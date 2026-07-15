@@ -1,0 +1,109 @@
+export type SourceLocation = {
+  readonly offset: number;
+  readonly line: number;
+  readonly column: number;
+};
+
+export type Program = {
+  readonly kind: "program";
+  readonly imports: ImportDeclaration[];
+  readonly functions: FunctionDeclaration[];
+};
+
+export type ImportDeclaration = {
+  readonly kind: "import";
+  readonly moduleName: string;
+  readonly header: string;
+  readonly location: SourceLocation;
+};
+
+export type FunctionDeclaration = {
+  readonly kind: "function";
+  readonly name: string;
+  readonly parameters: Parameter[];
+  readonly returnType: TypeReference;
+  readonly body: Statement[];
+  readonly location: SourceLocation;
+};
+
+export type Parameter = {
+  readonly name: string;
+  readonly type: TypeReference;
+  readonly location: SourceLocation;
+};
+
+export type TypeReference = {
+  readonly name: string;
+  readonly location: SourceLocation;
+};
+
+export type Statement = VariableStatement | ReturnStatement | ExpressionStatement;
+
+export type VariableStatement = {
+  readonly kind: "variable";
+  readonly mutable: boolean;
+  readonly name: string;
+  readonly type: TypeReference | null;
+  readonly initializer: Expression;
+  readonly location: SourceLocation;
+};
+
+export type ReturnStatement = {
+  readonly kind: "return";
+  readonly expression: Expression | null;
+  readonly location: SourceLocation;
+};
+
+export type ExpressionStatement = {
+  readonly kind: "expressionStatement";
+  readonly expression: Expression;
+  readonly location: SourceLocation;
+};
+
+export type Expression =
+  | NumberExpression
+  | StringExpression
+  | IdentifierExpression
+  | BinaryExpression
+  | CallExpression
+  | MemberExpression;
+
+export type NumberExpression = {
+  readonly kind: "number";
+  readonly value: string;
+  readonly location: SourceLocation;
+};
+
+export type StringExpression = {
+  readonly kind: "string";
+  readonly value: string;
+  readonly location: SourceLocation;
+};
+
+export type IdentifierExpression = {
+  readonly kind: "identifier";
+  readonly name: string;
+  readonly location: SourceLocation;
+};
+
+export type BinaryExpression = {
+  readonly kind: "binary";
+  readonly operator: string;
+  readonly left: Expression;
+  readonly right: Expression;
+  readonly location: SourceLocation;
+};
+
+export type CallExpression = {
+  readonly kind: "call";
+  readonly callee: Expression;
+  readonly arguments: Expression[];
+  readonly location: SourceLocation;
+};
+
+export type MemberExpression = {
+  readonly kind: "member";
+  readonly object: Expression;
+  readonly property: string;
+  readonly location: SourceLocation;
+};

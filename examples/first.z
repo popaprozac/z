@@ -1,0 +1,12 @@
+import stdio from "stdio.h";
+
+function add(a: i32, b: i32): i32 {
+  return a + b;
+}
+
+function main(): i32 {
+  const answer: i32 = add(20, 22);
+  stdio.printf("Z says %d\n", answer);
+  return 0;
+}
+
