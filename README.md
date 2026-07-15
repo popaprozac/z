@@ -72,3 +72,12 @@ The repository includes an initial VS Code-compatible syntax extension in
 `editors/vscode`. It recognizes `.z` files, comments, strings, imports,
 declarations, control-flow keywords, primitive types, and numbers. Semantic
 highlighting and diagnostics will come from the compiler-backed language server.
+
+Install it locally for VS Code and/or Cursor, then reload the editor window:
+
+```sh
+./scripts/install-editor-extension.sh
+```
+
+The installer creates a development symlink, so grammar updates only require an
+editor reload.
