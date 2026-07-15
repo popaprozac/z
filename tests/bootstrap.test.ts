@@ -75,13 +75,64 @@ test("reports unsupported C signatures at the Z call site", () => {
   const source = `
     import stdio from "stdio.h";
     function main(): i32 {
-      stdio.fopen("file", "r");
+      stdio.freopen("file", "r", "unsupported");
       return 0;
     }
   `;
   assert.throws(
     () => compileToC(source, "foreign-pointer.z"),
-    /C function "fopen" uses unsupported type "FILE \*"/,
+    /C function "freopen" uses unsupported type "FILE \*"/,
+  );
+});
+
+test("narrows, borrows, consumes, and cleans up owned C handles", () => {
+  const example = resolve(projectRoot, "examples/foreign-handle.z");
+  const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, "wrote handle\n");
+  assert.equal(readFileSync("/tmp/z-lang-foreign-handle.txt", "utf8"), "owned by Z\n");
+
+  const source = `
+    import stdio from "stdio.h";
+    function main(): i32 {
+      const file = stdio.fopen("/tmp/z-lang-double-close.txt", "w");
+      if (!file) { return 1; }
+      stdio.fclose(file);
+      return stdio.fclose(file);
+    }
+  `;
+  assert.throws(
+    () => compileToC(source, "foreign-consume.z"),
+    /use of moved value "file"/,
+  );
+});
+
+test("discovers ownership notes beside project headers", () => {
+  const source = `
+    import handles from "tests/fixtures/foreign-handles.h";
+    function main(): i32 {
+      const handle = handles.z_test_open();
+      if (!handle) { return 1; }
+      return handles.z_test_use(handle);
+    }
+  `;
+  const generated = compileToC(source, resolve(projectRoot, "foreign-local-notes.z"));
+  assert.match(generated, /ZTestHandle \* const handle = z_test_open\(\);/);
+  assert.match(generated, /if \(_z_live_handle_0 && handle != NULL\) z_test_close\(handle\);/);
+});
+
+test("requires nullable C handles to be checked before borrowing", () => {
+  const source = `
+    import stdio from "stdio.h";
+    function main(): i32 {
+      const file = stdio.fopen("/tmp/z-lang-nullable.txt", "w");
+      stdio.fputs("unsafe", file);
+      return 0;
+    }
+  `;
+  assert.throws(
+    () => compileToC(source, "foreign-nullability.z"),
+    /nullable FILE \* must be checked before passing it to "fputs"/,
   );
 });
 

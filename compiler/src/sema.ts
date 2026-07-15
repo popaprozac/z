@@ -10,16 +10,20 @@ import type {
 } from "./ast.ts";
 import { DiagnosticError } from "./diagnostics.ts";
 import { resultTypeName } from "./results.ts";
-import type { ForeignFunction, ForeignModule } from "./foreign.ts";
+import { pointerTypeName, type ForeignFunction, type ForeignModule, type ForeignPointerType } from "./foreign.ts";
 
 type ValueType = string | "unknown" | "never";
 
 export type SemanticInfo = {
   readonly movedExpressions: ReadonlySet<number>;
+  readonly foreignTypes: ReadonlyMap<string, ForeignPointerType>;
+  readonly foreignCallTypes: ReadonlyMap<number, string>;
 };
 
 type AnalysisState = {
   readonly movedExpressions: Set<number>;
+  readonly foreignTypes: ReadonlyMap<string, ForeignPointerType>;
+  readonly foreignCallTypes: Map<number, string>;
 };
 
 type SymbolValue =
@@ -37,7 +41,11 @@ export function analyze(
   fileName: string,
   foreignModules: ReadonlyMap<string, ForeignModule>,
 ): SemanticInfo {
-  const state: AnalysisState = { movedExpressions: new Set() };
+  const foreignTypes = new Map<string, ForeignPointerType>();
+  for (const module of foreignModules.values()) {
+    for (const [name, type] of module.types) foreignTypes.set(name, type);
+  }
+  const state: AnalysisState = { movedExpressions: new Set(), foreignTypes, foreignCallTypes: new Map() };
   const globals = new Map<string, SymbolValue>();
   const structs = new Map<string, StructDeclaration>();
   const enums = new Map<string, EnumDeclaration>();
@@ -346,14 +354,16 @@ function analyzeStatement(
     }
     case "if": {
       const conditionType = inferExpression(statement.condition, locals, globals, structs, enums, fileName, state);
-      requireAssignable("bool", conditionType, statement.condition, fileName);
+      if (conditionType !== "bool" && !foreignPointer(conditionType, state)?.nullable) {
+        requireAssignable("bool", conditionType, statement.condition, fileName);
+      }
       analyzeIfBranches(statement, owner, locals, globals, structs, enums, fileName, state);
       return;
     }
     case "expressionStatement":
       {
         const type = inferDirectValue(statement.expression, owner, locals, globals, structs, enums, fileName, state);
-        if (hasCleanupType(type, structs)) {
+        if (hasCleanupType(type, structs, state.foreignTypes)) {
           throw new DiagnosticError(fileName, statement.expression.location, "a cleanup-bearing value must be bound or transferred; it cannot be discarded");
         }
       }
@@ -382,7 +392,7 @@ function analyzeStatement(
       }
       const missing = declaration.variants.find((variant) => !covered.has(variant.name));
       if (missing) throw new DiagnosticError(fileName, statement.location, `non-exhaustive match; missing ${declaration.name}.${missing.name}`);
-      mergeOwnershipStates(locals, continuing);
+      mergeOwnershipStates(locals, continuing, state);
       return;
     }
   }
@@ -448,7 +458,7 @@ function inferMatchExpression(
   }
   const missing = declaration.variants.find((variant) => !covered.has(variant.name));
   if (missing) throw new DiagnosticError(fileName, expression.location, `non-exhaustive match; missing ${declaration.name}.${missing.name}`);
-  mergeOwnershipStates(locals, continuing);
+  mergeOwnershipStates(locals, continuing, state);
   return resultType;
 }
 
@@ -554,6 +564,7 @@ function inferExpression(
     case "unary": {
       const operand = inferExpression(expression.operand, locals, globals, structs, enums, fileName, state);
       if (expression.operator === "!" && operand === "bool") return "bool";
+      if (expression.operator === "!" && foreignPointer(operand, state)?.nullable) return "bool";
       throw new DiagnosticError(fileName, expression.location, `operator ${JSON.stringify(expression.operator)} requires a bool operand`);
     }
     case "identifier": {
@@ -676,7 +687,7 @@ function inferExpression(
         }
       }
       const receiverType = inferExpression(expression.object, locals, globals, structs, enums, fileName, state);
-      if (hasCleanupType(receiverType, structs) && !isNamedStorageExpression(expression.object)) {
+      if (hasCleanupType(receiverType, structs, state.foreignTypes) && !isNamedStorageExpression(expression.object)) {
         throw new DiagnosticError(fileName, expression.object.location, "a cleanup-bearing temporary must be bound before borrowing one of its members");
       }
       const declaration = structs.get(receiverType);
@@ -712,7 +723,7 @@ function inferExpression(
           return checkForeignCall(foreignFunction, expression.arguments, locals, globals, structs, enums, fileName, expression.location, state);
         }
         const receiverType = inferExpression(expression.callee.object, locals, globals, structs, enums, fileName, state);
-        if (hasCleanupType(receiverType, structs) && !isNamedStorageExpression(expression.callee.object)) {
+        if (hasCleanupType(receiverType, structs, state.foreignTypes) && !isNamedStorageExpression(expression.callee.object)) {
           throw new DiagnosticError(fileName, expression.callee.object.location, "a cleanup-bearing temporary must be bound before calling one of its methods");
         }
         const declaration = structs.get(receiverType);
@@ -825,7 +836,7 @@ function consumeOwnedValue(
   fileName: string,
   state: AnalysisState,
 ): void {
-  if (!hasCleanupType(type, structs)) return;
+  if (!hasCleanupType(type, structs, state.foreignTypes)) return;
   if (expression.kind === "member") {
     throw new DiagnosticError(fileName, expression.location, "moving a cleanup-bearing field out of its owner is not implemented yet");
   }
@@ -844,8 +855,9 @@ function rejectForeignOwnedMove(
   type: ValueType,
   structs: Map<string, StructDeclaration>,
   fileName: string,
+  state: AnalysisState,
 ): void {
-  if (!hasCleanupType(type, structs)) return;
+  if (!hasCleanupType(type, structs, state.foreignTypes)) return;
   throw new DiagnosticError(
     fileName,
     expression.location,
@@ -877,17 +889,57 @@ function propagateOuterOwnership(target: Map<string, ValueType>, source: Map<str
   }
 }
 
-function mergeOwnershipStates(target: Map<string, ValueType>, paths: Map<string, ValueType>[]): void {
+function mergeOwnershipStates(
+  target: Map<string, ValueType>,
+  paths: Map<string, ValueType>[],
+  state: AnalysisState,
+): void {
   if (paths.length === 0) return;
   for (const name of target.keys()) {
     const values = paths.map((path) => path.get(name)).filter((value): value is ValueType => Boolean(value));
     if (values.length === 0) continue;
-    const type = underlyingType(values[0]);
+    let type = underlyingType(values[0]);
+    const pointerTypes = values.map((value) => foreignPointer(value, state));
+    const firstPointer = pointerTypes[0];
+    if (firstPointer && pointerTypes.every((pointer) => pointer?.identity === firstPointer.identity && pointer.ownership === firstPointer.ownership)) {
+      const nullable = pointerTypes.some((pointer) => pointer!.nullable);
+      type = pointerTypeName(firstPointer.identity, firstPointer.ownership, nullable);
+    }
     const states = new Set(values.map(ownershipState));
     if (states.size === 1 && states.has("available")) target.set(name, type);
     else if (states.size === 1 && states.has("moved")) target.set(name, `${movedPrefix}${type}`);
     else target.set(name, `${maybeMovedPrefix}${type}`);
   }
+}
+
+function narrowedConditionLocals(
+  locals: Map<string, ValueType>,
+  condition: Expression,
+  truthy: boolean,
+  state: AnalysisState,
+): Map<string, ValueType> {
+  const narrowed = new Map(locals);
+  let name: string | null = null;
+  let nonnull = truthy;
+  if (condition.kind === "identifier") {
+    name = condition.name;
+  } else if (condition.kind === "unary" && condition.operator === "!" && condition.operand.kind === "identifier") {
+    name = condition.operand.name;
+    nonnull = !truthy;
+  }
+  if (!name || !nonnull) return narrowed;
+  const current = narrowed.get(name);
+  const pointer = current ? foreignPointer(current, state) : null;
+  if (pointer?.nullable) {
+    narrowed.set(name, pointerTypeName(pointer.identity, pointer.ownership, false));
+  }
+  return narrowed;
+}
+
+function foreignPointer(type: ValueType, state: AnalysisState): ForeignPointerType | null {
+  const actual = underlyingType(type);
+  if (actual === "unknown" || actual === "never") return null;
+  return state.foreignTypes.get(actual) ?? null;
 }
 
 function analyzeIfBranches(
@@ -902,32 +954,34 @@ function analyzeIfBranches(
 ): void {
   const original = new Map(locals);
   const continuing: Map<string, ValueType>[] = [];
-  const thenLocals = new Map(original);
+  const thenLocals = narrowedConditionLocals(original, statement.condition, true, state);
   analyzeStatement(statement.thenBranch, owner, thenLocals, globals, structs, enums, fileName, state);
   if (!statementReturns(statement.thenBranch)) continuing.push(thenLocals);
 
   if (statement.elseBranch) {
-    const elseLocals = new Map(original);
+    const elseLocals = narrowedConditionLocals(original, statement.condition, false, state);
     analyzeStatement(statement.elseBranch, owner, elseLocals, globals, structs, enums, fileName, state);
     if (!statementReturns(statement.elseBranch)) continuing.push(elseLocals);
   } else {
-    continuing.push(original);
+    continuing.push(narrowedConditionLocals(original, statement.condition, false, state));
   }
-  mergeOwnershipStates(locals, continuing);
+  mergeOwnershipStates(locals, continuing, state);
 }
 
 function hasCleanupType(
   type: ValueType,
   structs: Map<string, StructDeclaration>,
+  foreignTypes: ReadonlyMap<string, ForeignPointerType> = new Map(),
   visiting = new Set<string>(),
 ): boolean {
   const actual = underlyingType(type);
   if (actual === "unknown" || actual === "never" || visiting.has(actual)) return false;
+  if (foreignTypes.get(actual)?.ownership === "owned") return true;
   const declaration = structs.get(actual);
   if (!declaration) return false;
   if (declaration.deinitializer) return true;
   visiting.add(actual);
-  const result = declaration.fields.some((field) => hasCleanupType(field.type.name, structs, visiting));
+  const result = declaration.fields.some((field) => hasCleanupType(field.type.name, structs, foreignTypes, visiting));
   visiting.delete(actual);
   return result;
 }
@@ -987,14 +1041,55 @@ function checkForeignCall(
   for (let index = 0; index < args.length; index += 1) {
     const argument = args[index];
     const actual = inferExpression(argument, locals, globals, structs, enums, fileName, state);
-    rejectForeignOwnedMove(argument, actual, structs, fileName);
     const parameter = target.parameters[index];
-    if (parameter?.type.kind === "z") requireAssignable(parameter.type.name, actual, argument, fileName);
+    if (parameter?.type.kind === "z") {
+      rejectForeignOwnedMove(argument, actual, structs, fileName, state);
+      requireAssignable(parameter.type.name, actual, argument, fileName);
+    }
+    if (parameter?.type.kind === "pointer") {
+      const actualPointer = foreignPointer(actual, state);
+      if (!actualPointer || actualPointer.identity !== parameter.type.identity) {
+        throw new DiagnosticError(
+          fileName,
+          argument.location,
+          `C function ${JSON.stringify(target.name)} expects ${describePointer(parameter.type)}, found ${describeValueType(actual, state)}`,
+        );
+      }
+      if (!parameter.type.nullable && actualPointer.nullable) {
+        throw new DiagnosticError(
+          fileName,
+          argument.location,
+          `nullable ${actualPointer.cName} must be checked before passing it to ${JSON.stringify(target.name)}`,
+        );
+      }
+      if (parameter.type.ownership === "consuming") {
+        if (actualPointer.ownership !== "owned") {
+          throw new DiagnosticError(fileName, argument.location, `C function ${JSON.stringify(target.name)} can only consume an owned ${actualPointer.cName}`);
+        }
+        consumeOwnedValue(argument, actual, locals, structs, fileName, state);
+      }
+    }
     if (!parameter && actual !== "i32" && actual !== "bool" && actual !== "cstring") {
-      throw new DiagnosticError(fileName, argument.location, `unsupported variadic argument type ${actual} for C function ${JSON.stringify(target.name)}`);
+      throw new DiagnosticError(fileName, argument.location, `unsupported variadic argument type ${describeValueType(actual, state)} for C function ${JSON.stringify(target.name)}`);
     }
   }
-  return target.returnType.kind === "z" ? target.returnType.name : "unknown";
+  const result = target.returnType.kind === "z"
+    ? target.returnType.name
+    : target.returnType.kind === "pointer"
+      ? target.returnType.typeName
+      : "unknown";
+  state.foreignCallTypes.set(location.offset, result);
+  return result;
+}
+
+function describePointer(type: ForeignPointerType): string {
+  const ownership = type.ownership === "consuming" ? "owned" : type.ownership;
+  return `${ownership} ${type.nullable ? "nullable " : ""}${type.cName}`;
+}
+
+function describeValueType(type: ValueType, state: AnalysisState): string {
+  const pointer = foreignPointer(type, state);
+  return pointer ? describePointer(pointer) : String(underlyingType(type));
 }
 
 function validateType(

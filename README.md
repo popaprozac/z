@@ -126,6 +126,26 @@ location cannot be used afterward. Path-sensitive analysis rejects values that
 may have moved along only some continuing control-flow paths, while generated
 live flags ensure each runtime path still performs cleanup exactly once.
 
+Imported opaque handles participate in the same ownership system when API
+notes provide the facts missing from C headers:
+
+```z
+import stdio from "stdio.h";
+
+const file = stdio.fopen("notes.txt", "w");
+if (!file) {
+  return 1;
+}
+
+stdio.fputs("owned by Z\n", file);
+// fclose(file) is inserted on every exit.
+```
+
+The truthiness guard narrows nullable `FILE *` to non-null. `fputs` borrows the
+handle for the call; an explicit `fclose(file)` consumes it and makes any later
+use a compile-time error. If ownership remains local, generated cleanup calls
+`fclose` once and only when the handle is non-null.
+
 `try` evaluates its call once, propagates failure immediately, and produces the
 success payload. It is currently supported directly in bindings, returns, and
 expression statements; general nested-expression lowering comes later.
@@ -136,6 +156,7 @@ bun run z emit examples/first.z
 bun run z run examples/first.z
 bun run z run examples/control-flow.z
 bun run z run examples/deinit.z
+bun run z run examples/foreign-handle.z
 bun run z run examples/structs.z
 bun run z run examples/match.z
 bun run z run examples/match-expression.z
@@ -148,9 +169,14 @@ The current header importer asks Clang for function declarations, rejects
 unknown symbols, checks fixed argument types and counts, enforces variadic
 boundaries, and carries supported return types into Z inference. This first
 slice maps C `int`, `_Bool`, `const char *`, and `void` to Z's `i32`, `bool`,
-`cstring`, and `void`. Mutable pointers, records, globals, macros, ownership
-annotations, Objective-C, and C++ produce explicit limitations or remain future
-layers; they are not silently treated as safe.
+`cstring`, and `void`. It also imports opaque single-pointer handles when API
+notes specify nullability, owned returns and their release function, and
+borrowed or consuming parameters. The compiler ships initial `stdio.h` notes
+and discovers project notes beside a header as `<header>.zapi.json`; this JSON is
+a stage-0 representation, not yet a frozen language format. Unannotated
+pointers, borrowed returns without lifetime provenance, mutable strings,
+records, globals, macros, Objective-C, and C++ remain conservative errors or
+future layers rather than being silently treated as safe.
 
 See [DESIGN.md](DESIGN.md) for the language charter and roadmap.
 

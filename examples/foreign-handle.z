@@ -1,0 +1,12 @@
+import stdio from "stdio.h";
+
+function main(): i32 {
+  const file = stdio.fopen("/tmp/z-lang-foreign-handle.txt", "w");
+  if (!file) {
+    return 1;
+  }
+
+  stdio.fputs("owned by Z\n", file);
+  stdio.printf("wrote handle\n");
+  return 0;
+}
