@@ -72,6 +72,10 @@ export function parse(tokens: Token[], fileName: string): Program {
       const token = previous();
       return { kind: "attempt", expression: parsePostfix(), location: token.location };
     }
+    if (match("try")) {
+      const token = previous();
+      return { kind: "try", expression: parsePostfix(), location: token.location };
+    }
     if (match("number")) {
       const token = previous();
       return { kind: "number", value: token.text, location: token.location };

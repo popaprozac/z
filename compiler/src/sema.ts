@@ -220,7 +220,9 @@ function analyzeStatement(
       if (locals.has(statement.name)) {
         throw new DiagnosticError(fileName, statement.location, `duplicate local ${JSON.stringify(statement.name)}`);
       }
-      const initializerType = inferExpression(statement.initializer, locals, globals, structs, enums, fileName);
+      const initializerType = statement.initializer.kind === "try"
+        ? inferTrySuccess(statement.initializer, owner, locals, globals, structs, enums, fileName)
+        : inferExpression(statement.initializer, locals, globals, structs, enums, fileName);
       let variableType = initializerType;
       if (statement.type) {
         validateType(statement.type, structs, enums, fileName, false);
@@ -247,7 +249,9 @@ function analyzeStatement(
       if (expected === "void") {
         throw new DiagnosticError(fileName, statement.location, "a void function cannot return a value");
       }
-      const actual = inferExpression(statement.expression, locals, globals, structs, enums, fileName);
+      const actual = statement.expression.kind === "try"
+        ? inferTrySuccess(statement.expression, owner, locals, globals, structs, enums, fileName)
+        : inferExpression(statement.expression, locals, globals, structs, enums, fileName);
       requireAssignable(expected, actual, statement.expression, fileName);
       return;
     }
@@ -260,7 +264,11 @@ function analyzeStatement(
       return;
     }
     case "expressionStatement":
-      inferExpression(statement.expression, locals, globals, structs, enums, fileName);
+      if (statement.expression.kind === "try") {
+        inferTrySuccess(statement.expression, owner, locals, globals, structs, enums, fileName);
+      } else {
+        inferExpression(statement.expression, locals, globals, structs, enums, fileName);
+      }
       return;
     case "match": {
       const subjectType = inferExpression(statement.expression, locals, globals, structs, enums, fileName);
@@ -286,6 +294,31 @@ function analyzeStatement(
       return;
     }
   }
+}
+
+function inferTrySuccess(
+  expression: Extract<Expression, { kind: "try" }>,
+  owner: FunctionDeclaration,
+  locals: Map<string, ValueType>,
+  globals: Map<string, SymbolValue>,
+  structs: Map<string, StructDeclaration>,
+  enums: Map<string, EnumDeclaration>,
+  fileName: string,
+): ValueType {
+  if (!owner.errorType) {
+    throw new DiagnosticError(fileName, expression.location, "try requires an enclosing throwing function");
+  }
+  const resultType = inferExpression(expression.expression, locals, globals, structs, enums, fileName, true);
+  const result = enums.get(resultType);
+  if (!result || !result.name.startsWith("__z_Result_")) {
+    throw new DiagnosticError(fileName, expression.location, "try requires a throwing function call");
+  }
+  const success = result.variants.find((variant) => variant.name === "success")!.payload!;
+  const failure = result.variants.find((variant) => variant.name === "failure")!.payload!;
+  if (failure.name !== owner.errorType.name) {
+    throw new DiagnosticError(fileName, expression.location, `cannot propagate ${failure.name} from a function throwing ${owner.errorType.name}`);
+  }
+  return success.name;
 }
 
 function inferExpression(
@@ -372,6 +405,8 @@ function inferExpression(
       }
       return result;
     }
+    case "try":
+      throw new DiagnosticError(fileName, expression.location, "try must be the direct value of a binding, return, or expression statement");
     case "member": {
       if (isForeignMember(expression, globals)) return "unknown";
       if (expression.object.kind === "identifier") {

@@ -66,7 +66,18 @@ match result {
 ```
 
 `return` constructs success and `throw` constructs failure. A throwing call must
-be marked with `attempt` (or, in the next lowering stage, `try`).
+be marked with `attempt` for inspection or `try` for propagation:
+
+```z
+function userId(id: i32): i32 throws UserError {
+  const user = try findUser(id);
+  return user.id;
+}
+```
+
+`try` evaluates its call once, propagates failure immediately, and produces the
+success payload. It is currently supported directly in bindings, returns, and
+expression statements; general nested-expression lowering comes later.
 
 ```sh
 bun run z check examples/first.z
@@ -75,6 +86,7 @@ bun run z run examples/first.z
 bun run z run examples/structs.z
 bun run z run examples/match.z
 bun run z run examples/result.z
+bun run z run examples/try.z
 bun test
 ```
 

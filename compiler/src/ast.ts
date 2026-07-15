@@ -119,7 +119,8 @@ export type Expression =
   | MemberExpression
   | StructExpression
   | VariantExpression
-  | AttemptExpression;
+  | AttemptExpression
+  | TryExpression;
 
 export type NumberExpression = {
   readonly kind: "number";
@@ -184,6 +185,12 @@ export type VariantExpression = {
 
 export type AttemptExpression = {
   readonly kind: "attempt";
+  readonly expression: Expression;
+  readonly location: SourceLocation;
+};
+
+export type TryExpression = {
+  readonly kind: "try";
   readonly expression: Expression;
   readonly location: SourceLocation;
 };

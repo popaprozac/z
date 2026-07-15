@@ -16,6 +16,7 @@ type GenerationContext = {
   readonly receiver: StructDeclaration | null;
   readonly owner: FunctionDeclaration;
   readonly matchCounter: { value: number };
+  readonly tryCounter: { value: number };
 };
 
 const primitiveTypeNames: Record<string, string> = {
@@ -103,11 +104,22 @@ function generateFunction(
 ): string {
   const localTypes = new Map(declaration.parameters.map((parameter) => [parameter.name, parameter.type.name]));
   if (receiver) localTypes.set("this", receiver.name);
-  const context: GenerationContext = { structs, enums, functions, localTypes, receiver, owner: declaration, matchCounter: { value: 0 } };
+  const context: GenerationContext = {
+    structs,
+    enums,
+    functions,
+    localTypes,
+    receiver,
+    owner: declaration,
+    matchCounter: { value: 0 },
+    tryCounter: { value: 0 },
+  };
   const body = declaration.body.map((statement) => {
     const generated = generateStatement(statement, context);
     if (statement.kind === "variable") {
-      const type = statement.type?.name ?? inferExpressionType(statement.initializer, context);
+      const type = statement.type?.name ?? (statement.initializer.kind === "try"
+        ? trySuccessType(statement.initializer, context)
+        : inferExpressionType(statement.initializer, context));
       localTypes.set(statement.name, type);
     }
     return `  ${generated}`;
@@ -136,12 +148,20 @@ function generateFunctionSignature(
 function generateStatement(statement: Statement, context: GenerationContext): string {
   switch (statement.kind) {
     case "variable": {
-      const zType = statement.type?.name ?? inferExpressionType(statement.initializer, context);
+      const zType = statement.type?.name ?? (statement.initializer.kind === "try"
+        ? trySuccessType(statement.initializer, context)
+        : inferExpressionType(statement.initializer, context));
       const declaration = generateLocalDeclaration(zType, statement.name, statement.mutable, context.structs, context.enums);
+      if (statement.initializer.kind === "try") {
+        return generateTry(statement.initializer, context, (value) => `${declaration} = ${value};`);
+      }
       return `${declaration} = ${generateExpression(statement.initializer, context)};`;
     }
     case "return":
       if (!statement.expression) return "return;";
+      if (statement.expression.kind === "try") {
+        return generateTry(statement.expression, context, (value) => generateSuccessReturn(value, context));
+      }
       if (context.owner.errorType) {
         const result = resultTypeName(context.owner.returnType.name, context.owner.errorType.name);
         return `return (${enumName(result)}){ .tag = ${variantTag(result, "success")}, .data.success = ${generateExpression(statement.expression, context)} };`;
@@ -152,10 +172,52 @@ function generateStatement(statement: Statement, context: GenerationContext): st
       return `return (${enumName(result)}){ .tag = ${variantTag(result, "failure")}, .data.failure = ${generateExpression(statement.expression, context)} };`;
     }
     case "expressionStatement":
+      if (statement.expression.kind === "try") {
+        return generateTry(statement.expression, context, (value) => `(void)${value};`);
+      }
       return `${generateExpression(statement.expression, context)};`;
     case "match":
       return generateMatch(statement, context);
   }
+}
+
+function generateSuccessReturn(value: string, context: GenerationContext): string {
+  if (!context.owner.errorType) return `return ${value};`;
+  const result = resultTypeName(context.owner.returnType.name, context.owner.errorType.name);
+  return `return (${enumName(result)}){ .tag = ${variantTag(result, "success")}, .data.success = ${value} };`;
+}
+
+function generateTry(
+  expression: Extract<Expression, { kind: "try" }>,
+  context: GenerationContext,
+  consumeSuccess: (value: string) => string,
+): string {
+  const resultType = throwingCallResultType(expression.expression, context);
+  const temporary = `_z_try_${context.tryCounter.value++}`;
+  const ownerResult = resultTypeName(context.owner.returnType.name, context.owner.errorType!.name);
+  return `const ${mapType(resultType, context.structs, context.enums)} ${temporary} = ${generateExpression(expression.expression, context)};\n`
+    + `  if (${temporary}.tag == ${variantTag(resultType, "failure")}) {\n`
+    + `    return (${enumName(ownerResult)}){ .tag = ${variantTag(ownerResult, "failure")}, .data.failure = ${temporary}.data.failure };\n`
+    + `  }\n`
+    + `  ${consumeSuccess(`${temporary}.data.success`)}`;
+}
+
+function trySuccessType(expression: Extract<Expression, { kind: "try" }>, context: GenerationContext): string {
+  const result = context.enums.get(throwingCallResultType(expression.expression, context))!;
+  return result.variants.find((variant) => variant.name === "success")!.payload!.name;
+}
+
+function throwingCallResultType(expression: Expression, context: GenerationContext): string {
+  if (expression.kind === "call" && expression.callee.kind === "identifier") {
+    const target = context.functions.get(expression.callee.name)!;
+    return resultTypeName(target.returnType.name, target.errorType!.name);
+  }
+  if (expression.kind === "call" && expression.callee.kind === "member") {
+    const receiver = context.structs.get(inferExpressionType(expression.callee.object, context))!;
+    const method = receiver.methods.find((candidate) => candidate.name === expression.callee.property)!;
+    return resultTypeName(method.returnType.name, method.errorType!.name);
+  }
+  throw new Error("try lowering expected a throwing call");
 }
 
 function generateLocalDeclaration(
@@ -216,6 +278,8 @@ function generateExpression(expression: Expression, context: GenerationContext):
       return `(${enumName(expression.enumName)}){ .tag = ${variantTag(expression.enumName, expression.variantName)}, .data.${expression.variantName} = ${generateExpression(expression.payload, context)} }`;
     case "attempt":
       return generateExpression(expression.expression, context);
+    case "try":
+      throw new Error("try must be lowered from its containing statement");
     case "member": {
       if (expression.object.kind === "identifier") {
         const declaration = context.enums.get(expression.object.name);
@@ -267,18 +331,10 @@ function inferExpressionType(expression: Expression, context: GenerationContext)
     case "variantExpression":
       return expression.enumName;
     case "attempt": {
-      const inner = expression.expression;
-      if (inner.kind === "call" && inner.callee.kind === "identifier") {
-        const target = context.functions.get(inner.callee.name)!;
-        return resultTypeName(target.returnType.name, target.errorType!.name);
-      }
-      if (inner.kind === "call" && inner.callee.kind === "member") {
-        const receiver = context.structs.get(inferExpressionType(inner.callee.object, context))!;
-        const method = receiver.methods.find((candidate) => candidate.name === inner.callee.property)!;
-        return resultTypeName(method.returnType.name, method.errorType!.name);
-      }
-      return "i32";
+      return throwingCallResultType(expression.expression, context);
     }
+    case "try":
+      return trySuccessType(expression, context);
     case "member": {
       if (expression.object.kind === "identifier" && context.enums.has(expression.object.name)) {
         return expression.object.name;

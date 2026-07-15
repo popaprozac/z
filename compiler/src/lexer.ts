@@ -17,6 +17,7 @@ export type TokenKind =
   | "throws"
   | "throw"
   | "attempt"
+  | "try"
   | "leftParen"
   | "rightParen"
   | "leftBrace"
@@ -52,6 +53,7 @@ const keywords = new Map<string, TokenKind>([
   ["throws", "throws"],
   ["throw", "throw"],
   ["attempt", "attempt"],
+  ["try", "try"],
 ]);
 
 export function lex(source: string, fileName: string): Token[] {

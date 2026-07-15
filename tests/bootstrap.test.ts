@@ -183,6 +183,42 @@ test("compiles typed Result success and failure paths", () => {
   assert.equal(result.stdout, "found=42\nerror=7\n");
 });
 
+test("requires try inside a throwing function", () => {
+  const source = `
+    struct Problem { code: i32; }
+    function fallible(): i32 throws Problem { return 42; }
+    function main(): i32 { return try fallible(); }
+  `;
+  assert.throws(
+    () => compileToC(source, "try-context.z"),
+    /try requires an enclosing throwing function/,
+  );
+});
+
+test("requires compatible propagated error types", () => {
+  const source = `
+    struct FirstError { code: i32; }
+    struct SecondError { code: i32; }
+    function first(): i32 throws FirstError { return 1; }
+    function second(): i32 throws SecondError {
+      const value = try first();
+      return value;
+    }
+    function main(): i32 { return 0; }
+  `;
+  assert.throws(
+    () => compileToC(source, "try-errors.z"),
+    /cannot propagate FirstError from a function throwing SecondError/,
+  );
+});
+
+test("propagates typed failures through try", () => {
+  const example = resolve(projectRoot, "examples/try.z");
+  const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, "id=42\nforwarded=9\nerror=7\n");
+});
+
 test("compiles and runs structs as native values", () => {
   const example = resolve(projectRoot, "examples/structs.z");
   const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
