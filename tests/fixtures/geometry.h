@@ -2,6 +2,9 @@
 #define Z_TEST_GEOMETRY_H
 
 typedef int ZCount;
+typedef unsigned short ZExtent;
+typedef unsigned int ZFlags;
+typedef unsigned long long ZIdentifier;
 
 typedef struct ZPoint {
   int x;
@@ -13,6 +16,18 @@ typedef enum ZDirection {
   ZBackward = -1
 } ZDirection;
 
+typedef struct ZSize {
+  ZExtent width;
+  ZExtent height;
+} ZSize;
+
+typedef struct ZRect {
+  ZPoint origin;
+  ZSize size;
+  ZFlags flags;
+  ZIdentifier identifier;
+} ZRect;
+
 static inline ZPoint z_translate(ZPoint point, ZDirection direction, ZCount amount) {
   point.x += direction * amount;
   return point;
@@ -20,6 +35,14 @@ static inline ZPoint z_translate(ZPoint point, ZDirection direction, ZCount amou
 
 static inline int z_score(ZPoint point) {
   return point.x + point.y;
+}
+
+static inline unsigned int z_extent_value(ZExtent value) {
+  return value;
+}
+
+static inline ZIdentifier z_rect_id(ZRect rect) {
+  return rect.identifier;
 }
 
 #endif

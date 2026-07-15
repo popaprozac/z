@@ -125,12 +125,52 @@ test("imports C typedefs, records, enums, constants, and qualified signatures", 
   const example = resolve(projectRoot, "examples/foreign-types.z");
   const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
-  assert.equal(result.stdout, "point=13,20 score=33\n");
+  assert.equal(result.stdout, "point=13,20 width=640 flags=7 id=42\n");
 
   const generated = compileToC(readFileSync(example, "utf8"), example);
   assert.match(generated, /static ZPoint move\(ZPoint point, ZCount amount\)/);
   assert.match(generated, /\(ZPoint\)\{ \.x = 10, \.y = 20 \}/);
   assert.match(generated, /z_translate\(point, ZForward, amount\)/);
+});
+
+test("checks contextual literals and preserves exact integer expression types", () => {
+  const source = `
+    function plus(value: u16): u16 {
+      const result = value + 3;
+      return result;
+    }
+    function maxWord(): u32 {
+      return 4294967295;
+    }
+    function maxWide(): u64 {
+      return 18446744073709551615;
+    }
+    function main(): i32 {
+      plus(65535);
+      return 0;
+    }
+  `;
+  const generated = compileToC(source, "integer-widths.z");
+  assert.match(generated, /static uint16_t plus\(uint16_t value\)/);
+  assert.match(generated, /const uint16_t result = \(value \+ 3\);/);
+  assert.match(generated, /return 4294967295U;/);
+  assert.match(generated, /return 18446744073709551615ULL;/);
+
+  assert.throws(
+    () => compileToC(source.replace("65535", "65536"), "integer-overflow.z"),
+    /integer literal 65536 does not fit u16/,
+  );
+
+  const inferredWide = `
+    function main(): i32 {
+      const value = 4294967295;
+      return 0;
+    }
+  `;
+  assert.throws(
+    () => compileToC(inferredWide, "integer-default.z"),
+    /does not fit default i32; add an explicit integer type/,
+  );
 });
 
 test("checks imported C record fields and enum arguments in Z", () => {

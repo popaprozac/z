@@ -188,9 +188,11 @@ bun test
 
 The current header importer asks Clang for function declarations, rejects
 unknown symbols, checks fixed argument types and counts, enforces variadic
-boundaries, and carries supported return types into Z inference. This first
-slice maps C `int`, `_Bool`, `const char *`, and `void` to Z's `i32`, `bool`,
-`cstring`, and `void`. It also imports opaque single-pointer handles when API
+boundaries, and carries supported return types into Z inference. Signed and
+unsigned C integer spellings and common fixed-width or pointer-sized typedefs
+map to Z's `i8` through `i64`, `u8` through `u64`, `isize`, and `usize` families;
+`_Bool`, `const char *`, and `void` map to `bool`, `cstring`, and `void`. The
+importer also accepts opaque single-pointer handles when API
 notes specify nullability, owned returns and their release function, and
 borrowed or consuming parameters. The compiler ships initial `stdio.h` notes
 and discovers project notes beside a header as `<header>.zapi.json`; this JSON is
@@ -199,11 +201,13 @@ pointers, borrowed returns without lifetime provenance, mutable strings,
 globals, macros, Objective-C, and C++ remain conservative errors or future
 layers rather than being silently treated as safe.
 
-Complete typedef-named C structs with supported scalar or enum fields, C enums
-and their constants, and `int`/`_Bool` typedefs are now usable as namespaced Z
-types. Unions, anonymous or incomplete layouts, nested records, unsigned and
-wide scalars, arrays, bitfield-specific validation, callbacks, and pointer-
-bearing records remain upcoming interop layers.
+Complete typedef-named C structs with supported integer, enum, or nested-record
+fields, C enums and their constants, and integer typedefs are now usable as
+namespaced Z types. Integer literals are contextually typed and rejected when
+they do not fit the destination width. Unions, anonymous or incomplete layouts,
+plain `char` signedness, arrays, floating-point types, bitfield-specific
+validation, callbacks, and pointer-bearing records remain upcoming interop
+layers.
 
 See [DESIGN.md](DESIGN.md) for the language charter and roadmap.
 

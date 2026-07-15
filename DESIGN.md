@@ -59,6 +59,20 @@ tracks available, moved, and possibly-moved states through branches and matches;
 using a value after ownership may have left is an error. Backend live flags
 preserve exactly-once cleanup when runtime branches move different values.
 
+## Numeric types
+
+Z names exact signed and unsigned integer widths as `i8`, `u8`, `i16`, `u16`,
+`i32`, `u32`, `i64`, and `u64`; `isize` and `usize` track pointer width. Integer
+literals are contextually typed and must fit their destination. Variables do
+not silently change signedness or width, and binary arithmetic currently
+requires matching integer types.
+
+The final overflow policy still needs an explicit language-design decision.
+Generated C behavior in the bootstrap is not the semantic contract: safe Z
+must not inherit C signed-overflow undefined behavior. Default trapping,
+explicit checked results, and separately named wrapping or saturating operations
+should be evaluated before this surface is frozen.
+
 ## Errors
 
 Recoverable failures are typed values. Surface syntax exposes the two outcomes

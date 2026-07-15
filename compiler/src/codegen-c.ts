@@ -33,7 +33,16 @@ type CleanupLocal = {
 };
 
 const primitiveTypeNames: Record<string, string> = {
+  i8: "int8_t",
+  u8: "uint8_t",
+  i16: "int16_t",
+  u16: "uint16_t",
   i32: "int32_t",
+  u32: "uint32_t",
+  i64: "int64_t",
+  u64: "uint64_t",
+  isize: "intptr_t",
+  usize: "uintptr_t",
   void: "void",
   bool: "bool",
   cstring: "const char *",
@@ -560,7 +569,10 @@ function statementListTerminates(statements: Statement[]): boolean {
 function generateExpression(expression: Expression, context: GenerationContext): string {
   switch (expression.kind) {
     case "number":
-      return expression.value;
+      return generateIntegerLiteral(
+        expression.value,
+        context.semanticInfo.integerLiteralTypes.get(expression.location.offset),
+      );
     case "string":
       return JSON.stringify(expression.value);
     case "boolean":
@@ -629,6 +641,13 @@ function generateExpression(expression: Expression, context: GenerationContext):
       return `${generateExpression(expression.callee, context)}(${expression.arguments.map((argument) => generateExpression(argument, context)).join(", ")})`;
     }
   }
+}
+
+function generateIntegerLiteral(value: string, type: string | undefined): string {
+  if (type === "u32") return `${value}U`;
+  if (type === "u64" || type === "usize") return `${value}ULL`;
+  if (type === "i64" || type === "isize") return `${value}LL`;
+  return value;
 }
 
 function inferExpressionType(expression: Expression, context: GenerationContext): string {

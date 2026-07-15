@@ -5,8 +5,11 @@ import { fileURLToPath } from "node:url";
 import type { ImportDeclaration } from "./ast.ts";
 import { DiagnosticError } from "./diagnostics.ts";
 
+export type ForeignScalarTypeName =
+  | "i8" | "u8" | "i16" | "u16" | "i32" | "u32" | "i64" | "u64" | "isize" | "usize" | "bool";
+
 export type ForeignType =
-  | { readonly kind: "z"; readonly name: "i32" | "bool" | "cstring" | "void"; readonly cName: string }
+  | { readonly kind: "z"; readonly name: ForeignScalarTypeName | "cstring" | "void"; readonly cName: string }
   | { readonly kind: "named"; readonly type: ForeignNamedType; readonly cName: string }
   | ForeignPointerType
   | { readonly kind: "unsupported"; readonly cName: string };
@@ -30,7 +33,7 @@ export type ForeignNamedType =
     readonly exportName: string;
     readonly typeName: string;
     readonly cName: string;
-    readonly underlying: "i32" | "bool";
+    readonly underlying: ForeignScalarTypeName;
   };
 
 export type ForeignField = {
@@ -224,7 +227,7 @@ function collectNamedTypes(
     typeName: string;
     cName: string;
     declaration?: ClangNode;
-    underlying?: "i32" | "bool";
+    underlying?: ForeignScalarTypeName;
   };
   const seeds = new Map<string, Seed>();
   for (const node of nodes) {
@@ -232,12 +235,12 @@ function collectNamedTypes(
     const qualified = node.type.qualType;
     const recordMatch = /^struct (.+)$/.exec(qualified);
     const enumMatch = /^enum (.+)$/.exec(qualified);
-    const underlying = mapBuiltinType(node.type.desugaredQualType ?? qualified);
+    const underlying = mapTypedefType(node.name, node.type.desugaredQualType ?? qualified);
     const kind = recordMatch && records.has(recordMatch[1])
       ? "record"
       : enumMatch && enums.has(enumMatch[1])
         ? "enum"
-        : underlying === "i32" || underlying === "bool"
+        : underlying && underlying !== "void"
           ? "scalar"
           : null;
     if (!kind) continue;
@@ -247,11 +250,11 @@ function collectNamedTypes(
       typeName: `${moduleName}.${node.name}`,
       cName: node.name,
       declaration: kind === "record" ? records.get(recordMatch![1]) : kind === "enum" ? enums.get(enumMatch![1]) : undefined,
-      underlying: kind === "scalar" ? underlying as "i32" | "bool" : undefined,
+      underlying: kind === "scalar" ? underlying as ForeignScalarTypeName : undefined,
     });
   }
 
-  const potential = new Map<string, { typeName: string; kind: Seed["kind"]; underlying?: "i32" | "bool" }>();
+  const potential = new Map<string, { typeName: string; kind: Seed["kind"]; underlying?: ForeignScalarTypeName; declaration?: ClangNode }>();
   for (const seed of seeds.values()) potential.set(seed.cName, seed);
   const namedTypes = new Map<string, ForeignNamedType>();
   const byCName = new Map<string, ForeignNamedType>();
@@ -266,7 +269,7 @@ function collectNamedTypes(
       const mapped = fields.map((field) => field.name && field.type?.qualType
         ? { name: field.name, typeName: mapRecordFieldType(field.type.qualType, potential) }
         : null);
-      if (mapped.every((field): field is ForeignField => Boolean(field?.typeName))) {
+      if (recordIsSupported(seed, potential, new Set()) && mapped.every((field): field is ForeignField => Boolean(field?.typeName))) {
         named = { kind: "record", exportName: seed.exportName, typeName: seed.typeName, cName: seed.cName, fields: mapped };
       }
     }
@@ -289,14 +292,35 @@ function collectNamedTypes(
 
 function mapRecordFieldType(
   cName: string,
-  named: ReadonlyMap<string, { typeName: string; kind: string; underlying?: "i32" | "bool" }>,
+  named: ReadonlyMap<string, { typeName: string; kind: string; underlying?: ForeignScalarTypeName }>,
 ): string {
   const builtin = mapBuiltinType(cName);
-  if (builtin) return builtin;
+  if (builtin && builtin !== "void") return builtin;
   const imported = named.get(stripValueQualifiers(cName));
   if (imported?.kind === "scalar") return imported.underlying!;
-  if (imported?.kind === "enum") return imported.typeName;
+  if (imported?.kind === "enum" || imported?.kind === "record") return imported.typeName;
   return "";
+}
+
+function recordIsSupported(
+  seed: { typeName: string; kind: string; declaration?: ClangNode },
+  named: ReadonlyMap<string, { typeName: string; kind: string; declaration?: ClangNode }>,
+  visiting: Set<string>,
+): boolean {
+  if (seed.kind !== "record" || !seed.declaration || visiting.has(seed.typeName)) return seed.kind !== "record";
+  visiting.add(seed.typeName);
+  const supported = (seed.declaration.inner ?? [])
+    .filter((field) => field.kind === "FieldDecl")
+    .every((field) => {
+      if (!field.name || !field.type?.qualType) return false;
+      const builtin = mapBuiltinType(field.type.qualType);
+      if (builtin) return builtin !== "void";
+      const nested = named.get(stripValueQualifiers(field.type.qualType));
+      if (!nested) return false;
+      return nested.kind !== "record" || recordIsSupported(nested, named, visiting);
+    });
+  visiting.delete(seed.typeName);
+  return supported;
 }
 
 function readApiNotes(
@@ -382,12 +406,70 @@ function mapForeignType(
   return { kind: "unsupported", cName };
 }
 
-function mapBuiltinType(cName: string): "i32" | "bool" | "void" | null {
+function mapBuiltinType(cName: string): ForeignScalarTypeName | "void" | null {
   const normalized = stripValueQualifiers(cName);
   if (normalized === "void") return "void";
+  if (normalized === "signed char") return "i8";
+  if (normalized === "unsigned char") return "u8";
+  if (normalized === "short" || normalized === "short int" || normalized === "signed short" || normalized === "signed short int") return "i16";
+  if (normalized === "unsigned short" || normalized === "unsigned short int") return "u16";
   if (normalized === "int" || normalized === "signed int") return "i32";
+  if (normalized === "unsigned" || normalized === "unsigned int") return "u32";
+  if (normalized === "long" || normalized === "long int" || normalized === "signed long" || normalized === "signed long int") {
+    return targetIntegerWidths().long === 8 ? "i64" : "i32";
+  }
+  if (normalized === "unsigned long" || normalized === "unsigned long int") {
+    return targetIntegerWidths().long === 8 ? "u64" : "u32";
+  }
+  if (normalized === "long long" || normalized === "long long int" || normalized === "signed long long" || normalized === "signed long long int") return "i64";
+  if (normalized === "unsigned long long" || normalized === "unsigned long long int") return "u64";
   if (normalized === "_Bool" || normalized === "bool") return "bool";
   return null;
+}
+
+function mapTypedefType(name: string, cName: string): ForeignScalarTypeName | "void" | null {
+  const exact: Readonly<Record<string, ForeignScalarTypeName>> = {
+    int8_t: "i8",
+    uint8_t: "u8",
+    int16_t: "i16",
+    uint16_t: "u16",
+    int32_t: "i32",
+    uint32_t: "u32",
+    int64_t: "i64",
+    uint64_t: "u64",
+    intptr_t: "isize",
+    uintptr_t: "usize",
+    ptrdiff_t: "isize",
+    size_t: "usize",
+    NSInteger: "isize",
+    NSUInteger: "usize",
+  };
+  const underlying = mapBuiltinType(cName);
+  const intended = exact[name];
+  if (!intended || !underlying || underlying === "void" || underlying === "bool") return underlying;
+  const widths = targetIntegerWidths();
+  const widthOf = (type: ForeignScalarTypeName): number => {
+    if (type === "isize" || type === "usize") return widths.pointer * 8;
+    return Number(/\d+/.exec(type)?.[0] ?? 0);
+  };
+  const sameSignedness = intended.startsWith("i") === underlying.startsWith("i")
+    || intended.startsWith("u") === underlying.startsWith("u");
+  return widthOf(intended) === widthOf(underlying) && sameSignedness ? intended : underlying;
+}
+
+let cachedTargetWidths: { long: number; pointer: number } | null = null;
+
+function targetIntegerWidths(): { long: number; pointer: number } {
+  if (cachedTargetWidths) return cachedTargetWidths;
+  const result = spawnSync("clang", ["-dM", "-E", "-x", "c", "/dev/null"], { encoding: "utf8" });
+  const longMatch = result.status === 0 ? /^#define __SIZEOF_LONG__ (\d+)$/m.exec(result.stdout) : null;
+  const pointerMatch = result.status === 0 ? /^#define __SIZEOF_POINTER__ (\d+)$/m.exec(result.stdout) : null;
+  const fallbackPointer = process.arch.includes("64") ? 8 : 4;
+  cachedTargetWidths = {
+    long: longMatch ? Number(longMatch[1]) : process.platform === "win32" ? 4 : fallbackPointer,
+    pointer: pointerMatch ? Number(pointerMatch[1]) : fallbackPointer,
+  };
+  return cachedTargetWidths;
 }
 
 function stripValueQualifiers(cName: string): string {
