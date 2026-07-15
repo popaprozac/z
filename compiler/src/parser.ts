@@ -56,6 +56,18 @@ export function parse(tokens: Token[], fileName: string): Program {
 
   const precedence = (kind: TokenKind): number => {
     switch (kind) {
+      case "orOr":
+        return 1;
+      case "andAnd":
+        return 2;
+      case "equalEqual":
+      case "bangEqual":
+        return 3;
+      case "less":
+      case "lessEqual":
+      case "greater":
+      case "greaterEqual":
+        return 4;
       case "plus":
       case "minus":
         return 10;
@@ -90,6 +102,10 @@ export function parse(tokens: Token[], fileName: string): Program {
     if (match("string")) {
       const token = previous();
       return { kind: "string", value: token.text, location: token.location };
+    }
+    if (match("true") || match("false")) {
+      const token = previous();
+      return { kind: "boolean", value: token.kind === "true", location: token.location };
     }
     if (match("identifier")) {
       const token = previous();
@@ -160,8 +176,16 @@ export function parse(tokens: Token[], fileName: string): Program {
     }
   };
 
+  const parseUnary = (): Expression => {
+    if (match("bang")) {
+      const token = previous();
+      return { kind: "unary", operator: token.text, operand: parseUnary(), location: token.location };
+    }
+    return parsePostfix();
+  };
+
   const parseBinary = (minimumPrecedence: number): Expression => {
-    let left = parsePostfix();
+    let left = parseUnary();
     while (precedence(peek().kind) >= minimumPrecedence) {
       const operator = take();
       const right = parseBinary(precedence(operator.kind) + 1);
@@ -192,6 +216,21 @@ export function parse(tokens: Token[], fileName: string): Program {
   };
 
   parseStatement = (): Statement => {
+    if (match("if")) {
+      const ifToken = previous();
+      expect("leftParen", "`(`");
+      const condition = parseExpression();
+      expect("rightParen", "`)`");
+      const thenBranch = parseRequiredBlock("an `if` body");
+      let elseBranch = null;
+      if (match("else")) {
+        elseBranch = at("if") ? parseStatement() : parseRequiredBlock("an `else` body");
+        if (elseBranch.kind !== "if" && elseBranch.kind !== "block") {
+          throw new DiagnosticError(fileName, elseBranch.location, "expected an `if` or block after `else`");
+        }
+      }
+      return { kind: "if", condition, thenBranch, elseBranch, location: ifToken.location };
+    }
     if (match("match")) {
       const matchToken = previous();
       const expression = parseExpression();
@@ -236,6 +275,14 @@ export function parse(tokens: Token[], fileName: string): Program {
     expect("semicolon", "`;`");
     return { kind: "expressionStatement", expression, location: expression.location };
   };
+
+  function parseRequiredBlock(description: string) {
+    const start = expect("leftBrace", description).location;
+    const statements: Statement[] = [];
+    while (!at("rightBrace") && !at("eof")) statements.push(parseStatement());
+    expect("rightBrace", "`}`");
+    return { kind: "block" as const, statements, location: start };
+  }
 
   const parseFunction = (): FunctionDeclaration => {
     const start = expect("function", "`function`").location;
@@ -303,7 +350,7 @@ export function parse(tokens: Token[], fileName: string): Program {
 }
 
 function startsPrimary(kind: TokenKind | undefined): boolean {
-  return kind === "identifier" || kind === "number" || kind === "string";
+  return kind === "identifier" || kind === "number" || kind === "string" || kind === "true" || kind === "false";
 }
 
 function tokenDescription(token: Token): string {

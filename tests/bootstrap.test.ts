@@ -70,6 +70,65 @@ test("infers primitive local types for C emission", () => {
   assert.match(generated, /const int32_t value = answer\(\);/);
 });
 
+test("compiles boolean expressions and path-complete if statements", () => {
+  const example = resolve(projectRoot, "examples/control-flow.z");
+  const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, "disabled=0\nordinary=1\nspecial=2\n");
+});
+
+test("requires boolean if conditions", () => {
+  const source = `
+    function main(): i32 {
+      if (42) { return 1; } else { return 0; }
+    }
+  `;
+  assert.throws(
+    () => compileToC(source, "if-condition.z"),
+    /if-condition\.z:3:11: error: expected bool, found i32/,
+  );
+});
+
+test("requires every reachable if path to return", () => {
+  const source = `
+    function choose(flag: bool): i32 {
+      if (flag) { return 1; }
+    }
+    function main(): i32 { return choose(true); }
+  `;
+  assert.throws(
+    () => compileToC(source, "if-return.z"),
+    /function "choose" must end with a return value/,
+  );
+});
+
+test("rejects statements after every branch exits", () => {
+  const source = `
+    function choose(flag: bool): i32 {
+      if (flag) { return 1; } else { return 2; }
+      return 3;
+    }
+    function main(): i32 { return choose(true); }
+  `;
+  assert.throws(
+    () => compileToC(source, "unreachable.z"),
+    /unreachable\.z:4:7: error: unreachable statement after guaranteed function exit/,
+  );
+});
+
+test("checks logical operand types", () => {
+  const source = `
+    function main(): i32 {
+      const invalid = true && 1;
+      return 0;
+    }
+  `;
+  assert.throws(
+    () => compileToC(source, "logical-types.z"),
+    /operator "&&" requires bool operands/,
+  );
+});
+
 test("emits struct layouts, literals, fields, and borrowed methods", () => {
   const source = `
     struct Point {
@@ -279,8 +338,12 @@ test("editor grammar tracks keywords without reserving Result variants", () => {
   const grammarPath = resolve(projectRoot, "editors/vscode/syntaxes/z.tmLanguage.json");
   const grammar = JSON.parse(readFileSync(grammarPath, "utf8"));
   const keywordPattern = grammar.repository.keywords.patterns.map((pattern: { match: string }) => pattern.match).join(" ");
+  const constantPattern = grammar.repository.constants.patterns.map((pattern: { match: string }) => pattern.match).join(" ");
+  const operatorPattern = grammar.repository.operators.patterns.map((pattern: { match: string }) => pattern.match).join(" ");
   assert.match(keywordPattern, /throw/);
   assert.match(keywordPattern, /attempt/);
   assert.match(keywordPattern, /yield/);
+  assert.match(constantPattern, /true\|false/);
+  assert.match(operatorPattern, /&&/);
   assert.doesNotMatch(keywordPattern, /success|failure/);
 });

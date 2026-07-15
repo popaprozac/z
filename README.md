@@ -84,8 +84,23 @@ be marked with `attempt` for inspection or `try` for propagation:
 
 ```z
 function userId(id: i32): i32 throws UserError {
-  const user = try findUser(id);
+const user = try findUser(id);
   return user.id;
+}
+```
+
+Control flow uses familiar TypeScript-style conditions with statically checked
+Boolean expressions. A non-void function must return on every reachable path:
+
+```z
+function classify(value: i32, enabled: bool): i32 {
+  if (!enabled) {
+    return 0;
+  } else if (value >= 10 && value != 42) {
+    return 1;
+  } else {
+    return 2;
+  }
 }
 ```
 
@@ -97,6 +112,7 @@ expression statements; general nested-expression lowering comes later.
 bun run z check examples/first.z
 bun run z emit examples/first.z
 bun run z run examples/first.z
+bun run z run examples/control-flow.z
 bun run z run examples/structs.z
 bun run z run examples/match.z
 bun run z run examples/match-expression.z

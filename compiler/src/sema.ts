@@ -190,19 +190,39 @@ function analyzeFunction(
     locals.set(parameter.name, parameter.type.name);
   }
 
-  for (const statement of declaration.body) {
-    analyzeStatement(statement, declaration, locals, globals, structs, enums, fileName);
-  }
-
-  if (declaration.returnType.name !== "void" && !statementReturns(declaration.body.at(-1))) {
+  const returns = analyzeStatements(declaration.body, declaration, locals, globals, structs, enums, fileName);
+  if (declaration.returnType.name !== "void" && !returns) {
     throw new DiagnosticError(fileName, declaration.location, `function ${JSON.stringify(declaration.name)} must end with a return value`);
   }
+}
+
+function analyzeStatements(
+  statements: Statement[],
+  owner: FunctionDeclaration,
+  locals: Map<string, ValueType>,
+  globals: Map<string, SymbolValue>,
+  structs: Map<string, StructDeclaration>,
+  enums: Map<string, EnumDeclaration>,
+  fileName: string,
+): boolean {
+  let returns = false;
+  for (const statement of statements) {
+    if (returns) throw new DiagnosticError(fileName, statement.location, "unreachable statement after guaranteed function exit");
+    analyzeStatement(statement, owner, locals, globals, structs, enums, fileName);
+    returns = statementReturns(statement);
+  }
+  return returns;
 }
 
 function statementReturns(statement: Statement | undefined): boolean {
   if (!statement) return false;
   if (statement.kind === "return" || statement.kind === "throw") return true;
   if (statement.kind === "block") return statementReturns(statement.statements.at(-1));
+  if (statement.kind === "if") {
+    return Boolean(statement.elseBranch)
+      && statementReturns(statement.thenBranch)
+      && statementReturns(statement.elseBranch!);
+  }
   return statement.kind === "match" && statement.arms.length > 0
     && statement.arms.every((arm) => statementReturns(arm.body));
 }
@@ -266,8 +286,15 @@ function analyzeStatement(
       throw new DiagnosticError(fileName, statement.location, "yield requires an enclosing value-producing block");
     case "block": {
       const blockLocals = new Map(locals);
-      for (const nested of statement.statements) {
-        analyzeStatement(nested, owner, blockLocals, globals, structs, enums, fileName);
+      analyzeStatements(statement.statements, owner, blockLocals, globals, structs, enums, fileName);
+      return;
+    }
+    case "if": {
+      const conditionType = inferExpression(statement.condition, locals, globals, structs, enums, fileName);
+      requireAssignable("bool", conditionType, statement.condition, fileName);
+      analyzeStatement(statement.thenBranch, owner, locals, globals, structs, enums, fileName);
+      if (statement.elseBranch) {
+        analyzeStatement(statement.elseBranch, owner, locals, globals, structs, enums, fileName);
       }
       return;
     }
@@ -379,8 +406,17 @@ function inferValueArm(
       throw new DiagnosticError(fileName, statement.location, "a value-producing match arm cannot be empty");
     }
     const blockLocals = new Map(locals);
-    for (const nested of statement.statements.slice(0, -1)) {
-      analyzeStatement(nested, owner, blockLocals, globals, structs, enums, fileName);
+    const prefixReturns = analyzeStatements(
+      statement.statements.slice(0, -1),
+      owner,
+      blockLocals,
+      globals,
+      structs,
+      enums,
+      fileName,
+    );
+    if (prefixReturns) {
+      throw new DiagnosticError(fileName, statement.statements.at(-1)!.location, "unreachable statement after guaranteed function exit");
     }
     return inferValueArm(statement.statements.at(-1)!, owner, blockLocals, globals, structs, enums, fileName);
   }
@@ -437,6 +473,13 @@ function inferExpression(
       return "i32";
     case "string":
       return "cstring";
+    case "boolean":
+      return "bool";
+    case "unary": {
+      const operand = inferExpression(expression.operand, locals, globals, structs, enums, fileName);
+      if (expression.operator === "!" && operand === "bool") return "bool";
+      throw new DiagnosticError(fileName, expression.location, `operator ${JSON.stringify(expression.operator)} requires a bool operand`);
+    }
     case "identifier": {
       const local = locals.get(expression.name);
       if (local) return local;
@@ -458,10 +501,31 @@ function inferExpression(
     case "binary": {
       const left = inferExpression(expression.left, locals, globals, structs, enums, fileName);
       const right = inferExpression(expression.right, locals, globals, structs, enums, fileName);
-      if (left !== "i32" || right !== "i32") {
-        throw new DiagnosticError(fileName, expression.location, `operator ${JSON.stringify(expression.operator)} requires i32 operands`);
+      if (["+", "-", "*", "/"].includes(expression.operator)) {
+        if (left !== "i32" || right !== "i32") {
+          throw new DiagnosticError(fileName, expression.location, `operator ${JSON.stringify(expression.operator)} requires i32 operands`);
+        }
+        return "i32";
       }
-      return "i32";
+      if (["<", "<=", ">", ">="].includes(expression.operator)) {
+        if (left !== "i32" || right !== "i32") {
+          throw new DiagnosticError(fileName, expression.location, `operator ${JSON.stringify(expression.operator)} requires i32 operands`);
+        }
+        return "bool";
+      }
+      if (["==", "!="].includes(expression.operator)) {
+        if (left !== right || (left !== "i32" && left !== "bool")) {
+          throw new DiagnosticError(fileName, expression.location, `operator ${JSON.stringify(expression.operator)} requires matching i32 or bool operands`);
+        }
+        return "bool";
+      }
+      if (["&&", "||"].includes(expression.operator)) {
+        if (left !== "bool" || right !== "bool") {
+          throw new DiagnosticError(fileName, expression.location, `operator ${JSON.stringify(expression.operator)} requires bool operands`);
+        }
+        return "bool";
+      }
+      throw new DiagnosticError(fileName, expression.location, `unsupported binary operator ${JSON.stringify(expression.operator)}`);
     }
     case "structExpression": {
       const declaration = structs.get(expression.typeName);

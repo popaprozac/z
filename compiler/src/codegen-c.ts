@@ -122,7 +122,7 @@ function generateFunction(
       const type = statement.type?.name ?? directValueType(statement.initializer, context);
       localTypes.set(statement.name, type);
     }
-    return `  ${generated}`;
+    return indent(generated, 2);
   }).join("\n");
   return `${generateFunctionSignature(declaration, structs, enums, receiver)} {\n${body}\n}`;
 }
@@ -168,11 +168,23 @@ function generateStatement(statement: Statement, context: GenerationContext): st
       throw new Error("yield must be lowered by its enclosing value-producing block");
     case "block":
       return generateBlock(statement.statements, context);
+    case "if":
+      return generateIf(statement, context);
     case "expressionStatement":
       return generateDirectValue(statement.expression, context, (value) => `(void)${value};`);
     case "match":
       return generateMatch(statement, context);
   }
+}
+
+function generateIf(statement: Extract<Statement, { kind: "if" }>, context: GenerationContext): string {
+  const condition = generateExpression(statement.condition, context);
+  const thenBranch = generateBlock(statement.thenBranch.statements, context);
+  if (!statement.elseBranch) return `if (${condition}) ${thenBranch}`;
+  const elseBranch = statement.elseBranch.kind === "if"
+    ? generateIf(statement.elseBranch, context)
+    : generateBlock(statement.elseBranch.statements, context);
+  return `if (${condition}) ${thenBranch} else ${elseBranch}`;
 }
 
 function generateDirectValue(
@@ -194,9 +206,14 @@ function generateBlock(statements: Statement[], context: GenerationContext): str
   const body = statements.map((statement) => {
     const generated = generateStatement(statement, blockContext);
     recordVariableType(statement, blockContext);
-    return `  ${generated}`;
+    return indent(generated, 2);
   }).join("\n");
   return `{\n${body}\n}`;
+}
+
+function indent(text: string, spaces: number): string {
+  const prefix = " ".repeat(spaces);
+  return text.split("\n").map((line) => `${prefix}${line}`).join("\n");
 }
 
 function recordVariableType(statement: Statement, context: GenerationContext): void {
@@ -343,6 +360,11 @@ function valueArmTerminates(statement: Statement): boolean {
 function statementTerminates(statement: Statement): boolean {
   if (statement.kind === "return" || statement.kind === "throw") return true;
   if (statement.kind === "block") return statementTerminates(statement.statements.at(-1)!);
+  if (statement.kind === "if") {
+    return Boolean(statement.elseBranch)
+      && statementTerminates(statement.thenBranch)
+      && statementTerminates(statement.elseBranch!);
+  }
   return statement.kind === "match" && statement.arms.length > 0
     && statement.arms.every((arm) => statementTerminates(arm.body));
 }
@@ -353,6 +375,10 @@ function generateExpression(expression: Expression, context: GenerationContext):
       return expression.value;
     case "string":
       return JSON.stringify(expression.value);
+    case "boolean":
+      return expression.value ? "true" : "false";
+    case "unary":
+      return `(${expression.operator}${generateExpression(expression.operand, context)})`;
     case "identifier":
       return expression.name === "this" ? "(*self)" : expression.name;
     case "binary":
@@ -411,10 +437,14 @@ function generateExpression(expression: Expression, context: GenerationContext):
 function inferExpressionType(expression: Expression, context: GenerationContext): string {
   switch (expression.kind) {
     case "number":
-    case "binary":
       return "i32";
     case "string":
       return "cstring";
+    case "boolean":
+    case "unary":
+      return "bool";
+    case "binary":
+      return ["+", "-", "*", "/"].includes(expression.operator) ? "i32" : "bool";
     case "identifier":
       return context.localTypes.get(expression.name) ?? "i32";
     case "structExpression":

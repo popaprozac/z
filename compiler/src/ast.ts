@@ -74,6 +74,7 @@ export type Statement =
   | YieldStatement
   | ExpressionStatement
   | BlockStatement
+  | IfStatement
   | MatchStatement;
 
 export type VariableStatement = {
@@ -115,6 +116,14 @@ export type BlockStatement = {
   readonly location: SourceLocation;
 };
 
+export type IfStatement = {
+  readonly kind: "if";
+  readonly condition: Expression;
+  readonly thenBranch: BlockStatement;
+  readonly elseBranch: BlockStatement | IfStatement | null;
+  readonly location: SourceLocation;
+};
+
 export type MatchStatement = {
   readonly kind: "match";
   readonly expression: Expression;
@@ -132,7 +141,9 @@ export type MatchArm = {
 export type Expression =
   | NumberExpression
   | StringExpression
+  | BooleanExpression
   | IdentifierExpression
+  | UnaryExpression
   | BinaryExpression
   | CallExpression
   | MemberExpression
@@ -151,6 +162,19 @@ export type NumberExpression = {
 export type StringExpression = {
   readonly kind: "string";
   readonly value: string;
+  readonly location: SourceLocation;
+};
+
+export type BooleanExpression = {
+  readonly kind: "boolean";
+  readonly value: boolean;
+  readonly location: SourceLocation;
+};
+
+export type UnaryExpression = {
+  readonly kind: "unary";
+  readonly operator: string;
+  readonly operand: Expression;
   readonly location: SourceLocation;
 };
 

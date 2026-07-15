@@ -11,6 +11,10 @@ export type TokenKind =
   | "struct"
   | "enum"
   | "match"
+  | "if"
+  | "else"
+  | "true"
+  | "false"
   | "const"
   | "let"
   | "return"
@@ -28,6 +32,15 @@ export type TokenKind =
   | "semicolon"
   | "dot"
   | "equal"
+  | "equalEqual"
+  | "bang"
+  | "bangEqual"
+  | "less"
+  | "lessEqual"
+  | "greater"
+  | "greaterEqual"
+  | "andAnd"
+  | "orOr"
   | "fatArrow"
   | "plus"
   | "minus"
@@ -48,6 +61,10 @@ const keywords = new Map<string, TokenKind>([
   ["struct", "struct"],
   ["enum", "enum"],
   ["match", "match"],
+  ["if", "if"],
+  ["else", "else"],
+  ["true", "true"],
+  ["false", "false"],
   ["const", "const"],
   ["let", "let"],
   ["return", "return"],
@@ -151,15 +168,29 @@ export function lex(source: string, fileName: string): Token[] {
       ";": "semicolon",
       ".": "dot",
       "=": "equal",
+      "!": "bang",
+      "<": "less",
+      ">": "greater",
       "+": "plus",
       "-": "minus",
       "*": "star",
       "/": "slash",
     };
-    if (character === "=" && peek(1) === ">") {
+    const pairedPunctuation: Record<string, TokenKind> = {
+      "=>": "fatArrow",
+      "==": "equalEqual",
+      "!=": "bangEqual",
+      "<=": "lessEqual",
+      ">=": "greaterEqual",
+      "&&": "andAnd",
+      "||": "orOr",
+    };
+    const pair = character + peek(1);
+    const pairedKind = pairedPunctuation[pair];
+    if (pairedKind) {
       advance();
       advance();
-      tokens.push({ kind: "fatArrow", text: "=>", location: start });
+      tokens.push({ kind: pairedKind, text: pair, location: start });
       continue;
     }
     const kind = punctuation[character];
