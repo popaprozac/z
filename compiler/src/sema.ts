@@ -1,5 +1,6 @@
 import type {
   Expression,
+  EnumDeclaration,
   FunctionDeclaration,
   ImportDeclaration,
   Program,
@@ -15,13 +16,15 @@ type ValueType = string | "unknown";
 type SymbolValue =
   | { readonly kind: "function"; readonly declaration: FunctionDeclaration }
   | { readonly kind: "foreignModule"; readonly declaration: ImportDeclaration }
-  | { readonly kind: "struct"; readonly declaration: StructDeclaration };
+  | { readonly kind: "struct"; readonly declaration: StructDeclaration }
+  | { readonly kind: "enum"; readonly declaration: EnumDeclaration };
 
 const primitiveTypes = new Set(["i32", "void", "bool", "cstring"]);
 
 export function analyze(program: Program, fileName: string): void {
   const globals = new Map<string, SymbolValue>();
   const structs = new Map<string, StructDeclaration>();
+  const enums = new Map<string, EnumDeclaration>();
 
   for (const declaration of program.imports) {
     declareGlobal(globals, declaration.moduleName, { kind: "foreignModule", declaration }, declaration.location, fileName);
@@ -31,17 +34,24 @@ export function analyze(program: Program, fileName: string): void {
     declareGlobal(globals, declaration.name, { kind: "struct", declaration }, declaration.location, fileName);
     structs.set(declaration.name, declaration);
   }
+  for (const declaration of program.enums) {
+    declareGlobal(globals, declaration.name, { kind: "enum", declaration }, declaration.location, fileName);
+    enums.set(declaration.name, declaration);
+  }
 
   for (const declaration of program.functions) {
     declareGlobal(globals, declaration.name, { kind: "function", declaration }, declaration.location, fileName);
   }
 
   for (const declaration of program.structs) {
-    analyzeStructDeclaration(declaration, structs, fileName);
+    analyzeStructDeclaration(declaration, structs, enums, fileName);
+  }
+  for (const declaration of program.enums) {
+    analyzeEnumDeclaration(declaration, structs, enums, fileName);
   }
 
   for (const declaration of program.functions) {
-    validateFunctionSignature(declaration, structs, fileName);
+    validateFunctionSignature(declaration, structs, enums, fileName);
   }
 
   validateStructLayouts(program.structs, structs, fileName);
@@ -56,17 +66,18 @@ export function analyze(program: Program, fileName: string): void {
 
   for (const declaration of program.structs) {
     for (const method of declaration.methods) {
-      analyzeFunction(method, globals, structs, fileName, declaration);
+      analyzeFunction(method, globals, structs, enums, fileName, declaration);
     }
   }
   for (const declaration of program.functions) {
-    analyzeFunction(declaration, globals, structs, fileName, null);
+    analyzeFunction(declaration, globals, structs, enums, fileName, null);
   }
 }
 
 function analyzeStructDeclaration(
   declaration: StructDeclaration,
   structs: Map<string, StructDeclaration>,
+  enums: Map<string, EnumDeclaration>,
   fileName: string,
 ): void {
   const members = new Set<string>();
@@ -75,25 +86,56 @@ function analyzeStructDeclaration(
       throw new DiagnosticError(fileName, field.location, `duplicate member ${JSON.stringify(field.name)} in struct ${JSON.stringify(declaration.name)}`);
     }
     members.add(field.name);
-    validateType(field.type, structs, fileName, false);
+    validateType(field.type, structs, enums, fileName, false);
+    if (enums.has(field.type.name)) {
+      throw new DiagnosticError(fileName, field.location, "enum-valued struct fields are not implemented in this bootstrap stage");
+    }
   }
   for (const method of declaration.methods) {
     if (members.has(method.name)) {
       throw new DiagnosticError(fileName, method.location, `duplicate member ${JSON.stringify(method.name)} in struct ${JSON.stringify(declaration.name)}`);
     }
     members.add(method.name);
-    validateFunctionSignature(method, structs, fileName);
+    validateFunctionSignature(method, structs, enums, fileName);
+  }
+}
+
+function analyzeEnumDeclaration(
+  declaration: EnumDeclaration,
+  structs: Map<string, StructDeclaration>,
+  enums: Map<string, EnumDeclaration>,
+  fileName: string,
+): void {
+  const names = new Set<string>();
+  for (const variant of declaration.variants) {
+    if (names.has(variant.name)) {
+      throw new DiagnosticError(fileName, variant.location, `duplicate variant ${JSON.stringify(variant.name)}`);
+    }
+    names.add(variant.name);
+    if (variant.payload) {
+      validateType(variant.payload, structs, enums, fileName, false);
+      if (variant.payload.name === declaration.name) {
+        throw new DiagnosticError(fileName, variant.location, "an enum cannot contain itself directly by value");
+      }
+      if (enums.has(variant.payload.name)) {
+        throw new DiagnosticError(fileName, variant.location, "nested enum payloads are not implemented in this bootstrap stage");
+      }
+    }
+  }
+  if (declaration.variants.length === 0) {
+    throw new DiagnosticError(fileName, declaration.location, "an enum must declare at least one variant");
   }
 }
 
 function validateFunctionSignature(
   declaration: FunctionDeclaration,
   structs: Map<string, StructDeclaration>,
+  enums: Map<string, EnumDeclaration>,
   fileName: string,
 ): void {
-  validateType(declaration.returnType, structs, fileName, true);
+  validateType(declaration.returnType, structs, enums, fileName, true);
   for (const parameter of declaration.parameters) {
-    validateType(parameter.type, structs, fileName, false);
+    validateType(parameter.type, structs, enums, fileName, false);
   }
 }
 
@@ -126,6 +168,7 @@ function analyzeFunction(
   declaration: FunctionDeclaration,
   globals: Map<string, SymbolValue>,
   structs: Map<string, StructDeclaration>,
+  enums: Map<string, EnumDeclaration>,
   fileName: string,
   receiver: StructDeclaration | null,
 ): void {
@@ -140,12 +183,19 @@ function analyzeFunction(
   }
 
   for (const statement of declaration.body) {
-    analyzeStatement(statement, declaration, locals, globals, structs, fileName);
+    analyzeStatement(statement, declaration, locals, globals, structs, enums, fileName);
   }
 
-  if (declaration.returnType.name !== "void" && declaration.body.at(-1)?.kind !== "return") {
+  if (declaration.returnType.name !== "void" && !statementReturns(declaration.body.at(-1))) {
     throw new DiagnosticError(fileName, declaration.location, `function ${JSON.stringify(declaration.name)} must end with a return value`);
   }
+}
+
+function statementReturns(statement: Statement | undefined): boolean {
+  if (!statement) return false;
+  if (statement.kind === "return") return true;
+  return statement.kind === "match" && statement.arms.length > 0
+    && statement.arms.every((arm) => statementReturns(arm.body));
 }
 
 function analyzeStatement(
@@ -154,6 +204,7 @@ function analyzeStatement(
   locals: Map<string, ValueType>,
   globals: Map<string, SymbolValue>,
   structs: Map<string, StructDeclaration>,
+  enums: Map<string, EnumDeclaration>,
   fileName: string,
 ): void {
   switch (statement.kind) {
@@ -161,10 +212,10 @@ function analyzeStatement(
       if (locals.has(statement.name)) {
         throw new DiagnosticError(fileName, statement.location, `duplicate local ${JSON.stringify(statement.name)}`);
       }
-      const initializerType = inferExpression(statement.initializer, locals, globals, structs, fileName);
+      const initializerType = inferExpression(statement.initializer, locals, globals, structs, enums, fileName);
       let variableType = initializerType;
       if (statement.type) {
-        validateType(statement.type, structs, fileName, false);
+        validateType(statement.type, structs, enums, fileName, false);
         variableType = statement.type.name;
         requireAssignable(variableType, initializerType, statement.initializer, fileName);
       } else if (initializerType === "unknown") {
@@ -188,13 +239,39 @@ function analyzeStatement(
       if (expected === "void") {
         throw new DiagnosticError(fileName, statement.location, "a void function cannot return a value");
       }
-      const actual = inferExpression(statement.expression, locals, globals, structs, fileName);
+      const actual = inferExpression(statement.expression, locals, globals, structs, enums, fileName);
       requireAssignable(expected, actual, statement.expression, fileName);
       return;
     }
     case "expressionStatement":
-      inferExpression(statement.expression, locals, globals, structs, fileName);
+      inferExpression(statement.expression, locals, globals, structs, enums, fileName);
       return;
+    case "match": {
+      const subjectType = inferExpression(statement.expression, locals, globals, structs, enums, fileName);
+      const declaration = enums.get(subjectType);
+      if (!declaration) {
+        throw new DiagnosticError(fileName, statement.expression.location, `match requires an enum value, found ${subjectType}`);
+      }
+      const covered = new Set<string>();
+      for (const arm of statement.arms) {
+        if (arm.enumName !== declaration.name) {
+          throw new DiagnosticError(fileName, arm.location, `expected variants of ${JSON.stringify(declaration.name)}`);
+        }
+        const variant = declaration.variants.find((candidate) => candidate.name === arm.variantName);
+        if (!variant) throw new DiagnosticError(fileName, arm.location, `unknown variant ${JSON.stringify(arm.variantName)}`);
+        if (covered.has(variant.name)) throw new DiagnosticError(fileName, arm.location, `duplicate match arm ${JSON.stringify(variant.name)}`);
+        covered.add(variant.name);
+        if (Boolean(variant.payload) !== Boolean(arm.binding)) {
+          throw new DiagnosticError(fileName, arm.location, variant.payload ? "payload variant requires a binding" : "payloadless variant cannot bind a value");
+        }
+        const armLocals = new Map(locals);
+        if (variant.payload && arm.binding) armLocals.set(arm.binding, variant.payload.name);
+        analyzeStatement(arm.body, owner, armLocals, globals, structs, enums, fileName);
+      }
+      const missing = declaration.variants.find((variant) => !covered.has(variant.name));
+      if (missing) throw new DiagnosticError(fileName, statement.location, `non-exhaustive match; missing ${declaration.name}.${missing.name}`);
+      return;
+    }
   }
 }
 
@@ -203,6 +280,7 @@ function inferExpression(
   locals: Map<string, ValueType>,
   globals: Map<string, SymbolValue>,
   structs: Map<string, StructDeclaration>,
+  enums: Map<string, EnumDeclaration>,
   fileName: string,
 ): ValueType {
   switch (expression.kind) {
@@ -223,11 +301,14 @@ function inferExpression(
       if (global?.kind === "struct") {
         throw new DiagnosticError(fileName, expression.location, "a struct type must be followed by a field initializer");
       }
+      if (global?.kind === "enum") {
+        throw new DiagnosticError(fileName, expression.location, "an enum type must be followed by a variant name");
+      }
       throw new DiagnosticError(fileName, expression.location, `unknown name ${JSON.stringify(expression.name)}`);
     }
     case "binary": {
-      const left = inferExpression(expression.left, locals, globals, structs, fileName);
-      const right = inferExpression(expression.right, locals, globals, structs, fileName);
+      const left = inferExpression(expression.left, locals, globals, structs, enums, fileName);
+      const right = inferExpression(expression.right, locals, globals, structs, enums, fileName);
       if (left !== "i32" || right !== "i32") {
         throw new DiagnosticError(fileName, expression.location, `operator ${JSON.stringify(expression.operator)} requires i32 operands`);
       }
@@ -248,7 +329,7 @@ function inferExpression(
         if (!field) {
           throw new DiagnosticError(fileName, initializer.location, `struct ${JSON.stringify(declaration.name)} has no field ${JSON.stringify(initializer.name)}`);
         }
-        const actual = inferExpression(initializer.expression, locals, globals, structs, fileName);
+        const actual = inferExpression(initializer.expression, locals, globals, structs, enums, fileName);
         requireAssignable(field.type.name, actual, initializer.expression, fileName);
       }
       const missing = declaration.fields.find((field) => !provided.has(field.name));
@@ -259,7 +340,16 @@ function inferExpression(
     }
     case "member": {
       if (isForeignMember(expression, globals)) return "unknown";
-      const receiverType = inferExpression(expression.object, locals, globals, structs, fileName);
+      if (expression.object.kind === "identifier") {
+        const enumDeclaration = enums.get(expression.object.name);
+        if (enumDeclaration) {
+          const variant = enumDeclaration.variants.find((candidate) => candidate.name === expression.property);
+          if (!variant) throw new DiagnosticError(fileName, expression.location, `enum ${JSON.stringify(enumDeclaration.name)} has no variant ${JSON.stringify(expression.property)}`);
+          if (variant.payload) throw new DiagnosticError(fileName, expression.location, "payload variant must be called with a value");
+          return enumDeclaration.name;
+        }
+      }
+      const receiverType = inferExpression(expression.object, locals, globals, structs, enums, fileName);
       const declaration = structs.get(receiverType);
       if (!declaration) {
         throw new DiagnosticError(fileName, expression.location, `type ${JSON.stringify(receiverType)} has no members`);
@@ -274,17 +364,31 @@ function inferExpression(
     }
     case "call": {
       if (expression.callee.kind === "member") {
+        if (expression.callee.object.kind === "identifier") {
+          const enumDeclaration = enums.get(expression.callee.object.name);
+          if (enumDeclaration) {
+            const variant = enumDeclaration.variants.find((candidate) => candidate.name === expression.callee.property);
+            if (!variant) throw new DiagnosticError(fileName, expression.callee.location, `enum ${JSON.stringify(enumDeclaration.name)} has no variant ${JSON.stringify(expression.callee.property)}`);
+            const expectedCount = variant.payload ? 1 : 0;
+            if (expression.arguments.length !== expectedCount) throw new DiagnosticError(fileName, expression.location, `variant ${JSON.stringify(variant.name)} expects ${expectedCount} argument(s)`);
+            if (variant.payload) {
+              const actual = inferExpression(expression.arguments[0], locals, globals, structs, enums, fileName);
+              requireAssignable(variant.payload.name, actual, expression.arguments[0], fileName);
+            }
+            return enumDeclaration.name;
+          }
+        }
         if (isForeignMember(expression.callee, globals)) {
-          for (const argument of expression.arguments) inferExpression(argument, locals, globals, structs, fileName);
+          for (const argument of expression.arguments) inferExpression(argument, locals, globals, structs, enums, fileName);
           return "unknown";
         }
-        const receiverType = inferExpression(expression.callee.object, locals, globals, structs, fileName);
+        const receiverType = inferExpression(expression.callee.object, locals, globals, structs, enums, fileName);
         const declaration = structs.get(receiverType);
         const method = declaration?.methods.find((candidate) => candidate.name === expression.callee.property);
         if (!declaration || !method) {
           throw new DiagnosticError(fileName, expression.callee.location, `type ${JSON.stringify(receiverType)} has no method ${JSON.stringify(expression.callee.property)}`);
         }
-        checkArguments(method, expression.arguments, locals, globals, structs, fileName, expression.location);
+        checkArguments(method, expression.arguments, locals, globals, structs, enums, fileName, expression.location);
         return method.returnType.name;
       }
       if (expression.callee.kind !== "identifier") {
@@ -297,7 +401,7 @@ function inferExpression(
         }
         throw new DiagnosticError(fileName, expression.callee.location, `unknown function ${JSON.stringify(expression.callee.name)}`);
       }
-      checkArguments(target.declaration, expression.arguments, locals, globals, structs, fileName, expression.location);
+      checkArguments(target.declaration, expression.arguments, locals, globals, structs, enums, fileName, expression.location);
       return target.declaration.returnType.name;
     }
   }
@@ -309,6 +413,7 @@ function checkArguments(
   locals: Map<string, ValueType>,
   globals: Map<string, SymbolValue>,
   structs: Map<string, StructDeclaration>,
+  enums: Map<string, EnumDeclaration>,
   fileName: string,
   location: SourceLocation,
 ): void {
@@ -320,7 +425,7 @@ function checkArguments(
     );
   }
   for (let index = 0; index < target.parameters.length; index += 1) {
-    const actual = inferExpression(args[index], locals, globals, structs, fileName);
+    const actual = inferExpression(args[index], locals, globals, structs, enums, fileName);
     requireAssignable(target.parameters[index].type.name, actual, args[index], fileName);
   }
 }
@@ -336,10 +441,11 @@ function isForeignMember(
 function validateType(
   type: TypeReference,
   structs: Map<string, StructDeclaration>,
+  enums: Map<string, EnumDeclaration>,
   fileName: string,
   allowVoid: boolean,
 ): void {
-  if (!primitiveTypes.has(type.name) && !structs.has(type.name)) {
+  if (!primitiveTypes.has(type.name) && !structs.has(type.name) && !enums.has(type.name)) {
     throw new DiagnosticError(fileName, type.location, `unknown type ${JSON.stringify(type.name)}`);
   }
   if (!allowVoid && type.name === "void") {

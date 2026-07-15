@@ -9,6 +9,8 @@ export type TokenKind =
   | "from"
   | "function"
   | "struct"
+  | "enum"
+  | "match"
   | "const"
   | "let"
   | "return"
@@ -21,6 +23,7 @@ export type TokenKind =
   | "semicolon"
   | "dot"
   | "equal"
+  | "fatArrow"
   | "plus"
   | "minus"
   | "star"
@@ -38,6 +41,8 @@ const keywords = new Map<string, TokenKind>([
   ["from", "from"],
   ["function", "function"],
   ["struct", "struct"],
+  ["enum", "enum"],
+  ["match", "match"],
   ["const", "const"],
   ["let", "let"],
   ["return", "return"],
@@ -141,6 +146,12 @@ export function lex(source: string, fileName: string): Token[] {
       "*": "star",
       "/": "slash",
     };
+    if (character === "=" && peek(1) === ">") {
+      advance();
+      advance();
+      tokens.push({ kind: "fatArrow", text: "=>", location: start });
+      continue;
+    }
     const kind = punctuation[character];
     if (kind) {
       advance();

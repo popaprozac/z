@@ -126,6 +126,32 @@ test("checks struct method arguments", () => {
   );
 });
 
+test("requires exhaustive enum matches", () => {
+  const source = `
+    enum Outcome {
+      success(i32),
+      failure(i32),
+    }
+    function main(): i32 {
+      const outcome = Outcome.success(42);
+      match outcome {
+        Outcome.success(value) => return value;
+      }
+    }
+  `;
+  assert.throws(
+    () => compileToC(source, "exhaustive.z"),
+    /exhaustive\.z:8:7: error: non-exhaustive match; missing Outcome\.failure/,
+  );
+});
+
+test("compiles payload enums and exhaustive matches", () => {
+  const example = resolve(projectRoot, "examples/match.z");
+  const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, "matched=42\n");
+});
+
 test("compiles and runs structs as native values", () => {
   const example = resolve(projectRoot, "examples/structs.z");
   const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });

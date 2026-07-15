@@ -8,6 +8,7 @@ export type Program = {
   readonly kind: "program";
   readonly imports: ImportDeclaration[];
   readonly structs: StructDeclaration[];
+  readonly enums: EnumDeclaration[];
   readonly functions: FunctionDeclaration[];
 };
 
@@ -32,6 +33,19 @@ export type FieldDeclaration = {
   readonly location: SourceLocation;
 };
 
+export type EnumDeclaration = {
+  readonly kind: "enum";
+  readonly name: string;
+  readonly variants: EnumVariant[];
+  readonly location: SourceLocation;
+};
+
+export type EnumVariant = {
+  readonly name: string;
+  readonly payload: TypeReference | null;
+  readonly location: SourceLocation;
+};
+
 export type FunctionDeclaration = {
   readonly kind: "function";
   readonly name: string;
@@ -52,7 +66,7 @@ export type TypeReference = {
   readonly location: SourceLocation;
 };
 
-export type Statement = VariableStatement | ReturnStatement | ExpressionStatement;
+export type Statement = VariableStatement | ReturnStatement | ExpressionStatement | MatchStatement;
 
 export type VariableStatement = {
   readonly kind: "variable";
@@ -72,6 +86,21 @@ export type ReturnStatement = {
 export type ExpressionStatement = {
   readonly kind: "expressionStatement";
   readonly expression: Expression;
+  readonly location: SourceLocation;
+};
+
+export type MatchStatement = {
+  readonly kind: "match";
+  readonly expression: Expression;
+  readonly arms: MatchArm[];
+  readonly location: SourceLocation;
+};
+
+export type MatchArm = {
+  readonly enumName: string;
+  readonly variantName: string;
+  readonly binding: string | null;
+  readonly body: Statement;
   readonly location: SourceLocation;
 };
 

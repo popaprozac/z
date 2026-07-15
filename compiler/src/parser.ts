@@ -1,5 +1,6 @@
 import type {
   Expression,
+  EnumDeclaration,
   FunctionDeclaration,
   ImportDeclaration,
   Parameter,
@@ -77,7 +78,11 @@ export function parse(tokens: Token[], fileName: string): Program {
     }
     if (match("identifier")) {
       const token = previous();
-      if (match("leftBrace")) {
+      const beginsStructLiteral = at("leftBrace")
+        && (tokens[current + 1]?.kind === "rightBrace"
+          || (tokens[current + 1]?.kind === "identifier" && tokens[current + 2]?.kind === "colon"));
+      if (beginsStructLiteral) {
+        take();
         const fields = [];
         while (!at("rightBrace")) {
           const field = expect("identifier", "a field name");
@@ -142,6 +147,32 @@ export function parse(tokens: Token[], fileName: string): Program {
   const parseExpression = (): Expression => parseBinary(0);
 
   const parseStatement = (): Statement => {
+    if (match("match")) {
+      const matchToken = previous();
+      const expression = parseExpression();
+      expect("leftBrace", "`{`");
+      const arms = [];
+      while (!at("rightBrace") && !at("eof")) {
+        const enumToken = expect("identifier", "an enum name");
+        expect("dot", "`.`");
+        const variantToken = expect("identifier", "a variant name");
+        let binding: string | null = null;
+        if (match("leftParen")) {
+          binding = expect("identifier", "a payload binding").text;
+          expect("rightParen", "`)`");
+        }
+        expect("fatArrow", "`=>`");
+        arms.push({
+          enumName: enumToken.text,
+          variantName: variantToken.text,
+          binding,
+          body: parseStatement(),
+          location: enumToken.location,
+        });
+      }
+      expect("rightBrace", "`}`");
+      return { kind: "match", expression, arms, location: matchToken.location };
+    }
     if (match("const") || match("let")) {
       const declarationToken = previous();
       const mutable = declarationToken.kind === "let";
@@ -198,16 +229,37 @@ export function parse(tokens: Token[], fileName: string): Program {
     return { kind: "struct", name, fields, methods, location: start };
   };
 
+  const parseEnum = (): EnumDeclaration => {
+    const start = expect("enum", "`enum`").location;
+    const name = expect("identifier", "an enum name").text;
+    expect("leftBrace", "`{`");
+    const variants = [];
+    while (!at("rightBrace") && !at("eof")) {
+      const variant = expect("identifier", "a variant name");
+      let payload = null;
+      if (match("leftParen")) {
+        payload = parseType();
+        expect("rightParen", "`)`");
+      }
+      variants.push({ name: variant.text, payload, location: variant.location });
+      if (!match("comma")) break;
+    }
+    expect("rightBrace", "`}`");
+    return { kind: "enum", name, variants, location: start };
+  };
+
   const imports: ImportDeclaration[] = [];
   const structs: StructDeclaration[] = [];
+  const enums: EnumDeclaration[] = [];
   const functions: FunctionDeclaration[] = [];
   while (!at("eof")) {
     if (at("import")) imports.push(parseImport());
     else if (at("struct")) structs.push(parseStruct());
+    else if (at("enum")) enums.push(parseEnum());
     else if (at("function")) functions.push(parseFunction());
-    else throw new DiagnosticError(fileName, peek().location, "expected an import, struct, or function declaration");
+    else throw new DiagnosticError(fileName, peek().location, "expected an import, struct, enum, or function declaration");
   }
-  return { kind: "program", imports, structs, functions };
+  return { kind: "program", imports, structs, enums, functions };
 }
 
 function tokenDescription(token: Token): string {

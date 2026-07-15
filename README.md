@@ -36,11 +36,26 @@ struct Point {
 }
 ```
 
+Tagged enums carry typed payloads and are matched exhaustively:
+
+```z
+enum UserResult {
+  success(User),
+  failure(UserError),
+}
+
+match result {
+  UserResult.success(user) => show(user);
+  UserResult.failure(error) => showError(error);
+}
+```
+
 ```sh
 bun run z check examples/first.z
 bun run z emit examples/first.z
 bun run z run examples/first.z
 bun run z run examples/structs.z
+bun run z run examples/match.z
 bun test
 ```
 

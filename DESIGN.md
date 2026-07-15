@@ -146,6 +146,14 @@ ported independently rather than translated as one monolith.
 Self-hosting is not allowed to block early experimentation, but every bootstrap
 feature should have a plausible representation in the intended Z language.
 
+## Editor tooling
+
+Editor support grows from the compiler frontend rather than reimplementing the
+language. An early TextMate grammar can provide immediate syntax highlighting.
+The language server should then reuse source files, tokens, syntax trees,
+symbols, types, and diagnostics from a compiler-service API for semantic
+highlighting, completion, hover, navigation, references, and rename operations.
+
 ## Bootstrap milestones
 
 ### 0.1: Native vertical slice
