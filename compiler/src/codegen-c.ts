@@ -581,7 +581,10 @@ function generateExpression(expression: Expression, context: GenerationContext):
       const fields = expression.fields
         .map((field) => `.${field.name} = ${generateExpression(field.expression, context)}`)
         .join(", ");
-      return `(${structName(expression.typeName)}){ ${fields} }`;
+      const type = expression.typeName.includes(".")
+        ? mapType(expression.typeName, context.structs, context.enums)
+        : structName(expression.typeName);
+      return `(${type}){ ${fields} }`;
     }
     case "variantExpression":
       return `(${enumName(expression.enumName)}){ .tag = ${variantTag(expression.enumName, expression.variantName)}, .data.${expression.variantName} = ${generateExpression(expression.payload, context)} }`;
@@ -629,6 +632,8 @@ function generateExpression(expression: Expression, context: GenerationContext):
 }
 
 function inferExpressionType(expression: Expression, context: GenerationContext): string {
+  const foreignExpressionType = context.semanticInfo.foreignExpressionTypes.get(expression.location.offset);
+  if (foreignExpressionType) return foreignExpressionType;
   const foreignCallType = expression.kind === "call"
     ? context.semanticInfo.foreignCallTypes.get(expression.location.offset)
     : null;
@@ -724,6 +729,7 @@ function mapType(name: string, structs: Map<string, StructDeclaration>, enums: M
   if (structs.has(name)) return structName(name);
   if (enums.has(name)) return enumName(name);
   if (name.startsWith("__z_ffi:")) return name.split(":").slice(3).join(":");
+  if (name.includes(".")) return name.slice(name.lastIndexOf(".") + 1);
   throw new Error(`unsupported bootstrap type ${JSON.stringify(name)}`);
 }
 

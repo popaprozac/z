@@ -121,6 +121,45 @@ test("discovers ownership notes beside project headers", () => {
   assert.match(generated, /if \(_z_live_handle_0 && handle != NULL\) z_test_close\(handle\);/);
 });
 
+test("imports C typedefs, records, enums, constants, and qualified signatures", () => {
+  const example = resolve(projectRoot, "examples/foreign-types.z");
+  const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, "point=13,20 score=33\n");
+
+  const generated = compileToC(readFileSync(example, "utf8"), example);
+  assert.match(generated, /static ZPoint move\(ZPoint point, ZCount amount\)/);
+  assert.match(generated, /\(ZPoint\)\{ \.x = 10, \.y = 20 \}/);
+  assert.match(generated, /z_translate\(point, ZForward, amount\)/);
+});
+
+test("checks imported C record fields and enum arguments in Z", () => {
+  const missingField = `
+    import geometry from "tests/fixtures/geometry.h";
+    function main(): i32 {
+      const point = geometry.ZPoint { x: 1 };
+      return point.x;
+    }
+  `;
+  assert.throws(
+    () => compileToC(missingField, resolve(projectRoot, "foreign-record-fields.z")),
+    /missing field "y" when constructing "geometry\.ZPoint"/,
+  );
+
+  const wrongEnum = `
+    import geometry from "tests/fixtures/geometry.h";
+    function main(): i32 {
+      const point = geometry.ZPoint { x: 1, y: 2 };
+      const moved = geometry.z_translate(point, 1, 3);
+      return moved.x;
+    }
+  `;
+  assert.throws(
+    () => compileToC(wrongEnum, resolve(projectRoot, "foreign-enum-argument.z")),
+    /expected geometry\.ZDirection, found i32/,
+  );
+});
+
 test("requires nullable C handles to be checked before borrowing", () => {
   const source = `
     import stdio from "stdio.h";

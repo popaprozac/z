@@ -10,7 +10,7 @@ import type {
 } from "./ast.ts";
 import { DiagnosticError } from "./diagnostics.ts";
 import { resultTypeName } from "./results.ts";
-import { pointerTypeName, type ForeignFunction, type ForeignModule, type ForeignPointerType } from "./foreign.ts";
+import { pointerTypeName, type ForeignConstant, type ForeignFunction, type ForeignModule, type ForeignNamedType, type ForeignPointerType } from "./foreign.ts";
 
 type ValueType = string | "unknown" | "never";
 
@@ -18,12 +18,16 @@ export type SemanticInfo = {
   readonly movedExpressions: ReadonlySet<number>;
   readonly foreignTypes: ReadonlyMap<string, ForeignPointerType>;
   readonly foreignCallTypes: ReadonlyMap<number, string>;
+  readonly foreignNamedTypes: ReadonlyMap<string, ForeignNamedType>;
+  readonly foreignExpressionTypes: ReadonlyMap<number, string>;
 };
 
 type AnalysisState = {
   readonly movedExpressions: Set<number>;
   readonly foreignTypes: ReadonlyMap<string, ForeignPointerType>;
   readonly foreignCallTypes: Map<number, string>;
+  readonly foreignNamedTypes: ReadonlyMap<string, ForeignNamedType>;
+  readonly foreignExpressionTypes: Map<number, string>;
 };
 
 type SymbolValue =
@@ -42,10 +46,18 @@ export function analyze(
   foreignModules: ReadonlyMap<string, ForeignModule>,
 ): SemanticInfo {
   const foreignTypes = new Map<string, ForeignPointerType>();
+  const foreignNamedTypes = new Map<string, ForeignNamedType>();
   for (const module of foreignModules.values()) {
     for (const [name, type] of module.types) foreignTypes.set(name, type);
+    for (const type of module.namedTypes.values()) foreignNamedTypes.set(type.typeName, type);
   }
-  const state: AnalysisState = { movedExpressions: new Set(), foreignTypes, foreignCallTypes: new Map() };
+  const state: AnalysisState = {
+    movedExpressions: new Set(),
+    foreignTypes,
+    foreignCallTypes: new Map(),
+    foreignNamedTypes,
+    foreignExpressionTypes: new Map(),
+  };
   const globals = new Map<string, SymbolValue>();
   const structs = new Map<string, StructDeclaration>();
   const enums = new Map<string, EnumDeclaration>();
@@ -70,14 +82,14 @@ export function analyze(
   }
 
   for (const declaration of program.structs) {
-    analyzeStructDeclaration(declaration, structs, enums, fileName);
+    analyzeStructDeclaration(declaration, structs, enums, foreignNamedTypes, fileName);
   }
   for (const declaration of program.enums) {
-    analyzeEnumDeclaration(declaration, structs, enums, fileName);
+    analyzeEnumDeclaration(declaration, structs, enums, foreignNamedTypes, fileName);
   }
 
   for (const declaration of program.functions) {
-    validateFunctionSignature(declaration, structs, enums, fileName);
+    validateFunctionSignature(declaration, structs, enums, foreignNamedTypes, fileName);
   }
 
   validateStructLayouts(program.structs, structs, fileName);
@@ -128,6 +140,7 @@ function analyzeStructDeclaration(
   declaration: StructDeclaration,
   structs: Map<string, StructDeclaration>,
   enums: Map<string, EnumDeclaration>,
+  foreignNamedTypes: ReadonlyMap<string, ForeignNamedType>,
   fileName: string,
 ): void {
   const members = new Set<string>();
@@ -137,7 +150,7 @@ function analyzeStructDeclaration(
       throw new DiagnosticError(fileName, field.location, `duplicate member ${JSON.stringify(field.name)} in struct ${JSON.stringify(declaration.name)}`);
     }
     members.add(field.name);
-    validateType(field.type, structs, enums, fileName, false);
+    validateType(field.type, structs, enums, foreignNamedTypes, fileName, false);
     if (enums.has(field.type.name)) {
       throw new DiagnosticError(fileName, field.location, "enum-valued struct fields are not implemented in this bootstrap stage");
     }
@@ -148,7 +161,7 @@ function analyzeStructDeclaration(
       throw new DiagnosticError(fileName, method.location, `duplicate member ${JSON.stringify(method.name)} in struct ${JSON.stringify(declaration.name)}`);
     }
     members.add(method.name);
-    validateFunctionSignature(method, structs, enums, fileName);
+    validateFunctionSignature(method, structs, enums, foreignNamedTypes, fileName);
   }
 }
 
@@ -156,6 +169,7 @@ function analyzeEnumDeclaration(
   declaration: EnumDeclaration,
   structs: Map<string, StructDeclaration>,
   enums: Map<string, EnumDeclaration>,
+  foreignNamedTypes: ReadonlyMap<string, ForeignNamedType>,
   fileName: string,
 ): void {
   const names = new Set<string>();
@@ -166,7 +180,7 @@ function analyzeEnumDeclaration(
     }
     names.add(variant.name);
     if (variant.payload) {
-      validateType(variant.payload, structs, enums, fileName, false);
+      validateType(variant.payload, structs, enums, foreignNamedTypes, fileName, false);
       if (variant.payload.name === declaration.name) {
         throw new DiagnosticError(fileName, variant.location, "an enum cannot contain itself directly by value");
       }
@@ -187,10 +201,11 @@ function validateFunctionSignature(
   declaration: FunctionDeclaration,
   structs: Map<string, StructDeclaration>,
   enums: Map<string, EnumDeclaration>,
+  foreignNamedTypes: ReadonlyMap<string, ForeignNamedType>,
   fileName: string,
 ): void {
-  validateType(declaration.returnType, structs, enums, fileName, true);
-  if (declaration.errorType) validateType(declaration.errorType, structs, enums, fileName, false);
+  validateType(declaration.returnType, structs, enums, foreignNamedTypes, fileName, true);
+  if (declaration.errorType) validateType(declaration.errorType, structs, enums, foreignNamedTypes, fileName, false);
   if (declaration.errorType && hasCleanupType(declaration.errorType.name, structs)) {
     throw new DiagnosticError(fileName, declaration.errorType.location, "throwing cleanup-bearing error values is not implemented in this bootstrap stage");
   }
@@ -199,7 +214,7 @@ function validateFunctionSignature(
   }
   for (const parameter of declaration.parameters) {
     validateUserName(parameter.name, parameter.location, fileName);
-    validateType(parameter.type, structs, enums, fileName, false);
+    validateType(parameter.type, structs, enums, foreignNamedTypes, fileName, false);
   }
 }
 
@@ -304,9 +319,9 @@ function analyzeStatement(
       const initializerType = inferDirectValue(statement.initializer, owner, locals, globals, structs, enums, fileName, state);
       let variableType = initializerType;
       if (statement.type) {
-        validateType(statement.type, structs, enums, fileName, false);
+        validateType(statement.type, structs, enums, state.foreignNamedTypes, fileName, false);
         variableType = statement.type.name;
-        requireAssignable(variableType, initializerType, statement.initializer, fileName);
+        requireAssignable(variableType, initializerType, statement.initializer, fileName, state.foreignNamedTypes);
       } else if (initializerType === "unknown") {
         throw new DiagnosticError(
           fileName,
@@ -332,7 +347,7 @@ function analyzeStatement(
         throw new DiagnosticError(fileName, statement.location, "a void function cannot return a value");
       }
       const actual = inferDirectValue(statement.expression, owner, locals, globals, structs, enums, fileName, state);
-      requireAssignable(expected, actual, statement.expression, fileName);
+      requireAssignable(expected, actual, statement.expression, fileName, state.foreignNamedTypes);
       consumeOwnedValue(statement.expression, expected, locals, structs, fileName, state);
       return;
     }
@@ -341,7 +356,7 @@ function analyzeStatement(
         throw new DiagnosticError(fileName, statement.location, `function ${JSON.stringify(owner.name)} does not declare an error type`);
       }
       const actual = inferExpression(statement.expression, locals, globals, structs, enums, fileName, state);
-      requireAssignable(owner.errorType.name, actual, statement.expression, fileName);
+      requireAssignable(owner.errorType.name, actual, statement.expression, fileName, state.foreignNamedTypes);
       return;
     }
     case "yield":
@@ -355,7 +370,7 @@ function analyzeStatement(
     case "if": {
       const conditionType = inferExpression(statement.condition, locals, globals, structs, enums, fileName, state);
       if (conditionType !== "bool" && !foreignPointer(conditionType, state)?.nullable) {
-        requireAssignable("bool", conditionType, statement.condition, fileName);
+        requireAssignable("bool", conditionType, statement.condition, fileName, state.foreignNamedTypes);
       }
       analyzeIfBranches(statement, owner, locals, globals, structs, enums, fileName, state);
       return;
@@ -563,7 +578,7 @@ function inferExpression(
       return "bool";
     case "unary": {
       const operand = inferExpression(expression.operand, locals, globals, structs, enums, fileName, state);
-      if (expression.operator === "!" && operand === "bool") return "bool";
+      if (expression.operator === "!" && canonicalType(operand, state.foreignNamedTypes) === "bool") return "bool";
       if (expression.operator === "!" && foreignPointer(operand, state)?.nullable) return "bool";
       throw new DiagnosticError(fileName, expression.location, `operator ${JSON.stringify(expression.operator)} requires a bool operand`);
     }
@@ -598,25 +613,28 @@ function inferExpression(
       const left = inferExpression(expression.left, locals, globals, structs, enums, fileName, state);
       const right = inferExpression(expression.right, locals, globals, structs, enums, fileName, state);
       if (["+", "-", "*", "/"].includes(expression.operator)) {
-        if (left !== "i32" || right !== "i32") {
+        if (canonicalType(left, state.foreignNamedTypes) !== "i32" || canonicalType(right, state.foreignNamedTypes) !== "i32") {
           throw new DiagnosticError(fileName, expression.location, `operator ${JSON.stringify(expression.operator)} requires i32 operands`);
         }
         return "i32";
       }
       if (["<", "<=", ">", ">="].includes(expression.operator)) {
-        if (left !== "i32" || right !== "i32") {
+        if (canonicalType(left, state.foreignNamedTypes) !== "i32" || canonicalType(right, state.foreignNamedTypes) !== "i32") {
           throw new DiagnosticError(fileName, expression.location, `operator ${JSON.stringify(expression.operator)} requires i32 operands`);
         }
         return "bool";
       }
       if (["==", "!="].includes(expression.operator)) {
-        if (left !== right || (left !== "i32" && left !== "bool")) {
+        const canonicalLeft = canonicalType(left, state.foreignNamedTypes);
+        const canonicalRight = canonicalType(right, state.foreignNamedTypes);
+        const comparableNamed = left === right && state.foreignNamedTypes.get(String(left))?.kind === "enum";
+        if (canonicalLeft !== canonicalRight || (canonicalLeft !== "i32" && canonicalLeft !== "bool" && !comparableNamed)) {
           throw new DiagnosticError(fileName, expression.location, `operator ${JSON.stringify(expression.operator)} requires matching i32 or bool operands`);
         }
         return "bool";
       }
       if (["&&", "||"].includes(expression.operator)) {
-        if (left !== "bool" || right !== "bool") {
+        if (canonicalType(left, state.foreignNamedTypes) !== "bool" || canonicalType(right, state.foreignNamedTypes) !== "bool") {
           throw new DiagnosticError(fileName, expression.location, `operator ${JSON.stringify(expression.operator)} requires bool operands`);
         }
         return "bool";
@@ -625,7 +643,8 @@ function inferExpression(
     }
     case "structExpression": {
       const declaration = structs.get(expression.typeName);
-      if (!declaration) {
+      const foreignDeclaration = state.foreignNamedTypes.get(expression.typeName);
+      if (!declaration && foreignDeclaration?.kind !== "record") {
         throw new DiagnosticError(fileName, expression.location, `unknown struct ${JSON.stringify(expression.typeName)}`);
       }
       const provided = new Set<string>();
@@ -634,19 +653,23 @@ function inferExpression(
           throw new DiagnosticError(fileName, initializer.location, `duplicate field initializer ${JSON.stringify(initializer.name)}`);
         }
         provided.add(initializer.name);
-        const field = declaration.fields.find((candidate) => candidate.name === initializer.name);
+        const field = declaration?.fields.find((candidate) => candidate.name === initializer.name)
+          ?? (foreignDeclaration?.kind === "record" ? foreignDeclaration.fields.find((candidate) => candidate.name === initializer.name) : null);
         if (!field) {
-          throw new DiagnosticError(fileName, initializer.location, `struct ${JSON.stringify(declaration.name)} has no field ${JSON.stringify(initializer.name)}`);
+          throw new DiagnosticError(fileName, initializer.location, `struct ${JSON.stringify(expression.typeName)} has no field ${JSON.stringify(initializer.name)}`);
         }
         const actual = inferExpression(initializer.expression, locals, globals, structs, enums, fileName, state);
-        requireAssignable(field.type.name, actual, initializer.expression, fileName);
-        consumeOwnedValue(initializer.expression, field.type.name, locals, structs, fileName, state);
+        const fieldType = "type" in field ? field.type.name : field.typeName;
+        requireAssignable(fieldType, actual, initializer.expression, fileName, state.foreignNamedTypes);
+        consumeOwnedValue(initializer.expression, fieldType, locals, structs, fileName, state);
       }
-      const missing = declaration.fields.find((field) => !provided.has(field.name));
+      const expectedFields = declaration?.fields ?? (foreignDeclaration?.kind === "record" ? foreignDeclaration.fields : []);
+      const missing = expectedFields.find((field) => !provided.has(field.name));
       if (missing) {
-        throw new DiagnosticError(fileName, expression.location, `missing field ${JSON.stringify(missing.name)} when constructing ${JSON.stringify(declaration.name)}`);
+        throw new DiagnosticError(fileName, expression.location, `missing field ${JSON.stringify(missing.name)} when constructing ${JSON.stringify(expression.typeName)}`);
       }
-      return declaration.name;
+      if (foreignDeclaration?.kind === "record") state.foreignExpressionTypes.set(expression.location.offset, expression.typeName);
+      return expression.typeName;
     }
     case "variantExpression": {
       const declaration = enums.get(expression.enumName);
@@ -658,7 +681,7 @@ function inferExpression(
         throw new DiagnosticError(fileName, expression.location, "payloadless variant does not accept a value");
       }
       const actual = inferExpression(expression.payload, locals, globals, structs, enums, fileName, state);
-      requireAssignable(variant.payload.name, actual, expression.payload, fileName);
+      requireAssignable(variant.payload.name, actual, expression.payload, fileName, state.foreignNamedTypes);
       return declaration.name;
     }
     case "attempt": {
@@ -673,6 +696,11 @@ function inferExpression(
     case "matchExpression":
       throw new DiagnosticError(fileName, expression.location, "match must be the direct value of a binding, return, or expression statement");
     case "member": {
+      const foreignConstant = getForeignConstant(expression, globals);
+      if (foreignConstant) {
+        state.foreignExpressionTypes.set(expression.location.offset, foreignConstant.typeName);
+        return foreignConstant.typeName;
+      }
       const foreignFunction = getForeignFunction(expression, globals, fileName);
       if (foreignFunction) {
         throw new DiagnosticError(fileName, expression.location, "foreign function values are not implemented; call the function instead");
@@ -691,6 +719,15 @@ function inferExpression(
         throw new DiagnosticError(fileName, expression.object.location, "a cleanup-bearing temporary must be bound before borrowing one of its members");
       }
       const declaration = structs.get(receiverType);
+      const foreignRecord = state.foreignNamedTypes.get(String(receiverType));
+      if (foreignRecord?.kind === "record") {
+        const field = foreignRecord.fields.find((candidate) => candidate.name === expression.property);
+        if (field) {
+          state.foreignExpressionTypes.set(expression.location.offset, field.typeName);
+          return field.typeName;
+        }
+        throw new DiagnosticError(fileName, expression.location, `record ${JSON.stringify(foreignRecord.typeName)} has no field ${JSON.stringify(expression.property)}`);
+      }
       if (!declaration) {
         throw new DiagnosticError(fileName, expression.location, `type ${JSON.stringify(receiverType)} has no members`);
       }
@@ -713,7 +750,7 @@ function inferExpression(
             if (expression.arguments.length !== expectedCount) throw new DiagnosticError(fileName, expression.location, `variant ${JSON.stringify(variant.name)} expects ${expectedCount} argument(s)`);
             if (variant.payload) {
               const actual = inferExpression(expression.arguments[0], locals, globals, structs, enums, fileName, state);
-              requireAssignable(variant.payload.name, actual, expression.arguments[0], fileName);
+              requireAssignable(variant.payload.name, actual, expression.arguments[0], fileName, state.foreignNamedTypes);
             }
             return enumDeclaration.name;
           }
@@ -778,7 +815,7 @@ function checkArguments(
   }
   for (let index = 0; index < target.parameters.length; index += 1) {
     const actual = inferExpression(args[index], locals, globals, structs, enums, fileName, state);
-    requireAssignable(target.parameters[index].type.name, actual, args[index], fileName);
+    requireAssignable(target.parameters[index].type.name, actual, args[index], fileName, state.foreignNamedTypes);
     consumeOwnedValue(args[index], target.parameters[index].type.name, locals, structs, fileName, state);
   }
 }
@@ -1013,6 +1050,16 @@ function getForeignFunction(
   return foreignFunction;
 }
 
+function getForeignConstant(
+  expression: Extract<Expression, { kind: "member" }>,
+  globals: Map<string, SymbolValue>,
+): ForeignConstant | null {
+  if (expression.object.kind !== "identifier") return null;
+  const symbol = globals.get(expression.object.name);
+  if (symbol?.kind !== "foreignModule") return null;
+  return symbol.module.constants.get(expression.property) ?? null;
+}
+
 function checkForeignCall(
   target: ForeignFunction,
   args: Expression[],
@@ -1044,7 +1091,10 @@ function checkForeignCall(
     const parameter = target.parameters[index];
     if (parameter?.type.kind === "z") {
       rejectForeignOwnedMove(argument, actual, structs, fileName, state);
-      requireAssignable(parameter.type.name, actual, argument, fileName);
+      requireAssignable(parameter.type.name, actual, argument, fileName, state.foreignNamedTypes);
+    }
+    if (parameter?.type.kind === "named") {
+      requireAssignable(parameter.type.type.typeName, actual, argument, fileName, state.foreignNamedTypes);
     }
     if (parameter?.type.kind === "pointer") {
       const actualPointer = foreignPointer(actual, state);
@@ -1075,6 +1125,8 @@ function checkForeignCall(
   }
   const result = target.returnType.kind === "z"
     ? target.returnType.name
+    : target.returnType.kind === "named"
+      ? target.returnType.type.typeName
     : target.returnType.kind === "pointer"
       ? target.returnType.typeName
       : "unknown";
@@ -1096,10 +1148,11 @@ function validateType(
   type: TypeReference,
   structs: Map<string, StructDeclaration>,
   enums: Map<string, EnumDeclaration>,
+  foreignNamedTypes: ReadonlyMap<string, ForeignNamedType>,
   fileName: string,
   allowVoid: boolean,
 ): void {
-  if (!primitiveTypes.has(type.name) && !structs.has(type.name) && !enums.has(type.name)) {
+  if (!primitiveTypes.has(type.name) && !structs.has(type.name) && !enums.has(type.name) && !foreignNamedTypes.has(type.name)) {
     throw new DiagnosticError(fileName, type.location, `unknown type ${JSON.stringify(type.name)}`);
   }
   if (!allowVoid && type.name === "void") {
@@ -1107,10 +1160,22 @@ function validateType(
   }
 }
 
-function requireAssignable(expected: ValueType, actual: ValueType, expression: Expression, fileName: string): void {
-  if (actual !== "unknown" && actual !== "never" && expected !== actual) {
+function requireAssignable(
+  expected: ValueType,
+  actual: ValueType,
+  expression: Expression,
+  fileName: string,
+  foreignNamedTypes: ReadonlyMap<string, ForeignNamedType>,
+): void {
+  if (actual !== "unknown" && actual !== "never" && canonicalType(expected, foreignNamedTypes) !== canonicalType(actual, foreignNamedTypes)) {
     throw new DiagnosticError(fileName, expression.location, `expected ${expected}, found ${actual}`);
   }
+}
+
+function canonicalType(type: ValueType, foreignNamedTypes: ReadonlyMap<string, ForeignNamedType>): ValueType {
+  if (type === "unknown" || type === "never") return type;
+  const named = foreignNamedTypes.get(String(underlyingType(type)));
+  return named?.kind === "scalar" ? named.underlying : type;
 }
 
 function declareGlobal(

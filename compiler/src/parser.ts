@@ -31,7 +31,9 @@ export function parse(tokens: Token[], fileName: string): Program {
 
   const parseType = (): TypeReference => {
     const token = expect("identifier", "a type name");
-    return { name: token.text, location: token.location };
+    if (!match("dot")) return { name: token.text, location: token.location };
+    const member = expect("identifier", "an imported type name");
+    return { name: `${token.text}.${member.text}`, location: token.location };
   };
 
   const parseImport = (): ImportDeclaration => {
@@ -109,6 +111,30 @@ export function parse(tokens: Token[], fileName: string): Program {
     }
     if (match("identifier")) {
       const token = previous();
+      const beginsForeignStructLiteral = at("dot")
+        && tokens[current + 1]?.kind === "identifier"
+        && tokens[current + 2]?.kind === "leftBrace"
+        && (tokens[current + 3]?.kind === "rightBrace"
+          || (tokens[current + 3]?.kind === "identifier" && tokens[current + 4]?.kind === "colon"));
+      if (beginsForeignStructLiteral) {
+        take();
+        const foreignType = take();
+        take();
+        const fields = [];
+        while (!at("rightBrace")) {
+          const field = expect("identifier", "a field name");
+          expect("colon", "`:`");
+          fields.push({ name: field.text, expression: parseExpression(), location: field.location });
+          if (!match("comma")) break;
+        }
+        expect("rightBrace", "`}`");
+        return {
+          kind: "structExpression",
+          typeName: `${token.text}.${foreignType.text}`,
+          fields,
+          location: token.location,
+        };
+      }
       const beginsStructLiteral = at("leftBrace")
         && (tokens[current + 1]?.kind === "rightBrace"
           || (tokens[current + 1]?.kind === "identifier" && tokens[current + 2]?.kind === "colon"));

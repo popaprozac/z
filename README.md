@@ -146,6 +146,26 @@ handle for the call; an explicit `fclose(file)` consumes it and makes any later
 use a compile-time error. If ownership remains local, generated cleanup calls
 `fclose` once and only when the handle is non-null.
 
+Complete C records, enums, constants, and scalar typedefs are imported under the
+module namespace and used with ordinary Z syntax:
+
+```z
+import geometry from "geometry.h";
+
+function move(point: geometry.Point, amount: geometry.Count): geometry.Point {
+  return geometry.translate(point, geometry.Forward, amount);
+}
+
+const origin = geometry.Point { x: 10, y: 20 };
+const moved = move(origin, 3);
+console.log(`moved to {moved.x}, {moved.y}`);
+```
+
+The header remains the single ABI declaration. Z checks record fields, enum
+arguments, qualified signatures, and imported calls without an `extern` mirror.
+The interpolated `console.log` line shows the planned formatting syntax; that
+standard-library feature is not implemented in the bootstrap yet.
+
 `try` evaluates its call once, propagates failure immediately, and produces the
 success payload. It is currently supported directly in bindings, returns, and
 expression statements; general nested-expression lowering comes later.
@@ -157,6 +177,7 @@ bun run z run examples/first.z
 bun run z run examples/control-flow.z
 bun run z run examples/deinit.z
 bun run z run examples/foreign-handle.z
+bun run z run examples/foreign-types.z
 bun run z run examples/structs.z
 bun run z run examples/match.z
 bun run z run examples/match-expression.z
@@ -175,8 +196,14 @@ borrowed or consuming parameters. The compiler ships initial `stdio.h` notes
 and discovers project notes beside a header as `<header>.zapi.json`; this JSON is
 a stage-0 representation, not yet a frozen language format. Unannotated
 pointers, borrowed returns without lifetime provenance, mutable strings,
-records, globals, macros, Objective-C, and C++ remain conservative errors or
-future layers rather than being silently treated as safe.
+globals, macros, Objective-C, and C++ remain conservative errors or future
+layers rather than being silently treated as safe.
+
+Complete typedef-named C structs with supported scalar or enum fields, C enums
+and their constants, and `int`/`_Bool` typedefs are now usable as namespaced Z
+types. Unions, anonymous or incomplete layouts, nested records, unsigned and
+wide scalars, arrays, bitfield-specific validation, callbacks, and pointer-
+bearing records remain upcoming interop layers.
 
 See [DESIGN.md](DESIGN.md) for the language charter and roadmap.
 

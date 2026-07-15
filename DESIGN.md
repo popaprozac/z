@@ -192,6 +192,14 @@ common case remains simply:
 import platform from "platform.h";
 ```
 
+Imported C data remains namespaced but otherwise follows Z expression syntax:
+typedef-named records can appear in signatures, are built with checked struct
+literals, and expose imported fields; C enum constants become typed module
+values. The native compiler still includes the original header, so it does not
+redeclare layouts or guess padding and calling conventions. A future
+`unsafe raw { ... }` facility may cover operations the semantic importer cannot
+represent, but routine function and data interop must not require it.
+
 Interop work proceeds in layers:
 
 1. Direct header syntax with native compilation.
