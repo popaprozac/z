@@ -74,7 +74,7 @@
       "patterns": [{ "name": "constant.language.boolean.z", "match": "\\b(?:true|false)\\b" }]
     },
     "operators": {
-      "patterns": [{ "name": "keyword.operator.z", "match": "(?:==|!=|<=|>=|&&|\\|\\||[!<>+\\-*/])" }]
+      "patterns": [{ "name": "keyword.operator.z", "match": "(?:==|!=|<=|>=|&&|\\|\\||[=!<>+\\-*/])" }]
     },
     "numbers": {
       "patterns": [{ "name": "constant.numeric.z", "match": "\\b(?:0[xX][0-9A-Fa-f]+|[0-9]+(?:\\.[0-9]+)?)\\b" }]

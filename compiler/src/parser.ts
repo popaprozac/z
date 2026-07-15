@@ -331,6 +331,14 @@ export function parse(tokens: Token[], fileName: string): Program {
       return { kind: "yield", expression, location: yieldToken.location };
     }
     const expression = parseExpression();
+    if (match("equal")) {
+      if (expression.kind !== "identifier" && expression.kind !== "member") {
+        throw new DiagnosticError(fileName, expression.location, "assignment target must be a mutable binding or one of its fields");
+      }
+      const value = parseExpression();
+      expect("semicolon", "`;`");
+      return { kind: "assignment", target: expression, expression: value, location: expression.location };
+    }
     expect("semicolon", "`;`");
     return { kind: "expressionStatement", expression, location: expression.location };
   };

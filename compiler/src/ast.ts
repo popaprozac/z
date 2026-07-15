@@ -83,6 +83,7 @@ export type TypeReference = {
 
 export type Statement =
   | VariableStatement
+  | AssignmentStatement
   | ReturnStatement
   | ThrowStatement
   | YieldStatement
@@ -97,6 +98,13 @@ export type VariableStatement = {
   readonly name: string;
   readonly type: TypeReference | null;
   readonly initializer: Expression;
+  readonly location: SourceLocation;
+};
+
+export type AssignmentStatement = {
+  readonly kind: "assignment";
+  readonly target: IdentifierExpression | MemberExpression;
+  readonly expression: Expression;
   readonly location: SourceLocation;
 };
 

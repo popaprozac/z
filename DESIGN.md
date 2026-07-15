@@ -35,6 +35,30 @@ async semantics that are absent from the header itself.
 - `deinit` is deterministic, exactly-once, synchronous, and infallible.
 - Fallible cleanup is expressed by an explicit operation such as `close()`.
 
+## Bindings and mutation
+
+`const` declares immutable storage and `let` declares mutable, lexically scoped
+storage. Z has no `var`: function-scoped declarations and hoisting do not belong
+in the language. For value structs, immutability applies through their fields.
+
+```z
+const origin = Point { x: 1, y: 2 };
+let position = origin;
+position.x = 10;
+position = Point { x: position.x, y: 20 };
+```
+
+Assignment is a statement, not an expression. Its target must be a mutable
+binding or a field path rooted in one, and its value must have the target's
+static type. Parameters and pattern bindings begin immutable. Methods currently
+borrow `this` immutably; explicit mutable-receiver syntax should be designed
+before methods may change their receiver.
+
+Replacing cleanup-bearing storage has additional semantics: the old value must
+be destroyed exactly once before the new value becomes live, including when
+evaluation fails. The bootstrap rejects that case until ownership-aware
+replacement lowering is implemented.
+
 Lifecycle cleanup is declared as a compiler-only block rather than a callable
 method:
 

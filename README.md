@@ -50,6 +50,24 @@ struct Point {
 }
 ```
 
+Bindings make mutation explicit. `const` stores an immutable value; `let`
+stores a mutable value in the same lexical scope. Z does not have JavaScript's
+function-scoped, hoisted `var`:
+
+```z
+const origin = Point { x: 1, y: 2 };
+let position = origin;
+position.x = 10;
+position = Point { x: position.x, y: 20 };
+```
+
+Assignment is a statement rather than a value-producing expression. It is
+statically type-checked, and nested field mutation must remain rooted in a
+`let`. Parameters, match bindings, and the current borrowed method receiver
+`this` are immutable in this bootstrap slice. Replacing cleanup-bearing storage
+is temporarily rejected until assignment lowering can destroy the previous
+value before installing the new one.
+
 Tagged enums carry typed payloads and are matched exhaustively:
 
 ```z
@@ -212,6 +230,7 @@ bun run z run examples/selective-import.z
 bun run z run examples/structs.z
 bun run z run examples/match.z
 bun run z run examples/match-expression.z
+bun run z run examples/mutation.z
 bun run z run examples/result.z
 bun run z run examples/try.z
 bun test

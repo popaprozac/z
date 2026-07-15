@@ -256,6 +256,12 @@ function generateStatement(statement: Statement, context: GenerationContext): st
       const liveFlag = ensureLiveFlag(statement.name, context);
       return `${initialized}\nbool ${liveFlag} = true;`;
     }
+    case "assignment":
+      return generateDirectValue(
+        statement.expression,
+        context,
+        (value) => `${generateExpression(statement.target, context)} = ${value};`,
+      );
     case "return":
       if (!statement.expression) {
         const cleanup = generateCleanup(context.cleanupScopes, context);

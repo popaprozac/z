@@ -781,6 +781,103 @@ test("compiles and runs structs as native values", () => {
   assert.equal(result.stdout, "original=42 translated=45\n");
 });
 
+test("assigns mutable locals and nested value fields", () => {
+  const example = resolve(projectRoot, "examples/mutation.z");
+  const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, "count=2 point=40,2 frame=40,2/640\n");
+
+  const generated = compileToC(readFileSync(example, "utf8"), example);
+  assert.match(generated, /count = \(count \+ 1\);/);
+  assert.match(generated, /\(point\)\.x = 40;/);
+  assert.match(generated, /point = \(Z_Point\)\{ \.x = \(point\)\.x, \.y = count \};/);
+  assert.match(generated, /\(\(frame\)\.origin\)\.y = 2;/);
+});
+
+test("keeps const values, parameters, and borrowed receivers immutable", () => {
+  const immutableLocal = `
+    function main(): i32 {
+      const value = 1;
+      value = 2;
+      return value;
+    }
+  `;
+  assert.throws(
+    () => compileToC(immutableLocal, "const-assignment.z"),
+    /cannot assign to immutable binding "value"/,
+  );
+
+  const immutableField = `
+    struct Point { x: i32; }
+    function main(): i32 {
+      const point = Point { x: 1 };
+      point.x = 2;
+      return point.x;
+    }
+  `;
+  assert.throws(
+    () => compileToC(immutableField, "const-field-assignment.z"),
+    /cannot mutate a field through immutable binding "point"/,
+  );
+
+  const immutableParameter = `
+    function change(value: i32): i32 {
+      value = 2;
+      return value;
+    }
+    function main(): i32 { return change(1); }
+  `;
+  assert.throws(
+    () => compileToC(immutableParameter, "parameter-assignment.z"),
+    /cannot assign to immutable binding "value"/,
+  );
+
+  const borrowedReceiver = `
+    struct Counter {
+      value: i32;
+      function change(): i32 {
+        this.value = 2;
+        return this.value;
+      }
+    }
+    function main(): i32 { return 0; }
+  `;
+  assert.throws(
+    () => compileToC(borrowedReceiver, "receiver-assignment.z"),
+    /cannot mutate a field through immutable binding "this"/,
+  );
+});
+
+test("type-checks assignments and protects cleanup-bearing replacements", () => {
+  const wrongType = `
+    function main(): i32 {
+      let value = 1;
+      value = true;
+      return value;
+    }
+  `;
+  assert.throws(
+    () => compileToC(wrongType, "assignment-type.z"),
+    /expected i32, found bool/,
+  );
+
+  const cleanupReplacement = `
+    struct Resource {
+      value: i32;
+      deinit {}
+    }
+    function main(): i32 {
+      let resource = Resource { value: 1 };
+      resource = Resource { value: 2 };
+      return 0;
+    }
+  `;
+  assert.throws(
+    () => compileToC(cleanupReplacement, "cleanup-assignment.z"),
+    /replacing cleanup-bearing storage is not implemented yet/,
+  );
+});
+
 test("compiles and runs the first native program", () => {
   const example = resolve(projectRoot, "examples/first.z");
   const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
@@ -806,5 +903,6 @@ test("editor grammar tracks keywords without reserving Result variants", () => {
   assert.match(keywordPattern, /\bas\b/);
   assert.match(constantPattern, /true\|false/);
   assert.match(operatorPattern, /&&/);
+  assert.match(operatorPattern, /=/);
   assert.doesNotMatch(keywordPattern, /success|failure/);
 });

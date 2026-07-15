@@ -378,6 +378,32 @@ function analyzeStatement(
       locals.set(statement.name, statement.mutable ? `${mutablePrefix}${variableType}` : variableType);
       return;
     }
+    case "assignment": {
+      const root = assignmentRoot(statement.target);
+      if (!root) {
+        throw new DiagnosticError(fileName, statement.target.location, "assignment target must be a mutable binding or one of its fields");
+      }
+      const stored = locals.get(root.name);
+      if (!stored) {
+        inferExpression(statement.target, locals, globals, structs, enums, fileName, state);
+        throw new DiagnosticError(fileName, statement.target.location, "assignment target must be local mutable storage");
+      }
+      if (!isMutableBinding(stored)) {
+        const action = statement.target.kind === "identifier" ? "assign to" : "mutate a field through";
+        throw new DiagnosticError(fileName, statement.target.location, `cannot ${action} immutable binding ${JSON.stringify(root.name)}`);
+      }
+      const expected = inferExpression(statement.target, locals, globals, structs, enums, fileName, state);
+      if (hasCleanupType(expected, structs, state.foreignTypes)) {
+        throw new DiagnosticError(
+          fileName,
+          statement.target.location,
+          "replacing cleanup-bearing storage is not implemented yet; its previous value must be destroyed first",
+        );
+      }
+      const actual = inferDirectValue(statement.expression, owner, locals, globals, structs, enums, fileName, state);
+      requireAssignable(expected, actual, statement.expression, fileName, state.foreignNamedTypes, state.integerLiteralTypes);
+      return;
+    }
     case "return": {
       const expected = owner.returnType.name;
       if (!statement.expression) {
@@ -900,6 +926,10 @@ function validateDeinitControlFlow(statements: Statement[], fileName: string): v
     }
     if (statement.kind === "block") validateDeinitControlFlow(statement.statements, fileName);
     if (statement.kind === "variable") validateDeinitExpression(statement.initializer, fileName);
+    if (statement.kind === "assignment") {
+      validateDeinitExpression(statement.target, fileName);
+      validateDeinitExpression(statement.expression, fileName);
+    }
     if (statement.kind === "expressionStatement") validateDeinitExpression(statement.expression, fileName);
     if (statement.kind === "if") {
       validateDeinitExpression(statement.condition, fileName);
@@ -981,6 +1011,14 @@ function rejectForeignOwnedMove(
 function isNamedStorageExpression(expression: Expression): boolean {
   if (expression.kind === "identifier") return true;
   return expression.kind === "member" && isNamedStorageExpression(expression.object);
+}
+
+function assignmentRoot(
+  expression: Extract<Statement, { kind: "assignment" }>["target"],
+): Extract<Expression, { kind: "identifier" }> | null {
+  let current: Expression = expression;
+  while (current.kind === "member") current = current.object;
+  return current.kind === "identifier" ? current : null;
 }
 
 function ownershipState(type: ValueType): "available" | "moved" | "maybeMoved" {

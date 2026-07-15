@@ -1,0 +1,35 @@
+import stdio from "stdio.h";
+
+struct Point {
+  x: i32;
+  y: i32;
+}
+
+struct Frame {
+  origin: Point;
+  width: i32;
+}
+
+function main(): i32 {
+  let count = 1;
+  count = count + 1;
+
+  let point = Point { x: 10, y: 20 };
+  point.x = 40;
+  point = Point { x: point.x, y: count };
+
+  let frame = Frame { origin: point, width: 100 };
+  frame.origin.y = 2;
+  frame.width = 640;
+
+  stdio.printf(
+    "count=%d point=%d,%d frame=%d,%d/%d\n",
+    count,
+    point.x,
+    point.y,
+    frame.origin.x,
+    frame.origin.y,
+    frame.width
+  );
+  return 0;
+}
