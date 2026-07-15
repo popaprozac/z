@@ -7,6 +7,7 @@ export type SourceLocation = {
 export type Program = {
   readonly kind: "program";
   readonly imports: ImportDeclaration[];
+  readonly structs: StructDeclaration[];
   readonly functions: FunctionDeclaration[];
 };
 
@@ -14,6 +15,20 @@ export type ImportDeclaration = {
   readonly kind: "import";
   readonly moduleName: string;
   readonly header: string;
+  readonly location: SourceLocation;
+};
+
+export type StructDeclaration = {
+  readonly kind: "struct";
+  readonly name: string;
+  readonly fields: FieldDeclaration[];
+  readonly methods: FunctionDeclaration[];
+  readonly location: SourceLocation;
+};
+
+export type FieldDeclaration = {
+  readonly name: string;
+  readonly type: TypeReference;
   readonly location: SourceLocation;
 };
 
@@ -66,7 +81,8 @@ export type Expression =
   | IdentifierExpression
   | BinaryExpression
   | CallExpression
-  | MemberExpression;
+  | MemberExpression
+  | StructExpression;
 
 export type NumberExpression = {
   readonly kind: "number";
@@ -105,5 +121,18 @@ export type MemberExpression = {
   readonly kind: "member";
   readonly object: Expression;
   readonly property: string;
+  readonly location: SourceLocation;
+};
+
+export type StructExpression = {
+  readonly kind: "structExpression";
+  readonly typeName: string;
+  readonly fields: FieldInitializer[];
+  readonly location: SourceLocation;
+};
+
+export type FieldInitializer = {
+  readonly name: string;
+  readonly expression: Expression;
   readonly location: SourceLocation;
 };

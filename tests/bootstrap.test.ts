@@ -69,6 +69,70 @@ test("infers primitive local types for C emission", () => {
   assert.match(generated, /const int32_t value = answer\(\);/);
 });
 
+test("emits struct layouts, literals, fields, and borrowed methods", () => {
+  const source = `
+    struct Point {
+      x: i32;
+      y: i32;
+      function sum(): i32 {
+        return this.x + this.y;
+      }
+    }
+    function main(): i32 {
+      const point = Point { x: 20, y: 22 };
+      return point.sum();
+    }
+  `;
+  const generated = compileToC(source, "point.z");
+  assert.match(generated, /struct Z_Point \{/);
+  assert.match(generated, /static int32_t Z_Point_sum\(const Z_Point \*self\)/);
+  assert.match(generated, /const Z_Point point = \(Z_Point\)\{ \.x = 20, \.y = 22 \};/);
+  assert.match(generated, /return Z_Point_sum\(&\(point\)\);/);
+});
+
+test("requires every struct field exactly once", () => {
+  const source = `
+    struct Point {
+      x: i32;
+      y: i32;
+    }
+    function main(): i32 {
+      const point = Point { x: 1 };
+      return point.x;
+    }
+  `;
+  assert.throws(
+    () => compileToC(source, "missing-field.z"),
+    /missing-field\.z:7:21: error: missing field "y" when constructing "Point"/,
+  );
+});
+
+test("checks struct method arguments", () => {
+  const source = `
+    struct Counter {
+      value: i32;
+      function add(amount: i32): i32 {
+        return this.value + amount;
+      }
+    }
+    function main(): i32 {
+      const counter = Counter { value: 1 };
+      return counter.add("wrong");
+    }
+  `;
+  assert.throws(
+    () => compileToC(source, "method-arguments.z"),
+    /method-arguments\.z:10:26: error: expected i32, found cstring/,
+  );
+});
+
+test("compiles and runs structs as native values", () => {
+  const example = resolve(projectRoot, "examples/structs.z");
+  const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, "original=42 translated=45\n");
+});
+
 test("compiles and runs the first native program", () => {
   const example = resolve(projectRoot, "examples/first.z");
   const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });

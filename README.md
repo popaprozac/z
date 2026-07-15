@@ -23,10 +23,24 @@ function main(): i32 {
 }
 ```
 
+Structs are value types with fields, literals, and methods:
+
+```z
+struct Point {
+  x: i32;
+  y: i32;
+
+  function translated(dx: i32, dy: i32): Point {
+    return Point { x: this.x + dx, y: this.y + dy };
+  }
+}
+```
+
 ```sh
 bun run z check examples/first.z
 bun run z emit examples/first.z
 bun run z run examples/first.z
+bun run z run examples/structs.z
 bun test
 ```
 

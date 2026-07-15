@@ -5,6 +5,7 @@ import type {
   Parameter,
   Program,
   Statement,
+  StructDeclaration,
   TypeReference,
 } from "./ast.ts";
 import { DiagnosticError } from "./diagnostics.ts";
@@ -76,6 +77,26 @@ export function parse(tokens: Token[], fileName: string): Program {
     }
     if (match("identifier")) {
       const token = previous();
+      if (match("leftBrace")) {
+        const fields = [];
+        while (!at("rightBrace")) {
+          const field = expect("identifier", "a field name");
+          expect("colon", "`:`");
+          fields.push({
+            name: field.text,
+            expression: parseExpression(),
+            location: field.location,
+          });
+          if (!match("comma")) break;
+        }
+        expect("rightBrace", "`}`");
+        return {
+          kind: "structExpression",
+          typeName: token.text,
+          fields,
+          location: token.location,
+        };
+      }
       return { kind: "identifier", name: token.text, location: token.location };
     }
     if (match("leftParen")) {
@@ -157,14 +178,36 @@ export function parse(tokens: Token[], fileName: string): Program {
     return { kind: "function", name, parameters, returnType, body, location: start };
   };
 
+  const parseStruct = (): StructDeclaration => {
+    const start = expect("struct", "`struct`").location;
+    const name = expect("identifier", "a struct name").text;
+    expect("leftBrace", "`{`");
+    const fields = [];
+    const methods: FunctionDeclaration[] = [];
+    while (!at("rightBrace") && !at("eof")) {
+      if (at("function")) {
+        methods.push(parseFunction());
+        continue;
+      }
+      const field = expect("identifier", "a field or method declaration");
+      expect("colon", "`:`");
+      fields.push({ name: field.text, type: parseType(), location: field.location });
+      expect("semicolon", "`;`");
+    }
+    expect("rightBrace", "`}`");
+    return { kind: "struct", name, fields, methods, location: start };
+  };
+
   const imports: ImportDeclaration[] = [];
+  const structs: StructDeclaration[] = [];
   const functions: FunctionDeclaration[] = [];
   while (!at("eof")) {
     if (at("import")) imports.push(parseImport());
+    else if (at("struct")) structs.push(parseStruct());
     else if (at("function")) functions.push(parseFunction());
-    else throw new DiagnosticError(fileName, peek().location, "expected an import or function declaration");
+    else throw new DiagnosticError(fileName, peek().location, "expected an import, struct, or function declaration");
   }
-  return { kind: "program", imports, functions };
+  return { kind: "program", imports, structs, functions };
 }
 
 function tokenDescription(token: Token): string {

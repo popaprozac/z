@@ -8,6 +8,7 @@ export type TokenKind =
   | "import"
   | "from"
   | "function"
+  | "struct"
   | "const"
   | "let"
   | "return"
@@ -36,6 +37,7 @@ const keywords = new Map<string, TokenKind>([
   ["import", "import"],
   ["from", "from"],
   ["function", "function"],
+  ["struct", "struct"],
   ["const", "const"],
   ["let", "let"],
   ["return", "return"],
@@ -152,4 +154,3 @@ export function lex(source: string, fileName: string): Token[] {
   tokens.push({ kind: "eof", text: "", location: location() });
   return tokens;
 }
-
