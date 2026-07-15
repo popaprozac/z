@@ -51,6 +51,7 @@ export type FunctionDeclaration = {
   readonly name: string;
   readonly parameters: Parameter[];
   readonly returnType: TypeReference;
+  readonly errorType: TypeReference | null;
   readonly body: Statement[];
   readonly location: SourceLocation;
 };
@@ -66,7 +67,7 @@ export type TypeReference = {
   readonly location: SourceLocation;
 };
 
-export type Statement = VariableStatement | ReturnStatement | ExpressionStatement | MatchStatement;
+export type Statement = VariableStatement | ReturnStatement | ThrowStatement | ExpressionStatement | MatchStatement;
 
 export type VariableStatement = {
   readonly kind: "variable";
@@ -80,6 +81,12 @@ export type VariableStatement = {
 export type ReturnStatement = {
   readonly kind: "return";
   readonly expression: Expression | null;
+  readonly location: SourceLocation;
+};
+
+export type ThrowStatement = {
+  readonly kind: "throw";
+  readonly expression: Expression;
   readonly location: SourceLocation;
 };
 
@@ -111,7 +118,8 @@ export type Expression =
   | CallExpression
   | MemberExpression
   | StructExpression
-  | VariantExpression;
+  | VariantExpression
+  | AttemptExpression;
 
 export type NumberExpression = {
   readonly kind: "number";
@@ -171,5 +179,11 @@ export type VariantExpression = {
   readonly enumName: string;
   readonly variantName: string;
   readonly payload: Expression;
+  readonly location: SourceLocation;
+};
+
+export type AttemptExpression = {
+  readonly kind: "attempt";
+  readonly expression: Expression;
   readonly location: SourceLocation;
 };

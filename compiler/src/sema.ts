@@ -10,6 +10,7 @@ import type {
   TypeReference,
 } from "./ast.ts";
 import { DiagnosticError } from "./diagnostics.ts";
+import { resultTypeName } from "./results.ts";
 
 type ValueType = string | "unknown";
 
@@ -62,6 +63,9 @@ export function analyze(program: Program, fileName: string): void {
   }
   if (main.declaration.parameters.length !== 0 || main.declaration.returnType.name !== "i32") {
     throw new DiagnosticError(fileName, main.declaration.location, "`main` must have signature `function main(): i32`");
+  }
+  if (main.declaration.errorType) {
+    throw new DiagnosticError(fileName, main.declaration.location, "`main` cannot throw in the bootstrap runtime");
   }
 
   for (const declaration of program.structs) {
@@ -117,7 +121,7 @@ function analyzeEnumDeclaration(
       if (variant.payload.name === declaration.name) {
         throw new DiagnosticError(fileName, variant.location, "an enum cannot contain itself directly by value");
       }
-      if (enums.has(variant.payload.name)) {
+      if (enums.has(variant.payload.name) && !declaration.name.startsWith("__z_Result_")) {
         throw new DiagnosticError(fileName, variant.location, "nested enum payloads are not implemented in this bootstrap stage");
       }
     }
@@ -134,6 +138,10 @@ function validateFunctionSignature(
   fileName: string,
 ): void {
   validateType(declaration.returnType, structs, enums, fileName, true);
+  if (declaration.errorType) validateType(declaration.errorType, structs, enums, fileName, false);
+  if (declaration.errorType && declaration.returnType.name === "void") {
+    throw new DiagnosticError(fileName, declaration.returnType.location, "void success results are not implemented in this bootstrap stage");
+  }
   for (const parameter of declaration.parameters) {
     validateType(parameter.type, structs, enums, fileName, false);
   }
@@ -193,7 +201,7 @@ function analyzeFunction(
 
 function statementReturns(statement: Statement | undefined): boolean {
   if (!statement) return false;
-  if (statement.kind === "return") return true;
+  if (statement.kind === "return" || statement.kind === "throw") return true;
   return statement.kind === "match" && statement.arms.length > 0
     && statement.arms.every((arm) => statementReturns(arm.body));
 }
@@ -243,6 +251,14 @@ function analyzeStatement(
       requireAssignable(expected, actual, statement.expression, fileName);
       return;
     }
+    case "throw": {
+      if (!owner.errorType) {
+        throw new DiagnosticError(fileName, statement.location, `function ${JSON.stringify(owner.name)} does not declare an error type`);
+      }
+      const actual = inferExpression(statement.expression, locals, globals, structs, enums, fileName);
+      requireAssignable(owner.errorType.name, actual, statement.expression, fileName);
+      return;
+    }
     case "expressionStatement":
       inferExpression(statement.expression, locals, globals, structs, enums, fileName);
       return;
@@ -279,6 +295,7 @@ function inferExpression(
   structs: Map<string, StructDeclaration>,
   enums: Map<string, EnumDeclaration>,
   fileName: string,
+  allowThrowingCall = false,
 ): ValueType {
   switch (expression.kind) {
     case "number":
@@ -348,6 +365,13 @@ function inferExpression(
       requireAssignable(variant.payload.name, actual, expression.payload, fileName);
       return declaration.name;
     }
+    case "attempt": {
+      const result = inferExpression(expression.expression, locals, globals, structs, enums, fileName, true);
+      if (!result.startsWith("__z_Result_")) {
+        throw new DiagnosticError(fileName, expression.location, "attempt requires a throwing function call");
+      }
+      return result;
+    }
     case "member": {
       if (isForeignMember(expression, globals)) return "unknown";
       if (expression.object.kind === "identifier") {
@@ -399,6 +423,10 @@ function inferExpression(
           throw new DiagnosticError(fileName, expression.callee.location, `type ${JSON.stringify(receiverType)} has no method ${JSON.stringify(expression.callee.property)}`);
         }
         checkArguments(method, expression.arguments, locals, globals, structs, enums, fileName, expression.location);
+        if (method.errorType) {
+          if (!allowThrowingCall) throw new DiagnosticError(fileName, expression.location, "throwing call requires `attempt` or `try`");
+          return resultTypeName(method.returnType.name, method.errorType.name);
+        }
         return method.returnType.name;
       }
       if (expression.callee.kind !== "identifier") {
@@ -412,6 +440,10 @@ function inferExpression(
         throw new DiagnosticError(fileName, expression.callee.location, `unknown function ${JSON.stringify(expression.callee.name)}`);
       }
       checkArguments(target.declaration, expression.arguments, locals, globals, structs, enums, fileName, expression.location);
+      if (target.declaration.errorType) {
+        if (!allowThrowingCall) throw new DiagnosticError(fileName, expression.location, "throwing call requires `attempt` or `try`");
+        return resultTypeName(target.declaration.returnType.name, target.declaration.errorType.name);
+      }
       return target.declaration.returnType.name;
     }
   }

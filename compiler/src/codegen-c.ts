@@ -6,6 +6,7 @@ import type {
   Statement,
   StructDeclaration,
 } from "./ast.ts";
+import { resultTypeName } from "./results.ts";
 
 type GenerationContext = {
   readonly structs: Map<string, StructDeclaration>;
@@ -13,6 +14,7 @@ type GenerationContext = {
   readonly functions: Map<string, FunctionDeclaration>;
   readonly localTypes: Map<string, string>;
   readonly receiver: StructDeclaration | null;
+  readonly owner: FunctionDeclaration;
   readonly matchCounter: { value: number };
 };
 
@@ -101,7 +103,7 @@ function generateFunction(
 ): string {
   const localTypes = new Map(declaration.parameters.map((parameter) => [parameter.name, parameter.type.name]));
   if (receiver) localTypes.set("this", receiver.name);
-  const context: GenerationContext = { structs, enums, functions, localTypes, receiver, matchCounter: { value: 0 } };
+  const context: GenerationContext = { structs, enums, functions, localTypes, receiver, owner: declaration, matchCounter: { value: 0 } };
   const body = declaration.body.map((statement) => {
     const generated = generateStatement(statement, context);
     if (statement.kind === "variable") {
@@ -125,7 +127,10 @@ function generateFunctionSignature(
     (parameter) => `${mapType(parameter.type.name, structs, enums)} ${parameter.name}`,
   );
   if (receiver) parameters.unshift(`const ${structName(receiver.name)} *self`);
-  return `${storage}${mapType(declaration.returnType.name, structs, enums)} ${name}(${parameters.join(", ") || "void"})`;
+  const returnName = declaration.errorType
+    ? resultTypeName(declaration.returnType.name, declaration.errorType.name)
+    : declaration.returnType.name;
+  return `${storage}${mapType(returnName, structs, enums)} ${name}(${parameters.join(", ") || "void"})`;
 }
 
 function generateStatement(statement: Statement, context: GenerationContext): string {
@@ -136,7 +141,16 @@ function generateStatement(statement: Statement, context: GenerationContext): st
       return `${declaration} = ${generateExpression(statement.initializer, context)};`;
     }
     case "return":
-      return statement.expression ? `return ${generateExpression(statement.expression, context)};` : "return;";
+      if (!statement.expression) return "return;";
+      if (context.owner.errorType) {
+        const result = resultTypeName(context.owner.returnType.name, context.owner.errorType.name);
+        return `return (${enumName(result)}){ .tag = ${variantTag(result, "success")}, .data.success = ${generateExpression(statement.expression, context)} };`;
+      }
+      return `return ${generateExpression(statement.expression, context)};`;
+    case "throw": {
+      const result = resultTypeName(context.owner.returnType.name, context.owner.errorType!.name);
+      return `return (${enumName(result)}){ .tag = ${variantTag(result, "failure")}, .data.failure = ${generateExpression(statement.expression, context)} };`;
+    }
     case "expressionStatement":
       return `${generateExpression(statement.expression, context)};`;
     case "match":
@@ -177,7 +191,7 @@ function generateMatch(statement: Extract<Statement, { kind: "match" }>, context
 }
 
 function statementTerminates(statement: Statement): boolean {
-  if (statement.kind === "return") return true;
+  if (statement.kind === "return" || statement.kind === "throw") return true;
   return statement.kind === "match" && statement.arms.length > 0
     && statement.arms.every((arm) => statementTerminates(arm.body));
 }
@@ -200,6 +214,8 @@ function generateExpression(expression: Expression, context: GenerationContext):
     }
     case "variantExpression":
       return `(${enumName(expression.enumName)}){ .tag = ${variantTag(expression.enumName, expression.variantName)}, .data.${expression.variantName} = ${generateExpression(expression.payload, context)} }`;
+    case "attempt":
+      return generateExpression(expression.expression, context);
     case "member": {
       if (expression.object.kind === "identifier") {
         const declaration = context.enums.get(expression.object.name);
@@ -250,6 +266,19 @@ function inferExpressionType(expression: Expression, context: GenerationContext)
       return expression.typeName;
     case "variantExpression":
       return expression.enumName;
+    case "attempt": {
+      const inner = expression.expression;
+      if (inner.kind === "call" && inner.callee.kind === "identifier") {
+        const target = context.functions.get(inner.callee.name)!;
+        return resultTypeName(target.returnType.name, target.errorType!.name);
+      }
+      if (inner.kind === "call" && inner.callee.kind === "member") {
+        const receiver = context.structs.get(inferExpressionType(inner.callee.object, context))!;
+        const method = receiver.methods.find((candidate) => candidate.name === inner.callee.property)!;
+        return resultTypeName(method.returnType.name, method.errorType!.name);
+      }
+      return "i32";
+    }
     case "member": {
       if (expression.object.kind === "identifier" && context.enums.has(expression.object.name)) {
         return expression.object.name;
@@ -293,11 +322,11 @@ function mapType(name: string, structs: Map<string, StructDeclaration>, enums: M
 }
 
 function enumName(name: string): string {
-  return `Z_${name}`;
+  return `Z_${name.replace(/^__z_/, "")}`;
 }
 
 function variantTag(owner: string, variant: string): string {
-  return `Z_${owner}_${variant}`;
+  return `${enumName(owner)}_${variant}`;
 }
 
 function structName(name: string): string {

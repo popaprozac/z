@@ -153,6 +153,36 @@ test("compiles payload enums and exhaustive matches", () => {
   assert.equal(result.stdout, "matched=42\n");
 });
 
+test("requires explicit handling for throwing calls", () => {
+  const source = `
+    struct Problem { code: i32; }
+    function fallible(): i32 throws Problem { return 42; }
+    function main(): i32 { return fallible(); }
+  `;
+  assert.throws(
+    () => compileToC(source, "explicit-errors.z"),
+    /throwing call requires `attempt` or `try`/,
+  );
+});
+
+test("rejects throw outside a throwing function", () => {
+  const source = `
+    struct Problem { code: i32; }
+    function main(): i32 { throw Problem { code: 1 }; }
+  `;
+  assert.throws(
+    () => compileToC(source, "invalid-throw.z"),
+    /function "main" does not declare an error type/,
+  );
+});
+
+test("compiles typed Result success and failure paths", () => {
+  const example = resolve(projectRoot, "examples/result.z");
+  const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, "found=42\nerror=7\n");
+});
+
 test("compiles and runs structs as native values", () => {
   const example = resolve(projectRoot, "examples/structs.z");
   const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });

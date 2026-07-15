@@ -68,6 +68,10 @@ export function parse(tokens: Token[], fileName: string): Program {
   };
 
   const parsePrimary = (): Expression => {
+    if (match("attempt")) {
+      const token = previous();
+      return { kind: "attempt", expression: parsePostfix(), location: token.location };
+    }
     if (match("number")) {
       const token = previous();
       return { kind: "number", value: token.text, location: token.location };
@@ -194,6 +198,12 @@ export function parse(tokens: Token[], fileName: string): Program {
       expect("semicolon", "`;`");
       return { kind: "return", expression, location: returnToken.location };
     }
+    if (match("throw")) {
+      const throwToken = previous();
+      const expression = parseExpression();
+      expect("semicolon", "`;`");
+      return { kind: "throw", expression, location: throwToken.location };
+    }
     const expression = parseExpression();
     expect("semicolon", "`;`");
     return { kind: "expressionStatement", expression, location: expression.location };
@@ -207,11 +217,12 @@ export function parse(tokens: Token[], fileName: string): Program {
     expect("rightParen", "`)`");
     expect("colon", "`:`");
     const returnType = parseType();
+    const errorType = match("throws") ? parseType() : null;
     expect("leftBrace", "`{`");
     const body: Statement[] = [];
     while (!at("rightBrace") && !at("eof")) body.push(parseStatement());
     expect("rightBrace", "`}`");
-    return { kind: "function", name, parameters, returnType, body, location: start };
+    return { kind: "function", name, parameters, returnType, errorType, body, location: start };
   };
 
   const parseStruct = (): StructDeclaration => {

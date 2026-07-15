@@ -2,15 +2,16 @@ import { generateC } from "./codegen-c.ts";
 import { lex } from "./lexer.ts";
 import { parse } from "./parser.ts";
 import { analyze } from "./sema.ts";
+import { materializeResultTypes } from "./results.ts";
 
 export function compileToC(source: string, fileName: string): string {
   const tokens = lex(source, fileName);
-  const program = parse(tokens, fileName);
+  const program = materializeResultTypes(parse(tokens, fileName));
   analyze(program, fileName);
   return generateC(program, fileName);
 }
 
 export function check(source: string, fileName: string): void {
-  const program = parse(lex(source, fileName), fileName);
+  const program = materializeResultTypes(parse(lex(source, fileName), fileName));
   analyze(program, fileName);
 }

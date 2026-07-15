@@ -50,12 +50,31 @@ match result {
 }
 ```
 
+Throwing functions use a compiler-provided `Result<T, E>` without constructor
+ceremony:
+
+```z
+function findUser(id: i32): User throws UserError {
+  return User { id: id };
+}
+
+const result = attempt findUser(42);
+match result {
+  success user => show(user);
+  failure error => showError(error);
+}
+```
+
+`return` constructs success and `throw` constructs failure. A throwing call must
+be marked with `attempt` (or, in the next lowering stage, `try`).
+
 ```sh
 bun run z check examples/first.z
 bun run z emit examples/first.z
 bun run z run examples/first.z
 bun run z run examples/structs.z
 bun run z run examples/match.z
+bun run z run examples/result.z
 bun test
 ```
 
