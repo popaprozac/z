@@ -7,6 +7,7 @@ import type {
   StructDeclaration,
 } from "./ast.ts";
 import { resultTypeName } from "./results.ts";
+import type { SemanticInfo } from "./sema.ts";
 
 type GenerationContext = {
   readonly structs: Map<string, StructDeclaration>;
@@ -20,11 +21,15 @@ type GenerationContext = {
   readonly valueCounter: { value: number };
   readonly returnCounter: { value: number };
   readonly cleanupScopes: CleanupLocal[][];
+  readonly liveFlags: Map<string, string>;
+  readonly liveFlagCounter: { value: number };
+  readonly semanticInfo: SemanticInfo;
 };
 
 type CleanupLocal = {
   readonly name: string;
   readonly type: string;
+  readonly liveFlag: string;
 };
 
 const primitiveTypeNames: Record<string, string> = {
@@ -34,7 +39,7 @@ const primitiveTypeNames: Record<string, string> = {
   cstring: "const char *",
 };
 
-export function generateC(program: Program, sourceName: string): string {
+export function generateC(program: Program, sourceName: string, semanticInfo: SemanticInfo): string {
   const structs = new Map(program.structs.map((declaration) => [declaration.name, declaration]));
   const enums = new Map(program.enums.map((declaration) => [declaration.name, declaration]));
   const functions = new Map(program.functions.map((declaration) => [declaration.name, declaration]));
@@ -82,14 +87,14 @@ export function generateC(program: Program, sourceName: string): string {
 
   for (const declaration of program.structs) {
     if (hasCleanupType(declaration.name, structs)) {
-      lines.push(generateDeinit(declaration, structs, enums, functions), "");
+      lines.push(generateDeinit(declaration, structs, enums, functions, semanticInfo), "");
     }
     for (const method of declaration.methods) {
-      lines.push(generateFunction(method, structs, enums, functions, declaration), "");
+      lines.push(generateFunction(method, structs, enums, functions, declaration, semanticInfo), "");
     }
   }
   for (const declaration of program.functions) {
-    lines.push(generateFunction(declaration, structs, enums, functions, null), "");
+    lines.push(generateFunction(declaration, structs, enums, functions, null, semanticInfo), "");
   }
   return `${lines.join("\n")}\n`;
 }
@@ -115,9 +120,19 @@ function generateFunction(
   enums: Map<string, EnumDeclaration>,
   functions: Map<string, FunctionDeclaration>,
   receiver: StructDeclaration | null,
+  semanticInfo: SemanticInfo,
 ): string {
   const localTypes = new Map(declaration.parameters.map((parameter) => [parameter.name, parameter.type.name]));
   if (receiver) localTypes.set("this", receiver.name);
+  const liveFlagCounter = { value: 0 };
+  const liveFlags = new Map<string, string>();
+  const parameterCleanup = declaration.parameters
+    .filter((parameter) => hasCleanupType(parameter.type.name, structs))
+    .map((parameter) => {
+      const liveFlag = nextLiveFlag(parameter.name, liveFlagCounter);
+      liveFlags.set(parameter.name, liveFlag);
+      return { name: parameter.name, type: parameter.type.name, liveFlag };
+    });
   const context: GenerationContext = {
     structs,
     enums,
@@ -129,15 +144,17 @@ function generateFunction(
     tryCounter: { value: 0 },
     valueCounter: { value: 0 },
     returnCounter: { value: 0 },
-    cleanupScopes: [declaration.parameters
-      .filter((parameter) => hasCleanupType(parameter.type.name, structs))
-      .map((parameter) => ({ name: parameter.name, type: parameter.type.name }))],
+    cleanupScopes: [parameterCleanup],
+    liveFlags,
+    liveFlagCounter,
+    semanticInfo,
   };
-  const bodyParts = declaration.body.map((statement) => {
+  const bodyParts = parameterCleanup.map((parameter) => indent(`bool ${parameter.liveFlag} = true;`, 2));
+  bodyParts.push(...declaration.body.map((statement) => {
     const generated = generateStatement(statement, context);
     recordVariableType(statement, context);
     return indent(generated, 2);
-  });
+  }));
   if (declaration.returnType.name === "void" && !statementListTerminates(declaration.body)) {
     const cleanup = generateCleanup(context.cleanupScopes, context);
     if (cleanup) bodyParts.push(indent(cleanup, 2));
@@ -151,6 +168,7 @@ function generateDeinit(
   structs: Map<string, StructDeclaration>,
   enums: Map<string, EnumDeclaration>,
   functions: Map<string, FunctionDeclaration>,
+  semanticInfo: SemanticInfo,
 ): string {
   const lifecycle = declaration.deinitializer;
   const owner: FunctionDeclaration = {
@@ -174,6 +192,9 @@ function generateDeinit(
     valueCounter: { value: 0 },
     returnCounter: { value: 0 },
     cleanupScopes: [[]],
+    liveFlags: new Map(),
+    liveFlagCounter: { value: 0 },
+    semanticInfo,
   };
   const body = ["  (void)self;", ...owner.body.map((statement) => {
     const generated = generateStatement(statement, context);
@@ -213,12 +234,17 @@ function generateStatement(statement: Statement, context: GenerationContext): st
     case "variable": {
       const zType = statement.type?.name ?? directValueType(statement.initializer, context);
       const declaration = generateLocalDeclaration(zType, statement.name, statement.mutable, context.structs, context.enums);
+      let initialized: string;
       if (statement.initializer.kind === "matchExpression") {
         const temporary = `_z_value_${context.valueCounter.value++}`;
         const temporaryDeclaration = generateLocalDeclaration(zType, temporary, true, context.structs, context.enums);
-        return `${temporaryDeclaration};\n${generateDirectValue(statement.initializer, context, (value) => `${temporary} = ${value};`)}\n${declaration} = ${temporary};`;
+        initialized = `${temporaryDeclaration};\n${generateDirectValue(statement.initializer, context, (value) => `${temporary} = ${value};`)}\n${declaration} = ${temporary};`;
+      } else {
+        initialized = generateDirectValue(statement.initializer, context, (value) => `${declaration} = ${value};`);
       }
-      return generateDirectValue(statement.initializer, context, (value) => `${declaration} = ${value};`);
+      if (!hasCleanupType(zType, context.structs)) return initialized;
+      const liveFlag = ensureLiveFlag(statement.name, context);
+      return `${initialized}\nbool ${liveFlag} = true;`;
     }
     case "return":
       if (!statement.expression) {
@@ -275,7 +301,12 @@ function generateDirectValue(
 
 function generateBlock(statements: Statement[], context: GenerationContext): string {
   const blockTypes = new Map(context.localTypes);
-  const blockContext = { ...context, localTypes: blockTypes, cleanupScopes: [...context.cleanupScopes, []] };
+  const blockContext = {
+    ...context,
+    localTypes: blockTypes,
+    liveFlags: new Map(context.liveFlags),
+    cleanupScopes: [...context.cleanupScopes, []],
+  };
   const body = statements.map((statement) => {
     const generated = generateStatement(statement, blockContext);
     recordVariableType(statement, blockContext);
@@ -298,15 +329,23 @@ function recordVariableType(statement: Statement, context: GenerationContext): v
   const type = statement.type?.name ?? directValueType(statement.initializer, context);
   context.localTypes.set(statement.name, type);
   if (hasCleanupType(type, context.structs)) {
-    context.cleanupScopes.at(-1)!.push({ name: statement.name, type });
+    context.cleanupScopes.at(-1)!.push({ name: statement.name, type, liveFlag: ensureLiveFlag(statement.name, context) });
   }
+}
+
+function ensureLiveFlag(name: string, context: GenerationContext): string {
+  const existing = context.liveFlags.get(name);
+  if (existing) return existing;
+  const generated = nextLiveFlag(name, context.liveFlagCounter);
+  context.liveFlags.set(name, generated);
+  return generated;
 }
 
 function generateCleanup(scopes: CleanupLocal[][], context: GenerationContext): string {
   const calls: string[] = [];
   for (const scope of [...scopes].reverse()) {
     for (const local of [...scope].reverse()) {
-      calls.push(`${deinitName(local.type)}(&(${local.name}));`);
+      calls.push(`if (${local.liveFlag}) ${deinitName(local.type)}(&(${local.name}));`);
     }
   }
   return calls.join("\n");
@@ -389,7 +428,12 @@ function generateMatch(statement: Extract<Statement, { kind: "match" }>, context
       ? `\n    const ${mapType(variant.payload.name, context.structs, context.enums)} ${arm.binding} = ${temporary}.data.${variant.name};`
       : "";
     if (variant.payload && arm.binding) armTypes.set(arm.binding, variant.payload.name);
-    const armContext = { ...context, localTypes: armTypes, cleanupScopes: [...context.cleanupScopes, []] };
+    const armContext = {
+      ...context,
+      localTypes: armTypes,
+      liveFlags: new Map(context.liveFlags),
+      cleanupScopes: [...context.cleanupScopes, []],
+    };
     const body = generateStatement(arm.body, armContext);
     recordVariableType(arm.body, armContext);
     const cleanup = statementTerminates(arm.body)
@@ -418,7 +462,12 @@ function generateMatchExpression(
       ? `\n    const ${mapType(variant.payload.name, context.structs, context.enums)} ${arm.binding} = ${temporary}.data.${variant.name};`
       : "";
     if (variant.payload && arm.binding) armTypes.set(arm.binding, variant.payload.name);
-    const armContext = { ...context, localTypes: armTypes, cleanupScopes: [...context.cleanupScopes, []] };
+    const armContext = {
+      ...context,
+      localTypes: armTypes,
+      liveFlags: new Map(context.liveFlags),
+      cleanupScopes: [...context.cleanupScopes, []],
+    };
     const body = generateValueArm(arm.body, armContext, consumeValue, consumeTerminates);
     const cleanup = consumeTerminates || valueArmTerminates(arm.body)
       ? ""
@@ -447,7 +496,12 @@ function generateValueArm(
   }
   if (statement.kind === "block") {
     const blockTypes = new Map(context.localTypes);
-    const blockContext = { ...context, localTypes: blockTypes, cleanupScopes: [...context.cleanupScopes, []] };
+    const blockContext = {
+      ...context,
+      localTypes: blockTypes,
+      liveFlags: new Map(context.liveFlags),
+      cleanupScopes: [...context.cleanupScopes, []],
+    };
     const prefix = statement.statements.slice(0, -1).map((nested) => {
       const generated = generateStatement(nested, blockContext);
       recordVariableType(nested, blockContext);
@@ -503,7 +557,13 @@ function generateExpression(expression: Expression, context: GenerationContext):
     case "unary":
       return `(${expression.operator}${generateExpression(expression.operand, context)})`;
     case "identifier":
-      return expression.name === "this" ? "(*self)" : expression.name;
+      if (expression.name === "this") return "(*self)";
+      if (context.semanticInfo.movedExpressions.has(expression.location.offset)) {
+        const liveFlag = context.liveFlags.get(expression.name);
+        if (!liveFlag) throw new Error(`missing ownership flag for moved value ${JSON.stringify(expression.name)}`);
+        return `(${liveFlag} = false, ${expression.name})`;
+      }
+      return expression.name;
     case "binary":
       return `(${generateExpression(expression.left, context)} ${expression.operator} ${generateExpression(expression.right, context)})`;
     case "structExpression": {
@@ -669,6 +729,10 @@ function methodName(owner: string, method: string): string {
 
 function deinitName(owner: string): string {
   return `${structName(owner)}_deinit`;
+}
+
+function nextLiveFlag(name: string, counter: { value: number }): string {
+  return `_z_live_${name}_${counter.value++}`;
 }
 
 function hasCleanupType(

@@ -14,6 +14,14 @@ import { resultTypeName } from "./results.ts";
 
 type ValueType = string | "unknown" | "never";
 
+export type SemanticInfo = {
+  readonly movedExpressions: ReadonlySet<number>;
+};
+
+type AnalysisState = {
+  readonly movedExpressions: Set<number>;
+};
+
 type SymbolValue =
   | { readonly kind: "function"; readonly declaration: FunctionDeclaration }
   | { readonly kind: "foreignModule"; readonly declaration: ImportDeclaration }
@@ -21,8 +29,11 @@ type SymbolValue =
   | { readonly kind: "enum"; readonly declaration: EnumDeclaration };
 
 const primitiveTypes = new Set(["i32", "void", "bool", "cstring"]);
+const movedPrefix = "__z_moved:";
+const maybeMovedPrefix = "__z_maybe_moved:";
 
-export function analyze(program: Program, fileName: string): void {
+export function analyze(program: Program, fileName: string): SemanticInfo {
+  const state: AnalysisState = { movedExpressions: new Set() };
   const globals = new Map<string, SymbolValue>();
   const structs = new Map<string, StructDeclaration>();
   const enums = new Map<string, EnumDeclaration>();
@@ -70,7 +81,7 @@ export function analyze(program: Program, fileName: string): void {
 
   for (const declaration of program.structs) {
     for (const method of declaration.methods) {
-      analyzeFunction(method, globals, structs, enums, fileName, declaration);
+      analyzeFunction(method, globals, structs, enums, fileName, declaration, state);
     }
     if (declaration.deinitializer) {
       validateDeinitControlFlow(declaration.deinitializer.body, fileName);
@@ -89,12 +100,14 @@ export function analyze(program: Program, fileName: string): void {
         enums,
         fileName,
         declaration,
+        state,
       );
     }
   }
   for (const declaration of program.functions) {
-    analyzeFunction(declaration, globals, structs, enums, fileName, null);
+    analyzeFunction(declaration, globals, structs, enums, fileName, null, state);
   }
+  return state;
 }
 
 function analyzeStructDeclaration(
@@ -105,6 +118,7 @@ function analyzeStructDeclaration(
 ): void {
   const members = new Set<string>();
   for (const field of declaration.fields) {
+    validateUserName(field.name, field.location, fileName);
     if (members.has(field.name)) {
       throw new DiagnosticError(fileName, field.location, `duplicate member ${JSON.stringify(field.name)} in struct ${JSON.stringify(declaration.name)}`);
     }
@@ -115,6 +129,7 @@ function analyzeStructDeclaration(
     }
   }
   for (const method of declaration.methods) {
+    validateUserName(method.name, method.location, fileName);
     if (members.has(method.name)) {
       throw new DiagnosticError(fileName, method.location, `duplicate member ${JSON.stringify(method.name)} in struct ${JSON.stringify(declaration.name)}`);
     }
@@ -131,6 +146,7 @@ function analyzeEnumDeclaration(
 ): void {
   const names = new Set<string>();
   for (const variant of declaration.variants) {
+    validateUserName(variant.name, variant.location, fileName);
     if (names.has(variant.name)) {
       throw new DiagnosticError(fileName, variant.location, `duplicate variant ${JSON.stringify(variant.name)}`);
     }
@@ -168,6 +184,7 @@ function validateFunctionSignature(
     throw new DiagnosticError(fileName, declaration.returnType.location, "void success results are not implemented in this bootstrap stage");
   }
   for (const parameter of declaration.parameters) {
+    validateUserName(parameter.name, parameter.location, fileName);
     validateType(parameter.type, structs, enums, fileName, false);
   }
 }
@@ -204,6 +221,7 @@ function analyzeFunction(
   enums: Map<string, EnumDeclaration>,
   fileName: string,
   receiver: StructDeclaration | null,
+  state: AnalysisState,
 ): void {
   const locals = new Map<string, ValueType>();
   if (receiver) locals.set("this", receiver.name);
@@ -215,7 +233,7 @@ function analyzeFunction(
     locals.set(parameter.name, parameter.type.name);
   }
 
-  const returns = analyzeStatements(declaration.body, declaration, locals, globals, structs, enums, fileName);
+  const returns = analyzeStatements(declaration.body, declaration, locals, globals, structs, enums, fileName, state);
   if (declaration.returnType.name !== "void" && !returns) {
     throw new DiagnosticError(fileName, declaration.location, `function ${JSON.stringify(declaration.name)} must end with a return value`);
   }
@@ -229,11 +247,12 @@ function analyzeStatements(
   structs: Map<string, StructDeclaration>,
   enums: Map<string, EnumDeclaration>,
   fileName: string,
+  state: AnalysisState,
 ): boolean {
   let returns = false;
   for (const statement of statements) {
     if (returns) throw new DiagnosticError(fileName, statement.location, "unreachable statement after guaranteed function exit");
-    analyzeStatement(statement, owner, locals, globals, structs, enums, fileName);
+    analyzeStatement(statement, owner, locals, globals, structs, enums, fileName, state);
     returns = statementReturns(statement);
   }
   return returns;
@@ -260,13 +279,15 @@ function analyzeStatement(
   structs: Map<string, StructDeclaration>,
   enums: Map<string, EnumDeclaration>,
   fileName: string,
+  state: AnalysisState,
 ): void {
   switch (statement.kind) {
     case "variable": {
+      validateUserName(statement.name, statement.location, fileName);
       if (locals.has(statement.name)) {
         throw new DiagnosticError(fileName, statement.location, `duplicate local ${JSON.stringify(statement.name)}`);
       }
-      const initializerType = inferDirectValue(statement.initializer, owner, locals, globals, structs, enums, fileName);
+      const initializerType = inferDirectValue(statement.initializer, owner, locals, globals, structs, enums, fileName, state);
       let variableType = initializerType;
       if (statement.type) {
         validateType(statement.type, structs, enums, fileName, false);
@@ -281,7 +302,7 @@ function analyzeStatement(
       } else if (initializerType === "never") {
         throw new DiagnosticError(fileName, statement.initializer.location, "cannot bind a value from an expression that never produces one");
       }
-      rejectNamedOwnedMove(statement.initializer, variableType, structs, fileName);
+      consumeOwnedValue(statement.initializer, variableType, locals, structs, fileName, state);
       locals.set(statement.name, variableType);
       return;
     }
@@ -296,16 +317,16 @@ function analyzeStatement(
       if (expected === "void") {
         throw new DiagnosticError(fileName, statement.location, "a void function cannot return a value");
       }
-      const actual = inferDirectValue(statement.expression, owner, locals, globals, structs, enums, fileName);
+      const actual = inferDirectValue(statement.expression, owner, locals, globals, structs, enums, fileName, state);
       requireAssignable(expected, actual, statement.expression, fileName);
-      rejectNamedOwnedMove(statement.expression, expected, structs, fileName);
+      consumeOwnedValue(statement.expression, expected, locals, structs, fileName, state);
       return;
     }
     case "throw": {
       if (!owner.errorType) {
         throw new DiagnosticError(fileName, statement.location, `function ${JSON.stringify(owner.name)} does not declare an error type`);
       }
-      const actual = inferExpression(statement.expression, locals, globals, structs, enums, fileName);
+      const actual = inferExpression(statement.expression, locals, globals, structs, enums, fileName, state);
       requireAssignable(owner.errorType.name, actual, statement.expression, fileName);
       return;
     }
@@ -313,33 +334,32 @@ function analyzeStatement(
       throw new DiagnosticError(fileName, statement.location, "yield requires an enclosing value-producing block");
     case "block": {
       const blockLocals = new Map(locals);
-      analyzeStatements(statement.statements, owner, blockLocals, globals, structs, enums, fileName);
+      analyzeStatements(statement.statements, owner, blockLocals, globals, structs, enums, fileName, state);
+      propagateOuterOwnership(locals, blockLocals);
       return;
     }
     case "if": {
-      const conditionType = inferExpression(statement.condition, locals, globals, structs, enums, fileName);
+      const conditionType = inferExpression(statement.condition, locals, globals, structs, enums, fileName, state);
       requireAssignable("bool", conditionType, statement.condition, fileName);
-      analyzeStatement(statement.thenBranch, owner, locals, globals, structs, enums, fileName);
-      if (statement.elseBranch) {
-        analyzeStatement(statement.elseBranch, owner, locals, globals, structs, enums, fileName);
-      }
+      analyzeIfBranches(statement, owner, locals, globals, structs, enums, fileName, state);
       return;
     }
     case "expressionStatement":
       {
-        const type = inferDirectValue(statement.expression, owner, locals, globals, structs, enums, fileName);
+        const type = inferDirectValue(statement.expression, owner, locals, globals, structs, enums, fileName, state);
         if (hasCleanupType(type, structs)) {
           throw new DiagnosticError(fileName, statement.expression.location, "a cleanup-bearing value must be bound or transferred; it cannot be discarded");
         }
       }
       return;
     case "match": {
-      const subjectType = inferExpression(statement.expression, locals, globals, structs, enums, fileName);
+      const subjectType = inferExpression(statement.expression, locals, globals, structs, enums, fileName, state);
       const declaration = enums.get(subjectType);
       if (!declaration) {
         throw new DiagnosticError(fileName, statement.expression.location, `match requires an enum value, found ${subjectType}`);
       }
       const covered = new Set<string>();
+      const continuing: Map<string, ValueType>[] = [];
       for (const arm of statement.arms) {
         const variant = declaration.variants.find((candidate) => candidate.name === arm.variantName);
         if (!variant) throw new DiagnosticError(fileName, arm.location, `unknown variant ${JSON.stringify(arm.variantName)}`);
@@ -348,12 +368,15 @@ function analyzeStatement(
         if (Boolean(variant.payload) !== Boolean(arm.binding)) {
           throw new DiagnosticError(fileName, arm.location, variant.payload ? "payload variant requires a binding" : "payloadless variant cannot bind a value");
         }
+        if (arm.binding) validateUserName(arm.binding, arm.location, fileName);
         const armLocals = new Map(locals);
         if (variant.payload && arm.binding) armLocals.set(arm.binding, variant.payload.name);
-        analyzeStatement(arm.body, owner, armLocals, globals, structs, enums, fileName);
+        analyzeStatement(arm.body, owner, armLocals, globals, structs, enums, fileName, state);
+        if (!statementReturns(arm.body)) continuing.push(armLocals);
       }
       const missing = declaration.variants.find((variant) => !covered.has(variant.name));
       if (missing) throw new DiagnosticError(fileName, statement.location, `non-exhaustive match; missing ${declaration.name}.${missing.name}`);
+      mergeOwnershipStates(locals, continuing);
       return;
     }
   }
@@ -367,14 +390,15 @@ function inferDirectValue(
   structs: Map<string, StructDeclaration>,
   enums: Map<string, EnumDeclaration>,
   fileName: string,
+  state: AnalysisState,
 ): ValueType {
   if (expression.kind === "try") {
-    return inferTrySuccess(expression, owner, locals, globals, structs, enums, fileName);
+    return inferTrySuccess(expression, owner, locals, globals, structs, enums, fileName, state);
   }
   if (expression.kind === "matchExpression") {
-    return inferMatchExpression(expression, owner, locals, globals, structs, enums, fileName);
+    return inferMatchExpression(expression, owner, locals, globals, structs, enums, fileName, state);
   }
-  return inferExpression(expression, locals, globals, structs, enums, fileName);
+  return inferExpression(expression, locals, globals, structs, enums, fileName, state);
 }
 
 function inferMatchExpression(
@@ -385,14 +409,16 @@ function inferMatchExpression(
   structs: Map<string, StructDeclaration>,
   enums: Map<string, EnumDeclaration>,
   fileName: string,
+  state: AnalysisState,
 ): ValueType {
-  const subjectType = inferExpression(expression.expression, locals, globals, structs, enums, fileName);
+  const subjectType = inferExpression(expression.expression, locals, globals, structs, enums, fileName, state);
   const declaration = enums.get(subjectType);
   if (!declaration) {
     throw new DiagnosticError(fileName, expression.expression.location, `match requires an enum value, found ${subjectType}`);
   }
 
   const covered = new Set<string>();
+  const continuing: Map<string, ValueType>[] = [];
   let resultType: ValueType = "never";
   for (const arm of expression.arms) {
     const variant = declaration.variants.find((candidate) => candidate.name === arm.variantName);
@@ -402,10 +428,12 @@ function inferMatchExpression(
     if (Boolean(variant.payload) !== Boolean(arm.binding)) {
       throw new DiagnosticError(fileName, arm.location, variant.payload ? "payload variant requires a binding" : "payloadless variant cannot bind a value");
     }
+    if (arm.binding) validateUserName(arm.binding, arm.location, fileName);
     const armLocals = new Map(locals);
     if (variant.payload && arm.binding) armLocals.set(arm.binding, variant.payload.name);
-    const armType = inferValueArm(arm.body, owner, armLocals, globals, structs, enums, fileName);
+    const armType = inferValueArm(arm.body, owner, armLocals, globals, structs, enums, fileName, state);
     if (armType !== "never") {
+      continuing.push(armLocals);
       if (resultType === "never" || resultType === "unknown") resultType = armType;
       else if (armType !== "unknown" && armType !== resultType) {
         throw new DiagnosticError(fileName, arm.location, `match arm produces ${armType}, but previous arms produce ${resultType}`);
@@ -414,6 +442,7 @@ function inferMatchExpression(
   }
   const missing = declaration.variants.find((variant) => !covered.has(variant.name));
   if (missing) throw new DiagnosticError(fileName, expression.location, `non-exhaustive match; missing ${declaration.name}.${missing.name}`);
+  mergeOwnershipStates(locals, continuing);
   return resultType;
 }
 
@@ -425,14 +454,15 @@ function inferValueArm(
   structs: Map<string, StructDeclaration>,
   enums: Map<string, EnumDeclaration>,
   fileName: string,
+  state: AnalysisState,
 ): ValueType {
   if (statement.kind === "expressionStatement" || statement.kind === "yield") {
-    const type = inferDirectValue(statement.expression, owner, locals, globals, structs, enums, fileName);
-    rejectNamedOwnedMove(statement.expression, type, structs, fileName);
+    const type = inferDirectValue(statement.expression, owner, locals, globals, structs, enums, fileName, state);
+    consumeOwnedValue(statement.expression, type, locals, structs, fileName, state);
     return type;
   }
   if (statement.kind === "return" || statement.kind === "throw") {
-    analyzeStatement(statement, owner, locals, globals, structs, enums, fileName);
+    analyzeStatement(statement, owner, locals, globals, structs, enums, fileName, state);
     return "never";
   }
   if (statement.kind === "block") {
@@ -448,11 +478,14 @@ function inferValueArm(
       structs,
       enums,
       fileName,
+      state,
     );
     if (prefixReturns) {
       throw new DiagnosticError(fileName, statement.statements.at(-1)!.location, "unreachable statement after guaranteed function exit");
     }
-    return inferValueArm(statement.statements.at(-1)!, owner, blockLocals, globals, structs, enums, fileName);
+    const type = inferValueArm(statement.statements.at(-1)!, owner, blockLocals, globals, structs, enums, fileName, state);
+    propagateOuterOwnership(locals, blockLocals);
+    return type;
   }
   if (statement.kind === "match") {
     return inferMatchExpression(
@@ -463,6 +496,7 @@ function inferValueArm(
       structs,
       enums,
       fileName,
+      state,
     );
   }
   throw new DiagnosticError(fileName, statement.location, "a value-producing match arm must produce a value with an expression or `yield`");
@@ -476,11 +510,12 @@ function inferTrySuccess(
   structs: Map<string, StructDeclaration>,
   enums: Map<string, EnumDeclaration>,
   fileName: string,
+  state: AnalysisState,
 ): ValueType {
   if (!owner.errorType) {
     throw new DiagnosticError(fileName, expression.location, "try requires an enclosing throwing function");
   }
-  const resultType = inferExpression(expression.expression, locals, globals, structs, enums, fileName, true);
+  const resultType = inferExpression(expression.expression, locals, globals, structs, enums, fileName, state, true);
   const result = enums.get(resultType);
   if (!result || !result.name.startsWith("__z_Result_")) {
     throw new DiagnosticError(fileName, expression.location, "try requires a throwing function call");
@@ -500,6 +535,7 @@ function inferExpression(
   structs: Map<string, StructDeclaration>,
   enums: Map<string, EnumDeclaration>,
   fileName: string,
+  state: AnalysisState,
   allowThrowingCall = false,
 ): ValueType {
   switch (expression.kind) {
@@ -510,13 +546,22 @@ function inferExpression(
     case "boolean":
       return "bool";
     case "unary": {
-      const operand = inferExpression(expression.operand, locals, globals, structs, enums, fileName);
+      const operand = inferExpression(expression.operand, locals, globals, structs, enums, fileName, state);
       if (expression.operator === "!" && operand === "bool") return "bool";
       throw new DiagnosticError(fileName, expression.location, `operator ${JSON.stringify(expression.operator)} requires a bool operand`);
     }
     case "identifier": {
       const local = locals.get(expression.name);
-      if (local) return local;
+      if (local) {
+        const ownership = ownershipState(local);
+        if (ownership === "moved") {
+          throw new DiagnosticError(fileName, expression.location, `use of moved value ${JSON.stringify(expression.name)}`);
+        }
+        if (ownership === "maybeMoved") {
+          throw new DiagnosticError(fileName, expression.location, `value ${JSON.stringify(expression.name)} may have been moved on another control-flow path`);
+        }
+        return underlyingType(local);
+      }
       const global = globals.get(expression.name);
       if (global?.kind === "function") {
         throw new DiagnosticError(fileName, expression.location, "function values are not implemented; call the function instead");
@@ -533,8 +578,8 @@ function inferExpression(
       throw new DiagnosticError(fileName, expression.location, `unknown name ${JSON.stringify(expression.name)}`);
     }
     case "binary": {
-      const left = inferExpression(expression.left, locals, globals, structs, enums, fileName);
-      const right = inferExpression(expression.right, locals, globals, structs, enums, fileName);
+      const left = inferExpression(expression.left, locals, globals, structs, enums, fileName, state);
+      const right = inferExpression(expression.right, locals, globals, structs, enums, fileName, state);
       if (["+", "-", "*", "/"].includes(expression.operator)) {
         if (left !== "i32" || right !== "i32") {
           throw new DiagnosticError(fileName, expression.location, `operator ${JSON.stringify(expression.operator)} requires i32 operands`);
@@ -576,9 +621,9 @@ function inferExpression(
         if (!field) {
           throw new DiagnosticError(fileName, initializer.location, `struct ${JSON.stringify(declaration.name)} has no field ${JSON.stringify(initializer.name)}`);
         }
-        const actual = inferExpression(initializer.expression, locals, globals, structs, enums, fileName);
+        const actual = inferExpression(initializer.expression, locals, globals, structs, enums, fileName, state);
         requireAssignable(field.type.name, actual, initializer.expression, fileName);
-        rejectNamedOwnedMove(initializer.expression, field.type.name, structs, fileName);
+        consumeOwnedValue(initializer.expression, field.type.name, locals, structs, fileName, state);
       }
       const missing = declaration.fields.find((field) => !provided.has(field.name));
       if (missing) {
@@ -595,12 +640,12 @@ function inferExpression(
       if (!variant.payload) {
         throw new DiagnosticError(fileName, expression.location, "payloadless variant does not accept a value");
       }
-      const actual = inferExpression(expression.payload, locals, globals, structs, enums, fileName);
+      const actual = inferExpression(expression.payload, locals, globals, structs, enums, fileName, state);
       requireAssignable(variant.payload.name, actual, expression.payload, fileName);
       return declaration.name;
     }
     case "attempt": {
-      const result = inferExpression(expression.expression, locals, globals, structs, enums, fileName, true);
+      const result = inferExpression(expression.expression, locals, globals, structs, enums, fileName, state, true);
       if (!result.startsWith("__z_Result_")) {
         throw new DiagnosticError(fileName, expression.location, "attempt requires a throwing function call");
       }
@@ -621,7 +666,7 @@ function inferExpression(
           return enumDeclaration.name;
         }
       }
-      const receiverType = inferExpression(expression.object, locals, globals, structs, enums, fileName);
+      const receiverType = inferExpression(expression.object, locals, globals, structs, enums, fileName, state);
       if (hasCleanupType(receiverType, structs) && !isNamedStorageExpression(expression.object)) {
         throw new DiagnosticError(fileName, expression.object.location, "a cleanup-bearing temporary must be bound before borrowing one of its members");
       }
@@ -647,7 +692,7 @@ function inferExpression(
             const expectedCount = variant.payload ? 1 : 0;
             if (expression.arguments.length !== expectedCount) throw new DiagnosticError(fileName, expression.location, `variant ${JSON.stringify(variant.name)} expects ${expectedCount} argument(s)`);
             if (variant.payload) {
-              const actual = inferExpression(expression.arguments[0], locals, globals, structs, enums, fileName);
+              const actual = inferExpression(expression.arguments[0], locals, globals, structs, enums, fileName, state);
               requireAssignable(variant.payload.name, actual, expression.arguments[0], fileName);
             }
             return enumDeclaration.name;
@@ -655,12 +700,12 @@ function inferExpression(
         }
         if (isForeignMember(expression.callee, globals)) {
           for (const argument of expression.arguments) {
-            const argumentType = inferExpression(argument, locals, globals, structs, enums, fileName);
-            rejectNamedOwnedMove(argument, argumentType, structs, fileName);
+            const argumentType = inferExpression(argument, locals, globals, structs, enums, fileName, state);
+            rejectForeignOwnedMove(argument, argumentType, structs, fileName);
           }
           return "unknown";
         }
-        const receiverType = inferExpression(expression.callee.object, locals, globals, structs, enums, fileName);
+        const receiverType = inferExpression(expression.callee.object, locals, globals, structs, enums, fileName, state);
         if (hasCleanupType(receiverType, structs) && !isNamedStorageExpression(expression.callee.object)) {
           throw new DiagnosticError(fileName, expression.callee.object.location, "a cleanup-bearing temporary must be bound before calling one of its methods");
         }
@@ -669,7 +714,7 @@ function inferExpression(
         if (!declaration || !method) {
           throw new DiagnosticError(fileName, expression.callee.location, `type ${JSON.stringify(receiverType)} has no method ${JSON.stringify(expression.callee.property)}`);
         }
-        checkArguments(method, expression.arguments, locals, globals, structs, enums, fileName, expression.location);
+        checkArguments(method, expression.arguments, locals, globals, structs, enums, fileName, expression.location, state);
         if (method.errorType) {
           if (!allowThrowingCall) throw new DiagnosticError(fileName, expression.location, "throwing call requires `attempt` or `try`");
           return resultTypeName(method.returnType.name, method.errorType.name);
@@ -686,7 +731,7 @@ function inferExpression(
         }
         throw new DiagnosticError(fileName, expression.callee.location, `unknown function ${JSON.stringify(expression.callee.name)}`);
       }
-      checkArguments(target.declaration, expression.arguments, locals, globals, structs, enums, fileName, expression.location);
+      checkArguments(target.declaration, expression.arguments, locals, globals, structs, enums, fileName, expression.location, state);
       if (target.declaration.errorType) {
         if (!allowThrowingCall) throw new DiagnosticError(fileName, expression.location, "throwing call requires `attempt` or `try`");
         return resultTypeName(target.declaration.returnType.name, target.declaration.errorType.name);
@@ -705,6 +750,7 @@ function checkArguments(
   enums: Map<string, EnumDeclaration>,
   fileName: string,
   location: SourceLocation,
+  state: AnalysisState,
 ): void {
   if (target.parameters.length !== args.length) {
     throw new DiagnosticError(
@@ -714,9 +760,9 @@ function checkArguments(
     );
   }
   for (let index = 0; index < target.parameters.length; index += 1) {
-    const actual = inferExpression(args[index], locals, globals, structs, enums, fileName);
+    const actual = inferExpression(args[index], locals, globals, structs, enums, fileName, state);
     requireAssignable(target.parameters[index].type.name, actual, args[index], fileName);
-    rejectNamedOwnedMove(args[index], target.parameters[index].type.name, structs, fileName);
+    consumeOwnedValue(args[index], target.parameters[index].type.name, locals, structs, fileName, state);
   }
 }
 
@@ -765,18 +811,39 @@ function validateDeinitExpression(expression: Expression, fileName: string): voi
   }
 }
 
-function rejectNamedOwnedMove(
+function consumeOwnedValue(
+  expression: Expression,
+  type: ValueType,
+  locals: Map<string, ValueType>,
+  structs: Map<string, StructDeclaration>,
+  fileName: string,
+  state: AnalysisState,
+): void {
+  if (!hasCleanupType(type, structs)) return;
+  if (expression.kind === "member") {
+    throw new DiagnosticError(fileName, expression.location, "moving a cleanup-bearing field out of its owner is not implemented yet");
+  }
+  if (expression.kind !== "identifier") return;
+  if (expression.name === "this") {
+    throw new DiagnosticError(fileName, expression.location, "cannot move the borrowed method receiver `this`");
+  }
+  const stored = locals.get(expression.name);
+  if (!stored) return;
+  locals.set(expression.name, `${movedPrefix}${underlyingType(stored)}`);
+  state.movedExpressions.add(expression.location.offset);
+}
+
+function rejectForeignOwnedMove(
   expression: Expression,
   type: ValueType,
   structs: Map<string, StructDeclaration>,
   fileName: string,
 ): void {
   if (!hasCleanupType(type, structs)) return;
-  if (expression.kind !== "identifier" && expression.kind !== "member") return;
   throw new DiagnosticError(
     fileName,
     expression.location,
-    "moving a cleanup-bearing value from named storage is not implemented yet; construct or return a fresh value",
+    "passing an owned Z value to an untyped foreign function requires imported ownership metadata",
   );
 }
 
@@ -785,18 +852,77 @@ function isNamedStorageExpression(expression: Expression): boolean {
   return expression.kind === "member" && isNamedStorageExpression(expression.object);
 }
 
+function ownershipState(type: ValueType): "available" | "moved" | "maybeMoved" {
+  if (type.startsWith(movedPrefix)) return "moved";
+  if (type.startsWith(maybeMovedPrefix)) return "maybeMoved";
+  return "available";
+}
+
+function underlyingType(type: ValueType): ValueType {
+  if (type.startsWith(movedPrefix)) return type.slice(movedPrefix.length);
+  if (type.startsWith(maybeMovedPrefix)) return type.slice(maybeMovedPrefix.length);
+  return type;
+}
+
+function propagateOuterOwnership(target: Map<string, ValueType>, source: Map<string, ValueType>): void {
+  for (const name of target.keys()) {
+    const value = source.get(name);
+    if (value) target.set(name, value);
+  }
+}
+
+function mergeOwnershipStates(target: Map<string, ValueType>, paths: Map<string, ValueType>[]): void {
+  if (paths.length === 0) return;
+  for (const name of target.keys()) {
+    const values = paths.map((path) => path.get(name)).filter((value): value is ValueType => Boolean(value));
+    if (values.length === 0) continue;
+    const type = underlyingType(values[0]);
+    const states = new Set(values.map(ownershipState));
+    if (states.size === 1 && states.has("available")) target.set(name, type);
+    else if (states.size === 1 && states.has("moved")) target.set(name, `${movedPrefix}${type}`);
+    else target.set(name, `${maybeMovedPrefix}${type}`);
+  }
+}
+
+function analyzeIfBranches(
+  statement: Extract<Statement, { kind: "if" }>,
+  owner: FunctionDeclaration,
+  locals: Map<string, ValueType>,
+  globals: Map<string, SymbolValue>,
+  structs: Map<string, StructDeclaration>,
+  enums: Map<string, EnumDeclaration>,
+  fileName: string,
+  state: AnalysisState,
+): void {
+  const original = new Map(locals);
+  const continuing: Map<string, ValueType>[] = [];
+  const thenLocals = new Map(original);
+  analyzeStatement(statement.thenBranch, owner, thenLocals, globals, structs, enums, fileName, state);
+  if (!statementReturns(statement.thenBranch)) continuing.push(thenLocals);
+
+  if (statement.elseBranch) {
+    const elseLocals = new Map(original);
+    analyzeStatement(statement.elseBranch, owner, elseLocals, globals, structs, enums, fileName, state);
+    if (!statementReturns(statement.elseBranch)) continuing.push(elseLocals);
+  } else {
+    continuing.push(original);
+  }
+  mergeOwnershipStates(locals, continuing);
+}
+
 function hasCleanupType(
   type: ValueType,
   structs: Map<string, StructDeclaration>,
   visiting = new Set<string>(),
 ): boolean {
-  if (type === "unknown" || type === "never" || visiting.has(type)) return false;
-  const declaration = structs.get(type);
+  const actual = underlyingType(type);
+  if (actual === "unknown" || actual === "never" || visiting.has(actual)) return false;
+  const declaration = structs.get(actual);
   if (!declaration) return false;
   if (declaration.deinitializer) return true;
-  visiting.add(type);
+  visiting.add(actual);
   const result = declaration.fields.some((field) => hasCleanupType(field.type.name, structs, visiting));
-  visiting.delete(type);
+  visiting.delete(actual);
   return result;
 }
 
@@ -836,8 +962,15 @@ function declareGlobal(
   location: SourceLocation,
   fileName: string,
 ): void {
+  validateUserName(name, location, fileName);
   if (globals.has(name)) {
     throw new DiagnosticError(fileName, location, `duplicate top-level name ${JSON.stringify(name)}`);
   }
   globals.set(name, symbol);
+}
+
+function validateUserName(name: string, location: SourceLocation, fileName: string): void {
+  if (name.startsWith("_z_")) {
+    throw new DiagnosticError(fileName, location, "names beginning with `_z_` are reserved for compiler-generated storage");
+  }
 }

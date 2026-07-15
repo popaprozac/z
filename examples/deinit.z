@@ -87,6 +87,43 @@ function matchExit(): i32 {
   };
 }
 
+function relocate(): i32 {
+  const first = Resource { id: 15 };
+  const second = first;
+  return second.id;
+}
+
+function forward(): i32 {
+  const resource = Resource { id: 16 };
+  return consume(resource);
+}
+
+function returnNamed(): Resource {
+  const resource = Resource { id: 17 };
+  return resource;
+}
+
+function ownNamedReturn(): i32 {
+  const resource = returnNamed();
+  return resource.id;
+}
+
+function conditionalMove(moveIt: bool): i32 {
+  const resource = Resource { id: 18 };
+  if (moveIt) {
+    consume(resource);
+  }
+  return 0;
+}
+
+function moveOnExitingPath(moveIt: bool): i32 {
+  const resource = Resource { id: 19 };
+  if (moveIt) {
+    return consume(resource);
+  }
+  return resource.id;
+}
+
 function fail(): i32 throws Problem {
   const resource = Resource { id: 6 };
   throw Problem { code: resource.id };
@@ -111,6 +148,13 @@ function main(): i32 {
   earlyVoidExit();
   branchExit();
   matchExit();
+  relocate();
+  forward();
+  ownNamedReturn();
+  conditionalMove(true);
+  conditionalMove(false);
+  moveOnExitingPath(true);
+  moveOnExitingPath(false);
   attempt fail();
   attempt propagate();
   return 0;

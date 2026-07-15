@@ -83,11 +83,11 @@ test("runs deterministic deinit across normal, return, throw, and try exits", ()
   assert.equal(result.status, 0, result.stderr);
   assert.equal(
     result.stdout,
-    "scope\ndeinit=2\ndeinit=1\ndeinit=3\ndeinit=5\ndeinit=4\ndeinit=8\ndeinit=9\ndeinit=10\ndeinit=11\ndeinit=13\ndeinit=12\ndeinit=14\ndeinit=6\ndeinit=7\n",
+    "scope\ndeinit=2\ndeinit=1\ndeinit=3\ndeinit=5\ndeinit=4\ndeinit=8\ndeinit=9\ndeinit=10\ndeinit=11\ndeinit=13\ndeinit=12\ndeinit=14\ndeinit=15\ndeinit=16\ndeinit=17\ndeinit=18\ndeinit=18\ndeinit=19\ndeinit=19\ndeinit=6\ndeinit=7\n",
   );
 });
 
-test("rejects implicit copies of cleanup-bearing values", () => {
+test("rejects using a cleanup-bearing value after it moves", () => {
   const source = `
     struct Resource {
       id: i32;
@@ -96,12 +96,59 @@ test("rejects implicit copies of cleanup-bearing values", () => {
     function main(): i32 {
       const first = Resource { id: 1 };
       const second = first;
-      return second.id;
+      return first.id + second.id;
     }
   `;
   assert.throws(
     () => compileToC(source, "owned-copy.z"),
-    /moving a cleanup-bearing value from named storage is not implemented yet/,
+    /use of moved value "first"/,
+  );
+});
+
+test("rejects values that may have moved on another branch", () => {
+  const source = `
+    struct Resource {
+      id: i32;
+      deinit {}
+    }
+    function consume(resource: Resource): i32 { return resource.id; }
+    function choose(flag: bool): i32 {
+      const resource = Resource { id: 1 };
+      if (flag) {
+        consume(resource);
+      }
+      return resource.id;
+    }
+    function main(): i32 { return choose(false); }
+  `;
+  assert.throws(
+    () => compileToC(source, "maybe-moved.z"),
+    /value "resource" may have been moved on another control-flow path/,
+  );
+});
+
+test("merges ownership state across exhaustive match arms", () => {
+  const source = `
+    struct Resource {
+      id: i32;
+      deinit {}
+    }
+    enum Choice { move i32, keep i32, }
+    function consume(resource: Resource): i32 { return resource.id; }
+    function choose(choice: Choice, resource: Resource): i32 {
+      match choice {
+        move value => consume(resource);
+        keep value => value;
+      }
+      return resource.id;
+    }
+    function main(): i32 {
+      return choose(Choice.keep 1, Resource { id: 2 });
+    }
+  `;
+  assert.throws(
+    () => compileToC(source, "match-moved.z"),
+    /value "resource" may have been moved on another control-flow path/,
   );
 });
 

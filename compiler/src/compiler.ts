@@ -7,8 +7,8 @@ import { materializeResultTypes } from "./results.ts";
 export function compileToC(source: string, fileName: string): string {
   const tokens = lex(source, fileName);
   const program = materializeResultTypes(parse(tokens, fileName));
-  analyze(program, fileName);
-  return generateC(program, fileName);
+  const semanticInfo = analyze(program, fileName);
+  return generateC(program, fileName, semanticInfo);
 }
 
 export function check(source: string, fileName: string): void {

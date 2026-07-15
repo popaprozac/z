@@ -52,6 +52,12 @@ cannot accept parameters, return, throw, suspend, or be called directly.
 Cleanup is inserted on every path that leaves ownership, including normal
 scope exit, `return`, `throw`, and error propagation through `try`.
 
+Cleanup-bearing values are non-copyable by default. Assignment, owned argument
+passing, return, and owning field initialization move the value. The compiler
+tracks available, moved, and possibly-moved states through branches and matches;
+using a value after ownership may have left is an error. Backend live flags
+preserve exactly-once cleanup when runtime branches move different values.
+
 ## Errors
 
 Recoverable failures are typed values. Surface syntax exposes the two outcomes

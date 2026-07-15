@@ -119,9 +119,11 @@ struct File {
 
 `deinit` runs exactly once in reverse declaration order on normal scope exit,
 `return`, `throw`, and `try` propagation. Fields with cleanup are then destroyed
-in reverse field order. The bootstrap currently rejects moves from named
-cleanup-bearing storage until full move-state analysis lands; fresh values,
-owned parameters, and returned temporaries already transfer ownership safely.
+in reverse field order. Cleanup-bearing values move when assigned, passed to an
+owned parameter, returned, or placed into an owning field. Their previous
+location cannot be used afterward. Path-sensitive analysis rejects values that
+may have moved along only some continuing control-flow paths, while generated
+live flags ensure each runtime path still performs cleanup exactly once.
 
 `try` evaluates its call once, propagates failure immediately, and produces the
 success payload. It is currently supported directly in bindings, returns, and
