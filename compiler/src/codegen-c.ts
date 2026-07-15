@@ -184,6 +184,7 @@ function generateDeinit(
   const owner: FunctionDeclaration = {
     kind: "function",
     name: "deinit",
+    receiverMode: null,
     parameters: [],
     returnType: { name: "void", location: lifecycle?.location ?? declaration.location },
     errorType: null,
@@ -232,7 +233,10 @@ function generateFunctionSignature(
   const parameters = declaration.parameters.map(
     (parameter) => `${mapType(parameter.type.name, structs, enums)} ${parameter.name}`,
   );
-  if (receiver) parameters.unshift(`const ${structName(receiver.name)} *self`);
+  if (receiver) {
+    const receiverConst = declaration.receiverMode === "inout" ? "" : "const ";
+    parameters.unshift(`${receiverConst}${structName(receiver.name)} *self`);
+  }
   const returnName = declaration.errorType
     ? resultTypeName(declaration.returnType.name, declaration.errorType.name)
     : declaration.returnType.name;

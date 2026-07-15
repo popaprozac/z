@@ -50,9 +50,27 @@ position = Point { x: position.x, y: 20 };
 
 Assignment is a statement, not an expression. Its target must be a mutable
 binding or a field path rooted in one, and its value must have the target's
-static type. Parameters and pattern bindings begin immutable. Methods currently
-borrow `this` immutably; explicit mutable-receiver syntax should be designed
-before methods may change their receiver.
+static type. Parameters and pattern bindings begin immutable.
+
+Methods borrow `this` immutably by default. Receiver mutation is part of the
+typed method interface and uses an explicit receiver capability:
+
+```z
+function current(): i32                         // implicit `this: in`
+function add(this: inout, amount: i32): void   // exclusive mutable borrow
+```
+
+An `inout` method requires addressable storage rooted in a `let`; it cannot be
+called through a `const`, immutable parameter, immutable receiver, or temporary.
+The borrow lasts for the call and does not transfer ownership. A future
+`this: move` can represent consuming methods without adding lifetime syntax.
+`out` is not meaningful for an already-existing receiver.
+
+Attribute syntax remains deliberately open. A future declaration attribute may
+provide sugar for a receiver capability, while an `@{ ... }` form may describe
+scoped effects such as unsafe operations, executor affinity, or allocator
+selection. Any sugar must still lower to the same receiver capability in method
+and trait signatures.
 
 Replacing cleanup-bearing storage has additional semantics: the old value must
 be destroyed exactly once before the new value becomes live, including when

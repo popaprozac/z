@@ -355,6 +355,14 @@ export function parse(tokens: Token[], fileName: string): Program {
     const start = expect("function", "`function`").location;
     const name = expect("identifier", "a function name").text;
     expect("leftParen", "`(`");
+    let receiverMode: FunctionDeclaration["receiverMode"] = null;
+    if (at("identifier") && peek().text === "this" && tokens[current + 1]?.kind === "colon" && tokens[current + 2]?.kind === "inout") {
+      take();
+      take();
+      take();
+      receiverMode = "inout";
+      if (!at("rightParen")) expect("comma", "`,` after `this: inout`");
+    }
     const parameters = parseParameters();
     expect("rightParen", "`)`");
     expect("colon", "`:`");
@@ -364,7 +372,7 @@ export function parse(tokens: Token[], fileName: string): Program {
     const body: Statement[] = [];
     while (!at("rightBrace") && !at("eof")) body.push(parseStatement());
     expect("rightBrace", "`}`");
-    return { kind: "function", name, parameters, returnType, errorType, body, location: start };
+    return { kind: "function", name, receiverMode, parameters, returnType, errorType, body, location: start };
   };
 
   const parseStruct = (): StructDeclaration => {

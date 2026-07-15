@@ -63,10 +63,34 @@ position = Point { x: position.x, y: 20 };
 
 Assignment is a statement rather than a value-producing expression. It is
 statically type-checked, and nested field mutation must remain rooted in a
-`let`. Parameters, match bindings, and the current borrowed method receiver
-`this` are immutable in this bootstrap slice. Replacing cleanup-bearing storage
-is temporarily rejected until assignment lowering can destroy the previous
-value before installing the new one.
+`let`. Parameters and match bindings are immutable in this bootstrap slice.
+Replacing cleanup-bearing storage is temporarily rejected until assignment
+lowering can destroy the previous value before installing the new one.
+
+Methods borrow `this` immutably by default. A method that changes its receiver
+declares the non-default capability as a TypeScript-style receiver parameter:
+
+```z
+struct Counter {
+  value: i32;
+
+  function add(this: inout, amount: i32): void {
+    this.value = this.value + amount;
+  }
+
+  function current(): i32 {
+    return this.value;
+  }
+}
+
+let counter = Counter { value: 1 };
+counter.add(2);
+```
+
+`counter.add` requires mutable addressable `let` storage. `current` may be
+called through `const`, `let`, or a temporary. The receiver capability belongs
+to the method signature; callers do not repeat `inout` because the receiver is
+already explicit in member-call syntax.
 
 Tagged enums carry typed payloads and are matched exhaustively:
 
@@ -231,6 +255,7 @@ bun run z run examples/structs.z
 bun run z run examples/match.z
 bun run z run examples/match-expression.z
 bun run z run examples/mutation.z
+bun run z run examples/mutable-methods.z
 bun run z run examples/result.z
 bun run z run examples/try.z
 bun test

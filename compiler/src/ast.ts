@@ -63,6 +63,7 @@ export type EnumVariant = {
 export type FunctionDeclaration = {
   readonly kind: "function";
   readonly name: string;
+  readonly receiverMode: "inout" | null;
   readonly parameters: Parameter[];
   readonly returnType: TypeReference;
   readonly errorType: TypeReference | null;

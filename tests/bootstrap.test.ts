@@ -794,6 +794,97 @@ test("assigns mutable locals and nested value fields", () => {
   assert.match(generated, /\(\(frame\)\.origin\)\.y = 2;/);
 });
 
+test("runs explicit mutable receivers while immutable methods remain borrowable", () => {
+  const example = resolve(projectRoot, "examples/mutable-methods.z");
+  const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, "counter=3 snapshot=3 nested=15 temporary=7\n");
+
+  const generated = compileToC(readFileSync(example, "utf8"), example);
+  assert.match(generated, /static void Z_Counter_add\(Z_Counter \*self, int32_t amount\)/);
+  assert.match(generated, /static int32_t Z_Counter_current\(const Z_Counter \*self\)/);
+  assert.match(generated, /static void Z_Panel_bump\(Z_Panel \*self, int32_t amount\)/);
+  assert.match(generated, /Z_Counter_add\(&\(counter\), 2\);/);
+  assert.match(generated, /Z_Counter_add\(&\(self->counter\), amount\);/);
+});
+
+test("requires addressable mutable storage for inout method receivers", () => {
+  const immutable = `
+    struct Counter {
+      value: i32;
+      function add(this: inout, amount: i32): void {
+        this.value = this.value + amount;
+      }
+    }
+    function main(): i32 {
+      const counter = Counter { value: 1 };
+      counter.add(2);
+      return 0;
+    }
+  `;
+  assert.throws(
+    () => compileToC(immutable, "immutable-receiver.z"),
+    /mutable method "add" cannot be called through immutable binding "counter"/,
+  );
+
+  const temporary = immutable.replace(
+    "const counter = Counter { value: 1 };\n      counter.add(2);",
+    "Counter { value: 1 }.add(2);",
+  );
+  assert.throws(
+    () => compileToC(temporary, "temporary-receiver.z"),
+    /mutable method "add" requires addressable let storage/,
+  );
+
+  const transitive = `
+    struct Counter {
+      value: i32;
+      function add(this: inout, amount: i32): void {
+        this.value = this.value + amount;
+      }
+    }
+    struct Panel {
+      counter: Counter;
+      function invalid(): void {
+        this.counter.add(1);
+      }
+    }
+    function main(): i32 { return 0; }
+  `;
+  assert.throws(
+    () => compileToC(transitive, "transitive-receiver.z"),
+    /mutable method "add" cannot be called through immutable binding "this"/,
+  );
+});
+
+test("keeps receiver capabilities in method signatures", () => {
+  const topLevelReceiver = `
+    function invalid(this: inout): void {}
+    function main(): i32 { return 0; }
+  `;
+  assert.throws(
+    () => compileToC(topLevelReceiver, "top-level-receiver.z"),
+    /`this: inout` is only valid on a struct method/,
+  );
+
+  const movedReceiver = `
+    struct Resource {
+      value: i32;
+      function merge(this: inout, other: Resource): void {}
+      deinit {}
+    }
+    function main(): i32 {
+      let resource = Resource { value: 1 };
+      resource.merge(resource);
+      return 0;
+    }
+  `;
+  assert.throws(
+    () => compileToC(movedReceiver, "moved-receiver.z"),
+    /mutable receiver "resource" cannot move while borrowed for this call/,
+  );
+});
+
 test("keeps const values, parameters, and borrowed receivers immutable", () => {
   const immutableLocal = `
     function main(): i32 {
@@ -902,6 +993,7 @@ test("editor grammar tracks keywords without reserving Result variants", () => {
   assert.match(keywordPattern, /out\|inout/);
   assert.match(keywordPattern, /\bas\b/);
   assert.match(constantPattern, /true\|false/);
+  assert.match(constantPattern, /this/);
   assert.match(operatorPattern, /&&/);
   assert.match(operatorPattern, /=/);
   assert.doesNotMatch(keywordPattern, /success|failure/);

@@ -126,6 +126,9 @@ export function analyze(
   }
 
   for (const declaration of program.functions) {
+    if (declaration.receiverMode) {
+      throw new DiagnosticError(fileName, declaration.location, "`this: inout` is only valid on a struct method");
+    }
     validateFunctionSignature(declaration, structs, enums, foreignNamedTypes, fileName);
   }
 
@@ -152,6 +155,7 @@ export function analyze(
         {
           kind: "function",
           name: "deinit",
+          receiverMode: null,
           parameters: [],
           returnType: { name: "void", location: declaration.deinitializer.location },
           errorType: null,
@@ -250,6 +254,9 @@ function validateFunctionSignature(
     throw new DiagnosticError(fileName, declaration.returnType.location, "void success results are not implemented in this bootstrap stage");
   }
   for (const parameter of declaration.parameters) {
+    if (parameter.name === "this") {
+      throw new DiagnosticError(fileName, parameter.location, "`this` is reserved for a method receiver");
+    }
     validateUserName(parameter.name, parameter.location, fileName);
     validateType(parameter.type, structs, enums, foreignNamedTypes, fileName, false);
   }
@@ -290,7 +297,9 @@ function analyzeFunction(
   state: AnalysisState,
 ): void {
   const locals = new Map<string, ValueType>();
-  if (receiver) locals.set("this", receiver.name);
+  if (receiver) {
+    locals.set("this", declaration.receiverMode === "inout" ? `${mutablePrefix}${receiver.name}` : receiver.name);
+  }
 
   for (const parameter of declaration.parameters) {
     if (locals.has(parameter.name)) {
@@ -379,7 +388,7 @@ function analyzeStatement(
       return;
     }
     case "assignment": {
-      const root = assignmentRoot(statement.target);
+      const root = storageRoot(statement.target);
       if (!root) {
         throw new DiagnosticError(fileName, statement.target.location, "assignment target must be a mutable binding or one of its fields");
       }
@@ -863,7 +872,37 @@ function inferExpression(
         if (!declaration || !method) {
           throw new DiagnosticError(fileName, expression.callee.location, `type ${JSON.stringify(receiverType)} has no method ${JSON.stringify(expression.callee.property)}`);
         }
+        const mutableReceiverRoot = method.receiverMode === "inout"
+          ? storageRoot(expression.callee.object)
+          : null;
+        if (method.receiverMode === "inout") {
+          if (!mutableReceiverRoot) {
+            throw new DiagnosticError(
+              fileName,
+              expression.callee.object.location,
+              `mutable method ${JSON.stringify(method.name)} requires addressable let storage`,
+            );
+          }
+          const storedReceiver = locals.get(mutableReceiverRoot.name);
+          if (!storedReceiver || !isMutableBinding(storedReceiver)) {
+            throw new DiagnosticError(
+              fileName,
+              expression.callee.object.location,
+              `mutable method ${JSON.stringify(method.name)} cannot be called through immutable binding ${JSON.stringify(mutableReceiverRoot.name)}`,
+            );
+          }
+        }
         checkArguments(method, expression.arguments, locals, globals, structs, enums, fileName, expression.location, state);
+        if (mutableReceiverRoot) {
+          const receiverAfterArguments = locals.get(mutableReceiverRoot.name);
+          if (receiverAfterArguments && ownershipState(receiverAfterArguments) !== "available") {
+            throw new DiagnosticError(
+              fileName,
+              expression.location,
+              `mutable receiver ${JSON.stringify(mutableReceiverRoot.name)} cannot move while borrowed for this call`,
+            );
+          }
+        }
         if (method.errorType) {
           if (!allowThrowingCall) throw new DiagnosticError(fileName, expression.location, "throwing call requires `attempt` or `try`");
           return resultTypeName(method.returnType.name, method.errorType.name);
@@ -1013,9 +1052,7 @@ function isNamedStorageExpression(expression: Expression): boolean {
   return expression.kind === "member" && isNamedStorageExpression(expression.object);
 }
 
-function assignmentRoot(
-  expression: Extract<Statement, { kind: "assignment" }>["target"],
-): Extract<Expression, { kind: "identifier" }> | null {
+function storageRoot(expression: Expression): Extract<Expression, { kind: "identifier" }> | null {
   let current: Expression = expression;
   while (current.kind === "member") current = current.object;
   return current.kind === "identifier" ? current : null;

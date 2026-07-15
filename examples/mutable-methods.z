@@ -1,0 +1,39 @@
+import stdio from "stdio.h";
+
+struct Counter {
+  value: i32;
+
+  function add(this: inout, amount: i32): void {
+    this.value = this.value + amount;
+  }
+
+  function current(): i32 {
+    return this.value;
+  }
+}
+
+struct Panel {
+  counter: Counter;
+
+  function bump(this: inout, amount: i32): void {
+    this.counter.add(amount);
+  }
+}
+
+function main(): i32 {
+  let counter = Counter { value: 1 };
+  counter.add(2);
+  const snapshot = counter;
+
+  let panel = Panel { counter: Counter { value: 10 } };
+  panel.bump(5);
+
+  stdio.printf(
+    "counter=%d snapshot=%d nested=%d temporary=%d\n",
+    counter.current(),
+    snapshot.current(),
+    panel.counter.current(),
+    Counter { value: 7 }.current()
+  );
+  return 0;
+}
