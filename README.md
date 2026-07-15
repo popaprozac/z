@@ -65,3 +65,10 @@ imported signatures are not yet known to Z. This is not yet the safe Clang-AST
 importer described in the design documents.
 
 See [DESIGN.md](DESIGN.md) for the language charter and roadmap.
+
+## Editor support
+
+The repository includes an initial VS Code-compatible syntax extension in
+`editors/vscode`. It recognizes `.z` files, comments, strings, imports,
+declarations, control-flow keywords, primitive types, and numbers. Semantic
+highlighting and diagnostics will come from the compiler-backed language server.

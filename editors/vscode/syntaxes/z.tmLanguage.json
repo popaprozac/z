@@ -1,0 +1,66 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "Z",
+  "scopeName": "source.z",
+  "patterns": [
+    { "include": "#comments" },
+    { "include": "#strings" },
+    { "include": "#imports" },
+    { "include": "#declarations" },
+    { "include": "#keywords" },
+    { "include": "#types" },
+    { "include": "#numbers" }
+  ],
+  "repository": {
+    "comments": {
+      "patterns": [{ "name": "comment.line.double-slash.z", "match": "//.*$" }]
+    },
+    "strings": {
+      "patterns": [{
+        "name": "string.quoted.double.z",
+        "begin": "\"",
+        "end": "\"",
+        "patterns": [{ "name": "constant.character.escape.z", "match": "\\\\[nrt\\\\\"]" }]
+      }]
+    },
+    "imports": {
+      "patterns": [{
+        "name": "meta.import.z",
+        "match": "\\b(import)\\s+([A-Za-z_][A-Za-z0-9_]*)\\s+(from)\\s+(\"(?:\\\\.|[^\"])*\")",
+        "captures": {
+          "1": { "name": "keyword.control.import.z" },
+          "2": { "name": "entity.name.namespace.z" },
+          "3": { "name": "keyword.control.import.z" },
+          "4": { "name": "string.quoted.double.header.z" }
+        }
+      }]
+    },
+    "declarations": {
+      "patterns": [
+        {
+          "match": "\\b(function)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+          "captures": { "1": { "name": "storage.type.function.z" }, "2": { "name": "entity.name.function.z" } }
+        },
+        {
+          "match": "\\b(struct|enum|trait|class)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+          "captures": { "1": { "name": "storage.type.z" }, "2": { "name": "entity.name.type.z" } }
+        }
+      ]
+    },
+    "keywords": {
+      "patterns": [{
+        "name": "keyword.control.z",
+        "match": "\\b(?:return|throw|try|attempt|match|if|else|while|for|break|continue|async|await|spawn|deinit|unsafe)\\b"
+      }, {
+        "name": "storage.modifier.z",
+        "match": "\\b(?:const|let|mut|weak|static|private|public)\\b"
+      }]
+    },
+    "types": {
+      "patterns": [{ "name": "storage.type.primitive.z", "match": "\\b(?:void|bool|string|cstring|i8|i16|i32|i64|u8|u16|u32|u64|f32|f64|usize|isize)\\b" }]
+    },
+    "numbers": {
+      "patterns": [{ "name": "constant.numeric.z", "match": "\\b(?:0[xX][0-9A-Fa-f]+|[0-9]+(?:\\.[0-9]+)?)\\b" }]
+    }
+  }
+}

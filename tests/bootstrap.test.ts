@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { resolve } from "node:path";
+import { readFileSync } from "node:fs";
 import { test } from "bun:test";
 import { compileToC } from "../compiler/src/compiler.ts";
 
@@ -169,3 +170,12 @@ test("compiles and runs the first native program", () => {
 function dirnameFromImportMeta(): string {
   return new URL(".", import.meta.url).pathname;
 }
+
+test("editor grammar tracks keywords without reserving Result variants", () => {
+  const grammarPath = resolve(projectRoot, "editors/vscode/syntaxes/z.tmLanguage.json");
+  const grammar = JSON.parse(readFileSync(grammarPath, "utf8"));
+  const keywordPattern = grammar.repository.keywords.patterns.map((pattern: { match: string }) => pattern.match).join(" ");
+  assert.match(keywordPattern, /throw/);
+  assert.match(keywordPattern, /attempt/);
+  assert.doesNotMatch(keywordPattern, /success|failure/);
+});
