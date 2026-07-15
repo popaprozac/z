@@ -7,8 +7,9 @@ interop with C-family platform APIs.
 The bootstrap compiler currently implements a deliberately small vertical
 slice: imports, functions, local bindings, primitive expressions, structs with
 methods, tagged enums, exhaustive statement and expression matches, typed
-errors, name resolution, static checking, and readable C emission. It has no
-third-party dependencies and runs directly on Bun.
+errors, deterministic struct cleanup, name resolution, static checking, and
+readable C emission. It has no third-party dependencies and runs directly on
+Bun.
 
 ```z
 import stdio from "stdio.h";
@@ -104,6 +105,24 @@ function classify(value: i32, enabled: bool): i32 {
 }
 ```
 
+Owned structs can define an infallible compiler-controlled lifecycle hook:
+
+```z
+struct File {
+  handle: c.FILE;
+
+  deinit {
+    c.fclose(this.handle);
+  }
+}
+```
+
+`deinit` runs exactly once in reverse declaration order on normal scope exit,
+`return`, `throw`, and `try` propagation. Fields with cleanup are then destroyed
+in reverse field order. The bootstrap currently rejects moves from named
+cleanup-bearing storage until full move-state analysis lands; fresh values,
+owned parameters, and returned temporaries already transfer ownership safely.
+
 `try` evaluates its call once, propagates failure immediately, and produces the
 success payload. It is currently supported directly in bindings, returns, and
 expression statements; general nested-expression lowering comes later.
@@ -113,6 +132,7 @@ bun run z check examples/first.z
 bun run z emit examples/first.z
 bun run z run examples/first.z
 bun run z run examples/control-flow.z
+bun run z run examples/deinit.z
 bun run z run examples/structs.z
 bun run z run examples/match.z
 bun run z run examples/match-expression.z

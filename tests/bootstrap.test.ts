@@ -77,6 +77,66 @@ test("compiles boolean expressions and path-complete if statements", () => {
   assert.equal(result.stdout, "disabled=0\nordinary=1\nspecial=2\n");
 });
 
+test("runs deterministic deinit across normal, return, throw, and try exits", () => {
+  const example = resolve(projectRoot, "examples/deinit.z");
+  const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(
+    result.stdout,
+    "scope\ndeinit=2\ndeinit=1\ndeinit=3\ndeinit=5\ndeinit=4\ndeinit=8\ndeinit=9\ndeinit=10\ndeinit=11\ndeinit=13\ndeinit=12\ndeinit=14\ndeinit=6\ndeinit=7\n",
+  );
+});
+
+test("rejects implicit copies of cleanup-bearing values", () => {
+  const source = `
+    struct Resource {
+      id: i32;
+      deinit {}
+    }
+    function main(): i32 {
+      const first = Resource { id: 1 };
+      const second = first;
+      return second.id;
+    }
+  `;
+  assert.throws(
+    () => compileToC(source, "owned-copy.z"),
+    /moving a cleanup-bearing value from named storage is not implemented yet/,
+  );
+});
+
+test("rejects discarding cleanup-bearing return values", () => {
+  const source = `
+    struct Resource {
+      id: i32;
+      deinit {}
+    }
+    function make(): Resource { return Resource { id: 1 }; }
+    function main(): i32 {
+      make();
+      return 0;
+    }
+  `;
+  assert.throws(
+    () => compileToC(source, "owned-discard.z"),
+    /a cleanup-bearing value must be bound or transferred; it cannot be discarded/,
+  );
+});
+
+test("keeps deinit synchronous and free of explicit control-flow exits", () => {
+  const source = `
+    struct Resource {
+      id: i32;
+      deinit { return; }
+    }
+    function main(): i32 { return 0; }
+  `;
+  assert.throws(
+    () => compileToC(source, "deinit-return.z"),
+    /deinit cannot contain "return"/,
+  );
+});
+
 test("requires boolean if conditions", () => {
   const source = `
     function main(): i32 {
@@ -343,6 +403,7 @@ test("editor grammar tracks keywords without reserving Result variants", () => {
   assert.match(keywordPattern, /throw/);
   assert.match(keywordPattern, /attempt/);
   assert.match(keywordPattern, /yield/);
+  assert.match(keywordPattern, /deinit/);
   assert.match(constantPattern, /true\|false/);
   assert.match(operatorPattern, /&&/);
   assert.doesNotMatch(keywordPattern, /success|failure/);

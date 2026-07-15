@@ -34,6 +34,24 @@ semantics that are absent from the header itself.
 - `deinit` is deterministic, exactly-once, synchronous, and infallible.
 - Fallible cleanup is expressed by an explicit operation such as `close()`.
 
+Lifecycle cleanup is declared as a compiler-only block rather than a callable
+method:
+
+```z
+struct File {
+  handle: c.FILE;
+
+  deinit {
+    c.fclose(this.handle);
+  }
+}
+```
+
+The body runs before fields are cleaned up in reverse declaration order. It
+cannot accept parameters, return, throw, suspend, or be called directly.
+Cleanup is inserted on every path that leaves ownership, including normal
+scope exit, `return`, `throw`, and error propagation through `try`.
+
 ## Errors
 
 Recoverable failures are typed values. Surface syntax exposes the two outcomes

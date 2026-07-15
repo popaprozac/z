@@ -18,6 +18,13 @@ type GenerationContext = {
   readonly matchCounter: { value: number };
   readonly tryCounter: { value: number };
   readonly valueCounter: { value: number };
+  readonly returnCounter: { value: number };
+  readonly cleanupScopes: CleanupLocal[][];
+};
+
+type CleanupLocal = {
+  readonly name: string;
+  readonly type: string;
 };
 
 const primitiveTypeNames: Record<string, string> = {
@@ -59,6 +66,9 @@ export function generateC(program: Program, sourceName: string): string {
   }
 
   for (const declaration of program.structs) {
+    if (hasCleanupType(declaration.name, structs)) {
+      lines.push(`static void ${deinitName(declaration.name)}(${structName(declaration.name)} *self);`);
+    }
     for (const method of declaration.methods) {
       lines.push(`${generateFunctionSignature(method, structs, enums, declaration)};`);
     }
@@ -71,6 +81,9 @@ export function generateC(program: Program, sourceName: string): string {
   }
 
   for (const declaration of program.structs) {
+    if (hasCleanupType(declaration.name, structs)) {
+      lines.push(generateDeinit(declaration, structs, enums, functions), "");
+    }
     for (const method of declaration.methods) {
       lines.push(generateFunction(method, structs, enums, functions, declaration), "");
     }
@@ -115,16 +128,66 @@ function generateFunction(
     matchCounter: { value: 0 },
     tryCounter: { value: 0 },
     valueCounter: { value: 0 },
+    returnCounter: { value: 0 },
+    cleanupScopes: [declaration.parameters
+      .filter((parameter) => hasCleanupType(parameter.type.name, structs))
+      .map((parameter) => ({ name: parameter.name, type: parameter.type.name }))],
   };
-  const body = declaration.body.map((statement) => {
+  const bodyParts = declaration.body.map((statement) => {
     const generated = generateStatement(statement, context);
-    if (statement.kind === "variable") {
-      const type = statement.type?.name ?? directValueType(statement.initializer, context);
-      localTypes.set(statement.name, type);
-    }
+    recordVariableType(statement, context);
     return indent(generated, 2);
-  }).join("\n");
+  });
+  if (declaration.returnType.name === "void" && !statementListTerminates(declaration.body)) {
+    const cleanup = generateCleanup(context.cleanupScopes, context);
+    if (cleanup) bodyParts.push(indent(cleanup, 2));
+  }
+  const body = bodyParts.join("\n");
   return `${generateFunctionSignature(declaration, structs, enums, receiver)} {\n${body}\n}`;
+}
+
+function generateDeinit(
+  declaration: StructDeclaration,
+  structs: Map<string, StructDeclaration>,
+  enums: Map<string, EnumDeclaration>,
+  functions: Map<string, FunctionDeclaration>,
+): string {
+  const lifecycle = declaration.deinitializer;
+  const owner: FunctionDeclaration = {
+    kind: "function",
+    name: "deinit",
+    parameters: [],
+    returnType: { name: "void", location: lifecycle?.location ?? declaration.location },
+    errorType: null,
+    body: lifecycle?.body ?? [],
+    location: lifecycle?.location ?? declaration.location,
+  };
+  const context: GenerationContext = {
+    structs,
+    enums,
+    functions,
+    localTypes: new Map([["this", declaration.name]]),
+    receiver: declaration,
+    owner,
+    matchCounter: { value: 0 },
+    tryCounter: { value: 0 },
+    valueCounter: { value: 0 },
+    returnCounter: { value: 0 },
+    cleanupScopes: [[]],
+  };
+  const body = ["  (void)self;", ...owner.body.map((statement) => {
+    const generated = generateStatement(statement, context);
+    recordVariableType(statement, context);
+    return indent(generated, 2);
+  })];
+  const localCleanup = generateCleanup(context.cleanupScopes, context);
+  if (localCleanup) body.push(indent(localCleanup, 2));
+  for (const field of [...declaration.fields].reverse()) {
+    if (hasCleanupType(field.type.name, structs)) {
+      body.push(`  ${deinitName(field.type.name)}(&(self->${field.name}));`);
+    }
+  }
+  return `static void ${deinitName(declaration.name)}(${structName(declaration.name)} *self) {\n${body.join("\n")}\n}`;
 }
 
 function generateFunctionSignature(
@@ -153,16 +216,26 @@ function generateStatement(statement: Statement, context: GenerationContext): st
       if (statement.initializer.kind === "matchExpression") {
         const temporary = `_z_value_${context.valueCounter.value++}`;
         const temporaryDeclaration = generateLocalDeclaration(zType, temporary, true, context.structs, context.enums);
-        return `${temporaryDeclaration};\n  ${generateDirectValue(statement.initializer, context, (value) => `${temporary} = ${value};`)}\n  ${declaration} = ${temporary};`;
+        return `${temporaryDeclaration};\n${generateDirectValue(statement.initializer, context, (value) => `${temporary} = ${value};`)}\n${declaration} = ${temporary};`;
       }
       return generateDirectValue(statement.initializer, context, (value) => `${declaration} = ${value};`);
     }
     case "return":
-      if (!statement.expression) return "return;";
-      return generateDirectValue(statement.expression, context, (value) => generateSuccessReturn(value, context), true);
+      if (!statement.expression) {
+        const cleanup = generateCleanup(context.cleanupScopes, context);
+        return cleanup ? `${cleanup}\nreturn;` : "return;";
+      }
+      return generateDirectValue(statement.expression, context, (value, valueContext) => generateSuccessReturn(value, valueContext), true);
     case "throw": {
       const result = resultTypeName(context.owner.returnType.name, context.owner.errorType!.name);
-      return `return (${enumName(result)}){ .tag = ${variantTag(result, "failure")}, .data.failure = ${generateExpression(statement.expression, context)} };`;
+      const value = generateExpression(statement.expression, context);
+      const cleanup = generateCleanup(context.cleanupScopes, context);
+      if (!cleanup) {
+        return `return (${enumName(result)}){ .tag = ${variantTag(result, "failure")}, .data.failure = ${value} };`;
+      }
+      const temporary = `_z_error_${context.returnCounter.value++}`;
+      const declaration = generateLocalDeclaration(context.owner.errorType!.name, temporary, false, context.structs, context.enums);
+      return `${declaration} = ${value};\n${cleanup}\nreturn (${enumName(result)}){ .tag = ${variantTag(result, "failure")}, .data.failure = ${temporary} };`;
     }
     case "yield":
       throw new Error("yield must be lowered by its enclosing value-producing block");
@@ -190,25 +263,29 @@ function generateIf(statement: Extract<Statement, { kind: "if" }>, context: Gene
 function generateDirectValue(
   expression: Expression,
   context: GenerationContext,
-  consumeValue: (value: string) => string,
+  consumeValue: (value: string, context: GenerationContext) => string,
   consumeTerminates = false,
 ): string {
   if (expression.kind === "try") return generateTry(expression, context, consumeValue);
   if (expression.kind === "matchExpression") {
     return generateMatchExpression(expression, context, consumeValue, consumeTerminates);
   }
-  return consumeValue(generateExpression(expression, context));
+  return consumeValue(generateExpression(expression, context), context);
 }
 
 function generateBlock(statements: Statement[], context: GenerationContext): string {
   const blockTypes = new Map(context.localTypes);
-  const blockContext = { ...context, localTypes: blockTypes };
+  const blockContext = { ...context, localTypes: blockTypes, cleanupScopes: [...context.cleanupScopes, []] };
   const body = statements.map((statement) => {
     const generated = generateStatement(statement, blockContext);
     recordVariableType(statement, blockContext);
     return indent(generated, 2);
-  }).join("\n");
-  return `{\n${body}\n}`;
+  });
+  if (!statementListTerminates(statements)) {
+    const cleanup = generateCleanup([blockContext.cleanupScopes.at(-1)!], blockContext);
+    if (cleanup) body.push(indent(cleanup, 2));
+  }
+  return `{\n${body.join("\n")}\n}`;
 }
 
 function indent(text: string, spaces: number): string {
@@ -218,28 +295,54 @@ function indent(text: string, spaces: number): string {
 
 function recordVariableType(statement: Statement, context: GenerationContext): void {
   if (statement.kind !== "variable") return;
-  context.localTypes.set(statement.name, statement.type?.name ?? directValueType(statement.initializer, context));
+  const type = statement.type?.name ?? directValueType(statement.initializer, context);
+  context.localTypes.set(statement.name, type);
+  if (hasCleanupType(type, context.structs)) {
+    context.cleanupScopes.at(-1)!.push({ name: statement.name, type });
+  }
+}
+
+function generateCleanup(scopes: CleanupLocal[][], context: GenerationContext): string {
+  const calls: string[] = [];
+  for (const scope of [...scopes].reverse()) {
+    for (const local of [...scope].reverse()) {
+      calls.push(`${deinitName(local.type)}(&(${local.name}));`);
+    }
+  }
+  return calls.join("\n");
 }
 
 function generateSuccessReturn(value: string, context: GenerationContext): string {
-  if (!context.owner.errorType) return `return ${value};`;
-  const result = resultTypeName(context.owner.returnType.name, context.owner.errorType.name);
-  return `return (${enumName(result)}){ .tag = ${variantTag(result, "success")}, .data.success = ${value} };`;
+  const cleanup = generateCleanup(context.cleanupScopes, context);
+  if (!cleanup) {
+    if (!context.owner.errorType) return `return ${value};`;
+    const result = resultTypeName(context.owner.returnType.name, context.owner.errorType.name);
+    return `return (${enumName(result)}){ .tag = ${variantTag(result, "success")}, .data.success = ${value} };`;
+  }
+  const temporary = `_z_return_${context.returnCounter.value++}`;
+  const declaration = generateLocalDeclaration(context.owner.returnType.name, temporary, false, context.structs, context.enums);
+  const returned = context.owner.errorType
+    ? `return (${enumName(resultTypeName(context.owner.returnType.name, context.owner.errorType.name))}){ .tag = ${variantTag(resultTypeName(context.owner.returnType.name, context.owner.errorType.name), "success")}, .data.success = ${temporary} };`
+    : `return ${temporary};`;
+  return `${declaration} = ${value};\n${cleanup}\n${returned}`;
 }
 
 function generateTry(
   expression: Extract<Expression, { kind: "try" }>,
   context: GenerationContext,
-  consumeSuccess: (value: string) => string,
+  consumeSuccess: (value: string, context: GenerationContext) => string,
 ): string {
   const resultType = throwingCallResultType(expression.expression, context);
   const temporary = `_z_try_${context.tryCounter.value++}`;
   const ownerResult = resultTypeName(context.owner.returnType.name, context.owner.errorType!.name);
+  const cleanup = generateCleanup(context.cleanupScopes, context);
+  const failureReturn = `return (${enumName(ownerResult)}){ .tag = ${variantTag(ownerResult, "failure")}, .data.failure = ${temporary}.data.failure };`;
   return `const ${mapType(resultType, context.structs, context.enums)} ${temporary} = ${generateExpression(expression.expression, context)};\n`
-    + `  if (${temporary}.tag == ${variantTag(resultType, "failure")}) {\n`
-    + `    return (${enumName(ownerResult)}){ .tag = ${variantTag(ownerResult, "failure")}, .data.failure = ${temporary}.data.failure };\n`
-    + `  }\n`
-    + `  ${consumeSuccess(`${temporary}.data.success`)}`;
+    + `if (${temporary}.tag == ${variantTag(resultType, "failure")}) {\n`
+    + `${cleanup ? `${indent(cleanup, 2)}\n` : ""}`
+    + `  ${failureReturn}\n`
+    + `}\n`
+    + consumeSuccess(`${temporary}.data.success`, context);
 }
 
 function trySuccessType(expression: Extract<Expression, { kind: "try" }>, context: GenerationContext): string {
@@ -270,6 +373,7 @@ function generateLocalDeclaration(
   if (type === "cstring") {
     return mutable ? `const char *${name}` : `const char * const ${name}`;
   }
+  if (hasCleanupType(type, structs)) return `${mapType(type, structs, enums)} ${name}`;
   return `${mutable ? "" : "const "}${mapType(type, structs, enums)} ${name}`;
 }
 
@@ -282,20 +386,25 @@ function generateMatch(statement: Extract<Statement, { kind: "match" }>, context
     const variant = declaration.variants.find((candidate) => candidate.name === arm.variantName)!;
     const armTypes = new Map(context.localTypes);
     const binding = variant.payload && arm.binding
-      ? `\n      const ${mapType(variant.payload.name, context.structs, context.enums)} ${arm.binding} = ${temporary}.data.${variant.name};`
+      ? `\n    const ${mapType(variant.payload.name, context.structs, context.enums)} ${arm.binding} = ${temporary}.data.${variant.name};`
       : "";
     if (variant.payload && arm.binding) armTypes.set(arm.binding, variant.payload.name);
-    const armContext = { ...context, localTypes: armTypes };
-    const breakStatement = statementTerminates(arm.body) ? "" : "\n      break;";
-    return `    case ${variantTag(type, variant.name)}: {${binding}\n      ${generateStatement(arm.body, armContext)}${breakStatement}\n    }`;
+    const armContext = { ...context, localTypes: armTypes, cleanupScopes: [...context.cleanupScopes, []] };
+    const body = generateStatement(arm.body, armContext);
+    recordVariableType(arm.body, armContext);
+    const cleanup = statementTerminates(arm.body)
+      ? ""
+      : generateCleanup([armContext.cleanupScopes.at(-1)!], armContext);
+    const lines = [body, cleanup, statementTerminates(arm.body) ? "" : "break;"].filter(Boolean).join("\n");
+    return `  case ${variantTag(type, variant.name)}: {${binding}\n${indent(lines, 4)}\n  }`;
   }).join("\n");
-  return `const ${enumName(type)} ${temporary} = ${subject};\n  switch (${temporary}.tag) {\n${arms}\n  }`;
+  return `const ${enumName(type)} ${temporary} = ${subject};\nswitch (${temporary}.tag) {\n${arms}\n}`;
 }
 
 function generateMatchExpression(
   expression: Extract<Expression, { kind: "matchExpression" }>,
   context: GenerationContext,
-  consumeValue: (value: string) => string,
+  consumeValue: (value: string, context: GenerationContext) => string,
   consumeTerminates: boolean,
 ): string {
   const type = inferExpressionType(expression.expression, context);
@@ -306,21 +415,28 @@ function generateMatchExpression(
     const variant = declaration.variants.find((candidate) => candidate.name === arm.variantName)!;
     const armTypes = new Map(context.localTypes);
     const binding = variant.payload && arm.binding
-      ? `\n      const ${mapType(variant.payload.name, context.structs, context.enums)} ${arm.binding} = ${temporary}.data.${variant.name};`
+      ? `\n    const ${mapType(variant.payload.name, context.structs, context.enums)} ${arm.binding} = ${temporary}.data.${variant.name};`
       : "";
     if (variant.payload && arm.binding) armTypes.set(arm.binding, variant.payload.name);
-    const armContext = { ...context, localTypes: armTypes };
+    const armContext = { ...context, localTypes: armTypes, cleanupScopes: [...context.cleanupScopes, []] };
     const body = generateValueArm(arm.body, armContext, consumeValue, consumeTerminates);
-    const breakStatement = consumeTerminates || valueArmTerminates(arm.body) ? "" : "\n      break;";
-    return `    case ${variantTag(type, variant.name)}: {${binding}\n      ${body}${breakStatement}\n    }`;
+    const cleanup = consumeTerminates || valueArmTerminates(arm.body)
+      ? ""
+      : generateCleanup([armContext.cleanupScopes.at(-1)!], armContext);
+    const lines = [
+      body,
+      cleanup,
+      consumeTerminates || valueArmTerminates(arm.body) ? "" : "break;",
+    ].filter(Boolean).join("\n");
+    return `  case ${variantTag(type, variant.name)}: {${binding}\n${indent(lines, 4)}\n  }`;
   }).join("\n");
-  return `const ${enumName(type)} ${temporary} = ${subject};\n  switch (${temporary}.tag) {\n${arms}\n  }`;
+  return `const ${enumName(type)} ${temporary} = ${subject};\nswitch (${temporary}.tag) {\n${arms}\n}`;
 }
 
 function generateValueArm(
   statement: Statement,
   context: GenerationContext,
-  consumeValue: (value: string) => string,
+  consumeValue: (value: string, context: GenerationContext) => string,
   consumeTerminates: boolean,
 ): string {
   if (statement.kind === "expressionStatement" || statement.kind === "yield") {
@@ -331,14 +447,17 @@ function generateValueArm(
   }
   if (statement.kind === "block") {
     const blockTypes = new Map(context.localTypes);
-    const blockContext = { ...context, localTypes: blockTypes };
+    const blockContext = { ...context, localTypes: blockTypes, cleanupScopes: [...context.cleanupScopes, []] };
     const prefix = statement.statements.slice(0, -1).map((nested) => {
       const generated = generateStatement(nested, blockContext);
       recordVariableType(nested, blockContext);
       return generated;
     });
     const final = generateValueArm(statement.statements.at(-1)!, blockContext, consumeValue, consumeTerminates);
-    return [...prefix, final].join("\n      ");
+    const cleanup = consumeTerminates || valueArmTerminates(statement.statements.at(-1)!)
+      ? ""
+      : generateCleanup([blockContext.cleanupScopes.at(-1)!], blockContext);
+    return [...prefix, final, cleanup].filter(Boolean).join("\n");
   }
   if (statement.kind === "match") {
     return generateMatchExpression(
@@ -367,6 +486,10 @@ function statementTerminates(statement: Statement): boolean {
   }
   return statement.kind === "match" && statement.arms.length > 0
     && statement.arms.every((arm) => statementTerminates(arm.body));
+}
+
+function statementListTerminates(statements: Statement[]): boolean {
+  return statements.length > 0 && statementTerminates(statements.at(-1)!);
 }
 
 function generateExpression(expression: Expression, context: GenerationContext): string {
@@ -542,6 +665,25 @@ function structName(name: string): string {
 
 function methodName(owner: string, method: string): string {
   return `${structName(owner)}_${method}`;
+}
+
+function deinitName(owner: string): string {
+  return `${structName(owner)}_deinit`;
+}
+
+function hasCleanupType(
+  type: string,
+  structs: Map<string, StructDeclaration>,
+  visiting = new Set<string>(),
+): boolean {
+  if (visiting.has(type)) return false;
+  const declaration = structs.get(type);
+  if (!declaration) return false;
+  if (declaration.deinitializer) return true;
+  visiting.add(type);
+  const result = declaration.fields.some((field) => hasCleanupType(field.type.name, structs, visiting));
+  visiting.delete(type);
+  return result;
 }
 
 function orderedStructs(

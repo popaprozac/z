@@ -1,0 +1,117 @@
+import stdio from "stdio.h";
+
+struct Resource {
+  id: i32;
+
+  deinit {
+    stdio.printf("deinit=%d\n", this.id);
+  }
+}
+
+struct Pair {
+  first: Resource;
+  second: Resource;
+}
+
+struct Problem {
+  code: i32;
+}
+
+enum Choice {
+  yes i32,
+  no i32,
+}
+
+function scoped(): i32 {
+  {
+    const first = Resource { id: 1 };
+    const second = Resource { id: 2 };
+    stdio.printf("scope\n");
+  }
+  return 0;
+}
+
+function early(): i32 {
+  const resource = Resource { id: 3 };
+  return resource.id;
+}
+
+function nested(): i32 {
+  const pair = Pair {
+    first: Resource { id: 4 },
+    second: Resource { id: 5 },
+  };
+  return 0;
+}
+
+function consume(resource: Resource): i32 {
+  return resource.id;
+}
+
+function make(id: i32): Resource {
+  return Resource { id: id };
+}
+
+function ownReturned(): i32 {
+  const resource = make(9);
+  return resource.id;
+}
+
+function normalExit(): void {
+  const resource = Resource { id: 10 };
+}
+
+function earlyVoidExit(): void {
+  const resource = Resource { id: 11 };
+  return;
+}
+
+function branchExit(): i32 {
+  const outer = Resource { id: 12 };
+  if (true) {
+    const inner = Resource { id: 13 };
+    return inner.id + outer.id;
+  } else {
+    return 0;
+  }
+}
+
+function matchExit(): i32 {
+  const choice = Choice.yes 14;
+  return match choice {
+    yes id => {
+      const resource = Resource { id: id };
+      yield resource.id;
+    }
+    no id => id;
+  };
+}
+
+function fail(): i32 throws Problem {
+  const resource = Resource { id: 6 };
+  throw Problem { code: resource.id };
+}
+
+function leaf(): i32 throws Problem {
+  throw Problem { code: 7 };
+}
+
+function propagate(): i32 throws Problem {
+  const resource = Resource { id: 7 };
+  return try leaf();
+}
+
+function main(): i32 {
+  scoped();
+  early();
+  nested();
+  consume(Resource { id: 8 });
+  ownReturned();
+  normalExit();
+  earlyVoidExit();
+  branchExit();
+  matchExit();
+  attempt fail();
+  attempt propagate();
+  return 0;
+}

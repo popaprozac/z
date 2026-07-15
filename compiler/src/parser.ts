@@ -306,9 +306,19 @@ export function parse(tokens: Token[], fileName: string): Program {
     expect("leftBrace", "`{`");
     const fields = [];
     const methods: FunctionDeclaration[] = [];
+    let deinitializer = null;
     while (!at("rightBrace") && !at("eof")) {
       if (at("function")) {
         methods.push(parseFunction());
+        continue;
+      }
+      if (match("deinit")) {
+        const deinitToken = previous();
+        if (deinitializer) {
+          throw new DiagnosticError(fileName, deinitToken.location, `struct ${JSON.stringify(name)} cannot declare more than one deinit block`);
+        }
+        const block = parseRequiredBlock("a `deinit` body");
+        deinitializer = { kind: "deinit" as const, body: block.statements, location: deinitToken.location };
         continue;
       }
       const field = expect("identifier", "a field or method declaration");
@@ -317,7 +327,7 @@ export function parse(tokens: Token[], fileName: string): Program {
       expect("semicolon", "`;`");
     }
     expect("rightBrace", "`}`");
-    return { kind: "struct", name, fields, methods, location: start };
+    return { kind: "struct", name, fields, methods, deinitializer, location: start };
   };
 
   const parseEnum = (): EnumDeclaration => {

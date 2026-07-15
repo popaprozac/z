@@ -24,6 +24,13 @@ export type StructDeclaration = {
   readonly name: string;
   readonly fields: FieldDeclaration[];
   readonly methods: FunctionDeclaration[];
+  readonly deinitializer: DeinitDeclaration | null;
+  readonly location: SourceLocation;
+};
+
+export type DeinitDeclaration = {
+  readonly kind: "deinit";
+  readonly body: Statement[];
   readonly location: SourceLocation;
 };
 

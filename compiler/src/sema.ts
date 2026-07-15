@@ -72,6 +72,25 @@ export function analyze(program: Program, fileName: string): void {
     for (const method of declaration.methods) {
       analyzeFunction(method, globals, structs, enums, fileName, declaration);
     }
+    if (declaration.deinitializer) {
+      validateDeinitControlFlow(declaration.deinitializer.body, fileName);
+      analyzeFunction(
+        {
+          kind: "function",
+          name: "deinit",
+          parameters: [],
+          returnType: { name: "void", location: declaration.deinitializer.location },
+          errorType: null,
+          body: declaration.deinitializer.body,
+          location: declaration.deinitializer.location,
+        },
+        globals,
+        structs,
+        enums,
+        fileName,
+        declaration,
+      );
+    }
   }
   for (const declaration of program.functions) {
     analyzeFunction(declaration, globals, structs, enums, fileName, null);
@@ -124,6 +143,9 @@ function analyzeEnumDeclaration(
       if (enums.has(variant.payload.name) && !declaration.name.startsWith("__z_Result_")) {
         throw new DiagnosticError(fileName, variant.location, "nested enum payloads are not implemented in this bootstrap stage");
       }
+      if (hasCleanupType(variant.payload.name, structs)) {
+        throw new DiagnosticError(fileName, variant.location, "enum payloads with deterministic cleanup are not implemented in this bootstrap stage");
+      }
     }
   }
   if (declaration.variants.length === 0) {
@@ -139,6 +161,9 @@ function validateFunctionSignature(
 ): void {
   validateType(declaration.returnType, structs, enums, fileName, true);
   if (declaration.errorType) validateType(declaration.errorType, structs, enums, fileName, false);
+  if (declaration.errorType && hasCleanupType(declaration.errorType.name, structs)) {
+    throw new DiagnosticError(fileName, declaration.errorType.location, "throwing cleanup-bearing error values is not implemented in this bootstrap stage");
+  }
   if (declaration.errorType && declaration.returnType.name === "void") {
     throw new DiagnosticError(fileName, declaration.returnType.location, "void success results are not implemented in this bootstrap stage");
   }
@@ -256,6 +281,7 @@ function analyzeStatement(
       } else if (initializerType === "never") {
         throw new DiagnosticError(fileName, statement.initializer.location, "cannot bind a value from an expression that never produces one");
       }
+      rejectNamedOwnedMove(statement.initializer, variableType, structs, fileName);
       locals.set(statement.name, variableType);
       return;
     }
@@ -272,6 +298,7 @@ function analyzeStatement(
       }
       const actual = inferDirectValue(statement.expression, owner, locals, globals, structs, enums, fileName);
       requireAssignable(expected, actual, statement.expression, fileName);
+      rejectNamedOwnedMove(statement.expression, expected, structs, fileName);
       return;
     }
     case "throw": {
@@ -299,7 +326,12 @@ function analyzeStatement(
       return;
     }
     case "expressionStatement":
-      inferDirectValue(statement.expression, owner, locals, globals, structs, enums, fileName);
+      {
+        const type = inferDirectValue(statement.expression, owner, locals, globals, structs, enums, fileName);
+        if (hasCleanupType(type, structs)) {
+          throw new DiagnosticError(fileName, statement.expression.location, "a cleanup-bearing value must be bound or transferred; it cannot be discarded");
+        }
+      }
       return;
     case "match": {
       const subjectType = inferExpression(statement.expression, locals, globals, structs, enums, fileName);
@@ -395,7 +427,9 @@ function inferValueArm(
   fileName: string,
 ): ValueType {
   if (statement.kind === "expressionStatement" || statement.kind === "yield") {
-    return inferDirectValue(statement.expression, owner, locals, globals, structs, enums, fileName);
+    const type = inferDirectValue(statement.expression, owner, locals, globals, structs, enums, fileName);
+    rejectNamedOwnedMove(statement.expression, type, structs, fileName);
+    return type;
   }
   if (statement.kind === "return" || statement.kind === "throw") {
     analyzeStatement(statement, owner, locals, globals, structs, enums, fileName);
@@ -544,6 +578,7 @@ function inferExpression(
         }
         const actual = inferExpression(initializer.expression, locals, globals, structs, enums, fileName);
         requireAssignable(field.type.name, actual, initializer.expression, fileName);
+        rejectNamedOwnedMove(initializer.expression, field.type.name, structs, fileName);
       }
       const missing = declaration.fields.find((field) => !provided.has(field.name));
       if (missing) {
@@ -587,6 +622,9 @@ function inferExpression(
         }
       }
       const receiverType = inferExpression(expression.object, locals, globals, structs, enums, fileName);
+      if (hasCleanupType(receiverType, structs) && !isNamedStorageExpression(expression.object)) {
+        throw new DiagnosticError(fileName, expression.object.location, "a cleanup-bearing temporary must be bound before borrowing one of its members");
+      }
       const declaration = structs.get(receiverType);
       if (!declaration) {
         throw new DiagnosticError(fileName, expression.location, `type ${JSON.stringify(receiverType)} has no members`);
@@ -616,10 +654,16 @@ function inferExpression(
           }
         }
         if (isForeignMember(expression.callee, globals)) {
-          for (const argument of expression.arguments) inferExpression(argument, locals, globals, structs, enums, fileName);
+          for (const argument of expression.arguments) {
+            const argumentType = inferExpression(argument, locals, globals, structs, enums, fileName);
+            rejectNamedOwnedMove(argument, argumentType, structs, fileName);
+          }
           return "unknown";
         }
         const receiverType = inferExpression(expression.callee.object, locals, globals, structs, enums, fileName);
+        if (hasCleanupType(receiverType, structs) && !isNamedStorageExpression(expression.callee.object)) {
+          throw new DiagnosticError(fileName, expression.callee.object.location, "a cleanup-bearing temporary must be bound before calling one of its methods");
+        }
         const declaration = structs.get(receiverType);
         const method = declaration?.methods.find((candidate) => candidate.name === expression.callee.property);
         if (!declaration || !method) {
@@ -672,7 +716,88 @@ function checkArguments(
   for (let index = 0; index < target.parameters.length; index += 1) {
     const actual = inferExpression(args[index], locals, globals, structs, enums, fileName);
     requireAssignable(target.parameters[index].type.name, actual, args[index], fileName);
+    rejectNamedOwnedMove(args[index], target.parameters[index].type.name, structs, fileName);
   }
+}
+
+function validateDeinitControlFlow(statements: Statement[], fileName: string): void {
+  for (const statement of statements) {
+    if (statement.kind === "return" || statement.kind === "throw" || statement.kind === "yield") {
+      throw new DiagnosticError(fileName, statement.location, `deinit cannot contain ${JSON.stringify(statement.kind)}`);
+    }
+    if (statement.kind === "block") validateDeinitControlFlow(statement.statements, fileName);
+    if (statement.kind === "variable") validateDeinitExpression(statement.initializer, fileName);
+    if (statement.kind === "expressionStatement") validateDeinitExpression(statement.expression, fileName);
+    if (statement.kind === "if") {
+      validateDeinitExpression(statement.condition, fileName);
+      validateDeinitControlFlow(statement.thenBranch.statements, fileName);
+      if (statement.elseBranch?.kind === "block") validateDeinitControlFlow(statement.elseBranch.statements, fileName);
+      if (statement.elseBranch?.kind === "if") validateDeinitControlFlow([statement.elseBranch], fileName);
+    }
+    if (statement.kind === "match") {
+      validateDeinitExpression(statement.expression, fileName);
+      for (const arm of statement.arms) validateDeinitControlFlow([arm.body], fileName);
+    }
+  }
+}
+
+function validateDeinitExpression(expression: Expression, fileName: string): void {
+  if (expression.kind === "unary") validateDeinitExpression(expression.operand, fileName);
+  if (expression.kind === "binary") {
+    validateDeinitExpression(expression.left, fileName);
+    validateDeinitExpression(expression.right, fileName);
+  }
+  if (expression.kind === "call") {
+    validateDeinitExpression(expression.callee, fileName);
+    for (const argument of expression.arguments) validateDeinitExpression(argument, fileName);
+  }
+  if (expression.kind === "member") validateDeinitExpression(expression.object, fileName);
+  if (expression.kind === "structExpression") {
+    for (const field of expression.fields) validateDeinitExpression(field.expression, fileName);
+  }
+  if (expression.kind === "variantExpression") validateDeinitExpression(expression.payload, fileName);
+  if (expression.kind === "attempt" || expression.kind === "try") {
+    validateDeinitExpression(expression.expression, fileName);
+  }
+  if (expression.kind === "matchExpression") {
+    validateDeinitExpression(expression.expression, fileName);
+    for (const arm of expression.arms) validateDeinitControlFlow([arm.body], fileName);
+  }
+}
+
+function rejectNamedOwnedMove(
+  expression: Expression,
+  type: ValueType,
+  structs: Map<string, StructDeclaration>,
+  fileName: string,
+): void {
+  if (!hasCleanupType(type, structs)) return;
+  if (expression.kind !== "identifier" && expression.kind !== "member") return;
+  throw new DiagnosticError(
+    fileName,
+    expression.location,
+    "moving a cleanup-bearing value from named storage is not implemented yet; construct or return a fresh value",
+  );
+}
+
+function isNamedStorageExpression(expression: Expression): boolean {
+  if (expression.kind === "identifier") return true;
+  return expression.kind === "member" && isNamedStorageExpression(expression.object);
+}
+
+function hasCleanupType(
+  type: ValueType,
+  structs: Map<string, StructDeclaration>,
+  visiting = new Set<string>(),
+): boolean {
+  if (type === "unknown" || type === "never" || visiting.has(type)) return false;
+  const declaration = structs.get(type);
+  if (!declaration) return false;
+  if (declaration.deinitializer) return true;
+  visiting.add(type);
+  const result = declaration.fields.some((field) => hasCleanupType(field.type.name, structs, visiting));
+  visiting.delete(type);
+  return result;
 }
 
 function isForeignMember(

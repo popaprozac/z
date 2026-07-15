@@ -10,6 +10,7 @@ export type TokenKind =
   | "function"
   | "struct"
   | "enum"
+  | "deinit"
   | "match"
   | "if"
   | "else"
@@ -60,6 +61,7 @@ const keywords = new Map<string, TokenKind>([
   ["function", "function"],
   ["struct", "struct"],
   ["enum", "enum"],
+  ["deinit", "deinit"],
   ["match", "match"],
   ["if", "if"],
   ["else", "else"],
