@@ -153,6 +153,44 @@ test("compiles payload enums and exhaustive matches", () => {
   assert.equal(result.stdout, "matched=42\n");
 });
 
+test("compiles expression matches with concise and yielding block arms", () => {
+  const example = resolve(projectRoot, "examples/match-expression.z");
+  const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, "code=41\ndirect=41\nyielded=42\n");
+});
+
+test("requires yield to target a value-producing block", () => {
+  const source = `
+    function main(): i32 {
+      yield 42;
+      return 0;
+    }
+  `;
+  assert.throws(
+    () => compileToC(source, "orphan-yield.z"),
+    /orphan-yield\.z:3:7: error: yield requires an enclosing value-producing block/,
+  );
+});
+
+test("requires expression match arms to agree on a value type", () => {
+  const source = `
+    enum Choice { first i32, second i32, }
+    function main(): i32 {
+      const choice = Choice.first 42;
+      const value = match choice {
+        first number => number;
+        second number => "wrong";
+      };
+      return value;
+    }
+  `;
+  assert.throws(
+    () => compileToC(source, "match-types.z"),
+    /match-types\.z:7:9: error: match arm produces cstring, but previous arms produce i32/,
+  );
+});
+
 test("requires explicit handling for throwing calls", () => {
   const source = `
     struct Problem { code: i32; }
@@ -243,5 +281,6 @@ test("editor grammar tracks keywords without reserving Result variants", () => {
   const keywordPattern = grammar.repository.keywords.patterns.map((pattern: { match: string }) => pattern.match).join(" ");
   assert.match(keywordPattern, /throw/);
   assert.match(keywordPattern, /attempt/);
+  assert.match(keywordPattern, /yield/);
   assert.doesNotMatch(keywordPattern, /success|failure/);
 });

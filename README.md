@@ -5,9 +5,10 @@ safe value semantics, deterministic cleanup, typed errors, and first-class
 interop with C-family platform APIs.
 
 The bootstrap compiler currently implements a deliberately small vertical
-slice: imports, functions, local bindings, primitive expressions, calls, name
-resolution, primitive type checking, and C emission. It has no third-party
-dependencies and runs directly on Bun.
+slice: imports, functions, local bindings, primitive expressions, structs with
+methods, tagged enums, exhaustive statement and expression matches, typed
+errors, name resolution, static checking, and readable C emission. It has no
+third-party dependencies and runs directly on Bun.
 
 ```z
 import stdio from "stdio.h";
@@ -50,6 +51,19 @@ match result {
 }
 ```
 
+`match` can produce a value. A concise arm provides its expression directly;
+use `yield` when an arm needs multiple statements:
+
+```z
+const id: i32 = match result {
+  success user => {
+    log(user);
+    yield user.id;
+  }
+  failure error => throw error;
+};
+```
+
 Throwing functions use a compiler-provided `Result<T, E>` without constructor
 ceremony:
 
@@ -85,6 +99,7 @@ bun run z emit examples/first.z
 bun run z run examples/first.z
 bun run z run examples/structs.z
 bun run z run examples/match.z
+bun run z run examples/match-expression.z
 bun run z run examples/result.z
 bun run z run examples/try.z
 bun test

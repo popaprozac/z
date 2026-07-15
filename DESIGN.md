@@ -80,6 +80,26 @@ match event {
 The intended pattern system is exhaustive and eventually includes enum
 variants, type patterns, destructuring, guards, literals, and wildcards.
 
+`match` is also an expression. Concise arms provide their expression value;
+multi-statement arms use `yield` to explicitly provide a value to the nearest
+enclosing value-producing construct:
+
+```z
+const name: string = match result {
+  success user => {
+    log(user);
+    yield user.name;
+  }
+  failure error => throw error;
+};
+```
+
+`return` and `throw` still exit the enclosing function. They have the bottom
+type, so an arm that exits does not need to agree with the other arms' value
+type. A future generator may use the same `yield` keyword; lexical nesting
+selects the nearest yield target, allowing a match expression inside a
+generator to intercept its own yields without ambiguity.
+
 ## Async and concurrency
 
 Z keeps suspension explicit. Full colorless async is not a goal because hidden

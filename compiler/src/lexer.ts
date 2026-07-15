@@ -16,6 +16,7 @@ export type TokenKind =
   | "return"
   | "throws"
   | "throw"
+  | "yield"
   | "attempt"
   | "try"
   | "leftParen"
@@ -52,6 +53,7 @@ const keywords = new Map<string, TokenKind>([
   ["return", "return"],
   ["throws", "throws"],
   ["throw", "throw"],
+  ["yield", "yield"],
   ["attempt", "attempt"],
   ["try", "try"],
 ]);

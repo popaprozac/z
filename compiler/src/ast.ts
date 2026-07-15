@@ -67,7 +67,14 @@ export type TypeReference = {
   readonly location: SourceLocation;
 };
 
-export type Statement = VariableStatement | ReturnStatement | ThrowStatement | ExpressionStatement | MatchStatement;
+export type Statement =
+  | VariableStatement
+  | ReturnStatement
+  | ThrowStatement
+  | YieldStatement
+  | ExpressionStatement
+  | BlockStatement
+  | MatchStatement;
 
 export type VariableStatement = {
   readonly kind: "variable";
@@ -90,9 +97,21 @@ export type ThrowStatement = {
   readonly location: SourceLocation;
 };
 
+export type YieldStatement = {
+  readonly kind: "yield";
+  readonly expression: Expression;
+  readonly location: SourceLocation;
+};
+
 export type ExpressionStatement = {
   readonly kind: "expressionStatement";
   readonly expression: Expression;
+  readonly location: SourceLocation;
+};
+
+export type BlockStatement = {
+  readonly kind: "block";
+  readonly statements: Statement[];
   readonly location: SourceLocation;
 };
 
@@ -120,7 +139,8 @@ export type Expression =
   | StructExpression
   | VariantExpression
   | AttemptExpression
-  | TryExpression;
+  | TryExpression
+  | MatchExpression;
 
 export type NumberExpression = {
   readonly kind: "number";
@@ -192,5 +212,12 @@ export type AttemptExpression = {
 export type TryExpression = {
   readonly kind: "try";
   readonly expression: Expression;
+  readonly location: SourceLocation;
+};
+
+export type MatchExpression = {
+  readonly kind: "matchExpression";
+  readonly expression: Expression;
+  readonly arms: MatchArm[];
   readonly location: SourceLocation;
 };

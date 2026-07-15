@@ -17,6 +17,7 @@ type GenerationContext = {
   readonly owner: FunctionDeclaration;
   readonly matchCounter: { value: number };
   readonly tryCounter: { value: number };
+  readonly valueCounter: { value: number };
 };
 
 const primitiveTypeNames: Record<string, string> = {
@@ -113,13 +114,12 @@ function generateFunction(
     owner: declaration,
     matchCounter: { value: 0 },
     tryCounter: { value: 0 },
+    valueCounter: { value: 0 },
   };
   const body = declaration.body.map((statement) => {
     const generated = generateStatement(statement, context);
     if (statement.kind === "variable") {
-      const type = statement.type?.name ?? (statement.initializer.kind === "try"
-        ? trySuccessType(statement.initializer, context)
-        : inferExpressionType(statement.initializer, context));
+      const type = statement.type?.name ?? directValueType(statement.initializer, context);
       localTypes.set(statement.name, type);
     }
     return `  ${generated}`;
@@ -148,37 +148,60 @@ function generateFunctionSignature(
 function generateStatement(statement: Statement, context: GenerationContext): string {
   switch (statement.kind) {
     case "variable": {
-      const zType = statement.type?.name ?? (statement.initializer.kind === "try"
-        ? trySuccessType(statement.initializer, context)
-        : inferExpressionType(statement.initializer, context));
+      const zType = statement.type?.name ?? directValueType(statement.initializer, context);
       const declaration = generateLocalDeclaration(zType, statement.name, statement.mutable, context.structs, context.enums);
-      if (statement.initializer.kind === "try") {
-        return generateTry(statement.initializer, context, (value) => `${declaration} = ${value};`);
+      if (statement.initializer.kind === "matchExpression") {
+        const temporary = `_z_value_${context.valueCounter.value++}`;
+        const temporaryDeclaration = generateLocalDeclaration(zType, temporary, true, context.structs, context.enums);
+        return `${temporaryDeclaration};\n  ${generateDirectValue(statement.initializer, context, (value) => `${temporary} = ${value};`)}\n  ${declaration} = ${temporary};`;
       }
-      return `${declaration} = ${generateExpression(statement.initializer, context)};`;
+      return generateDirectValue(statement.initializer, context, (value) => `${declaration} = ${value};`);
     }
     case "return":
       if (!statement.expression) return "return;";
-      if (statement.expression.kind === "try") {
-        return generateTry(statement.expression, context, (value) => generateSuccessReturn(value, context));
-      }
-      if (context.owner.errorType) {
-        const result = resultTypeName(context.owner.returnType.name, context.owner.errorType.name);
-        return `return (${enumName(result)}){ .tag = ${variantTag(result, "success")}, .data.success = ${generateExpression(statement.expression, context)} };`;
-      }
-      return `return ${generateExpression(statement.expression, context)};`;
+      return generateDirectValue(statement.expression, context, (value) => generateSuccessReturn(value, context), true);
     case "throw": {
       const result = resultTypeName(context.owner.returnType.name, context.owner.errorType!.name);
       return `return (${enumName(result)}){ .tag = ${variantTag(result, "failure")}, .data.failure = ${generateExpression(statement.expression, context)} };`;
     }
+    case "yield":
+      throw new Error("yield must be lowered by its enclosing value-producing block");
+    case "block":
+      return generateBlock(statement.statements, context);
     case "expressionStatement":
-      if (statement.expression.kind === "try") {
-        return generateTry(statement.expression, context, (value) => `(void)${value};`);
-      }
-      return `${generateExpression(statement.expression, context)};`;
+      return generateDirectValue(statement.expression, context, (value) => `(void)${value};`);
     case "match":
       return generateMatch(statement, context);
   }
+}
+
+function generateDirectValue(
+  expression: Expression,
+  context: GenerationContext,
+  consumeValue: (value: string) => string,
+  consumeTerminates = false,
+): string {
+  if (expression.kind === "try") return generateTry(expression, context, consumeValue);
+  if (expression.kind === "matchExpression") {
+    return generateMatchExpression(expression, context, consumeValue, consumeTerminates);
+  }
+  return consumeValue(generateExpression(expression, context));
+}
+
+function generateBlock(statements: Statement[], context: GenerationContext): string {
+  const blockTypes = new Map(context.localTypes);
+  const blockContext = { ...context, localTypes: blockTypes };
+  const body = statements.map((statement) => {
+    const generated = generateStatement(statement, blockContext);
+    recordVariableType(statement, blockContext);
+    return `  ${generated}`;
+  }).join("\n");
+  return `{\n${body}\n}`;
+}
+
+function recordVariableType(statement: Statement, context: GenerationContext): void {
+  if (statement.kind !== "variable") return;
+  context.localTypes.set(statement.name, statement.type?.name ?? directValueType(statement.initializer, context));
 }
 
 function generateSuccessReturn(value: string, context: GenerationContext): string {
@@ -252,8 +275,74 @@ function generateMatch(statement: Extract<Statement, { kind: "match" }>, context
   return `const ${enumName(type)} ${temporary} = ${subject};\n  switch (${temporary}.tag) {\n${arms}\n  }`;
 }
 
+function generateMatchExpression(
+  expression: Extract<Expression, { kind: "matchExpression" }>,
+  context: GenerationContext,
+  consumeValue: (value: string) => string,
+  consumeTerminates: boolean,
+): string {
+  const type = inferExpressionType(expression.expression, context);
+  const declaration = context.enums.get(type)!;
+  const temporary = `_z_match_${context.matchCounter.value++}`;
+  const subject = generateExpression(expression.expression, context);
+  const arms = expression.arms.map((arm) => {
+    const variant = declaration.variants.find((candidate) => candidate.name === arm.variantName)!;
+    const armTypes = new Map(context.localTypes);
+    const binding = variant.payload && arm.binding
+      ? `\n      const ${mapType(variant.payload.name, context.structs, context.enums)} ${arm.binding} = ${temporary}.data.${variant.name};`
+      : "";
+    if (variant.payload && arm.binding) armTypes.set(arm.binding, variant.payload.name);
+    const armContext = { ...context, localTypes: armTypes };
+    const body = generateValueArm(arm.body, armContext, consumeValue, consumeTerminates);
+    const breakStatement = consumeTerminates || valueArmTerminates(arm.body) ? "" : "\n      break;";
+    return `    case ${variantTag(type, variant.name)}: {${binding}\n      ${body}${breakStatement}\n    }`;
+  }).join("\n");
+  return `const ${enumName(type)} ${temporary} = ${subject};\n  switch (${temporary}.tag) {\n${arms}\n  }`;
+}
+
+function generateValueArm(
+  statement: Statement,
+  context: GenerationContext,
+  consumeValue: (value: string) => string,
+  consumeTerminates: boolean,
+): string {
+  if (statement.kind === "expressionStatement" || statement.kind === "yield") {
+    return generateDirectValue(statement.expression, context, consumeValue, consumeTerminates);
+  }
+  if (statement.kind === "return" || statement.kind === "throw") {
+    return generateStatement(statement, context);
+  }
+  if (statement.kind === "block") {
+    const blockTypes = new Map(context.localTypes);
+    const blockContext = { ...context, localTypes: blockTypes };
+    const prefix = statement.statements.slice(0, -1).map((nested) => {
+      const generated = generateStatement(nested, blockContext);
+      recordVariableType(nested, blockContext);
+      return generated;
+    });
+    const final = generateValueArm(statement.statements.at(-1)!, blockContext, consumeValue, consumeTerminates);
+    return [...prefix, final].join("\n      ");
+  }
+  if (statement.kind === "match") {
+    return generateMatchExpression(
+      { ...statement, kind: "matchExpression" },
+      context,
+      consumeValue,
+      consumeTerminates,
+    );
+  }
+  throw new Error("invalid value-producing match arm");
+}
+
+function valueArmTerminates(statement: Statement): boolean {
+  if (statement.kind === "return" || statement.kind === "throw") return true;
+  if (statement.kind === "block") return valueArmTerminates(statement.statements.at(-1)!);
+  return false;
+}
+
 function statementTerminates(statement: Statement): boolean {
   if (statement.kind === "return" || statement.kind === "throw") return true;
+  if (statement.kind === "block") return statementTerminates(statement.statements.at(-1)!);
   return statement.kind === "match" && statement.arms.length > 0
     && statement.arms.every((arm) => statementTerminates(arm.body));
 }
@@ -280,6 +369,8 @@ function generateExpression(expression: Expression, context: GenerationContext):
       return generateExpression(expression.expression, context);
     case "try":
       throw new Error("try must be lowered from its containing statement");
+    case "matchExpression":
+      throw new Error("match must be lowered from its containing statement");
     case "member": {
       if (expression.object.kind === "identifier") {
         const declaration = context.enums.get(expression.object.name);
@@ -335,6 +426,8 @@ function inferExpressionType(expression: Expression, context: GenerationContext)
     }
     case "try":
       return trySuccessType(expression, context);
+    case "matchExpression":
+      return matchExpressionType(expression, context);
     case "member": {
       if (expression.object.kind === "identifier" && context.enums.has(expression.object.name)) {
         return expression.object.name;
@@ -357,6 +450,34 @@ function inferExpressionType(expression: Expression, context: GenerationContext)
       return "i32";
     }
   }
+}
+
+function directValueType(expression: Expression, context: GenerationContext): string {
+  if (expression.kind === "try") return trySuccessType(expression, context);
+  if (expression.kind === "matchExpression") return matchExpressionType(expression, context);
+  return inferExpressionType(expression, context);
+}
+
+function matchExpressionType(expression: Extract<Expression, { kind: "matchExpression" }>, context: GenerationContext): string {
+  const subjectType = inferExpressionType(expression.expression, context);
+  const declaration = context.enums.get(subjectType)!;
+  for (const arm of expression.arms) {
+    const variant = declaration.variants.find((candidate) => candidate.name === arm.variantName)!;
+    const armTypes = new Map(context.localTypes);
+    if (variant.payload && arm.binding) armTypes.set(arm.binding, variant.payload.name);
+    const type = valueArmType(arm.body, { ...context, localTypes: armTypes });
+    if (type) return type;
+  }
+  return "i32";
+}
+
+function valueArmType(statement: Statement, context: GenerationContext): string | null {
+  if (statement.kind === "expressionStatement" || statement.kind === "yield") {
+    return directValueType(statement.expression, context);
+  }
+  if (statement.kind === "block") return valueArmType(statement.statements.at(-1)!, context);
+  if (statement.kind === "match") return matchExpressionType({ ...statement, kind: "matchExpression" }, context);
+  return null;
 }
 
 function isForeignMember(

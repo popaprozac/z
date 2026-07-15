@@ -67,7 +67,14 @@ export function parse(tokens: Token[], fileName: string): Program {
     }
   };
 
+  let parseStatement: () => Statement;
+
   const parsePrimary = (): Expression => {
+    if (match("match")) {
+      const token = previous();
+      const expression = parseExpression();
+      return { kind: "matchExpression", expression, arms: parseMatchArms(), location: token.location };
+    }
     if (match("attempt")) {
       const token = previous();
       return { kind: "attempt", expression: parsePostfix(), location: token.location };
@@ -165,26 +172,37 @@ export function parse(tokens: Token[], fileName: string): Program {
 
   const parseExpression = (): Expression => parseBinary(0);
 
-  const parseStatement = (): Statement => {
+  const parseMatchArms = () => {
+    expect("leftBrace", "`{`");
+    const arms = [];
+    while (!at("rightBrace") && !at("eof")) {
+      const variantToken = expect("identifier", "a variant name");
+      let binding: string | null = null;
+      if (at("identifier")) binding = take().text;
+      expect("fatArrow", "`=>`");
+      arms.push({
+        variantName: variantToken.text,
+        binding,
+        body: parseStatement(),
+        location: variantToken.location,
+      });
+    }
+    expect("rightBrace", "`}`");
+    return arms;
+  };
+
+  parseStatement = (): Statement => {
     if (match("match")) {
       const matchToken = previous();
       const expression = parseExpression();
-      expect("leftBrace", "`{`");
-      const arms = [];
-      while (!at("rightBrace") && !at("eof")) {
-        const variantToken = expect("identifier", "a variant name");
-        let binding: string | null = null;
-        if (at("identifier")) binding = take().text;
-        expect("fatArrow", "`=>`");
-        arms.push({
-          variantName: variantToken.text,
-          binding,
-          body: parseStatement(),
-          location: variantToken.location,
-        });
-      }
+      return { kind: "match", expression, arms: parseMatchArms(), location: matchToken.location };
+    }
+    if (match("leftBrace")) {
+      const blockToken = previous();
+      const statements: Statement[] = [];
+      while (!at("rightBrace") && !at("eof")) statements.push(parseStatement());
       expect("rightBrace", "`}`");
-      return { kind: "match", expression, arms, location: matchToken.location };
+      return { kind: "block", statements, location: blockToken.location };
     }
     if (match("const") || match("let")) {
       const declarationToken = previous();
@@ -207,6 +225,12 @@ export function parse(tokens: Token[], fileName: string): Program {
       const expression = parseExpression();
       expect("semicolon", "`;`");
       return { kind: "throw", expression, location: throwToken.location };
+    }
+    if (match("yield")) {
+      const yieldToken = previous();
+      const expression = parseExpression();
+      expect("semicolon", "`;`");
+      return { kind: "yield", expression, location: yieldToken.location };
     }
     const expression = parseExpression();
     expect("semicolon", "`;`");

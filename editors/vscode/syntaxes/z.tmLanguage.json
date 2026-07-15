@@ -50,7 +50,7 @@
     "keywords": {
       "patterns": [{
         "name": "keyword.control.z",
-        "match": "\\b(?:return|throws|throw|try|attempt|match|if|else|while|for|break|continue|async|await|spawn|deinit|unsafe)\\b"
+        "match": "\\b(?:return|throws|throw|yield|try|attempt|match|if|else|while|for|break|continue|async|await|spawn|deinit|unsafe)\\b"
       }, {
         "name": "storage.modifier.z",
         "match": "\\b(?:const|let|mut|weak|static|private|public)\\b"

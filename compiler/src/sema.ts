@@ -12,7 +12,7 @@ import type {
 import { DiagnosticError } from "./diagnostics.ts";
 import { resultTypeName } from "./results.ts";
 
-type ValueType = string | "unknown";
+type ValueType = string | "unknown" | "never";
 
 type SymbolValue =
   | { readonly kind: "function"; readonly declaration: FunctionDeclaration }
@@ -202,6 +202,7 @@ function analyzeFunction(
 function statementReturns(statement: Statement | undefined): boolean {
   if (!statement) return false;
   if (statement.kind === "return" || statement.kind === "throw") return true;
+  if (statement.kind === "block") return statementReturns(statement.statements.at(-1));
   return statement.kind === "match" && statement.arms.length > 0
     && statement.arms.every((arm) => statementReturns(arm.body));
 }
@@ -220,9 +221,7 @@ function analyzeStatement(
       if (locals.has(statement.name)) {
         throw new DiagnosticError(fileName, statement.location, `duplicate local ${JSON.stringify(statement.name)}`);
       }
-      const initializerType = statement.initializer.kind === "try"
-        ? inferTrySuccess(statement.initializer, owner, locals, globals, structs, enums, fileName)
-        : inferExpression(statement.initializer, locals, globals, structs, enums, fileName);
+      const initializerType = inferDirectValue(statement.initializer, owner, locals, globals, structs, enums, fileName);
       let variableType = initializerType;
       if (statement.type) {
         validateType(statement.type, structs, enums, fileName, false);
@@ -234,6 +233,8 @@ function analyzeStatement(
           statement.initializer.location,
           "cannot infer the result of an imported function until its header is typed; add a type annotation",
         );
+      } else if (initializerType === "never") {
+        throw new DiagnosticError(fileName, statement.initializer.location, "cannot bind a value from an expression that never produces one");
       }
       locals.set(statement.name, variableType);
       return;
@@ -249,9 +250,7 @@ function analyzeStatement(
       if (expected === "void") {
         throw new DiagnosticError(fileName, statement.location, "a void function cannot return a value");
       }
-      const actual = statement.expression.kind === "try"
-        ? inferTrySuccess(statement.expression, owner, locals, globals, structs, enums, fileName)
-        : inferExpression(statement.expression, locals, globals, structs, enums, fileName);
+      const actual = inferDirectValue(statement.expression, owner, locals, globals, structs, enums, fileName);
       requireAssignable(expected, actual, statement.expression, fileName);
       return;
     }
@@ -263,12 +262,17 @@ function analyzeStatement(
       requireAssignable(owner.errorType.name, actual, statement.expression, fileName);
       return;
     }
-    case "expressionStatement":
-      if (statement.expression.kind === "try") {
-        inferTrySuccess(statement.expression, owner, locals, globals, structs, enums, fileName);
-      } else {
-        inferExpression(statement.expression, locals, globals, structs, enums, fileName);
+    case "yield":
+      throw new DiagnosticError(fileName, statement.location, "yield requires an enclosing value-producing block");
+    case "block": {
+      const blockLocals = new Map(locals);
+      for (const nested of statement.statements) {
+        analyzeStatement(nested, owner, blockLocals, globals, structs, enums, fileName);
       }
+      return;
+    }
+    case "expressionStatement":
+      inferDirectValue(statement.expression, owner, locals, globals, structs, enums, fileName);
       return;
     case "match": {
       const subjectType = inferExpression(statement.expression, locals, globals, structs, enums, fileName);
@@ -294,6 +298,104 @@ function analyzeStatement(
       return;
     }
   }
+}
+
+function inferDirectValue(
+  expression: Expression,
+  owner: FunctionDeclaration,
+  locals: Map<string, ValueType>,
+  globals: Map<string, SymbolValue>,
+  structs: Map<string, StructDeclaration>,
+  enums: Map<string, EnumDeclaration>,
+  fileName: string,
+): ValueType {
+  if (expression.kind === "try") {
+    return inferTrySuccess(expression, owner, locals, globals, structs, enums, fileName);
+  }
+  if (expression.kind === "matchExpression") {
+    return inferMatchExpression(expression, owner, locals, globals, structs, enums, fileName);
+  }
+  return inferExpression(expression, locals, globals, structs, enums, fileName);
+}
+
+function inferMatchExpression(
+  expression: Extract<Expression, { kind: "matchExpression" }>,
+  owner: FunctionDeclaration,
+  locals: Map<string, ValueType>,
+  globals: Map<string, SymbolValue>,
+  structs: Map<string, StructDeclaration>,
+  enums: Map<string, EnumDeclaration>,
+  fileName: string,
+): ValueType {
+  const subjectType = inferExpression(expression.expression, locals, globals, structs, enums, fileName);
+  const declaration = enums.get(subjectType);
+  if (!declaration) {
+    throw new DiagnosticError(fileName, expression.expression.location, `match requires an enum value, found ${subjectType}`);
+  }
+
+  const covered = new Set<string>();
+  let resultType: ValueType = "never";
+  for (const arm of expression.arms) {
+    const variant = declaration.variants.find((candidate) => candidate.name === arm.variantName);
+    if (!variant) throw new DiagnosticError(fileName, arm.location, `unknown variant ${JSON.stringify(arm.variantName)}`);
+    if (covered.has(variant.name)) throw new DiagnosticError(fileName, arm.location, `duplicate match arm ${JSON.stringify(variant.name)}`);
+    covered.add(variant.name);
+    if (Boolean(variant.payload) !== Boolean(arm.binding)) {
+      throw new DiagnosticError(fileName, arm.location, variant.payload ? "payload variant requires a binding" : "payloadless variant cannot bind a value");
+    }
+    const armLocals = new Map(locals);
+    if (variant.payload && arm.binding) armLocals.set(arm.binding, variant.payload.name);
+    const armType = inferValueArm(arm.body, owner, armLocals, globals, structs, enums, fileName);
+    if (armType !== "never") {
+      if (resultType === "never" || resultType === "unknown") resultType = armType;
+      else if (armType !== "unknown" && armType !== resultType) {
+        throw new DiagnosticError(fileName, arm.location, `match arm produces ${armType}, but previous arms produce ${resultType}`);
+      }
+    }
+  }
+  const missing = declaration.variants.find((variant) => !covered.has(variant.name));
+  if (missing) throw new DiagnosticError(fileName, expression.location, `non-exhaustive match; missing ${declaration.name}.${missing.name}`);
+  return resultType;
+}
+
+function inferValueArm(
+  statement: Statement,
+  owner: FunctionDeclaration,
+  locals: Map<string, ValueType>,
+  globals: Map<string, SymbolValue>,
+  structs: Map<string, StructDeclaration>,
+  enums: Map<string, EnumDeclaration>,
+  fileName: string,
+): ValueType {
+  if (statement.kind === "expressionStatement" || statement.kind === "yield") {
+    return inferDirectValue(statement.expression, owner, locals, globals, structs, enums, fileName);
+  }
+  if (statement.kind === "return" || statement.kind === "throw") {
+    analyzeStatement(statement, owner, locals, globals, structs, enums, fileName);
+    return "never";
+  }
+  if (statement.kind === "block") {
+    if (statement.statements.length === 0) {
+      throw new DiagnosticError(fileName, statement.location, "a value-producing match arm cannot be empty");
+    }
+    const blockLocals = new Map(locals);
+    for (const nested of statement.statements.slice(0, -1)) {
+      analyzeStatement(nested, owner, blockLocals, globals, structs, enums, fileName);
+    }
+    return inferValueArm(statement.statements.at(-1)!, owner, blockLocals, globals, structs, enums, fileName);
+  }
+  if (statement.kind === "match") {
+    return inferMatchExpression(
+      { ...statement, kind: "matchExpression" },
+      owner,
+      locals,
+      globals,
+      structs,
+      enums,
+      fileName,
+    );
+  }
+  throw new DiagnosticError(fileName, statement.location, "a value-producing match arm must produce a value with an expression or `yield`");
 }
 
 function inferTrySuccess(
@@ -407,6 +509,8 @@ function inferExpression(
     }
     case "try":
       throw new DiagnosticError(fileName, expression.location, "try must be the direct value of a binding, return, or expression statement");
+    case "matchExpression":
+      throw new DiagnosticError(fileName, expression.location, "match must be the direct value of a binding, return, or expression statement");
     case "member": {
       if (isForeignMember(expression, globals)) return "unknown";
       if (expression.object.kind === "identifier") {
@@ -531,7 +635,7 @@ function validateType(
 }
 
 function requireAssignable(expected: ValueType, actual: ValueType, expression: Expression, fileName: string): void {
-  if (actual !== "unknown" && expected !== actual) {
+  if (actual !== "unknown" && actual !== "never" && expected !== actual) {
     throw new DiagnosticError(fileName, expression.location, `expected ${expected}, found ${actual}`);
   }
 }
