@@ -129,13 +129,13 @@ test("checks struct method arguments", () => {
 test("requires exhaustive enum matches", () => {
   const source = `
     enum Outcome {
-      success(i32),
-      failure(i32),
+      success i32,
+      failure i32,
     }
     function main(): i32 {
-      const outcome = Outcome.success(42);
+      const outcome = Outcome.success 42;
       match outcome {
-        Outcome.success(value) => return value;
+        success value => return value;
       }
     }
   `;

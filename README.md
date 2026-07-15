@@ -40,13 +40,13 @@ Tagged enums carry typed payloads and are matched exhaustively:
 
 ```z
 enum UserResult {
-  success(User),
-  failure(UserError),
+  success User,
+  failure UserError,
 }
 
 match result {
-  UserResult.success(user) => show(user);
-  UserResult.failure(error) => showError(error);
+  success user => show(user);
+  failure error => showError(error);
 }
 ```
 

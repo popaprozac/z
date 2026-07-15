@@ -102,6 +102,17 @@ export function parse(tokens: Token[], fileName: string): Program {
           location: token.location,
         };
       }
+      if (at("dot") && tokens[current + 1]?.kind === "identifier" && startsPrimary(tokens[current + 2]?.kind)) {
+        take();
+        const variant = take();
+        return {
+          kind: "variantExpression",
+          enumName: token.text,
+          variantName: variant.text,
+          payload: parsePrimary(),
+          location: token.location,
+        };
+      }
       return { kind: "identifier", name: token.text, location: token.location };
     }
     if (match("leftParen")) {
@@ -153,21 +164,15 @@ export function parse(tokens: Token[], fileName: string): Program {
       expect("leftBrace", "`{`");
       const arms = [];
       while (!at("rightBrace") && !at("eof")) {
-        const enumToken = expect("identifier", "an enum name");
-        expect("dot", "`.`");
         const variantToken = expect("identifier", "a variant name");
         let binding: string | null = null;
-        if (match("leftParen")) {
-          binding = expect("identifier", "a payload binding").text;
-          expect("rightParen", "`)`");
-        }
+        if (at("identifier")) binding = take().text;
         expect("fatArrow", "`=>`");
         arms.push({
-          enumName: enumToken.text,
           variantName: variantToken.text,
           binding,
           body: parseStatement(),
-          location: enumToken.location,
+          location: variantToken.location,
         });
       }
       expect("rightBrace", "`}`");
@@ -236,11 +241,7 @@ export function parse(tokens: Token[], fileName: string): Program {
     const variants = [];
     while (!at("rightBrace") && !at("eof")) {
       const variant = expect("identifier", "a variant name");
-      let payload = null;
-      if (match("leftParen")) {
-        payload = parseType();
-        expect("rightParen", "`)`");
-      }
+      const payload = at("identifier") ? parseType() : null;
       variants.push({ name: variant.text, payload, location: variant.location });
       if (!match("comma")) break;
     }
@@ -260,6 +261,10 @@ export function parse(tokens: Token[], fileName: string): Program {
     else throw new DiagnosticError(fileName, peek().location, "expected an import, struct, enum, or function declaration");
   }
   return { kind: "program", imports, structs, enums, functions };
+}
+
+function startsPrimary(kind: TokenKind | undefined): boolean {
+  return kind === "identifier" || kind === "number" || kind === "string";
 }
 
 function tokenDescription(token: Token): string {

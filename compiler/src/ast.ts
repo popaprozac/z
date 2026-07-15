@@ -97,7 +97,6 @@ export type MatchStatement = {
 };
 
 export type MatchArm = {
-  readonly enumName: string;
   readonly variantName: string;
   readonly binding: string | null;
   readonly body: Statement;
@@ -111,7 +110,8 @@ export type Expression =
   | BinaryExpression
   | CallExpression
   | MemberExpression
-  | StructExpression;
+  | StructExpression
+  | VariantExpression;
 
 export type NumberExpression = {
   readonly kind: "number";
@@ -163,5 +163,13 @@ export type StructExpression = {
 export type FieldInitializer = {
   readonly name: string;
   readonly expression: Expression;
+  readonly location: SourceLocation;
+};
+
+export type VariantExpression = {
+  readonly kind: "variantExpression";
+  readonly enumName: string;
+  readonly variantName: string;
+  readonly payload: Expression;
   readonly location: SourceLocation;
 };

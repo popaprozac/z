@@ -170,9 +170,16 @@ function generateMatch(statement: Extract<Statement, { kind: "match" }>, context
       : "";
     if (variant.payload && arm.binding) armTypes.set(arm.binding, variant.payload.name);
     const armContext = { ...context, localTypes: armTypes };
-    return `    case ${variantTag(type, variant.name)}: {${binding}\n      ${generateStatement(arm.body, armContext)}\n      break;\n    }`;
+    const breakStatement = statementTerminates(arm.body) ? "" : "\n      break;";
+    return `    case ${variantTag(type, variant.name)}: {${binding}\n      ${generateStatement(arm.body, armContext)}${breakStatement}\n    }`;
   }).join("\n");
   return `const ${enumName(type)} ${temporary} = ${subject};\n  switch (${temporary}.tag) {\n${arms}\n  }`;
+}
+
+function statementTerminates(statement: Statement): boolean {
+  if (statement.kind === "return") return true;
+  return statement.kind === "match" && statement.arms.length > 0
+    && statement.arms.every((arm) => statementTerminates(arm.body));
 }
 
 function generateExpression(expression: Expression, context: GenerationContext): string {
@@ -191,6 +198,8 @@ function generateExpression(expression: Expression, context: GenerationContext):
         .join(", ");
       return `(${structName(expression.typeName)}){ ${fields} }`;
     }
+    case "variantExpression":
+      return `(${enumName(expression.enumName)}){ .tag = ${variantTag(expression.enumName, expression.variantName)}, .data.${expression.variantName} = ${generateExpression(expression.payload, context)} }`;
     case "member": {
       if (expression.object.kind === "identifier") {
         const declaration = context.enums.get(expression.object.name);
@@ -239,6 +248,8 @@ function inferExpressionType(expression: Expression, context: GenerationContext)
       return context.localTypes.get(expression.name) ?? "i32";
     case "structExpression":
       return expression.typeName;
+    case "variantExpression":
+      return expression.enumName;
     case "member": {
       if (expression.object.kind === "identifier" && context.enums.has(expression.object.name)) {
         return expression.object.name;

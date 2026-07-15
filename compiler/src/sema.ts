@@ -254,9 +254,6 @@ function analyzeStatement(
       }
       const covered = new Set<string>();
       for (const arm of statement.arms) {
-        if (arm.enumName !== declaration.name) {
-          throw new DiagnosticError(fileName, arm.location, `expected variants of ${JSON.stringify(declaration.name)}`);
-        }
         const variant = declaration.variants.find((candidate) => candidate.name === arm.variantName);
         if (!variant) throw new DiagnosticError(fileName, arm.location, `unknown variant ${JSON.stringify(arm.variantName)}`);
         if (covered.has(variant.name)) throw new DiagnosticError(fileName, arm.location, `duplicate match arm ${JSON.stringify(variant.name)}`);
@@ -336,6 +333,19 @@ function inferExpression(
       if (missing) {
         throw new DiagnosticError(fileName, expression.location, `missing field ${JSON.stringify(missing.name)} when constructing ${JSON.stringify(declaration.name)}`);
       }
+      return declaration.name;
+    }
+    case "variantExpression": {
+      const declaration = enums.get(expression.enumName);
+      const variant = declaration?.variants.find((candidate) => candidate.name === expression.variantName);
+      if (!declaration || !variant) {
+        throw new DiagnosticError(fileName, expression.location, `unknown enum variant ${expression.enumName}.${expression.variantName}`);
+      }
+      if (!variant.payload) {
+        throw new DiagnosticError(fileName, expression.location, "payloadless variant does not accept a value");
+      }
+      const actual = inferExpression(expression.payload, locals, globals, structs, enums, fileName);
+      requireAssignable(variant.payload.name, actual, expression.payload, fileName);
       return declaration.name;
     }
     case "member": {
