@@ -224,10 +224,16 @@ common case remains simply:
 import platform from "platform.h";
 ```
 
-Selective imports are planned for large headers without changing the boundary
-model: `import { sqlite3_open, sqlite3_close } from "sqlite3.h";` binds only the
-named declarations, with aliases available for collision management. Namespace
-imports remain useful when provenance and breadth matter.
+Selective imports keep large headers out of local scope without changing the
+boundary model:
+
+```z
+import { sqlite3_open, sqlite3_close as closeDatabase } from "sqlite3.h";
+```
+
+This binds only those C functions. Namespace imports remain useful when
+provenance and breadth matter. The bootstrap implements selective functions
+first; imported types and constants will join the same binding model later.
 
 Imported C data remains namespaced but otherwise follows Z expression syntax:
 typedef-named records can appear in signatures, are built with checked struct

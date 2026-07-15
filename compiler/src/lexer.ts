@@ -7,6 +7,7 @@ export type TokenKind =
   | "string"
   | "import"
   | "from"
+  | "as"
   | "function"
   | "struct"
   | "enum"
@@ -60,6 +61,7 @@ export type Token = {
 const keywords = new Map<string, TokenKind>([
   ["import", "import"],
   ["from", "from"],
+  ["as", "as"],
   ["function", "function"],
   ["struct", "struct"],
   ["enum", "enum"],

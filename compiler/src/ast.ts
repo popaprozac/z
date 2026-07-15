@@ -15,7 +15,14 @@ export type Program = {
 export type ImportDeclaration = {
   readonly kind: "import";
   readonly moduleName: string;
+  readonly bindings: ImportBinding[] | null;
   readonly header: string;
+  readonly location: SourceLocation;
+};
+
+export type ImportBinding = {
+  readonly importedName: string;
+  readonly localName: string;
   readonly location: SourceLocation;
 };
 

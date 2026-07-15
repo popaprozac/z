@@ -582,6 +582,9 @@ function generateExpression(expression: Expression, context: GenerationContext):
     case "unary":
       return `(${expression.operator}${generateExpression(expression.operand, context)})`;
     case "identifier":
+      if (context.semanticInfo.foreignFunctionNames.has(expression.location.offset)) {
+        return context.semanticInfo.foreignFunctionNames.get(expression.location.offset)!;
+      }
       if (expression.name === "this") return "(*self)";
       if (context.semanticInfo.movedExpressions.has(expression.location.offset)) {
         const liveFlag = context.liveFlags.get(expression.name);

@@ -14,6 +14,7 @@ import type { Token, TokenKind } from "./lexer.ts";
 
 export function parse(tokens: Token[], fileName: string): Program {
   let current = 0;
+  let importCounter = 0;
 
   const peek = (): Token => tokens[current];
   const previous = (): Token => tokens[current - 1];
@@ -38,11 +39,33 @@ export function parse(tokens: Token[], fileName: string): Program {
 
   const parseImport = (): ImportDeclaration => {
     const start = expect("import", "`import`").location;
-    const moduleName = expect("identifier", "an import name").text;
+    let moduleName: string;
+    let bindings: ImportDeclaration["bindings"] = null;
+    if (match("leftBrace")) {
+      moduleName = `__z_selective_import_${importCounter++}`;
+      bindings = [];
+      if (at("rightBrace")) {
+        throw new DiagnosticError(fileName, peek().location, "a selective import requires at least one C function name");
+      }
+      do {
+        const imported = expect("identifier", "an imported C function name");
+        const local = match("as")
+          ? expect("identifier", "a local import alias")
+          : imported;
+        bindings.push({
+          importedName: imported.text,
+          localName: local.text,
+          location: imported.location,
+        });
+      } while (match("comma") && !at("rightBrace"));
+      expect("rightBrace", "`}`");
+    } else {
+      moduleName = expect("identifier", "an import name").text;
+    }
     expect("from", "`from`");
     const header = expect("string", "a header string").text;
     expect("semicolon", "`;`");
-    return { kind: "import", moduleName, header, location: start };
+    return { kind: "import", moduleName, bindings, header, location: start };
   };
 
   const parseParameters = (): Parameter[] => {

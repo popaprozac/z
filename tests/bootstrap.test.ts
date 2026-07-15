@@ -22,6 +22,63 @@ test("emits functions and direct imported C calls", () => {
   assert.doesNotMatch(generated, /stdio\.puts/);
 });
 
+test("selectively imports C functions with optional local aliases", () => {
+  const example = resolve(projectRoot, "examples/selective-import.z");
+  const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, "selective C imports\nanswer=42\n");
+
+  const generated = compileToC(readFileSync(example, "utf8"), example);
+  assert.match(generated, /puts\("selective C imports"\);/);
+  assert.match(generated, /printf\("answer=%d\\n", 42\);/);
+  assert.doesNotMatch(generated, /\bprint\(/);
+
+  const shadowed = `
+    import { printf as value } from "stdio.h";
+    function main(): i32 {
+      const value = 7;
+      return value;
+    }
+  `;
+  const shadowedC = compileToC(shadowed, "selective-shadow.z");
+  assert.match(shadowedC, /const int32_t value = 7;/);
+  assert.match(shadowedC, /return value;/);
+  assert.doesNotMatch(shadowedC, /return printf;/);
+});
+
+test("keeps unselected C functions out of scope", () => {
+  const source = `
+    import { puts } from "stdio.h";
+    function main(): i32 {
+      printf("not imported");
+      return 0;
+    }
+  `;
+  assert.throws(
+    () => compileToC(source, "selective-scope.z"),
+    /unknown function "printf"/,
+  );
+
+  const missing = source.replace("puts", "not_a_real_c_function").replace("printf", "not_a_real_c_function");
+  assert.throws(
+    () => compileToC(missing, "selective-missing.z"),
+    /header "stdio\.h" has no function "not_a_real_c_function"/,
+  );
+});
+
+test("shares imported C type identity across namespace and selective imports", () => {
+  const source = `
+    import geometry from "tests/fixtures/geometry.h";
+    import { z_read } from "tests/fixtures/geometry.h";
+    function main(): i32 {
+      const point = geometry.ZPoint { x: 20, y: 22 };
+      return z_read(point);
+    }
+  `;
+  const generated = compileToC(source, resolve(projectRoot, "selective-record.z"));
+  assert.match(generated, /return z_read\(&\(point\)\);/);
+});
+
 test("imports C function signatures through Clang", () => {
   const source = `
     import stdio from "stdio.h";
@@ -746,6 +803,7 @@ test("editor grammar tracks keywords without reserving Result variants", () => {
   assert.match(keywordPattern, /yield/);
   assert.match(keywordPattern, /deinit/);
   assert.match(keywordPattern, /out\|inout/);
+  assert.match(keywordPattern, /\bas\b/);
   assert.match(constantPattern, /true\|false/);
   assert.match(operatorPattern, /&&/);
   assert.doesNotMatch(keywordPattern, /success|failure/);

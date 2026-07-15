@@ -22,6 +22,7 @@ export type SemanticInfo = {
   readonly foreignExpressionTypes: ReadonlyMap<number, string>;
   readonly integerLiteralTypes: ReadonlyMap<number, string>;
   readonly foreignArgumentAccesses: ReadonlyMap<number, "in" | "out" | "inout">;
+  readonly foreignFunctionNames: ReadonlyMap<number, string>;
 };
 
 type AnalysisState = {
@@ -32,10 +33,12 @@ type AnalysisState = {
   readonly foreignExpressionTypes: Map<number, string>;
   readonly integerLiteralTypes: Map<number, string>;
   readonly foreignArgumentAccesses: Map<number, "in" | "out" | "inout">;
+  readonly foreignFunctionNames: Map<number, string>;
 };
 
 type SymbolValue =
   | { readonly kind: "function"; readonly declaration: FunctionDeclaration }
+  | { readonly kind: "foreignFunction"; readonly declaration: ForeignFunction }
   | { readonly kind: "foreignModule"; readonly module: ForeignModule }
   | { readonly kind: "struct"; readonly declaration: StructDeclaration }
   | { readonly kind: "enum"; readonly declaration: EnumDeclaration };
@@ -65,6 +68,7 @@ export function analyze(
     foreignExpressionTypes: new Map(),
     integerLiteralTypes: new Map(),
     foreignArgumentAccesses: new Map(),
+    foreignFunctionNames: new Map(),
   };
   const globals = new Map<string, SymbolValue>();
   const structs = new Map<string, StructDeclaration>();
@@ -73,7 +77,32 @@ export function analyze(
   for (const declaration of program.imports) {
     const module = foreignModules.get(declaration.moduleName);
     if (!module) throw new DiagnosticError(fileName, declaration.location, `header ${JSON.stringify(declaration.header)} was not resolved`);
-    declareGlobal(globals, declaration.moduleName, { kind: "foreignModule", module }, declaration.location, fileName);
+    if (!declaration.bindings) {
+      declareGlobal(globals, declaration.moduleName, { kind: "foreignModule", module }, declaration.location, fileName);
+      continue;
+    }
+    for (const binding of declaration.bindings) {
+      validateUserName(binding.localName, binding.location, fileName);
+      const foreignFunction = module.functions.get(binding.importedName);
+      if (!foreignFunction) {
+        const unsupportedKind = module.namedTypes.has(binding.importedName)
+          ? "type"
+          : module.constants.has(binding.importedName)
+            ? "constant"
+            : null;
+        const message = unsupportedKind
+          ? `selective ${unsupportedKind} imports are not implemented yet; import the header as a namespace`
+          : `header ${JSON.stringify(declaration.header)} has no function ${JSON.stringify(binding.importedName)}`;
+        throw new DiagnosticError(fileName, binding.location, message);
+      }
+      declareGlobal(
+        globals,
+        binding.localName,
+        { kind: "foreignFunction", declaration: foreignFunction },
+        binding.location,
+        fileName,
+      );
+    }
   }
 
   for (const declaration of program.structs) {
@@ -621,6 +650,9 @@ function inferExpression(
       if (global?.kind === "function") {
         throw new DiagnosticError(fileName, expression.location, "function values are not implemented; call the function instead");
       }
+      if (global?.kind === "foreignFunction") {
+        throw new DiagnosticError(fileName, expression.location, "foreign function values are not implemented; call the function instead");
+      }
       if (global?.kind === "foreignModule") {
         throw new DiagnosticError(fileName, expression.location, "an imported module must be followed by a member name");
       }
@@ -815,11 +847,15 @@ function inferExpression(
       if (expression.callee.kind !== "identifier") {
         throw new DiagnosticError(fileName, expression.callee.location, "this expression is not callable");
       }
+      if (locals.has(expression.callee.name)) {
+        throw new DiagnosticError(fileName, expression.callee.location, `${JSON.stringify(expression.callee.name)} is not callable`);
+      }
       const target = globals.get(expression.callee.name);
+      if (target?.kind === "foreignFunction") {
+        state.foreignFunctionNames.set(expression.callee.location.offset, target.declaration.name);
+        return checkForeignCall(target.declaration, expression.arguments, locals, globals, structs, enums, fileName, expression.location, state);
+      }
       if (target?.kind !== "function") {
-        if (locals.has(expression.callee.name)) {
-          throw new DiagnosticError(fileName, expression.callee.location, `${JSON.stringify(expression.callee.name)} is not callable`);
-        }
         throw new DiagnosticError(fileName, expression.callee.location, `unknown function ${JSON.stringify(expression.callee.name)}`);
       }
       checkArguments(target.declaration, expression.arguments, locals, globals, structs, enums, fileName, expression.location, state);
@@ -1294,9 +1330,30 @@ function requireAssignable(
     integerLiteralTypes.set(expression.location.offset, expectedType);
     return;
   }
-  if (actual !== "unknown" && actual !== "never" && expectedType !== canonicalType(actual, foreignNamedTypes)) {
+  if (
+    actual !== "unknown"
+    && actual !== "never"
+    && expectedType !== canonicalType(actual, foreignNamedTypes)
+    && !sameForeignNamedType(expected, actual, foreignNamedTypes)
+  ) {
     throw new DiagnosticError(fileName, expression.location, `expected ${expected}, found ${actual}`);
   }
+}
+
+function sameForeignNamedType(
+  expected: ValueType,
+  actual: ValueType,
+  foreignNamedTypes: ReadonlyMap<string, ForeignNamedType>,
+): boolean {
+  if (expected === "unknown" || expected === "never" || actual === "unknown" || actual === "never") return false;
+  const expectedNamed = foreignNamedTypes.get(String(underlyingType(expected)));
+  const actualNamed = foreignNamedTypes.get(String(underlyingType(actual)));
+  return Boolean(
+    expectedNamed
+    && actualNamed
+    && expectedNamed.kind === actualNamed.kind
+    && expectedNamed.cName === actualNamed.cName,
+  );
 }
 
 function isIntegerType(type: ValueType): type is string {

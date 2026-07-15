@@ -26,6 +26,17 @@ function main(): i32 {
 }
 ```
 
+Large headers can expose only the C functions a file uses, with optional local
+aliases:
+
+```z
+import { sqlite3_open, sqlite3_close as closeDatabase } from "sqlite3.h";
+```
+
+This is a scope filter over the same typed header module, not a wrapper or an
+ABI redeclaration. Selective imported types and constants are not implemented
+in the bootstrap yet; namespace imports cover those declarations.
+
 Structs are value types with fields, literals, and methods:
 
 ```z
@@ -197,6 +208,7 @@ bun run z run examples/deinit.z
 bun run z run examples/foreign-handle.z
 bun run z run examples/foreign-types.z
 bun run z run examples/foreign-pointers.z
+bun run z run examples/selective-import.z
 bun run z run examples/structs.z
 bun run z run examples/match.z
 bun run z run examples/match-expression.z
@@ -207,7 +219,8 @@ bun test
 
 The current header importer asks Clang for function declarations, rejects
 unknown symbols, checks fixed argument types and counts, enforces variadic
-boundaries, and carries supported return types into Z inference. Signed and
+boundaries, carries supported return types into Z inference, and supports both
+namespace and selective function imports with aliases. Signed and
 unsigned C integer spellings and common fixed-width or pointer-sized typedefs
 map to Z's `i8` through `i64`, `u8` through `u64`, `isize`, and `usize` families;
 `_Bool`, `const char *`, and `void` map to `bool`, `cstring`, and `void`. The

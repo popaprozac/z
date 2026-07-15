@@ -127,7 +127,7 @@ export function resolveForeignModules(
   const modules = new Map<string, ForeignModule>();
   for (const declaration of declarations) {
     const includeDirectory = resolve(dirname(fileName));
-    const cacheKey = `${includeDirectory}\0${declaration.header}`;
+    const cacheKey = `${includeDirectory}\0${declaration.header}\0${declaration.moduleName}`;
     let header = headerCache.get(cacheKey);
     if (!header) {
       header = readHeader(declaration, fileName, includeDirectory);
