@@ -45,6 +45,7 @@ function runNative(inputPath: string, generated: string): void {
     "-Wall",
     "-Wextra",
     "-Werror",
+    "-I", dirname(inputPath),
     cPath,
     "-o",
     executablePath,

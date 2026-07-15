@@ -8,8 +8,9 @@ The bootstrap compiler currently implements a deliberately small vertical
 slice: imports, functions, local bindings, primitive expressions, structs with
 methods, tagged enums, exhaustive statement and expression matches, typed
 errors, deterministic struct cleanup, name resolution, static checking, and
-readable C emission. It has no third-party dependencies and runs directly on
-Bun.
+readable C emission. Header imports use Clang's AST to type-check an initial
+subset of C functions. The compiler has no third-party package dependencies and
+runs directly on Bun.
 
 ```z
 import stdio from "stdio.h";
@@ -143,10 +144,13 @@ bun run z run examples/try.z
 bun test
 ```
 
-The current header import proves the intended source experience and delegates
-foreign-symbol checking to Clang. Z declarations are checked before emission;
-imported signatures are not yet known to Z. This is not yet the safe Clang-AST
-importer described in the design documents.
+The current header importer asks Clang for function declarations, rejects
+unknown symbols, checks fixed argument types and counts, enforces variadic
+boundaries, and carries supported return types into Z inference. This first
+slice maps C `int`, `_Bool`, `const char *`, and `void` to Z's `i32`, `bool`,
+`cstring`, and `void`. Mutable pointers, records, globals, macros, ownership
+annotations, Objective-C, and C++ produce explicit limitations or remain future
+layers; they are not silently treated as safe.
 
 See [DESIGN.md](DESIGN.md) for the language charter and roadmap.
 

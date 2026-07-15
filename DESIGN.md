@@ -15,9 +15,10 @@ const database = try sqlite.open("app.db");
 const environment = try await webview.createEnvironment();
 ```
 
-Headers are eventually parsed through Clang into cached, typed foreign modules.
-Sidecar API notes supply ownership, lifetime, nullability, callback, and async
-semantics that are absent from the header itself.
+Header imports are progressively parsed through Clang into cached, typed foreign
+modules. The bootstrap begins with C functions and a small set of scalar types.
+Sidecar API notes will supply ownership, lifetime, nullability, callback, and
+async semantics that are absent from the header itself.
 
 ## Core semantics
 
@@ -123,6 +124,24 @@ type, so an arm that exits does not need to agree with the other arms' value
 type. A future generator may use the same `yield` keyword; lexical nesting
 selects the nearest yield target, allowing a match expression inside a
 generator to intercept its own yields without ambiguity.
+
+## Strings, formatting, and diagnostics
+
+Z should preserve the convenience of logging arbitrary values without giving
+up static types:
+
+```z
+console.log(`{someInt} with text in between, struct: {someStruct}`);
+```
+
+An interpolated string evaluates expressions once from left to right. Primitive
+types have standard formatting, while structs receive a useful derived debug
+representation by default and may override an eventual formatting trait. The
+compiler can lower interpolation to typed formatter operations without runtime
+reflection or C-style variadic unsafety. `console.log` belongs to the standard
+library; interpolation should remain a reusable value for logging, errors, and
+string construction rather than console-specific syntax. Exact formatting
+traits and format-specifier syntax remain to be designed.
 
 ## Async and concurrency
 

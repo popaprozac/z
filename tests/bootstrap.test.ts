@@ -22,6 +22,104 @@ test("emits functions and direct imported C calls", () => {
   assert.doesNotMatch(generated, /stdio\.puts/);
 });
 
+test("imports C function signatures through Clang", () => {
+  const source = `
+    import stdio from "stdio.h";
+    function main(): i32 {
+      const written = stdio.puts("typed");
+      return written;
+    }
+  `;
+  const generated = compileToC(source, "typed-header.z");
+  assert.match(generated, /const int32_t written = puts\("typed"\);/);
+});
+
+test("rejects unknown functions from imported headers", () => {
+  const source = `
+    import stdio from "stdio.h";
+    function main(): i32 {
+      return stdio.not_a_real_function("nope");
+    }
+  `;
+  assert.throws(
+    () => compileToC(source, "foreign-name.z"),
+    /header "stdio\.h" has no function "not_a_real_function"/,
+  );
+});
+
+test("checks fixed C arguments and variadic boundaries", () => {
+  const wrongType = `
+    import stdio from "stdio.h";
+    function main(): i32 {
+      return stdio.puts(42);
+    }
+  `;
+  assert.throws(
+    () => compileToC(wrongType, "foreign-type.z"),
+    /expected cstring, found i32/,
+  );
+
+  const missingFormat = `
+    import stdio from "stdio.h";
+    function main(): i32 {
+      return stdio.printf();
+    }
+  `;
+  assert.throws(
+    () => compileToC(missingFormat, "foreign-variadic.z"),
+    /C function "printf" expects at least 1 argument\(s\), found 0/,
+  );
+});
+
+test("reports unsupported C signatures at the Z call site", () => {
+  const source = `
+    import stdio from "stdio.h";
+    function main(): i32 {
+      stdio.fopen("file", "r");
+      return 0;
+    }
+  `;
+  assert.throws(
+    () => compileToC(source, "foreign-pointer.z"),
+    /C function "fopen" uses unsupported type "FILE \*"/,
+  );
+});
+
+test("does not treat mutable C strings as safe cstrings", () => {
+  const supportedSource = `
+    import fixture from "tests/fixtures/foreign-types.h";
+    function main(): i32 {
+      return fixture.z_test_bool(true);
+    }
+  `;
+  assert.match(
+    compileToC(supportedSource, resolve(projectRoot, "foreign-bool.z")),
+    /return z_test_bool\(true\);/,
+  );
+
+  const source = `
+    import fixture from "tests/fixtures/foreign-types.h";
+    function main(): i32 {
+      return fixture.z_test_mutate("immutable");
+    }
+  `;
+  assert.throws(
+    () => compileToC(source, resolve(projectRoot, "mutable-cstring.z")),
+    /C function "z_test_mutate" uses unsupported type "char \*"/,
+  );
+});
+
+test("reports headers Clang cannot import", () => {
+  const source = `
+    import missing from "z_header_that_does_not_exist.h";
+    function main(): i32 { return 0; }
+  `;
+  assert.throws(
+    () => compileToC(source, "missing-header.z"),
+    /could not import header "z_header_that_does_not_exist\.h"/,
+  );
+});
+
 test("reports source locations for parser errors", () => {
   assert.throws(
     () => compileToC("function main(: i32 {}", "broken.z"),

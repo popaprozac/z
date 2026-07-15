@@ -2,7 +2,6 @@ import type {
   Expression,
   EnumDeclaration,
   FunctionDeclaration,
-  ImportDeclaration,
   Program,
   SourceLocation,
   Statement,
@@ -11,6 +10,7 @@ import type {
 } from "./ast.ts";
 import { DiagnosticError } from "./diagnostics.ts";
 import { resultTypeName } from "./results.ts";
+import type { ForeignFunction, ForeignModule } from "./foreign.ts";
 
 type ValueType = string | "unknown" | "never";
 
@@ -24,7 +24,7 @@ type AnalysisState = {
 
 type SymbolValue =
   | { readonly kind: "function"; readonly declaration: FunctionDeclaration }
-  | { readonly kind: "foreignModule"; readonly declaration: ImportDeclaration }
+  | { readonly kind: "foreignModule"; readonly module: ForeignModule }
   | { readonly kind: "struct"; readonly declaration: StructDeclaration }
   | { readonly kind: "enum"; readonly declaration: EnumDeclaration };
 
@@ -32,14 +32,20 @@ const primitiveTypes = new Set(["i32", "void", "bool", "cstring"]);
 const movedPrefix = "__z_moved:";
 const maybeMovedPrefix = "__z_maybe_moved:";
 
-export function analyze(program: Program, fileName: string): SemanticInfo {
+export function analyze(
+  program: Program,
+  fileName: string,
+  foreignModules: ReadonlyMap<string, ForeignModule>,
+): SemanticInfo {
   const state: AnalysisState = { movedExpressions: new Set() };
   const globals = new Map<string, SymbolValue>();
   const structs = new Map<string, StructDeclaration>();
   const enums = new Map<string, EnumDeclaration>();
 
   for (const declaration of program.imports) {
-    declareGlobal(globals, declaration.moduleName, { kind: "foreignModule", declaration }, declaration.location, fileName);
+    const module = foreignModules.get(declaration.moduleName);
+    if (!module) throw new DiagnosticError(fileName, declaration.location, `header ${JSON.stringify(declaration.header)} was not resolved`);
+    declareGlobal(globals, declaration.moduleName, { kind: "foreignModule", module }, declaration.location, fileName);
   }
 
   for (const declaration of program.structs) {
@@ -656,7 +662,10 @@ function inferExpression(
     case "matchExpression":
       throw new DiagnosticError(fileName, expression.location, "match must be the direct value of a binding, return, or expression statement");
     case "member": {
-      if (isForeignMember(expression, globals)) return "unknown";
+      const foreignFunction = getForeignFunction(expression, globals, fileName);
+      if (foreignFunction) {
+        throw new DiagnosticError(fileName, expression.location, "foreign function values are not implemented; call the function instead");
+      }
       if (expression.object.kind === "identifier") {
         const enumDeclaration = enums.get(expression.object.name);
         if (enumDeclaration) {
@@ -699,11 +708,8 @@ function inferExpression(
           }
         }
         if (isForeignMember(expression.callee, globals)) {
-          for (const argument of expression.arguments) {
-            const argumentType = inferExpression(argument, locals, globals, structs, enums, fileName, state);
-            rejectForeignOwnedMove(argument, argumentType, structs, fileName);
-          }
-          return "unknown";
+          const foreignFunction = getForeignFunction(expression.callee, globals, fileName)!;
+          return checkForeignCall(foreignFunction, expression.arguments, locals, globals, structs, enums, fileName, expression.location, state);
         }
         const receiverType = inferExpression(expression.callee.object, locals, globals, structs, enums, fileName, state);
         if (hasCleanupType(receiverType, structs) && !isNamedStorageExpression(expression.callee.object)) {
@@ -932,6 +938,63 @@ function isForeignMember(
 ): boolean {
   return expression.object.kind === "identifier"
     && globals.get(expression.object.name)?.kind === "foreignModule";
+}
+
+function getForeignFunction(
+  expression: Extract<Expression, { kind: "member" }>,
+  globals: Map<string, SymbolValue>,
+  fileName: string,
+): ForeignFunction | null {
+  if (expression.object.kind !== "identifier") return null;
+  const symbol = globals.get(expression.object.name);
+  if (symbol?.kind !== "foreignModule") return null;
+  const foreignFunction = symbol.module.functions.get(expression.property);
+  if (!foreignFunction) {
+    throw new DiagnosticError(
+      fileName,
+      expression.location,
+      `header ${JSON.stringify(symbol.module.declaration.header)} has no function ${JSON.stringify(expression.property)}`,
+    );
+  }
+  return foreignFunction;
+}
+
+function checkForeignCall(
+  target: ForeignFunction,
+  args: Expression[],
+  locals: Map<string, ValueType>,
+  globals: Map<string, SymbolValue>,
+  structs: Map<string, StructDeclaration>,
+  enums: Map<string, EnumDeclaration>,
+  fileName: string,
+  location: SourceLocation,
+  state: AnalysisState,
+): ValueType {
+  const unsupported = [target.returnType, ...target.parameters.map((parameter) => parameter.type)]
+    .find((type) => type.kind === "unsupported");
+  if (unsupported?.kind === "unsupported") {
+    throw new DiagnosticError(
+      fileName,
+      location,
+      `C function ${JSON.stringify(target.name)} uses unsupported type ${JSON.stringify(unsupported.cName)} in signature ${JSON.stringify(target.cSignature)}`,
+    );
+  }
+  const expected = target.parameters.length;
+  if ((!target.variadic && args.length !== expected) || (target.variadic && args.length < expected)) {
+    const expectation = target.variadic ? `at least ${expected}` : String(expected);
+    throw new DiagnosticError(fileName, location, `C function ${JSON.stringify(target.name)} expects ${expectation} argument(s), found ${args.length}`);
+  }
+  for (let index = 0; index < args.length; index += 1) {
+    const argument = args[index];
+    const actual = inferExpression(argument, locals, globals, structs, enums, fileName, state);
+    rejectForeignOwnedMove(argument, actual, structs, fileName);
+    const parameter = target.parameters[index];
+    if (parameter?.type.kind === "z") requireAssignable(parameter.type.name, actual, argument, fileName);
+    if (!parameter && actual !== "i32" && actual !== "bool" && actual !== "cstring") {
+      throw new DiagnosticError(fileName, argument.location, `unsupported variadic argument type ${actual} for C function ${JSON.stringify(target.name)}`);
+    }
+  }
+  return target.returnType.kind === "z" ? target.returnType.name : "unknown";
 }
 
 function validateType(
