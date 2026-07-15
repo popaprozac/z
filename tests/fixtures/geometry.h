@@ -37,6 +37,20 @@ static inline int z_score(ZPoint point) {
   return point.x + point.y;
 }
 
+static inline void z_offset(ZPoint *point, int dx, int dy) {
+  point->x += dx;
+  point->y += dy;
+}
+
+static inline void z_reset(ZPoint *point) {
+  point->x = 5;
+  point->y = 6;
+}
+
+static inline int z_read(const ZPoint *point) {
+  return point->x + point->y;
+}
+
 static inline unsigned int z_extent_value(ZExtent value) {
   return value;
 }

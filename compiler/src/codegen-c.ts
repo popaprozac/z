@@ -577,6 +577,8 @@ function generateExpression(expression: Expression, context: GenerationContext):
       return JSON.stringify(expression.value);
     case "boolean":
       return expression.value ? "true" : "false";
+    case "argumentReference":
+      return `&(${expression.name})`;
     case "unary":
       return `(${expression.operator}${generateExpression(expression.operand, context)})`;
     case "identifier":
@@ -635,12 +637,19 @@ function generateExpression(expression: Expression, context: GenerationContext):
         const receiverArgument = expression.callee.object.kind === "identifier" && expression.callee.object.name === "this"
           ? "self"
           : `&(${receiver})`;
-        const args = [receiverArgument, ...expression.arguments.map((argument) => generateExpression(argument, context))];
+        const args = [receiverArgument, ...expression.arguments.map((argument) => generateCallArgument(argument, context))];
         return `${methodName(receiverType, expression.callee.property)}(${args.join(", ")})`;
       }
-      return `${generateExpression(expression.callee, context)}(${expression.arguments.map((argument) => generateExpression(argument, context)).join(", ")})`;
+      return `${generateExpression(expression.callee, context)}(${expression.arguments.map((argument) => generateCallArgument(argument, context)).join(", ")})`;
     }
   }
+}
+
+function generateCallArgument(expression: Expression, context: GenerationContext): string {
+  const value = generateExpression(expression, context);
+  return context.semanticInfo.foreignArgumentAccesses.get(expression.location.offset) === "in"
+    ? `&(${value})`
+    : value;
 }
 
 function generateIntegerLiteral(value: string, type: string | undefined): string {
@@ -668,6 +677,8 @@ function inferExpressionType(expression: Expression, context: GenerationContext)
     case "binary":
       return ["+", "-", "*", "/"].includes(expression.operator) ? "i32" : "bool";
     case "identifier":
+      return context.localTypes.get(expression.name) ?? "i32";
+    case "argumentReference":
       return context.localTypes.get(expression.name) ?? "i32";
     case "structExpression":
       return expression.typeName;

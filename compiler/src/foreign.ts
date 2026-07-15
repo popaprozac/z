@@ -11,6 +11,7 @@ export type ForeignScalarTypeName =
 export type ForeignType =
   | { readonly kind: "z"; readonly name: ForeignScalarTypeName | "cstring" | "void"; readonly cName: string }
   | { readonly kind: "named"; readonly type: ForeignNamedType; readonly cName: string }
+  | ForeignRecordPointerType
   | ForeignPointerType
   | { readonly kind: "unsupported"; readonly cName: string };
 
@@ -57,6 +58,14 @@ export type ForeignPointerType = {
   readonly release: string | null;
 };
 
+export type ForeignRecordPointerType = {
+  readonly kind: "recordPointer";
+  readonly cName: string;
+  readonly record: Extract<ForeignNamedType, { kind: "record" }>;
+  readonly access: "in" | "out" | "inout";
+  readonly nullable: boolean;
+};
+
 export type ForeignParameter = {
   readonly name: string | null;
   readonly type: ForeignType;
@@ -87,6 +96,7 @@ type HeaderInfo = {
 
 type PointerNote = {
   readonly ownership?: "owned" | "borrowed" | "consuming";
+  readonly access?: "in" | "out" | "inout";
   readonly nullable?: boolean;
   readonly release?: string;
 };
@@ -377,6 +387,17 @@ function mapForeignType(
   }
   const stars = normalized.match(/\*/g)?.length ?? 0;
   if (stars === 1 && normalized.endsWith(" *")) {
+    const pointeeSpelling = normalized.slice(0, -2).trim();
+    const pointee = namedTypes.get(stripValueQualifiers(pointeeSpelling));
+    if (pointee?.kind === "record") {
+      const access = note?.access;
+      const nullable = note?.nullable ?? nullabilityFromClang(cName);
+      const constPointee = pointeeSpelling.split(/\s+/).includes("const");
+      const validAccess = position === "parameter"
+        && (access === "in" ? constPointee : (access === "out" || access === "inout") && !constPointee);
+      if (!validAccess || nullable === null) return { kind: "unsupported", cName };
+      return { kind: "recordPointer", cName: normalized, record: pointee, access, nullable };
+    }
     const ownership = note?.ownership;
     const nullable = note?.nullable ?? nullabilityFromClang(cName);
     const validOwnership = position === "return"

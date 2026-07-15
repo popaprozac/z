@@ -195,6 +195,24 @@ conditional on both ownership liveness and non-nullness. Borrowed returns remain
 unsupported until their lifetime can be tied to static storage or an input
 owner.
 
+Pointers to complete imported records use a separate, non-escaping call
+contract. API notes classify `const T *` as `in` and writable `T *` as `out` or
+`inout`. An `in` call implicitly borrows a stored Z value. Writable calls require
+initialized mutable storage and spell the capability at the call site:
+
+```z
+let point = geometry.Point { x: 1, y: 2 };
+geometry.translate(inout point, 3, 4);
+geometry.reset(out point);
+```
+
+`in` forbids mutation and retention, `inout` allows the callee to read and
+mutate, and `out` additionally promises complete initialization before return.
+These modes authorize a compiler-generated address for one call; they do not
+introduce a general safe-code address-of operator. The first bootstrap requires
+even `out` bindings to have an initializer, deferring uninitialized storage and
+definite-initialization analysis.
+
 The Bun bootstrap currently represents project notes as adjacent
 `<header>.zapi.json` files and can ship notes for platform headers. That file
 format is an implementation scaffold, not the final authoring experience. Over
@@ -205,6 +223,11 @@ common case remains simply:
 ```z
 import platform from "platform.h";
 ```
+
+Selective imports are planned for large headers without changing the boundary
+model: `import { sqlite3_open, sqlite3_close } from "sqlite3.h";` binds only the
+named declarations, with aliases available for collision management. Namespace
+imports remain useful when provenance and breadth matter.
 
 Imported C data remains namespaced but otherwise follows Z expression syntax:
 typedef-named records can appear in signatures, are built with checked struct

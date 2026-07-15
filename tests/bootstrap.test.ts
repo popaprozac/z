@@ -200,6 +200,72 @@ test("checks imported C record fields and enum arguments in Z", () => {
   );
 });
 
+test("borrows and explicitly mutates imported C records through safe pointer modes", () => {
+  const example = resolve(projectRoot, "examples/foreign-pointers.z");
+  const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, "before=10 after=11 point=5,6\n");
+
+  const generated = compileToC(readFileSync(example, "utf8"), example);
+  assert.match(generated, /z_offset\(&\(point\), 3, 4\);/);
+  assert.match(generated, /z_read\(&\(point\)\)/);
+  assert.match(generated, /z_reset\(&\(point\)\);/);
+});
+
+test("requires exact pointer modes and mutable storage at imported record boundaries", () => {
+  const immutable = `
+    import geometry from "tests/fixtures/geometry.h";
+    function main(): i32 {
+      const point = geometry.ZPoint { x: 1, y: 2 };
+      geometry.z_reset(out point);
+      return 0;
+    }
+  `;
+  assert.throws(
+    () => compileToC(immutable, resolve(projectRoot, "foreign-record-const.z")),
+    /out argument "point" requires a mutable let binding/,
+  );
+
+  const missingMode = `
+    import geometry from "tests/fixtures/geometry.h";
+    function main(): i32 {
+      let point = geometry.ZPoint { x: 1, y: 2 };
+      geometry.z_offset(point, 3, 4);
+      return 0;
+    }
+  `;
+  assert.throws(
+    () => compileToC(missingMode, resolve(projectRoot, "foreign-record-mode.z")),
+    /requires inout <mutable binding> for parameter 1/,
+  );
+
+  const wrongMode = `
+    import geometry from "tests/fixtures/geometry.h";
+    function main(): i32 {
+      let point = geometry.ZPoint { x: 1, y: 2 };
+      geometry.z_reset(inout point);
+      return 0;
+    }
+  `;
+  assert.throws(
+    () => compileToC(wrongMode, resolve(projectRoot, "foreign-record-wrong-mode.z")),
+    /expects out point, found inout point/,
+  );
+
+  const escapedModifier = `
+    function use(value: i32): void {}
+    function main(): i32 {
+      let value = 1;
+      use(out value);
+      return 0;
+    }
+  `;
+  assert.throws(
+    () => compileToC(escapedModifier, "escaped-out.z"),
+    /out is only valid for a classified imported C record-pointer parameter/,
+  );
+});
+
 test("requires nullable C handles to be checked before borrowing", () => {
   const source = `
     import stdio from "stdio.h";
@@ -679,6 +745,7 @@ test("editor grammar tracks keywords without reserving Result variants", () => {
   assert.match(keywordPattern, /attempt/);
   assert.match(keywordPattern, /yield/);
   assert.match(keywordPattern, /deinit/);
+  assert.match(keywordPattern, /out\|inout/);
   assert.match(constantPattern, /true\|false/);
   assert.match(operatorPattern, /&&/);
   assert.doesNotMatch(keywordPattern, /success|failure/);

@@ -166,6 +166,24 @@ arguments, qualified signatures, and imported calls without an `extern` mirror.
 The interpolated `console.log` line shows the planned formatting syntax; that
 standard-library feature is not implemented in the bootstrap yet.
 
+Pointer parameters to complete imported records remain safe when adjacent API
+notes classify their call-only access. Read-only `const T *` parameters borrow a
+stored value implicitly; writable `T *` parameters require an initialized
+mutable binding and an explicit mode at the call site:
+
+```z
+let point = geometry.Point { x: 1, y: 2 };
+geometry.offset(inout point, 3, 4);
+const score = geometry.read(point); // `in` is implicit for const T *.
+geometry.reset(out point);
+```
+
+`in` promises no mutation or retention, `inout` permits reading and mutation,
+and `out` promises to fully overwrite the value. The compiler creates an address
+only for the duration of that call; Z exposes no general address-of operator.
+The bootstrap requires `out` storage to be initialized first, so uninitialized
+locals and definite-initialization analysis are not part of this slice.
+
 `try` evaluates its call once, propagates failure immediately, and produces the
 success payload. It is currently supported directly in bindings, returns, and
 expression statements; general nested-expression lowering comes later.
@@ -178,6 +196,7 @@ bun run z run examples/control-flow.z
 bun run z run examples/deinit.z
 bun run z run examples/foreign-handle.z
 bun run z run examples/foreign-types.z
+bun run z run examples/foreign-pointers.z
 bun run z run examples/structs.z
 bun run z run examples/match.z
 bun run z run examples/match-expression.z
@@ -194,7 +213,10 @@ map to Z's `i8` through `i64`, `u8` through `u64`, `isize`, and `usize` families
 `_Bool`, `const char *`, and `void` map to `bool`, `cstring`, and `void`. The
 importer also accepts opaque single-pointer handles when API
 notes specify nullability, owned returns and their release function, and
-borrowed or consuming parameters. The compiler ships initial `stdio.h` notes
+borrowed or consuming parameters. Pointer parameters to imported complete
+records are accepted only when notes classify them as non-escaping `in`, `out`,
+or `inout`; writable calls require explicit mutable storage. The compiler ships
+initial `stdio.h` notes
 and discovers project notes beside a header as `<header>.zapi.json`; this JSON is
 a stage-0 representation, not yet a frozen language format. Unannotated
 pointers, borrowed returns without lifetime provenance, mutable strings,
@@ -206,8 +228,8 @@ fields, C enums and their constants, and integer typedefs are now usable as
 namespaced Z types. Integer literals are contextually typed and rejected when
 they do not fit the destination width. Unions, anonymous or incomplete layouts,
 plain `char` signedness, arrays, floating-point types, bitfield-specific
-validation, callbacks, and pointer-bearing records remain upcoming interop
-layers.
+validation, callbacks, pointers stored inside records, and uninitialized output
+storage remain upcoming interop layers.
 
 See [DESIGN.md](DESIGN.md) for the language charter and roadmap.
 

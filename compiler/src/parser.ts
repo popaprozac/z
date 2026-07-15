@@ -84,6 +84,16 @@ export function parse(tokens: Token[], fileName: string): Program {
   let parseStatement: () => Statement;
 
   const parsePrimary = (): Expression => {
+    if (match("out") || match("inout")) {
+      const token = previous();
+      const name = expect("identifier", "a mutable binding");
+      return {
+        kind: "argumentReference",
+        access: token.kind as "out" | "inout",
+        name: name.text,
+        location: token.location,
+      };
+    }
     if (match("match")) {
       const token = previous();
       const expression = parseExpression();

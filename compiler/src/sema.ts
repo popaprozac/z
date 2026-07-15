@@ -21,6 +21,7 @@ export type SemanticInfo = {
   readonly foreignNamedTypes: ReadonlyMap<string, ForeignNamedType>;
   readonly foreignExpressionTypes: ReadonlyMap<number, string>;
   readonly integerLiteralTypes: ReadonlyMap<number, string>;
+  readonly foreignArgumentAccesses: ReadonlyMap<number, "in" | "out" | "inout">;
 };
 
 type AnalysisState = {
@@ -30,6 +31,7 @@ type AnalysisState = {
   readonly foreignNamedTypes: ReadonlyMap<string, ForeignNamedType>;
   readonly foreignExpressionTypes: Map<number, string>;
   readonly integerLiteralTypes: Map<number, string>;
+  readonly foreignArgumentAccesses: Map<number, "in" | "out" | "inout">;
 };
 
 type SymbolValue =
@@ -42,6 +44,7 @@ const integerTypes = new Set(["i8", "u8", "i16", "u16", "i32", "u32", "i64", "u6
 const primitiveTypes = new Set([...integerTypes, "void", "bool", "cstring"]);
 const movedPrefix = "__z_moved:";
 const maybeMovedPrefix = "__z_maybe_moved:";
+const mutablePrefix = "__z_mutable:";
 
 export function analyze(
   program: Program,
@@ -61,6 +64,7 @@ export function analyze(
     foreignNamedTypes,
     foreignExpressionTypes: new Map(),
     integerLiteralTypes: new Map(),
+    foreignArgumentAccesses: new Map(),
   };
   const globals = new Map<string, SymbolValue>();
   const structs = new Map<string, StructDeclaration>();
@@ -342,7 +346,7 @@ function analyzeStatement(
         );
       }
       consumeOwnedValue(statement.initializer, variableType, locals, structs, fileName, state);
-      locals.set(statement.name, variableType);
+      locals.set(statement.name, statement.mutable ? `${mutablePrefix}${variableType}` : variableType);
       return;
     }
     case "return": {
@@ -589,6 +593,12 @@ function inferExpression(
       return "cstring";
     case "boolean":
       return "bool";
+    case "argumentReference":
+      throw new DiagnosticError(
+        fileName,
+        expression.location,
+        `${expression.access} is only valid for a classified imported C record-pointer parameter`,
+      );
     case "unary": {
       const operand = inferExpression(expression.operand, locals, globals, structs, enums, fileName, state);
       if (expression.operator === "!" && canonicalType(operand, state.foreignNamedTypes) === "bool") return "bool";
@@ -910,7 +920,10 @@ function consumeOwnedValue(
   }
   const stored = locals.get(expression.name);
   if (!stored) return;
-  locals.set(expression.name, `${movedPrefix}${underlyingType(stored)}`);
+  locals.set(
+    expression.name,
+    `${movedPrefix}${isMutableBinding(stored) ? mutablePrefix : ""}${underlyingType(stored)}`,
+  );
   state.movedExpressions.add(expression.location.offset);
 }
 
@@ -941,9 +954,16 @@ function ownershipState(type: ValueType): "available" | "moved" | "maybeMoved" {
 }
 
 function underlyingType(type: ValueType): ValueType {
-  if (type.startsWith(movedPrefix)) return type.slice(movedPrefix.length);
-  if (type.startsWith(maybeMovedPrefix)) return type.slice(maybeMovedPrefix.length);
+  if (type.startsWith(movedPrefix)) return underlyingType(type.slice(movedPrefix.length));
+  if (type.startsWith(maybeMovedPrefix)) return underlyingType(type.slice(maybeMovedPrefix.length));
+  if (type.startsWith(mutablePrefix)) return underlyingType(type.slice(mutablePrefix.length));
   return type;
+}
+
+function isMutableBinding(type: ValueType): boolean {
+  if (type.startsWith(movedPrefix)) return isMutableBinding(type.slice(movedPrefix.length));
+  if (type.startsWith(maybeMovedPrefix)) return isMutableBinding(type.slice(maybeMovedPrefix.length));
+  return type.startsWith(mutablePrefix);
 }
 
 function propagateOuterOwnership(target: Map<string, ValueType>, source: Map<string, ValueType>): void {
@@ -963,6 +983,7 @@ function mergeOwnershipStates(
     const values = paths.map((path) => path.get(name)).filter((value): value is ValueType => Boolean(value));
     if (values.length === 0) continue;
     let type = underlyingType(values[0]);
+    const mutable = values.every(isMutableBinding);
     const pointerTypes = values.map((value) => foreignPointer(value, state));
     const firstPointer = pointerTypes[0];
     if (firstPointer && pointerTypes.every((pointer) => pointer?.identity === firstPointer.identity && pointer.ownership === firstPointer.ownership)) {
@@ -970,9 +991,10 @@ function mergeOwnershipStates(
       type = pointerTypeName(firstPointer.identity, firstPointer.ownership, nullable);
     }
     const states = new Set(values.map(ownershipState));
-    if (states.size === 1 && states.has("available")) target.set(name, type);
-    else if (states.size === 1 && states.has("moved")) target.set(name, `${movedPrefix}${type}`);
-    else target.set(name, `${maybeMovedPrefix}${type}`);
+    const storedType = `${mutable ? mutablePrefix : ""}${type}`;
+    if (states.size === 1 && states.has("available")) target.set(name, storedType);
+    else if (states.size === 1 && states.has("moved")) target.set(name, `${movedPrefix}${storedType}`);
+    else target.set(name, `${maybeMovedPrefix}${storedType}`);
   }
 }
 
@@ -1114,8 +1136,74 @@ function checkForeignCall(
   }
   for (let index = 0; index < args.length; index += 1) {
     const argument = args[index];
-    const actual = inferExpression(argument, locals, globals, structs, enums, fileName, state);
     const parameter = target.parameters[index];
+    if (argument.kind === "argumentReference") {
+      if (parameter?.type.kind !== "recordPointer") {
+        throw new DiagnosticError(
+          fileName,
+          argument.location,
+          `${argument.access} is only valid for a classified imported C record-pointer parameter`,
+        );
+      }
+      if (parameter.type.access !== argument.access) {
+        throw new DiagnosticError(
+          fileName,
+          argument.location,
+          `C function ${JSON.stringify(target.name)} expects ${parameter.type.access} ${argument.name}, found ${argument.access} ${argument.name}`,
+        );
+      }
+      const stored = locals.get(argument.name);
+      if (!stored) {
+        throw new DiagnosticError(fileName, argument.location, `unknown name ${JSON.stringify(argument.name)}`);
+      }
+      if (ownershipState(stored) === "moved") {
+        throw new DiagnosticError(fileName, argument.location, `use of moved value ${JSON.stringify(argument.name)}`);
+      }
+      if (ownershipState(stored) === "maybeMoved") {
+        throw new DiagnosticError(fileName, argument.location, `value ${JSON.stringify(argument.name)} may have been moved on another control-flow path`);
+      }
+      if (!isMutableBinding(stored)) {
+        throw new DiagnosticError(fileName, argument.location, `${argument.access} argument ${JSON.stringify(argument.name)} requires a mutable let binding`);
+      }
+      requireAssignable(
+        parameter.type.record.typeName,
+        underlyingType(stored),
+        argument,
+        fileName,
+        state.foreignNamedTypes,
+        state.integerLiteralTypes,
+      );
+      state.foreignArgumentAccesses.set(argument.location.offset, argument.access);
+      continue;
+    }
+    if (parameter?.type.kind === "recordPointer") {
+      if (parameter.type.access !== "in") {
+        throw new DiagnosticError(
+          fileName,
+          argument.location,
+          `C function ${JSON.stringify(target.name)} requires ${parameter.type.access} <mutable binding> for parameter ${index + 1}`,
+        );
+      }
+      if (!isNamedStorageExpression(argument) && argument.kind !== "structExpression") {
+        throw new DiagnosticError(
+          fileName,
+          argument.location,
+          `in record argument to C function ${JSON.stringify(target.name)} must be a stored value or struct literal`,
+        );
+      }
+      const actual = inferExpression(argument, locals, globals, structs, enums, fileName, state);
+      requireAssignable(
+        parameter.type.record.typeName,
+        actual,
+        argument,
+        fileName,
+        state.foreignNamedTypes,
+        state.integerLiteralTypes,
+      );
+      state.foreignArgumentAccesses.set(argument.location.offset, "in");
+      continue;
+    }
+    const actual = inferExpression(argument, locals, globals, structs, enums, fileName, state);
     if (parameter?.type.kind === "z") {
       rejectForeignOwnedMove(argument, actual, structs, fileName, state);
       requireAssignable(parameter.type.name, actual, argument, fileName, state.foreignNamedTypes, state.integerLiteralTypes);

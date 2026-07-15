@@ -158,7 +158,8 @@ export type Expression =
   | VariantExpression
   | AttemptExpression
   | TryExpression
-  | MatchExpression;
+  | MatchExpression
+  | ArgumentReferenceExpression;
 
 export type NumberExpression = {
   readonly kind: "number";
@@ -250,5 +251,12 @@ export type MatchExpression = {
   readonly kind: "matchExpression";
   readonly expression: Expression;
   readonly arms: MatchArm[];
+  readonly location: SourceLocation;
+};
+
+export type ArgumentReferenceExpression = {
+  readonly kind: "argumentReference";
+  readonly access: "out" | "inout";
+  readonly name: string;
   readonly location: SourceLocation;
 };
