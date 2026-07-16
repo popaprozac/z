@@ -2165,4 +2165,6 @@ test("editor grammar tracks keywords without reserving Result variants", () => {
   const extension = readFileSync(resolve(projectRoot, "editors/vscode/extension.js"), "utf8");
   assert.match(extension, /6: vscode\.CompletionItemKind\.Variable/);
   assert.match(extension, /8: vscode\.CompletionItemKind\.Interface/);
+  assert.match(extension, /createFileSystemWatcher/);
+  assert.match(extension, /restartLanguageServer/);
 });

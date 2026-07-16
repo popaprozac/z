@@ -5,6 +5,7 @@ const os = require("node:os");
 const path = require("node:path");
 
 let client = null;
+let restartTimer = null;
 
 async function activate(context) {
   const extensionPath = realpathSync(context.extensionPath);
@@ -17,54 +18,101 @@ async function activate(context) {
   const diagnostics = vscode.languages.createDiagnosticCollection("z");
   context.subscriptions.push(output, diagnostics);
 
-  client = new RpcClient(spawn(process.env.Z_BUN_PATH || bunPath, [serverPath], {
-    cwd: projectRoot,
-    stdio: ["pipe", "pipe", "pipe"],
-  }), output);
-  context.subscriptions.push({ dispose: () => client?.dispose() });
-
-  client.onNotification("textDocument/publishDiagnostics", (params) => {
-    const uri = vscode.Uri.parse(params.uri);
-    const values = params.diagnostics.map((item) => {
-      const diagnostic = new vscode.Diagnostic(toRange(item.range), item.message, vscode.DiagnosticSeverity.Error);
-      diagnostic.source = item.source || "z";
-      return diagnostic;
+  async function startLanguageServer() {
+    const nextClient = new RpcClient(spawn(process.env.Z_BUN_PATH || bunPath, [serverPath], {
+      cwd: projectRoot,
+      stdio: ["pipe", "pipe", "pipe"],
+    }), output);
+    nextClient.onNotification("textDocument/publishDiagnostics", (params) => {
+      if (client !== nextClient) return;
+      const uri = vscode.Uri.parse(params.uri);
+      const values = params.diagnostics.map((item) => {
+        const diagnostic = new vscode.Diagnostic(toRange(item.range), item.message, vscode.DiagnosticSeverity.Error);
+        diagnostic.source = item.source || "z";
+        return diagnostic;
+      });
+      diagnostics.set(uri, values);
     });
-    diagnostics.set(uri, values);
-  });
-  client.onNotification("window/logMessage", (params) => output.appendLine(params.message));
+    nextClient.onNotification("window/logMessage", (params) => output.appendLine(params.message));
 
-  await client.request("initialize", {
-    processId: process.pid,
-    rootUri: vscode.workspace.workspaceFolders?.[0]?.uri.toString() || null,
-    capabilities: {},
-  });
-  client.notify("initialized", {});
-
-  for (const document of vscode.workspace.textDocuments) {
-    if (document.languageId === "z") didOpen(document);
+    try {
+      await nextClient.request("initialize", {
+        processId: process.pid,
+        rootUri: vscode.workspace.workspaceFolders?.[0]?.uri.toString() || null,
+        capabilities: {},
+      });
+    } catch (error) {
+      nextClient.dispose();
+      throw error;
+    }
+    const previousClient = client;
+    client = nextClient;
+    nextClient.notify("initialized", {});
+    for (const document of vscode.workspace.textDocuments) {
+      if (document.languageId === "z") didOpen(document, nextClient);
+    }
+    previousClient?.dispose();
   }
+
+  async function restartLanguageServer() {
+    output.appendLine("Compiler sources changed; restarting the Z language server.");
+    try {
+      await startLanguageServer();
+    } catch (error) {
+      output.appendLine(`Failed to restart the Z language server: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
+  await startLanguageServer();
+  context.subscriptions.push({
+    dispose: () => {
+      if (restartTimer) clearTimeout(restartTimer);
+      restartTimer = null;
+      client?.dispose();
+      client = null;
+    },
+  });
+
+  // Development installs are symlinked to the repository. Keep their long-lived
+  // Bun process in sync as compiler syntax and language-service code evolves.
+  if (existsSync(path.join(projectRoot, ".git"))) {
+    const watcher = vscode.workspace.createFileSystemWatcher(
+      new vscode.RelativePattern(path.join(projectRoot, "compiler/src"), "**/*.ts"),
+    );
+    const scheduleRestart = () => {
+      if (restartTimer) clearTimeout(restartTimer);
+      restartTimer = setTimeout(() => {
+        restartTimer = null;
+        void restartLanguageServer();
+      }, 200);
+    };
+    watcher.onDidChange(scheduleRestart);
+    watcher.onDidCreate(scheduleRestart);
+    watcher.onDidDelete(scheduleRestart);
+    context.subscriptions.push(watcher);
+  }
+
   context.subscriptions.push(
     vscode.workspace.onDidOpenTextDocument((document) => {
       if (document.languageId === "z") didOpen(document);
     }),
     vscode.workspace.onDidChangeTextDocument((event) => {
       if (event.document.languageId !== "z") return;
-      client.notify("textDocument/didChange", {
+      client?.notify("textDocument/didChange", {
         textDocument: { uri: event.document.uri.toString(), version: event.document.version },
         contentChanges: [{ text: event.document.getText() }],
       });
     }),
     vscode.workspace.onDidSaveTextDocument((document) => {
       if (document.languageId !== "z") return;
-      client.notify("textDocument/didSave", {
+      client?.notify("textDocument/didSave", {
         textDocument: { uri: document.uri.toString() },
         text: document.getText(),
       });
     }),
     vscode.workspace.onDidCloseTextDocument((document) => {
       if (document.languageId !== "z") return;
-      client.notify("textDocument/didClose", { textDocument: { uri: document.uri.toString() } });
+      client?.notify("textDocument/didClose", { textDocument: { uri: document.uri.toString() } });
       diagnostics.delete(document.uri);
     }),
   );
@@ -115,8 +163,8 @@ async function activate(context) {
     },
   }, semanticLegend));
 
-  function didOpen(document) {
-    client.notify("textDocument/didOpen", {
+  function didOpen(document, targetClient = client) {
+    targetClient?.notify("textDocument/didOpen", {
       textDocument: {
         uri: document.uri.toString(),
         languageId: "z",

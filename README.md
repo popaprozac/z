@@ -547,11 +547,13 @@ Install it locally for VS Code and/or Cursor, then reload the editor window:
 ./scripts/install-editor-extension.sh
 ```
 
-The installer creates a development symlink, so grammar and language-server
-updates only require an editor reload. Bun must be available on the editor's
-`PATH`; the extension also detects the standard `~/.bun/bin/bun` installation,
-and the `z.bunPath` editor setting can select another executable. The language
-server can also be started directly for another LSP client:
+The installer creates a development symlink. The extension automatically
+restarts its language server when files under `compiler/src` change and
+resynchronizes every open Z document. TextMate grammar or extension-host changes
+still require an editor reload. Bun must be available on the editor's `PATH`;
+the extension also detects the standard `~/.bun/bin/bun` installation, and the
+`z.bunPath` editor setting can select another executable. The language server
+can also be started directly for another LSP client:
 
 ```sh
 bun run lsp
