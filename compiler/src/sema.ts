@@ -83,6 +83,7 @@ export type SemanticInfo = {
   readonly closures: ReadonlyMap<number, ClosureInfo>;
   readonly consoleCalls: ReadonlySet<number>;
   readonly objectiveC: boolean;
+  readonly cPlusPlus: boolean;
   readonly frameworks: readonly string[];
 };
 
@@ -110,6 +111,7 @@ type AnalysisState = {
   readonly closures: Map<number, ClosureInfo>;
   readonly consoleCalls: Set<number>;
   readonly objectiveC: boolean;
+  readonly cPlusPlus: boolean;
   readonly frameworks: readonly string[];
   readonly loopStack: LoopAnalysisFrame[];
   readonly moveOrigins: Map<string, SourceLocation>;
@@ -152,12 +154,14 @@ export function analyze(
   const foreignObjectTypes = new Map<string, ForeignObjectType>();
   const foreignInterfaces = new Map<string, ForeignObjCInterface>();
   const frameworks = new Set<string>();
+  let cPlusPlus = false;
   for (const module of foreignModules.values()) {
     for (const [name, type] of module.types) foreignTypes.set(name, type);
     for (const type of module.namedTypes.values()) foreignNamedTypes.set(type.typeName, type);
     for (const [name, type] of module.objectTypes) foreignObjectTypes.set(name, type);
     for (const type of module.interfaces.values()) foreignInterfaces.set(type.typeName, type);
     if (module.framework) frameworks.add(module.framework);
+    if (module.cPlusPlus) cPlusPlus = true;
   }
   const state: AnalysisState = {
     movedExpressions: new Set(),
@@ -183,6 +187,7 @@ export function analyze(
     closures: new Map(),
     consoleCalls: new Set(),
     objectiveC: frameworks.size > 0,
+    cPlusPlus,
     frameworks: [...frameworks],
     loopStack: [],
     moveOrigins: new Map(),
@@ -1800,6 +1805,7 @@ function inferExpressionInner(
     case "member": {
       const foreignConstant = getForeignConstant(expression, globals);
       if (foreignConstant) {
+        state.foreignConstantNames.set(expression.location.offset, foreignConstant.cName);
         state.foreignExpressionTypes.set(expression.location.offset, foreignConstant.typeName);
         return foreignConstant.typeName;
       }
@@ -1919,6 +1925,7 @@ function inferExpressionInner(
           const foreignFunction = getForeignFunction(expression.callee, globals);
           if (foreignFunction) {
             rejectLabeledArguments(expression.argumentLabels, expression.location, fileName);
+            state.foreignFunctionNames.set(expression.callee.location.offset, foreignFunction.cName);
             return checkForeignCall(foreignFunction, expression.arguments, locals, globals, structs, enums, fileName, expression.location, state);
           }
           const symbol = expression.callee.object.kind === "identifier" ? globals.get(expression.callee.object.name) : null;
@@ -2091,7 +2098,7 @@ function inferExpressionInner(
       const target = globals.get(expression.callee.name);
       if (target?.kind === "foreignFunction") {
         rejectLabeledArguments(expression.argumentLabels, expression.location, fileName);
-        state.foreignFunctionNames.set(expression.callee.location.offset, target.declaration.name);
+        state.foreignFunctionNames.set(expression.callee.location.offset, target.declaration.cName);
         return checkForeignCall(target.declaration, expression.arguments, locals, globals, structs, enums, fileName, expression.location, state);
       }
       if (target?.kind !== "function") {
@@ -3082,6 +3089,17 @@ function checkForeignCall(
   location: SourceLocation,
   state: AnalysisState,
 ): ValueType {
+  if (target.alternatives.length > 1) {
+    throw new DiagnosticError(
+      fileName,
+      location,
+      `C++ function ${JSON.stringify(target.name)} is overloaded or ambiguous; overload selection is not implemented yet`,
+      {
+        notes: target.alternatives.map((candidate) => `${candidate.cName}: ${candidate.cSignature}`),
+        helps: ["expose a uniquely named wrapper in the C++ header for this bootstrap tier"],
+      },
+    );
+  }
   const unsupported = [target.returnType, ...target.parameters.map((parameter) => parameter.type)]
     .find((type) => type.kind === "unsupported");
   if (unsupported?.kind === "unsupported") {

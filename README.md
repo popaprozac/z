@@ -510,6 +510,22 @@ The global `console` namespace provides typed `log`, `write`, `error`, and
 and structs, imported records, arrays, enums, primitives, and class identity
 receive useful initial formatting without exposing C variadics to Z.
 
+The first C++ tier uses the same source model for uniquely named namespace
+functions and plain aggregate records:
+
+```z
+import cpp from "cpp_math.hpp";
+
+const origin = cpp.Point { x: 20, y: 22 };
+const moved = cpp.translate(origin, 1, -1);
+console.log(`sum=${cpp.sum(moved)}, point=${moved}`);
+```
+
+Recognized C++ header extensions select C++20 output and `clang++`; generated
+calls preserve names such as `zcpp::translate`. Ambiguous overload or namespace
+leaf names are rejected in this tier. Constructors, methods, references, RAII
+ownership, inheritance, and templates remain future C++ layers.
+
 Pointer parameters to complete imported records remain safe when adjacent API
 notes classify their call-only access. Read-only `const T *` parameters borrow a
 stored value implicitly; writable `T *` parameters require mutable storage and
@@ -543,6 +559,7 @@ bun run z run examples/foreign-pointers.z
 bun run z run examples/selective-import.z
 bun run z run examples/selective-declarations.z
 bun run z run examples/apple-groundwork.z
+bun run z run examples/cpp-interop.z
 bun run z run examples/nswindow.z # macOS: opens a window and enters AppKit's event loop
 bun run z run examples/structs.z
 bun run z run examples/classes.z
@@ -579,8 +596,9 @@ initial `stdio.h` notes
 and discovers project notes beside a header as `<header>.zapi.json`; this JSON is
 a stage-0 representation, not yet a frozen language format. Unannotated
 pointers, borrowed returns without lifetime provenance, mutable strings,
-globals, macros, and C++ remain conservative errors or future
-layers rather than being silently treated as safe.
+globals, and macros remain conservative errors or future layers rather than
+being silently treated as safe. C++ support currently stops at uniquely named
+namespace functions and plain aggregate records.
 
 On macOS, importing an installed framework header selects the Objective-C ARC
 backend and carries the framework into the native link plan:
@@ -612,6 +630,13 @@ local object-reference retain/release behavior, and the generated `main` runs
 inside an autorelease pool. Protocols, delegates, blocks, general Z `String`
 bridging, lightweight generics, availability checking, and actor isolation
 remain upcoming layers.
+
+Swift interop is deliberately split into two tiers. Swift-authored APIs exposed
+through a generated Objective-C compatibility header can reuse this importer
+once the build product and header are available. Native Swift support remains a
+separate goal: import Swift modules/interfaces and Swift Package products so Z
+can reach Swift-only Apple APIs, value types, protocols, generics, errors, and
+concurrency without inventing or guessing the Swift ABI.
 
 ```z
 import {

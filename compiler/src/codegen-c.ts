@@ -1531,6 +1531,10 @@ function generateExpression(expression: Expression, context: GenerationContext):
     case "ifExpression":
       throw new Error("if must be lowered from its containing statement");
     case "member": {
+      const foreignFunctionName = context.semanticInfo.foreignFunctionNames.get(expression.location.offset);
+      if (foreignFunctionName) return foreignFunctionName;
+      const foreignConstantName = context.semanticInfo.foreignConstantNames.get(expression.location.offset);
+      if (foreignConstantName) return foreignConstantName;
       const ownerType = inferExpressionType(expression.object, context);
       const array = parseFixedArrayType(ownerType);
       const slice = parseSliceType(ownerType);

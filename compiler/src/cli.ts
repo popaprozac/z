@@ -51,7 +51,7 @@ function runNative(inputPath: string, artifact: NativeArtifact): void {
   const executablePath = join(cacheDirectory, stem);
   writeFileSync(sourcePath, artifact.source);
 
-  const compilation = spawnSync("clang", [
+  const compilation = spawnSync(nativeCompiler(artifact.language), [
     ...nativeLanguageFlags(artifact.language),
     "-Wall",
     "-Wextra",
@@ -70,6 +70,10 @@ function runNative(inputPath: string, artifact: NativeArtifact): void {
   process.stdout.write(execution.stdout);
   process.stderr.write(execution.stderr);
   if (execution.status !== 0) process.exitCode = execution.status ?? 1;
+}
+
+function nativeCompiler(language: NativeArtifact["language"]): string {
+  return language === "c++" || language === "objective-c++" ? "clang++" : "clang";
 }
 
 function nativeExtension(language: NativeArtifact["language"]): string {

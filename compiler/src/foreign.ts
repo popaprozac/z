@@ -111,6 +111,8 @@ export type ForeignParameter = {
 
 export type ForeignFunction = {
   readonly name: string;
+  readonly cName: string;
+  readonly alternatives: readonly { readonly cName: string; readonly cSignature: string }[];
   readonly returnType: ForeignType;
   readonly parameters: readonly ForeignParameter[];
   readonly variadic: boolean;
@@ -126,6 +128,7 @@ export type ForeignModule = {
   readonly objectTypes: ReadonlyMap<string, ForeignObjectType>;
   readonly interfaces: ReadonlyMap<string, ForeignObjCInterface>;
   readonly framework: string | null;
+  readonly cPlusPlus: boolean;
 };
 
 type HeaderInfo = {
@@ -136,6 +139,7 @@ type HeaderInfo = {
   readonly objectTypes: ReadonlyMap<string, ForeignObjectType>;
   readonly interfaces: ReadonlyMap<string, ForeignObjCInterface>;
   readonly framework: string | null;
+  readonly cPlusPlus: boolean;
 };
 
 type PointerNote = {
@@ -182,10 +186,11 @@ export function resolveForeignModules(
   for (const declaration of declarations) {
     const includeDirectory = resolve(dirname(fileName));
     const framework = discoverFramework(declaration.header);
-    const cacheKey = `${includeDirectory}\0${declaration.header}\0${declaration.moduleName}\0${framework ?? "c"}`;
+    const cPlusPlus = isCPlusPlusHeader(declaration.header);
+    const cacheKey = `${includeDirectory}\0${declaration.header}\0${declaration.moduleName}\0${framework ?? (cPlusPlus ? "c++" : "c")}`;
     let header = headerCache.get(cacheKey);
     if (!header) {
-      header = readHeader(declaration, fileName, includeDirectory, framework);
+      header = readHeader(declaration, fileName, includeDirectory, framework, cPlusPlus);
       headerCache.set(cacheKey, header);
     }
     modules.set(declaration.moduleName, { declaration, ...header });
@@ -198,9 +203,12 @@ function readHeader(
   fileName: string,
   includeDirectory: string,
   framework: string | null,
+  cPlusPlus: boolean,
 ): HeaderInfo {
+  const clangLanguage = framework ? "objective-c" : cPlusPlus ? "c++" : "c";
   const clangArguments = [
-    "-x", framework ? "objective-c" : "c",
+    "-x", clangLanguage,
+    ...(cPlusPlus ? ["-std=c++20"] : []),
     ...(framework ? ["-fobjc-arc"] : []),
     "-I", includeDirectory,
     "-include", declaration.header,
@@ -230,14 +238,14 @@ function readHeader(
   }
 
   const notes = readApiNotes(declaration, fileName, includeDirectory);
-  const imported = collectNamedTypes(root, declaration.moduleName);
+  const imported = collectNamedTypes(root, declaration.moduleName, cPlusPlus);
   const objectTypes = new Map<string, ForeignObjectType>();
   const interfaces = framework
     ? collectObjCInterfaces(root, declaration.moduleName, imported.byCName, objectTypes)
     : new Map<string, ForeignObjCInterface>();
   const functions = new Map<string, ForeignFunction>();
   const types = new Map<string, ForeignPointerType>();
-  visit(root, (node) => {
+  visitWithNamespaces(root, (node, namespaces) => {
     if (node.kind !== "FunctionDecl" || !node.name || !node.type?.qualType) return;
     const functionNotes = notes.functions?.[node.name];
     const parameters = (node.inner ?? [])
@@ -247,13 +255,26 @@ function readHeader(
         type: mapForeignType(child.type!.qualType!, functionNotes?.parameters?.[String(index)], "parameter", types, imported.byCName),
       }));
     const cSignature = node.type.qualType;
-    functions.set(node.name, {
+    const cName = cPlusPlus && namespaces.length > 0 ? `${namespaces.join("::")}::${node.name}` : node.name;
+    const candidate: ForeignFunction = {
       name: node.name,
+      cName,
+      alternatives: [{ cName, cSignature }],
       returnType: mapForeignType(returnTypeOf(cSignature), functionNotes?.return, "return", types, imported.byCName),
       parameters,
       variadic: node.variadic === true,
       cSignature,
-    });
+    };
+    const existing = functions.get(node.name);
+    if (!existing) {
+      functions.set(node.name, candidate);
+      return;
+    }
+    const alternatives = [...existing.alternatives];
+    if (!alternatives.some((item) => item.cName === cName && item.cSignature === cSignature)) {
+      alternatives.push({ cName, cSignature });
+    }
+    functions.set(node.name, { ...existing, alternatives });
   });
   for (const target of functions.values()) {
     if (target.returnType.kind !== "pointer" || target.returnType.ownership !== "owned") continue;
@@ -272,12 +293,13 @@ function readHeader(
       );
     }
   }
-  return { functions, types, namedTypes: imported.namedTypes, constants: imported.constants, objectTypes, interfaces, framework };
+  return { functions, types, namedTypes: imported.namedTypes, constants: imported.constants, objectTypes, interfaces, framework, cPlusPlus };
 }
 
 function collectNamedTypes(
   root: ClangNode,
   moduleName: string,
+  cPlusPlus: boolean,
 ): {
   namedTypes: ReadonlyMap<string, ForeignNamedType>;
   constants: ReadonlyMap<string, ForeignConstant>;
@@ -291,6 +313,23 @@ function collectNamedTypes(
     if (!node.name || !node.inner?.length) continue;
     if (node.kind === "RecordDecl" && node.tagUsed === "struct" && node.inner.some((child) => child.kind === "FieldDecl")) records.set(node.name, node);
     if (node.kind === "EnumDecl" && node.inner.some((child) => child.kind === "EnumConstantDecl")) enums.set(node.name, node);
+  }
+
+  const cppRecords: { readonly exportName: string; readonly cName: string; readonly declaration: ClangNode }[] = [];
+  if (cPlusPlus) {
+    visitWithNamespaces(root, (node, namespaces) => {
+      if (
+        node.kind !== "CXXRecordDecl"
+        || node.tagUsed !== "struct"
+        || !node.name
+        || !node.inner?.some((child) => child.kind === "FieldDecl")
+      ) return;
+      cppRecords.push({
+        exportName: node.name,
+        cName: [...namespaces, node.name].join("::"),
+        declaration: node,
+      });
+    });
   }
 
   type Seed = {
@@ -333,9 +372,22 @@ function collectNamedTypes(
       flags: kind === "enum" && enumDeclaration?.inner?.some((child) => child.kind === "FlagEnumAttr"),
     });
   }
+  for (const record of cppRecords) {
+    if (seeds.has(record.exportName)) continue;
+    seeds.set(record.exportName, {
+      kind: "record",
+      exportName: record.exportName,
+      typeName: `${moduleName}.${record.exportName}`,
+      cName: record.cName,
+      declaration: record.declaration,
+    });
+  }
 
   const potential = new Map<string, { typeName: string; kind: Seed["kind"]; underlying?: ForeignScalarTypeName; declaration?: ClangNode }>();
-  for (const seed of seeds.values()) potential.set(seed.cName, seed);
+  for (const seed of seeds.values()) {
+    potential.set(seed.cName, seed);
+    potential.set(seed.exportName, seed);
+  }
   const namedTypes = new Map<string, ForeignNamedType>();
   const byCName = new Map<string, ForeignNamedType>();
   for (const seed of seeds.values()) {
@@ -363,6 +415,7 @@ function collectNamedTypes(
     if (!named) continue;
     namedTypes.set(named.exportName, named);
     byCName.set(named.cName, named);
+    byCName.set(named.exportName, named);
   }
 
   const constants = new Map<string, ForeignConstant>();
@@ -532,6 +585,16 @@ function readApiNotes(
 function visit(node: ClangNode, callback: (node: ClangNode) => void): void {
   callback(node);
   for (const child of node.inner ?? []) visit(child, callback);
+}
+
+function visitWithNamespaces(
+  node: ClangNode,
+  callback: (node: ClangNode, namespaces: readonly string[]) => void,
+  namespaces: readonly string[] = [],
+): void {
+  callback(node, namespaces);
+  const nested = node.kind === "NamespaceDecl" && node.name ? [...namespaces, node.name] : namespaces;
+  for (const child of node.inner ?? []) visitWithNamespaces(child, callback, nested);
 }
 
 function returnTypeOf(signature: string): string {
@@ -705,4 +768,8 @@ function discoverFramework(header: string): string | null {
   if (!cachedSdkPath) return null;
   const frameworkPath = resolve(cachedSdkPath, "System/Library/Frameworks", `${match[1]}.framework`);
   return existsSync(frameworkPath) ? match[1] : null;
+}
+
+function isCPlusPlusHeader(header: string): boolean {
+  return /\.(?:hh|hpp|hxx|h\+\+)$/i.test(header);
 }

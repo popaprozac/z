@@ -298,6 +298,35 @@ test("runs floating-point values and typed bitwise option masks", () => {
   assert.match(artifact.source, /const float scientific = 1\.5e2F;/);
 });
 
+test("imports uniquely named C++ namespace functions and plain value records", () => {
+  const example = resolve(projectRoot, "examples/cpp-interop.z");
+  const source = readFileSync(example, "utf8");
+  const artifact = compileToNative(source, example);
+  assert.equal(artifact.language, "c++");
+  assert.deepEqual(artifact.frameworks, []);
+  assert.match(artifact.source, /#include <cpp_math\.hpp>/);
+  assert.match(artifact.source, /const zcpp::Point origin/);
+  assert.match(artifact.source, /zcpp::translate\(origin, 1, \(-1\)\)/);
+  assert.match(artifact.source, /zcpp::sum\(moved\)/);
+
+  const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, "cpp=42, point=Point { x: 21, y: 21 }\n");
+
+  const translateOffset = source.indexOf("translate") + 1;
+  assert.match(hover(source, example, translateOffset)?.contents.value ?? "", /Point \(Point, int, int\)/);
+  const completionSource = source.replace("cpp.translate", "cpp.tr");
+  const completionOffset = completionSource.indexOf("cpp.tr") + "cpp.tr".length;
+  assert.equal(completions(completionSource, example, completionOffset).find((item) => item.label === "translate")?.kind, 3);
+  const fieldOffset = source.indexOf("x: 20") + 1;
+  assert.match(hover(source, example, fieldOffset)?.contents.value ?? "", /x: i32/);
+
+  assert.throws(
+    () => compileToNative(source.replace("cpp.sum(moved)", "cpp.scale(2, 3)"), example),
+    /C\+\+ function "scale" is overloaded or ambiguous; overload selection is not implemented yet/,
+  );
+});
+
 test("imports AppKit classes and emits an ARC Objective-C NSWindow program", () => {
   if (process.platform !== "darwin") return;
   const example = resolve(projectRoot, "examples/nswindow.z");
