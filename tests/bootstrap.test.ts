@@ -476,6 +476,54 @@ test("checks contextual literals and preserves exact integer expression types", 
   );
 });
 
+test("contextually types signed literals at their destination width", () => {
+  const source = `
+    struct Tiny { value: i8; }
+
+    function echo(value: i8): i8 { return value; }
+    function minimum(): i16 { return -32768; }
+
+    function main(): i32 {
+      const narrow: i8 = -128;
+      const positive: i16 = +32767;
+      const fraction: f32 = -1.5;
+      let assigned: i16 = 0;
+      assigned = -32768;
+      const called = echo(-128);
+      const tiny = Tiny { value: -128 };
+      if (narrow == called && tiny.value == narrow && assigned == minimum() && positive > 0 && fraction < 0.0) {
+        return 0;
+      }
+      return 1;
+    }
+  `;
+  const generated = compileToC(source, "signed-context.z");
+  assert.match(generated, /const int8_t narrow = INT8_MIN;/);
+  assert.match(generated, /const int16_t positive = 32767;/);
+  assert.match(generated, /const float fraction = \(-1\.5F\);/);
+  assert.match(generated, /assigned = INT16_MIN;/);
+  assert.match(generated, /echo\(INT8_MIN\)/);
+  assert.match(generated, /\.value = INT8_MIN/);
+
+  const narrowLiteral = source.indexOf("128", source.indexOf("narrow:")) + 1;
+  assert.match(hover(source, "signed-context.z", narrowLiteral)?.contents.value ?? "", /128: i8/);
+
+  assert.throws(
+    () => compileToC(source.replace("const narrow: i8 = -128", "const narrow: i8 = -129"), "signed-too-small.z"),
+    /integer literal -129 does not fit i8/,
+  );
+  assert.throws(
+    () => compileToC(source.replace("const narrow: i8 = -128", "const narrow: u8 = -1"), "unsigned-negative.z"),
+    /integer literal -1 does not fit u8/,
+  );
+
+  const directory = mkdtempSync("/tmp/z-signed-context-");
+  const fileName = resolve(directory, "main.z");
+  writeFileSync(fileName, source);
+  const result = spawnSync(process.execPath, [cli, "run", fileName], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+});
+
 test("checks integer arithmetic and provides explicit wrapping and saturation", () => {
   const example = resolve(projectRoot, "examples/integer-safety.z");
   const source = readFileSync(example, "utf8");
@@ -561,7 +609,7 @@ test("imports uniquely named C++ namespace functions and plain value records", (
   assert.deepEqual(artifact.frameworks, []);
   assert.match(artifact.source, /#include <cpp_math\.hpp>/);
   assert.match(artifact.source, /const zcpp::Point origin/);
-  assert.match(artifact.source, /zcpp::translate\(origin, 1, z_checked_negate_i32\(1\)\)/);
+  assert.match(artifact.source, /zcpp::translate\(origin, 1, \(-1\)\)/);
   assert.match(artifact.source, /zcpp::sum\(moved\)/);
 
   const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });

@@ -269,6 +269,9 @@ are contextually typed and must fit their destination. Variables do not
 silently change numeric width or category, and binary arithmetic currently
 requires matching numeric types. Bitwise `&`, `|`, `^`, `~`, `<<`, and `>>`
 remain integer-only; this directly supports typed foreign option masks.
+Unary signs remain part of the contextual literal for range checking, so exact
+minimum values such as `const minimum: i8 = -128` are valid without first
+constructing the out-of-range positive value `128` as an `i8`.
 
 Ordinary integer addition, subtraction, multiplication, division, remainder,
 negation, and shifts are checked in every build mode. Overflow, division or

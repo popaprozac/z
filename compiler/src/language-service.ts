@@ -352,6 +352,7 @@ export function hover(source: string, fileName: string, offset: number): Hover |
   const context = safeAnalysis(source, fileName);
   if (!context) return declarationHover(source, null, word.text, word.start, word.end);
   const directWordType = context.semanticInfo.bindingTypes.get(word.start)
+    ?? context.semanticInfo.numericLiteralTypes.get(word.start)
     ?? context.semanticInfo.expressionTypes.get(word.start);
 
   const declaredField = context.sourceProgram.structs

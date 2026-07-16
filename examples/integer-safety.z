@@ -3,8 +3,7 @@ import console from "std/console";
 function main(): i32 {
   const maximum: u8 = 255;
   const unsignedZero: u8 = 0;
-  const zero: i8 = 0;
-  const minimum = zero - 127;
+  const minimum: i8 = -127;
   const wrapped = maximum.wrappingAdd(1);
   const wrappedLow = unsignedZero.wrappingSubtract(1);
   const wrappedProduct = maximum.wrappingMultiply(2);

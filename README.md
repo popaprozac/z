@@ -596,7 +596,8 @@ addition, subtraction, multiplication, division, remainder, negation, and
 shifts trap on invalid results without exposing C signed-overflow behavior.
 Constant invalid arithmetic is diagnosed during compilation. Intentional
 overflow uses explicit methods such as `value.wrappingAdd(other)` or
-`value.saturatingMultiply(other)`.
+`value.saturatingMultiply(other)`. Signed literals use their destination width,
+including exact minimum values such as `const minimum: i8 = -128`.
 
 ```sh
 bun run z check examples/first.z

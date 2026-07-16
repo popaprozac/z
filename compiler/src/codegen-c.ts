@@ -106,7 +106,7 @@ export function generateC(program: Program, sourceName: string, semanticInfo: Se
     lines.push(`#include <${declaration.header}>`);
     includedHeaders.add(declaration.header);
   }
-  const integerRuntime = generateIntegerRuntime(semanticInfo.integerOperations);
+  const integerRuntime = generateIntegerRuntime(semanticInfo.integerOperations, semanticInfo.numericLiteralTypes);
   if (integerRuntime.length > 0) lines.push("", ...integerRuntime);
   if (programUsesIndex(program)) {
     lines.push(
@@ -1928,6 +1928,14 @@ function generateExpression(expression: Expression, context: GenerationContext):
       if (context.parameterModes.get(expression.name) === "inout" || context.parameterModes.get(expression.name) === "out") return expression.name;
       return `&(${expression.name})`;
     case "unary": {
+      const contextualType = context.semanticInfo.numericLiteralTypes.get(expression.location.offset);
+      if (
+        contextualType
+        && expression.operand.kind === "number"
+        && (expression.operator === "+" || expression.operator === "-")
+      ) {
+        return generateContextualSignedLiteral(expression.operator, expression.operand.value, contextualType);
+      }
       const integerOperation = context.semanticInfo.integerOperations.get(expression.location.offset);
       if (integerOperation) {
         return `${integerOperationName(integerOperation)}(${generateExpression(expression.operand, context)})`;
@@ -2174,9 +2182,13 @@ function generateCallArgument(expression: Expression, context: GenerationContext
     : value;
 }
 
-function generateIntegerRuntime(operations: ReadonlyMap<number, IntegerOperation>): string[] {
+function generateIntegerRuntime(
+  operations: ReadonlyMap<number, IntegerOperation>,
+  contextualLiterals: ReadonlyMap<number, string>,
+): string[] {
   const unique = new Map<string, IntegerOperation>();
-  for (const operation of operations.values()) {
+  for (const [offset, operation] of operations) {
+    if (contextualLiterals.has(offset)) continue;
     unique.set(`${operation.kind}:${operation.type}`, operation);
   }
   return [...unique.values()]
@@ -2305,6 +2317,28 @@ function generateNumericLiteral(value: string, type: string | undefined): string
   if (type === "u64" || type === "usize") return `${value}ULL`;
   if (type === "i64" || type === "isize") return `${value}LL`;
   return value;
+}
+
+function generateContextualSignedLiteral(operator: "+" | "-", value: string, type: string): string {
+  if (operator === "+") return generateNumericLiteral(value, type);
+  if (/[.eE]/.test(value)) return `(-${generateNumericLiteral(value, type)})`;
+  const widths: Readonly<Record<string, number>> = {
+    i8: 8,
+    i16: 16,
+    i32: 32,
+    i64: 64,
+    isize: process.arch.includes("64") ? 64 : 32,
+  };
+  const minimumMacros: Readonly<Record<string, string>> = {
+    i8: "INT8_MIN",
+    i16: "INT16_MIN",
+    i32: "INT32_MIN",
+    i64: "INT64_MIN",
+    isize: "INTPTR_MIN",
+  };
+  const width = widths[type];
+  if (width && -BigInt(value) === -(1n << BigInt(width - 1))) return minimumMacros[type];
+  return `(-${generateNumericLiteral(value, type)})`;
 }
 
 function inferExpressionType(expression: Expression, context: GenerationContext): string {

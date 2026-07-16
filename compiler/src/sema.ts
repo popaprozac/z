@@ -3510,6 +3510,9 @@ function requireAssignable(
   numericLiteralTypes: Map<number, string>,
 ): void {
   const expectedType = canonicalType(expected, foreignNamedTypes);
+  if (isNumericType(expectedType) && requireContextualSignedLiteral(expression, expectedType, fileName, numericLiteralTypes)) {
+    return;
+  }
   if (expression.kind === "number" && isNumericType(expectedType)) {
     requireNumericLiteralFits(expression, expectedType, fileName, numericLiteralTypes);
     return;
@@ -3529,6 +3532,39 @@ function requireAssignable(
       `expected ${displayArrayType(String(expected))}, found ${displayArrayType(String(actual))}`,
     );
   }
+}
+
+function requireContextualSignedLiteral(
+  expression: Expression,
+  type: string,
+  fileName: string,
+  numericLiteralTypes: Map<number, string>,
+): boolean {
+  if (
+    expression.kind !== "unary"
+    || !["+", "-"].includes(expression.operator)
+    || expression.operand.kind !== "number"
+  ) return false;
+  const spelling = `${expression.operator}${expression.operand.value}`;
+  if (isIntegerType(type)) {
+    if (!isIntegerLiteral(expression.operand.value)) {
+      throw new DiagnosticError(fileName, expression.location, `floating-point literal ${spelling} cannot initialize ${type}`);
+    }
+    if (!integerLiteralFits(spelling, type)) {
+      throw new DiagnosticError(fileName, expression.location, `integer literal ${spelling} does not fit ${type}`);
+    }
+  } else if (isFloatType(type)) {
+    const value = Number(spelling);
+    const maximum = type === "f32" ? 3.4028234663852886e38 : Number.MAX_VALUE;
+    if (!Number.isFinite(value) || Math.abs(value) > maximum) {
+      throw new DiagnosticError(fileName, expression.location, `floating-point literal ${spelling} does not fit ${type}`);
+    }
+  } else {
+    return false;
+  }
+  numericLiteralTypes.set(expression.location.offset, type);
+  numericLiteralTypes.set(expression.operand.location.offset, type);
+  return true;
 }
 
 function sameForeignNamedType(
