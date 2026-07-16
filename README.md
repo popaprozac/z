@@ -216,13 +216,13 @@ match result {
 ```
 
 `match` can produce a value. A concise arm provides its expression directly;
-use `yield` when an arm needs multiple statements:
+use `select` when an arm needs multiple statements:
 
 ```z
 const id: i32 = match result {
   success user => {
     log(user);
-    yield user.id;
+    select user.id;
   }
   failure error => throw error;
 };

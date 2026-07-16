@@ -24,7 +24,7 @@ function userId(result: UserResult): i32 throws UserError {
   return match result {
     success user => {
       const adjusted = user.id + 1;
-      yield adjusted;
+      select adjusted;
     }
     failure error => throw error;
   };
@@ -42,7 +42,7 @@ function main(): i32 {
 
   const result = attempt userId(found);
   match result {
-    success value => stdio.printf("yielded=%d\n", value);
+    success value => stdio.printf("selected=%d\n", value);
     failure error => stdio.printf("error=%d\n", error.code);
   }
   return 0;

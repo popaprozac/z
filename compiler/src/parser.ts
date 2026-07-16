@@ -469,11 +469,14 @@ export function parse(tokens: Token[], fileName: string): Program {
       expect("semicolon", "`;`");
       return { kind: "throw", expression, location: throwToken.location };
     }
-    if (match("yield")) {
-      const yieldToken = previous();
+    if (match("select")) {
+      const selectToken = previous();
       const expression = parseExpression();
       expect("semicolon", "`;`");
-      return { kind: "yield", expression, location: yieldToken.location };
+      return { kind: "select", expression, location: selectToken.location };
+    }
+    if (match("yield")) {
+      throw new DiagnosticError(fileName, previous().location, "yield is reserved for generators, which are not implemented yet");
     }
     const expression = parseExpression();
     if (match("equal")) {

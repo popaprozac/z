@@ -312,14 +312,14 @@ The intended pattern system is exhaustive and eventually includes enum
 variants, type patterns, destructuring, guards, literals, and wildcards.
 
 `match` is also an expression. Concise arms provide their expression value;
-multi-statement arms use `yield` to explicitly provide a value to the nearest
+multi-statement arms use `select` to explicitly provide a value to the nearest
 enclosing value-producing construct:
 
 ```z
 const name: string = match result {
   success user => {
     log(user);
-    yield user.name;
+    select user.name;
   }
   failure error => throw error;
 };
@@ -327,9 +327,23 @@ const name: string = match result {
 
 `return` and `throw` still exit the enclosing function. They have the bottom
 type, so an arm that exits does not need to agree with the other arms' value
-type. A future generator may use the same `yield` keyword; lexical nesting
-selects the nearest yield target, allowing a match expression inside a
-generator to intercept its own yields without ambiguity.
+type. `select` belongs to local value-producing control flow; `yield` is
+reserved for producing values from a future generator.
+
+`if` will also be an expression. Its statement blocks use the same explicit
+`select` operation, while conventional ternaries remain available for small
+conditions:
+
+```z
+const label = ready ? "Ready" : "Waiting";
+const detailed = if (ready) {
+  log("ready");
+  select "Ready";
+} else {
+  log("waiting");
+  select "Waiting";
+};
+```
 
 ## Strings, formatting, and diagnostics
 

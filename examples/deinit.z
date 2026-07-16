@@ -81,7 +81,7 @@ function matchExit(): i32 {
   return match choice {
     yes id => {
       const resource = Resource { id: id };
-      yield resource.id;
+      select resource.id;
     }
     no id => id;
   };

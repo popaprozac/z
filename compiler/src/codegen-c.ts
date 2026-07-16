@@ -688,8 +688,8 @@ function generateStatement(statement: Statement, context: GenerationContext): st
       const declaration = generateLocalDeclaration(context.owner.errorType!.name, temporary, false, context.structs, context.enums, context.semanticInfo.foreignNamedTypes);
       return `${declaration} = ${value};\n${cleanup}\nreturn (${enumName(result)}){ .tag = ${variantTag(result, "failure")}, .data.failure = ${temporary} };`;
     }
-    case "yield":
-      throw new Error("yield must be lowered by its enclosing value-producing block");
+    case "select":
+      throw new Error("select must be lowered by its enclosing value-producing block");
     case "break":
       return generateLoopTransfer("break", context);
     case "continue":
@@ -1095,7 +1095,7 @@ function generateValueArm(
   consumeValue: (value: string, context: GenerationContext) => string,
   consumeTerminates: boolean,
 ): string {
-  if (statement.kind === "expressionStatement" || statement.kind === "yield") {
+  if (statement.kind === "expressionStatement" || statement.kind === "select") {
     return generateDirectValue(statement.expression, context, consumeValue, consumeTerminates);
   }
   if (statement.kind === "return" || statement.kind === "throw") {
@@ -1471,7 +1471,7 @@ function matchExpressionType(expression: Extract<Expression, { kind: "matchExpre
 }
 
 function valueArmType(statement: Statement, context: GenerationContext): string | null {
-  if (statement.kind === "expressionStatement" || statement.kind === "yield") {
+  if (statement.kind === "expressionStatement" || statement.kind === "select") {
     return directValueType(statement.expression, context);
   }
   if (statement.kind === "block") return valueArmType(statement.statements.at(-1)!, context);

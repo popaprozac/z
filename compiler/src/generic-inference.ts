@@ -324,7 +324,7 @@ export function inferGenericCalls(
           ? { ...statement, expression: rewriteExpression(statement.expression, environment).expression }
           : statement;
       case "throw":
-      case "yield":
+      case "select":
       case "expressionStatement":
         return { ...statement, expression: rewriteExpression(statement.expression, environment).expression };
       case "block":
@@ -363,10 +363,10 @@ export function inferGenericCalls(
   const armValueType = (arms: readonly MatchArm[], environment: Environment): string | null => {
     for (const arm of arms) {
       if (arm.body.kind === "expressionStatement") return rewriteExpression(arm.body.expression, environment).type;
-      if (arm.body.kind === "yield") return rewriteExpression(arm.body.expression, environment).type;
+      if (arm.body.kind === "select") return rewriteExpression(arm.body.expression, environment).type;
       if (arm.body.kind === "block") {
-        const yielded = arm.body.statements.find((statement) => statement.kind === "yield");
-        if (yielded?.kind === "yield") return rewriteExpression(yielded.expression, environment).type;
+        const selected = arm.body.statements.find((statement) => statement.kind === "select");
+        if (selected?.kind === "select") return rewriteExpression(selected.expression, environment).type;
       }
     }
     return null;

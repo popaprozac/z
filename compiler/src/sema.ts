@@ -746,8 +746,8 @@ function analyzeStatement(
       loop.continues.push(new Map(locals));
       return;
     }
-    case "yield":
-      throw new DiagnosticError(fileName, statement.location, "yield requires an enclosing value-producing block");
+    case "select":
+      throw new DiagnosticError(fileName, statement.location, "select requires an enclosing value-producing block");
     case "block": {
       const blockLocals = new Map(locals);
       analyzeStatements(statement.statements, owner, blockLocals, globals, structs, enums, fileName, state);
@@ -881,7 +881,7 @@ function inferValueArm(
   fileName: string,
   state: AnalysisState,
 ): ValueType {
-  if (statement.kind === "expressionStatement" || statement.kind === "yield") {
+  if (statement.kind === "expressionStatement" || statement.kind === "select") {
     const type = inferDirectValue(statement.expression, owner, locals, globals, structs, enums, fileName, state);
     consumeOwnedValue(statement.expression, type, locals, structs, fileName, state);
     return type;
@@ -924,7 +924,7 @@ function inferValueArm(
       state,
     );
   }
-  throw new DiagnosticError(fileName, statement.location, "a value-producing match arm must produce a value with an expression or `yield`");
+  throw new DiagnosticError(fileName, statement.location, "a value-producing match arm must produce a value with an expression or `select`");
 }
 
 function inferTrySuccess(
@@ -1627,7 +1627,7 @@ function checkArguments(
 
 function validateDeinitControlFlow(statements: Statement[], fileName: string): void {
   for (const statement of statements) {
-    if (statement.kind === "return" || statement.kind === "throw" || statement.kind === "yield") {
+    if (statement.kind === "return" || statement.kind === "throw" || statement.kind === "select") {
       throw new DiagnosticError(fileName, statement.location, `deinit cannot contain ${JSON.stringify(statement.kind)}`);
     }
     if (statement.kind === "block") validateDeinitControlFlow(statement.statements, fileName);

@@ -107,7 +107,7 @@ export type Statement =
   | AssignmentStatement
   | ReturnStatement
   | ThrowStatement
-  | YieldStatement
+  | SelectStatement
   | ExpressionStatement
   | BlockStatement
   | IfStatement
@@ -145,8 +145,8 @@ export type ThrowStatement = {
   readonly location: SourceLocation;
 };
 
-export type YieldStatement = {
-  readonly kind: "yield";
+export type SelectStatement = {
+  readonly kind: "select";
   readonly expression: Expression;
   readonly location: SourceLocation;
 };

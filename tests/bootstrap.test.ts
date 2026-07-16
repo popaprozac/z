@@ -1729,14 +1729,27 @@ test("compiles payload enums and exhaustive matches", () => {
   assert.equal(result.stdout, "matched=42\n");
 });
 
-test("compiles expression matches with concise and yielding block arms", () => {
+test("compiles expression matches with concise and selecting block arms", () => {
   const example = resolve(projectRoot, "examples/match-expression.z");
   const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
-  assert.equal(result.stdout, "code=41\ndirect=41\nyielded=42\n");
+  assert.equal(result.stdout, "code=41\ndirect=41\nselected=42\n");
 });
 
-test("requires yield to target a value-producing block", () => {
+test("requires select to target a value-producing block", () => {
+  const source = `
+    function main(): i32 {
+      select 42;
+      return 0;
+    }
+  `;
+  assert.throws(
+    () => compileToC(source, "orphan-select.z"),
+    /orphan-select\.z:3:7: error: select requires an enclosing value-producing block/,
+  );
+});
+
+test("reserves yield for generators", () => {
   const source = `
     function main(): i32 {
       yield 42;
@@ -1744,8 +1757,8 @@ test("requires yield to target a value-producing block", () => {
     }
   `;
   assert.throws(
-    () => compileToC(source, "orphan-yield.z"),
-    /orphan-yield\.z:3:7: error: yield requires an enclosing value-producing block/,
+    () => compileToC(source, "future-generator.z"),
+    /future-generator\.z:3:7: error: yield is reserved for generators, which are not implemented yet/,
   );
 });
 
