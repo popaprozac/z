@@ -86,14 +86,23 @@ export function parse(tokens: Token[], fileName: string): Program {
         return 1;
       case "andAnd":
         return 2;
+      case "bitOr":
+        return 3;
+      case "bitXor":
+        return 4;
+      case "bitAnd":
+        return 5;
       case "equalEqual":
       case "bangEqual":
-        return 3;
+        return 6;
       case "less":
       case "lessEqual":
       case "greater":
       case "greaterEqual":
-        return 4;
+        return 7;
+      case "shiftLeft":
+      case "shiftRight":
+        return 8;
       case "plus":
       case "minus":
         return 10;
@@ -142,6 +151,9 @@ export function parse(tokens: Token[], fileName: string): Program {
     if (match("true") || match("false")) {
       const token = previous();
       return { kind: "boolean", value: token.kind === "true", location: token.location };
+    }
+    if (match("null")) {
+      return { kind: "null", location: previous().location };
     }
     if (match("identifier")) {
       const token = previous();
@@ -237,7 +249,7 @@ export function parse(tokens: Token[], fileName: string): Program {
   };
 
   const parseUnary = (): Expression => {
-    if (match("bang")) {
+    if (match("bang") || match("plus") || match("minus") || match("tilde")) {
       const token = previous();
       return { kind: "unary", operator: token.text, operand: parseUnary(), location: token.location };
     }
@@ -448,7 +460,7 @@ export function parse(tokens: Token[], fileName: string): Program {
 }
 
 function startsPrimary(kind: TokenKind | undefined): boolean {
-  return kind === "identifier" || kind === "number" || kind === "string" || kind === "true" || kind === "false";
+  return kind === "identifier" || kind === "number" || kind === "string" || kind === "true" || kind === "false" || kind === "null";
 }
 
 function tokenDescription(token: Token): string {

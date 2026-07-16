@@ -22,6 +22,14 @@
           "nullable": false
         }
       }
+    },
+    "z_test_optional": {
+      "parameters": {
+        "0": {
+          "ownership": "borrowed",
+          "nullable": true
+        }
+      }
     }
   }
 }

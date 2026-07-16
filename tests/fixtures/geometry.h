@@ -5,6 +5,7 @@ typedef int ZCount;
 typedef unsigned short ZExtent;
 typedef unsigned int ZFlags;
 typedef unsigned long long ZIdentifier;
+typedef double ZCoordinate;
 
 typedef struct ZPoint {
   int x;
@@ -57,6 +58,10 @@ static inline unsigned int z_extent_value(ZExtent value) {
 
 static inline ZIdentifier z_rect_id(ZRect rect) {
   return rect.identifier;
+}
+
+static inline ZCoordinate z_area(ZCoordinate width, ZCoordinate height) {
+  return width * height;
 }
 
 #endif

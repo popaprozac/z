@@ -17,6 +17,7 @@ export type TokenKind =
   | "else"
   | "true"
   | "false"
+  | "null"
   | "const"
   | "let"
   | "return"
@@ -46,6 +47,12 @@ export type TokenKind =
   | "greaterEqual"
   | "andAnd"
   | "orOr"
+  | "bitAnd"
+  | "bitOr"
+  | "bitXor"
+  | "shiftLeft"
+  | "shiftRight"
+  | "tilde"
   | "fatArrow"
   | "plus"
   | "minus"
@@ -72,6 +79,7 @@ const keywords = new Map<string, TokenKind>([
   ["else", "else"],
   ["true", "true"],
   ["false", "false"],
+  ["null", "null"],
   ["const", "const"],
   ["let", "let"],
   ["return", "return"],
@@ -130,6 +138,18 @@ export function lex(source: string, fileName: string): Token[] {
     if (/[0-9]/.test(character)) {
       let text = "";
       while (/[0-9]/.test(peek())) text += advance();
+      if (peek() === "." && /[0-9]/.test(peek(1))) {
+        text += advance();
+        while (/[0-9]/.test(peek())) text += advance();
+      }
+      if (peek() === "e" || peek() === "E") {
+        text += advance();
+        if (peek() === "+" || peek() === "-") text += advance();
+        if (!/[0-9]/.test(peek())) {
+          throw new DiagnosticError(fileName, start, "a numeric exponent requires at least one digit");
+        }
+        while (/[0-9]/.test(peek())) text += advance();
+      }
       tokens.push({ kind: "number", text, location: start });
       continue;
     }
@@ -185,6 +205,10 @@ export function lex(source: string, fileName: string): Token[] {
       "-": "minus",
       "*": "star",
       "/": "slash",
+      "&": "bitAnd",
+      "|": "bitOr",
+      "^": "bitXor",
+      "~": "tilde",
     };
     const pairedPunctuation: Record<string, TokenKind> = {
       "=>": "fatArrow",
@@ -194,6 +218,8 @@ export function lex(source: string, fileName: string): Token[] {
       ">=": "greaterEqual",
       "&&": "andAnd",
       "||": "orOr",
+      "<<": "shiftLeft",
+      ">>": "shiftRight",
     };
     const pair = character + peek(1);
     const pairedKind = pairedPunctuation[pair];

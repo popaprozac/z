@@ -6,5 +6,6 @@ typedef struct ZTestHandle ZTestHandle;
 ZTestHandle *z_test_open(void);
 void z_test_close(ZTestHandle *handle);
 int z_test_use(ZTestHandle *handle);
+int z_test_optional(ZTestHandle *handle);
 
 #endif

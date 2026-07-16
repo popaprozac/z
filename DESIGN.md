@@ -143,10 +143,16 @@ preserve exactly-once cleanup when runtime branches move different values.
 ## Numeric types
 
 Z names exact signed and unsigned integer widths as `i8`, `u8`, `i16`, `u16`,
-`i32`, `u32`, `i64`, and `u64`; `isize` and `usize` track pointer width. Integer
-literals are contextually typed and must fit their destination. Variables do
-not silently change signedness or width, and binary arithmetic currently
-requires matching integer types.
+`i32`, `u32`, `i64`, and `u64`; `isize` and `usize` track pointer width. `f32`
+and `f64` map to native IEEE-754 `float` and `double` storage. Numeric literals
+are contextually typed and must fit their destination. Variables do not
+silently change numeric width or category, and binary arithmetic currently
+requires matching numeric types. Bitwise `&`, `|`, `^`, `~`, `<<`, and `>>`
+remain integer-only; this directly supports typed foreign option masks.
+
+`null` has no independently inferable storage type. It is accepted only when a
+destination explicitly carries nullable foreign-reference semantics; it cannot
+silently enter ordinary values or non-null foreign boundaries.
 
 The final overflow policy still needs an explicit language-design decision.
 Generated C behavior in the bootstrap is not the semantic contract: safe Z

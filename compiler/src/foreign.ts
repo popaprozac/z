@@ -6,7 +6,7 @@ import type { ImportDeclaration } from "./ast.ts";
 import { DiagnosticError } from "./diagnostics.ts";
 
 export type ForeignScalarTypeName =
-  | "i8" | "u8" | "i16" | "u16" | "i32" | "u32" | "i64" | "u64" | "isize" | "usize" | "bool";
+  | "i8" | "u8" | "i16" | "u16" | "i32" | "u32" | "i64" | "u64" | "isize" | "usize" | "f32" | "f64" | "bool";
 
 export type ForeignType =
   | { readonly kind: "z"; readonly name: ForeignScalarTypeName | "cstring" | "void"; readonly cName: string }
@@ -430,6 +430,8 @@ function mapForeignType(
 function mapBuiltinType(cName: string): ForeignScalarTypeName | "void" | null {
   const normalized = stripValueQualifiers(cName);
   if (normalized === "void") return "void";
+  if (normalized === "float") return "f32";
+  if (normalized === "double") return "f64";
   if (normalized === "signed char") return "i8";
   if (normalized === "unsigned char") return "u8";
   if (normalized === "short" || normalized === "short int" || normalized === "signed short" || normalized === "signed short int") return "i16";

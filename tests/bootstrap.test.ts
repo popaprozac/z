@@ -3,7 +3,7 @@ import { spawnSync } from "node:child_process";
 import { resolve } from "node:path";
 import { readFileSync } from "node:fs";
 import { test } from "bun:test";
-import { compileToC } from "../compiler/src/compiler.ts";
+import { compileToC, compileToNative } from "../compiler/src/compiler.ts";
 
 const projectRoot = resolve(dirnameFromImportMeta(), "..");
 const cli = resolve(projectRoot, "compiler/src/cli.ts");
@@ -266,6 +266,100 @@ test("checks contextual literals and preserves exact integer expression types", 
   assert.throws(
     () => compileToC(inferredWide, "integer-default.z"),
     /does not fit default i32; add an explicit integer type/,
+  );
+});
+
+test("runs floating-point values and typed bitwise option masks", () => {
+  const example = resolve(projectRoot, "examples/apple-groundwork.z");
+  const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, "");
+
+  const artifact = compileToNative(readFileSync(example, "utf8"), example);
+  assert.equal(artifact.language, "c");
+  assert.deepEqual(artifact.frameworks, []);
+  assert.match(artifact.source, /static float twice\(float value\)/);
+  assert.match(artifact.source, /static double negate\(double value\)/);
+  assert.match(artifact.source, /const float width = 800\.0F;/);
+  assert.match(artifact.source, /const ZCoordinate windowArea = z_area\(800\.0, 600\.0\);/);
+  assert.match(artifact.source, /const uintptr_t styleMask = \(\(titled \| 2ULL\) \| 8ULL\);/);
+  assert.match(artifact.source, /const uint32_t shifted = \(one << 3U\);/);
+  assert.match(artifact.source, /const uint32_t inverted = \(~one\);/);
+  assert.match(artifact.source, /const uintptr_t toggled = \(filtered \^ 1ULL\);/);
+  assert.match(artifact.source, /const float scientific = 1\.5e2F;/);
+});
+
+test("checks floating-point widths and integer-only bitwise operators", () => {
+  const mismatch = `
+    function accept(value: f32): void {}
+    function main(): i32 {
+      const value: f64 = 1.25;
+      accept(value);
+      return 0;
+    }
+  `;
+  assert.throws(() => compileToC(mismatch, "float-width.z"), /expected f32, found f64/);
+
+  const floatToInteger = `
+    function main(): i32 {
+      const value: i32 = 1.5;
+      return value;
+    }
+  `;
+  assert.throws(
+    () => compileToC(floatToInteger, "float-to-integer.z"),
+    /floating-point literal 1\.5 cannot initialize i32/,
+  );
+
+  const floatMask = `
+    function main(): i32 {
+      const mask = 1.0 | 2.0;
+      return 0;
+    }
+  `;
+  assert.throws(
+    () => compileToC(floatMask, "float-mask.z"),
+    /operator "\|" requires matching integer operands/,
+  );
+
+  const variadicFloat = `
+    import stdio from "stdio.h";
+    function main(): i32 {
+      stdio.printf("%.1f", 1.5);
+      return 0;
+    }
+  `;
+  assert.match(compileToC(variadicFloat, "variadic-float.z"), /printf\("%\.1f", 1\.5\)/);
+});
+
+test("accepts null only at explicitly nullable foreign boundaries", () => {
+  const nullable = `
+    import handles from "tests/fixtures/foreign-handles.h";
+    function main(): i32 {
+      handles.z_test_optional(null);
+      return 0;
+    }
+  `;
+  assert.match(
+    compileToC(nullable, resolve(projectRoot, "nullable-null.z")),
+    /z_test_optional\(NULL\);/,
+  );
+
+  const nonnull = nullable.replace("z_test_optional", "z_test_use");
+  assert.throws(
+    () => compileToC(nonnull, resolve(projectRoot, "nonnull-null.z")),
+    /C function "z_test_use" requires a non-null ZTestHandle \*/,
+  );
+
+  const inferred = `
+    function main(): i32 {
+      const absent = null;
+      return 0;
+    }
+  `;
+  assert.throws(
+    () => compileToC(inferred, "inferred-null.z"),
+    /cannot infer a type from null; provide an explicitly nullable type/,
   );
 });
 
@@ -1322,8 +1416,11 @@ test("editor grammar tracks keywords without reserving Result variants", () => {
   assert.match(keywordPattern, /\bin\b/);
   assert.match(keywordPattern, /\bas\b/);
   assert.match(constantPattern, /true\|false/);
+  assert.match(constantPattern, /null/);
   assert.match(constantPattern, /this/);
   assert.match(operatorPattern, /&&/);
+  assert.match(operatorPattern, /<</);
+  assert.match(operatorPattern, /\^/);
   assert.match(operatorPattern, /=/);
   assert.doesNotMatch(keywordPattern, /success|failure/);
 });

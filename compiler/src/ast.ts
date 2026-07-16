@@ -166,6 +166,7 @@ export type Expression =
   | NumberExpression
   | StringExpression
   | BooleanExpression
+  | NullExpression
   | IdentifierExpression
   | UnaryExpression
   | BinaryExpression
@@ -193,6 +194,11 @@ export type StringExpression = {
 export type BooleanExpression = {
   readonly kind: "boolean";
   readonly value: boolean;
+  readonly location: SourceLocation;
+};
+
+export type NullExpression = {
+  readonly kind: "null";
   readonly location: SourceLocation;
 };
 

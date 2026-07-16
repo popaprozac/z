@@ -26,7 +26,7 @@ function main(): i32 {
 }
 ```
 
-Large headers can expose only the C functions a file uses, with optional local
+Large headers can expose only the C declarations a file uses, with optional local
 aliases:
 
 ```z
@@ -34,8 +34,8 @@ import { sqlite3_open, sqlite3_close as closeDatabase } from "sqlite3.h";
 ```
 
 This is a scope filter over the same typed header module, not a wrapper or an
-ABI redeclaration. Selective imported types and constants are not implemented
-in the bootstrap yet; namespace imports cover those declarations.
+ABI redeclaration. Functions, supported typedef-named types, and enum constants
+share the same selective binding model.
 
 Structs are value types with fields, literals, and methods:
 
@@ -325,6 +325,7 @@ bun run z run examples/foreign-types.z
 bun run z run examples/foreign-pointers.z
 bun run z run examples/selective-import.z
 bun run z run examples/selective-declarations.z
+bun run z run examples/apple-groundwork.z
 bun run z run examples/structs.z
 bun run z run examples/match.z
 bun run z run examples/match-expression.z
@@ -344,7 +345,8 @@ aliases. Selective type aliases preserve the underlying C declaration identity
 in signatures, literals, field access, and calls. Signed and
 unsigned C integer spellings and common fixed-width or pointer-sized typedefs
 map to Z's `i8` through `i64`, `u8` through `u64`, `isize`, and `usize` families;
-`_Bool`, `const char *`, and `void` map to `bool`, `cstring`, and `void`. The
+`float` and `double` map to `f32` and `f64`; `_Bool`, `const char *`, and `void`
+map to `bool`, `cstring`, and `void`. The
 importer also accepts opaque single-pointer handles when API
 notes specify nullability, owned returns and their release function, and
 borrowed or consuming parameters. Pointer parameters to imported complete
@@ -370,11 +372,11 @@ const moved = translate(origin, forward, 3);
 
 Complete typedef-named C structs with supported integer, enum, or nested-record
 fields, C enums and their constants, and integer typedefs are now usable as
-namespaced or selective Z types and values. Integer literals are contextually
-typed and rejected when they do not fit the destination width. Unions, anonymous or incomplete layouts,
-plain `char` signedness, arrays, floating-point types, bitfield-specific
-validation, callbacks, and pointers stored inside records remain upcoming
-interop layers.
+namespaced or selective Z types and values. Numeric literals are contextually
+typed and rejected when they do not fit the destination width. Unions,
+anonymous or incomplete layouts, plain `char` signedness, arrays,
+bitfield-specific validation, callbacks, and pointers stored inside records
+remain upcoming interop layers.
 
 See [DESIGN.md](DESIGN.md) for the language charter and roadmap.
 

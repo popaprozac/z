@@ -44,6 +44,8 @@ const primitiveTypeNames: Record<string, string> = {
   u64: "uint64_t",
   isize: "intptr_t",
   usize: "uintptr_t",
+  f32: "float",
+  f64: "double",
   void: "void",
   bool: "bool",
   cstring: "const char *",
@@ -716,14 +718,16 @@ function statementListTerminates(statements: Statement[]): boolean {
 function generateExpression(expression: Expression, context: GenerationContext): string {
   switch (expression.kind) {
     case "number":
-      return generateIntegerLiteral(
+      return generateNumericLiteral(
         expression.value,
-        context.semanticInfo.integerLiteralTypes.get(expression.location.offset),
+        context.semanticInfo.numericLiteralTypes.get(expression.location.offset),
       );
     case "string":
       return JSON.stringify(expression.value);
     case "boolean":
       return expression.value ? "true" : "false";
+    case "null":
+      return "NULL";
     case "argumentReference":
       if (expression.name === "this") return context.owner.receiverMode === "move" ? "&(self)" : "self";
       if (context.parameterModes.get(expression.name) === "inout" || context.parameterModes.get(expression.name) === "out") return expression.name;
@@ -829,7 +833,10 @@ function generateCallArgument(expression: Expression, context: GenerationContext
     : value;
 }
 
-function generateIntegerLiteral(value: string, type: string | undefined): string {
+function generateNumericLiteral(value: string, type: string | undefined): string {
+  const isFloating = /[.eE]/.test(value);
+  if (type === "f32") return `${value}${isFloating ? "F" : ".0F"}`;
+  if (type === "f64") return isFloating ? value : `${value}.0`;
   if (type === "u32") return `${value}U`;
   if (type === "u64" || type === "usize") return `${value}ULL`;
   if (type === "i64" || type === "isize") return `${value}LL`;
@@ -845,14 +852,16 @@ function inferExpressionType(expression: Expression, context: GenerationContext)
   if (foreignCallType) return foreignCallType;
   switch (expression.kind) {
     case "number":
-      return "i32";
+      return /[.eE]/.test(expression.value) ? "f64" : "i32";
     case "string":
       return "cstring";
     case "boolean":
+    case "null":
+      return expression.kind === "null" ? "null" : "bool";
     case "unary":
       return "bool";
     case "binary":
-      return ["+", "-", "*", "/"].includes(expression.operator) ? "i32" : "bool";
+      return ["+", "-", "*", "/", "&", "|", "^", "<<", ">>"].includes(expression.operator) ? "i32" : "bool";
     case "identifier":
       return context.localTypes.get(expression.name) ?? "i32";
     case "argumentReference":
