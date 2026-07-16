@@ -412,11 +412,30 @@ const accumulate = (value: i32): i32 => {
 const snapshot = move (value: i32): i32 => seed + value;
 ```
 
+Explicit function types use TypeScript arrow spelling:
+
+```z
+const operation: (left: i32, right: i32) => i32 = add;
+
+function apply(
+  operation: (left: i32, right: i32) => i32,
+  left: i32,
+  right: i32
+): i32 {
+  return operation(left, right);
+}
+```
+
+Named functions and non-capturing closures can be stored, passed, returned, and
+placed in aggregate fields. They lower to ordinary typed C function pointers
+with no allocation. Parameter names are documentary and do not affect function
+type compatibility; parameter capabilities and value types do.
+
 Owned escaping environments, cleanup-bearing move captures, inferred
-single-parameter syntax, weak class captures, and closure function types are
-reserved for later tiers. Those features must preserve deterministic cleanup
-and ARC cycle safety rather than silently allocating an incomplete runtime
-representation.
+single-parameter syntax, weak class captures, and converting capturing closures
+to storable function types are reserved for later tiers. Those features must
+preserve deterministic cleanup and ARC cycle safety rather than silently
+allocating an incomplete runtime representation.
 
 ## Strings, formatting, and diagnostics
 

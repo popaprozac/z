@@ -20,6 +20,7 @@ import {
 } from "./array-types.ts";
 import { DiagnosticError } from "./diagnostics.ts";
 import { genericTypeName, parseGenericType } from "./generic-types.ts";
+import { functionTypeName, parseFunctionType } from "./function-types.ts";
 import { lex } from "./lexer.ts";
 import { parse } from "./parser.ts";
 
@@ -593,6 +594,16 @@ function renameTypeReference(reference: TypeReference, scope: ModuleScope, typeP
 
 function renameTypeName(name: string, scope: ModuleScope, typeParameters: ReadonlySet<string>): string {
   if (typeParameters.has(name)) return name;
+  const functionType = parseFunctionType(name);
+  if (functionType) {
+    return functionTypeName(
+      functionType.parameters.map((parameter) => ({
+        ...parameter,
+        type: renameTypeName(parameter.type, scope, typeParameters),
+      })),
+      renameTypeName(functionType.returnType, scope, typeParameters),
+    );
+  }
   const fixed = parseFixedArrayType(name);
   if (fixed) return fixedArrayTypeName(renameTypeName(fixed.elementType, scope, typeParameters), fixed.length);
   const slice = parseSliceType(name);

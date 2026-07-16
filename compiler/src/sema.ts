@@ -20,6 +20,13 @@ import {
   parseSliceType,
 } from "./array-types.ts";
 import {
+  displayFunctionType,
+  functionTypeName,
+  functionTypesCompatible,
+  parseFunctionType,
+  type FunctionType,
+} from "./function-types.ts";
+import {
   pointerTypeName,
   type ForeignConstant,
   type ForeignFunction,
@@ -763,8 +770,8 @@ function analyzeStatement(
         if (statement.mutable) {
           throw new DiagnosticError(fileName, statement.location, "closure bindings are immutable in the initial non-escaping tier");
         }
-        if (statement.type) {
-          throw new DiagnosticError(fileName, statement.type.location, "explicit closure function types are not implemented yet");
+        if (statement.type && !parseFunctionType(statement.type.name)) {
+          throw new DiagnosticError(fileName, statement.type.location, "a closure annotation must be a function type");
         }
       }
       let initializerType = inferDirectValue(statement.initializer, owner, locals, globals, structs, enums, fileName, state);
@@ -772,8 +779,35 @@ function analyzeStatement(
       if (statement.type) {
         validateType(statement.type, structs, enums, state.foreignNamedTypes, fileName, false);
         variableType = statement.type.name;
-        initializerType = contextualCStringLiteral(variableType, statement.initializer, state) ?? initializerType;
-        requireAssignable(variableType, initializerType, statement.initializer, fileName, state.foreignNamedTypes, state.numericLiteralTypes);
+        if (statement.initializer.kind === "closure") {
+          const expectedFunction = parseFunctionType(variableType)!;
+          const closure = state.closures.get(statement.initializer.location.offset)!;
+          if (closure.captures.length > 0) {
+            throw new DiagnosticError(
+              fileName,
+              statement.initializer.location,
+              "a capturing closure cannot become a storable function value until owned closure environments are implemented",
+              {
+                code: "Z0212",
+                length: statement.initializer.captureMode === "move" ? 4 : 1,
+                notes: ["plain function values contain only executable code and cannot carry borrowed captures"],
+                helps: ["pass captured values as explicit parameters, or keep the closure as an inferred non-escaping local"],
+              },
+            );
+          }
+          const actualFunction = closureFunctionType(closure);
+          if (!functionTypesCompatible(expectedFunction, actualFunction)) {
+            throw new DiagnosticError(
+              fileName,
+              statement.initializer.location,
+              `expected ${displayFunctionType(variableType)}, found ${displayFunctionType(functionTypeName(actualFunction.parameters, actualFunction.returnType))}`,
+            );
+          }
+          initializerType = variableType;
+        } else {
+          initializerType = contextualCStringLiteral(variableType, statement.initializer, state) ?? initializerType;
+          requireAssignable(variableType, initializerType, statement.initializer, fileName, state.foreignNamedTypes, state.numericLiteralTypes);
+        }
       } else if (initializerType === "unknown") {
         throw new DiagnosticError(
           fileName,
@@ -1008,6 +1042,35 @@ function closureInfoForType(type: ValueType, state: AnalysisState): ClosureInfo 
   const actual = String(underlyingType(type));
   if (!actual.startsWith("__z_closure_")) return null;
   return [...state.closures.values()].find((closure) => closure.type === actual) ?? null;
+}
+
+function closureFunctionType(closure: ClosureInfo): FunctionType {
+  return {
+    parameters: closure.declaration.parameters.slice(closure.captures.length).map((parameter) => ({
+      name: parameter.name,
+      mode: parameter.mode,
+      type: parameter.type.name,
+    })),
+    returnType: closure.declaration.returnType.name,
+  };
+}
+
+function functionTypeDeclaration(name: string, type: FunctionType, location: SourceLocation): FunctionDeclaration {
+  return {
+    kind: "function",
+    name,
+    receiverMode: null,
+    parameters: type.parameters.map((parameter) => ({
+      name: parameter.name,
+      mode: parameter.mode,
+      type: { name: parameter.type, location },
+      location,
+    })),
+    returnType: { name: type.returnType, location },
+    errorType: null,
+    body: [],
+    location,
+  };
 }
 
 function inferClosureExpression(
@@ -1699,7 +1762,20 @@ function inferExpressionInner(
       }
       const global = globals.get(expression.name);
       if (global?.kind === "function") {
-        throw new DiagnosticError(fileName, expression.location, "function values are not implemented; call the function instead");
+        if (global.declaration.typeParameters?.length) {
+          throw new DiagnosticError(fileName, expression.location, "generic function values require explicit specialization, which is not implemented yet");
+        }
+        if (global.declaration.errorType) {
+          throw new DiagnosticError(fileName, expression.location, "throwing function values are not implemented in the first function-type tier");
+        }
+        return functionTypeName(
+          global.declaration.parameters.map((parameter) => ({
+            name: parameter.name,
+            mode: parameter.mode,
+            type: parameter.type.name,
+          })),
+          global.declaration.returnType.name,
+        );
       }
       if (global?.kind === "foreignFunction") {
         throw new DiagnosticError(fileName, expression.location, "foreign function values are not implemented; call the function instead");
@@ -2162,6 +2238,27 @@ function inferExpressionInner(
           return result;
         }
         const declaration = structs.get(receiverType);
+        const field = declaration?.fields.find((candidate) => candidate.name === expression.callee.property);
+        const fieldFunctionType = field ? parseFunctionType(field.type.name) : null;
+        if (declaration && field && fieldFunctionType) {
+          if (hasCleanupType(receiverType, structs, state.foreignTypes) && !isNamedStorageExpression(expression.callee.object)) {
+            throw new DiagnosticError(fileName, expression.callee.object.location, "a cleanup-bearing temporary must be bound before calling one of its function fields");
+          }
+          rejectLabeledArguments(expression.argumentLabels, expression.location, fileName);
+          state.expressionTypes.set(expression.callee.location.offset, field.type.name);
+          checkArguments(
+            functionTypeDeclaration(expression.callee.property, fieldFunctionType, expression.callee.location),
+            expression.arguments,
+            locals,
+            globals,
+            structs,
+            enums,
+            fileName,
+            expression.location,
+            state,
+          );
+          return fieldFunctionType.returnType;
+        }
         const method = declaration?.methods.find((candidate) => candidate.name === expression.callee.property);
         if (!declaration || !method) {
           throw new DiagnosticError(fileName, expression.callee.location, `type ${JSON.stringify(receiverType)} has no method ${JSON.stringify(expression.callee.property)}`);
@@ -2248,13 +2345,29 @@ function inferExpressionInner(
       const localCallee = locals.get(expression.callee.name);
       if (localCallee) {
         const closure = closureInfoForType(localCallee, state);
-        if (!closure) {
+        const functionType = parseFunctionType(String(underlyingType(localCallee)));
+        if (!closure && !functionType) {
           throw new DiagnosticError(fileName, expression.callee.location, `${JSON.stringify(expression.callee.name)} is not callable`);
         }
-        state.expressionTypes.set(expression.callee.location.offset, closure.type);
         rejectLabeledArguments(expression.argumentLabels, expression.location, fileName);
+        if (functionType) {
+          state.expressionTypes.set(expression.callee.location.offset, String(underlyingType(localCallee)));
+          checkArguments(
+            functionTypeDeclaration(expression.callee.name, functionType, expression.callee.location),
+            expression.arguments,
+            locals,
+            globals,
+            structs,
+            enums,
+            fileName,
+            expression.location,
+            state,
+          );
+          return functionType.returnType;
+        }
+        state.expressionTypes.set(expression.callee.location.offset, closure!.type);
         checkArguments(
-          { ...closure.declaration, parameters: closure.declaration.parameters.slice(closure.captures.length) },
+          { ...closure!.declaration, parameters: closure!.declaration.parameters.slice(closure!.captures.length) },
           expression.arguments,
           locals,
           globals,
@@ -2264,7 +2377,7 @@ function inferExpressionInner(
           expression.location,
           state,
         );
-        return closure.declaration.returnType.name;
+        return closure!.declaration.returnType.name;
       }
       const target = globals.get(expression.callee.name);
       if (target?.kind === "foreignFunction") {
@@ -3459,7 +3572,9 @@ function describePointer(type: ForeignPointerType): string {
 
 function describeValueType(type: ValueType, state: AnalysisState): string {
   const pointer = foreignPointer(type, state);
-  return pointer ? describePointer(pointer) : displayArrayType(String(underlyingType(type)));
+  if (pointer) return describePointer(pointer);
+  const name = String(underlyingType(type));
+  return displayFunctionType(name, displayArrayType) ?? displayArrayType(name);
 }
 
 function validateType(
@@ -3470,6 +3585,20 @@ function validateType(
   fileName: string,
   allowVoid: boolean,
 ): void {
+  const functionType = parseFunctionType(type.name);
+  if (functionType) {
+    for (const parameter of functionType.parameters) {
+      if (parseFunctionType(parameter.type)) {
+        throw new DiagnosticError(fileName, type.location, "nested function types are deferred beyond the first function-value tier");
+      }
+      validateType({ name: parameter.type, location: type.location }, structs, enums, foreignNamedTypes, fileName, false);
+    }
+    if (parseFunctionType(functionType.returnType)) {
+      throw new DiagnosticError(fileName, type.location, "returning another function type is deferred beyond the first function-value tier");
+    }
+    validateType({ name: functionType.returnType, location: type.location }, structs, enums, foreignNamedTypes, fileName, true);
+    return;
+  }
   const slice = parseSliceType(type.name);
   if (slice) {
     validateType({ name: slice.elementType, location: type.location }, structs, enums, foreignNamedTypes, fileName, false);
@@ -3510,6 +3639,20 @@ function requireAssignable(
   numericLiteralTypes: Map<number, string>,
 ): void {
   const expectedType = canonicalType(expected, foreignNamedTypes);
+  const expectedFunction = expectedType === "unknown" || expectedType === "never"
+    ? null
+    : parseFunctionType(String(expectedType));
+  const actualFunction = actual === "unknown" || actual === "never"
+    ? null
+    : parseFunctionType(String(underlyingType(actual)));
+  if (expectedFunction || actualFunction) {
+    if (expectedFunction && actualFunction && functionTypesCompatible(expectedFunction, actualFunction)) return;
+    throw new DiagnosticError(
+      fileName,
+      expression.location,
+      `expected ${displayFunctionType(String(expectedType)) ?? displayArrayType(String(expectedType))}, found ${displayFunctionType(String(underlyingType(actual))) ?? displayArrayType(String(actual))}`,
+    );
+  }
   if (isNumericType(expectedType) && requireContextualSignedLiteral(expression, expectedType, fileName, numericLiteralTypes)) {
     return;
   }

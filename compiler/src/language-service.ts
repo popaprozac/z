@@ -22,6 +22,7 @@ import { pathToFileURL } from "node:url";
 import { dirname, resolve } from "node:path";
 import { readFileSync } from "node:fs";
 import { isLocalSourceModuleSpecifier, type SourceModuleInfo } from "./modules.ts";
+import { displayFunctionType, functionTypeName, parseFunctionType } from "./function-types.ts";
 
 export type Position = { readonly line: number; readonly character: number };
 export type Range = { readonly start: Position; readonly end: Position };
@@ -530,7 +531,8 @@ function symbolCompletions(source: string, fileName: string, offset: number): Co
   const start = offset - prefix.length;
   const tailOffset = source[offset] === ";" ? offset + 1 : offset;
   const context = safeAnalysis(source, fileName)
-    ?? safeAnalysis(source.slice(0, start) + "0;" + source.slice(tailOffset), fileName);
+    ?? safeAnalysis(source.slice(0, start) + "0;" + source.slice(tailOffset), fileName)
+    ?? completionRecoveryAnalysis(source, fileName, start, tailOffset, prefix);
   if (!context) return [];
   const items: CompletionItem[] = [];
   for (const binding of collectBindings(context)) {
@@ -602,6 +604,24 @@ function symbolCompletions(source: string, fileName: string, offset: number): Co
     items.push({ label: name, kind: completionKinds.module, detail: `standard console imported as ${name}` });
   }
   return filterCompletions(uniqueCompletions(items), prefix, 500);
+}
+
+function completionRecoveryAnalysis(
+  source: string,
+  fileName: string,
+  start: number,
+  tailOffset: number,
+  prefix: string,
+): AnalyzedSource | null {
+  const candidates = lex(source.slice(0, start), fileName)
+    .filter((token) => token.kind === "identifier" && token.text.startsWith(prefix))
+    .map((token) => token.text)
+    .reverse();
+  for (const candidate of new Set(candidates)) {
+    const context = safeAnalysis(source.slice(0, start) + candidate + source.slice(tailOffset), fileName);
+    if (context) return context;
+  }
+  return null;
 }
 
 type Binding = {
@@ -1376,6 +1396,8 @@ function foreignTypeName(type: ForeignType): string {
 function displayType(type: string, typeDisplayNames: ReadonlyMap<string, string> = new Map()): string {
   const known = typeDisplayNames.get(type);
   if (known) return known;
+  const functionType = displayFunctionType(type, (nested) => displayType(nested, typeDisplayNames));
+  if (functionType) return functionType;
   const generic = parseGenericType(type);
   if (generic) return `${generic.base}<${generic.arguments.map((argument) => displayType(argument, typeDisplayNames)).join(", ")}>`;
   const array = parseFixedArrayType(type);
@@ -1404,6 +1426,19 @@ function displaySubstitutedType(
 ): string {
   const substituted = substitutions.get(type);
   if (substituted) return displayType(substituted, typeDisplayNames);
+  const functionType = parseFunctionType(type);
+  if (functionType) {
+    return displayFunctionType(
+      functionTypeName(
+        functionType.parameters.map((parameter) => ({
+          ...parameter,
+          type: substitutions.get(parameter.type) ?? parameter.type,
+        })),
+        substitutions.get(functionType.returnType) ?? functionType.returnType,
+      ),
+      (nested) => displayType(nested, typeDisplayNames),
+    )!;
+  }
   const generic = parseGenericType(type);
   if (generic) {
     return `${generic.base}<${generic.arguments.map((argument) => (

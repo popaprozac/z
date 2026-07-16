@@ -1324,6 +1324,73 @@ test("exposes closure bindings and parameters to editor services", () => {
   assert.equal(items.find((item) => item.label === "add")?.detail, "const add: (value: i32) => i32");
 });
 
+test("stores and calls explicitly typed non-capturing function values", () => {
+  const source = `
+    function add(left: i32, right: i32): i32 { return left + right; }
+    function subtract(left: i32, right: i32): i32 { return left - right; }
+
+    function apply(operation: (first: i32, second: i32) => i32, left: i32, right: i32): i32 {
+      return operation(left, right);
+    }
+
+    function choose(addition: bool): (left: i32, right: i32) => i32 {
+      if (addition) { return add; }
+      return subtract;
+    }
+
+    struct Calculator {
+      operation: (left: i32, right: i32) => i32;
+    }
+
+    function main(): i32 {
+      const operation: (x: i32, y: i32) => i32 = add;
+      const inferred = subtract;
+      const double: (value: i32) => i32 = (value: i32): i32 => value * 2;
+      const selected = choose(false);
+      const calculator = Calculator { operation: add };
+      if (apply(operation, 20, 22) == 42 && inferred(50, 8) == 42 && double(21) == 42 && selected(50, 8) == 42 && calculator.operation(20, 22) == 42) {
+        return 0;
+      }
+      return 1;
+    }
+  `;
+  const generated = compileToC(source, "function-values.z");
+  assert.match(generated, /typedef int32_t \(\*Z_Function_[0-9a-f]+\)\(int32_t (?:first|x|left), int32_t (?:second|y|right)\);/);
+  assert.match(generated, /const Z_Function_[0-9a-f]+ operation = add;/);
+  assert.match(generated, /const Z_Function_[0-9a-f]+ inferred = subtract;/);
+  assert.match(generated, /const Z_Function_[0-9a-f]+ z_double = __z_closure_call_/);
+  assert.match(generated, /return operation\(left, right\);/);
+  assert.match(generated, /\(calculator\)\.operation\(20, 22\)/);
+
+  const operationUse = source.indexOf("operation(left") + 1;
+  assert.match(hover(source, "function-values.z", operationUse)?.contents.value ?? "", /operation: \(first: i32, second: i32\) => i32/);
+  const completionSource = source.replace("apply(operation, 20", "apply(oper, 20");
+  const completionOffset = completionSource.indexOf("apply(oper, 20") + "apply(oper".length;
+  assert.match(
+    completions(completionSource, "function-values.z", completionOffset).find((item) => item.label === "operation")?.detail ?? "",
+    /\(first: i32, second: i32\) => i32/,
+  );
+
+  const directory = mkdtempSync("/tmp/z-function-values-");
+  const fileName = resolve(directory, "main.z");
+  writeFileSync(fileName, source);
+  const result = spawnSync(process.execPath, [cli, "run", fileName], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+
+  const captured = source.replace(
+    "const double: (value: i32) => i32 = (value: i32): i32 => value * 2;",
+    "const offset = 2; const double: (value: i32) => i32 = (value: i32): i32 => value + offset;",
+  );
+  const capturedDiagnostic = diagnostics(captured, "captured-function-value.z")[0];
+  assert.equal(capturedDiagnostic.code, "Z0212");
+  assert.match(capturedDiagnostic.message, /owned closure environments/);
+
+  assert.throws(
+    () => compileToC(source.replace("= add;", "= subtract;").replace("(x: i32, y: i32) => i32", "(x: i32) => i32"), "function-value-mismatch.z"),
+    /expected \(x: i32\) => i32, found \(left: i32, right: i32\) => i32/,
+  );
+});
+
 test("renders structured ownership diagnostics in the CLI and language server", () => {
   const fixture = resolve(projectRoot, "tests/fixtures/ownership-diagnostic.z");
   const source = readFileSync(fixture, "utf8");

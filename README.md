@@ -290,15 +290,29 @@ const accumulate = (value: i32): i32 => {
 const snapshot = move (value: i32): i32 => seed + value;
 ```
 
+Explicit function types make non-capturing callables first-class values. Named
+functions and non-capturing closures can be stored, passed, returned, and kept
+in aggregate fields without allocation:
+
+```z
+function apply(operation: (left: i32, right: i32) => i32): i32 {
+  return operation(20, 22);
+}
+
+const operation: (left: i32, right: i32) => i32 = add;
+```
+
 Run the closure example with:
 
 ```sh
 bun run z run examples/closures.z
+bun run z run examples/function-values.z
 ```
 
-Escaping closure values and cleanup-bearing move captures remain explicitly
-deferred until owned environments and their ARC/deterministic cleanup rules are
-implemented.
+Capturing closures remain non-escaping. Converting one to a storable function
+type, escaping closure values, and cleanup-bearing move captures remain
+explicitly deferred until owned environments and their ARC/deterministic
+cleanup rules are implemented.
 
 Typed logging uses the explicit standard `console` module:
 

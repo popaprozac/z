@@ -1,0 +1,42 @@
+import console from "std/console";
+
+function add(left: i32, right: i32): i32 {
+  return left + right;
+}
+
+function subtract(left: i32, right: i32): i32 {
+  return left - right;
+}
+
+function choose(subtraction: bool): (left: i32, right: i32) => i32 {
+  if (subtraction) {
+    return subtract;
+  }
+  return add;
+}
+
+function apply(
+  operation: (left: i32, right: i32) => i32,
+  left: i32,
+  right: i32
+): i32 {
+  return operation(left, right);
+}
+
+struct Calculator {
+  operation: (left: i32, right: i32) => i32;
+}
+
+function main(): i32 {
+  const direct: (x: i32, y: i32) => i32 = add;
+  const inferred = subtract;
+  const selected = choose(false);
+  const calculator = Calculator { operation: selected };
+  const doubled: (value: i32) => i32 = (value: i32): i32 => value * 2;
+
+  console.log(`${apply(direct, 20, 22)}`);
+  console.log(`${inferred(50, 8)}`);
+  console.log(`${calculator.operation(20, 22)}`);
+  console.log(`${doubled(21)}`);
+  return 0;
+}

@@ -9,6 +9,7 @@ import {
   sliceTypeName,
 } from "./array-types.ts";
 import { monomorphizedName, parseGenericType } from "./generic-types.ts";
+import { functionTypeName, parseFunctionType } from "./function-types.ts";
 
 export function materializeGenerics(
   program: Program,
@@ -48,6 +49,16 @@ export function materializeGenerics(
 
   const substituteName = (name: string, substitutions: Map<string, string>): string => {
     if (substitutions.has(name)) return substitutions.get(name)!;
+    const functionType = parseFunctionType(name);
+    if (functionType) {
+      return functionTypeName(
+        functionType.parameters.map((parameter) => ({
+          ...parameter,
+          type: substituteName(parameter.type, substitutions),
+        })),
+        substituteName(functionType.returnType, substitutions),
+      );
+    }
     const array = parseFixedArrayType(name);
     if (array) return fixedArrayTypeName(substituteName(array.elementType, substitutions), array.length);
     const slice = parseSliceType(name);

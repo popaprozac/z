@@ -13,6 +13,7 @@ import type {
 import { DiagnosticError } from "./diagnostics.ts";
 import { dynamicArrayTypeName, fixedArrayTypeName, sliceTypeName } from "./array-types.ts";
 import { genericTypeName } from "./generic-types.ts";
+import { functionTypeName } from "./function-types.ts";
 import type { Token, TokenKind } from "./lexer.ts";
 
 export function parse(tokens: Token[], fileName: string): Program {
@@ -51,6 +52,22 @@ export function parse(tokens: Token[], fileName: string): Program {
   };
 
   const parseType = (): TypeReference => {
+    if (match("leftParen")) {
+      const location = previous().location;
+      const parameters = [];
+      if (!at("rightParen")) {
+        do {
+          const mode = match("in") ? "in" : match("inout") ? "inout" : match("out") ? "out" : "value";
+          const parameter = expect("identifier", "a function-type parameter name");
+          expect("colon", "`:`");
+          parameters.push({ name: parameter.text, mode, type: parseType().name });
+        } while (match("comma"));
+      }
+      expect("rightParen", "`)`");
+      expect("fatArrow", "`=>` in a function type");
+      const returnType = parseType();
+      return { name: functionTypeName(parameters, returnType.name), location };
+    }
     const token = expect("identifier", "a type name");
     let name = token.text;
     if (token.text === "Slice" && match("less")) {

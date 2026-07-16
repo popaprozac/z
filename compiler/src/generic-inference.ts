@@ -18,6 +18,7 @@ import {
 import { DiagnosticError } from "./diagnostics.ts";
 import type { ForeignModule, ForeignType } from "./foreign.ts";
 import { genericTypeName, parseGenericType } from "./generic-types.ts";
+import { functionTypeName, parseFunctionType } from "./function-types.ts";
 
 type Environment = Map<string, string>;
 type RewrittenExpression = { readonly expression: Expression; readonly type: string | null };
@@ -51,6 +52,16 @@ export function inferGenericCalls(
   const substituteType = (type: string, substitutions: ReadonlyMap<string, string>): string => {
     const direct = substitutions.get(type);
     if (direct) return direct;
+    const functionType = parseFunctionType(type);
+    if (functionType) {
+      return functionTypeName(
+        functionType.parameters.map((parameter) => ({
+          ...parameter,
+          type: substituteType(parameter.type, substitutions),
+        })),
+        substituteType(functionType.returnType, substitutions),
+      );
+    }
     const array = parseFixedArrayType(type);
     if (array) return fixedArrayTypeName(substituteType(array.elementType, substitutions), array.length);
     const slice = parseSliceType(type);
