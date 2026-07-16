@@ -812,7 +812,7 @@ test("requires addressable mutable storage for inout method receivers", () => {
   const immutable = `
     struct Counter {
       value: i32;
-      function add(this: inout, amount: i32): void {
+      function add(inout this, amount: i32): void {
         this.value = this.value + amount;
       }
     }
@@ -839,7 +839,7 @@ test("requires addressable mutable storage for inout method receivers", () => {
   const transitive = `
     struct Counter {
       value: i32;
-      function add(this: inout, amount: i32): void {
+      function add(inout this, amount: i32): void {
         this.value = this.value + amount;
       }
     }
@@ -859,18 +859,18 @@ test("requires addressable mutable storage for inout method receivers", () => {
 
 test("keeps receiver capabilities in method signatures", () => {
   const topLevelReceiver = `
-    function invalid(this: inout): void {}
+    function invalid(inout this): void {}
     function main(): i32 { return 0; }
   `;
   assert.throws(
     () => compileToC(topLevelReceiver, "top-level-receiver.z"),
-    /`this: inout` is only valid on a struct method/,
+    /`inout this` is only valid on a struct method/,
   );
 
   const movedReceiver = `
     struct Resource {
       value: i32;
-      function merge(this: inout, other: Resource): void {}
+      function merge(inout this, other: Resource): void {}
       deinit {}
     }
     function main(): i32 {
@@ -903,7 +903,7 @@ test("borrows native parameters immutably and mutably", () => {
 
 test("enforces native parameter capabilities at declaration and call sites", () => {
   const missingInout = `
-    function increment(value: inout i32): void {
+    function increment(inout value: i32): void {
       value = value + 1;
     }
     function main(): i32 {
@@ -926,7 +926,7 @@ test("enforces native parameter capabilities at declaration and call sites", () 
   );
 
   const overlapping = `
-    function invalid(first: inout i32, second: inout i32): void {}
+    function invalid(inout first: i32, inout second: i32): void {}
     function main(): i32 {
       let value = 1;
       invalid(inout value, inout value);
@@ -939,7 +939,7 @@ test("enforces native parameter capabilities at declaration and call sites", () 
   );
 
   const mutateInput = `
-    function invalid(value: in i32): void {
+    function invalid(in value: i32): void {
       value = 2;
     }
     function main(): i32 {
@@ -952,6 +952,15 @@ test("enforces native parameter capabilities at declaration and call sites", () 
     () => compileToC(mutateInput, "mutate-input.z"),
     /cannot assign to immutable binding "value"/,
   );
+
+  const legacyTypePosition = `
+    function inspect(value: in i32): void {}
+    function main(): i32 { return 0; }
+  `;
+  assert.throws(
+    () => compileToC(legacyTypePosition, "legacy-capability-order.z"),
+    /expected a type name, found "in"/,
+  );
 });
 
 test("borrowed cleanup values cannot be consumed", () => {
@@ -960,7 +969,7 @@ test("borrowed cleanup values cannot be consumed", () => {
       id: i32;
       deinit {}
     }
-    function invalid(resource: in Resource): Resource {
+    function invalid(in resource: Resource): Resource {
       return resource;
     }
     function main(): i32 { return 0; }

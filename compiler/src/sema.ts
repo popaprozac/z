@@ -131,7 +131,7 @@ export function analyze(
 
   for (const declaration of program.functions) {
     if (declaration.receiverMode) {
-      throw new DiagnosticError(fileName, declaration.location, "`this: inout` is only valid on a struct method");
+      throw new DiagnosticError(fileName, declaration.location, "`inout this` is only valid on a struct method");
     }
     validateFunctionSignature(declaration, structs, enums, foreignNamedTypes, fileName);
   }

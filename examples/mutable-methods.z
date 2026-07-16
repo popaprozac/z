@@ -3,7 +3,7 @@ import stdio from "stdio.h";
 struct Counter {
   value: i32;
 
-  function add(this: inout, amount: i32): void {
+  function add(inout this, amount: i32): void {
     this.value = this.value + amount;
   }
 
@@ -15,7 +15,7 @@ struct Counter {
 struct Panel {
   counter: Counter;
 
-  function bump(this: inout, amount: i32): void {
+  function bump(inout this, amount: i32): void {
     this.counter.add(amount);
   }
 }

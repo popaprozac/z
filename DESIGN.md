@@ -56,14 +56,14 @@ Methods borrow `this` immutably by default. Receiver mutation is part of the
 typed method interface and uses an explicit receiver capability:
 
 ```z
-function current(): i32                         // implicit `this: in`
-function add(this: inout, amount: i32): void   // exclusive mutable borrow
+function current(): i32                         // implicit `in this`
+function add(inout this, amount: i32): void    // exclusive mutable borrow
 ```
 
 An `inout` method requires addressable storage rooted in a `let`; it cannot be
 called through a `const`, immutable parameter, immutable receiver, or temporary.
 The borrow lasts for the call and does not transfer ownership. A future
-`this: move` can represent consuming methods without adding lifetime syntax.
+`move this` can represent consuming methods without adding lifetime syntax.
 `out` is not meaningful for an already-existing receiver.
 
 Attribute syntax remains deliberately open. A future declaration attribute may
@@ -78,10 +78,13 @@ cleanup-bearing values move. Borrowing is the non-default declaration:
 | Shape | Declaration | Call | Contract |
 |---|---|---|---|
 | owned/value | `value: T` | `use(value)` | Callee owns the parameter; copy or move follows the type. |
-| immutable borrow | `value: in T` | `inspect(value)` | Read-only, non-escaping borrow for the call. |
-| mutable borrow | `value: inout T` | `update(inout value)` | Exclusive read/write borrow for the call. |
-| output | future `value: out T` | `create(out value)` | Callee fully initializes storage. |
-| consuming receiver | future `this: move` | `value.consume()` | Receiver ownership transfers to the method. |
+| immutable borrow | `in value: T` | `inspect(value)` | Read-only, non-escaping borrow for the call. |
+| mutable borrow | `inout value: T` | `update(inout value)` | Exclusive read/write borrow for the call. |
+| output | future `out value: T` | `create(out value)` | Callee fully initializes storage. |
+| consuming receiver | future `move this` | `value.consume()` | Receiver ownership transfers to the method. |
+
+Capabilities precede parameter bindings because they modify access to storage,
+not the value's type. The annotation after `:` is always a type.
 
 `in` stays quiet at the call site because it cannot change ownership or caller
 storage. `inout` and `out` remain explicit at free-function calls because their

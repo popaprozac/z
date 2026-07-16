@@ -72,9 +72,9 @@ export function parse(tokens: Token[], fileName: string): Program {
     const parameters: Parameter[] = [];
     if (at("rightParen")) return parameters;
     do {
+      const mode = match("in") ? "in" : match("inout") ? "inout" : "value";
       const nameToken = expect("identifier", "a parameter name");
       expect("colon", "`:`");
-      const mode = match("in") ? "in" : match("inout") ? "inout" : "value";
       parameters.push({ name: nameToken.text, mode, type: parseType(), location: nameToken.location });
     } while (match("comma"));
     return parameters;
@@ -357,12 +357,11 @@ export function parse(tokens: Token[], fileName: string): Program {
     const name = expect("identifier", "a function name").text;
     expect("leftParen", "`(`");
     let receiverMode: FunctionDeclaration["receiverMode"] = null;
-    if (at("identifier") && peek().text === "this" && tokens[current + 1]?.kind === "colon" && tokens[current + 2]?.kind === "inout") {
-      take();
+    if (at("inout") && tokens[current + 1]?.kind === "identifier" && tokens[current + 1]?.text === "this") {
       take();
       take();
       receiverMode = "inout";
-      if (!at("rightParen")) expect("comma", "`,` after `this: inout`");
+      if (!at("rightParen")) expect("comma", "`,` after `inout this`");
     }
     const parameters = parseParameters();
     expect("rightParen", "`)`");

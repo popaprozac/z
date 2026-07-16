@@ -63,7 +63,9 @@ position = Point { x: position.x, y: 20 };
 
 Assignment is a statement rather than a value-producing expression. It is
 statically type-checked, and nested field mutation must remain rooted in a
-`let`. Parameters and match bindings are immutable in this bootstrap slice.
+`let`. Owned and `in` parameters are immutable; `inout` parameters permit
+mutation of the caller's explicitly borrowed storage. Match bindings remain
+immutable in this bootstrap slice.
 Replacing cleanup-bearing storage is temporarily rejected until assignment
 lowering can destroy the previous value before installing the new one.
 
@@ -74,7 +76,7 @@ declares the non-default capability as a TypeScript-style receiver parameter:
 struct Counter {
   value: i32;
 
-  function add(this: inout, amount: i32): void {
+  function add(inout this, amount: i32): void {
     this.value = this.value + amount;
   }
 
@@ -97,17 +99,20 @@ cleanup-bearing values move. A function declares a borrow only when it does not
 need ownership:
 
 ```z
-function read(counter: in Counter): i32 {
+function read(in counter: Counter): i32 {
   return counter.value;
 }
 
-function add(counter: inout Counter, amount: i32): void {
+function add(inout counter: Counter, amount: i32): void {
   counter.value = counter.value + amount;
 }
 
 const current = read(counter); // `in` is quiet at the call site.
 add(inout counter, 2);         // Mutation is explicit.
 ```
+
+Capabilities precede the binding because they describe how the declaration may
+access storage; the annotation after `:` is always the value's type.
 
 Borrowed parameters cannot be returned, stored into owning fields, or otherwise
 moved. `inout` requires an initialized mutable binding and can be forwarded with

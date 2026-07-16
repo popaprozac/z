@@ -3,7 +3,7 @@ import stdio from "stdio.h";
 struct Counter {
   value: i32;
 
-  function bump(this: inout): void {
+  function bump(inout this): void {
     add(inout this, 1);
   }
 }
@@ -16,19 +16,19 @@ struct Resource {
   }
 }
 
-function read(counter: in Counter): i32 {
+function read(in counter: Counter): i32 {
   return counter.value;
 }
 
-function add(counter: inout Counter, amount: i32): void {
+function add(inout counter: Counter, amount: i32): void {
   counter.value = counter.value + amount;
 }
 
-function forward(counter: inout Counter): void {
+function forward(inout counter: Counter): void {
   add(inout counter, 2);
 }
 
-function inspect(resource: in Resource): i32 {
+function inspect(in resource: Resource): i32 {
   return resource.id;
 }
 
