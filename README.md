@@ -422,6 +422,8 @@ slice provides:
 - live compiler diagnostics with debounced document checking;
 - completion for imported C/Objective-C namespaces;
 - type-directed Z struct and Objective-C instance/class member completion;
+- local-symbol completion and semantic highlighting for bindings, parameters,
+  namespaces, types, functions, methods, and properties;
 - selector-aware Objective-C method snippets and argument-label completion;
 - hover types and signatures; and
 - go-to-definition for declarations in the current Z source file.

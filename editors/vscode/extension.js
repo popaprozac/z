@@ -72,7 +72,7 @@ async function activate(context) {
   context.subscriptions.push(vscode.languages.registerCompletionItemProvider("z", {
     async provideCompletionItems(document, position) {
       const result = await client.request("textDocument/completion", textDocumentPosition(document, position));
-      return (result?.items || []).map((item) => {
+      const items = (result?.items || []).map((item) => {
         const completion = new vscode.CompletionItem(item.label, completionKind(item.kind));
         completion.detail = item.detail;
         completion.sortText = item.sortText;
@@ -81,6 +81,7 @@ async function activate(context) {
           : item.insertText || item.label;
         return completion;
       });
+      return new vscode.CompletionList(items, Boolean(result?.isIncomplete));
     },
   }, ".", ","));
 
@@ -99,6 +100,19 @@ async function activate(context) {
       return result ? new vscode.Location(vscode.Uri.parse(result.uri), toRange(result.range)) : null;
     },
   }));
+
+  const semanticLegend = new vscode.SemanticTokensLegend(
+    ["namespace", "type", "class", "enum", "function", "method", "property", "variable", "parameter"],
+    ["declaration", "readonly", "defaultLibrary"],
+  );
+  context.subscriptions.push(vscode.languages.registerDocumentSemanticTokensProvider("z", {
+    async provideDocumentSemanticTokens(document) {
+      const result = await client.request("textDocument/semanticTokens/full", {
+        textDocument: { uri: document.uri.toString() },
+      });
+      return new vscode.SemanticTokens(new Uint32Array(result?.data || []));
+    },
+  }, semanticLegend));
 
   function didOpen(document) {
     client.notify("textDocument/didOpen", {

@@ -1,4 +1,4 @@
-import type { Program, SourceLocation, StructDeclaration } from "./ast.ts";
+import type { Program, SourceLocation, Statement, StructDeclaration } from "./ast.ts";
 import { analyzeSource, type AnalyzedSource } from "./compiler.ts";
 import { DiagnosticError } from "./diagnostics.ts";
 import type {
@@ -31,6 +31,7 @@ const completionKinds = {
   class: 7,
   module: 9,
   property: 10,
+  variable: 6,
   enum: 13,
   constant: 21,
   struct: 22,
@@ -58,9 +59,115 @@ export function diagnostics(source: string, fileName: string): ServiceDiagnostic
 
 export function completions(source: string, fileName: string, offset: number): CompletionItem[] {
   const before = source.slice(0, offset);
-  const member = before.match(/([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*)\.$/);
-  if (member) return memberCompletions(source, fileName, offset, member[1]);
-  return labelCompletions(source, fileName, offset);
+  const member = before.match(/([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*)\.([A-Za-z_][A-Za-z0-9_]*)?$/);
+  if (member) return memberCompletions(source, fileName, offset, member[1], member[2] ?? "");
+  const labels = labelCompletions(source, fileName, offset);
+  return labels.length > 0 ? labels : symbolCompletions(source, fileName, offset);
+}
+
+export const semanticTokenTypes = [
+  "namespace",
+  "type",
+  "class",
+  "enum",
+  "function",
+  "method",
+  "property",
+  "variable",
+  "parameter",
+] as const;
+
+export const semanticTokenModifiers = ["declaration", "readonly", "defaultLibrary"] as const;
+
+export function semanticTokens(source: string, fileName: string): { readonly data: number[] } {
+  const context = safeAnalysis(source, fileName);
+  if (!context) return { data: [] };
+  const classifications = new Map<number, { readonly type: number; readonly modifiers: number }>();
+  const bindings = collectBindings(context);
+  const bindingsByName = new Map<string, Binding[]>();
+  for (const binding of bindings) {
+    const named = bindingsByName.get(binding.name) ?? [];
+    named.push(binding);
+    bindingsByName.set(binding.name, named);
+  }
+  const functionNames = new Set(context.program.functions.map((item) => item.name));
+  const structNames = new Set(context.program.structs.map((item) => item.name));
+  const enumNames = new Set(context.program.enums.map((item) => item.name));
+  const modules = new Map([...context.foreignModules.keys()].map((name) => [name, context.foreignModules.get(name)!]));
+  const tokens = lex(source, fileName);
+
+  for (let index = 0; index < tokens.length; index += 1) {
+    const token = tokens[index];
+    if (token.kind !== "identifier") continue;
+    const previous = tokens[index - 1];
+    const next = tokens[index + 1];
+    const namedBindings = bindingsByName.get(token.text) ?? [];
+    const binding = namedBindings.filter((candidate) => candidate.offset <= token.location.offset).at(-1)
+      ?? namedBindings[0];
+    if (binding) {
+      const declaration = token.location.offset === binding.offset ? 1 : 0;
+      const readonly = binding.readonly ? 2 : 0;
+      classifications.set(token.location.offset, {
+        type: semanticTokenTypes.indexOf(binding.parameter ? "parameter" : "variable"),
+        modifiers: declaration | readonly,
+      });
+      continue;
+    }
+    if (modules.has(token.text)) {
+      classifications.set(token.location.offset, { type: semanticTokenTypes.indexOf("namespace"), modifiers: 4 });
+      continue;
+    }
+    if (functionNames.has(token.text)) {
+      classifications.set(token.location.offset, {
+        type: semanticTokenTypes.indexOf("function"),
+        modifiers: previous?.kind === "function" ? 1 : 0,
+      });
+      continue;
+    }
+    if (structNames.has(token.text) || context.semanticInfo.foreignNamedTypes.has(token.text)) {
+      classifications.set(token.location.offset, { type: semanticTokenTypes.indexOf("type"), modifiers: previous?.kind === "struct" ? 1 : 0 });
+      continue;
+    }
+    if (enumNames.has(token.text)) {
+      classifications.set(token.location.offset, { type: semanticTokenTypes.indexOf("enum"), modifiers: previous?.kind === "enum" ? 1 : 0 });
+      continue;
+    }
+    if (previous?.kind === "dot") {
+      const namespaceToken = tokens[index - 2];
+      const module = namespaceToken ? modules.get(namespaceToken.text) : null;
+      if (module?.interfaces.has(token.text)) {
+        classifications.set(token.location.offset, { type: semanticTokenTypes.indexOf("class"), modifiers: 4 });
+      } else if (module?.namedTypes.has(token.text)) {
+        const named = module.namedTypes.get(token.text)!;
+        classifications.set(token.location.offset, {
+          type: semanticTokenTypes.indexOf(named.kind === "enum" ? "enum" : "type"),
+          modifiers: 4,
+        });
+      } else if (module?.functions.has(token.text)) {
+        classifications.set(token.location.offset, { type: semanticTokenTypes.indexOf("function"), modifiers: 4 });
+      } else {
+        classifications.set(token.location.offset, {
+          type: semanticTokenTypes.indexOf(next?.kind === "leftParen" ? "method" : "property"),
+          modifiers: module ? 4 : 0,
+        });
+      }
+    }
+  }
+
+  const encoded: number[] = [];
+  let previousLine = 0;
+  let previousCharacter = 0;
+  for (const token of tokens.filter((item) => classifications.has(item.location.offset))) {
+    const classification = classifications.get(token.location.offset)!;
+    const line = token.location.line - 1;
+    const character = token.location.column - 1;
+    const deltaLine = line - previousLine;
+    const deltaCharacter = deltaLine === 0 ? character - previousCharacter : character;
+    encoded.push(deltaLine, deltaCharacter, token.text.length, classification.type, classification.modifiers);
+    previousLine = line;
+    previousCharacter = character;
+  }
+  return { data: encoded };
 }
 
 export function hover(source: string, fileName: string, offset: number): Hover | null {
@@ -68,6 +175,11 @@ export function hover(source: string, fileName: string, offset: number): Hover |
   if (!word) return null;
   const context = safeAnalysis(source, fileName);
   if (!context) return declarationHover(source, null, word.text, word.start, word.end);
+
+  const module = context.foreignModules.get(word.text);
+  if (module) {
+    return markdownHover(`import ${word.text} from ${JSON.stringify(module.declaration.header)}`, source, word.start, word.end);
+  }
 
   const memberPrefix = source.slice(0, word.start).match(/([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*)\.$/);
   if (memberPrefix) {
@@ -90,7 +202,8 @@ export function hover(source: string, fileName: string, offset: number): Hover |
     }
   }
 
-  const type = context.semanticInfo.expressionTypes.get(word.start);
+  const type = context.semanticInfo.bindingTypes.get(word.start)
+    ?? context.semanticInfo.expressionTypes.get(word.start);
   if (type) return markdownHover(`${word.text}: ${displayType(type)}`, source, word.start, word.end);
   return declarationHover(source, context.program, word.text, word.start, word.end);
 }
@@ -132,26 +245,121 @@ export function offsetAt(source: string, position: Position): number {
   return Math.min(offset + position.character, source.length);
 }
 
-function memberCompletions(source: string, fileName: string, offset: number, receiverText: string): CompletionItem[] {
+function symbolCompletions(source: string, fileName: string, offset: number): CompletionItem[] {
+  const prefix = source.slice(0, offset).match(/([A-Za-z_][A-Za-z0-9_]*)$/)?.[1];
+  if (!prefix) return [];
+  const start = offset - prefix.length;
+  const tailOffset = source[offset] === ";" ? offset + 1 : offset;
+  const context = safeAnalysis(source, fileName)
+    ?? safeAnalysis(source.slice(0, start) + "0;" + source.slice(tailOffset), fileName);
+  if (!context) return [];
+  const items: CompletionItem[] = [];
+  for (const binding of collectBindings(context)) {
+    if (binding.offset >= start) continue;
+    items.push({
+      label: binding.name,
+      kind: completionKinds.variable,
+      detail: `${binding.parameter ? "parameter" : binding.readonly ? "const" : "let"} ${binding.name}: ${displayType(binding.type)}`,
+    });
+  }
+  for (const declaration of context.program.functions) {
+    items.push({
+      label: declaration.name,
+      kind: completionKinds.function,
+      detail: zFunctionDetail(declaration.name, declaration.parameters, declaration.returnType.name),
+    });
+  }
+  for (const declaration of context.program.structs) {
+    items.push({ label: declaration.name, kind: completionKinds.struct, detail: `struct ${declaration.name}` });
+  }
+  for (const declaration of context.program.enums) {
+    items.push({ label: declaration.name, kind: completionKinds.enum, detail: `enum ${declaration.name}` });
+  }
+  for (const [name, module] of context.foreignModules) {
+    items.push({ label: name, kind: completionKinds.module, detail: `import from ${JSON.stringify(module.declaration.header)}` });
+  }
+  return filterCompletions(uniqueCompletions(items), prefix, 500);
+}
+
+type Binding = {
+  readonly name: string;
+  readonly type: string;
+  readonly offset: number;
+  readonly readonly: boolean;
+  readonly parameter: boolean;
+};
+
+function collectBindings(context: AnalyzedSource): Binding[] {
+  const bindings: Binding[] = [];
+  const visitStatements = (statements: readonly Statement[]): void => {
+    for (const statement of statements) {
+      if (statement.kind === "variable") {
+        bindings.push({
+          name: statement.name,
+          type: context.semanticInfo.bindingTypes.get(statement.nameLocation.offset) ?? statement.type?.name ?? "unknown",
+          offset: statement.nameLocation.offset,
+          readonly: !statement.mutable,
+          parameter: false,
+        });
+      }
+      if (statement.kind === "block") visitStatements(statement.statements);
+      if (statement.kind === "if") {
+        visitStatements(statement.thenBranch.statements);
+        if (statement.elseBranch?.kind === "block") visitStatements(statement.elseBranch.statements);
+        if (statement.elseBranch?.kind === "if") visitStatements([statement.elseBranch]);
+      }
+      if (statement.kind === "match") {
+        for (const arm of statement.arms) visitStatements([arm.body]);
+      }
+    }
+  };
+  const visitFunction = (declaration: Program["functions"][number]): void => {
+    for (const parameter of declaration.parameters) {
+      bindings.push({
+        name: parameter.name,
+        type: context.semanticInfo.bindingTypes.get(parameter.location.offset) ?? parameter.type.name,
+        offset: parameter.location.offset,
+        readonly: parameter.mode === "value" || parameter.mode === "in",
+        parameter: true,
+      });
+    }
+    visitStatements(declaration.body);
+  };
+  for (const declaration of context.program.functions) visitFunction(declaration);
+  for (const declaration of context.program.structs) {
+    for (const method of declaration.methods) visitFunction(method);
+    if (declaration.deinitializer) visitStatements(declaration.deinitializer.body);
+  }
+  return bindings;
+}
+
+function memberCompletions(
+  source: string,
+  fileName: string,
+  offset: number,
+  receiverText: string,
+  prefix: string,
+): CompletionItem[] {
   const importContext = importAnalysis(source, fileName);
   if (!importContext) return [];
   const directModule = importContext.foreignModules.get(receiverText);
-  if (directModule) return moduleCompletions(directModule);
+  if (directModule) return moduleCompletions(directModule, prefix);
 
   const [moduleName, className, extra] = receiverText.split(".");
   if (!extra && moduleName && className) {
     const declaration = importContext.foreignModules.get(moduleName)?.interfaces.get(className);
-    if (declaration) return objcCompletions(declaration, false, importContext);
+    if (declaration) return filterCompletions(objcCompletions(declaration, false, importContext), prefix, 1000);
   }
 
-  const dotOffset = offset - 1;
-  const sanitized = source.slice(0, dotOffset) + source.slice(dotOffset + 1);
+  const receiverOffset = offset - receiverText.length - prefix.length - 1;
+  const dotOffset = receiverOffset + receiverText.length;
+  const tailOffset = source[offset] === ";" ? offset + 1 : offset;
+  const sanitized = source.slice(0, dotOffset) + ";" + source.slice(tailOffset);
   const context = safeAnalysis(sanitized, fileName);
   if (!context) return [];
-  const receiverOffset = offset - 1 - receiverText.length;
   const resolved = resolveReceiver(context, receiverText, receiverOffset);
-  if (resolved?.kind === "objc") return objcCompletions(resolved.declaration, resolved.instance, context);
-  if (resolved?.kind === "struct") return structCompletions(resolved.declaration);
+  if (resolved?.kind === "objc") return filterCompletions(objcCompletions(resolved.declaration, resolved.instance, context), prefix, 1000);
+  if (resolved?.kind === "struct") return filterCompletions(structCompletions(resolved.declaration), prefix, 1000);
   return [];
 }
 
@@ -223,13 +431,10 @@ function resolveReceiver(context: AnalyzedSource, text: string, offset: number):
   return declaration ? { kind: "struct", declaration } : null;
 }
 
-function moduleCompletions(module: ForeignModule): CompletionItem[] {
+function moduleCompletions(module: ForeignModule, prefix: string): CompletionItem[] {
   const items: CompletionItem[] = [];
-  for (const declaration of module.functions.values()) {
-    items.push({ label: declaration.name, kind: completionKinds.function, detail: declaration.cSignature });
-  }
-  for (const declaration of module.constants.values()) {
-    items.push({ label: declaration.name, kind: completionKinds.constant, detail: declaration.typeName });
+  for (const declaration of module.interfaces.values()) {
+    items.push({ label: declaration.exportName, kind: completionKinds.class, detail: `Objective-C class ${declaration.className}` });
   }
   for (const declaration of module.namedTypes.values()) {
     items.push({
@@ -238,10 +443,19 @@ function moduleCompletions(module: ForeignModule): CompletionItem[] {
       detail: declaration.cName,
     });
   }
-  for (const declaration of module.interfaces.values()) {
-    items.push({ label: declaration.exportName, kind: completionKinds.class, detail: `Objective-C class ${declaration.className}` });
+  for (const declaration of module.functions.values()) {
+    items.push({ label: declaration.name, kind: completionKinds.function, detail: declaration.cSignature });
   }
-  return uniqueCompletions(items);
+  for (const declaration of module.constants.values()) {
+    items.push({ label: declaration.name, kind: completionKinds.constant, detail: declaration.typeName });
+  }
+  const unique = uniqueCompletions(items);
+  if (prefix) return filterCompletions(unique, prefix, 1500);
+  return unique.filter((item) => (
+    item.kind === completionKinds.class
+    || ((item.kind === completionKinds.struct || item.kind === completionKinds.enum) && /^(?:NS|CG)/.test(item.label))
+    || (item.kind === completionKinds.function && /^(?:NS|CG)/.test(item.label))
+  )).slice(0, 2500);
 }
 
 function objcCompletions(declaration: ForeignObjCInterface, instance: boolean, context: AnalyzedSource): CompletionItem[] {
@@ -370,6 +584,13 @@ function uniqueCompletions(items: CompletionItem[]): CompletionItem[] {
     seen.add(key);
     return true;
   });
+}
+
+function filterCompletions(items: CompletionItem[], prefix: string, limit: number): CompletionItem[] {
+  const filtered = prefix
+    ? items.filter((item) => item.label.toLowerCase().startsWith(prefix.toLowerCase()))
+    : items;
+  return filtered.slice(0, limit);
 }
 
 function unmatchedOpenParen(source: string, offset: number): number {

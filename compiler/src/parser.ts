@@ -324,7 +324,8 @@ export function parse(tokens: Token[], fileName: string): Program {
     if (match("const") || match("let")) {
       const declarationToken = previous();
       const mutable = declarationToken.kind === "let";
-      const name = expect("identifier", "a variable name").text;
+      const nameToken = expect("identifier", "a variable name");
+      const name = nameToken.text;
       const type = match("colon") ? parseType() : null;
       if (match("semicolon")) {
         if (!mutable) {
@@ -333,12 +334,12 @@ export function parse(tokens: Token[], fileName: string): Program {
         if (!type) {
           throw new DiagnosticError(fileName, declarationToken.location, "an uninitialized let declaration requires a type annotation");
         }
-        return { kind: "variable", mutable, name, type, initializer: null, location: declarationToken.location };
+        return { kind: "variable", mutable, name, nameLocation: nameToken.location, type, initializer: null, location: declarationToken.location };
       }
       expect("equal", "`=`");
       const initializer = parseExpression();
       expect("semicolon", "`;`");
-      return { kind: "variable", mutable, name, type, initializer, location: declarationToken.location };
+      return { kind: "variable", mutable, name, nameLocation: nameToken.location, type, initializer, location: declarationToken.location };
     }
     if (match("return")) {
       const returnToken = previous();

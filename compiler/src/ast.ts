@@ -98,6 +98,7 @@ export type VariableStatement = {
   readonly kind: "variable";
   readonly mutable: boolean;
   readonly name: string;
+  readonly nameLocation: SourceLocation;
   readonly type: TypeReference | null;
   readonly initializer: Expression | null;
   readonly location: SourceLocation;

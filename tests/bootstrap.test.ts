@@ -9,6 +9,8 @@ import {
   definition,
   diagnostics,
   hover,
+  semanticTokens,
+  semanticTokenTypes,
 } from "../compiler/src/language-service.ts";
 
 const projectRoot = resolve(dirnameFromImportMeta(), "..");
@@ -372,8 +374,8 @@ test("provides compiler-backed AppKit completion, labels, hover, diagnostics, an
   const example = resolve(projectRoot, "examples/nswindow.z");
   const source = readFileSync(example, "utf8");
 
-  const memberSource = source.replace("window.center();", "window.;");
-  const memberOffset = memberSource.indexOf("window.;") + "window.".length;
+  const memberSource = source.replace("window.center();", "window.");
+  const memberOffset = memberSource.indexOf("window.\n") + "window.".length;
   const members = completions(memberSource, example, memberOffset);
   assert.ok(members.some((item) => item.label === "title" && item.kind === 10));
   assert.ok(members.some((item) => item.label === "center" && item.insertText === "center()"));
@@ -383,12 +385,50 @@ test("provides compiler-backed AppKit completion, labels, hover, diagnostics, an
   )));
   assert.equal(members.filter((item) => item.label === "title").length, 1);
 
+  const partialMemberSource = source.replace("window.center();", "window.ce");
+  const partialMemberOffset = partialMemberSource.indexOf("window.ce\n") + "window.ce".length;
+  const partialWindowMembers = completions(partialMemberSource, example, partialMemberOffset);
+  assert.ok(partialWindowMembers.some((item) => item.label === "center"));
+  assert.ok(partialWindowMembers.every((item) => item.label.toLowerCase().startsWith("ce")));
+
+  const localSource = source.replace("window.center();", "win");
+  const localOffset = localSource.indexOf("win\n") + "win".length;
+  const locals = completions(localSource, example, localOffset);
+  assert.ok(locals.some((item) => item.label === "window" && /const window: AppKit\.NSWindow/.test(item.detail ?? "")));
+
+  const namespaceSource = source.replace("AppKit.NSApplication.sharedApplication", "AppKit.");
+  const namespaceOffset = namespaceSource.indexOf("AppKit.;") + "AppKit.".length;
+  const namespaceMembers = completions(namespaceSource, example, namespaceOffset);
+  assert.ok(namespaceMembers.some((item) => item.label === "NSWindow"));
+  assert.ok(namespaceMembers.some((item) => item.label === "NSMakeRect"));
+  assert.ok(namespaceMembers.length <= 2500);
+
+  const partialNamespace = source.replace("AppKit.NSApplication.sharedApplication", "AppKit.NSW");
+  const partialOffset = partialNamespace.indexOf("AppKit.NSW;") + "AppKit.NSW".length;
+  const partialMembers = completions(partialNamespace, example, partialOffset);
+  assert.ok(partialMembers.some((item) => item.label === "NSWindow"));
+  assert.ok(partialMembers.every((item) => item.label.toLowerCase().startsWith("nsw")));
+
   const labelOffset = source.indexOf("styleMask:");
   const labels = completions(source, example, labelOffset);
   assert.ok(labels.some((item) => item.label === "styleMask:" && item.detail === "AppKit.NSWindowStyleMask"));
 
   const titleOffset = source.indexOf("title") + 2;
   assert.match(hover(source, example, titleOffset)?.contents.value ?? "", /title: NSString/);
+
+  const frameBinding = source.indexOf("frame =") + 2;
+  assert.match(hover(source, example, frameBinding)?.contents.value ?? "", /frame: AppKit\.NSRect/);
+
+  const appKitNamespace = source.indexOf("AppKit") + 2;
+  assert.match(hover(source, example, appKitNamespace)?.contents.value ?? "", /import AppKit from "AppKit\/AppKit\.h"/);
+
+  const semantic = decodeSemanticTokens(semanticTokens(source, example).data);
+  assert.ok(semantic.some((token) => token.line === 11 && token.character === 8
+    && semanticTokenTypes[token.type] === "variable" && token.modifiers === 3));
+  assert.ok(semantic.some((token) => token.line === 18 && token.character === 2
+    && semanticTokenTypes[token.type] === "variable" && token.modifiers === 2));
+  assert.ok(semantic.some((token) => token.line === 0 && token.character === 7
+    && semanticTokenTypes[token.type] === "namespace"));
 
   const invalid = source.replace("window.center();", "window.center(1);");
   assert.match(diagnostics(invalid, example)[0]?.message ?? "", /has no method "center" accepting 1 argument/);
@@ -413,6 +453,7 @@ test("speaks the LSP initialize and shutdown protocol over stdio", () => {
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /"name":"z-language-server"/);
   assert.match(result.stdout, /"completionProvider"/);
+  assert.match(result.stdout, /"semanticTokensProvider"/);
 });
 
 test("checks floating-point widths and integer-only bitwise operators", () => {
@@ -1523,6 +1564,30 @@ test("compiles and runs the first native program", () => {
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stdout, "Z says 42\n");
 });
+
+function decodeSemanticTokens(data: readonly number[]): Array<{
+  readonly line: number;
+  readonly character: number;
+  readonly length: number;
+  readonly type: number;
+  readonly modifiers: number;
+}> {
+  const decoded = [];
+  let line = 0;
+  let character = 0;
+  for (let index = 0; index < data.length; index += 5) {
+    line += data[index];
+    character = data[index] === 0 ? character + data[index + 1] : data[index + 1];
+    decoded.push({
+      line,
+      character,
+      length: data[index + 2],
+      type: data[index + 3],
+      modifiers: data[index + 4],
+    });
+  }
+  return decoded;
+}
 
 function dirnameFromImportMeta(): string {
   return new URL(".", import.meta.url).pathname;

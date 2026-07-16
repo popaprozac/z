@@ -415,7 +415,9 @@ highlighting, completion, hover, navigation, references, and rename operations.
 The initial Bun stdio server now shares compiler diagnostics and analyzed
 expression types, and exposes imported namespace members, type-directed Z and
 Objective-C members, selector snippets and labels, hover, and same-file
-definitions. Document diagnostics are debounced because importing a large SDK
+definitions. It also publishes compiler-backed semantic tokens and completes
+bare local bindings, so editor symbol awareness does not begin only after a
+member-access dot. Document diagnostics are debounced because importing a large SDK
 header must not run once per keystroke. Imported-header definitions will use
 Clang declaration source locations rather than text-searching SDK headers.
 

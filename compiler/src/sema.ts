@@ -54,6 +54,7 @@ export type SemanticInfo = {
   readonly objcCalls: ReadonlyMap<number, ObjCCallInfo>;
   readonly objcStringLiterals: ReadonlySet<number>;
   readonly expressionTypes: ReadonlyMap<number, string>;
+  readonly bindingTypes: ReadonlyMap<number, string>;
   readonly objectiveC: boolean;
   readonly frameworks: readonly string[];
 };
@@ -76,6 +77,7 @@ type AnalysisState = {
   readonly objcCalls: Map<number, ObjCCallInfo>;
   readonly objcStringLiterals: Set<number>;
   readonly expressionTypes: Map<number, string>;
+  readonly bindingTypes: Map<number, string>;
   readonly objectiveC: boolean;
   readonly frameworks: readonly string[];
 };
@@ -134,6 +136,7 @@ export function analyze(
     objcCalls: new Map(),
     objcStringLiterals: new Set(),
     expressionTypes: new Map(),
+    bindingTypes: new Map(),
     objectiveC: frameworks.size > 0,
     frameworks: [...frameworks],
   };
@@ -396,6 +399,7 @@ function analyzeFunction(
     const mutable = parameter.mode === "inout" || parameter.mode === "out" ? mutablePrefix : "";
     const uninitialized = parameter.mode === "out" ? uninitializedPrefix : "";
     locals.set(parameter.name, `${uninitialized}${borrowed}${mutable}${parameter.type.name}`);
+    state.bindingTypes.set(parameter.location.offset, parameter.type.name);
   }
 
   const returns = analyzeStatements(declaration.body, declaration, locals, globals, structs, enums, fileName, state);
@@ -457,6 +461,7 @@ function analyzeStatement(
         const declaredType = statement.type!;
         validateType(declaredType, structs, enums, state.foreignNamedTypes, fileName, false);
         locals.set(statement.name, `${uninitializedPrefix}${mutablePrefix}${declaredType.name}`);
+        state.bindingTypes.set(statement.nameLocation.offset, declaredType.name);
         return;
       }
       const initializerType = inferDirectValue(statement.initializer, owner, locals, globals, structs, enums, fileName, state);
@@ -486,6 +491,7 @@ function analyzeStatement(
       }
       consumeOwnedValue(statement.initializer, variableType, locals, structs, fileName, state);
       locals.set(statement.name, statement.mutable ? `${mutablePrefix}${variableType}` : variableType);
+      state.bindingTypes.set(statement.nameLocation.offset, String(variableType));
       return;
     }
     case "assignment": {

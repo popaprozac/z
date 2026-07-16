@@ -29,6 +29,11 @@
           "description": "Path to the Bun executable used to start the Z language server."
         }
       }
+    },
+    "configurationDefaults": {
+      "[z]": {
+        "editor.semanticHighlighting.enabled": true
+      }
     }
   }
 }

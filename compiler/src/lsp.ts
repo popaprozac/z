@@ -6,6 +6,9 @@ import {
   diagnostics,
   hover,
   offsetAt,
+  semanticTokens,
+  semanticTokenModifiers,
+  semanticTokenTypes,
   type Position,
 } from "./language-service.ts";
 
@@ -65,6 +68,10 @@ async function dispatch(message: JsonRpcMessage): Promise<void> {
             completionProvider: { triggerCharacters: [".", ","] },
             hoverProvider: true,
             definitionProvider: true,
+            semanticTokensProvider: {
+              legend: { tokenTypes: semanticTokenTypes, tokenModifiers: semanticTokenModifiers },
+              full: true,
+            },
           },
           serverInfo: { name: "z-language-server", version: "0.1.0" },
         });
@@ -109,7 +116,7 @@ async function dispatch(message: JsonRpcMessage): Promise<void> {
         const items = document
           ? completions(document.text, fileName(document.uri), offsetAt(document.text, message.params.position as Position))
           : [];
-        respond(message.id!, { isIncomplete: false, items });
+        respond(message.id!, { isIncomplete: true, items });
         return;
       }
       case "textDocument/hover": {
@@ -126,6 +133,11 @@ async function dispatch(message: JsonRpcMessage): Promise<void> {
           ? definition(document.text, document.uri, offsetAt(document.text, message.params.position as Position))
           : null;
         respond(message.id!, result);
+        return;
+      }
+      case "textDocument/semanticTokens/full": {
+        const document = documents.get(message.params.textDocument.uri);
+        respond(message.id!, document ? semanticTokens(document.text, fileName(document.uri)) : { data: [] });
         return;
       }
       default:
