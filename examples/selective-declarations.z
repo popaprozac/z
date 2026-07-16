@@ -1,0 +1,24 @@
+import {
+  ZPoint as Point,
+  ZDirection as Direction,
+  ZForward as forward,
+  ZCount as Count,
+  z_translate as translate,
+  z_score as score
+} from "../tests/fixtures/geometry.h";
+import { printf } from "stdio.h";
+
+function direction(): Direction {
+  return forward;
+}
+
+function shift(point: Point, amount: Count): Point {
+  return translate(point, direction(), amount);
+}
+
+function main(): i32 {
+  const point = Point { x: 20, y: 19 };
+  const moved = shift(point, 3);
+  printf("selective point=%d,%d score=%d\n", moved.x, moved.y, score(moved));
+  return 0;
+}

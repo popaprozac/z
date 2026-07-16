@@ -308,17 +308,21 @@ boundary model:
 
 ```z
 import { sqlite3_open, sqlite3_close as closeDatabase } from "sqlite3.h";
+import { sqlite3 as Database } from "sqlite3.h";
 ```
 
-This binds only those C functions. Namespace imports remain useful when
-provenance and breadth matter. The bootstrap implements selective functions
-first; imported types and constants will join the same binding model later.
+This binds only those C declarations. Functions, supported typedef-named
+records, enums, scalar typedefs, and enum constants can share the same import
+list and can each be aliased. Aliases affect only Z source: generated C uses the
+original declaration spelling, and aliases preserve C type identity across
+selective and namespace imports. Namespace imports remain useful when
+provenance and breadth matter.
 
-Imported C data remains namespaced but otherwise follows Z expression syntax:
-typedef-named records can appear in signatures, are built with checked struct
-literals, and expose imported fields; C enum constants become typed module
-values. The native compiler still includes the original header, so it does not
-redeclare layouts or guess padding and calling conventions. A future
+Imported C data follows Z expression syntax whether it is namespaced or
+selective: typedef-named records can appear in signatures, are built with
+checked struct literals, and expose imported fields; C enum constants become
+typed values. The native compiler still includes the original header, so it
+does not redeclare layouts or guess padding and calling conventions. A future
 `unsafe raw { ... }` facility may cover operations the semantic importer cannot
 represent, but routine function and data interop must not require it.
 

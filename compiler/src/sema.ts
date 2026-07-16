@@ -23,6 +23,7 @@ export type SemanticInfo = {
   readonly integerLiteralTypes: ReadonlyMap<number, string>;
   readonly foreignArgumentAccesses: ReadonlyMap<number, "in" | "out" | "inout">;
   readonly foreignFunctionNames: ReadonlyMap<number, string>;
+  readonly foreignConstantNames: ReadonlyMap<number, string>;
   readonly nativeArgumentAccesses: ReadonlyMap<number, "in" | "inout" | "out">;
 };
 
@@ -35,12 +36,15 @@ type AnalysisState = {
   readonly integerLiteralTypes: Map<number, string>;
   readonly foreignArgumentAccesses: Map<number, "in" | "out" | "inout">;
   readonly foreignFunctionNames: Map<number, string>;
+  readonly foreignConstantNames: Map<number, string>;
   readonly nativeArgumentAccesses: Map<number, "in" | "inout" | "out">;
 };
 
 type SymbolValue =
   | { readonly kind: "function"; readonly declaration: FunctionDeclaration }
   | { readonly kind: "foreignFunction"; readonly declaration: ForeignFunction }
+  | { readonly kind: "foreignConstant"; readonly declaration: ForeignConstant }
+  | { readonly kind: "foreignType"; readonly declaration: ForeignNamedType }
   | { readonly kind: "foreignModule"; readonly module: ForeignModule }
   | { readonly kind: "struct"; readonly declaration: StructDeclaration }
   | { readonly kind: "enum"; readonly declaration: EnumDeclaration };
@@ -74,6 +78,7 @@ export function analyze(
     integerLiteralTypes: new Map(),
     foreignArgumentAccesses: new Map(),
     foreignFunctionNames: new Map(),
+    foreignConstantNames: new Map(),
     nativeArgumentAccesses: new Map(),
   };
   const globals = new Map<string, SymbolValue>();
@@ -90,23 +95,31 @@ export function analyze(
     for (const binding of declaration.bindings) {
       validateUserName(binding.localName, binding.location, fileName);
       const foreignFunction = module.functions.get(binding.importedName);
-      if (!foreignFunction) {
-        const unsupportedKind = module.namedTypes.has(binding.importedName)
-          ? "type"
-          : module.constants.has(binding.importedName)
-            ? "constant"
-            : null;
-        const message = unsupportedKind
-          ? `selective ${unsupportedKind} imports are not implemented yet; import the header as a namespace`
-          : `header ${JSON.stringify(declaration.header)} has no function ${JSON.stringify(binding.importedName)}`;
-        throw new DiagnosticError(fileName, binding.location, message);
+      if (foreignFunction) {
+        declareGlobal(
+          globals,
+          binding.localName,
+          { kind: "foreignFunction", declaration: foreignFunction },
+          binding.location,
+          fileName,
+        );
+        continue;
       }
-      declareGlobal(
-        globals,
-        binding.localName,
-        { kind: "foreignFunction", declaration: foreignFunction },
-        binding.location,
+      const foreignType = module.namedTypes.get(binding.importedName);
+      if (foreignType) {
+        foreignNamedTypes.set(binding.localName, foreignType);
+        declareGlobal(globals, binding.localName, { kind: "foreignType", declaration: foreignType }, binding.location, fileName);
+        continue;
+      }
+      const foreignConstant = module.constants.get(binding.importedName);
+      if (foreignConstant) {
+        declareGlobal(globals, binding.localName, { kind: "foreignConstant", declaration: foreignConstant }, binding.location, fileName);
+        continue;
+      }
+      throw new DiagnosticError(
         fileName,
+        binding.location,
+        `header ${JSON.stringify(declaration.header)} has no declaration ${JSON.stringify(binding.importedName)}`,
       );
     }
   }
@@ -738,6 +751,14 @@ function inferExpression(
       }
       if (global?.kind === "foreignFunction") {
         throw new DiagnosticError(fileName, expression.location, "foreign function values are not implemented; call the function instead");
+      }
+      if (global?.kind === "foreignConstant") {
+        state.foreignExpressionTypes.set(expression.location.offset, global.declaration.typeName);
+        state.foreignConstantNames.set(expression.location.offset, global.declaration.cName);
+        return global.declaration.typeName;
+      }
+      if (global?.kind === "foreignType") {
+        throw new DiagnosticError(fileName, expression.location, "an imported type must be followed by a field initializer or used in a type position");
       }
       if (global?.kind === "foreignModule") {
         throw new DiagnosticError(fileName, expression.location, "an imported module must be followed by a member name");

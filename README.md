@@ -324,6 +324,7 @@ bun run z run examples/foreign-handle.z
 bun run z run examples/foreign-types.z
 bun run z run examples/foreign-pointers.z
 bun run z run examples/selective-import.z
+bun run z run examples/selective-declarations.z
 bun run z run examples/structs.z
 bun run z run examples/match.z
 bun run z run examples/match-expression.z
@@ -338,7 +339,9 @@ bun test
 The current header importer asks Clang for function declarations, rejects
 unknown symbols, checks fixed argument types and counts, enforces variadic
 boundaries, carries supported return types into Z inference, and supports both
-namespace and selective function imports with aliases. Signed and
+namespace imports and selective function, type, and enum-constant imports with
+aliases. Selective type aliases preserve the underlying C declaration identity
+in signatures, literals, field access, and calls. Signed and
 unsigned C integer spellings and common fixed-width or pointer-sized typedefs
 map to Z's `i8` through `i64`, `u8` through `u64`, `isize`, and `usize` families;
 `_Bool`, `const char *`, and `void` map to `bool`, `cstring`, and `void`. The
@@ -354,10 +357,21 @@ pointers, borrowed returns without lifetime provenance, mutable strings,
 globals, macros, Objective-C, and C++ remain conservative errors or future
 layers rather than being silently treated as safe.
 
+```z
+import {
+  ZPoint as Point,
+  ZForward as forward,
+  z_translate as translate
+} from "geometry.h";
+
+const origin = Point { x: 10, y: 20 };
+const moved = translate(origin, forward, 3);
+```
+
 Complete typedef-named C structs with supported integer, enum, or nested-record
 fields, C enums and their constants, and integer typedefs are now usable as
-namespaced Z types. Integer literals are contextually typed and rejected when
-they do not fit the destination width. Unions, anonymous or incomplete layouts,
+namespaced or selective Z types and values. Integer literals are contextually
+typed and rejected when they do not fit the destination width. Unions, anonymous or incomplete layouts,
 plain `char` signedness, arrays, floating-point types, bitfield-specific
 validation, callbacks, and pointers stored inside records remain upcoming
 interop layers.

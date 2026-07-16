@@ -62,16 +62,55 @@ test("keeps unselected C functions out of scope", () => {
   const missing = source.replace("puts", "not_a_real_c_function").replace("printf", "not_a_real_c_function");
   assert.throws(
     () => compileToC(missing, "selective-missing.z"),
-    /header "stdio\.h" has no function "not_a_real_c_function"/,
+    /header "stdio\.h" has no declaration "not_a_real_c_function"/,
+  );
+});
+
+test("selectively imports C types and constants with the same aliases used by functions", () => {
+  const example = resolve(projectRoot, "examples/selective-declarations.z");
+  const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, "selective point=23,19 score=42\n");
+
+  const generated = compileToC(readFileSync(example, "utf8"), example);
+  assert.match(generated, /static ZDirection direction\(void\)/);
+  assert.match(generated, /return ZForward;/);
+  assert.match(generated, /static ZPoint shift\(ZPoint point, ZCount amount\)/);
+  assert.match(generated, /return z_translate\(point, direction\(\), amount\);/);
+  assert.match(generated, /const ZPoint point = \(ZPoint\)\{ \.x = 20, \.y = 19 \};/);
+  assert.doesNotMatch(generated, /\b(Point|Direction|Count|forward|translate|score)\s*\(/);
+});
+
+test("keeps unselected C types and constants out of scope", () => {
+  const missingType = `
+    import { z_score } from "tests/fixtures/geometry.h";
+    function inspect(point: ZPoint): i32 { return z_score(point); }
+    function main(): i32 { return 0; }
+  `;
+  assert.throws(
+    () => compileToC(missingType, resolve(projectRoot, "selective-type-scope.z")),
+    /unknown type "ZPoint"/,
+  );
+
+  const missingConstant = `
+    import { ZDirection } from "tests/fixtures/geometry.h";
+    function main(): i32 {
+      const direction: ZDirection = ZForward;
+      return 0;
+    }
+  `;
+  assert.throws(
+    () => compileToC(missingConstant, resolve(projectRoot, "selective-constant-scope.z")),
+    /unknown name "ZForward"/,
   );
 });
 
 test("shares imported C type identity across namespace and selective imports", () => {
   const source = `
     import geometry from "tests/fixtures/geometry.h";
-    import { z_read } from "tests/fixtures/geometry.h";
+    import { ZPoint as Point, z_read } from "tests/fixtures/geometry.h";
     function main(): i32 {
-      const point = geometry.ZPoint { x: 20, y: 22 };
+      const point: Point = geometry.ZPoint { x: 20, y: 22 };
       return z_read(point);
     }
   `;

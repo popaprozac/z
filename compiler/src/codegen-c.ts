@@ -75,10 +75,10 @@ export function generateC(program: Program, sourceName: string, semanticInfo: Se
   if (program.structs.length > 0 || program.enums.length > 0) lines.push("");
 
   for (const declaration of orderedStructs(program.structs, structs)) {
-    lines.push(generateStruct(declaration, structs, enums), "");
+    lines.push(generateStruct(declaration, structs, enums, semanticInfo.foreignNamedTypes), "");
   }
   for (const declaration of program.enums) {
-    lines.push(generateEnum(declaration, structs, enums), "");
+    lines.push(generateEnum(declaration, structs, enums, semanticInfo.foreignNamedTypes), "");
   }
 
   for (const declaration of program.structs) {
@@ -86,11 +86,11 @@ export function generateC(program: Program, sourceName: string, semanticInfo: Se
       lines.push(`static void ${deinitName(declaration.name)}(${structName(declaration.name)} *self);`);
     }
     for (const method of declaration.methods) {
-      lines.push(`${generateFunctionSignature(method, structs, enums, declaration)};`);
+      lines.push(`${generateFunctionSignature(method, structs, enums, declaration, semanticInfo.foreignNamedTypes)};`);
     }
   }
   for (const declaration of program.functions) {
-    lines.push(`${generateFunctionSignature(declaration, structs, enums, null)};`);
+    lines.push(`${generateFunctionSignature(declaration, structs, enums, null, semanticInfo.foreignNamedTypes)};`);
   }
   if (program.structs.some((declaration) => declaration.methods.length > 0) || program.functions.length > 0) {
     lines.push("");
@@ -110,17 +110,27 @@ export function generateC(program: Program, sourceName: string, semanticInfo: Se
   return `${lines.join("\n")}\n`;
 }
 
-function generateStruct(declaration: StructDeclaration, structs: Map<string, StructDeclaration>, enums: Map<string, EnumDeclaration>): string {
+function generateStruct(
+  declaration: StructDeclaration,
+  structs: Map<string, StructDeclaration>,
+  enums: Map<string, EnumDeclaration>,
+  foreignNamedTypes: SemanticInfo["foreignNamedTypes"],
+): string {
   const fields = declaration.fields
-    .map((field) => `  ${mapType(field.type.name, structs, enums)} ${field.name};`)
+    .map((field) => `  ${mapType(field.type.name, structs, enums, foreignNamedTypes)} ${field.name};`)
     .join("\n");
   return `struct ${structName(declaration.name)} {\n${fields}\n};`;
 }
 
-function generateEnum(declaration: EnumDeclaration, structs: Map<string, StructDeclaration>, enums: Map<string, EnumDeclaration>): string {
+function generateEnum(
+  declaration: EnumDeclaration,
+  structs: Map<string, StructDeclaration>,
+  enums: Map<string, EnumDeclaration>,
+  foreignNamedTypes: SemanticInfo["foreignNamedTypes"],
+): string {
   const tag = declaration.variants.map((variant) => `  ${variantTag(declaration.name, variant.name)},`).join("\n");
   const payloads = declaration.variants.filter((variant) => variant.payload)
-    .map((variant) => `    ${mapType(variant.payload!.name, structs, enums)} ${variant.name};`).join("\n");
+    .map((variant) => `    ${mapType(variant.payload!.name, structs, enums, foreignNamedTypes)} ${variant.name};`).join("\n");
   const union = payloads ? `\n  union {\n${payloads}\n  } data;` : "";
   return `typedef enum {\n${tag}\n} ${enumName(declaration.name)}_Tag;\n\nstruct ${enumName(declaration.name)} {\n  ${enumName(declaration.name)}_Tag tag;${union}\n};`;
 }
@@ -188,7 +198,7 @@ function generateFunction(
     if (cleanup) bodyParts.push(indent(cleanup, 2));
   }
   const body = bodyParts.join("\n");
-  return `${generateFunctionSignature(declaration, structs, enums, receiver)} {\n${body}\n}`;
+  return `${generateFunctionSignature(declaration, structs, enums, receiver, semanticInfo.foreignNamedTypes)} {\n${body}\n}`;
 }
 
 function generateDeinit(
@@ -246,11 +256,12 @@ function generateFunctionSignature(
   structs: Map<string, StructDeclaration>,
   enums: Map<string, EnumDeclaration>,
   receiver: StructDeclaration | null,
+  foreignNamedTypes: SemanticInfo["foreignNamedTypes"],
 ): string {
   const storage = receiver || declaration.name !== "main" ? "static " : "";
   const name = receiver ? methodName(receiver.name, declaration.name) : declaration.name;
   const parameters = declaration.parameters.map((parameter) => {
-    const type = mapType(parameter.type.name, structs, enums);
+    const type = mapType(parameter.type.name, structs, enums, foreignNamedTypes);
     if (parameter.mode === "in") return `const ${type} *${parameter.name}`;
     if (parameter.mode === "inout" || parameter.mode === "out") return `${type} *${parameter.name}`;
     return `${type} ${parameter.name}`;
@@ -265,14 +276,14 @@ function generateFunctionSignature(
   const returnName = declaration.errorType
     ? resultTypeName(declaration.returnType.name, declaration.errorType.name)
     : declaration.returnType.name;
-  return `${storage}${mapType(returnName, structs, enums)} ${name}(${parameters.join(", ") || "void"})`;
+  return `${storage}${mapType(returnName, structs, enums, foreignNamedTypes)} ${name}(${parameters.join(", ") || "void"})`;
 }
 
 function generateStatement(statement: Statement, context: GenerationContext): string {
   switch (statement.kind) {
     case "variable": {
       const zType = statement.type?.name ?? directValueType(statement.initializer!, context);
-      const declaration = generateLocalDeclaration(zType, statement.name, statement.mutable, context.structs, context.enums);
+      const declaration = generateLocalDeclaration(zType, statement.name, statement.mutable, context.structs, context.enums, context.semanticInfo.foreignNamedTypes);
       if (!statement.initializer) {
         if (!hasCleanupType(zType, context.structs, context.semanticInfo.foreignTypes)) return `${declaration};`;
         const liveFlag = ensureLiveFlag(statement.name, context);
@@ -281,7 +292,7 @@ function generateStatement(statement: Statement, context: GenerationContext): st
       let initialized: string;
       if (statement.initializer.kind === "matchExpression") {
         const temporary = `_z_value_${context.valueCounter.value++}`;
-        const temporaryDeclaration = generateLocalDeclaration(zType, temporary, true, context.structs, context.enums);
+        const temporaryDeclaration = generateLocalDeclaration(zType, temporary, true, context.structs, context.enums, context.semanticInfo.foreignNamedTypes);
         initialized = `${temporaryDeclaration};\n${generateDirectValue(statement.initializer, context, (value) => `${temporary} = ${value};`)}\n${declaration} = ${temporary};`;
       } else {
         initialized = generateDirectValue(statement.initializer, context, (value) => `${declaration} = ${value};`);
@@ -315,7 +326,7 @@ function generateStatement(statement: Statement, context: GenerationContext): st
         return `return (${enumName(result)}){ .tag = ${variantTag(result, "failure")}, .data.failure = ${value} };`;
       }
       const temporary = `_z_error_${context.returnCounter.value++}`;
-      const declaration = generateLocalDeclaration(context.owner.errorType!.name, temporary, false, context.structs, context.enums);
+      const declaration = generateLocalDeclaration(context.owner.errorType!.name, temporary, false, context.structs, context.enums, context.semanticInfo.foreignNamedTypes);
       return `${declaration} = ${value};\n${cleanup}\nreturn (${enumName(result)}){ .tag = ${variantTag(result, "failure")}, .data.failure = ${temporary} };`;
     }
     case "yield":
@@ -392,7 +403,7 @@ function generateNativeOutCall(
   if (returnType === "void") return [...before, `${call};`, ...after].join("\n");
 
   const temporary = `_z_out_result_${context.valueCounter.value++}`;
-  const declaration = generateLocalDeclaration(returnType, temporary, false, context.structs, context.enums);
+  const declaration = generateLocalDeclaration(returnType, temporary, false, context.structs, context.enums, context.semanticInfo.foreignNamedTypes);
   return [
     ...before,
     `${declaration} = ${call};`,
@@ -470,6 +481,7 @@ function generateCleanupAwareAssignment(
     true,
     context.structs,
     context.enums,
+    context.semanticInfo.foreignNamedTypes,
   );
   const target = generateExpression(statement.target, context);
   const liveFlag = statement.target.kind === "identifier"
@@ -509,7 +521,7 @@ function generateSuccessReturn(value: string, context: GenerationContext): strin
     return `return (${enumName(result)}){ .tag = ${variantTag(result, "success")}, .data.success = ${value} };`;
   }
   const temporary = `_z_return_${context.returnCounter.value++}`;
-  const declaration = generateLocalDeclaration(context.owner.returnType.name, temporary, false, context.structs, context.enums);
+  const declaration = generateLocalDeclaration(context.owner.returnType.name, temporary, false, context.structs, context.enums, context.semanticInfo.foreignNamedTypes);
   const returned = context.owner.errorType
     ? `return (${enumName(resultTypeName(context.owner.returnType.name, context.owner.errorType.name))}){ .tag = ${variantTag(resultTypeName(context.owner.returnType.name, context.owner.errorType.name), "success")}, .data.success = ${temporary} };`
     : `return ${temporary};`;
@@ -526,7 +538,7 @@ function generateTry(
   const ownerResult = resultTypeName(context.owner.returnType.name, context.owner.errorType!.name);
   const cleanup = generateCleanup(context.cleanupScopes, context);
   const failureReturn = `return (${enumName(ownerResult)}){ .tag = ${variantTag(ownerResult, "failure")}, .data.failure = ${temporary}.data.failure };`;
-  return `const ${mapType(resultType, context.structs, context.enums)} ${temporary} = ${generateExpression(expression.expression, context)};\n`
+  return `const ${mapType(resultType, context.structs, context.enums, context.semanticInfo.foreignNamedTypes)} ${temporary} = ${generateExpression(expression.expression, context)};\n`
     + `if (${temporary}.tag == ${variantTag(resultType, "failure")}) {\n`
     + `${cleanup ? `${indent(cleanup, 2)}\n` : ""}`
     + `  ${failureReturn}\n`
@@ -558,16 +570,17 @@ function generateLocalDeclaration(
   mutable: boolean,
   structs: Map<string, StructDeclaration>,
   enums: Map<string, EnumDeclaration>,
+  foreignNamedTypes: SemanticInfo["foreignNamedTypes"],
 ): string {
   if (type === "cstring") {
     return mutable ? `const char *${name}` : `const char * const ${name}`;
   }
   if (type.startsWith("__z_ffi:")) {
-    const cType = mapType(type, structs, enums);
+    const cType = mapType(type, structs, enums, foreignNamedTypes);
     return mutable ? `${cType}${name}` : `${cType} const ${name}`;
   }
-  if (hasCleanupType(type, structs)) return `${mapType(type, structs, enums)} ${name}`;
-  return `${mutable ? "" : "const "}${mapType(type, structs, enums)} ${name}`;
+  if (hasCleanupType(type, structs)) return `${mapType(type, structs, enums, foreignNamedTypes)} ${name}`;
+  return `${mutable ? "" : "const "}${mapType(type, structs, enums, foreignNamedTypes)} ${name}`;
 }
 
 function generateMatch(statement: Extract<Statement, { kind: "match" }>, context: GenerationContext): string {
@@ -579,7 +592,7 @@ function generateMatch(statement: Extract<Statement, { kind: "match" }>, context
     const variant = declaration.variants.find((candidate) => candidate.name === arm.variantName)!;
     const armTypes = new Map(context.localTypes);
     const binding = variant.payload && arm.binding
-      ? `\n    const ${mapType(variant.payload.name, context.structs, context.enums)} ${arm.binding} = ${temporary}.data.${variant.name};`
+      ? `\n    const ${mapType(variant.payload.name, context.structs, context.enums, context.semanticInfo.foreignNamedTypes)} ${arm.binding} = ${temporary}.data.${variant.name};`
       : "";
     if (variant.payload && arm.binding) armTypes.set(arm.binding, variant.payload.name);
     const armContext = {
@@ -613,7 +626,7 @@ function generateMatchExpression(
     const variant = declaration.variants.find((candidate) => candidate.name === arm.variantName)!;
     const armTypes = new Map(context.localTypes);
     const binding = variant.payload && arm.binding
-      ? `\n    const ${mapType(variant.payload.name, context.structs, context.enums)} ${arm.binding} = ${temporary}.data.${variant.name};`
+      ? `\n    const ${mapType(variant.payload.name, context.structs, context.enums, context.semanticInfo.foreignNamedTypes)} ${arm.binding} = ${temporary}.data.${variant.name};`
       : "";
     if (variant.payload && arm.binding) armTypes.set(arm.binding, variant.payload.name);
     const armContext = {
@@ -721,6 +734,9 @@ function generateExpression(expression: Expression, context: GenerationContext):
       if (context.semanticInfo.foreignFunctionNames.has(expression.location.offset)) {
         return context.semanticInfo.foreignFunctionNames.get(expression.location.offset)!;
       }
+      if (context.semanticInfo.foreignConstantNames.has(expression.location.offset)) {
+        return context.semanticInfo.foreignConstantNames.get(expression.location.offset)!;
+      }
       if (expression.name === "this") {
         const value = context.owner.receiverMode === "move" ? "self" : "(*self)";
         if (!context.semanticInfo.movedExpressions.has(expression.location.offset)) return value;
@@ -748,8 +764,10 @@ function generateExpression(expression: Expression, context: GenerationContext):
         .map((field) => `.${field.name} = ${generateExpression(field.expression, context)}`)
         .join(", ");
       const type = expression.typeName.includes(".")
-        ? mapType(expression.typeName, context.structs, context.enums)
-        : structName(expression.typeName);
+        ? mapType(expression.typeName, context.structs, context.enums, context.semanticInfo.foreignNamedTypes)
+        : context.semanticInfo.foreignNamedTypes.has(expression.typeName)
+          ? mapType(expression.typeName, context.structs, context.enums, context.semanticInfo.foreignNamedTypes)
+          : structName(expression.typeName);
       return `(${type}){ ${fields} }`;
     }
     case "variantExpression":
@@ -912,11 +930,18 @@ function isForeignMember(
     && !context.enums.has(expression.object.name);
 }
 
-function mapType(name: string, structs: Map<string, StructDeclaration>, enums: Map<string, EnumDeclaration>): string {
+function mapType(
+  name: string,
+  structs: Map<string, StructDeclaration>,
+  enums: Map<string, EnumDeclaration>,
+  foreignNamedTypes: SemanticInfo["foreignNamedTypes"] = new Map(),
+): string {
   const primitive = primitiveTypeNames[name];
   if (primitive) return primitive;
   if (structs.has(name)) return structName(name);
   if (enums.has(name)) return enumName(name);
+  const foreignNamed = foreignNamedTypes.get(name);
+  if (foreignNamed) return foreignNamed.cName;
   if (name.startsWith("__z_ffi:")) return name.split(":").slice(3).join(":");
   if (name.includes(".")) return name.slice(name.lastIndexOf(".") + 1);
   throw new Error(`unsupported bootstrap type ${JSON.stringify(name)}`);
