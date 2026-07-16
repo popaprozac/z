@@ -339,6 +339,7 @@ function collectBindings(context: AnalyzedSource): Binding[] {
         if (statement.elseBranch?.kind === "block") visitStatements(statement.elseBranch.statements);
         if (statement.elseBranch?.kind === "if") visitStatements([statement.elseBranch]);
       }
+      if (statement.kind === "while") visitStatements(statement.body.statements);
       if (statement.kind === "match") {
         for (const arm of statement.arms) visitStatements([arm.body]);
       }

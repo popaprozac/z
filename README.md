@@ -267,6 +267,23 @@ function classify(value: i32, enabled: bool): i32 {
 }
 ```
 
+`while`, `break`, and `continue` use the same familiar syntax. Every loop-control
+transfer runs deterministic cleanup for the local scopes it exits:
+
+```z
+let index = 0;
+while (index < 10) {
+  index = index + 1;
+  if (index == 3) { continue; }
+  if (index == 8) { break; }
+}
+```
+
+Ownership analysis reaches a fixed state across loop back-edges. Moving a value
+on one iteration and potentially using it on the next is therefore rejected.
+`for...of` remains deferred until Z has collections and an iteration trait worth
+making part of the language contract.
+
 Owned structs can define an infallible compiler-controlled lifecycle hook:
 
 ```z
@@ -363,6 +380,7 @@ bun run z run examples/apple-groundwork.z
 bun run z run examples/nswindow.z # macOS: opens a window and enters AppKit's event loop
 bun run z run examples/structs.z
 bun run z run examples/classes.z
+bun run z run examples/loops.z
 bun run z run examples/match.z
 bun run z run examples/match-expression.z
 bun run z run examples/mutation.z

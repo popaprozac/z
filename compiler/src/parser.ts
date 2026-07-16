@@ -310,6 +310,24 @@ export function parse(tokens: Token[], fileName: string): Program {
       }
       return { kind: "if", condition, thenBranch, elseBranch, location: ifToken.location };
     }
+    if (match("while")) {
+      const whileToken = previous();
+      expect("leftParen", "`(`");
+      const condition = parseExpression();
+      expect("rightParen", "`)`");
+      const body = parseRequiredBlock("a `while` body");
+      return { kind: "while", condition, body, location: whileToken.location };
+    }
+    if (match("break")) {
+      const breakToken = previous();
+      expect("semicolon", "`;`");
+      return { kind: "break", location: breakToken.location };
+    }
+    if (match("continue")) {
+      const continueToken = previous();
+      expect("semicolon", "`;`");
+      return { kind: "continue", location: continueToken.location };
+    }
     if (match("match")) {
       const matchToken = previous();
       const expression = parseExpression();

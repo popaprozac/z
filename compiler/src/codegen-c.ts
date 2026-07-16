@@ -21,6 +21,8 @@ type GenerationContext = {
   readonly tryCounter: { value: number };
   readonly valueCounter: { value: number };
   readonly returnCounter: { value: number };
+  readonly loopCounter: { value: number };
+  readonly loopStack: LoopGenerationFrame[];
   readonly cleanupScopes: CleanupLocal[][];
   readonly liveFlags: Map<string, string>;
   readonly liveFlagCounter: { value: number };
@@ -31,6 +33,12 @@ type CleanupLocal = {
   readonly name: string;
   readonly type: string;
   readonly liveFlag: string;
+};
+
+type LoopGenerationFrame = {
+  readonly breakLabel: string;
+  readonly continueLabel: string;
+  readonly cleanupDepth: number;
 };
 
 const primitiveTypeNames: Record<string, string> = {
@@ -236,6 +244,8 @@ function generateFunction(
     tryCounter: { value: 0 },
     valueCounter: { value: 0 },
     returnCounter: { value: 0 },
+    loopCounter: { value: 0 },
+    loopStack: [],
     cleanupScopes: [parameterCleanup],
     liveFlags,
     liveFlagCounter,
@@ -292,6 +302,8 @@ function generateDeinit(
     tryCounter: { value: 0 },
     valueCounter: { value: 0 },
     returnCounter: { value: 0 },
+    loopCounter: { value: 0 },
+    loopStack: [],
     cleanupScopes: [[]],
     liveFlags: new Map(),
     liveFlagCounter: { value: 0 },
@@ -413,10 +425,16 @@ function generateStatement(statement: Statement, context: GenerationContext): st
     }
     case "yield":
       throw new Error("yield must be lowered by its enclosing value-producing block");
+    case "break":
+      return generateLoopTransfer("break", context);
+    case "continue":
+      return generateLoopTransfer("continue", context);
     case "block":
       return generateBlock(statement.statements, context);
     case "if":
       return generateIf(statement, context);
+    case "while":
+      return generateWhile(statement, context);
     case "expressionStatement":
       return generateDirectValue(statement.expression, context, (value) => `(void)${value};`);
     case "match":
@@ -424,14 +442,43 @@ function generateStatement(statement: Statement, context: GenerationContext): st
   }
 }
 
+function generateWhile(statement: Extract<Statement, { kind: "while" }>, context: GenerationContext): string {
+  const index = context.loopCounter.value++;
+  const frame: LoopGenerationFrame = {
+    breakLabel: `_z_loop_break_${index}`,
+    continueLabel: `_z_loop_continue_${index}`,
+    cleanupDepth: context.cleanupScopes.length,
+  };
+  context.loopStack.push(frame);
+  let body: string;
+  try {
+    body = generateBlock(statement.body.statements, context, frame.continueLabel);
+  } finally {
+    context.loopStack.pop();
+  }
+  return `while ${controlCondition(generateExpression(statement.condition, context))} ${body}\n${frame.breakLabel}: ;`;
+}
+
+function generateLoopTransfer(kind: "break" | "continue", context: GenerationContext): string {
+  const frame = context.loopStack.at(-1);
+  if (!frame) throw new Error(`${kind} lowering requires an enclosing loop`);
+  const cleanup = generateCleanup(context.cleanupScopes.slice(frame.cleanupDepth), context);
+  const target = kind === "break" ? frame.breakLabel : frame.continueLabel;
+  return cleanup ? `${cleanup}\ngoto ${target};` : `goto ${target};`;
+}
+
 function generateIf(statement: Extract<Statement, { kind: "if" }>, context: GenerationContext): string {
   const condition = generateExpression(statement.condition, context);
   const thenBranch = generateBlock(statement.thenBranch.statements, context);
-  if (!statement.elseBranch) return `if (${condition}) ${thenBranch}`;
+  if (!statement.elseBranch) return `if ${controlCondition(condition)} ${thenBranch}`;
   const elseBranch = statement.elseBranch.kind === "if"
     ? generateIf(statement.elseBranch, context)
     : generateBlock(statement.elseBranch.statements, context);
-  return `if (${condition}) ${thenBranch} else ${elseBranch}`;
+  return `if ${controlCondition(condition)} ${thenBranch} else ${elseBranch}`;
+}
+
+function controlCondition(value: string): string {
+  return value.startsWith("(") && value.endsWith(")") ? value : `(${value})`;
 }
 
 function generateDirectValue(
@@ -504,7 +551,11 @@ function generateStoredValue(name: string, context: GenerationContext): string {
   return context.parameterModes.get(name) ? `(*${name})` : name;
 }
 
-function generateBlock(statements: Statement[], context: GenerationContext): string {
+function generateBlock(
+  statements: Statement[],
+  context: GenerationContext,
+  trailingLabel: string | null = null,
+): string {
   const blockTypes = new Map(context.localTypes);
   const blockContext = {
     ...context,
@@ -521,6 +572,7 @@ function generateBlock(statements: Statement[], context: GenerationContext): str
     const cleanup = generateCleanup([blockContext.cleanupScopes.at(-1)!], blockContext);
     if (cleanup) body.push(indent(cleanup, 2));
   }
+  if (trailingLabel) body.push(`  ${trailingLabel}: ;`);
   return `{\n${body.join("\n")}\n}`;
 }
 
@@ -799,7 +851,12 @@ function valueArmTerminates(statement: Statement): boolean {
 }
 
 function statementTerminates(statement: Statement): boolean {
-  if (statement.kind === "return" || statement.kind === "throw") return true;
+  if (
+    statement.kind === "return"
+    || statement.kind === "throw"
+    || statement.kind === "break"
+    || statement.kind === "continue"
+  ) return true;
   if (statement.kind === "block") return statementTerminates(statement.statements.at(-1)!);
   if (statement.kind === "if") {
     return Boolean(statement.elseBranch)

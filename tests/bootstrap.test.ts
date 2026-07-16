@@ -895,6 +895,135 @@ test("rejects statements after every branch exits", () => {
   );
 });
 
+test("runs while loops with cleanup-aware break and continue", () => {
+  const example = resolve(projectRoot, "examples/loops.z");
+  const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, "drop=1\ndrop=2\ndrop=3\ndrop=4\ntotal=8\n");
+
+  const generated = compileToC(readFileSync(example, "utf8"), example);
+  assert.match(generated, /Z_Iteration_deinit\(&\(iteration\)\);\n\s+goto _z_loop_continue_0;/);
+  assert.match(generated, /Z_Iteration_deinit\(&\(iteration\)\);\n\s+goto _z_loop_break_0;/);
+  assert.match(generated, /_z_loop_continue_0: ;\n\s+}\n\s+_z_loop_break_0: ;/);
+});
+
+test("keeps loop control inside an enclosing loop", () => {
+  const outsideBreak = `
+    function main(): i32 {
+      break;
+      return 0;
+    }
+  `;
+  assert.throws(() => compileToC(outsideBreak, "break-outside.z"), /break requires an enclosing loop/);
+
+  const outsideContinue = outsideBreak.replace("break", "continue");
+  assert.throws(() => compileToC(outsideContinue, "continue-outside.z"), /continue requires an enclosing loop/);
+
+  const unreachable = `
+    function main(): i32 {
+      while (true) {
+        break;
+        return 1;
+      }
+      return 0;
+    }
+  `;
+  assert.throws(
+    () => compileToC(unreachable, "loop-unreachable.z"),
+    /unreachable statement after guaranteed loop control transfer/,
+  );
+});
+
+test("requires boolean while conditions", () => {
+  const source = `
+    function main(): i32 {
+      while (42) { break; }
+      return 0;
+    }
+  `;
+  assert.throws(() => compileToC(source, "while-condition.z"), /expected bool, found i32/);
+});
+
+test("reaches a fixed ownership state across loop iterations", () => {
+  const repeatedMove = `
+    struct Resource { id: i32; deinit {} }
+    function consume(resource: Resource): void {}
+    function main(): i32 {
+      let index = 0;
+      const resource = Resource { id: 1 };
+      while (index < 2) {
+        consume(resource);
+        index = index + 1;
+      }
+      return 0;
+    }
+  `;
+  assert.throws(
+    () => compileToC(repeatedMove, "loop-repeated-move.z"),
+    /resource.*may have been moved|may have been moved.*resource/,
+  );
+
+  const maybeMovedAfterBreak = repeatedMove
+    .replace("index = index + 1;", "break;")
+    .replace("      return 0;", "      consume(resource);\n      return 0;");
+  assert.throws(
+    () => compileToC(maybeMovedAfterBreak, "loop-break-move.z"),
+    /resource.*may have been moved|may have been moved.*resource/,
+  );
+
+  const restored = `
+    struct Resource { id: i32; deinit {} }
+    function consume(resource: Resource): void {}
+    function main(): i32 {
+      let index = 0;
+      let resource = Resource { id: 1 };
+      while (index < 2) {
+        consume(resource);
+        resource = Resource { id: index + 2 };
+        index = index + 1;
+      }
+      consume(resource);
+      return 0;
+    }
+  `;
+  assert.match(compileToC(restored, "loop-restored-owner.z"), /while \(index < 2\)/);
+});
+
+test("lowers loop control through match without targeting the generated switch", () => {
+  const source = `
+    enum Action { skip, stop, }
+    function main(): i32 {
+      let running = true;
+      while (running) {
+        match Action.stop {
+          skip => { continue; }
+          stop => { break; }
+        }
+      }
+      return 0;
+    }
+  `;
+  const generated = compileToC(source, "loop-match-control.z");
+  assert.match(generated, /case Z_Action_skip:[\s\S]*goto _z_loop_continue_0;/);
+  assert.match(generated, /case Z_Action_stop:[\s\S]*goto _z_loop_break_0;/);
+});
+
+test("keeps loop-local bindings visible to editor services", () => {
+  const source = `
+    function main(): i32 {
+      let index = 0;
+      while (index < 1) {
+        const inside = index;
+        ins;
+      }
+      return 0;
+    }
+  `;
+  const offset = source.indexOf("ins;") + 3;
+  const items = completions(source, "loop-editor.z", offset);
+  assert.equal(items.find((item) => item.label === "inside")?.detail, "const inside: i32");
+});
+
 test("checks logical operand types", () => {
   const source = `
     function main(): i32 {
@@ -1741,6 +1870,9 @@ test("editor grammar tracks keywords without reserving Result variants", () => {
   assert.match(keywordPattern, /\bin\b/);
   assert.match(keywordPattern, /\bas\b/);
   assert.match(keywordPattern, /implements/);
+  assert.match(keywordPattern, /while/);
+  assert.match(keywordPattern, /break/);
+  assert.match(keywordPattern, /continue/);
   assert.match(grammar.repository.declarations.patterns.map((pattern: { match: string }) => pattern.match).join(" "), /trait\|class/);
   assert.match(constantPattern, /true\|false/);
   assert.match(constantPattern, /null/);

@@ -83,6 +83,12 @@ type AnalysisState = {
   readonly bindingTypes: Map<number, string>;
   readonly objectiveC: boolean;
   readonly frameworks: readonly string[];
+  readonly loopStack: LoopAnalysisFrame[];
+};
+
+type LoopAnalysisFrame = {
+  readonly breaks: Map<string, ValueType>[];
+  readonly continues: Map<string, ValueType>[];
 };
 
 type SymbolValue =
@@ -144,6 +150,7 @@ export function analyze(
     bindingTypes: new Map(),
     objectiveC: frameworks.size > 0,
     frameworks: [...frameworks],
+    loopStack: [],
   };
   const globals = new Map<string, SymbolValue>();
   const structs = new Map<string, StructDeclaration>();
@@ -503,10 +510,20 @@ function analyzeStatements(
   state: AnalysisState,
 ): boolean {
   let returns = false;
+  let stops = false;
   for (const statement of statements) {
-    if (returns) throw new DiagnosticError(fileName, statement.location, "unreachable statement after guaranteed function exit");
+    if (stops) {
+      throw new DiagnosticError(
+        fileName,
+        statement.location,
+        returns
+          ? "unreachable statement after guaranteed function exit"
+          : "unreachable statement after guaranteed loop control transfer",
+      );
+    }
     analyzeStatement(statement, owner, locals, globals, structs, enums, fileName, state);
     returns = statementReturns(statement);
+    stops = statementStopsFlow(statement);
   }
   return returns;
 }
@@ -522,6 +539,26 @@ function statementReturns(statement: Statement | undefined): boolean {
   }
   return statement.kind === "match" && statement.arms.length > 0
     && statement.arms.every((arm) => statementReturns(arm.body));
+}
+
+function statementStopsFlow(statement: Statement | undefined): boolean {
+  if (!statement) return false;
+  if (
+    statement.kind === "return"
+    || statement.kind === "throw"
+    || statement.kind === "break"
+    || statement.kind === "continue"
+  ) {
+    return true;
+  }
+  if (statement.kind === "block") return statementStopsFlow(statement.statements.at(-1));
+  if (statement.kind === "if") {
+    return Boolean(statement.elseBranch)
+      && statementStopsFlow(statement.thenBranch)
+      && statementStopsFlow(statement.elseBranch!);
+  }
+  return statement.kind === "match" && statement.arms.length > 0
+    && statement.arms.every((arm) => statementStopsFlow(arm.body));
 }
 
 function analyzeStatement(
@@ -660,6 +697,18 @@ function analyzeStatement(
       requireAssignable(owner.errorType.name, actual, statement.expression, fileName, state.foreignNamedTypes, state.numericLiteralTypes);
       return;
     }
+    case "break": {
+      const loop = state.loopStack.at(-1);
+      if (!loop) throw new DiagnosticError(fileName, statement.location, "break requires an enclosing loop");
+      loop.breaks.push(new Map(locals));
+      return;
+    }
+    case "continue": {
+      const loop = state.loopStack.at(-1);
+      if (!loop) throw new DiagnosticError(fileName, statement.location, "continue requires an enclosing loop");
+      loop.continues.push(new Map(locals));
+      return;
+    }
     case "yield":
       throw new DiagnosticError(fileName, statement.location, "yield requires an enclosing value-producing block");
     case "block": {
@@ -674,6 +723,10 @@ function analyzeStatement(
         requireAssignable("bool", conditionType, statement.condition, fileName, state.foreignNamedTypes, state.numericLiteralTypes);
       }
       analyzeIfBranches(statement, owner, locals, globals, structs, enums, fileName, state);
+      return;
+    }
+    case "while": {
+      analyzeWhileLoop(statement, owner, locals, globals, structs, enums, fileName, state);
       return;
     }
     case "expressionStatement":
@@ -707,7 +760,7 @@ function analyzeStatement(
         const armLocals = new Map(locals);
         if (variant.payload && arm.binding) armLocals.set(arm.binding, variant.payload.name);
         analyzeStatement(arm.body, owner, armLocals, globals, structs, enums, fileName, state);
-        if (!statementReturns(arm.body)) continuing.push(armLocals);
+        if (!statementStopsFlow(arm.body)) continuing.push(armLocals);
       }
       const missing = declaration.variants.find((variant) => !covered.has(variant.name));
       if (missing) throw new DiagnosticError(fileName, statement.location, `non-exhaustive match; missing ${declaration.name}.${missing.name}`);
@@ -1454,6 +1507,10 @@ function validateDeinitControlFlow(statements: Statement[], fileName: string): v
       if (statement.elseBranch?.kind === "block") validateDeinitControlFlow(statement.elseBranch.statements, fileName);
       if (statement.elseBranch?.kind === "if") validateDeinitControlFlow([statement.elseBranch], fileName);
     }
+    if (statement.kind === "while") {
+      validateDeinitExpression(statement.condition, fileName);
+      validateDeinitControlFlow(statement.body.statements, fileName);
+    }
     if (statement.kind === "match") {
       validateDeinitExpression(statement.expression, fileName);
       for (const arm of statement.arms) validateDeinitControlFlow([arm.body], fileName);
@@ -1703,16 +1760,88 @@ function analyzeIfBranches(
   const continuing: Map<string, ValueType>[] = [];
   const thenLocals = narrowedConditionLocals(original, statement.condition, true, state);
   analyzeStatement(statement.thenBranch, owner, thenLocals, globals, structs, enums, fileName, state);
-  if (!statementReturns(statement.thenBranch)) continuing.push(thenLocals);
+  if (!statementStopsFlow(statement.thenBranch)) continuing.push(thenLocals);
 
   if (statement.elseBranch) {
     const elseLocals = narrowedConditionLocals(original, statement.condition, false, state);
     analyzeStatement(statement.elseBranch, owner, elseLocals, globals, structs, enums, fileName, state);
-    if (!statementReturns(statement.elseBranch)) continuing.push(elseLocals);
+    if (!statementStopsFlow(statement.elseBranch)) continuing.push(elseLocals);
   } else {
     continuing.push(narrowedConditionLocals(original, statement.condition, false, state));
   }
   mergeOwnershipStates(locals, continuing, state);
+}
+
+function analyzeWhileLoop(
+  statement: Extract<Statement, { kind: "while" }>,
+  owner: FunctionDeclaration,
+  locals: Map<string, ValueType>,
+  globals: Map<string, SymbolValue>,
+  structs: Map<string, StructDeclaration>,
+  enums: Map<string, EnumDeclaration>,
+  fileName: string,
+  state: AnalysisState,
+): void {
+  const entry = new Map(locals);
+  let header = new Map(entry);
+  let finalCondition = new Map(header);
+  let finalFrame: LoopAnalysisFrame = { breaks: [], continues: [] };
+
+  for (let iteration = 0; iteration < 8; iteration += 1) {
+    const conditionLocals = new Map(header);
+    const conditionType = inferExpression(
+      statement.condition,
+      conditionLocals,
+      globals,
+      structs,
+      enums,
+      fileName,
+      state,
+    );
+    if (conditionType !== "bool" && !foreignPointer(conditionType, state)?.nullable) {
+      requireAssignable(
+        "bool",
+        conditionType,
+        statement.condition,
+        fileName,
+        state.foreignNamedTypes,
+        state.numericLiteralTypes,
+      );
+    }
+
+    const bodyLocals = narrowedConditionLocals(conditionLocals, statement.condition, true, state);
+    const frame: LoopAnalysisFrame = { breaks: [], continues: [] };
+    state.loopStack.push(frame);
+    try {
+      analyzeStatement(statement.body, owner, bodyLocals, globals, structs, enums, fileName, state);
+    } finally {
+      state.loopStack.pop();
+    }
+
+    const backEdges = [...frame.continues];
+    if (!statementStopsFlow(statement.body)) backEdges.push(bodyLocals);
+    const nextHeader = new Map(entry);
+    mergeOwnershipStates(nextHeader, [entry, ...backEdges], state);
+
+    finalCondition = conditionLocals;
+    finalFrame = frame;
+    if (sameLocalStates(header, nextHeader)) break;
+    header = nextHeader;
+  }
+
+  const exits = [
+    narrowedConditionLocals(finalCondition, statement.condition, false, state),
+    ...finalFrame.breaks,
+  ];
+  mergeOwnershipStates(locals, exits, state);
+}
+
+function sameLocalStates(left: Map<string, ValueType>, right: Map<string, ValueType>): boolean {
+  if (left.size !== right.size) return false;
+  for (const [name, type] of left) {
+    if (right.get(name) !== type) return false;
+  }
+  return true;
 }
 
 function hasCleanupType(

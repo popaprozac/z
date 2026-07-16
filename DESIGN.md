@@ -161,6 +161,24 @@ trait-typed storage, existential representation, generic constraints, and
 dynamic dispatch remain later design work. Z-defined classes intentionally do
 not have inheritance.
 
+## Control flow
+
+Conditions are statically typed `bool` expressions. `if`/`else` and `while`
+retain TypeScript-like spelling, while `break` and `continue` target the nearest
+enclosing loop. A control transfer first cleans every local scope it exits, so
+deterministic destruction is preserved on normal iteration, `break`,
+`continue`, `return`, `throw`, and `try` propagation.
+
+Ownership analysis computes a fixed state across loop back-edges. An owned value
+that may move during one iteration cannot be reused during a later iteration
+unless every continuing path restores ownership. State after a loop merges the
+zero-iteration path with every reachable `break` path.
+
+Collection iteration syntax is deliberately deferred. The likely surface is
+TypeScript-style `for (const value of collection)`, but its exact semantics must
+follow Z's collection, iterator, borrowing, mutation, and async-iteration traits
+rather than precede them.
+
 ## Numeric types
 
 Z names exact signed and unsigned integer widths as `i8`, `u8`, `i16`, `u16`,
@@ -463,6 +481,7 @@ Clang declaration source locations rather than text-searching SDK headers.
 - tagged enums and exhaustive `match`;
 - typed `throws`, `try`, and `attempt`;
 - cleanup lowering across every exit path.
+- cleanup-aware `while`, `break`, and `continue` with loop ownership analysis.
 
 ### 0.25: Portable object model
 

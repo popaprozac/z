@@ -101,6 +101,9 @@ export type Statement =
   | ExpressionStatement
   | BlockStatement
   | IfStatement
+  | WhileStatement
+  | BreakStatement
+  | ContinueStatement
   | MatchStatement;
 
 export type VariableStatement = {
@@ -155,6 +158,23 @@ export type IfStatement = {
   readonly condition: Expression;
   readonly thenBranch: BlockStatement;
   readonly elseBranch: BlockStatement | IfStatement | null;
+  readonly location: SourceLocation;
+};
+
+export type WhileStatement = {
+  readonly kind: "while";
+  readonly condition: Expression;
+  readonly body: BlockStatement;
+  readonly location: SourceLocation;
+};
+
+export type BreakStatement = {
+  readonly kind: "break";
+  readonly location: SourceLocation;
+};
+
+export type ContinueStatement = {
+  readonly kind: "continue";
   readonly location: SourceLocation;
 };
 
