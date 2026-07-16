@@ -117,6 +117,7 @@ export const semanticTokenTypes = [
   "variable",
   "parameter",
   "interface",
+  "enumMember",
 ] as const;
 
 export const semanticTokenModifiers = ["declaration", "readonly", "defaultLibrary"] as const;
@@ -149,6 +150,10 @@ export function semanticTokens(source: string, fileName: string): { readonly dat
   const fieldInitializers = new Set(collectStructLiteralFields(context.sourceProgram).map((item) => item.location.offset));
   const traitNames = new Set(context.program.traits.map((item) => item.name));
   const enumNames = new Set(context.program.enums.map((item) => item.name));
+  const enumVariantDeclarations = new Set(
+    context.sourceProgram.enums.flatMap((declaration) => declaration.variants.map((variant) => variant.location.offset)),
+  );
+  const matchVariants = new Set(collectMatchArmInfos(context).map((item) => item.variantOffset));
   const modules = new Map([...context.foreignModules.keys()].map((name) => [name, context.foreignModules.get(name)!]));
   const tokens = lex(source, fileName);
 
@@ -157,6 +162,13 @@ export function semanticTokens(source: string, fileName: string): { readonly dat
     if (token.kind !== "identifier") continue;
     const previous = tokens[index - 1];
     const next = tokens[index + 1];
+    if (enumVariantDeclarations.has(token.location.offset) || matchVariants.has(token.location.offset)) {
+      classifications.set(token.location.offset, {
+        type: semanticTokenTypes.indexOf("enumMember"),
+        modifiers: enumVariantDeclarations.has(token.location.offset) ? 1 : 0,
+      });
+      continue;
+    }
     if (fieldDeclarations.has(token.location.offset)) {
       classifications.set(token.location.offset, {
         type: semanticTokenTypes.indexOf("property"),
@@ -290,6 +302,19 @@ export function hover(source: string, fileName: string, offset: number): Hover |
 
   const literalField = structLiteralFieldHover(context, word.start);
   if (literalField) return markdownHover(literalField, source, word.start, word.end);
+
+  const matchVariant = collectMatchArmInfos(context).find((item) => item.variantOffset === word.start);
+  if (matchVariant) {
+    const payload = matchVariant.payloadType
+      ? ` ${displayType(matchVariant.payloadType, context.typeDisplayNames)}`
+      : "";
+    return markdownHover(
+      `${displayType(matchVariant.enumName, context.typeDisplayNames)}.${matchVariant.variantName}${payload}`,
+      source,
+      word.start,
+      word.end,
+    );
+  }
 
   const module = context.foreignModules.get(word.text);
   if (module) {
@@ -512,7 +537,68 @@ function collectBindings(context: AnalyzedSource): Binding[] {
     for (const method of declaration.methods) visitFunction(method);
     if (declaration.deinitializer) visitStatements(declaration.deinitializer.body);
   }
+  for (const arm of collectMatchArmInfos(context)) {
+    if (!arm.binding || arm.bindingOffset === null || !arm.payloadType) continue;
+    bindings.push({
+      name: arm.binding,
+      type: context.semanticInfo.bindingTypes.get(arm.bindingOffset) ?? arm.payloadType,
+      offset: arm.bindingOffset,
+      readonly: true,
+      parameter: false,
+    });
+  }
   return bindings;
+}
+
+type MatchArmInfo = {
+  readonly variantName: string;
+  readonly variantOffset: number;
+  readonly binding: string | null;
+  readonly bindingOffset: number | null;
+  readonly enumName: string;
+  readonly payloadType: string | null;
+};
+
+function collectMatchArmInfos(context: AnalyzedSource): MatchArmInfo[] {
+  const collected: MatchArmInfo[] = [];
+  const visit = (value: unknown): void => {
+    if (!value || typeof value !== "object") return;
+    if (Array.isArray(value)) {
+      for (const child of value) visit(child);
+      return;
+    }
+    const node = value as Record<string, unknown>;
+    if ((node.kind === "match" || node.kind === "matchExpression") && node.expression && Array.isArray(node.arms)) {
+      const subject = node.expression as { readonly location?: SourceLocation };
+      const enumName = subject.location
+        ? context.semanticInfo.expressionTypes.get(subject.location.offset)
+        : null;
+      const declaration = enumName ? context.program.enums.find((item) => item.name === enumName) : null;
+      if (enumName && declaration) {
+        for (const armValue of node.arms) {
+          const arm = armValue as {
+            readonly variantName: string;
+            readonly binding: string | null;
+            readonly bindingLocation: SourceLocation | null;
+            readonly location: SourceLocation;
+          };
+          const variant = declaration.variants.find((item) => item.name === arm.variantName);
+          if (!variant) continue;
+          collected.push({
+            variantName: arm.variantName,
+            variantOffset: arm.location.offset,
+            binding: arm.binding,
+            bindingOffset: arm.bindingLocation?.offset ?? null,
+            enumName,
+            payloadType: variant.payload?.name ?? null,
+          });
+        }
+      }
+    }
+    for (const child of Object.values(node)) visit(child);
+  };
+  visit(context.sourceProgram);
+  return collected;
 }
 
 function memberCompletions(

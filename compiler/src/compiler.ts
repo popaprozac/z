@@ -33,6 +33,16 @@ export function analyzeSource(source: string, fileName: string): AnalyzedSource 
   const typeDisplayNames = new Map<string, string>();
   const inferredProgram = inferGenericCalls(sourceProgram, fileName, foreignModules);
   const program = materializeResultTypes(materializeGenerics(inferredProgram, fileName, typeDisplayNames));
+  for (const declaration of program.enums) {
+    if (!declaration.name.startsWith("__z_Result_")) continue;
+    const success = declaration.variants.find((variant) => variant.name === "success")?.payload?.name;
+    const failure = declaration.variants.find((variant) => variant.name === "failure")?.payload?.name;
+    if (!success || !failure) continue;
+    typeDisplayNames.set(
+      declaration.name,
+      `Result<${typeDisplayNames.get(success) ?? success}, ${typeDisplayNames.get(failure) ?? failure}>`,
+    );
+  }
   const semanticInfo = analyze(program, fileName, foreignModules);
   return { sourceProgram, program, foreignModules, semanticInfo, typeDisplayNames };
 }

@@ -304,13 +304,20 @@ function load(path: string): Config throws ConfigError {
 
 ## Pattern matching
 
+Each enum variant currently has zero or one payload, so a match arm uses a bare
+variant name followed by at most one binding: `success user => ...` or
+`stopped => ...`. Parenthesized `success(user)` patterns are intentionally not
+another spelling. If variants later gain structured payloads, Z should add
+named structural destructuring rather than positional punctuation around the
+single-binding form.
+
 Result matching preserves the success/failure tag, including when its two
 payload types happen to be identical:
 
 ```z
 match attempt getUser(id) {
-  success user => show(user),
-  failure error => showError(error),
+  success user => show(user);
+  failure error => showError(error);
 }
 ```
 
@@ -318,8 +325,8 @@ Direct type patterns belong to union values:
 
 ```z
 match event {
-  User user => show(user),
-  UserError error => showError(error),
+  User user => show(user);
+  UserError error => showError(error);
 }
 ```
 

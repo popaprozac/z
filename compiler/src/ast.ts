@@ -208,6 +208,7 @@ export type MatchStatement = {
 export type MatchArm = {
   readonly variantName: string;
   readonly binding: string | null;
+  readonly bindingLocation: SourceLocation | null;
   readonly body: Statement;
   readonly location: SourceLocation;
 };

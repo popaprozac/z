@@ -451,12 +451,12 @@ export function parse(tokens: Token[], fileName: string): Program {
     const arms = [];
     while (!at("rightBrace") && !at("eof")) {
       const variantToken = expect("identifier", "a variant name");
-      let binding: string | null = null;
-      if (at("identifier")) binding = take().text;
+      const bindingToken = at("identifier") ? take() : null;
       expect("fatArrow", "`=>`");
       arms.push({
         variantName: variantToken.text,
-        binding,
+        binding: bindingToken?.text ?? null,
+        bindingLocation: bindingToken?.location ?? null,
         body: parseStatement(),
         location: variantToken.location,
       });

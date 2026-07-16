@@ -2223,6 +2223,40 @@ test("compiles expression matches with concise and selecting block arms", () => 
   assert.equal(result.stdout, "code=41\ndirect=41\nselected=42\n");
 });
 
+test("exposes match variants, payload bindings, and source Result names to editor services", () => {
+  const source = `
+    struct User { id: i32; }
+    struct UserError { code: i32; }
+    function find(): User throws UserError { return User { id: 42 }; }
+    function main(): i32 {
+      const failed = attempt find();
+      return match failed {
+        success user => user.id;
+        failure error => error.code;
+      };
+    }
+  `;
+  const failedUse = source.indexOf("failed {") + 1;
+  assert.match(hover(source, "match-editor.z", failedUse)?.contents.value ?? "", /failed: Result<User, UserError>/);
+  const successVariant = source.indexOf("success user") + 1;
+  assert.match(hover(source, "match-editor.z", successVariant)?.contents.value ?? "", /Result<User, UserError>\.success User/);
+  const userBinding = source.indexOf("user =>") + 1;
+  assert.match(hover(source, "match-editor.z", userBinding)?.contents.value ?? "", /user: User/);
+  const errorBinding = source.indexOf("error =>") + 1;
+  assert.match(hover(source, "match-editor.z", errorBinding)?.contents.value ?? "", /error: UserError/);
+
+  const tokens = decodeSemanticTokens(semanticTokens(source, "match-editor.z").data);
+  const successPosition = positionForOffset(source, source.indexOf("success user"));
+  assert.ok(tokens.some((token) => token.line === successPosition.line
+    && token.character === successPosition.character
+    && semanticTokenTypes[token.type] === "enumMember"));
+  const userPosition = positionForOffset(source, source.indexOf("user =>"));
+  assert.ok(tokens.some((token) => token.line === userPosition.line
+    && token.character === userPosition.character
+    && semanticTokenTypes[token.type] === "variable"
+    && token.modifiers === 3));
+});
+
 test("requires select to target a value-producing block", () => {
   const source = `
     function main(): i32 {
@@ -2976,6 +3010,7 @@ test("editor grammar tracks keywords without reserving Result variants", () => {
   const keywordPattern = grammar.repository.keywords.patterns.map((pattern: { match: string }) => pattern.match).join(" ");
   const constantPattern = grammar.repository.constants.patterns.map((pattern: { match: string }) => pattern.match).join(" ");
   const operatorPattern = grammar.repository.operators.patterns.map((pattern: { match: string }) => pattern.match).join(" ");
+  const operatorScopes = grammar.repository.operators.patterns.map((pattern: { name: string }) => pattern.name).join(" ");
   const typePattern = grammar.repository.types.patterns.map((pattern: { match: string }) => pattern.match).join(" ");
   const stringPatterns = JSON.stringify(grammar.repository.strings.patterns);
   assert.match(keywordPattern, /throw/);
@@ -3000,6 +3035,7 @@ test("editor grammar tracks keywords without reserving Result variants", () => {
   assert.match(operatorPattern, /<</);
   assert.match(operatorPattern, /\^/);
   assert.match(operatorPattern, /=/);
+  assert.match(operatorScopes, /keyword\.operator\.arrow\.z/);
   assert.match(typePattern, /Slice/);
   assert.match(typePattern, /Array/);
   assert.match(stringPatterns, /string\.quoted\.template\.z/);

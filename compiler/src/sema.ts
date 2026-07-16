@@ -877,9 +877,12 @@ function analyzeStatement(
         if (Boolean(variant.payload) !== Boolean(arm.binding)) {
           throw new DiagnosticError(fileName, arm.location, variant.payload ? "payload variant requires a binding" : "payloadless variant cannot bind a value");
         }
-        if (arm.binding) validateUserName(arm.binding, arm.location, fileName);
+        if (arm.binding && arm.bindingLocation) validateUserName(arm.binding, arm.bindingLocation, fileName);
         const armLocals = new Map(locals);
-        if (variant.payload && arm.binding) armLocals.set(arm.binding, variant.payload.name);
+        if (variant.payload && arm.binding && arm.bindingLocation) {
+          armLocals.set(arm.binding, variant.payload.name);
+          state.bindingTypes.set(arm.bindingLocation.offset, variant.payload.name);
+        }
         analyzeStatement(arm.body, owner, armLocals, globals, structs, enums, fileName, state);
         if (!statementStopsFlow(arm.body)) continuing.push(armLocals);
       }
@@ -1296,9 +1299,12 @@ function inferMatchExpression(
     if (Boolean(variant.payload) !== Boolean(arm.binding)) {
       throw new DiagnosticError(fileName, arm.location, variant.payload ? "payload variant requires a binding" : "payloadless variant cannot bind a value");
     }
-    if (arm.binding) validateUserName(arm.binding, arm.location, fileName);
+    if (arm.binding && arm.bindingLocation) validateUserName(arm.binding, arm.bindingLocation, fileName);
     const armLocals = new Map(locals);
-    if (variant.payload && arm.binding) armLocals.set(arm.binding, variant.payload.name);
+    if (variant.payload && arm.binding && arm.bindingLocation) {
+      armLocals.set(arm.binding, variant.payload.name);
+      state.bindingTypes.set(arm.bindingLocation.offset, variant.payload.name);
+    }
     const armType = inferValueArm(arm.body, owner, armLocals, globals, structs, enums, fileName, state);
     if (armType !== "never") {
       continuing.push(armLocals);

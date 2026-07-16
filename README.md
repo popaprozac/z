@@ -562,6 +562,7 @@ bun run z run examples/selective-import.z
 bun run z run examples/selective-declarations.z
 bun run z run examples/apple-groundwork.z
 bun run z run examples/cpp-interop.z
+./examples/swift-interop/run.sh
 bun run z run examples/nswindow.z # macOS: opens a window and enters AppKit's event loop
 bun run z run examples/structs.z
 bun run z run examples/classes.z
@@ -647,6 +648,12 @@ and dylib with `swiftc`, links the Z-produced object against it, and executes th
 result. Z does not yet build the Swift target or infer its library link plan;
 that belongs to upcoming package/build integration rather than being hidden
 inside header import.
+
+The runnable example is in [`examples/swift-interop`](examples/swift-interop):
+
+```sh
+./examples/swift-interop/run.sh
+```
 
 ```z
 import {
