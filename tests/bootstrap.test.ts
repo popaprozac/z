@@ -1230,7 +1230,7 @@ test("exposes Slice length and generic spelling to editor services", () => {
   assert.match(hover(valid, "slice-editor.z", declaration + 1)?.contents.value ?? "", /values: Slice<i32>/);
 });
 
-test("monomorphizes explicit generic structs and functions", () => {
+test("monomorphizes generic structs and functions", () => {
   const example = resolve(projectRoot, "examples/generics.z");
   const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
@@ -1260,14 +1260,14 @@ test("creates distinct generic instances and preserves ownership semantics", () 
     function identity<T>(value: T): T { return value; }
     function main(): i32 {
       const resource = Resource { id: 1 };
-      const other = identity<Resource>(resource);
+      const other = identity(resource);
       return resource.id + other.id;
     }
   `;
   assert.throws(() => compileToC(moved, "generic-move.z"), /use of moved value "resource"/);
 });
 
-test("checks explicit generic arity and requires explicit instantiation", () => {
+test("infers generic calls while preserving explicit instantiation", () => {
   const wrongArity = `
     struct Pair<T, U> { first: T; second: U; }
     function main(): i32 { const pair = Pair<i32> { first: 1, second: 2 }; return 0; }
@@ -1278,13 +1278,69 @@ test("checks explicit generic arity and requires explicit instantiation", () => 
     function identity<T>(value: T): T { return value; }
     function main(): i32 { return identity(42); }
   `;
-  assert.throws(() => compileToC(implicit, "generic-explicit.z"), /unknown function "identity"/);
+  assert.match(compileToC(implicit, "generic-inferred.z"), /__z_mono_identity_i32\(42\)/);
+
+  const explicit = `
+    function identity<T>(value: T): T { return value; }
+    function main(): i32 { return identity<i32>(42); }
+  `;
+  assert.match(compileToC(explicit, "generic-explicit.z"), /__z_mono_identity_i32\(42\)/);
+
+  const ambiguous = `
+    function make<T>(): T { return 1; }
+    function main(): i32 { return make(); }
+  `;
+  assert.throws(() => compileToC(ambiguous, "generic-ambiguous.z"), /cannot infer type parameter "T" for "make"/);
+
+  const conflicting = `
+    function choose<T>(left: T, right: T): T { return left; }
+    function main(): i32 { return choose(1, true); }
+  `;
+  assert.throws(() => compileToC(conflicting, "generic-conflict.z"), /conflicting inferred types for T.*i32 and bool/);
 
   const duplicate = `
     struct Invalid<T, T> { value: T; }
     function main(): i32 { return 0; }
   `;
   assert.throws(() => compileToC(duplicate, "generic-duplicate.z"), /duplicate type parameter "T"/);
+});
+
+test("infers nested generic calls and calls within generic functions", () => {
+  const source = `
+    struct Box<T> { value: T; }
+    function identity<T>(value: T): T { return value; }
+    function unbox<T>(box: Box<T>): T { return identity(box.value); }
+    function main(): i32 {
+      const box = Box<i32> { value: 42 };
+      return identity(unbox(box));
+    }
+  `;
+  const generated = compileToC(source, "generic-nested-inference.z");
+  assert.match(generated, /__z_mono_unbox_i32/);
+  assert.match(generated, /__z_mono_identity_i32/);
+});
+
+test("infers generic Slice element types from fixed arrays", () => {
+  const source = `
+    function firstItem<T>(values: Slice<T>): T { return values[0]; }
+    function main(): i32 {
+      const values = [42, 43];
+      return firstItem(values);
+    }
+  `;
+  const generated = compileToC(source, "generic-slice-inference.z");
+  assert.match(generated, /__z_mono_firstItem_i32/);
+  assert.match(generated, /\.length = 2/);
+});
+
+test("infers generic arguments from imported C results", () => {
+  const source = `
+    import stdio from "stdio.h";
+    function identity<T>(value: T): T { return value; }
+    function main(): i32 { return identity(stdio.getchar()); }
+  `;
+  const generated = compileToC(source, "generic-c-inference.z");
+  assert.match(generated, /__z_mono_identity_i32\(getchar\(\)\)/);
 });
 
 test("exposes generic templates without leaking monomorphized names to editor completion", () => {

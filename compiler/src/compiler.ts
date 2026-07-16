@@ -4,6 +4,7 @@ import { parse } from "./parser.ts";
 import { analyze } from "./sema.ts";
 import { materializeResultTypes } from "./results.ts";
 import { materializeGenerics } from "./generics.ts";
+import { inferGenericCalls } from "./generic-inference.ts";
 import { resolveForeignModules } from "./foreign.ts";
 import type { Program } from "./ast.ts";
 import type { ForeignModule } from "./foreign.ts";
@@ -28,9 +29,10 @@ export type AnalyzedSource = {
 export function analyzeSource(source: string, fileName: string): AnalyzedSource {
   const tokens = lex(source, fileName);
   const sourceProgram = parse(tokens, fileName);
+  const foreignModules = resolveForeignModules(sourceProgram.imports, fileName);
   const typeDisplayNames = new Map<string, string>();
-  const program = materializeResultTypes(materializeGenerics(sourceProgram, fileName, typeDisplayNames));
-  const foreignModules = resolveForeignModules(program.imports, fileName);
+  const inferredProgram = inferGenericCalls(sourceProgram, fileName, foreignModules);
+  const program = materializeResultTypes(materializeGenerics(inferredProgram, fileName, typeDisplayNames));
   const semanticInfo = analyze(program, fileName, foreignModules);
   return { sourceProgram, program, foreignModules, semanticInfo, typeDisplayNames };
 }
