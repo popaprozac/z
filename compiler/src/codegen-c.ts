@@ -86,6 +86,8 @@ export function generateC(program: Program, sourceName: string, semanticInfo: Se
     "#include <stdlib.h>",
   ];
 
+  if (programUsesConsole(program)) lines.push("#include <stdio.h>");
+
   for (const declaration of program.imports) {
     lines.push(`#include <${declaration.header}>`);
   }
@@ -281,6 +283,30 @@ function programUsesIndex(program: Program): boolean {
       return;
     }
     if ((value as { readonly kind?: string }).kind === "index") {
+      found = true;
+      return;
+    }
+    for (const child of Object.values(value as Record<string, unknown>)) visit(child);
+  };
+  visit(program);
+  return found;
+}
+
+function programUsesConsole(program: Program): boolean {
+  let found = false;
+  const visit = (value: unknown): void => {
+    if (found || !value || typeof value !== "object") return;
+    if (Array.isArray(value)) {
+      for (const item of value) visit(item);
+      return;
+    }
+    const expression = value as Partial<Expression>;
+    if (
+      expression.kind === "call"
+      && expression.callee?.kind === "member"
+      && expression.callee.object.kind === "identifier"
+      && expression.callee.object.name === "console"
+    ) {
       found = true;
       return;
     }
@@ -726,10 +752,143 @@ function generateStatement(statement: Statement, context: GenerationContext): st
     case "for":
       return generateFor(statement, context);
     case "expressionStatement":
+      if (statement.expression.kind === "call" && context.semanticInfo.consoleCalls.has(statement.expression.location.offset)) {
+        return generateConsoleCall(statement.expression, context);
+      }
       return generateDirectValue(statement.expression, context, (value) => `(void)${value};`);
     case "match":
       return generateMatch(statement, context);
   }
+}
+
+function generateConsoleCall(
+  expression: Extract<Expression, { kind: "call" }>,
+  context: GenerationContext,
+): string {
+  if (expression.callee.kind !== "member") throw new Error("console lowering requires a member call");
+  const stream = expression.callee.property === "log" || expression.callee.property === "write" ? "stdout" : "stderr";
+  const lines: string[] = [];
+  expression.arguments.forEach((argument, index) => {
+    if (index > 0) lines.push(`fputc(' ', ${stream});`);
+    if (argument.kind === "template") {
+      for (const part of argument.parts) {
+        if (part.kind === "text") {
+          if (part.value) lines.push(`fputs(${JSON.stringify(part.value)}, ${stream});`);
+        } else {
+          lines.push(...generateConsoleExpression(part.expression, stream, context));
+        }
+      }
+    } else {
+      lines.push(...generateConsoleExpression(argument, stream, context));
+    }
+  });
+  if (expression.callee.property !== "write") lines.push(`fputc('\\n', ${stream});`);
+  return lines.join("\n");
+}
+
+function generateConsoleExpression(expression: Expression, stream: "stdout" | "stderr", context: GenerationContext): string[] {
+  const type = context.semanticInfo.expressionTypes.get(expression.location.offset) ?? inferExpressionType(expression, context);
+  if (hasCleanupType(type, context.structs, context.semanticInfo.foreignTypes)) {
+    return renderConsoleValue(generateExpression(expression, context), type, stream, context);
+  }
+  const temporary = `_z_console_${context.valueCounter.value++}`;
+  if (type === "null") return [`fputs("null", ${stream});`];
+  const declaration = generateLocalDeclaration(
+    type,
+    temporary,
+    false,
+    context.structs,
+    context.enums,
+    context.semanticInfo.foreignNamedTypes,
+  );
+  return [
+    `${declaration} = ${generateExpression(expression, context)};`,
+    ...renderConsoleValue(temporary, type, stream, context),
+  ];
+}
+
+function renderConsoleValue(
+  value: string,
+  type: string,
+  stream: "stdout" | "stderr",
+  context: GenerationContext,
+): string[] {
+  if (["i8", "i16", "i32", "i64", "isize"].includes(type)) {
+    return [`fprintf(${stream}, "%lld", (long long)(${value}));`];
+  }
+  if (["u8", "u16", "u32", "u64", "usize"].includes(type)) {
+    return [`fprintf(${stream}, "%llu", (unsigned long long)(${value}));`];
+  }
+  if (type === "f32" || type === "f64") {
+    return [`fprintf(${stream}, "%g", (double)(${value}));`];
+  }
+  if (type === "bool") return [`fputs((${value}) ? "true" : "false", ${stream});`];
+  if (type === "cstring") return [`fputs((${value}) != NULL ? (${value}) : "null", ${stream});`];
+  if (type === "null") return [`fputs("null", ${stream});`];
+
+  const foreign = context.semanticInfo.foreignNamedTypes.get(type);
+  if (foreign?.kind === "scalar" || foreign?.kind === "enum") {
+    return renderConsoleValue(value, foreign.underlying, stream, context);
+  }
+  if (context.semanticInfo.foreignTypes.has(type)) {
+    return [`fprintf(${stream}, "%p", (void *)(${value}));`];
+  }
+  if (type.startsWith("__z_objc:")) return [`fputs("<Objective-C object>", ${stream});`];
+  if (type.startsWith("__z_objc_class:")) return [`fputs("<Objective-C class>", ${stream});`];
+
+  const fixed = parseFixedArrayType(type);
+  const dynamic = parseDynamicArrayType(type);
+  const slice = parseSliceType(type);
+  const collection = fixed ?? dynamic ?? slice;
+  if (collection) {
+    const index = `_z_console_index_${context.valueCounter.value++}`;
+    const length = fixed ? String(fixed.length) : `(${value}).length`;
+    const element = `((${value}).data[${index}])`;
+    return [
+      `fputc('[', ${stream});`,
+      `for (uintptr_t ${index} = 0; ${index} < ${length}; ${index} += 1) {`,
+      `  if (${index} > 0) fputs(", ", ${stream});`,
+      ...renderConsoleValue(element, collection.elementType, stream, context).map((line) => indent(line, 2)),
+      "}",
+      `fputc(']', ${stream});`,
+    ];
+  }
+
+  const declaration = context.structs.get(type);
+  if (declaration?.kind === "class") {
+    return [`fprintf(${stream}, ${JSON.stringify(`${declaration.name}@%p`)}, (void *)(${value}));`];
+  }
+  const recordFields = declaration?.fields
+    ?? (foreign?.kind === "record" ? foreign.fields.map((field) => ({ name: field.name, type: { name: field.typeName } })) : null);
+  if (recordFields) {
+    const displayName = declaration?.name ?? (foreign?.kind === "record" ? foreign.exportName : type);
+    const lines = [`fputs(${JSON.stringify(`${displayName} { `)}, ${stream});`];
+    recordFields.forEach((field, index) => {
+      if (index > 0) lines.push(`fputs(", ", ${stream});`);
+      lines.push(`fputs(${JSON.stringify(`${field.name}: `)}, ${stream});`);
+      lines.push(...renderConsoleValue(`(${value}).${field.name}`, field.type.name, stream, context));
+    });
+    lines.push(`fputs(" }", ${stream});`);
+    return lines;
+  }
+
+  const enumDeclaration = context.enums.get(type);
+  if (enumDeclaration) {
+    const lines = [`switch ((${value}).tag) {`];
+    for (const variant of enumDeclaration.variants) {
+      lines.push(`  case ${variantTag(type, variant.name)}:`);
+      lines.push(`    fputs(${JSON.stringify(`${enumDeclaration.name}.${variant.name}`)}, ${stream});`);
+      if (variant.payload) {
+        lines.push(`    fputc('(', ${stream});`);
+        lines.push(...renderConsoleValue(`(${value}).data.${variant.name}`, variant.payload.name, stream, context).map((line) => indent(line, 4)));
+        lines.push(`    fputc(')', ${stream});`);
+      }
+      lines.push("    break;");
+    }
+    lines.push("}");
+    return lines;
+  }
+  throw new Error(`console lowering does not support ${JSON.stringify(type)}`);
 }
 
 function generateWhile(statement: Extract<Statement, { kind: "while" }>, context: GenerationContext): string {
@@ -1255,6 +1414,8 @@ function generateExpression(expression: Expression, context: GenerationContext):
       );
     case "string":
       return `${context.semanticInfo.objcStringLiterals.has(expression.location.offset) ? "@" : ""}${JSON.stringify(expression.value)}`;
+    case "template":
+      throw new Error("template literal must be lowered by a console method");
     case "boolean":
       return expression.value ? "true" : "false";
     case "null":
@@ -1502,6 +1663,8 @@ function inferExpressionType(expression: Expression, context: GenerationContext)
       return /[.eE]/.test(expression.value) ? "f64" : "i32";
     case "string":
       return "cstring";
+    case "template":
+      return "__z_template";
     case "boolean":
     case "null":
       return expression.kind === "null" ? "null" : "bool";

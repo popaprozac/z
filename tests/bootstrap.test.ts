@@ -1203,6 +1203,72 @@ test("exposes for-of bindings to hover, completion, and semantic tokens", () => 
   assert.ok(tokens.some((token) => token.line === bindingPosition.line && token.character === bindingPosition.character));
 });
 
+test("formats typed values through the global console namespace and interpolation", () => {
+  const example = resolve(projectRoot, "examples/console.z");
+  const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(
+    result.stdout,
+    /^42 with text in between, struct: Point \{ x: 20, y: 22 \}\narray \[1, 2, 3\] enum Status\.ready\(7\) class Counter@0x[0-9a-f]+\npartial true done\nsequence 1 then 2\n$/,
+  );
+  assert.equal(result.stderr, "problem Point { x: 20, y: 22 }\ndebug 42\n");
+
+  const generated = compileToC(readFileSync(example, "utf8"), example);
+  assert.match(generated, /#include <stdio\.h>/);
+  assert.match(generated, /fputs\(" with text in between, struct: ", stdout\)/);
+  assert.match(generated, /fprintf\(stdout, "%lld", \(long long\)/);
+  assert.match(generated, /switch \(\(_z_console_\d+\)\.tag\)/);
+  assert.doesNotMatch(generated, /console\.log/);
+});
+
+test("keeps templates console-scoped until owned String exists", () => {
+  const storedTemplate = `
+    function main(): i32 {
+      const answer = 42;
+      const text = \`answer={answer}\`;
+      return 0;
+    }
+  `;
+  const templateDiagnostic = diagnostics(storedTemplate, "stored-template.z");
+  assert.equal(templateDiagnostic[0].code, "Z0402");
+  assert.match(templateDiagnostic[0].message, /general interpolated String values require the owned String type/);
+
+  const cleanupTemporary = `
+    struct Resource { value: i32; deinit {} }
+    function make(): Resource { return Resource { value: 42 }; }
+    function main(): i32 {
+      console.log(make());
+      return 0;
+    }
+  `;
+  const cleanupDiagnostic = diagnostics(cleanupTemporary, "console-temporary.z");
+  assert.equal(cleanupDiagnostic[0].code, "Z0402");
+  assert.match(cleanupDiagnostic[0].message, /bind the value to a const or let before logging it/);
+
+  const unknownMethod = `function main(): i32 { console.table(42); return 0; }`;
+  const methodDiagnostic = diagnostics(unknownMethod, "console-method.z");
+  assert.equal(methodDiagnostic[0].code, "Z0401");
+  assert.match(methodDiagnostic[0].message, /use console\.log, console\.write, console\.error, or console\.debug/);
+});
+
+test("exposes console methods and interpolated expressions to editor services", () => {
+  const source = `
+    function main(): i32 {
+      const answer = 42;
+      console.log(\`answer={answer}\`);
+      return 0;
+    }
+  `;
+  const consoleOffset = source.indexOf("console") + 1;
+  assert.match(hover(source, "console-editor.z", consoleOffset)?.contents.value ?? "", /global console/);
+  const logOffset = source.indexOf("log") + 1;
+  assert.match(hover(source, "console-editor.z", logOffset)?.contents.value ?? "", /stdout with newline/);
+  const items = completions(source.replace("console.log", "console.lo"), "console-editor.z", source.indexOf("console.log") + "console.lo".length);
+  assert.equal(items.find((item) => item.label === "log")?.kind, 2);
+  const answerUse = source.lastIndexOf("answer") + 1;
+  assert.match(hover(source, "console-editor.z", answerUse)?.contents.value ?? "", /answer: i32/);
+});
+
 test("keeps loop control inside an enclosing loop", () => {
   const outsideBreak = `
     function main(): i32 {
@@ -2786,6 +2852,7 @@ test("editor grammar tracks keywords without reserving Result variants", () => {
   const constantPattern = grammar.repository.constants.patterns.map((pattern: { match: string }) => pattern.match).join(" ");
   const operatorPattern = grammar.repository.operators.patterns.map((pattern: { match: string }) => pattern.match).join(" ");
   const typePattern = grammar.repository.types.patterns.map((pattern: { match: string }) => pattern.match).join(" ");
+  const stringPatterns = JSON.stringify(grammar.repository.strings.patterns);
   assert.match(keywordPattern, /throw/);
   assert.match(keywordPattern, /attempt/);
   assert.match(keywordPattern, /yield/);
@@ -2810,6 +2877,8 @@ test("editor grammar tracks keywords without reserving Result variants", () => {
   assert.match(operatorPattern, /=/);
   assert.match(typePattern, /Slice/);
   assert.match(typePattern, /Array/);
+  assert.match(stringPatterns, /string\.quoted\.template\.z/);
+  assert.match(stringPatterns, /meta\.interpolation\.z/);
   assert.doesNotMatch(keywordPattern, /success|failure/);
 
   const extension = readFileSync(resolve(projectRoot, "editors/vscode/extension.js"), "utf8");

@@ -268,6 +268,24 @@ Escaping closure values and cleanup-bearing move captures remain explicitly
 deferred until owned environments and their ARC/deterministic cleanup rules are
 implemented.
 
+Typed logging uses the global prelude `console` namespace:
+
+```z
+console.log(`{someInt} with text in between, struct: {someStruct}`);
+console.write("no automatic newline");
+console.error("written to stderr", errorValue);
+console.debug("debug stream", state);
+```
+
+Template expressions run exactly once from left to right. The bootstrap formats
+primitives, structs and imported records, arrays, enums, and class identity.
+Templates are currently consumed directly by console methods; storing or
+returning one waits for the owned `String` type.
+
+```sh
+bun run z run examples/console.z
+```
+
 Ownership and capability diagnostics include stable codes, the source location
 where a move or closure borrow began, explanatory notes, and concrete help.
 The CLI renders annotated source while the language server publishes the same
@@ -481,8 +499,10 @@ console.log(`moved to {moved.x}, {moved.y}`);
 
 The header remains the single ABI declaration. Z checks record fields, enum
 arguments, qualified signatures, and imported calls without an `extern` mirror.
-The interpolated `console.log` line shows the planned formatting syntax; that
-standard-library feature is not implemented in the bootstrap yet.
+The global `console` namespace provides typed `log`, `write`, `error`, and
+`debug` methods. Interpolated expressions are evaluated once from left to right,
+and structs, imported records, arrays, enums, primitives, and class identity
+receive useful initial formatting without exposing C variadics to Z.
 
 Pointer parameters to complete imported records remain safe when adjacent API
 notes classify their call-only access. Read-only `const T *` parameters borrow a

@@ -215,6 +215,22 @@ export function parse(tokens: Token[], fileName: string): Program {
         current = closureCheckpoint;
       }
     }
+    if (match("templateStart")) {
+      const token = previous();
+      const parts = [];
+      while (!at("templateEnd") && !at("eof")) {
+        if (match("templateText")) {
+          parts.push({ kind: "text" as const, value: previous().text, location: previous().location });
+          continue;
+        }
+        const start = expect("templateExpressionStart", "`{` starting an interpolated expression");
+        const expression = parseExpression();
+        expect("templateExpressionEnd", "`}` ending an interpolated expression");
+        parts.push({ kind: "value" as const, expression, location: start.location });
+      }
+      expect("templateEnd", "a closing backtick");
+      return { kind: "template", parts, location: token.location };
+    }
     if (match("leftBracket")) {
       const token = previous();
       const elements: Expression[] = [];

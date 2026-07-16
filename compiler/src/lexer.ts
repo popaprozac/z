@@ -5,6 +5,11 @@ export type TokenKind =
   | "identifier"
   | "number"
   | "string"
+  | "templateStart"
+  | "templateText"
+  | "templateExpressionStart"
+  | "templateExpressionEnd"
+  | "templateEnd"
   | "import"
   | "from"
   | "as"
@@ -114,13 +119,17 @@ const keywords = new Map<string, TokenKind>([
   ["inout", "inout"],
 ]);
 
-export function lex(source: string, fileName: string): Token[] {
+export function lex(
+  source: string,
+  fileName: string,
+  base: SourceLocation = { offset: 0, line: 1, column: 1 },
+): Token[] {
   const tokens: Token[] = [];
   let offset = 0;
-  let line = 1;
-  let column = 1;
+  let line = base.line;
+  let column = base.column;
 
-  const location = (): SourceLocation => ({ offset, line, column });
+  const location = (): SourceLocation => ({ offset: base.offset + offset, line, column });
   const peek = (distance = 0): string => source[offset + distance] ?? "\0";
   const advance = (): string => {
     const character = peek();
@@ -148,6 +157,98 @@ export function lex(source: string, fileName: string): Token[] {
     }
 
     const start = location();
+
+    if (character === "`") {
+      advance();
+      tokens.push({ kind: "templateStart", text: "`", location: start });
+      let text = "";
+      let textStart = location();
+      const flushText = (): void => {
+        if (!text) return;
+        tokens.push({ kind: "templateText", text, location: textStart });
+        text = "";
+      };
+      while (peek() !== "`") {
+        if (peek() === "\0") throw new DiagnosticError(fileName, start, "unterminated template literal");
+        if (peek() === "\\") {
+          const escapeLocation = location();
+          advance();
+          const escaped = advance();
+          const escapes: Record<string, string> = {
+            n: "\n",
+            r: "\r",
+            t: "\t",
+            "\\": "\\",
+            "`": "`",
+            "{": "{",
+            "}": "}",
+          };
+          if (!(escaped in escapes)) {
+            throw new DiagnosticError(fileName, escapeLocation, `unknown template escape sequence \\${escaped}`);
+          }
+          text += escapes[escaped];
+          continue;
+        }
+        if (peek() === "{") {
+          flushText();
+          const marker = location();
+          advance();
+          tokens.push({ kind: "templateExpressionStart", text: "{", location: marker });
+          const expressionStartOffset = offset;
+          const expressionStart = location();
+          let depth = 0;
+          let quote: string | null = null;
+          while (true) {
+            const current = peek();
+            if (current === "\0") throw new DiagnosticError(fileName, marker, "unterminated template interpolation");
+            if (quote) {
+              if (current === "\\") {
+                advance();
+                if (peek() !== "\0") advance();
+                continue;
+              }
+              if (current === quote) quote = null;
+              advance();
+              continue;
+            }
+            if (current === '"' || current === "'" || current === "`") {
+              quote = current;
+              advance();
+              continue;
+            }
+            if (current === "/" && peek(1) === "/") {
+              while (peek() !== "\n" && peek() !== "\0") advance();
+              continue;
+            }
+            if (current === "{") {
+              depth += 1;
+              advance();
+              continue;
+            }
+            if (current === "}") {
+              if (depth === 0) break;
+              depth -= 1;
+              advance();
+              continue;
+            }
+            advance();
+          }
+          const nestedSource = source.slice(expressionStartOffset, offset);
+          tokens.push(...lex(nestedSource, fileName, expressionStart).filter((token) => token.kind !== "eof"));
+          const end = location();
+          advance();
+          tokens.push({ kind: "templateExpressionEnd", text: "}", location: end });
+          textStart = location();
+          continue;
+        }
+        text += advance();
+      }
+      flushText();
+      const end = location();
+      advance();
+      tokens.push({ kind: "templateEnd", text: "`", location: end });
+      continue;
+    }
 
     if (/[A-Za-z_]/.test(character)) {
       let text = "";

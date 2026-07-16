@@ -19,6 +19,19 @@
     },
     "strings": {
       "patterns": [{
+        "name": "string.quoted.template.z",
+        "begin": "`",
+        "end": "`",
+        "patterns": [{
+          "name": "meta.interpolation.z",
+          "begin": "\\{",
+          "end": "\\}",
+          "patterns": [{ "include": "$self" }]
+        }, {
+          "name": "constant.character.escape.z",
+          "match": "\\\\[nrt\\\\`{}]"
+        }]
+      }, {
         "name": "string.quoted.double.z",
         "begin": "\"",
         "end": "\"",

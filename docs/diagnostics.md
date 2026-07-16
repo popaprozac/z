@@ -23,6 +23,7 @@ The bootstrap reserves these code families:
 |---|---|
 | `Z02xx` | ownership, moves, borrows, and captures |
 | `Z03xx` | initialization, parameter capabilities, and collection access |
+| `Z04xx` | formatting, console, and string construction |
 
 Currently structured codes include:
 
@@ -40,6 +41,8 @@ Currently structured codes include:
 | `Z0305` | out parameter is not initialized on every success path |
 | `Z0310` | value is not valid stored collection iteration input |
 | `Z0311` | structural collection mutation conflicts with iteration borrow |
+| `Z0401` | console method or value has no supported formatter |
+| `Z0402` | formatting requires stored ownership or an owned String value |
 
 CLI diagnostics render source context. Language-server diagnostics expose the
 same code and message, secondary locations through related information, and

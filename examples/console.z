@@ -1,0 +1,37 @@
+struct Point {
+  x: i32;
+  y: i32;
+}
+
+class Counter {
+  value: i32;
+}
+
+enum Status {
+  ready i32,
+  stopped,
+}
+
+function next(inout value: i32): i32 {
+  value = value + 1;
+  return value;
+}
+
+function main(): i32 {
+  const answer = 42;
+  const point = Point { x: 20, y: 22 };
+  const values = [1, 2, 3];
+  const status = Status.ready 7;
+  const counter = Counter { value: answer };
+  const sharedCounter = counter;
+  let sequence = 0;
+
+  console.log(`{answer} with text in between, struct: {point}`);
+  console.log("array", values, "enum", status, "class", sharedCounter);
+  console.write(`partial {true} `);
+  console.log("done");
+  console.log(`sequence {next(inout sequence)} then {next(inout sequence)}`);
+  console.error("problem", point);
+  console.debug("debug", answer);
+  return 0;
+}

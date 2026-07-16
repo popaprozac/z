@@ -394,21 +394,32 @@ representation.
 
 ## Strings, formatting, and diagnostics
 
-Z should preserve the convenience of logging arbitrary values without giving
-up static types:
+Z preserves the convenience of logging arbitrary values without giving up
+static types:
 
 ```z
 console.log(`{someInt} with text in between, struct: {someStruct}`);
 ```
 
-An interpolated string evaluates expressions once from left to right. Primitive
-types have standard formatting, while structs receive a useful derived debug
-representation by default and may override an eventual formatting trait. The
-compiler can lower interpolation to typed formatter operations without runtime
-reflection or C-style variadic unsafety. `console.log` belongs to the standard
-library; interpolation should remain a reusable value for logging, errors, and
-string construction rather than console-specific syntax. Exact formatting
-traits and format-specifier syntax remain to be designed.
+`console` is a globally available prelude namespace. The bootstrap implements
+`log` and `write` on stdout plus `error` and `debug` on stderr. `log`, `error`,
+and `debug` append a newline; `write` does not. This namespaced surface remains
+the canonical logging API instead of reserving competing global `print` and
+`println` functions.
+
+An interpolated template evaluates expressions exactly once from left to right.
+Primitive types have standard formatting; structs and imported records receive
+derived field formatting; arrays format their elements; enums show their active
+variant and payload; and classes initially show type plus reference identity.
+The compiler lowers these operations to typed native output without runtime
+reflection or exposing C-style variadic unsafety to Z.
+
+The first template tier is consumed directly by `console` methods. Reusable
+interpolated values for errors, storage, and APIs must wait for Z's owned
+`String` representation rather than masquerading as borrowed `cstring` values.
+The surface syntax will remain the same when that representation arrives.
+Formatting traits, format specifiers, release-build debug behavior, and
+structured logging remain later design work.
 
 Diagnostics are part of the language contract. Ownership and capability errors
 carry stable `Z02xx`/`Z03xx` codes, retain the source location where a move or

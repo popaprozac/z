@@ -183,6 +183,18 @@ export function semanticTokens(source: string, fileName: string): { readonly dat
       });
       continue;
     }
+    if (token.text === "console" && next?.kind === "dot") {
+      classifications.set(token.location.offset, { type: semanticTokenTypes.indexOf("namespace"), modifiers: 4 });
+      continue;
+    }
+    if (
+      previous?.kind === "dot"
+      && tokens[index - 2]?.text === "console"
+      && ["log", "write", "error", "debug"].includes(token.text)
+    ) {
+      classifications.set(token.location.offset, { type: semanticTokenTypes.indexOf("method"), modifiers: 4 });
+      continue;
+    }
     if (modules.has(token.text)) {
       classifications.set(token.location.offset, { type: semanticTokenTypes.indexOf("namespace"), modifiers: 4 });
       continue;
@@ -283,6 +295,9 @@ export function hover(source: string, fileName: string, offset: number): Hover |
   if (module) {
     return markdownHover(`import ${word.text} from ${JSON.stringify(module.declaration.header)}`, source, word.start, word.end);
   }
+  if (word.text === "console") {
+    return markdownHover("global console", source, word.start, word.end);
+  }
 
   const chainedSelector = objectiveCSelectorAt(context, word.start);
   if (chainedSelector) {
@@ -297,6 +312,10 @@ export function hover(source: string, fileName: string, offset: number): Hover |
 
   const memberPrefix = source.slice(0, word.start).match(/([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*)\.$/);
   if (memberPrefix) {
+    if (memberPrefix[1] === "console") {
+      const detail = consoleMethodDetail(word.text);
+      if (detail) return markdownHover(detail, source, word.start, word.end);
+    }
     const resolved = resolveReceiver(context, memberPrefix[1], word.start - memberPrefix[1].length - 1);
     if (resolved?.kind === "module") {
       const item = describeModuleMember(resolved.module, word.text);
@@ -416,6 +435,7 @@ function symbolCompletions(source: string, fileName: string, offset: number): Co
   for (const [name, module] of context.foreignModules) {
     items.push({ label: name, kind: completionKinds.module, detail: `import from ${JSON.stringify(module.declaration.header)}` });
   }
+  items.push({ label: "console", kind: completionKinds.module, detail: "global typed console" });
   return filterCompletions(uniqueCompletions(items), prefix, 500);
 }
 
@@ -502,6 +522,7 @@ function memberCompletions(
   receiverText: string,
   prefix: string,
 ): CompletionItem[] {
+  if (receiverText === "console") return filterCompletions(consoleCompletions(), prefix, 100);
   const importContext = importAnalysis(source, fileName);
   if (!importContext) return [];
   const directModule = importContext.foreignModules.get(receiverText);
@@ -540,6 +561,23 @@ function memberCompletions(
     return filterCompletions(items, prefix, 1000);
   }
   return [];
+}
+
+function consoleCompletions(): CompletionItem[] {
+  return ["log", "write", "error", "debug"].map((name) => ({
+    label: name,
+    kind: completionKinds.method,
+    detail: consoleMethodDetail(name)!,
+    insertText: `${name}()`,
+  }));
+}
+
+function consoleMethodDetail(name: string): string | null {
+  if (name === "log") return "log(...values): void  // stdout with newline";
+  if (name === "write") return "write(...values): void  // stdout";
+  if (name === "error") return "error(...values): void  // stderr with newline";
+  if (name === "debug") return "debug(...values): void  // debug stream";
+  return null;
 }
 
 function labelCompletions(source: string, fileName: string, offset: number): CompletionItem[] {

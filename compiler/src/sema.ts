@@ -81,6 +81,7 @@ export type SemanticInfo = {
   readonly expressionTypes: ReadonlyMap<number, string>;
   readonly bindingTypes: ReadonlyMap<number, string>;
   readonly closures: ReadonlyMap<number, ClosureInfo>;
+  readonly consoleCalls: ReadonlySet<number>;
   readonly objectiveC: boolean;
   readonly frameworks: readonly string[];
 };
@@ -107,6 +108,7 @@ type AnalysisState = {
   readonly expressionTypes: Map<number, string>;
   readonly bindingTypes: Map<number, string>;
   readonly closures: Map<number, ClosureInfo>;
+  readonly consoleCalls: Set<number>;
   readonly objectiveC: boolean;
   readonly frameworks: readonly string[];
   readonly loopStack: LoopAnalysisFrame[];
@@ -179,6 +181,7 @@ export function analyze(
     expressionTypes: new Map(),
     bindingTypes: new Map(),
     closures: new Map(),
+    consoleCalls: new Set(),
     objectiveC: frameworks.size > 0,
     frameworks: [...frameworks],
     loopStack: [],
@@ -1046,6 +1049,11 @@ function collectClosureCaptures(
       case "null":
       case "dynamicArrayExpression":
         return;
+      case "template":
+        for (const part of expression.parts) {
+          if (part.kind === "value") walkExpression(part.expression, localNames);
+        }
+        return;
       case "identifier":
         record(expression.name, expression.location, mutated, localNames);
         return;
@@ -1347,6 +1355,115 @@ function inferTrySuccess(
   return success.name;
 }
 
+function isConsoleMember(
+  expression: Extract<Expression, { kind: "member" }>,
+  locals: ReadonlyMap<string, ValueType>,
+  globals: ReadonlyMap<string, SymbolValue>,
+): boolean {
+  return expression.object.kind === "identifier"
+    && expression.object.name === "console"
+    && !locals.has("console")
+    && !globals.has("console");
+}
+
+function requireConsoleFormattable(
+  type: ValueType,
+  expression: Expression,
+  structs: Map<string, StructDeclaration>,
+  enums: Map<string, EnumDeclaration>,
+  fileName: string,
+  state: AnalysisState,
+  visiting = new Set<string>(),
+): void {
+  const actual = String(underlyingType(type));
+  if (hasCleanupType(actual, structs, state.foreignTypes)
+    && !isNamedStorageExpression(expression)) {
+    throw new DiagnosticError(fileName, expression.location, "console formatting of a cleanup-bearing temporary requires stored ownership", {
+      code: "Z0402",
+      helps: ["bind the value to a const or let before logging it"],
+    });
+  }
+  if (actual === "null" || (primitiveTypes.has(actual) && actual !== "void")) return;
+  if (actual.startsWith("__z_objc:") || actual.startsWith(objcClassPrefix) || state.foreignTypes.has(actual)) return;
+  if (visiting.has(actual)) return;
+  visiting.add(actual);
+  const array = parseFixedArrayType(actual) ?? parseDynamicArrayType(actual) ?? parseSliceType(actual);
+  if (array) {
+    requireConsoleFormattable(
+      array.elementType,
+      { kind: "identifier", name: "element", location: expression.location },
+      structs,
+      enums,
+      fileName,
+      state,
+      visiting,
+    );
+    visiting.delete(actual);
+    return;
+  }
+  const declaration = structs.get(actual);
+  if (declaration?.kind === "class") {
+    visiting.delete(actual);
+    return;
+  }
+  if (declaration) {
+    for (const field of declaration.fields) {
+      requireConsoleFormattable(
+        field.type.name,
+        { kind: "identifier", name: field.name, location: expression.location },
+        structs,
+        enums,
+        fileName,
+        state,
+        visiting,
+      );
+    }
+    visiting.delete(actual);
+    return;
+  }
+  const enumDeclaration = enums.get(actual);
+  if (enumDeclaration) {
+    for (const variant of enumDeclaration.variants) {
+      if (!variant.payload) continue;
+      requireConsoleFormattable(
+        variant.payload.name,
+        { kind: "identifier", name: variant.name, location: expression.location },
+        structs,
+        enums,
+        fileName,
+        state,
+        visiting,
+      );
+    }
+    visiting.delete(actual);
+    return;
+  }
+  const foreign = state.foreignNamedTypes.get(actual);
+  if (foreign?.kind === "record") {
+    for (const field of foreign.fields) {
+      requireConsoleFormattable(
+        field.typeName,
+        { kind: "identifier", name: field.name, location: expression.location },
+        structs,
+        enums,
+        fileName,
+        state,
+        visiting,
+      );
+    }
+    visiting.delete(actual);
+    return;
+  }
+  if (foreign?.kind === "enum" || foreign?.kind === "scalar") {
+    visiting.delete(actual);
+    return;
+  }
+  throw new DiagnosticError(fileName, expression.location, `console cannot format value of type ${actual}`, {
+    code: "Z0401",
+    helps: ["log one of the value's formattable fields, or add formatting support for this type"],
+  });
+}
+
 function inferExpression(
   expression: Expression,
   locals: Map<string, ValueType>,
@@ -1386,6 +1503,12 @@ function inferExpressionInner(
       return isIntegerLiteral(expression.value) ? "i32" : "f64";
     case "string":
       return "cstring";
+    case "template":
+      throw new DiagnosticError(fileName, expression.location, "template literals are currently consumed directly by console methods", {
+        code: "Z0402",
+        notes: ["general interpolated String values require the owned String type, which is not implemented yet"],
+        helps: ["pass this template directly to console.log, console.write, console.error, or console.debug"],
+      });
     case "boolean":
       return "bool";
     case "null":
@@ -1719,6 +1842,30 @@ function inferExpressionInner(
     }
     case "call": {
       if (expression.callee.kind === "member") {
+        if (isConsoleMember(expression.callee, locals, globals)) {
+          const supported = new Set(["log", "write", "error", "debug"]);
+          if (!supported.has(expression.callee.property)) {
+            throw new DiagnosticError(fileName, expression.callee.location, `console has no method ${JSON.stringify(expression.callee.property)} in the bootstrap`, {
+              code: "Z0401",
+              helps: ["use console.log, console.write, console.error, or console.debug"],
+            });
+          }
+          rejectLabeledArguments(expression.argumentLabels, expression.location, fileName);
+          for (const argument of expression.arguments) {
+            if (argument.kind === "template") {
+              for (const part of argument.parts) {
+                if (part.kind !== "value") continue;
+                const type = inferExpression(part.expression, locals, globals, structs, enums, fileName, state);
+                requireConsoleFormattable(type, part.expression, structs, enums, fileName, state);
+              }
+              continue;
+            }
+            const type = inferExpression(argument, locals, globals, structs, enums, fileName, state);
+            requireConsoleFormattable(type, argument, structs, enums, fileName, state);
+          }
+          state.consoleCalls.add(expression.location.offset);
+          return "void";
+        }
         if (expression.callee.object.kind === "identifier") {
           const enumDeclaration = enums.get(expression.callee.object.name);
           if (enumDeclaration) {
@@ -2170,6 +2317,11 @@ function validateDeinitExpression(expression: Expression, fileName: string): voi
   if (expression.kind === "matchExpression") {
     validateDeinitExpression(expression.expression, fileName);
     for (const arm of expression.arms) validateDeinitControlFlow([arm.body], fileName);
+  }
+  if (expression.kind === "template") {
+    for (const part of expression.parts) {
+      if (part.kind === "value") validateDeinitExpression(part.expression, fileName);
+    }
   }
   if (expression.kind === "ifExpression") {
     validateDeinitExpression(expression.condition, fileName);

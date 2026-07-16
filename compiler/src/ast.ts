@@ -215,6 +215,7 @@ export type MatchArm = {
 export type Expression =
   | NumberExpression
   | StringExpression
+  | TemplateExpression
   | BooleanExpression
   | NullExpression
   | IdentifierExpression
@@ -246,6 +247,16 @@ export type StringExpression = {
   readonly value: string;
   readonly location: SourceLocation;
 };
+
+export type TemplateExpression = {
+  readonly kind: "template";
+  readonly parts: TemplatePart[];
+  readonly location: SourceLocation;
+};
+
+export type TemplatePart =
+  | { readonly kind: "text"; readonly value: string; readonly location: SourceLocation }
+  | { readonly kind: "value"; readonly expression: Expression; readonly location: SourceLocation };
 
 export type BooleanExpression = {
   readonly kind: "boolean";
