@@ -5,6 +5,7 @@ export type FixedArrayType = {
 
 const prefix = "__z_array:";
 const slicePrefix = "__z_slice:";
+const dynamicPrefix = "__z_dynamic_array:";
 
 export function fixedArrayTypeName(elementType: string, length: number): string {
   return `${prefix}${length}:${elementType}`;
@@ -23,7 +24,9 @@ export function displayArrayType(name: string): string {
   const array = parseFixedArrayType(name);
   if (array) return `${displayArrayType(array.elementType)}[${array.length}]`;
   const slice = parseSliceType(name);
-  return slice ? `Slice<${displayArrayType(slice.elementType)}>` : name;
+  if (slice) return `Slice<${displayArrayType(slice.elementType)}>`;
+  const dynamic = parseDynamicArrayType(name);
+  return dynamic ? `Array<${displayArrayType(dynamic.elementType)}>` : name;
 }
 
 export function sliceTypeName(elementType: string): string {
@@ -32,4 +35,12 @@ export function sliceTypeName(elementType: string): string {
 
 export function parseSliceType(name: string): { readonly elementType: string } | null {
   return name.startsWith(slicePrefix) ? { elementType: name.slice(slicePrefix.length) } : null;
+}
+
+export function dynamicArrayTypeName(elementType: string): string {
+  return `${dynamicPrefix}${elementType}`;
+}
+
+export function parseDynamicArrayType(name: string): { readonly elementType: string } | null {
+  return name.startsWith(dynamicPrefix) ? { elementType: name.slice(dynamicPrefix.length) } : null;
 }

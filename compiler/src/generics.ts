@@ -1,6 +1,13 @@
 import type { FunctionDeclaration, Program, StructDeclaration } from "./ast.ts";
 import { DiagnosticError } from "./diagnostics.ts";
-import { fixedArrayTypeName, parseFixedArrayType, parseSliceType, sliceTypeName } from "./array-types.ts";
+import {
+  dynamicArrayTypeName,
+  fixedArrayTypeName,
+  parseDynamicArrayType,
+  parseFixedArrayType,
+  parseSliceType,
+  sliceTypeName,
+} from "./array-types.ts";
 import { monomorphizedName, parseGenericType } from "./generic-types.ts";
 
 export function materializeGenerics(
@@ -33,6 +40,8 @@ export function materializeGenerics(
     if (array) return `${displayName(array.elementType)}[${array.length}]`;
     const slice = parseSliceType(name);
     if (slice) return `Slice<${displayName(slice.elementType)}>`;
+    const dynamic = parseDynamicArrayType(name);
+    if (dynamic) return `Array<${displayName(dynamic.elementType)}>`;
     const generic = parseGenericType(name);
     return generic ? `${generic.base}<${generic.arguments.map(displayName).join(", ")}>` : name;
   };
@@ -43,6 +52,8 @@ export function materializeGenerics(
     if (array) return fixedArrayTypeName(substituteName(array.elementType, substitutions), array.length);
     const slice = parseSliceType(name);
     if (slice) return sliceTypeName(substituteName(slice.elementType, substitutions));
+    const dynamic = parseDynamicArrayType(name);
+    if (dynamic) return dynamicArrayTypeName(substituteName(dynamic.elementType, substitutions));
     const generic = parseGenericType(name);
     if (!generic) return name;
     const args = generic.arguments.map((argument) => substituteName(argument, substitutions));
@@ -54,6 +65,16 @@ export function materializeGenerics(
     if (!value || typeof value !== "object") return value;
     if (value.kind === "call" && value.callee?.kind === "identifier") {
       const generic = parseGenericType(value.callee.name);
+      if (generic?.base === "Array") {
+        if (generic.arguments.length !== 1 || value.arguments.length !== 0) {
+          throw new DiagnosticError(fileName, value.location, "Array<T>() expects one type argument and no values");
+        }
+        return {
+          kind: "dynamicArrayExpression",
+          elementType: substituteName(generic.arguments[0], substitutions),
+          location: value.location,
+        };
+      }
       const callee = generic
         ? { ...value.callee, name: instantiateFunction(generic.base, generic.arguments.map((arg) => substituteName(arg, substitutions))) }
         : transform(value.callee, substitutions);

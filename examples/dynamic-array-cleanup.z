@@ -1,0 +1,18 @@
+import stdio from "stdio.h";
+
+struct Item {
+  id: i32;
+
+  deinit {
+    stdio.printf("drop=%d\n", this.id);
+  }
+}
+
+function main(): i32 {
+  let items = Array<Item>();
+  const first = Item { id: 1 };
+  const second = Item { id: 2 };
+  items.push(first);
+  items.push(second);
+  return 0;
+}

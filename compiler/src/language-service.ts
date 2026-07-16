@@ -16,7 +16,7 @@ import type {
   ForeignType,
 } from "./foreign.ts";
 import { lex } from "./lexer.ts";
-import { parseFixedArrayType, parseSliceType } from "./array-types.ts";
+import { parseDynamicArrayType, parseFixedArrayType, parseSliceType } from "./array-types.ts";
 import { parseGenericType } from "./generic-types.ts";
 
 export type Position = { readonly line: number; readonly character: number };
@@ -174,7 +174,7 @@ export function semanticTokens(source: string, fileName: string): { readonly dat
       });
       continue;
     }
-    if (token.text === "Slice") {
+    if (token.text === "Slice" || token.text === "Array") {
       classifications.set(token.location.offset, { type: semanticTokenTypes.indexOf("type"), modifiers: 4 });
       continue;
     }
@@ -285,6 +285,13 @@ export function hover(source: string, fileName: string, offset: number): Hover |
     }
     if (resolved?.kind === "array" && word.text === "length") {
       return markdownHover(`length: usize  // ${displayType(resolved.type, context.typeDisplayNames)}`, source, word.start, word.end);
+    }
+    if (resolved?.kind === "array" && parseDynamicArrayType(resolved.type)) {
+      if (word.text === "capacity") return markdownHover("capacity: usize", source, word.start, word.end);
+      if (word.text === "push") {
+        const element = parseDynamicArrayType(resolved.type)!.elementType;
+        return markdownHover(`push(value: ${displayType(element, context.typeDisplayNames)}): void`, source, word.start, word.end);
+      }
     }
   }
 
@@ -456,13 +463,27 @@ function memberCompletions(
   const dotOffset = receiverOffset + receiverText.length;
   const tailOffset = source[offset] === ";" ? offset + 1 : offset;
   const sanitized = source.slice(0, dotOffset) + ";" + source.slice(tailOffset);
-  const context = safeAnalysis(sanitized, fileName);
+  const lengthSanitized = source.slice(0, dotOffset) + ".length;" + source.slice(tailOffset);
+  const context = safeAnalysis(sanitized, fileName) ?? safeAnalysis(lengthSanitized, fileName);
   if (!context) return [];
   const resolved = resolveReceiver(context, receiverText, receiverOffset);
   if (resolved?.kind === "objc") return filterCompletions(objcCompletions(resolved.declaration, resolved.instance, context), prefix, 1000);
   if (resolved?.kind === "struct") return filterCompletions(structCompletions(resolved.declaration, context.typeDisplayNames), prefix, 1000);
   if (resolved?.kind === "array") {
-    return filterCompletions([{ label: "length", kind: completionKinds.property, detail: "usize" }], prefix, 1000);
+    const items: CompletionItem[] = [{ label: "length", kind: completionKinds.property, detail: "usize" }];
+    const dynamic = parseDynamicArrayType(resolved.type);
+    if (dynamic) {
+      items.push(
+        { label: "capacity", kind: completionKinds.property, detail: "usize" },
+        {
+          label: "push",
+          kind: completionKinds.method,
+          detail: `push(value: ${displayType(dynamic.elementType, context.typeDisplayNames)}): void`,
+          insertText: "push()",
+        },
+      );
+    }
+    return filterCompletions(items, prefix, 1000);
   }
   return [];
 }
@@ -529,7 +550,7 @@ function resolveReceiver(context: AnalyzedSource, text: string, offset: number):
   }
   const type = context.semanticInfo.expressionTypes.get(offset);
   if (!type) return null;
-  if (parseFixedArrayType(type) || parseSliceType(type)) return { kind: "array", type };
+  if (parseFixedArrayType(type) || parseSliceType(type) || parseDynamicArrayType(type)) return { kind: "array", type };
   const interfaceName = type.replace(/^__z_objc:(?:nullable|nonnull):/, "");
   const objc = context.semanticInfo.foreignInterfaces.get(interfaceName);
   if (objc) return { kind: "objc", declaration: objc, instance: true };
@@ -804,6 +825,8 @@ function displayType(type: string, typeDisplayNames: ReadonlyMap<string, string>
   if (array) return `${displayType(array.elementType, typeDisplayNames)}[${array.length}]`;
   const slice = parseSliceType(type);
   if (slice) return `Slice<${displayType(slice.elementType, typeDisplayNames)}>`;
+  const dynamic = parseDynamicArrayType(type);
+  if (dynamic) return `Array<${displayType(dynamic.elementType, typeDisplayNames)}>`;
   return type.replace(/^__z_objc:(?:nullable|nonnull):/, "");
 }
 

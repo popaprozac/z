@@ -214,6 +214,7 @@ export type Expression =
   | MemberExpression
   | IndexExpression
   | ArrayExpression
+  | DynamicArrayExpression
   | StructExpression
   | VariantExpression
   | AttemptExpression
@@ -290,6 +291,12 @@ export type IndexExpression = {
 export type ArrayExpression = {
   readonly kind: "arrayExpression";
   readonly elements: Expression[];
+  readonly location: SourceLocation;
+};
+
+export type DynamicArrayExpression = {
+  readonly kind: "dynamicArrayExpression";
+  readonly elementType: string;
   readonly location: SourceLocation;
 };
 

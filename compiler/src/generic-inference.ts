@@ -7,7 +7,14 @@ import type {
   StructDeclaration,
   TypeParameterConstraint,
 } from "./ast.ts";
-import { fixedArrayTypeName, parseFixedArrayType, parseSliceType, sliceTypeName } from "./array-types.ts";
+import {
+  dynamicArrayTypeName,
+  fixedArrayTypeName,
+  parseDynamicArrayType,
+  parseFixedArrayType,
+  parseSliceType,
+  sliceTypeName,
+} from "./array-types.ts";
 import { DiagnosticError } from "./diagnostics.ts";
 import type { ForeignModule, ForeignType } from "./foreign.ts";
 import { genericTypeName, parseGenericType } from "./generic-types.ts";
@@ -47,6 +54,8 @@ export function inferGenericCalls(
     if (array) return fixedArrayTypeName(substituteType(array.elementType, substitutions), array.length);
     const slice = parseSliceType(type);
     if (slice) return sliceTypeName(substituteType(slice.elementType, substitutions));
+    const dynamic = parseDynamicArrayType(type);
+    if (dynamic) return dynamicArrayTypeName(substituteType(dynamic.elementType, substitutions));
     const generic = parseGenericType(type);
     return generic
       ? genericTypeName(generic.base, generic.arguments.map((argument) => substituteType(argument, substitutions)))
@@ -95,8 +104,22 @@ export function inferGenericCalls(
     }
     const patternSlice = parseSliceType(pattern);
     const actualSlice = parseSliceType(actual);
-    if (patternSlice && (actualSlice || actualArray)) {
-      unify(patternSlice.elementType, (actualSlice ?? actualArray)!.elementType, parameters, inferred, functionName, location);
+    const actualDynamicForSlice = parseDynamicArrayType(actual);
+    if (patternSlice && (actualSlice || actualArray || actualDynamicForSlice)) {
+      unify(
+        patternSlice.elementType,
+        (actualSlice ?? actualArray ?? actualDynamicForSlice)!.elementType,
+        parameters,
+        inferred,
+        functionName,
+        location,
+      );
+      return;
+    }
+    const patternDynamic = parseDynamicArrayType(pattern);
+    const actualDynamic = parseDynamicArrayType(actual);
+    if (patternDynamic && actualDynamic) {
+      unify(patternDynamic.elementType, actualDynamic.elementType, parameters, inferred, functionName, location);
       return;
     }
     const patternGeneric = parseGenericType(pattern);
@@ -144,6 +167,8 @@ export function inferGenericCalls(
           type: elementType ? fixedArrayTypeName(elementType, elements.length) : null,
         };
       }
+      case "dynamicArrayExpression":
+        return { expression, type: dynamicArrayTypeName(expression.elementType) };
       case "structExpression": {
         const fields = expression.fields.map((field) => {
           const value = rewriteExpression(field.expression, environment);
@@ -153,6 +178,13 @@ export function inferGenericCalls(
       }
       case "member": {
         const object = rewriteExpression(expression.object, environment);
+        const dynamicArray = object.type ? parseDynamicArrayType(object.type) : null;
+        if (dynamicArray && (expression.property === "length" || expression.property === "capacity")) {
+          return { expression: { ...expression, object: object.expression }, type: "usize" };
+        }
+        if (dynamicArray && expression.property === "push") {
+          return { expression: { ...expression, object: object.expression }, type: "void" };
+        }
         if (expression.object.kind === "identifier") {
           const module = foreignModules.get(expression.object.name);
           const fn = module?.functions.get(expression.property);
@@ -184,7 +216,9 @@ export function inferGenericCalls(
       case "index": {
         const object = rewriteExpression(expression.object, environment);
         const index = rewriteExpression(expression.index, environment);
-        const indexed = object.type ? parseFixedArrayType(object.type) ?? parseSliceType(object.type) : null;
+        const indexed = object.type
+          ? parseFixedArrayType(object.type) ?? parseSliceType(object.type) ?? parseDynamicArrayType(object.type)
+          : null;
         return { expression: { ...expression, object: object.expression, index: index.expression }, type: indexed?.elementType ?? null };
       }
       case "variantExpression": {
@@ -212,6 +246,11 @@ export function inferGenericCalls(
           if (explicit && template) {
             const substitutions = new Map(template.typeParameters!.map((parameter, index) => [parameter, explicit.arguments[index]]));
             returnType = substituteType(template.returnType.name, substitutions);
+          } else if (explicit?.base === "Array") {
+            if (explicit.arguments.length !== 1 || args.length !== 0) {
+              throw new DiagnosticError(fileName, expression.location, "Array<T>() expects one type argument and no values");
+            }
+            returnType = dynamicArrayTypeName(explicit.arguments[0]);
           } else if (!explicit && template) {
             if (template.parameters.length !== args.length) {
               throw new DiagnosticError(
@@ -409,6 +448,8 @@ function displayType(type: string): string {
   if (array) return `${displayType(array.elementType)}[${array.length}]`;
   const slice = parseSliceType(type);
   if (slice) return `Slice<${displayType(slice.elementType)}>`;
+  const dynamic = parseDynamicArrayType(type);
+  if (dynamic) return `Array<${displayType(dynamic.elementType)}>`;
   const generic = parseGenericType(type);
   return generic ? `${generic.base}<${generic.arguments.map(displayType).join(", ")}>` : type;
 }

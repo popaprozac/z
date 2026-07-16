@@ -11,7 +11,7 @@ import type {
   TypeReference,
 } from "./ast.ts";
 import { DiagnosticError } from "./diagnostics.ts";
-import { fixedArrayTypeName, sliceTypeName } from "./array-types.ts";
+import { dynamicArrayTypeName, fixedArrayTypeName, sliceTypeName } from "./array-types.ts";
 import { genericTypeName } from "./generic-types.ts";
 import type { Token, TokenKind } from "./lexer.ts";
 
@@ -32,13 +32,33 @@ export function parse(tokens: Token[], fileName: string): Program {
     if (at(kind)) return take();
     throw new DiagnosticError(fileName, peek().location, `expected ${description}, found ${tokenDescription(peek())}`);
   };
+  const expectTypeGreater = (): Token => {
+    if (at("greater")) return take();
+    if (at("shiftRight")) {
+      const combined = take();
+      tokens.splice(current, 0, {
+        kind: "greater",
+        text: ">",
+        location: {
+          offset: combined.location.offset + 1,
+          line: combined.location.line,
+          column: combined.location.column + 1,
+        },
+      });
+      return { ...combined, kind: "greater", text: ">" };
+    }
+    return expect("greater", "`>`");
+  };
 
   const parseType = (): TypeReference => {
     const token = expect("identifier", "a type name");
     let name = token.text;
     if (token.text === "Slice" && match("less")) {
       name = sliceTypeName(parseType().name);
-      expect("greater", "`>`");
+      expectTypeGreater();
+    } else if (token.text === "Array" && match("less")) {
+      name = dynamicArrayTypeName(parseType().name);
+      expectTypeGreater();
     } else if (match("dot")) {
       const member = expect("identifier", "an imported type name");
       name = `${name}.${member.text}`;
@@ -47,7 +67,7 @@ export function parse(tokens: Token[], fileName: string): Program {
       take();
       const arguments_ = [];
       do arguments_.push(parseType().name); while (match("comma"));
-      expect("greater", "`>`");
+      expectTypeGreater();
       name = genericTypeName(name, arguments_);
     }
     while (match("leftBracket")) {
@@ -160,7 +180,7 @@ export function parse(tokens: Token[], fileName: string): Program {
         constraints.push({ parameter: parameter.text, traits, location: parameter.location });
       }
     } while (match("comma"));
-    expect("greater", "`>`");
+    expectTypeGreater();
     return { names, constraints };
   };
 
@@ -221,7 +241,7 @@ export function parse(tokens: Token[], fileName: string): Program {
           take();
           const arguments_ = [];
           do arguments_.push(parseType().name); while (match("comma"));
-          expect("greater", "`>`");
+          expectTypeGreater();
           if (!at("leftParen") && !at("leftBrace")) current = checkpoint;
           else identifierName = genericTypeName(token.text, arguments_);
         } catch {

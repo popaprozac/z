@@ -1488,6 +1488,151 @@ test("shows source generic fields and concrete generic binding types on hover", 
   assert.equal(semanticTokenTypes[initializerToken?.type ?? -1], "property");
 });
 
+test("grows owned Array values with checked indexing and generic inout mutation", () => {
+  const example = resolve(projectRoot, "examples/dynamic-arrays.z");
+  const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, "length=3 capacity=4 middle=42\n");
+  const generated = compileToC(readFileSync(example, "utf8"), example);
+  assert.match(generated, /struct Z_DynamicArray_/);
+  assert.match(generated, /realloc\(self->data, next \* sizeof\(int32_t\)\)/);
+  assert.match(generated, /z_bounds_index/);
+  assert.match(generated, /free\(\(values\)\.data\)/);
+});
+
+test("borrows growable Array storage as read-only and mutable Slice values", () => {
+  const source = `
+    function first<T>(values: Slice<T>): T { return values[0]; }
+    function replace(inout values: Slice<i32>, value: i32): void { values[0] = value; }
+    function main(): i32 {
+      let values = Array<i32>();
+      values.push(1);
+      replace(inout values, 42);
+      return first(values);
+    }
+  `;
+  const generated = compileToC(source, "dynamic-array-slice.z");
+  assert.match(generated, /\.data = \(values\)\.data, \.length = \(values\)\.length/);
+  assert.match(generated, /__z_mono_first_i32/);
+});
+
+test("specializes generic Array mutation helpers for every element type", () => {
+  const source = `
+    function append<T>(inout values: Array<T>, value: T): void { values.push(value); }
+    function main(): i32 {
+      let numbers = Array<i32>();
+      let flags = Array<bool>();
+      append(inout numbers, 42);
+      append(inout flags, true);
+      if (flags[0]) { return numbers[0]; }
+      return 0;
+    }
+  `;
+  const generated = compileToC(source, "dynamic-array-specializations.z");
+  assert.match(generated, /DynamicArray_.*i32.*_push/);
+  assert.match(generated, /DynamicArray_.*bool.*_push/);
+  const compilation = spawnSync("clang", ["-x", "c", "-Wall", "-Wextra", "-Werror", "-fsyntax-only", "-"], {
+    input: generated,
+    encoding: "utf8",
+  });
+  assert.equal(compilation.status, 0, compilation.stderr);
+});
+
+test("parses adjacent generic closers for nested Array types", () => {
+  const source = `
+    function main(): i32 {
+      let inner = Array<i32>();
+      inner.push(42);
+      let outer = Array<Array<i32>>();
+      outer.push(inner);
+      return outer[0][0];
+    }
+  `;
+  const generated = compileToC(source, "nested-dynamic-arrays.z");
+  assert.match(generated, /Z_DynamicArray_.*Z_DynamicArray_/);
+  assert.match(generated, /free\(\(\(outer\)\.data\[/);
+});
+
+test("moves Array storage and destroys initialized owned elements in reverse order", () => {
+  const example = resolve(projectRoot, "examples/dynamic-array-cleanup.z");
+  const source = readFileSync(example, "utf8");
+  const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, "drop=2\ndrop=1\n");
+  assert.throws(
+    () => compileToC(source.replace("  return 0;", "  return first.id;"), "dynamic-array-move.z"),
+    /use of moved value "first"/,
+  );
+
+  const movedArray = `
+    function main(): i32 {
+      let first = Array<i32>();
+      first.push(1);
+      const second = first;
+      return first.length + second.length;
+    }
+  `;
+  assert.throws(() => compileToC(movedArray, "dynamic-array-owner-move.z"), /use of moved value "first"/);
+});
+
+test("checks Array mutation, element types, and partial moves", () => {
+  const empty = `
+    function main(): i32 { const values = Array<i32>(); return 0; }
+  `;
+  const emptyGenerated = compileToC(empty, "dynamic-array-empty.z");
+  assert.doesNotMatch(emptyGenerated, /DynamicArray_.*_push\(/);
+
+  const immutable = `
+    function main(): i32 {
+      const values = Array<i32>();
+      values.push(1);
+      return 0;
+    }
+  `;
+  assert.throws(() => compileToC(immutable, "dynamic-array-const.z"), /Array.push requires addressable let storage/);
+
+  const wrongElement = `
+    function main(): i32 {
+      let values = Array<i32>();
+      values.push(true);
+      return 0;
+    }
+  `;
+  assert.throws(() => compileToC(wrongElement, "dynamic-array-element.z"), /expected i32, found bool/);
+
+  const partialMove = `
+    struct Item { id: i32; deinit {} }
+    function main(): i32 {
+      let values = Array<Item>();
+      values.push(Item { id: 1 });
+      const item = values[0];
+      return item.id;
+    }
+  `;
+  assert.throws(() => compileToC(partialMove, "dynamic-array-partial-move.z"), /moving a cleanup-bearing element out of its owner is not implemented/);
+});
+
+test("exposes Array members and source-level types to editor services", () => {
+  const source = `
+    function main(): i32 {
+      let values = Array<i32>();
+      values.;
+      return 0;
+    }
+  `;
+  const offset = source.indexOf("values.;") + "values.".length;
+  const items = completions(source, "dynamic-array-editor.z", offset);
+  assert.equal(items.find((item) => item.label === "length")?.detail, "usize");
+  assert.equal(items.find((item) => item.label === "capacity")?.detail, "usize");
+  assert.match(items.find((item) => item.label === "push")?.detail ?? "", /push\(value: i32\): void/);
+
+  const valid = source.replace("      values.;", "      values.push(1);");
+  const declaration = valid.indexOf("values =");
+  assert.match(hover(valid, "dynamic-array-editor.z", declaration + 1)?.contents.value ?? "", /values: Array<i32>/);
+  const push = valid.indexOf("push(1)");
+  assert.match(hover(valid, "dynamic-array-editor.z", push + 1)?.contents.value ?? "", /push\(value: i32\): void/);
+});
+
 test("checks logical operand types", () => {
   const source = `
     function main(): i32 {
@@ -2347,6 +2492,7 @@ test("editor grammar tracks keywords without reserving Result variants", () => {
   assert.match(operatorPattern, /\^/);
   assert.match(operatorPattern, /=/);
   assert.match(typePattern, /Slice/);
+  assert.match(typePattern, /Array/);
   assert.doesNotMatch(keywordPattern, /success|failure/);
 
   const extension = readFileSync(resolve(projectRoot, "editors/vscode/extension.js"), "utf8");

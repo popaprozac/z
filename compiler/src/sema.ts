@@ -11,7 +11,14 @@ import type {
 } from "./ast.ts";
 import { DiagnosticError } from "./diagnostics.ts";
 import { resultTypeName } from "./results.ts";
-import { displayArrayType, fixedArrayTypeName, parseFixedArrayType, parseSliceType } from "./array-types.ts";
+import {
+  displayArrayType,
+  dynamicArrayTypeName,
+  fixedArrayTypeName,
+  parseDynamicArrayType,
+  parseFixedArrayType,
+  parseSliceType,
+} from "./array-types.ts";
 import {
   pointerTypeName,
   type ForeignConstant,
@@ -1157,11 +1164,16 @@ function inferExpressionInner(
       }
       return fixedArrayTypeName(String(elementType), expression.elements.length);
     }
+    case "dynamicArrayExpression":
+      return dynamicArrayTypeName(expression.elementType);
     case "index": {
       const ownerType = inferExpression(expression.object, locals, globals, structs, enums, fileName, state);
       const array = parseFixedArrayType(String(ownerType));
       const slice = parseSliceType(String(ownerType));
-      if (!array && !slice) throw new DiagnosticError(fileName, expression.object.location, `indexing requires an array or Slice, found ${ownerType}`);
+      const dynamic = parseDynamicArrayType(String(ownerType));
+      if (!array && !slice && !dynamic) {
+        throw new DiagnosticError(fileName, expression.object.location, `indexing requires an array or Slice, found ${ownerType}`);
+      }
       if (hasCleanupType(ownerType, structs, state.foreignTypes) && !isNamedStorageExpression(expression.object)) {
         throw new DiagnosticError(fileName, expression.object.location, "a cleanup-bearing array temporary must be bound before indexing");
       }
@@ -1179,7 +1191,7 @@ function inferExpressionInner(
           );
         }
       }
-      return (array ?? slice)!.elementType;
+      return (array ?? slice ?? dynamic)!.elementType;
     }
     case "variantExpression": {
       const declaration = enums.get(expression.enumName);
@@ -1232,12 +1244,13 @@ function inferExpressionInner(
       const receiverType = inferExpression(expression.object, locals, globals, structs, enums, fileName, state);
       const array = parseFixedArrayType(String(receiverType));
       const slice = parseSliceType(String(receiverType));
-      if (array || slice) {
+      const dynamic = parseDynamicArrayType(String(receiverType));
+      if (array || slice || dynamic) {
         if (hasCleanupType(receiverType, structs, state.foreignTypes) && !isNamedStorageExpression(expression.object)) {
           throw new DiagnosticError(fileName, expression.object.location, "a cleanup-bearing array temporary must be bound before reading its length");
         }
-        if (expression.property !== "length") {
-          throw new DiagnosticError(fileName, expression.location, `fixed array has no member ${JSON.stringify(expression.property)}`);
+        if (expression.property !== "length" && !(dynamic && expression.property === "capacity")) {
+          throw new DiagnosticError(fileName, expression.location, `${dynamic ? "Array" : "fixed array"} has no member ${JSON.stringify(expression.property)}`);
         }
         return "usize";
       }
@@ -1310,6 +1323,25 @@ function inferExpressionInner(
           }
         }
         const receiverType = inferExpression(expression.callee.object, locals, globals, structs, enums, fileName, state);
+        const dynamic = parseDynamicArrayType(String(receiverType));
+        if (dynamic) {
+          rejectLabeledArguments(expression.argumentLabels, expression.location, fileName);
+          if (expression.callee.property !== "push") {
+            throw new DiagnosticError(fileName, expression.callee.location, `Array has no method ${JSON.stringify(expression.callee.property)}`);
+          }
+          if (expression.arguments.length !== 1) {
+            throw new DiagnosticError(fileName, expression.location, `"push" expects 1 argument, received ${expression.arguments.length}`);
+          }
+          const root = storageRoot(expression.callee.object);
+          const stored = root ? locals.get(root.name) : null;
+          if (!root || !stored || !isMutableBinding(stored)) {
+            throw new DiagnosticError(fileName, expression.callee.object.location, "Array.push requires addressable let storage");
+          }
+          const actual = inferExpression(expression.arguments[0], locals, globals, structs, enums, fileName, state);
+          requireAssignable(dynamic.elementType, actual, expression.arguments[0], fileName, state.foreignNamedTypes, state.numericLiteralTypes);
+          consumeOwnedValue(expression.arguments[0], dynamic.elementType, locals, structs, fileName, state);
+          return "void";
+        }
         const objcReceiverType = objcReceiver(receiverType, state);
         if (objcReceiverType) {
           const method = findObjCMethod(
@@ -1534,7 +1566,8 @@ function checkArguments(
       const expectedSlice = parseSliceType(parameter.type.name);
       const storedType = underlyingType(stored);
       const storedArray = parseFixedArrayType(storedType);
-      if (expectedSlice && storedArray?.elementType === expectedSlice.elementType) {
+      const storedDynamic = parseDynamicArrayType(storedType);
+      if (expectedSlice && (storedArray ?? storedDynamic)?.elementType === expectedSlice.elementType) {
         state.sliceConversions.set(argument.location.offset, { sourceType: storedType, targetType: parameter.type.name });
       } else {
         requireAssignable(
@@ -1575,8 +1608,9 @@ function checkArguments(
     const actual = inferExpression(argument, locals, globals, structs, enums, fileName, state);
     const expectedSlice = parseSliceType(parameter.type.name);
     const actualArray = parseFixedArrayType(String(actual));
+    const actualDynamic = parseDynamicArrayType(String(actual));
     if (expectedSlice) {
-      if (actualArray?.elementType === expectedSlice.elementType) {
+      if ((actualArray ?? actualDynamic)?.elementType === expectedSlice.elementType) {
         if (!isNamedStorageExpression(argument)) {
           throw new DiagnosticError(fileName, argument.location, "an array-to-Slice borrow requires stored array storage");
         }
@@ -1963,6 +1997,7 @@ function hasCleanupType(
   if (actual === "unknown" || actual === "never" || visiting.has(actual)) return false;
   if (foreignTypes.get(actual)?.ownership === "owned") return true;
   const declaration = structs.get(actual);
+  if (parseDynamicArrayType(actual)) return true;
   const array = parseFixedArrayType(actual);
   if (array) return hasCleanupType(array.elementType, structs, foreignTypes, visiting);
   if (!declaration) return false;
@@ -2368,6 +2403,11 @@ function validateType(
     validateType({ name: slice.elementType, location: type.location }, structs, enums, foreignNamedTypes, fileName, false);
     return;
   }
+  const dynamic = parseDynamicArrayType(type.name);
+  if (dynamic) {
+    validateType({ name: dynamic.elementType, location: type.location }, structs, enums, foreignNamedTypes, fileName, false);
+    return;
+  }
   const array = parseFixedArrayType(type.name);
   if (array) {
     validateType({ name: array.elementType, location: type.location }, structs, enums, foreignNamedTypes, fileName, false);
@@ -2383,6 +2423,8 @@ function validateType(
 
 function containsSliceType(name: string): boolean {
   if (parseSliceType(name)) return true;
+  const dynamic = parseDynamicArrayType(name);
+  if (dynamic) return containsSliceType(dynamic.elementType);
   const array = parseFixedArrayType(name);
   return array ? containsSliceType(array.elementType) : false;
 }

@@ -212,11 +212,20 @@ read-only slices may share one array in a call, while any overlap involving an
 `inout` slice is rejected. The slice descriptor owns neither its buffer nor its
 elements and performs no cleanup.
 
-The language reserves `Array<T>` for a growable owned buffer. Its allocation,
-capacity, and move behavior will be designed alongside user-defined generics.
-Escaping slices, subslices, and returned views require an explicit inferred or
-declared lifetime contract informed by real APIs. `T[]` remains unassigned until
-those contracts are proven.
+`Array<T>()` explicitly creates a growable owned buffer; array literals remain
+fixed inline arrays. `Array<T>` carries its allocation, initialized length, and
+capacity as one move-only value. `push` requires addressable `let` storage,
+checks capacity arithmetic, grows geometrically, and transfers or copies the
+element according to its ordinary ownership rules. Safe indexing uses the same
+bounds check as fixed arrays. Destruction walks initialized elements in reverse
+order before freeing the buffer.
+
+A growable array can be borrowed as `Slice<T>` for a non-escaping call. The
+first slice intentionally omits removal, reservation, and fallible allocation;
+those APIs need an optional/result and allocator policy rather than sentinel
+values. Allocation failure currently traps. Escaping slices, subslices, and
+returned views require an explicit inferred or declared lifetime contract
+informed by real APIs. `T[]` remains unassigned until those contracts are proven.
 
 ## Generics
 
@@ -544,6 +553,8 @@ Clang declaration source locations rather than text-searching SDK headers.
 - argument-inferred generic function calls and explicit generic aggregates with
   C monomorphization.
 - statically dispatched nominal trait constraints on generic parameters.
+- growable owned `Array<T>` buffers with checked indexing and deterministic
+  element cleanup.
 
 ### 0.25: Portable object model
 

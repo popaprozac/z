@@ -315,7 +315,23 @@ Slice parameters are already borrowed, so read-only slices omit `in`; `inout`
 creates an exclusive mutable element borrow and remains explicit at both sides.
 Slices cannot yet be returned, stored in fields or enums, or captured in local
 bindings. This non-escaping boundary provides lifetime inference without public
-lifetime annotations. Growable `Array<T>` remains future work, and `T[]` stays
+lifetime annotations.
+
+`Array<T>` is an explicitly allocated, growable owned buffer:
+
+```z
+let values = Array<i32>();
+values.push(10);
+values.push(20);
+values[1] = 42;
+```
+
+It exposes checked indexing plus read-only `length` and `capacity` properties.
+`push` requires `let` storage because growth may replace the allocation. The
+array moves as one owner, borrows as `Slice<T>`, and destroys initialized
+elements in reverse order before releasing its buffer. Capacity growth and
+allocation-size arithmetic are checked; allocation failure currently traps.
+Removal, reservation, and fallible allocation APIs remain upcoming. `T[]` stays
 unassigned rather than hiding allocation or borrowing.
 
 User-defined generic structs, classes, and functions use TypeScript-style type
