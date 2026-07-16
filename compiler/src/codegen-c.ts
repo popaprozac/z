@@ -61,6 +61,7 @@ export function generateC(program: Program, sourceName: string, semanticInfo: Se
     "#include <stdbool.h>",
     "#include <stddef.h>",
     "#include <stdint.h>",
+    "#include <stdlib.h>",
   ];
 
   for (const declaration of program.imports) {
@@ -87,6 +88,11 @@ export function generateC(program: Program, sourceName: string, semanticInfo: Se
     if (hasCleanupType(declaration.name, structs)) {
       lines.push(`static void ${deinitName(declaration.name)}(${structName(declaration.name)} *self);`);
     }
+    if (declaration.kind === "class") {
+      lines.push(`static ${structName(declaration.name)} *${retainName(declaration.name)}(${structName(declaration.name)} *value);`);
+      lines.push(`static void ${releaseName(declaration.name)}(${structName(declaration.name)} *value);`);
+      lines.push(`${generateClassConstructorSignature(declaration, structs, enums, semanticInfo.foreignNamedTypes)};`);
+    }
     for (const method of declaration.methods) {
       lines.push(`${generateFunctionSignature(method, structs, enums, declaration, semanticInfo.foreignNamedTypes)};`);
     }
@@ -101,6 +107,9 @@ export function generateC(program: Program, sourceName: string, semanticInfo: Se
   for (const declaration of program.structs) {
     if (hasCleanupType(declaration.name, structs)) {
       lines.push(generateDeinit(declaration, structs, enums, functions, semanticInfo), "");
+    }
+    if (declaration.kind === "class") {
+      lines.push(generateClassLifecycle(declaration, structs, enums, semanticInfo.foreignNamedTypes), "");
     }
     for (const method of declaration.methods) {
       lines.push(generateFunction(method, structs, enums, functions, declaration, semanticInfo), "");
@@ -118,10 +127,56 @@ function generateStruct(
   enums: Map<string, EnumDeclaration>,
   foreignNamedTypes: SemanticInfo["foreignNamedTypes"],
 ): string {
-  const fields = declaration.fields
-    .map((field) => `  ${mapType(field.type.name, structs, enums, foreignNamedTypes)} ${field.name};`)
-    .join("\n");
+  const fields = [
+    ...(declaration.kind === "class" ? ["  size_t _z_refcount;"] : []),
+    ...declaration.fields.map(
+      (field) => `  ${mapType(field.type.name, structs, enums, foreignNamedTypes)} ${field.name};`,
+    ),
+  ].join("\n");
   return `struct ${structName(declaration.name)} {\n${fields}\n};`;
+}
+
+function generateClassConstructorSignature(
+  declaration: StructDeclaration,
+  structs: Map<string, StructDeclaration>,
+  enums: Map<string, EnumDeclaration>,
+  foreignNamedTypes: SemanticInfo["foreignNamedTypes"],
+): string {
+  const parameters = declaration.fields.map((field) => (
+    `${mapType(field.type.name, structs, enums, foreignNamedTypes)} ${field.name}`
+  ));
+  return `static ${structName(declaration.name)} *${constructorName(declaration.name)}(${parameters.join(", ") || "void"})`;
+}
+
+function generateClassLifecycle(
+  declaration: StructDeclaration,
+  structs: Map<string, StructDeclaration>,
+  enums: Map<string, EnumDeclaration>,
+  foreignNamedTypes: SemanticInfo["foreignNamedTypes"],
+): string {
+  const cName = structName(declaration.name);
+  const assignments = declaration.fields.map((field) => `  self->${field.name} = ${field.name};`).join("\n");
+  return `static ${cName} *${retainName(declaration.name)}(${cName} *value) {
+  if (value != NULL) value->_z_refcount += 1;
+  return value;
+}
+
+static void ${releaseName(declaration.name)}(${cName} *value) {
+  if (value == NULL) return;
+  value->_z_refcount -= 1;
+  if (value->_z_refcount == 0) {
+    ${deinitName(declaration.name)}(value);
+    free(value);
+  }
+}
+
+${generateClassConstructorSignature(declaration, structs, enums, foreignNamedTypes)} {
+  ${cName} *self = (${cName} *)malloc(sizeof(${cName}));
+  if (self == NULL) abort();
+  self->_z_refcount = 1;
+${assignments}
+  return self;
+}`;
 }
 
 function generateEnum(
@@ -251,7 +306,10 @@ function generateDeinit(
   if (localCleanup) body.push(indent(localCleanup, 2));
   for (const field of [...declaration.fields].reverse()) {
     if (hasCleanupType(field.type.name, structs)) {
-      body.push(`  ${deinitName(field.type.name)}(&(self->${field.name}));`);
+      const fieldDeclaration = structs.get(field.type.name);
+      body.push(fieldDeclaration?.kind === "class"
+        ? `  ${releaseName(field.type.name)}(self->${field.name});`
+        : `  ${deinitName(field.type.name)}(&(self->${field.name}));`);
     }
   }
   return `static void ${deinitName(declaration.name)}(${structName(declaration.name)} *self) {\n${body.join("\n")}\n}`;
@@ -268,12 +326,21 @@ function generateFunctionSignature(
   const name = receiver ? methodName(receiver.name, declaration.name) : declaration.name;
   const parameters = declaration.parameters.map((parameter) => {
     const type = mapType(parameter.type.name, structs, enums, foreignNamedTypes);
+    const aggregate = structs.get(parameter.type.name);
+    if (aggregate?.kind === "class") {
+      if (parameter.mode === "in") return `const ${structName(aggregate.name)} *${parameter.name}`;
+      if (parameter.mode === "inout" || parameter.mode === "out") return `${structName(aggregate.name)} **${parameter.name}`;
+      return `${type}${parameter.name}`;
+    }
     if (parameter.mode === "in") return `const ${type} *${parameter.name}`;
     if (parameter.mode === "inout" || parameter.mode === "out") return `${type} *${parameter.name}`;
     return `${type} ${parameter.name}`;
   });
   if (receiver) {
-    if (declaration.receiverMode === "move") parameters.unshift(`${structName(receiver.name)} self`);
+    if (receiver.kind === "class") {
+      const receiverConst = declaration.receiverMode === "inout" ? "" : "const ";
+      parameters.unshift(`${receiverConst}${structName(receiver.name)} *self`);
+    } else if (declaration.receiverMode === "move") parameters.unshift(`${structName(receiver.name)} self`);
     else {
       const receiverConst = declaration.receiverMode === "inout" ? "" : "const ";
       parameters.unshift(`${receiverConst}${structName(receiver.name)} *self`);
@@ -428,7 +495,12 @@ function generateNativeOutCall(
 }
 
 function generateStoredValue(name: string, context: GenerationContext): string {
-  if (name === "this") return context.owner.receiverMode === "move" ? "self" : "(*self)";
+  if (name === "this") {
+    if (context.receiver?.kind === "class") return "self";
+    return context.owner.receiverMode === "move" ? "self" : "(*self)";
+  }
+  const type = context.localTypes.get(name);
+  if (type && context.structs.get(type)?.kind === "class" && context.parameterModes.get(name) === "in") return name;
   return context.parameterModes.get(name) ? `(*${name})` : name;
 }
 
@@ -524,6 +596,11 @@ function generateValueCleanup(
     const release = `${foreign.release}(${value});`;
     return conditions.length > 0 ? `if (${conditions.join(" && ")}) ${release}` : release;
   }
+  const declaration = context.structs.get(type);
+  if (declaration?.kind === "class") {
+    const release = `${releaseName(type)}(${value});`;
+    return liveFlag ? `if (${liveFlag}) ${release}` : release;
+  }
   const cleanup = `${deinitName(type)}(&(${value}));`;
   return liveFlag ? `if (${liveFlag}) ${cleanup}` : cleanup;
 }
@@ -595,6 +672,11 @@ function generateLocalDeclaration(
     return mutable ? `${cType}${name}` : `${cType} const ${name}`;
   }
   if (type.startsWith("__z_objc:")) {
+    const cType = mapType(type, structs, enums, foreignNamedTypes);
+    return mutable ? `${cType}${name}` : `${cType} const ${name}`;
+  }
+  const declaration = structs.get(type);
+  if (declaration?.kind === "class") {
     const cType = mapType(type, structs, enums, foreignNamedTypes);
     return mutable ? `${cType}${name}` : `${cType} const ${name}`;
   }
@@ -759,8 +841,12 @@ function generateExpression(expression: Expression, context: GenerationContext):
         return context.semanticInfo.foreignConstantNames.get(expression.location.offset)!;
       }
       if (expression.name === "this") {
-        const value = context.owner.receiverMode === "move" ? "self" : "(*self)";
-        if (!context.semanticInfo.movedExpressions.has(expression.location.offset)) return value;
+        const value = context.receiver?.kind === "class"
+          ? "self"
+          : context.owner.receiverMode === "move" ? "self" : "(*self)";
+        if (!context.semanticInfo.movedExpressions.has(expression.location.offset)) {
+          return maybeRetainClass(expression, value, context);
+        }
         const liveFlag = context.liveFlags.get("this");
         if (!liveFlag) throw new Error("missing ownership flag for moved receiver `this`");
         return `(${liveFlag} = false, ${value})`;
@@ -770,17 +856,27 @@ function generateExpression(expression: Expression, context: GenerationContext):
         || context.parameterModes.get(expression.name) === "inout"
         || context.parameterModes.get(expression.name) === "out"
       ) {
-        return `(*${expression.name})`;
+        const type = context.localTypes.get(expression.name);
+        const value = type && context.structs.get(type)?.kind === "class" && context.parameterModes.get(expression.name) === "in"
+          ? expression.name
+          : `(*${expression.name})`;
+        return maybeRetainClass(expression, value, context);
       }
       if (context.semanticInfo.movedExpressions.has(expression.location.offset)) {
         const liveFlag = context.liveFlags.get(expression.name);
         if (!liveFlag) throw new Error(`missing ownership flag for moved value ${JSON.stringify(expression.name)}`);
         return `(${liveFlag} = false, ${expression.name})`;
       }
-      return expression.name;
+      return maybeRetainClass(expression, expression.name, context);
     case "binary":
       return `(${generateExpression(expression.left, context)} ${expression.operator} ${generateExpression(expression.right, context)})`;
     case "structExpression": {
+      const declaration = context.structs.get(expression.typeName);
+      if (declaration?.kind === "class") {
+        const provided = new Map(expression.fields.map((field) => [field.name, field.expression]));
+        const fields = declaration.fields.map((field) => generateExpression(provided.get(field.name)!, context));
+        return `${constructorName(declaration.name)}(${fields.join(", ")})`;
+      }
       const fields = expression.fields
         .map((field) => `.${field.name} = ${generateExpression(field.expression, context)}`)
         .join(", ");
@@ -813,11 +909,20 @@ function generateExpression(expression: Expression, context: GenerationContext):
       }
       if (isForeignMember(expression, context)) return expression.property;
       if (expression.object.kind === "identifier" && expression.object.name === "this") {
-        return context.owner.receiverMode === "move"
+        const value = context.receiver?.kind === "class"
+          ? `self->${expression.property}`
+          : context.owner.receiverMode === "move"
           ? `self.${expression.property}`
           : `self->${expression.property}`;
+        return maybeRetainClass(expression, value, context);
       }
-      return `(${generateExpression(expression.object, context)}).${expression.property}`;
+      const owner = context.structs.get(inferExpressionType(expression.object, context));
+      const access = owner?.kind === "class" ? "->" : ".";
+      return maybeRetainClass(
+        expression,
+        `(${generateExpression(expression.object, context)})${access}${expression.property}`,
+        context,
+      );
     }
     case "call": {
       const objcCall = context.semanticInfo.objcCalls.get(expression.location.offset);
@@ -839,7 +944,9 @@ function generateExpression(expression: Expression, context: GenerationContext):
         const declaration = context.structs.get(receiverType)!;
         const method = declaration.methods.find((candidate) => candidate.name === expression.callee.property)!;
         const receiver = generateExpression(expression.callee.object, context);
-        const receiverArgument = method.receiverMode === "move"
+        const receiverArgument = declaration.kind === "class"
+          ? receiver
+          : method.receiverMode === "move"
           ? receiver
           : expression.callee.object.kind === "identifier" && expression.callee.object.name === "this"
             ? context.owner.receiverMode === "move" ? "&(self)" : "self"
@@ -852,10 +959,20 @@ function generateExpression(expression: Expression, context: GenerationContext):
   }
 }
 
+function maybeRetainClass(expression: Expression, value: string, context: GenerationContext): string {
+  if (!context.semanticInfo.classCopies.has(expression.location.offset)) return value;
+  const type = inferExpressionType(expression, context);
+  const declaration = context.structs.get(type);
+  if (declaration?.kind !== "class") return value;
+  return `${retainName(type)}(${value})`;
+}
+
 function generateCallArgument(expression: Expression, context: GenerationContext): string {
   const value = generateExpression(expression, context);
+  const nativeIn = context.semanticInfo.nativeArgumentAccesses.get(expression.location.offset) === "in";
+  const classIn = nativeIn && context.structs.get(inferExpressionType(expression, context))?.kind === "class";
   return context.semanticInfo.foreignArgumentAccesses.get(expression.location.offset) === "in"
-    || context.semanticInfo.nativeArgumentAccesses.get(expression.location.offset) === "in"
+    || (nativeIn && !classIn)
     ? `&(${value})`
     : value;
 }
@@ -974,7 +1091,8 @@ function mapType(
 ): string {
   const primitive = primitiveTypeNames[name];
   if (primitive) return primitive;
-  if (structs.has(name)) return structName(name);
+  const aggregate = structs.get(name);
+  if (aggregate) return aggregate.kind === "class" ? `${structName(name)} *` : structName(name);
   if (enums.has(name)) return enumName(name);
   const foreignNamed = foreignNamedTypes.get(name);
   if (foreignNamed) return foreignNamed.cName;
@@ -1015,6 +1133,18 @@ function deinitName(owner: string): string {
   return `${structName(owner)}_deinit`;
 }
 
+function constructorName(owner: string): string {
+  return `${structName(owner)}_new`;
+}
+
+function retainName(owner: string): string {
+  return `${structName(owner)}_retain`;
+}
+
+function releaseName(owner: string): string {
+  return `${structName(owner)}_release`;
+}
+
 function nextLiveFlag(name: string, counter: { value: number }): string {
   return `_z_live_${name}_${counter.value++}`;
 }
@@ -1029,6 +1159,7 @@ function hasCleanupType(
   if (foreignTypes.get(type)?.ownership === "owned") return true;
   const declaration = structs.get(type);
   if (!declaration) return false;
+  if (declaration.kind === "class") return true;
   if (declaration.deinitializer) return true;
   visiting.add(type);
   const result = declaration.fields.some((field) => hasCleanupType(field.type.name, structs, foreignTypes, visiting));
@@ -1047,7 +1178,7 @@ function orderedStructs(
     visited.add(declaration.name);
     for (const field of declaration.fields) {
       const nested = structs.get(field.type.name);
-      if (nested) visit(nested);
+      if (nested?.kind === "struct") visit(nested);
     }
     result.push(declaration);
   };

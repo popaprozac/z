@@ -7,6 +7,7 @@ export type SourceLocation = {
 export type Program = {
   readonly kind: "program";
   readonly imports: ImportDeclaration[];
+  readonly traits: TraitDeclaration[];
   readonly structs: StructDeclaration[];
   readonly enums: EnumDeclaration[];
   readonly functions: FunctionDeclaration[];
@@ -27,11 +28,19 @@ export type ImportBinding = {
 };
 
 export type StructDeclaration = {
-  readonly kind: "struct";
+  readonly kind: "struct" | "class";
   readonly name: string;
+  readonly implements: TypeReference[];
   readonly fields: FieldDeclaration[];
   readonly methods: FunctionDeclaration[];
   readonly deinitializer: DeinitDeclaration | null;
+  readonly location: SourceLocation;
+};
+
+export type TraitDeclaration = {
+  readonly kind: "trait";
+  readonly name: string;
+  readonly methods: FunctionDeclaration[];
   readonly location: SourceLocation;
 };
 

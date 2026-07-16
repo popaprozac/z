@@ -1,0 +1,39 @@
+import stdio from "stdio.h";
+
+trait Counted {
+  function value(): i32;
+  function add(inout this, amount: i32): void;
+}
+
+class Counter implements Counted {
+  count: i32;
+
+  function value(): i32 {
+    return this.count;
+  }
+
+  function add(inout this, amount: i32): void {
+    this.count = this.count + amount;
+  }
+
+  deinit {
+    stdio.printf("drop=%d\n", this.count);
+  }
+}
+
+function share(counter: Counter): Counter {
+  return counter;
+}
+
+function inspect(in counter: Counter): i32 {
+  return counter.value();
+}
+
+function main(): i32 {
+  const first = Counter { count: 40 };
+  first.add(2);
+  const second = first;
+  const third = share(second);
+  stdio.printf("first=%d second=%d third=%d\n", first.value(), second.value(), inspect(third));
+  return 0;
+}

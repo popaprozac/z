@@ -40,6 +40,8 @@ async semantics that are absent from the header itself.
 `const` declares immutable storage and `let` declares mutable, lexically scoped
 storage. Z has no `var`: function-scoped declarations and hoisting do not belong
 in the language. For value structs, immutability applies through their fields.
+For classes, `const` fixes the reference binding but does not make the shared
+instance deeply immutable.
 
 ```z
 const origin = Point { x: 1, y: 2 };
@@ -61,8 +63,10 @@ function add(inout this, amount: i32): void    // exclusive mutable borrow
 function close(move this): void                 // ownership transfer
 ```
 
-An `inout` method requires addressable storage rooted in a `let`; it cannot be
-called through a `const`, immutable parameter, immutable receiver, or temporary.
+On a struct, an `inout` method requires addressable storage rooted in a `let`;
+it cannot be called through a `const`, immutable parameter, immutable receiver,
+or temporary. On a class, `inout this` mutates the referenced instance and may
+be called through a `const` reference binding.
 The borrow lasts for the call and does not transfer ownership. `move this`
 passes the receiver by value and transfers ownership to the method. The owned
 receiver may be mutated and is cleaned up on every exit unless returned or
@@ -139,6 +143,23 @@ passing, return, and owning field initialization move the value. The compiler
 tracks available, moved, and possibly-moved states through branches and matches;
 using a value after ownership may have left is an error. Backend live flags
 preserve exactly-once cleanup when runtime branches move different values.
+
+Classes are the managed-reference exception to move-only cleanup. A class
+literal allocates one instance with a strong reference count. Binding, passing,
+storing, or returning an existing reference retains it; every owning scope and
+field releases it. The user `deinit` body and reverse-order field cleanup run
+when the last strong reference is released, followed by storage reclamation.
+The bootstrap counter is single-threaded; atomicity and actor/executor rules
+must be designed with concurrency rather than accidentally frozen now. Cycles
+require future weak references and/or ORC-style cycle handling.
+
+`trait` declarations contain method signatures, including receiver capability,
+parameter capability, return type, and error type. `struct T implements X` and
+`class T implements X` are checked explicitly and nominally. The first slice is
+static conformance only: concrete values call their concrete methods, while
+trait-typed storage, existential representation, generic constraints, and
+dynamic dispatch remain later design work. Z-defined classes intentionally do
+not have inheritance.
 
 ## Numeric types
 
@@ -442,6 +463,14 @@ Clang declaration source locations rather than text-searching SDK headers.
 - tagged enums and exhaustive `match`;
 - typed `throws`, `try`, and `attempt`;
 - cleanup lowering across every exit path.
+
+### 0.25: Portable object model
+
+- ARC-managed classes with reference identity;
+- class lifecycle lowering and deterministic final `deinit`;
+- traits with explicit, statically checked `implements` conformance;
+- compiler and editor awareness for class and trait declarations;
+- trait values and dynamic dispatch deferred until real APIs shape them.
 
 ### 0.3: Safe native import
 

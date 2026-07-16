@@ -10,6 +10,9 @@ export type TokenKind =
   | "as"
   | "function"
   | "struct"
+  | "class"
+  | "trait"
+  | "implements"
   | "enum"
   | "deinit"
   | "match"
@@ -72,6 +75,9 @@ const keywords = new Map<string, TokenKind>([
   ["as", "as"],
   ["function", "function"],
   ["struct", "struct"],
+  ["class", "class"],
+  ["trait", "trait"],
+  ["implements", "implements"],
   ["enum", "enum"],
   ["deinit", "deinit"],
   ["match", "match"],

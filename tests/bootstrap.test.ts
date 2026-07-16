@@ -1564,6 +1564,134 @@ test("type-checks assignments and replaces cleanup-bearing values safely", () =>
   assert.match(generated, /Z_Resource_deinit\(&\(\(holder\)\.resource\)\);\n\s+\(holder\)\.resource = _z_replacement_\d+;/);
 });
 
+test("runs ARC classes with shared identity and one final deinit", () => {
+  const example = resolve(projectRoot, "examples/classes.z");
+  const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, "first=42 second=42 third=42\ndrop=42\n");
+
+  const generated = compileToC(readFileSync(example, "utf8"), example);
+  assert.match(generated, /struct Z_Counter \{\n\s+size_t _z_refcount;/);
+  assert.match(generated, /Z_Counter \* const second = Z_Counter_retain\(first\);/);
+  assert.match(generated, /static int32_t inspect\(const Z_Counter \*counter\)/);
+  assert.match(generated, /inspect\(third\)/);
+  assert.match(generated, /static void Z_Counter_release\(Z_Counter \*value\)/);
+  assert.match(generated, /if \(value->_z_refcount == 0\) \{\n\s+Z_Counter_deinit\(value\);\n\s+free\(value\);/);
+});
+
+test("checks explicit trait conformance for structs and classes", () => {
+  const validStruct = `
+    trait Measured {
+      function measure(): i32;
+    }
+    struct Size implements Measured {
+      value: i32;
+      function measure(): i32 { return this.value; }
+    }
+    function main(): i32 {
+      const size = Size { value: 42 };
+      return size.measure();
+    }
+  `;
+  assert.match(compileToC(validStruct, "trait-struct.z"), /Z_Size_measure/);
+
+  const missing = `
+    trait Named { function name(): cstring; }
+    class User implements Named { id: i32; }
+    function main(): i32 { return 0; }
+  `;
+  assert.throws(
+    () => compileToC(missing, "trait-missing.z"),
+    /class "User" does not implement Named\.name/,
+  );
+
+  const mismatch = `
+    trait Adjustable { function add(inout this, amount: i32): void; }
+    class Counter implements Adjustable {
+      value: i32;
+      function add(amount: i32): void {}
+    }
+    function main(): i32 { return 0; }
+  `;
+  assert.throws(
+    () => compileToC(mismatch, "trait-mismatch.z"),
+    /does not match trait requirement Adjustable\.add/,
+  );
+
+  const unknown = `
+    struct Value implements Missing { value: i32; }
+    function main(): i32 { return 0; }
+  `;
+  assert.throws(() => compileToC(unknown, "trait-unknown.z"), /unknown trait "Missing"/);
+});
+
+test("keeps class binding immutability separate from instance mutation", () => {
+  const source = `
+    class Counter {
+      value: i32;
+      function add(inout this, amount: i32): void {
+        this.value = this.value + amount;
+      }
+      function consume(move this): i32 { return this.value; }
+    }
+    function main(): i32 {
+      const counter = Counter { value: 1 };
+      counter.add(2);
+      return counter.value;
+    }
+  `;
+  assert.throws(
+    () => compileToC(source, "class-move-this.z"),
+    /class methods cannot declare `move this`/,
+  );
+  const withoutConsume = source.replace("      function consume(move this): i32 { return this.value; }\n", "");
+  assert.match(compileToC(withoutConsume, "class-const-mutation.z"), /Z_Counter_add\(counter, 2\)/);
+
+  const implicitMutation = withoutConsume.replace(
+    "      function add(inout this, amount: i32): void {",
+    "      function add(amount: i32): void {",
+  );
+  assert.throws(
+    () => compileToC(implicitMutation, "class-implicit-mutation.z"),
+    /cannot mutate a field through immutable binding "this"/,
+  );
+
+  const immutableBorrow = withoutConsume.replace(
+    "    function main(): i32 {",
+    "    function update(in counter: Counter): void { counter.add(1); }\n    function main(): i32 {",
+  );
+  assert.throws(
+    () => compileToC(immutableBorrow, "class-immutable-borrow.z"),
+    /mutable method "add" cannot be called through immutable binding "counter"/,
+  );
+});
+
+test("exposes Z classes and traits to editor services", () => {
+  const source = `
+    trait Counted { function value(): i32; }
+    class Counter implements Counted {
+      count: i32;
+      function value(): i32 { return this.count; }
+    }
+    function main(): i32 {
+      const counter = Counter { count: 1 };
+      Cou;
+      return counter.value();
+    }
+  `;
+  const completionOffset = source.indexOf("Cou;") + 3;
+  const items = completions(source, "class-editor.z", completionOffset);
+  assert.equal(items.find((item) => item.label === "Counter")?.kind, 7);
+  assert.equal(items.find((item) => item.label === "Counted")?.kind, 8);
+
+  const valid = source.replace("      Cou;\n", "");
+  const classOffset = valid.indexOf("Counter");
+  assert.match(hover(valid, "class-editor.z", classOffset + 1)?.contents.value ?? "", /class Counter/);
+  const traitUse = valid.indexOf("Counted", valid.indexOf("implements"));
+  const target = definition(valid, "file:///class-editor.z", traitUse + 1);
+  assert.equal(target?.range.start.line, 1);
+});
+
 test("compiles and runs the first native program", () => {
   const example = resolve(projectRoot, "examples/first.z");
   const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
@@ -1612,6 +1740,8 @@ test("editor grammar tracks keywords without reserving Result variants", () => {
   assert.match(keywordPattern, /out\|inout/);
   assert.match(keywordPattern, /\bin\b/);
   assert.match(keywordPattern, /\bas\b/);
+  assert.match(keywordPattern, /implements/);
+  assert.match(grammar.repository.declarations.patterns.map((pattern: { match: string }) => pattern.match).join(" "), /trait\|class/);
   assert.match(constantPattern, /true\|false/);
   assert.match(constantPattern, /null/);
   assert.match(constantPattern, /this/);
@@ -1623,4 +1753,5 @@ test("editor grammar tracks keywords without reserving Result variants", () => {
 
   const extension = readFileSync(resolve(projectRoot, "editors/vscode/extension.js"), "utf8");
   assert.match(extension, /6: vscode\.CompletionItemKind\.Variable/);
+  assert.match(extension, /8: vscode\.CompletionItemKind\.Interface/);
 });

@@ -35,6 +35,7 @@ const completionKinds = {
   enum: 13,
   constant: 21,
   struct: 22,
+  interface: 8,
 } as const;
 
 export function diagnostics(source: string, fileName: string): ServiceDiagnostic[] {
@@ -75,6 +76,7 @@ export const semanticTokenTypes = [
   "property",
   "variable",
   "parameter",
+  "interface",
 ] as const;
 
 export const semanticTokenModifiers = ["declaration", "readonly", "defaultLibrary"] as const;
@@ -91,7 +93,9 @@ export function semanticTokens(source: string, fileName: string): { readonly dat
     bindingsByName.set(binding.name, named);
   }
   const functionNames = new Set(context.program.functions.map((item) => item.name));
-  const structNames = new Set(context.program.structs.map((item) => item.name));
+  const structNames = new Set(context.program.structs.filter((item) => item.kind === "struct").map((item) => item.name));
+  const classNames = new Set(context.program.structs.filter((item) => item.kind === "class").map((item) => item.name));
+  const traitNames = new Set(context.program.traits.map((item) => item.name));
   const enumNames = new Set(context.program.enums.map((item) => item.name));
   const modules = new Map([...context.foreignModules.keys()].map((name) => [name, context.foreignModules.get(name)!]));
   const tokens = lex(source, fileName);
@@ -126,6 +130,14 @@ export function semanticTokens(source: string, fileName: string): { readonly dat
     }
     if (structNames.has(token.text) || context.semanticInfo.foreignNamedTypes.has(token.text)) {
       classifications.set(token.location.offset, { type: semanticTokenTypes.indexOf("type"), modifiers: previous?.kind === "struct" ? 1 : 0 });
+      continue;
+    }
+    if (classNames.has(token.text)) {
+      classifications.set(token.location.offset, { type: semanticTokenTypes.indexOf("class"), modifiers: previous?.kind === "class" ? 1 : 0 });
+      continue;
+    }
+    if (traitNames.has(token.text)) {
+      classifications.set(token.location.offset, { type: semanticTokenTypes.indexOf("interface"), modifiers: previous?.kind === "trait" ? 1 : 0 });
       continue;
     }
     if (enumNames.has(token.text)) {
@@ -234,7 +246,7 @@ export function definition(source: string, uri: string, offset: number): Locatio
     if (token.text !== word.text) continue;
     const previous = tokens[index - 1];
     const next = tokens[index + 1];
-    const declarationKeyword = previous && ["function", "struct", "enum", "const", "let"].includes(previous.kind);
+    const declarationKeyword = previous && ["function", "struct", "class", "trait", "enum", "const", "let"].includes(previous.kind);
     const namedSlot = next?.kind === "colon";
     const importSlot = previous?.kind === "leftBrace" || previous?.kind === "comma" || previous?.kind === "as";
     if (declarationKeyword || namedSlot || importSlot) candidates.push(token.location);
@@ -282,7 +294,14 @@ function symbolCompletions(source: string, fileName: string, offset: number): Co
     });
   }
   for (const declaration of context.program.structs) {
-    items.push({ label: declaration.name, kind: completionKinds.struct, detail: `struct ${declaration.name}` });
+    items.push({
+      label: declaration.name,
+      kind: declaration.kind === "class" ? completionKinds.class : completionKinds.struct,
+      detail: `${declaration.kind} ${declaration.name}`,
+    });
+  }
+  for (const declaration of context.program.traits) {
+    items.push({ label: declaration.name, kind: completionKinds.interface, detail: `trait ${declaration.name}` });
   }
   for (const declaration of context.program.enums) {
     items.push({ label: declaration.name, kind: completionKinds.enum, detail: `enum ${declaration.name}` });
@@ -562,7 +581,9 @@ function declarationHover(source: string, program: Program | null, name: string,
     const fn = program.functions.find((item) => item.name === name);
     if (fn) return markdownHover(zFunctionDetail(fn.name, fn.parameters, fn.returnType.name), source, start, end);
     const struct = program.structs.find((item) => item.name === name);
-    if (struct) return markdownHover(`struct ${struct.name}`, source, start, end);
+    if (struct) return markdownHover(`${struct.kind} ${struct.name}`, source, start, end);
+    const trait = program.traits.find((item) => item.name === name);
+    if (trait) return markdownHover(`trait ${trait.name}`, source, start, end);
     const enumeration = program.enums.find((item) => item.name === name);
     if (enumeration) return markdownHover(`enum ${enumeration.name}`, source, start, end);
   }

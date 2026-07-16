@@ -6,6 +6,7 @@ import type {
   SourceLocation,
   Statement,
   StructDeclaration,
+  TraitDeclaration,
   TypeReference,
 } from "./ast.ts";
 import { DiagnosticError } from "./diagnostics.ts";
@@ -38,6 +39,7 @@ type ValueType = string | "unknown" | "never";
 
 export type SemanticInfo = {
   readonly movedExpressions: ReadonlySet<number>;
+  readonly classCopies: ReadonlySet<number>;
   readonly foreignTypes: ReadonlyMap<string, ForeignPointerType>;
   readonly foreignCallTypes: ReadonlyMap<number, string>;
   readonly foreignNamedTypes: ReadonlyMap<string, ForeignNamedType>;
@@ -61,6 +63,7 @@ export type SemanticInfo = {
 
 type AnalysisState = {
   readonly movedExpressions: Set<number>;
+  readonly classCopies: Set<number>;
   readonly foreignTypes: ReadonlyMap<string, ForeignPointerType>;
   readonly foreignCallTypes: Map<number, string>;
   readonly foreignNamedTypes: ReadonlyMap<string, ForeignNamedType>;
@@ -89,6 +92,7 @@ type SymbolValue =
   | { readonly kind: "foreignType"; readonly declaration: ForeignNamedType }
   | { readonly kind: "foreignModule"; readonly module: ForeignModule }
   | { readonly kind: "struct"; readonly declaration: StructDeclaration }
+  | { readonly kind: "trait"; readonly declaration: TraitDeclaration }
   | { readonly kind: "enum"; readonly declaration: EnumDeclaration };
 
 const integerTypes = new Set(["i8", "u8", "i16", "u16", "i32", "u32", "i64", "u64", "isize", "usize"]);
@@ -120,6 +124,7 @@ export function analyze(
   }
   const state: AnalysisState = {
     movedExpressions: new Set(),
+    classCopies: new Set(),
     foreignTypes,
     foreignCallTypes: new Map(),
     foreignNamedTypes,
@@ -142,6 +147,7 @@ export function analyze(
   };
   const globals = new Map<string, SymbolValue>();
   const structs = new Map<string, StructDeclaration>();
+  const traits = new Map<string, TraitDeclaration>();
   const enums = new Map<string, EnumDeclaration>();
 
   for (const declaration of program.imports) {
@@ -187,6 +193,10 @@ export function analyze(
     declareGlobal(globals, declaration.name, { kind: "struct", declaration }, declaration.location, fileName);
     structs.set(declaration.name, declaration);
   }
+  for (const declaration of program.traits) {
+    declareGlobal(globals, declaration.name, { kind: "trait", declaration }, declaration.location, fileName);
+    traits.set(declaration.name, declaration);
+  }
   for (const declaration of program.enums) {
     declareGlobal(globals, declaration.name, { kind: "enum", declaration }, declaration.location, fileName);
     enums.set(declaration.name, declaration);
@@ -199,6 +209,12 @@ export function analyze(
   for (const declaration of program.structs) {
     analyzeStructDeclaration(declaration, structs, enums, foreignNamedTypes, fileName);
   }
+  for (const declaration of program.traits) {
+    analyzeTraitDeclaration(declaration, structs, enums, foreignNamedTypes, fileName);
+  }
+  for (const declaration of program.structs) {
+    validateTraitConformance(declaration, traits, fileName);
+  }
   for (const declaration of program.enums) {
     analyzeEnumDeclaration(declaration, structs, enums, foreignNamedTypes, fileName);
   }
@@ -208,7 +224,7 @@ export function analyze(
       throw new DiagnosticError(
         fileName,
         declaration.location,
-        `\`${declaration.receiverMode} this\` is only valid on a struct method`,
+        `\`${declaration.receiverMode} this\` is only valid on a struct method (or class method)`,
       );
     }
     validateFunctionSignature(declaration, structs, enums, foreignNamedTypes, fileName);
@@ -266,11 +282,15 @@ function analyzeStructDeclaration(
   foreignNamedTypes: ReadonlyMap<string, ForeignNamedType>,
   fileName: string,
 ): void {
+  if (declaration.kind === "class" && declaration.methods.some((method) => method.receiverMode === "move")) {
+    const method = declaration.methods.find((candidate) => candidate.receiverMode === "move")!;
+    throw new DiagnosticError(fileName, method.location, "class methods cannot declare `move this`; ARC references may have aliases");
+  }
   const members = new Set<string>();
   for (const field of declaration.fields) {
     validateUserName(field.name, field.location, fileName);
     if (members.has(field.name)) {
-      throw new DiagnosticError(fileName, field.location, `duplicate member ${JSON.stringify(field.name)} in struct ${JSON.stringify(declaration.name)}`);
+      throw new DiagnosticError(fileName, field.location, `duplicate member ${JSON.stringify(field.name)} in ${declaration.kind} ${JSON.stringify(declaration.name)}`);
     }
     members.add(field.name);
     validateType(field.type, structs, enums, foreignNamedTypes, fileName, false);
@@ -281,11 +301,73 @@ function analyzeStructDeclaration(
   for (const method of declaration.methods) {
     validateUserName(method.name, method.location, fileName);
     if (members.has(method.name)) {
-      throw new DiagnosticError(fileName, method.location, `duplicate member ${JSON.stringify(method.name)} in struct ${JSON.stringify(declaration.name)}`);
+      throw new DiagnosticError(fileName, method.location, `duplicate member ${JSON.stringify(method.name)} in ${declaration.kind} ${JSON.stringify(declaration.name)}`);
     }
     members.add(method.name);
     validateFunctionSignature(method, structs, enums, foreignNamedTypes, fileName);
   }
+}
+
+function analyzeTraitDeclaration(
+  declaration: TraitDeclaration,
+  structs: Map<string, StructDeclaration>,
+  enums: Map<string, EnumDeclaration>,
+  foreignNamedTypes: ReadonlyMap<string, ForeignNamedType>,
+  fileName: string,
+): void {
+  const methods = new Set<string>();
+  for (const method of declaration.methods) {
+    validateUserName(method.name, method.location, fileName);
+    if (methods.has(method.name)) {
+      throw new DiagnosticError(fileName, method.location, `duplicate method ${JSON.stringify(method.name)} in trait ${JSON.stringify(declaration.name)}`);
+    }
+    methods.add(method.name);
+    validateFunctionSignature(method, structs, enums, foreignNamedTypes, fileName);
+  }
+}
+
+function validateTraitConformance(
+  declaration: StructDeclaration,
+  traits: Map<string, TraitDeclaration>,
+  fileName: string,
+): void {
+  const implemented = new Set<string>();
+  for (const reference of declaration.implements) {
+    if (implemented.has(reference.name)) {
+      throw new DiagnosticError(fileName, reference.location, `${declaration.kind} ${JSON.stringify(declaration.name)} repeats trait ${JSON.stringify(reference.name)}`);
+    }
+    implemented.add(reference.name);
+    const trait = traits.get(reference.name);
+    if (!trait) throw new DiagnosticError(fileName, reference.location, `unknown trait ${JSON.stringify(reference.name)}`);
+    for (const requirement of trait.methods) {
+      const method = declaration.methods.find((candidate) => candidate.name === requirement.name);
+      if (!method) {
+        throw new DiagnosticError(
+          fileName,
+          reference.location,
+          `${declaration.kind} ${JSON.stringify(declaration.name)} does not implement ${reference.name}.${requirement.name}`,
+        );
+      }
+      if (!sameMethodSignature(method, requirement)) {
+        throw new DiagnosticError(
+          fileName,
+          method.location,
+          `method ${declaration.name}.${method.name} does not match trait requirement ${reference.name}.${requirement.name}`,
+        );
+      }
+    }
+  }
+}
+
+function sameMethodSignature(actual: FunctionDeclaration, required: FunctionDeclaration): boolean {
+  return actual.receiverMode === required.receiverMode
+    && actual.returnType.name === required.returnType.name
+    && actual.errorType?.name === required.errorType?.name
+    && actual.parameters.length === required.parameters.length
+    && actual.parameters.every((parameter, index) => (
+      parameter.mode === required.parameters[index].mode
+      && parameter.type.name === required.parameters[index].type.name
+    ));
 }
 
 function analyzeEnumDeclaration(
@@ -359,6 +441,7 @@ function validateStructLayouts(
   const visited = new Set<string>();
 
   const visit = (declaration: StructDeclaration): void => {
+    if (declaration.kind === "class") return;
     if (visited.has(declaration.name)) return;
     if (visiting.has(declaration.name)) {
       throw new DiagnosticError(fileName, declaration.location, `struct ${JSON.stringify(declaration.name)} has a recursive value layout`);
@@ -366,7 +449,7 @@ function validateStructLayouts(
     visiting.add(declaration.name);
     for (const field of declaration.fields) {
       const nested = structs.get(field.type.name);
-      if (nested) visit(nested);
+      if (nested?.kind === "struct") visit(nested);
     }
     visiting.delete(declaration.name);
     visited.add(declaration.name);
@@ -517,7 +600,11 @@ function analyzeStatement(
         inferExpression(statement.target, locals, globals, structs, enums, fileName, state);
         throw new DiagnosticError(fileName, statement.target.location, "assignment target must be local mutable storage");
       }
-      if (!isMutableBinding(stored)) {
+      const rootDeclaration = structs.get(underlyingType(stored));
+      const mutatesThroughClassReference = statement.target.kind === "member"
+        && rootDeclaration?.kind === "class"
+        && (!isBorrowedBinding(stored) || isMutableBinding(stored));
+      if (!isMutableBinding(stored) && !mutatesThroughClassReference) {
         const action = statement.target.kind === "identifier" ? "assign to" : "mutate a field through";
         throw new DiagnosticError(fileName, statement.target.location, `cannot ${action} immutable binding ${JSON.stringify(root.name)}`);
       }
@@ -1135,11 +1222,21 @@ function inferExpressionInner(
             throw new DiagnosticError(
               fileName,
               expression.callee.object.location,
-              `mutable method ${JSON.stringify(method.name)} requires addressable let storage`,
+              declaration.kind === "class"
+                ? `mutable method ${JSON.stringify(method.name)} requires an addressable class reference`
+                : `mutable method ${JSON.stringify(method.name)} requires addressable let storage`,
             );
           }
           const storedReceiver = locals.get(mutableReceiverRoot.name);
-          if (!storedReceiver || !isMutableBinding(storedReceiver)) {
+          const unavailableClassBorrow = declaration.kind === "class"
+            && storedReceiver
+            && isBorrowedBinding(storedReceiver)
+            && !isMutableBinding(storedReceiver);
+          if (
+            !storedReceiver
+            || declaration.kind !== "class" && !isMutableBinding(storedReceiver)
+            || unavailableClassBorrow
+          ) {
             throw new DiagnosticError(
               fileName,
               expression.callee.object.location,
@@ -1397,6 +1494,13 @@ function consumeOwnedValue(
   state: AnalysisState,
 ): void {
   if (!hasCleanupType(type, structs, state.foreignTypes)) return;
+  const declaration = structs.get(underlyingType(type));
+  if (declaration?.kind === "class") {
+    if (expression.kind === "identifier" || expression.kind === "member") {
+      state.classCopies.add(expression.location.offset);
+    }
+    return;
+  }
   if (expression.kind === "member") {
     throw new DiagnosticError(fileName, expression.location, "moving a cleanup-bearing field out of its owner is not implemented yet");
   }
@@ -1622,6 +1726,7 @@ function hasCleanupType(
   if (foreignTypes.get(actual)?.ownership === "owned") return true;
   const declaration = structs.get(actual);
   if (!declaration) return false;
+  if (declaration.kind === "class") return true;
   if (declaration.deinitializer) return true;
   visiting.add(actual);
   const result = declaration.fields.some((field) => hasCleanupType(field.type.name, structs, foreignTypes, visiting));

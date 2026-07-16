@@ -5,10 +5,11 @@ safe value semantics, deterministic cleanup, typed errors, and first-class
 interop with C-family platform APIs.
 
 The bootstrap compiler currently implements a deliberately small vertical
-slice: imports, functions, local bindings, primitive expressions, structs with
-methods, tagged enums, exhaustive statement and expression matches, typed
-errors, deterministic struct cleanup, name resolution, static checking, and
-readable native-source emission. Header imports use Clang's AST to type-check
+slice: imports, functions, local bindings, primitive expressions, value structs,
+ARC reference classes, statically checked traits, tagged enums, exhaustive
+statement and expression matches, typed errors, deterministic cleanup, name
+resolution, static checking, and readable native-source emission. Header
+imports use Clang's AST to type-check
 an initial subset of C and Objective-C APIs. The compiler has no third-party
 package dependencies and runs directly on Bun.
 
@@ -49,6 +50,39 @@ struct Point {
   }
 }
 ```
+
+Classes use reference identity and automatic reference counting. Assigning or
+passing a class reference shares the same instance; the compiler inserts retain
+and release operations, and `deinit` runs once when the final strong reference
+ends. Traits are explicit behavior contracts checked at the `implements` site:
+
+```z
+trait Counted {
+  function value(): i32;
+  function add(inout this, amount: i32): void;
+}
+
+class Counter implements Counted {
+  count: i32;
+
+  function value(): i32 { return this.count; }
+
+  function add(inout this, amount: i32): void {
+    this.count = this.count + amount;
+  }
+}
+
+const first = Counter { count: 1 };
+const second = first;
+first.add(2); // Both references now observe 3.
+```
+
+`const` fixes the class reference binding; it does not make the referenced
+instance deeply immutable. This lets an explicitly mutating `inout this` method
+operate through a `const` class reference. Classes do not support `move this`,
+because another ARC alias may still refer to the same instance. This first trait
+slice checks concrete conformance only; trait-typed values and dynamic dispatch
+are not implemented yet.
 
 Bindings make mutation explicit. `const` stores an immutable value; `let`
 stores a mutable value in the same lexical scope. Z does not have JavaScript's
@@ -328,6 +362,7 @@ bun run z run examples/selective-declarations.z
 bun run z run examples/apple-groundwork.z
 bun run z run examples/nswindow.z # macOS: opens a window and enters AppKit's event loop
 bun run z run examples/structs.z
+bun run z run examples/classes.z
 bun run z run examples/match.z
 bun run z run examples/match-expression.z
 bun run z run examples/mutation.z
@@ -421,7 +456,7 @@ slice provides:
 
 - live compiler diagnostics with debounced document checking;
 - completion for imported C/Objective-C namespaces;
-- type-directed Z struct and Objective-C instance/class member completion;
+- type-directed Z struct/class and Objective-C instance/class member completion;
 - local-symbol completion and semantic highlighting for bindings, parameters,
   namespaces, types, functions, methods, and properties;
 - selector-aware Objective-C method snippets and argument-label completion;

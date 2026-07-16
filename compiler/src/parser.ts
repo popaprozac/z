@@ -7,6 +7,7 @@ import type {
   Program,
   Statement,
   StructDeclaration,
+  TraitDeclaration,
   TypeReference,
 } from "./ast.ts";
 import { DiagnosticError } from "./diagnostics.ts";
@@ -380,7 +381,7 @@ export function parse(tokens: Token[], fileName: string): Program {
     return { kind: "block" as const, statements, location: start };
   }
 
-  const parseFunction = (): FunctionDeclaration => {
+  const parseFunction = (signatureOnly = false): FunctionDeclaration => {
     const start = expect("function", "`function`").location;
     const name = expect("identifier", "a function name").text;
     expect("leftParen", "`(`");
@@ -400,16 +401,26 @@ export function parse(tokens: Token[], fileName: string): Program {
     expect("colon", "`:`");
     const returnType = parseType();
     const errorType = match("throws") ? parseType() : null;
-    expect("leftBrace", "`{`");
     const body: Statement[] = [];
-    while (!at("rightBrace") && !at("eof")) body.push(parseStatement());
-    expect("rightBrace", "`}`");
+    if (signatureOnly) {
+      expect("semicolon", "`;`");
+    } else {
+      expect("leftBrace", "`{`");
+      while (!at("rightBrace") && !at("eof")) body.push(parseStatement());
+      expect("rightBrace", "`}`");
+    }
     return { kind: "function", name, receiverMode, parameters, returnType, errorType, body, location: start };
   };
 
-  const parseStruct = (): StructDeclaration => {
-    const start = expect("struct", "`struct`").location;
-    const name = expect("identifier", "a struct name").text;
+  const parseAggregate = (): StructDeclaration => {
+    const declarationToken = take();
+    const kind = declarationToken.kind as "struct" | "class";
+    const start = declarationToken.location;
+    const name = expect("identifier", `a ${kind} name`).text;
+    const implemented: TypeReference[] = [];
+    if (match("implements")) {
+      do implemented.push(parseType()); while (match("comma"));
+    }
     expect("leftBrace", "`{`");
     const fields = [];
     const methods: FunctionDeclaration[] = [];
@@ -422,7 +433,7 @@ export function parse(tokens: Token[], fileName: string): Program {
       if (match("deinit")) {
         const deinitToken = previous();
         if (deinitializer) {
-          throw new DiagnosticError(fileName, deinitToken.location, `struct ${JSON.stringify(name)} cannot declare more than one deinit block`);
+          throw new DiagnosticError(fileName, deinitToken.location, `${kind} ${JSON.stringify(name)} cannot declare more than one deinit block`);
         }
         const block = parseRequiredBlock("a `deinit` body");
         deinitializer = { kind: "deinit" as const, body: block.statements, location: deinitToken.location };
@@ -434,7 +445,17 @@ export function parse(tokens: Token[], fileName: string): Program {
       expect("semicolon", "`;`");
     }
     expect("rightBrace", "`}`");
-    return { kind: "struct", name, fields, methods, deinitializer, location: start };
+    return { kind, name, implements: implemented, fields, methods, deinitializer, location: start };
+  };
+
+  const parseTrait = (): TraitDeclaration => {
+    const start = expect("trait", "`trait`").location;
+    const name = expect("identifier", "a trait name").text;
+    expect("leftBrace", "`{`");
+    const methods: FunctionDeclaration[] = [];
+    while (!at("rightBrace") && !at("eof")) methods.push(parseFunction(true));
+    expect("rightBrace", "`}`");
+    return { kind: "trait", name, methods, location: start };
   };
 
   const parseEnum = (): EnumDeclaration => {
@@ -453,17 +474,19 @@ export function parse(tokens: Token[], fileName: string): Program {
   };
 
   const imports: ImportDeclaration[] = [];
+  const traits: TraitDeclaration[] = [];
   const structs: StructDeclaration[] = [];
   const enums: EnumDeclaration[] = [];
   const functions: FunctionDeclaration[] = [];
   while (!at("eof")) {
     if (at("import")) imports.push(parseImport());
-    else if (at("struct")) structs.push(parseStruct());
+    else if (at("trait")) traits.push(parseTrait());
+    else if (at("struct") || at("class")) structs.push(parseAggregate());
     else if (at("enum")) enums.push(parseEnum());
     else if (at("function")) functions.push(parseFunction());
-    else throw new DiagnosticError(fileName, peek().location, "expected an import, struct, enum, or function declaration");
+    else throw new DiagnosticError(fileName, peek().location, "expected an import, trait, struct, class, enum, or function declaration");
   }
-  return { kind: "program", imports, structs, enums, functions };
+  return { kind: "program", imports, traits, structs, enums, functions };
 }
 
 function startsPrimary(kind: TokenKind | undefined): boolean {

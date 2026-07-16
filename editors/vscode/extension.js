@@ -103,7 +103,7 @@ async function activate(context) {
   }));
 
   const semanticLegend = new vscode.SemanticTokensLegend(
-    ["namespace", "type", "class", "enum", "function", "method", "property", "variable", "parameter"],
+    ["namespace", "type", "class", "enum", "function", "method", "property", "variable", "parameter", "interface"],
     ["declaration", "readonly", "defaultLibrary"],
   );
   context.subscriptions.push(vscode.languages.registerDocumentSemanticTokensProvider("z", {
@@ -227,6 +227,7 @@ function completionKind(kind) {
     5: vscode.CompletionItemKind.Field,
     6: vscode.CompletionItemKind.Variable,
     7: vscode.CompletionItemKind.Class,
+    8: vscode.CompletionItemKind.Interface,
     9: vscode.CompletionItemKind.Module,
     10: vscode.CompletionItemKind.Property,
     13: vscode.CompletionItemKind.Enum,
