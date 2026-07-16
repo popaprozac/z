@@ -8,9 +8,9 @@ The bootstrap compiler currently implements a deliberately small vertical
 slice: imports, functions, local bindings, primitive expressions, structs with
 methods, tagged enums, exhaustive statement and expression matches, typed
 errors, deterministic struct cleanup, name resolution, static checking, and
-readable C emission. Header imports use Clang's AST to type-check an initial
-subset of C functions. The compiler has no third-party package dependencies and
-runs directly on Bun.
+readable native-source emission. Header imports use Clang's AST to type-check
+an initial subset of C and Objective-C APIs. The compiler has no third-party
+package dependencies and runs directly on Bun.
 
 ```z
 import stdio from "stdio.h";
@@ -326,6 +326,7 @@ bun run z run examples/foreign-pointers.z
 bun run z run examples/selective-import.z
 bun run z run examples/selective-declarations.z
 bun run z run examples/apple-groundwork.z
+bun run z run examples/nswindow.z # macOS: opens a window and enters AppKit's event loop
 bun run z run examples/structs.z
 bun run z run examples/match.z
 bun run z run examples/match-expression.z
@@ -356,8 +357,35 @@ initial `stdio.h` notes
 and discovers project notes beside a header as `<header>.zapi.json`; this JSON is
 a stage-0 representation, not yet a frozen language format. Unannotated
 pointers, borrowed returns without lifetime provenance, mutable strings,
-globals, macros, Objective-C, and C++ remain conservative errors or future
+globals, macros, and C++ remain conservative errors or future
 layers rather than being silently treated as safe.
+
+On macOS, importing an installed framework header selects the Objective-C ARC
+backend and carries the framework into the native link plan:
+
+```z
+import AppKit from "AppKit/AppKit.h";
+
+const app = AppKit.NSApplication.sharedApplication;
+const window = AppKit.NSWindow.alloc().initWithContentRect(
+  AppKit.NSMakeRect(0.0, 0.0, 800.0, 600.0),
+  AppKit.NSWindowStyleMaskTitled | AppKit.NSWindowStyleMaskClosable,
+  AppKit.NSBackingStoreBuffered,
+  false
+);
+window.makeKeyAndOrderFront(null);
+app.run();
+```
+
+The bootstrap imports Objective-C interfaces, superclass method lookup, class
+and instance methods, readonly properties, `instancetype`, object nullability,
+and C values used inside method signatures. Calls use a selector's first
+component as the TypeScript-style method name and resolve by argument count.
+Selectors that remain ambiguous are rejected until labeled arguments are
+implemented. ARC owns local object-reference retain/release behavior, and the
+generated `main` runs inside an autorelease pool. Writable properties, string
+bridging, protocols, delegates, blocks, lightweight generics, availability
+checking, and actor isolation remain upcoming layers.
 
 ```z
 import {

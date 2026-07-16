@@ -24,8 +24,8 @@ export function compileToNative(source: string, fileName: string): NativeArtifac
   const semanticInfo = analyze(program, fileName, foreignModules);
   return {
     source: generateC(program, fileName, semanticInfo),
-    language: "c",
-    frameworks: [],
+    language: semanticInfo.objectiveC ? "objective-c" : "c",
+    frameworks: semanticInfo.frameworks,
   };
 }
 

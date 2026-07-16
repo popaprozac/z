@@ -289,6 +289,34 @@ test("runs floating-point values and typed bitwise option masks", () => {
   assert.match(artifact.source, /const float scientific = 1\.5e2F;/);
 });
 
+test("imports AppKit classes and emits an ARC Objective-C NSWindow program", () => {
+  if (process.platform !== "darwin") return;
+  const example = resolve(projectRoot, "examples/nswindow.z");
+  const source = readFileSync(example, "utf8");
+  const artifact = compileToNative(source, example);
+
+  assert.equal(artifact.language, "objective-c");
+  assert.deepEqual(artifact.frameworks, ["AppKit"]);
+  assert.match(artifact.source, /@autoreleasepool/);
+  assert.match(artifact.source, /NSApplication \* const app = \[NSApplication sharedApplication\];/);
+  assert.match(artifact.source, /const NSWindowStyleMask style =/);
+  assert.match(artifact.source, /NSWindow \* const window = \[\[NSWindow alloc\] initWithContentRect:frame styleMask:style backing:NSBackingStoreBuffered defer:false\];/);
+  assert.match(artifact.source, /\[window makeKeyAndOrderFront:NULL\]/);
+
+  const compilation = spawnSync("clang", [
+    "-x", "objective-c",
+    "-fobjc-arc",
+    "-Wall", "-Wextra", "-Werror",
+    "-fsyntax-only", "-",
+  ], { input: artifact.source, encoding: "utf8" });
+  assert.equal(compilation.status, 0, compilation.stderr);
+
+  assert.throws(
+    () => compileToNative(source.replace("window.center();", "window.center(1);"), example),
+    /Objective-C instance "NSWindow" has no method "center" accepting 1 argument\(s\)/,
+  );
+});
+
 test("checks floating-point widths and integer-only bitwise operators", () => {
   const mismatch = `
     function accept(value: f32): void {}

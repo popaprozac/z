@@ -200,7 +200,11 @@ function generateFunction(
     if (cleanup) bodyParts.push(indent(cleanup, 2));
   }
   const body = bodyParts.join("\n");
-  return `${generateFunctionSignature(declaration, structs, enums, receiver, semanticInfo.foreignNamedTypes)} {\n${body}\n}`;
+  const signature = generateFunctionSignature(declaration, structs, enums, receiver, semanticInfo.foreignNamedTypes);
+  if (!receiver && declaration.name === "main" && semanticInfo.objectiveC) {
+    return `${signature} {\n  @autoreleasepool {\n${indent(body, 2)}\n  }\n}`;
+  }
+  return `${signature} {\n${body}\n}`;
 }
 
 function generateDeinit(
@@ -581,6 +585,10 @@ function generateLocalDeclaration(
     const cType = mapType(type, structs, enums, foreignNamedTypes);
     return mutable ? `${cType}${name}` : `${cType} const ${name}`;
   }
+  if (type.startsWith("__z_objc:")) {
+    const cType = mapType(type, structs, enums, foreignNamedTypes);
+    return mutable ? `${cType}${name}` : `${cType} const ${name}`;
+  }
   if (hasCleanupType(type, structs)) return `${mapType(type, structs, enums, foreignNamedTypes)} ${name}`;
   return `${mutable ? "" : "const "}${mapType(type, structs, enums, foreignNamedTypes)} ${name}`;
 }
@@ -783,6 +791,10 @@ function generateExpression(expression: Expression, context: GenerationContext):
     case "matchExpression":
       throw new Error("match must be lowered from its containing statement");
     case "member": {
+      const objcClassName = context.semanticInfo.objcClassNames.get(expression.location.offset);
+      if (objcClassName) return objcClassName;
+      const objcPropertyName = context.semanticInfo.objcPropertyNames.get(expression.location.offset);
+      if (objcPropertyName) return `[${generateExpression(expression.object, context)} ${objcPropertyName}]`;
       if (expression.object.kind === "identifier") {
         const declaration = context.enums.get(expression.object.name);
         const variant = declaration?.variants.find((candidate) => candidate.name === expression.property);
@@ -799,6 +811,12 @@ function generateExpression(expression: Expression, context: GenerationContext):
       return `(${generateExpression(expression.object, context)}).${expression.property}`;
     }
     case "call": {
+      const objcCall = context.semanticInfo.objcCalls.get(expression.location.offset);
+      if (objcCall && expression.callee.kind === "member") {
+        const receiver = generateExpression(expression.callee.object, context);
+        const args = expression.arguments.map((argument) => generateCallArgument(argument, context));
+        return generateObjCMessage(receiver, objcCall.selector, args);
+      }
       if (expression.callee.kind === "member" && !isForeignMember(expression.callee, context)) {
         if (expression.callee.object.kind === "identifier") {
           const declaration = context.enums.get(expression.callee.object.name);
@@ -952,8 +970,20 @@ function mapType(
   const foreignNamed = foreignNamedTypes.get(name);
   if (foreignNamed) return foreignNamed.cName;
   if (name.startsWith("__z_ffi:")) return name.split(":").slice(3).join(":");
+  if (name.startsWith("__z_objc:")) {
+    const baseName = name.replace(/^__z_objc:(?:nullable|nonnull):/, "");
+    if (baseName === "id") return "id";
+    return `${baseName.slice(baseName.lastIndexOf(".") + 1)} *`;
+  }
   if (name.includes(".")) return name.slice(name.lastIndexOf(".") + 1);
   throw new Error(`unsupported bootstrap type ${JSON.stringify(name)}`);
+}
+
+function generateObjCMessage(receiver: string, selector: string, args: string[]): string {
+  if (args.length === 0) return `[${receiver} ${selector}]`;
+  const parts = selector.split(":");
+  const message = args.map((argument, index) => `${parts[index]}:${argument}`).join(" ");
+  return `[${receiver} ${message}]`;
 }
 
 function enumName(name: string): string {

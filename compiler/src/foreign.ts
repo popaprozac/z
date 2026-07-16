@@ -11,6 +11,7 @@ export type ForeignScalarTypeName =
 export type ForeignType =
   | { readonly kind: "z"; readonly name: ForeignScalarTypeName | "cstring" | "void"; readonly cName: string }
   | { readonly kind: "named"; readonly type: ForeignNamedType; readonly cName: string }
+  | ForeignObjectType
   | ForeignRecordPointerType
   | ForeignPointerType
   | { readonly kind: "unsupported"; readonly cName: string };
@@ -28,6 +29,8 @@ export type ForeignNamedType =
     readonly exportName: string;
     readonly typeName: string;
     readonly cName: string;
+    readonly flags: boolean;
+    readonly underlying: ForeignScalarTypeName;
   }
   | {
     readonly kind: "scalar";
@@ -46,6 +49,39 @@ export type ForeignConstant = {
   readonly name: string;
   readonly cName: string;
   readonly typeName: string;
+};
+
+export type ForeignObjectType = {
+  readonly kind: "object";
+  readonly typeName: string;
+  readonly cName: string;
+  readonly className: string | null;
+  readonly nullable: boolean;
+};
+
+export type ForeignObjCMethod = {
+  readonly selector: string;
+  readonly baseName: string;
+  readonly instance: boolean;
+  readonly returnsInstanceType: boolean;
+  readonly returnType: ForeignType;
+  readonly parameters: readonly ForeignParameter[];
+};
+
+export type ForeignObjCProperty = {
+  readonly name: string;
+  readonly classProperty: boolean;
+  readonly readonly: boolean;
+  readonly type: ForeignType;
+};
+
+export type ForeignObjCInterface = {
+  readonly exportName: string;
+  readonly typeName: string;
+  readonly className: string;
+  readonly superName: string | null;
+  readonly methods: readonly ForeignObjCMethod[];
+  readonly properties: readonly ForeignObjCProperty[];
 };
 
 export type ForeignPointerType = {
@@ -85,6 +121,9 @@ export type ForeignModule = {
   readonly types: ReadonlyMap<string, ForeignPointerType>;
   readonly namedTypes: ReadonlyMap<string, ForeignNamedType>;
   readonly constants: ReadonlyMap<string, ForeignConstant>;
+  readonly objectTypes: ReadonlyMap<string, ForeignObjectType>;
+  readonly interfaces: ReadonlyMap<string, ForeignObjCInterface>;
+  readonly framework: string | null;
 };
 
 type HeaderInfo = {
@@ -92,6 +131,9 @@ type HeaderInfo = {
   readonly types: ReadonlyMap<string, ForeignPointerType>;
   readonly namedTypes: ReadonlyMap<string, ForeignNamedType>;
   readonly constants: ReadonlyMap<string, ForeignConstant>;
+  readonly objectTypes: ReadonlyMap<string, ForeignObjectType>;
+  readonly interfaces: ReadonlyMap<string, ForeignObjCInterface>;
+  readonly framework: string | null;
 };
 
 type PointerNote = {
@@ -115,10 +157,18 @@ type ClangNode = {
   readonly tagUsed?: string;
   readonly type?: { readonly qualType?: string; readonly desugaredQualType?: string };
   readonly variadic?: boolean;
+  readonly instance?: boolean;
+  readonly readonly?: boolean;
+  readonly class?: boolean;
+  readonly isImplicit?: boolean;
+  readonly returnType?: { readonly qualType?: string; readonly desugaredQualType?: string };
+  readonly super?: { readonly name?: string };
+  readonly fixedUnderlyingType?: { readonly qualType?: string; readonly desugaredQualType?: string };
   readonly inner?: readonly ClangNode[];
 };
 
 const headerCache = new Map<string, HeaderInfo>();
+let cachedSdkPath: string | null | undefined;
 
 export function resolveForeignModules(
   declarations: readonly ImportDeclaration[],
@@ -127,10 +177,11 @@ export function resolveForeignModules(
   const modules = new Map<string, ForeignModule>();
   for (const declaration of declarations) {
     const includeDirectory = resolve(dirname(fileName));
-    const cacheKey = `${includeDirectory}\0${declaration.header}\0${declaration.moduleName}`;
+    const framework = discoverFramework(declaration.header);
+    const cacheKey = `${includeDirectory}\0${declaration.header}\0${declaration.moduleName}\0${framework ?? "c"}`;
     let header = headerCache.get(cacheKey);
     if (!header) {
-      header = readHeader(declaration, fileName, includeDirectory);
+      header = readHeader(declaration, fileName, includeDirectory, framework);
       headerCache.set(cacheKey, header);
     }
     modules.set(declaration.moduleName, { declaration, ...header });
@@ -142,17 +193,20 @@ function readHeader(
   declaration: ImportDeclaration,
   fileName: string,
   includeDirectory: string,
+  framework: string | null,
 ): HeaderInfo {
-  const result = spawnSync("clang", [
-    "-x", "c",
+  const clangArguments = [
+    "-x", framework ? "objective-c" : "c",
+    ...(framework ? ["-fobjc-arc"] : []),
     "-I", includeDirectory,
     "-include", declaration.header,
     "-Xclang", "-ast-dump=json",
     "-fsyntax-only",
     "/dev/null",
-  ], {
+  ];
+  const result = spawnSync(framework ? "xcrun" : "clang", framework ? ["clang", ...clangArguments] : clangArguments, {
     encoding: "utf8",
-    maxBuffer: 64 * 1024 * 1024,
+    maxBuffer: framework ? 512 * 1024 * 1024 : 64 * 1024 * 1024,
   });
 
   if (result.error) {
@@ -173,6 +227,10 @@ function readHeader(
 
   const notes = readApiNotes(declaration, fileName, includeDirectory);
   const imported = collectNamedTypes(root, declaration.moduleName);
+  const objectTypes = new Map<string, ForeignObjectType>();
+  const interfaces = framework
+    ? collectObjCInterfaces(root, declaration.moduleName, imported.byCName, objectTypes)
+    : new Map<string, ForeignObjCInterface>();
   const functions = new Map<string, ForeignFunction>();
   const types = new Map<string, ForeignPointerType>();
   visit(root, (node) => {
@@ -210,7 +268,7 @@ function readHeader(
       );
     }
   }
-  return { functions, types, namedTypes: imported.namedTypes, constants: imported.constants };
+  return { functions, types, namedTypes: imported.namedTypes, constants: imported.constants, objectTypes, interfaces, framework };
 }
 
 function collectNamedTypes(
@@ -238,14 +296,17 @@ function collectNamedTypes(
     cName: string;
     declaration?: ClangNode;
     underlying?: ForeignScalarTypeName;
+    flags?: boolean;
   };
   const seeds = new Map<string, Seed>();
   for (const node of nodes) {
     if (node.kind !== "TypedefDecl" || !node.name || !node.type?.qualType) continue;
     const qualified = node.type.qualType;
-    const recordMatch = /^struct (.+)$/.exec(qualified);
-    const enumMatch = /^enum (.+)$/.exec(qualified);
-    const underlying = mapTypedefType(node.name, node.type.desugaredQualType ?? qualified);
+    const desugared = node.type.desugaredQualType ?? qualified;
+    const recordMatch = /^struct (.+)$/.exec(desugared);
+    const enumMatch = /^enum (.+)$/.exec(desugared) ?? /^enum (.+)$/.exec(qualified);
+    const underlying = mapTypedefType(node.name, desugared);
+    const enumDeclaration = enumMatch ? enums.get(enumMatch[1]) : undefined;
     const kind = recordMatch && records.has(recordMatch[1])
       ? "record"
       : enumMatch && enums.has(enumMatch[1])
@@ -260,7 +321,12 @@ function collectNamedTypes(
       typeName: `${moduleName}.${node.name}`,
       cName: node.name,
       declaration: kind === "record" ? records.get(recordMatch![1]) : kind === "enum" ? enums.get(enumMatch![1]) : undefined,
-      underlying: kind === "scalar" ? underlying as ForeignScalarTypeName : undefined,
+      underlying: kind === "scalar"
+        ? underlying as ForeignScalarTypeName
+        : kind === "enum"
+          ? mapBuiltinType(enumDeclaration?.fixedUnderlyingType?.desugaredQualType ?? enumDeclaration?.fixedUnderlyingType?.qualType ?? "int") ?? "i32"
+          : undefined,
+      flags: kind === "enum" && enumDeclaration?.inner?.some((child) => child.kind === "FlagEnumAttr"),
     });
   }
 
@@ -273,7 +339,14 @@ function collectNamedTypes(
     if (seed.kind === "scalar") {
       named = { kind: "scalar", exportName: seed.exportName, typeName: seed.typeName, cName: seed.cName, underlying: seed.underlying! };
     } else if (seed.kind === "enum") {
-      named = { kind: "enum", exportName: seed.exportName, typeName: seed.typeName, cName: seed.cName };
+      named = {
+        kind: "enum",
+        exportName: seed.exportName,
+        typeName: seed.typeName,
+        cName: seed.cName,
+        flags: seed.flags ?? false,
+        underlying: seed.underlying ?? "i32",
+      };
     } else {
       const fields = (seed.declaration!.inner ?? []).filter((child) => child.kind === "FieldDecl");
       const mapped = fields.map((field) => field.name && field.type?.qualType
@@ -298,6 +371,98 @@ function collectNamedTypes(
     }
   }
   return { namedTypes, constants, byCName };
+}
+
+function collectObjCInterfaces(
+  root: ClangNode,
+  moduleName: string,
+  namedTypes: ReadonlyMap<string, ForeignNamedType>,
+  objectTypes: Map<string, ForeignObjectType>,
+): Map<string, ForeignObjCInterface> {
+  const declarations = new Map<string, ClangNode>();
+  visit(root, (node) => {
+    if (node.kind !== "ObjCInterfaceDecl" || !node.name) return;
+    const existing = declarations.get(node.name);
+    if (!existing || (node.inner?.length ?? 0) > (existing.inner?.length ?? 0)) declarations.set(node.name, node);
+  });
+
+  const typeNames = new Map([...declarations.keys()].map((name) => [name, `${moduleName}.${name}`]));
+  const objectType = (className: string | null, nullable: boolean): ForeignObjectType => {
+    const baseName = className ? typeNames.get(className) ?? `${moduleName}.${className}` : "id";
+    const typeName = nullable ? `__z_objc:nullable:${baseName}` : `__z_objc:nonnull:${baseName}`;
+    const existing = objectTypes.get(typeName);
+    if (existing) return existing;
+    const created: ForeignObjectType = {
+      kind: "object",
+      typeName,
+      cName: className ? `${className} *` : "id",
+      className,
+      nullable,
+    };
+    objectTypes.set(typeName, created);
+    return created;
+  };
+
+  const interfaces = new Map<string, ForeignObjCInterface>();
+  for (const [className, declaration] of declarations) {
+    const methods = (declaration.inner ?? [])
+      .filter((child) => child.kind === "ObjCMethodDecl" && child.name && child.returnType?.qualType)
+      .map((method): ForeignObjCMethod => ({
+        selector: method.name!,
+        baseName: method.name!.split(":")[0],
+        instance: method.instance === true,
+        returnsInstanceType: /\binstancetype\b/.test(method.returnType!.qualType ?? ""),
+        returnType: mapObjCType(method.returnType!, className, "return", namedTypes, typeNames, objectType),
+        parameters: (method.inner ?? [])
+          .filter((child) => child.kind === "ParmVarDecl" && child.type?.qualType)
+          .map((parameter) => ({
+            name: parameter.name ?? null,
+            type: mapObjCType(parameter.type!, className, "parameter", namedTypes, typeNames, objectType),
+          })),
+      }));
+    const properties = (declaration.inner ?? [])
+      .filter((child) => child.kind === "ObjCPropertyDecl" && child.name && child.type?.qualType)
+      .map((property): ForeignObjCProperty => ({
+        name: property.name!,
+        classProperty: property.class === true,
+        readonly: property.readonly === true,
+        type: mapObjCType(property.type!, className, "return", namedTypes, typeNames, objectType),
+      }));
+    interfaces.set(className, {
+      exportName: className,
+      typeName: typeNames.get(className)!,
+      className,
+      superName: declaration.super?.name ?? null,
+      methods,
+      properties,
+    });
+    objectType(className, false);
+    objectType(className, true);
+  }
+  return interfaces;
+}
+
+function mapObjCType(
+  type: { readonly qualType?: string; readonly desugaredQualType?: string },
+  receiverClass: string,
+  position: "return" | "parameter",
+  namedTypes: ReadonlyMap<string, ForeignNamedType>,
+  typeNames: ReadonlyMap<string, string>,
+  objectType: (className: string | null, nullable: boolean) => ForeignObjectType,
+): ForeignType {
+  const qualified = type.qualType ?? "";
+  const nullable = /\b(?:_Nullable|_Null_unspecified)\b/.test(qualified);
+  if (/\binstancetype\b/.test(qualified)) return objectType(receiverClass, nullable);
+  if (/^(?:__strong\s+)?id(?:\s|<|$)/.test(qualified.replace(/\b_(?:Nullable|Nonnull|Null_unspecified)\b/g, "").trim())) {
+    return objectType(null, nullable);
+  }
+  const objectMatch = /(?:__kindof\s+)?([A-Za-z_]\w*)\s*\*/.exec(qualified);
+  if (objectMatch && typeNames.has(objectMatch[1])) return objectType(objectMatch[1], nullable);
+
+  const pointerTypes = new Map<string, ForeignPointerType>();
+  const mapped = mapForeignType(qualified, undefined, position, pointerTypes, namedTypes);
+  if (mapped.kind !== "unsupported" || !type.desugaredQualType || type.desugaredQualType === qualified) return mapped;
+  return mapForeignType(type.desugaredQualType, undefined, position, pointerTypes, namedTypes);
 }
 
 function mapRecordFieldType(
@@ -519,4 +684,17 @@ export function pointerTypeName(
   nullable: boolean,
 ): string {
   return `__z_ffi:${ownership}:${nullable ? "nullable" : "nonnull"}:${identity}`;
+}
+
+function discoverFramework(header: string): string | null {
+  if (process.platform !== "darwin") return null;
+  const match = /^([A-Za-z_]\w*)\//.exec(header);
+  if (!match) return null;
+  if (cachedSdkPath === undefined) {
+    const result = spawnSync("xcrun", ["--show-sdk-path"], { encoding: "utf8" });
+    cachedSdkPath = result.status === 0 ? result.stdout.trim() : null;
+  }
+  if (!cachedSdkPath) return null;
+  const frameworkPath = resolve(cachedSdkPath, "System/Library/Frameworks", `${match[1]}.framework`);
+  return existsSync(frameworkPath) ? match[1] : null;
 }
