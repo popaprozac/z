@@ -801,6 +801,91 @@ test("requires an else branch and explicit select in statement-bodied if express
   );
 });
 
+test("runs non-escaping arrow closures with inferred borrow, mutation, and move captures", () => {
+  const example = resolve(projectRoot, "examples/closures.z");
+  const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, "add=42\ntotal=20,42\nsnapshot=15 seed=100\ntarget=42\n");
+  const generated = compileToC(readFileSync(example, "utf8"), example);
+  assert.match(generated, /__z_closure_call_/);
+  assert.match(generated, /const int32_t \*offset/);
+  assert.match(generated, /int32_t \*total/);
+});
+
+test("checks closure parameters, block return types, and immutable captures", () => {
+  const blockInference = `
+    function main(): i32 {
+      const closure = (value: i32) => { return value; };
+      return closure(42);
+    }
+  `;
+  assert.throws(
+    () => compileToC(blockInference, "closure-block-type.z"),
+    /closure-block-type\.z:3:23: error: a block-bodied closure requires an explicit return type/,
+  );
+
+  const immutableCapture = `
+    function main(): i32 {
+      const value = 41;
+      const increment = (): i32 => {
+        value = value + 1;
+        return value;
+      };
+      return increment();
+    }
+  `;
+  assert.throws(
+    () => compileToC(immutableCapture, "closure-const.z"),
+    /closure-const\.z:5:9: error: closure cannot mutate immutable capture "value"/,
+  );
+
+  const wrongArgument = `
+    function main(): i32 {
+      const identity = (value: i32): i32 => value;
+      return identity("wrong");
+    }
+  `;
+  assert.throws(
+    () => compileToC(wrongArgument, "closure-argument.z"),
+    /closure-argument\.z:4:23: error: expected i32, found cstring/,
+  );
+});
+
+test("defers move captures that require owned closure environments", () => {
+  const source = `
+    struct Resource {
+      value: i32;
+      deinit {}
+    }
+    function main(): i32 {
+      const resource = Resource { value: 42 };
+      const consume = move (): i32 => resource.value;
+      return consume();
+    }
+  `;
+  assert.throws(
+    () => compileToC(source, "closure-owned-move.z"),
+    /closure-owned-move\.z:8:39: error: move-capturing cleanup-bearing Resource requires an owned closure environment, which is not implemented yet/,
+  );
+});
+
+test("exposes closure bindings and parameters to editor services", () => {
+  const source = `
+    function main(): i32 {
+      const offset = 1;
+      const add = (value: i32): i32 => value + offset;
+      const answer = add(41);
+      return answer;
+    }
+  `;
+  const addUse = source.indexOf("add(41)") + 1;
+  assert.match(hover(source, "closure-editor.z", addUse)?.contents.value ?? "", /add: \(value: i32\) => i32/);
+  const parameter = source.indexOf("value: i32") + 1;
+  assert.match(hover(source, "closure-editor.z", parameter)?.contents.value ?? "", /value: i32/);
+  const items = completions(source.replace("add(41)", "ad"), "closure-editor.z", source.indexOf("add(41)") + 2);
+  assert.equal(items.find((item) => item.label === "add")?.detail, "const add: (value: i32) => i32");
+});
+
 test("runs deterministic deinit across normal, return, throw, and try exits", () => {
   const example = resolve(projectRoot, "examples/deinit.z");
   const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
@@ -2540,6 +2625,8 @@ test("editor grammar tracks keywords without reserving Result variants", () => {
   assert.match(keywordPattern, /throw/);
   assert.match(keywordPattern, /attempt/);
   assert.match(keywordPattern, /yield/);
+  assert.match(keywordPattern, /select/);
+  assert.match(keywordPattern, /move/);
   assert.match(keywordPattern, /deinit/);
   assert.match(keywordPattern, /out\|inout/);
   assert.match(keywordPattern, /\bin\b/);

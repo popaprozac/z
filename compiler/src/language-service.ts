@@ -297,7 +297,7 @@ export function hover(source: string, fileName: string, offset: number): Hover |
 
   const type = context.semanticInfo.bindingTypes.get(word.start)
     ?? context.semanticInfo.expressionTypes.get(word.start);
-  if (type) return markdownHover(`${word.text}: ${displayType(type, context.typeDisplayNames)}`, source, word.start, word.end);
+  if (type) return markdownHover(`${word.text}: ${displayServiceType(type, context)}`, source, word.start, word.end);
   return declarationHover(source, context.sourceProgram, word.text, word.start, word.end, context.typeDisplayNames);
 }
 
@@ -352,7 +352,7 @@ function symbolCompletions(source: string, fileName: string, offset: number): Co
     items.push({
       label: binding.name,
       kind: completionKinds.variable,
-      detail: `${binding.parameter ? "parameter" : binding.readonly ? "const" : "let"} ${binding.name}: ${displayType(binding.type, context.typeDisplayNames)}`,
+      detail: `${binding.parameter ? "parameter" : binding.readonly ? "const" : "let"} ${binding.name}: ${displayServiceType(binding.type, context)}`,
       sortText: `0-${binding.name}`,
     });
   }
@@ -398,6 +398,18 @@ type Binding = {
 
 function collectBindings(context: AnalyzedSource): Binding[] {
   const bindings: Binding[] = [];
+  const visitClosure = (expression: Extract<NonNullable<Extract<Statement, { kind: "variable" }>["initializer"]>, { kind: "closure" }>): void => {
+    for (const parameter of expression.parameters) {
+      bindings.push({
+        name: parameter.name,
+        type: parameter.type.name,
+        offset: parameter.location.offset,
+        readonly: parameter.mode === "value" || parameter.mode === "in",
+        parameter: true,
+      });
+    }
+    if (expression.body.kind === "block") visitStatements(expression.body.statements);
+  };
   const visitStatements = (statements: readonly Statement[]): void => {
     for (const statement of statements) {
       if (statement.kind === "variable") {
@@ -408,6 +420,7 @@ function collectBindings(context: AnalyzedSource): Binding[] {
           readonly: !statement.mutable,
           parameter: false,
         });
+        if (statement.initializer?.kind === "closure") visitClosure(statement.initializer);
       }
       if (statement.kind === "block") visitStatements(statement.statements);
       if (statement.kind === "if") {
@@ -828,6 +841,16 @@ function displayType(type: string, typeDisplayNames: ReadonlyMap<string, string>
   const dynamic = parseDynamicArrayType(type);
   if (dynamic) return `Array<${displayType(dynamic.elementType, typeDisplayNames)}>`;
   return type.replace(/^__z_objc:(?:nullable|nonnull):/, "");
+}
+
+function displayServiceType(type: string, context: AnalyzedSource): string {
+  const closure = [...context.semanticInfo.closures.values()].find((item) => item.type === type);
+  if (!closure) return displayType(type, context.typeDisplayNames);
+  const parameters = closure.declaration.parameters.slice(closure.captures.length).map((parameter) => {
+    const capability = parameter.mode === "value" ? "" : `${parameter.mode} `;
+    return `${capability}${parameter.name}: ${displayType(parameter.type.name, context.typeDisplayNames)}`;
+  });
+  return `(${parameters.join(", ")}) => ${displayType(closure.declaration.returnType.name, context.typeDisplayNames)}`;
 }
 
 function displaySubstitutedType(

@@ -211,6 +211,7 @@ export type Expression =
   | UnaryExpression
   | BinaryExpression
   | ConditionalExpression
+  | ClosureExpression
   | CallExpression
   | MemberExpression
   | IndexExpression
@@ -273,6 +274,15 @@ export type ConditionalExpression = {
   readonly condition: Expression;
   readonly thenExpression: Expression;
   readonly elseExpression: Expression;
+  readonly location: SourceLocation;
+};
+
+export type ClosureExpression = {
+  readonly kind: "closure";
+  readonly captureMode: "borrow" | "move";
+  readonly parameters: Parameter[];
+  readonly returnType: TypeReference | null;
+  readonly body: Expression | BlockStatement;
   readonly location: SourceLocation;
 };
 

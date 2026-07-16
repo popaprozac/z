@@ -13,7 +13,7 @@ import {
   parseFixedArrayType,
   parseSliceType,
 } from "./array-types.ts";
-import type { SemanticInfo } from "./sema.ts";
+import type { ClosureInfo, SemanticInfo } from "./sema.ts";
 
 type GenerationContext = {
   readonly structs: Map<string, StructDeclaration>;
@@ -72,6 +72,7 @@ export function generateC(program: Program, sourceName: string, semanticInfo: Se
   const structs = new Map(program.structs.map((declaration) => [declaration.name, declaration]));
   const enums = new Map(program.enums.map((declaration) => [declaration.name, declaration]));
   const functions = new Map(program.functions.map((declaration) => [declaration.name, declaration]));
+  const closures = [...semanticInfo.closures.values()];
   const arrayTypes = collectFixedArrayTypes(program, semanticInfo);
   const sliceTypes = collectSliceTypes(program);
   const dynamicArrayTypes = collectDynamicArrayTypes(program, semanticInfo);
@@ -157,6 +158,9 @@ export function generateC(program: Program, sourceName: string, semanticInfo: Se
   for (const declaration of program.functions) {
     lines.push(`${generateFunctionSignature(declaration, structs, enums, null, semanticInfo.foreignNamedTypes)};`);
   }
+  for (const closure of closures) {
+    lines.push(`${generateFunctionSignature(closure.declaration, structs, enums, null, semanticInfo.foreignNamedTypes)};`);
+  }
   if (program.structs.some((declaration) => declaration.methods.length > 0) || program.functions.length > 0) {
     lines.push("");
   }
@@ -171,6 +175,9 @@ export function generateC(program: Program, sourceName: string, semanticInfo: Se
     for (const method of declaration.methods) {
       lines.push(generateFunction(method, structs, enums, functions, declaration, semanticInfo), "");
     }
+  }
+  for (const closure of closures) {
+    lines.push(generateFunction(closure.declaration, structs, enums, functions, null, semanticInfo), "");
   }
   for (const declaration of program.functions) {
     lines.push(generateFunction(declaration, structs, enums, functions, null, semanticInfo), "");
@@ -633,6 +640,22 @@ function generateStatement(statement: Statement, context: GenerationContext): st
   switch (statement.kind) {
     case "variable": {
       const zType = statement.type?.name ?? directValueType(statement.initializer!, context);
+      if (statement.initializer?.kind === "closure") {
+        const closure = context.semanticInfo.closures.get(statement.initializer.location.offset)!;
+        const snapshots = closure.captures.filter((capture) => capture.moved).map((capture) => {
+          const name = closureCaptureStorageName(closure, capture.name);
+          const declaration = generateLocalDeclaration(
+            capture.type,
+            name,
+            capture.mode === "inout",
+            context.structs,
+            context.enums,
+            context.semanticInfo.foreignNamedTypes,
+          );
+          return `${declaration} = ${generateStoredValue(capture.name, context)};`;
+        });
+        return [...snapshots, "(void)0;"].join("\n");
+      }
       const declaration = generateLocalDeclaration(zType, statement.name, statement.mutable, context.structs, context.enums, context.semanticInfo.foreignNamedTypes);
       if (!statement.initializer) {
         if (!hasCleanupType(zType, context.structs, context.semanticInfo.foreignTypes)) return `${declaration};`;
@@ -1239,6 +1262,8 @@ function generateExpression(expression: Expression, context: GenerationContext):
       return `(${generateExpression(expression.left, context)} ${expression.operator} ${generateExpression(expression.right, context)})`;
     case "conditional":
       return `(${generateExpression(expression.condition, context)} ? ${generateExpression(expression.thenExpression, context)} : ${generateExpression(expression.elseExpression, context)})`;
+    case "closure":
+      throw new Error("closure must be lowered from its const binding");
     case "arrayExpression": {
       const type = context.semanticInfo.expressionTypes.get(expression.location.offset)!;
       const elements = expression.elements.map((element) => generateExpression(element, context)).join(", ");
@@ -1361,6 +1386,21 @@ function generateExpression(expression: Expression, context: GenerationContext):
         const args = [receiverArgument, ...expression.arguments.map((argument) => generateCallArgument(argument, context))];
         return `${methodName(receiverType, expression.callee.property)}(${args.join(", ")})`;
       }
+      if (expression.callee.kind === "identifier") {
+        const closure = closureForType(context.localTypes.get(expression.callee.name), context.semanticInfo);
+        if (closure) {
+          const hidden = closure.captures.map((capture) => {
+            const stored = capture.moved
+              ? closureCaptureStorageName(closure, capture.name)
+              : generateStoredValue(capture.name, context);
+            if (capture.mode === "value") return stored;
+            if (capture.mode === "in" && context.structs.get(capture.type)?.kind === "class") return stored;
+            return `&(${stored})`;
+          });
+          const args = [...hidden, ...expression.arguments.map((argument) => generateCallArgument(argument, context))];
+          return `${closure.declaration.name}(${args.join(", ") || ""})`;
+        }
+      }
       return `${generateExpression(expression.callee, context)}(${expression.arguments.map((argument) => generateCallArgument(argument, context)).join(", ")})`;
     }
   }
@@ -1427,6 +1467,8 @@ function inferExpressionType(expression: Expression, context: GenerationContext)
       return ["+", "-", "*", "/", "&", "|", "^", "<<", ">>"].includes(expression.operator) ? "i32" : "bool";
     case "conditional":
       return inferExpressionType(expression.thenExpression, context);
+    case "closure":
+      return `__z_closure_${expression.location.offset}`;
     case "identifier":
       return context.localTypes.get(expression.name) ?? "i32";
     case "argumentReference":
@@ -1464,6 +1506,8 @@ function inferExpressionType(expression: Expression, context: GenerationContext)
     }
     case "call": {
       if (expression.callee.kind === "identifier") {
+        const closure = closureForType(context.localTypes.get(expression.callee.name), context.semanticInfo);
+        if (closure) return closure.declaration.returnType.name;
         return context.functions.get(expression.callee.name)?.returnType.name ?? "i32";
       }
       if (expression.callee.kind === "member" && !isForeignMember(expression.callee, context)) {
@@ -1478,6 +1522,15 @@ function inferExpressionType(expression: Expression, context: GenerationContext)
       return "i32";
     }
   }
+}
+
+function closureForType(type: string | undefined, semanticInfo: SemanticInfo) {
+  if (!type) return null;
+  return [...semanticInfo.closures.values()].find((closure) => closure.type === type) ?? null;
+}
+
+function closureCaptureStorageName(closure: ClosureInfo, name: string): string {
+  return `_z_capture_${closure.declaration.location.offset}_${name}`;
 }
 
 function directValueType(expression: Expression, context: GenerationContext): string {

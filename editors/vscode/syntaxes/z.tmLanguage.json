@@ -64,7 +64,7 @@
         "match": "\\bmove(?=\\s+this\\b)"
       }, {
         "name": "keyword.control.z",
-        "match": "\\b(?:return|throws|throw|select|yield|try|attempt|match|if|else|while|for|break|continue|async|await|spawn|deinit|unsafe|in|out|inout|as|implements)\\b"
+        "match": "\\b(?:return|throws|throw|select|yield|try|attempt|match|if|else|while|for|break|continue|async|await|spawn|deinit|unsafe|in|out|inout|move|as|implements)\\b"
       }, {
         "name": "storage.modifier.z",
         "match": "\\b(?:const|let|mut|weak|static|private|public)\\b"

@@ -330,7 +330,7 @@ type, so an arm that exits does not need to agree with the other arms' value
 type. `select` belongs to local value-producing control flow; `yield` is
 reserved for producing values from a future generator.
 
-`if` will also be an expression. Its statement blocks use the same explicit
+`if` is also an expression. Its statement blocks use the same explicit
 `select` operation, while conventional ternaries remain available for small
 conditions:
 
@@ -344,6 +344,40 @@ const detailed = if (ready) {
   select "Waiting";
 };
 ```
+
+## Closures
+
+Closures use TypeScript arrow syntax. Expression bodies infer their return
+type; statement bodies keep ordinary explicit `return` semantics:
+
+```z
+const add = (value: i32): i32 => value + offset;
+const describe = (value: i32): string => {
+  log(value);
+  return `${value}`;
+};
+```
+
+The compiler infers read-only and mutable captures. The initial implementation
+keeps closure bindings non-escaping and lowers captures to hidden borrowed
+parameters, so calls do not allocate or increment reference counts. `move`
+snapshots copyable captures at closure creation:
+
+```z
+let total = 0;
+const accumulate = (value: i32): i32 => {
+  total = total + value;
+  return total;
+};
+
+const snapshot = move (value: i32): i32 => seed + value;
+```
+
+Owned escaping environments, cleanup-bearing move captures, inferred
+single-parameter syntax, weak class captures, and closure function types are
+reserved for later tiers. Those features must preserve deterministic cleanup
+and ARC cycle safety rather than silently allocating an incomplete runtime
+representation.
 
 ## Strings, formatting, and diagnostics
 

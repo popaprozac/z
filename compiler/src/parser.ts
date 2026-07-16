@@ -185,6 +185,36 @@ export function parse(tokens: Token[], fileName: string): Program {
   };
 
   const parsePrimary = (): Expression => {
+    const closureCheckpoint = current;
+    const closureCaptureMode = at("identifier") && peek().text === "move"
+      ? (take(), "move" as const)
+      : null;
+    if (closureCaptureMode || at("leftParen")) {
+      let recognizedClosure = false;
+      const closureLocation = closureCaptureMode ? previous().location : peek().location;
+      try {
+        expect("leftParen", "`(` starting closure parameters");
+        const parameters = parseParameters();
+        expect("rightParen", "`)`");
+        const returnType = match("colon") ? parseType() : null;
+        expect("fatArrow", "`=>`");
+        recognizedClosure = true;
+        const body = at("leftBrace")
+          ? parseRequiredBlock("a closure body")
+          : parseExpression();
+        return {
+          kind: "closure",
+          captureMode: closureCaptureMode ?? "borrow",
+          parameters,
+          returnType,
+          body,
+          location: closureLocation,
+        };
+      } catch (error) {
+        if (recognizedClosure) throw error;
+        current = closureCheckpoint;
+      }
+    }
     if (match("leftBracket")) {
       const token = previous();
       const elements: Expression[] = [];

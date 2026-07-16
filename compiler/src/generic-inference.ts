@@ -36,6 +36,7 @@ export function inferGenericCalls(
   const traits = new Map(program.traits.map((item) => [item.name, item]));
   let activeConstraints = new Map<string, string[]>();
   let activeTypeParameters = new Set<string>();
+  const closureReturns = new Map<string, string | null>();
   const selectiveFunctions = new Map<string, ForeignType>();
   const selectiveValues = new Map<string, string>();
   for (const module of foreignModules.values()) {
@@ -172,6 +173,18 @@ export function inferGenericCalls(
           },
           type: thenExpression.type ?? elseExpression.type,
         };
+      }
+      case "closure": {
+        const closureEnvironment = new Map(environment);
+        for (const parameter of expression.parameters) closureEnvironment.set(parameter.name, parameter.type.name);
+        const rewrittenBody = expression.body.kind === "block"
+          ? { expression: rewriteStatement(expression.body, closureEnvironment) as typeof expression.body, type: null }
+          : rewriteExpression(expression.body, closureEnvironment);
+        const body = rewrittenBody.expression;
+        const type = `__z_closure_${expression.location.offset}`;
+        const returnType = expression.returnType?.name ?? rewrittenBody.type;
+        closureReturns.set(type, returnType);
+        return { expression: { ...expression, body }, type };
       }
       case "arrayExpression": {
         const elements = expression.elements.map((item) => rewriteExpression(item, environment));
@@ -313,6 +326,8 @@ export function inferGenericCalls(
             const arguments_ = template.typeParameters!.map((parameter) => inferred.get(parameter)!);
             rewrittenCallee = { ...rewrittenCallee, name: genericTypeName(template.name, arguments_) };
             returnType = substituteType(template.returnType.name, inferred);
+          } else if (callee.type && closureReturns.has(callee.type)) {
+            returnType = closureReturns.get(callee.type) ?? returnType;
           } else {
             returnType = functions.get(rewrittenCallee.name)?.returnType.name
               ?? inferenceTypeName(selectiveFunctions.get(rewrittenCallee.name))

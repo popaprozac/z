@@ -242,6 +242,32 @@ const detailed = if (ready) {
 };
 ```
 
+The bootstrap also supports typed, non-escaping arrow closures with inferred
+read and mutable captures. `move` snapshots copyable captures when the closure
+is created:
+
+```z
+const add = (value: i32): i32 => value + offset;
+
+let total = 0;
+const accumulate = (value: i32): i32 => {
+  total = total + value;
+  return total;
+};
+
+const snapshot = move (value: i32): i32 => seed + value;
+```
+
+Run the closure example with:
+
+```sh
+bun run z run examples/closures.z
+```
+
+Escaping closure values and cleanup-bearing move captures remain explicitly
+deferred until owned environments and their ARC/deterministic cleanup rules are
+implemented.
+
 Throwing functions use a compiler-provided `Result<T, E>` without constructor
 ceremony:
 

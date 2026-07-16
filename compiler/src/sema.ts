@@ -43,6 +43,20 @@ export type ObjCPropertyInfo = {
   readonly type: ForeignType;
 };
 
+export type ClosureCaptureInfo = {
+  readonly name: string;
+  readonly type: string;
+  readonly mode: "value" | "in" | "inout";
+  readonly moved: boolean;
+};
+
+export type ClosureInfo = {
+  readonly type: string;
+  readonly declaration: FunctionDeclaration;
+  readonly captures: readonly ClosureCaptureInfo[];
+  readonly parameterCount: number;
+};
+
 type ValueType = string | "unknown" | "never";
 
 export type SemanticInfo = {
@@ -66,6 +80,7 @@ export type SemanticInfo = {
   readonly objcStringLiterals: ReadonlySet<number>;
   readonly expressionTypes: ReadonlyMap<number, string>;
   readonly bindingTypes: ReadonlyMap<number, string>;
+  readonly closures: ReadonlyMap<number, ClosureInfo>;
   readonly objectiveC: boolean;
   readonly frameworks: readonly string[];
 };
@@ -91,6 +106,7 @@ type AnalysisState = {
   readonly objcStringLiterals: Set<number>;
   readonly expressionTypes: Map<number, string>;
   readonly bindingTypes: Map<number, string>;
+  readonly closures: Map<number, ClosureInfo>;
   readonly objectiveC: boolean;
   readonly frameworks: readonly string[];
   readonly loopStack: LoopAnalysisFrame[];
@@ -159,6 +175,7 @@ export function analyze(
     objcStringLiterals: new Set(),
     expressionTypes: new Map(),
     bindingTypes: new Map(),
+    closures: new Map(),
     objectiveC: frameworks.size > 0,
     frameworks: [...frameworks],
     loopStack: [],
@@ -616,6 +633,14 @@ function analyzeStatement(
         state.bindingTypes.set(statement.nameLocation.offset, declaredType.name);
         return;
       }
+      if (statement.initializer.kind === "closure") {
+        if (statement.mutable) {
+          throw new DiagnosticError(fileName, statement.location, "closure bindings are immutable in the initial non-escaping tier");
+        }
+        if (statement.type) {
+          throw new DiagnosticError(fileName, statement.type.location, "explicit closure function types are not implemented yet");
+        }
+      }
       const initializerType = inferDirectValue(statement.initializer, owner, locals, globals, structs, enums, fileName, state);
       let variableType = initializerType;
       if (statement.type) {
@@ -826,7 +851,287 @@ function inferDirectValue(
   if (expression.kind === "ifExpression") {
     return inferIfExpression(expression, owner, locals, globals, structs, enums, fileName, state);
   }
+  if (expression.kind === "closure") {
+    return inferClosureExpression(expression, owner, locals, globals, structs, enums, fileName, state);
+  }
   return inferExpression(expression, locals, globals, structs, enums, fileName, state);
+}
+
+function closureTypeName(expression: Extract<Expression, { kind: "closure" }>): string {
+  return `__z_closure_${expression.location.offset}`;
+}
+
+function closureInfoForType(type: ValueType, state: AnalysisState): ClosureInfo | null {
+  const actual = String(underlyingType(type));
+  if (!actual.startsWith("__z_closure_")) return null;
+  return [...state.closures.values()].find((closure) => closure.type === actual) ?? null;
+}
+
+function inferClosureExpression(
+  expression: Extract<Expression, { kind: "closure" }>,
+  owner: FunctionDeclaration,
+  locals: Map<string, ValueType>,
+  globals: Map<string, SymbolValue>,
+  structs: Map<string, StructDeclaration>,
+  enums: Map<string, EnumDeclaration>,
+  fileName: string,
+  state: AnalysisState,
+): ValueType {
+  const parameterNames = new Set<string>();
+  for (const parameter of expression.parameters) {
+    if (parameterNames.has(parameter.name)) {
+      throw new DiagnosticError(fileName, parameter.location, `duplicate closure parameter ${JSON.stringify(parameter.name)}`);
+    }
+    parameterNames.add(parameter.name);
+    validateUserName(parameter.name, parameter.location, fileName);
+    validateType(parameter.type, structs, enums, state.foreignNamedTypes, fileName, false);
+    if (parameter.mode === "out") {
+      throw new DiagnosticError(fileName, parameter.location, "out closure parameters are deferred until escaping function types are implemented");
+    }
+    const slice = parseSliceType(parameter.type.name);
+    if (slice && parameter.mode === "in") {
+      throw new DiagnosticError(fileName, parameter.location, "Slice parameters are already borrowed; omit `in`");
+    }
+    if (parameter.mode !== "value" && parameter.type.name === "cstring") {
+      throw new DiagnosticError(fileName, parameter.location, "cstring already represents a borrowed C string; it cannot use in or inout");
+    }
+  }
+
+  const discovered = collectClosureCaptures(expression, new Set(locals.keys()), parameterNames);
+  const captures: ClosureCaptureInfo[] = [];
+  const closureLocals = new Map<string, ValueType>();
+  for (const capture of discovered.values()) {
+    if (capture.name === "this") {
+      throw new DiagnosticError(fileName, capture.location, "capturing `this` is not implemented in the initial closure tier");
+    }
+    const stored = locals.get(capture.name)!;
+    if (initializationState(stored) !== "initialized") {
+      throw new DiagnosticError(fileName, capture.location, `cannot capture uninitialized value ${JSON.stringify(capture.name)}`);
+    }
+    if (ownershipState(stored) !== "available") {
+      throw new DiagnosticError(fileName, capture.location, `cannot capture moved value ${JSON.stringify(capture.name)}`);
+    }
+    if (capture.mutated && !isMutableBinding(stored)) {
+      throw new DiagnosticError(fileName, capture.location, `closure cannot mutate immutable capture ${JSON.stringify(capture.name)}`);
+    }
+    const type = String(underlyingType(stored));
+    if (type.startsWith("__z_closure_")) {
+      throw new DiagnosticError(fileName, capture.location, "capturing another closure requires escaping closure environments");
+    }
+    if (parseSliceType(type)) {
+      throw new DiagnosticError(fileName, capture.location, "capturing Slice values requires an explicit lifetime contract");
+    }
+    if (expression.captureMode === "move" && hasCleanupType(type, structs, state.foreignTypes)) {
+      throw new DiagnosticError(
+        fileName,
+        capture.location,
+        `move-capturing cleanup-bearing ${type} requires an owned closure environment, which is not implemented yet`,
+      );
+    }
+    const mode: ClosureCaptureInfo["mode"] = capture.mutated
+      ? "inout"
+      : expression.captureMode === "move" || type === "cstring" ? "value" : "in";
+    captures.push({ name: capture.name, type, mode, moved: expression.captureMode === "move" });
+    closureLocals.set(capture.name, `${borrowedPrefix}${capture.mutated ? mutablePrefix : ""}${type}`);
+    if (expression.captureMode === "borrow" && hasCleanupType(type, structs, state.foreignTypes)) {
+      locals.set(capture.name, `${borrowedPrefix}${isMutableBinding(stored) ? mutablePrefix : ""}${type}`);
+    }
+  }
+  for (const parameter of expression.parameters) {
+    const borrowed = parameter.mode === "value" && !parseSliceType(parameter.type.name) ? "" : borrowedPrefix;
+    const mutable = parameter.mode === "inout" ? mutablePrefix : "";
+    closureLocals.set(parameter.name, `${borrowed}${mutable}${parameter.type.name}`);
+    state.bindingTypes.set(parameter.location.offset, parameter.type.name);
+  }
+
+  if (expression.body.kind === "block" && !expression.returnType) {
+    throw new DiagnosticError(fileName, expression.location, "a block-bodied closure requires an explicit return type");
+  }
+  const provisionalReturn = expression.returnType ?? { name: "void", location: expression.location };
+  if (expression.returnType) validateType(expression.returnType, structs, enums, state.foreignNamedTypes, fileName, true);
+  const syntheticBase: FunctionDeclaration = {
+    kind: "function",
+    name: `__z_closure_call_${expression.location.offset}`,
+    receiverMode: null,
+    parameters: [
+      ...captures.map((capture) => ({
+        name: capture.name,
+        mode: capture.mode,
+        type: { name: capture.type, location: expression.location },
+        location: expression.location,
+      })),
+      ...expression.parameters,
+    ],
+    returnType: provisionalReturn,
+    errorType: null,
+    body: [],
+    location: expression.location,
+  };
+
+  let returnType: ValueType;
+  let body: Statement[];
+  if (expression.body.kind === "block") {
+    body = expression.body.statements;
+    const returns = analyzeStatements(body, syntheticBase, closureLocals, globals, structs, enums, fileName, state);
+    if (syntheticBase.returnType.name !== "void" && !returns) {
+      throw new DiagnosticError(fileName, expression.location, "closure must end with a return value");
+    }
+    returnType = syntheticBase.returnType.name;
+  } else {
+    returnType = inferDirectValue(expression.body, syntheticBase, closureLocals, globals, structs, enums, fileName, state);
+    if (expression.returnType) {
+      requireAssignable(expression.returnType.name, returnType, expression.body, fileName, state.foreignNamedTypes, state.numericLiteralTypes);
+      returnType = expression.returnType.name;
+    }
+    consumeOwnedValue(expression.body, returnType, closureLocals, structs, fileName, state);
+    body = [{ kind: "return", expression: expression.body, location: expression.body.location }];
+  }
+
+  const declaration = { ...syntheticBase, returnType: { name: String(returnType), location: provisionalReturn.location }, body };
+  const type = closureTypeName(expression);
+  state.closures.set(expression.location.offset, { type, declaration, captures, parameterCount: expression.parameters.length });
+  return type;
+}
+
+function collectClosureCaptures(
+  closure: Extract<Expression, { kind: "closure" }>,
+  outerNames: ReadonlySet<string>,
+  parameterNames: ReadonlySet<string>,
+): Map<string, { readonly name: string; readonly location: SourceLocation; mutated: boolean }> {
+  const captures = new Map<string, { readonly name: string; readonly location: SourceLocation; mutated: boolean }>();
+  const record = (name: string, location: SourceLocation, mutated = false, localNames: ReadonlySet<string>): void => {
+    if (!outerNames.has(name) || localNames.has(name)) return;
+    const previous = captures.get(name);
+    if (previous) previous.mutated ||= mutated;
+    else captures.set(name, { name, location, mutated });
+  };
+
+  const walkExpression = (expression: Expression, localNames: ReadonlySet<string>, mutated = false): void => {
+    switch (expression.kind) {
+      case "number":
+      case "string":
+      case "boolean":
+      case "null":
+      case "dynamicArrayExpression":
+        return;
+      case "identifier":
+        record(expression.name, expression.location, mutated, localNames);
+        return;
+      case "argumentReference":
+        record(expression.name, expression.location, true, localNames);
+        return;
+      case "unary":
+        walkExpression(expression.operand, localNames);
+        return;
+      case "binary":
+        walkExpression(expression.left, localNames);
+        walkExpression(expression.right, localNames);
+        return;
+      case "conditional":
+        walkExpression(expression.condition, localNames);
+        walkExpression(expression.thenExpression, localNames);
+        walkExpression(expression.elseExpression, localNames);
+        return;
+      case "closure":
+        return;
+      case "call":
+        walkExpression(expression.callee, localNames);
+        for (const argument of expression.arguments) walkExpression(argument, localNames);
+        return;
+      case "member":
+        walkExpression(expression.object, localNames, mutated);
+        return;
+      case "index":
+        walkExpression(expression.object, localNames, mutated);
+        walkExpression(expression.index, localNames);
+        return;
+      case "arrayExpression":
+        for (const element of expression.elements) walkExpression(element, localNames);
+        return;
+      case "structExpression":
+        for (const field of expression.fields) walkExpression(field.expression, localNames);
+        return;
+      case "variantExpression":
+        walkExpression(expression.payload, localNames);
+        return;
+      case "attempt":
+      case "try":
+        walkExpression(expression.expression, localNames);
+        return;
+      case "matchExpression":
+        walkExpression(expression.expression, localNames);
+        for (const arm of expression.arms) {
+          const armNames = new Set(localNames);
+          if (arm.binding) armNames.add(arm.binding);
+          walkStatement(arm.body, armNames);
+        }
+        return;
+      case "ifExpression":
+        walkExpression(expression.condition, localNames);
+        walkStatement(expression.thenBranch, new Set(localNames));
+        if (expression.elseBranch.kind === "ifExpression") walkExpression(expression.elseBranch, new Set(localNames));
+        else walkStatement(expression.elseBranch, new Set(localNames));
+        return;
+    }
+  };
+
+  const walkStatements = (statements: readonly Statement[], localNames: Set<string>): void => {
+    for (const statement of statements) {
+      if (statement.kind === "variable") {
+        if (statement.initializer) walkExpression(statement.initializer, localNames);
+        localNames.add(statement.name);
+      } else walkStatement(statement, localNames);
+    }
+  };
+
+  const walkStatement = (statement: Statement, localNames: Set<string>): void => {
+    switch (statement.kind) {
+      case "variable":
+        if (statement.initializer) walkExpression(statement.initializer, localNames);
+        localNames.add(statement.name);
+        return;
+      case "assignment":
+        walkExpression(statement.target, localNames, true);
+        walkExpression(statement.expression, localNames);
+        return;
+      case "return":
+        if (statement.expression) walkExpression(statement.expression, localNames);
+        return;
+      case "throw":
+      case "select":
+      case "expressionStatement":
+        walkExpression(statement.expression, localNames);
+        return;
+      case "block":
+        walkStatements(statement.statements, new Set(localNames));
+        return;
+      case "if":
+        walkExpression(statement.condition, localNames);
+        walkStatement(statement.thenBranch, new Set(localNames));
+        if (statement.elseBranch) walkStatement(statement.elseBranch, new Set(localNames));
+        return;
+      case "while":
+        walkExpression(statement.condition, localNames);
+        walkStatement(statement.body, new Set(localNames));
+        return;
+      case "match":
+        walkExpression(statement.expression, localNames);
+        for (const arm of statement.arms) {
+          const armNames = new Set(localNames);
+          if (arm.binding) armNames.add(arm.binding);
+          walkStatement(arm.body, armNames);
+        }
+        return;
+      case "break":
+      case "continue":
+        return;
+    }
+  };
+
+  const names = new Set(parameterNames);
+  if (closure.body.kind === "block") walkStatements(closure.body.statements, names);
+  else walkExpression(closure.body, names);
+  return captures;
 }
 
 function inferIfExpression(
@@ -1183,6 +1488,8 @@ function inferExpressionInner(
       mergeOwnershipStates(locals, [thenLocals, elseLocals], state);
       return commonBranchType("conditional", thenType, elseType, expression.elseExpression.location, fileName);
     }
+    case "closure":
+      throw new DiagnosticError(fileName, expression.location, "a closure must directly initialize a const binding in the initial non-escaping tier");
     case "structExpression": {
       const declaration = structs.get(expression.typeName);
       const foreignDeclaration = state.foreignNamedTypes.get(expression.typeName);
@@ -1515,8 +1822,26 @@ function inferExpressionInner(
       if (expression.callee.kind !== "identifier") {
         throw new DiagnosticError(fileName, expression.callee.location, "this expression is not callable");
       }
-      if (locals.has(expression.callee.name)) {
-        throw new DiagnosticError(fileName, expression.callee.location, `${JSON.stringify(expression.callee.name)} is not callable`);
+      const localCallee = locals.get(expression.callee.name);
+      if (localCallee) {
+        const closure = closureInfoForType(localCallee, state);
+        if (!closure) {
+          throw new DiagnosticError(fileName, expression.callee.location, `${JSON.stringify(expression.callee.name)} is not callable`);
+        }
+        state.expressionTypes.set(expression.callee.location.offset, closure.type);
+        rejectLabeledArguments(expression.argumentLabels, expression.location, fileName);
+        checkArguments(
+          { ...closure.declaration, parameters: closure.declaration.parameters.slice(closure.captures.length) },
+          expression.arguments,
+          locals,
+          globals,
+          structs,
+          enums,
+          fileName,
+          expression.location,
+          state,
+        );
+        return closure.declaration.returnType.name;
       }
       const target = globals.get(expression.callee.name);
       if (target?.kind === "foreignFunction") {
@@ -1760,6 +2085,9 @@ function validateDeinitExpression(expression: Expression, fileName: string): voi
     validateDeinitControlFlow(expression.thenBranch.statements, fileName);
     if (expression.elseBranch.kind === "ifExpression") validateDeinitExpression(expression.elseBranch, fileName);
     else validateDeinitControlFlow(expression.elseBranch.statements, fileName);
+  }
+  if (expression.kind === "closure") {
+    throw new DiagnosticError(fileName, expression.location, "deinit cannot create a closure");
   }
 }
 
