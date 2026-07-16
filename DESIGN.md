@@ -425,10 +425,18 @@ variant and payload; and classes initially show type plus reference identity.
 The compiler lowers these operations to typed native output without runtime
 reflection or exposing C-style variadic unsafety to Z.
 
-The first template tier is consumed directly by `console` methods. Reusable
-interpolated values for errors, storage, and APIs must wait for Z's owned
-`String` representation rather than masquerading as borrowed `cstring` values.
-The surface syntax will remain the same when that representation arrives.
+An interpolated template produces an owned `String`. The bootstrap representation
+is a growable, NUL-terminated byte buffer carrying its length and capacity;
+deterministic cleanup releases that allocation. `String` is cleanup-bearing and
+therefore move-only under the same ownership rules as arrays and value structs.
+It can be stored, returned, moved through value parameters, nested in owning
+struct fields, and logged. Plain double-quoted literals remain borrowed
+`cstring` values for direct C-family interop. Direct console templates retain a
+typed allocation-free lowering. In this first lowering tier, a template used as
+a call argument, aggregate field, array element, or ternary branch must first be
+bound to make its owner and evaluation order explicit; removing that bootstrap
+restriction requires general statement-producing expression lowering, not a
+change to the language-level ownership model.
 Formatting traits, format specifiers, release-build debug behavior, and
 structured logging remain later design work.
 

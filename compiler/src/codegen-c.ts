@@ -66,6 +66,7 @@ const primitiveTypeNames: Record<string, string> = {
   void: "void",
   bool: "bool",
   cstring: "const char *",
+  String: "Z_String",
 };
 
 export function generateC(program: Program, sourceName: string, semanticInfo: SemanticInfo): string {
@@ -86,7 +87,9 @@ export function generateC(program: Program, sourceName: string, semanticInfo: Se
     "#include <stdlib.h>",
   ];
 
-  if (programUsesConsole(program)) lines.push("#include <stdio.h>");
+  const usesString = programUsesString(program);
+  if (programUsesConsole(program) || usesString) lines.push("#include <stdio.h>");
+  if (usesString) lines.push("#include <string.h>");
 
   for (const declaration of program.imports) {
     lines.push(`#include <${declaration.header}>`);
@@ -101,6 +104,8 @@ export function generateC(program: Program, sourceName: string, semanticInfo: Se
     );
   }
   lines.push("");
+
+  if (usesString) lines.push(generateStringRuntime(), "");
 
   for (const declaration of program.structs) {
     lines.push(`typedef struct ${structName(declaration.name)} ${structName(declaration.name)};`);
@@ -310,6 +315,116 @@ function programUsesConsole(program: Program): boolean {
   };
   visit(program);
   return found;
+}
+
+function programUsesString(program: Program): boolean {
+  let found = false;
+  const visit = (value: unknown, directConsoleTemplate = false): void => {
+    if (found || !value || typeof value !== "object") return;
+    if (Array.isArray(value)) {
+      for (const item of value) visit(item, directConsoleTemplate);
+      return;
+    }
+    const node = value as Partial<Expression> & { readonly name?: string };
+    if ((node.kind === "template" && !directConsoleTemplate) || node.name === "String") {
+      found = true;
+      return;
+    }
+    if (
+      node.kind === "call"
+      && node.callee?.kind === "member"
+      && node.callee.object.kind === "identifier"
+      && node.callee.object.name === "console"
+    ) {
+      visit(node.callee);
+      for (const argument of node.arguments ?? []) visit(argument, argument.kind === "template");
+      return;
+    }
+    for (const child of Object.values(value as Record<string, unknown>)) visit(child);
+  };
+  visit(program);
+  return found;
+}
+
+function generateStringRuntime(): string {
+  return `#if defined(__GNUC__) || defined(__clang__)
+#define Z_UNUSED_FUNCTION __attribute__((unused))
+#else
+#define Z_UNUSED_FUNCTION
+#endif
+
+typedef struct {
+  char *data;
+  uintptr_t length;
+  uintptr_t capacity;
+} Z_String;
+
+static Z_UNUSED_FUNCTION inline Z_String z_string_new(void) {
+  Z_String value = { NULL, 0, 0 };
+  return value;
+}
+
+static Z_UNUSED_FUNCTION inline void z_string_reserve(Z_String *self, uintptr_t additional) {
+  if (additional > SIZE_MAX - self->length - 1) abort();
+  uintptr_t required = self->length + additional + 1;
+  if (required <= self->capacity) return;
+  uintptr_t next = self->capacity == 0 ? 32 : self->capacity;
+  while (next < required) {
+    if (next > SIZE_MAX / 2) {
+      next = required;
+      break;
+    }
+    next *= 2;
+  }
+  void *storage = realloc(self->data, next);
+  if (storage == NULL) abort();
+  self->data = (char *)storage;
+  self->capacity = next;
+}
+
+static Z_UNUSED_FUNCTION inline void z_string_append_bytes(Z_String *self, const char *data, uintptr_t length) {
+  if (length == 0) return;
+  z_string_reserve(self, length);
+  memcpy(self->data + self->length, data, length);
+  self->length += length;
+  self->data[self->length] = '\\0';
+}
+
+static Z_UNUSED_FUNCTION inline void z_string_append_cstring(Z_String *self, const char *value) {
+  if (value == NULL) {
+    z_string_append_bytes(self, "null", 4);
+    return;
+  }
+  z_string_append_bytes(self, value, (uintptr_t)strlen(value));
+}
+
+static Z_UNUSED_FUNCTION inline void z_string_append_signed(Z_String *self, long long value) {
+  char buffer[32];
+  int length = snprintf(buffer, sizeof(buffer), "%lld", value);
+  if (length < 0) abort();
+  z_string_append_bytes(self, buffer, (uintptr_t)length);
+}
+
+static Z_UNUSED_FUNCTION inline void z_string_append_unsigned(Z_String *self, unsigned long long value) {
+  char buffer[32];
+  int length = snprintf(buffer, sizeof(buffer), "%llu", value);
+  if (length < 0) abort();
+  z_string_append_bytes(self, buffer, (uintptr_t)length);
+}
+
+static Z_UNUSED_FUNCTION inline void z_string_append_float(Z_String *self, double value) {
+  char buffer[64];
+  int length = snprintf(buffer, sizeof(buffer), "%g", value);
+  if (length < 0) abort();
+  z_string_append_bytes(self, buffer, (uintptr_t)length);
+}
+
+static Z_UNUSED_FUNCTION inline void z_string_append_pointer(Z_String *self, const void *value) {
+  char buffer[32];
+  int length = snprintf(buffer, sizeof(buffer), "%p", value);
+  if (length < 0) abort();
+  z_string_append_bytes(self, buffer, (uintptr_t)length);
+}`;
 }
 
 function collectDynamicArrayPushTypes(program: Program, semanticInfo: SemanticInfo): string[] {
@@ -625,14 +740,7 @@ function generateDeinit(
   if (localCleanup) body.push(indent(localCleanup, 2));
   for (const field of [...declaration.fields].reverse()) {
     if (hasCleanupType(field.type.name, structs)) {
-      if (parseFixedArrayType(field.type.name)) {
-        body.push(indent(generateValueCleanup(`self->${field.name}`, field.type.name, null, context), 2));
-        continue;
-      }
-      const fieldDeclaration = structs.get(field.type.name);
-      body.push(fieldDeclaration?.kind === "class"
-        ? `  ${releaseName(field.type.name)}(self->${field.name});`
-        : `  ${deinitName(field.type.name)}(&(self->${field.name}));`);
+      body.push(indent(generateValueCleanup(`self->${field.name}`, field.type.name, null, context), 2));
     }
   }
   return `static void ${deinitName(declaration.name)}(${structName(declaration.name)} *self) {\n${body.join("\n")}\n}`;
@@ -769,6 +877,11 @@ function generateStatement(statement: Statement, context: GenerationContext): st
       if (statement.expression.kind === "call" && context.semanticInfo.consoleCalls.has(statement.expression.location.offset)) {
         return generateConsoleCall(statement.expression, context);
       }
+      if (statement.expression.kind === "template") {
+        return generateDirectValue(statement.expression, context, (value) => (
+          `(void)${value};\n${generateValueCleanup(value, "String", null, context)}`
+        ));
+      }
       return generateDirectValue(statement.expression, context, (value) => `(void)${value};`);
     case "match":
       return generateMatch(statement, context);
@@ -838,6 +951,7 @@ function renderConsoleValue(
   }
   if (type === "bool") return [`fputs((${value}) ? "true" : "false", ${stream});`];
   if (type === "cstring") return [`fputs((${value}) != NULL ? (${value}) : "null", ${stream});`];
+  if (type === "String") return [`if ((${value}).length > 0) fwrite((${value}).data, 1, (${value}).length, ${stream});`];
   if (type === "null") return [`fputs("null", ${stream});`];
 
   const foreign = context.semanticInfo.foreignNamedTypes.get(type);
@@ -903,6 +1017,103 @@ function renderConsoleValue(
     return lines;
   }
   throw new Error(`console lowering does not support ${JSON.stringify(type)}`);
+}
+
+function renderStringValue(
+  value: string,
+  type: string,
+  target: string,
+  context: GenerationContext,
+): string[] {
+  if (["i8", "i16", "i32", "i64", "isize"].includes(type)) {
+    return [`z_string_append_signed(&${target}, (long long)(${value}));`];
+  }
+  if (["u8", "u16", "u32", "u64", "usize"].includes(type)) {
+    return [`z_string_append_unsigned(&${target}, (unsigned long long)(${value}));`];
+  }
+  if (type === "f32" || type === "f64") {
+    return [`z_string_append_float(&${target}, (double)(${value}));`];
+  }
+  if (type === "bool") {
+    return [`z_string_append_bytes(&${target}, (${value}) ? "true" : "false", (${value}) ? 4 : 5);`];
+  }
+  if (type === "cstring") return [`z_string_append_cstring(&${target}, ${value});`];
+  if (type === "String") return [`z_string_append_bytes(&${target}, (${value}).data, (${value}).length);`];
+  if (type === "null") return [`z_string_append_bytes(&${target}, "null", 4);`];
+
+  const foreign = context.semanticInfo.foreignNamedTypes.get(type);
+  if (foreign?.kind === "scalar" || foreign?.kind === "enum") {
+    return renderStringValue(value, foreign.underlying, target, context);
+  }
+  if (context.semanticInfo.foreignTypes.has(type)) {
+    return [`z_string_append_pointer(&${target}, (void *)(${value}));`];
+  }
+  if (type.startsWith("__z_objc:")) {
+    return [`z_string_append_bytes(&${target}, "<Objective-C object>", 20);`];
+  }
+  if (type.startsWith("__z_objc_class:")) {
+    return [`z_string_append_bytes(&${target}, "<Objective-C class>", 19);`];
+  }
+
+  const fixed = parseFixedArrayType(type);
+  const dynamic = parseDynamicArrayType(type);
+  const slice = parseSliceType(type);
+  const collection = fixed ?? dynamic ?? slice;
+  if (collection) {
+    const index = `_z_string_index_${context.valueCounter.value++}`;
+    const length = fixed ? String(fixed.length) : `(${value}).length`;
+    const element = `((${value}).data[${index}])`;
+    return [
+      `z_string_append_bytes(&${target}, "[", 1);`,
+      `for (uintptr_t ${index} = 0; ${index} < ${length}; ${index} += 1) {`,
+      `  if (${index} > 0) z_string_append_bytes(&${target}, ", ", 2);`,
+      ...renderStringValue(element, collection.elementType, target, context).map((line) => indent(line, 2)),
+      "}",
+      `z_string_append_bytes(&${target}, "]", 1);`,
+    ];
+  }
+
+  const declaration = context.structs.get(type);
+  if (declaration?.kind === "class") {
+    return [
+      `z_string_append_bytes(&${target}, ${JSON.stringify(`${declaration.name}@`)}, ${declaration.name.length + 1});`,
+      `z_string_append_pointer(&${target}, (void *)(${value}));`,
+    ];
+  }
+  const recordFields = declaration?.fields
+    ?? (foreign?.kind === "record" ? foreign.fields.map((field) => ({ name: field.name, type: { name: field.typeName } })) : null);
+  if (recordFields) {
+    const displayName = declaration?.name ?? (foreign?.kind === "record" ? foreign.exportName : type);
+    const prefix = `${displayName} { `;
+    const lines = [`z_string_append_bytes(&${target}, ${JSON.stringify(prefix)}, sizeof(${JSON.stringify(prefix)}) - 1);`];
+    recordFields.forEach((field, index) => {
+      if (index > 0) lines.push(`z_string_append_bytes(&${target}, ", ", 2);`);
+      const label = `${field.name}: `;
+      lines.push(`z_string_append_bytes(&${target}, ${JSON.stringify(label)}, sizeof(${JSON.stringify(label)}) - 1);`);
+      lines.push(...renderStringValue(`(${value}).${field.name}`, field.type.name, target, context));
+    });
+    lines.push(`z_string_append_bytes(&${target}, " }", 2);`);
+    return lines;
+  }
+
+  const enumDeclaration = context.enums.get(type);
+  if (enumDeclaration) {
+    const lines = [`switch ((${value}).tag) {`];
+    for (const variant of enumDeclaration.variants) {
+      const label = `${enumDeclaration.name}.${variant.name}`;
+      lines.push(`  case ${variantTag(type, variant.name)}:`);
+      lines.push(`    z_string_append_bytes(&${target}, ${JSON.stringify(label)}, sizeof(${JSON.stringify(label)}) - 1);`);
+      if (variant.payload) {
+        lines.push(`    z_string_append_bytes(&${target}, "(", 1);`);
+        lines.push(...renderStringValue(`(${value}).data.${variant.name}`, variant.payload.name, target, context).map((line) => indent(line, 4)));
+        lines.push(`    z_string_append_bytes(&${target}, ")", 1);`);
+      }
+      lines.push("    break;");
+    }
+    lines.push("}");
+    return lines;
+  }
+  throw new Error(`String formatting does not support ${JSON.stringify(type)}`);
 }
 
 function generateWhile(statement: Extract<Statement, { kind: "while" }>, context: GenerationContext): string {
@@ -998,6 +1209,9 @@ function generateDirectValue(
   consumeValue: (value: string, context: GenerationContext) => string,
   consumeTerminates = false,
 ): string {
+  if (expression.kind === "template") {
+    return generateTemplateValue(expression, context, consumeValue);
+  }
   if (expression.kind === "call" && hasNativeOutArguments(expression, context)) {
     return generateNativeOutCall(expression, context, consumeValue);
   }
@@ -1009,6 +1223,46 @@ function generateDirectValue(
     return generateIfExpression(expression, context, consumeValue, consumeTerminates);
   }
   return consumeValue(generateExpression(expression, context), context);
+}
+
+function generateTemplateValue(
+  expression: Extract<Expression, { kind: "template" }>,
+  context: GenerationContext,
+  consumeValue: (value: string, context: GenerationContext) => string,
+): string {
+  const temporary = `_z_string_${context.valueCounter.value++}`;
+  const lines = [`Z_String ${temporary} = z_string_new();`];
+  for (const part of expression.parts) {
+    if (part.kind === "text") {
+      if (part.value) {
+        const literal = JSON.stringify(part.value);
+        lines.push(`z_string_append_bytes(&${temporary}, ${literal}, sizeof(${literal}) - 1);`);
+      }
+      continue;
+    }
+    const type = context.semanticInfo.expressionTypes.get(part.expression.location.offset)
+      ?? inferExpressionType(part.expression, context);
+    lines.push(generateDirectValue(part.expression, context, (value) => {
+      if (hasCleanupType(type, context.structs, context.semanticInfo.foreignTypes)) {
+        return renderStringValue(value, type, temporary, context).join("\n");
+      }
+      const valueTemporary = `_z_string_value_${context.valueCounter.value++}`;
+      const declaration = generateLocalDeclaration(
+        type,
+        valueTemporary,
+        false,
+        context.structs,
+        context.enums,
+        context.semanticInfo.foreignNamedTypes,
+      );
+      return [
+        `${declaration} = ${value};`,
+        ...renderStringValue(valueTemporary, type, temporary, context),
+      ].join("\n");
+    }));
+  }
+  lines.push(consumeValue(temporary, context));
+  return lines.join("\n");
 }
 
 function hasNativeOutArguments(
@@ -1151,6 +1405,10 @@ function generateValueCleanup(
   liveFlag: string | null,
   context: GenerationContext,
 ): string {
+  if (type === "String") {
+    const cleanup = `free((${value}).data);`;
+    return liveFlag ? `if (${liveFlag}) ${cleanup}` : cleanup;
+  }
   const dynamic = parseDynamicArrayType(type);
   if (dynamic) {
     const lines: string[] = [];
@@ -1682,7 +1940,7 @@ function inferExpressionType(expression: Expression, context: GenerationContext)
     case "string":
       return "cstring";
     case "template":
-      return "__z_template";
+      return "String";
     case "boolean":
     case "null":
       return expression.kind === "null" ? "null" : "bool";
@@ -1903,6 +2161,7 @@ function hasCleanupType(
   visiting = new Set<string>(),
 ): boolean {
   if (visiting.has(type)) return false;
+  if (type === "String") return true;
   if (foreignTypes.get(type)?.ownership === "owned") return true;
   if (parseDynamicArrayType(type)) return true;
   const declaration = structs.get(type);

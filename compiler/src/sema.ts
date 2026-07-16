@@ -136,7 +136,7 @@ type SymbolValue =
 
 const integerTypes = new Set(["i8", "u8", "i16", "u16", "i32", "u32", "i64", "u64", "isize", "usize"]);
 const floatTypes = new Set(["f32", "f64"]);
-const primitiveTypes = new Set([...integerTypes, ...floatTypes, "void", "bool", "cstring"]);
+const primitiveTypes = new Set([...integerTypes, ...floatTypes, "void", "bool", "cstring", "String"]);
 const movedPrefix = "__z_moved:";
 const maybeMovedPrefix = "__z_maybe_moved:";
 const uninitializedPrefix = "__z_uninitialized:";
@@ -1551,11 +1551,12 @@ function inferExpressionInner(
     case "string":
       return "cstring";
     case "template":
-      throw new DiagnosticError(fileName, expression.location, "template literals are currently consumed directly by console methods", {
-        code: "Z0402",
-        notes: ["general interpolated String values require the owned String type, which is not implemented yet"],
-        helps: ["pass this template directly to console.log, console.write, console.error, or console.debug"],
-      });
+      for (const part of expression.parts) {
+        if (part.kind !== "value") continue;
+        const type = inferExpression(part.expression, locals, globals, structs, enums, fileName, state);
+        requireConsoleFormattable(type, part.expression, structs, enums, fileName, state);
+      }
+      return "String";
     case "boolean":
       return "bool";
     case "null":
@@ -1700,9 +1701,11 @@ function inferExpressionInner(
       const original = new Map(locals);
       const thenLocals = narrowedConditionLocals(original, expression.condition, true, state);
       const thenType = inferExpression(expression.thenExpression, thenLocals, globals, structs, enums, fileName, state);
+      requireBoundTemplate(expression.thenExpression, fileName, "a conditional expression branch");
       consumeOwnedValue(expression.thenExpression, thenType, thenLocals, structs, fileName, state);
       const elseLocals = narrowedConditionLocals(original, expression.condition, false, state);
       const elseType = inferExpression(expression.elseExpression, elseLocals, globals, structs, enums, fileName, state);
+      requireBoundTemplate(expression.elseExpression, fileName, "a conditional expression branch");
       consumeOwnedValue(expression.elseExpression, elseType, elseLocals, structs, fileName, state);
       mergeOwnershipStates(locals, [thenLocals, elseLocals], state);
       return commonBranchType("conditional", thenType, elseType, expression.elseExpression.location, fileName);
@@ -1727,6 +1730,7 @@ function inferExpressionInner(
           throw new DiagnosticError(fileName, initializer.location, `struct ${JSON.stringify(expression.typeName)} has no field ${JSON.stringify(initializer.name)}`);
         }
         const actual = inferExpression(initializer.expression, locals, globals, structs, enums, fileName, state);
+        requireBoundTemplate(initializer.expression, fileName, "a struct field initializer");
         const fieldType = "type" in field ? field.type.name : field.typeName;
         requireAssignable(fieldType, actual, initializer.expression, fileName, state.foreignNamedTypes, state.numericLiteralTypes);
         consumeOwnedValue(initializer.expression, fieldType, locals, structs, fileName, state);
@@ -1744,12 +1748,14 @@ function inferExpressionInner(
         throw new DiagnosticError(fileName, expression.location, "cannot infer an empty fixed array; provide at least one element");
       }
       const elementType = inferExpression(expression.elements[0], locals, globals, structs, enums, fileName, state);
+      requireBoundTemplate(expression.elements[0], fileName, "an array element");
       if (elementType === "unknown" || elementType === "never" || elementType === "null") {
         throw new DiagnosticError(fileName, expression.elements[0].location, "cannot infer a fixed array element type from this expression");
       }
       consumeOwnedValue(expression.elements[0], elementType, locals, structs, fileName, state);
       for (const element of expression.elements.slice(1)) {
         const actual = inferExpression(element, locals, globals, structs, enums, fileName, state);
+        requireBoundTemplate(element, fileName, "an array element");
         requireAssignable(elementType, actual, element, fileName, state.foreignNamedTypes, state.numericLiteralTypes);
         consumeOwnedValue(element, elementType, locals, structs, fileName, state);
       }
@@ -2281,6 +2287,7 @@ function checkArguments(
       continue;
     }
     const actual = inferExpression(argument, locals, globals, structs, enums, fileName, state);
+    requireBoundTemplate(argument, fileName, "a call argument");
     const expectedSlice = parseSliceType(parameter.type.name);
     const actualArray = parseFixedArrayType(String(actual));
     const actualDynamic = parseDynamicArrayType(String(actual));
@@ -2298,6 +2305,20 @@ function checkArguments(
     requireAssignable(parameter.type.name, actual, argument, fileName, state.foreignNamedTypes, state.numericLiteralTypes);
     consumeOwnedValue(argument, parameter.type.name, locals, structs, fileName, state);
   }
+}
+
+function requireBoundTemplate(expression: Expression, fileName: string, destination: string): void {
+  if (expression.kind !== "template") return;
+  throw new DiagnosticError(
+    fileName,
+    expression.location,
+    `an owned String template used as ${destination} must be bound first in this bootstrap tier`,
+    {
+      code: "Z0402",
+      notes: ["binding gives the generated native code an explicit owner and preserves left-to-right interpolation evaluation"],
+      helps: ["initialize a const with the template, then pass that binding to the destination"],
+    },
+  );
 }
 
 function validateDeinitControlFlow(statements: Statement[], fileName: string): void {
@@ -2861,6 +2882,7 @@ function hasCleanupType(
 ): boolean {
   const actual = underlyingType(type);
   if (actual === "unknown" || actual === "never" || visiting.has(actual)) return false;
+  if (actual === "String") return true;
   if (foreignTypes.get(actual)?.ownership === "owned") return true;
   const declaration = structs.get(actual);
   if (parseDynamicArrayType(actual)) return true;

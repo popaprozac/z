@@ -1354,17 +1354,60 @@ test("formats typed values through the global console namespace and interpolatio
   assert.doesNotMatch(generated, /console\.log/);
 });
 
-test("keeps templates console-scoped until owned String exists", () => {
-  const storedTemplate = `
+test("stores, returns, moves, and formats owned String values", () => {
+  const example = resolve(projectRoot, "examples/strings.z");
+  const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, "Message { text: [point=Point { x: 20, y: 22 }, total=42] }\n");
+
+  const generated = compileToC(readFileSync(example, "utf8"), example);
+  assert.match(generated, /typedef struct \{\n  char \*data;\n  uintptr_t length;/);
+  assert.match(generated, /Z_String _z_string_\d+ = z_string_new\(\);/);
+  assert.match(generated, /z_string_append_signed/);
+  assert.match(generated, /free\(\(self->text\)\.data\);/);
+
+  const source = readFileSync(example, "utf8");
+  const wrappedOffset = source.indexOf("wrapped: String") + 1;
+  assert.match(hover(source, example, wrappedOffset)?.contents.value ?? "", /wrapped: String/);
+
+  const directArgument = `
+    function consume(value: String): void {}
+    function main(): i32 { consume(\`value=\${42}\`); return 0; }
+  `;
+  const directArgumentDiagnostic = diagnostics(directArgument, "string-argument.z");
+  assert.equal(directArgumentDiagnostic[0].code, "Z0402");
+  assert.match(directArgumentDiagnostic[0].message, /must be bound first/);
+
+  const movedString = `
     function main(): i32 {
-      const answer = 42;
-      const text = \`answer=\${answer}\`;
+      const first = \`value=42\`;
+      const second = first;
+      console.log(first);
       return 0;
     }
   `;
-  const templateDiagnostic = diagnostics(storedTemplate, "stored-template.z");
-  assert.equal(templateDiagnostic[0].code, "Z0402");
-  assert.match(templateDiagnostic[0].message, /general interpolated String values require the owned String type/);
+  const movedStringDiagnostic = diagnostics(movedString, "moved-string.z");
+  assert.equal(movedStringDiagnostic[0].code, "Z0201");
+  assert.match(movedStringDiagnostic[0].message, /use of moved value "first"/);
+
+  const cppSource = `
+    import cpp from "cpp_math.hpp";
+    function main(): i32 {
+      const point = cpp.Point { x: 20, y: 22 };
+      const answer = cpp.sum(point);
+      const text = \`cpp=\${answer}\`;
+      console.log(text);
+      return 0;
+    }
+  `;
+  const cppFile = resolve(projectRoot, "examples/string-cpp-probe.z");
+  const cppArtifact = compileToNative(cppSource, cppFile);
+  assert.equal(cppArtifact.language, "c++");
+  const cppCompilation = spawnSync("clang++", [
+    "-std=c++20", "-Wall", "-Wextra", "-Werror", "-I", resolve(projectRoot, "examples"),
+    "-x", "c++", "-fsyntax-only", "-",
+  ], { input: cppArtifact.source, encoding: "utf8" });
+  assert.equal(cppCompilation.status, 0, cppCompilation.stderr);
 
   const cleanupTemporary = `
     struct Resource { value: i32; deinit {} }
@@ -3072,6 +3115,7 @@ test("editor grammar tracks keywords without reserving Result variants", () => {
   assert.match(operatorScopes, /keyword\.operator\.arrow\.z/);
   assert.match(typePattern, /Slice/);
   assert.match(typePattern, /Array/);
+  assert.match(typePattern, /String/);
   assert.match(stringPatterns, /string\.quoted\.template\.z/);
   assert.match(stringPatterns, /meta\.interpolation\.z/);
   assert.match(stringPatterns, /punctuation\.definition\.template-expression\.begin\.z/);

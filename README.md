@@ -8,7 +8,7 @@ The bootstrap compiler currently implements a deliberately small vertical
 slice: imports, functions, local bindings, primitive expressions, value structs,
 ARC reference classes, statically checked traits, fixed arrays, borrowed slices,
 tagged enums, exhaustive statement and expression matches, typed errors,
-deterministic cleanup, TypeScript-style collection iteration, name
+deterministic cleanup, owned interpolated strings, TypeScript-style collection iteration, name
 resolution, static checking, and readable native-source emission. Header
 imports use Clang's AST to type-check
 an initial subset of C and Objective-C APIs. The compiler has no third-party
@@ -284,12 +284,15 @@ console.debug("debug stream", state);
 Template expressions use TypeScript's `${expression}` spelling and run exactly
 once from left to right. Plain braces are literal text; write `\${expression}`
 for a literal interpolation sequence. The bootstrap formats primitives,
-structs and imported records, arrays, enums, and class identity. Templates are
-currently consumed directly by console methods; storing or returning one waits
-for the owned `String` type.
+structs and imported records, arrays, enums, and class identity. A template
+produces an owned, move-only `String`; it can be stored, returned, placed in
+owning storage, and logged. Plain double-quoted literals remain borrowed
+`cstring` values so C calls stay direct and unsurprising. A template passed
+directly to `console` keeps an allocation-free lowering.
 
 ```sh
 bun run z run examples/console.z
+bun run z run examples/strings.z
 ```
 
 Ownership and capability diagnostics include stable codes, the source location

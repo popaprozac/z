@@ -143,7 +143,7 @@ export function inferGenericCalls(
         const parts = expression.parts.map((part) => part.kind === "text"
           ? part
           : { ...part, expression: rewriteExpression(part.expression, environment).expression });
-        return { expression: { ...expression, parts }, type: "__z_template" };
+        return { expression: { ...expression, parts }, type: "String" };
       }
       case "boolean":
         return { expression, type: "bool" };
