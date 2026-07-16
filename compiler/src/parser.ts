@@ -204,6 +204,21 @@ export function parse(tokens: Token[], fileName: string): Program {
         location: token.location,
       };
     }
+    if (match("if")) {
+      const token = previous();
+      expect("leftParen", "`(`");
+      const condition = parseExpression();
+      expect("rightParen", "`)`");
+      const thenBranch = parseRequiredBlock("an `if` expression body");
+      expect("else", "`else` in a value-producing `if`");
+      const elseBranch = at("if")
+        ? parsePrimary()
+        : parseRequiredBlock("an `else` expression body");
+      if (elseBranch.kind !== "ifExpression" && elseBranch.kind !== "block") {
+        throw new DiagnosticError(fileName, elseBranch.location, "expected an `if` expression or block after `else`");
+      }
+      return { kind: "ifExpression", condition, thenBranch, elseBranch, location: token.location };
+    }
     if (match("match")) {
       const token = previous();
       const expression = parseExpression();
@@ -370,7 +385,20 @@ export function parse(tokens: Token[], fileName: string): Program {
     return left;
   };
 
-  const parseExpression = (): Expression => parseBinary(0);
+  const parseExpression = (): Expression => {
+    const condition = parseBinary(0);
+    if (!match("question")) return condition;
+    const thenExpression = parseExpression();
+    expect("colon", "`:` in a conditional expression");
+    const elseExpression = parseExpression();
+    return {
+      kind: "conditional",
+      condition,
+      thenExpression,
+      elseExpression,
+      location: condition.location,
+    };
+  };
 
   const parseMatchArms = () => {
     expect("leftBrace", "`{`");

@@ -210,6 +210,7 @@ export type Expression =
   | IdentifierExpression
   | UnaryExpression
   | BinaryExpression
+  | ConditionalExpression
   | CallExpression
   | MemberExpression
   | IndexExpression
@@ -220,6 +221,7 @@ export type Expression =
   | AttemptExpression
   | TryExpression
   | MatchExpression
+  | IfExpression
   | ArgumentReferenceExpression;
 
 export type NumberExpression = {
@@ -263,6 +265,14 @@ export type BinaryExpression = {
   readonly operator: string;
   readonly left: Expression;
   readonly right: Expression;
+  readonly location: SourceLocation;
+};
+
+export type ConditionalExpression = {
+  readonly kind: "conditional";
+  readonly condition: Expression;
+  readonly thenExpression: Expression;
+  readonly elseExpression: Expression;
   readonly location: SourceLocation;
 };
 
@@ -337,6 +347,14 @@ export type MatchExpression = {
   readonly kind: "matchExpression";
   readonly expression: Expression;
   readonly arms: MatchArm[];
+  readonly location: SourceLocation;
+};
+
+export type IfExpression = {
+  readonly kind: "ifExpression";
+  readonly condition: Expression;
+  readonly thenBranch: BlockStatement;
+  readonly elseBranch: BlockStatement | IfExpression;
   readonly location: SourceLocation;
 };
 

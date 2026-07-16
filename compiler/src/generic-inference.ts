@@ -159,6 +159,20 @@ export function inferGenericCalls(
           type: comparison ? "bool" : left.type ?? right.type,
         };
       }
+      case "conditional": {
+        const condition = rewriteExpression(expression.condition, environment);
+        const thenExpression = rewriteExpression(expression.thenExpression, new Map(environment));
+        const elseExpression = rewriteExpression(expression.elseExpression, new Map(environment));
+        return {
+          expression: {
+            ...expression,
+            condition: condition.expression,
+            thenExpression: thenExpression.expression,
+            elseExpression: elseExpression.expression,
+          },
+          type: thenExpression.type ?? elseExpression.type,
+        };
+      }
       case "arrayExpression": {
         const elements = expression.elements.map((item) => rewriteExpression(item, environment));
         const elementType = elements.find((item) => item.type)?.type ?? null;
@@ -234,6 +248,22 @@ export function inferGenericCalls(
         const matched = rewriteExpression(expression.expression, environment);
         const arms = expression.arms.map((arm) => rewriteArm(arm, environment, matched.type));
         return { expression: { ...expression, expression: matched.expression, arms }, type: armValueType(arms, environment) };
+      }
+      case "ifExpression": {
+        const condition = rewriteExpression(expression.condition, environment);
+        const thenBranch = rewriteStatement(expression.thenBranch, new Map(environment)) as typeof expression.thenBranch;
+        const elseBranch = expression.elseBranch.kind === "ifExpression"
+          ? rewriteExpression(expression.elseBranch, new Map(environment)).expression as typeof expression.elseBranch
+          : rewriteStatement(expression.elseBranch, new Map(environment)) as typeof expression.elseBranch;
+        return {
+          expression: { ...expression, condition: condition.expression, thenBranch, elseBranch },
+          type: armValueType([{
+            variantName: "",
+            binding: null,
+            body: thenBranch,
+            location: thenBranch.location,
+          }], environment),
+        };
       }
       case "call": {
         const callee = rewriteExpression(expression.callee, environment);

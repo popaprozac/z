@@ -1,0 +1,27 @@
+import stdio from "stdio.h";
+
+function describe(value: i32): cstring {
+  return if (value == 10) {
+    const label = "ten";
+    select label;
+  } else if (value > 10) {
+    select "large";
+  } else {
+    select "small";
+  };
+}
+
+function main(): i32 {
+  const exact = 10 == 10 ? "yes" : "no";
+  const selected = if (true) {
+    select 42;
+  } else {
+    select 0;
+  };
+  stdio.printf("exact=%s\n", exact);
+  stdio.printf("selected=%d\n", selected);
+  stdio.printf("ten=%s\n", describe(10));
+  stdio.printf("large=%s\n", describe(11));
+  stdio.printf("small=%s\n", describe(9));
+  return 0;
+}

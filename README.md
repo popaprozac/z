@@ -228,6 +228,20 @@ const id: i32 = match result {
 };
 ```
 
+Conditionals can produce values with the same explicit local selection model.
+Ternaries retain their familiar TypeScript spelling:
+
+```z
+const short = ready ? "Ready" : "Waiting";
+const detailed = if (ready) {
+  log("ready");
+  select "Ready";
+} else {
+  log("waiting");
+  select "Waiting";
+};
+```
+
 Throwing functions use a compiler-provided `Result<T, E>` without constructor
 ceremony:
 

@@ -749,6 +749,58 @@ test("compiles boolean expressions and path-complete if statements", () => {
   assert.equal(result.stdout, "disabled=0\nordinary=1\nspecial=2\n");
 });
 
+test("compiles ternaries and value-producing if expressions with select", () => {
+  const example = resolve(projectRoot, "examples/conditional-expressions.z");
+  const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, "exact=yes\nselected=42\nten=ten\nlarge=large\nsmall=small\n");
+});
+
+test("requires matching branch types in conditional expressions", () => {
+  const source = `
+    function main(): i32 {
+      const value = if (true) {
+        select 42;
+      } else {
+        select "wrong";
+      };
+      return value;
+    }
+  `;
+  assert.throws(
+    () => compileToC(source, "if-expression-types.z"),
+    /if-expression-types\.z:5:14: error: if branch produces cstring, but the other branch produces i32/,
+  );
+});
+
+test("requires an else branch and explicit select in statement-bodied if expressions", () => {
+  const missingElse = `
+    function main(): i32 {
+      const value = if (true) { select 42; };
+      return value;
+    }
+  `;
+  assert.throws(
+    () => compileToC(missingElse, "if-expression-else.z"),
+    /if-expression-else\.z:3:45: error: expected `else` in a value-producing `if`, found ";"/,
+  );
+
+  const missingSelect = `
+    function main(): i32 {
+      const value = if (true) {
+        const answer = 42;
+      } else {
+        select 0;
+      };
+      return value;
+    }
+  `;
+  assert.throws(
+    () => compileToC(missingSelect, "if-expression-select.z"),
+    /if-expression-select\.z:4:9: error: a value-producing block must produce a value with an expression or `select`/,
+  );
+});
+
 test("runs deterministic deinit across normal, return, throw, and try exits", () => {
   const example = resolve(projectRoot, "examples/deinit.z");
   const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });

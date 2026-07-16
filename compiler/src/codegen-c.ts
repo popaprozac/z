@@ -640,7 +640,7 @@ function generateStatement(statement: Statement, context: GenerationContext): st
         return `${declaration};\nbool ${liveFlag} = false;`;
       }
       let initialized: string;
-      if (statement.initializer.kind === "matchExpression") {
+      if (statement.initializer.kind === "matchExpression" || statement.initializer.kind === "ifExpression") {
         const temporary = `_z_value_${context.valueCounter.value++}`;
         const temporaryDeclaration = generateLocalDeclaration(zType, temporary, true, context.structs, context.enums, context.semanticInfo.foreignNamedTypes);
         initialized = `${temporaryDeclaration};\n${generateDirectValue(statement.initializer, context, (value) => `${temporary} = ${value};`)}\n${declaration} = ${temporary};`;
@@ -764,6 +764,9 @@ function generateDirectValue(
   if (expression.kind === "try") return generateTry(expression, context, consumeValue);
   if (expression.kind === "matchExpression") {
     return generateMatchExpression(expression, context, consumeValue, consumeTerminates);
+  }
+  if (expression.kind === "ifExpression") {
+    return generateIfExpression(expression, context, consumeValue, consumeTerminates);
   }
   return consumeValue(generateExpression(expression, context), context);
 }
@@ -1089,6 +1092,24 @@ function generateMatchExpression(
   return `const ${enumName(type)} ${temporary} = ${subject};\nswitch (${temporary}.tag) {\n${arms}\n}`;
 }
 
+function generateIfExpression(
+  expression: Extract<Expression, { kind: "ifExpression" }>,
+  context: GenerationContext,
+  consumeValue: (value: string, context: GenerationContext) => string,
+  consumeTerminates: boolean,
+): string {
+  const condition = generateExpression(expression.condition, context);
+  const thenBranch = generateValueArm(expression.thenBranch, context, consumeValue, consumeTerminates);
+  const elseBranch = expression.elseBranch.kind === "ifExpression"
+    ? generateIfExpression(expression.elseBranch, context, consumeValue, consumeTerminates)
+    : generateValueArm(expression.elseBranch, context, consumeValue, consumeTerminates);
+  return `if ${controlCondition(condition)} {\n${indent(thenBranch, 2)}\n} else ${
+    expression.elseBranch.kind === "ifExpression"
+      ? elseBranch
+      : `{\n${indent(elseBranch, 2)}\n}`
+  }`;
+}
+
 function generateValueArm(
   statement: Statement,
   context: GenerationContext,
@@ -1216,6 +1237,8 @@ function generateExpression(expression: Expression, context: GenerationContext):
       return maybeRetainClass(expression, expression.name, context);
     case "binary":
       return `(${generateExpression(expression.left, context)} ${expression.operator} ${generateExpression(expression.right, context)})`;
+    case "conditional":
+      return `(${generateExpression(expression.condition, context)} ? ${generateExpression(expression.thenExpression, context)} : ${generateExpression(expression.elseExpression, context)})`;
     case "arrayExpression": {
       const type = context.semanticInfo.expressionTypes.get(expression.location.offset)!;
       const elements = expression.elements.map((element) => generateExpression(element, context)).join(", ");
@@ -1261,6 +1284,8 @@ function generateExpression(expression: Expression, context: GenerationContext):
       throw new Error("try must be lowered from its containing statement");
     case "matchExpression":
       throw new Error("match must be lowered from its containing statement");
+    case "ifExpression":
+      throw new Error("if must be lowered from its containing statement");
     case "member": {
       const ownerType = inferExpressionType(expression.object, context);
       const array = parseFixedArrayType(ownerType);
@@ -1400,6 +1425,8 @@ function inferExpressionType(expression: Expression, context: GenerationContext)
       return "bool";
     case "binary":
       return ["+", "-", "*", "/", "&", "|", "^", "<<", ">>"].includes(expression.operator) ? "i32" : "bool";
+    case "conditional":
+      return inferExpressionType(expression.thenExpression, context);
     case "identifier":
       return context.localTypes.get(expression.name) ?? "i32";
     case "argumentReference":
@@ -1423,6 +1450,8 @@ function inferExpressionType(expression: Expression, context: GenerationContext)
       return trySuccessType(expression, context);
     case "matchExpression":
       return matchExpressionType(expression, context);
+    case "ifExpression":
+      return ifExpressionType(expression, context);
     case "member": {
       const ownerType = inferExpressionType(expression.object, context);
       if (parseFixedArrayType(ownerType) || parseSliceType(ownerType) || parseDynamicArrayType(ownerType)) return "usize";
@@ -1454,7 +1483,16 @@ function inferExpressionType(expression: Expression, context: GenerationContext)
 function directValueType(expression: Expression, context: GenerationContext): string {
   if (expression.kind === "try") return trySuccessType(expression, context);
   if (expression.kind === "matchExpression") return matchExpressionType(expression, context);
+  if (expression.kind === "ifExpression") return ifExpressionType(expression, context);
   return inferExpressionType(expression, context);
+}
+
+function ifExpressionType(expression: Extract<Expression, { kind: "ifExpression" }>, context: GenerationContext): string {
+  return valueArmType(expression.thenBranch, context)
+    ?? (expression.elseBranch.kind === "ifExpression"
+      ? ifExpressionType(expression.elseBranch, context)
+      : valueArmType(expression.elseBranch, context))
+    ?? "i32";
 }
 
 function matchExpressionType(expression: Extract<Expression, { kind: "matchExpression" }>, context: GenerationContext): string {

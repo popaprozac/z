@@ -823,7 +823,57 @@ function inferDirectValue(
   if (expression.kind === "matchExpression") {
     return inferMatchExpression(expression, owner, locals, globals, structs, enums, fileName, state);
   }
+  if (expression.kind === "ifExpression") {
+    return inferIfExpression(expression, owner, locals, globals, structs, enums, fileName, state);
+  }
   return inferExpression(expression, locals, globals, structs, enums, fileName, state);
+}
+
+function inferIfExpression(
+  expression: Extract<Expression, { kind: "ifExpression" }>,
+  owner: FunctionDeclaration,
+  locals: Map<string, ValueType>,
+  globals: Map<string, SymbolValue>,
+  structs: Map<string, StructDeclaration>,
+  enums: Map<string, EnumDeclaration>,
+  fileName: string,
+  state: AnalysisState,
+): ValueType {
+  const conditionType = inferExpression(expression.condition, locals, globals, structs, enums, fileName, state);
+  if (conditionType !== "bool" && !foreignPointer(conditionType, state)?.nullable) {
+    requireAssignable("bool", conditionType, expression.condition, fileName, state.foreignNamedTypes, state.numericLiteralTypes);
+  }
+
+  const original = new Map(locals);
+  const continuing: Map<string, ValueType>[] = [];
+  const thenLocals = narrowedConditionLocals(original, expression.condition, true, state);
+  const thenType = inferValueArm(expression.thenBranch, owner, thenLocals, globals, structs, enums, fileName, state);
+  if (thenType !== "never") continuing.push(thenLocals);
+
+  const elseLocals = narrowedConditionLocals(original, expression.condition, false, state);
+  const elseType = expression.elseBranch.kind === "ifExpression"
+    ? inferIfExpression(expression.elseBranch, owner, elseLocals, globals, structs, enums, fileName, state)
+    : inferValueArm(expression.elseBranch, owner, elseLocals, globals, structs, enums, fileName, state);
+  if (elseType !== "never") continuing.push(elseLocals);
+
+  const resultType = commonBranchType("if", thenType, elseType, expression.elseBranch.location, fileName);
+  mergeOwnershipStates(locals, continuing, state);
+  return resultType;
+}
+
+function commonBranchType(
+  construct: string,
+  first: ValueType,
+  second: ValueType,
+  location: Expression["location"],
+  fileName: string,
+): ValueType {
+  if (first === "never" || first === "unknown") return second;
+  if (second === "never" || second === "unknown") return first;
+  if (first !== second) {
+    throw new DiagnosticError(fileName, location, `${construct} branch produces ${second}, but the other branch produces ${first}`);
+  }
+  return first;
 }
 
 function inferMatchExpression(
@@ -892,7 +942,7 @@ function inferValueArm(
   }
   if (statement.kind === "block") {
     if (statement.statements.length === 0) {
-      throw new DiagnosticError(fileName, statement.location, "a value-producing match arm cannot be empty");
+      throw new DiagnosticError(fileName, statement.location, "a value-producing block cannot be empty");
     }
     const blockLocals = new Map(locals);
     const prefixReturns = analyzeStatements(
@@ -924,7 +974,7 @@ function inferValueArm(
       state,
     );
   }
-  throw new DiagnosticError(fileName, statement.location, "a value-producing match arm must produce a value with an expression or `select`");
+  throw new DiagnosticError(fileName, statement.location, "a value-producing block must produce a value with an expression or `select`");
 }
 
 function inferTrySuccess(
@@ -1118,6 +1168,21 @@ function inferExpressionInner(
       }
       throw new DiagnosticError(fileName, expression.location, `unsupported binary operator ${JSON.stringify(expression.operator)}`);
     }
+    case "conditional": {
+      const conditionType = inferExpression(expression.condition, locals, globals, structs, enums, fileName, state);
+      if (conditionType !== "bool" && !foreignPointer(conditionType, state)?.nullable) {
+        requireAssignable("bool", conditionType, expression.condition, fileName, state.foreignNamedTypes, state.numericLiteralTypes);
+      }
+      const original = new Map(locals);
+      const thenLocals = narrowedConditionLocals(original, expression.condition, true, state);
+      const thenType = inferExpression(expression.thenExpression, thenLocals, globals, structs, enums, fileName, state);
+      consumeOwnedValue(expression.thenExpression, thenType, thenLocals, structs, fileName, state);
+      const elseLocals = narrowedConditionLocals(original, expression.condition, false, state);
+      const elseType = inferExpression(expression.elseExpression, elseLocals, globals, structs, enums, fileName, state);
+      consumeOwnedValue(expression.elseExpression, elseType, elseLocals, structs, fileName, state);
+      mergeOwnershipStates(locals, [thenLocals, elseLocals], state);
+      return commonBranchType("conditional", thenType, elseType, expression.elseExpression.location, fileName);
+    }
     case "structExpression": {
       const declaration = structs.get(expression.typeName);
       const foreignDeclaration = state.foreignNamedTypes.get(expression.typeName);
@@ -1217,6 +1282,8 @@ function inferExpressionInner(
       throw new DiagnosticError(fileName, expression.location, "try must be the direct value of a binding, return, or expression statement");
     case "matchExpression":
       throw new DiagnosticError(fileName, expression.location, "match must be the direct value of a binding, return, or expression statement");
+    case "ifExpression":
+      throw new DiagnosticError(fileName, expression.location, "if must be the direct value of a binding, return, or expression statement");
     case "member": {
       const foreignConstant = getForeignConstant(expression, globals);
       if (foreignConstant) {
@@ -1660,6 +1727,11 @@ function validateDeinitExpression(expression: Expression, fileName: string): voi
     validateDeinitExpression(expression.left, fileName);
     validateDeinitExpression(expression.right, fileName);
   }
+  if (expression.kind === "conditional") {
+    validateDeinitExpression(expression.condition, fileName);
+    validateDeinitExpression(expression.thenExpression, fileName);
+    validateDeinitExpression(expression.elseExpression, fileName);
+  }
   if (expression.kind === "call") {
     validateDeinitExpression(expression.callee, fileName);
     for (const argument of expression.arguments) validateDeinitExpression(argument, fileName);
@@ -1682,6 +1754,12 @@ function validateDeinitExpression(expression: Expression, fileName: string): voi
   if (expression.kind === "matchExpression") {
     validateDeinitExpression(expression.expression, fileName);
     for (const arm of expression.arms) validateDeinitControlFlow([arm.body], fileName);
+  }
+  if (expression.kind === "ifExpression") {
+    validateDeinitExpression(expression.condition, fileName);
+    validateDeinitControlFlow(expression.thenBranch.statements, fileName);
+    if (expression.elseBranch.kind === "ifExpression") validateDeinitExpression(expression.elseBranch, fileName);
+    else validateDeinitControlFlow(expression.elseBranch.statements, fileName);
   }
 }
 
