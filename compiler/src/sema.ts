@@ -23,7 +23,7 @@ export type SemanticInfo = {
   readonly integerLiteralTypes: ReadonlyMap<number, string>;
   readonly foreignArgumentAccesses: ReadonlyMap<number, "in" | "out" | "inout">;
   readonly foreignFunctionNames: ReadonlyMap<number, string>;
-  readonly nativeArgumentAccesses: ReadonlyMap<number, "in" | "inout">;
+  readonly nativeArgumentAccesses: ReadonlyMap<number, "in" | "inout" | "out">;
 };
 
 type AnalysisState = {
@@ -35,7 +35,7 @@ type AnalysisState = {
   readonly integerLiteralTypes: Map<number, string>;
   readonly foreignArgumentAccesses: Map<number, "in" | "out" | "inout">;
   readonly foreignFunctionNames: Map<number, string>;
-  readonly nativeArgumentAccesses: Map<number, "in" | "inout">;
+  readonly nativeArgumentAccesses: Map<number, "in" | "inout" | "out">;
 };
 
 type SymbolValue =
@@ -49,6 +49,8 @@ const integerTypes = new Set(["i8", "u8", "i16", "u16", "i32", "u32", "i64", "u6
 const primitiveTypes = new Set([...integerTypes, "void", "bool", "cstring"]);
 const movedPrefix = "__z_moved:";
 const maybeMovedPrefix = "__z_maybe_moved:";
+const uninitializedPrefix = "__z_uninitialized:";
+const maybeUninitializedPrefix = "__z_maybe_uninitialized:";
 const mutablePrefix = "__z_mutable:";
 const borrowedPrefix = "__z_borrowed:";
 
@@ -261,6 +263,9 @@ function validateFunctionSignature(
   if (declaration.errorType && declaration.returnType.name === "void") {
     throw new DiagnosticError(fileName, declaration.returnType.location, "void success results are not implemented in this bootstrap stage");
   }
+  if (declaration.errorType && declaration.parameters.some((parameter) => parameter.mode === "out")) {
+    throw new DiagnosticError(fileName, declaration.location, "throwing functions with out parameters are not implemented yet");
+  }
   for (const parameter of declaration.parameters) {
     if (parameter.name === "this") {
       throw new DiagnosticError(fileName, parameter.location, "`this` is reserved for a method receiver");
@@ -268,7 +273,7 @@ function validateFunctionSignature(
     validateUserName(parameter.name, parameter.location, fileName);
     validateType(parameter.type, structs, enums, foreignNamedTypes, fileName, false);
     if (parameter.mode !== "value" && parameter.type.name === "cstring") {
-      throw new DiagnosticError(fileName, parameter.location, "cstring already represents a borrowed C string; it cannot use in or inout");
+      throw new DiagnosticError(fileName, parameter.location, "cstring already represents a borrowed C string; it cannot use in, inout, or out");
     }
   }
 }
@@ -319,11 +324,13 @@ function analyzeFunction(
       throw new DiagnosticError(fileName, parameter.location, `duplicate parameter ${JSON.stringify(parameter.name)}`);
     }
     const borrowed = parameter.mode === "value" ? "" : borrowedPrefix;
-    const mutable = parameter.mode === "inout" ? mutablePrefix : "";
-    locals.set(parameter.name, `${borrowed}${mutable}${parameter.type.name}`);
+    const mutable = parameter.mode === "inout" || parameter.mode === "out" ? mutablePrefix : "";
+    const uninitialized = parameter.mode === "out" ? uninitializedPrefix : "";
+    locals.set(parameter.name, `${uninitialized}${borrowed}${mutable}${parameter.type.name}`);
   }
 
   const returns = analyzeStatements(declaration.body, declaration, locals, globals, structs, enums, fileName, state);
+  if (!returns) requireOutParametersInitialized(declaration, locals, declaration.location, fileName);
   if (declaration.returnType.name !== "void" && !returns) {
     throw new DiagnosticError(fileName, declaration.location, `function ${JSON.stringify(declaration.name)} must end with a return value`);
   }
@@ -377,6 +384,12 @@ function analyzeStatement(
       if (locals.has(statement.name)) {
         throw new DiagnosticError(fileName, statement.location, `duplicate local ${JSON.stringify(statement.name)}`);
       }
+      if (!statement.initializer) {
+        const declaredType = statement.type!;
+        validateType(declaredType, structs, enums, state.foreignNamedTypes, fileName, false);
+        locals.set(statement.name, `${uninitializedPrefix}${mutablePrefix}${declaredType.name}`);
+        return;
+      }
       const initializerType = inferDirectValue(statement.initializer, owner, locals, globals, structs, enums, fileName, state);
       let variableType = initializerType;
       if (statement.type) {
@@ -416,7 +429,9 @@ function analyzeStatement(
         const action = statement.target.kind === "identifier" ? "assign to" : "mutate a field through";
         throw new DiagnosticError(fileName, statement.target.location, `cannot ${action} immutable binding ${JSON.stringify(root.name)}`);
       }
-      const expected = inferExpression(statement.target, locals, globals, structs, enums, fileName, state);
+      const expected = statement.target.kind === "identifier"
+        ? underlyingType(stored)
+        : inferExpression(statement.target, locals, globals, structs, enums, fileName, state);
       const actual = inferDirectValue(statement.expression, owner, locals, globals, structs, enums, fileName, state);
       requireAssignable(expected, actual, statement.expression, fileName, state.foreignNamedTypes, state.integerLiteralTypes);
       if (hasCleanupType(expected, structs, state.foreignTypes)) {
@@ -424,7 +439,7 @@ function analyzeStatement(
         if (statement.target.kind === "identifier") {
           // A whole binding may move into the replacement expression and become
           // initialized again when that expression succeeds.
-          locals.set(root.name, stored);
+          locals.set(root.name, initializedAvailableBinding(stored));
         } else {
           const rootAfterReplacement = locals.get(root.name);
           if (rootAfterReplacement && ownershipState(rootAfterReplacement) !== "available") {
@@ -435,6 +450,8 @@ function analyzeStatement(
             );
           }
         }
+      } else if (statement.target.kind === "identifier") {
+        locals.set(root.name, initializedAvailableBinding(stored));
       }
       return;
     }
@@ -444,6 +461,7 @@ function analyzeStatement(
         if (expected !== "void") {
           throw new DiagnosticError(fileName, statement.location, `expected a ${expected} return value`);
         }
+        requireOutParametersInitialized(owner, locals, statement.location, fileName);
         return;
       }
       if (expected === "void") {
@@ -452,6 +470,7 @@ function analyzeStatement(
       const actual = inferDirectValue(statement.expression, owner, locals, globals, structs, enums, fileName, state);
       requireAssignable(expected, actual, statement.expression, fileName, state.foreignNamedTypes, state.integerLiteralTypes);
       consumeOwnedValue(statement.expression, expected, locals, structs, fileName, state);
+      requireOutParametersInitialized(owner, locals, statement.location, fileName);
       return;
     }
     case "throw": {
@@ -697,6 +716,13 @@ function inferExpression(
     case "identifier": {
       const local = locals.get(expression.name);
       if (local) {
+        const initialization = initializationState(local);
+        if (initialization === "uninitialized") {
+          throw new DiagnosticError(fileName, expression.location, `use of uninitialized value ${JSON.stringify(expression.name)}`);
+        }
+        if (initialization === "maybeUninitialized") {
+          throw new DiagnosticError(fileName, expression.location, `value ${JSON.stringify(expression.name)} may be uninitialized on another control-flow path`);
+        }
         const ownership = ownershipState(local);
         if (ownership === "moved") {
           throw new DiagnosticError(fileName, expression.location, `use of moved value ${JSON.stringify(expression.name)}`);
@@ -1002,7 +1028,7 @@ function checkArguments(
       `${JSON.stringify(target.name)} expects ${target.parameters.length} argument(s), received ${args.length}`,
     );
   }
-  const activeUses = new Map<string, "value" | "in" | "inout" | "move">();
+  const activeUses = new Map<string, "value" | "in" | "inout" | "out" | "move">();
   if (receiverUse) activeUses.set(receiverUse.name, receiverUse.mode);
   for (let index = 0; index < target.parameters.length; index += 1) {
     const parameter = target.parameters[index];
@@ -1024,6 +1050,31 @@ function checkArguments(
   for (let index = 0; index < target.parameters.length; index += 1) {
     const parameter = target.parameters[index];
     const argument = args[index];
+    if (parameter.mode === "out") {
+      if (argument.kind !== "argumentReference" || argument.access !== "out") {
+        throw new DiagnosticError(
+          fileName,
+          argument.location,
+          `${JSON.stringify(target.name)} requires out <mutable binding> for parameter ${index + 1}`,
+        );
+      }
+      const stored = locals.get(argument.name);
+      if (!stored) throw new DiagnosticError(fileName, argument.location, `unknown name ${JSON.stringify(argument.name)}`);
+      if (!isMutableBinding(stored)) {
+        throw new DiagnosticError(fileName, argument.location, `out argument ${JSON.stringify(argument.name)} requires a mutable let binding`);
+      }
+      requireAssignable(
+        parameter.type.name,
+        underlyingType(stored),
+        argument,
+        fileName,
+        state.foreignNamedTypes,
+        state.integerLiteralTypes,
+      );
+      locals.set(argument.name, initializedAvailableBinding(stored));
+      state.nativeArgumentAccesses.set(argument.location.offset, "out");
+      continue;
+    }
     if (parameter.mode === "inout") {
       if (argument.kind !== "argumentReference" || argument.access !== "inout") {
         throw new DiagnosticError(
@@ -1034,6 +1085,12 @@ function checkArguments(
       }
       const stored = locals.get(argument.name);
       if (!stored) throw new DiagnosticError(fileName, argument.location, `unknown name ${JSON.stringify(argument.name)}`);
+      if (initializationState(stored) === "uninitialized") {
+        throw new DiagnosticError(fileName, argument.location, `inout argument ${JSON.stringify(argument.name)} must be initialized before the call`);
+      }
+      if (initializationState(stored) === "maybeUninitialized") {
+        throw new DiagnosticError(fileName, argument.location, `inout argument ${JSON.stringify(argument.name)} may be uninitialized on another control-flow path`);
+      }
       if (ownershipState(stored) === "moved") {
         throw new DiagnosticError(fileName, argument.location, `use of moved value ${JSON.stringify(argument.name)}`);
       }
@@ -1089,7 +1146,7 @@ function validateDeinitControlFlow(statements: Statement[], fileName: string): v
       throw new DiagnosticError(fileName, statement.location, `deinit cannot contain ${JSON.stringify(statement.kind)}`);
     }
     if (statement.kind === "block") validateDeinitControlFlow(statement.statements, fileName);
-    if (statement.kind === "variable") validateDeinitExpression(statement.initializer, fileName);
+    if (statement.kind === "variable" && statement.initializer) validateDeinitExpression(statement.initializer, fileName);
     if (statement.kind === "assignment") {
       validateDeinitExpression(statement.target, fileName);
       validateDeinitExpression(statement.expression, fileName);
@@ -1189,12 +1246,28 @@ function storageRoot(expression: Expression): Extract<Expression, { kind: "ident
 function ownershipState(type: ValueType): "available" | "moved" | "maybeMoved" {
   if (type.startsWith(movedPrefix)) return "moved";
   if (type.startsWith(maybeMovedPrefix)) return "maybeMoved";
+  if (type.startsWith(uninitializedPrefix)) return ownershipState(type.slice(uninitializedPrefix.length));
+  if (type.startsWith(maybeUninitializedPrefix)) return ownershipState(type.slice(maybeUninitializedPrefix.length));
+  if (type.startsWith(mutablePrefix)) return ownershipState(type.slice(mutablePrefix.length));
+  if (type.startsWith(borrowedPrefix)) return ownershipState(type.slice(borrowedPrefix.length));
   return "available";
+}
+
+function initializationState(type: ValueType): "initialized" | "uninitialized" | "maybeUninitialized" {
+  if (type.startsWith(uninitializedPrefix)) return "uninitialized";
+  if (type.startsWith(maybeUninitializedPrefix)) return "maybeUninitialized";
+  if (type.startsWith(movedPrefix)) return initializationState(type.slice(movedPrefix.length));
+  if (type.startsWith(maybeMovedPrefix)) return initializationState(type.slice(maybeMovedPrefix.length));
+  if (type.startsWith(mutablePrefix)) return initializationState(type.slice(mutablePrefix.length));
+  if (type.startsWith(borrowedPrefix)) return initializationState(type.slice(borrowedPrefix.length));
+  return "initialized";
 }
 
 function underlyingType(type: ValueType): ValueType {
   if (type.startsWith(movedPrefix)) return underlyingType(type.slice(movedPrefix.length));
   if (type.startsWith(maybeMovedPrefix)) return underlyingType(type.slice(maybeMovedPrefix.length));
+  if (type.startsWith(uninitializedPrefix)) return underlyingType(type.slice(uninitializedPrefix.length));
+  if (type.startsWith(maybeUninitializedPrefix)) return underlyingType(type.slice(maybeUninitializedPrefix.length));
   if (type.startsWith(mutablePrefix)) return underlyingType(type.slice(mutablePrefix.length));
   if (type.startsWith(borrowedPrefix)) return underlyingType(type.slice(borrowedPrefix.length));
   return type;
@@ -1203,6 +1276,8 @@ function underlyingType(type: ValueType): ValueType {
 function isMutableBinding(type: ValueType): boolean {
   if (type.startsWith(movedPrefix)) return isMutableBinding(type.slice(movedPrefix.length));
   if (type.startsWith(maybeMovedPrefix)) return isMutableBinding(type.slice(maybeMovedPrefix.length));
+  if (type.startsWith(uninitializedPrefix)) return isMutableBinding(type.slice(uninitializedPrefix.length));
+  if (type.startsWith(maybeUninitializedPrefix)) return isMutableBinding(type.slice(maybeUninitializedPrefix.length));
   if (type.startsWith(borrowedPrefix)) return isMutableBinding(type.slice(borrowedPrefix.length));
   return type.startsWith(mutablePrefix);
 }
@@ -1210,8 +1285,33 @@ function isMutableBinding(type: ValueType): boolean {
 function isBorrowedBinding(type: ValueType): boolean {
   if (type.startsWith(movedPrefix)) return isBorrowedBinding(type.slice(movedPrefix.length));
   if (type.startsWith(maybeMovedPrefix)) return isBorrowedBinding(type.slice(maybeMovedPrefix.length));
+  if (type.startsWith(uninitializedPrefix)) return isBorrowedBinding(type.slice(uninitializedPrefix.length));
+  if (type.startsWith(maybeUninitializedPrefix)) return isBorrowedBinding(type.slice(maybeUninitializedPrefix.length));
   if (type.startsWith(mutablePrefix)) return isBorrowedBinding(type.slice(mutablePrefix.length));
   return type.startsWith(borrowedPrefix);
+}
+
+function initializedAvailableBinding(type: ValueType): ValueType {
+  return `${isBorrowedBinding(type) ? borrowedPrefix : ""}${isMutableBinding(type) ? mutablePrefix : ""}${underlyingType(type)}`;
+}
+
+function requireOutParametersInitialized(
+  declaration: FunctionDeclaration,
+  locals: Map<string, ValueType>,
+  location: SourceLocation,
+  fileName: string,
+): void {
+  for (const parameter of declaration.parameters) {
+    if (parameter.mode !== "out") continue;
+    const stored = locals.get(parameter.name)!;
+    const initialization = initializationState(stored);
+    if (initialization === "uninitialized") {
+      throw new DiagnosticError(fileName, location, `out parameter ${JSON.stringify(parameter.name)} is not initialized before successful return`);
+    }
+    if (initialization === "maybeUninitialized") {
+      throw new DiagnosticError(fileName, location, `out parameter ${JSON.stringify(parameter.name)} may be uninitialized on a successful return path`);
+    }
+  }
 }
 
 function propagateOuterOwnership(target: Map<string, ValueType>, source: Map<string, ValueType>): void {
@@ -1240,10 +1340,19 @@ function mergeOwnershipStates(
       type = pointerTypeName(firstPointer.identity, firstPointer.ownership, nullable);
     }
     const states = new Set(values.map(ownershipState));
+    const initializationStates = new Set(values.map(initializationState));
     const storedType = `${borrowed ? borrowedPrefix : ""}${mutable ? mutablePrefix : ""}${type}`;
-    if (states.size === 1 && states.has("available")) target.set(name, storedType);
-    else if (states.size === 1 && states.has("moved")) target.set(name, `${movedPrefix}${storedType}`);
-    else target.set(name, `${maybeMovedPrefix}${storedType}`);
+    const ownershipType = states.size === 1 && states.has("available")
+      ? storedType
+      : states.size === 1 && states.has("moved")
+        ? `${movedPrefix}${storedType}`
+        : `${maybeMovedPrefix}${storedType}`;
+    if (initializationStates.size === 1 && initializationStates.has("initialized")) target.set(name, ownershipType);
+    else if (initializationStates.size === 1 && initializationStates.has("uninitialized")) {
+      target.set(name, `${uninitializedPrefix}${ownershipType}`);
+    } else {
+      target.set(name, `${maybeUninitializedPrefix}${ownershipType}`);
+    }
   }
 }
 
@@ -1405,10 +1514,16 @@ function checkForeignCall(
       if (!stored) {
         throw new DiagnosticError(fileName, argument.location, `unknown name ${JSON.stringify(argument.name)}`);
       }
-      if (ownershipState(stored) === "moved") {
+      if (argument.access !== "out" && initializationState(stored) === "uninitialized") {
+        throw new DiagnosticError(fileName, argument.location, `${argument.access} argument ${JSON.stringify(argument.name)} must be initialized before the call`);
+      }
+      if (argument.access !== "out" && initializationState(stored) === "maybeUninitialized") {
+        throw new DiagnosticError(fileName, argument.location, `${argument.access} argument ${JSON.stringify(argument.name)} may be uninitialized on another control-flow path`);
+      }
+      if (argument.access !== "out" && ownershipState(stored) === "moved") {
         throw new DiagnosticError(fileName, argument.location, `use of moved value ${JSON.stringify(argument.name)}`);
       }
-      if (ownershipState(stored) === "maybeMoved") {
+      if (argument.access !== "out" && ownershipState(stored) === "maybeMoved") {
         throw new DiagnosticError(fileName, argument.location, `value ${JSON.stringify(argument.name)} may have been moved on another control-flow path`);
       }
       if (!isMutableBinding(stored)) {
@@ -1423,6 +1538,7 @@ function checkForeignCall(
         state.integerLiteralTypes,
       );
       state.foreignArgumentAccesses.set(argument.location.offset, argument.access);
+      if (argument.access === "out") locals.set(argument.name, initializedAvailableBinding(stored));
       continue;
     }
     if (parameter?.type.kind === "recordPointer") {

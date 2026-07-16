@@ -1,0 +1,53 @@
+import stdio from "stdio.h";
+
+struct Resource {
+  id: i32;
+
+  deinit {
+    stdio.printf("drop=%d\n", this.id);
+  }
+}
+
+function divide(value: i32, divisor: i32, out quotient: i32, out remainder: i32): void {
+  quotient = value / divisor;
+  remainder = value - quotient * divisor;
+}
+
+function choose(flag: bool, out value: i32): void {
+  if (flag) {
+    value = 10;
+  } else {
+    value = 20;
+  }
+}
+
+function initializeWithStatus(out value: i32): i32 {
+  value = 42;
+  return 7;
+}
+
+function makeResource(id: i32, out resource: Resource): void {
+  resource = Resource { id: id };
+  stdio.printf("init=%d\n", resource.id);
+}
+
+function main(): i32 {
+  let quotient: i32;
+  let remainder: i32;
+  divide(17, 5, out quotient, out remainder);
+  stdio.printf("17/5=%d remainder=%d\n", quotient, remainder);
+
+  let selected: i32;
+  choose(true, out selected);
+  stdio.printf("selected=%d\n", selected);
+
+  let statusValue: i32;
+  const status = initializeWithStatus(out statusValue);
+  stdio.printf("status=%d value=%d\n", status, statusValue);
+
+  let resource: Resource;
+  makeResource(40, out resource);
+  makeResource(42, out resource);
+  stdio.printf("resource=%d\n", resource.id);
+  return 0;
+}

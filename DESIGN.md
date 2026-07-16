@@ -90,7 +90,7 @@ cleanup-bearing values move. Borrowing is the non-default declaration:
 | owned/value | `value: T` | `use(value)` | Callee owns the parameter; copy or move follows the type. |
 | immutable borrow | `in value: T` | `inspect(value)` | Read-only, non-escaping borrow for the call. |
 | mutable borrow | `inout value: T` | `update(inout value)` | Exclusive read/write borrow for the call. |
-| output | future `out value: T` | `create(out value)` | Callee fully initializes storage. |
+| output | `out value: T` | `create(out value)` | Callee fully initializes storage. |
 | consuming receiver | `move this` | `value.consume()` | Receiver ownership transfers; copyable values copy. |
 
 Capabilities precede parameter bindings because they modify access to storage,
@@ -102,11 +102,13 @@ effects are externally visible. Borrowed bindings cannot move into returns,
 owned parameters, or owning fields. Borrowed cleanup-bearing parameters do not
 run cleanup; their owner remains responsible.
 
-The bootstrap initially requires `inout` to name a direct initialized mutable
-binding. Immutable borrows accept stored expressions and non-cleanup struct
-literals. General temporary materialization, native `out`, and definite
-initialization follow later. Multiple `in` uses may share one root in a call;
-uses involving `inout` or ownership must not overlap that root.
+The bootstrap requires `inout` to name direct initialized mutable storage.
+Immutable borrows accept stored expressions and non-cleanup struct literals;
+general temporary materialization follows later. An `out` parameter begins
+uninitialized and write-only, becomes readable after assignment, and must be
+initialized along every successful return path. Uninitialized typed `let`
+bindings use the same flow-sensitive analysis. Multiple `in` uses may share one
+root in a call; uses involving writable access or ownership must not overlap it.
 
 Replacing cleanup-bearing storage evaluates the new value into owned temporary
 storage before destroying the old value and installing the replacement. If
@@ -277,20 +279,18 @@ owner.
 Pointers to complete imported records use a separate, non-escaping call
 contract. API notes classify `const T *` as `in` and writable `T *` as `out` or
 `inout`. An `in` call implicitly borrows a stored Z value. Writable calls require
-initialized mutable storage and spell the capability at the call site:
+mutable storage and spell the capability at the call site:
 
 ```z
-let point = geometry.Point { x: 1, y: 2 };
-geometry.translate(inout point, 3, 4);
+let point: geometry.Point;
 geometry.reset(out point);
+geometry.translate(inout point, 3, 4);
 ```
 
-`in` forbids mutation and retention, `inout` allows the callee to read and
-mutate, and `out` additionally promises complete initialization before return.
-These modes authorize a compiler-generated address for one call; they do not
-introduce a general safe-code address-of operator. The first bootstrap requires
-even `out` bindings to have an initializer, deferring uninitialized storage and
-definite-initialization analysis.
+`in` forbids mutation and retention, `inout` requires initialized storage and
+allows the callee to read and mutate, and `out` promises complete initialization
+before return. These modes authorize a compiler-generated address for one call;
+they do not introduce a general safe-code address-of operator.
 
 The Bun bootstrap currently represents project notes as adjacent
 `<header>.zapi.json` files and can ship notes for platform headers. That file

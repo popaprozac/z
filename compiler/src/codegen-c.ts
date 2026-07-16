@@ -14,7 +14,7 @@ type GenerationContext = {
   readonly enums: Map<string, EnumDeclaration>;
   readonly functions: Map<string, FunctionDeclaration>;
   readonly localTypes: Map<string, string>;
-  readonly parameterModes: Map<string, "value" | "in" | "inout">;
+  readonly parameterModes: Map<string, "value" | "in" | "inout" | "out">;
   readonly receiver: StructDeclaration | null;
   readonly owner: FunctionDeclaration;
   readonly matchCounter: { value: number };
@@ -150,6 +150,13 @@ function generateFunction(
       liveFlags.set(parameter.name, liveFlag);
       return { name: parameter.name, type: parameter.type.name, liveFlag };
     }));
+  const outParameterFlags = declaration.parameters
+    .filter((parameter) => parameter.mode === "out" && hasCleanupType(parameter.type.name, structs, semanticInfo.foreignTypes))
+    .map((parameter) => {
+      const liveFlag = nextLiveFlag(parameter.name, liveFlagCounter);
+      liveFlags.set(parameter.name, liveFlag);
+      return liveFlag;
+    });
   const context: GenerationContext = {
     structs,
     enums,
@@ -167,7 +174,10 @@ function generateFunction(
     liveFlagCounter,
     semanticInfo,
   };
-  const bodyParts = parameterCleanup.map((parameter) => indent(`bool ${parameter.liveFlag} = true;`, 2));
+  const bodyParts = [
+    ...parameterCleanup.map((parameter) => indent(`bool ${parameter.liveFlag} = true;`, 2)),
+    ...outParameterFlags.map((liveFlag) => indent(`bool ${liveFlag} = false;`, 2)),
+  ];
   bodyParts.push(...declaration.body.map((statement) => {
     const generated = generateStatement(statement, context);
     recordVariableType(statement, context);
@@ -242,7 +252,7 @@ function generateFunctionSignature(
   const parameters = declaration.parameters.map((parameter) => {
     const type = mapType(parameter.type.name, structs, enums);
     if (parameter.mode === "in") return `const ${type} *${parameter.name}`;
-    if (parameter.mode === "inout") return `${type} *${parameter.name}`;
+    if (parameter.mode === "inout" || parameter.mode === "out") return `${type} *${parameter.name}`;
     return `${type} ${parameter.name}`;
   });
   if (receiver) {
@@ -261,8 +271,13 @@ function generateFunctionSignature(
 function generateStatement(statement: Statement, context: GenerationContext): string {
   switch (statement.kind) {
     case "variable": {
-      const zType = statement.type?.name ?? directValueType(statement.initializer, context);
+      const zType = statement.type?.name ?? directValueType(statement.initializer!, context);
       const declaration = generateLocalDeclaration(zType, statement.name, statement.mutable, context.structs, context.enums);
+      if (!statement.initializer) {
+        if (!hasCleanupType(zType, context.structs, context.semanticInfo.foreignTypes)) return `${declaration};`;
+        const liveFlag = ensureLiveFlag(statement.name, context);
+        return `${declaration};\nbool ${liveFlag} = false;`;
+      }
       let initialized: string;
       if (statement.initializer.kind === "matchExpression") {
         const temporary = `_z_value_${context.valueCounter.value++}`;
@@ -332,11 +347,63 @@ function generateDirectValue(
   consumeValue: (value: string, context: GenerationContext) => string,
   consumeTerminates = false,
 ): string {
+  if (expression.kind === "call" && hasNativeOutArguments(expression, context)) {
+    return generateNativeOutCall(expression, context, consumeValue);
+  }
   if (expression.kind === "try") return generateTry(expression, context, consumeValue);
   if (expression.kind === "matchExpression") {
     return generateMatchExpression(expression, context, consumeValue, consumeTerminates);
   }
   return consumeValue(generateExpression(expression, context), context);
+}
+
+function hasNativeOutArguments(
+  expression: Extract<Expression, { kind: "call" }>,
+  context: GenerationContext,
+): boolean {
+  return expression.arguments.some(
+    (argument) => context.semanticInfo.nativeArgumentAccesses.get(argument.location.offset) === "out",
+  );
+}
+
+function generateNativeOutCall(
+  expression: Extract<Expression, { kind: "call" }>,
+  context: GenerationContext,
+  consumeValue: (value: string, context: GenerationContext) => string,
+): string {
+  const before: string[] = [];
+  const after: string[] = [];
+  for (const argument of expression.arguments) {
+    if (context.semanticInfo.nativeArgumentAccesses.get(argument.location.offset) !== "out") continue;
+    if (argument.kind !== "argumentReference") throw new Error("native out argument must name storage");
+    const type = context.localTypes.get(argument.name)!;
+    if (!hasCleanupType(type, context.structs, context.semanticInfo.foreignTypes)) continue;
+    const value = generateStoredValue(argument.name, context);
+    const liveFlag = context.liveFlags.get(argument.name) ?? null;
+    before.push(generateValueCleanup(value, type, liveFlag, context));
+    if (liveFlag) {
+      before.push(`${liveFlag} = false;`);
+      after.push(`${liveFlag} = true;`);
+    }
+  }
+
+  const call = generateExpression(expression, context);
+  const returnType = inferExpressionType(expression, context);
+  if (returnType === "void") return [...before, `${call};`, ...after].join("\n");
+
+  const temporary = `_z_out_result_${context.valueCounter.value++}`;
+  const declaration = generateLocalDeclaration(returnType, temporary, false, context.structs, context.enums);
+  return [
+    ...before,
+    `${declaration} = ${call};`,
+    ...after,
+    consumeValue(temporary, context),
+  ].join("\n");
+}
+
+function generateStoredValue(name: string, context: GenerationContext): string {
+  if (name === "this") return context.owner.receiverMode === "move" ? "self" : "(*self)";
+  return context.parameterModes.get(name) ? `(*${name})` : name;
 }
 
 function generateBlock(statements: Statement[], context: GenerationContext): string {
@@ -366,7 +433,7 @@ function indent(text: string, spaces: number): string {
 
 function recordVariableType(statement: Statement, context: GenerationContext): void {
   if (statement.kind !== "variable") return;
-  const type = statement.type?.name ?? directValueType(statement.initializer, context);
+  const type = statement.type?.name ?? directValueType(statement.initializer!, context);
   context.localTypes.set(statement.name, type);
   if (hasCleanupType(type, context.structs, context.semanticInfo.foreignTypes)) {
     context.cleanupScopes.at(-1)!.push({ name: statement.name, type, liveFlag: ensureLiveFlag(statement.name, context) });
@@ -646,7 +713,7 @@ function generateExpression(expression: Expression, context: GenerationContext):
       return expression.value ? "true" : "false";
     case "argumentReference":
       if (expression.name === "this") return context.owner.receiverMode === "move" ? "&(self)" : "self";
-      if (context.parameterModes.get(expression.name) === "inout") return expression.name;
+      if (context.parameterModes.get(expression.name) === "inout" || context.parameterModes.get(expression.name) === "out") return expression.name;
       return `&(${expression.name})`;
     case "unary":
       return `(${expression.operator}${generateExpression(expression.operand, context)})`;
@@ -661,7 +728,11 @@ function generateExpression(expression: Expression, context: GenerationContext):
         if (!liveFlag) throw new Error("missing ownership flag for moved receiver `this`");
         return `(${liveFlag} = false, ${value})`;
       }
-      if (context.parameterModes.get(expression.name) === "in" || context.parameterModes.get(expression.name) === "inout") {
+      if (
+        context.parameterModes.get(expression.name) === "in"
+        || context.parameterModes.get(expression.name) === "inout"
+        || context.parameterModes.get(expression.name) === "out"
+      ) {
         return `(*${expression.name})`;
       }
       if (context.semanticInfo.movedExpressions.has(expression.location.offset)) {

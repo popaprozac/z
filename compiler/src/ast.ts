@@ -73,7 +73,7 @@ export type FunctionDeclaration = {
 
 export type Parameter = {
   readonly name: string;
-  readonly mode: "value" | "in" | "inout";
+  readonly mode: "value" | "in" | "inout" | "out";
   readonly type: TypeReference;
   readonly location: SourceLocation;
 };
@@ -99,7 +99,7 @@ export type VariableStatement = {
   readonly mutable: boolean;
   readonly name: string;
   readonly type: TypeReference | null;
-  readonly initializer: Expression;
+  readonly initializer: Expression | null;
   readonly location: SourceLocation;
 };
 

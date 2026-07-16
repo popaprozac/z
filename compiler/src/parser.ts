@@ -72,7 +72,7 @@ export function parse(tokens: Token[], fileName: string): Program {
     const parameters: Parameter[] = [];
     if (at("rightParen")) return parameters;
     do {
-      const mode = match("in") ? "in" : match("inout") ? "inout" : "value";
+      const mode = match("in") ? "in" : match("inout") ? "inout" : match("out") ? "out" : "value";
       const nameToken = expect("identifier", "a parameter name");
       expect("colon", "`:`");
       parameters.push({ name: nameToken.text, mode, type: parseType(), location: nameToken.location });
@@ -308,6 +308,15 @@ export function parse(tokens: Token[], fileName: string): Program {
       const mutable = declarationToken.kind === "let";
       const name = expect("identifier", "a variable name").text;
       const type = match("colon") ? parseType() : null;
+      if (match("semicolon")) {
+        if (!mutable) {
+          throw new DiagnosticError(fileName, declarationToken.location, "const declarations require an initializer");
+        }
+        if (!type) {
+          throw new DiagnosticError(fileName, declarationToken.location, "an uninitialized let declaration requires a type annotation");
+        }
+        return { kind: "variable", mutable, name, type, initializer: null, location: declarationToken.location };
+      }
       expect("equal", "`=`");
       const initializer = parseExpression();
       expect("semicolon", "`;`");

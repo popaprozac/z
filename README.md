@@ -146,10 +146,25 @@ Borrowed parameters cannot be returned, stored into owning fields, or otherwise
 moved. `inout` requires an initialized mutable binding and can be forwarded with
 `inout parameter`. The bootstrap currently borrows stored expressions or
 non-cleanup struct literals; general borrowed-temporary lowering comes later.
-Native `out` waits on definite-initialization analysis, while cleanup-bearing
-owned parameters continue to move implicitly. A call may share the same value
-through multiple `in` parameters, but overlapping `inout`, owned, and borrowed
-uses of one storage root are rejected.
+`out` starts write-only, must be initialized on every successful return path,
+and becomes readable after definite assignment:
+
+```z
+function divide(value: i32, out quotient: i32, out remainder: i32): void {
+  quotient = value / 2;
+  remainder = value - quotient * 2;
+}
+
+let quotient: i32;
+let remainder: i32;
+divide(17, out quotient, out remainder);
+```
+
+Cleanup-bearing output storage becomes live only after initialization. Passing
+an already-live value to `out` destroys its old value before the call. Throwing
+native functions with `out` parameters remain deferred so failure does not
+leave ambiguous output state. A call may share one value through multiple `in`
+parameters, but overlapping writable, owned, and borrowed uses are rejected.
 
 Tagged enums carry typed payloads and are matched exhaustively:
 
@@ -280,21 +295,20 @@ standard-library feature is not implemented in the bootstrap yet.
 
 Pointer parameters to complete imported records remain safe when adjacent API
 notes classify their call-only access. Read-only `const T *` parameters borrow a
-stored value implicitly; writable `T *` parameters require an initialized
-mutable binding and an explicit mode at the call site:
+stored value implicitly; writable `T *` parameters require mutable storage and
+an explicit mode at the call site:
 
 ```z
-let point = geometry.Point { x: 1, y: 2 };
+let point: geometry.Point;
+geometry.reset(out point);
 geometry.offset(inout point, 3, 4);
 const score = geometry.read(point); // `in` is implicit for const T *.
-geometry.reset(out point);
 ```
 
-`in` promises no mutation or retention, `inout` permits reading and mutation,
-and `out` promises to fully overwrite the value. The compiler creates an address
-only for the duration of that call; Z exposes no general address-of operator.
-The bootstrap requires `out` storage to be initialized first, so uninitialized
-locals and definite-initialization analysis are not part of this slice.
+`in` promises no mutation or retention, `inout` requires initialized storage and
+permits reading and mutation, and `out` fully initializes possibly uninitialized
+storage. The compiler creates an address only for the duration of that call; Z
+exposes no general address-of operator.
 
 `try` evaluates its call once, propagates failure immediately, and produces the
 success payload. It is currently supported directly in bindings, returns, and
@@ -345,8 +359,8 @@ fields, C enums and their constants, and integer typedefs are now usable as
 namespaced Z types. Integer literals are contextually typed and rejected when
 they do not fit the destination width. Unions, anonymous or incomplete layouts,
 plain `char` signedness, arrays, floating-point types, bitfield-specific
-validation, callbacks, pointers stored inside records, and uninitialized output
-storage remain upcoming interop layers.
+validation, callbacks, and pointers stored inside records remain upcoming
+interop layers.
 
 See [DESIGN.md](DESIGN.md) for the language charter and roadmap.
 

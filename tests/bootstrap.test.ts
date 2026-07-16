@@ -270,6 +270,21 @@ test("borrows and explicitly mutates imported C records through safe pointer mod
 });
 
 test("requires exact pointer modes and mutable storage at imported record boundaries", () => {
+  const uninitializedOutput = `
+    import geometry from "tests/fixtures/geometry.h";
+    function main(): i32 {
+      let point: geometry.ZPoint;
+      geometry.z_reset(out point);
+      return point.x;
+    }
+  `;
+  const uninitializedOutputC = compileToC(
+    uninitializedOutput,
+    resolve(projectRoot, "foreign-record-uninitialized-out.z"),
+  );
+  assert.match(uninitializedOutputC, /ZPoint point;/);
+  assert.match(uninitializedOutputC, /z_reset\(&\(point\)\);/);
+
   const immutable = `
     import geometry from "tests/fixtures/geometry.h";
     function main(): i32 {
@@ -1031,6 +1046,119 @@ test("enforces native parameter capabilities at declaration and call sites", () 
   assert.throws(
     () => compileToC(legacyTypePosition, "legacy-capability-order.z"),
     /expected a type name, found "in"/,
+  );
+});
+
+test("initializes native out parameters with flow-sensitive checking", () => {
+  const example = resolve(projectRoot, "examples/native-out.z");
+  const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(
+    result.stdout,
+    "17/5=3 remainder=2\nselected=10\nstatus=7 value=42\ninit=40\ndrop=40\ninit=42\nresource=42\ndrop=42\n",
+  );
+
+  const generated = compileToC(readFileSync(example, "utf8"), example);
+  assert.match(generated, /static void divide\(int32_t value, int32_t divisor, int32_t \*quotient, int32_t \*remainder\)/);
+  assert.match(generated, /int32_t quotient;\n\s+int32_t remainder;/);
+  assert.match(generated, /divide\(17, 5, &\(quotient\), &\(remainder\)\);/);
+  assert.match(generated, /const int32_t _z_out_result_\d+ = initializeWithStatus\(&\(statusValue\)\);\n\s+const int32_t status = _z_out_result_\d+;/);
+  assert.match(generated, /Z_Resource resource;\n\s+bool (_z_live_resource_\d+) = false;/);
+  assert.match(generated, /if \(_z_live_resource_\d+\) Z_Resource_deinit\(&\(resource\)\);\n\s+_z_live_resource_\d+ = false;\n\s+makeResource\(40, &\(resource\)\);\n\s+_z_live_resource_\d+ = true;/);
+
+  const readBeforeInitialization = `
+    function main(): i32 {
+      let value: i32;
+      return value;
+    }
+  `;
+  assert.throws(
+    () => compileToC(readBeforeInitialization, "read-uninitialized.z"),
+    /use of uninitialized value "value"/,
+  );
+
+  const maybeInitialized = `
+    function main(): i32 {
+      let value: i32;
+      if (true) { value = 1; }
+      return value;
+    }
+  `;
+  assert.throws(
+    () => compileToC(maybeInitialized, "maybe-uninitialized.z"),
+    /value "value" may be uninitialized on another control-flow path/,
+  );
+
+  const missingOutput = `
+    function initialize(flag: bool, out value: i32): void {
+      if (flag) { value = 1; }
+    }
+    function main(): i32 { return 0; }
+  `;
+  assert.throws(
+    () => compileToC(missingOutput, "missing-out-initialization.z"),
+    /out parameter "value" may be uninitialized on a successful return path/,
+  );
+
+  const missingModifier = `
+    function initialize(out value: i32): void { value = 1; }
+    function main(): i32 {
+      let value: i32;
+      initialize(value);
+      return value;
+    }
+  `;
+  assert.throws(
+    () => compileToC(missingModifier, "missing-out-call-modifier.z"),
+    /"initialize" requires out <mutable binding> for parameter 1/,
+  );
+
+  const immutableOutput = `
+    function initialize(out value: i32): void { value = 1; }
+    function main(): i32 {
+      const value = 0;
+      initialize(out value);
+      return value;
+    }
+  `;
+  assert.throws(
+    () => compileToC(immutableOutput, "immutable-out.z"),
+    /out argument "value" requires a mutable let binding/,
+  );
+
+  const uninitializedInout = `
+    function update(inout value: i32): void { value = value + 1; }
+    function main(): i32 {
+      let value: i32;
+      update(inout value);
+      return 0;
+    }
+  `;
+  assert.throws(
+    () => compileToC(uninitializedInout, "uninitialized-inout.z"),
+    /inout argument "value" must be initialized before the call/,
+  );
+
+  const throwingOutput = `
+    enum Failure { invalid, }
+    function initialize(out value: i32): i32 throws Failure {
+      value = 1;
+      return value;
+    }
+    function main(): i32 { return 0; }
+  `;
+  assert.throws(
+    () => compileToC(throwingOutput, "throwing-out.z"),
+    /throwing functions with out parameters are not implemented yet/,
+  );
+
+  assert.throws(
+    () => compileToC("function main(): i32 { let value; return 0; }", "untyped-uninitialized.z"),
+    /an uninitialized let declaration requires a type annotation/,
+  );
+  assert.throws(
+    () => compileToC("function main(): i32 { const value: i32; return 0; }", "uninitialized-const.z"),
+    /const declarations require an initializer/,
   );
 });
 
