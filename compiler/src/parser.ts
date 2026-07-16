@@ -74,7 +74,8 @@ export function parse(tokens: Token[], fileName: string): Program {
     do {
       const nameToken = expect("identifier", "a parameter name");
       expect("colon", "`:`");
-      parameters.push({ name: nameToken.text, type: parseType(), location: nameToken.location });
+      const mode = match("in") ? "in" : match("inout") ? "inout" : "value";
+      parameters.push({ name: nameToken.text, mode, type: parseType(), location: nameToken.location });
     } while (match("comma"));
     return parameters;
   };

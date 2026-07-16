@@ -23,6 +23,7 @@ export type SemanticInfo = {
   readonly integerLiteralTypes: ReadonlyMap<number, string>;
   readonly foreignArgumentAccesses: ReadonlyMap<number, "in" | "out" | "inout">;
   readonly foreignFunctionNames: ReadonlyMap<number, string>;
+  readonly nativeArgumentAccesses: ReadonlyMap<number, "in" | "inout">;
 };
 
 type AnalysisState = {
@@ -34,6 +35,7 @@ type AnalysisState = {
   readonly integerLiteralTypes: Map<number, string>;
   readonly foreignArgumentAccesses: Map<number, "in" | "out" | "inout">;
   readonly foreignFunctionNames: Map<number, string>;
+  readonly nativeArgumentAccesses: Map<number, "in" | "inout">;
 };
 
 type SymbolValue =
@@ -48,6 +50,7 @@ const primitiveTypes = new Set([...integerTypes, "void", "bool", "cstring"]);
 const movedPrefix = "__z_moved:";
 const maybeMovedPrefix = "__z_maybe_moved:";
 const mutablePrefix = "__z_mutable:";
+const borrowedPrefix = "__z_borrowed:";
 
 export function analyze(
   program: Program,
@@ -69,6 +72,7 @@ export function analyze(
     integerLiteralTypes: new Map(),
     foreignArgumentAccesses: new Map(),
     foreignFunctionNames: new Map(),
+    nativeArgumentAccesses: new Map(),
   };
   const globals = new Map<string, SymbolValue>();
   const structs = new Map<string, StructDeclaration>();
@@ -259,6 +263,9 @@ function validateFunctionSignature(
     }
     validateUserName(parameter.name, parameter.location, fileName);
     validateType(parameter.type, structs, enums, foreignNamedTypes, fileName, false);
+    if (parameter.mode !== "value" && parameter.type.name === "cstring") {
+      throw new DiagnosticError(fileName, parameter.location, "cstring already represents a borrowed C string; it cannot use in or inout");
+    }
   }
 }
 
@@ -305,7 +312,9 @@ function analyzeFunction(
     if (locals.has(parameter.name)) {
       throw new DiagnosticError(fileName, parameter.location, `duplicate parameter ${JSON.stringify(parameter.name)}`);
     }
-    locals.set(parameter.name, parameter.type.name);
+    const borrowed = parameter.mode === "value" ? "" : borrowedPrefix;
+    const mutable = parameter.mode === "inout" ? mutablePrefix : "";
+    locals.set(parameter.name, `${borrowed}${mutable}${parameter.type.name}`);
   }
 
   const returns = analyzeStatements(declaration.body, declaration, locals, globals, structs, enums, fileName, state);
@@ -892,7 +901,18 @@ function inferExpression(
             );
           }
         }
-        checkArguments(method, expression.arguments, locals, globals, structs, enums, fileName, expression.location, state);
+        checkArguments(
+          method,
+          expression.arguments,
+          locals,
+          globals,
+          structs,
+          enums,
+          fileName,
+          expression.location,
+          state,
+          mutableReceiverRoot?.name ?? null,
+        );
         if (mutableReceiverRoot) {
           const receiverAfterArguments = locals.get(mutableReceiverRoot.name);
           if (receiverAfterArguments && ownershipState(receiverAfterArguments) !== "available") {
@@ -943,6 +963,7 @@ function checkArguments(
   fileName: string,
   location: SourceLocation,
   state: AnalysisState,
+  mutableReceiverName: string | null = null,
 ): void {
   if (target.parameters.length !== args.length) {
     throw new DiagnosticError(
@@ -951,10 +972,84 @@ function checkArguments(
       `${JSON.stringify(target.name)} expects ${target.parameters.length} argument(s), received ${args.length}`,
     );
   }
+  const activeUses = new Map<string, "value" | "in" | "inout">();
+  if (mutableReceiverName) activeUses.set(mutableReceiverName, "inout");
   for (let index = 0; index < target.parameters.length; index += 1) {
-    const actual = inferExpression(args[index], locals, globals, structs, enums, fileName, state);
-    requireAssignable(target.parameters[index].type.name, actual, args[index], fileName, state.foreignNamedTypes, state.integerLiteralTypes);
-    consumeOwnedValue(args[index], target.parameters[index].type.name, locals, structs, fileName, state);
+    const parameter = target.parameters[index];
+    const argument = args[index];
+    const root = argument.kind === "argumentReference"
+      ? argument.name
+      : storageRoot(argument)?.name ?? null;
+    if (!root) continue;
+    const previous = activeUses.get(root);
+    if (previous && !((previous === "in" && parameter.mode === "in") || (previous === "value" && parameter.mode === "value"))) {
+      throw new DiagnosticError(
+        fileName,
+        argument.location,
+        `overlapping ${previous} and ${parameter.mode} uses of ${JSON.stringify(root)} in one call are not allowed`,
+      );
+    }
+    activeUses.set(root, parameter.mode);
+  }
+  for (let index = 0; index < target.parameters.length; index += 1) {
+    const parameter = target.parameters[index];
+    const argument = args[index];
+    if (parameter.mode === "inout") {
+      if (argument.kind !== "argumentReference" || argument.access !== "inout") {
+        throw new DiagnosticError(
+          fileName,
+          argument.location,
+          `${JSON.stringify(target.name)} requires inout <mutable binding> for parameter ${index + 1}`,
+        );
+      }
+      const stored = locals.get(argument.name);
+      if (!stored) throw new DiagnosticError(fileName, argument.location, `unknown name ${JSON.stringify(argument.name)}`);
+      if (ownershipState(stored) === "moved") {
+        throw new DiagnosticError(fileName, argument.location, `use of moved value ${JSON.stringify(argument.name)}`);
+      }
+      if (ownershipState(stored) === "maybeMoved") {
+        throw new DiagnosticError(fileName, argument.location, `value ${JSON.stringify(argument.name)} may have been moved on another control-flow path`);
+      }
+      if (!isMutableBinding(stored)) {
+        throw new DiagnosticError(fileName, argument.location, `inout argument ${JSON.stringify(argument.name)} requires a mutable let binding`);
+      }
+      requireAssignable(
+        parameter.type.name,
+        underlyingType(stored),
+        argument,
+        fileName,
+        state.foreignNamedTypes,
+        state.integerLiteralTypes,
+      );
+      state.nativeArgumentAccesses.set(argument.location.offset, "inout");
+      continue;
+    }
+    if (argument.kind === "argumentReference") {
+      throw new DiagnosticError(
+        fileName,
+        argument.location,
+        `${argument.access} is not valid for ${parameter.mode === "in" ? "an immutable borrow" : "an owned value parameter"}`,
+      );
+    }
+    if (parameter.mode === "in") {
+      if (!isNamedStorageExpression(argument) && argument.kind !== "structExpression") {
+        throw new DiagnosticError(
+          fileName,
+          argument.location,
+          `borrowed argument to ${JSON.stringify(target.name)} must be stored or a struct literal`,
+        );
+      }
+      const actual = inferExpression(argument, locals, globals, structs, enums, fileName, state);
+      if (hasCleanupType(actual, structs, state.foreignTypes) && !isNamedStorageExpression(argument)) {
+        throw new DiagnosticError(fileName, argument.location, "a cleanup-bearing borrowed temporary must be bound before the call");
+      }
+      requireAssignable(parameter.type.name, actual, argument, fileName, state.foreignNamedTypes, state.integerLiteralTypes);
+      state.nativeArgumentAccesses.set(argument.location.offset, "in");
+      continue;
+    }
+    const actual = inferExpression(argument, locals, globals, structs, enums, fileName, state);
+    requireAssignable(parameter.type.name, actual, argument, fileName, state.foreignNamedTypes, state.integerLiteralTypes);
+    consumeOwnedValue(argument, parameter.type.name, locals, structs, fileName, state);
   }
 }
 
@@ -1025,6 +1120,9 @@ function consumeOwnedValue(
   }
   const stored = locals.get(expression.name);
   if (!stored) return;
+  if (isBorrowedBinding(stored)) {
+    throw new DiagnosticError(fileName, expression.location, `cannot move borrowed parameter ${JSON.stringify(expression.name)}`);
+  }
   locals.set(
     expression.name,
     `${movedPrefix}${isMutableBinding(stored) ? mutablePrefix : ""}${underlyingType(stored)}`,
@@ -1068,13 +1166,22 @@ function underlyingType(type: ValueType): ValueType {
   if (type.startsWith(movedPrefix)) return underlyingType(type.slice(movedPrefix.length));
   if (type.startsWith(maybeMovedPrefix)) return underlyingType(type.slice(maybeMovedPrefix.length));
   if (type.startsWith(mutablePrefix)) return underlyingType(type.slice(mutablePrefix.length));
+  if (type.startsWith(borrowedPrefix)) return underlyingType(type.slice(borrowedPrefix.length));
   return type;
 }
 
 function isMutableBinding(type: ValueType): boolean {
   if (type.startsWith(movedPrefix)) return isMutableBinding(type.slice(movedPrefix.length));
   if (type.startsWith(maybeMovedPrefix)) return isMutableBinding(type.slice(maybeMovedPrefix.length));
+  if (type.startsWith(borrowedPrefix)) return isMutableBinding(type.slice(borrowedPrefix.length));
   return type.startsWith(mutablePrefix);
+}
+
+function isBorrowedBinding(type: ValueType): boolean {
+  if (type.startsWith(movedPrefix)) return isBorrowedBinding(type.slice(movedPrefix.length));
+  if (type.startsWith(maybeMovedPrefix)) return isBorrowedBinding(type.slice(maybeMovedPrefix.length));
+  if (type.startsWith(mutablePrefix)) return isBorrowedBinding(type.slice(mutablePrefix.length));
+  return type.startsWith(borrowedPrefix);
 }
 
 function propagateOuterOwnership(target: Map<string, ValueType>, source: Map<string, ValueType>): void {
@@ -1095,6 +1202,7 @@ function mergeOwnershipStates(
     if (values.length === 0) continue;
     let type = underlyingType(values[0]);
     const mutable = values.every(isMutableBinding);
+    const borrowed = values.every(isBorrowedBinding);
     const pointerTypes = values.map((value) => foreignPointer(value, state));
     const firstPointer = pointerTypes[0];
     if (firstPointer && pointerTypes.every((pointer) => pointer?.identity === firstPointer.identity && pointer.ownership === firstPointer.ownership)) {
@@ -1102,7 +1210,7 @@ function mergeOwnershipStates(
       type = pointerTypeName(firstPointer.identity, firstPointer.ownership, nullable);
     }
     const states = new Set(values.map(ownershipState));
-    const storedType = `${mutable ? mutablePrefix : ""}${type}`;
+    const storedType = `${borrowed ? borrowedPrefix : ""}${mutable ? mutablePrefix : ""}${type}`;
     if (states.size === 1 && states.has("available")) target.set(name, storedType);
     else if (states.size === 1 && states.has("moved")) target.set(name, `${movedPrefix}${storedType}`);
     else target.set(name, `${maybeMovedPrefix}${storedType}`);

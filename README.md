@@ -92,6 +92,32 @@ called through `const`, `let`, or a temporary. The receiver capability belongs
 to the method signature; callers do not repeat `inout` because the receiver is
 already explicit in member-call syntax.
 
+Native function parameters are owned/by-value by default. Copyable values copy;
+cleanup-bearing values move. A function declares a borrow only when it does not
+need ownership:
+
+```z
+function read(counter: in Counter): i32 {
+  return counter.value;
+}
+
+function add(counter: inout Counter, amount: i32): void {
+  counter.value = counter.value + amount;
+}
+
+const current = read(counter); // `in` is quiet at the call site.
+add(inout counter, 2);         // Mutation is explicit.
+```
+
+Borrowed parameters cannot be returned, stored into owning fields, or otherwise
+moved. `inout` requires an initialized mutable binding and can be forwarded with
+`inout parameter`. The bootstrap currently borrows stored expressions or
+non-cleanup struct literals; general borrowed-temporary lowering comes later.
+Native `out` waits on definite-initialization analysis, while cleanup-bearing
+owned parameters continue to move implicitly. A call may share the same value
+through multiple `in` parameters, but overlapping `inout`, owned, and borrowed
+uses of one storage root are rejected.
+
 Tagged enums carry typed payloads and are matched exhaustively:
 
 ```z
@@ -256,6 +282,7 @@ bun run z run examples/match.z
 bun run z run examples/match-expression.z
 bun run z run examples/mutation.z
 bun run z run examples/mutable-methods.z
+bun run z run examples/borrowed-parameters.z
 bun run z run examples/result.z
 bun run z run examples/try.z
 bun test

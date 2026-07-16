@@ -319,7 +319,7 @@ test("requires exact pointer modes and mutable storage at imported record bounda
   `;
   assert.throws(
     () => compileToC(escapedModifier, "escaped-out.z"),
-    /out is only valid for a classified imported C record-pointer parameter/,
+    /out is not valid for an owned value parameter/,
   );
 });
 
@@ -881,7 +881,93 @@ test("keeps receiver capabilities in method signatures", () => {
   `;
   assert.throws(
     () => compileToC(movedReceiver, "moved-receiver.z"),
-    /mutable receiver "resource" cannot move while borrowed for this call/,
+    /overlapping inout and value uses of "resource" in one call are not allowed/,
+  );
+});
+
+test("borrows native parameters immutably and mutably", () => {
+  const example = resolve(projectRoot, "examples/borrowed-parameters.z");
+  const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, "counter=16 literal=7 resource=42\ndrop=42\n");
+
+  const generated = compileToC(readFileSync(example, "utf8"), example);
+  assert.match(generated, /static int32_t read\(const Z_Counter \*counter\)/);
+  assert.match(generated, /static void add\(Z_Counter \*counter, int32_t amount\)/);
+  assert.match(generated, /static int32_t inspect\(const Z_Resource \*resource\)/);
+  assert.match(generated, /add\(counter, 2\);/);
+  assert.match(generated, /add\(self, 1\);/);
+  assert.match(generated, /read\(&\(counter\)\)/);
+  assert.doesNotMatch(generated, /Z_Resource_deinit\(&\(\*resource\)\)/);
+});
+
+test("enforces native parameter capabilities at declaration and call sites", () => {
+  const missingInout = `
+    function increment(value: inout i32): void {
+      value = value + 1;
+    }
+    function main(): i32 {
+      let value = 1;
+      increment(value);
+      return value;
+    }
+  `;
+  assert.throws(
+    () => compileToC(missingInout, "missing-native-inout.z"),
+    /"increment" requires inout <mutable binding> for parameter 1/,
+  );
+
+  const immutableInout = missingInout
+    .replace("let value = 1", "const value = 1")
+    .replace("increment(value)", "increment(inout value)");
+  assert.throws(
+    () => compileToC(immutableInout, "immutable-native-inout.z"),
+    /inout argument "value" requires a mutable let binding/,
+  );
+
+  const overlapping = `
+    function invalid(first: inout i32, second: inout i32): void {}
+    function main(): i32 {
+      let value = 1;
+      invalid(inout value, inout value);
+      return value;
+    }
+  `;
+  assert.throws(
+    () => compileToC(overlapping, "overlapping-inout.z"),
+    /overlapping inout and inout uses of "value" in one call are not allowed/,
+  );
+
+  const mutateInput = `
+    function invalid(value: in i32): void {
+      value = 2;
+    }
+    function main(): i32 {
+      const value = 1;
+      invalid(value);
+      return value;
+    }
+  `;
+  assert.throws(
+    () => compileToC(mutateInput, "mutate-input.z"),
+    /cannot assign to immutable binding "value"/,
+  );
+});
+
+test("borrowed cleanup values cannot be consumed", () => {
+  const source = `
+    struct Resource {
+      id: i32;
+      deinit {}
+    }
+    function invalid(resource: in Resource): Resource {
+      return resource;
+    }
+    function main(): i32 { return 0; }
+  `;
+  assert.throws(
+    () => compileToC(source, "move-borrowed-parameter.z"),
+    /cannot move borrowed parameter "resource"/,
   );
 });
 
@@ -991,6 +1077,7 @@ test("editor grammar tracks keywords without reserving Result variants", () => {
   assert.match(keywordPattern, /yield/);
   assert.match(keywordPattern, /deinit/);
   assert.match(keywordPattern, /out\|inout/);
+  assert.match(keywordPattern, /\bin\b/);
   assert.match(keywordPattern, /\bas\b/);
   assert.match(constantPattern, /true\|false/);
   assert.match(constantPattern, /this/);

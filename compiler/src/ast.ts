@@ -73,6 +73,7 @@ export type FunctionDeclaration = {
 
 export type Parameter = {
   readonly name: string;
+  readonly mode: "value" | "in" | "inout";
   readonly type: TypeReference;
   readonly location: SourceLocation;
 };

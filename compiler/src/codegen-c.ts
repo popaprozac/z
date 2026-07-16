@@ -14,6 +14,7 @@ type GenerationContext = {
   readonly enums: Map<string, EnumDeclaration>;
   readonly functions: Map<string, FunctionDeclaration>;
   readonly localTypes: Map<string, string>;
+  readonly parameterModes: Map<string, "value" | "in" | "inout">;
   readonly receiver: StructDeclaration | null;
   readonly owner: FunctionDeclaration;
   readonly matchCounter: { value: number };
@@ -137,7 +138,7 @@ function generateFunction(
   const liveFlagCounter = { value: 0 };
   const liveFlags = new Map<string, string>();
   const parameterCleanup = declaration.parameters
-    .filter((parameter) => hasCleanupType(parameter.type.name, structs))
+    .filter((parameter) => parameter.mode === "value" && hasCleanupType(parameter.type.name, structs))
     .map((parameter) => {
       const liveFlag = nextLiveFlag(parameter.name, liveFlagCounter);
       liveFlags.set(parameter.name, liveFlag);
@@ -148,6 +149,7 @@ function generateFunction(
     enums,
     functions,
     localTypes,
+    parameterModes: new Map(declaration.parameters.map((parameter) => [parameter.name, parameter.mode])),
     receiver,
     owner: declaration,
     matchCounter: { value: 0 },
@@ -196,6 +198,7 @@ function generateDeinit(
     enums,
     functions,
     localTypes: new Map([["this", declaration.name]]),
+    parameterModes: new Map(),
     receiver: declaration,
     owner,
     matchCounter: { value: 0 },
@@ -230,9 +233,12 @@ function generateFunctionSignature(
 ): string {
   const storage = receiver || declaration.name !== "main" ? "static " : "";
   const name = receiver ? methodName(receiver.name, declaration.name) : declaration.name;
-  const parameters = declaration.parameters.map(
-    (parameter) => `${mapType(parameter.type.name, structs, enums)} ${parameter.name}`,
-  );
+  const parameters = declaration.parameters.map((parameter) => {
+    const type = mapType(parameter.type.name, structs, enums);
+    if (parameter.mode === "in") return `const ${type} *${parameter.name}`;
+    if (parameter.mode === "inout") return `${type} *${parameter.name}`;
+    return `${type} ${parameter.name}`;
+  });
   if (receiver) {
     const receiverConst = declaration.receiverMode === "inout" ? "" : "const ";
     parameters.unshift(`${receiverConst}${structName(receiver.name)} *self`);
@@ -588,6 +594,8 @@ function generateExpression(expression: Expression, context: GenerationContext):
     case "boolean":
       return expression.value ? "true" : "false";
     case "argumentReference":
+      if (expression.name === "this") return "self";
+      if (context.parameterModes.get(expression.name) === "inout") return expression.name;
       return `&(${expression.name})`;
     case "unary":
       return `(${expression.operator}${generateExpression(expression.operand, context)})`;
@@ -596,6 +604,9 @@ function generateExpression(expression: Expression, context: GenerationContext):
         return context.semanticInfo.foreignFunctionNames.get(expression.location.offset)!;
       }
       if (expression.name === "this") return "(*self)";
+      if (context.parameterModes.get(expression.name) === "in" || context.parameterModes.get(expression.name) === "inout") {
+        return `(*${expression.name})`;
+      }
       if (context.semanticInfo.movedExpressions.has(expression.location.offset)) {
         const liveFlag = context.liveFlags.get(expression.name);
         if (!liveFlag) throw new Error(`missing ownership flag for moved value ${JSON.stringify(expression.name)}`);
@@ -661,6 +672,7 @@ function generateExpression(expression: Expression, context: GenerationContext):
 function generateCallArgument(expression: Expression, context: GenerationContext): string {
   const value = generateExpression(expression, context);
   return context.semanticInfo.foreignArgumentAccesses.get(expression.location.offset) === "in"
+    || context.semanticInfo.nativeArgumentAccesses.get(expression.location.offset) === "in"
     ? `&(${value})`
     : value;
 }

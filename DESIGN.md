@@ -72,6 +72,29 @@ scoped effects such as unsafe operations, executor affinity, or allocator
 selection. Any sugar must still lower to the same receiver capability in method
 and trait signatures.
 
+Native parameters are owned/by-value by default: copyable values copy and
+cleanup-bearing values move. Borrowing is the non-default declaration:
+
+| Shape | Declaration | Call | Contract |
+|---|---|---|---|
+| owned/value | `value: T` | `use(value)` | Callee owns the parameter; copy or move follows the type. |
+| immutable borrow | `value: in T` | `inspect(value)` | Read-only, non-escaping borrow for the call. |
+| mutable borrow | `value: inout T` | `update(inout value)` | Exclusive read/write borrow for the call. |
+| output | future `value: out T` | `create(out value)` | Callee fully initializes storage. |
+| consuming receiver | future `this: move` | `value.consume()` | Receiver ownership transfers to the method. |
+
+`in` stays quiet at the call site because it cannot change ownership or caller
+storage. `inout` and `out` remain explicit at free-function calls because their
+effects are externally visible. Borrowed bindings cannot move into returns,
+owned parameters, or owning fields. Borrowed cleanup-bearing parameters do not
+run cleanup; their owner remains responsible.
+
+The bootstrap initially requires `inout` to name a direct initialized mutable
+binding. Immutable borrows accept stored expressions and non-cleanup struct
+literals. General temporary materialization, native `out`, and definite
+initialization follow later. Multiple `in` uses may share one root in a call;
+uses involving `inout` or ownership must not overlap that root.
+
 Replacing cleanup-bearing storage has additional semantics: the old value must
 be destroyed exactly once before the new value becomes live, including when
 evaluation fails. The bootstrap rejects that case until ownership-aware
