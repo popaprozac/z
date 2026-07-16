@@ -1209,7 +1209,7 @@ test("formats typed values through the global console namespace and interpolatio
   assert.equal(result.status, 0, result.stderr);
   assert.match(
     result.stdout,
-    /^42 with text in between, struct: Point \{ x: 20, y: 22 \}\narray \[1, 2, 3\] enum Status\.ready\(7\) class Counter@0x[0-9a-f]+\npartial true done\nsequence 1 then 2\n$/,
+    /^42 with text in between, struct: Point \{ x: 20, y: 22 \}; literal \{braces\}, escaped \$\{answer\}\narray \[1, 2, 3\] enum Status\.ready\(7\) class Counter@0x[0-9a-f]+\npartial true done\nsequence 1 then 2\n$/,
   );
   assert.equal(result.stderr, "problem Point { x: 20, y: 22 }\ndebug 42\n");
 
@@ -1225,7 +1225,7 @@ test("keeps templates console-scoped until owned String exists", () => {
   const storedTemplate = `
     function main(): i32 {
       const answer = 42;
-      const text = \`answer={answer}\`;
+      const text = \`answer=\${answer}\`;
       return 0;
     }
   `;
@@ -1255,7 +1255,7 @@ test("exposes console methods and interpolated expressions to editor services", 
   const source = `
     function main(): i32 {
       const answer = 42;
-      console.log(\`answer={answer}\`);
+      console.log(\`answer=\${answer}\`);
       return 0;
     }
   `;

@@ -398,7 +398,7 @@ Z preserves the convenience of logging arbitrary values without giving up
 static types:
 
 ```z
-console.log(`{someInt} with text in between, struct: {someStruct}`);
+console.log(`${someInt} with text in between, struct: ${someStruct}`);
 ```
 
 `console` is a globally available prelude namespace. The bootstrap implements
@@ -408,6 +408,8 @@ the canonical logging API instead of reserving competing global `print` and
 `println` functions.
 
 An interpolated template evaluates expressions exactly once from left to right.
+Interpolation uses TypeScript's `${expression}` spelling. Plain braces remain
+literal text, and `\${expression}` writes a literal `${expression}` sequence.
 Primitive types have standard formatting; structs and imported records receive
 derived field formatting; arrays format their elements; enums show their active
 variant and payload; and classes initially show type plus reference identity.

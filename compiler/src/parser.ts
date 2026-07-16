@@ -223,7 +223,7 @@ export function parse(tokens: Token[], fileName: string): Program {
           parts.push({ kind: "text" as const, value: previous().text, location: previous().location });
           continue;
         }
-        const start = expect("templateExpressionStart", "`{` starting an interpolated expression");
+        const start = expect("templateExpressionStart", "`${` starting an interpolated expression");
         const expression = parseExpression();
         expect("templateExpressionEnd", "`}` ending an interpolated expression");
         parts.push({ kind: "value" as const, expression, location: start.location });

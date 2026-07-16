@@ -24,12 +24,12 @@
         "end": "`",
         "patterns": [{
           "name": "meta.interpolation.z",
-          "begin": "\\{",
+          "begin": "\\$\\{",
           "end": "\\}",
           "patterns": [{ "include": "$self" }]
         }, {
           "name": "constant.character.escape.z",
-          "match": "\\\\[nrt\\\\`{}]"
+          "match": "\\\\[nrt\\\\`$]"
         }]
       }, {
         "name": "string.quoted.double.z",

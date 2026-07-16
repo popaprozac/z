@@ -180,8 +180,7 @@ export function lex(
             t: "\t",
             "\\": "\\",
             "`": "`",
-            "{": "{",
-            "}": "}",
+            "$": "$",
           };
           if (!(escaped in escapes)) {
             throw new DiagnosticError(fileName, escapeLocation, `unknown template escape sequence \\${escaped}`);
@@ -189,11 +188,12 @@ export function lex(
           text += escapes[escaped];
           continue;
         }
-        if (peek() === "{") {
+        if (peek() === "$" && peek(1) === "{") {
           flushText();
           const marker = location();
           advance();
-          tokens.push({ kind: "templateExpressionStart", text: "{", location: marker });
+          advance();
+          tokens.push({ kind: "templateExpressionStart", text: "${", location: marker });
           const expressionStartOffset = offset;
           const expressionStart = location();
           let depth = 0;

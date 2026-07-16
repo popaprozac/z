@@ -271,16 +271,18 @@ implemented.
 Typed logging uses the global prelude `console` namespace:
 
 ```z
-console.log(`{someInt} with text in between, struct: {someStruct}`);
+console.log(`${someInt} with text in between, struct: ${someStruct}`);
 console.write("no automatic newline");
 console.error("written to stderr", errorValue);
 console.debug("debug stream", state);
 ```
 
-Template expressions run exactly once from left to right. The bootstrap formats
-primitives, structs and imported records, arrays, enums, and class identity.
-Templates are currently consumed directly by console methods; storing or
-returning one waits for the owned `String` type.
+Template expressions use TypeScript's `${expression}` spelling and run exactly
+once from left to right. Plain braces are literal text; write `\${expression}`
+for a literal interpolation sequence. The bootstrap formats primitives,
+structs and imported records, arrays, enums, and class identity. Templates are
+currently consumed directly by console methods; storing or returning one waits
+for the owned `String` type.
 
 ```sh
 bun run z run examples/console.z
@@ -494,7 +496,7 @@ function move(point: geometry.Point, amount: geometry.Count): geometry.Point {
 
 const origin = geometry.Point { x: 10, y: 20 };
 const moved = move(origin, 3);
-console.log(`moved to {moved.x}, {moved.y}`);
+console.log(`moved to ${moved.x}, ${moved.y}`);
 ```
 
 The header remains the single ABI declaration. Z checks record fields, enum
