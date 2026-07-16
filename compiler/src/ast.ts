@@ -112,6 +112,7 @@ export type Statement =
   | BlockStatement
   | IfStatement
   | WhileStatement
+  | ForStatement
   | BreakStatement
   | ContinueStatement
   | MatchStatement;
@@ -174,6 +175,15 @@ export type IfStatement = {
 export type WhileStatement = {
   readonly kind: "while";
   readonly condition: Expression;
+  readonly body: BlockStatement;
+  readonly location: SourceLocation;
+};
+
+export type ForStatement = {
+  readonly kind: "for";
+  readonly binding: string;
+  readonly bindingLocation: SourceLocation;
+  readonly iterable: Expression;
   readonly body: BlockStatement;
   readonly location: SourceLocation;
 };

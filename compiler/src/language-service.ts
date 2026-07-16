@@ -460,6 +460,16 @@ function collectBindings(context: AnalyzedSource): Binding[] {
         if (statement.elseBranch?.kind === "if") visitStatements([statement.elseBranch]);
       }
       if (statement.kind === "while") visitStatements(statement.body.statements);
+      if (statement.kind === "for") {
+        bindings.push({
+          name: statement.binding,
+          type: context.semanticInfo.bindingTypes.get(statement.bindingLocation.offset) ?? "unknown",
+          offset: statement.bindingLocation.offset,
+          readonly: true,
+          parameter: false,
+        });
+        visitStatements(statement.body.statements);
+      }
       if (statement.kind === "match") {
         for (const arm of statement.arms) visitStatements([arm.body]);
       }

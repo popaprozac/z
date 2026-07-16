@@ -1114,6 +1114,95 @@ test("runs while loops with cleanup-aware break and continue", () => {
   assert.match(generated, /_z_loop_continue_0: ;\n\s+}\n\s+_z_loop_break_0: ;/);
 });
 
+test("iterates fixed arrays, Array values, Slices, and borrowed owned elements", () => {
+  const example = resolve(projectRoot, "examples/iteration.z");
+  const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, "sum=22 slice=18\nvisit=8\nvisit=9\ndrop=9\ndrop=8\n");
+  const generated = compileToC(readFileSync(example, "utf8"), example);
+  assert.match(generated, /for \(uintptr_t _z_for_index_/);
+  assert.match(generated, /const Z_Resource \*resource = &\(/);
+});
+
+test("keeps for-of iteration storage stable and owned elements borrowed", () => {
+  const structuralMutation = `
+    function main(): i32 {
+      let values = Array<i32>();
+      values.push(1);
+      for (const value of values) {
+        values.push(value);
+      }
+      return 0;
+    }
+  `;
+  const mutationDiagnostics = diagnostics(structuralMutation, "iteration-mutation.z");
+  assert.equal(mutationDiagnostics[0].code, "Z0311");
+  assert.match(mutationDiagnostics[0].message, /may reallocate storage/);
+  assert.match(mutationDiagnostics[0].message, /finish the loop before pushing/);
+  assert.equal(mutationDiagnostics[0].relatedInformation?.length, 1);
+
+  const movedElement = `
+    struct Resource { id: i32; deinit {} }
+    function consume(resource: Resource): i32 { return resource.id; }
+    function main(): i32 {
+      const resources = [Resource { id: 42 }];
+      for (const resource of resources) {
+        return consume(resource);
+      }
+      return 0;
+    }
+  `;
+  let moveError: unknown;
+  try {
+    compileToC(movedElement, "iteration-move.z");
+  } catch (error) {
+    moveError = error;
+  }
+  assert.ok(moveError instanceof DiagnosticError);
+  assert.equal(moveError.code, "Z0203");
+  assert.match(moveError.summary, /cannot move borrowed iteration binding "resource"/);
+  assert.match(moveError.helps[0], /borrow the element with an `in` parameter/);
+
+  const movedOuter = `
+    struct Resource { id: i32; deinit {} }
+    function consume(resource: Resource): i32 { return resource.id; }
+    function main(): i32 {
+      const values = [1, 2];
+      const resource = Resource { id: 42 };
+      for (const value of values) {
+        if (value == 2) { consume(resource); }
+      }
+      return resource.id;
+    }
+  `;
+  assert.throws(
+    () => compileToC(movedOuter, "iteration-outer-move.z"),
+    /value "resource" may have been moved on another control-flow path/,
+  );
+});
+
+test("exposes for-of bindings to hover, completion, and semantic tokens", () => {
+  const source = `
+    function main(): i32 {
+      const values = [20, 22];
+      let total = 0;
+      for (const value of values) {
+        total = total + value;
+      }
+      return total;
+    }
+  `;
+  const use = source.indexOf("value;", source.indexOf("for")) + 1;
+  assert.match(hover(source, "iteration-editor.z", use)?.contents.value ?? "", /value: i32/);
+  const completionSource = source.replace("total = total + value", "total = total + val");
+  const completionOffset = completionSource.indexOf("val;", completionSource.indexOf("for")) + 3;
+  assert.equal(completions(completionSource, "iteration-editor.z", completionOffset).find((item) => item.label === "value")?.detail, "const value: i32");
+  const tokens = decodeSemanticTokens(semanticTokens(source, "iteration-editor.z").data);
+  const bindingOffset = source.indexOf("value of");
+  const bindingPosition = positionForOffset(source, bindingOffset);
+  assert.ok(tokens.some((token) => token.line === bindingPosition.line && token.character === bindingPosition.character));
+});
+
 test("keeps loop control inside an enclosing loop", () => {
   const outsideBreak = `
     function main(): i32 {
@@ -2681,6 +2770,11 @@ function decodeSemanticTokens(data: readonly number[]): Array<{
   return decoded;
 }
 
+function positionForOffset(source: string, offset: number): { readonly line: number; readonly character: number } {
+  const lines = source.slice(0, offset).split("\n");
+  return { line: lines.length - 1, character: lines.at(-1)!.length };
+}
+
 function dirnameFromImportMeta(): string {
   return new URL(".", import.meta.url).pathname;
 }
@@ -2703,6 +2797,7 @@ test("editor grammar tracks keywords without reserving Result variants", () => {
   assert.match(keywordPattern, /\bas\b/);
   assert.match(keywordPattern, /implements/);
   assert.match(keywordPattern, /while/);
+  assert.match(keywordPattern, /for\|of/);
   assert.match(keywordPattern, /break/);
   assert.match(keywordPattern, /continue/);
   assert.match(grammar.repository.declarations.patterns.map((pattern: { match: string }) => pattern.match).join(" "), /trait\|class/);

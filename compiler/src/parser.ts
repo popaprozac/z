@@ -473,6 +473,24 @@ export function parse(tokens: Token[], fileName: string): Program {
       const body = parseRequiredBlock("a `while` body");
       return { kind: "while", condition, body, location: whileToken.location };
     }
+    if (match("for")) {
+      const forToken = previous();
+      expect("leftParen", "`(`");
+      expect("const", "`const` in a read-only `for...of` binding");
+      const binding = expect("identifier", "an iteration binding");
+      expect("of", "`of`");
+      const iterable = parseExpression();
+      expect("rightParen", "`)`");
+      const body = parseRequiredBlock("a `for...of` body");
+      return {
+        kind: "for",
+        binding: binding.text,
+        bindingLocation: binding.location,
+        iterable,
+        body,
+        location: forToken.location,
+      };
+    }
     if (match("break")) {
       const breakToken = previous();
       expect("semicolon", "`;`");

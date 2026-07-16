@@ -387,6 +387,16 @@ export function inferGenericCalls(
         const body = rewriteStatement(statement.body, new Map(environment)) as typeof statement.body;
         return { ...statement, condition: condition.expression, body };
       }
+      case "for": {
+        const iterable = rewriteExpression(statement.iterable, environment);
+        const collection = iterable.type
+          ? parseFixedArrayType(iterable.type) ?? parseSliceType(iterable.type) ?? parseDynamicArrayType(iterable.type)
+          : null;
+        const bodyEnvironment = new Map(environment);
+        if (collection) bodyEnvironment.set(statement.binding, collection.elementType);
+        const body = rewriteStatement(statement.body, bodyEnvironment) as typeof statement.body;
+        return { ...statement, iterable: iterable.expression, body };
+      }
       case "match": {
         const matched = rewriteExpression(statement.expression, environment);
         return {

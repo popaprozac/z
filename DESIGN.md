@@ -176,10 +176,23 @@ that may move during one iteration cannot be reused during a later iteration
 unless every continuing path restores ownership. State after a loop merges the
 zero-iteration path with every reachable `break` path.
 
-Collection iteration syntax is deliberately deferred. The likely surface is
-TypeScript-style `for (const value of collection)`, but its exact semantics must
-follow Z's collection, iterator, borrowing, mutation, and async-iteration traits
-rather than precede them.
+The first collection iteration tier uses TypeScript-style `for...of` over fixed
+arrays, `Array<T>`, and `Slice<T>`:
+
+```z
+for (const value of values) {
+  use(value);
+}
+```
+
+Primitive and other copyable elements copy into the immutable loop binding.
+Cleanup-bearing elements remain borrowed from their collection and cannot move
+out. The collection is structurally borrowed for the loop, so an `Array.push`
+that could reallocate storage is rejected until iteration ends. `break` and
+`continue` retain cleanup-aware loop semantics. Mutable element iteration,
+custom iteration traits, consuming iterators, and async iteration remain later
+layers; the built-in lowering must be expressible through that eventual trait
+model rather than contradict it.
 
 ## Arrays and views
 

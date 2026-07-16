@@ -1,0 +1,47 @@
+import stdio from "stdio.h";
+
+struct Resource {
+  id: i32;
+
+  deinit {
+    stdio.printf("drop=%d\n", this.id);
+  }
+}
+
+function sumSlice(values: Slice<i32>): i32 {
+  let total = 0;
+  for (const value of values) {
+    total = total + value;
+  }
+  return total;
+}
+
+function main(): i32 {
+  const fixed = [1, 2, 3, 4];
+  let total = 0;
+  for (const value of fixed) {
+    if (value == 2) {
+      continue;
+    }
+    total = total + value;
+    if (value == 3) {
+      break;
+    }
+  }
+
+  let dynamic = Array<i32>();
+  dynamic.push(5);
+  dynamic.push(6);
+  dynamic.push(7);
+  for (const value of dynamic) {
+    total = total + value;
+  }
+
+  stdio.printf("sum=%d slice=%d\n", total, sumSlice(dynamic));
+
+  const resources = [Resource { id: 8 }, Resource { id: 9 }];
+  for (const resource of resources) {
+    stdio.printf("visit=%d\n", resource.id);
+  }
+  return 0;
+}

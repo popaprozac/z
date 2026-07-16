@@ -7,8 +7,8 @@ interop with C-family platform APIs.
 The bootstrap compiler currently implements a deliberately small vertical
 slice: imports, functions, local bindings, primitive expressions, value structs,
 ARC reference classes, statically checked traits, fixed arrays, borrowed slices,
-tagged enums, exhaustive
-statement and expression matches, typed errors, deterministic cleanup, name
+tagged enums, exhaustive statement and expression matches, typed errors,
+deterministic cleanup, TypeScript-style collection iteration, name
 resolution, static checking, and readable native-source emission. Header
 imports use Clang's AST to type-check
 an initial subset of C and Objective-C APIs. The compiler has no third-party
@@ -328,8 +328,22 @@ while (index < 10) {
 
 Ownership analysis reaches a fixed state across loop back-edges. Moving a value
 on one iteration and potentially using it on the next is therefore rejected.
-`for...of` remains deferred until Z has collections and an iteration trait worth
-making part of the language contract.
+
+Fixed arrays, `Array<T>`, and `Slice<T>` support TypeScript-style read-only
+iteration:
+
+```z
+for (const value of values) {
+  if (value == 0) { continue; }
+  consume(value);
+}
+```
+
+Copyable elements copy into the loop binding. Cleanup-bearing elements are
+borrowed and cannot move out of collection storage. The collection remains
+structurally borrowed during iteration, so operations such as `Array.push`
+that may reallocate are rejected until the loop ends. Mutable element,
+consuming, custom-trait, and async iteration remain future tiers.
 
 Fixed arrays are inline values with compile-time length, TypeScript-adjacent
 element syntax, and bounds-checked indexing:

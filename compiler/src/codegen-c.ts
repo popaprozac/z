@@ -723,6 +723,8 @@ function generateStatement(statement: Statement, context: GenerationContext): st
       return generateIf(statement, context);
     case "while":
       return generateWhile(statement, context);
+    case "for":
+      return generateFor(statement, context);
     case "expressionStatement":
       return generateDirectValue(statement.expression, context, (value) => `(void)${value};`);
     case "match":
@@ -749,6 +751,48 @@ function generateWhile(statement: Extract<Statement, { kind: "while" }>, context
   if (frame.usedContinue) body = body.replace(/\n}$/, `\n  ${frame.continueLabel}: ;\n}`);
   const breakLabel = frame.usedBreak ? `\n${frame.breakLabel}: ;` : "";
   return `while ${controlCondition(generateExpression(statement.condition, context))} ${body}${breakLabel}`;
+}
+
+function generateFor(statement: Extract<Statement, { kind: "for" }>, context: GenerationContext): string {
+  const index = context.loopCounter.value++;
+  const iterableType = inferExpressionType(statement.iterable, context);
+  const collection = parseFixedArrayType(iterableType)
+    ?? parseDynamicArrayType(iterableType)
+    ?? parseSliceType(iterableType);
+  if (!collection) throw new Error("for...of lowering requires an array or Slice");
+  const iterable = generateExpression(statement.iterable, context);
+  const length = "length" in collection ? String(collection.length) : `(${iterable}).length`;
+  const item = `((${iterable}).data[_z_for_index_${index}])`;
+  const borrowedElement = hasCleanupType(collection.elementType, context.structs, context.semanticInfo.foreignTypes);
+  const loopTypes = new Map(context.localTypes);
+  const loopModes = new Map(context.parameterModes);
+  loopTypes.set(statement.binding, collection.elementType);
+  if (borrowedElement) loopModes.set(statement.binding, "in");
+  const loopContext = { ...context, localTypes: loopTypes, parameterModes: loopModes };
+  const frame: LoopGenerationFrame = {
+    breakLabel: `_z_loop_break_${index}`,
+    continueLabel: `_z_loop_continue_${index}`,
+    cleanupDepth: context.cleanupScopes.length,
+    usedBreak: false,
+    usedContinue: false,
+  };
+  context.loopStack.push(frame);
+  let body: string;
+  try {
+    body = generateBlock(statement.body.statements, loopContext);
+  } finally {
+    context.loopStack.pop();
+  }
+  const elementType = mapType(collection.elementType, context.structs, context.enums, context.semanticInfo.foreignNamedTypes);
+  const elementDeclaration = borrowedElement
+    ? context.structs.get(collection.elementType)?.kind === "class"
+      ? `${elementType} const ${statement.binding} = ${item};`
+      : `const ${elementType} *${statement.binding} = &(${item});`
+    : `${generateLocalDeclaration(collection.elementType, statement.binding, false, context.structs, context.enums, context.semanticInfo.foreignNamedTypes)} = ${item};`;
+  body = body.replace("{\n", `{\n  ${elementDeclaration}\n`);
+  if (frame.usedContinue) body = body.replace(/\n}$/, `\n  ${frame.continueLabel}: ;\n}`);
+  const breakLabel = frame.usedBreak ? `\n${frame.breakLabel}: ;` : "";
+  return `for (uintptr_t _z_for_index_${index} = 0; _z_for_index_${index} < ${length}; _z_for_index_${index} += 1) ${body}${breakLabel}`;
 }
 
 function generateLoopTransfer(kind: "break" | "continue", context: GenerationContext): string {

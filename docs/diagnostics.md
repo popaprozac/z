@@ -22,7 +22,7 @@ The bootstrap reserves these code families:
 | Range | Area |
 |---|---|
 | `Z02xx` | ownership, moves, borrows, and captures |
-| `Z03xx` | initialization and parameter capabilities |
+| `Z03xx` | initialization, parameter capabilities, and collection access |
 
 Currently structured codes include:
 
@@ -38,6 +38,8 @@ Currently structured codes include:
 | `Z0303` | read before initialization |
 | `Z0304` | value may be uninitialized on another path |
 | `Z0305` | out parameter is not initialized on every success path |
+| `Z0310` | value is not valid stored collection iteration input |
+| `Z0311` | structural collection mutation conflicts with iteration borrow |
 
 CLI diagnostics render source context. Language-server diagnostics expose the
 same code and message, secondary locations through related information, and

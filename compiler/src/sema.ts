@@ -111,7 +111,8 @@ type AnalysisState = {
   readonly frameworks: readonly string[];
   readonly loopStack: LoopAnalysisFrame[];
   readonly moveOrigins: Map<string, SourceLocation>;
-  readonly borrowOrigins: Map<string, SourceLocation>;
+  readonly borrowOrigins: Map<string, { readonly location: SourceLocation; readonly kind: "closure" | "iteration" }>;
+  readonly iterationBorrowOrigins: Map<string, SourceLocation>;
 };
 
 type LoopAnalysisFrame = {
@@ -183,6 +184,7 @@ export function analyze(
     loopStack: [],
     moveOrigins: new Map(),
     borrowOrigins: new Map(),
+    iterationBorrowOrigins: new Map(),
   };
   const globals = new Map<string, SymbolValue>();
   const structs = new Map<string, StructDeclaration>();
@@ -526,6 +528,7 @@ function analyzeFunction(
 ): void {
   state.moveOrigins.clear();
   state.borrowOrigins.clear();
+  state.iterationBorrowOrigins.clear();
   const locals = new Map<string, ValueType>();
   if (receiver) {
     const borrowed = declaration.receiverMode === "move" ? "" : borrowedPrefix;
@@ -799,6 +802,10 @@ function analyzeStatement(
       analyzeWhileLoop(statement, owner, locals, globals, structs, enums, fileName, state);
       return;
     }
+    case "for": {
+      analyzeForLoop(statement, owner, locals, globals, structs, enums, fileName, state);
+      return;
+    }
     case "expressionStatement":
       {
         if (statement.expression.kind === "number" && isIntegerLiteral(statement.expression.value) && !integerLiteralFits(statement.expression.value, "i32")) {
@@ -959,7 +966,7 @@ function inferClosureExpression(
     closureLocals.set(capture.name, `${borrowedPrefix}${capture.mutated ? mutablePrefix : ""}${type}`);
     if (expression.captureMode === "borrow" && hasCleanupType(type, structs, state.foreignTypes)) {
       locals.set(capture.name, `${borrowedPrefix}${isMutableBinding(stored) ? mutablePrefix : ""}${type}`);
-      state.borrowOrigins.set(capture.name, capture.location);
+      state.borrowOrigins.set(capture.name, { location: capture.location, kind: "closure" });
     }
   }
   for (const parameter of expression.parameters) {
@@ -1139,6 +1146,13 @@ function collectClosureCaptures(
         walkExpression(statement.condition, localNames);
         walkStatement(statement.body, new Set(localNames));
         return;
+      case "for": {
+        walkExpression(statement.iterable, localNames);
+        const bodyNames = new Set(localNames);
+        bodyNames.add(statement.binding);
+        walkStatement(statement.body, bodyNames);
+        return;
+      }
       case "match":
         walkExpression(statement.expression, localNames);
         for (const arm of statement.arms) {
@@ -1744,6 +1758,21 @@ function inferExpressionInner(
           const root = storageRoot(expression.callee.object);
           const stored = root ? locals.get(root.name) : null;
           if (!root || !stored || !isMutableBinding(stored)) {
+            const iteration = root ? state.iterationBorrowOrigins.get(root.name) : null;
+            if (root && iteration) {
+              throw new DiagnosticError(
+                fileName,
+                expression.callee.location,
+                `cannot structurally mutate Array ${JSON.stringify(root.name)} while for...of is borrowing it`,
+                {
+                  code: "Z0311",
+                  length: expression.callee.property.length,
+                  labels: [{ location: iteration, message: "iteration borrow begins here", length: 3 }],
+                  notes: ["Array.push may reallocate storage and invalidate the element currently being visited"],
+                  helps: ["finish the loop before pushing, or iterate a separate snapshot"],
+                },
+              );
+            }
             throw new DiagnosticError(fileName, expression.callee.object.location, "Array.push requires addressable let storage");
           }
           const actual = inferExpression(expression.arguments[0], locals, globals, structs, enums, fileName, state);
@@ -2093,6 +2122,10 @@ function validateDeinitControlFlow(statements: Statement[], fileName: string): v
       if (statement.elseBranch?.kind === "block") validateDeinitControlFlow(statement.elseBranch.statements, fileName);
       if (statement.elseBranch?.kind === "if") validateDeinitControlFlow([statement.elseBranch], fileName);
     }
+    if (statement.kind === "for") {
+      validateDeinitExpression(statement.iterable, fileName);
+      validateDeinitControlFlow(statement.body.statements, fileName);
+    }
     if (statement.kind === "while") {
       validateDeinitExpression(statement.condition, fileName);
       validateDeinitControlFlow(statement.body.statements, fileName);
@@ -2180,14 +2213,23 @@ function consumeOwnedValue(
         helps: ["change the receiver declaration to `move this` if this method must consume the value"],
       });
     }
-    const capture = state.borrowOrigins.get(expression.name);
-    if (capture) {
+    const borrow = state.borrowOrigins.get(expression.name);
+    if (borrow?.kind === "closure") {
       throw new DiagnosticError(fileName, expression.location, `cannot transfer ownership of ${JSON.stringify(expression.name)} while it is borrowed by a closure`, {
         code: "Z0203",
         length: expression.name.length,
-        labels: [{ location: capture, message: "closure borrow begins here", length: expression.name.length }],
+        labels: [{ location: borrow.location, message: "closure borrow begins here", length: expression.name.length }],
         notes: ["the borrowed closure may still read this value later in the enclosing scope"],
         helps: ["keep the owner available until the closure is no longer used; owned escaping closure environments are not implemented yet"],
+      });
+    }
+    if (borrow?.kind === "iteration") {
+      throw new DiagnosticError(fileName, expression.location, `cannot move borrowed iteration binding ${JSON.stringify(expression.name)}`, {
+        code: "Z0203",
+        length: expression.name.length,
+        labels: [{ location: borrow.location, message: "for...of borrows cleanup-bearing elements here", length: 3 }],
+        notes: ["moving an element would leave a hole in collection storage that still owns its elements"],
+        helps: ["borrow the element with an `in` parameter inside the loop; explicit element removal is a future collection operation"],
       });
     }
     throw new DiagnosticError(fileName, expression.location, `cannot move borrowed parameter ${JSON.stringify(expression.name)}`, {
@@ -2511,6 +2553,95 @@ function analyzeWhileLoop(
     ...finalFrame.breaks,
   ];
   mergeOwnershipStates(locals, exits, state);
+}
+
+function analyzeForLoop(
+  statement: Extract<Statement, { kind: "for" }>,
+  owner: FunctionDeclaration,
+  locals: Map<string, ValueType>,
+  globals: Map<string, SymbolValue>,
+  structs: Map<string, StructDeclaration>,
+  enums: Map<string, EnumDeclaration>,
+  fileName: string,
+  state: AnalysisState,
+): void {
+  validateUserName(statement.binding, statement.bindingLocation, fileName);
+  if (locals.has(statement.binding)) {
+    throw new DiagnosticError(fileName, statement.bindingLocation, `duplicate local ${JSON.stringify(statement.binding)}`);
+  }
+  const root = storageRoot(statement.iterable);
+  if (!root) {
+    throw new DiagnosticError(fileName, statement.iterable.location, "for...of requires stored array or Slice storage in the initial iteration tier", {
+      code: "Z0310",
+      helps: ["bind the collection to a const or let before iterating it"],
+    });
+  }
+  const iterableType = inferExpression(statement.iterable, locals, globals, structs, enums, fileName, state);
+  const collection = parseFixedArrayType(String(iterableType))
+    ?? parseDynamicArrayType(String(iterableType))
+    ?? parseSliceType(String(iterableType));
+  if (!collection) {
+    throw new DiagnosticError(fileName, statement.iterable.location, `for...of requires an array or Slice, found ${iterableType}`, {
+      code: "Z0310",
+      helps: ["iterate a fixed array, Array<T>, or Slice<T> value"],
+    });
+  }
+  state.bindingTypes.set(statement.bindingLocation.offset, collection.elementType);
+
+  const entry = new Map(locals);
+  let header = new Map(entry);
+  let finalFrame: LoopAnalysisFrame = { breaks: [], continues: [] };
+  const normalize = (candidate: Map<string, ValueType>): Map<string, ValueType> => {
+    const normalized = new Map(candidate);
+    normalized.delete(statement.binding);
+    const rootType = header.get(root.name);
+    if (rootType) normalized.set(root.name, rootType);
+    return normalized;
+  };
+
+  for (let iteration = 0; iteration < 8; iteration += 1) {
+    const bodyLocals = new Map(header);
+    const rootType = bodyLocals.get(root.name);
+    if (rootType) bodyLocals.set(root.name, `${borrowedPrefix}${underlyingType(rootType)}`);
+    const elementBinding = hasCleanupType(collection.elementType, structs, state.foreignTypes)
+      ? `${borrowedPrefix}${collection.elementType}`
+      : collection.elementType;
+    bodyLocals.set(statement.binding, elementBinding);
+
+    const frame: LoopAnalysisFrame = { breaks: [], continues: [] };
+    const previousIterationBorrow = state.iterationBorrowOrigins.get(root.name);
+    const previousElementBorrow = state.borrowOrigins.get(statement.binding);
+    state.iterationBorrowOrigins.set(root.name, statement.location);
+    if (hasCleanupType(collection.elementType, structs, state.foreignTypes)) {
+      state.borrowOrigins.set(statement.binding, { location: statement.location, kind: "iteration" });
+    }
+    state.loopStack.push(frame);
+    try {
+      analyzeStatement(statement.body, owner, bodyLocals, globals, structs, enums, fileName, state);
+    } finally {
+      state.loopStack.pop();
+      if (previousIterationBorrow) state.iterationBorrowOrigins.set(root.name, previousIterationBorrow);
+      else state.iterationBorrowOrigins.delete(root.name);
+      if (previousElementBorrow) state.borrowOrigins.set(statement.binding, previousElementBorrow);
+      else state.borrowOrigins.delete(statement.binding);
+    }
+
+    const backEdges = frame.continues.map(normalize);
+    if (!statementStopsFlow(statement.body)) backEdges.push(normalize(bodyLocals));
+    const nextHeader = new Map(entry);
+    mergeOwnershipStates(nextHeader, [entry, ...backEdges], state);
+    finalFrame = {
+      breaks: frame.breaks.map(normalize),
+      continues: frame.continues.map(normalize),
+    };
+    if (sameLocalStates(header, nextHeader)) {
+      header = nextHeader;
+      break;
+    }
+    header = nextHeader;
+  }
+
+  mergeOwnershipStates(locals, [header, ...finalFrame.breaks], state);
 }
 
 function sameLocalStates(left: Map<string, ValueType>, right: Map<string, ValueType>): boolean {

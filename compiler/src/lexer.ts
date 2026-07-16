@@ -19,6 +19,8 @@ export type TokenKind =
   | "if"
   | "else"
   | "while"
+  | "for"
+  | "of"
   | "break"
   | "continue"
   | "true"
@@ -91,6 +93,8 @@ const keywords = new Map<string, TokenKind>([
   ["if", "if"],
   ["else", "else"],
   ["while", "while"],
+  ["for", "for"],
+  ["of", "of"],
   ["break", "break"],
   ["continue", "continue"],
   ["true", "true"],
