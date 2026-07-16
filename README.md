@@ -332,10 +332,11 @@ const explicit = first<i32>(pair);
 ```
 
 Generic parameters can require explicit nominal trait conformance. Multiple
-requirements use `+` and remain statically dispatched:
+requirements use TypeScript-style `&` intersections and remain statically
+dispatched:
 
 ```z
-function measure<T: Measured + Named>(value: T): i32 {
+function measure<T: Measured & Named>(value: T): i32 {
   return value.measure();
 }
 ```

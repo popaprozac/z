@@ -156,7 +156,7 @@ export function parse(tokens: Token[], fileName: string): Program {
             throw new DiagnosticError(fileName, trait.location, `duplicate constraint ${JSON.stringify(trait.text)} for ${JSON.stringify(parameter.text)}`);
           }
           traits.push({ name: trait.text, location: trait.location });
-        } while (match("plus"));
+        } while (match("bitAnd"));
         constraints.push({ parameter: parameter.text, traits, location: parameter.location });
       }
     } while (match("comma"));

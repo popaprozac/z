@@ -1395,8 +1395,8 @@ test("supports multiple trait constraints and constrained generic aggregates", (
       function measure(): i32 { return 42; }
       function name(): cstring { return "reading"; }
     }
-    struct Holder<T: Measured + Named> { value: T; }
-    function read<T: Measured + Named>(value: T): i32 {
+    struct Holder<T: Measured & Named> { value: T; }
+    function read<T: Measured & Named>(value: T): i32 {
       return identity(value.measure());
     }
     function identity<T>(value: T): T { return value; }

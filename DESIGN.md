@@ -157,7 +157,7 @@ require future weak references and/or ORC-style cycle handling.
 parameter capability, return type, and error type. `struct T implements X` and
 `class T implements X` are checked explicitly and nominally. Generic parameters
 may require this conformance with `T: X` or multiple constraints such as
-`T: X + Y`; every concrete specialization is checked before monomorphization.
+`T: X & Y`; every concrete specialization is checked before monomorphization.
 This remains static conformance only: concrete values call their concrete
 methods, while trait-typed storage, existential representation, generic traits,
 and dynamic dispatch remain later design work. Z-defined classes intentionally

@@ -782,7 +782,7 @@ function formatTypeParameters(
   return `<${parameters.map((parameter) => {
     const traits = constrained.get(parameter) ?? [];
     return traits.length
-      ? `${parameter}: ${traits.map((trait) => displayType(trait.name, typeDisplayNames)).join(" + ")}`
+      ? `${parameter}: ${traits.map((trait) => displayType(trait.name, typeDisplayNames)).join(" & ")}`
       : parameter;
   }).join(", ")}>`;
 }
