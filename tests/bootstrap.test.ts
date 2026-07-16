@@ -4,6 +4,12 @@ import { resolve } from "node:path";
 import { readFileSync } from "node:fs";
 import { test } from "bun:test";
 import { compileToC, compileToNative } from "../compiler/src/compiler.ts";
+import {
+  completions,
+  definition,
+  diagnostics,
+  hover,
+} from "../compiler/src/language-service.ts";
 
 const projectRoot = resolve(dirnameFromImportMeta(), "..");
 const cli = resolve(projectRoot, "compiler/src/cli.ts");
@@ -359,6 +365,54 @@ test("keeps labeled arguments reserved for Objective-C selectors", () => {
     () => compileToC(source, "labeled-native-call.z"),
     /labeled arguments are currently supported only for Objective-C method calls/,
   );
+});
+
+test("provides compiler-backed AppKit completion, labels, hover, diagnostics, and definitions", () => {
+  if (process.platform !== "darwin") return;
+  const example = resolve(projectRoot, "examples/nswindow.z");
+  const source = readFileSync(example, "utf8");
+
+  const memberSource = source.replace("window.center();", "window.;");
+  const memberOffset = memberSource.indexOf("window.;") + "window.".length;
+  const members = completions(memberSource, example, memberOffset);
+  assert.ok(members.some((item) => item.label === "title" && item.kind === 10));
+  assert.ok(members.some((item) => item.label === "center" && item.insertText === "center()"));
+  assert.ok(members.some((item) => (
+    item.label === "makeKeyAndOrderFront"
+    && item.insertText === "makeKeyAndOrderFront(${1:sender})"
+  )));
+  assert.equal(members.filter((item) => item.label === "title").length, 1);
+
+  const labelOffset = source.indexOf("styleMask:");
+  const labels = completions(source, example, labelOffset);
+  assert.ok(labels.some((item) => item.label === "styleMask:" && item.detail === "AppKit.NSWindowStyleMask"));
+
+  const titleOffset = source.indexOf("title") + 2;
+  assert.match(hover(source, example, titleOffset)?.contents.value ?? "", /title: NSString/);
+
+  const invalid = source.replace("window.center();", "window.center(1);");
+  assert.match(diagnostics(invalid, example)[0]?.message ?? "", /has no method "center" accepting 1 argument/);
+
+  const styleUse = source.indexOf("styleMask: style") + "styleMask: ".length;
+  const styleDefinition = definition(source, `file://${example}`, styleUse);
+  assert.equal(styleDefinition?.range.start.line, 7);
+});
+
+test("speaks the LSP initialize and shutdown protocol over stdio", () => {
+  const lsp = resolve(projectRoot, "compiler/src/lsp.ts");
+  const messages = [
+    { jsonrpc: "2.0", id: 1, method: "initialize", params: { capabilities: {} } },
+    { jsonrpc: "2.0", id: 2, method: "shutdown", params: null },
+    { jsonrpc: "2.0", method: "exit", params: null },
+  ];
+  const input = messages.map((message) => {
+    const body = JSON.stringify(message);
+    return `Content-Length: ${Buffer.byteLength(body)}\r\n\r\n${body}`;
+  }).join("");
+  const result = spawnSync(process.execPath, [lsp], { input, encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /"name":"z-language-server"/);
+  assert.match(result.stdout, /"completionProvider"/);
 });
 
 test("checks floating-point widths and integer-only bitwise operators", () => {

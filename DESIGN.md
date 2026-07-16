@@ -412,6 +412,12 @@ language. An early TextMate grammar can provide immediate syntax highlighting.
 The language server should then reuse source files, tokens, syntax trees,
 symbols, types, and diagnostics from a compiler-service API for semantic
 highlighting, completion, hover, navigation, references, and rename operations.
+The initial Bun stdio server now shares compiler diagnostics and analyzed
+expression types, and exposes imported namespace members, type-directed Z and
+Objective-C members, selector snippets and labels, hover, and same-file
+definitions. Document diagnostics are debounced because importing a large SDK
+header must not run once per keystroke. Imported-header definitions will use
+Clang declaration source locations rather than text-searching SDK headers.
 
 ## Bootstrap milestones
 

@@ -53,6 +53,7 @@ export type SemanticInfo = {
   readonly objcProperties: ReadonlyMap<number, ObjCPropertyInfo>;
   readonly objcCalls: ReadonlyMap<number, ObjCCallInfo>;
   readonly objcStringLiterals: ReadonlySet<number>;
+  readonly expressionTypes: ReadonlyMap<number, string>;
   readonly objectiveC: boolean;
   readonly frameworks: readonly string[];
 };
@@ -74,6 +75,7 @@ type AnalysisState = {
   readonly objcProperties: Map<number, ObjCPropertyInfo>;
   readonly objcCalls: Map<number, ObjCCallInfo>;
   readonly objcStringLiterals: Set<number>;
+  readonly expressionTypes: Map<number, string>;
   readonly objectiveC: boolean;
   readonly frameworks: readonly string[];
 };
@@ -131,6 +133,7 @@ export function analyze(
     objcProperties: new Map(),
     objcCalls: new Map(),
     objcStringLiterals: new Set(),
+    expressionTypes: new Map(),
     objectiveC: frameworks.size > 0,
     frameworks: [...frameworks],
   };
@@ -768,6 +771,30 @@ function inferTrySuccess(
 }
 
 function inferExpression(
+  expression: Expression,
+  locals: Map<string, ValueType>,
+  globals: Map<string, SymbolValue>,
+  structs: Map<string, StructDeclaration>,
+  enums: Map<string, EnumDeclaration>,
+  fileName: string,
+  state: AnalysisState,
+  allowThrowingCall = false,
+): ValueType {
+  const type = inferExpressionInner(
+    expression,
+    locals,
+    globals,
+    structs,
+    enums,
+    fileName,
+    state,
+    allowThrowingCall,
+  );
+  state.expressionTypes.set(expression.location.offset, String(type));
+  return type;
+}
+
+function inferExpressionInner(
   expression: Expression,
   locals: Map<string, ValueType>,
   globals: Map<string, SymbolValue>,

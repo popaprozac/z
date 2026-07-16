@@ -4,6 +4,9 @@ import { parse } from "./parser.ts";
 import { analyze } from "./sema.ts";
 import { materializeResultTypes } from "./results.ts";
 import { resolveForeignModules } from "./foreign.ts";
+import type { Program } from "./ast.ts";
+import type { ForeignModule } from "./foreign.ts";
+import type { SemanticInfo } from "./sema.ts";
 
 export type NativeLanguage = "c" | "objective-c" | "c++" | "objective-c++";
 
@@ -13,15 +16,26 @@ export type NativeArtifact = {
   readonly frameworks: readonly string[];
 };
 
+export type AnalyzedSource = {
+  readonly program: Program;
+  readonly foreignModules: ReadonlyMap<string, ForeignModule>;
+  readonly semanticInfo: SemanticInfo;
+};
+
+export function analyzeSource(source: string, fileName: string): AnalyzedSource {
+  const tokens = lex(source, fileName);
+  const program = materializeResultTypes(parse(tokens, fileName));
+  const foreignModules = resolveForeignModules(program.imports, fileName);
+  const semanticInfo = analyze(program, fileName, foreignModules);
+  return { program, foreignModules, semanticInfo };
+}
+
 export function compileToC(source: string, fileName: string): string {
   return compileToNative(source, fileName).source;
 }
 
 export function compileToNative(source: string, fileName: string): NativeArtifact {
-  const tokens = lex(source, fileName);
-  const program = materializeResultTypes(parse(tokens, fileName));
-  const foreignModules = resolveForeignModules(program.imports, fileName);
-  const semanticInfo = analyze(program, fileName, foreignModules);
+  const { program, semanticInfo } = analyzeSource(source, fileName);
   return {
     source: generateC(program, fileName, semanticInfo),
     language: semanticInfo.objectiveC ? "objective-c" : "c",
@@ -30,7 +44,5 @@ export function compileToNative(source: string, fileName: string): NativeArtifac
 }
 
 export function check(source: string, fileName: string): void {
-  const program = materializeResultTypes(parse(lex(source, fileName), fileName));
-  const foreignModules = resolveForeignModules(program.imports, fileName);
-  analyze(program, fileName, foreignModules);
+  analyzeSource(source, fileName);
 }

@@ -1,11 +1,13 @@
 {
   "name": "z-lang",
   "displayName": "Z Lang",
-  "description": "Syntax highlighting for the Z systems programming language",
-  "version": "0.0.1",
+  "description": "Compiler-backed language support for the Z systems programming language",
+  "version": "0.1.0",
   "publisher": "z-lang",
   "engines": { "vscode": "^1.90.0" },
   "categories": ["Programming Languages"],
+  "activationEvents": ["onLanguage:z"],
+  "main": "./extension.js",
   "contributes": {
     "languages": [{
       "id": "z",
@@ -17,6 +19,16 @@
       "language": "z",
       "scopeName": "source.z",
       "path": "./syntaxes/z.tmLanguage.json"
-    }]
+    }],
+    "configuration": {
+      "title": "Z Lang",
+      "properties": {
+        "z.bunPath": {
+          "type": "string",
+          "default": "bun",
+          "description": "Path to the Bun executable used to start the Z language server."
+        }
+      }
+    }
   }
 }

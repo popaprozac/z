@@ -9,7 +9,7 @@ install_into() {
   extension_root=$1
   if [ -d "$extension_root" ]; then
     ln -sfn "$extension_source" "$extension_root/z-lang.z-lang-0.0.1"
-    printf 'Installed Z highlighting in %s\n' "$extension_root"
+    printf 'Installed Z language support in %s\n' "$extension_root"
     installed=1
   fi
 }
@@ -22,4 +22,4 @@ if [ "$installed" -eq 0 ]; then
   exit 1
 fi
 
-printf '%s\n' 'Reload the editor window, then open a .z file.'
+printf '%s\n' 'Reload the editor window, then open a .z file. Bun must be available on PATH.'

@@ -414,10 +414,23 @@ See [DESIGN.md](DESIGN.md) for the language charter and roadmap.
 
 ## Editor support
 
-The repository includes an initial VS Code-compatible syntax extension in
-`editors/vscode`. It recognizes `.z` files, comments, strings, imports,
-declarations, control-flow keywords, primitive types, and numbers. Semantic
-highlighting and diagnostics will come from the compiler-backed language server.
+The repository includes a VS Code/Cursor extension in `editors/vscode`. Its
+TextMate grammar recognizes `.z` syntax immediately, and it starts the Bun-based
+compiler language server when a Z document opens. The initial language-server
+slice provides:
+
+- live compiler diagnostics with debounced document checking;
+- completion for imported C/Objective-C namespaces;
+- type-directed Z struct and Objective-C instance/class member completion;
+- selector-aware Objective-C method snippets and argument-label completion;
+- hover types and signatures; and
+- go-to-definition for declarations in the current Z source file.
+
+The server and compiler share lexer, AST, imported Clang metadata, semantic
+types, and diagnostics. AppKit completions therefore come from the installed SDK
+rather than a generated editor-only binding database. Definition links into C,
+Objective-C, and Swift headers require importer source-location metadata and are
+the next definition layer.
 
 Install it locally for VS Code and/or Cursor, then reload the editor window:
 
@@ -425,5 +438,12 @@ Install it locally for VS Code and/or Cursor, then reload the editor window:
 ./scripts/install-editor-extension.sh
 ```
 
-The installer creates a development symlink, so grammar updates only require an
-editor reload.
+The installer creates a development symlink, so grammar and language-server
+updates only require an editor reload. Bun must be available on the editor's
+`PATH`; the extension also detects the standard `~/.bun/bin/bun` installation,
+and the `z.bunPath` editor setting can select another executable. The language
+server can also be started directly for another LSP client:
+
+```sh
+bun run lsp
+```
