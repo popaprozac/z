@@ -25,7 +25,13 @@
         "patterns": [{
           "name": "meta.interpolation.z",
           "begin": "\\$\\{",
+          "beginCaptures": {
+            "0": { "name": "punctuation.definition.template-expression.begin.z" }
+          },
           "end": "\\}",
+          "endCaptures": {
+            "0": { "name": "punctuation.definition.template-expression.end.z" }
+          },
           "patterns": [{ "include": "$self" }]
         }, {
           "name": "constant.character.escape.z",

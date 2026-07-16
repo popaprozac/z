@@ -2879,6 +2879,8 @@ test("editor grammar tracks keywords without reserving Result variants", () => {
   assert.match(typePattern, /Array/);
   assert.match(stringPatterns, /string\.quoted\.template\.z/);
   assert.match(stringPatterns, /meta\.interpolation\.z/);
+  assert.match(stringPatterns, /punctuation\.definition\.template-expression\.begin\.z/);
+  assert.match(stringPatterns, /punctuation\.definition\.template-expression\.end\.z/);
   assert.doesNotMatch(keywordPattern, /success|failure/);
 
   const extension = readFileSync(resolve(projectRoot, "editors/vscode/extension.js"), "utf8");
