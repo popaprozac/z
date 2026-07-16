@@ -158,12 +158,13 @@ export function generateC(program: Program, sourceName: string, semanticInfo: Se
     lines.push(generateDynamicArrayPush(type, structs, enums, semanticInfo.foreignNamedTypes), "");
   }
   for (const declaration of program.structs) {
+    const moduleUnused = declaration.name.startsWith("__z_module_") ? "__attribute__((unused)) " : "";
     if (hasCleanupType(declaration.name, structs)) {
-      lines.push(`static void ${deinitName(declaration.name)}(${structName(declaration.name)} *self);`);
+      lines.push(`static ${moduleUnused}void ${deinitName(declaration.name)}(${structName(declaration.name)} *self);`);
     }
     if (declaration.kind === "class") {
-      lines.push(`static ${structName(declaration.name)} *${retainName(declaration.name)}(${structName(declaration.name)} *value);`);
-      lines.push(`static void ${releaseName(declaration.name)}(${structName(declaration.name)} *value);`);
+      lines.push(`static ${moduleUnused}${structName(declaration.name)} *${retainName(declaration.name)}(${structName(declaration.name)} *value);`);
+      lines.push(`static ${moduleUnused}void ${releaseName(declaration.name)}(${structName(declaration.name)} *value);`);
       lines.push(`${generateClassConstructorSignature(declaration, structs, enums, semanticInfo.foreignNamedTypes)};`);
     }
     for (const method of declaration.methods) {
@@ -573,7 +574,8 @@ function generateClassConstructorSignature(
   const parameters = declaration.fields.map((field) => (
     `${mapType(field.type.name, structs, enums, foreignNamedTypes)} ${field.name}`
   ));
-  return `static ${structName(declaration.name)} *${constructorName(declaration.name)}(${parameters.join(", ") || "void"})`;
+  const unused = declaration.name.startsWith("__z_module_") ? "__attribute__((unused)) " : "";
+  return `static ${unused}${structName(declaration.name)} *${constructorName(declaration.name)}(${parameters.join(", ") || "void"})`;
 }
 
 function generateClassLifecycle(
@@ -583,13 +585,14 @@ function generateClassLifecycle(
   foreignNamedTypes: SemanticInfo["foreignNamedTypes"],
 ): string {
   const cName = structName(declaration.name);
+  const unused = declaration.name.startsWith("__z_module_") ? "__attribute__((unused)) " : "";
   const assignments = declaration.fields.map((field) => `  self->${field.name} = ${field.name};`).join("\n");
-  return `static ${cName} *${retainName(declaration.name)}(${cName} *value) {
+  return `static ${unused}${cName} *${retainName(declaration.name)}(${cName} *value) {
   if (value != NULL) value->_z_refcount += 1;
   return value;
 }
 
-static void ${releaseName(declaration.name)}(${cName} *value) {
+static ${unused}void ${releaseName(declaration.name)}(${cName} *value) {
   if (value == NULL) return;
   value->_z_refcount -= 1;
   if (value->_z_refcount == 0) {
@@ -745,7 +748,8 @@ function generateDeinit(
       body.push(indent(generateValueCleanup(`self->${field.name}`, field.type.name, null, context), 2));
     }
   }
-  return `static void ${deinitName(declaration.name)}(${structName(declaration.name)} *self) {\n${body.join("\n")}\n}`;
+  const unused = declaration.name.startsWith("__z_module_") ? "__attribute__((unused)) " : "";
+  return `static ${unused}void ${deinitName(declaration.name)}(${structName(declaration.name)} *self) {\n${body.join("\n")}\n}`;
 }
 
 function generateFunctionSignature(
@@ -755,7 +759,10 @@ function generateFunctionSignature(
   receiver: StructDeclaration | null,
   foreignNamedTypes: SemanticInfo["foreignNamedTypes"],
 ): string {
-  const storage = receiver || declaration.name !== "main" ? "static " : "";
+  const moduleGenerated = (receiver?.name ?? declaration.name).startsWith("__z_module_");
+  const storage = receiver || declaration.name !== "main"
+    ? `static ${moduleGenerated ? "__attribute__((unused)) " : ""}`
+    : "";
   const name = receiver ? methodName(receiver.name, declaration.name) : declaration.name;
   const parameters = declaration.parameters.map((parameter) => {
     const type = mapType(parameter.type.name, structs, enums, foreignNamedTypes);
@@ -999,12 +1006,15 @@ function renderConsoleValue(
 
   const declaration = context.structs.get(type);
   if (declaration?.kind === "class") {
-    return [`fprintf(${stream}, ${JSON.stringify(`${declaration.name}@%p`)}, (void *)(${value}));`];
+    const displayName = context.semanticInfo.typeDisplayNames.get(declaration.name) ?? declaration.name;
+    return [`fprintf(${stream}, ${JSON.stringify(`${displayName}@%p`)}, (void *)(${value}));`];
   }
   const recordFields = declaration?.fields
     ?? (foreign?.kind === "record" ? foreign.fields.map((field) => ({ name: field.name, type: { name: field.typeName } })) : null);
   if (recordFields) {
-    const displayName = declaration?.name ?? (foreign?.kind === "record" ? foreign.exportName : type);
+    const displayName = declaration
+      ? context.semanticInfo.typeDisplayNames.get(declaration.name) ?? declaration.name
+      : foreign?.kind === "record" ? foreign.exportName : type;
     const lines = [`fputs(${JSON.stringify(`${displayName} { `)}, ${stream});`];
     recordFields.forEach((field, index) => {
       if (index > 0) lines.push(`fputs(", ", ${stream});`);
@@ -1017,10 +1027,11 @@ function renderConsoleValue(
 
   const enumDeclaration = context.enums.get(type);
   if (enumDeclaration) {
+    const displayName = context.semanticInfo.typeDisplayNames.get(enumDeclaration.name) ?? enumDeclaration.name;
     const lines = [`switch ((${value}).tag) {`];
     for (const variant of enumDeclaration.variants) {
       lines.push(`  case ${variantTag(type, variant.name)}:`);
-      lines.push(`    fputs(${JSON.stringify(`${enumDeclaration.name}.${variant.name}`)}, ${stream});`);
+      lines.push(`    fputs(${JSON.stringify(`${displayName}.${variant.name}`)}, ${stream});`);
       if (variant.payload) {
         lines.push(`    fputc('(', ${stream});`);
         lines.push(...renderConsoleValue(`(${value}).data.${variant.name}`, variant.payload.name, stream, context).map((line) => indent(line, 4)));
@@ -1090,15 +1101,18 @@ function renderStringValue(
 
   const declaration = context.structs.get(type);
   if (declaration?.kind === "class") {
+    const displayName = context.semanticInfo.typeDisplayNames.get(declaration.name) ?? declaration.name;
     return [
-      `z_string_append_bytes(&${target}, ${JSON.stringify(`${declaration.name}@`)}, ${declaration.name.length + 1});`,
+      `z_string_append_bytes(&${target}, ${JSON.stringify(`${displayName}@`)}, ${displayName.length + 1});`,
       `z_string_append_pointer(&${target}, (void *)(${value}));`,
     ];
   }
   const recordFields = declaration?.fields
     ?? (foreign?.kind === "record" ? foreign.fields.map((field) => ({ name: field.name, type: { name: field.typeName } })) : null);
   if (recordFields) {
-    const displayName = declaration?.name ?? (foreign?.kind === "record" ? foreign.exportName : type);
+    const displayName = declaration
+      ? context.semanticInfo.typeDisplayNames.get(declaration.name) ?? declaration.name
+      : foreign?.kind === "record" ? foreign.exportName : type;
     const prefix = `${displayName} { `;
     const lines = [`z_string_append_bytes(&${target}, ${JSON.stringify(prefix)}, sizeof(${JSON.stringify(prefix)}) - 1);`];
     recordFields.forEach((field, index) => {
@@ -1113,9 +1127,10 @@ function renderStringValue(
 
   const enumDeclaration = context.enums.get(type);
   if (enumDeclaration) {
+    const displayName = context.semanticInfo.typeDisplayNames.get(enumDeclaration.name) ?? enumDeclaration.name;
     const lines = [`switch ((${value}).tag) {`];
     for (const variant of enumDeclaration.variants) {
-      const label = `${enumDeclaration.name}.${variant.name}`;
+      const label = `${displayName}.${variant.name}`;
       lines.push(`  case ${variantTag(type, variant.name)}:`);
       lines.push(`    z_string_append_bytes(&${target}, ${JSON.stringify(label)}, sizeof(${JSON.stringify(label)}) - 1);`);
       if (variant.payload) {

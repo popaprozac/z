@@ -191,18 +191,20 @@ export function resolveForeignModules(
   const includeDirectories = [...new Set([sourceDirectory, ...projectIncludeDirectories.map((directory) => resolve(directory))])];
   for (const declaration of declarations) {
     if (isStandardModuleSpecifier(declaration.header)) continue;
-    const headerDirectory = includeDirectories.find((directory) => existsSync(resolve(directory, declaration.header)))
-      ?? sourceDirectory;
+    const declarationDirectory = resolve(dirname(declaration.location.fileName ?? fileName));
+    const declarationIncludeDirectories = [...new Set([declarationDirectory, ...includeDirectories])];
+    const headerDirectory = declarationIncludeDirectories.find((directory) => existsSync(resolve(directory, declaration.header)))
+      ?? declarationDirectory;
     const localHeader = resolve(headerDirectory, declaration.header);
     const headerFreshness = existsSync(localHeader) ? statSync(localHeader).mtimeMs : 0;
     const framework = discoverFramework(declaration.header);
     const objectiveC = Boolean(framework) || isSwiftCompatibilityHeader(declaration.header);
     const cPlusPlus = isCPlusPlusHeader(declaration.header);
     const language = objectiveC ? cPlusPlus ? "objective-c++" : "objective-c" : cPlusPlus ? "c++" : "c";
-    const cacheKey = `${includeDirectories.join("\0")}\0${declaration.header}\0${headerFreshness}\0${declaration.moduleName}\0${framework ?? language}`;
+    const cacheKey = `${declarationIncludeDirectories.join("\0")}\0${declaration.header}\0${headerFreshness}\0${declaration.moduleName}\0${framework ?? language}`;
     let header = headerCache.get(cacheKey);
     if (!header) {
-      header = readHeader(declaration, fileName, includeDirectories, headerDirectory, framework, objectiveC, cPlusPlus);
+      header = readHeader(declaration, fileName, declarationIncludeDirectories, headerDirectory, framework, objectiveC, cPlusPlus);
       headerCache.set(cacheKey, header);
     }
     modules.set(declaration.moduleName, { declaration, ...header });

@@ -2,15 +2,23 @@ export type SourceLocation = {
   readonly offset: number;
   readonly line: number;
   readonly column: number;
+  readonly fileName?: string;
 };
 
 export type Program = {
   readonly kind: "program";
   readonly imports: ImportDeclaration[];
+  readonly exports: ExportDeclaration[];
   readonly traits: TraitDeclaration[];
   readonly structs: StructDeclaration[];
   readonly enums: EnumDeclaration[];
   readonly functions: FunctionDeclaration[];
+};
+
+export type ExportDeclaration = {
+  readonly name: string;
+  readonly declarationKind: "function" | "struct" | "class" | "trait" | "enum";
+  readonly location: SourceLocation;
 };
 
 export type ImportDeclaration = {

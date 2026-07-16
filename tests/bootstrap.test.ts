@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { resolve } from "node:path";
-import { mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { test } from "bun:test";
-import { compileToC, compileToNative } from "../compiler/src/compiler.ts";
+import { analyzeSource, compileToC, compileToNative } from "../compiler/src/compiler.ts";
 import { DiagnosticError, formatDiagnostic } from "../compiler/src/diagnostics.ts";
 import {
   completions,
@@ -73,6 +73,177 @@ test("keeps unselected C functions out of scope", () => {
     () => compileToC(missing, "selective-missing.z"),
     /header "stdio\.h" has no declaration "not_a_real_c_function"/,
   );
+});
+
+test("loads explicit Z exports through selective and namespace module imports", () => {
+  const example = resolve(projectRoot, "examples/modules/main.z");
+  const source = readFileSync(example, "utf8");
+  const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, "module point=Point { x: 21, y: 21 }, total=42\n");
+
+  const analysis = analyzeSource(source, example);
+  assert.equal(analysis.sourceModules.size, 3);
+  assert.ok(analysis.program.functions.find((item) => item.name.endsWith("_add"))!.location.offset > source.length);
+  const generated = compileToC(source, example);
+  assert.match(generated, /__z_module_\d+_translate/);
+  assert.match(generated, /__z_module_\d+_add/);
+  assert.doesNotMatch(generated, /#include <\.\/geometry\.z>/);
+  assert.doesNotMatch(generated, /#include <\.\/math\.z>/);
+});
+
+test("diagnoses missing Z exports, missing files, cycles, and module binding collisions", () => {
+  const directory = mkdtempSync("/tmp/z-modules-");
+  const main = resolve(directory, "main.z");
+  const values = resolve(directory, "values.z");
+  writeFileSync(values, "function hidden(): i32 { return 42; }\n");
+
+  const missingExport = `import { hidden } from "./values.z"; function main(): i32 { return hidden(); }`;
+  assert.throws(() => compileToC(missingExport, main), (error: unknown) => {
+    assert.ok(error instanceof DiagnosticError);
+    assert.equal(error.code, "Z0602");
+    assert.match(error.message, /has no export "hidden"/);
+    return true;
+  });
+
+  const missingFile = `import missing from "./missing.z"; function main(): i32 { return 0; }`;
+  assert.throws(() => compileToC(missingFile, main), (error: unknown) => {
+    assert.ok(error instanceof DiagnosticError);
+    assert.equal(error.code, "Z0602");
+    assert.match(error.message, /could not find Z module/);
+    return true;
+  });
+
+  const left = resolve(directory, "left.z");
+  const right = resolve(directory, "right.z");
+  writeFileSync(left, `import right from "./right.z"; export function left(): i32 { return right.right(); }`);
+  writeFileSync(right, `import left from "./left.z"; export function right(): i32 { return left.left(); }`);
+  const cycleMain = `import left from "./left.z"; function main(): i32 { return left.left(); }`;
+  assert.throws(() => compileToC(cycleMain, main), (error: unknown) => {
+    assert.ok(error instanceof DiagnosticError);
+    assert.equal(error.code, "Z0601");
+    assert.match(error.message, /left\.z -> right\.z -> left\.z/);
+    return true;
+  });
+
+  writeFileSync(values, "export function answer(): i32 { return 42; }\n");
+  const collision = `
+    import { answer } from "./values.z";
+    function answer(): i32 { return 0; }
+    function main(): i32 { return answer(); }
+  `;
+  assert.throws(() => compileToC(collision, main), (error: unknown) => {
+    assert.ok(error instanceof DiagnosticError);
+    assert.equal(error.code, "Z0603");
+    assert.match(error.message, /duplicate module binding "answer"/);
+    return true;
+  });
+
+  const broken = resolve(directory, "broken.z");
+  writeFileSync(broken, `export function broken(): i32 { return missing; }`);
+  const brokenMain = `import { broken } from "./broken.z"; function main(): i32 { return broken(); }`;
+  assert.throws(() => compileToC(brokenMain, main), (error: unknown) => {
+    assert.ok(error instanceof DiagnosticError);
+    assert.match(error.fileName, /broken\.z$/);
+    assert.match(error.message, /broken\.z:1:40: error: unknown name "missing"/);
+    return true;
+  });
+  const editorDiagnostic = diagnostics(brokenMain, main)[0];
+  assert.match(editorDiagnostic.message, /broken\.z: unknown name "missing"/);
+  assert.match(editorDiagnostic.relatedInformation?.[0].location.uri ?? "", /broken\.z$/);
+});
+
+test("preserves generic inference and local shadowing across Z modules", () => {
+  const directory = mkdtempSync("/tmp/z-generic-modules-");
+  const library = resolve(directory, "library.z");
+  const main = resolve(directory, "main.z");
+  writeFileSync(library, `
+    export struct Pair<T> { first: T; second: T; }
+    class HiddenCounter { value: i32; }
+    struct HiddenResource { value: i32; deinit {} }
+    function helper(): i32 { return 0; }
+    export function first<T>(in pair: Pair<T>): T { return pair.first; }
+    export function shadowed(): i32 { const helper = 42; return helper; }
+  `);
+  const source = `
+    import library from "./library.z";
+    import { first } from "./library.z";
+    function main(): i32 {
+      const pair = library.Pair<i32> { first: 20, second: 22 };
+      return library.first<i32>(pair) + first(pair) + library.shadowed() - 82;
+    }
+  `;
+  const generated = compileToC(source, main);
+  assert.match(generated, /__z_mono___z_module_\d+_Pair_i32/);
+  const sourcePath = resolve(directory, "main.z");
+  writeFileSync(sourcePath, source);
+  const result = spawnSync(process.execPath, [cli, "run", sourcePath], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+});
+
+test("provides completion, hover, definitions, and semantic tokens across Z modules", () => {
+  const example = resolve(projectRoot, "examples/modules/main.z");
+  const source = readFileSync(example, "utf8");
+  const uri = `file://${example}`;
+
+  const incompleteMember = source.replace("geometry.total", "geometry.to");
+  const memberOffset = incompleteMember.indexOf("geometry.to") + "geometry.to".length;
+  const memberItems = completions(incompleteMember, example, memberOffset);
+  assert.equal(memberItems.find((item) => item.label === "total")?.kind, 3);
+  const incompleteType = source.replace("geometry.Point", "geometry.P");
+  const typeOffset = incompleteType.indexOf("geometry.P") + "geometry.P".length;
+  assert.equal(completions(incompleteType, example, typeOffset).find((item) => item.label === "Point")?.kind, 22);
+
+  const namespaceUse = source.indexOf("geometry.Point") + 1;
+  assert.match(hover(source, example, namespaceUse)?.contents.value ?? "", /Z module/);
+  const pointUse = source.indexOf("Point", source.indexOf("geometry.Point")) + 1;
+  assert.match(hover(source, example, pointUse)?.contents.value ?? "", /struct Point/);
+  const moveUse = source.indexOf("move(origin") + 1;
+  assert.match(hover(source, example, moveUse)?.contents.value ?? "", /translate\(point: Point, dx: i32, dy: i32\): Point/);
+
+  const totalUse = source.indexOf("total(moved") + 1;
+  const totalDefinition = definition(source, uri, totalUse);
+  assert.match(totalDefinition?.uri ?? "", /geometry\.z$/);
+  assert.equal(totalDefinition?.range.start.line, 11);
+  const moveDefinition = definition(source, uri, moveUse);
+  assert.match(moveDefinition?.uri ?? "", /geometry\.z$/);
+  assert.equal(moveDefinition?.range.start.line, 7);
+
+  const symbolSource = source.replace("return 0;", "mov; return 0;");
+  const symbolOffset = symbolSource.indexOf("mov;") + 3;
+  assert.equal(completions(symbolSource, example, symbolOffset).find((item) => item.label === "move")?.kind, 3);
+
+  const tokens = decodeSemanticTokens(semanticTokens(source, example).data);
+  const namespacePosition = positionForOffset(source, source.indexOf("geometry.Point"));
+  const pointPosition = positionForOffset(source, source.indexOf("Point", source.indexOf("geometry.Point")));
+  assert.ok(tokens.some((token) => token.line === namespacePosition.line
+    && token.character === namespacePosition.character
+    && token.type === semanticTokenTypes.indexOf("namespace")));
+  assert.ok(tokens.some((token) => token.line === pointPosition.line
+    && token.character === pointPosition.character
+    && token.type === semanticTokenTypes.indexOf("type")));
+});
+
+test("resolves native headers relative to the Z module that imports them", () => {
+  const directory = mkdtempSync("/tmp/z-native-module-");
+  const libraryDirectory = resolve(directory, "library");
+  mkdirSync(libraryDirectory);
+  writeFileSync(resolve(libraryDirectory, "native.h"), `static inline int z_module_answer(void) { return 42; }\n`);
+  writeFileSync(resolve(libraryDirectory, "native.z"), `
+    import native from "native.h";
+    export function answer(): i32 { return native.z_module_answer(); }
+  `);
+  const main = resolve(directory, "main.z");
+  const source = `
+    import { answer } from "./library/native.z";
+    function main(): i32 { return answer() - 42; }
+  `;
+  writeFileSync(main, source);
+  const artifact = compileToNative(source, main);
+  assert.match(artifact.source, /#include <native\.h>/);
+  assert.ok(artifact.includeDirectories.some((item) => item.endsWith("/library")));
+  const result = spawnSync(process.execPath, [cli, "run", main], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
 });
 
 test("selectively imports C types and constants with the same aliases used by functions", () => {
@@ -3196,6 +3367,7 @@ test("editor grammar tracks keywords without reserving Result variants", () => {
   assert.match(keywordPattern, /\bin\b/);
   assert.match(keywordPattern, /\bas\b/);
   assert.match(keywordPattern, /implements/);
+  assert.match(keywordPattern, /export/);
   assert.match(keywordPattern, /while/);
   assert.match(keywordPattern, /for\|of/);
   assert.match(keywordPattern, /break/);

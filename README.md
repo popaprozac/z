@@ -39,6 +39,30 @@ This is a scope filter over the same typed header module, not a wrapper or an
 ABI redeclaration. Functions, supported typedef-named types, and enum constants
 share the same selective binding model.
 
+Z source files use the same familiar import surface with explicit exports:
+
+```z
+// geometry.z
+export struct Point { x: i32; y: i32; }
+export function total(in point: Point): i32 { return point.x + point.y; }
+```
+
+```z
+import geometry from "./geometry.z";
+import { total as sum } from "./geometry.z";
+
+const point = geometry.Point { x: 20, y: 22 };
+const answer = sum(point);
+```
+
+Relative paths ending in `.z` form a recursively loaded source-module graph.
+Namespace and selective imports expose only declarations marked `export`;
+private declarations receive collision-free compiler identities. Circular
+imports, missing files and exports, and duplicate bindings are diagnosed before
+native generation. The bootstrap links the graph into one C-family translation
+unit while preserving source names in diagnostics, formatting, and editor
+services. Run the three-file example with `bun run z run examples/modules/main.z`.
+
 Structs are value types with fields, literals, and methods:
 
 ```z

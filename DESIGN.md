@@ -461,6 +461,33 @@ same information as diagnostic codes and related locations. Suggestions must
 not advertise an unimplemented ownership shape. The current code catalog is in
 [`docs/diagnostics.md`](docs/diagnostics.md).
 
+## Source modules
+
+Z declarations are private to their source module unless marked `export`.
+Relative source imports use TypeScript-shaped namespace or selective bindings:
+
+```z
+// geometry.z
+export struct Point { x: i32; y: i32; }
+export function total(in point: Point): i32 { return point.x + point.y; }
+```
+
+```z
+import geometry from "./geometry.z";
+import { total as sum } from "./geometry.z";
+```
+
+The bootstrap recognizes explicit relative paths ending in `.z`, recursively
+loads an acyclic dependency graph, and links it into one native translation
+unit. Each dependency receives private compiler identities so unrelated files
+may reuse ordinary declaration and native-import names without collision.
+Those identities are backend details: diagnostics, formatting, hover,
+completion, semantic highlighting, and cross-file definitions retain source
+names and source locations. Selective imports require an explicit export;
+namespace access exposes the same export set. Re-exports, directory indexes,
+package resolution, separate compilation, and a package registry remain later
+layers.
+
 ## Async and concurrency
 
 Z keeps suspension explicit. Full colorless async is not a goal because hidden
@@ -642,8 +669,9 @@ ported independently rather than translated as one monolith.
 
 1. **Stage 0:** Bun runs the bootstrap lexer, parser, semantic analysis, IR, and
    native-source backend.
-2. **Stage 1:** Once Z has structs, tagged enums, matching, collections, and safe
-   file/process APIs, reimplement the frontend in the supported Z subset.
+2. **Stage 1:** With source modules now implemented, once Z also has safe
+   file/process APIs, reimplement the frontend in the supported Z subset of
+   structs, tagged enums, matching, generics, and collections.
 3. **Stage 2:** Compile the Z compiler with stage 0, then use that result to
    compile itself.
 4. **Bootstrap verification:** Compare generated native source and compiler test
@@ -699,6 +727,8 @@ Clang declaration source locations rather than text-searching SDK headers.
   element cleanup.
 - enum-valued fields, fixed arrays of enums, and nested copyable enum payloads
   with dependency-ordered native layouts.
+- explicit source-module exports, selective and namespace imports, recursive
+  graph loading, private symbol identities, and cross-file editor navigation.
 
 ### 0.25: Portable object model
 

@@ -10,6 +10,7 @@ import type { Program } from "./ast.ts";
 import type { ForeignModule } from "./foreign.ts";
 import type { SemanticInfo } from "./sema.ts";
 import { prepareProject, type ProjectBuild } from "./project.ts";
+import { linkSourceModules, type SourceModuleInfo } from "./modules.ts";
 
 export type NativeLanguage = "c" | "objective-c" | "c++" | "objective-c++";
 
@@ -28,15 +29,19 @@ export type AnalyzedSource = {
   readonly semanticInfo: SemanticInfo;
   readonly typeDisplayNames: ReadonlyMap<string, string>;
   readonly projectBuild: ProjectBuild;
+  readonly sourceModules: ReadonlyMap<string, SourceModuleInfo>;
+  readonly moduleIncludeDirectories: readonly string[];
 };
 
 export function analyzeSource(source: string, fileName: string): AnalyzedSource {
   const tokens = lex(source, fileName);
   const sourceProgram = parse(tokens, fileName);
+  const linked = linkSourceModules(sourceProgram, fileName);
   const projectBuild = prepareProject(fileName);
-  const foreignModules = resolveForeignModules(sourceProgram.imports, fileName, projectBuild.includeDirectories);
-  const typeDisplayNames = new Map<string, string>();
-  const inferredProgram = inferGenericCalls(sourceProgram, fileName, foreignModules);
+  const includeDirectories = [...new Set([...projectBuild.includeDirectories, ...linked.includeDirectories])];
+  const foreignModules = resolveForeignModules(linked.program.imports, fileName, includeDirectories);
+  const typeDisplayNames = new Map(linked.typeDisplayNames);
+  const inferredProgram = inferGenericCalls(linked.program, fileName, foreignModules);
   const program = materializeResultTypes(materializeGenerics(inferredProgram, fileName, typeDisplayNames));
   for (const declaration of program.enums) {
     if (!declaration.name.startsWith("__z_Result_")) continue;
@@ -48,8 +53,17 @@ export function analyzeSource(source: string, fileName: string): AnalyzedSource 
       `Result<${typeDisplayNames.get(success) ?? success}, ${typeDisplayNames.get(failure) ?? failure}>`,
     );
   }
-  const semanticInfo = analyze(program, fileName, foreignModules);
-  return { sourceProgram, program, foreignModules, semanticInfo, typeDisplayNames, projectBuild };
+  const semanticInfo = analyze(program, fileName, foreignModules, typeDisplayNames);
+  return {
+    sourceProgram,
+    program,
+    foreignModules,
+    semanticInfo,
+    typeDisplayNames,
+    projectBuild,
+    sourceModules: linked.modules,
+    moduleIncludeDirectories: linked.includeDirectories,
+  };
 }
 
 export function compileToC(source: string, fileName: string): string {
@@ -57,14 +71,14 @@ export function compileToC(source: string, fileName: string): string {
 }
 
 export function compileToNative(source: string, fileName: string): NativeArtifact {
-  const { program, semanticInfo, projectBuild } = analyzeSource(source, fileName);
+  const { program, semanticInfo, projectBuild, moduleIncludeDirectories } = analyzeSource(source, fileName);
   return {
     source: generateC(program, fileName, semanticInfo),
     language: semanticInfo.objectiveC
       ? semanticInfo.cPlusPlus ? "objective-c++" : "objective-c"
       : semanticInfo.cPlusPlus ? "c++" : "c",
     frameworks: [...new Set([...semanticInfo.frameworks, ...projectBuild.frameworks])],
-    includeDirectories: projectBuild.includeDirectories,
+    includeDirectories: [...new Set([...projectBuild.includeDirectories, ...moduleIncludeDirectories])],
     nativeLibraries: projectBuild.nativeLibraries,
   };
 }

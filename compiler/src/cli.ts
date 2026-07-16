@@ -28,7 +28,7 @@ if (!command || !inputArgument || !["check", "emit", "run"].includes(command)) {
     }
   } catch (error) {
     console.error(error instanceof DiagnosticError
-      ? formatDiagnostic(error, readSourceIfAvailable(inputPath))
+      ? formatDiagnostic(error, readSourceIfAvailable(error.fileName))
       : error instanceof Error ? error.message : String(error));
     process.exitCode = 1;
   }

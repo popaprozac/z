@@ -91,7 +91,7 @@
         "match": "\\b(?:return|throws|throw|select|yield|try|attempt|match|if|else|while|for|of|break|continue|async|await|spawn|deinit|unsafe|in|out|inout|move|as|implements)\\b"
       }, {
         "name": "storage.modifier.z",
-        "match": "\\b(?:const|let|mut|weak|static|private|public)\\b"
+        "match": "\\b(?:export|const|let|mut|weak|static|private|public)\\b"
       }]
     },
     "types": {

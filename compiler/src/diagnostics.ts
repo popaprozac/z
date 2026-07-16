@@ -25,9 +25,10 @@ export class DiagnosticError extends Error {
   readonly helps: readonly string[];
 
   constructor(fileName: string, location: SourceLocation, message: string, details: DiagnosticDetails = {}) {
-    super(`${fileName}:${location.line}:${location.column}: error: ${message}`);
+    const resolvedFileName = location.fileName ?? fileName;
+    super(`${resolvedFileName}:${location.line}:${location.column}: error: ${message}`);
     this.name = "DiagnosticError";
-    this.fileName = fileName;
+    this.fileName = resolvedFileName;
     this.location = location;
     this.summary = message;
     this.code = details.code ?? null;

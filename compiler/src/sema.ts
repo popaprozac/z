@@ -85,6 +85,7 @@ export type SemanticInfo = {
   readonly closures: ReadonlyMap<number, ClosureInfo>;
   readonly consoleCalls: ReadonlySet<number>;
   readonly consoleBindings: ReadonlySet<string>;
+  readonly typeDisplayNames: ReadonlyMap<string, string>;
   readonly objectiveC: boolean;
   readonly cPlusPlus: boolean;
   readonly frameworks: readonly string[];
@@ -115,6 +116,7 @@ type AnalysisState = {
   readonly closures: Map<number, ClosureInfo>;
   readonly consoleCalls: Set<number>;
   readonly consoleBindings: Set<string>;
+  readonly typeDisplayNames: ReadonlyMap<string, string>;
   readonly objectiveC: boolean;
   readonly cPlusPlus: boolean;
   readonly frameworks: readonly string[];
@@ -154,6 +156,7 @@ export function analyze(
   program: Program,
   fileName: string,
   foreignModules: ReadonlyMap<string, ForeignModule>,
+  typeDisplayNames: ReadonlyMap<string, string> = new Map(),
 ): SemanticInfo {
   const foreignTypes = new Map<string, ForeignPointerType>();
   const foreignNamedTypes = new Map<string, ForeignNamedType>();
@@ -196,6 +199,7 @@ export function analyze(
     closures: new Map(),
     consoleCalls: new Set(),
     consoleBindings: new Set(),
+    typeDisplayNames,
     objectiveC,
     cPlusPlus,
     frameworks: [...frameworks],

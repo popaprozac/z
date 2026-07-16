@@ -309,29 +309,43 @@ export function parse(tokens: Token[], fileName: string): Program {
           current = checkpoint;
         }
       }
-      const beginsForeignStructLiteral = at("dot")
-        && tokens[current + 1]?.kind === "identifier"
-        && tokens[current + 2]?.kind === "leftBrace"
-        && (tokens[current + 3]?.kind === "rightBrace"
-          || (tokens[current + 3]?.kind === "identifier" && tokens[current + 4]?.kind === "colon"));
-      if (beginsForeignStructLiteral) {
-        take();
-        const foreignType = take();
-        take();
-        const fields = [];
-        while (!at("rightBrace")) {
-          const field = expect("identifier", "a field name");
-          expect("colon", "`:`");
-          fields.push({ name: field.text, expression: parseExpression(), location: field.location });
-          if (!match("comma")) break;
+      if (at("dot") && tokens[current + 1]?.kind === "identifier") {
+        const checkpoint = current;
+        try {
+          take();
+          const qualifiedType = take();
+          let qualifiedTypeName = `${token.text}.${qualifiedType.text}`;
+          if (match("less")) {
+            const arguments_ = [];
+            do arguments_.push(parseType().name); while (match("comma"));
+            expectTypeGreater();
+            qualifiedTypeName = genericTypeName(qualifiedTypeName, arguments_);
+          }
+          const beginsQualifiedStructLiteral = at("leftBrace")
+            && (tokens[current + 1]?.kind === "rightBrace"
+              || (tokens[current + 1]?.kind === "identifier" && tokens[current + 2]?.kind === "colon"));
+          if (!beginsQualifiedStructLiteral) {
+            current = checkpoint;
+          } else {
+            take();
+            const fields = [];
+            while (!at("rightBrace")) {
+              const field = expect("identifier", "a field name");
+              expect("colon", "`:`");
+              fields.push({ name: field.text, expression: parseExpression(), location: field.location });
+              if (!match("comma")) break;
+            }
+            expect("rightBrace", "`}`");
+            return {
+              kind: "structExpression",
+              typeName: qualifiedTypeName,
+              fields,
+              location: token.location,
+            };
+          }
+        } catch {
+          current = checkpoint;
         }
-        expect("rightBrace", "`}`");
-        return {
-          kind: "structExpression",
-          typeName: `${token.text}.${foreignType.text}`,
-          fields,
-          location: token.location,
-        };
       }
       const beginsStructLiteral = at("leftBrace")
         && (tokens[current + 1]?.kind === "rightBrace"
@@ -387,7 +401,21 @@ export function parse(tokens: Token[], fileName: string): Program {
           throw new DiagnosticError(fileName, property.location, `expected a member name, found ${tokenDescription(property)}`);
         }
         take();
-        expression = { kind: "member", object: expression, property: property.text, location: property.location };
+        let propertyName = property.text;
+        if (at("less")) {
+          const checkpoint = current;
+          try {
+            take();
+            const arguments_ = [];
+            do arguments_.push(parseType().name); while (match("comma"));
+            expectTypeGreater();
+            if (!at("leftParen")) current = checkpoint;
+            else propertyName = genericTypeName(property.text, arguments_);
+          } catch {
+            current = checkpoint;
+          }
+        }
+        expression = { kind: "member", object: expression, property: propertyName, location: property.location };
         continue;
       }
       if (match("leftParen")) {
@@ -711,19 +739,37 @@ export function parse(tokens: Token[], fileName: string): Program {
   };
 
   const imports: ImportDeclaration[] = [];
+  const exports: Program["exports"] = [];
   const traits: TraitDeclaration[] = [];
   const structs: StructDeclaration[] = [];
   const enums: EnumDeclaration[] = [];
   const functions: FunctionDeclaration[] = [];
   while (!at("eof")) {
-    if (at("import")) imports.push(parseImport());
-    else if (at("trait")) traits.push(parseTrait());
-    else if (at("struct") || at("class")) structs.push(parseAggregate());
-    else if (at("enum")) enums.push(parseEnum());
-    else if (at("function")) functions.push(parseFunction());
-    else throw new DiagnosticError(fileName, peek().location, "expected an import, trait, struct, class, enum, or function declaration");
+    const exportToken = match("export") ? previous() : null;
+    if (at("import")) {
+      if (exportToken) throw new DiagnosticError(fileName, exportToken.location, "imports cannot be exported; export declarations from their defining module");
+      imports.push(parseImport());
+    } else if (at("trait")) {
+      const declaration = parseTrait();
+      traits.push(declaration);
+      if (exportToken) exports.push({ name: declaration.name, declarationKind: "trait", location: exportToken.location });
+    } else if (at("struct") || at("class")) {
+      const declaration = parseAggregate();
+      structs.push(declaration);
+      if (exportToken) exports.push({ name: declaration.name, declarationKind: declaration.kind, location: exportToken.location });
+    } else if (at("enum")) {
+      const declaration = parseEnum();
+      enums.push(declaration);
+      if (exportToken) exports.push({ name: declaration.name, declarationKind: "enum", location: exportToken.location });
+    } else if (at("function")) {
+      const declaration = parseFunction();
+      functions.push(declaration);
+      if (exportToken) exports.push({ name: declaration.name, declarationKind: "function", location: exportToken.location });
+    } else {
+      throw new DiagnosticError(fileName, peek().location, "expected an import, export, trait, struct, class, enum, or function declaration");
+    }
   }
-  return { kind: "program", imports, traits, structs, enums, functions };
+  return { kind: "program", imports, exports, traits, structs, enums, functions };
 }
 
 function startsPrimary(kind: TokenKind | undefined): boolean {

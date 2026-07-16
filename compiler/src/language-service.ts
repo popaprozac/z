@@ -19,7 +19,9 @@ import { lex } from "./lexer.ts";
 import { parseDynamicArrayType, parseFixedArrayType, parseSliceType } from "./array-types.ts";
 import { parseGenericType } from "./generic-types.ts";
 import { pathToFileURL } from "node:url";
-import { resolve } from "node:path";
+import { dirname, resolve } from "node:path";
+import { readFileSync } from "node:fs";
+import { isLocalSourceModuleSpecifier, type SourceModuleInfo } from "./modules.ts";
 
 export type Position = { readonly line: number; readonly character: number };
 export type Range = { readonly start: Position; readonly end: Position };
@@ -65,17 +67,18 @@ export function diagnostics(source: string, fileName: string): ServiceDiagnostic
     analyzeSource(source, fileName);
     return [];
   } catch (error) {
-    const location = error instanceof DiagnosticError
-      ? error.location
+    const diagnostic = error instanceof DiagnosticError ? error : null;
+    const crossFile = diagnostic ? resolve(diagnostic.fileName) !== resolve(fileName) : false;
+    const location = diagnostic && !crossFile
+      ? diagnostic.location
       : { offset: 0, line: 1, column: 1 };
     const start = { line: location.line - 1, character: location.column - 1 };
-    const diagnostic = error instanceof DiagnosticError ? error : null;
     const length = diagnostic?.length ?? 1;
     const relatedInformation = diagnostic?.labels.map((label) => {
       const labelStart = { line: label.location.line - 1, character: label.location.column - 1 };
       return {
         location: {
-          uri: diagnosticUri(fileName),
+          uri: diagnosticUri(label.location.fileName ?? diagnostic.fileName),
           range: {
             start: labelStart,
             end: { line: labelStart.line, character: labelStart.character + (label.length ?? 1) },
@@ -83,14 +86,27 @@ export function diagnostics(source: string, fileName: string): ServiceDiagnostic
         },
         message: label.message,
       };
-    });
+    }) ?? [];
+    if (diagnostic && crossFile) {
+      const origin = { line: diagnostic.location.line - 1, character: diagnostic.location.column - 1 };
+      relatedInformation.unshift({
+        location: {
+          uri: diagnosticUri(diagnostic.fileName),
+          range: {
+            start: origin,
+            end: { line: origin.line, character: origin.character + diagnostic.length },
+          },
+        },
+        message: "error originates in an imported Z module",
+      });
+    }
     return [{
       range: { start, end: { line: start.line, character: start.character + length } },
       severity: 1,
       source: "z",
       code: diagnostic?.code ?? undefined,
       message: diagnostic
-        ? [diagnostic.summary, ...diagnostic.notes.map((note) => `note: ${note}`), ...diagnostic.helps.map((help) => `help: ${help}`)].join("\n")
+        ? [crossFile ? `${diagnostic.fileName}: ${diagnostic.summary}` : diagnostic.summary, ...diagnostic.notes.map((note) => `note: ${note}`), ...diagnostic.helps.map((help) => `help: ${help}`)].join("\n")
         : error instanceof Error ? error.message : String(error),
       relatedInformation: relatedInformation?.length ? relatedInformation : undefined,
       data: diagnostic?.helps.length ? { helps: diagnostic.helps } : undefined,
@@ -155,6 +171,21 @@ export function semanticTokens(source: string, fileName: string): { readonly dat
   );
   const matchVariants = new Set(collectMatchArmInfos(context).map((item) => item.variantOffset));
   const modules = new Map([...context.foreignModules.keys()].map((name) => [name, context.foreignModules.get(name)!]));
+  const localNamespaces = new Map(
+    context.sourceProgram.imports
+      .filter((declaration) => isLocalSourceModuleSpecifier(declaration.header) && !declaration.bindings)
+      .map((declaration) => [declaration.moduleName, localSourceModule(context, declaration)] as const)
+      .filter((entry): entry is [string, SourceModuleInfo] => Boolean(entry[1])),
+  );
+  const localBindings = new Map(
+    context.sourceProgram.imports
+      .filter((declaration) => isLocalSourceModuleSpecifier(declaration.header) && declaration.bindings)
+      .flatMap((declaration) => declaration.bindings!.map((binding) => [binding.localName, {
+        module: localSourceModule(context, declaration),
+        importedName: binding.importedName,
+      }] as const))
+      .filter((entry): entry is [string, { module: SourceModuleInfo; importedName: string }] => Boolean(entry[1].module)),
+  );
   const consoleBindings = context.semanticInfo.consoleBindings;
   const tokens = lex(source, fileName);
 
@@ -189,7 +220,9 @@ export function semanticTokens(source: string, fileName: string): { readonly dat
       });
       continue;
     }
-    const namedBindings = bindingsByName.get(token.text) ?? [];
+    const namedBindings = (bindingsByName.get(token.text) ?? []).filter((candidate) => (
+      !candidate.fileName || resolve(candidate.fileName) === resolve(fileName)
+    ));
     const binding = namedBindings.filter((candidate) => candidate.offset <= token.location.offset).at(-1)
       ?? namedBindings[0];
     if (binding) {
@@ -203,6 +236,18 @@ export function semanticTokens(source: string, fileName: string): { readonly dat
     }
     if (consoleBindings.has(token.text)) {
       classifications.set(token.location.offset, { type: semanticTokenTypes.indexOf("namespace"), modifiers: 4 });
+      continue;
+    }
+    if (localNamespaces.has(token.text)) {
+      classifications.set(token.location.offset, { type: semanticTokenTypes.indexOf("namespace"), modifiers: 4 });
+      continue;
+    }
+    const localImport = localBindings.get(token.text);
+    if (localImport) {
+      classifications.set(token.location.offset, {
+        type: semanticTokenTypes.indexOf(sourceExportTokenType(localImport.module, localImport.importedName)),
+        modifiers: 4,
+      });
       continue;
     }
     if (
@@ -257,6 +302,14 @@ export function semanticTokens(source: string, fileName: string): { readonly dat
     }
     if (previous?.kind === "dot") {
       const namespaceToken = tokens[index - 2];
+      const localModule = namespaceToken ? localNamespaces.get(namespaceToken.text) : null;
+      if (localModule?.exports.has(token.text)) {
+        classifications.set(token.location.offset, {
+          type: semanticTokenTypes.indexOf(sourceExportTokenType(localModule, token.text)),
+          modifiers: 4,
+        });
+        continue;
+      }
       const module = namespaceToken ? modules.get(namespaceToken.text) : null;
       if (module?.interfaces.has(token.text)) {
         classifications.set(token.location.offset, { type: semanticTokenTypes.indexOf("class"), modifiers: 4 });
@@ -298,6 +351,8 @@ export function hover(source: string, fileName: string, offset: number): Hover |
   if (!word) return null;
   const context = safeAnalysis(source, fileName);
   if (!context) return declarationHover(source, null, word.text, word.start, word.end);
+  const directWordType = context.semanticInfo.bindingTypes.get(word.start)
+    ?? context.semanticInfo.expressionTypes.get(word.start);
 
   const declaredField = context.sourceProgram.structs
     .flatMap((declaration) => declaration.fields)
@@ -326,6 +381,17 @@ export function hover(source: string, fileName: string, offset: number): Hover |
   if (module) {
     return markdownHover(`import ${word.text} from ${JSON.stringify(module.declaration.header)}`, source, word.start, word.end);
   }
+  const sourceNamespace = context.sourceProgram.imports.find((declaration) => (
+    isLocalSourceModuleSpecifier(declaration.header) && !declaration.bindings && declaration.moduleName === word.text
+  ));
+  const sourceNamespaceShadowed = sourceNameIsShadowed(context, word.text, word.start, fileName);
+  if (sourceNamespace && !sourceNamespaceShadowed) {
+    return markdownHover(`import ${word.text} from ${JSON.stringify(sourceNamespace.header)}  // Z module`, source, word.start, word.end);
+  }
+  const sourceBinding = localSourceBinding(context, word.text);
+  if (sourceBinding && !directWordType) {
+    return markdownHover(sourceExportDetail(sourceBinding.module, sourceBinding.importedName, context.typeDisplayNames), source, word.start, word.end);
+  }
   if (context.semanticInfo.consoleBindings.has(word.text)) {
     return markdownHover(`standard console imported as ${word.text}`, source, word.start, word.end);
   }
@@ -349,6 +415,16 @@ export function hover(source: string, fileName: string, offset: number): Hover |
     }
     if (memberPrefix[1] === "String" && word.text === "from") {
       return markdownHover("from(value: cstring): String  // copies borrowed C bytes", source, word.start, word.end);
+    }
+    const sourceImport = context.sourceProgram.imports.find((declaration) => (
+      isLocalSourceModuleSpecifier(declaration.header)
+      && !declaration.bindings
+      && declaration.moduleName === memberPrefix[1]
+    ));
+    const sourceModule = sourceImport ? localSourceModule(context, sourceImport) : null;
+    if (sourceModule?.exports.has(word.text)
+      && !sourceNameIsShadowed(context, memberPrefix[1], word.start, fileName)) {
+      return markdownHover(sourceExportDetail(sourceModule, word.text, context.typeDisplayNames), source, word.start, word.end);
     }
     const resolved = resolveReceiver(context, memberPrefix[1], word.start - memberPrefix[1].length - 1);
     if (resolved?.kind === "module") {
@@ -379,8 +455,7 @@ export function hover(source: string, fileName: string, offset: number): Hover |
     }
   }
 
-  const type = context.semanticInfo.bindingTypes.get(word.start)
-    ?? context.semanticInfo.expressionTypes.get(word.start);
+  const type = directWordType;
   if (type) return markdownHover(`${word.text}: ${displayServiceType(type, context)}`, source, word.start, word.end);
   return declarationHover(source, context.sourceProgram, word.text, word.start, word.end, context.typeDisplayNames);
 }
@@ -388,9 +463,25 @@ export function hover(source: string, fileName: string, offset: number): Hover |
 export function definition(source: string, uri: string, offset: number): Location | null {
   const word = wordAt(source, offset);
   if (!word) return null;
+  const fileName = uriToFileName(uri);
+  const context = safeAnalysis(source, fileName);
+  if (context) {
+    const memberNamespace = source.slice(0, word.start).match(/([A-Za-z_][A-Za-z0-9_]*)\.$/)?.[1];
+    const namespaceImport = memberNamespace
+      ? context.sourceProgram.imports.find((declaration) => (
+        isLocalSourceModuleSpecifier(declaration.header)
+        && !declaration.bindings
+        && declaration.moduleName === memberNamespace
+      ))
+      : null;
+    const namespaceModule = namespaceImport ? localSourceModule(context, namespaceImport) : null;
+    if (namespaceModule?.exports.has(word.text)) return sourceExportLocation(namespaceModule, word.text);
+    const binding = localSourceBinding(context, word.text);
+    if (binding) return sourceExportLocation(binding.module, binding.importedName);
+  }
   let tokens;
   try {
-    tokens = lex(source, uriToFileName(uri));
+    tokens = lex(source, fileName);
   } catch {
     return null;
   }
@@ -432,6 +523,7 @@ function symbolCompletions(source: string, fileName: string, offset: number): Co
   if (!context) return [];
   const items: CompletionItem[] = [];
   for (const binding of collectBindings(context)) {
+    if (binding.fileName && resolve(binding.fileName) !== resolve(fileName)) continue;
     if (binding.offset >= start) continue;
     items.push({
       label: binding.name,
@@ -441,7 +533,7 @@ function symbolCompletions(source: string, fileName: string, offset: number): Co
     });
   }
   for (const declaration of context.program.functions) {
-    if (declaration.name.startsWith("__z_mono_")) continue;
+    if (declaration.name.startsWith("__z_mono_") || declaration.name.startsWith("__z_module_")) continue;
     items.push({
       label: declaration.name,
       kind: completionKinds.function,
@@ -449,7 +541,7 @@ function symbolCompletions(source: string, fileName: string, offset: number): Co
     });
   }
   for (const declaration of context.program.structs) {
-    if (declaration.name.startsWith("__z_mono_")) continue;
+    if (declaration.name.startsWith("__z_mono_") || declaration.name.startsWith("__z_module_")) continue;
     items.push({
       label: declaration.name,
       kind: declaration.kind === "class" ? completionKinds.class : completionKinds.struct,
@@ -461,13 +553,31 @@ function symbolCompletions(source: string, fileName: string, offset: number): Co
     items.push({ label: match[2], kind, detail: `${match[1]} ${match[2]}<${match[3].trim()}>` });
   }
   for (const declaration of context.program.traits) {
+    if (declaration.name.startsWith("__z_module_")) continue;
     items.push({ label: declaration.name, kind: completionKinds.interface, detail: `trait ${declaration.name}` });
   }
   for (const declaration of context.program.enums) {
+    if (declaration.name.startsWith("__z_module_") || declaration.name.startsWith("__z_Result_")) continue;
     items.push({ label: declaration.name, kind: completionKinds.enum, detail: `enum ${declaration.name}` });
   }
   for (const [name, module] of context.foreignModules) {
     items.push({ label: name, kind: completionKinds.module, detail: `import from ${JSON.stringify(module.declaration.header)}` });
+  }
+  for (const declaration of context.sourceProgram.imports) {
+    if (!isLocalSourceModuleSpecifier(declaration.header)) continue;
+    const module = localSourceModule(context, declaration);
+    if (!module) continue;
+    if (!declaration.bindings) {
+      items.push({ label: declaration.moduleName, kind: completionKinds.module, detail: `Z module ${JSON.stringify(declaration.header)}` });
+      continue;
+    }
+    for (const binding of declaration.bindings) {
+      items.push({
+        label: binding.localName,
+        kind: sourceExportCompletionKind(module, binding.importedName),
+        detail: sourceExportDetail(module, binding.importedName, context.typeDisplayNames),
+      });
+    }
   }
   for (const name of context.semanticInfo.consoleBindings) {
     items.push({ label: name, kind: completionKinds.module, detail: `standard console imported as ${name}` });
@@ -481,6 +591,7 @@ type Binding = {
   readonly offset: number;
   readonly readonly: boolean;
   readonly parameter: boolean;
+  readonly fileName?: string;
 };
 
 function collectBindings(context: AnalyzedSource): Binding[] {
@@ -493,6 +604,7 @@ function collectBindings(context: AnalyzedSource): Binding[] {
         offset: parameter.location.offset,
         readonly: parameter.mode === "value" || parameter.mode === "in",
         parameter: true,
+        fileName: parameter.location.fileName,
       });
     }
     if (expression.body.kind === "block") visitStatements(expression.body.statements);
@@ -506,6 +618,7 @@ function collectBindings(context: AnalyzedSource): Binding[] {
           offset: statement.nameLocation.offset,
           readonly: !statement.mutable,
           parameter: false,
+          fileName: statement.nameLocation.fileName,
         });
         if (statement.initializer?.kind === "closure") visitClosure(statement.initializer);
       }
@@ -523,6 +636,7 @@ function collectBindings(context: AnalyzedSource): Binding[] {
           offset: statement.bindingLocation.offset,
           readonly: true,
           parameter: false,
+          fileName: statement.bindingLocation.fileName,
         });
         visitStatements(statement.body.statements);
       }
@@ -539,6 +653,7 @@ function collectBindings(context: AnalyzedSource): Binding[] {
         offset: parameter.location.offset,
         readonly: parameter.mode === "value" || parameter.mode === "in",
         parameter: true,
+        fileName: parameter.location.fileName,
       });
     }
     visitStatements(declaration.body);
@@ -556,6 +671,7 @@ function collectBindings(context: AnalyzedSource): Binding[] {
       offset: arm.bindingOffset,
       readonly: true,
       parameter: false,
+      fileName: arm.bindingFileName,
     });
   }
   return bindings;
@@ -566,6 +682,7 @@ type MatchArmInfo = {
   readonly variantOffset: number;
   readonly binding: string | null;
   readonly bindingOffset: number | null;
+  readonly bindingFileName?: string;
   readonly enumName: string;
   readonly payloadType: string | null;
 };
@@ -600,6 +717,7 @@ function collectMatchArmInfos(context: AnalyzedSource): MatchArmInfo[] {
             variantOffset: arm.location.offset,
             binding: arm.binding,
             bindingOffset: arm.bindingLocation?.offset ?? null,
+            bindingFileName: arm.bindingLocation?.fileName,
             enumName,
             payloadType: variant.payload?.name ?? null,
           });
@@ -631,6 +749,19 @@ function memberCompletions(
   if (!importContext) return [];
   if (importContext.semanticInfo.consoleBindings.has(receiverText)) {
     return filterCompletions(consoleCompletions(), prefix, 100);
+  }
+  const sourceImport = importContext.sourceProgram.imports.find((declaration) => (
+    isLocalSourceModuleSpecifier(declaration.header)
+    && !declaration.bindings
+    && declaration.moduleName === receiverText
+  ));
+  const sourceModule = sourceImport ? localSourceModule(importContext, sourceImport) : null;
+  if (sourceModule) {
+    return filterCompletions([...sourceModule.exports.keys()].map((name) => ({
+      label: name,
+      kind: sourceExportCompletionKind(sourceModule, name),
+      detail: sourceExportDetail(sourceModule, name, importContext.typeDisplayNames),
+    })), prefix, 1000);
   }
   const directModule = importContext.foreignModules.get(receiverText);
   if (directModule) return moduleCompletions(directModule, prefix);
@@ -717,6 +848,114 @@ function consoleMethodDetail(name: string): string | null {
   if (name === "error") return "error(...values): void  // stderr with newline";
   if (name === "debug") return "debug(...values): void  // debug stream";
   return null;
+}
+
+function localSourceModule(context: AnalyzedSource, declaration: Program["imports"][number]): SourceModuleInfo | null {
+  const importer = declaration.location.fileName;
+  if (!importer) return null;
+  const target = resolve(dirname(importer), declaration.header);
+  return context.sourceModules.get(target)
+    ?? [...context.sourceModules.values()].find((module) => resolve(module.fileName) === target)
+    ?? null;
+}
+
+function localSourceBinding(
+  context: AnalyzedSource,
+  localName: string,
+): { readonly module: SourceModuleInfo; readonly importedName: string } | null {
+  for (const declaration of context.sourceProgram.imports) {
+    if (!isLocalSourceModuleSpecifier(declaration.header) || !declaration.bindings) continue;
+    const binding = declaration.bindings.find((item) => item.localName === localName);
+    if (!binding) continue;
+    const module = localSourceModule(context, declaration);
+    if (module) return { module, importedName: binding.importedName };
+  }
+  return null;
+}
+
+function sourceNameIsShadowed(context: AnalyzedSource, name: string, offset: number, fileName: string): boolean {
+  return collectBindings(context).some((binding) => (
+    binding.name === name
+    && binding.offset <= offset
+    && (!binding.fileName || resolve(binding.fileName) === resolve(fileName))
+  ));
+}
+
+function sourceExportDeclaration(module: SourceModuleInfo, name: string):
+  | Program["functions"][number]
+  | Program["structs"][number]
+  | Program["traits"][number]
+  | Program["enums"][number]
+  | null {
+  return module.program.functions.find((item) => item.name === name)
+    ?? module.program.structs.find((item) => item.name === name)
+    ?? module.program.traits.find((item) => item.name === name)
+    ?? module.program.enums.find((item) => item.name === name)
+    ?? null;
+}
+
+function sourceExportDetail(
+  module: SourceModuleInfo,
+  name: string,
+  typeDisplayNames: ReadonlyMap<string, string>,
+): string {
+  const declaration = sourceExportDeclaration(module, name);
+  if (!declaration) return `export ${name}`;
+  if (declaration.kind === "function") {
+    return zFunctionDetail(
+      declaration.name,
+      declaration.parameters,
+      declaration.returnType.name,
+      declaration.typeParameters,
+      typeDisplayNames,
+      declaration.typeParameterConstraints,
+    );
+  }
+  if (declaration.kind === "struct" || declaration.kind === "class") {
+    return `${declaration.kind} ${declaration.name}${formatTypeParameters(
+      declaration.typeParameters ?? [],
+      declaration.typeParameterConstraints ?? [],
+      typeDisplayNames,
+    )}`;
+  }
+  return `${declaration.kind} ${declaration.name}`;
+}
+
+function sourceExportTokenType(module: SourceModuleInfo, name: string): (typeof semanticTokenTypes)[number] {
+  const declaration = sourceExportDeclaration(module, name);
+  if (declaration?.kind === "function") return "function";
+  if (declaration?.kind === "class") return "class";
+  if (declaration?.kind === "trait") return "interface";
+  if (declaration?.kind === "enum") return "enum";
+  return "type";
+}
+
+function sourceExportCompletionKind(module: SourceModuleInfo, name: string): number {
+  const declaration = sourceExportDeclaration(module, name);
+  if (declaration?.kind === "function") return completionKinds.function;
+  if (declaration?.kind === "class") return completionKinds.class;
+  if (declaration?.kind === "trait") return completionKinds.interface;
+  if (declaration?.kind === "enum") return completionKinds.enum;
+  return completionKinds.struct;
+}
+
+function sourceExportLocation(module: SourceModuleInfo, name: string): Location | null {
+  const declaration = sourceExportDeclaration(module, name);
+  if (!declaration) return null;
+  try {
+    const source = readFileSync(module.fileName, "utf8");
+    const tokens = lex(source, module.fileName);
+    const declarationIndex = tokens.findIndex((token) => token.location.offset === declaration.location.offset);
+    const nameToken = tokens.slice(Math.max(0, declarationIndex + 1)).find((token) => token.text === name);
+    if (!nameToken) return null;
+    const start = { line: nameToken.location.line - 1, character: nameToken.location.column - 1 };
+    return {
+      uri: pathToFileURL(module.fileName).href,
+      range: { start, end: { line: start.line, character: start.character + name.length } },
+    };
+  } catch {
+    return null;
+  }
 }
 
 function labelCompletions(source: string, fileName: string, offset: number): CompletionItem[] {

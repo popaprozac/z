@@ -45,6 +45,9 @@ Currently structured codes include:
 | `Z0402` | formatting a cleanup-bearing temporary requires stored ownership |
 | `Z0403` | console is used without an explicit standard-module import |
 | `Z0501` | invalid standard-module path, import shape, or export |
+| `Z0601` | circular Z source-module import |
+| `Z0602` | missing Z module or exported declaration |
+| `Z0603` | duplicate source-module export or binding |
 
 CLI diagnostics render source context. Language-server diagnostics expose the
 same code and message, secondary locations through related information, and

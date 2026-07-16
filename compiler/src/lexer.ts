@@ -11,6 +11,7 @@ export type TokenKind =
   | "templateExpressionEnd"
   | "templateEnd"
   | "import"
+  | "export"
   | "from"
   | "as"
   | "function"
@@ -85,6 +86,7 @@ export type Token = {
 
 const keywords = new Map<string, TokenKind>([
   ["import", "import"],
+  ["export", "export"],
   ["from", "from"],
   ["as", "as"],
   ["function", "function"],
@@ -129,7 +131,7 @@ export function lex(
   let line = base.line;
   let column = base.column;
 
-  const location = (): SourceLocation => ({ offset: base.offset + offset, line, column });
+  const location = (): SourceLocation => ({ offset: base.offset + offset, line, column, fileName });
   const peek = (distance = 0): string => source[offset + distance] ?? "\0";
   const advance = (): string => {
     const character = peek();
