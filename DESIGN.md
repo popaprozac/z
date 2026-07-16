@@ -28,6 +28,8 @@ async semantics that are absent from the header itself.
 - `class` is an ARC-managed reference type with identity.
 - `trait` describes behavior independently of storage and allocation.
 - `enum` supports finite values and tagged unions.
+- Copyable enums compose by value inside struct fields, fixed arrays, and other
+  enum payloads; mixed recursive value layouts are rejected.
 - Safe code cannot perform unchecked pointer operations.
 - Native operations that the compiler cannot verify require `unsafe`.
 - Unique values, inferred borrows, managed references, and safe arenas serve
@@ -637,6 +639,8 @@ Clang declaration source locations rather than text-searching SDK headers.
 - statically dispatched nominal trait constraints on generic parameters.
 - growable owned `Array<T>` buffers with checked indexing and deterministic
   element cleanup.
+- enum-valued fields, fixed arrays of enums, and nested copyable enum payloads
+  with dependency-ordered native layouts.
 
 ### 0.25: Portable object model
 

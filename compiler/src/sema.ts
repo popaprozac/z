@@ -274,7 +274,7 @@ export function analyze(
     validateFunctionSignature(declaration, structs, enums, foreignNamedTypes, fileName);
   }
 
-  validateStructLayouts(program.structs, structs, fileName);
+  validateValueLayouts(program.structs, program.enums, structs, enums, fileName);
 
   const main = globals.get("main");
   if (!main || main.kind !== "function") {
@@ -340,9 +340,6 @@ function analyzeStructDeclaration(
     validateType(field.type, structs, enums, foreignNamedTypes, fileName, false);
     if (containsSliceType(field.type.name)) {
       throw new DiagnosticError(fileName, field.location, "Slice values cannot be stored in struct or class fields");
-    }
-    if (enums.has(field.type.name)) {
-      throw new DiagnosticError(fileName, field.location, "enum-valued struct fields are not implemented in this bootstrap stage");
     }
   }
   for (const method of declaration.methods) {
@@ -439,9 +436,6 @@ function analyzeEnumDeclaration(
       if (variant.payload.name === declaration.name) {
         throw new DiagnosticError(fileName, variant.location, "an enum cannot contain itself directly by value");
       }
-      if (enums.has(variant.payload.name) && !declaration.name.startsWith("__z_Result_")) {
-        throw new DiagnosticError(fileName, variant.location, "nested enum payloads are not implemented in this bootstrap stage");
-      }
       if (hasCleanupType(variant.payload.name, structs)) {
         throw new DiagnosticError(fileName, variant.location, "enum payloads with deterministic cleanup are not implemented in this bootstrap stage");
       }
@@ -492,32 +486,72 @@ function validateFunctionSignature(
   }
 }
 
-function validateStructLayouts(
-  declarations: StructDeclaration[],
+function validateValueLayouts(
+  structDeclarations: StructDeclaration[],
+  enumDeclarations: EnumDeclaration[],
   structs: Map<string, StructDeclaration>,
+  enums: Map<string, EnumDeclaration>,
   fileName: string,
 ): void {
   const visiting = new Set<string>();
   const visited = new Set<string>();
 
-  const visit = (declaration: StructDeclaration): void => {
-    if (declaration.kind === "class") return;
-    if (visited.has(declaration.name)) return;
-    if (visiting.has(declaration.name)) {
-      throw new DiagnosticError(fileName, declaration.location, `struct ${JSON.stringify(declaration.name)} has a recursive value layout`);
+  const visitType = (name: string, location: SourceLocation): void => {
+    const array = parseFixedArrayType(name);
+    if (array) {
+      visitType(array.elementType, location);
+      return;
     }
-    visiting.add(declaration.name);
-    for (const field of declaration.fields) {
-      let nestedName = field.type.name;
-      while (parseFixedArrayType(nestedName)) nestedName = parseFixedArrayType(nestedName)!.elementType;
-      const nested = structs.get(nestedName);
-      if (nested?.kind === "struct") visit(nested);
+    const struct = structs.get(name);
+    if (struct?.kind === "struct") {
+      visit(`struct:${name}`, name, location, struct.fields.map((field) => ({ type: field.type.name, location: field.location })));
+      return;
     }
-    visiting.delete(declaration.name);
-    visited.add(declaration.name);
+    const enumDeclaration = enums.get(name);
+    if (enumDeclaration) {
+      visit(
+        `enum:${name}`,
+        name,
+        location,
+        enumDeclaration.variants.flatMap((variant) => variant.payload ? [{ type: variant.payload.name, location: variant.location }] : []),
+      );
+    }
   };
 
-  for (const declaration of declarations) visit(declaration);
+  const visit = (
+    key: string,
+    name: string,
+    location: SourceLocation,
+    children: readonly { readonly type: string; readonly location: SourceLocation }[],
+  ): void => {
+    if (visited.has(key)) return;
+    if (visiting.has(key)) {
+      throw new DiagnosticError(fileName, location, `type ${JSON.stringify(name)} has a recursive value layout`);
+    }
+    visiting.add(key);
+    for (const child of children) visitType(child.type, child.location);
+    visiting.delete(key);
+    visited.add(key);
+  };
+
+  for (const declaration of structDeclarations) {
+    if (declaration.kind === "struct") {
+      visit(
+        `struct:${declaration.name}`,
+        declaration.name,
+        declaration.location,
+        declaration.fields.map((field) => ({ type: field.type.name, location: field.location })),
+      );
+    }
+  }
+  for (const declaration of enumDeclarations) {
+    visit(
+      `enum:${declaration.name}`,
+      declaration.name,
+      declaration.location,
+      declaration.variants.flatMap((variant) => variant.payload ? [{ type: variant.payload.name, location: variant.location }] : []),
+    );
+  }
 }
 
 function analyzeFunction(

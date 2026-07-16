@@ -136,14 +136,10 @@ export function generateC(program: Program, sourceName: string, semanticInfo: Se
     );
   }
 
-  lines.push(...generateAggregateDefinitions(program.structs, arrayTypes, structs, enums, semanticInfo.foreignNamedTypes));
+  lines.push(...generateAggregateDefinitions(program.structs, program.enums, arrayTypes, structs, enums, semanticInfo.foreignNamedTypes));
   for (const type of dynamicArrayPushTypes) {
     lines.push(generateDynamicArrayPush(type, structs, enums, semanticInfo.foreignNamedTypes), "");
   }
-  for (const declaration of program.enums) {
-    lines.push(generateEnum(declaration, structs, enums, semanticInfo.foreignNamedTypes), "");
-  }
-
   for (const declaration of program.structs) {
     if (hasCleanupType(declaration.name, structs)) {
       lines.push(`static void ${deinitName(declaration.name)}(${structName(declaration.name)} *self);`);
@@ -363,6 +359,7 @@ function collectDynamicArrayPushTypes(program: Program, semanticInfo: SemanticIn
 
 function generateAggregateDefinitions(
   declarations: StructDeclaration[],
+  enumDeclarations: EnumDeclaration[],
   arrayTypes: string[],
   structs: Map<string, StructDeclaration>,
   enums: Map<string, EnumDeclaration>,
@@ -370,27 +367,44 @@ function generateAggregateDefinitions(
 ): string[] {
   const lines: string[] = [];
   const definedStructs = new Set<string>();
+  const definedEnums = new Set<string>();
   const definedArrays = new Set<string>();
+  const emitDependency = (name: string): void => {
+    if (parseFixedArrayType(name)) {
+      emitArray(name);
+      return;
+    }
+    const nestedStruct = structs.get(name);
+    if (nestedStruct?.kind === "struct") {
+      emitStruct(nestedStruct);
+      return;
+    }
+    const nestedEnum = enums.get(name);
+    if (nestedEnum) emitEnum(nestedEnum);
+  };
   const emitArray = (name: string): void => {
     if (definedArrays.has(name)) return;
     definedArrays.add(name);
     const array = parseFixedArrayType(name)!;
-    if (parseFixedArrayType(array.elementType)) emitArray(array.elementType);
-    const elementStruct = structs.get(array.elementType);
-    if (elementStruct?.kind === "struct") emitStruct(elementStruct);
+    emitDependency(array.elementType);
     lines.push(generateFixedArray(name, array.elementType, array.length, structs, enums, foreignNamedTypes), "");
   };
   const emitStruct = (declaration: StructDeclaration): void => {
     if (definedStructs.has(declaration.name)) return;
     definedStructs.add(declaration.name);
-    for (const field of declaration.fields) {
-      if (parseFixedArrayType(field.type.name)) emitArray(field.type.name);
-      const nested = structs.get(field.type.name);
-      if (nested?.kind === "struct") emitStruct(nested);
-    }
+    for (const field of declaration.fields) emitDependency(field.type.name);
     lines.push(generateStruct(declaration, structs, enums, foreignNamedTypes), "");
   };
+  const emitEnum = (declaration: EnumDeclaration): void => {
+    if (definedEnums.has(declaration.name)) return;
+    definedEnums.add(declaration.name);
+    for (const variant of declaration.variants) {
+      if (variant.payload) emitDependency(variant.payload.name);
+    }
+    lines.push(generateEnum(declaration, structs, enums, foreignNamedTypes), "");
+  };
   for (const declaration of declarations) emitStruct(declaration);
+  for (const declaration of enumDeclarations) emitEnum(declaration);
   for (const type of arrayTypes) emitArray(type);
   return lines;
 }

@@ -2091,6 +2091,32 @@ test("compiles payload enums and exhaustive matches", () => {
   assert.equal(result.stdout, "matched=42\n");
 });
 
+test("composes enums through value aggregates and emits dependency-ordered C layouts", () => {
+  const example = resolve(projectRoot, "examples/aggregate-enums.z");
+  const source = readFileSync(example, "utf8");
+  const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, "state=42 history=7\n");
+
+  const generated = compileToC(source, example);
+  assert.ok(generated.indexOf("struct Z_Mode {") < generated.indexOf("struct Z_State {"));
+  assert.ok(generated.indexOf("struct Z_State {") < generated.indexOf("struct Z_Snapshot {"));
+  assert.match(generated, /Z_Mode data\[2\]/);
+
+  const currentUse = source.indexOf("snapshot.current") + "snapshot.".length + 1;
+  assert.match(hover(source, example, currentUse)?.contents.value ?? "", /current: State/);
+
+  const recursive = `
+    enum Link { node Node, end, }
+    struct Node { link: Link; }
+    function main(): i32 { return 0; }
+  `;
+  assert.throws(
+    () => compileToC(recursive, "recursive-aggregate.z"),
+    /type "(?:Link|Node)" has a recursive value layout/,
+  );
+});
+
 test("compiles expression matches with concise and selecting block arms", () => {
   const example = resolve(projectRoot, "examples/match-expression.z");
   const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });

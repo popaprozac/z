@@ -215,6 +215,10 @@ match result {
 }
 ```
 
+Copyable enums may also be stored directly in structs and fixed arrays or used
+as another enum's payload. The compiler orders the generated native definitions
+from their value dependencies and rejects recursive struct/enum layouts.
+
 `match` can produce a value. A concise arm provides its expression directly;
 use `select` when an arm needs multiple statements:
 

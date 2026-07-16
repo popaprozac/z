@@ -1,0 +1,39 @@
+import stdio from "stdio.h";
+
+enum Mode {
+  idle,
+  active i32,
+}
+
+enum State {
+  mode Mode,
+  stopped,
+}
+
+struct Snapshot {
+  current: State;
+  history: Mode[2];
+}
+
+function modeValue(mode: Mode): i32 {
+  return match mode {
+    idle => 0;
+    active value => value;
+  };
+}
+
+function activeValue(state: State): i32 {
+  return match state {
+    mode mode => modeValue(mode);
+    stopped => -1;
+  };
+}
+
+function main(): i32 {
+  const snapshot = Snapshot {
+    current: State.mode(Mode.active(42)),
+    history: [Mode.idle, Mode.active(7)],
+  };
+  stdio.printf("state=%d history=%d\n", activeValue(snapshot.current), modeValue(snapshot.history[1]));
+  return 0;
+}
