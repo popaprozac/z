@@ -11,6 +11,7 @@ import type {
   TypeReference,
 } from "./ast.ts";
 import { DiagnosticError } from "./diagnostics.ts";
+import { fixedArrayTypeName } from "./array-types.ts";
 import type { Token, TokenKind } from "./lexer.ts";
 
 export function parse(tokens: Token[], fileName: string): Program {
@@ -33,9 +34,20 @@ export function parse(tokens: Token[], fileName: string): Program {
 
   const parseType = (): TypeReference => {
     const token = expect("identifier", "a type name");
-    if (!match("dot")) return { name: token.text, location: token.location };
-    const member = expect("identifier", "an imported type name");
-    return { name: `${token.text}.${member.text}`, location: token.location };
+    let name = token.text;
+    if (match("dot")) {
+      const member = expect("identifier", "an imported type name");
+      name = `${name}.${member.text}`;
+    }
+    while (match("leftBracket")) {
+      const length = expect("number", "a fixed array length");
+      if (!/^[0-9]+$/.test(length.text) || Number(length.text) < 1) {
+        throw new DiagnosticError(fileName, length.location, "a fixed array length must be a positive integer");
+      }
+      expect("rightBracket", "`]`");
+      name = fixedArrayTypeName(name, Number(length.text));
+    }
+    return { name, location: token.location };
   };
 
   const parseImport = (): ImportDeclaration => {
@@ -118,6 +130,15 @@ export function parse(tokens: Token[], fileName: string): Program {
   let parseStatement: () => Statement;
 
   const parsePrimary = (): Expression => {
+    if (match("leftBracket")) {
+      const token = previous();
+      const elements: Expression[] = [];
+      if (!at("rightBracket")) {
+        do elements.push(parseExpression()); while (match("comma") && !at("rightBracket"));
+      }
+      expect("rightBracket", "`]`");
+      return { kind: "arrayExpression", elements, location: token.location };
+    }
     if (match("out") || match("inout")) {
       const token = previous();
       const name = expect("identifier", "a mutable binding");
@@ -251,6 +272,13 @@ export function parse(tokens: Token[], fileName: string): Program {
         expression = { kind: "call", callee: expression, arguments: args, argumentLabels, location: callLocation };
         continue;
       }
+      if (match("leftBracket")) {
+        const location = previous().location;
+        const index = parseExpression();
+        expect("rightBracket", "`]`");
+        expression = { kind: "index", object: expression, index, location };
+        continue;
+      }
       return expression;
     }
   };
@@ -380,7 +408,7 @@ export function parse(tokens: Token[], fileName: string): Program {
     }
     const expression = parseExpression();
     if (match("equal")) {
-      if (expression.kind !== "identifier" && expression.kind !== "member") {
+      if (expression.kind !== "identifier" && expression.kind !== "member" && expression.kind !== "index") {
         throw new DiagnosticError(fileName, expression.location, "assignment target must be a mutable binding or one of its fields");
       }
       const value = parseExpression();

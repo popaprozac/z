@@ -11,6 +11,7 @@ import type {
 } from "./ast.ts";
 import { DiagnosticError } from "./diagnostics.ts";
 import { resultTypeName } from "./results.ts";
+import { displayArrayType, fixedArrayTypeName, parseFixedArrayType } from "./array-types.ts";
 import {
   pointerTypeName,
   type ForeignConstant,
@@ -455,7 +456,9 @@ function validateStructLayouts(
     }
     visiting.add(declaration.name);
     for (const field of declaration.fields) {
-      const nested = structs.get(field.type.name);
+      let nestedName = field.type.name;
+      while (parseFixedArrayType(nestedName)) nestedName = parseFixedArrayType(nestedName)!.elementType;
+      const nested = structs.get(nestedName);
       if (nested?.kind === "struct") visit(nested);
     }
     visiting.delete(declaration.name);
@@ -638,11 +641,13 @@ function analyzeStatement(
         throw new DiagnosticError(fileName, statement.target.location, "assignment target must be local mutable storage");
       }
       const rootDeclaration = structs.get(underlyingType(stored));
-      const mutatesThroughClassReference = statement.target.kind === "member"
+      const mutatesThroughClassReference = statement.target.kind !== "identifier"
         && rootDeclaration?.kind === "class"
         && (!isBorrowedBinding(stored) || isMutableBinding(stored));
       if (!isMutableBinding(stored) && !mutatesThroughClassReference) {
-        const action = statement.target.kind === "identifier" ? "assign to" : "mutate a field through";
+        const action = statement.target.kind === "identifier"
+          ? "assign to"
+          : statement.target.kind === "member" ? "mutate a field through" : "mutate an indexed element through";
         throw new DiagnosticError(fileName, statement.target.location, `cannot ${action} immutable binding ${JSON.stringify(root.name)}`);
       }
       const expected = statement.target.kind === "identifier"
@@ -1111,6 +1116,45 @@ function inferExpressionInner(
       if (foreignDeclaration?.kind === "record") state.foreignExpressionTypes.set(expression.location.offset, expression.typeName);
       return expression.typeName;
     }
+    case "arrayExpression": {
+      if (expression.elements.length === 0) {
+        throw new DiagnosticError(fileName, expression.location, "cannot infer an empty fixed array; provide at least one element");
+      }
+      const elementType = inferExpression(expression.elements[0], locals, globals, structs, enums, fileName, state);
+      if (elementType === "unknown" || elementType === "never" || elementType === "null") {
+        throw new DiagnosticError(fileName, expression.elements[0].location, "cannot infer a fixed array element type from this expression");
+      }
+      consumeOwnedValue(expression.elements[0], elementType, locals, structs, fileName, state);
+      for (const element of expression.elements.slice(1)) {
+        const actual = inferExpression(element, locals, globals, structs, enums, fileName, state);
+        requireAssignable(elementType, actual, element, fileName, state.foreignNamedTypes, state.numericLiteralTypes);
+        consumeOwnedValue(element, elementType, locals, structs, fileName, state);
+      }
+      return fixedArrayTypeName(String(elementType), expression.elements.length);
+    }
+    case "index": {
+      const ownerType = inferExpression(expression.object, locals, globals, structs, enums, fileName, state);
+      const array = parseFixedArrayType(String(ownerType));
+      if (!array) throw new DiagnosticError(fileName, expression.object.location, `indexing requires a fixed array, found ${ownerType}`);
+      if (hasCleanupType(ownerType, structs, state.foreignTypes) && !isNamedStorageExpression(expression.object)) {
+        throw new DiagnosticError(fileName, expression.object.location, "a cleanup-bearing array temporary must be bound before indexing");
+      }
+      const indexType = inferExpression(expression.index, locals, globals, structs, enums, fileName, state);
+      if (!isIntegerType(canonicalType(indexType, state.foreignNamedTypes))) {
+        throw new DiagnosticError(fileName, expression.index.location, `array index must be an integer, found ${indexType}`);
+      }
+      if (expression.index.kind === "number" && /^[0-9]+$/.test(expression.index.value)) {
+        const index = BigInt(expression.index.value);
+        if (index >= BigInt(array.length)) {
+          throw new DiagnosticError(
+            fileName,
+            expression.index.location,
+            `array index ${expression.index.value} is out of bounds for length ${array.length}`,
+          );
+        }
+      }
+      return array.elementType;
+    }
     case "variantExpression": {
       const declaration = enums.get(expression.enumName);
       const variant = declaration?.variants.find((candidate) => candidate.name === expression.variantName);
@@ -1160,6 +1204,16 @@ function inferExpressionInner(
         }
       }
       const receiverType = inferExpression(expression.object, locals, globals, structs, enums, fileName, state);
+      const array = parseFixedArrayType(String(receiverType));
+      if (array) {
+        if (hasCleanupType(receiverType, structs, state.foreignTypes) && !isNamedStorageExpression(expression.object)) {
+          throw new DiagnosticError(fileName, expression.object.location, "a cleanup-bearing array temporary must be bound before reading its length");
+        }
+        if (expression.property !== "length") {
+          throw new DiagnosticError(fileName, expression.location, `fixed array has no member ${JSON.stringify(expression.property)}`);
+        }
+        return "usize";
+      }
       const objcReceiverType = objcReceiver(receiverType, state);
       if (objcReceiverType) {
         const property = findObjCProperty(objcReceiverType, expression.property, state);
@@ -1529,6 +1583,13 @@ function validateDeinitExpression(expression: Expression, fileName: string): voi
     for (const argument of expression.arguments) validateDeinitExpression(argument, fileName);
   }
   if (expression.kind === "member") validateDeinitExpression(expression.object, fileName);
+  if (expression.kind === "index") {
+    validateDeinitExpression(expression.object, fileName);
+    validateDeinitExpression(expression.index, fileName);
+  }
+  if (expression.kind === "arrayExpression") {
+    for (const element of expression.elements) validateDeinitExpression(element, fileName);
+  }
   if (expression.kind === "structExpression") {
     for (const field of expression.fields) validateDeinitExpression(field.expression, fileName);
   }
@@ -1553,13 +1614,13 @@ function consumeOwnedValue(
   if (!hasCleanupType(type, structs, state.foreignTypes)) return;
   const declaration = structs.get(underlyingType(type));
   if (declaration?.kind === "class") {
-    if (expression.kind === "identifier" || expression.kind === "member") {
+    if (expression.kind === "identifier" || expression.kind === "member" || expression.kind === "index") {
       state.classCopies.add(expression.location.offset);
     }
     return;
   }
-  if (expression.kind === "member") {
-    throw new DiagnosticError(fileName, expression.location, "moving a cleanup-bearing field out of its owner is not implemented yet");
+  if (expression.kind === "member" || expression.kind === "index") {
+    throw new DiagnosticError(fileName, expression.location, "moving a cleanup-bearing element out of its owner is not implemented yet");
   }
   if (expression.kind !== "identifier") return;
   const stored = locals.get(expression.name);
@@ -1594,12 +1655,12 @@ function rejectForeignOwnedMove(
 
 function isNamedStorageExpression(expression: Expression): boolean {
   if (expression.kind === "identifier") return true;
-  return expression.kind === "member" && isNamedStorageExpression(expression.object);
+  return (expression.kind === "member" || expression.kind === "index") && isNamedStorageExpression(expression.object);
 }
 
 function storageRoot(expression: Expression): Extract<Expression, { kind: "identifier" }> | null {
   let current: Expression = expression;
-  while (current.kind === "member") current = current.object;
+  while (current.kind === "member" || current.kind === "index") current = current.object;
   return current.kind === "identifier" ? current : null;
 }
 
@@ -1854,6 +1915,8 @@ function hasCleanupType(
   if (actual === "unknown" || actual === "never" || visiting.has(actual)) return false;
   if (foreignTypes.get(actual)?.ownership === "owned") return true;
   const declaration = structs.get(actual);
+  const array = parseFixedArrayType(actual);
+  if (array) return hasCleanupType(array.elementType, structs, foreignTypes, visiting);
   if (!declaration) return false;
   if (declaration.kind === "class") return true;
   if (declaration.deinitializer) return true;
@@ -2241,7 +2304,7 @@ function describePointer(type: ForeignPointerType): string {
 
 function describeValueType(type: ValueType, state: AnalysisState): string {
   const pointer = foreignPointer(type, state);
-  return pointer ? describePointer(pointer) : String(underlyingType(type));
+  return pointer ? describePointer(pointer) : displayArrayType(String(underlyingType(type)));
 }
 
 function validateType(
@@ -2252,6 +2315,11 @@ function validateType(
   fileName: string,
   allowVoid: boolean,
 ): void {
+  const array = parseFixedArrayType(type.name);
+  if (array) {
+    validateType({ name: array.elementType, location: type.location }, structs, enums, foreignNamedTypes, fileName, false);
+    return;
+  }
   if (!primitiveTypes.has(type.name) && !structs.has(type.name) && !enums.has(type.name) && !foreignNamedTypes.has(type.name)) {
     throw new DiagnosticError(fileName, type.location, `unknown type ${JSON.stringify(type.name)}`);
   }
@@ -2282,7 +2350,11 @@ function requireAssignable(
     && expectedType !== canonicalType(actual, foreignNamedTypes)
     && !sameForeignNamedType(expected, actual, foreignNamedTypes)
   ) {
-    throw new DiagnosticError(fileName, expression.location, `expected ${expected}, found ${actual}`);
+    throw new DiagnosticError(
+      fileName,
+      expression.location,
+      `expected ${displayArrayType(String(expected))}, found ${displayArrayType(String(actual))}`,
+    );
   }
 }
 

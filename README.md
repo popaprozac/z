@@ -6,7 +6,7 @@ interop with C-family platform APIs.
 
 The bootstrap compiler currently implements a deliberately small vertical
 slice: imports, functions, local bindings, primitive expressions, value structs,
-ARC reference classes, statically checked traits, tagged enums, exhaustive
+ARC reference classes, statically checked traits, fixed arrays, tagged enums, exhaustive
 statement and expression matches, typed errors, deterministic cleanup, name
 resolution, static checking, and readable native-source emission. Header
 imports use Clang's AST to type-check
@@ -284,6 +284,24 @@ on one iteration and potentially using it on the next is therefore rejected.
 `for...of` remains deferred until Z has collections and an iteration trait worth
 making part of the language contract.
 
+Fixed arrays are inline values with compile-time length, TypeScript-adjacent
+element syntax, and bounds-checked indexing:
+
+```z
+let values: i32[4] = [10, 20, 30, 40];
+values[2] = 42;
+const count: usize = values.length;
+```
+
+The length is part of the type, so `i32[3]` and `i32[4]` are distinct. Arrays
+copy or move according to their element ownership, may be nested or stored in
+structs, and clean up owned elements in reverse order. Safe indexing traps on an
+out-of-range index. Empty literals need later contextual literal inference.
+
+`T[N]` intentionally means only a fixed inline array. Growable `Array<T>` and
+borrowed `Slice<T>` remain separate future abstractions, keeping allocation and
+borrowing visible rather than overloading `T[]` prematurely.
+
 Owned structs can define an infallible compiler-controlled lifecycle hook:
 
 ```z
@@ -381,6 +399,7 @@ bun run z run examples/nswindow.z # macOS: opens a window and enters AppKit's ev
 bun run z run examples/structs.z
 bun run z run examples/classes.z
 bun run z run examples/loops.z
+bun run z run examples/arrays.z
 bun run z run examples/match.z
 bun run z run examples/match-expression.z
 bun run z run examples/mutation.z

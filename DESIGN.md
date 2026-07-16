@@ -179,6 +179,29 @@ TypeScript-style `for (const value of collection)`, but its exact semantics must
 follow Z's collection, iterator, borrowing, mutation, and async-iteration traits
 rather than precede them.
 
+## Arrays and views
+
+`T[N]` is a fixed-size inline value whose length participates in its type. Array
+literals use `[a, b, c]`, indexing uses `values[index]`, and `.length` produces
+`usize`. A `let` array permits element replacement; a `const` array is immutable
+through its elements. Nested arrays and arrays inside structs retain value
+semantics.
+
+Safe indexing performs a bounds check and traps on failure. A future explicitly
+unsafe indexing operation may remove that check when the programmer assumes the
+proof obligation. Ordinary optimization should eliminate checks proven
+redundant by loop and range analysis.
+
+Cleanup-bearing arrays own every initialized element and destroy them in reverse
+index order. Moving an individual cleanup-bearing element out is initially
+rejected because it would create partially initialized storage; whole arrays
+follow ordinary move rules.
+
+The language reserves `Array<T>` for a growable owned buffer and `Slice<T>` for
+a non-owning contiguous view. Their allocation, capacity, lifetime, covariance,
+and mutation contracts will be designed alongside generics and borrowing.
+`T[]` remains unassigned until those contracts are proven in real APIs.
+
 ## Numeric types
 
 Z names exact signed and unsigned integer widths as `i8`, `u8`, `i16`, `u16`,
@@ -482,6 +505,7 @@ Clang declaration source locations rather than text-searching SDK headers.
 - typed `throws`, `try`, and `attempt`;
 - cleanup lowering across every exit path.
 - cleanup-aware `while`, `break`, and `continue` with loop ownership analysis.
+- fixed arrays with checked indexing and deterministic element cleanup.
 
 ### 0.25: Portable object model
 

@@ -9,6 +9,7 @@ import type {
   ForeignType,
 } from "./foreign.ts";
 import { lex } from "./lexer.ts";
+import { displayArrayType, parseFixedArrayType } from "./array-types.ts";
 
 export type Position = { readonly line: number; readonly character: number };
 export type Range = { readonly start: Position; readonly end: Position };
@@ -223,6 +224,9 @@ export function hover(source: string, fileName: string, offset: number): Hover |
       const method = resolved.declaration.methods.find((item) => item.name === word.text);
       if (method) return markdownHover(zFunctionDetail(method.name, method.parameters, method.returnType.name), source, word.start, word.end);
     }
+    if (resolved?.kind === "array" && word.text === "length") {
+      return markdownHover(`length: usize  // ${displayType(resolved.type)}`, source, word.start, word.end);
+    }
   }
 
   const type = context.semanticInfo.bindingTypes.get(word.start)
@@ -392,6 +396,9 @@ function memberCompletions(
   const resolved = resolveReceiver(context, receiverText, receiverOffset);
   if (resolved?.kind === "objc") return filterCompletions(objcCompletions(resolved.declaration, resolved.instance, context), prefix, 1000);
   if (resolved?.kind === "struct") return filterCompletions(structCompletions(resolved.declaration), prefix, 1000);
+  if (resolved?.kind === "array") {
+    return filterCompletions([{ label: "length", kind: completionKinds.property, detail: "usize" }], prefix, 1000);
+  }
   return [];
 }
 
@@ -444,7 +451,8 @@ function safeAnalysis(source: string, fileName: string): AnalyzedSource | null {
 type ResolvedReceiver =
   | { readonly kind: "module"; readonly module: ForeignModule }
   | { readonly kind: "objc"; readonly declaration: ForeignObjCInterface; readonly instance: boolean }
-  | { readonly kind: "struct"; readonly declaration: StructDeclaration };
+  | { readonly kind: "struct"; readonly declaration: StructDeclaration }
+  | { readonly kind: "array"; readonly type: string };
 
 function resolveReceiver(context: AnalyzedSource, text: string, offset: number): ResolvedReceiver | null {
   const module = context.foreignModules.get(text);
@@ -456,6 +464,7 @@ function resolveReceiver(context: AnalyzedSource, text: string, offset: number):
   }
   const type = context.semanticInfo.expressionTypes.get(offset);
   if (!type) return null;
+  if (parseFixedArrayType(type)) return { kind: "array", type };
   const interfaceName = type.replace(/^__z_objc:(?:nullable|nonnull):/, "");
   const objc = context.semanticInfo.foreignInterfaces.get(interfaceName);
   if (objc) return { kind: "objc", declaration: objc, instance: true };
@@ -616,7 +625,7 @@ function objectiveCSelectorAt(context: AnalyzedSource, memberOffset: number): st
 }
 
 function zFunctionDetail(name: string, parameters: readonly { readonly name: string; readonly type: { readonly name: string } }[], returnType: string): string {
-  return `function ${name}(${parameters.map((item) => `${item.name}: ${item.type.name}`).join(", ")}): ${returnType}`;
+  return `function ${name}(${parameters.map((item) => `${item.name}: ${displayType(item.type.name)}`).join(", ")}): ${displayType(returnType)}`;
 }
 
 function foreignTypeName(type: ForeignType): string {
@@ -628,6 +637,8 @@ function foreignTypeName(type: ForeignType): string {
 }
 
 function displayType(type: string): string {
+  const array = parseFixedArrayType(type);
+  if (array) return displayArrayType(type);
   return type.replace(/^__z_objc:(?:nullable|nonnull):/, "");
 }
 

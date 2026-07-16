@@ -118,7 +118,7 @@ export type VariableStatement = {
 
 export type AssignmentStatement = {
   readonly kind: "assignment";
-  readonly target: IdentifierExpression | MemberExpression;
+  readonly target: IdentifierExpression | MemberExpression | IndexExpression;
   readonly expression: Expression;
   readonly location: SourceLocation;
 };
@@ -202,6 +202,8 @@ export type Expression =
   | BinaryExpression
   | CallExpression
   | MemberExpression
+  | IndexExpression
+  | ArrayExpression
   | StructExpression
   | VariantExpression
   | AttemptExpression
@@ -265,6 +267,19 @@ export type MemberExpression = {
   readonly kind: "member";
   readonly object: Expression;
   readonly property: string;
+  readonly location: SourceLocation;
+};
+
+export type IndexExpression = {
+  readonly kind: "index";
+  readonly object: Expression;
+  readonly index: Expression;
+  readonly location: SourceLocation;
+};
+
+export type ArrayExpression = {
+  readonly kind: "arrayExpression";
+  readonly elements: Expression[];
   readonly location: SourceLocation;
 };
 

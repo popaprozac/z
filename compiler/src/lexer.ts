@@ -39,6 +39,8 @@ export type TokenKind =
   | "rightParen"
   | "leftBrace"
   | "rightBrace"
+  | "leftBracket"
+  | "rightBracket"
   | "colon"
   | "comma"
   | "semicolon"
@@ -205,6 +207,8 @@ export function lex(source: string, fileName: string): Token[] {
       ")": "rightParen",
       "{": "leftBrace",
       "}": "rightBrace",
+      "[": "leftBracket",
+      "]": "rightBracket",
       ":": "colon",
       ",": "comma",
       ";": "semicolon",

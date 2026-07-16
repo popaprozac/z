@@ -1024,6 +1024,111 @@ test("keeps loop-local bindings visible to editor services", () => {
   assert.equal(items.find((item) => item.label === "inside")?.detail, "const inside: i32");
 });
 
+test("runs fixed arrays with checked indexing and reverse element cleanup", () => {
+  const example = resolve(projectRoot, "examples/arrays.z");
+  const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, "length=4 sum=112\nmiddle=2\ndrop=3\ndrop=2\ndrop=1\n");
+
+  const generated = compileToC(readFileSync(example, "utf8"), example);
+  assert.match(generated, /if \(index >= length\) abort\(\);/);
+  assert.match(generated, /data\[z_bounds_index\(\(uintptr_t\)\(2\), 4\)\]\) = 42/);
+  assert.match(generated, /for \(uintptr_t _z_cleanup_index_\d+ = 3;[\s\S]*Z_Item_deinit/);
+});
+
+test("checks fixed array types, indices, and mutability", () => {
+  const immutable = `
+    function main(): i32 {
+      const values = [1, 2, 3];
+      values[0] = 4;
+      return 0;
+    }
+  `;
+  assert.throws(
+    () => compileToC(immutable, "array-immutable.z"),
+    /cannot mutate an indexed element through immutable binding "values"/,
+  );
+
+  const wrongLength = `
+    function main(): i32 {
+      const values: i32[3] = [1, 2];
+      return 0;
+    }
+  `;
+  assert.throws(() => compileToC(wrongLength, "array-length.z"), /expected i32\[3\], found i32\[2\]/);
+
+  const wrongIndex = `
+    function main(): i32 {
+      const values = [1, 2];
+      return values[1.5];
+    }
+  `;
+  assert.throws(() => compileToC(wrongIndex, "array-index.z"), /array index must be an integer, found f64/);
+
+  const staticBounds = wrongIndex.replace("1.5", "2");
+  assert.throws(
+    () => compileToC(staticBounds, "array-static-bounds.z"),
+    /array index 2 is out of bounds for length 2/,
+  );
+
+  const empty = `function main(): i32 { const values = []; return 0; }`;
+  assert.throws(() => compileToC(empty, "array-empty.z"), /cannot infer an empty fixed array/);
+});
+
+test("supports nested fixed arrays and arrays inside value structs", () => {
+  const source = `
+    struct Matrix { rows: i32[2][2]; }
+    function main(): i32 {
+      let matrix = Matrix { rows: [[1, 2], [3, 4]] };
+      matrix.rows[1][0] = 20;
+      return matrix.rows[1][0] + matrix.rows[0][1];
+    }
+  `;
+  const generated = compileToC(source, "nested-arrays.z");
+  assert.match(generated, /data\[2\]/);
+  assert.match(generated, /struct Z_Matrix/);
+  assert.match(generated, /z_bounds_index/);
+
+  const recursive = `
+    struct Node { children: Node[1]; }
+    function main(): i32 { return 0; }
+  `;
+  assert.throws(() => compileToC(recursive, "recursive-array-layout.z"), /recursive value layout/);
+});
+
+test("does not move cleanup-bearing elements out of fixed arrays", () => {
+  const source = `
+    struct Item { value: i32; deinit {} }
+    function consume(item: Item): void {}
+    function main(): i32 {
+      let items = [Item { value: 1 }, Item { value: 2 }];
+      consume(items[0]);
+      return 0;
+    }
+  `;
+  assert.throws(
+    () => compileToC(source, "array-element-move.z"),
+    /moving a cleanup-bearing element out of its owner is not implemented yet/,
+  );
+});
+
+test("exposes fixed array length and readable types to editor services", () => {
+  const source = `
+    function main(): i32 {
+      const values = [1, 2, 3];
+      values.;
+      return 0;
+    }
+  `;
+  const offset = source.indexOf("values.;") + "values.".length;
+  const items = completions(source, "array-editor.z", offset);
+  assert.equal(items.find((item) => item.label === "length")?.detail, "usize");
+
+  const valid = source.replace("      values.;\n", "      const count = values.length;\n");
+  const valuesDeclaration = valid.indexOf("values =");
+  assert.match(hover(valid, "array-editor.z", valuesDeclaration + 1)?.contents.value ?? "", /values: i32\[3\]/);
+});
+
 test("checks logical operand types", () => {
   const source = `
     function main(): i32 {
