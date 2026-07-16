@@ -562,7 +562,7 @@ bun run z run examples/selective-import.z
 bun run z run examples/selective-declarations.z
 bun run z run examples/apple-groundwork.z
 bun run z run examples/cpp-interop.z
-./examples/swift-interop/run.sh
+bun run z run examples/swift-interop/main.z
 bun run z run examples/nswindow.z # macOS: opens a window and enters AppKit's event loop
 bun run z run examples/structs.z
 bun run z run examples/classes.z
@@ -641,18 +641,36 @@ separate goal: import Swift modules/interfaces and Swift Package products so Z
 can reach Swift-only Apple APIs, value types, protocols, generics, errors, and
 concurrency without inventing or guessing the Swift ABI.
 
-The compiler now recognizes a conventional local `Module-Swift.h` as
+The compiler recognizes a conventional local `Module-Swift.h` as
 Objective-C, imports its classes, methods, initializers, and properties, and
 selects Objective-C ARC output. The integration suite generates a real header
 and dylib with `swiftc`, links the Z-produced object against it, and executes the
-result. Z does not yet build the Swift target or infer its library link plan;
-that belongs to upcoming package/build integration rather than being hidden
-inside header import.
+result. A nearby `z.json` can now declare one Swift module, its sources, and
+required frameworks; the compiler and language server share its generated
+include path, while `z run` links the produced dylib automatically.
+
+```json
+{
+  "target": {
+    "entry": "main.z",
+    "swift": {
+      "module": "ZSwiftExample",
+      "sources": ["Counter.swift"],
+      "frameworks": ["Foundation"]
+    }
+  }
+}
+```
+
+Paths are relative to `z.json`. Generated headers, modules, and dylibs stay in a
+local `.z-cache`; they are rebuilt when the manifest or a Swift source changes.
+The manifest slice intentionally supports one Swift module while its build and
+link semantics are validated through real projects.
 
 The runnable example is in [`examples/swift-interop`](examples/swift-interop):
 
 ```sh
-./examples/swift-interop/run.sh
+bun run z run examples/swift-interop/main.z
 ```
 
 ```z

@@ -1,0 +1,10 @@
+{
+  "target": {
+    "entry": "main.z",
+    "swift": {
+      "module": "ZSwiftExample",
+      "sources": ["Counter.swift"],
+      "frameworks": ["Foundation"]
+    }
+  }
+}

@@ -514,9 +514,14 @@ Objective-C ARC backend. The bootstrap has an end-to-end fixture in which
 `swiftc` builds a Swift dylib and generated header, Z imports its class,
 initializer, method, and property, and the native executable links and runs.
 This tier intentionally sees only declarations representable to Objective-C.
-Discovering and building Swift modules or packages and carrying their libraries
-into Z's link plan remain package/build-system work, separate from native Swift
-module import.
+A nearby `z.json` may declare one Swift module, its sources, and required Apple
+frameworks. Compiler and language-server analysis share the cached generated
+header directory, and native runs link the produced dylib automatically. This
+is the first build-manifest slice; dependency resolution and general Swift
+Package integration remain separate from native Swift module import.
+Manifest paths are relative to `z.json`, generated products live in a local
+ignored `.z-cache`, and manifest or Swift-source modification times invalidate
+both the Swift build and imported Clang metadata.
 
 Clang supplies ABI identity and signatures but cannot generally say whether a C
 pointer is nullable, borrowed, transferred, retained, or consumed. Z therefore
@@ -591,8 +596,8 @@ Interop work proceeds in layers:
    followed by RAII, overloads, methods, and selected templates.
 6. Callback-to-async synthesis.
 7. Swift-authored Objective-C compatibility-header import through the existing
-   Objective-C path (generated-header compiler/runtime probe implemented;
-   package build and link-plan integration remains).
+   Objective-C path (generated-header compiler/runtime probe and initial
+   `z.json` Swift build/link plan implemented).
 8. Native Swift module/interface and Swift Package import for Swift-only APIs,
    value types, protocols, generics, errors, and concurrency.
 

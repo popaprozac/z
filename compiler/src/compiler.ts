@@ -9,6 +9,7 @@ import { resolveForeignModules } from "./foreign.ts";
 import type { Program } from "./ast.ts";
 import type { ForeignModule } from "./foreign.ts";
 import type { SemanticInfo } from "./sema.ts";
+import { prepareProject, type ProjectBuild } from "./project.ts";
 
 export type NativeLanguage = "c" | "objective-c" | "c++" | "objective-c++";
 
@@ -16,6 +17,8 @@ export type NativeArtifact = {
   readonly source: string;
   readonly language: NativeLanguage;
   readonly frameworks: readonly string[];
+  readonly includeDirectories: readonly string[];
+  readonly nativeLibraries: readonly string[];
 };
 
 export type AnalyzedSource = {
@@ -24,12 +27,14 @@ export type AnalyzedSource = {
   readonly foreignModules: ReadonlyMap<string, ForeignModule>;
   readonly semanticInfo: SemanticInfo;
   readonly typeDisplayNames: ReadonlyMap<string, string>;
+  readonly projectBuild: ProjectBuild;
 };
 
 export function analyzeSource(source: string, fileName: string): AnalyzedSource {
   const tokens = lex(source, fileName);
   const sourceProgram = parse(tokens, fileName);
-  const foreignModules = resolveForeignModules(sourceProgram.imports, fileName);
+  const projectBuild = prepareProject(fileName);
+  const foreignModules = resolveForeignModules(sourceProgram.imports, fileName, projectBuild.includeDirectories);
   const typeDisplayNames = new Map<string, string>();
   const inferredProgram = inferGenericCalls(sourceProgram, fileName, foreignModules);
   const program = materializeResultTypes(materializeGenerics(inferredProgram, fileName, typeDisplayNames));
@@ -44,7 +49,7 @@ export function analyzeSource(source: string, fileName: string): AnalyzedSource 
     );
   }
   const semanticInfo = analyze(program, fileName, foreignModules);
-  return { sourceProgram, program, foreignModules, semanticInfo, typeDisplayNames };
+  return { sourceProgram, program, foreignModules, semanticInfo, typeDisplayNames, projectBuild };
 }
 
 export function compileToC(source: string, fileName: string): string {
@@ -52,13 +57,15 @@ export function compileToC(source: string, fileName: string): string {
 }
 
 export function compileToNative(source: string, fileName: string): NativeArtifact {
-  const { program, semanticInfo } = analyzeSource(source, fileName);
+  const { program, semanticInfo, projectBuild } = analyzeSource(source, fileName);
   return {
     source: generateC(program, fileName, semanticInfo),
     language: semanticInfo.objectiveC
       ? semanticInfo.cPlusPlus ? "objective-c++" : "objective-c"
       : semanticInfo.cPlusPlus ? "c++" : "c",
-    frameworks: semanticInfo.frameworks,
+    frameworks: [...new Set([...semanticInfo.frameworks, ...projectBuild.frameworks])],
+    includeDirectories: projectBuild.includeDirectories,
+    nativeLibraries: projectBuild.nativeLibraries,
   };
 }
 

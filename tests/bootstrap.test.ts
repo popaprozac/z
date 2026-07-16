@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { resolve } from "node:path";
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { test } from "bun:test";
 import { compileToC, compileToNative } from "../compiler/src/compiler.ts";
 import { DiagnosticError, formatDiagnostic } from "../compiler/src/diagnostics.ts";
@@ -456,6 +456,40 @@ test("imports and executes Swift through its generated Objective-C compatibility
   assert.equal(completions(completionSource, zSource, completionOffset).find((item) => item.label === "add")?.kind, 2);
   const propertyOffset = source.lastIndexOf("value") + 1;
   assert.match(hover(source, zSource, propertyOffset)?.contents.value ?? "", /value: i32/);
+});
+
+test("builds a declared Swift target for ordinary CLI and editor workflows", () => {
+  if (process.platform !== "darwin") return;
+  const example = resolve(projectRoot, "examples/swift-interop/main.z");
+  const source = readFileSync(example, "utf8");
+  const artifact = compileToNative(source, example);
+  assert.equal(artifact.language, "objective-c");
+  assert.deepEqual(artifact.frameworks, ["Foundation"]);
+  assert.equal(artifact.includeDirectories.length, 1);
+  assert.match(artifact.includeDirectories[0], /\.z-cache\/swift\/ZSwiftExample$/);
+  assert.equal(artifact.nativeLibraries.length, 1);
+  assert.match(artifact.nativeLibraries[0], /libZSwiftExample\.dylib$/);
+  assert.deepEqual(diagnostics(source, example), []);
+
+  const generatedHeader = resolve(artifact.includeDirectories[0], "ZSwiftExample-Swift.h");
+  const headerMtime = statSync(generatedHeader).mtimeMs;
+  const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, "swift=42, value=42\n");
+  assert.equal(statSync(generatedHeader).mtimeMs, headerMtime);
+  const addOffset = source.indexOf("add(1)") + 1;
+  assert.match(hover(source, example, addOffset)?.contents.value ?? "", /add\(amount: i32\): i32/);
+
+  const invalidDirectory = mkdtempSync("/tmp/z-invalid-project-");
+  const invalidSource = resolve(invalidDirectory, "main.z");
+  writeFileSync(invalidSource, "function main(): i32 { return 0; }");
+  writeFileSync(resolve(invalidDirectory, "z.json"), JSON.stringify({
+    target: { entry: "main.z", swift: { module: "not-valid!", sources: ["Counter.swift"] } },
+  }));
+  assert.throws(
+    () => compileToNative(readFileSync(invalidSource, "utf8"), invalidSource),
+    /target\.swift\.module must be a valid module name/,
+  );
 });
 
 test("keeps labeled arguments reserved for Objective-C selectors", () => {
