@@ -12,6 +12,7 @@ import type {
 } from "./ast.ts";
 import { DiagnosticError } from "./diagnostics.ts";
 import { fixedArrayTypeName, sliceTypeName } from "./array-types.ts";
+import { genericTypeName } from "./generic-types.ts";
 import type { Token, TokenKind } from "./lexer.ts";
 
 export function parse(tokens: Token[], fileName: string): Program {
@@ -41,6 +42,13 @@ export function parse(tokens: Token[], fileName: string): Program {
     } else if (match("dot")) {
       const member = expect("identifier", "an imported type name");
       name = `${name}.${member.text}`;
+    }
+    if (at("less")) {
+      take();
+      const arguments_ = [];
+      do arguments_.push(parseType().name); while (match("comma"));
+      expect("greater", "`>`");
+      name = genericTypeName(name, arguments_);
     }
     while (match("leftBracket")) {
       const length = expect("number", "a fixed array length");
@@ -132,6 +140,18 @@ export function parse(tokens: Token[], fileName: string): Program {
 
   let parseStatement: () => Statement;
 
+  const parseTypeParameters = (): string[] => {
+    if (!match("less")) return [];
+    const names = [];
+    do {
+      const parameter = expect("identifier", "a type parameter name");
+      if (names.includes(parameter.text)) throw new DiagnosticError(fileName, parameter.location, `duplicate type parameter ${JSON.stringify(parameter.text)}`);
+      names.push(parameter.text);
+    } while (match("comma"));
+    expect("greater", "`>`");
+    return names;
+  };
+
   const parsePrimary = (): Expression => {
     if (match("leftBracket")) {
       const token = previous();
@@ -182,6 +202,20 @@ export function parse(tokens: Token[], fileName: string): Program {
     }
     if (match("identifier")) {
       const token = previous();
+      let identifierName = token.text;
+      if (at("less")) {
+        const checkpoint = current;
+        try {
+          take();
+          const arguments_ = [];
+          do arguments_.push(parseType().name); while (match("comma"));
+          expect("greater", "`>`");
+          if (!at("leftParen") && !at("leftBrace")) current = checkpoint;
+          else identifierName = genericTypeName(token.text, arguments_);
+        } catch {
+          current = checkpoint;
+        }
+      }
       const beginsForeignStructLiteral = at("dot")
         && tokens[current + 1]?.kind === "identifier"
         && tokens[current + 2]?.kind === "leftBrace"
@@ -225,7 +259,7 @@ export function parse(tokens: Token[], fileName: string): Program {
         expect("rightBrace", "`}`");
         return {
           kind: "structExpression",
-          typeName: token.text,
+          typeName: identifierName,
           fields,
           location: token.location,
         };
@@ -241,7 +275,7 @@ export function parse(tokens: Token[], fileName: string): Program {
           location: token.location,
         };
       }
-      return { kind: "identifier", name: token.text, location: token.location };
+      return { kind: "identifier", name: identifierName, location: token.location };
     }
     if (match("leftParen")) {
       const expression = parseExpression();
@@ -433,6 +467,7 @@ export function parse(tokens: Token[], fileName: string): Program {
   const parseFunction = (signatureOnly = false): FunctionDeclaration => {
     const start = expect("function", "`function`").location;
     const name = expect("identifier", "a function name").text;
+    const typeParameters = parseTypeParameters();
     expect("leftParen", "`(`");
     let receiverMode: FunctionDeclaration["receiverMode"] = null;
     if (
@@ -458,7 +493,7 @@ export function parse(tokens: Token[], fileName: string): Program {
       while (!at("rightBrace") && !at("eof")) body.push(parseStatement());
       expect("rightBrace", "`}`");
     }
-    return { kind: "function", name, receiverMode, parameters, returnType, errorType, body, location: start };
+    return { kind: "function", name, typeParameters, receiverMode, parameters, returnType, errorType, body, location: start };
   };
 
   const parseAggregate = (): StructDeclaration => {
@@ -466,6 +501,7 @@ export function parse(tokens: Token[], fileName: string): Program {
     const kind = declarationToken.kind as "struct" | "class";
     const start = declarationToken.location;
     const name = expect("identifier", `a ${kind} name`).text;
+    const typeParameters = parseTypeParameters();
     const implemented: TypeReference[] = [];
     if (match("implements")) {
       do implemented.push(parseType()); while (match("comma"));
@@ -494,7 +530,7 @@ export function parse(tokens: Token[], fileName: string): Program {
       expect("semicolon", "`;`");
     }
     expect("rightBrace", "`}`");
-    return { kind, name, implements: implemented, fields, methods, deinitializer, location: start };
+    return { kind, name, typeParameters, implements: implemented, fields, methods, deinitializer, location: start };
   };
 
   const parseTrait = (): TraitDeclaration => {

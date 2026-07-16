@@ -318,6 +318,23 @@ bindings. This non-escaping boundary provides lifetime inference without public
 lifetime annotations. Growable `Array<T>` remains future work, and `T[]` stays
 unassigned rather than hiding allocation or borrowing.
 
+User-defined generic structs, classes, and functions use TypeScript-style type
+parameters and explicit concrete arguments:
+
+```z
+struct Pair<T> { first: T; second: T; }
+function first<T>(pair: Pair<T>): T { return pair.first; }
+
+const pair = Pair<i32> { first: 20, second: 22 };
+const value = first<i32>(pair);
+```
+
+The compiler monomorphizes each concrete use before semantic analysis and C
+lowering. Generic values therefore follow the same copy, move, ARC, borrowing,
+and `deinit` rules as handwritten concrete code, with no runtime type metadata
+or dispatch cost. This first stage requires explicit type arguments; inference,
+constraints, generic traits, and separately generic methods remain upcoming.
+
 Owned structs can define an infallible compiler-controlled lifecycle hook:
 
 ```z
@@ -417,6 +434,7 @@ bun run z run examples/classes.z
 bun run z run examples/loops.z
 bun run z run examples/arrays.z
 bun run z run examples/slices.z
+bun run z run examples/generics.z
 bun run z run examples/match.z
 bun run z run examples/match-expression.z
 bun run z run examples/mutation.z

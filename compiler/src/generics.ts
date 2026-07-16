@@ -1,0 +1,96 @@
+import type { FunctionDeclaration, Program, StructDeclaration } from "./ast.ts";
+import { DiagnosticError } from "./diagnostics.ts";
+import { fixedArrayTypeName, parseFixedArrayType, parseSliceType, sliceTypeName } from "./array-types.ts";
+import { monomorphizedName, parseGenericType } from "./generic-types.ts";
+
+export function materializeGenerics(program: Program, fileName: string): Program {
+  const structTemplates = new Map(program.structs.filter((item) => item.typeParameters?.length).map((item) => [item.name, item]));
+  const functionTemplates = new Map(program.functions.filter((item) => item.typeParameters?.length).map((item) => [item.name, item]));
+  const structs: StructDeclaration[] = [];
+  const functions: FunctionDeclaration[] = [];
+  const structInstances = new Map<string, string>();
+  const functionInstances = new Map<string, string>();
+
+  const substituteName = (name: string, substitutions: Map<string, string>): string => {
+    if (substitutions.has(name)) return substitutions.get(name)!;
+    const array = parseFixedArrayType(name);
+    if (array) return fixedArrayTypeName(substituteName(array.elementType, substitutions), array.length);
+    const slice = parseSliceType(name);
+    if (slice) return sliceTypeName(substituteName(slice.elementType, substitutions));
+    const generic = parseGenericType(name);
+    if (!generic) return name;
+    const args = generic.arguments.map((argument) => substituteName(argument, substitutions));
+    return instantiateStruct(generic.base, args);
+  };
+
+  const transform = (value: any, substitutions: Map<string, string>): any => {
+    if (Array.isArray(value)) return value.map((item) => transform(item, substitutions));
+    if (!value || typeof value !== "object") return value;
+    if (value.kind === "call" && value.callee?.kind === "identifier") {
+      const generic = parseGenericType(value.callee.name);
+      const callee = generic
+        ? { ...value.callee, name: instantiateFunction(generic.base, generic.arguments.map((arg) => substituteName(arg, substitutions))) }
+        : transform(value.callee, substitutions);
+      return { ...value, callee, arguments: transform(value.arguments, substitutions) };
+    }
+    if (value.kind === "structExpression") {
+      return { ...transformObject(value, substitutions), typeName: substituteName(value.typeName, substitutions) };
+    }
+    const keys = Object.keys(value);
+    if (!value.kind && keys.length === 2 && keys.includes("name") && keys.includes("location")) {
+      return { ...value, name: substituteName(value.name, substitutions) };
+    }
+    return transformObject(value, substitutions);
+  };
+  const transformObject = (value: any, substitutions: Map<string, string>): any => Object.fromEntries(
+    Object.entries(value).map(([key, child]) => [key, transform(child, substitutions)]),
+  );
+
+  function instantiateStruct(base: string, args: string[]): string {
+    const template = structTemplates.get(base);
+    if (!template) return monomorphizedName(base, args);
+    if (args.length !== template.typeParameters!.length) {
+      throw new DiagnosticError(fileName, template.location, `${base} expects ${template.typeParameters!.length} type argument(s), received ${args.length}`);
+    }
+    const key = `${base}\0${args.join("\0")}`;
+    const existing = structInstances.get(key);
+    if (existing) return existing;
+    const name = monomorphizedName(base, args);
+    structInstances.set(key, name);
+    const substitutions = new Map(template.typeParameters!.map((parameter, index) => [parameter, args[index]]));
+    const concrete = transform({ ...template, name, typeParameters: [] }, substitutions) as StructDeclaration;
+    structs.push(concrete);
+    return name;
+  }
+
+  function instantiateFunction(base: string, args: string[]): string {
+    const template = functionTemplates.get(base);
+    if (!template) return monomorphizedName(base, args);
+    if (args.length !== template.typeParameters!.length) {
+      throw new DiagnosticError(fileName, template.location, `${base} expects ${template.typeParameters!.length} type argument(s), received ${args.length}`);
+    }
+    const key = `${base}\0${args.join("\0")}`;
+    const existing = functionInstances.get(key);
+    if (existing) return existing;
+    const name = monomorphizedName(base, args);
+    functionInstances.set(key, name);
+    const substitutions = new Map(template.typeParameters!.map((parameter, index) => [parameter, args[index]]));
+    const concrete = transform({ ...template, name, typeParameters: [] }, substitutions) as FunctionDeclaration;
+    functions.push(concrete);
+    return name;
+  }
+
+  for (const declaration of program.structs.filter((item) => !item.typeParameters?.length)) {
+    structs.push(transform(declaration, new Map()));
+  }
+  for (const declaration of program.functions.filter((item) => !item.typeParameters?.length)) {
+    functions.push(transform(declaration, new Map()));
+  }
+  return {
+    ...program,
+    structs,
+    functions,
+    enums: transform(program.enums, new Map()),
+    traits: transform(program.traits, new Map()),
+  };
+}

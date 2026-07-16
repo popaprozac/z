@@ -1230,6 +1230,77 @@ test("exposes Slice length and generic spelling to editor services", () => {
   assert.match(hover(valid, "slice-editor.z", declaration + 1)?.contents.value ?? "", /values: Slice<i32>/);
 });
 
+test("monomorphizes explicit generic structs and functions", () => {
+  const example = resolve(projectRoot, "examples/generics.z");
+  const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, "generic=42\n");
+  const generated = compileToC(readFileSync(example, "utf8"), example);
+  assert.match(generated, /struct Z___z_mono_Pair_i32/);
+  assert.match(generated, /__z_mono_first_i32/);
+  assert.doesNotMatch(generated, /\bT\b/);
+});
+
+test("creates distinct generic instances and preserves ownership semantics", () => {
+  const distinct = `
+    function identity<T>(value: T): T { return value; }
+    function main(): i32 {
+      const number = identity<i32>(42);
+      const flag = identity<bool>(true);
+      if (flag) { return number; }
+      return 0;
+    }
+  `;
+  const generated = compileToC(distinct, "generic-distinct.z");
+  assert.match(generated, /__z_mono_identity_i32/);
+  assert.match(generated, /__z_mono_identity_bool/);
+
+  const moved = `
+    struct Resource { id: i32; deinit {} }
+    function identity<T>(value: T): T { return value; }
+    function main(): i32 {
+      const resource = Resource { id: 1 };
+      const other = identity<Resource>(resource);
+      return resource.id + other.id;
+    }
+  `;
+  assert.throws(() => compileToC(moved, "generic-move.z"), /use of moved value "resource"/);
+});
+
+test("checks explicit generic arity and requires explicit instantiation", () => {
+  const wrongArity = `
+    struct Pair<T, U> { first: T; second: U; }
+    function main(): i32 { const pair = Pair<i32> { first: 1, second: 2 }; return 0; }
+  `;
+  assert.throws(() => compileToC(wrongArity, "generic-arity.z"), /Pair expects 2 type argument\(s\), received 1/);
+
+  const implicit = `
+    function identity<T>(value: T): T { return value; }
+    function main(): i32 { return identity(42); }
+  `;
+  assert.throws(() => compileToC(implicit, "generic-explicit.z"), /unknown function "identity"/);
+
+  const duplicate = `
+    struct Invalid<T, T> { value: T; }
+    function main(): i32 { return 0; }
+  `;
+  assert.throws(() => compileToC(duplicate, "generic-duplicate.z"), /duplicate type parameter "T"/);
+});
+
+test("exposes generic templates without leaking monomorphized names to editor completion", () => {
+  const source = `
+    struct Box<T> { value: T; }
+    function identity<T>(value: T): T { return value; }
+    function main(): i32 { const value = identity<i32>(1); ide; return value; }
+  `;
+  const offset = source.indexOf("ide;") + 3;
+  const items = completions(source, "generic-editor.z", offset);
+  assert.equal(items.find((item) => item.label === "identity")?.detail, "function identity<T>");
+  assert.equal(items.some((item) => item.label.startsWith("__z_mono_")), false);
+  const declaration = source.indexOf("identity<T>");
+  assert.match(hover(source.replace(" ide;", ""), "generic-editor.z", declaration + 1)?.contents.value ?? "", /function identity<T>/);
+});
+
 test("checks logical operand types", () => {
   const source = `
     function main(): i32 {

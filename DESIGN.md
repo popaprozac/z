@@ -216,6 +216,20 @@ Escaping slices, subslices, and returned views require an explicit inferred or
 declared lifetime contract informed by real APIs. `T[]` remains unassigned until
 those contracts are proven.
 
+## Generics
+
+Generic aggregates and functions use `Name<T>` declarations and explicit
+`Name<Concrete>` instantiation. The compiler monomorphizes every reachable
+concrete instance into an ordinary Z declaration before semantic analysis.
+Ownership, cleanup, ARC, layout, and ABI checking therefore operate on concrete
+types rather than a parallel erased-generic runtime.
+
+The initial implementation requires explicit type arguments and supports outer
+aggregate parameters inside fields and methods. Type inference, trait
+constraints, generic traits, separately generic methods, specialization policy,
+and cross-module instance ownership remain future layers. Generated instance
+names are backend details and do not form part of Z's source or ABI contract.
+
 ## Numeric types
 
 Z names exact signed and unsigned integer widths as `i8`, `u8`, `i16`, `u16`,
@@ -521,6 +535,7 @@ Clang declaration source locations rather than text-searching SDK headers.
 - cleanup-aware `while`, `break`, and `continue` with loop ownership analysis.
 - fixed arrays with checked indexing and deterministic element cleanup.
 - non-escaping `Slice<T>` parameters with shared and exclusive borrow checking.
+- explicitly instantiated generic aggregates/functions with C monomorphization.
 
 ### 0.25: Portable object model
 

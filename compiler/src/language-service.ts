@@ -122,6 +122,17 @@ export function semanticTokens(source: string, fileName: string): { readonly dat
       classifications.set(token.location.offset, { type: semanticTokenTypes.indexOf("namespace"), modifiers: 4 });
       continue;
     }
+    if (previous?.kind === "function") {
+      classifications.set(token.location.offset, { type: semanticTokenTypes.indexOf("function"), modifiers: 1 });
+      continue;
+    }
+    if (previous?.kind === "struct" || previous?.kind === "class") {
+      classifications.set(token.location.offset, {
+        type: semanticTokenTypes.indexOf(previous.kind === "class" ? "class" : "type"),
+        modifiers: 1,
+      });
+      continue;
+    }
     if (functionNames.has(token.text)) {
       classifications.set(token.location.offset, {
         type: semanticTokenTypes.indexOf("function"),
@@ -295,6 +306,7 @@ function symbolCompletions(source: string, fileName: string, offset: number): Co
     });
   }
   for (const declaration of context.program.functions) {
+    if (declaration.name.startsWith("__z_mono_")) continue;
     items.push({
       label: declaration.name,
       kind: completionKinds.function,
@@ -302,11 +314,16 @@ function symbolCompletions(source: string, fileName: string, offset: number): Co
     });
   }
   for (const declaration of context.program.structs) {
+    if (declaration.name.startsWith("__z_mono_")) continue;
     items.push({
       label: declaration.name,
       kind: declaration.kind === "class" ? completionKinds.class : completionKinds.struct,
       detail: `${declaration.kind} ${declaration.name}`,
     });
+  }
+  for (const match of source.matchAll(/\b(function|struct|class)\s+([A-Za-z_][A-Za-z0-9_]*)\s*<([^>]+)>/g)) {
+    const kind = match[1] === "function" ? completionKinds.function : match[1] === "class" ? completionKinds.class : completionKinds.struct;
+    items.push({ label: match[2], kind, detail: `${match[1]} ${match[2]}<${match[3].trim()}>` });
   }
   for (const declaration of context.program.traits) {
     items.push({ label: declaration.name, kind: completionKinds.interface, detail: `trait ${declaration.name}` });
@@ -601,6 +618,8 @@ function declarationHover(source: string, program: Program | null, name: string,
     const enumeration = program.enums.find((item) => item.name === name);
     if (enumeration) return markdownHover(`enum ${enumeration.name}`, source, start, end);
   }
+  const generic = new RegExp(`\\b(function|struct|class)\\s+${name}\\s*<([^>]+)>`).exec(source);
+  if (generic) return markdownHover(`${generic[1]} ${name}<${generic[2].trim()}>`, source, start, end);
   return null;
 }
 

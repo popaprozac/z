@@ -30,6 +30,7 @@ export type ImportBinding = {
 export type StructDeclaration = {
   readonly kind: "struct" | "class";
   readonly name: string;
+  readonly typeParameters?: string[];
   readonly implements: TypeReference[];
   readonly fields: FieldDeclaration[];
   readonly methods: FunctionDeclaration[];
@@ -72,6 +73,7 @@ export type EnumVariant = {
 export type FunctionDeclaration = {
   readonly kind: "function";
   readonly name: string;
+  readonly typeParameters?: string[];
   readonly receiverMode: "inout" | "move" | null;
   readonly parameters: Parameter[];
   readonly returnType: TypeReference;
