@@ -3,13 +3,28 @@ import { DiagnosticError } from "./diagnostics.ts";
 import { fixedArrayTypeName, parseFixedArrayType, parseSliceType, sliceTypeName } from "./array-types.ts";
 import { monomorphizedName, parseGenericType } from "./generic-types.ts";
 
-export function materializeGenerics(program: Program, fileName: string): Program {
+export function materializeGenerics(
+  program: Program,
+  fileName: string,
+  typeDisplayNames: Map<string, string> = new Map(),
+): Program {
   const structTemplates = new Map(program.structs.filter((item) => item.typeParameters?.length).map((item) => [item.name, item]));
   const functionTemplates = new Map(program.functions.filter((item) => item.typeParameters?.length).map((item) => [item.name, item]));
   const structs: StructDeclaration[] = [];
   const functions: FunctionDeclaration[] = [];
   const structInstances = new Map<string, string>();
   const functionInstances = new Map<string, string>();
+
+  const displayName = (name: string): string => {
+    const known = typeDisplayNames.get(name);
+    if (known) return known;
+    const array = parseFixedArrayType(name);
+    if (array) return `${displayName(array.elementType)}[${array.length}]`;
+    const slice = parseSliceType(name);
+    if (slice) return `Slice<${displayName(slice.elementType)}>`;
+    const generic = parseGenericType(name);
+    return generic ? `${generic.base}<${generic.arguments.map(displayName).join(", ")}>` : name;
+  };
 
   const substituteName = (name: string, substitutions: Map<string, string>): string => {
     if (substitutions.has(name)) return substitutions.get(name)!;
@@ -57,6 +72,7 @@ export function materializeGenerics(program: Program, fileName: string): Program
     if (existing) return existing;
     const name = monomorphizedName(base, args);
     structInstances.set(key, name);
+    typeDisplayNames.set(name, `${base}<${args.map(displayName).join(", ")}>`);
     const substitutions = new Map(template.typeParameters!.map((parameter, index) => [parameter, args[index]]));
     const concrete = transform({ ...template, name, typeParameters: [] }, substitutions) as StructDeclaration;
     structs.push(concrete);

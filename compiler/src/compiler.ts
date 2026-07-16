@@ -18,17 +18,21 @@ export type NativeArtifact = {
 };
 
 export type AnalyzedSource = {
+  readonly sourceProgram: Program;
   readonly program: Program;
   readonly foreignModules: ReadonlyMap<string, ForeignModule>;
   readonly semanticInfo: SemanticInfo;
+  readonly typeDisplayNames: ReadonlyMap<string, string>;
 };
 
 export function analyzeSource(source: string, fileName: string): AnalyzedSource {
   const tokens = lex(source, fileName);
-  const program = materializeResultTypes(materializeGenerics(parse(tokens, fileName), fileName));
+  const sourceProgram = parse(tokens, fileName);
+  const typeDisplayNames = new Map<string, string>();
+  const program = materializeResultTypes(materializeGenerics(sourceProgram, fileName, typeDisplayNames));
   const foreignModules = resolveForeignModules(program.imports, fileName);
   const semanticInfo = analyze(program, fileName, foreignModules);
-  return { program, foreignModules, semanticInfo };
+  return { sourceProgram, program, foreignModules, semanticInfo, typeDisplayNames };
 }
 
 export function compileToC(source: string, fileName: string): string {

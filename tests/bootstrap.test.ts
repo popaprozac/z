@@ -1301,6 +1301,33 @@ test("exposes generic templates without leaking monomorphized names to editor co
   assert.match(hover(source.replace(" ide;", ""), "generic-editor.z", declaration + 1)?.contents.value ?? "", /function identity<T>/);
 });
 
+test("shows source generic fields and concrete generic binding types on hover", () => {
+  const source = `
+    struct Pair<T> {
+      first: T;
+      second: T;
+    }
+    function first<T>(pair: Pair<T>): T { return pair.first; }
+    function main(): i32 {
+      const pair = Pair<i32> { first: 20, second: 22 };
+      return pair.second;
+    }
+  `;
+  const firstField = source.indexOf("first: T");
+  const secondField = source.indexOf("second: T");
+  const pairBinding = source.indexOf("pair =");
+  assert.match(hover(source, "generic-hover.z", firstField + 1)?.contents.value ?? "", /first: T/);
+  assert.match(hover(source, "generic-hover.z", secondField + 1)?.contents.value ?? "", /second: T/);
+  const pairHover = hover(source, "generic-hover.z", pairBinding + 1)?.contents.value ?? "";
+  assert.match(pairHover, /pair: Pair<i32>/);
+  assert.doesNotMatch(pairHover, /__z_mono_/);
+  const beforeFirst = source.slice(0, firstField).split("\n");
+  const firstToken = decodeSemanticTokens(semanticTokens(source, "generic-hover.z").data).find((token) => (
+    token.line === beforeFirst.length - 1 && token.character === beforeFirst.at(-1)!.length
+  ));
+  assert.equal(semanticTokenTypes[firstToken?.type ?? -1], "property");
+});
+
 test("checks logical operand types", () => {
   const source = `
     function main(): i32 {

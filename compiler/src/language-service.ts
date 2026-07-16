@@ -9,7 +9,8 @@ import type {
   ForeignType,
 } from "./foreign.ts";
 import { lex } from "./lexer.ts";
-import { displayArrayType, parseFixedArrayType, parseSliceType } from "./array-types.ts";
+import { parseFixedArrayType, parseSliceType } from "./array-types.ts";
+import { parseGenericType } from "./generic-types.ts";
 
 export type Position = { readonly line: number; readonly character: number };
 export type Range = { readonly start: Position; readonly end: Position };
@@ -93,9 +94,20 @@ export function semanticTokens(source: string, fileName: string): { readonly dat
     named.push(binding);
     bindingsByName.set(binding.name, named);
   }
-  const functionNames = new Set(context.program.functions.map((item) => item.name));
-  const structNames = new Set(context.program.structs.filter((item) => item.kind === "struct").map((item) => item.name));
-  const classNames = new Set(context.program.structs.filter((item) => item.kind === "class").map((item) => item.name));
+  const functionNames = new Set([...context.program.functions, ...context.sourceProgram.functions].map((item) => item.name));
+  const structNames = new Set(
+    [...context.program.structs, ...context.sourceProgram.structs]
+      .filter((item) => item.kind === "struct")
+      .map((item) => item.name),
+  );
+  const classNames = new Set(
+    [...context.program.structs, ...context.sourceProgram.structs]
+      .filter((item) => item.kind === "class")
+      .map((item) => item.name),
+  );
+  const fieldDeclarations = new Set(
+    context.sourceProgram.structs.flatMap((declaration) => declaration.fields.map((field) => field.location.offset)),
+  );
   const traitNames = new Set(context.program.traits.map((item) => item.name));
   const enumNames = new Set(context.program.enums.map((item) => item.name));
   const modules = new Map([...context.foreignModules.keys()].map((name) => [name, context.foreignModules.get(name)!]));
@@ -106,6 +118,13 @@ export function semanticTokens(source: string, fileName: string): { readonly dat
     if (token.kind !== "identifier") continue;
     const previous = tokens[index - 1];
     const next = tokens[index + 1];
+    if (fieldDeclarations.has(token.location.offset)) {
+      classifications.set(token.location.offset, {
+        type: semanticTokenTypes.indexOf("property"),
+        modifiers: 1,
+      });
+      continue;
+    }
     const namedBindings = bindingsByName.get(token.text) ?? [];
     const binding = namedBindings.filter((candidate) => candidate.offset <= token.location.offset).at(-1)
       ?? namedBindings[0];
@@ -204,6 +223,13 @@ export function hover(source: string, fileName: string, offset: number): Hover |
   const context = safeAnalysis(source, fileName);
   if (!context) return declarationHover(source, null, word.text, word.start, word.end);
 
+  const declaredField = context.sourceProgram.structs
+    .flatMap((declaration) => declaration.fields)
+    .find((field) => field.location.offset === word.start && field.name === word.text);
+  if (declaredField) {
+    return markdownHover(`${declaredField.name}: ${displayType(declaredField.type.name, context.typeDisplayNames)}`, source, word.start, word.end);
+  }
+
   const module = context.foreignModules.get(word.text);
   if (module) {
     return markdownHover(`import ${word.text} from ${JSON.stringify(module.declaration.header)}`, source, word.start, word.end);
@@ -235,19 +261,19 @@ export function hover(source: string, fileName: string, offset: number): Hover |
     }
     if (resolved?.kind === "struct") {
       const field = resolved.declaration.fields.find((item) => item.name === word.text);
-      if (field) return markdownHover(`${field.name}: ${field.type.name}`, source, word.start, word.end);
+      if (field) return markdownHover(`${field.name}: ${displayType(field.type.name, context.typeDisplayNames)}`, source, word.start, word.end);
       const method = resolved.declaration.methods.find((item) => item.name === word.text);
-      if (method) return markdownHover(zFunctionDetail(method.name, method.parameters, method.returnType.name), source, word.start, word.end);
+      if (method) return markdownHover(zFunctionDetail(method.name, method.parameters, method.returnType.name, [], context.typeDisplayNames), source, word.start, word.end);
     }
     if (resolved?.kind === "array" && word.text === "length") {
-      return markdownHover(`length: usize  // ${displayType(resolved.type)}`, source, word.start, word.end);
+      return markdownHover(`length: usize  // ${displayType(resolved.type, context.typeDisplayNames)}`, source, word.start, word.end);
     }
   }
 
   const type = context.semanticInfo.bindingTypes.get(word.start)
     ?? context.semanticInfo.expressionTypes.get(word.start);
-  if (type) return markdownHover(`${word.text}: ${displayType(type)}`, source, word.start, word.end);
-  return declarationHover(source, context.program, word.text, word.start, word.end);
+  if (type) return markdownHover(`${word.text}: ${displayType(type, context.typeDisplayNames)}`, source, word.start, word.end);
+  return declarationHover(source, context.sourceProgram, word.text, word.start, word.end, context.typeDisplayNames);
 }
 
 export function definition(source: string, uri: string, offset: number): Location | null {
@@ -301,7 +327,7 @@ function symbolCompletions(source: string, fileName: string, offset: number): Co
     items.push({
       label: binding.name,
       kind: completionKinds.variable,
-      detail: `${binding.parameter ? "parameter" : binding.readonly ? "const" : "let"} ${binding.name}: ${displayType(binding.type)}`,
+      detail: `${binding.parameter ? "parameter" : binding.readonly ? "const" : "let"} ${binding.name}: ${displayType(binding.type, context.typeDisplayNames)}`,
       sortText: `0-${binding.name}`,
     });
   }
@@ -416,7 +442,7 @@ function memberCompletions(
   if (!context) return [];
   const resolved = resolveReceiver(context, receiverText, receiverOffset);
   if (resolved?.kind === "objc") return filterCompletions(objcCompletions(resolved.declaration, resolved.instance, context), prefix, 1000);
-  if (resolved?.kind === "struct") return filterCompletions(structCompletions(resolved.declaration), prefix, 1000);
+  if (resolved?.kind === "struct") return filterCompletions(structCompletions(resolved.declaration, context.typeDisplayNames), prefix, 1000);
   if (resolved?.kind === "array") {
     return filterCompletions([{ label: "length", kind: completionKinds.property, detail: "usize" }], prefix, 1000);
   }
@@ -541,13 +567,13 @@ function objcCompletions(declaration: ForeignObjCInterface, instance: boolean, c
   return uniqueCompletions(items);
 }
 
-function structCompletions(declaration: StructDeclaration): CompletionItem[] {
+function structCompletions(declaration: StructDeclaration, typeDisplayNames: ReadonlyMap<string, string>): CompletionItem[] {
   return [
-    ...declaration.fields.map((field) => ({ label: field.name, kind: completionKinds.field, detail: field.type.name })),
+    ...declaration.fields.map((field) => ({ label: field.name, kind: completionKinds.field, detail: displayType(field.type.name, typeDisplayNames) })),
     ...declaration.methods.map((method) => ({
       label: method.name,
       kind: completionKinds.method,
-      detail: zFunctionDetail(method.name, method.parameters, method.returnType.name),
+      detail: zFunctionDetail(method.name, method.parameters, method.returnType.name, [], typeDisplayNames),
       insertText: `${method.name}()`,
     })),
   ];
@@ -607,12 +633,22 @@ function describeModuleMember(module: ForeignModule, name: string): string | nul
   return objc ? `Objective-C class ${objc.className}` : null;
 }
 
-function declarationHover(source: string, program: Program | null, name: string, start: number, end: number): Hover | null {
+function declarationHover(
+  source: string,
+  program: Program | null,
+  name: string,
+  start: number,
+  end: number,
+  typeDisplayNames: ReadonlyMap<string, string> = new Map(),
+): Hover | null {
   if (program) {
     const fn = program.functions.find((item) => item.name === name);
-    if (fn) return markdownHover(zFunctionDetail(fn.name, fn.parameters, fn.returnType.name), source, start, end);
+    if (fn) return markdownHover(zFunctionDetail(fn.name, fn.parameters, fn.returnType.name, fn.typeParameters, typeDisplayNames), source, start, end);
     const struct = program.structs.find((item) => item.name === name);
-    if (struct) return markdownHover(`${struct.kind} ${struct.name}`, source, start, end);
+    if (struct) {
+      const parameters = struct.typeParameters?.length ? `<${struct.typeParameters.join(", ")}>` : "";
+      return markdownHover(`${struct.kind} ${struct.name}${parameters}`, source, start, end);
+    }
     const trait = program.traits.find((item) => item.name === name);
     if (trait) return markdownHover(`trait ${trait.name}`, source, start, end);
     const enumeration = program.enums.find((item) => item.name === name);
@@ -647,8 +683,15 @@ function objectiveCSelectorAt(context: AnalyzedSource, memberOffset: number): st
   return selector;
 }
 
-function zFunctionDetail(name: string, parameters: readonly { readonly name: string; readonly type: { readonly name: string } }[], returnType: string): string {
-  return `function ${name}(${parameters.map((item) => `${item.name}: ${displayType(item.type.name)}`).join(", ")}): ${displayType(returnType)}`;
+function zFunctionDetail(
+  name: string,
+  parameters: readonly { readonly name: string; readonly type: { readonly name: string } }[],
+  returnType: string,
+  typeParameters: readonly string[] = [],
+  typeDisplayNames: ReadonlyMap<string, string> = new Map(),
+): string {
+  const generic = typeParameters.length ? `<${typeParameters.join(", ")}>` : "";
+  return `function ${name}${generic}(${parameters.map((item) => `${item.name}: ${displayType(item.type.name, typeDisplayNames)}`).join(", ")}): ${displayType(returnType, typeDisplayNames)}`;
 }
 
 function foreignTypeName(type: ForeignType): string {
@@ -659,9 +702,15 @@ function foreignTypeName(type: ForeignType): string {
   return type.cName;
 }
 
-function displayType(type: string): string {
+function displayType(type: string, typeDisplayNames: ReadonlyMap<string, string> = new Map()): string {
+  const known = typeDisplayNames.get(type);
+  if (known) return known;
+  const generic = parseGenericType(type);
+  if (generic) return `${generic.base}<${generic.arguments.map((argument) => displayType(argument, typeDisplayNames)).join(", ")}>`;
   const array = parseFixedArrayType(type);
-  if (array || parseSliceType(type)) return displayArrayType(type);
+  if (array) return `${displayType(array.elementType, typeDisplayNames)}[${array.length}]`;
+  const slice = parseSliceType(type);
+  if (slice) return `Slice<${displayType(slice.elementType, typeDisplayNames)}>`;
   return type.replace(/^__z_objc:(?:nullable|nonnull):/, "");
 }
 
