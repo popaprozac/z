@@ -467,6 +467,8 @@ the ABI declaration and the generated artifact builds with `clang++`. Overload
 selection, constructors, methods, references, RAII values, inheritance, and
 templates remain explicit later tiers; an ambiguous function name is rejected
 rather than silently choosing a declaration.
+The next namespace tier should preserve the native hierarchy at the Z surface,
+for example `library.desktop.calculate`, before overload resolution is added.
 
 On macOS, an installed framework header such as `AppKit/AppKit.h` selects the
 Objective-C ARC backend and adds its framework to the native link plan. Imported
@@ -499,6 +501,15 @@ accessor names, while rebinding the local remains forbidden. A string literal
 is emitted as an Objective-C `NSString` literal only when the receiving
 parameter or property accepts `NSString` (or a compatible supertype); ordinary
 Z and C string literals remain `cstring` values.
+
+A conventional local `Module-Swift.h` compatibility header also selects the
+Objective-C ARC backend. The bootstrap has an end-to-end fixture in which
+`swiftc` builds a Swift dylib and generated header, Z imports its class,
+initializer, method, and property, and the native executable links and runs.
+This tier intentionally sees only declarations representable to Objective-C.
+Discovering and building Swift modules or packages and carrying their libraries
+into Z's link plan remain package/build-system work, separate from native Swift
+module import.
 
 Clang supplies ABI identity and signatures but cannot generally say whether a C
 pointer is nullable, borrowed, transferred, retained, or consumed. Z therefore
@@ -573,7 +584,8 @@ Interop work proceeds in layers:
    followed by RAII, overloads, methods, and selected templates.
 6. Callback-to-async synthesis.
 7. Swift-authored Objective-C compatibility-header import through the existing
-   Objective-C path.
+   Objective-C path (generated-header compiler/runtime probe implemented;
+   package build and link-plan integration remains).
 8. Native Swift module/interface and Swift Package import for Swift-only APIs,
    value types, protocols, generics, errors, and concurrency.
 

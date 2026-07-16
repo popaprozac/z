@@ -525,6 +525,8 @@ Recognized C++ header extensions select C++20 output and `clang++`; generated
 calls preserve names such as `zcpp::translate`. Ambiguous overload or namespace
 leaf names are rejected in this tier. Constructors, methods, references, RAII
 ownership, inheritance, and templates remain future C++ layers.
+The follow-up namespace tier will preserve native paths such as
+`library.desktop.calculate` at the Z surface before overload resolution lands.
 
 Pointer parameters to complete imported records remain safe when adjacent API
 notes classify their call-only access. Read-only `const T *` parameters borrow a
@@ -637,6 +639,14 @@ once the build product and header are available. Native Swift support remains a
 separate goal: import Swift modules/interfaces and Swift Package products so Z
 can reach Swift-only Apple APIs, value types, protocols, generics, errors, and
 concurrency without inventing or guessing the Swift ABI.
+
+The compiler now recognizes a conventional local `Module-Swift.h` as
+Objective-C, imports its classes, methods, initializers, and properties, and
+selects Objective-C ARC output. The integration suite generates a real header
+and dylib with `swiftc`, links the Z-produced object against it, and executes the
+result. Z does not yet build the Swift target or infer its library link plan;
+that belongs to upcoming package/build integration rather than being hidden
+inside header import.
 
 ```z
 import {

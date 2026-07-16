@@ -536,10 +536,16 @@ function memberCompletions(
 
   const receiverOffset = offset - receiverText.length - prefix.length - 1;
   const dotOffset = receiverOffset + receiverText.length;
-  const tailOffset = source[offset] === ";" ? offset + 1 : offset;
-  const sanitized = source.slice(0, dotOffset) + ";" + source.slice(tailOffset);
-  const lengthSanitized = source.slice(0, dotOffset) + ".length;" + source.slice(tailOffset);
-  const context = safeAnalysis(sanitized, fileName) ?? safeAnalysis(lengthSanitized, fileName);
+  const tailOffset = completionTailOffset(source, offset);
+  const sanitized = source.slice(0, dotOffset) + source.slice(tailOffset);
+  const lengthSanitized = source.slice(0, dotOffset) + ".length" + source.slice(tailOffset);
+  const statementTailOffset = source[tailOffset] === ";" ? tailOffset + 1 : tailOffset;
+  const statementSanitized = source.slice(0, dotOffset) + ";" + source.slice(statementTailOffset);
+  const lengthStatementSanitized = source.slice(0, dotOffset) + ".length;" + source.slice(statementTailOffset);
+  const context = safeAnalysis(sanitized, fileName)
+    ?? safeAnalysis(statementSanitized, fileName)
+    ?? safeAnalysis(lengthSanitized, fileName)
+    ?? safeAnalysis(lengthStatementSanitized, fileName);
   if (!context) return [];
   const resolved = resolveReceiver(context, receiverText, receiverOffset);
   if (resolved?.kind === "objc") return filterCompletions(objcCompletions(resolved.declaration, resolved.instance, context), prefix, 1000);
@@ -561,6 +567,32 @@ function memberCompletions(
     return filterCompletions(items, prefix, 1000);
   }
   return [];
+}
+
+function completionTailOffset(source: string, offset: number): number {
+  if (source[offset] !== "(") return offset;
+  let depth = 0;
+  let quote: string | null = null;
+  for (let index = offset; index < source.length; index += 1) {
+    const character = source[index];
+    if (quote) {
+      if (character === "\\") {
+        index += 1;
+        continue;
+      }
+      if (character === quote) quote = null;
+      continue;
+    }
+    if (character === '"' || character === "'" || character === "`") {
+      quote = character;
+      continue;
+    }
+    if (character === "(") depth += 1;
+    if (character !== ")") continue;
+    depth -= 1;
+    if (depth === 0) return index + 1;
+  }
+  return offset;
 }
 
 function consoleCompletions(): CompletionItem[] {

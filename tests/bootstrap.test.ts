@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { resolve } from "node:path";
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { test } from "bun:test";
 import { compileToC, compileToNative } from "../compiler/src/compiler.ts";
 import { DiagnosticError, formatDiagnostic } from "../compiler/src/diagnostics.ts";
@@ -386,6 +386,76 @@ test("imports AppKit classes and emits an ARC Objective-C NSWindow program", () 
     example,
   );
   assert.match(customGetter.source, /\[window isVisible\]/);
+});
+
+test("imports and executes Swift through its generated Objective-C compatibility header", () => {
+  if (process.platform !== "darwin") return;
+  const directory = mkdtempSync("/tmp/z-swift-interop-");
+  const header = resolve(directory, "ZSwiftFixture-Swift.h");
+  const library = resolve(directory, "libZSwiftFixture.dylib");
+  const swiftSource = resolve(projectRoot, "tests/fixtures/swift-fixture.swift");
+  const swiftBuild = spawnSync("xcrun", [
+    "swiftc",
+    "-emit-library",
+    "-emit-module",
+    "-module-name", "ZSwiftFixture",
+    "-emit-objc-header-path", header,
+    swiftSource,
+    "-o", library,
+  ], { encoding: "utf8" });
+  assert.equal(swiftBuild.status, 0, swiftBuild.stderr);
+
+  const source = `
+    import Swift from "ZSwiftFixture-Swift.h";
+    function main(): i32 {
+      const counter = Swift.ZSwiftCounter.alloc().initWithValue(40);
+      counter.value = 41;
+      console.log(\`swift=\${counter.add(1)}, value=\${counter.value}\`);
+      return 0;
+    }
+  `;
+  const zSource = resolve(directory, "swift-interop.z");
+  writeFileSync(zSource, source);
+  const artifact = compileToNative(source, zSource);
+  assert.equal(artifact.language, "objective-c");
+  assert.match(artifact.source, /#include <ZSwiftFixture-Swift\.h>/);
+  assert.match(artifact.source, /\[\[ZSwiftCounter alloc\] initWithValue:40\]/);
+  assert.match(artifact.source, /\[counter setValue:41\]/);
+  assert.match(artifact.source, /\[counter add:1\]/);
+
+  const objectiveCSource = resolve(directory, "swift-interop.m");
+  const object = resolve(directory, "swift-interop.o");
+  const executable = resolve(directory, "swift-interop");
+  writeFileSync(objectiveCSource, artifact.source);
+  const nativeCompile = spawnSync("xcrun", [
+    "clang",
+    "-x", "objective-c",
+    "-fobjc-arc",
+    "-Wall", "-Wextra", "-Werror",
+    "-I", directory,
+    "-c", objectiveCSource,
+    "-o", object,
+  ], { encoding: "utf8" });
+  assert.equal(nativeCompile.status, 0, nativeCompile.stderr);
+  const nativeLink = spawnSync("xcrun", [
+    "clang",
+    object,
+    library,
+    "-framework", "Foundation",
+    "-o", executable,
+  ], { encoding: "utf8" });
+  assert.equal(nativeLink.status, 0, nativeLink.stderr);
+  const result = spawnSync(executable, [], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, "swift=42, value=42\n");
+
+  const addOffset = source.indexOf("add(1)") + 1;
+  assert.match(hover(source, zSource, addOffset)?.contents.value ?? "", /add\(amount: i32\): i32/);
+  const completionSource = source.replace("counter.add", "counter.ad");
+  const completionOffset = completionSource.indexOf("counter.ad") + "counter.ad".length;
+  assert.equal(completions(completionSource, zSource, completionOffset).find((item) => item.label === "add")?.kind, 2);
+  const propertyOffset = source.lastIndexOf("value") + 1;
+  assert.match(hover(source, zSource, propertyOffset)?.contents.value ?? "", /value: i32/);
 });
 
 test("keeps labeled arguments reserved for Objective-C selectors", () => {

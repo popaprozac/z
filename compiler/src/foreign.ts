@@ -128,6 +128,7 @@ export type ForeignModule = {
   readonly objectTypes: ReadonlyMap<string, ForeignObjectType>;
   readonly interfaces: ReadonlyMap<string, ForeignObjCInterface>;
   readonly framework: string | null;
+  readonly objectiveC: boolean;
   readonly cPlusPlus: boolean;
 };
 
@@ -139,6 +140,7 @@ type HeaderInfo = {
   readonly objectTypes: ReadonlyMap<string, ForeignObjectType>;
   readonly interfaces: ReadonlyMap<string, ForeignObjCInterface>;
   readonly framework: string | null;
+  readonly objectiveC: boolean;
   readonly cPlusPlus: boolean;
 };
 
@@ -186,11 +188,13 @@ export function resolveForeignModules(
   for (const declaration of declarations) {
     const includeDirectory = resolve(dirname(fileName));
     const framework = discoverFramework(declaration.header);
+    const objectiveC = Boolean(framework) || isSwiftCompatibilityHeader(declaration.header);
     const cPlusPlus = isCPlusPlusHeader(declaration.header);
-    const cacheKey = `${includeDirectory}\0${declaration.header}\0${declaration.moduleName}\0${framework ?? (cPlusPlus ? "c++" : "c")}`;
+    const language = objectiveC ? cPlusPlus ? "objective-c++" : "objective-c" : cPlusPlus ? "c++" : "c";
+    const cacheKey = `${includeDirectory}\0${declaration.header}\0${declaration.moduleName}\0${framework ?? language}`;
     let header = headerCache.get(cacheKey);
     if (!header) {
-      header = readHeader(declaration, fileName, includeDirectory, framework, cPlusPlus);
+      header = readHeader(declaration, fileName, includeDirectory, framework, objectiveC, cPlusPlus);
       headerCache.set(cacheKey, header);
     }
     modules.set(declaration.moduleName, { declaration, ...header });
@@ -203,22 +207,23 @@ function readHeader(
   fileName: string,
   includeDirectory: string,
   framework: string | null,
+  objectiveC: boolean,
   cPlusPlus: boolean,
 ): HeaderInfo {
-  const clangLanguage = framework ? "objective-c" : cPlusPlus ? "c++" : "c";
+  const clangLanguage = objectiveC ? cPlusPlus ? "objective-c++" : "objective-c" : cPlusPlus ? "c++" : "c";
   const clangArguments = [
     "-x", clangLanguage,
     ...(cPlusPlus ? ["-std=c++20"] : []),
-    ...(framework ? ["-fobjc-arc"] : []),
+    ...(objectiveC ? ["-fobjc-arc"] : []),
     "-I", includeDirectory,
     "-include", declaration.header,
     "-Xclang", "-ast-dump=json",
     "-fsyntax-only",
     "/dev/null",
   ];
-  const result = spawnSync(framework ? "xcrun" : "clang", framework ? ["clang", ...clangArguments] : clangArguments, {
+  const result = spawnSync(objectiveC ? "xcrun" : "clang", objectiveC ? ["clang", ...clangArguments] : clangArguments, {
     encoding: "utf8",
-    maxBuffer: framework ? 512 * 1024 * 1024 : 64 * 1024 * 1024,
+    maxBuffer: objectiveC ? 512 * 1024 * 1024 : 64 * 1024 * 1024,
   });
 
   if (result.error) {
@@ -240,7 +245,7 @@ function readHeader(
   const notes = readApiNotes(declaration, fileName, includeDirectory);
   const imported = collectNamedTypes(root, declaration.moduleName, cPlusPlus);
   const objectTypes = new Map<string, ForeignObjectType>();
-  const interfaces = framework
+  const interfaces = objectiveC
     ? collectObjCInterfaces(root, declaration.moduleName, imported.byCName, objectTypes)
     : new Map<string, ForeignObjCInterface>();
   const functions = new Map<string, ForeignFunction>();
@@ -293,7 +298,7 @@ function readHeader(
       );
     }
   }
-  return { functions, types, namedTypes: imported.namedTypes, constants: imported.constants, objectTypes, interfaces, framework, cPlusPlus };
+  return { functions, types, namedTypes: imported.namedTypes, constants: imported.constants, objectTypes, interfaces, framework, objectiveC, cPlusPlus };
 }
 
 function collectNamedTypes(
@@ -772,4 +777,8 @@ function discoverFramework(header: string): string | null {
 
 function isCPlusPlusHeader(header: string): boolean {
   return /\.(?:hh|hpp|hxx|h\+\+)$/i.test(header);
+}
+
+function isSwiftCompatibilityHeader(header: string): boolean {
+  return /-Swift\.h$/i.test(header);
 }

@@ -154,6 +154,7 @@ export function analyze(
   const foreignObjectTypes = new Map<string, ForeignObjectType>();
   const foreignInterfaces = new Map<string, ForeignObjCInterface>();
   const frameworks = new Set<string>();
+  let objectiveC = false;
   let cPlusPlus = false;
   for (const module of foreignModules.values()) {
     for (const [name, type] of module.types) foreignTypes.set(name, type);
@@ -161,6 +162,7 @@ export function analyze(
     for (const [name, type] of module.objectTypes) foreignObjectTypes.set(name, type);
     for (const type of module.interfaces.values()) foreignInterfaces.set(type.typeName, type);
     if (module.framework) frameworks.add(module.framework);
+    if (module.objectiveC) objectiveC = true;
     if (module.cPlusPlus) cPlusPlus = true;
   }
   const state: AnalysisState = {
@@ -186,7 +188,7 @@ export function analyze(
     bindingTypes: new Map(),
     closures: new Map(),
     consoleCalls: new Set(),
-    objectiveC: frameworks.size > 0,
+    objectiveC,
     cPlusPlus,
     frameworks: [...frameworks],
     loopStack: [],
