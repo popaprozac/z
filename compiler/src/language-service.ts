@@ -181,6 +181,17 @@ export function hover(source: string, fileName: string, offset: number): Hover |
     return markdownHover(`import ${word.text} from ${JSON.stringify(module.declaration.header)}`, source, word.start, word.end);
   }
 
+  const chainedSelector = objectiveCSelectorAt(context, word.start);
+  if (chainedSelector) {
+    const details = new Set<string>();
+    for (const declaration of context.semanticInfo.foreignInterfaces.values()) {
+      for (const method of declaration.methods) {
+        if (method.selector === chainedSelector && method.baseName === word.text) details.add(objCMethodDetail(method));
+      }
+    }
+    if (details.size > 0) return markdownHover([...details].join("\n"), source, word.start, word.end);
+  }
+
   const memberPrefix = source.slice(0, word.start).match(/([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*)\.$/);
   if (memberPrefix) {
     const resolved = resolveReceiver(context, memberPrefix[1], word.start - memberPrefix[1].length - 1);
@@ -260,6 +271,7 @@ function symbolCompletions(source: string, fileName: string, offset: number): Co
       label: binding.name,
       kind: completionKinds.variable,
       detail: `${binding.parameter ? "parameter" : binding.readonly ? "const" : "let"} ${binding.name}: ${displayType(binding.type)}`,
+      sortText: `0-${binding.name}`,
     });
   }
   for (const declaration of context.program.functions) {
@@ -528,7 +540,8 @@ function objCMethodSnippet(method: ForeignObjCMethod): string {
 function objCMethodDetail(method: ForeignObjCMethod): string {
   const parameters = method.parameters.map((parameter, index) => {
     const label = selectorParts(method.selector)[index];
-    return `${index === 0 ? "" : `${label}: `}${parameter.name ?? "value"}: ${foreignTypeName(parameter.type)}`;
+    const sourceName = index === 0 ? parameter.name ?? "value" : label;
+    return `${sourceName}: ${foreignTypeName(parameter.type)}`;
   });
   return `${method.baseName}(${parameters.join(", ")}): ${foreignTypeName(method.returnType)}  // ${method.selector}`;
 }
@@ -554,6 +567,30 @@ function declarationHover(source: string, program: Program | null, name: string,
     if (enumeration) return markdownHover(`enum ${enumeration.name}`, source, start, end);
   }
   return null;
+}
+
+function objectiveCSelectorAt(context: AnalyzedSource, memberOffset: number): string | null {
+  let selector: string | null = null;
+  const visit = (value: unknown): void => {
+    if (selector || value === null || typeof value !== "object") return;
+    if (Array.isArray(value)) {
+      for (const item of value) visit(item);
+      return;
+    }
+    const node = value as {
+      readonly kind?: string;
+      readonly location?: SourceLocation;
+      readonly callee?: { readonly kind?: string; readonly location?: SourceLocation };
+    };
+    if (node.kind === "call" && node.location && node.callee?.kind === "member"
+      && node.callee.location?.offset === memberOffset) {
+      selector = context.semanticInfo.objcCalls.get(node.location.offset)?.selector ?? null;
+      if (selector) return;
+    }
+    for (const child of Object.values(value as Record<string, unknown>)) visit(child);
+  };
+  visit(context.program);
+  return selector;
 }
 
 function zFunctionDetail(name: string, parameters: readonly { readonly name: string; readonly type: { readonly name: string } }[], returnType: string): string {

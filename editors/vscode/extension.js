@@ -69,6 +69,7 @@ async function activate(context) {
     }),
   );
 
+  const completionTriggers = [".", ",", "_", ..."abcdefghijklmnopqrstuvwxyz", ..."ABCDEFGHIJKLMNOPQRSTUVWXYZ"];
   context.subscriptions.push(vscode.languages.registerCompletionItemProvider("z", {
     async provideCompletionItems(document, position) {
       const result = await client.request("textDocument/completion", textDocumentPosition(document, position));
@@ -83,7 +84,7 @@ async function activate(context) {
       });
       return new vscode.CompletionList(items, Boolean(result?.isIncomplete));
     },
-  }, ".", ","));
+  }, ...completionTriggers));
 
   context.subscriptions.push(vscode.languages.registerHoverProvider("z", {
     async provideHover(document, position) {

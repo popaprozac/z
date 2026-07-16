@@ -65,7 +65,7 @@ async function dispatch(message: JsonRpcMessage): Promise<void> {
         respond(message.id!, {
           capabilities: {
             textDocumentSync: { openClose: true, change: 1, save: { includeText: true } },
-            completionProvider: { triggerCharacters: [".", ","] },
+            completionProvider: { triggerCharacters: completionTriggerCharacters() },
             hoverProvider: true,
             definitionProvider: true,
             semanticTokensProvider: {
@@ -195,4 +195,8 @@ function write(message: unknown): void {
 
 function fileName(uri: string): string {
   return uri.startsWith("file://") ? decodeURIComponent(new URL(uri).pathname) : uri;
+}
+
+function completionTriggerCharacters(): string[] {
+  return [".", ",", "_", ..."abcdefghijklmnopqrstuvwxyz", ..."ABCDEFGHIJKLMNOPQRSTUVWXYZ"];
 }

@@ -416,6 +416,11 @@ test("provides compiler-backed AppKit completion, labels, hover, diagnostics, an
   const titleOffset = source.indexOf("title") + 2;
   assert.match(hover(source, example, titleOffset)?.contents.value ?? "", /title: NSString/);
 
+  const chainedMethod = source.indexOf("initWithContentRect") + 4;
+  const chainedHover = hover(source, example, chainedMethod)?.contents.value ?? "";
+  assert.match(chainedHover, /initWithContentRect\(contentRect: AppKit\.NSRect, styleMask: AppKit\.NSWindowStyleMask/);
+  assert.match(chainedHover, /initWithContentRect:styleMask:backing:defer:/);
+
   const frameBinding = source.indexOf("frame =") + 2;
   assert.match(hover(source, example, frameBinding)?.contents.value ?? "", /frame: AppKit\.NSRect/);
 
@@ -454,6 +459,7 @@ test("speaks the LSP initialize and shutdown protocol over stdio", () => {
   assert.match(result.stdout, /"name":"z-language-server"/);
   assert.match(result.stdout, /"completionProvider"/);
   assert.match(result.stdout, /"semanticTokensProvider"/);
+  assert.match(result.stdout, /"triggerCharacters":\["\.",",","_","a","b"/);
 });
 
 test("checks floating-point widths and integer-only bitwise operators", () => {
