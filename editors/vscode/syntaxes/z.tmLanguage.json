@@ -71,7 +71,7 @@
       }]
     },
     "types": {
-      "patterns": [{ "name": "storage.type.primitive.z", "match": "\\b(?:void|bool|string|cstring|i8|i16|i32|i64|u8|u16|u32|u64|f32|f64|usize|isize)\\b" }]
+      "patterns": [{ "name": "storage.type.primitive.z", "match": "\\b(?:void|bool|string|cstring|Slice|i8|i16|i32|i64|u8|u16|u32|u64|f32|f64|usize|isize)\\b" }]
     },
     "constants": {
       "patterns": [

@@ -1129,6 +1129,107 @@ test("exposes fixed array length and readable types to editor services", () => {
   assert.match(hover(valid, "array-editor.z", valuesDeclaration + 1)?.contents.value ?? "", /values: i32\[3\]/);
 });
 
+test("borrows fixed arrays as read-only and mutable Slice parameters", () => {
+  const example = resolve(projectRoot, "examples/slices.z");
+  const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, "before=10 after=28\n");
+
+  const generated = compileToC(readFileSync(example, "utf8"), example);
+  assert.match(generated, /struct Z_Slice_[\s\S]*int32_t \*data;\n\s+uintptr_t length;/);
+  assert.match(generated, /static int32_t sum\(Z_Slice_\S+ values\)/);
+  assert.match(generated, /sum\(\(Z_Slice_\S+\)\{ \.data = \(values\)\.data, \.length = 4 \}\)/);
+});
+
+test("keeps Slice values non-escaping until lifetime contracts exist", () => {
+  const returned = `
+    function expose(values: Slice<i32>): Slice<i32> { return values; }
+    function main(): i32 { return 0; }
+  `;
+  assert.throws(
+    () => compileToC(returned, "slice-return.z"),
+    /returning Slice values requires an explicit lifetime contract/,
+  );
+
+  const stored = `
+    struct Holder { values: Slice<i32>; }
+    function main(): i32 { return 0; }
+  `;
+  assert.throws(() => compileToC(stored, "slice-field.z"), /Slice values cannot be stored in struct or class fields/);
+
+  const local = `
+    function inspect(values: Slice<i32>): i32 {
+      const saved = values;
+      return saved.length;
+    }
+    function main(): i32 { return 0; }
+  `;
+  assert.throws(() => compileToC(local, "slice-local.z"), /Slice values cannot be stored in local bindings yet/);
+});
+
+test("checks Slice capabilities, element types, and overlapping borrows", () => {
+  const readOnlyMutation = `
+    function mutate(values: Slice<i32>): void { values[0] = 1; }
+    function main(): i32 { return 0; }
+  `;
+  assert.throws(
+    () => compileToC(readOnlyMutation, "slice-readonly.z"),
+    /cannot mutate an indexed element through immutable binding "values"/,
+  );
+
+  const redundantIn = `
+    function inspect(in values: Slice<i32>): i32 { return values.length; }
+    function main(): i32 { return 0; }
+  `;
+  assert.throws(() => compileToC(redundantIn, "slice-in.z"), /Slice parameters are already borrowed; omit `in`/);
+
+  const immutableMutation = `
+    function fill(inout values: Slice<i32>): void { values[0] = 1; }
+    function main(): i32 {
+      const values = [1, 2];
+      fill(inout values);
+      return 0;
+    }
+  `;
+  assert.throws(() => compileToC(immutableMutation, "slice-const.z"), /requires a mutable let binding/);
+
+  const wrongElement = `
+    function sum(values: Slice<u32>): u32 { return values[0]; }
+    function main(): i32 {
+      const values = [1, 2];
+      sum(values);
+      return 0;
+    }
+  `;
+  assert.throws(() => compileToC(wrongElement, "slice-element.z"), /expected Slice<u32>, found i32\[2\]/);
+
+  const overlap = `
+    function mix(inout target: Slice<i32>, source: Slice<i32>): void {}
+    function main(): i32 {
+      let values = [1, 2];
+      mix(inout values, values);
+      return 0;
+    }
+  `;
+  assert.throws(() => compileToC(overlap, "slice-overlap.z"), /overlapping inout and in uses of "values"/);
+});
+
+test("exposes Slice length and generic spelling to editor services", () => {
+  const source = `
+    function inspect(values: Slice<i32>): i32 {
+      values.;
+      return 0;
+    }
+    function main(): i32 { return 0; }
+  `;
+  const offset = source.indexOf("values.;") + "values.".length;
+  assert.equal(completions(source, "slice-editor.z", offset).find((item) => item.label === "length")?.detail, "usize");
+
+  const valid = source.replace("      values.;\n", "      const count = values.length;\n");
+  const declaration = valid.indexOf("values:");
+  assert.match(hover(valid, "slice-editor.z", declaration + 1)?.contents.value ?? "", /values: Slice<i32>/);
+});
+
 test("checks logical operand types", () => {
   const source = `
     function main(): i32 {
@@ -1967,6 +2068,7 @@ test("editor grammar tracks keywords without reserving Result variants", () => {
   const keywordPattern = grammar.repository.keywords.patterns.map((pattern: { match: string }) => pattern.match).join(" ");
   const constantPattern = grammar.repository.constants.patterns.map((pattern: { match: string }) => pattern.match).join(" ");
   const operatorPattern = grammar.repository.operators.patterns.map((pattern: { match: string }) => pattern.match).join(" ");
+  const typePattern = grammar.repository.types.patterns.map((pattern: { match: string }) => pattern.match).join(" ");
   assert.match(keywordPattern, /throw/);
   assert.match(keywordPattern, /attempt/);
   assert.match(keywordPattern, /yield/);
@@ -1986,6 +2088,7 @@ test("editor grammar tracks keywords without reserving Result variants", () => {
   assert.match(operatorPattern, /<</);
   assert.match(operatorPattern, /\^/);
   assert.match(operatorPattern, /=/);
+  assert.match(typePattern, /Slice/);
   assert.doesNotMatch(keywordPattern, /success|failure/);
 
   const extension = readFileSync(resolve(projectRoot, "editors/vscode/extension.js"), "utf8");

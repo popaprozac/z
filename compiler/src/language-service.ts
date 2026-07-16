@@ -9,7 +9,7 @@ import type {
   ForeignType,
 } from "./foreign.ts";
 import { lex } from "./lexer.ts";
-import { displayArrayType, parseFixedArrayType } from "./array-types.ts";
+import { displayArrayType, parseFixedArrayType, parseSliceType } from "./array-types.ts";
 
 export type Position = { readonly line: number; readonly character: number };
 export type Range = { readonly start: Position; readonly end: Position };
@@ -127,6 +127,10 @@ export function semanticTokens(source: string, fileName: string): { readonly dat
         type: semanticTokenTypes.indexOf("function"),
         modifiers: previous?.kind === "function" ? 1 : 0,
       });
+      continue;
+    }
+    if (token.text === "Slice") {
+      classifications.set(token.location.offset, { type: semanticTokenTypes.indexOf("type"), modifiers: 4 });
       continue;
     }
     if (structNames.has(token.text) || context.semanticInfo.foreignNamedTypes.has(token.text)) {
@@ -464,7 +468,7 @@ function resolveReceiver(context: AnalyzedSource, text: string, offset: number):
   }
   const type = context.semanticInfo.expressionTypes.get(offset);
   if (!type) return null;
-  if (parseFixedArrayType(type)) return { kind: "array", type };
+  if (parseFixedArrayType(type) || parseSliceType(type)) return { kind: "array", type };
   const interfaceName = type.replace(/^__z_objc:(?:nullable|nonnull):/, "");
   const objc = context.semanticInfo.foreignInterfaces.get(interfaceName);
   if (objc) return { kind: "objc", declaration: objc, instance: true };
@@ -638,7 +642,7 @@ function foreignTypeName(type: ForeignType): string {
 
 function displayType(type: string): string {
   const array = parseFixedArrayType(type);
-  if (array) return displayArrayType(type);
+  if (array || parseSliceType(type)) return displayArrayType(type);
   return type.replace(/^__z_objc:(?:nullable|nonnull):/, "");
 }
 

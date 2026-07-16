@@ -197,10 +197,24 @@ index order. Moving an individual cleanup-bearing element out is initially
 rejected because it would create partially initialized storage; whole arrays
 follow ordinary move rules.
 
-The language reserves `Array<T>` for a growable owned buffer and `Slice<T>` for
-a non-owning contiguous view. Their allocation, capacity, lifetime, covariance,
-and mutation contracts will be designed alongside generics and borrowing.
-`T[]` remains unassigned until those contracts are proven in real APIs.
+`Slice<T>` is a non-owning contiguous pointer/length view. Its first supported
+shape is parameter-only and non-escaping: a compatible fixed array converts to
+a slice for one call, but slices cannot yet be returned, stored in aggregates or
+enums, or captured by local bindings. This makes the source lifetime obvious to
+the compiler without requiring a source-level lifetime name.
+
+A plain `values: Slice<T>` parameter is an immutable element borrow; spelling
+`in` would be redundant and is rejected. `inout values: Slice<T>` creates an
+exclusive mutable element borrow and requires `inout` at the call. Multiple
+read-only slices may share one array in a call, while any overlap involving an
+`inout` slice is rejected. The slice descriptor owns neither its buffer nor its
+elements and performs no cleanup.
+
+The language reserves `Array<T>` for a growable owned buffer. Its allocation,
+capacity, and move behavior will be designed alongside user-defined generics.
+Escaping slices, subslices, and returned views require an explicit inferred or
+declared lifetime contract informed by real APIs. `T[]` remains unassigned until
+those contracts are proven.
 
 ## Numeric types
 
@@ -506,6 +520,7 @@ Clang declaration source locations rather than text-searching SDK headers.
 - cleanup lowering across every exit path.
 - cleanup-aware `while`, `break`, and `continue` with loop ownership analysis.
 - fixed arrays with checked indexing and deterministic element cleanup.
+- non-escaping `Slice<T>` parameters with shared and exclusive borrow checking.
 
 ### 0.25: Portable object model
 

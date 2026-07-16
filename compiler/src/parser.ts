@@ -11,7 +11,7 @@ import type {
   TypeReference,
 } from "./ast.ts";
 import { DiagnosticError } from "./diagnostics.ts";
-import { fixedArrayTypeName } from "./array-types.ts";
+import { fixedArrayTypeName, sliceTypeName } from "./array-types.ts";
 import type { Token, TokenKind } from "./lexer.ts";
 
 export function parse(tokens: Token[], fileName: string): Program {
@@ -35,7 +35,10 @@ export function parse(tokens: Token[], fileName: string): Program {
   const parseType = (): TypeReference => {
     const token = expect("identifier", "a type name");
     let name = token.text;
-    if (match("dot")) {
+    if (token.text === "Slice" && match("less")) {
+      name = sliceTypeName(parseType().name);
+      expect("greater", "`>`");
+    } else if (match("dot")) {
       const member = expect("identifier", "an imported type name");
       name = `${name}.${member.text}`;
     }

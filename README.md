@@ -6,7 +6,8 @@ interop with C-family platform APIs.
 
 The bootstrap compiler currently implements a deliberately small vertical
 slice: imports, functions, local bindings, primitive expressions, value structs,
-ARC reference classes, statically checked traits, fixed arrays, tagged enums, exhaustive
+ARC reference classes, statically checked traits, fixed arrays, borrowed slices,
+tagged enums, exhaustive
 statement and expression matches, typed errors, deterministic cleanup, name
 resolution, static checking, and readable native-source emission. Header
 imports use Clang's AST to type-check
@@ -298,9 +299,24 @@ copy or move according to their element ownership, may be nested or stored in
 structs, and clean up owned elements in reverse order. Safe indexing traps on an
 out-of-range index. Empty literals need later contextual literal inference.
 
-`T[N]` intentionally means only a fixed inline array. Growable `Array<T>` and
-borrowed `Slice<T>` remain separate future abstractions, keeping allocation and
-borrowing visible rather than overloading `T[]` prematurely.
+`T[N]` intentionally means only a fixed inline array. `Slice<T>` is a non-owning
+pointer/length view accepted initially only as a function parameter:
+
+```z
+function sum(values: Slice<i32>): i32 { /* read-only elements */ }
+function fill(inout values: Slice<i32>, value: i32): void { /* mutable elements */ }
+
+sum(values);
+fill(inout values, 0);
+```
+
+A fixed array converts to a compatible slice for the duration of the call.
+Slice parameters are already borrowed, so read-only slices omit `in`; `inout`
+creates an exclusive mutable element borrow and remains explicit at both sides.
+Slices cannot yet be returned, stored in fields or enums, or captured in local
+bindings. This non-escaping boundary provides lifetime inference without public
+lifetime annotations. Growable `Array<T>` remains future work, and `T[]` stays
+unassigned rather than hiding allocation or borrowing.
 
 Owned structs can define an infallible compiler-controlled lifecycle hook:
 
@@ -400,6 +416,7 @@ bun run z run examples/structs.z
 bun run z run examples/classes.z
 bun run z run examples/loops.z
 bun run z run examples/arrays.z
+bun run z run examples/slices.z
 bun run z run examples/match.z
 bun run z run examples/match-expression.z
 bun run z run examples/mutation.z

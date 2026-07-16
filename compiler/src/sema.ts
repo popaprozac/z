@@ -11,7 +11,7 @@ import type {
 } from "./ast.ts";
 import { DiagnosticError } from "./diagnostics.ts";
 import { resultTypeName } from "./results.ts";
-import { displayArrayType, fixedArrayTypeName, parseFixedArrayType } from "./array-types.ts";
+import { displayArrayType, fixedArrayTypeName, parseFixedArrayType, parseSliceType } from "./array-types.ts";
 import {
   pointerTypeName,
   type ForeignConstant,
@@ -41,6 +41,7 @@ type ValueType = string | "unknown" | "never";
 export type SemanticInfo = {
   readonly movedExpressions: ReadonlySet<number>;
   readonly classCopies: ReadonlySet<number>;
+  readonly sliceConversions: ReadonlyMap<number, { readonly sourceType: string; readonly targetType: string }>;
   readonly foreignTypes: ReadonlyMap<string, ForeignPointerType>;
   readonly foreignCallTypes: ReadonlyMap<number, string>;
   readonly foreignNamedTypes: ReadonlyMap<string, ForeignNamedType>;
@@ -65,6 +66,7 @@ export type SemanticInfo = {
 type AnalysisState = {
   readonly movedExpressions: Set<number>;
   readonly classCopies: Set<number>;
+  readonly sliceConversions: Map<number, { readonly sourceType: string; readonly targetType: string }>;
   readonly foreignTypes: ReadonlyMap<string, ForeignPointerType>;
   readonly foreignCallTypes: Map<number, string>;
   readonly foreignNamedTypes: ReadonlyMap<string, ForeignNamedType>;
@@ -132,6 +134,7 @@ export function analyze(
   const state: AnalysisState = {
     movedExpressions: new Set(),
     classCopies: new Set(),
+    sliceConversions: new Map(),
     foreignTypes,
     foreignCallTypes: new Map(),
     foreignNamedTypes,
@@ -302,6 +305,9 @@ function analyzeStructDeclaration(
     }
     members.add(field.name);
     validateType(field.type, structs, enums, foreignNamedTypes, fileName, false);
+    if (containsSliceType(field.type.name)) {
+      throw new DiagnosticError(fileName, field.location, "Slice values cannot be stored in struct or class fields");
+    }
     if (enums.has(field.type.name)) {
       throw new DiagnosticError(fileName, field.location, "enum-valued struct fields are not implemented in this bootstrap stage");
     }
@@ -394,6 +400,9 @@ function analyzeEnumDeclaration(
     names.add(variant.name);
     if (variant.payload) {
       validateType(variant.payload, structs, enums, foreignNamedTypes, fileName, false);
+      if (containsSliceType(variant.payload.name)) {
+        throw new DiagnosticError(fileName, variant.location, "Slice values cannot be stored in enum payloads");
+      }
       if (variant.payload.name === declaration.name) {
         throw new DiagnosticError(fileName, variant.location, "an enum cannot contain itself directly by value");
       }
@@ -418,6 +427,9 @@ function validateFunctionSignature(
   fileName: string,
 ): void {
   validateType(declaration.returnType, structs, enums, foreignNamedTypes, fileName, true);
+  if (containsSliceType(declaration.returnType.name)) {
+    throw new DiagnosticError(fileName, declaration.returnType.location, "returning Slice values requires an explicit lifetime contract and is not implemented yet");
+  }
   if (declaration.errorType) validateType(declaration.errorType, structs, enums, foreignNamedTypes, fileName, false);
   if (declaration.errorType && hasCleanupType(declaration.errorType.name, structs)) {
     throw new DiagnosticError(fileName, declaration.errorType.location, "throwing cleanup-bearing error values is not implemented in this bootstrap stage");
@@ -434,6 +446,13 @@ function validateFunctionSignature(
     }
     validateUserName(parameter.name, parameter.location, fileName);
     validateType(parameter.type, structs, enums, foreignNamedTypes, fileName, false);
+    const slice = parseSliceType(parameter.type.name);
+    if (slice && parameter.mode === "in") {
+      throw new DiagnosticError(fileName, parameter.location, "Slice parameters are already borrowed; omit `in`");
+    }
+    if (slice && parameter.mode === "out") {
+      throw new DiagnosticError(fileName, parameter.location, "out Slice parameters are not supported");
+    }
     if (parameter.mode !== "value" && parameter.type.name === "cstring") {
       throw new DiagnosticError(fileName, parameter.location, "cstring already represents a borrowed C string; it cannot use in, inout, or out");
     }
@@ -488,7 +507,7 @@ function analyzeFunction(
     if (locals.has(parameter.name)) {
       throw new DiagnosticError(fileName, parameter.location, `duplicate parameter ${JSON.stringify(parameter.name)}`);
     }
-    const borrowed = parameter.mode === "value" ? "" : borrowedPrefix;
+    const borrowed = parameter.mode === "value" && !parseSliceType(parameter.type.name) ? "" : borrowedPrefix;
     const mutable = parameter.mode === "inout" || parameter.mode === "out" ? mutablePrefix : "";
     const uninitialized = parameter.mode === "out" ? uninitializedPrefix : "";
     locals.set(parameter.name, `${uninitialized}${borrowed}${mutable}${parameter.type.name}`);
@@ -583,6 +602,9 @@ function analyzeStatement(
       if (!statement.initializer) {
         const declaredType = statement.type!;
         validateType(declaredType, structs, enums, state.foreignNamedTypes, fileName, false);
+        if (containsSliceType(declaredType.name)) {
+          throw new DiagnosticError(fileName, declaredType.location, "Slice values cannot be stored in local bindings yet");
+        }
         locals.set(statement.name, `${uninitializedPrefix}${mutablePrefix}${declaredType.name}`);
         state.bindingTypes.set(statement.nameLocation.offset, declaredType.name);
         return;
@@ -613,6 +635,9 @@ function analyzeStatement(
         );
       }
       consumeOwnedValue(statement.initializer, variableType, locals, structs, fileName, state);
+      if (containsSliceType(String(variableType))) {
+        throw new DiagnosticError(fileName, statement.location, "Slice values cannot be stored in local bindings yet");
+      }
       locals.set(statement.name, statement.mutable ? `${mutablePrefix}${variableType}` : variableType);
       state.bindingTypes.set(statement.nameLocation.offset, String(variableType));
       return;
@@ -1135,7 +1160,8 @@ function inferExpressionInner(
     case "index": {
       const ownerType = inferExpression(expression.object, locals, globals, structs, enums, fileName, state);
       const array = parseFixedArrayType(String(ownerType));
-      if (!array) throw new DiagnosticError(fileName, expression.object.location, `indexing requires a fixed array, found ${ownerType}`);
+      const slice = parseSliceType(String(ownerType));
+      if (!array && !slice) throw new DiagnosticError(fileName, expression.object.location, `indexing requires an array or Slice, found ${ownerType}`);
       if (hasCleanupType(ownerType, structs, state.foreignTypes) && !isNamedStorageExpression(expression.object)) {
         throw new DiagnosticError(fileName, expression.object.location, "a cleanup-bearing array temporary must be bound before indexing");
       }
@@ -1143,7 +1169,7 @@ function inferExpressionInner(
       if (!isIntegerType(canonicalType(indexType, state.foreignNamedTypes))) {
         throw new DiagnosticError(fileName, expression.index.location, `array index must be an integer, found ${indexType}`);
       }
-      if (expression.index.kind === "number" && /^[0-9]+$/.test(expression.index.value)) {
+      if (array && expression.index.kind === "number" && /^[0-9]+$/.test(expression.index.value)) {
         const index = BigInt(expression.index.value);
         if (index >= BigInt(array.length)) {
           throw new DiagnosticError(
@@ -1153,7 +1179,7 @@ function inferExpressionInner(
           );
         }
       }
-      return array.elementType;
+      return (array ?? slice)!.elementType;
     }
     case "variantExpression": {
       const declaration = enums.get(expression.enumName);
@@ -1205,7 +1231,8 @@ function inferExpressionInner(
       }
       const receiverType = inferExpression(expression.object, locals, globals, structs, enums, fileName, state);
       const array = parseFixedArrayType(String(receiverType));
-      if (array) {
+      const slice = parseSliceType(String(receiverType));
+      if (array || slice) {
         if (hasCleanupType(receiverType, structs, state.foreignTypes) && !isNamedStorageExpression(expression.object)) {
           throw new DiagnosticError(fileName, expression.object.location, "a cleanup-bearing array temporary must be bound before reading its length");
         }
@@ -1435,20 +1462,21 @@ function checkArguments(
   if (receiverUse) activeUses.set(receiverUse.name, receiverUse.mode);
   for (let index = 0; index < target.parameters.length; index += 1) {
     const parameter = target.parameters[index];
+    const useMode = parseSliceType(parameter.type.name) && parameter.mode === "value" ? "in" : parameter.mode;
     const argument = args[index];
     const root = argument.kind === "argumentReference"
       ? argument.name
       : storageRoot(argument)?.name ?? null;
     if (!root) continue;
     const previous = activeUses.get(root);
-    if (previous && !((previous === "in" && parameter.mode === "in") || (previous === "value" && parameter.mode === "value"))) {
+    if (previous && !((previous === "in" && useMode === "in") || (previous === "value" && useMode === "value"))) {
       throw new DiagnosticError(
         fileName,
         argument.location,
-        `overlapping ${previous} and ${parameter.mode} uses of ${JSON.stringify(root)} in one call are not allowed`,
+        `overlapping ${previous} and ${useMode} uses of ${JSON.stringify(root)} in one call are not allowed`,
       );
     }
-    activeUses.set(root, parameter.mode);
+    activeUses.set(root, useMode);
   }
   for (let index = 0; index < target.parameters.length; index += 1) {
     const parameter = target.parameters[index];
@@ -1503,14 +1531,21 @@ function checkArguments(
       if (!isMutableBinding(stored)) {
         throw new DiagnosticError(fileName, argument.location, `inout argument ${JSON.stringify(argument.name)} requires a mutable let binding`);
       }
-      requireAssignable(
-        parameter.type.name,
-        underlyingType(stored),
-        argument,
-        fileName,
-        state.foreignNamedTypes,
-        state.numericLiteralTypes,
-      );
+      const expectedSlice = parseSliceType(parameter.type.name);
+      const storedType = underlyingType(stored);
+      const storedArray = parseFixedArrayType(storedType);
+      if (expectedSlice && storedArray?.elementType === expectedSlice.elementType) {
+        state.sliceConversions.set(argument.location.offset, { sourceType: storedType, targetType: parameter.type.name });
+      } else {
+        requireAssignable(
+          parameter.type.name,
+          storedType,
+          argument,
+          fileName,
+          state.foreignNamedTypes,
+          state.numericLiteralTypes,
+        );
+      }
       state.nativeArgumentAccesses.set(argument.location.offset, "inout");
       continue;
     }
@@ -1538,6 +1573,19 @@ function checkArguments(
       continue;
     }
     const actual = inferExpression(argument, locals, globals, structs, enums, fileName, state);
+    const expectedSlice = parseSliceType(parameter.type.name);
+    const actualArray = parseFixedArrayType(String(actual));
+    if (expectedSlice) {
+      if (actualArray?.elementType === expectedSlice.elementType) {
+        if (!isNamedStorageExpression(argument)) {
+          throw new DiagnosticError(fileName, argument.location, "an array-to-Slice borrow requires stored array storage");
+        }
+        state.sliceConversions.set(argument.location.offset, { sourceType: String(actual), targetType: parameter.type.name });
+      } else {
+        requireAssignable(parameter.type.name, actual, argument, fileName, state.foreignNamedTypes, state.numericLiteralTypes);
+      }
+      continue;
+    }
     requireAssignable(parameter.type.name, actual, argument, fileName, state.foreignNamedTypes, state.numericLiteralTypes);
     consumeOwnedValue(argument, parameter.type.name, locals, structs, fileName, state);
   }
@@ -2315,6 +2363,11 @@ function validateType(
   fileName: string,
   allowVoid: boolean,
 ): void {
+  const slice = parseSliceType(type.name);
+  if (slice) {
+    validateType({ name: slice.elementType, location: type.location }, structs, enums, foreignNamedTypes, fileName, false);
+    return;
+  }
   const array = parseFixedArrayType(type.name);
   if (array) {
     validateType({ name: array.elementType, location: type.location }, structs, enums, foreignNamedTypes, fileName, false);
@@ -2326,6 +2379,12 @@ function validateType(
   if (!allowVoid && type.name === "void") {
     throw new DiagnosticError(fileName, type.location, "void is not a value type");
   }
+}
+
+function containsSliceType(name: string): boolean {
+  if (parseSliceType(name)) return true;
+  const array = parseFixedArrayType(name);
+  return array ? containsSliceType(array.elementType) : false;
 }
 
 function requireAssignable(
