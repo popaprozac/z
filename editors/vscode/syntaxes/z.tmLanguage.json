@@ -118,7 +118,7 @@
     "operators": {
       "patterns": [
         { "name": "keyword.operator.arrow.z", "match": "=>" },
-        { "name": "keyword.operator.z", "match": "(?:==|!=|<=|>=|<<|>>|&&|\\|\\||[=!<>+\\-*/&|^~])" }
+        { "name": "keyword.operator.z", "match": "(?:==|!=|<=|>=|<<|>>|&&|\\|\\||[=!<>+\\-*/%&|^~])" }
       ]
     },
     "numbers": {

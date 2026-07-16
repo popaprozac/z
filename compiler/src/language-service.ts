@@ -449,6 +449,10 @@ export function hover(source: string, fileName: string, offset: number): Hover |
       const method = resolved.declaration.methods.find((item) => item.name === word.text);
       if (method) return markdownHover(zFunctionDetail(method.name, method.parameters, method.returnType.name, [], context.typeDisplayNames), source, word.start, word.end);
     }
+    if (resolved?.kind === "integer") {
+      const detail = integerMethodDetail(word.text, resolved.type);
+      if (detail) return markdownHover(detail, source, word.start, word.end);
+    }
     if (resolved?.kind === "array" && word.text === "length") {
       return markdownHover(`length: usize  // ${displayType(resolved.type, context.typeDisplayNames)}`, source, word.start, word.end);
     }
@@ -818,6 +822,9 @@ function memberCompletions(
     }
     return filterCompletions(items, prefix, 1000);
   }
+  if (resolved?.kind === "integer") {
+    return filterCompletions(integerCompletions(resolved.type), prefix, 1000);
+  }
   return [];
 }
 
@@ -1052,6 +1059,7 @@ type ResolvedReceiver =
   | { readonly kind: "module"; readonly module: ForeignModule }
   | { readonly kind: "objc"; readonly declaration: ForeignObjCInterface; readonly instance: boolean }
   | { readonly kind: "struct"; readonly declaration: StructDeclaration }
+  | { readonly kind: "integer"; readonly type: string }
   | { readonly kind: "array"; readonly type: string };
 
 function resolveReceiver(context: AnalyzedSource, text: string, offset: number): ResolvedReceiver | null {
@@ -1065,11 +1073,45 @@ function resolveReceiver(context: AnalyzedSource, text: string, offset: number):
   const type = context.semanticInfo.expressionTypes.get(offset);
   if (!type) return null;
   if (parseFixedArrayType(type) || parseSliceType(type) || parseDynamicArrayType(type)) return { kind: "array", type };
+  if (isIntegerSourceType(type)) return { kind: "integer", type };
   const interfaceName = type.replace(/^__z_objc:(?:nullable|nonnull):/, "");
   const objc = context.semanticInfo.foreignInterfaces.get(interfaceName);
   if (objc) return { kind: "objc", declaration: objc, instance: true };
   const declaration = context.program.structs.find((item) => item.name === type);
   return declaration ? { kind: "struct", declaration } : null;
+}
+
+function isIntegerSourceType(type: string): boolean {
+  return /^(?:i8|u8|i16|u16|i32|u32|i64|u64|isize|usize)$/.test(type);
+}
+
+function integerMethodDetail(name: string, type: string): string | null {
+  const descriptions: Readonly<Record<string, string>> = {
+    wrappingAdd: "wraps modulo the integer width",
+    wrappingSubtract: "wraps modulo the integer width",
+    wrappingMultiply: "wraps modulo the integer width",
+    saturatingAdd: "clamps to the nearest representable value",
+    saturatingSubtract: "clamps to the nearest representable value",
+    saturatingMultiply: "clamps to the nearest representable value",
+  };
+  const description = descriptions[name];
+  return description ? `${name}(other: ${type}): ${type}  // ${description}` : null;
+}
+
+function integerCompletions(type: string): CompletionItem[] {
+  return [
+    "wrappingAdd",
+    "wrappingSubtract",
+    "wrappingMultiply",
+    "saturatingAdd",
+    "saturatingSubtract",
+    "saturatingMultiply",
+  ].map((name) => ({
+    label: name,
+    kind: completionKinds.method,
+    detail: integerMethodDetail(name, type)!,
+    insertText: `${name}()`,
+  }));
 }
 
 function moduleCompletions(module: ForeignModule, prefix: string): CompletionItem[] {

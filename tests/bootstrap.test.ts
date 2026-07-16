@@ -455,7 +455,7 @@ test("checks contextual literals and preserves exact integer expression types", 
   `;
   const generated = compileToC(source, "integer-widths.z");
   assert.match(generated, /static uint16_t plus\(uint16_t value\)/);
-  assert.match(generated, /const uint16_t result = \(value \+ 3\);/);
+  assert.match(generated, /const uint16_t result = z_checked_add_u16\(value, 3\);/);
   assert.match(generated, /return 4294967295U;/);
   assert.match(generated, /return 18446744073709551615ULL;/);
 
@@ -476,6 +476,63 @@ test("checks contextual literals and preserves exact integer expression types", 
   );
 });
 
+test("checks integer arithmetic and provides explicit wrapping and saturation", () => {
+  const example = resolve(projectRoot, "examples/integer-safety.z");
+  const source = readFileSync(example, "utf8");
+  const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, "wrapped=0,255,254, saturated=255,-128,255, division=3,2, negated=-3, shifts=12,6\n");
+
+  const generated = compileToC(source, example);
+  assert.match(generated, /z_wrapping_add_u8\(maximum, 1\)/);
+  assert.match(generated, /z_wrapping_subtract_u8\(unsignedZero, 1\)/);
+  assert.match(generated, /z_wrapping_multiply_u8\(maximum, 2\)/);
+  assert.match(generated, /z_saturating_add_u8\(maximum, 1\)/);
+  assert.match(generated, /z_saturating_subtract_i8\(minimum, 2\)/);
+  assert.match(generated, /z_saturating_multiply_u8\(maximum, 2\)/);
+  assert.match(generated, /z_checked_divide_i32\(17, 5\)/);
+  assert.match(generated, /z_checked_remainder_i32\(17, 5\)/);
+  assert.match(generated, /z_checked_negate_i32\(quotient\)/);
+  assert.match(generated, /z_checked_shift_left_i32\(quotient, 2\)/);
+  assert.match(generated, /z_checked_shift_right_i32\(shifted, 1\)/);
+
+  const wrappingOffset = source.indexOf("wrappingAdd") + 1;
+  assert.match(hover(source, example, wrappingOffset)?.contents.value ?? "", /wrappingAdd\(other: u8\): u8/);
+  const completionSource = source.replace("maximum.wrappingAdd(1)", "maximum.wrap");
+  const completionOffset = completionSource.indexOf("maximum.wrap") + "maximum.wrap".length;
+  const wrappingCompletion = completions(completionSource, example, completionOffset)
+    .find((item) => item.label === "wrappingAdd");
+  assert.equal(wrappingCompletion?.kind, 2);
+  assert.match(wrappingCompletion?.detail ?? "", /wraps modulo the integer width/);
+
+  const constantCases = [
+    ["function main(): i32 { return 2147483647 + 1; }", "constant-add-overflow.z", "Z0101", /overflows i32/],
+    ["function main(): i32 { return 10 / 0; }", "constant-divide-zero.z", "Z0102", /division by zero/],
+    ["function main(): i32 { return 1 << 32; }", "constant-shift-range.z", "Z0103", /outside the range for i32/],
+  ] as const;
+  for (const [invalidSource, fileName, code, summary] of constantCases) {
+    let caught: unknown;
+    try {
+      compileToC(invalidSource, fileName);
+    } catch (error) {
+      caught = error;
+    }
+    assert.ok(caught instanceof DiagnosticError);
+    assert.equal(caught.code, code);
+    assert.match(caught.summary, summary);
+    assert.equal(diagnostics(invalidSource, fileName)[0].code, code);
+  }
+
+  const directory = mkdtempSync("/tmp/z-integer-trap-");
+  const trapSource = resolve(directory, "main.z");
+  writeFileSync(trapSource, `
+    function overflow(value: i32): i32 { return value + 1; }
+    function main(): i32 { return overflow(2147483647); }
+  `);
+  const trapped = spawnSync(process.execPath, [cli, "run", trapSource], { encoding: "utf8" });
+  assert.notEqual(trapped.status, 0);
+});
+
 test("runs floating-point values and typed bitwise option masks", () => {
   const example = resolve(projectRoot, "examples/apple-groundwork.z");
   const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
@@ -490,7 +547,7 @@ test("runs floating-point values and typed bitwise option masks", () => {
   assert.match(artifact.source, /const float width = 800\.0F;/);
   assert.match(artifact.source, /const ZCoordinate windowArea = z_area\(800\.0, 600\.0\);/);
   assert.match(artifact.source, /const uintptr_t styleMask = \(\(titled \| 2ULL\) \| 8ULL\);/);
-  assert.match(artifact.source, /const uint32_t shifted = \(one << 3U\);/);
+  assert.match(artifact.source, /const uint32_t shifted = z_checked_shift_left_u32\(one, 3U\);/);
   assert.match(artifact.source, /const uint32_t inverted = \(~one\);/);
   assert.match(artifact.source, /const uintptr_t toggled = \(filtered \^ 1ULL\);/);
   assert.match(artifact.source, /const float scientific = 1\.5e2F;/);
@@ -504,7 +561,7 @@ test("imports uniquely named C++ namespace functions and plain value records", (
   assert.deepEqual(artifact.frameworks, []);
   assert.match(artifact.source, /#include <cpp_math\.hpp>/);
   assert.match(artifact.source, /const zcpp::Point origin/);
-  assert.match(artifact.source, /zcpp::translate\(origin, 1, \(-1\)\)/);
+  assert.match(artifact.source, /zcpp::translate\(origin, 1, z_checked_negate_i32\(1\)\)/);
   assert.match(artifact.source, /zcpp::sum\(moved\)/);
 
   const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
@@ -2752,7 +2809,7 @@ test("assigns mutable locals and nested value fields", () => {
   assert.equal(result.stdout, "count=2 point=40,2 frame=40,2/640\n");
 
   const generated = compileToC(readFileSync(example, "utf8"), example);
-  assert.match(generated, /count = \(count \+ 1\);/);
+  assert.match(generated, /count = z_checked_add_i32\(count, 1\);/);
   assert.match(generated, /\(point\)\.x = 40;/);
   assert.match(generated, /point = \(Z_Point\)\{ \.x = \(point\)\.x, \.y = count \};/);
   assert.match(generated, /\(\(frame\)\.origin\)\.y = 2;/);
@@ -2867,7 +2924,7 @@ test("moves consuming receivers and cleans them up exactly once", () => {
   const generated = compileToC(readFileSync(example, "utf8"), example);
   assert.match(generated, /static Z_Resource Z_Resource_relay\(Z_Resource self\)/);
   assert.match(generated, /static int32_t Z_Resource_finish\(Z_Resource self, int32_t offset\)/);
-  assert.match(generated, /self\.id = \(self\.id \+ offset\);/);
+  assert.match(generated, /self\.id = z_checked_add_i32\(self\.id, offset\);/);
   assert.match(generated, /Z_Resource_relay\(\(_z_live_first_\d+ = false, first\)\)/);
   assert.match(generated, /Z_Resource_finish\(\(_z_live_second_\d+ = false, second\), 2\)/);
 
@@ -3410,6 +3467,7 @@ test("editor grammar tracks keywords without reserving Result variants", () => {
   assert.match(operatorPattern, /&&/);
   assert.match(operatorPattern, /<</);
   assert.match(operatorPattern, /\^/);
+  assert.match(operatorPattern, /%/);
   assert.match(operatorPattern, /=/);
   assert.match(operatorScopes, /keyword\.operator\.arrow\.z/);
   assert.match(typePattern, /Slice/);

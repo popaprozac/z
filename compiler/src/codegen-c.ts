@@ -13,7 +13,7 @@ import {
   parseFixedArrayType,
   parseSliceType,
 } from "./array-types.ts";
-import type { ClosureInfo, SemanticInfo } from "./sema.ts";
+import type { ClosureInfo, IntegerOperation, SemanticInfo } from "./sema.ts";
 import { isStandardModuleSpecifier } from "./standard-library.ts";
 
 type GenerationContext = {
@@ -106,6 +106,8 @@ export function generateC(program: Program, sourceName: string, semanticInfo: Se
     lines.push(`#include <${declaration.header}>`);
     includedHeaders.add(declaration.header);
   }
+  const integerRuntime = generateIntegerRuntime(semanticInfo.integerOperations);
+  if (integerRuntime.length > 0) lines.push("", ...integerRuntime);
   if (programUsesIndex(program)) {
     lines.push(
       "",
@@ -1925,8 +1927,13 @@ function generateExpression(expression: Expression, context: GenerationContext):
       if (parseSliceType(context.localTypes.get(expression.name) ?? "")) return expression.name;
       if (context.parameterModes.get(expression.name) === "inout" || context.parameterModes.get(expression.name) === "out") return expression.name;
       return `&(${expression.name})`;
-    case "unary":
+    case "unary": {
+      const integerOperation = context.semanticInfo.integerOperations.get(expression.location.offset);
+      if (integerOperation) {
+        return `${integerOperationName(integerOperation)}(${generateExpression(expression.operand, context)})`;
+      }
       return `(${expression.operator}${generateExpression(expression.operand, context)})`;
+    }
     case "identifier":
       if (context.semanticInfo.foreignFunctionNames.has(expression.location.offset)) {
         return context.semanticInfo.foreignFunctionNames.get(expression.location.offset)!;
@@ -1963,8 +1970,13 @@ function generateExpression(expression: Expression, context: GenerationContext):
         return `(${liveFlag} = false, ${expression.name})`;
       }
       return maybeRetainClass(expression, expression.name, context);
-    case "binary":
+    case "binary": {
+      const integerOperation = context.semanticInfo.integerOperations.get(expression.location.offset);
+      if (integerOperation) {
+        return `${integerOperationName(integerOperation)}(${generateExpression(expression.left, context)}, ${generateExpression(expression.right, context)})`;
+      }
       return `(${generateExpression(expression.left, context)} ${expression.operator} ${generateExpression(expression.right, context)})`;
+    }
     case "conditional":
       return `(${generateExpression(expression.condition, context)} ? ${generateExpression(expression.thenExpression, context)} : ${generateExpression(expression.elseExpression, context)})`;
     case "closure":
@@ -2061,6 +2073,10 @@ function generateExpression(expression: Expression, context: GenerationContext):
       );
     }
     case "call": {
+      const integerOperation = context.semanticInfo.integerOperations.get(expression.location.offset);
+      if (integerOperation && expression.callee.kind === "member") {
+        return `${integerOperationName(integerOperation)}(${generateExpression(expression.callee.object, context)}, ${generateExpression(expression.arguments[0], context)})`;
+      }
       if (
         expression.callee.kind === "member"
         && expression.callee.object.kind === "identifier"
@@ -2158,6 +2174,129 @@ function generateCallArgument(expression: Expression, context: GenerationContext
     : value;
 }
 
+function generateIntegerRuntime(operations: ReadonlyMap<number, IntegerOperation>): string[] {
+  const unique = new Map<string, IntegerOperation>();
+  for (const operation of operations.values()) {
+    unique.set(`${operation.kind}:${operation.type}`, operation);
+  }
+  return [...unique.values()]
+    .sort((left, right) => integerOperationName(left).localeCompare(integerOperationName(right)))
+    .flatMap((operation) => [generateIntegerOperation(operation), ""]);
+}
+
+function integerOperationName(operation: IntegerOperation): string {
+  const names: Readonly<Record<IntegerOperation["kind"], string>> = {
+    checkedAdd: "checked_add",
+    checkedSubtract: "checked_subtract",
+    checkedMultiply: "checked_multiply",
+    checkedDivide: "checked_divide",
+    checkedRemainder: "checked_remainder",
+    checkedNegate: "checked_negate",
+    checkedShiftLeft: "checked_shift_left",
+    checkedShiftRight: "checked_shift_right",
+    wrappingAdd: "wrapping_add",
+    wrappingSubtract: "wrapping_subtract",
+    wrappingMultiply: "wrapping_multiply",
+    saturatingAdd: "saturating_add",
+    saturatingSubtract: "saturating_subtract",
+    saturatingMultiply: "saturating_multiply",
+  };
+  return `z_${names[operation.kind]}_${operation.type}`;
+}
+
+function generateIntegerOperation(operation: IntegerOperation): string {
+  const cType = primitiveTypeNames[operation.type];
+  if (!cType) throw new Error(`unsupported integer operation type ${JSON.stringify(operation.type)}`);
+  const name = integerOperationName(operation);
+  const signed = !operation.type.startsWith("u");
+  const limits: Readonly<Record<string, { readonly minimum?: string; readonly maximum: string }>> = {
+    i8: { minimum: "INT8_MIN", maximum: "INT8_MAX" },
+    u8: { maximum: "UINT8_MAX" },
+    i16: { minimum: "INT16_MIN", maximum: "INT16_MAX" },
+    u16: { maximum: "UINT16_MAX" },
+    i32: { minimum: "INT32_MIN", maximum: "INT32_MAX" },
+    u32: { maximum: "UINT32_MAX" },
+    i64: { minimum: "INT64_MIN", maximum: "INT64_MAX" },
+    u64: { maximum: "UINT64_MAX" },
+    isize: { minimum: "INTPTR_MIN", maximum: "INTPTR_MAX" },
+    usize: { maximum: "UINTPTR_MAX" },
+  };
+  const limit = limits[operation.type]!;
+  const binaryHeader = `static inline ${cType} ${name}(${cType} left, ${cType} right) {`;
+  const result = `  ${cType} result;`;
+  if (operation.kind === "checkedNegate") {
+    return [
+      `static inline ${cType} ${name}(${cType} value) {`,
+      result,
+      "  if (__builtin_sub_overflow(0, value, &result)) abort();",
+      "  return result;",
+      "}",
+    ].join("\n");
+  }
+  if (operation.kind === "checkedAdd" || operation.kind === "checkedSubtract" || operation.kind === "checkedMultiply") {
+    const builtin = operation.kind === "checkedAdd"
+      ? "__builtin_add_overflow"
+      : operation.kind === "checkedSubtract"
+        ? "__builtin_sub_overflow"
+        : "__builtin_mul_overflow";
+    return [binaryHeader, result, `  if (${builtin}(left, right, &result)) abort();`, "  return result;", "}"].join("\n");
+  }
+  if (operation.kind === "checkedDivide" || operation.kind === "checkedRemainder") {
+    return [
+      binaryHeader,
+      "  if (right == 0) abort();",
+      ...(signed ? [`  if (left == ${limit.minimum} && right == -1) abort();`] : []),
+      `  return left ${operation.kind === "checkedDivide" ? "/" : "%"} right;`,
+      "}",
+    ].join("\n");
+  }
+  if (operation.kind === "checkedShiftLeft" || operation.kind === "checkedShiftRight") {
+    const rangeCheck = signed
+      ? "  if (right < 0 || (uint64_t)right >= sizeof(left) * 8) abort();"
+      : "  if ((uint64_t)right >= sizeof(left) * 8) abort();";
+    if (operation.kind === "checkedShiftRight") {
+      return [binaryHeader, rangeCheck, "  return left >> right;", "}"].join("\n");
+    }
+    return [
+      binaryHeader,
+      rangeCheck,
+      result,
+      "  uint64_t factor = UINT64_C(1) << (uint64_t)right;",
+      "  if (__builtin_mul_overflow(left, factor, &result)) abort();",
+      "  return result;",
+      "}",
+    ].join("\n");
+  }
+  const wrappingBuiltin = operation.kind.endsWith("Add")
+    ? "__builtin_add_overflow"
+    : operation.kind.endsWith("Subtract")
+      ? "__builtin_sub_overflow"
+      : "__builtin_mul_overflow";
+  if (operation.kind.startsWith("wrapping")) {
+    return [
+      binaryHeader,
+      result,
+      `  (void)${wrappingBuiltin}(left, right, &result);`,
+      "  return result;",
+      "}",
+    ].join("\n");
+  }
+  const saturation = !signed
+    ? operation.kind === "saturatingSubtract" ? "0" : limit.maximum
+    : operation.kind === "saturatingAdd"
+      ? `(right > 0 ? ${limit.maximum} : ${limit.minimum})`
+      : operation.kind === "saturatingSubtract"
+        ? `(right > 0 ? ${limit.minimum} : ${limit.maximum})`
+        : `((left < 0) != (right < 0) ? ${limit.minimum} : ${limit.maximum})`;
+  return [
+    binaryHeader,
+    result,
+    `  if (${wrappingBuiltin}(left, right, &result)) return ${saturation};`,
+    "  return result;",
+    "}",
+  ].join("\n");
+}
+
 function generateNumericLiteral(value: string, type: string | undefined): string {
   const isFloating = /[.eE]/.test(value);
   if (type === "f32") return `${value}${isFloating ? "F" : ".0F"}`;
@@ -2169,6 +2308,8 @@ function generateNumericLiteral(value: string, type: string | undefined): string
 }
 
 function inferExpressionType(expression: Expression, context: GenerationContext): string {
+  const integerOperation = context.semanticInfo.integerOperations.get(expression.location.offset);
+  if (integerOperation) return integerOperation.type;
   const foreignExpressionType = context.semanticInfo.foreignExpressionTypes.get(expression.location.offset);
   if (foreignExpressionType) return foreignExpressionType;
   const foreignCallType = expression.kind === "call"
@@ -2188,7 +2329,7 @@ function inferExpressionType(expression: Expression, context: GenerationContext)
     case "unary":
       return "bool";
     case "binary":
-      return ["+", "-", "*", "/", "&", "|", "^", "<<", ">>"].includes(expression.operator) ? "i32" : "bool";
+      return ["+", "-", "*", "/", "%", "&", "|", "^", "<<", ">>"].includes(expression.operator) ? "i32" : "bool";
     case "conditional":
       return inferExpressionType(expression.thenExpression, context);
     case "closure":

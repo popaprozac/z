@@ -152,6 +152,7 @@ export function parse(tokens: Token[], fileName: string): Program {
         return 10;
       case "star":
       case "slash":
+      case "percent":
         return 20;
       default:
         return -1;

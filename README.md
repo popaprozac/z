@@ -591,6 +591,13 @@ exposes no general address-of operator.
 success payload. It is currently supported directly in bindings, returns, and
 expression statements; general nested-expression lowering comes later.
 
+Integer arithmetic is checked consistently in every build mode. Ordinary
+addition, subtraction, multiplication, division, remainder, negation, and
+shifts trap on invalid results without exposing C signed-overflow behavior.
+Constant invalid arithmetic is diagnosed during compilation. Intentional
+overflow uses explicit methods such as `value.wrappingAdd(other)` or
+`value.saturatingMultiply(other)`.
+
 ```sh
 bun run z check examples/first.z
 bun run z emit examples/first.z
@@ -603,6 +610,7 @@ bun run z run examples/foreign-pointers.z
 bun run z run examples/selective-import.z
 bun run z run examples/selective-declarations.z
 bun run z run examples/apple-groundwork.z
+bun run z run examples/integer-safety.z
 bun run z run examples/cpp-interop.z
 bun run z run examples/swift-interop/main.z
 bun run z run examples/nswindow.z # macOS: opens a window and enters AppKit's event loop

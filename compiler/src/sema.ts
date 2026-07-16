@@ -60,6 +60,25 @@ export type ClosureInfo = {
 
 type ValueType = string | "unknown" | "never";
 
+export type IntegerOperation = {
+  readonly kind:
+    | "checkedAdd"
+    | "checkedSubtract"
+    | "checkedMultiply"
+    | "checkedDivide"
+    | "checkedRemainder"
+    | "checkedNegate"
+    | "checkedShiftLeft"
+    | "checkedShiftRight"
+    | "wrappingAdd"
+    | "wrappingSubtract"
+    | "wrappingMultiply"
+    | "saturatingAdd"
+    | "saturatingSubtract"
+    | "saturatingMultiply";
+  readonly type: string;
+};
+
 export type SemanticInfo = {
   readonly movedExpressions: ReadonlySet<number>;
   readonly classCopies: ReadonlySet<number>;
@@ -69,6 +88,7 @@ export type SemanticInfo = {
   readonly foreignNamedTypes: ReadonlyMap<string, ForeignNamedType>;
   readonly foreignExpressionTypes: ReadonlyMap<number, string>;
   readonly numericLiteralTypes: ReadonlyMap<number, string>;
+  readonly integerOperations: ReadonlyMap<number, IntegerOperation>;
   readonly foreignArgumentAccesses: ReadonlyMap<number, "in" | "out" | "inout">;
   readonly foreignFunctionNames: ReadonlyMap<number, string>;
   readonly foreignConstantNames: ReadonlyMap<number, string>;
@@ -100,6 +120,7 @@ type AnalysisState = {
   readonly foreignNamedTypes: ReadonlyMap<string, ForeignNamedType>;
   readonly foreignExpressionTypes: Map<number, string>;
   readonly numericLiteralTypes: Map<number, string>;
+  readonly integerOperations: Map<number, IntegerOperation>;
   readonly foreignArgumentAccesses: Map<number, "in" | "out" | "inout">;
   readonly foreignFunctionNames: Map<number, string>;
   readonly foreignConstantNames: Map<number, string>;
@@ -184,6 +205,7 @@ export function analyze(
     foreignNamedTypes,
     foreignExpressionTypes: new Map(),
     numericLiteralTypes: new Map(),
+    integerOperations: new Map(),
     foreignArgumentAccesses: new Map(),
     foreignFunctionNames: new Map(),
     foreignConstantNames: new Map(),
@@ -1633,6 +1655,10 @@ function inferExpressionInner(
       if (expression.operator === "!" && foreignPointer(operand, state)?.nullable) return "bool";
       if (["+", "-"].includes(expression.operator) && isNumericType(canonicalOperand)) {
         state.foreignExpressionTypes.set(expression.location.offset, canonicalOperand);
+        if (expression.operator === "-" && isIntegerType(canonicalOperand)) {
+          state.integerOperations.set(expression.location.offset, { kind: "checkedNegate", type: canonicalOperand });
+          validateConstantIntegerOperation(expression, canonicalOperand, fileName);
+        }
         return canonicalOperand;
       }
       if (expression.operator === "~" && isIntegerType(canonicalOperand)) {
@@ -1712,11 +1738,25 @@ function inferExpressionInner(
         requireNumericLiteralFits(expression.left, canonicalRight, fileName, state.numericLiteralTypes);
         canonicalLeft = canonicalRight;
       }
-      if (["+", "-", "*", "/"].includes(expression.operator)) {
+      if (["+", "-", "*", "/", "%"].includes(expression.operator)) {
         if (canonicalLeft !== canonicalRight || !isNumericType(canonicalLeft)) {
           throw new DiagnosticError(fileName, expression.location, `operator ${JSON.stringify(expression.operator)} requires matching numeric operands`);
         }
         state.foreignExpressionTypes.set(expression.location.offset, canonicalLeft);
+        if (isIntegerType(canonicalLeft)) {
+          const kinds = {
+            "+": "checkedAdd",
+            "-": "checkedSubtract",
+            "*": "checkedMultiply",
+            "/": "checkedDivide",
+            "%": "checkedRemainder",
+          } as const;
+          state.integerOperations.set(expression.location.offset, {
+            kind: kinds[expression.operator as keyof typeof kinds],
+            type: canonicalLeft,
+          });
+          validateConstantIntegerOperation(expression, canonicalLeft, fileName);
+        }
         return canonicalLeft;
       }
       if (["&", "|", "^", "<<", ">>"].includes(expression.operator)) {
@@ -1732,6 +1772,13 @@ function inferExpressionInner(
           ? left
           : canonicalLeft;
         state.foreignExpressionTypes.set(expression.location.offset, String(result));
+        if (expression.operator === "<<" || expression.operator === ">>") {
+          state.integerOperations.set(expression.location.offset, {
+            kind: expression.operator === "<<" ? "checkedShiftLeft" : "checkedShiftRight",
+            type: canonicalLeft,
+          });
+          validateConstantIntegerOperation(expression, canonicalLeft, fileName);
+        }
         return result;
       }
       if (["<", "<=", ">", ">="].includes(expression.operator)) {
@@ -2031,6 +2078,33 @@ function inferExpressionInner(
           }
         }
         const receiverType = inferExpression(expression.callee.object, locals, globals, structs, enums, fileName, state);
+        const integerReceiverType = canonicalType(receiverType, state.foreignNamedTypes);
+        const integerMethod = isIntegerType(integerReceiverType)
+          ? integerMethodKind(expression.callee.property)
+          : null;
+        if (integerMethod) {
+          rejectLabeledArguments(expression.argumentLabels, expression.location, fileName);
+          if (expression.arguments.length !== 1) {
+            throw new DiagnosticError(
+              fileName,
+              expression.location,
+              `${JSON.stringify(expression.callee.property)} expects 1 argument, received ${expression.arguments.length}`,
+            );
+          }
+          const argument = expression.arguments[0];
+          const actual = inferExpression(argument, locals, globals, structs, enums, fileName, state);
+          if (argument.kind === "number") {
+            requireNumericLiteralFits(argument, integerReceiverType, fileName, state.numericLiteralTypes);
+          } else if (canonicalType(actual, state.foreignNamedTypes) !== integerReceiverType) {
+            throw new DiagnosticError(
+              fileName,
+              argument.location,
+              `${expression.callee.property} requires ${integerReceiverType}, found ${displayArrayType(String(actual))}`,
+            );
+          }
+          state.integerOperations.set(expression.location.offset, { kind: integerMethod, type: integerReceiverType });
+          return integerReceiverType;
+        }
         const dynamic = parseDynamicArrayType(String(receiverType));
         if (dynamic) {
           rejectLabeledArguments(expression.argumentLabels, expression.location, fileName);
@@ -3489,6 +3563,120 @@ function isIntegerLiteral(value: string): boolean {
   return !/[.eE]/.test(value);
 }
 
+function integerMethodKind(name: string): IntegerOperation["kind"] | null {
+  const methods: Readonly<Record<string, IntegerOperation["kind"]>> = {
+    wrappingAdd: "wrappingAdd",
+    wrappingSubtract: "wrappingSubtract",
+    wrappingMultiply: "wrappingMultiply",
+    saturatingAdd: "saturatingAdd",
+    saturatingSubtract: "saturatingSubtract",
+    saturatingMultiply: "saturatingMultiply",
+  };
+  return methods[name] ?? null;
+}
+
+function integerBounds(type: string): { readonly minimum: bigint; readonly maximum: bigint; readonly width: number } | null {
+  const widths: Readonly<Record<string, number>> = {
+    i8: 8,
+    u8: 8,
+    i16: 16,
+    u16: 16,
+    i32: 32,
+    u32: 32,
+    i64: 64,
+    u64: 64,
+    isize: process.arch.includes("64") ? 64 : 32,
+    usize: process.arch.includes("64") ? 64 : 32,
+  };
+  const width = widths[type];
+  if (!width) return null;
+  const unsigned = type.startsWith("u");
+  return {
+    minimum: unsigned ? 0n : -(1n << BigInt(width - 1)),
+    maximum: unsigned ? (1n << BigInt(width)) - 1n : (1n << BigInt(width - 1)) - 1n,
+    width,
+  };
+}
+
+function constantIntegerValue(expression: Expression): bigint | null {
+  if (expression.kind === "number") return isIntegerLiteral(expression.value) ? BigInt(expression.value) : null;
+  if (expression.kind === "unary") {
+    const operand = constantIntegerValue(expression.operand);
+    if (operand === null) return null;
+    if (expression.operator === "+") return operand;
+    if (expression.operator === "-") return -operand;
+    if (expression.operator === "~") return ~operand;
+    return null;
+  }
+  if (expression.kind !== "binary") return null;
+  const left = constantIntegerValue(expression.left);
+  const right = constantIntegerValue(expression.right);
+  if (left === null || right === null) return null;
+  if (expression.operator === "+") return left + right;
+  if (expression.operator === "-") return left - right;
+  if (expression.operator === "*") return left * right;
+  if (expression.operator === "/") return right === 0n ? null : left / right;
+  if (expression.operator === "%") return right === 0n ? null : left % right;
+  if (expression.operator === "&") return left & right;
+  if (expression.operator === "|") return left | right;
+  if (expression.operator === "^") return left ^ right;
+  if ((expression.operator === "<<" || expression.operator === ">>") && right >= 0n && right < 1024n) {
+    return expression.operator === "<<" ? left << right : left >> right;
+  }
+  return null;
+}
+
+function validateConstantIntegerOperation(expression: Expression, type: string, fileName: string): void {
+  const bounds = integerBounds(type);
+  if (!bounds) return;
+  if (expression.kind === "unary") {
+    const value = constantIntegerValue(expression);
+    if (value !== null && (value < bounds.minimum || value > bounds.maximum)) {
+      throw integerOverflowError(fileName, expression, type);
+    }
+    return;
+  }
+  if (expression.kind !== "binary") return;
+  const left = constantIntegerValue(expression.left);
+  const right = constantIntegerValue(expression.right);
+  if (left === null || right === null) return;
+  if ((expression.operator === "/" || expression.operator === "%") && right === 0n) {
+    const operation = expression.operator === "/" ? "division" : "remainder";
+    throw new DiagnosticError(fileName, expression.location, `integer ${operation} by zero`, {
+      code: "Z0102",
+      length: expression.operator.length,
+      notes: [`integer ${operation} by zero traps at runtime when the divisor is not known during compilation`],
+      helps: ["ensure the divisor is nonzero before dividing"],
+    });
+  }
+  if (expression.operator === "%" && left === bounds.minimum && right === -1n) {
+    throw integerOverflowError(fileName, expression, type);
+  }
+  if (expression.operator === "<<" || expression.operator === ">>") {
+    if (right < 0n || right >= BigInt(bounds.width)) {
+      throw new DiagnosticError(fileName, expression.location, `shift count ${right} is outside the range for ${type}`, {
+        code: "Z0103",
+        length: expression.operator.length,
+        notes: [`${type} shift counts must be between 0 and ${bounds.width - 1}`],
+        helps: ["use a shift count within the integer width"],
+      });
+    }
+  }
+  const value = constantIntegerValue(expression);
+  if (value !== null && (value < bounds.minimum || value > bounds.maximum)) {
+    throw integerOverflowError(fileName, expression, type);
+  }
+}
+
+function integerOverflowError(fileName: string, expression: Expression, type: string): DiagnosticError {
+  return new DiagnosticError(fileName, expression.location, `constant integer expression overflows ${type}`, {
+    code: "Z0101",
+    length: expression.kind === "binary" || expression.kind === "unary" ? expression.operator.length : 1,
+    notes: ["ordinary integer arithmetic is checked in every build mode"],
+    helps: ["use wrappingAdd, wrappingSubtract, wrappingMultiply, or a saturating counterpart when overflow is intentional"],
+  });
+}
+
 function requireNumericLiteralFits(
   expression: Extract<Expression, { kind: "number" }>,
   type: string,
@@ -3519,24 +3707,10 @@ function isNullableForeignTypeName(type: string): boolean {
 }
 
 function integerLiteralFits(value: string, type: string): boolean {
-  const bits: Readonly<Record<string, number>> = {
-    i8: 8,
-    u8: 8,
-    i16: 16,
-    u16: 16,
-    i32: 32,
-    u32: 32,
-    i64: 64,
-    u64: 64,
-    isize: process.arch.includes("64") ? 64 : 32,
-    usize: process.arch.includes("64") ? 64 : 32,
-  };
-  const width = bits[type];
-  if (!width) return false;
+  const bounds = integerBounds(type);
+  if (!bounds) return false;
   const literal = BigInt(value);
-  const unsigned = type.startsWith("u");
-  const maximum = unsigned ? (1n << BigInt(width)) - 1n : (1n << BigInt(width - 1)) - 1n;
-  return literal <= maximum;
+  return literal >= bounds.minimum && literal <= bounds.maximum;
 }
 
 function canonicalType(type: ValueType, foreignNamedTypes: ReadonlyMap<string, ForeignNamedType>): ValueType {

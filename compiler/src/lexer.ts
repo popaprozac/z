@@ -76,6 +76,7 @@ export type TokenKind =
   | "minus"
   | "star"
   | "slash"
+  | "percent"
   | "eof";
 
 export type Token = {
@@ -334,6 +335,7 @@ export function lex(
       "-": "minus",
       "*": "star",
       "/": "slash",
+      "%": "percent",
       "&": "bitAnd",
       "|": "bitOr",
       "^": "bitXor",

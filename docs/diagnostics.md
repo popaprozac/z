@@ -21,6 +21,7 @@ The bootstrap reserves these code families:
 
 | Range | Area |
 |---|---|
+| `Z01xx` | numeric safety and arithmetic |
 | `Z02xx` | ownership, moves, borrows, and captures |
 | `Z03xx` | initialization, parameter capabilities, and collection access |
 | `Z04xx` | formatting, console, and string construction |
@@ -29,6 +30,9 @@ Currently structured codes include:
 
 | Code | Meaning |
 |---|---|
+| `Z0101` | compile-time integer overflow |
+| `Z0102` | compile-time integer division or remainder by zero |
+| `Z0103` | compile-time shift count outside the integer width |
 | `Z0201` | use or capture after ownership transfer |
 | `Z0202` | value may move on another control-flow path |
 | `Z0203` | attempted ownership transfer through a borrow |
