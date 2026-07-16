@@ -94,6 +94,33 @@ called through `const`, `let`, or a temporary. The receiver capability belongs
 to the method signature; callers do not repeat `inout` because the receiver is
 already explicit in member-call syntax.
 
+A consuming method takes ownership with `move this`:
+
+```z
+struct Resource {
+  handle: usize;
+
+  function close(move this): void {
+    // Ownership ends here; deinit performs the release on method exit.
+  }
+
+  deinit {
+    native_close(this.handle);
+  }
+}
+
+const resource = Resource { handle };
+resource.close();
+// `resource` has moved and cannot be used again.
+```
+
+The receiver is passed by value and owned by the method. A cleanup-bearing
+receiver is destroyed exactly once on every exit unless the method returns or
+forwards `this`. The owned receiver may be mutated. Calling a consuming method
+on a copyable struct copies it, so the original remains usable. `move` is
+contextual before `this`; functions and enum variants may still be named
+`move`.
+
 Native function parameters are owned/by-value by default. Copyable values copy;
 cleanup-bearing values move. A function declares a borrow only when it does not
 need ownership:

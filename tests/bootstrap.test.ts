@@ -867,6 +867,15 @@ test("keeps receiver capabilities in method signatures", () => {
     /`inout this` is only valid on a struct method/,
   );
 
+  const topLevelMoveReceiver = `
+    function invalid(move this): void {}
+    function main(): i32 { return 0; }
+  `;
+  assert.throws(
+    () => compileToC(topLevelMoveReceiver, "top-level-move-receiver.z"),
+    /`move this` is only valid on a struct method/,
+  );
+
   const movedReceiver = `
     struct Resource {
       value: i32;
@@ -882,6 +891,68 @@ test("keeps receiver capabilities in method signatures", () => {
   assert.throws(
     () => compileToC(movedReceiver, "moved-receiver.z"),
     /overlapping inout and value uses of "resource" in one call are not allowed/,
+  );
+});
+
+test("moves consuming receivers and cleans them up exactly once", () => {
+  const example = resolve(projectRoot, "examples/consuming-methods.z");
+  const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, "drop=42\nresult=42 copy=7,7\n");
+
+  const generated = compileToC(readFileSync(example, "utf8"), example);
+  assert.match(generated, /static Z_Resource Z_Resource_relay\(Z_Resource self\)/);
+  assert.match(generated, /static int32_t Z_Resource_finish\(Z_Resource self, int32_t offset\)/);
+  assert.match(generated, /self\.id = \(self\.id \+ offset\);/);
+  assert.match(generated, /Z_Resource_relay\(\(_z_live_first_\d+ = false, first\)\)/);
+  assert.match(generated, /Z_Resource_finish\(\(_z_live_second_\d+ = false, second\), 2\)/);
+
+  const useAfterConsume = `
+    struct Resource {
+      id: i32;
+      function finish(move this): void {}
+      deinit {}
+    }
+    function main(): i32 {
+      const resource = Resource { id: 1 };
+      resource.finish();
+      return resource.id;
+    }
+  `;
+  assert.throws(
+    () => compileToC(useAfterConsume, "use-after-consuming-method.z"),
+    /use of moved value "resource"/,
+  );
+
+  const borrowedConsume = `
+    struct Resource {
+      id: i32;
+      function finish(move this): void {}
+      function invalid(): void { this.finish(); }
+      deinit {}
+    }
+    function main(): i32 { return 0; }
+  `;
+  assert.throws(
+    () => compileToC(borrowedConsume, "consume-borrowed-receiver.z"),
+    /cannot move the borrowed method receiver `this`; declare `move this`/,
+  );
+
+  const overlappingConsume = `
+    struct Resource {
+      id: i32;
+      function merge(move this, in other: Resource): void {}
+      deinit {}
+    }
+    function main(): i32 {
+      const resource = Resource { id: 1 };
+      resource.merge(resource);
+      return 0;
+    }
+  `;
+  assert.throws(
+    () => compileToC(overlappingConsume, "overlapping-consuming-receiver.z"),
+    /overlapping move and in uses of "resource" in one call are not allowed/,
   );
 });
 

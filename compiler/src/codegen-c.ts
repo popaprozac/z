@@ -137,13 +137,19 @@ function generateFunction(
   if (receiver) localTypes.set("this", receiver.name);
   const liveFlagCounter = { value: 0 };
   const liveFlags = new Map<string, string>();
-  const parameterCleanup = declaration.parameters
+  const ownedReceiverCleanup = receiver
+    && declaration.receiverMode === "move"
+    && hasCleanupType(receiver.name, structs)
+    ? [{ name: "self", type: receiver.name, liveFlag: nextLiveFlag("this", liveFlagCounter) }]
+    : [];
+  if (ownedReceiverCleanup.length > 0) liveFlags.set("this", ownedReceiverCleanup[0].liveFlag);
+  const parameterCleanup = ownedReceiverCleanup.concat(declaration.parameters
     .filter((parameter) => parameter.mode === "value" && hasCleanupType(parameter.type.name, structs))
     .map((parameter) => {
       const liveFlag = nextLiveFlag(parameter.name, liveFlagCounter);
       liveFlags.set(parameter.name, liveFlag);
       return { name: parameter.name, type: parameter.type.name, liveFlag };
-    });
+    }));
   const context: GenerationContext = {
     structs,
     enums,
@@ -240,8 +246,11 @@ function generateFunctionSignature(
     return `${type} ${parameter.name}`;
   });
   if (receiver) {
-    const receiverConst = declaration.receiverMode === "inout" ? "" : "const ";
-    parameters.unshift(`${receiverConst}${structName(receiver.name)} *self`);
+    if (declaration.receiverMode === "move") parameters.unshift(`${structName(receiver.name)} self`);
+    else {
+      const receiverConst = declaration.receiverMode === "inout" ? "" : "const ";
+      parameters.unshift(`${receiverConst}${structName(receiver.name)} *self`);
+    }
   }
   const returnName = declaration.errorType
     ? resultTypeName(declaration.returnType.name, declaration.errorType.name)
@@ -594,7 +603,7 @@ function generateExpression(expression: Expression, context: GenerationContext):
     case "boolean":
       return expression.value ? "true" : "false";
     case "argumentReference":
-      if (expression.name === "this") return "self";
+      if (expression.name === "this") return context.owner.receiverMode === "move" ? "&(self)" : "self";
       if (context.parameterModes.get(expression.name) === "inout") return expression.name;
       return `&(${expression.name})`;
     case "unary":
@@ -603,7 +612,13 @@ function generateExpression(expression: Expression, context: GenerationContext):
       if (context.semanticInfo.foreignFunctionNames.has(expression.location.offset)) {
         return context.semanticInfo.foreignFunctionNames.get(expression.location.offset)!;
       }
-      if (expression.name === "this") return "(*self)";
+      if (expression.name === "this") {
+        const value = context.owner.receiverMode === "move" ? "self" : "(*self)";
+        if (!context.semanticInfo.movedExpressions.has(expression.location.offset)) return value;
+        const liveFlag = context.liveFlags.get("this");
+        if (!liveFlag) throw new Error("missing ownership flag for moved receiver `this`");
+        return `(${liveFlag} = false, ${value})`;
+      }
       if (context.parameterModes.get(expression.name) === "in" || context.parameterModes.get(expression.name) === "inout") {
         return `(*${expression.name})`;
       }
@@ -642,7 +657,9 @@ function generateExpression(expression: Expression, context: GenerationContext):
       }
       if (isForeignMember(expression, context)) return expression.property;
       if (expression.object.kind === "identifier" && expression.object.name === "this") {
-        return `self->${expression.property}`;
+        return context.owner.receiverMode === "move"
+          ? `self.${expression.property}`
+          : `self->${expression.property}`;
       }
       return `(${generateExpression(expression.object, context)}).${expression.property}`;
     }
@@ -657,10 +674,14 @@ function generateExpression(expression: Expression, context: GenerationContext):
           }
         }
         const receiverType = inferExpressionType(expression.callee.object, context);
+        const declaration = context.structs.get(receiverType)!;
+        const method = declaration.methods.find((candidate) => candidate.name === expression.callee.property)!;
         const receiver = generateExpression(expression.callee.object, context);
-        const receiverArgument = expression.callee.object.kind === "identifier" && expression.callee.object.name === "this"
-          ? "self"
-          : `&(${receiver})`;
+        const receiverArgument = method.receiverMode === "move"
+          ? receiver
+          : expression.callee.object.kind === "identifier" && expression.callee.object.name === "this"
+            ? context.owner.receiverMode === "move" ? "&(self)" : "self"
+            : `&(${receiver})`;
         const args = [receiverArgument, ...expression.arguments.map((argument) => generateCallArgument(argument, context))];
         return `${methodName(receiverType, expression.callee.property)}(${args.join(", ")})`;
       }

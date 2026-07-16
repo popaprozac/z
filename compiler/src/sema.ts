@@ -131,7 +131,11 @@ export function analyze(
 
   for (const declaration of program.functions) {
     if (declaration.receiverMode) {
-      throw new DiagnosticError(fileName, declaration.location, "`inout this` is only valid on a struct method");
+      throw new DiagnosticError(
+        fileName,
+        declaration.location,
+        `\`${declaration.receiverMode} this\` is only valid on a struct method`,
+      );
     }
     validateFunctionSignature(declaration, structs, enums, foreignNamedTypes, fileName);
   }
@@ -305,7 +309,9 @@ function analyzeFunction(
 ): void {
   const locals = new Map<string, ValueType>();
   if (receiver) {
-    locals.set("this", declaration.receiverMode === "inout" ? `${mutablePrefix}${receiver.name}` : receiver.name);
+    const borrowed = declaration.receiverMode === "move" ? "" : borrowedPrefix;
+    const mutable = declaration.receiverMode === "inout" || declaration.receiverMode === "move" ? mutablePrefix : "";
+    locals.set("this", `${borrowed}${mutable}${receiver.name}`);
   }
 
   for (const parameter of declaration.parameters) {
@@ -873,15 +879,22 @@ function inferExpression(
           return checkForeignCall(foreignFunction, expression.arguments, locals, globals, structs, enums, fileName, expression.location, state);
         }
         const receiverType = inferExpression(expression.callee.object, locals, globals, structs, enums, fileName, state);
-        if (hasCleanupType(receiverType, structs, state.foreignTypes) && !isNamedStorageExpression(expression.callee.object)) {
-          throw new DiagnosticError(fileName, expression.callee.object.location, "a cleanup-bearing temporary must be bound before calling one of its methods");
-        }
         const declaration = structs.get(receiverType);
         const method = declaration?.methods.find((candidate) => candidate.name === expression.callee.property);
         if (!declaration || !method) {
           throw new DiagnosticError(fileName, expression.callee.location, `type ${JSON.stringify(receiverType)} has no method ${JSON.stringify(expression.callee.property)}`);
         }
+        if (
+          method.receiverMode !== "move"
+          && hasCleanupType(receiverType, structs, state.foreignTypes)
+          && !isNamedStorageExpression(expression.callee.object)
+        ) {
+          throw new DiagnosticError(fileName, expression.callee.object.location, "a cleanup-bearing temporary must be bound before borrowing it for a method call");
+        }
         const mutableReceiverRoot = method.receiverMode === "inout"
+          ? storageRoot(expression.callee.object)
+          : null;
+        const consumingReceiverRoot = method.receiverMode === "move"
           ? storageRoot(expression.callee.object)
           : null;
         if (method.receiverMode === "inout") {
@@ -911,7 +924,11 @@ function inferExpression(
           fileName,
           expression.location,
           state,
-          mutableReceiverRoot?.name ?? null,
+          mutableReceiverRoot
+            ? { name: mutableReceiverRoot.name, mode: "inout" }
+            : consumingReceiverRoot
+              ? { name: consumingReceiverRoot.name, mode: "move" }
+              : null,
         );
         if (mutableReceiverRoot) {
           const receiverAfterArguments = locals.get(mutableReceiverRoot.name);
@@ -922,6 +939,9 @@ function inferExpression(
               `mutable receiver ${JSON.stringify(mutableReceiverRoot.name)} cannot move while borrowed for this call`,
             );
           }
+        }
+        if (method.receiverMode === "move") {
+          consumeOwnedValue(expression.callee.object, receiverType, locals, structs, fileName, state);
         }
         if (method.errorType) {
           if (!allowThrowingCall) throw new DiagnosticError(fileName, expression.location, "throwing call requires `attempt` or `try`");
@@ -963,7 +983,7 @@ function checkArguments(
   fileName: string,
   location: SourceLocation,
   state: AnalysisState,
-  mutableReceiverName: string | null = null,
+  receiverUse: { readonly name: string; readonly mode: "inout" | "move" } | null = null,
 ): void {
   if (target.parameters.length !== args.length) {
     throw new DiagnosticError(
@@ -972,8 +992,8 @@ function checkArguments(
       `${JSON.stringify(target.name)} expects ${target.parameters.length} argument(s), received ${args.length}`,
     );
   }
-  const activeUses = new Map<string, "value" | "in" | "inout">();
-  if (mutableReceiverName) activeUses.set(mutableReceiverName, "inout");
+  const activeUses = new Map<string, "value" | "in" | "inout" | "move">();
+  if (receiverUse) activeUses.set(receiverUse.name, receiverUse.mode);
   for (let index = 0; index < target.parameters.length; index += 1) {
     const parameter = target.parameters[index];
     const argument = args[index];
@@ -1115,12 +1135,12 @@ function consumeOwnedValue(
     throw new DiagnosticError(fileName, expression.location, "moving a cleanup-bearing field out of its owner is not implemented yet");
   }
   if (expression.kind !== "identifier") return;
-  if (expression.name === "this") {
-    throw new DiagnosticError(fileName, expression.location, "cannot move the borrowed method receiver `this`");
-  }
   const stored = locals.get(expression.name);
   if (!stored) return;
   if (isBorrowedBinding(stored)) {
+    if (expression.name === "this") {
+      throw new DiagnosticError(fileName, expression.location, "cannot move the borrowed method receiver `this`; declare `move this`");
+    }
     throw new DiagnosticError(fileName, expression.location, `cannot move borrowed parameter ${JSON.stringify(expression.name)}`);
   }
   locals.set(

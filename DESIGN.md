@@ -58,12 +58,16 @@ typed method interface and uses an explicit receiver capability:
 ```z
 function current(): i32                         // implicit `in this`
 function add(inout this, amount: i32): void    // exclusive mutable borrow
+function close(move this): void                 // ownership transfer
 ```
 
 An `inout` method requires addressable storage rooted in a `let`; it cannot be
 called through a `const`, immutable parameter, immutable receiver, or temporary.
-The borrow lasts for the call and does not transfer ownership. A future
-`move this` can represent consuming methods without adding lifetime syntax.
+The borrow lasts for the call and does not transfer ownership. `move this`
+passes the receiver by value and transfers ownership to the method. The owned
+receiver may be mutated and is cleaned up on every exit unless returned or
+forwarded. Copyable receivers copy instead of invalidating the caller. `move`
+is contextual in this position, so it remains available as an ordinary name.
 `out` is not meaningful for an already-existing receiver.
 
 Attribute syntax remains deliberately open. A future declaration attribute may
@@ -81,7 +85,7 @@ cleanup-bearing values move. Borrowing is the non-default declaration:
 | immutable borrow | `in value: T` | `inspect(value)` | Read-only, non-escaping borrow for the call. |
 | mutable borrow | `inout value: T` | `update(inout value)` | Exclusive read/write borrow for the call. |
 | output | future `out value: T` | `create(out value)` | Callee fully initializes storage. |
-| consuming receiver | future `move this` | `value.consume()` | Receiver ownership transfers to the method. |
+| consuming receiver | `move this` | `value.consume()` | Receiver ownership transfers; copyable values copy. |
 
 Capabilities precede parameter bindings because they modify access to storage,
 not the value's type. The annotation after `:` is always a type.
