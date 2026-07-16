@@ -1315,9 +1315,13 @@ test("shows source generic fields and concrete generic binding types on hover", 
   `;
   const firstField = source.indexOf("first: T");
   const secondField = source.indexOf("second: T");
+  const firstInitializer = source.indexOf("first: 20");
+  const secondInitializer = source.indexOf("second: 22");
   const pairBinding = source.indexOf("pair =");
   assert.match(hover(source, "generic-hover.z", firstField + 1)?.contents.value ?? "", /first: T/);
   assert.match(hover(source, "generic-hover.z", secondField + 1)?.contents.value ?? "", /second: T/);
+  assert.match(hover(source, "generic-hover.z", firstInitializer + 1)?.contents.value ?? "", /first: i32/);
+  assert.match(hover(source, "generic-hover.z", secondInitializer + 1)?.contents.value ?? "", /second: i32/);
   const pairHover = hover(source, "generic-hover.z", pairBinding + 1)?.contents.value ?? "";
   assert.match(pairHover, /pair: Pair<i32>/);
   assert.doesNotMatch(pairHover, /__z_mono_/);
@@ -1326,6 +1330,11 @@ test("shows source generic fields and concrete generic binding types on hover", 
     token.line === beforeFirst.length - 1 && token.character === beforeFirst.at(-1)!.length
   ));
   assert.equal(semanticTokenTypes[firstToken?.type ?? -1], "property");
+  const beforeInitializer = source.slice(0, firstInitializer).split("\n");
+  const initializerToken = decodeSemanticTokens(semanticTokens(source, "generic-hover.z").data).find((token) => (
+    token.line === beforeInitializer.length - 1 && token.character === beforeInitializer.at(-1)!.length
+  ));
+  assert.equal(semanticTokenTypes[initializerToken?.type ?? -1], "property");
 });
 
 test("checks logical operand types", () => {

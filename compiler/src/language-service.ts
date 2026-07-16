@@ -1,4 +1,4 @@
-import type { Program, SourceLocation, Statement, StructDeclaration } from "./ast.ts";
+import type { Program, SourceLocation, Statement, StructDeclaration, StructExpression } from "./ast.ts";
 import { analyzeSource, type AnalyzedSource } from "./compiler.ts";
 import { DiagnosticError } from "./diagnostics.ts";
 import type {
@@ -108,6 +108,7 @@ export function semanticTokens(source: string, fileName: string): { readonly dat
   const fieldDeclarations = new Set(
     context.sourceProgram.structs.flatMap((declaration) => declaration.fields.map((field) => field.location.offset)),
   );
+  const fieldInitializers = new Set(collectStructLiteralFields(context.sourceProgram).map((item) => item.location.offset));
   const traitNames = new Set(context.program.traits.map((item) => item.name));
   const enumNames = new Set(context.program.enums.map((item) => item.name));
   const modules = new Map([...context.foreignModules.keys()].map((name) => [name, context.foreignModules.get(name)!]));
@@ -122,6 +123,13 @@ export function semanticTokens(source: string, fileName: string): { readonly dat
       classifications.set(token.location.offset, {
         type: semanticTokenTypes.indexOf("property"),
         modifiers: 1,
+      });
+      continue;
+    }
+    if (fieldInitializers.has(token.location.offset)) {
+      classifications.set(token.location.offset, {
+        type: semanticTokenTypes.indexOf("property"),
+        modifiers: 0,
       });
       continue;
     }
@@ -229,6 +237,9 @@ export function hover(source: string, fileName: string, offset: number): Hover |
   if (declaredField) {
     return markdownHover(`${declaredField.name}: ${displayType(declaredField.type.name, context.typeDisplayNames)}`, source, word.start, word.end);
   }
+
+  const literalField = structLiteralFieldHover(context, word.start);
+  if (literalField) return markdownHover(literalField, source, word.start, word.end);
 
   const module = context.foreignModules.get(word.text);
   if (module) {
@@ -633,6 +644,47 @@ function describeModuleMember(module: ForeignModule, name: string): string | nul
   return objc ? `Objective-C class ${objc.className}` : null;
 }
 
+function structLiteralFieldHover(context: AnalyzedSource, offset: number): string | null {
+  const item = collectStructLiteralFields(context.sourceProgram).find((candidate) => candidate.location.offset === offset);
+  if (!item) return null;
+  const generic = parseGenericType(item.expression.typeName);
+  const declaration = context.sourceProgram.structs.find((candidate) => candidate.name === (generic?.base ?? item.expression.typeName));
+  if (!declaration) {
+    const foreign = context.semanticInfo.foreignNamedTypes.get(item.expression.typeName);
+    const field = foreign?.kind === "record" ? foreign.fields.find((candidate) => candidate.name === item.name) : null;
+    return field ? `${field.name}: ${field.typeName}` : null;
+  }
+  const field = declaration.fields.find((candidate) => candidate.name === item.name);
+  if (!field) return null;
+  const substitutions = new Map(
+    declaration.typeParameters?.map((parameter, index) => [parameter, generic?.arguments[index] ?? parameter]) ?? [],
+  );
+  return `${field.name}: ${displaySubstitutedType(field.type.name, substitutions, context.typeDisplayNames)}`;
+}
+
+function collectStructLiteralFields(program: Program): Array<{
+  readonly expression: StructExpression;
+  readonly name: string;
+  readonly location: SourceLocation;
+}> {
+  const fields: Array<{ expression: StructExpression; name: string; location: SourceLocation }> = [];
+  const visit = (value: unknown): void => {
+    if (value === null || typeof value !== "object") return;
+    if (Array.isArray(value)) {
+      for (const item of value) visit(item);
+      return;
+    }
+    const node = value as { readonly kind?: string };
+    if (node.kind === "structExpression") {
+      const expression = value as StructExpression;
+      for (const field of expression.fields) fields.push({ expression, name: field.name, location: field.location });
+    }
+    for (const child of Object.values(value as Record<string, unknown>)) visit(child);
+  };
+  visit(program);
+  return fields;
+}
+
 function declarationHover(
   source: string,
   program: Program | null,
@@ -712,6 +764,26 @@ function displayType(type: string, typeDisplayNames: ReadonlyMap<string, string>
   const slice = parseSliceType(type);
   if (slice) return `Slice<${displayType(slice.elementType, typeDisplayNames)}>`;
   return type.replace(/^__z_objc:(?:nullable|nonnull):/, "");
+}
+
+function displaySubstitutedType(
+  type: string,
+  substitutions: ReadonlyMap<string, string>,
+  typeDisplayNames: ReadonlyMap<string, string>,
+): string {
+  const substituted = substitutions.get(type);
+  if (substituted) return displayType(substituted, typeDisplayNames);
+  const generic = parseGenericType(type);
+  if (generic) {
+    return `${generic.base}<${generic.arguments.map((argument) => (
+      displaySubstitutedType(argument, substitutions, typeDisplayNames)
+    )).join(", ")}>`;
+  }
+  const array = parseFixedArrayType(type);
+  if (array) return `${displaySubstitutedType(array.elementType, substitutions, typeDisplayNames)}[${array.length}]`;
+  const slice = parseSliceType(type);
+  if (slice) return `Slice<${displaySubstitutedType(slice.elementType, substitutions, typeDisplayNames)}>`;
+  return displayType(type, typeDisplayNames);
 }
 
 function selectorParts(selector: string): string[] {
