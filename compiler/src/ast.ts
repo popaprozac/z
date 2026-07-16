@@ -227,6 +227,7 @@ export type CallExpression = {
   readonly kind: "call";
   readonly callee: Expression;
   readonly arguments: Expression[];
+  readonly argumentLabels: (string | null)[];
   readonly location: SourceLocation;
 };
 

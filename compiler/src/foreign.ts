@@ -70,6 +70,8 @@ export type ForeignObjCMethod = {
 
 export type ForeignObjCProperty = {
   readonly name: string;
+  readonly getter: string;
+  readonly setter: string | null;
   readonly classProperty: boolean;
   readonly readonly: boolean;
   readonly type: ForeignType;
@@ -160,6 +162,8 @@ type ClangNode = {
   readonly instance?: boolean;
   readonly readonly?: boolean;
   readonly class?: boolean;
+  readonly getter?: { readonly name?: string };
+  readonly setter?: { readonly name?: string };
   readonly isImplicit?: boolean;
   readonly returnType?: { readonly qualType?: string; readonly desugaredQualType?: string };
   readonly super?: { readonly name?: string };
@@ -424,6 +428,10 @@ function collectObjCInterfaces(
       .filter((child) => child.kind === "ObjCPropertyDecl" && child.name && child.type?.qualType)
       .map((property): ForeignObjCProperty => ({
         name: property.name!,
+        getter: property.getter?.name ?? property.name!,
+        setter: property.readonly === true
+          ? null
+          : property.setter?.name ?? `set${property.name![0].toUpperCase()}${property.name!.slice(1)}:`,
         classProperty: property.class === true,
         readonly: property.readonly === true,
         type: mapObjCType(property.type!, className, "return", namedTypes, typeNames, objectType),

@@ -275,10 +275,33 @@ On macOS, an installed framework header such as `AppKit/AppKit.h` selects the
 Objective-C ARC backend and adds its framework to the native link plan. Imported
 interfaces are ARC-managed reference values; superclass metadata is used for
 foreign method lookup without adding inheritance to Z's own type system. The
-bootstrap supports class and instance messages, readonly properties,
-`instancetype`, object nullability, and an autorelease pool around `main`.
-Positional calls resolve a selector by its first component and arity; ambiguity
-is a compile error until labeled arguments provide the complete selector shape.
+bootstrap supports class and instance messages, property getters and setters,
+`instancetype`, object nullability, contextual Objective-C string literals,
+and an autorelease pool around `main`. Positional calls resolve a selector by
+its first component and arity. A call may label every argument after the first
+to spell the complete selector shape without repeating the first component:
+
+```z
+window.initWithContentRect(
+  frame,
+  styleMask: style,
+  backing: AppKit.NSBackingStoreBuffered,
+  defer: false
+);
+```
+
+The first selector component remains the TypeScript-style method name. Labeled
+calls resolve exact selector components and remove ambiguity. For now labels are
+reserved for imported Objective-C methods so the bootstrap does not prematurely
+freeze named-argument semantics for ordinary Z functions.
+
+An immutable binding to an Objective-C object fixes the reference but does not
+claim that the foreign object is deeply immutable. Assignment to a writable
+imported property therefore sends its Clang-declared setter, including custom
+accessor names, while rebinding the local remains forbidden. A string literal
+is emitted as an Objective-C `NSString` literal only when the receiving
+parameter or property accepts `NSString` (or a compatible supertype); ordinary
+Z and C string literals remain `cstring` values.
 
 Clang supplies ABI identity and signatures but cannot generally say whether a C
 pointer is nullable, borrowed, transferred, retained, or consumed. Z therefore
@@ -347,7 +370,8 @@ Interop work proceeds in layers:
 2. Clang-AST symbol and layout import.
 3. Ownership and lifetime API notes.
 4. Objective-C methods, properties, protocols, blocks, and ARC conventions
-   (initial ARC methods and readonly properties implemented).
+   (ARC methods, labeled selectors, properties, and contextual string literals
+   implemented).
 5. C++ values, RAII, overloads, and selected templates.
 6. Callback-to-async synthesis.
 7. Swift generated-interface import.

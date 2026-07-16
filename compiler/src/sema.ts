@@ -28,6 +28,12 @@ export type ObjCCallInfo = {
   readonly selector: string;
 };
 
+export type ObjCPropertyInfo = {
+  readonly getter: string;
+  readonly setter: string | null;
+  readonly type: ForeignType;
+};
+
 type ValueType = string | "unknown" | "never";
 
 export type SemanticInfo = {
@@ -44,8 +50,9 @@ export type SemanticInfo = {
   readonly foreignObjectTypes: ReadonlyMap<string, ForeignObjectType>;
   readonly foreignInterfaces: ReadonlyMap<string, ForeignObjCInterface>;
   readonly objcClassNames: ReadonlyMap<number, string>;
-  readonly objcPropertyNames: ReadonlyMap<number, string>;
+  readonly objcProperties: ReadonlyMap<number, ObjCPropertyInfo>;
   readonly objcCalls: ReadonlyMap<number, ObjCCallInfo>;
+  readonly objcStringLiterals: ReadonlySet<number>;
   readonly objectiveC: boolean;
   readonly frameworks: readonly string[];
 };
@@ -64,8 +71,9 @@ type AnalysisState = {
   readonly foreignObjectTypes: ReadonlyMap<string, ForeignObjectType>;
   readonly foreignInterfaces: ReadonlyMap<string, ForeignObjCInterface>;
   readonly objcClassNames: Map<number, string>;
-  readonly objcPropertyNames: Map<number, string>;
+  readonly objcProperties: Map<number, ObjCPropertyInfo>;
   readonly objcCalls: Map<number, ObjCCallInfo>;
+  readonly objcStringLiterals: Set<number>;
   readonly objectiveC: boolean;
   readonly frameworks: readonly string[];
 };
@@ -120,8 +128,9 @@ export function analyze(
     foreignObjectTypes,
     foreignInterfaces,
     objcClassNames: new Map(),
-    objcPropertyNames: new Map(),
+    objcProperties: new Map(),
     objcCalls: new Map(),
+    objcStringLiterals: new Set(),
     objectiveC: frameworks.size > 0,
     frameworks: [...frameworks],
   };
@@ -477,6 +486,19 @@ function analyzeStatement(
       return;
     }
     case "assignment": {
+      if (statement.target.kind === "member") {
+        inferExpression(statement.target, locals, globals, structs, enums, fileName, state);
+        const property = state.objcProperties.get(statement.target.location.offset);
+        if (property) {
+          if (!property.setter) {
+            throw new DiagnosticError(fileName, statement.target.location, `Objective-C property ${JSON.stringify(statement.target.property)} is readonly`);
+          }
+          const contextual = contextualObjCStringType(property.type, statement.expression, state);
+          const actual = contextual ?? inferDirectValue(statement.expression, owner, locals, globals, structs, enums, fileName, state);
+          requireObjCAssignable(property.type, actual, statement.expression, fileName, state);
+          return;
+        }
+      }
       const root = storageRoot(statement.target);
       if (!root) {
         throw new DiagnosticError(fileName, statement.target.location, "assignment target must be a mutable binding or one of its fields");
@@ -493,9 +515,6 @@ function analyzeStatement(
       const expected = statement.target.kind === "identifier"
         ? underlyingType(stored)
         : inferExpression(statement.target, locals, globals, structs, enums, fileName, state);
-      if (state.objcPropertyNames.has(statement.target.location.offset)) {
-        throw new DiagnosticError(fileName, statement.target.location, "Objective-C property assignment is not implemented yet");
-      }
       const actual = inferDirectValue(statement.expression, owner, locals, globals, structs, enums, fileName, state);
       requireAssignable(expected, actual, statement.expression, fileName, state.foreignNamedTypes, state.numericLiteralTypes);
       if (hasCleanupType(expected, structs, state.foreignTypes)) {
@@ -976,7 +995,11 @@ function inferExpression(
         }
         const propertyType = foreignValueType(property.type);
         if (propertyType === "unknown") throw new DiagnosticError(fileName, expression.location, `Objective-C property ${JSON.stringify(property.name)} uses an unsupported type`);
-        state.objcPropertyNames.set(expression.location.offset, property.name);
+        state.objcProperties.set(expression.location.offset, {
+          getter: property.getter,
+          setter: property.setter,
+          type: property.type,
+        });
         state.foreignExpressionTypes.set(expression.location.offset, String(propertyType));
         return propertyType;
       }
@@ -1009,6 +1032,7 @@ function inferExpression(
         if (expression.callee.object.kind === "identifier") {
           const enumDeclaration = enums.get(expression.callee.object.name);
           if (enumDeclaration) {
+            rejectLabeledArguments(expression.argumentLabels, expression.location, fileName);
             const variant = enumDeclaration.variants.find((candidate) => candidate.name === expression.callee.property);
             if (!variant) throw new DiagnosticError(fileName, expression.callee.location, `enum ${JSON.stringify(enumDeclaration.name)} has no variant ${JSON.stringify(expression.callee.property)}`);
             const expectedCount = variant.payload ? 1 : 0;
@@ -1023,6 +1047,7 @@ function inferExpression(
         if (isForeignMember(expression.callee, globals)) {
           const foreignFunction = getForeignFunction(expression.callee, globals);
           if (foreignFunction) {
+            rejectLabeledArguments(expression.argumentLabels, expression.location, fileName);
             return checkForeignCall(foreignFunction, expression.arguments, locals, globals, structs, enums, fileName, expression.location, state);
           }
           const symbol = expression.callee.object.kind === "identifier" ? globals.get(expression.callee.object.name) : null;
@@ -1037,6 +1062,7 @@ function inferExpression(
             objcReceiverType,
             expression.callee.property,
             expression.arguments.length,
+            expression.argumentLabels,
             state,
             fileName,
             expression.callee.location,
@@ -1057,6 +1083,7 @@ function inferExpression(
         if (!declaration || !method) {
           throw new DiagnosticError(fileName, expression.callee.location, `type ${JSON.stringify(receiverType)} has no method ${JSON.stringify(expression.callee.property)}`);
         }
+        rejectLabeledArguments(expression.argumentLabels, expression.location, fileName);
         if (
           method.receiverMode !== "move"
           && hasCleanupType(receiverType, structs, state.foreignTypes)
@@ -1130,12 +1157,14 @@ function inferExpression(
       }
       const target = globals.get(expression.callee.name);
       if (target?.kind === "foreignFunction") {
+        rejectLabeledArguments(expression.argumentLabels, expression.location, fileName);
         state.foreignFunctionNames.set(expression.callee.location.offset, target.declaration.name);
         return checkForeignCall(target.declaration, expression.arguments, locals, globals, structs, enums, fileName, expression.location, state);
       }
       if (target?.kind !== "function") {
         throw new DiagnosticError(fileName, expression.callee.location, `unknown function ${JSON.stringify(expression.callee.name)}`);
       }
+      rejectLabeledArguments(expression.argumentLabels, expression.location, fileName);
       checkArguments(target.declaration, expression.arguments, locals, globals, structs, enums, fileName, expression.location, state);
       if (target.declaration.errorType) {
         if (!allowThrowingCall) throw new DiagnosticError(fileName, expression.location, "throwing call requires `attempt` or `try`");
@@ -1628,10 +1657,18 @@ function findObjCMethod(
   receiver: { readonly declaration: ForeignObjCInterface; readonly instance: boolean },
   baseName: string,
   argumentCount: number,
+  argumentLabels: readonly (string | null)[],
   state: AnalysisState,
   fileName: string,
   location: SourceLocation,
 ): ForeignObjCMethod {
+  const usesLabels = argumentLabels.some((label) => label !== null);
+  if (argumentLabels[0] !== null && argumentLabels.length > 0) {
+    throw new DiagnosticError(fileName, location, "the first Objective-C argument is already named by the method and must not have a label");
+  }
+  if (usesLabels && argumentLabels.slice(1).some((label) => label === null)) {
+    throw new DiagnosticError(fileName, location, "a labeled Objective-C call must label every argument after the first");
+  }
   let declaration: ForeignObjCInterface | undefined = receiver.declaration;
   const matches: ForeignObjCMethod[] = [];
   while (declaration) {
@@ -1639,6 +1676,7 @@ function findObjCMethod(
       method.instance === receiver.instance
       && method.baseName === baseName
       && method.parameters.length === argumentCount
+      && (!usesLabels || objectiveCLabels(method.selector).every((label, index) => label === argumentLabels[index]))
     )));
     if (matches.length > 0 || !declaration.superName) break;
     const moduleName = declaration.typeName.slice(0, declaration.typeName.lastIndexOf("."));
@@ -1646,12 +1684,30 @@ function findObjCMethod(
   }
   if (matches.length === 0) {
     const kind = receiver.instance ? "instance" : "class";
-    throw new DiagnosticError(fileName, location, `Objective-C ${kind} ${JSON.stringify(receiver.declaration.className)} has no method ${JSON.stringify(baseName)} accepting ${argumentCount} argument(s)`);
+    const suffix = usesLabels
+      ? ` matching labels ${argumentLabels.slice(1).map((label) => `${label}:`).join(" ")}`
+      : ` accepting ${argumentCount} argument(s)`;
+    throw new DiagnosticError(fileName, location, `Objective-C ${kind} ${JSON.stringify(receiver.declaration.className)} has no method ${JSON.stringify(baseName)}${suffix}`);
   }
   if (matches.length > 1) {
     throw new DiagnosticError(fileName, location, `Objective-C method ${JSON.stringify(baseName)} is ambiguous; labeled arguments are required to select a selector`);
   }
   return matches[0];
+}
+
+function objectiveCLabels(selector: string): (string | null)[] {
+  if (!selector.includes(":")) return [];
+  return [null, ...selector.split(":").slice(1, -1)];
+}
+
+function rejectLabeledArguments(
+  labels: readonly (string | null)[],
+  location: SourceLocation,
+  fileName: string,
+): void {
+  if (labels.some((label) => label !== null)) {
+    throw new DiagnosticError(fileName, location, "labeled arguments are currently supported only for Objective-C method calls");
+  }
 }
 
 function findObjCProperty(
@@ -1693,19 +1749,47 @@ function checkObjCArguments(
     if (parameter.type.kind === "unsupported" || parameter.type.kind === "recordPointer") {
       throw new DiagnosticError(fileName, argument.location, `Objective-C selector ${JSON.stringify(target.selector)} uses unsupported parameter type ${JSON.stringify(parameter.type.cName)}`);
     }
-    const actual = inferExpression(argument, locals, globals, structs, enums, fileName, state);
-    if (parameter.type.kind === "object") {
-      if (actual === "null") {
-        if (!parameter.type.nullable) throw new DiagnosticError(fileName, argument.location, `Objective-C selector ${JSON.stringify(target.selector)} requires a non-null ${parameter.type.cName}`);
-        continue;
-      }
-      const actualObject = state.foreignObjectTypes.get(String(underlyingType(actual)));
-      if (!actualObject || (parameter.type.className && !isObjCSubclass(actualObject, parameter.type, state))) {
-        throw new DiagnosticError(fileName, argument.location, `Objective-C selector ${JSON.stringify(target.selector)} expects ${parameter.type.cName}, found ${describeValueType(actual, state)}`);
-      }
-      continue;
-    }
-    requireAssignable(foreignValueType(parameter.type), actual, argument, fileName, state.foreignNamedTypes, state.numericLiteralTypes);
+    const contextual = contextualObjCStringType(parameter.type, argument, state);
+    const actual = contextual ?? inferExpression(argument, locals, globals, structs, enums, fileName, state);
+    requireObjCAssignable(parameter.type, actual, argument, fileName, state, target.selector);
+  }
+}
+
+function contextualObjCStringType(
+  expected: ForeignType,
+  expression: Expression,
+  state: AnalysisState,
+): ValueType | null {
+  if (expression.kind !== "string" || expected.kind !== "object") return null;
+  const stringType = [...state.foreignObjectTypes.values()].find((candidate) => (
+    candidate.className === "NSString" && !candidate.nullable
+  ));
+  if (!stringType) return null;
+  if (expected.className && !isObjCSubclass(stringType, expected, state)) return null;
+  state.objcStringLiterals.add(expression.location.offset);
+  return stringType.typeName;
+}
+
+function requireObjCAssignable(
+  expected: ForeignType,
+  actual: ValueType,
+  expression: Expression,
+  fileName: string,
+  state: AnalysisState,
+  selector: string | null = null,
+): void {
+  if (expected.kind !== "object") {
+    requireAssignable(foreignValueType(expected), actual, expression, fileName, state.foreignNamedTypes, state.numericLiteralTypes);
+    return;
+  }
+  const subject = selector ? `Objective-C selector ${JSON.stringify(selector)}` : "Objective-C property";
+  if (actual === "null") {
+    if (!expected.nullable) throw new DiagnosticError(fileName, expression.location, `${subject} requires a non-null ${expected.cName}`);
+    return;
+  }
+  const actualObject = state.foreignObjectTypes.get(String(underlyingType(actual)));
+  if (!actualObject || (expected.className && !isObjCSubclass(actualObject, expected, state))) {
+    throw new DiagnosticError(fileName, expression.location, `${subject} expects ${expected.cName}, found ${describeValueType(actual, state)}`);
   }
 }
 

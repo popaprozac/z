@@ -237,11 +237,17 @@ export function parse(tokens: Token[], fileName: string): Program {
       if (match("leftParen")) {
         const callLocation = previous().location;
         const args: Expression[] = [];
+        const argumentLabels: (string | null)[] = [];
         if (!at("rightParen")) {
-          do args.push(parseExpression()); while (match("comma"));
+          do {
+            const hasLabel = at("identifier") && tokens[current + 1]?.kind === "colon";
+            argumentLabels.push(hasLabel ? take().text : null);
+            if (hasLabel) take();
+            args.push(parseExpression());
+          } while (match("comma"));
         }
         expect("rightParen", "`)`");
-        expression = { kind: "call", callee: expression, arguments: args, location: callLocation };
+        expression = { kind: "call", callee: expression, arguments: args, argumentLabels, location: callLocation };
         continue;
       }
       return expression;

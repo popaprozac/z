@@ -369,23 +369,27 @@ import AppKit from "AppKit/AppKit.h";
 const app = AppKit.NSApplication.sharedApplication;
 const window = AppKit.NSWindow.alloc().initWithContentRect(
   AppKit.NSMakeRect(0.0, 0.0, 800.0, 600.0),
-  AppKit.NSWindowStyleMaskTitled | AppKit.NSWindowStyleMaskClosable,
-  AppKit.NSBackingStoreBuffered,
-  false
+  styleMask: AppKit.NSWindowStyleMaskTitled | AppKit.NSWindowStyleMaskClosable,
+  backing: AppKit.NSBackingStoreBuffered,
+  defer: false
 );
+window.title = "Hello from Z";
 window.makeKeyAndOrderFront(null);
 app.run();
 ```
 
 The bootstrap imports Objective-C interfaces, superclass method lookup, class
-and instance methods, readonly properties, `instancetype`, object nullability,
-and C values used inside method signatures. Calls use a selector's first
-component as the TypeScript-style method name and resolve by argument count.
-Selectors that remain ambiguous are rejected until labeled arguments are
-implemented. ARC owns local object-reference retain/release behavior, and the
-generated `main` runs inside an autorelease pool. Writable properties, string
-bridging, protocols, delegates, blocks, lightweight generics, availability
-checking, and actor isolation remain upcoming layers.
+and instance methods, property getters and setters, `instancetype`, object
+nullability, and C values used inside method signatures. Calls use a selector's
+first component as the TypeScript-style method name. Positional calls resolve by
+argument count; labeling every argument after the first selects the complete
+Objective-C selector. Imported custom property accessors are honored. String
+literals bridge contextually to `NSString` for compatible Objective-C method
+parameters and properties while remaining `cstring` everywhere else. ARC owns
+local object-reference retain/release behavior, and the generated `main` runs
+inside an autorelease pool. Protocols, delegates, blocks, general Z `String`
+bridging, lightweight generics, availability checking, and actor isolation
+remain upcoming layers.
 
 ```z
 import {

@@ -11,11 +11,12 @@ function main(): i32 {
     | AppKit.NSWindowStyleMaskResizable;
   const window = AppKit.NSWindow.alloc().initWithContentRect(
     frame,
-    style,
-    AppKit.NSBackingStoreBuffered,
-    false
+    styleMask: style,
+    backing: AppKit.NSBackingStoreBuffered,
+    defer: false
   );
 
+  window.title = "Hello from Z";
   window.center();
   window.makeKeyAndOrderFront(null);
   app.activate();

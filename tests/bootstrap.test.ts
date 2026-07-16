@@ -301,6 +301,7 @@ test("imports AppKit classes and emits an ARC Objective-C NSWindow program", () 
   assert.match(artifact.source, /NSApplication \* const app = \[NSApplication sharedApplication\];/);
   assert.match(artifact.source, /const NSWindowStyleMask style =/);
   assert.match(artifact.source, /NSWindow \* const window = \[\[NSWindow alloc\] initWithContentRect:frame styleMask:style backing:NSBackingStoreBuffered defer:false\];/);
+  assert.match(artifact.source, /\[window setTitle:@"Hello from Z"\]/);
   assert.match(artifact.source, /\[window makeKeyAndOrderFront:NULL\]/);
 
   const compilation = spawnSync("clang", [
@@ -314,6 +315,49 @@ test("imports AppKit classes and emits an ARC Objective-C NSWindow program", () 
   assert.throws(
     () => compileToNative(source.replace("window.center();", "window.center(1);"), example),
     /Objective-C instance "NSWindow" has no method "center" accepting 1 argument\(s\)/,
+  );
+
+  assert.throws(
+    () => compileToNative(source.replace("styleMask: style", "mask: style"), example),
+    /has no method "initWithContentRect" matching labels mask: backing: defer:/,
+  );
+
+  assert.throws(
+    () => compileToNative(source.replace("backing: AppKit.NSBackingStoreBuffered", "AppKit.NSBackingStoreBuffered"), example),
+    /a labeled Objective-C call must label every argument after the first/,
+  );
+
+  assert.throws(
+    () => compileToNative(source.replace("window.title = \"Hello from Z\";", "window.title = 42;"), example),
+    /Objective-C property expects NSString \*, found i32/,
+  );
+
+  assert.throws(
+    () => compileToNative(source.replace("window.title = \"Hello from Z\";", "window.windowNumber = 42;"), example),
+    /Objective-C property "windowNumber" is readonly/,
+  );
+
+  const methodSetter = compileToNative(
+    source.replace("window.title = \"Hello from Z\";", "window.setTitle(\"Hello from Z\");"),
+    example,
+  );
+  assert.match(methodSetter.source, /\[window setTitle:@"Hello from Z"\]/);
+
+  const customGetter = compileToNative(
+    source.replace("window.center();", "window.visible;\n  window.center();"),
+    example,
+  );
+  assert.match(customGetter.source, /\[window isVisible\]/);
+});
+
+test("keeps labeled arguments reserved for Objective-C selectors", () => {
+  const source = `
+    function identity(value: i32): i32 { return value; }
+    function main(): i32 { return identity(value: 1); }
+  `;
+  assert.throws(
+    () => compileToC(source, "labeled-native-call.z"),
+    /labeled arguments are currently supported only for Objective-C method calls/,
   );
 });
 

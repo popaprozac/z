@@ -308,6 +308,15 @@ function generateStatement(statement: Statement, context: GenerationContext): st
       return `${initialized}\nbool ${liveFlag} = true;`;
     }
     case "assignment": {
+      const objcProperty = context.semanticInfo.objcProperties.get(statement.target.location.offset);
+      if (objcProperty?.setter && statement.target.kind === "member") {
+        const receiver = generateExpression(statement.target.object, context);
+        return generateDirectValue(
+          statement.expression,
+          context,
+          (value) => `(void)${generateObjCMessage(receiver, objcProperty.setter!, [value])};`,
+        );
+      }
       const targetType = inferExpressionType(statement.target, context);
       if (hasCleanupType(targetType, context.structs, context.semanticInfo.foreignTypes)) {
         return generateCleanupAwareAssignment(statement, targetType, context);
@@ -731,7 +740,7 @@ function generateExpression(expression: Expression, context: GenerationContext):
         context.semanticInfo.numericLiteralTypes.get(expression.location.offset),
       );
     case "string":
-      return JSON.stringify(expression.value);
+      return `${context.semanticInfo.objcStringLiterals.has(expression.location.offset) ? "@" : ""}${JSON.stringify(expression.value)}`;
     case "boolean":
       return expression.value ? "true" : "false";
     case "null":
@@ -793,8 +802,8 @@ function generateExpression(expression: Expression, context: GenerationContext):
     case "member": {
       const objcClassName = context.semanticInfo.objcClassNames.get(expression.location.offset);
       if (objcClassName) return objcClassName;
-      const objcPropertyName = context.semanticInfo.objcPropertyNames.get(expression.location.offset);
-      if (objcPropertyName) return `[${generateExpression(expression.object, context)} ${objcPropertyName}]`;
+      const objcProperty = context.semanticInfo.objcProperties.get(expression.location.offset);
+      if (objcProperty) return `[${generateExpression(expression.object, context)} ${objcProperty.getter}]`;
       if (expression.object.kind === "identifier") {
         const declaration = context.enums.get(expression.object.name);
         const variant = declaration?.variants.find((candidate) => candidate.name === expression.property);
