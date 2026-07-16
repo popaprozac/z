@@ -286,9 +286,11 @@ once from left to right. Plain braces are literal text; write `\${expression}`
 for a literal interpolation sequence. The bootstrap formats primitives,
 structs and imported records, arrays, enums, and class identity. A template
 produces an owned, move-only `String`; it can be stored, returned, placed in
-owning storage, and logged. Plain double-quoted literals remain borrowed
-`cstring` values so C calls stay direct and unsurprising. A template passed
-directly to `console` keeps an allocation-free lowering.
+owning storage, and logged. Single- and double-quoted literals also produce
+`String`, backed directly by static program bytes without allocating. Imported
+C APIs that accept `cstring` borrow a `String`'s NUL-terminated bytes for that
+call only; `String.from(value)` explicitly copies a borrowed `cstring`. A
+template passed directly to `console` keeps an allocation-free lowering.
 
 ```sh
 bun run z run examples/console.z

@@ -159,9 +159,14 @@ export function semanticTokens(source: string, fileName: string): { readonly dat
 
   for (let index = 0; index < tokens.length; index += 1) {
     const token = tokens[index];
-    if (token.kind !== "identifier") continue;
     const previous = tokens[index - 1];
     const next = tokens[index + 1];
+    const keywordMember = previous?.kind === "dot" && /^[A-Za-z_][A-Za-z0-9_]*$/.test(token.text);
+    if (token.kind !== "identifier" && !keywordMember) continue;
+    if (keywordMember && tokens[index - 2]?.text === "String" && token.text === "from") {
+      classifications.set(token.location.offset, { type: semanticTokenTypes.indexOf("method"), modifiers: 4 });
+      continue;
+    }
     if (enumVariantDeclarations.has(token.location.offset) || matchVariants.has(token.location.offset)) {
       classifications.set(token.location.offset, {
         type: semanticTokenTypes.indexOf("enumMember"),
@@ -340,6 +345,9 @@ export function hover(source: string, fileName: string, offset: number): Hover |
     if (memberPrefix[1] === "console") {
       const detail = consoleMethodDetail(word.text);
       if (detail) return markdownHover(detail, source, word.start, word.end);
+    }
+    if (memberPrefix[1] === "String" && word.text === "from") {
+      return markdownHover("from(value: cstring): String  // copies borrowed C bytes", source, word.start, word.end);
     }
     const resolved = resolveReceiver(context, memberPrefix[1], word.start - memberPrefix[1].length - 1);
     if (resolved?.kind === "module") {
@@ -609,6 +617,14 @@ function memberCompletions(
   prefix: string,
 ): CompletionItem[] {
   if (receiverText === "console") return filterCompletions(consoleCompletions(), prefix, 100);
+  if (receiverText === "String") {
+    return filterCompletions([{
+      label: "from",
+      kind: completionKinds.method,
+      detail: "from(value: cstring): String  // copies borrowed C bytes",
+      insertText: "from()",
+    }], prefix, 100);
+  }
   const importContext = importAnalysis(source, fileName);
   if (!importContext) return [];
   const directModule = importContext.foreignModules.get(receiverText);

@@ -382,7 +382,11 @@ export function parse(tokens: Token[], fileName: string): Program {
     let expression = parsePrimary();
     while (true) {
       if (match("dot")) {
-        const property = expect("identifier", "a member name");
+        const property = peek();
+        if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(property.text)) {
+          throw new DiagnosticError(fileName, property.location, `expected a member name, found ${tokenDescription(property)}`);
+        }
+        take();
         expression = { kind: "member", object: expression, property: property.text, location: property.location };
         continue;
       }

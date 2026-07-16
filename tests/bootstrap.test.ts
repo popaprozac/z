@@ -858,7 +858,7 @@ test("checks Z function arguments", () => {
   `;
   assert.throws(
     () => compileToC(source, "arguments.z"),
-    /arguments\.z:6:23: error: expected i32, found cstring/,
+    /arguments\.z:6:23: error: expected i32, found String/,
   );
 });
 
@@ -903,7 +903,7 @@ test("requires matching branch types in conditional expressions", () => {
   `;
   assert.throws(
     () => compileToC(source, "if-expression-types.z"),
-    /if-expression-types\.z:5:14: error: if branch produces cstring, but the other branch produces i32/,
+    /if-expression-types\.z:5:14: error: if branch produces String, but the other branch produces i32/,
   );
 });
 
@@ -981,7 +981,7 @@ test("checks closure parameters, block return types, and immutable captures", ()
   `;
   assert.throws(
     () => compileToC(wrongArgument, "closure-argument.z"),
-    /closure-argument\.z:4:23: error: expected i32, found cstring/,
+    /closure-argument\.z:4:23: error: expected i32, found String/,
   );
 });
 
@@ -1360,22 +1360,51 @@ test("stores, returns, moves, and formats owned String values", () => {
   assert.equal(result.status, 0, result.stderr);
   assert.equal(
     result.stdout,
-    "Message { text: [point=Point { x: 20, y: 22 }, total=42] }\n12left=1|right=2\n[first, second]\nyes=42\nborrowed=42\n42\n",
+    "Message { text: [point=Point { x: 20, y: 22 }, total=42] }\n12left=1|right=2\n[first, second]\nyes=42\nborrowed=42\n42\ndouble|single|literal\nliteral\ndouble\nffi=42\nmade=42\n",
   );
 
   const generated = compileToC(readFileSync(example, "utf8"), example);
-  assert.match(generated, /typedef struct \{\n  char \*data;\n  uintptr_t length;/);
+  assert.match(generated, /typedef struct \{\n  const char \*data;\n  uintptr_t length;/);
   assert.match(generated, /Z_String _z_string_\d+ = z_string_new\(\);/);
   assert.match(generated, /Z_String _z_argument_\d+;/);
   assert.match(generated, /Z_String _z_aggregate_\d+;/);
   assert.match(generated, /const int32_t _z_call_result_\d+ = inspect/);
-  assert.match(generated, /free\(\(_z_argument_\d+\)\.data\);/);
+  assert.match(generated, /if \(\(_z_argument_\d+\)\.capacity > 0\) free\(\(void \*\)\(_z_argument_\d+\)\.data\);/);
+  assert.match(generated, /Z_String doubleQuoted = \(Z_String\)\{ \.data = "double", \.length = sizeof\("double"\) - 1, \.capacity = 0 \}/);
+  assert.match(generated, /puts\(\(\(doubleQuoted\)\.data != NULL/);
+  assert.match(generated, /const char \* const boundary = "literal";/);
+  assert.match(generated, /Z_String copied = z_string_from_cstring\(boundary\);/);
   assert.match(generated, /z_string_append_signed/);
-  assert.match(generated, /free\(\(self->text\)\.data\);/);
+  assert.match(generated, /if \(\(self->text\)\.capacity > 0\) free\(\(void \*\)\(self->text\)\.data\);/);
 
   const source = readFileSync(example, "utf8");
   const chosenOffset = source.indexOf("chosen: String") + 1;
   assert.match(hover(source, example, chosenOffset)?.contents.value ?? "", /chosen: String/);
+  const doubleOffset = source.indexOf("doubleQuoted") + 1;
+  assert.match(hover(source, example, doubleOffset)?.contents.value ?? "", /doubleQuoted: String/);
+  const boundaryOffset = source.indexOf("boundary: cstring") + 1;
+  assert.match(hover(source, example, boundaryOffset)?.contents.value ?? "", /boundary: cstring/);
+  const fromOffset = source.indexOf("from(boundary)") + 1;
+  assert.match(hover(source, example, fromOffset)?.contents.value ?? "", /from\(value: cstring\): String/);
+  const completionSource = source.replace("String.from(boundary)", "String.fr");
+  const completionOffset = completionSource.indexOf("String.fr") + "String.fr".length;
+  assert.equal(completions(completionSource, example, completionOffset).find((item) => item.label === "from")?.kind, 2);
+
+  const escapingBorrow = `
+    function main(): i32 {
+      const owned = \`value=42\`;
+      const escaped: cstring = owned;
+      return 0;
+    }
+  `;
+  assert.match(diagnostics(escapingBorrow, "escaping-cstring.z")[0].message, /expected cstring, found String/);
+
+  const singleQuotedImport = `
+    import stdio from 'stdio.h';
+    function main(): i32 { return stdio.puts('single import'); }
+  `;
+  assert.deepEqual(diagnostics(singleQuotedImport, "single-quoted-import.z"), []);
+  assert.match(compileToC(singleQuotedImport, "single-quoted-import.z"), /return puts\("single import"\);/);
 
   const directArgument = `
     function consume(value: String): void {}
@@ -2253,7 +2282,7 @@ test("checks struct method arguments", () => {
   `;
   assert.throws(
     () => compileToC(source, "method-arguments.z"),
-    /method-arguments\.z:10:26: error: expected i32, found cstring/,
+    /method-arguments\.z:10:26: error: expected i32, found String/,
   );
 });
 
@@ -2390,7 +2419,7 @@ test("requires expression match arms to agree on a value type", () => {
   `;
   assert.throws(
     () => compileToC(source, "match-types.z"),
-    /match-types\.z:7:9: error: match arm produces cstring, but previous arms produce i32/,
+    /match-types\.z:7:9: error: match arm produces String, but previous arms produce i32/,
   );
 });
 
@@ -3133,6 +3162,7 @@ test("editor grammar tracks keywords without reserving Result variants", () => {
   assert.match(typePattern, /Array/);
   assert.match(typePattern, /String/);
   assert.match(stringPatterns, /string\.quoted\.template\.z/);
+  assert.match(stringPatterns, /string\.quoted\.single\.z/);
   assert.match(stringPatterns, /meta\.interpolation\.z/);
   assert.match(stringPatterns, /punctuation\.definition\.template-expression\.begin\.z/);
   assert.match(stringPatterns, /punctuation\.definition\.template-expression\.end\.z/);

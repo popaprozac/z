@@ -286,7 +286,7 @@ Recoverable failures are typed values. Surface syntax exposes the two outcomes
 without requiring Rust-style constructors:
 
 ```z
-function load(path: string): Config throws ConfigError {
+function load(path: String): Config throws ConfigError {
   if (!File.exists(path)) {
     throw ConfigError.notFound(path);
   }
@@ -338,7 +338,7 @@ multi-statement arms use `select` to explicitly provide a value to the nearest
 enclosing value-producing construct:
 
 ```z
-const name: string = match result {
+const name: String = match result {
   success user => {
     log(user);
     select user.name;
@@ -374,7 +374,7 @@ type; statement bodies keep ordinary explicit `return` semantics:
 
 ```z
 const add = (value: i32): i32 => value + offset;
-const describe = (value: i32): string => {
+const describe = (value: i32): String => {
   log(value);
   return `${value}`;
 };
@@ -430,15 +430,23 @@ is a growable, NUL-terminated byte buffer carrying its length and capacity;
 deterministic cleanup releases that allocation. `String` is cleanup-bearing and
 therefore move-only under the same ownership rules as arrays and value structs.
 It can be stored, returned, moved through value parameters, nested in owning
-struct fields, and logged. Plain double-quoted literals remain borrowed
-`cstring` values for direct C-family interop. Direct console templates retain a
-typed allocation-free lowering. Statement-producing expression lowering
+struct fields, and logged. Single- and double-quoted literals are zero-allocation
+`String` values backed by static program bytes. Their zero capacity distinguishes
+static storage from allocated template buffers during deterministic cleanup.
+Direct console templates retain a typed allocation-free lowering.
+Statement-producing expression lowering
 materializes owned templates into native temporaries when they appear directly
 inside calls, aggregate fields, array elements, or ternary branches. Those
 temporaries transfer into the enclosing owner, and call arguments containing
 templates are evaluated once from left to right before the native call. A
 template passed to an `in` parameter remains caller-owned for the duration of
 the call and is cleaned immediately after the returned value is secured.
+At C-family boundaries, an imported `cstring` parameter may borrow a `String`'s
+NUL-terminated data for the duration of that call. This conversion cannot
+initialize stored `cstring` state or escape through an ordinary Z call. A quoted
+literal may explicitly initialize `cstring` because its bytes have static
+lifetime. `String.from(value)` performs the reverse operation by copying a
+borrowed `cstring` into owned storage.
 Formatting traits, format specifiers, release-build debug behavior, and
 structured logging remain later design work.
 
@@ -516,8 +524,9 @@ claim that the foreign object is deeply immutable. Assignment to a writable
 imported property therefore sends its Clang-declared setter, including custom
 accessor names, while rebinding the local remains forbidden. A string literal
 is emitted as an Objective-C `NSString` literal only when the receiving
-parameter or property accepts `NSString` (or a compatible supertype); ordinary
-Z and C string literals remain `cstring` values.
+parameter or property accepts `NSString` (or a compatible supertype). Otherwise
+the literal is a Z `String`; raw Objective-C/C `cstring` parameters receive the
+same call-scoped byte borrow used by C interop.
 
 A conventional local `Module-Swift.h` compatibility header also selects the
 Objective-C ARC backend. The bootstrap has an end-to-end fixture in which

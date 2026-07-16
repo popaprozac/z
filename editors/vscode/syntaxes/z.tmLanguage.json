@@ -42,26 +42,31 @@
         "begin": "\"",
         "end": "\"",
         "patterns": [{ "name": "constant.character.escape.z", "match": "\\\\[nrt\\\\\"]" }]
+      }, {
+        "name": "string.quoted.single.z",
+        "begin": "'",
+        "end": "'",
+        "patterns": [{ "name": "constant.character.escape.z", "match": "\\\\[nrt\\\\']" }]
       }]
     },
     "imports": {
       "patterns": [{
         "name": "meta.import.selective.z",
-        "match": "\\b(import)\\s+(\\{[^}]*\\})\\s+(from)\\s+(\"(?:\\\\.|[^\"])*\")",
+        "match": "\\b(import)\\s+(\\{[^}]*\\})\\s+(from)\\s+((?:\"(?:\\\\.|[^\"])*\")|(?:'(?:\\\\.|[^'])*'))",
         "captures": {
           "1": { "name": "keyword.control.import.z" },
           "2": { "name": "meta.import.bindings.z" },
           "3": { "name": "keyword.control.import.z" },
-          "4": { "name": "string.quoted.double.header.z" }
+          "4": { "name": "string.quoted.header.z" }
         }
       }, {
         "name": "meta.import.z",
-        "match": "\\b(import)\\s+([A-Za-z_][A-Za-z0-9_]*)\\s+(from)\\s+(\"(?:\\\\.|[^\"])*\")",
+        "match": "\\b(import)\\s+([A-Za-z_][A-Za-z0-9_]*)\\s+(from)\\s+((?:\"(?:\\\\.|[^\"])*\")|(?:'(?:\\\\.|[^'])*'))",
         "captures": {
           "1": { "name": "keyword.control.import.z" },
           "2": { "name": "entity.name.namespace.z" },
           "3": { "name": "keyword.control.import.z" },
-          "4": { "name": "string.quoted.double.header.z" }
+          "4": { "name": "string.quoted.header.z" }
         }
       }]
     },

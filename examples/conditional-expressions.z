@@ -1,6 +1,6 @@
 import stdio from "stdio.h";
 
-function describe(value: i32): cstring {
+function describe(value: i32): String {
   return if (value == 10) {
     const label = "ten";
     select label;

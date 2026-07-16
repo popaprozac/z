@@ -276,10 +276,11 @@ export function lex(
       continue;
     }
 
-    if (character === '"') {
+    if (character === '"' || character === "'") {
+      const quote = character;
       advance();
       let value = "";
-      while (peek() !== '"' && peek() !== "\0") {
+      while (peek() !== quote && peek() !== "\0") {
         if (peek() === "\n") {
           throw new DiagnosticError(fileName, start, "unterminated string literal");
         }
@@ -293,6 +294,7 @@ export function lex(
             t: "\t",
             "\\": "\\",
             '"': '"',
+            "'": "'",
           };
           if (!(escaped in escapes)) {
             throw new DiagnosticError(fileName, escapeLocation, `unknown escape sequence \\${escaped}`);
@@ -302,7 +304,7 @@ export function lex(
           value += advance();
         }
       }
-      if (peek() !== '"') {
+      if (peek() !== quote) {
         throw new DiagnosticError(fileName, start, "unterminated string literal");
       }
       advance();

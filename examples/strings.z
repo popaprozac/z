@@ -1,3 +1,5 @@
+import stdio from "stdio.h";
+
 struct Point {
   x: i32;
   y: i32;
@@ -43,5 +45,18 @@ function main(): i32 {
   console.log(chosen);
   const inspected = inspect(`borrowed=${6 * 7}`);
   console.log(inspected);
+  const doubleQuoted = "double";
+  const singleQuoted = 'single';
+  const boundary: cstring = "literal";
+  const copied = String.from(boundary);
+  console.log(`${doubleQuoted}|${singleQuoted}|${boundary}`);
+  console.log(copied);
+  stdio.puts(doubleQuoted);
+  stdio.puts(`ffi=${42}`);
+  stdio.puts(makeMessage());
   return 0;
+}
+
+function makeMessage(): String {
+  return `made=${6 * 7}`;
 }

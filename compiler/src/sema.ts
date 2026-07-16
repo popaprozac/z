@@ -78,6 +78,7 @@ export type SemanticInfo = {
   readonly objcProperties: ReadonlyMap<number, ObjCPropertyInfo>;
   readonly objcCalls: ReadonlyMap<number, ObjCCallInfo>;
   readonly objcStringLiterals: ReadonlySet<number>;
+  readonly cstringConversions: ReadonlySet<number>;
   readonly expressionTypes: ReadonlyMap<number, string>;
   readonly bindingTypes: ReadonlyMap<number, string>;
   readonly closures: ReadonlyMap<number, ClosureInfo>;
@@ -106,6 +107,7 @@ type AnalysisState = {
   readonly objcProperties: Map<number, ObjCPropertyInfo>;
   readonly objcCalls: Map<number, ObjCCallInfo>;
   readonly objcStringLiterals: Set<number>;
+  readonly cstringConversions: Set<number>;
   readonly expressionTypes: Map<number, string>;
   readonly bindingTypes: Map<number, string>;
   readonly closures: Map<number, ClosureInfo>;
@@ -184,6 +186,7 @@ export function analyze(
     objcProperties: new Map(),
     objcCalls: new Map(),
     objcStringLiterals: new Set(),
+    cstringConversions: new Set(),
     expressionTypes: new Map(),
     bindingTypes: new Map(),
     closures: new Map(),
@@ -694,11 +697,12 @@ function analyzeStatement(
           throw new DiagnosticError(fileName, statement.type.location, "explicit closure function types are not implemented yet");
         }
       }
-      const initializerType = inferDirectValue(statement.initializer, owner, locals, globals, structs, enums, fileName, state);
+      let initializerType = inferDirectValue(statement.initializer, owner, locals, globals, structs, enums, fileName, state);
       let variableType = initializerType;
       if (statement.type) {
         validateType(statement.type, structs, enums, state.foreignNamedTypes, fileName, false);
         variableType = statement.type.name;
+        initializerType = contextualCStringLiteral(variableType, statement.initializer, state) ?? initializerType;
         requireAssignable(variableType, initializerType, statement.initializer, fileName, state.foreignNamedTypes, state.numericLiteralTypes);
       } else if (initializerType === "unknown") {
         throw new DiagnosticError(
@@ -736,7 +740,11 @@ function analyzeStatement(
             throw new DiagnosticError(fileName, statement.target.location, `Objective-C property ${JSON.stringify(statement.target.property)} is readonly`);
           }
           const contextual = contextualObjCStringType(property.type, statement.expression, state);
-          const actual = contextual ?? inferDirectValue(statement.expression, owner, locals, globals, structs, enums, fileName, state);
+          let actual = contextual ?? inferDirectValue(statement.expression, owner, locals, globals, structs, enums, fileName, state);
+          if (property.type.kind === "z" && property.type.name === "cstring" && actual === "String") {
+            state.cstringConversions.add(statement.expression.location.offset);
+            actual = "cstring";
+          }
           requireObjCAssignable(property.type, actual, statement.expression, fileName, state);
           return;
         }
@@ -763,7 +771,8 @@ function analyzeStatement(
       const expected = statement.target.kind === "identifier"
         ? underlyingType(stored)
         : inferExpression(statement.target, locals, globals, structs, enums, fileName, state);
-      const actual = inferDirectValue(statement.expression, owner, locals, globals, structs, enums, fileName, state);
+      let actual = inferDirectValue(statement.expression, owner, locals, globals, structs, enums, fileName, state);
+      actual = contextualCStringLiteral(expected, statement.expression, state) ?? actual;
       requireAssignable(expected, actual, statement.expression, fileName, state.foreignNamedTypes, state.numericLiteralTypes);
       if (hasCleanupType(expected, structs, state.foreignTypes)) {
         consumeOwnedValue(statement.expression, expected, locals, structs, fileName, state);
@@ -800,7 +809,8 @@ function analyzeStatement(
       if (expected === "void") {
         throw new DiagnosticError(fileName, statement.location, "a void function cannot return a value");
       }
-      const actual = inferDirectValue(statement.expression, owner, locals, globals, structs, enums, fileName, state);
+      let actual = inferDirectValue(statement.expression, owner, locals, globals, structs, enums, fileName, state);
+      actual = contextualCStringLiteral(expected, statement.expression, state) ?? actual;
       requireAssignable(expected, actual, statement.expression, fileName, state.foreignNamedTypes, state.numericLiteralTypes);
       consumeOwnedValue(statement.expression, expected, locals, structs, fileName, state);
       requireOutParametersInitialized(owner, locals, statement.location, fileName);
@@ -810,7 +820,8 @@ function analyzeStatement(
       if (!owner.errorType) {
         throw new DiagnosticError(fileName, statement.location, `function ${JSON.stringify(owner.name)} does not declare an error type`);
       }
-      const actual = inferExpression(statement.expression, locals, globals, structs, enums, fileName, state);
+      let actual = inferExpression(statement.expression, locals, globals, structs, enums, fileName, state);
+      actual = contextualCStringLiteral(owner.errorType.name, statement.expression, state) ?? actual;
       requireAssignable(owner.errorType.name, actual, statement.expression, fileName, state.foreignNamedTypes, state.numericLiteralTypes);
       return;
     }
@@ -1424,7 +1435,8 @@ function requireConsoleFormattable(
 ): void {
   const actual = String(underlyingType(type));
   if (hasCleanupType(actual, structs, state.foreignTypes)
-    && !isNamedStorageExpression(expression)) {
+    && !isNamedStorageExpression(expression)
+    && expression.kind !== "string") {
     throw new DiagnosticError(fileName, expression.location, "console formatting of a cleanup-bearing temporary requires stored ownership", {
       code: "Z0402",
       helps: ["bind the value to a const or let before logging it"],
@@ -1549,7 +1561,7 @@ function inferExpressionInner(
     case "number":
       return isIntegerLiteral(expression.value) ? "i32" : "f64";
     case "string":
-      return "cstring";
+      return "String";
     case "template":
       for (const part of expression.parts) {
         if (part.kind !== "value") continue;
@@ -1727,8 +1739,9 @@ function inferExpressionInner(
         if (!field) {
           throw new DiagnosticError(fileName, initializer.location, `struct ${JSON.stringify(expression.typeName)} has no field ${JSON.stringify(initializer.name)}`);
         }
-        const actual = inferExpression(initializer.expression, locals, globals, structs, enums, fileName, state);
         const fieldType = "type" in field ? field.type.name : field.typeName;
+        let actual = inferExpression(initializer.expression, locals, globals, structs, enums, fileName, state);
+        actual = contextualCStringLiteral(fieldType, initializer.expression, state) ?? actual;
         requireAssignable(fieldType, actual, initializer.expression, fileName, state.foreignNamedTypes, state.numericLiteralTypes);
         consumeOwnedValue(initializer.expression, fieldType, locals, structs, fileName, state);
       }
@@ -1794,7 +1807,8 @@ function inferExpressionInner(
       if (!variant.payload) {
         throw new DiagnosticError(fileName, expression.location, "payloadless variant does not accept a value");
       }
-      const actual = inferExpression(expression.payload, locals, globals, structs, enums, fileName, state);
+      let actual = inferExpression(expression.payload, locals, globals, structs, enums, fileName, state);
+      actual = contextualCStringLiteral(variant.payload.name, expression.payload, state) ?? actual;
       requireAssignable(variant.payload.name, actual, expression.payload, fileName, state.foreignNamedTypes, state.numericLiteralTypes);
       return declaration.name;
     }
@@ -1914,6 +1928,19 @@ function inferExpressionInner(
           }
           state.consoleCalls.add(expression.location.offset);
           return "void";
+        }
+        if (
+          expression.callee.object.kind === "identifier"
+          && expression.callee.object.name === "String"
+          && expression.callee.property === "from"
+        ) {
+          rejectLabeledArguments(expression.argumentLabels, expression.location, fileName);
+          if (expression.arguments.length !== 1) {
+            throw new DiagnosticError(fileName, expression.location, `String.from expects 1 argument, received ${expression.arguments.length}`);
+          }
+          const actual = inferExpression(expression.arguments[0], locals, globals, structs, enums, fileName, state);
+          requireAssignable("cstring", actual, expression.arguments[0], fileName, state.foreignNamedTypes, state.numericLiteralTypes);
+          return "String";
         }
         if (expression.callee.object.kind === "identifier") {
           const enumDeclaration = enums.get(expression.callee.object.name);
@@ -2285,7 +2312,8 @@ function checkArguments(
       state.nativeArgumentAccesses.set(argument.location.offset, "in");
       continue;
     }
-    const actual = inferExpression(argument, locals, globals, structs, enums, fileName, state);
+    let actual = inferExpression(argument, locals, globals, structs, enums, fileName, state);
+    actual = contextualCStringLiteral(parameter.type.name, argument, state) ?? actual;
     const expectedSlice = parseSliceType(parameter.type.name);
     const actualArray = parseFixedArrayType(String(actual));
     const actualDynamic = parseDynamicArrayType(String(actual));
@@ -3035,7 +3063,11 @@ function checkObjCArguments(
       throw new DiagnosticError(fileName, argument.location, `Objective-C selector ${JSON.stringify(target.selector)} uses unsupported parameter type ${JSON.stringify(parameter.type.cName)}`);
     }
     const contextual = contextualObjCStringType(parameter.type, argument, state);
-    const actual = contextual ?? inferExpression(argument, locals, globals, structs, enums, fileName, state);
+    let actual = contextual ?? inferExpression(argument, locals, globals, structs, enums, fileName, state);
+    if (parameter.type.kind === "z" && parameter.type.name === "cstring" && actual === "String") {
+      state.cstringConversions.add(argument.location.offset);
+      actual = "cstring";
+    }
     requireObjCAssignable(parameter.type, actual, argument, fileName, state, target.selector);
   }
 }
@@ -3053,6 +3085,16 @@ function contextualObjCStringType(
   if (expected.className && !isObjCSubclass(stringType, expected, state)) return null;
   state.objcStringLiterals.add(expression.location.offset);
   return stringType.typeName;
+}
+
+function contextualCStringLiteral(
+  expected: ValueType,
+  expression: Expression,
+  state: AnalysisState,
+): ValueType | null {
+  if (underlyingType(expected) !== "cstring" || expression.kind !== "string") return null;
+  state.cstringConversions.add(expression.location.offset);
+  return "cstring";
 }
 
 function requireObjCAssignable(
@@ -3207,9 +3249,14 @@ function checkForeignCall(
       state.foreignArgumentAccesses.set(argument.location.offset, "in");
       continue;
     }
-    const actual = inferExpression(argument, locals, globals, structs, enums, fileName, state);
+    let actual = inferExpression(argument, locals, globals, structs, enums, fileName, state);
     if (parameter?.type.kind === "z") {
-      rejectForeignOwnedMove(argument, actual, structs, fileName, state);
+      if (parameter.type.name === "cstring" && actual === "String") {
+        state.cstringConversions.add(argument.location.offset);
+        actual = "cstring";
+      } else {
+        rejectForeignOwnedMove(argument, actual, structs, fileName, state);
+      }
       requireAssignable(parameter.type.name, actual, argument, fileName, state.foreignNamedTypes, state.numericLiteralTypes);
     }
     if (parameter?.type.kind === "named") {
@@ -3247,6 +3294,10 @@ function checkForeignCall(
         }
         consumeOwnedValue(argument, actual, locals, structs, fileName, state);
       }
+    }
+    if (!parameter && actual === "String") {
+      state.cstringConversions.add(argument.location.offset);
+      actual = "cstring";
     }
     if (!parameter && !isNumericType(canonicalType(actual, state.foreignNamedTypes)) && actual !== "bool" && actual !== "cstring") {
       throw new DiagnosticError(fileName, argument.location, `unsupported variadic argument type ${describeValueType(actual, state)} for C function ${JSON.stringify(target.name)}`);

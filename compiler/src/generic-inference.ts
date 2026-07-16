@@ -138,7 +138,7 @@ export function inferGenericCalls(
       case "number":
         return { expression, type: /^[0-9]+$/.test(expression.value) ? "i32" : "f64" };
       case "string":
-        return { expression, type: "cstring" };
+        return { expression, type: "String" };
       case "template": {
         const parts = expression.parts.map((part) => part.kind === "text"
           ? part
