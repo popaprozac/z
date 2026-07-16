@@ -1358,25 +1358,41 @@ test("stores, returns, moves, and formats owned String values", () => {
   const example = resolve(projectRoot, "examples/strings.z");
   const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
-  assert.equal(result.stdout, "Message { text: [point=Point { x: 20, y: 22 }, total=42] }\n");
+  assert.equal(
+    result.stdout,
+    "Message { text: [point=Point { x: 20, y: 22 }, total=42] }\n12left=1|right=2\n[first, second]\nyes=42\nborrowed=42\n42\n",
+  );
 
   const generated = compileToC(readFileSync(example, "utf8"), example);
   assert.match(generated, /typedef struct \{\n  char \*data;\n  uintptr_t length;/);
   assert.match(generated, /Z_String _z_string_\d+ = z_string_new\(\);/);
+  assert.match(generated, /Z_String _z_argument_\d+;/);
+  assert.match(generated, /Z_String _z_aggregate_\d+;/);
+  assert.match(generated, /const int32_t _z_call_result_\d+ = inspect/);
+  assert.match(generated, /free\(\(_z_argument_\d+\)\.data\);/);
   assert.match(generated, /z_string_append_signed/);
   assert.match(generated, /free\(\(self->text\)\.data\);/);
 
   const source = readFileSync(example, "utf8");
-  const wrappedOffset = source.indexOf("wrapped: String") + 1;
-  assert.match(hover(source, example, wrappedOffset)?.contents.value ?? "", /wrapped: String/);
+  const chosenOffset = source.indexOf("chosen: String") + 1;
+  assert.match(hover(source, example, chosenOffset)?.contents.value ?? "", /chosen: String/);
 
   const directArgument = `
     function consume(value: String): void {}
     function main(): i32 { consume(\`value=\${42}\`); return 0; }
   `;
-  const directArgumentDiagnostic = diagnostics(directArgument, "string-argument.z");
-  assert.equal(directArgumentDiagnostic[0].code, "Z0402");
-  assert.match(directArgumentDiagnostic[0].message, /must be bound first/);
+  assert.deepEqual(diagnostics(directArgument, "string-argument.z"), []);
+  assert.doesNotThrow(() => compileToC(directArgument, "string-argument.z"));
+
+  const throwingArgument = `
+    enum ParseError { invalid, }
+    function parse(in value: String): i32 throws ParseError { return 42; }
+    function forward(): i32 throws ParseError { return try parse(\`value=\${42}\`); }
+    function main(): i32 { return 0; }
+  `;
+  assert.deepEqual(diagnostics(throwingArgument, "throwing-string-argument.z"), []);
+  const throwingGenerated = compileToC(throwingArgument, "throwing-string-argument.z");
+  assert.match(throwingGenerated, /const Z_Result_i32_ParseError _z_call_result_\d+ = parse/);
 
   const movedString = `
     function main(): i32 {

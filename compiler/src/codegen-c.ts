@@ -33,6 +33,7 @@ type GenerationContext = {
   readonly cleanupScopes: CleanupLocal[][];
   readonly liveFlags: Map<string, string>;
   readonly liveFlagCounter: { value: number };
+  readonly expressionOverrides: ReadonlyMap<number, string>;
   readonly semanticInfo: SemanticInfo;
 };
 
@@ -670,6 +671,7 @@ function generateFunction(
     cleanupScopes: [parameterCleanup],
     liveFlags,
     liveFlagCounter,
+    expressionOverrides: new Map(),
     semanticInfo,
   };
   const bodyParts = [
@@ -729,6 +731,7 @@ function generateDeinit(
     cleanupScopes: [[]],
     liveFlags: new Map(),
     liveFlagCounter: { value: 0 },
+    expressionOverrides: new Map(),
     semanticInfo,
   };
   const body = ["  (void)self;", ...owner.body.map((statement) => {
@@ -811,7 +814,11 @@ function generateStatement(statement: Statement, context: GenerationContext): st
         return `${declaration};\nbool ${liveFlag} = false;`;
       }
       let initialized: string;
-      if (statement.initializer.kind === "matchExpression" || statement.initializer.kind === "ifExpression") {
+      if (
+        statement.initializer.kind === "matchExpression"
+        || statement.initializer.kind === "ifExpression"
+        || (statement.initializer.kind === "conditional" && requiresStatementValue(statement.initializer, context))
+      ) {
         const temporary = `_z_value_${context.valueCounter.value++}`;
         const temporaryDeclaration = generateLocalDeclaration(zType, temporary, true, context.structs, context.enums, context.semanticInfo.foreignNamedTypes);
         initialized = `${temporaryDeclaration};\n${generateDirectValue(statement.initializer, context, (value) => `${temporary} = ${value};`)}\n${declaration} = ${temporary};`;
@@ -1209,8 +1216,29 @@ function generateDirectValue(
   consumeValue: (value: string, context: GenerationContext) => string,
   consumeTerminates = false,
 ): string {
+  if (context.expressionOverrides.has(expression.location.offset)) {
+    return consumeValue(generateExpression(expression, context), context);
+  }
   if (expression.kind === "template") {
     return generateTemplateValue(expression, context, consumeValue);
+  }
+  if (expression.kind === "conditional" && requiresStatementValue(expression, context)) {
+    return generateConditionalValue(expression, context, consumeValue, consumeTerminates);
+  }
+  if (expression.kind === "call" && expression.arguments.some((argument) => requiresStatementValue(argument, context))) {
+    return generateLoweredCall(expression, context, consumeValue, consumeTerminates);
+  }
+  if (expression.kind === "structExpression" && expression.fields.some((field) => requiresStatementValue(field.expression, context))) {
+    return generateLoweredAggregate(expression, expression.fields.map((field) => field.expression), context, consumeValue, consumeTerminates);
+  }
+  if (expression.kind === "arrayExpression" && expression.elements.some((element) => requiresStatementValue(element, context))) {
+    return generateLoweredAggregate(expression, expression.elements, context, consumeValue, consumeTerminates);
+  }
+  if (expression.kind === "variantExpression" && requiresStatementValue(expression.payload, context)) {
+    return generateLoweredAggregate(expression, [expression.payload], context, consumeValue, consumeTerminates);
+  }
+  if (expression.kind === "attempt" && requiresStatementValue(expression.expression, context)) {
+    return generateDirectValue(expression.expression, context, consumeValue, consumeTerminates);
   }
   if (expression.kind === "call" && hasNativeOutArguments(expression, context)) {
     return generateNativeOutCall(expression, context, consumeValue);
@@ -1223,6 +1251,130 @@ function generateDirectValue(
     return generateIfExpression(expression, context, consumeValue, consumeTerminates);
   }
   return consumeValue(generateExpression(expression, context), context);
+}
+
+function requiresStatementValue(expression: Expression, context: GenerationContext): boolean {
+  if (context.expressionOverrides.has(expression.location.offset)) return false;
+  if (["template", "try", "matchExpression", "ifExpression"].includes(expression.kind)) return true;
+  if (expression.kind === "conditional") {
+    return requiresStatementValue(expression.thenExpression, context)
+      || requiresStatementValue(expression.elseExpression, context);
+  }
+  if (expression.kind === "call") {
+    return expression.arguments.some((argument) => requiresStatementValue(argument, context));
+  }
+  if (expression.kind === "structExpression") {
+    return expression.fields.some((field) => requiresStatementValue(field.expression, context));
+  }
+  if (expression.kind === "arrayExpression") {
+    return expression.elements.some((element) => requiresStatementValue(element, context));
+  }
+  if (expression.kind === "variantExpression") return requiresStatementValue(expression.payload, context);
+  if (expression.kind === "attempt") return requiresStatementValue(expression.expression, context);
+  return false;
+}
+
+function withExpressionOverrides(
+  context: GenerationContext,
+  overrides: ReadonlyMap<number, string>,
+): GenerationContext {
+  return {
+    ...context,
+    expressionOverrides: new Map([...context.expressionOverrides, ...overrides]),
+  };
+}
+
+function temporaryValueType(expression: Expression, context: GenerationContext): string {
+  return context.semanticInfo.numericLiteralTypes.get(expression.location.offset)
+    ?? context.semanticInfo.expressionTypes.get(expression.location.offset)
+    ?? inferExpressionType(expression, context);
+}
+
+function generateLoweredCall(
+  expression: Extract<Expression, { kind: "call" }>,
+  context: GenerationContext,
+  consumeValue: (value: string, context: GenerationContext) => string,
+  consumeTerminates: boolean,
+): string {
+  const lines: string[] = [];
+  const overrides = new Map<number, string>();
+  const borrowedTemporaries: Array<{ readonly name: string; readonly type: string }> = [];
+  for (const argument of expression.arguments) {
+    const access = context.semanticInfo.nativeArgumentAccesses.get(argument.location.offset)
+      ?? context.semanticInfo.foreignArgumentAccesses.get(argument.location.offset);
+    const borrowedTemplate = access === "in" && argument.kind === "template";
+    if (
+      argument.kind === "argumentReference"
+      || (access && !borrowedTemplate)
+      || context.semanticInfo.sliceConversions.has(argument.location.offset)
+    ) {
+      continue;
+    }
+    const type = temporaryValueType(argument, context);
+    if (type === "null") continue;
+    const temporary = `_z_argument_${context.valueCounter.value++}`;
+    lines.push(`${generateLocalDeclaration(type, temporary, true, context.structs, context.enums, context.semanticInfo.foreignNamedTypes)};`);
+    lines.push(generateDirectValue(argument, context, (value) => `${temporary} = ${value};`));
+    overrides.set(argument.location.offset, temporary);
+    if (borrowedTemplate) borrowedTemporaries.push({ name: temporary, type });
+  }
+  const loweredContext = withExpressionOverrides(context, overrides);
+  if (borrowedTemporaries.length === 0) {
+    lines.push(generateDirectValue(expression, loweredContext, consumeValue, consumeTerminates));
+    return lines.join("\n");
+  }
+  const cleanup = [...borrowedTemporaries]
+    .reverse()
+    .map((temporary) => generateValueCleanup(temporary.name, temporary.type, null, context))
+    .join("\n");
+  const resultType = temporaryValueType(expression, loweredContext);
+  lines.push(generateDirectValue(expression, loweredContext, (value, valueContext) => {
+    if (resultType === "void") return `(void)${value};\n${cleanup}`;
+    const result = `_z_call_result_${context.valueCounter.value++}`;
+    const declaration = generateLocalDeclaration(
+      resultType,
+      result,
+      false,
+      context.structs,
+      context.enums,
+      context.semanticInfo.foreignNamedTypes,
+    );
+    return `${declaration} = ${value};\n${cleanup}\n${consumeValue(result, valueContext)}`;
+  }, consumeTerminates));
+  return lines.join("\n");
+}
+
+function generateLoweredAggregate(
+  expression: Extract<Expression, { kind: "structExpression" | "arrayExpression" | "variantExpression" }>,
+  values: readonly Expression[],
+  context: GenerationContext,
+  consumeValue: (value: string, context: GenerationContext) => string,
+  consumeTerminates: boolean,
+): string {
+  const lines: string[] = [];
+  const overrides = new Map<number, string>();
+  for (const valueExpression of values) {
+    const type = temporaryValueType(valueExpression, context);
+    const temporary = `_z_aggregate_${context.valueCounter.value++}`;
+    lines.push(`${generateLocalDeclaration(type, temporary, true, context.structs, context.enums, context.semanticInfo.foreignNamedTypes)};`);
+    lines.push(generateDirectValue(valueExpression, context, (value) => `${temporary} = ${value};`));
+    overrides.set(valueExpression.location.offset, temporary);
+  }
+  const loweredContext = withExpressionOverrides(context, overrides);
+  lines.push(generateDirectValue(expression, loweredContext, consumeValue, consumeTerminates));
+  return lines.join("\n");
+}
+
+function generateConditionalValue(
+  expression: Extract<Expression, { kind: "conditional" }>,
+  context: GenerationContext,
+  consumeValue: (value: string, context: GenerationContext) => string,
+  consumeTerminates: boolean,
+): string {
+  const condition = generateExpression(expression.condition, context);
+  const thenBranch = generateDirectValue(expression.thenExpression, context, consumeValue, consumeTerminates);
+  const elseBranch = generateDirectValue(expression.elseExpression, context, consumeValue, consumeTerminates);
+  return `if ${controlCondition(condition)} {\n${indent(thenBranch, 2)}\n} else {\n${indent(elseBranch, 2)}\n}`;
 }
 
 function generateTemplateValue(
@@ -1470,12 +1622,14 @@ function generateTry(
   const ownerResult = resultTypeName(context.owner.returnType.name, context.owner.errorType!.name);
   const cleanup = generateCleanup(context.cleanupScopes, context);
   const failureReturn = `return (${enumName(ownerResult)}){ .tag = ${variantTag(ownerResult, "failure")}, .data.failure = ${temporary}.data.failure };`;
-  return `const ${mapType(resultType, context.structs, context.enums, context.semanticInfo.foreignNamedTypes)} ${temporary} = ${generateExpression(expression.expression, context)};\n`
-    + `if (${temporary}.tag == ${variantTag(resultType, "failure")}) {\n`
-    + `${cleanup ? `${indent(cleanup, 2)}\n` : ""}`
-    + `  ${failureReturn}\n`
-    + `}\n`
-    + consumeSuccess(`${temporary}.data.success`, context);
+  return generateDirectValue(expression.expression, context, (value) => (
+    `const ${mapType(resultType, context.structs, context.enums, context.semanticInfo.foreignNamedTypes)} ${temporary} = ${value};\n`
+      + `if (${temporary}.tag == ${variantTag(resultType, "failure")}) {\n`
+      + `${cleanup ? `${indent(cleanup, 2)}\n` : ""}`
+      + `  ${failureReturn}\n`
+      + `}\n`
+      + consumeSuccess(`${temporary}.data.success`, context)
+  ));
 }
 
 function trySuccessType(expression: Extract<Expression, { kind: "try" }>, context: GenerationContext): string {
@@ -1678,6 +1832,8 @@ function statementListTerminates(statements: Statement[]): boolean {
 }
 
 function generateExpression(expression: Expression, context: GenerationContext): string {
+  const override = context.expressionOverrides.get(expression.location.offset);
+  if (override) return override;
   switch (expression.kind) {
     case "number":
       return generateNumericLiteral(

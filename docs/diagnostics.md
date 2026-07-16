@@ -42,7 +42,7 @@ Currently structured codes include:
 | `Z0310` | value is not valid stored collection iteration input |
 | `Z0311` | structural collection mutation conflicts with iteration borrow |
 | `Z0401` | console method or value has no supported formatter |
-| `Z0402` | formatting or owned String lowering requires an explicit stored owner |
+| `Z0402` | formatting a cleanup-bearing temporary requires stored ownership |
 
 CLI diagnostics render source context. Language-server diagnostics expose the
 same code and message, secondary locations through related information, and

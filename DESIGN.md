@@ -432,11 +432,13 @@ therefore move-only under the same ownership rules as arrays and value structs.
 It can be stored, returned, moved through value parameters, nested in owning
 struct fields, and logged. Plain double-quoted literals remain borrowed
 `cstring` values for direct C-family interop. Direct console templates retain a
-typed allocation-free lowering. In this first lowering tier, a template used as
-a call argument, aggregate field, array element, or ternary branch must first be
-bound to make its owner and evaluation order explicit; removing that bootstrap
-restriction requires general statement-producing expression lowering, not a
-change to the language-level ownership model.
+typed allocation-free lowering. Statement-producing expression lowering
+materializes owned templates into native temporaries when they appear directly
+inside calls, aggregate fields, array elements, or ternary branches. Those
+temporaries transfer into the enclosing owner, and call arguments containing
+templates are evaluated once from left to right before the native call. A
+template passed to an `in` parameter remains caller-owned for the duration of
+the call and is cleaned immediately after the returned value is secured.
 Formatting traits, format specifiers, release-build debug behavior, and
 structured logging remain later design work.
 

@@ -15,12 +15,33 @@ function relay(value: String): String {
   return value;
 }
 
+function mark(value: i32): i32 {
+  console.write(value);
+  return value;
+}
+
+function join(left: String, right: String): String {
+  return `${left}|${right}`;
+}
+
+function inspect(in value: String): i32 {
+  console.log(value);
+  return 42;
+}
+
 function main(): i32 {
   const point = Point { x: 20, y: 22 };
   const first = describe(point);
   const second = relay(first);
-  const wrapped: String = `[${second}]`;
-  const message = Message { text: wrapped };
+  const message = Message { text: `[${second}]` };
   console.log(message);
+  const direct = join(`left=${mark(1)}`, `right=${mark(2)}`);
+  console.log(direct);
+  const choices = [`first`, `second`];
+  console.log(choices);
+  const chosen: String = true ? `yes=${42}` : `no`;
+  console.log(chosen);
+  const inspected = inspect(`borrowed=${6 * 7}`);
+  console.log(inspected);
   return 0;
 }
