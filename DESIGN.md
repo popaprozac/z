@@ -455,6 +455,19 @@ and `debug` append a newline; `write` does not. This namespaced surface remains
 the canonical logging API instead of reserving competing global `print` and
 `println` functions.
 
+The focused time module provides an explicitly blocking delay:
+
+```z
+import { sleep } from "std/time";
+
+sleep(100);
+```
+
+`sleep(milliseconds: u64): void` blocks the current OS thread and lowers to
+`Sleep` on Windows or interruption-safe `nanosleep` on POSIX platforms.
+Async delay remains a separate scheduler-aware operation so this synchronous
+API never changes behavior based on calling context.
+
 An interpolated template evaluates expressions exactly once from left to right.
 Interpolation uses TypeScript's `${expression}` spelling. Plain braces remain
 literal text, and `\${expression}` writes a literal `${expression}` sequence.

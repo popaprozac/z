@@ -239,6 +239,10 @@ export function semanticTokens(source: string, fileName: string): { readonly dat
       classifications.set(token.location.offset, { type: semanticTokenTypes.indexOf("namespace"), modifiers: 4 });
       continue;
     }
+    if (context.semanticInfo.standardFunctionBindings.has(token.text)) {
+      classifications.set(token.location.offset, { type: semanticTokenTypes.indexOf("function"), modifiers: 4 });
+      continue;
+    }
     if (localNamespaces.has(token.text)) {
       classifications.set(token.location.offset, { type: semanticTokenTypes.indexOf("namespace"), modifiers: 4 });
       continue;
@@ -402,6 +406,10 @@ export function hover(source: string, fileName: string, offset: number): Hover |
   }
   if (context.semanticInfo.consoleBindings.has(word.text)) {
     return markdownHover(`standard console imported as ${word.text}`, source, word.start, word.end);
+  }
+  const standardFunction = context.semanticInfo.standardFunctionBindings.get(word.text);
+  if (standardFunction) {
+    return markdownHover(standardFunctionDetail(word.text, standardFunction), source, word.start, word.end);
   }
 
   const chainedSelector = objectiveCSelectorAt(context, word.start);
@@ -603,7 +611,20 @@ function symbolCompletions(source: string, fileName: string, offset: number): Co
   for (const name of context.semanticInfo.consoleBindings) {
     items.push({ label: name, kind: completionKinds.module, detail: `standard console imported as ${name}` });
   }
+  for (const [name, standardFunction] of context.semanticInfo.standardFunctionBindings) {
+    items.push({
+      label: name,
+      kind: completionKinds.function,
+      detail: standardFunctionDetail(name, standardFunction),
+      sortText: `0-${name}`,
+    });
+  }
   return filterCompletions(uniqueCompletions(items), prefix, 500);
+}
+
+function standardFunctionDetail(localName: string, name: "sleep"): string {
+  const signature = `${localName}(milliseconds: u64): void  // blocks the current thread`;
+  return localName === name ? signature : `${signature} — alias of ${name} from "std/time"`;
 }
 
 function completionRecoveryAnalysis(

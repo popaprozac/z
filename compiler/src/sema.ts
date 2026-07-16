@@ -39,7 +39,11 @@ import {
   type ForeignPointerType,
   type ForeignType,
 } from "./foreign.ts";
-import { isStandardModuleSpecifier } from "./standard-library.ts";
+import {
+  isStandardModuleSpecifier,
+  standardFunctionSignature,
+  type StandardFunctionName,
+} from "./standard-library.ts";
 
 export type ObjCCallInfo = {
   readonly selector: string;
@@ -112,6 +116,8 @@ export type SemanticInfo = {
   readonly closures: ReadonlyMap<number, ClosureInfo>;
   readonly consoleCalls: ReadonlySet<number>;
   readonly consoleBindings: ReadonlySet<string>;
+  readonly standardFunctionReferences: ReadonlyMap<number, StandardFunctionName>;
+  readonly standardFunctionBindings: ReadonlyMap<string, StandardFunctionName>;
   readonly typeDisplayNames: ReadonlyMap<string, string>;
   readonly objectiveC: boolean;
   readonly cPlusPlus: boolean;
@@ -144,6 +150,8 @@ type AnalysisState = {
   readonly closures: Map<number, ClosureInfo>;
   readonly consoleCalls: Set<number>;
   readonly consoleBindings: Set<string>;
+  readonly standardFunctionReferences: Map<number, StandardFunctionName>;
+  readonly standardFunctionBindings: Map<string, StandardFunctionName>;
   readonly typeDisplayNames: ReadonlyMap<string, string>;
   readonly objectiveC: boolean;
   readonly cPlusPlus: boolean;
@@ -166,6 +174,7 @@ type SymbolValue =
   | { readonly kind: "foreignType"; readonly declaration: ForeignNamedType }
   | { readonly kind: "foreignModule"; readonly module: ForeignModule }
   | { readonly kind: "console" }
+  | { readonly kind: "standardFunction"; readonly name: StandardFunctionName; readonly declaration: FunctionDeclaration }
   | { readonly kind: "struct"; readonly declaration: StructDeclaration }
   | { readonly kind: "trait"; readonly declaration: TraitDeclaration }
   | { readonly kind: "enum"; readonly declaration: EnumDeclaration };
@@ -229,6 +238,8 @@ export function analyze(
     closures: new Map(),
     consoleCalls: new Set(),
     consoleBindings: new Set(),
+    standardFunctionReferences: new Map(),
+    standardFunctionBindings: new Map(),
     typeDisplayNames,
     objectiveC,
     cPlusPlus,
@@ -277,9 +288,36 @@ export function analyze(
         }
         continue;
       }
+      if (declaration.header === "std/time") {
+        if (!declaration.bindings) {
+          throw new DiagnosticError(fileName, declaration.location, "std/time requires a selective import", {
+            code: "Z0501",
+            helps: ["use `import { sleep } from \"std/time\";`"],
+          });
+        }
+        for (const binding of declaration.bindings) {
+          if (binding.importedName !== "sleep") {
+            throw new DiagnosticError(fileName, binding.location, `std/time has no export ${JSON.stringify(binding.importedName)}`, {
+              code: "Z0501",
+              helps: ["the bootstrap std/time module currently exports `sleep`"],
+            });
+          }
+          validateUserName(binding.localName, binding.location, fileName);
+          const name: StandardFunctionName = "sleep";
+          declareGlobal(
+            globals,
+            binding.localName,
+            { kind: "standardFunction", name, declaration: standardFunctionDeclaration(binding.localName, name, binding.location) },
+            binding.location,
+            fileName,
+          );
+          state.standardFunctionBindings.set(binding.localName, name);
+        }
+        continue;
+      }
       throw new DiagnosticError(fileName, declaration.location, `unknown standard module ${JSON.stringify(declaration.header)}`, {
         code: "Z0501",
-        helps: ["the bootstrap standard library currently provides `std` and `std/console`"],
+        helps: ["the bootstrap standard library currently provides `std`, `std/console`, and `std/time`"],
       });
     }
     const module = foreignModules.get(declaration.moduleName);
@@ -1073,6 +1111,18 @@ function functionTypeDeclaration(name: string, type: FunctionType, location: Sou
   };
 }
 
+function standardFunctionDeclaration(
+  localName: string,
+  name: StandardFunctionName,
+  location: SourceLocation,
+): FunctionDeclaration {
+  const signature = standardFunctionSignature(name);
+  return functionTypeDeclaration(localName, {
+    parameters: signature.parameters,
+    returnType: signature.returnType,
+  }, location);
+}
+
 function inferClosureExpression(
   expression: Extract<Expression, { kind: "closure" }>,
   owner: FunctionDeclaration,
@@ -1777,6 +1827,11 @@ function inferExpressionInner(
           global.declaration.returnType.name,
         );
       }
+      if (global?.kind === "standardFunction") {
+        const signature = standardFunctionSignature(global.name);
+        state.standardFunctionReferences.set(expression.location.offset, global.name);
+        return functionTypeName(signature.parameters, signature.returnType);
+      }
       if (global?.kind === "foreignFunction") {
         throw new DiagnosticError(fileName, expression.location, "foreign function values are not implemented; call the function instead");
       }
@@ -2380,6 +2435,23 @@ function inferExpressionInner(
         return closure!.declaration.returnType.name;
       }
       const target = globals.get(expression.callee.name);
+      if (target?.kind === "standardFunction") {
+        rejectLabeledArguments(expression.argumentLabels, expression.location, fileName);
+        state.standardFunctionReferences.set(expression.callee.location.offset, target.name);
+        state.expressionTypes.set(
+          expression.callee.location.offset,
+          functionTypeName(
+            target.declaration.parameters.map((parameter) => ({
+              name: parameter.name,
+              mode: parameter.mode,
+              type: parameter.type.name,
+            })),
+            target.declaration.returnType.name,
+          ),
+        );
+        checkArguments(target.declaration, expression.arguments, locals, globals, structs, enums, fileName, expression.location, state);
+        return target.declaration.returnType.name;
+      }
       if (target?.kind === "foreignFunction") {
         rejectLabeledArguments(expression.argumentLabels, expression.location, fileName);
         state.foreignFunctionNames.set(expression.callee.location.offset, target.declaration.cName);

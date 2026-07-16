@@ -10,6 +10,9 @@ async function fetchUser(id: UserId): User throws NetworkError {
 
 Synchronous functions are freely callable from async code. A fallible async
 operation is consumed with `try await` or retained with `attempt await`.
+The synchronous `sleep` imported from `std/time` remains a blocking OS-thread
+operation even inside async code. Eventual scheduler-aware delay will be a
+distinct suspending API.
 
 Concurrency is explicit and structured:
 
@@ -40,4 +43,3 @@ Actors provide isolation for long-lived mutable state; channels remain the
 primitive for pipelines and explicit communication. Executors are pluggable so
 Z can participate in Dispatch, GUI run loops, Windows thread-pool I/O, custom
 engines, and deterministic tests.
-

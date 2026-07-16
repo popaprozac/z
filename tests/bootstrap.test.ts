@@ -1753,6 +1753,56 @@ test("resolves explicit standard console imports without routing them through Cl
   assert.match(diagnostics(unknownExport, "unknown-std-export.z")[0].message, /std has no export "future"/);
 });
 
+test("sleeps the current thread through the portable std/time module", () => {
+  const source = `
+    import { sleep as pause } from "std/time";
+    function main(): i32 {
+      pause(1);
+      const delay: (milliseconds: u64) => void = pause;
+      delay(1);
+      return 0;
+    }
+  `;
+  const generated = compileToC(source, "sleep.z");
+  assert.match(generated, /#if defined\(_WIN32\)[\s\S]*#include <windows\.h>[\s\S]*#include <time\.h>/);
+  assert.match(generated, /static void z_sleep_ms\(uint64_t milliseconds\)/);
+  assert.match(generated, /nanosleep\(&remaining, &remaining\)/);
+  assert.match(generated, /Sleep\(\(DWORD\)milliseconds\)/);
+  assert.match(generated, /z_sleep_ms\(1ULL\);/);
+  assert.match(generated, /delay = z_sleep_ms;/);
+  assert.doesNotMatch(generated, /#include <std\/time>/);
+
+  const directory = mkdtempSync("/tmp/z-sleep-");
+  const fileName = resolve(directory, "main.z");
+  writeFileSync(fileName, source);
+  const result = spawnSync(process.execPath, [cli, "run", fileName], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+
+  const pauseUse = source.indexOf("pause(1)") + 1;
+  assert.match(hover(source, "sleep-editor.z", pauseUse)?.contents.value ?? "", /pause\(milliseconds: u64\): void/);
+  assert.match(hover(source, "sleep-editor.z", pauseUse)?.contents.value ?? "", /alias of sleep/);
+  const completionSource = source.replace("pause(1)", "pau");
+  const completionOffset = completionSource.indexOf("pau", completionSource.indexOf("main")) + 3;
+  assert.match(
+    completions(completionSource, "sleep-editor.z", completionOffset).find((item) => item.label === "pause")?.detail ?? "",
+    /blocks the current thread/,
+  );
+  const tokens = decodeSemanticTokens(semanticTokens(source, "sleep-editor.z").data);
+  const pausePosition = positionForOffset(source, pauseUse - 1);
+  assert.ok(tokens.some((token) => (
+    token.line === pausePosition.line
+    && token.character === pausePosition.character
+    && token.type === semanticTokenTypes.indexOf("function")
+  )));
+
+  const defaultImport = `import time from "std/time"; function main(): i32 { return 0; }`;
+  assert.equal(diagnostics(defaultImport, "sleep-default.z")[0].code, "Z0501");
+  const unknownExport = `import { delay } from "std/time"; function main(): i32 { return 0; }`;
+  assert.match(diagnostics(unknownExport, "sleep-export.z")[0].message, /std\/time has no export "delay"/);
+  const wrongType = `import { sleep } from "std/time"; function main(): i32 { sleep(-1); return 0; }`;
+  assert.match(diagnostics(wrongType, "sleep-type.z")[0].message, /integer literal -1 does not fit u64/);
+});
+
 test("stores, returns, moves, and formats owned String values", () => {
   const example = resolve(projectRoot, "examples/strings.z");
   const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });

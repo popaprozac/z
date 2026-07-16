@@ -330,6 +330,23 @@ language types and intrinsics remain implicit; standard facilities are imports.
 `std` and `std/...` are compiler-reserved module paths and are never mistaken
 for native headers by Clang.
 
+Blocking delays live in the focused `std/time` module:
+
+```z
+import { sleep } from "std/time";
+
+sleep(250); // milliseconds; blocks the current OS thread
+```
+
+`sleep(milliseconds: u64): void` lowers to the host timing primitive and is
+useful in synchronous applications and smoke tests. It will remain explicitly
+blocking when async arrives; scheduler-aware delay will be a separate
+suspending operation rather than silently changing `sleep` semantics.
+
+```sh
+bun run z run examples/sleep.z
+```
+
 Template expressions use TypeScript's `${expression}` spelling and run exactly
 once from left to right. Plain braces are literal text; write `\${expression}`
 for a literal interpolation sequence. The bootstrap formats primitives,
