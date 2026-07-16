@@ -488,6 +488,13 @@ namespace access exposes the same export set. Re-exports, directory indexes,
 package resolution, separate compilation, and a package registry remain later
 layers.
 
+A source file does not need a module declaration or a `main` function. Checking
+and editor analysis accept declaration-only and export-only modules. Executable
+context supplies the distinction: a file selected by `z run`, the current
+executable-oriented `z emit`, or as a manifest entry must declare
+`function main(): i32`. This keeps module identity in the
+import/build graph rather than duplicating it in source syntax.
+
 ## Async and concurrency
 
 Z keeps suspension explicit. Full colorless async is not a goal because hidden

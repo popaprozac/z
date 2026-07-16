@@ -157,6 +157,7 @@ export function analyze(
   fileName: string,
   foreignModules: ReadonlyMap<string, ForeignModule>,
   typeDisplayNames: ReadonlyMap<string, string> = new Map(),
+  requireMain = true,
 ): SemanticInfo {
   const foreignTypes = new Map<string, ForeignPointerType>();
   const foreignNamedTypes = new Map<string, ForeignNamedType>();
@@ -334,13 +335,13 @@ export function analyze(
   validateValueLayouts(program.structs, program.enums, structs, enums, fileName);
 
   const main = globals.get("main");
-  if (!main || main.kind !== "function") {
+  if ((!main || main.kind !== "function") && requireMain) {
     throw new DiagnosticError(fileName, { offset: 0, line: 1, column: 1 }, "program must declare `function main(): i32`");
   }
-  if (main.declaration.parameters.length !== 0 || main.declaration.returnType.name !== "i32") {
+  if (main?.kind === "function" && (main.declaration.parameters.length !== 0 || main.declaration.returnType.name !== "i32")) {
     throw new DiagnosticError(fileName, main.declaration.location, "`main` must have signature `function main(): i32`");
   }
-  if (main.declaration.errorType) {
+  if (main?.kind === "function" && main.declaration.errorType) {
     throw new DiagnosticError(fileName, main.declaration.location, "`main` cannot throw in the bootstrap runtime");
   }
 

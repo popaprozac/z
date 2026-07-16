@@ -33,7 +33,11 @@ export type AnalyzedSource = {
   readonly moduleIncludeDirectories: readonly string[];
 };
 
-export function analyzeSource(source: string, fileName: string): AnalyzedSource {
+export type AnalysisOptions = {
+  readonly requireMain?: boolean;
+};
+
+export function analyzeSource(source: string, fileName: string, options: AnalysisOptions = {}): AnalyzedSource {
   const tokens = lex(source, fileName);
   const sourceProgram = parse(tokens, fileName);
   const linked = linkSourceModules(sourceProgram, fileName);
@@ -53,7 +57,7 @@ export function analyzeSource(source: string, fileName: string): AnalyzedSource 
       `Result<${typeDisplayNames.get(success) ?? success}, ${typeDisplayNames.get(failure) ?? failure}>`,
     );
   }
-  const semanticInfo = analyze(program, fileName, foreignModules, typeDisplayNames);
+  const semanticInfo = analyze(program, fileName, foreignModules, typeDisplayNames, options.requireMain ?? true);
   return {
     sourceProgram,
     program,
@@ -84,5 +88,5 @@ export function compileToNative(source: string, fileName: string): NativeArtifac
 }
 
 export function check(source: string, fileName: string): void {
-  analyzeSource(source, fileName);
+  analyzeSource(source, fileName, { requireMain: false });
 }

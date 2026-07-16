@@ -61,7 +61,11 @@ private declarations receive collision-free compiler identities. Circular
 imports, missing files and exports, and duplicate bindings are diagnosed before
 native generation. The bootstrap links the graph into one C-family translation
 unit while preserving source names in diagnostics, formatting, and editor
-services. Run the three-file example with `bun run z run examples/modules/main.z`.
+services. An export-only file is valid in `z check` and the language server;
+only an executable entry selected by `z run` or the current executable-oriented
+`z emit` must declare
+`function main(): i32`. Run the three-file example with
+`bun run z run examples/modules/main.z`.
 
 Structs are value types with fields, literals, and methods:
 

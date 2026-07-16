@@ -3,7 +3,7 @@ import { spawnSync } from "node:child_process";
 import { resolve } from "node:path";
 import { mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { test } from "bun:test";
-import { analyzeSource, compileToC, compileToNative } from "../compiler/src/compiler.ts";
+import { analyzeSource, check, compileToC, compileToNative } from "../compiler/src/compiler.ts";
 import { DiagnosticError, formatDiagnostic } from "../compiler/src/diagnostics.ts";
 import {
   completions,
@@ -222,6 +222,26 @@ test("provides completion, hover, definitions, and semantic tokens across Z modu
   assert.ok(tokens.some((token) => token.line === pointPosition.line
     && token.character === pointPosition.character
     && token.type === semanticTokenTypes.indexOf("type")));
+});
+
+test("analyzes export-only files as modules while executable commands still require main", () => {
+  const moduleFile = resolve(projectRoot, "examples/modules/geometry.z");
+  const source = readFileSync(moduleFile, "utf8");
+  assert.doesNotThrow(() => check(source, moduleFile));
+  assert.deepEqual(diagnostics(source, moduleFile), []);
+
+  const pointOffset = source.indexOf("Point") + 1;
+  assert.match(hover(source, moduleFile, pointOffset)?.contents.value ?? "", /struct Point/);
+  assert.ok(semanticTokens(source, moduleFile).data.length > 0);
+
+  const checkResult = spawnSync(process.execPath, [cli, "check", moduleFile], { encoding: "utf8" });
+  assert.equal(checkResult.status, 0, checkResult.stderr);
+  assert.match(checkResult.stdout, /geometry\.z: ok/);
+
+  assert.throws(() => compileToNative(source, moduleFile), /program must declare `function main\(\): i32`/);
+  const runResult = spawnSync(process.execPath, [cli, "run", moduleFile], { encoding: "utf8" });
+  assert.notEqual(runResult.status, 0);
+  assert.match(runResult.stderr, /program must declare `function main\(\): i32`/);
 });
 
 test("resolves native headers relative to the Z module that imports them", () => {

@@ -64,7 +64,7 @@ const completionKinds = {
 
 export function diagnostics(source: string, fileName: string): ServiceDiagnostic[] {
   try {
-    analyzeSource(source, fileName);
+    analyzeSource(source, fileName, { requireMain: false });
     return [];
   } catch (error) {
     const diagnostic = error instanceof DiagnosticError ? error : null;
@@ -990,7 +990,7 @@ function labelCompletions(source: string, fileName: string, offset: number): Com
 function importAnalysis(source: string, fileName: string): AnalyzedSource | null {
   const imports = [...source.matchAll(/\bimport\b[\s\S]*?;/g)].map((match) => match[0]).join("\n");
   try {
-    return analyzeSource(`${imports}\nfunction main(): i32 { return 0; }`, fileName);
+    return analyzeSource(`${imports}\nfunction main(): i32 { return 0; }`, fileName, { requireMain: false });
   } catch {
     return null;
   }
@@ -998,7 +998,7 @@ function importAnalysis(source: string, fileName: string): AnalyzedSource | null
 
 function safeAnalysis(source: string, fileName: string): AnalyzedSource | null {
   try {
-    return analyzeSource(source, fileName);
+    return analyzeSource(source, fileName, { requireMain: false });
   } catch {
     return null;
   }
