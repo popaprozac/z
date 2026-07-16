@@ -417,15 +417,25 @@ function analyzeStatement(
         throw new DiagnosticError(fileName, statement.target.location, `cannot ${action} immutable binding ${JSON.stringify(root.name)}`);
       }
       const expected = inferExpression(statement.target, locals, globals, structs, enums, fileName, state);
-      if (hasCleanupType(expected, structs, state.foreignTypes)) {
-        throw new DiagnosticError(
-          fileName,
-          statement.target.location,
-          "replacing cleanup-bearing storage is not implemented yet; its previous value must be destroyed first",
-        );
-      }
       const actual = inferDirectValue(statement.expression, owner, locals, globals, structs, enums, fileName, state);
       requireAssignable(expected, actual, statement.expression, fileName, state.foreignNamedTypes, state.integerLiteralTypes);
+      if (hasCleanupType(expected, structs, state.foreignTypes)) {
+        consumeOwnedValue(statement.expression, expected, locals, structs, fileName, state);
+        if (statement.target.kind === "identifier") {
+          // A whole binding may move into the replacement expression and become
+          // initialized again when that expression succeeds.
+          locals.set(root.name, stored);
+        } else {
+          const rootAfterReplacement = locals.get(root.name);
+          if (rootAfterReplacement && ownershipState(rootAfterReplacement) !== "available") {
+            throw new DiagnosticError(
+              fileName,
+              statement.expression.location,
+              `cannot replace a field after its owner ${JSON.stringify(root.name)} moves while evaluating the new value`,
+            );
+          }
+        }
+      }
       return;
     }
     case "return": {

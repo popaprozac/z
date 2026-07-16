@@ -1105,7 +1105,7 @@ test("keeps const values, parameters, and borrowed receivers immutable", () => {
   );
 });
 
-test("type-checks assignments and protects cleanup-bearing replacements", () => {
+test("type-checks assignments and replaces cleanup-bearing values safely", () => {
   const wrongType = `
     function main(): i32 {
       let value = 1;
@@ -1118,21 +1118,16 @@ test("type-checks assignments and protects cleanup-bearing replacements", () => 
     /expected i32, found bool/,
   );
 
-  const cleanupReplacement = `
-    struct Resource {
-      value: i32;
-      deinit {}
-    }
-    function main(): i32 {
-      let resource = Resource { value: 1 };
-      resource = Resource { value: 2 };
-      return 0;
-    }
-  `;
-  assert.throws(
-    () => compileToC(cleanupReplacement, "cleanup-assignment.z"),
-    /replacing cleanup-bearing storage is not implemented yet/,
-  );
+  const example = resolve(projectRoot, "examples/replacement.z");
+  const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, "make=2\ndrop=1\nlive=5\ndrop=10\nholder=20\ndrop=20\ndrop=5\n");
+
+  const generated = compileToC(readFileSync(example, "utf8"), example);
+  assert.match(generated, /_z_replacement_\d+ = make\(2\);\n\s+if \(_z_live_resource_\d+\) Z_Resource_deinit\(&\(resource\)\);/);
+  assert.match(generated, /_z_replacement_\d+ = Z_Resource_bumped\(\(_z_live_resource_\d+ = false, resource\), 3\);/);
+  assert.match(generated, /resource = _z_replacement_\d+;\n\s+_z_live_resource_\d+ = true;/);
+  assert.match(generated, /Z_Resource_deinit\(&\(\(holder\)\.resource\)\);\n\s+\(holder\)\.resource = _z_replacement_\d+;/);
 });
 
 test("compiles and runs the first native program", () => {

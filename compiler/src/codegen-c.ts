@@ -275,12 +275,17 @@ function generateStatement(statement: Statement, context: GenerationContext): st
       const liveFlag = ensureLiveFlag(statement.name, context);
       return `${initialized}\nbool ${liveFlag} = true;`;
     }
-    case "assignment":
+    case "assignment": {
+      const targetType = inferExpressionType(statement.target, context);
+      if (hasCleanupType(targetType, context.structs, context.semanticInfo.foreignTypes)) {
+        return generateCleanupAwareAssignment(statement, targetType, context);
+      }
       return generateDirectValue(
         statement.expression,
         context,
         (value) => `${generateExpression(statement.target, context)} = ${value};`,
       );
+    }
     case "return":
       if (!statement.expression) {
         const cleanup = generateCleanup(context.cleanupScopes, context);
@@ -380,16 +385,53 @@ function generateCleanup(scopes: CleanupLocal[][], context: GenerationContext): 
   const calls: string[] = [];
   for (const scope of [...scopes].reverse()) {
     for (const local of [...scope].reverse()) {
-      const foreign = context.semanticInfo.foreignTypes.get(local.type);
-      if (foreign?.ownership === "owned") {
-        const condition = foreign.nullable ? `${local.liveFlag} && ${local.name} != NULL` : local.liveFlag;
-        calls.push(`if (${condition}) ${foreign.release}(${local.name});`);
-      } else {
-        calls.push(`if (${local.liveFlag}) ${deinitName(local.type)}(&(${local.name}));`);
-      }
+      calls.push(generateValueCleanup(local.name, local.type, local.liveFlag, context));
     }
   }
   return calls.join("\n");
+}
+
+function generateCleanupAwareAssignment(
+  statement: Extract<Statement, { kind: "assignment" }>,
+  targetType: string,
+  context: GenerationContext,
+): string {
+  const temporary = `_z_replacement_${context.valueCounter.value++}`;
+  const temporaryDeclaration = generateLocalDeclaration(
+    targetType,
+    temporary,
+    true,
+    context.structs,
+    context.enums,
+  );
+  const target = generateExpression(statement.target, context);
+  const liveFlag = statement.target.kind === "identifier"
+    ? context.liveFlags.get(statement.target.name) ?? null
+    : null;
+  const replacement = generateDirectValue(
+    statement.expression,
+    context,
+    (value) => `${temporary} = ${value};`,
+  );
+  const cleanup = generateValueCleanup(target, targetType, liveFlag, context);
+  const revive = liveFlag ? `\n${liveFlag} = true;` : "";
+  return `${temporaryDeclaration};\n${replacement}\n${cleanup}\n${target} = ${temporary};${revive}`;
+}
+
+function generateValueCleanup(
+  value: string,
+  type: string,
+  liveFlag: string | null,
+  context: GenerationContext,
+): string {
+  const foreign = context.semanticInfo.foreignTypes.get(type);
+  if (foreign?.ownership === "owned") {
+    const conditions = [liveFlag, foreign.nullable ? `${value} != NULL` : null].filter(Boolean);
+    const release = `${foreign.release}(${value});`;
+    return conditions.length > 0 ? `if (${conditions.join(" && ")}) ${release}` : release;
+  }
+  const cleanup = `${deinitName(type)}(&(${value}));`;
+  return liveFlag ? `if (${liveFlag}) ${cleanup}` : cleanup;
 }
 
 function generateSuccessReturn(value: string, context: GenerationContext): string {

@@ -65,9 +65,10 @@ Assignment is a statement rather than a value-producing expression. It is
 statically type-checked, and nested field mutation must remain rooted in a
 `let`. Owned and `in` parameters are immutable; `inout` parameters permit
 mutation of the caller's explicitly borrowed storage. Match bindings remain
-immutable in this bootstrap slice.
-Replacing cleanup-bearing storage is temporarily rejected until assignment
-lowering can destroy the previous value before installing the new one.
+immutable in this bootstrap slice. Replacing cleanup-bearing storage evaluates
+the new value first, destroys the old value exactly once, and then installs the
+replacement. If evaluation exits with an error, ordinary scope cleanup remains
+responsible for the old value.
 
 Methods borrow `this` immutably by default. A method that changes its receiver
 declares the non-default capability as a TypeScript-style receiver parameter:

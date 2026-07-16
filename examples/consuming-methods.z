@@ -20,7 +20,7 @@ struct Resource {
 struct Point {
   value: i32;
 
-  function take(move this): i32 {
+  function take(): i32 {
     return this.value;
   }
 }

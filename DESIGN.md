@@ -70,6 +70,12 @@ forwarded. Copyable receivers copy instead of invalidating the caller. `move`
 is contextual in this position, so it remains available as an ordinary name.
 `out` is not meaningful for an already-existing receiver.
 
+Whether explicit `move this` should always invalidate even a copyable source is
+deliberately open. The bootstrap currently follows ordinary owned-parameter
+semantics and copies copyable receivers. Forced invalidation, or rejecting
+`move this` when a borrow would suffice, may better match the explicit spelling;
+real APIs should drive that decision before traits and generics freeze it.
+
 Attribute syntax remains deliberately open. A future declaration attribute may
 provide sugar for a receiver capability, while an `@{ ... }` form may describe
 scoped effects such as unsafe operations, executor affinity, or allocator
@@ -102,10 +108,11 @@ literals. General temporary materialization, native `out`, and definite
 initialization follow later. Multiple `in` uses may share one root in a call;
 uses involving `inout` or ownership must not overlap that root.
 
-Replacing cleanup-bearing storage has additional semantics: the old value must
-be destroyed exactly once before the new value becomes live, including when
-evaluation fails. The bootstrap rejects that case until ownership-aware
-replacement lowering is implemented.
+Replacing cleanup-bearing storage evaluates the new value into owned temporary
+storage before destroying the old value and installing the replacement. If
+evaluation propagates an error, the old value remains governed by ordinary
+scope cleanup. A whole binding may move through its own replacement expression
+and becomes live again only after successful installation.
 
 Lifecycle cleanup is declared as a compiler-only block rather than a callable
 method:
