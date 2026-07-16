@@ -1620,4 +1620,7 @@ test("editor grammar tracks keywords without reserving Result variants", () => {
   assert.match(operatorPattern, /\^/);
   assert.match(operatorPattern, /=/);
   assert.doesNotMatch(keywordPattern, /success|failure/);
+
+  const extension = readFileSync(resolve(projectRoot, "editors/vscode/extension.js"), "utf8");
+  assert.match(extension, /6: vscode\.CompletionItemKind\.Variable/);
 });

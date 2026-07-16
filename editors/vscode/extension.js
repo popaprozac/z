@@ -225,6 +225,7 @@ function completionKind(kind) {
     2: vscode.CompletionItemKind.Method,
     3: vscode.CompletionItemKind.Function,
     5: vscode.CompletionItemKind.Field,
+    6: vscode.CompletionItemKind.Variable,
     7: vscode.CompletionItemKind.Class,
     9: vscode.CompletionItemKind.Module,
     10: vscode.CompletionItemKind.Property,
