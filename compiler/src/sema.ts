@@ -32,6 +32,7 @@ import {
   type ForeignPointerType,
   type ForeignType,
 } from "./foreign.ts";
+import { isStandardModuleSpecifier } from "./standard-library.ts";
 
 export type ObjCCallInfo = {
   readonly selector: string;
@@ -83,6 +84,7 @@ export type SemanticInfo = {
   readonly bindingTypes: ReadonlyMap<number, string>;
   readonly closures: ReadonlyMap<number, ClosureInfo>;
   readonly consoleCalls: ReadonlySet<number>;
+  readonly consoleBindings: ReadonlySet<string>;
   readonly objectiveC: boolean;
   readonly cPlusPlus: boolean;
   readonly frameworks: readonly string[];
@@ -112,6 +114,7 @@ type AnalysisState = {
   readonly bindingTypes: Map<number, string>;
   readonly closures: Map<number, ClosureInfo>;
   readonly consoleCalls: Set<number>;
+  readonly consoleBindings: Set<string>;
   readonly objectiveC: boolean;
   readonly cPlusPlus: boolean;
   readonly frameworks: readonly string[];
@@ -132,6 +135,7 @@ type SymbolValue =
   | { readonly kind: "foreignConstant"; readonly declaration: ForeignConstant }
   | { readonly kind: "foreignType"; readonly declaration: ForeignNamedType }
   | { readonly kind: "foreignModule"; readonly module: ForeignModule }
+  | { readonly kind: "console" }
   | { readonly kind: "struct"; readonly declaration: StructDeclaration }
   | { readonly kind: "trait"; readonly declaration: TraitDeclaration }
   | { readonly kind: "enum"; readonly declaration: EnumDeclaration };
@@ -191,6 +195,7 @@ export function analyze(
     bindingTypes: new Map(),
     closures: new Map(),
     consoleCalls: new Set(),
+    consoleBindings: new Set(),
     objectiveC,
     cPlusPlus,
     frameworks: [...frameworks],
@@ -205,6 +210,44 @@ export function analyze(
   const enums = new Map<string, EnumDeclaration>();
 
   for (const declaration of program.imports) {
+    if (isStandardModuleSpecifier(declaration.header)) {
+      if (declaration.header === "std/console") {
+        if (declaration.bindings) {
+          throw new DiagnosticError(fileName, declaration.location, "std/console is a default module import", {
+            code: "Z0501",
+            helps: ["use `import console from \"std/console\";`"],
+          });
+        }
+        validateUserName(declaration.moduleName, declaration.location, fileName);
+        declareGlobal(globals, declaration.moduleName, { kind: "console" }, declaration.location, fileName);
+        state.consoleBindings.add(declaration.moduleName);
+        continue;
+      }
+      if (declaration.header === "std") {
+        if (!declaration.bindings) {
+          throw new DiagnosticError(fileName, declaration.location, "the std facade requires a selective import", {
+            code: "Z0501",
+            helps: ["use `import { console } from \"std\";`"],
+          });
+        }
+        for (const binding of declaration.bindings) {
+          if (binding.importedName !== "console") {
+            throw new DiagnosticError(fileName, binding.location, `std has no export ${JSON.stringify(binding.importedName)}`, {
+              code: "Z0501",
+              helps: ["the bootstrap std facade currently exports `console`"],
+            });
+          }
+          validateUserName(binding.localName, binding.location, fileName);
+          declareGlobal(globals, binding.localName, { kind: "console" }, binding.location, fileName);
+          state.consoleBindings.add(binding.localName);
+        }
+        continue;
+      }
+      throw new DiagnosticError(fileName, declaration.location, `unknown standard module ${JSON.stringify(declaration.header)}`, {
+        code: "Z0501",
+        helps: ["the bootstrap standard library currently provides `std` and `std/console`"],
+      });
+    }
     const module = foreignModules.get(declaration.moduleName);
     if (!module) throw new DiagnosticError(fileName, declaration.location, `header ${JSON.stringify(declaration.header)} was not resolved`);
     if (!declaration.bindings) {
@@ -1419,9 +1462,8 @@ function isConsoleMember(
   globals: ReadonlyMap<string, SymbolValue>,
 ): boolean {
   return expression.object.kind === "identifier"
-    && expression.object.name === "console"
-    && !locals.has("console")
-    && !globals.has("console");
+    && !locals.has(expression.object.name)
+    && globals.get(expression.object.name)?.kind === "console";
 }
 
 function requireConsoleFormattable(
@@ -1641,6 +1683,9 @@ function inferExpressionInner(
       }
       if (global?.kind === "foreignModule") {
         throw new DiagnosticError(fileName, expression.location, "an imported module must be followed by a member name");
+      }
+      if (global?.kind === "console") {
+        throw new DiagnosticError(fileName, expression.location, "the console module must be followed by a method name");
       }
       if (global?.kind === "struct") {
         throw new DiagnosticError(fileName, expression.location, "a struct type must be followed by a field initializer");
@@ -1905,6 +1950,17 @@ function inferExpressionInner(
     }
     case "call": {
       if (expression.callee.kind === "member") {
+        if (
+          expression.callee.object.kind === "identifier"
+          && expression.callee.object.name === "console"
+          && !locals.has("console")
+          && !globals.has("console")
+        ) {
+          throw new DiagnosticError(fileName, expression.callee.object.location, "console is not in scope", {
+            code: "Z0403",
+            helps: ["add `import console from \"std/console\";`"],
+          });
+        }
         if (isConsoleMember(expression.callee, locals, globals)) {
           const supported = new Set(["log", "write", "error", "debug"]);
           if (!supported.has(expression.callee.property)) {

@@ -272,14 +272,21 @@ Escaping closure values and cleanup-bearing move captures remain explicitly
 deferred until owned environments and their ARC/deterministic cleanup rules are
 implemented.
 
-Typed logging uses the global prelude `console` namespace:
+Typed logging uses the explicit standard `console` module:
 
 ```z
+import console from "std/console";
+
 console.log(`${someInt} with text in between, struct: ${someStruct}`);
 console.write("no automatic newline");
 console.error("written to stderr", errorValue);
 console.debug("debug stream", state);
 ```
+
+The equivalent facade spelling is `import { console } from "std";`. Core
+language types and intrinsics remain implicit; standard facilities are imports.
+`std` and `std/...` are compiler-reserved module paths and are never mistaken
+for native headers by Clang.
 
 Template expressions use TypeScript's `${expression}` spelling and run exactly
 once from left to right. Plain braces are literal text; write `\${expression}`
@@ -497,6 +504,7 @@ Complete C records, enums, constants, and scalar typedefs are imported under the
 module namespace and used with ordinary Z syntax:
 
 ```z
+import console from "std/console";
 import geometry from "geometry.h";
 
 function move(point: geometry.Point, amount: geometry.Count): geometry.Point {
@@ -510,7 +518,7 @@ console.log(`moved to ${moved.x}, ${moved.y}`);
 
 The header remains the single ABI declaration. Z checks record fields, enum
 arguments, qualified signatures, and imported calls without an `extern` mirror.
-The global `console` namespace provides typed `log`, `write`, `error`, and
+The standard `console` module provides typed `log`, `write`, `error`, and
 `debug` methods. Interpolated expressions are evaluated once from left to right,
 and structs, imported records, arrays, enums, primitives, and class identity
 receive useful initial formatting without exposing C variadics to Z.
@@ -519,6 +527,7 @@ The first C++ tier uses the same source model for uniquely named namespace
 functions and plain aggregate records:
 
 ```z
+import console from "std/console";
 import cpp from "cpp_math.hpp";
 
 const origin = cpp.Point { x: 20, y: 22 };

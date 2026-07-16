@@ -1,3 +1,4 @@
+import console from "std/console";
 import Swift from "ZSwiftExample-Swift.h";
 
 function main(): i32 {

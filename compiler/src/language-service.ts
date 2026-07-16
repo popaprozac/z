@@ -155,6 +155,7 @@ export function semanticTokens(source: string, fileName: string): { readonly dat
   );
   const matchVariants = new Set(collectMatchArmInfos(context).map((item) => item.variantOffset));
   const modules = new Map([...context.foreignModules.keys()].map((name) => [name, context.foreignModules.get(name)!]));
+  const consoleBindings = context.semanticInfo.consoleBindings;
   const tokens = lex(source, fileName);
 
   for (let index = 0; index < tokens.length; index += 1) {
@@ -200,13 +201,13 @@ export function semanticTokens(source: string, fileName: string): { readonly dat
       });
       continue;
     }
-    if (token.text === "console" && next?.kind === "dot") {
+    if (consoleBindings.has(token.text)) {
       classifications.set(token.location.offset, { type: semanticTokenTypes.indexOf("namespace"), modifiers: 4 });
       continue;
     }
     if (
       previous?.kind === "dot"
-      && tokens[index - 2]?.text === "console"
+      && consoleBindings.has(tokens[index - 2]?.text ?? "")
       && ["log", "write", "error", "debug"].includes(token.text)
     ) {
       classifications.set(token.location.offset, { type: semanticTokenTypes.indexOf("method"), modifiers: 4 });
@@ -325,8 +326,8 @@ export function hover(source: string, fileName: string, offset: number): Hover |
   if (module) {
     return markdownHover(`import ${word.text} from ${JSON.stringify(module.declaration.header)}`, source, word.start, word.end);
   }
-  if (word.text === "console") {
-    return markdownHover("global console", source, word.start, word.end);
+  if (context.semanticInfo.consoleBindings.has(word.text)) {
+    return markdownHover(`standard console imported as ${word.text}`, source, word.start, word.end);
   }
 
   const chainedSelector = objectiveCSelectorAt(context, word.start);
@@ -342,7 +343,7 @@ export function hover(source: string, fileName: string, offset: number): Hover |
 
   const memberPrefix = source.slice(0, word.start).match(/([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*)\.$/);
   if (memberPrefix) {
-    if (memberPrefix[1] === "console") {
+    if (context.semanticInfo.consoleBindings.has(memberPrefix[1])) {
       const detail = consoleMethodDetail(word.text);
       if (detail) return markdownHover(detail, source, word.start, word.end);
     }
@@ -401,7 +402,7 @@ export function definition(source: string, uri: string, offset: number): Locatio
     const next = tokens[index + 1];
     const declarationKeyword = previous && ["function", "struct", "class", "trait", "enum", "const", "let"].includes(previous.kind);
     const namedSlot = next?.kind === "colon";
-    const importSlot = previous?.kind === "leftBrace" || previous?.kind === "comma" || previous?.kind === "as";
+    const importSlot = previous?.kind === "import" || previous?.kind === "leftBrace" || previous?.kind === "comma" || previous?.kind === "as";
     if (declarationKeyword || namedSlot || importSlot) candidates.push(token.location);
   }
   const preceding = candidates.filter((candidate) => candidate.offset <= word.start).at(-1);
@@ -468,7 +469,9 @@ function symbolCompletions(source: string, fileName: string, offset: number): Co
   for (const [name, module] of context.foreignModules) {
     items.push({ label: name, kind: completionKinds.module, detail: `import from ${JSON.stringify(module.declaration.header)}` });
   }
-  items.push({ label: "console", kind: completionKinds.module, detail: "global typed console" });
+  for (const name of context.semanticInfo.consoleBindings) {
+    items.push({ label: name, kind: completionKinds.module, detail: `standard console imported as ${name}` });
+  }
   return filterCompletions(uniqueCompletions(items), prefix, 500);
 }
 
@@ -616,7 +619,6 @@ function memberCompletions(
   receiverText: string,
   prefix: string,
 ): CompletionItem[] {
-  if (receiverText === "console") return filterCompletions(consoleCompletions(), prefix, 100);
   if (receiverText === "String") {
     return filterCompletions([{
       label: "from",
@@ -627,6 +629,9 @@ function memberCompletions(
   }
   const importContext = importAnalysis(source, fileName);
   if (!importContext) return [];
+  if (importContext.semanticInfo.consoleBindings.has(receiverText)) {
+    return filterCompletions(consoleCompletions(), prefix, 100);
+  }
   const directModule = importContext.foreignModules.get(receiverText);
   if (directModule) return moduleCompletions(directModule, prefix);
 

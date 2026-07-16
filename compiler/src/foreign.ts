@@ -4,6 +4,7 @@ import { basename, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ImportDeclaration } from "./ast.ts";
 import { DiagnosticError } from "./diagnostics.ts";
+import { isStandardModuleSpecifier } from "./standard-library.ts";
 
 export type ForeignScalarTypeName =
   | "i8" | "u8" | "i16" | "u16" | "i32" | "u32" | "i64" | "u64" | "isize" | "usize" | "f32" | "f64" | "bool";
@@ -189,6 +190,7 @@ export function resolveForeignModules(
   const sourceDirectory = resolve(dirname(fileName));
   const includeDirectories = [...new Set([sourceDirectory, ...projectIncludeDirectories.map((directory) => resolve(directory))])];
   for (const declaration of declarations) {
+    if (isStandardModuleSpecifier(declaration.header)) continue;
     const headerDirectory = includeDirectories.find((directory) => existsSync(resolve(directory, declaration.header)))
       ?? sourceDirectory;
     const localHeader = resolve(headerDirectory, declaration.header);

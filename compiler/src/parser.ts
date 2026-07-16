@@ -89,10 +89,10 @@ export function parse(tokens: Token[], fileName: string): Program {
       moduleName = `__z_selective_import_${importCounter++}`;
       bindings = [];
       if (at("rightBrace")) {
-        throw new DiagnosticError(fileName, peek().location, "a selective import requires at least one C declaration name");
+        throw new DiagnosticError(fileName, peek().location, "a selective import requires at least one imported name");
       }
       do {
-        const imported = expect("identifier", "an imported C declaration name");
+        const imported = expect("identifier", "an imported name");
         const local = match("as")
           ? expect("identifier", "a local import alias")
           : imported;
@@ -107,7 +107,7 @@ export function parse(tokens: Token[], fileName: string): Program {
       moduleName = expect("identifier", "an import name").text;
     }
     expect("from", "`from`");
-    const header = expect("string", "a header string").text;
+    const header = expect("string", "a module path").text;
     expect("semicolon", "`;`");
     return { kind: "import", moduleName, bindings, header, location: start };
   };

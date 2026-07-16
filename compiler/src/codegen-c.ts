@@ -14,6 +14,7 @@ import {
   parseSliceType,
 } from "./array-types.ts";
 import type { ClosureInfo, SemanticInfo } from "./sema.ts";
+import { isStandardModuleSpecifier } from "./standard-library.ts";
 
 type GenerationContext = {
   readonly structs: Map<string, StructDeclaration>;
@@ -89,8 +90,8 @@ export function generateC(program: Program, sourceName: string, semanticInfo: Se
     "#include <stdlib.h>",
   ];
 
-  const usesString = programUsesString(program);
-  if (programUsesConsole(program) || usesString) {
+  const usesString = programUsesString(program, semanticInfo);
+  if (semanticInfo.consoleCalls.size > 0 || usesString) {
     lines.push("#include <stdio.h>");
     includedHeaders.add("stdio.h");
   }
@@ -100,6 +101,7 @@ export function generateC(program: Program, sourceName: string, semanticInfo: Se
   }
 
   for (const declaration of program.imports) {
+    if (isStandardModuleSpecifier(declaration.header)) continue;
     if (includedHeaders.has(declaration.header)) continue;
     lines.push(`#include <${declaration.header}>`);
     includedHeaders.add(declaration.header);
@@ -303,31 +305,7 @@ function programUsesIndex(program: Program): boolean {
   return found;
 }
 
-function programUsesConsole(program: Program): boolean {
-  let found = false;
-  const visit = (value: unknown): void => {
-    if (found || !value || typeof value !== "object") return;
-    if (Array.isArray(value)) {
-      for (const item of value) visit(item);
-      return;
-    }
-    const expression = value as Partial<Expression>;
-    if (
-      expression.kind === "call"
-      && expression.callee?.kind === "member"
-      && expression.callee.object.kind === "identifier"
-      && expression.callee.object.name === "console"
-    ) {
-      found = true;
-      return;
-    }
-    for (const child of Object.values(value as Record<string, unknown>)) visit(child);
-  };
-  visit(program);
-  return found;
-}
-
-function programUsesString(program: Program): boolean {
+function programUsesString(program: Program, semanticInfo: SemanticInfo): boolean {
   let found = false;
   const visit = (value: unknown, directConsoleTemplate = false): void => {
     if (found || !value || typeof value !== "object") return;
@@ -342,9 +320,8 @@ function programUsesString(program: Program): boolean {
     }
     if (
       node.kind === "call"
-      && node.callee?.kind === "member"
-      && node.callee.object.kind === "identifier"
-      && node.callee.object.name === "console"
+      && node.location
+      && semanticInfo.consoleCalls.has(node.location.offset)
     ) {
       visit(node.callee);
       for (const argument of node.arguments ?? []) visit(argument, argument.kind === "template");

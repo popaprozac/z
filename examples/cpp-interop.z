@@ -1,3 +1,4 @@
+import console from "std/console";
 import cpp from "cpp_math.hpp";
 
 function main(): i32 {

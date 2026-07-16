@@ -407,10 +407,13 @@ Z preserves the convenience of logging arbitrary values without giving up
 static types:
 
 ```z
+import console from "std/console";
+
 console.log(`${someInt} with text in between, struct: ${someStruct}`);
 ```
 
-`console` is a globally available prelude namespace. The bootstrap implements
+`console` is imported explicitly; `import { console } from "std";` is the
+equivalent facade spelling. The bootstrap implements
 `log` and `write` on stdout plus `error` and `debug` on stderr. `log`, `error`,
 and `debug` append a newline; `write` does not. This namespaced surface remains
 the canonical logging API instead of reserving competing global `print` and

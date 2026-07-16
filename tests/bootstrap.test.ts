@@ -406,6 +406,7 @@ test("imports and executes Swift through its generated Objective-C compatibility
   assert.equal(swiftBuild.status, 0, swiftBuild.stderr);
 
   const source = `
+    import console from "std/console";
     import Swift from "ZSwiftFixture-Swift.h";
     function main(): i32 {
       const counter = Swift.ZSwiftCounter.alloc().initWithValue(40);
@@ -1336,7 +1337,7 @@ test("exposes for-of bindings to hover, completion, and semantic tokens", () => 
   assert.ok(tokens.some((token) => token.line === bindingPosition.line && token.character === bindingPosition.character));
 });
 
-test("formats typed values through the global console namespace and interpolation", () => {
+test("formats typed values through the imported console namespace and interpolation", () => {
   const example = resolve(projectRoot, "examples/console.z");
   const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
@@ -1352,6 +1353,34 @@ test("formats typed values through the global console namespace and interpolatio
   assert.match(generated, /fprintf\(stdout, "%lld", \(long long\)/);
   assert.match(generated, /switch \(\(_z_console_\d+\)\.tag\)/);
   assert.doesNotMatch(generated, /console\.log/);
+});
+
+test("resolves explicit standard console imports without routing them through Clang", () => {
+  const missing = `function main(): i32 { console.log(42); return 0; }`;
+  const missingDiagnostic = diagnostics(missing, "missing-console.z")[0];
+  assert.equal(missingDiagnostic.code, "Z0403");
+  assert.match(missingDiagnostic.message, /import console from "std\/console"/);
+
+  const focused = `
+    import logging from "std/console";
+    function main(): i32 { logging.log(42); return 0; }
+  `;
+  assert.deepEqual(diagnostics(focused, "focused-console.z"), []);
+  const focusedGenerated = compileToC(focused, "focused-console.z");
+  assert.match(focusedGenerated, /fprintf\(stdout, "%lld", \(long long\)/);
+  assert.doesNotMatch(focusedGenerated, /#include <std\/console>/);
+
+  const facade = `
+    import { console as logging } from "std";
+    function main(): i32 { logging.write(42); return 0; }
+  `;
+  assert.deepEqual(diagnostics(facade, "facade-console.z"), []);
+  assert.doesNotMatch(compileToC(facade, "facade-console.z"), /#include <std>/);
+
+  const unknownModule = `import future from "std/future"; function main(): i32 { return 0; }`;
+  assert.equal(diagnostics(unknownModule, "unknown-std.z")[0].code, "Z0501");
+  const unknownExport = `import { future } from "std"; function main(): i32 { return 0; }`;
+  assert.match(diagnostics(unknownExport, "unknown-std-export.z")[0].message, /std has no export "future"/);
 });
 
 test("stores, returns, moves, and formats owned String values", () => {
@@ -1424,6 +1453,7 @@ test("stores, returns, moves, and formats owned String values", () => {
   assert.match(throwingGenerated, /const Z_Result_i32_ParseError _z_call_result_\d+ = parse/);
 
   const movedString = `
+    import console from "std/console";
     function main(): i32 {
       const first = \`value=42\`;
       const second = first;
@@ -1436,6 +1466,7 @@ test("stores, returns, moves, and formats owned String values", () => {
   assert.match(movedStringDiagnostic[0].message, /use of moved value "first"/);
 
   const cppSource = `
+    import console from "std/console";
     import cpp from "cpp_math.hpp";
     function main(): i32 {
       const point = cpp.Point { x: 20, y: 22 };
@@ -1455,6 +1486,7 @@ test("stores, returns, moves, and formats owned String values", () => {
   assert.equal(cppCompilation.status, 0, cppCompilation.stderr);
 
   const cleanupTemporary = `
+    import console from "std/console";
     struct Resource { value: i32; deinit {} }
     function make(): Resource { return Resource { value: 42 }; }
     function main(): i32 {
@@ -1466,7 +1498,10 @@ test("stores, returns, moves, and formats owned String values", () => {
   assert.equal(cleanupDiagnostic[0].code, "Z0402");
   assert.match(cleanupDiagnostic[0].message, /bind the value to a const or let before logging it/);
 
-  const unknownMethod = `function main(): i32 { console.table(42); return 0; }`;
+  const unknownMethod = `
+    import console from "std/console";
+    function main(): i32 { console.table(42); return 0; }
+  `;
   const methodDiagnostic = diagnostics(unknownMethod, "console-method.z");
   assert.equal(methodDiagnostic[0].code, "Z0401");
   assert.match(methodDiagnostic[0].message, /use console\.log, console\.write, console\.error, or console\.debug/);
@@ -1474,6 +1509,7 @@ test("stores, returns, moves, and formats owned String values", () => {
 
 test("exposes console methods and interpolated expressions to editor services", () => {
   const source = `
+    import console from "std/console";
     function main(): i32 {
       const answer = 42;
       console.log(\`answer=\${answer}\`);
@@ -1481,13 +1517,28 @@ test("exposes console methods and interpolated expressions to editor services", 
     }
   `;
   const consoleOffset = source.indexOf("console") + 1;
-  assert.match(hover(source, "console-editor.z", consoleOffset)?.contents.value ?? "", /global console/);
+  assert.match(hover(source, "console-editor.z", consoleOffset)?.contents.value ?? "", /standard console imported as console/);
   const logOffset = source.indexOf("log") + 1;
   assert.match(hover(source, "console-editor.z", logOffset)?.contents.value ?? "", /stdout with newline/);
   const items = completions(source.replace("console.log", "console.lo"), "console-editor.z", source.indexOf("console.log") + "console.lo".length);
   assert.equal(items.find((item) => item.label === "log")?.kind, 2);
   const answerUse = source.lastIndexOf("answer") + 1;
   assert.match(hover(source, "console-editor.z", answerUse)?.contents.value ?? "", /answer: i32/);
+
+  const aliasSource = source
+    .replace("import console from", "import logging from")
+    .replaceAll("console.log", "logging.log");
+  const aliasUse = aliasSource.indexOf("logging.log") + 1;
+  assert.match(hover(aliasSource, "console-alias-editor.z", aliasUse)?.contents.value ?? "", /standard console imported as logging/);
+  const incompleteAlias = aliasSource.replace("logging.log", "logging.lo");
+  const incompleteAliasOffset = incompleteAlias.indexOf("logging.lo") + "logging.lo".length;
+  assert.equal(completions(incompleteAlias, "console-alias-editor.z", incompleteAliasOffset).find((item) => item.label === "log")?.kind, 2);
+  const symbolSource = `
+    import logging from "std/console";
+    function main(): i32 { logg; return 0; }
+  `;
+  const symbolOffset = symbolSource.indexOf("logg;") + 4;
+  assert.equal(completions(symbolSource, "console-alias-editor.z", symbolOffset).find((item) => item.label === "logging")?.kind, 9);
 });
 
 test("keeps loop control inside an enclosing loop", () => {

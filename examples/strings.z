@@ -1,3 +1,4 @@
+import console from "std/console";
 import stdio from "stdio.h";
 
 struct Point {

@@ -43,6 +43,8 @@ Currently structured codes include:
 | `Z0311` | structural collection mutation conflicts with iteration borrow |
 | `Z0401` | console method or value has no supported formatter |
 | `Z0402` | formatting a cleanup-bearing temporary requires stored ownership |
+| `Z0403` | console is used without an explicit standard-module import |
+| `Z0501` | invalid standard-module path, import shape, or export |
 
 CLI diagnostics render source context. Language-server diagnostics expose the
 same code and message, secondary locations through related information, and
