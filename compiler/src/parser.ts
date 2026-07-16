@@ -140,16 +140,28 @@ export function parse(tokens: Token[], fileName: string): Program {
 
   let parseStatement: () => Statement;
 
-  const parseTypeParameters = (): string[] => {
-    if (!match("less")) return [];
+  const parseTypeParameters = (): { names: string[]; constraints: NonNullable<FunctionDeclaration["typeParameterConstraints"]> } => {
+    if (!match("less")) return { names: [], constraints: [] };
     const names = [];
+    const constraints: NonNullable<FunctionDeclaration["typeParameterConstraints"]> = [];
     do {
       const parameter = expect("identifier", "a type parameter name");
       if (names.includes(parameter.text)) throw new DiagnosticError(fileName, parameter.location, `duplicate type parameter ${JSON.stringify(parameter.text)}`);
       names.push(parameter.text);
+      if (match("colon")) {
+        const traits = [];
+        do {
+          const trait = expect("identifier", "a trait constraint");
+          if (traits.some((item) => item.name === trait.text)) {
+            throw new DiagnosticError(fileName, trait.location, `duplicate constraint ${JSON.stringify(trait.text)} for ${JSON.stringify(parameter.text)}`);
+          }
+          traits.push({ name: trait.text, location: trait.location });
+        } while (match("plus"));
+        constraints.push({ parameter: parameter.text, traits, location: parameter.location });
+      }
     } while (match("comma"));
     expect("greater", "`>`");
-    return names;
+    return { names, constraints };
   };
 
   const parsePrimary = (): Expression => {
@@ -467,7 +479,7 @@ export function parse(tokens: Token[], fileName: string): Program {
   const parseFunction = (signatureOnly = false): FunctionDeclaration => {
     const start = expect("function", "`function`").location;
     const name = expect("identifier", "a function name").text;
-    const typeParameters = parseTypeParameters();
+    const generic = parseTypeParameters();
     expect("leftParen", "`(`");
     let receiverMode: FunctionDeclaration["receiverMode"] = null;
     if (
@@ -493,7 +505,18 @@ export function parse(tokens: Token[], fileName: string): Program {
       while (!at("rightBrace") && !at("eof")) body.push(parseStatement());
       expect("rightBrace", "`}`");
     }
-    return { kind: "function", name, typeParameters, receiverMode, parameters, returnType, errorType, body, location: start };
+    return {
+      kind: "function",
+      name,
+      typeParameters: generic.names,
+      typeParameterConstraints: generic.constraints,
+      receiverMode,
+      parameters,
+      returnType,
+      errorType,
+      body,
+      location: start,
+    };
   };
 
   const parseAggregate = (): StructDeclaration => {
@@ -501,7 +524,7 @@ export function parse(tokens: Token[], fileName: string): Program {
     const kind = declarationToken.kind as "struct" | "class";
     const start = declarationToken.location;
     const name = expect("identifier", `a ${kind} name`).text;
-    const typeParameters = parseTypeParameters();
+    const generic = parseTypeParameters();
     const implemented: TypeReference[] = [];
     if (match("implements")) {
       do implemented.push(parseType()); while (match("comma"));
@@ -530,7 +553,17 @@ export function parse(tokens: Token[], fileName: string): Program {
       expect("semicolon", "`;`");
     }
     expect("rightBrace", "`}`");
-    return { kind, name, typeParameters, implements: implemented, fields, methods, deinitializer, location: start };
+    return {
+      kind,
+      name,
+      typeParameters: generic.names,
+      typeParameterConstraints: generic.constraints,
+      implements: implemented,
+      fields,
+      methods,
+      deinitializer,
+      location: start,
+    };
   };
 
   const parseTrait = (): TraitDeclaration => {

@@ -1,4 +1,11 @@
-import type { Program, SourceLocation, Statement, StructDeclaration, StructExpression } from "./ast.ts";
+import type {
+  Program,
+  SourceLocation,
+  Statement,
+  StructDeclaration,
+  StructExpression,
+  TypeParameterConstraint,
+} from "./ast.ts";
 import { analyzeSource, type AnalyzedSource } from "./compiler.ts";
 import { DiagnosticError } from "./diagnostics.ts";
 import type {
@@ -695,10 +702,28 @@ function declarationHover(
 ): Hover | null {
   if (program) {
     const fn = program.functions.find((item) => item.name === name);
-    if (fn) return markdownHover(zFunctionDetail(fn.name, fn.parameters, fn.returnType.name, fn.typeParameters, typeDisplayNames), source, start, end);
+    if (fn) {
+      return markdownHover(
+        zFunctionDetail(
+          fn.name,
+          fn.parameters,
+          fn.returnType.name,
+          fn.typeParameters,
+          typeDisplayNames,
+          fn.typeParameterConstraints,
+        ),
+        source,
+        start,
+        end,
+      );
+    }
     const struct = program.structs.find((item) => item.name === name);
     if (struct) {
-      const parameters = struct.typeParameters?.length ? `<${struct.typeParameters.join(", ")}>` : "";
+      const parameters = formatTypeParameters(
+        struct.typeParameters ?? [],
+        struct.typeParameterConstraints ?? [],
+        typeDisplayNames,
+      );
       return markdownHover(`${struct.kind} ${struct.name}${parameters}`, source, start, end);
     }
     const trait = program.traits.find((item) => item.name === name);
@@ -741,9 +766,25 @@ function zFunctionDetail(
   returnType: string,
   typeParameters: readonly string[] = [],
   typeDisplayNames: ReadonlyMap<string, string> = new Map(),
+  typeParameterConstraints: readonly TypeParameterConstraint[] = [],
 ): string {
-  const generic = typeParameters.length ? `<${typeParameters.join(", ")}>` : "";
+  const generic = formatTypeParameters(typeParameters, typeParameterConstraints, typeDisplayNames);
   return `function ${name}${generic}(${parameters.map((item) => `${item.name}: ${displayType(item.type.name, typeDisplayNames)}`).join(", ")}): ${displayType(returnType, typeDisplayNames)}`;
+}
+
+function formatTypeParameters(
+  parameters: readonly string[],
+  constraints: readonly TypeParameterConstraint[],
+  typeDisplayNames: ReadonlyMap<string, string>,
+): string {
+  if (parameters.length === 0) return "";
+  const constrained = new Map(constraints.map((constraint) => [constraint.parameter, constraint.traits]));
+  return `<${parameters.map((parameter) => {
+    const traits = constrained.get(parameter) ?? [];
+    return traits.length
+      ? `${parameter}: ${traits.map((trait) => displayType(trait.name, typeDisplayNames)).join(" + ")}`
+      : parameter;
+  }).join(", ")}>`;
 }
 
 function foreignTypeName(type: ForeignType): string {

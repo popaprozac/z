@@ -31,6 +31,7 @@ export type StructDeclaration = {
   readonly kind: "struct" | "class";
   readonly name: string;
   readonly typeParameters?: string[];
+  readonly typeParameterConstraints?: TypeParameterConstraint[];
   readonly implements: TypeReference[];
   readonly fields: FieldDeclaration[];
   readonly methods: FunctionDeclaration[];
@@ -74,11 +75,18 @@ export type FunctionDeclaration = {
   readonly kind: "function";
   readonly name: string;
   readonly typeParameters?: string[];
+  readonly typeParameterConstraints?: TypeParameterConstraint[];
   readonly receiverMode: "inout" | "move" | null;
   readonly parameters: Parameter[];
   readonly returnType: TypeReference;
   readonly errorType: TypeReference | null;
   readonly body: Statement[];
+  readonly location: SourceLocation;
+};
+
+export type TypeParameterConstraint = {
+  readonly parameter: string;
+  readonly traits: TypeReference[];
   readonly location: SourceLocation;
 };
 

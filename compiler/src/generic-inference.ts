@@ -1,4 +1,12 @@
-import type { Expression, FunctionDeclaration, MatchArm, Program, Statement, StructDeclaration } from "./ast.ts";
+import type {
+  Expression,
+  FunctionDeclaration,
+  MatchArm,
+  Program,
+  Statement,
+  StructDeclaration,
+  TypeParameterConstraint,
+} from "./ast.ts";
 import { fixedArrayTypeName, parseFixedArrayType, parseSliceType, sliceTypeName } from "./array-types.ts";
 import { DiagnosticError } from "./diagnostics.ts";
 import type { ForeignModule, ForeignType } from "./foreign.ts";
@@ -18,6 +26,9 @@ export function inferGenericCalls(
   const functions = new Map(program.functions.map((item) => [item.name, item]));
   const structs = new Map(program.structs.map((item) => [item.name, item]));
   const enums = new Map(program.enums.map((item) => [item.name, item]));
+  const traits = new Map(program.traits.map((item) => [item.name, item]));
+  let activeConstraints = new Map<string, string[]>();
+  let activeTypeParameters = new Set<string>();
   const selectiveFunctions = new Map<string, ForeignType>();
   const selectiveValues = new Map<string, string>();
   for (const module of foreignModules.values()) {
@@ -153,9 +164,21 @@ export function inferGenericCalls(
         const owner = object.type ? aggregate(object.type) : null;
         const field = owner?.declaration.fields.find((item) => item.name === expression.property);
         const method = owner?.declaration.methods.find((item) => item.name === expression.property);
+        const constrainedMethod = object.type
+          ? (activeConstraints.get(object.type) ?? [])
+            .flatMap((trait) => traits.get(trait)?.methods ?? [])
+            .find((item) => item.name === expression.property)
+          : null;
+        if (object.type && activeTypeParameters.has(object.type) && !constrainedMethod) {
+          throw new DiagnosticError(
+            fileName,
+            expression.location,
+            `member ${JSON.stringify(expression.property)} is not provided by the trait constraints on ${object.type}`,
+          );
+        }
         const type = field
           ? substituteType(field.type.name, owner!.substitutions)
-          : method ? substituteType(method.returnType.name, owner!.substitutions) : null;
+          : method ? substituteType(method.returnType.name, owner!.substitutions) : constrainedMethod?.returnType.name ?? null;
         return { expression: { ...expression, object: object.expression }, type };
       }
       case "index": {
@@ -310,10 +333,40 @@ export function inferGenericCalls(
     return null;
   };
 
-  const rewriteFunction = (declaration: FunctionDeclaration, receiverType: string | null = null): FunctionDeclaration => {
+  const rewriteConstrainedStatements = (
+    statements: readonly Statement[],
+    environment: Environment,
+    typeParameters: readonly string[],
+    constraints: readonly TypeParameterConstraint[],
+  ): Statement[] => {
+    const previousConstraints = activeConstraints;
+    const previousTypeParameters = activeTypeParameters;
+    activeConstraints = new Map();
+    activeTypeParameters = new Set(typeParameters);
+    for (const constraint of constraints) {
+      activeConstraints.set(constraint.parameter, constraint.traits.map((trait) => trait.name));
+    }
+    const body = rewriteStatements(statements, environment);
+    activeConstraints = previousConstraints;
+    activeTypeParameters = previousTypeParameters;
+    return body;
+  };
+
+  const rewriteFunction = (
+    declaration: FunctionDeclaration,
+    receiverType: string | null = null,
+    inheritedTypeParameters: readonly string[] = [],
+    inheritedConstraints: readonly TypeParameterConstraint[] = [],
+  ): FunctionDeclaration => {
     const environment = new Map(declaration.parameters.map((parameter) => [parameter.name, parameter.type.name]));
     if (receiverType) environment.set("this", receiverType);
-    return { ...declaration, body: rewriteStatements(declaration.body, environment) };
+    const body = rewriteConstrainedStatements(
+      declaration.body,
+      environment,
+      [...inheritedTypeParameters, ...(declaration.typeParameters ?? [])],
+      [...inheritedConstraints, ...(declaration.typeParameterConstraints ?? [])],
+    );
+    return { ...declaration, body };
   };
 
   const rewrittenStructs = program.structs.map((declaration) => {
@@ -322,9 +375,24 @@ export function inferGenericCalls(
       : declaration.name;
     return {
       ...declaration,
-      methods: declaration.methods.map((method) => rewriteFunction(method, receiverType)),
+      methods: declaration.methods.map((method) => (
+        rewriteFunction(
+          method,
+          receiverType,
+          declaration.typeParameters ?? [],
+          declaration.typeParameterConstraints ?? [],
+        )
+      )),
       deinitializer: declaration.deinitializer
-        ? { ...declaration.deinitializer, body: rewriteStatements(declaration.deinitializer.body, new Map([["this", receiverType]])) }
+        ? {
+          ...declaration.deinitializer,
+          body: rewriteConstrainedStatements(
+            declaration.deinitializer.body,
+            new Map([["this", receiverType]]),
+            declaration.typeParameters ?? [],
+            declaration.typeParameterConstraints ?? [],
+          ),
+        }
         : null,
     };
   });

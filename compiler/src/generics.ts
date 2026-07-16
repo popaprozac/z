@@ -10,10 +10,21 @@ export function materializeGenerics(
 ): Program {
   const structTemplates = new Map(program.structs.filter((item) => item.typeParameters?.length).map((item) => [item.name, item]));
   const functionTemplates = new Map(program.functions.filter((item) => item.typeParameters?.length).map((item) => [item.name, item]));
+  const traits = new Map(program.traits.map((item) => [item.name, item]));
   const structs: StructDeclaration[] = [];
   const functions: FunctionDeclaration[] = [];
   const structInstances = new Map<string, string>();
   const functionInstances = new Map<string, string>();
+
+  for (const template of [...structTemplates.values(), ...functionTemplates.values()]) {
+    for (const constraint of template.typeParameterConstraints ?? []) {
+      for (const reference of constraint.traits) {
+        if (!traits.has(reference.name)) {
+          throw new DiagnosticError(fileName, reference.location, `unknown trait constraint ${JSON.stringify(reference.name)}`);
+        }
+      }
+    }
+  }
 
   const displayName = (name: string): string => {
     const known = typeDisplayNames.get(name);
@@ -67,6 +78,7 @@ export function materializeGenerics(
     if (args.length !== template.typeParameters!.length) {
       throw new DiagnosticError(fileName, template.location, `${base} expects ${template.typeParameters!.length} type argument(s), received ${args.length}`);
     }
+    validateConstraints(template, args);
     const key = `${base}\0${args.join("\0")}`;
     const existing = structInstances.get(key);
     if (existing) return existing;
@@ -74,7 +86,7 @@ export function materializeGenerics(
     structInstances.set(key, name);
     typeDisplayNames.set(name, `${base}<${args.map(displayName).join(", ")}>`);
     const substitutions = new Map(template.typeParameters!.map((parameter, index) => [parameter, args[index]]));
-    const concrete = transform({ ...template, name, typeParameters: [] }, substitutions) as StructDeclaration;
+    const concrete = transform({ ...template, name, typeParameters: [], typeParameterConstraints: [] }, substitutions) as StructDeclaration;
     structs.push(concrete);
     return name;
   }
@@ -85,15 +97,33 @@ export function materializeGenerics(
     if (args.length !== template.typeParameters!.length) {
       throw new DiagnosticError(fileName, template.location, `${base} expects ${template.typeParameters!.length} type argument(s), received ${args.length}`);
     }
+    validateConstraints(template, args);
     const key = `${base}\0${args.join("\0")}`;
     const existing = functionInstances.get(key);
     if (existing) return existing;
     const name = monomorphizedName(base, args);
     functionInstances.set(key, name);
     const substitutions = new Map(template.typeParameters!.map((parameter, index) => [parameter, args[index]]));
-    const concrete = transform({ ...template, name, typeParameters: [] }, substitutions) as FunctionDeclaration;
+    const concrete = transform({ ...template, name, typeParameters: [], typeParameterConstraints: [] }, substitutions) as FunctionDeclaration;
     functions.push(concrete);
     return name;
+  }
+
+  function validateConstraints(template: StructDeclaration | FunctionDeclaration, args: string[]): void {
+    const argumentsByParameter = new Map(template.typeParameters!.map((parameter, index) => [parameter, args[index]]));
+    for (const constraint of template.typeParameterConstraints ?? []) {
+      const argument = argumentsByParameter.get(constraint.parameter)!;
+      const declaration = [...structs, ...program.structs].find((item) => item.name === argument);
+      for (const trait of constraint.traits) {
+        if (!declaration?.implements.some((reference) => reference.name === trait.name)) {
+          throw new DiagnosticError(
+            fileName,
+            trait.location,
+            `${displayName(argument)} does not satisfy ${trait.name} for ${constraint.parameter} in ${JSON.stringify(template.name)}`,
+          );
+        }
+      }
+    }
   }
 
   for (const declaration of program.structs.filter((item) => !item.typeParameters?.length)) {

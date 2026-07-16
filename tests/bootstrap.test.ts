@@ -1343,6 +1343,101 @@ test("infers generic arguments from imported C results", () => {
   assert.match(generated, /__z_mono_identity_i32\(getchar\(\)\)/);
 });
 
+test("checks nominal trait constraints on inferred and explicit generic instances", () => {
+  const example = resolve(projectRoot, "examples/generic-constraints.z");
+  const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, "measured=42\n");
+
+  const structuralOnly = `
+    trait Measured { function measure(): i32; }
+    struct Reading { function measure(): i32 { return 42; } }
+    function read<T: Measured>(value: T): i32 { return value.measure(); }
+    function main(): i32 { return read(Reading {}); }
+  `;
+  assert.throws(
+    () => compileToC(structuralOnly, "generic-constraint-nominal.z"),
+    /Reading does not satisfy Measured for T in "read"/,
+  );
+
+  const primitive = `
+    trait Measured { function measure(): i32; }
+    function read<T: Measured>(value: T): i32 { return value.measure(); }
+    function main(): i32 { return read<i32>(42); }
+  `;
+  assert.throws(
+    () => compileToC(primitive, "generic-constraint-primitive.z"),
+    /i32 does not satisfy Measured for T in "read"/,
+  );
+
+  const unknown = `
+    function read<T: Missing>(value: T): T { return value; }
+    function main(): i32 { return 0; }
+  `;
+  assert.throws(() => compileToC(unknown, "generic-constraint-unknown.z"), /unknown trait constraint "Missing"/);
+
+  const outsideSurface = `
+    trait Measured { function measure(): i32; }
+    function reveal<T: Measured>(value: T): i32 { return value.secret(); }
+    function main(): i32 { return 0; }
+  `;
+  assert.throws(
+    () => compileToC(outsideSurface, "generic-constraint-surface.z"),
+    /member "secret" is not provided by the trait constraints on T/,
+  );
+});
+
+test("supports multiple trait constraints and constrained generic aggregates", () => {
+  const valid = `
+    trait Measured { function measure(): i32; }
+    trait Named { function name(): cstring; }
+    struct Reading implements Measured, Named {
+      function measure(): i32 { return 42; }
+      function name(): cstring { return "reading"; }
+    }
+    struct Holder<T: Measured + Named> { value: T; }
+    function read<T: Measured + Named>(value: T): i32 {
+      return identity(value.measure());
+    }
+    function identity<T>(value: T): T { return value; }
+    function main(): i32 {
+      const holder = Holder<Reading> { value: Reading {} };
+      return read(holder.value);
+    }
+  `;
+  assert.match(compileToC(valid, "generic-multiple-constraints.z"), /__z_mono_Holder_Reading/);
+
+  const invalidAggregate = `
+    trait Measured { function measure(): i32; }
+    struct Plain {}
+    struct Holder<T: Measured> { value: T; }
+    function main(): i32 { const holder = Holder<Plain> { value: Plain {} }; return 0; }
+  `;
+  assert.throws(
+    () => compileToC(invalidAggregate, "generic-aggregate-constraint.z"),
+    /Plain does not satisfy Measured for T in "Holder"/,
+  );
+});
+
+test("shows generic trait constraints in editor signatures", () => {
+  const source = `
+    trait Measured { function measure(): i32; }
+    struct Reading implements Measured { function measure(): i32 { return 42; } }
+    function read<T: Measured>(value: T): i32 { return value.measure(); }
+    function main(): i32 { rea; return 0; }
+  `;
+  const declaration = source.indexOf("read<T:");
+  assert.match(
+    hover(source.replace(" rea;", ""), "generic-constraint-editor.z", declaration + 1)?.contents.value ?? "",
+    /function read<T: Measured>\(value: T\): i32/,
+  );
+  const offset = source.indexOf("rea;") + 3;
+  assert.equal(
+    completions(source, "generic-constraint-editor.z", offset).find((item) => item.label === "read")?.detail,
+    "function read<T: Measured>",
+  );
+});
+
 test("exposes generic templates without leaking monomorphized names to editor completion", () => {
   const source = `
     struct Box<T> { value: T; }

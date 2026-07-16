@@ -331,12 +331,21 @@ const value = first(pair);
 const explicit = first<i32>(pair);
 ```
 
+Generic parameters can require explicit nominal trait conformance. Multiple
+requirements use `+` and remain statically dispatched:
+
+```z
+function measure<T: Measured + Named>(value: T): i32 {
+  return value.measure();
+}
+```
+
 The compiler monomorphizes each concrete use before semantic analysis and C
 lowering. Generic values therefore follow the same copy, move, ARC, borrowing,
 and `deinit` rules as handwritten concrete code, with no runtime type metadata
 or dispatch cost. Inference currently flows from call arguments; a type
 parameter that appears only in the return type still requires explicit arguments.
-Constraints, generic traits, and separately generic methods remain upcoming.
+Generic traits and separately generic methods remain upcoming.
 
 Owned structs can define an infallible compiler-controlled lifecycle hook:
 

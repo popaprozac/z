@@ -155,11 +155,13 @@ require future weak references and/or ORC-style cycle handling.
 
 `trait` declarations contain method signatures, including receiver capability,
 parameter capability, return type, and error type. `struct T implements X` and
-`class T implements X` are checked explicitly and nominally. The first slice is
-static conformance only: concrete values call their concrete methods, while
-trait-typed storage, existential representation, generic constraints, and
-dynamic dispatch remain later design work. Z-defined classes intentionally do
-not have inheritance.
+`class T implements X` are checked explicitly and nominally. Generic parameters
+may require this conformance with `T: X` or multiple constraints such as
+`T: X + Y`; every concrete specialization is checked before monomorphization.
+This remains static conformance only: concrete values call their concrete
+methods, while trait-typed storage, existential representation, generic traits,
+and dynamic dispatch remain later design work. Z-defined classes intentionally
+do not have inheritance.
 
 ## Control flow
 
@@ -228,10 +230,11 @@ types rather than a parallel erased-generic runtime.
 
 The initial inference implementation is argument-directed. Type parameters that
 appear only in a return type require explicit arguments. Outer aggregate
-parameters are supported inside fields and methods. Trait constraints, generic
-traits, separately generic methods, specialization policy, and cross-module
-instance ownership remain future layers. Generated instance names are backend
-details and do not form part of Z's source or ABI contract.
+parameters are supported inside fields and methods. Constraints use nominal
+traits and are checked on every inferred or explicit instance. Generic traits,
+separately generic methods, specialization policy, and cross-module instance
+ownership remain future layers. Generated instance names are backend details and
+do not form part of Z's source or ABI contract.
 
 ## Numeric types
 
@@ -540,6 +543,7 @@ Clang declaration source locations rather than text-searching SDK headers.
 - non-escaping `Slice<T>` parameters with shared and exclusive borrow checking.
 - argument-inferred generic function calls and explicit generic aggregates with
   C monomorphization.
+- statically dispatched nominal trait constraints on generic parameters.
 
 ### 0.25: Portable object model
 
