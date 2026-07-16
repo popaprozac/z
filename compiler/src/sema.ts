@@ -110,6 +110,8 @@ type AnalysisState = {
   readonly objectiveC: boolean;
   readonly frameworks: readonly string[];
   readonly loopStack: LoopAnalysisFrame[];
+  readonly moveOrigins: Map<string, SourceLocation>;
+  readonly borrowOrigins: Map<string, SourceLocation>;
 };
 
 type LoopAnalysisFrame = {
@@ -179,6 +181,8 @@ export function analyze(
     objectiveC: frameworks.size > 0,
     frameworks: [...frameworks],
     loopStack: [],
+    moveOrigins: new Map(),
+    borrowOrigins: new Map(),
   };
   const globals = new Map<string, SymbolValue>();
   const structs = new Map<string, StructDeclaration>();
@@ -520,6 +524,8 @@ function analyzeFunction(
   receiver: StructDeclaration | null,
   state: AnalysisState,
 ): void {
+  state.moveOrigins.clear();
+  state.borrowOrigins.clear();
   const locals = new Map<string, ValueType>();
   if (receiver) {
     const borrowed = declaration.receiverMode === "move" ? "" : borrowedPrefix;
@@ -718,6 +724,7 @@ function analyzeStatement(
           // A whole binding may move into the replacement expression and become
           // initialized again when that expression succeeds.
           locals.set(root.name, initializedAvailableBinding(stored));
+          state.moveOrigins.delete(root.name);
         } else {
           const rootAfterReplacement = locals.get(root.name);
           if (rootAfterReplacement && ownershipState(rootAfterReplacement) !== "available") {
@@ -730,6 +737,7 @@ function analyzeStatement(
         }
       } else if (statement.target.kind === "identifier") {
         locals.set(root.name, initializedAvailableBinding(stored));
+        state.moveOrigins.delete(root.name);
       }
       return;
     }
@@ -909,10 +917,15 @@ function inferClosureExpression(
       throw new DiagnosticError(fileName, capture.location, `cannot capture uninitialized value ${JSON.stringify(capture.name)}`);
     }
     if (ownershipState(stored) !== "available") {
-      throw new DiagnosticError(fileName, capture.location, `cannot capture moved value ${JSON.stringify(capture.name)}`);
+      throw movedValueError(fileName, { name: capture.name, location: capture.location }, state, false, "capture");
     }
     if (capture.mutated && !isMutableBinding(stored)) {
-      throw new DiagnosticError(fileName, capture.location, `closure cannot mutate immutable capture ${JSON.stringify(capture.name)}`);
+      throw new DiagnosticError(fileName, capture.location, `closure cannot mutate immutable capture ${JSON.stringify(capture.name)}`, {
+        code: "Z0210",
+        length: capture.name.length,
+        notes: ["capturing a const binding does not make that binding mutable"],
+        helps: [`declare ${JSON.stringify(capture.name)} with \`let\` if mutation is intended`],
+      });
     }
     const type = String(underlyingType(stored));
     if (type.startsWith("__z_closure_")) {
@@ -926,6 +939,17 @@ function inferClosureExpression(
         fileName,
         capture.location,
         `move-capturing cleanup-bearing ${type} requires an owned closure environment, which is not implemented yet`,
+        {
+          code: "Z0211",
+          length: capture.name.length,
+          labels: [{
+            location: expression.location,
+            message: "this `move` closure would need to own and later destroy its environment",
+            length: 4,
+          }],
+          notes: ["the bootstrap currently supports borrowed closures and copyable move snapshots"],
+          helps: ["remove `move` and keep the closure non-escaping, or keep ownership outside the closure for now"],
+        },
       );
     }
     const mode: ClosureCaptureInfo["mode"] = capture.mutated
@@ -935,6 +959,7 @@ function inferClosureExpression(
     closureLocals.set(capture.name, `${borrowedPrefix}${capture.mutated ? mutablePrefix : ""}${type}`);
     if (expression.captureMode === "borrow" && hasCleanupType(type, structs, state.foreignTypes)) {
       locals.set(capture.name, `${borrowedPrefix}${isMutableBinding(stored) ? mutablePrefix : ""}${type}`);
+      state.borrowOrigins.set(capture.name, capture.location);
     }
   }
   for (const parameter of expression.parameters) {
@@ -1378,17 +1403,27 @@ function inferExpressionInner(
       if (local) {
         const initialization = initializationState(local);
         if (initialization === "uninitialized") {
-          throw new DiagnosticError(fileName, expression.location, `use of uninitialized value ${JSON.stringify(expression.name)}`);
+          throw new DiagnosticError(fileName, expression.location, `use of uninitialized value ${JSON.stringify(expression.name)}`, {
+            code: "Z0303",
+            length: expression.name.length,
+            notes: ["an out-style binding becomes readable only after every path initializes it"],
+            helps: ["assign a value before this read, or pass the binding to an `out` parameter first"],
+          });
         }
         if (initialization === "maybeUninitialized") {
-          throw new DiagnosticError(fileName, expression.location, `value ${JSON.stringify(expression.name)} may be uninitialized on another control-flow path`);
+          throw new DiagnosticError(fileName, expression.location, `value ${JSON.stringify(expression.name)} may be uninitialized on another control-flow path`, {
+            code: "Z0304",
+            length: expression.name.length,
+            notes: ["Z requires a value to be initialized on every path reaching a read"],
+            helps: ["initialize the binding in every branch before using it here"],
+          });
         }
         const ownership = ownershipState(local);
         if (ownership === "moved") {
-          throw new DiagnosticError(fileName, expression.location, `use of moved value ${JSON.stringify(expression.name)}`);
+          throw movedValueError(fileName, expression, state, false);
         }
         if (ownership === "maybeMoved") {
-          throw new DiagnosticError(fileName, expression.location, `value ${JSON.stringify(expression.name)} may have been moved on another control-flow path`);
+          throw movedValueError(fileName, expression, state, true);
         }
         return underlyingType(local);
       }
@@ -1907,16 +1942,27 @@ function checkArguments(
     const argument = args[index];
     if (parameter.mode === "out") {
       if (argument.kind !== "argumentReference" || argument.access !== "out") {
+        const binding = argument.kind === "identifier" ? argument.name : "value";
         throw new DiagnosticError(
           fileName,
           argument.location,
           `${JSON.stringify(target.name)} requires out <mutable binding> for parameter ${index + 1}`,
+          {
+            code: "Z0302",
+            length: argument.kind === "identifier" ? argument.name.length : 1,
+            notes: ["`out` grants the callee permission to initialize storage without reading its previous value"],
+            helps: [`pass mutable storage explicitly as \`out ${binding}\``],
+          },
         );
       }
       const stored = locals.get(argument.name);
       if (!stored) throw new DiagnosticError(fileName, argument.location, `unknown name ${JSON.stringify(argument.name)}`);
       if (!isMutableBinding(stored)) {
-        throw new DiagnosticError(fileName, argument.location, `out argument ${JSON.stringify(argument.name)} requires a mutable let binding`);
+        throw new DiagnosticError(fileName, argument.location, `out argument ${JSON.stringify(argument.name)} requires a mutable let binding`, {
+          code: "Z0302",
+          length: argument.name.length,
+          helps: [`declare ${JSON.stringify(argument.name)} with \`let\` before passing it as \`out\``],
+        });
       }
       requireAssignable(
         parameter.type.name,
@@ -1927,15 +1973,23 @@ function checkArguments(
         state.numericLiteralTypes,
       );
       locals.set(argument.name, initializedAvailableBinding(stored));
+      state.moveOrigins.delete(argument.name);
       state.nativeArgumentAccesses.set(argument.location.offset, "out");
       continue;
     }
     if (parameter.mode === "inout") {
       if (argument.kind !== "argumentReference" || argument.access !== "inout") {
+        const binding = argument.kind === "identifier" ? argument.name : "value";
         throw new DiagnosticError(
           fileName,
           argument.location,
           `${JSON.stringify(target.name)} requires inout <mutable binding> for parameter ${index + 1}`,
+          {
+            code: "Z0301",
+            length: argument.kind === "identifier" ? argument.name.length : 1,
+            notes: ["`inout` makes mutation visible at both the function declaration and the call site"],
+            helps: [`pass mutable storage explicitly as \`inout ${binding}\``],
+          },
         );
       }
       const stored = locals.get(argument.name);
@@ -1947,13 +2001,17 @@ function checkArguments(
         throw new DiagnosticError(fileName, argument.location, `inout argument ${JSON.stringify(argument.name)} may be uninitialized on another control-flow path`);
       }
       if (ownershipState(stored) === "moved") {
-        throw new DiagnosticError(fileName, argument.location, `use of moved value ${JSON.stringify(argument.name)}`);
+        throw movedValueError(fileName, { ...argument, kind: "identifier" }, state, false);
       }
       if (ownershipState(stored) === "maybeMoved") {
-        throw new DiagnosticError(fileName, argument.location, `value ${JSON.stringify(argument.name)} may have been moved on another control-flow path`);
+        throw movedValueError(fileName, { ...argument, kind: "identifier" }, state, true);
       }
       if (!isMutableBinding(stored)) {
-        throw new DiagnosticError(fileName, argument.location, `inout argument ${JSON.stringify(argument.name)} requires a mutable let binding`);
+        throw new DiagnosticError(fileName, argument.location, `inout argument ${JSON.stringify(argument.name)} requires a mutable let binding`, {
+          code: "Z0301",
+          length: argument.name.length,
+          helps: [`declare ${JSON.stringify(argument.name)} with \`let\` before passing it as \`inout\``],
+        });
       }
       const expectedSlice = parseSliceType(parameter.type.name);
       const storedType = underlyingType(stored);
@@ -2115,15 +2173,68 @@ function consumeOwnedValue(
   if (!stored) return;
   if (isBorrowedBinding(stored)) {
     if (expression.name === "this") {
-      throw new DiagnosticError(fileName, expression.location, "cannot move the borrowed method receiver `this`; declare `move this`");
+      throw new DiagnosticError(fileName, expression.location, "cannot move the borrowed method receiver `this`; declare `move this`", {
+        code: "Z0203",
+        length: 4,
+        notes: ["methods borrow their receiver unless their signature explicitly consumes it"],
+        helps: ["change the receiver declaration to `move this` if this method must consume the value"],
+      });
     }
-    throw new DiagnosticError(fileName, expression.location, `cannot move borrowed parameter ${JSON.stringify(expression.name)}`);
+    const capture = state.borrowOrigins.get(expression.name);
+    if (capture) {
+      throw new DiagnosticError(fileName, expression.location, `cannot transfer ownership of ${JSON.stringify(expression.name)} while it is borrowed by a closure`, {
+        code: "Z0203",
+        length: expression.name.length,
+        labels: [{ location: capture, message: "closure borrow begins here", length: expression.name.length }],
+        notes: ["the borrowed closure may still read this value later in the enclosing scope"],
+        helps: ["keep the owner available until the closure is no longer used; owned escaping closure environments are not implemented yet"],
+      });
+    }
+    throw new DiagnosticError(fileName, expression.location, `cannot move borrowed parameter ${JSON.stringify(expression.name)}`, {
+      code: "Z0203",
+      length: expression.name.length,
+      notes: ["an `in` parameter is borrowed from its caller and is not owned by this function"],
+      helps: ["remove `in` from the parameter if the function is intended to take ownership"],
+    });
   }
   locals.set(
     expression.name,
     `${movedPrefix}${isMutableBinding(stored) ? mutablePrefix : ""}${underlyingType(stored)}`,
   );
   state.movedExpressions.add(expression.location.offset);
+  state.moveOrigins.set(expression.name, expression.location);
+}
+
+function movedValueError(
+  fileName: string,
+  expression: { readonly name: string; readonly location: SourceLocation },
+  state: AnalysisState,
+  maybe: boolean,
+  action = "use",
+): DiagnosticError {
+  const origin = state.moveOrigins.get(expression.name);
+  return new DiagnosticError(
+    fileName,
+    expression.location,
+    maybe
+      ? `value ${JSON.stringify(expression.name)} may have been moved on another control-flow path`
+      : `${action} of moved value ${JSON.stringify(expression.name)}`,
+    {
+      code: maybe ? "Z0202" : "Z0201",
+      length: expression.name.length,
+      labels: origin ? [{
+        location: origin,
+        message: maybe ? "ownership is transferred on at least one path here" : "ownership was transferred here",
+        length: expression.name.length,
+      }] : [],
+      notes: ["cleanup-bearing values have a single owner and cannot be used after ownership transfers"],
+      helps: [
+        maybe
+          ? "make ownership transfer consistent across every branch, or keep the value borrowed"
+          : "borrow the value with an `in` parameter when ownership transfer is unnecessary, or stop using it after the transfer",
+      ],
+    },
+  );
 }
 
 function rejectForeignOwnedMove(
@@ -2215,10 +2326,27 @@ function requireOutParametersInitialized(
     const stored = locals.get(parameter.name)!;
     const initialization = initializationState(stored);
     if (initialization === "uninitialized") {
-      throw new DiagnosticError(fileName, location, `out parameter ${JSON.stringify(parameter.name)} is not initialized before successful return`);
+      throw new DiagnosticError(fileName, location, `out parameter ${JSON.stringify(parameter.name)} is not initialized before successful return`, {
+        code: "Z0305",
+        labels: [{
+          location: parameter.location,
+          message: "this out parameter must be initialized on every successful path",
+          length: parameter.name.length,
+        }],
+        helps: [`assign to ${JSON.stringify(parameter.name)} before returning`],
+      });
     }
     if (initialization === "maybeUninitialized") {
-      throw new DiagnosticError(fileName, location, `out parameter ${JSON.stringify(parameter.name)} may be uninitialized on a successful return path`);
+      throw new DiagnosticError(fileName, location, `out parameter ${JSON.stringify(parameter.name)} may be uninitialized on a successful return path`, {
+        code: "Z0305",
+        labels: [{
+          location: parameter.location,
+          message: "this out parameter requires path-complete initialization",
+          length: parameter.name.length,
+        }],
+        notes: ["at least one branch reaches this return without initializing the output"],
+        helps: [`initialize ${JSON.stringify(parameter.name)} in every branch that can return successfully`],
+      });
     }
   }
 }
@@ -2680,10 +2808,10 @@ function checkForeignCall(
         throw new DiagnosticError(fileName, argument.location, `${argument.access} argument ${JSON.stringify(argument.name)} may be uninitialized on another control-flow path`);
       }
       if (argument.access !== "out" && ownershipState(stored) === "moved") {
-        throw new DiagnosticError(fileName, argument.location, `use of moved value ${JSON.stringify(argument.name)}`);
+        throw movedValueError(fileName, { name: argument.name, location: argument.location }, state, false);
       }
       if (argument.access !== "out" && ownershipState(stored) === "maybeMoved") {
-        throw new DiagnosticError(fileName, argument.location, `value ${JSON.stringify(argument.name)} may have been moved on another control-flow path`);
+        throw movedValueError(fileName, { name: argument.name, location: argument.location }, state, true);
       }
       if (!isMutableBinding(stored)) {
         throw new DiagnosticError(fileName, argument.location, `${argument.access} argument ${JSON.stringify(argument.name)} requires a mutable let binding`);
@@ -2697,7 +2825,10 @@ function checkForeignCall(
         state.numericLiteralTypes,
       );
       state.foreignArgumentAccesses.set(argument.location.offset, argument.access);
-      if (argument.access === "out") locals.set(argument.name, initializedAvailableBinding(stored));
+      if (argument.access === "out") {
+        locals.set(argument.name, initializedAvailableBinding(stored));
+        state.moveOrigins.delete(argument.name);
+      }
       continue;
     }
     if (parameter?.type.kind === "recordPointer") {

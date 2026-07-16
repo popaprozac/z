@@ -397,6 +397,14 @@ library; interpolation should remain a reusable value for logging, errors, and
 string construction rather than console-specific syntax. Exact formatting
 traits and format-specifier syntax remain to be designed.
 
+Diagnostics are part of the language contract. Ownership and capability errors
+carry stable `Z02xx`/`Z03xx` codes, retain the source location where a move or
+closure borrow began, and provide notes and safe, actionable help. CLI output
+renders primary and secondary source spans; the language server exposes the
+same information as diagnostic codes and related locations. Suggestions must
+not advertise an unimplemented ownership shape. The current code catalog is in
+[`docs/diagnostics.md`](docs/diagnostics.md).
+
 ## Async and concurrency
 
 Z keeps suspension explicit. Full colorless async is not a goal because hidden

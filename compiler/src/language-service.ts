@@ -18,10 +18,23 @@ import type {
 import { lex } from "./lexer.ts";
 import { parseDynamicArrayType, parseFixedArrayType, parseSliceType } from "./array-types.ts";
 import { parseGenericType } from "./generic-types.ts";
+import { pathToFileURL } from "node:url";
+import { resolve } from "node:path";
 
 export type Position = { readonly line: number; readonly character: number };
 export type Range = { readonly start: Position; readonly end: Position };
-export type ServiceDiagnostic = { readonly range: Range; readonly severity: 1; readonly source: "z"; readonly message: string };
+export type ServiceDiagnostic = {
+  readonly range: Range;
+  readonly severity: 1;
+  readonly source: "z";
+  readonly code?: string;
+  readonly message: string;
+  readonly relatedInformation?: readonly {
+    readonly location: { readonly uri: string; readonly range: Range };
+    readonly message: string;
+  }[];
+  readonly data?: { readonly helps: readonly string[] };
+};
 export type CompletionItem = {
   readonly label: string;
   readonly kind: number;
@@ -56,13 +69,31 @@ export function diagnostics(source: string, fileName: string): ServiceDiagnostic
       ? error.location
       : { offset: 0, line: 1, column: 1 };
     const start = { line: location.line - 1, character: location.column - 1 };
+    const diagnostic = error instanceof DiagnosticError ? error : null;
+    const length = diagnostic?.length ?? 1;
+    const relatedInformation = diagnostic?.labels.map((label) => {
+      const labelStart = { line: label.location.line - 1, character: label.location.column - 1 };
+      return {
+        location: {
+          uri: diagnosticUri(fileName),
+          range: {
+            start: labelStart,
+            end: { line: labelStart.line, character: labelStart.character + (label.length ?? 1) },
+          },
+        },
+        message: label.message,
+      };
+    });
     return [{
-      range: { start, end: { line: start.line, character: start.character + 1 } },
+      range: { start, end: { line: start.line, character: start.character + length } },
       severity: 1,
       source: "z",
-      message: error instanceof DiagnosticError
-        ? diagnosticMessage(error)
+      code: diagnostic?.code ?? undefined,
+      message: diagnostic
+        ? [diagnostic.summary, ...diagnostic.notes.map((note) => `note: ${note}`), ...diagnostic.helps.map((help) => `help: ${help}`)].join("\n")
         : error instanceof Error ? error.message : String(error),
+      relatedInformation: relatedInformation?.length ? relatedInformation : undefined,
+      data: diagnostic?.helps.length ? { helps: diagnostic.helps } : undefined,
     }];
   }
 }
@@ -940,10 +971,8 @@ function positionAt(source: string, offset: number): Position {
   return { line: lines.length - 1, character: lines.at(-1)!.length };
 }
 
-function diagnosticMessage(error: DiagnosticError): string {
-  const marker = ": error: ";
-  const index = error.message.indexOf(marker);
-  return index >= 0 ? error.message.slice(index + marker.length) : error.message;
+function diagnosticUri(fileName: string): string {
+  return pathToFileURL(resolve(fileName)).href;
 }
 
 function uriToFileName(uri: string): string {

@@ -268,6 +268,12 @@ Escaping closure values and cleanup-bearing move captures remain explicitly
 deferred until owned environments and their ARC/deterministic cleanup rules are
 implemented.
 
+Ownership and capability diagnostics include stable codes, the source location
+where a move or closure borrow began, explanatory notes, and concrete help.
+The CLI renders annotated source while the language server publishes the same
+secondary locations to the editor. See [docs/diagnostics.md](docs/diagnostics.md)
+for the current code catalog.
+
 Throwing functions use a compiler-provided `Result<T, E>` without constructor
 ceremony:
 

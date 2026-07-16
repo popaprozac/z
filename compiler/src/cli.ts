@@ -4,6 +4,7 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { check, compileToNative, type NativeArtifact } from "./compiler.ts";
+import { DiagnosticError, formatDiagnostic } from "./diagnostics.ts";
 
 const [command, inputArgument] = process.argv.slice(2);
 
@@ -26,8 +27,18 @@ if (!command || !inputArgument || !["check", "emit", "run"].includes(command)) {
       }
     }
   } catch (error) {
-    console.error(error instanceof Error ? error.message : String(error));
+    console.error(error instanceof DiagnosticError
+      ? formatDiagnostic(error, readSourceIfAvailable(inputPath))
+      : error instanceof Error ? error.message : String(error));
     process.exitCode = 1;
+  }
+}
+
+function readSourceIfAvailable(path: string): string | undefined {
+  try {
+    return readFileSync(path, "utf8");
+  } catch {
+    return undefined;
   }
 }
 

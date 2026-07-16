@@ -1,0 +1,49 @@
+# Z diagnostics
+
+Diagnostics are part of Z's language ergonomics. The compiler reports a stable
+code, a primary error location, relevant secondary locations, explanatory
+notes, and actionable help when the compiler can recommend a safe correction.
+
+```text
+example.z:9:10: error[Z0201]: use of moved value "first"
+  |
+9 |   return first.id + second.id;
+  |          ^^^^^ use of moved value "first"
+  ::: example.z:8:18
+  |
+8 |   const second = first;
+  |                  ^^^^^ ownership was transferred here
+  note: cleanup-bearing values have a single owner and cannot be used after ownership transfers
+  help: borrow the value with an `in` parameter when ownership transfer is unnecessary, or stop using it after the transfer
+```
+
+The bootstrap reserves these code families:
+
+| Range | Area |
+|---|---|
+| `Z02xx` | ownership, moves, borrows, and captures |
+| `Z03xx` | initialization and parameter capabilities |
+
+Currently structured codes include:
+
+| Code | Meaning |
+|---|---|
+| `Z0201` | use or capture after ownership transfer |
+| `Z0202` | value may move on another control-flow path |
+| `Z0203` | attempted ownership transfer through a borrow |
+| `Z0210` | mutation through an immutable closure capture |
+| `Z0211` | cleanup-bearing move capture needs an owned environment |
+| `Z0301` | invalid or missing `inout` capability |
+| `Z0302` | invalid or missing `out` capability |
+| `Z0303` | read before initialization |
+| `Z0304` | value may be uninitialized on another path |
+| `Z0305` | out parameter is not initialized on every success path |
+
+CLI diagnostics render source context. Language-server diagnostics expose the
+same code and message, secondary locations through related information, and
+machine-readable help text for future editor quick fixes.
+
+Suggestions must describe functionality that exists. For example, the
+bootstrap does not recommend `move` for a cleanup-bearing escaping closure,
+because owned closure environments are still deferred. It instead recommends a
+safe non-escaping shape and explains the current limitation.

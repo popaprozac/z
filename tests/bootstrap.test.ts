@@ -4,6 +4,7 @@ import { resolve } from "node:path";
 import { readFileSync } from "node:fs";
 import { test } from "bun:test";
 import { compileToC, compileToNative } from "../compiler/src/compiler.ts";
+import { DiagnosticError, formatDiagnostic } from "../compiler/src/diagnostics.ts";
 import {
   completions,
   definition,
@@ -884,6 +885,75 @@ test("exposes closure bindings and parameters to editor services", () => {
   assert.match(hover(source, "closure-editor.z", parameter)?.contents.value ?? "", /value: i32/);
   const items = completions(source.replace("add(41)", "ad"), "closure-editor.z", source.indexOf("add(41)") + 2);
   assert.equal(items.find((item) => item.label === "add")?.detail, "const add: (value: i32) => i32");
+});
+
+test("renders structured ownership diagnostics in the CLI and language server", () => {
+  const fixture = resolve(projectRoot, "tests/fixtures/ownership-diagnostic.z");
+  const source = readFileSync(fixture, "utf8");
+  let caught: unknown;
+  try {
+    compileToC(source, fixture);
+  } catch (error) {
+    caught = error;
+  }
+  assert.ok(caught instanceof DiagnosticError);
+  assert.equal(caught.code, "Z0201");
+  assert.equal(caught.labels.length, 1);
+  assert.match(caught.labels[0].message, /ownership was transferred here/);
+  assert.match(caught.helps.join("\n"), /borrow the value with an `in` parameter/);
+
+  const rendered = formatDiagnostic(caught, source);
+  assert.match(rendered, /error\[Z0201\]: use of moved value "first"/);
+  assert.match(rendered, /ownership was transferred here/);
+  assert.match(rendered, /note: cleanup-bearing values have a single owner/);
+  assert.match(rendered, /help: borrow the value with an `in` parameter/);
+
+  const cliResult = spawnSync(process.execPath, [cli, "check", fixture], { encoding: "utf8" });
+  assert.equal(cliResult.status, 1);
+  assert.match(cliResult.stderr, /error\[Z0201\]/);
+  assert.match(cliResult.stderr, /ownership was transferred here/);
+  assert.match(cliResult.stderr, /help:/);
+
+  const editor = diagnostics(source, fixture);
+  assert.equal(editor[0].code, "Z0201");
+  assert.match(editor[0].message, /help: borrow the value/);
+  assert.equal(editor[0].relatedInformation?.length, 1);
+  assert.match(editor[0].relatedInformation?.[0].message ?? "", /ownership was transferred here/);
+});
+
+test("guides closure borrows and explicit mutable call-site capabilities", () => {
+  const capturedOwner = `
+    struct Resource { id: i32; deinit {} }
+    function consume(resource: Resource): i32 { return resource.id; }
+    function main(): i32 {
+      const resource = Resource { id: 42 };
+      const inspect = (): i32 => resource.id;
+      return consume(resource) + inspect();
+    }
+  `;
+  let captureError: unknown;
+  try {
+    compileToC(capturedOwner, "captured-owner.z");
+  } catch (error) {
+    captureError = error;
+  }
+  assert.ok(captureError instanceof DiagnosticError);
+  assert.equal(captureError.code, "Z0203");
+  assert.match(captureError.summary, /borrowed by a closure/);
+  assert.match(captureError.labels[0].message, /closure borrow begins here/);
+  assert.match(captureError.helps[0], /keep the owner available/);
+
+  const missingInout = `
+    function increment(inout value: i32): void { value = value + 1; }
+    function main(): i32 {
+      let value = 41;
+      increment(value);
+      return value;
+    }
+  `;
+  const editor = diagnostics(missingInout, "missing-inout.z");
+  assert.equal(editor[0].code, "Z0301");
+  assert.match(editor[0].message, /help: pass mutable storage explicitly as `inout value`/);
 });
 
 test("runs deterministic deinit across normal, return, throw, and try exits", () => {
