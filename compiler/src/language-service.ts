@@ -390,7 +390,13 @@ export function hover(source: string, fileName: string, offset: number): Hover |
   }
   const sourceBinding = localSourceBinding(context, word.text);
   if (sourceBinding && !directWordType) {
-    return markdownHover(sourceExportDetail(sourceBinding.module, sourceBinding.importedName, context.typeDisplayNames), source, word.start, word.end);
+    const detail = sourceExportDetail(
+      sourceBinding.module,
+      sourceBinding.importedName,
+      context.typeDisplayNames,
+      sourceBinding.localName,
+    );
+    return sourceImportHover(detail, sourceBinding, source, word.start, word.end);
   }
   if (context.semanticInfo.consoleBindings.has(word.text)) {
     return markdownHover(`standard console imported as ${word.text}`, source, word.start, word.end);
@@ -572,10 +578,18 @@ function symbolCompletions(source: string, fileName: string, offset: number): Co
       continue;
     }
     for (const binding of declaration.bindings) {
+      const detail = sourceExportDetail(
+        module,
+        binding.importedName,
+        context.typeDisplayNames,
+        binding.localName,
+      );
       items.push({
         label: binding.localName,
         kind: sourceExportCompletionKind(module, binding.importedName),
-        detail: sourceExportDetail(module, binding.importedName, context.typeDisplayNames),
+        detail: binding.localName === binding.importedName
+          ? detail
+          : `${detail} — alias of ${binding.importedName} from ${JSON.stringify(declaration.header)}`,
       });
     }
   }
@@ -862,13 +876,25 @@ function localSourceModule(context: AnalyzedSource, declaration: Program["import
 function localSourceBinding(
   context: AnalyzedSource,
   localName: string,
-): { readonly module: SourceModuleInfo; readonly importedName: string } | null {
+): {
+  readonly module: SourceModuleInfo;
+  readonly importedName: string;
+  readonly localName: string;
+  readonly specifier: string;
+} | null {
   for (const declaration of context.sourceProgram.imports) {
     if (!isLocalSourceModuleSpecifier(declaration.header) || !declaration.bindings) continue;
     const binding = declaration.bindings.find((item) => item.localName === localName);
     if (!binding) continue;
     const module = localSourceModule(context, declaration);
-    if (module) return { module, importedName: binding.importedName };
+    if (module) {
+      return {
+        module,
+        importedName: binding.importedName,
+        localName: binding.localName,
+        specifier: declaration.header,
+      };
+    }
   }
   return null;
 }
@@ -898,12 +924,13 @@ function sourceExportDetail(
   module: SourceModuleInfo,
   name: string,
   typeDisplayNames: ReadonlyMap<string, string>,
+  displayName = name,
 ): string {
   const declaration = sourceExportDeclaration(module, name);
-  if (!declaration) return `export ${name}`;
+  if (!declaration) return `export ${displayName}`;
   if (declaration.kind === "function") {
     return zFunctionDetail(
-      declaration.name,
+      displayName,
       declaration.parameters,
       declaration.returnType.name,
       declaration.typeParameters,
@@ -912,13 +939,30 @@ function sourceExportDetail(
     );
   }
   if (declaration.kind === "struct" || declaration.kind === "class") {
-    return `${declaration.kind} ${declaration.name}${formatTypeParameters(
+    return `${declaration.kind} ${displayName}${formatTypeParameters(
       declaration.typeParameters ?? [],
       declaration.typeParameterConstraints ?? [],
       typeDisplayNames,
     )}`;
   }
-  return `${declaration.kind} ${declaration.name}`;
+  return `${declaration.kind} ${displayName}`;
+}
+
+function sourceImportHover(
+  detail: string,
+  binding: { readonly importedName: string; readonly localName: string; readonly specifier: string },
+  source: string,
+  start: number,
+  end: number,
+): Hover {
+  if (binding.localName === binding.importedName) return markdownHover(detail, source, start, end);
+  return {
+    contents: {
+      kind: "markdown",
+      value: `\`\`\`z\n${detail}\n\`\`\`\n\nAlias of \`${binding.importedName}\` from \`${JSON.stringify(binding.specifier)}\`.`,
+    },
+    range: { start: positionAt(source, start), end: positionAt(source, end) },
+  };
 }
 
 function sourceExportTokenType(module: SourceModuleInfo, name: string): (typeof semanticTokenTypes)[number] {

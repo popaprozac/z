@@ -199,7 +199,11 @@ test("provides completion, hover, definitions, and semantic tokens across Z modu
   const pointUse = source.indexOf("Point", source.indexOf("geometry.Point")) + 1;
   assert.match(hover(source, example, pointUse)?.contents.value ?? "", /struct Point/);
   const moveUse = source.indexOf("move(origin") + 1;
-  assert.match(hover(source, example, moveUse)?.contents.value ?? "", /translate\(point: Point, dx: i32, dy: i32\): Point/);
+  const moveHover = hover(source, example, moveUse)?.contents.value ?? "";
+  assert.match(moveHover, /function move\(point: Point, dx: i32, dy: i32\): Point/);
+  assert.match(moveHover, /Alias of `translate` from `"\.\/geometry\.z"`\./);
+  const moveDeclaration = source.indexOf("move", source.indexOf("translate as")) + 1;
+  assert.match(hover(source, example, moveDeclaration)?.contents.value ?? "", /Alias of `translate`/);
 
   const totalUse = source.indexOf("total(moved") + 1;
   const totalDefinition = definition(source, uri, totalUse);
@@ -211,7 +215,10 @@ test("provides completion, hover, definitions, and semantic tokens across Z modu
 
   const symbolSource = source.replace("return 0;", "mov; return 0;");
   const symbolOffset = symbolSource.indexOf("mov;") + 3;
-  assert.equal(completions(symbolSource, example, symbolOffset).find((item) => item.label === "move")?.kind, 3);
+  const moveCompletion = completions(symbolSource, example, symbolOffset).find((item) => item.label === "move");
+  assert.equal(moveCompletion?.kind, 3);
+  assert.match(moveCompletion?.detail ?? "", /function move\(point: Point, dx: i32, dy: i32\): Point/);
+  assert.match(moveCompletion?.detail ?? "", /alias of translate from "\.\/geometry\.z"/);
 
   const tokens = decodeSemanticTokens(semanticTokens(source, example).data);
   const namespacePosition = positionForOffset(source, source.indexOf("geometry.Point"));
@@ -3377,6 +3384,9 @@ test("editor grammar tracks keywords without reserving Result variants", () => {
   const operatorScopes = grammar.repository.operators.patterns.map((pattern: { name: string }) => pattern.name).join(" ");
   const typePattern = grammar.repository.types.patterns.map((pattern: { match: string }) => pattern.match).join(" ");
   const stringPatterns = JSON.stringify(grammar.repository.strings.patterns);
+  const selectiveImportPatterns = grammar.repository.imports.patterns[0].patterns
+    .map((pattern: { match: string }) => pattern.match)
+    .join(" ");
   assert.match(keywordPattern, /throw/);
   assert.match(keywordPattern, /attempt/);
   assert.match(keywordPattern, /yield/);
@@ -3388,6 +3398,7 @@ test("editor grammar tracks keywords without reserving Result variants", () => {
   assert.match(keywordPattern, /\bas\b/);
   assert.match(keywordPattern, /implements/);
   assert.match(keywordPattern, /export/);
+  assert.match(selectiveImportPatterns, /\\bas\\b/);
   assert.match(keywordPattern, /while/);
   assert.match(keywordPattern, /for\|of/);
   assert.match(keywordPattern, /break/);

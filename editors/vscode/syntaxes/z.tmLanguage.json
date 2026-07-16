@@ -52,13 +52,24 @@
     "imports": {
       "patterns": [{
         "name": "meta.import.selective.z",
-        "match": "\\b(import)\\s+(\\{[^}]*\\})\\s+(from)\\s+((?:\"(?:\\\\.|[^\"])*\")|(?:'(?:\\\\.|[^'])*'))",
-        "captures": {
+        "begin": "\\b(import)\\s+(\\{)",
+        "beginCaptures": {
           "1": { "name": "keyword.control.import.z" },
-          "2": { "name": "meta.import.bindings.z" },
-          "3": { "name": "keyword.control.import.z" },
-          "4": { "name": "string.quoted.header.z" }
-        }
+          "2": { "name": "punctuation.section.block.begin.z" }
+        },
+        "end": "(\\})\\s+(from)\\s+((?:\"(?:\\\\.|[^\"])*\")|(?:'(?:\\\\.|[^'])*'))",
+        "endCaptures": {
+          "1": { "name": "punctuation.section.block.end.z" },
+          "2": { "name": "keyword.control.import.z" },
+          "3": { "name": "string.quoted.header.z" }
+        },
+        "patterns": [{
+          "name": "keyword.control.import.alias.z",
+          "match": "\\bas\\b"
+        }, {
+          "name": "variable.other.readwrite.import.z",
+          "match": "\\b[A-Za-z_][A-Za-z0-9_]*\\b"
+        }]
       }, {
         "name": "meta.import.z",
         "match": "\\b(import)\\s+([A-Za-z_][A-Za-z0-9_]*)\\s+(from)\\s+((?:\"(?:\\\\.|[^\"])*\")|(?:'(?:\\\\.|[^'])*'))",
