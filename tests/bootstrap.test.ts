@@ -1413,7 +1413,7 @@ test("checks closure parameters, block return types, and immutable captures", ()
   `;
   assert.throws(
     () => compileToC(blockInference, "closure-block-type.z"),
-    /closure-block-type\.z:3:23: error: a block-bodied closure requires an explicit return type/,
+    /closure-block-type\.z:3:23: error: a block-bodied closure requires an explicit or contextual return type/,
   );
 
   const immutableCapture = `
@@ -1440,6 +1440,43 @@ test("checks closure parameters, block return types, and immutable captures", ()
   assert.throws(
     () => compileToC(wrongArgument, "closure-argument.z"),
     /closure-argument\.z:4:23: error: expected i32, found String/,
+  );
+});
+
+test("contextually infers closure parameter and result types from function values", () => {
+  const source = `
+    function main(): i32 {
+      const double: (value: i32) => i32 = (value) => value * 2;
+      const sum: (left: i32, right: i32) => i32 = (left, right) => {
+        return left + right;
+      };
+      let total = 40;
+      const increment: (inout value: i32) => void = (inout value) => {
+        value = value + 2;
+      };
+      increment(inout total);
+      return double(10) + sum(total, 0);
+    }
+  `;
+  const generated = compileToC(source, "contextual-closure.z");
+  assert.match(generated, /__z_closure_call_/);
+  const parameter = source.indexOf("(value) =>") + 2;
+  assert.match(hover(source, "contextual-closure.z", parameter)?.contents.value ?? "", /value: i32/);
+
+  const missingContext = `
+    function main(): i32 {
+      const identity = (value) => value;
+      return identity(42);
+    }
+  `;
+  const inferenceDiagnostic = diagnostics(missingContext, "closure-inference.z")[0];
+  assert.equal(inferenceDiagnostic.code, "Z0215");
+  assert.match(inferenceDiagnostic.message, /cannot infer the type of closure parameter "value"/);
+
+  const implicitCapability = source.replace("(inout value) =>", "(value) =>");
+  assert.throws(
+    () => compileToC(implicitCapability, "closure-capability.z"),
+    /closure parameter "value" requires the `inout` capability from its destination function type/,
   );
 });
 

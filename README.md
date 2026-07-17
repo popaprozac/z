@@ -300,7 +300,15 @@ function apply(operation: (left: i32, right: i32) => i32): i32 {
 }
 
 const operation: (left: i32, right: i32) => i32 = add;
+const doubled: (value: i32) => i32 = (value) => value * 2;
 ```
+
+Z follows an **infer implementations, declare contracts** rule. Local bindings,
+generic call arguments, expression-bodied closure results, and closure parameter
+types supplied by a destination function type may be inferred. Function
+parameters, public and FFI boundaries, aggregate fields, and uninitialized
+storage stay explicit. Access capabilities are never inferred from a closure
+body: a destination requiring `inout` still uses `(inout value) => ...`.
 
 Run the closure example with:
 

@@ -1,6 +1,7 @@
 import type {
-  Expression,
+  ClosureParameter,
   EnumDeclaration,
+  Expression,
   FunctionDeclaration,
   ImportDeclaration,
   Parameter,
@@ -141,6 +142,18 @@ export function parse(tokens: Token[], fileName: string): Program {
     return parameters;
   };
 
+  const parseClosureParameters = (): ClosureParameter[] => {
+    const parameters: ClosureParameter[] = [];
+    if (at("rightParen")) return parameters;
+    do {
+      const mode = match("in") ? "in" : match("inout") ? "inout" : match("out") ? "out" : "value";
+      const nameToken = expect("identifier", "a closure parameter name");
+      const type = match("colon") ? parseType() : null;
+      parameters.push({ name: nameToken.text, mode, type, location: nameToken.location });
+    } while (match("comma"));
+    return parameters;
+  };
+
   const precedence = (kind: TokenKind): number => {
     switch (kind) {
       case "orOr":
@@ -212,7 +225,7 @@ export function parse(tokens: Token[], fileName: string): Program {
       const closureLocation = closureCaptureMode ? previous().location : peek().location;
       try {
         expect("leftParen", "`(` starting closure parameters");
-        const parameters = parseParameters();
+        const parameters = parseClosureParameters();
         expect("rightParen", "`)`");
         const returnType = match("colon") ? parseType() : null;
         expect("fatArrow", "`=>`");

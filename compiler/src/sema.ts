@@ -829,7 +829,12 @@ function analyzeStatement(
           throw new DiagnosticError(fileName, statement.type.location, "a closure annotation must be a function type");
         }
       }
-      let initializerType = inferDirectValue(statement.initializer, owner, locals, globals, structs, enums, fileName, state);
+      const contextualFunction = statement.initializer.kind === "closure" && statement.type
+        ? parseFunctionType(statement.type.name)
+        : null;
+      let initializerType = statement.initializer.kind === "closure"
+        ? inferClosureExpression(statement.initializer, owner, locals, globals, structs, enums, fileName, state, contextualFunction)
+        : inferDirectValue(statement.initializer, owner, locals, globals, structs, enums, fileName, state);
       let variableType = initializerType;
       if (statement.type) {
         validateType(statement.type, structs, enums, state.foreignNamedTypes, fileName, false);
@@ -1191,9 +1196,54 @@ function inferClosureExpression(
   enums: Map<string, EnumDeclaration>,
   fileName: string,
   state: AnalysisState,
+  expectedFunction: FunctionType | null = null,
 ): ValueType {
+  if (expectedFunction && expression.parameters.length !== expectedFunction.parameters.length) {
+    throw new DiagnosticError(
+      fileName,
+      expression.location,
+      `expected ${expectedFunction.parameters.length} closure parameter(s), found ${expression.parameters.length}`,
+    );
+  }
+
+  const resolvedParameters: Parameter[] = expression.parameters.map((parameter, index) => {
+    const contextual = expectedFunction?.parameters[index];
+    if (!parameter.type && !contextual) {
+      throw new DiagnosticError(fileName, parameter.location, `cannot infer the type of closure parameter ${JSON.stringify(parameter.name)}`, {
+        code: "Z0215",
+        length: parameter.name.length,
+        notes: ["closure parameter types come from either the closure or its destination function type"],
+        helps: [`write \`${parameter.name}: Type\` or assign the closure to an explicitly typed function value`],
+      });
+    }
+    if (contextual && parameter.mode !== contextual.mode) {
+      const capability = contextual.mode === "value" ? "no capability" : `the \`${contextual.mode}\` capability`;
+      const spelling = contextual.mode === "value" ? parameter.name : `${contextual.mode} ${parameter.name}`;
+      throw new DiagnosticError(
+        fileName,
+        parameter.location,
+        `closure parameter ${JSON.stringify(parameter.name)} requires ${capability} from its destination function type`,
+        {
+          length: parameter.name.length,
+          helps: [`write \`${spelling}\``],
+        },
+      );
+    }
+    if (contextual && parameter.type && parameter.type.name !== contextual.type) {
+      throw new DiagnosticError(
+        fileName,
+        parameter.type.location,
+        `closure parameter ${JSON.stringify(parameter.name)} expects ${contextual.type}, found ${parameter.type.name}`,
+      );
+    }
+    return {
+      ...parameter,
+      type: parameter.type ?? { name: contextual!.type, location: parameter.location },
+    };
+  });
+
   const parameterNames = new Set<string>();
-  for (const parameter of expression.parameters) {
+  for (const parameter of resolvedParameters) {
     if (parameterNames.has(parameter.name)) {
       throw new DiagnosticError(fileName, parameter.location, `duplicate closure parameter ${JSON.stringify(parameter.name)}`);
     }
@@ -1259,17 +1309,19 @@ function inferClosureExpression(
       state.borrowOrigins.set(capture.name, { location: capture.location, kind: "closure" });
     }
   }
-  for (const parameter of expression.parameters) {
+  for (const parameter of resolvedParameters) {
     const borrowed = parameter.mode === "value" && !parseSliceType(parameter.type.name) ? "" : borrowedPrefix;
     const mutable = parameter.mode === "inout" ? mutablePrefix : "";
     closureLocals.set(parameter.name, `${borrowed}${mutable}${parameter.type.name}`);
     state.bindingTypes.set(parameter.location.offset, parameter.type.name);
   }
 
-  if (expression.body.kind === "block" && !expression.returnType) {
-    throw new DiagnosticError(fileName, expression.location, "a block-bodied closure requires an explicit return type");
+  const contextualReturn = expression.returnType
+    ?? (expectedFunction ? { name: expectedFunction.returnType, location: expression.location } : null);
+  if (expression.body.kind === "block" && !contextualReturn) {
+    throw new DiagnosticError(fileName, expression.location, "a block-bodied closure requires an explicit or contextual return type");
   }
-  const provisionalReturn = expression.returnType ?? { name: "void", location: expression.location };
+  const provisionalReturn = contextualReturn ?? { name: "void", location: expression.location };
   if (expression.returnType) validateType(expression.returnType, structs, enums, state.foreignNamedTypes, fileName, true);
   const syntheticBase: FunctionDeclaration = {
     kind: "function",
@@ -1282,7 +1334,7 @@ function inferClosureExpression(
         type: { name: capture.type, location: expression.location },
         location: expression.location,
       })),
-      ...expression.parameters,
+      ...resolvedParameters,
     ],
     returnType: provisionalReturn,
     errorType: null,
@@ -1301,9 +1353,10 @@ function inferClosureExpression(
     returnType = syntheticBase.returnType.name;
   } else {
     returnType = inferDirectValue(expression.body, syntheticBase, closureLocals, globals, structs, enums, fileName, state);
-    if (expression.returnType) {
-      requireAssignable(expression.returnType.name, returnType, expression.body, fileName, state.foreignNamedTypes, state.numericLiteralTypes);
-      returnType = expression.returnType.name;
+    if (contextualReturn) {
+      returnType = contextualCStringLiteral(contextualReturn.name, expression.body, state) ?? returnType;
+      requireAssignable(contextualReturn.name, returnType, expression.body, fileName, state.foreignNamedTypes, state.numericLiteralTypes);
+      returnType = contextualReturn.name;
     }
     consumeOwnedValue(expression.body, returnType, closureLocals, structs, fileName, state);
     body = [{ kind: "return", expression: expression.body, location: expression.body.location }];
@@ -1315,7 +1368,7 @@ function inferClosureExpression(
     type,
     declaration,
     captures,
-    parameterCount: expression.parameters.length,
+    parameterCount: resolvedParameters.length,
     owned: false,
     storable: false,
   });

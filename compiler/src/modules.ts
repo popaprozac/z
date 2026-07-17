@@ -494,7 +494,7 @@ function transformExpression(
         ...expression,
         parameters: expression.parameters.map((parameter) => ({
           ...parameter,
-          type: renameTypeReference(parameter.type, scope, typeParameters),
+          type: parameter.type ? renameTypeReference(parameter.type, scope, typeParameters) : null,
         })),
         returnType: expression.returnType ? renameTypeReference(expression.returnType, scope, typeParameters) : null,
         body: expression.body.kind === "block"

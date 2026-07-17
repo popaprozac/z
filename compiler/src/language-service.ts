@@ -661,7 +661,7 @@ function collectBindings(context: AnalyzedSource): Binding[] {
     for (const parameter of expression.parameters) {
       bindings.push({
         name: parameter.name,
-        type: parameter.type.name,
+        type: context.semanticInfo.bindingTypes.get(parameter.location.offset) ?? parameter.type?.name ?? "unknown",
         offset: parameter.location.offset,
         readonly: parameter.mode === "value" || parameter.mode === "in",
         parameter: true,

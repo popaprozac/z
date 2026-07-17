@@ -52,6 +52,29 @@ position.x = 10;
 position = Point { x: position.x, y: 20 };
 ```
 
+## Type inference boundary
+
+Z uses inference to remove repetition inside an implementation, not to hide an
+API contract. Initializers determine local binding types, call arguments infer
+generic parameters, and an explicit destination function type supplies omitted
+closure parameter and result types:
+
+```z
+const answer = 42;
+const doubled: (value: i32) => i32 = (value) => value * 2;
+const describe: (value: i32) => String = (value) => {
+  return `${value}`;
+};
+```
+
+Function parameters, exported return types, struct and class fields, FFI
+boundaries, empty collections, and uninitialized storage remain explicit.
+Capabilities describe ownership and access rather than ordinary value types,
+so they are not inferred from the closure body. For example, a closure assigned
+to `(inout value: Counter) => void` must still spell `(inout value) => ...`.
+An untyped closure without a destination contract receives a diagnostic asking
+for either `parameter: Type` or an explicit function value type.
+
 Assignment is a statement, not an expression. Its target must be a mutable
 binding or a field path rooted in one, and its value must have the target's
 static type. Parameters and pattern bindings begin immutable.

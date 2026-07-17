@@ -10,7 +10,7 @@ struct Resource {
 
 function makeCounter(start: i32): () => i32 {
   let current = start;
-  const counter: () => i32 = move (): i32 => {
+  const counter: () => i32 = move () => {
     current = current + 1;
     return current;
   };
@@ -18,7 +18,7 @@ function makeCounter(start: i32): () => i32 {
 }
 
 function holdResource(resource: Resource): () => i32 {
-  const read: () => i32 = move (): i32 => resource.value;
+  const read: () => i32 = move () => resource.value;
   return read;
 }
 
@@ -27,7 +27,7 @@ function twice(value: i32): i32 {
 }
 
 function defer(operation: (value: i32) => i32, value: i32): () => i32 {
-  const deferred: () => i32 = move (): i32 => operation(value);
+  const deferred: () => i32 = move () => operation(value);
   return deferred;
 }
 

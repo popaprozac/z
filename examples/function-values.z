@@ -32,7 +32,7 @@ function main(): i32 {
   const inferred = subtract;
   const selected = choose(false);
   const calculator = Calculator { operation: selected };
-  const doubled: (value: i32) => i32 = (value: i32): i32 => value * 2;
+  const doubled: (value: i32) => i32 = (value) => value * 2;
 
   console.log(`${apply(direct, 20, 22)}`);
   console.log(`${inferred(50, 8)}`);

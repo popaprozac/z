@@ -193,7 +193,9 @@ export function inferGenericCalls(
       }
       case "closure": {
         const closureEnvironment = new Map(environment);
-        for (const parameter of expression.parameters) closureEnvironment.set(parameter.name, parameter.type.name);
+        for (const parameter of expression.parameters) {
+          if (parameter.type) closureEnvironment.set(parameter.name, parameter.type.name);
+        }
         const rewrittenBody = expression.body.kind === "block"
           ? { expression: rewriteStatement(expression.body, closureEnvironment) as typeof expression.body, type: null }
           : rewriteExpression(expression.body, closureEnvironment);

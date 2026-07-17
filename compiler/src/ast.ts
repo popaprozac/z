@@ -105,6 +105,13 @@ export type Parameter = {
   readonly location: SourceLocation;
 };
 
+export type ClosureParameter = {
+  readonly name: string;
+  readonly mode: "value" | "in" | "inout" | "out";
+  readonly type: TypeReference | null;
+  readonly location: SourceLocation;
+};
+
 export type TypeReference = {
   readonly name: string;
   readonly location: SourceLocation;
@@ -310,7 +317,7 @@ export type ConditionalExpression = {
 export type ClosureExpression = {
   readonly kind: "closure";
   readonly captureMode: "borrow" | "move";
-  readonly parameters: Parameter[];
+  readonly parameters: ClosureParameter[];
   readonly returnType: TypeReference | null;
   readonly body: Expression | BlockStatement;
   readonly location: SourceLocation;
