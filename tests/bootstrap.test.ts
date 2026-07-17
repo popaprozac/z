@@ -169,7 +169,7 @@ test("preserves generic inference and local shadowing across Z modules", () => {
     import library from "./library.z";
     import { first } from "./library.z";
     function main(): i32 {
-      const pair = library.Pair<i32>({ first: 20, second: 22 });
+      const pair = library.Pair({ first: 20, second: 22 });
       return library.first<i32>(pair) + first(pair) + library.shadowed() - 82;
     }
   `;
@@ -2668,18 +2668,98 @@ test("infers generic calls while preserving explicit instantiation", () => {
   assert.throws(() => compileToC(duplicate, "generic-duplicate.z"), /duplicate type parameter "T"/);
 });
 
+test("infers generic aggregate construction, class construction, and static factories", () => {
+  const source = `
+    struct Pair<T> {
+      first: T;
+      second: T;
+    }
+    class Envelope<T> {
+      private value: T;
+      constructor(value: T) { this.value = value; }
+      function get(): T { return this.value; }
+    }
+    class Holder<T> { value: T; }
+    struct Container<T> {
+      value: T;
+      static function wrap(value: T): Container<T> {
+        return Container({ value });
+      }
+    }
+    class Shelf<T> {
+      private content: Container<T>;
+      constructor(value: T) { this.content = Container.wrap(value); }
+      function get(): T { return this.content.value; }
+    }
+    struct Marker<T> {
+      tag: i32;
+      static function create(): Marker<T> { return Marker<T>({ tag: 0 }); }
+    }
+    function makeMarker(): Marker<i32> { return Marker.create(); }
+    function main(): i32 {
+      const pair = Pair({ first: 20, second: 22 });
+      const envelope = new Envelope(42);
+      const holder = new Holder({ value: 42 });
+      const wrapped = Container.wrap(42);
+      const explicit = Container.wrap<i32>(42);
+      const shelf = new Shelf(42);
+      const marker: Marker<i32> = Marker.create();
+      return pair.first + pair.second + envelope.get() + holder.value
+        + wrapped.value + explicit.value + shelf.get() + marker.tag + makeMarker().tag - 252;
+    }
+  `;
+  const generated = compileToC(source, "aggregate-inference.z");
+  assert.match(generated, /Z___z_mono_Pair_i32/);
+  assert.match(generated, /Z___z_mono_Envelope_i32_new\(int32_t value\)/);
+  assert.match(generated, /Z___z_mono_Holder_i32_new\(int32_t value\)/);
+  assert.match(generated, /Z___z_mono_Container_i32_wrap\(int32_t value\)/);
+  assert.match(generated, /Z___z_mono_Shelf_i32_new\(int32_t value\)/);
+  assert.match(generated, /Z___z_mono_Marker_i32_create\(void\)/);
+  assert.match(hover(source, "aggregate-inference.z", source.indexOf("pair =") + 1)?.contents.value ?? "", /pair: Pair<i32>/);
+  assert.match(hover(source, "aggregate-inference.z", source.indexOf("envelope =") + 1)?.contents.value ?? "", /envelope: Envelope<i32>/);
+  assert.match(hover(source, "aggregate-inference.z", source.indexOf("wrapped =") + 1)?.contents.value ?? "", /wrapped: Container<i32>/);
+
+  const contextualWidth = `
+    struct Pair<T> { first: T; second: T; }
+    function wide(): i64 {
+      const pair: Pair<i64> = Pair({ first: 20, second: 22 });
+      return pair.first + pair.second;
+    }
+    function main(): i32 { return 0; }
+  `;
+  assert.match(compileToC(contextualWidth, "aggregate-expected-type.z"), /struct Z___z_mono_Pair_i64 \{[\s\S]*int64_t first/);
+
+  const conflict = `
+    struct Pair<T> { first: T; second: T; }
+    function main(): i32 { const pair = Pair({ first: 1, second: true }); return 0; }
+  `;
+  assert.throws(() => compileToC(conflict, "aggregate-inference-conflict.z"), /conflicting inferred types for T.*i32 and bool/);
+
+  const ambiguous = `
+    struct Marker<T> { tag: i32; static function create(): Marker<T> { return Marker<T>({ tag: 0 }); } }
+    function main(): i32 { const marker = Marker.create(); return marker.tag; }
+  `;
+  assert.throws(() => compileToC(ambiguous, "static-inference-ambiguous.z"), /cannot infer type parameter "T" for "Marker\.create"/);
+
+  const wrongStaticArity = source.replace("Container.wrap<i32>(42)", "Container.wrap<i32, bool>(42)");
+  assert.throws(() => compileToC(wrongStaticArity, "static-inference-arity.z"), /expects 1 type argument\(s\), received 2/);
+
+  const oldStaticShape = source.replace("Container.wrap<i32>(42)", "Container<i32>.wrap(42)");
+  assert.throws(() => compileToC(oldStaticShape, "static-owner-specialization.z"), /static generic arguments follow the method name/);
+});
+
 test("infers nested generic calls and calls within generic functions", () => {
   const source = `
-    struct Box<T> { value: T; }
+    struct Envelope<T> { value: T; }
     function identity<T>(value: T): T { return value; }
-    function unbox<T>(box: Box<T>): T { return identity(box.value); }
+    function unwrap<T>(envelope: Envelope<T>): T { return identity(envelope.value); }
     function main(): i32 {
-      const box = Box<i32>({ value: 42 });
-      return identity(unbox(box));
+      const envelope = Envelope({ value: 42 });
+      return identity(unwrap(envelope));
     }
   `;
   const generated = compileToC(source, "generic-nested-inference.z");
-  assert.match(generated, /__z_mono_unbox_i32/);
+  assert.match(generated, /__z_mono_unwrap_i32/);
   assert.match(generated, /__z_mono_identity_i32/);
 });
 
@@ -2803,7 +2883,7 @@ test("shows generic trait constraints in editor signatures", () => {
 
 test("exposes generic templates without leaking monomorphized names to editor completion", () => {
   const source = `
-    struct Box<T> { value: T; }
+    struct Envelope<T> { value: T; }
     function identity<T>(value: T): T { return value; }
     function main(): i32 { const value = identity<i32>(1); ide; return value; }
   `;
@@ -2823,7 +2903,7 @@ test("shows source generic fields and concrete generic binding types on hover", 
     }
     function first<T>(pair: Pair<T>): T { return pair.first; }
     function main(): i32 {
-      const pair = Pair<i32>({ first: 20, second: 22 });
+      const pair = Pair({ first: 20, second: 22 });
       return pair.second;
     }
   `;
@@ -3119,14 +3199,14 @@ test("initializes private class state through safe user constructors", () => {
   assert.throws(() => compileToC(incompleteBranch, "constructor-incomplete-branch.z"), /does not initialize field "value"/);
 
   const genericConstructor = `
-    class Box<T> {
+    class Envelope<T> {
       private value: T;
       constructor(value: T) { this.value = value; }
       function get(): T { return this.value; }
     }
-    function main(): i32 { const box = new Box<i32>(42); return box.get() - 42; }
+    function main(): i32 { const envelope = new Envelope(42); return envelope.get() - 42; }
   `;
-  assert.match(compileToC(genericConstructor, "generic-class-constructor.z"), /Z___z_mono_Box_i32_new\(int32_t value\)/);
+  assert.match(compileToC(genericConstructor, "generic-class-constructor.z"), /Z___z_mono_Envelope_i32_new\(int32_t value\)/);
 
   const objectBypass = `
     class Secret { private value: i32; constructor(value: i32) { this.value = value; } }
@@ -3160,13 +3240,17 @@ test("runs visible type-scoped static methods on structs, classes, and generic i
   assert.match(generated, /Z_Result_Session_InvalidSession Z_Session_checked\(int32_t id\)/);
 
   const generic = `
-    struct Box<T> {
+    struct Container<T> {
       value: T;
-      static function wrap(value: T): Box<T> { return Box<T>({ value }); }
+      static function wrap(value: T): Container<T> { return Container({ value }); }
     }
-    function main(): i32 { const box = Box<i32>.wrap(42); return box.value - 42; }
+    function main(): i32 {
+      const inferred = Container.wrap(42);
+      const explicit = Container.wrap<i32>(42);
+      return inferred.value + explicit.value - 84;
+    }
   `;
-  assert.match(compileToC(generic, "generic-static.z"), /Z___z_mono_Box_i32_wrap\(int32_t value\)/);
+  assert.match(compileToC(generic, "generic-static.z"), /Z___z_mono_Container_i32_wrap\(int32_t value\)/);
 
   const directory = mkdtempSync("/tmp/z-static-module-");
   const factory = resolve(directory, "factory.z");
@@ -3280,15 +3364,15 @@ test("completes and explains static methods on their type namespace", () => {
   )), true);
 
   const genericSource = `
-    struct Box<T> {
+    struct Container<T> {
       value: T;
-      static function wrap(value: T): Box<T> { return Box<T>({ value }); }
+      static function wrap(value: T): Container<T> { return Container({ value }); }
     }
-    function main(): i32 { Box<i32>.; return 0; }
+    function main(): i32 { Container.; return 0; }
   `;
-  const genericOffset = genericSource.indexOf("Box<i32>.;") + "Box<i32>.".length;
+  const genericOffset = genericSource.indexOf("Container.;") + "Container.".length;
   const genericItems = completions(genericSource, "generic-static-editor.z", genericOffset);
-  assert.match(genericItems.find((item) => item.label === "wrap")?.detail ?? "", /value: i32.*Box<i32>/);
+  assert.match(genericItems.find((item) => item.label === "wrap")?.detail ?? "", /wrap<T>\(value: T\).*Container<T>/);
 });
 
 test("requires every struct field exactly once", () => {

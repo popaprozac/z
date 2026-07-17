@@ -1711,6 +1711,11 @@ function methodDetail(
 ): string {
   const visibility = method.visibility ?? "public";
   const staticPrefix = method.static ? " static" : "";
+  const inferredOwnerParameters = method.static
+    ? [...substitutions].filter(([parameter, value]) => parameter === value).map(([parameter]) => parameter)
+    : [];
+  const genericParameters = [...inferredOwnerParameters, ...(method.typeParameters ?? [])];
+  const generic = genericParameters.length ? `<${genericParameters.join(", ")}>` : "";
   const parameters = method.parameters.map((parameter) => {
     const capability = parameter.mode === "value" ? "" : `${parameter.mode} `;
     return `${capability}${parameter.name}: ${displaySubstitutedType(parameter.type.name, substitutions, typeDisplayNames)}`;
@@ -1719,7 +1724,7 @@ function methodDetail(
   const throws = method.errorType
     ? ` throws ${displaySubstitutedType(method.errorType.name, substitutions, typeDisplayNames)}`
     : "";
-  return `${visibility}${staticPrefix} function ${method.name}(${parameters.join(", ")}): ${result}${throws}`;
+  return `${visibility}${staticPrefix} function ${method.name}${generic}(${parameters.join(", ")}): ${result}${throws}`;
 }
 
 function formatTypeParameters(

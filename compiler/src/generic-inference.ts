@@ -39,6 +39,7 @@ export function inferGenericCalls(
   let activeConstraints = new Map<string, string[]>();
   let activeTypeParameters = new Set<string>();
   const closureReturns = new Map<string, string | null>();
+  const objectFieldTypes = new Map<number, ReadonlyMap<string, string | null>>();
   const selectiveFunctions = new Map<string, ForeignType>();
   const selectiveValues = new Map<string, string>();
   for (const module of foreignModules.values()) {
@@ -145,7 +146,63 @@ export function inferGenericCalls(
     }
   };
 
-  const rewriteExpression = (expression: Expression, environment: Environment): RewrittenExpression => {
+  const inferAggregateArguments = (
+    declaration: StructDeclaration,
+    arguments_: readonly RewrittenExpression[],
+    originalArguments: readonly Expression[],
+    expectedType: string | null,
+    callName: string,
+    location: Expression["location"],
+  ): string => {
+    const parameters = new Set(declaration.typeParameters ?? []);
+    const inferred = new Map<string, string>();
+    if (expectedType) {
+      unify(
+        genericTypeName(declaration.name, declaration.typeParameters ?? []),
+        expectedType,
+        parameters,
+        inferred,
+        callName,
+        location,
+      );
+    }
+    const contextualParameters = new Set(inferred.keys());
+    const valueParameters = new Set([...parameters].filter((parameter) => !contextualParameters.has(parameter)));
+    if (declaration.constructor) {
+      for (let index = 0; index < Math.min(declaration.constructor.parameters.length, arguments_.length); index += 1) {
+        unify(
+          declaration.constructor.parameters[index].type.name,
+          arguments_[index].type,
+          valueParameters,
+          inferred,
+          callName,
+          originalArguments[index].location,
+        );
+      }
+    } else if (originalArguments.length === 1 && originalArguments[0].kind === "objectExpression") {
+      const fieldTypes = objectFieldTypes.get(originalArguments[0].location.offset);
+      for (const initializer of originalArguments[0].fields) {
+        const field = declaration.fields.find((candidate) => candidate.name === initializer.name);
+        if (!field) continue;
+        unify(field.type.name, fieldTypes?.get(initializer.name) ?? null, valueParameters, inferred, callName, initializer.location);
+      }
+    }
+    const missing = declaration.typeParameters?.find((parameter) => !inferred.has(parameter));
+    if (missing) {
+      throw new DiagnosticError(
+        fileName,
+        location,
+        `cannot infer type parameter ${JSON.stringify(missing)} for ${JSON.stringify(callName)}; specify explicit type arguments`,
+      );
+    }
+    return genericTypeName(declaration.name, declaration.typeParameters!.map((parameter) => inferred.get(parameter)!));
+  };
+
+  const rewriteExpression = (
+    expression: Expression,
+    environment: Environment,
+    expectedType: string | null = null,
+  ): RewrittenExpression => {
     switch (expression.kind) {
       case "number":
         return { expression, type: /^[0-9]+$/.test(expression.value) ? "i32" : "f64" };
@@ -194,7 +251,15 @@ export function inferGenericCalls(
       }
       case "new": {
         const arguments_ = expression.arguments.map((argument) => rewriteExpression(argument, environment));
-        return { expression: { ...expression, arguments: arguments_.map((argument) => argument.expression) }, type: expression.typeName };
+        const explicit = parseGenericType(expression.typeName);
+        const declaration = structs.get(explicit?.base ?? expression.typeName);
+        const typeName = declaration?.typeParameters?.length && !explicit
+          ? inferAggregateArguments(declaration, arguments_, expression.arguments, expectedType, declaration.name, expression.location)
+          : expression.typeName;
+        return {
+          expression: { ...expression, typeName, arguments: arguments_.map((argument) => argument.expression) },
+          type: typeName,
+        };
       }
       case "weak": {
         const inner = rewriteExpression(expression.expression, environment);
@@ -209,8 +274,11 @@ export function inferGenericCalls(
           if (parameter.type) closureEnvironment.set(parameter.name, parameter.type.name);
         }
         const rewrittenBody = expression.body.kind === "block"
-          ? { expression: rewriteStatement(expression.body, closureEnvironment) as typeof expression.body, type: null }
-          : rewriteExpression(expression.body, closureEnvironment);
+          ? {
+            expression: rewriteStatement(expression.body, closureEnvironment, expression.returnType?.name ?? null) as typeof expression.body,
+            type: null,
+          }
+          : rewriteExpression(expression.body, closureEnvironment, expression.returnType?.name ?? null);
         const body = rewrittenBody.expression;
         const type = `__z_closure_${expression.location.offset}`;
         const returnType = expression.returnType?.name ?? rewrittenBody.type;
@@ -235,10 +303,13 @@ export function inferGenericCalls(
         return { expression: { ...expression, fields }, type: expression.typeName };
       }
       case "objectExpression": {
+        const fieldTypes = new Map<string, string | null>();
         const fields = expression.fields.map((field) => {
           const value = rewriteExpression(field.expression, environment);
+          fieldTypes.set(field.name, value.type);
           return { ...field, expression: value.expression };
         });
+        objectFieldTypes.set(expression.location.offset, fieldTypes);
         return { expression: { ...expression, fields }, type: null };
       }
       case "member": {
@@ -335,8 +406,76 @@ export function inferGenericCalls(
         };
       }
       case "call": {
-        const callee = rewriteExpression(expression.callee, environment);
         const args = expression.arguments.map((item) => rewriteExpression(item, environment));
+        if (expression.callee.kind === "member" && expression.callee.object.kind === "identifier") {
+          const explicitOwner = parseGenericType(expression.callee.object.name);
+          const explicitMethod = parseGenericType(expression.callee.property);
+          const owner = structs.get(explicitOwner?.base ?? expression.callee.object.name);
+          const methodName = explicitMethod?.base ?? expression.callee.property;
+          const method = owner?.methods.find((candidate) => candidate.static && candidate.name === methodName);
+          if (owner && method && owner.typeParameters?.length) {
+            if (explicitOwner) {
+              throw new DiagnosticError(
+                fileName,
+                expression.callee.object.location,
+                `static generic arguments follow the method name; use ${owner.name}.${method.name}<...>()`,
+              );
+            }
+            if (method.typeParameters?.length) {
+              throw new DiagnosticError(fileName, method.location, "static methods with their own type parameters are not implemented yet");
+            }
+            const inferred = new Map<string, string>();
+            const parameters = new Set(owner.typeParameters);
+            if (explicitMethod) {
+              if (explicitMethod.arguments.length !== owner.typeParameters.length) {
+                throw new DiagnosticError(
+                  fileName,
+                  expression.callee.location,
+                  `${owner.name}.${method.name} expects ${owner.typeParameters.length} type argument(s), received ${explicitMethod.arguments.length}`,
+                );
+              }
+              owner.typeParameters.forEach((parameter, index) => inferred.set(parameter, explicitMethod.arguments[index]));
+            } else {
+              if (expectedType) {
+                unify(method.returnType.name, expectedType, parameters, inferred, `${owner.name}.${method.name}`, expression.location);
+              }
+              const contextualParameters = new Set(inferred.keys());
+              const valueParameters = new Set([...parameters].filter((parameter) => !contextualParameters.has(parameter)));
+              for (let index = 0; index < Math.min(method.parameters.length, args.length); index += 1) {
+                unify(
+                  method.parameters[index].type.name,
+                  args[index].type,
+                  valueParameters,
+                  inferred,
+                  `${owner.name}.${method.name}`,
+                  expression.arguments[index].location,
+                );
+              }
+            }
+            const missing = owner.typeParameters.find((parameter) => !inferred.has(parameter));
+            if (missing) {
+              throw new DiagnosticError(
+                fileName,
+                expression.callee.location,
+                `cannot infer type parameter ${JSON.stringify(missing)} for ${JSON.stringify(`${owner.name}.${method.name}`)}; specify explicit type arguments`,
+              );
+            }
+            const concreteOwner = genericTypeName(owner.name, owner.typeParameters.map((parameter) => inferred.get(parameter)!));
+            return {
+              expression: {
+                ...expression,
+                callee: {
+                  ...expression.callee,
+                  object: { ...expression.callee.object, name: concreteOwner },
+                  property: method.name,
+                },
+                arguments: args.map((item) => item.expression),
+              },
+              type: substituteType(method.returnType.name, inferred),
+            };
+          }
+        }
+        const callee = rewriteExpression(expression.callee, environment);
         if (callee.expression.kind === "member" && callee.expression.object.kind === "identifier") {
           const qualifier = parseGenericType(callee.expression.object.name);
           const optionBase = qualifier?.base ?? callee.expression.object.name;
@@ -379,9 +518,23 @@ export function inferGenericCalls(
                 `${explicitAggregate.base} expects ${expected} type argument(s), received ${explicitAggregate.arguments.length}`,
               );
             }
+            const inferredType = aggregateConstructor.declaration.typeParameters?.length && !explicitAggregate
+              ? inferAggregateArguments(
+                aggregateConstructor.declaration,
+                args,
+                expression.arguments,
+                expectedType,
+                aggregateConstructor.declaration.name,
+                expression.location,
+              )
+              : rewrittenCallee.name;
             return {
-              expression: { ...expression, callee: rewrittenCallee, arguments: args.map((item) => item.expression) },
-              type: rewrittenCallee.name,
+              expression: {
+                ...expression,
+                callee: { ...rewrittenCallee, name: inferredType },
+                arguments: args.map((item) => item.expression),
+              },
+              type: inferredType,
             };
           }
           const explicit = parseGenericType(rewrittenCallee.name);
@@ -442,7 +595,12 @@ export function inferGenericCalls(
     }
   };
 
-  const rewriteArm = (arm: MatchArm, environment: Environment, matchedType: string | null): MatchArm => {
+  const rewriteArm = (
+    arm: MatchArm,
+    environment: Environment,
+    matchedType: string | null,
+    returnType: string | null = null,
+  ): MatchArm => {
     const armEnvironment = new Map(environment);
     if (arm.binding && matchedType) {
       const variant = enums.get(matchedType)?.variants.find((item) => item.name === arm.variantName);
@@ -458,13 +616,19 @@ export function inferGenericCalls(
         if (field) armEnvironment.set(fieldBinding.bindingName, field.type.name);
       }
     }
-    return { ...arm, body: rewriteStatement(arm.body, armEnvironment) };
+    return { ...arm, body: rewriteStatement(arm.body, armEnvironment, returnType) };
   };
 
-  const rewriteStatement = (statement: Statement, environment: Environment): Statement => {
+  const rewriteStatement = (
+    statement: Statement,
+    environment: Environment,
+    returnType: string | null = null,
+  ): Statement => {
     switch (statement.kind) {
       case "variable": {
-        let initializer = statement.initializer ? rewriteExpression(statement.initializer, environment) : null;
+        let initializer = statement.initializer
+          ? rewriteExpression(statement.initializer, environment, statement.type?.name ?? null)
+          : null;
         const type = statement.type?.name ?? initializer?.type;
         if (
           statement.type
@@ -487,30 +651,30 @@ export function inferGenericCalls(
       }
       case "assignment": {
         const target = rewriteExpression(statement.target, environment);
-        const expression = rewriteExpression(statement.expression, environment);
+        const expression = rewriteExpression(statement.expression, environment, target.type);
         return { ...statement, target: target.expression as typeof statement.target, expression: expression.expression };
       }
       case "return":
         return statement.expression
-          ? { ...statement, expression: rewriteExpression(statement.expression, environment).expression }
+          ? { ...statement, expression: rewriteExpression(statement.expression, environment, returnType).expression }
           : statement;
       case "throw":
       case "select":
       case "expressionStatement":
         return { ...statement, expression: rewriteExpression(statement.expression, environment).expression };
       case "block":
-        return { ...statement, statements: rewriteStatements(statement.statements, new Map(environment)) };
+        return { ...statement, statements: rewriteStatements(statement.statements, new Map(environment), returnType) };
       case "if": {
         const condition = rewriteExpression(statement.condition, environment);
-        const thenBranch = rewriteStatement(statement.thenBranch, new Map(environment)) as typeof statement.thenBranch;
+        const thenBranch = rewriteStatement(statement.thenBranch, new Map(environment), returnType) as typeof statement.thenBranch;
         const elseBranch = statement.elseBranch
-          ? rewriteStatement(statement.elseBranch, new Map(environment)) as typeof statement.elseBranch
+          ? rewriteStatement(statement.elseBranch, new Map(environment), returnType) as typeof statement.elseBranch
           : null;
         return { ...statement, condition: condition.expression, thenBranch, elseBranch };
       }
       case "while": {
         const condition = rewriteExpression(statement.condition, environment);
-        const body = rewriteStatement(statement.body, new Map(environment)) as typeof statement.body;
+        const body = rewriteStatement(statement.body, new Map(environment), returnType) as typeof statement.body;
         return { ...statement, condition: condition.expression, body };
       }
       case "for": {
@@ -520,7 +684,7 @@ export function inferGenericCalls(
           : null;
         const bodyEnvironment = new Map(environment);
         if (collection) bodyEnvironment.set(statement.binding, collection.elementType);
-        const body = rewriteStatement(statement.body, bodyEnvironment) as typeof statement.body;
+        const body = rewriteStatement(statement.body, bodyEnvironment, returnType) as typeof statement.body;
         return { ...statement, iterable: iterable.expression, body };
       }
       case "match": {
@@ -528,7 +692,7 @@ export function inferGenericCalls(
         return {
           ...statement,
           expression: matched.expression,
-          arms: statement.arms.map((arm) => rewriteArm(arm, environment, matched.type)),
+          arms: statement.arms.map((arm) => rewriteArm(arm, environment, matched.type, returnType)),
         };
       }
       case "break":
@@ -537,8 +701,12 @@ export function inferGenericCalls(
     }
   };
 
-  const rewriteStatements = (statements: readonly Statement[], environment: Environment): Statement[] => (
-    statements.map((statement) => rewriteStatement(statement, environment))
+  const rewriteStatements = (
+    statements: readonly Statement[],
+    environment: Environment,
+    returnType: string | null = null,
+  ): Statement[] => (
+    statements.map((statement) => rewriteStatement(statement, environment, returnType))
   );
 
   const armValueType = (arms: readonly MatchArm[], environment: Environment): string | null => {
@@ -558,6 +726,7 @@ export function inferGenericCalls(
     environment: Environment,
     typeParameters: readonly string[],
     constraints: readonly TypeParameterConstraint[],
+    returnType: string | null = null,
   ): Statement[] => {
     const previousConstraints = activeConstraints;
     const previousTypeParameters = activeTypeParameters;
@@ -566,7 +735,7 @@ export function inferGenericCalls(
     for (const constraint of constraints) {
       activeConstraints.set(constraint.parameter, constraint.traits.map((trait) => trait.name));
     }
-    const body = rewriteStatements(statements, environment);
+    const body = rewriteStatements(statements, environment, returnType);
     activeConstraints = previousConstraints;
     activeTypeParameters = previousTypeParameters;
     return body;
@@ -585,6 +754,7 @@ export function inferGenericCalls(
       environment,
       [...inheritedTypeParameters, ...(declaration.typeParameters ?? [])],
       [...inheritedConstraints, ...(declaration.typeParameterConstraints ?? [])],
+      declaration.returnType.name,
     );
     return { ...declaration, body };
   };
@@ -595,6 +765,21 @@ export function inferGenericCalls(
       : declaration.name;
     return {
       ...declaration,
+      constructor: declaration.constructor
+        ? {
+          ...declaration.constructor,
+          body: rewriteConstrainedStatements(
+            declaration.constructor.body,
+            new Map([
+              ["this", receiverType],
+              ...declaration.constructor.parameters.map((parameter) => [parameter.name, parameter.type.name] as const),
+            ]),
+            declaration.typeParameters ?? [],
+            declaration.typeParameterConstraints ?? [],
+            receiverType,
+          ),
+        }
+        : null,
       methods: declaration.methods.map((method) => (
         rewriteFunction(
           method,
@@ -611,6 +796,7 @@ export function inferGenericCalls(
             new Map([["this", receiverType]]),
             declaration.typeParameters ?? [],
             declaration.typeParameterConstraints ?? [],
+            "void",
           ),
         }
         : null,

@@ -55,9 +55,10 @@ position = Point({ x: position.x, y: 20 });
 ## Type inference boundary
 
 Z uses inference to remove repetition inside an implementation, not to hide an
-API contract. Initializers determine local binding types, call arguments infer
-generic parameters, and an explicit destination function type supplies omitted
-closure parameter and result types:
+API contract. Initializers determine local binding types; object fields,
+constructor arguments, and static-factory arguments infer aggregate parameters;
+ordinary call arguments infer function parameters; and an explicit destination
+function type supplies omitted closure parameter and result types:
 
 ```z
 const answer = 42;
@@ -65,7 +66,16 @@ const doubled: (value: i32) => i32 = (value) => value * 2;
 const describe: (value: i32) => String = (value) => {
   return `${value}`;
 };
+const pair = Pair({ first: 20, second: 22 }); // Pair<i32>
+const envelope = new Envelope(42);           // Envelope<i32>
+const wrapped = Container.wrap(42);          // Container<i32>
 ```
+
+Expected binding and return types participate when a factory has no inferable
+value parameter. Explicit aggregate-factory arguments follow the method name,
+as in `Container.wrap<i32>(42)`, while `Container<i32>` remains type-position
+syntax. This keeps type namespaces TypeScript-shaped rather than requiring a
+specialized type expression before the member access.
 
 Function parameters, exported return types, struct and class fields, FFI
 boundaries, empty collections, and uninitialized storage remain explicit.
@@ -223,11 +233,17 @@ class storage.
 classes. It is invoked as `Type.method()`, performs no implicit allocation, and
 has no `this` receiver. Methods default to `public`; `private` static and
 instance methods are visible only inside their declaring aggregate. Static
-methods participate in ordinary `throws`, generic-owner specialization, source
+methods participate in ordinary `throws`, inferred generic-owner specialization, source
 modules, completion, hover, and readable native lowering. Calling one through
 an instance, calling an instance method through its type, or declaring a
 receiver capability on a static method is rejected. Static fields remain
 deferred until a concrete initialization and concurrency model justifies them.
+
+Static membership is independent of storage. A struct is a value type whose
+physical storage may be a local slot, registers, inline aggregate storage,
+caller-provided return storage, or explicitly managed memory; it is not defined
+as “always stack allocated.” A static struct method lowers to a namespaced native
+function with no receiver, dynamic dispatch, or implicit allocation.
 
 Explicit `Weak<T>` handles provide the first cycle-breaking tier for classes.
 `weak owner` borrows stored class identity without incrementing its strong

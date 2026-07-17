@@ -162,11 +162,36 @@ class Session {
 const session = Session.create(42);
 ```
 
+The same construct is useful on value structs. `static` describes attachment to
+the type rather than allocation strategy:
+
+```z
+struct Point {
+  x: i32;
+  y: i32;
+
+  static function origin(): Point {
+    return Point({ x: 0, y: 0 });
+  }
+
+  function sum(): i32 { return this.x + this.y; }
+}
+
+const origin = Point.origin(); // Point value; no implicit heap allocation
+```
+
+A struct is a value type, not a promise that it always occupies a stack slot.
+Its storage may be a local slot, registers, inline aggregate or array storage,
+caller return storage, and eventually explicitly managed heap or arena memory.
+Static struct methods lower to namespaced free functions and add no dispatch or
+allocation overhead.
+
 Methods default to `public`; `private` applies to instance and static methods
 as well as fields. A static method is called only as `Type.method()`, has no
 `this`, performs no implicit allocation, and may use ordinary generics,
-`throws`, and source-module imports. Generic owners retain their type namespace,
-for example `Box<i32>.wrap(42)`. Static fields remain deliberately deferred.
+`throws`, and source-module imports. Generic static factories infer their owner
+type from arguments (`Container.wrap(42)`) or accept explicit method-position
+arguments (`Container.wrap<i32>(42)`). Static fields remain deliberately deferred.
 
 `const` fixes the class reference binding; it does not make the referenced
 instance deeply immutable. This lets an explicitly mutating `inout this` method
@@ -670,12 +695,20 @@ parameters. Function calls infer concrete arguments from their values while
 retaining an explicit specialization escape hatch:
 
 ```z
-struct Pair<T> { first: T; second: T; }
+struct Pair<T> {
+  first: T;
+  second: T;
+
+  static function make(first: T, second: T): Pair<T> {
+    return Pair({ first, second });
+  }
+}
 function first<T>(pair: Pair<T>): T { return pair.first; }
 
-const pair = Pair<i32>({ first: 20, second: 22 });
+const pair = Pair({ first: 20, second: 22 }); // inferred Pair<i32>
 const value = first(pair);
 const explicit = first<i32>(pair);
+const explicitPair = Pair.make<i32>(20, 22);
 ```
 
 Generic parameters can require explicit nominal trait conformance. Multiple
@@ -688,12 +721,27 @@ function measure<T: Measured & Named>(value: T): i32 {
 }
 ```
 
-The compiler monomorphizes each concrete use before semantic analysis and C
-lowering. Generic values therefore follow the same copy, move, ARC, borrowing,
-and `deinit` rules as handwritten concrete code, with no runtime type metadata
-or dispatch cost. Inference currently flows from call arguments; a type
-parameter that appears only in the return type still requires explicit arguments.
-Generic traits and separately generic methods remain upcoming.
+The compiler infers generic struct object construction, class constructor calls,
+static factories, and ordinary function calls. Expected destination or return
+types can resolve factories whose parameters do not mention every type argument:
+
+```z
+struct Marker<T> {
+  tag: i32;
+  static function create(): Marker<T> {
+    return Marker<T>({ tag: 0 });
+  }
+}
+
+const marker: Marker<i32> = Marker.create();
+```
+
+Concrete uses are monomorphized before semantic analysis and C lowering, so
+generic values follow the same copy, move, ARC, borrowing, and `deinit` rules as
+handwritten concrete code, with no runtime type metadata or dispatch cost. An
+unresolved type parameter receives a diagnostic asking for explicit method- or
+function-position arguments. Generic traits and separately generic methods
+remain upcoming.
 
 Owned structs can define an infallible compiler-controlled lifecycle hook:
 
