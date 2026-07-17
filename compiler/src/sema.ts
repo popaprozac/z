@@ -503,8 +503,8 @@ function analyzeStructDeclaration(
     const field = declaration.fields.find((candidate) => candidate.visibility === "private")!;
     throw new DiagnosticError(fileName, field.location, `class ${JSON.stringify(declaration.name)} needs a constructor to initialize private field ${JSON.stringify(field.name)}`);
   }
-  if (declaration.kind === "class" && declaration.methods.some((method) => method.receiverMode === "move")) {
-    const method = declaration.methods.find((candidate) => candidate.receiverMode === "move")!;
+  if (declaration.kind === "class" && declaration.methods.some((method) => !method.static && method.receiverMode === "move")) {
+    const method = declaration.methods.find((candidate) => !candidate.static && candidate.receiverMode === "move")!;
     throw new DiagnosticError(fileName, method.location, "class methods cannot declare `move this`; ARC references may have aliases");
   }
   const members = new Set<string>();
@@ -525,6 +525,9 @@ function analyzeStructDeclaration(
       throw new DiagnosticError(fileName, method.location, `duplicate member ${JSON.stringify(method.name)} in ${declaration.kind} ${JSON.stringify(declaration.name)}`);
     }
     members.add(method.name);
+    if (method.static && method.receiverMode) {
+      throw new DiagnosticError(fileName, method.location, "static methods cannot declare a `this` receiver");
+    }
     validateFunctionSignature(method, structs, enums, foreignNamedTypes, fileName);
   }
   if (declaration.constructor) {
@@ -564,7 +567,7 @@ function validateTraitConformance(
     const trait = traits.get(reference.name);
     if (!trait) throw new DiagnosticError(fileName, reference.location, `unknown trait ${JSON.stringify(reference.name)}`);
     for (const requirement of trait.methods) {
-      const method = declaration.methods.find((candidate) => candidate.name === requirement.name);
+      const method = declaration.methods.find((candidate) => !candidate.static && candidate.name === requirement.name);
       if (!method) {
         throw new DiagnosticError(
           fileName,
@@ -746,7 +749,7 @@ function analyzeFunction(
   state.borrowOrigins.clear();
   state.iterationBorrowOrigins.clear();
   const locals = new Map<string, ValueType>();
-  if (receiver) {
+  if (receiver && !declaration.static) {
     const borrowed = declaration.receiverMode === "move" ? "" : borrowedPrefix;
     const mutable = declaration.receiverMode === "inout" || declaration.receiverMode === "move" ? mutablePrefix : "";
     locals.set("this", `${borrowed}${mutable}${receiver.name}`);
@@ -2631,6 +2634,19 @@ function inferExpressionInner(
         throw new DiagnosticError(fileName, expression.location, "foreign function values are not implemented; call the function instead");
       }
       if (expression.object.kind === "identifier") {
+        const aggregate = !locals.has(expression.object.name) ? structs.get(expression.object.name) : null;
+        if (aggregate) {
+          const method = aggregate.methods.find((candidate) => candidate.name === expression.property);
+          if (method?.static) {
+            if (method.visibility === "private" && state.activeReceiver !== aggregate.name) {
+              throw new DiagnosticError(fileName, expression.location, `static method ${JSON.stringify(method.name)} is private to ${aggregate.kind} ${JSON.stringify(aggregate.name)}`);
+            }
+            throw new DiagnosticError(fileName, expression.location, "static method values are not implemented; call the method instead");
+          }
+          if (method) {
+            throw new DiagnosticError(fileName, expression.location, `instance method ${JSON.stringify(method.name)} must be called through a ${aggregate.name} value`);
+          }
+        }
         const enumDeclaration = enums.get(expression.object.name);
         if (enumDeclaration) {
           const variant = enumDeclaration.variants.find((candidate) => candidate.name === expression.property);
@@ -2785,6 +2801,28 @@ function inferExpressionInner(
           return "String";
         }
         if (expression.callee.object.kind === "identifier") {
+          const aggregate = !locals.has(expression.callee.object.name)
+            ? structs.get(expression.callee.object.name)
+            : null;
+          if (aggregate) {
+            const method = aggregate.methods.find((candidate) => candidate.name === expression.callee.property);
+            if (!method) {
+              throw new DiagnosticError(fileName, expression.callee.location, `${aggregate.kind} ${JSON.stringify(aggregate.name)} has no static method ${JSON.stringify(expression.callee.property)}`);
+            }
+            if (!method.static) {
+              throw new DiagnosticError(fileName, expression.callee.location, `instance method ${JSON.stringify(method.name)} must be called through a ${aggregate.name} value`);
+            }
+            if (method.visibility === "private" && state.activeReceiver !== aggregate.name) {
+              throw new DiagnosticError(fileName, expression.callee.location, `static method ${JSON.stringify(method.name)} is private to ${aggregate.kind} ${JSON.stringify(aggregate.name)}`);
+            }
+            rejectLabeledArguments(expression.argumentLabels, expression.location, fileName);
+            checkArguments(method, expression.arguments, locals, globals, structs, enums, fileName, expression.location, state);
+            if (method.errorType) {
+              if (!allowThrowingCall) throw new DiagnosticError(fileName, expression.location, "throwing call requires `attempt` or `try`");
+              return resultTypeName(method.returnType.name, method.errorType.name);
+            }
+            return method.returnType.name;
+          }
           const enumDeclaration = enums.get(expression.callee.object.name);
           if (enumDeclaration) {
             rejectLabeledArguments(expression.argumentLabels, expression.location, fileName);
@@ -2941,6 +2979,12 @@ function inferExpressionInner(
         const method = declaration?.methods.find((candidate) => candidate.name === expression.callee.property);
         if (!declaration || !method) {
           throw new DiagnosticError(fileName, expression.callee.location, `type ${JSON.stringify(receiverType)} has no method ${JSON.stringify(expression.callee.property)}`);
+        }
+        if (method.static) {
+          throw new DiagnosticError(fileName, expression.callee.location, `static method ${JSON.stringify(method.name)} must be called as ${declaration.name}.${method.name}()`);
+        }
+        if (method.visibility === "private" && state.activeReceiver !== declaration.name) {
+          throw new DiagnosticError(fileName, expression.callee.location, `method ${JSON.stringify(method.name)} is private to ${declaration.kind} ${JSON.stringify(declaration.name)}`);
         }
         rejectLabeledArguments(expression.argumentLabels, expression.location, fileName);
         if (

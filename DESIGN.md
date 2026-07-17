@@ -219,9 +219,15 @@ ordinary `try` and `attempt`. Lowering maintains per-field liveness so failure
 destroys only initialized cleanup-bearing fields before reclaiming incomplete
 class storage.
 
-`static function` is reserved as the eventual type-scoped factory and utility
-surface. It performs no implicit allocation and has no `this` receiver; its
-implementation follows constructor safety rather than being conflated with it.
+`static function` is the type-scoped factory and utility surface on structs and
+classes. It is invoked as `Type.method()`, performs no implicit allocation, and
+has no `this` receiver. Methods default to `public`; `private` static and
+instance methods are visible only inside their declaring aggregate. Static
+methods participate in ordinary `throws`, generic-owner specialization, source
+modules, completion, hover, and readable native lowering. Calling one through
+an instance, calling an instance method through its type, or declaring a
+receiver capability on a static method is rejected. Static fields remain
+deferred until a concrete initialization and concurrency model justifies them.
 
 Explicit `Weak<T>` handles provide the first cycle-breaking tier for classes.
 `weak owner` borrows stored class identity without incrementing its strong
@@ -941,6 +947,7 @@ Clang declaration source locations rather than text-searching SDK headers.
 - ARC-managed classes with reference identity;
 - definite, optionally throwing class constructors with partial-initialization cleanup;
 - public and private class fields with compiler and editor enforcement;
+- public and private type-scoped static methods on structs and classes;
 - class lifecycle lowering and deterministic final `deinit`;
 - zeroing `Weak<T>` handles with typed upgrade failure and weak closure capture;
 - traits with explicit, statically checked `implements` conformance;

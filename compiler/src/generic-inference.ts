@@ -244,6 +244,14 @@ export function inferGenericCalls(
       case "member": {
         const object = rewriteExpression(expression.object, environment);
         if (expression.object.kind === "identifier") {
+          const owner = aggregate(expression.object.name);
+          const staticMethod = owner?.declaration.methods.find((item) => item.static && item.name === expression.property);
+          if (owner && staticMethod) {
+            return {
+              expression: { ...expression, object: object.expression },
+              type: substituteType(staticMethod.returnType.name, owner.substitutions),
+            };
+          }
           const option = parseGenericType(expression.object.name);
           if (option?.base === "Option") {
             return { expression: { ...expression, object: object.expression }, type: expression.object.name };
@@ -571,7 +579,7 @@ export function inferGenericCalls(
     inheritedConstraints: readonly TypeParameterConstraint[] = [],
   ): FunctionDeclaration => {
     const environment = new Map(declaration.parameters.map((parameter) => [parameter.name, parameter.type.name]));
-    if (receiverType) environment.set("this", receiverType);
+    if (receiverType && !declaration.static) environment.set("this", receiverType);
     const body = rewriteConstrainedStatements(
       declaration.body,
       environment,

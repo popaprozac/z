@@ -1287,14 +1287,15 @@ function generateFunction(
   receiver: StructDeclaration | null,
   semanticInfo: SemanticInfo,
 ): string {
+  const instanceReceiver = receiver && !declaration.static ? receiver : null;
   const localTypes = new Map(declaration.parameters.map((parameter) => [parameter.name, parameter.type.name]));
-  if (receiver) localTypes.set("this", receiver.name);
+  if (instanceReceiver) localTypes.set("this", instanceReceiver.name);
   const liveFlagCounter = { value: 0 };
   const liveFlags = new Map<string, string>();
-  const ownedReceiverCleanup = receiver
+  const ownedReceiverCleanup = instanceReceiver
     && declaration.receiverMode === "move"
-    && hasCleanupType(receiver.name, structs, enums)
-    ? [{ name: "self", type: receiver.name, liveFlag: nextLiveFlag("this", liveFlagCounter) }]
+    && hasCleanupType(instanceReceiver.name, structs, enums)
+    ? [{ name: "self", type: instanceReceiver.name, liveFlag: nextLiveFlag("this", liveFlagCounter) }]
     : [];
   if (ownedReceiverCleanup.length > 0) liveFlags.set("this", ownedReceiverCleanup[0].liveFlag);
   const parameterCleanup = ownedReceiverCleanup.concat(declaration.parameters
@@ -1317,7 +1318,7 @@ function generateFunction(
     functions,
     localTypes,
     parameterModes: new Map(declaration.parameters.map((parameter) => [parameter.name, parameter.mode])),
-    receiver,
+    receiver: instanceReceiver,
     owner: declaration,
     matchCounter: { value: 0 },
     tryCounter: { value: 0 },
@@ -1434,7 +1435,7 @@ function generateFunctionSignature(
     if (parameter.mode === "inout" || parameter.mode === "out") return `${type} *${name}`;
     return `${type} ${name}`;
   });
-  if (receiver) {
+  if (receiver && !declaration.static) {
     if (receiver.kind === "class") {
       const receiverConst = declaration.receiverMode === "inout" ? "" : "const ";
       parameters.unshift(`${receiverConst}${structName(receiver.name)} *self`);
@@ -2498,6 +2499,11 @@ function throwingCallResultType(expression: Expression, context: GenerationConte
     return resultTypeName(target.returnType.name, target.errorType!.name);
   }
   if (expression.kind === "call" && expression.callee.kind === "member") {
+    if (expression.callee.object.kind === "identifier") {
+      const owner = context.structs.get(expression.callee.object.name);
+      const method = owner?.methods.find((candidate) => candidate.static && candidate.name === expression.callee.property);
+      if (method) return resultTypeName(method.returnType.name, method.errorType!.name);
+    }
     const receiverType = inferExpressionType(expression.callee.object, context);
     const weak = parseWeakType(receiverType);
     if (weak && expression.callee.property === "upgrade") return weakResultTypeName(weak.target);
@@ -3065,6 +3071,12 @@ function generateExpression(expression: Expression, context: GenerationContext):
       }
       if (expression.callee.kind === "member" && !isForeignMember(expression.callee, context)) {
         if (expression.callee.object.kind === "identifier") {
+          const owner = context.structs.get(expression.callee.object.name);
+          const staticMethod = owner?.methods.find((candidate) => candidate.static && candidate.name === expression.callee.property);
+          if (owner && staticMethod) {
+            const args = expression.arguments.map((argument) => generateCallArgument(argument, context));
+            return `${methodName(owner.name, staticMethod.name)}(${args.join(", ") || ""})`;
+          }
           const declaration = context.enums.get(expression.callee.object.name);
           const variant = declaration?.variants.find((candidate) => candidate.name === expression.callee.property);
           if (declaration && variant) {
@@ -3464,6 +3476,11 @@ function inferExpressionType(expression: Expression, context: GenerationContext)
         return "String";
       }
       if (expression.callee.kind === "member" && !isForeignMember(expression.callee, context)) {
+        if (expression.callee.object.kind === "identifier") {
+          const owner = context.structs.get(expression.callee.object.name);
+          const method = owner?.methods.find((candidate) => candidate.static && candidate.name === expression.callee.property);
+          if (method) return method.returnType.name;
+        }
         if (expression.callee.object.kind === "identifier" && context.enums.has(expression.callee.object.name)) {
           return expression.callee.object.name;
         }

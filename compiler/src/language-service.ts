@@ -23,7 +23,7 @@ import { parseDynamicArrayType, parseFixedArrayType, parseSliceType } from "./ar
 import { parseGenericType } from "./generic-types.ts";
 import { pathToFileURL } from "node:url";
 import { dirname, resolve } from "node:path";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { isLocalSourceModuleSpecifier, type SourceModuleInfo } from "./modules.ts";
 import { displayFunctionType, functionTypeName, parseFunctionType } from "./function-types.ts";
 import { parseWeakType } from "./weak-types.ts";
@@ -122,7 +122,7 @@ export function diagnostics(source: string, fileName: string): ServiceDiagnostic
 
 export function completions(source: string, fileName: string, offset: number): CompletionItem[] {
   const before = source.slice(0, offset);
-  const member = before.match(/((?:Option(?:<[^<>]+>)?)|(?:[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*))\.([A-Za-z_][A-Za-z0-9_]*)?$/);
+  const member = before.match(/([A-Za-z_][A-Za-z0-9_]*(?:<[^<>]+>)?(?:\.[A-Za-z_][A-Za-z0-9_]*)*)\.([A-Za-z_][A-Za-z0-9_]*)?$/);
   if (member) return memberCompletions(source, fileName, offset, member[1], member[2] ?? "");
   const labels = labelCompletions(source, fileName, offset);
   return labels.length > 0 ? labels : symbolCompletions(source, fileName, offset);
@@ -168,6 +168,9 @@ export function semanticTokens(source: string, fileName: string): { readonly dat
   );
   const fieldDeclarations = new Set(
     context.sourceProgram.structs.flatMap((declaration) => declaration.fields.map((field) => field.location.offset)),
+  );
+  const methodDeclarations = new Set(
+    context.sourceProgram.structs.flatMap((declaration) => declaration.methods.map((method) => method.location.offset)),
   );
   const fieldInitializers = new Set(collectStructLiteralFields(context.sourceProgram).map((item) => item.location.offset));
   const traitNames = new Set(context.program.traits.map((item) => item.name));
@@ -218,6 +221,13 @@ export function semanticTokens(source: string, fileName: string): { readonly dat
     if (fieldDeclarations.has(token.location.offset)) {
       classifications.set(token.location.offset, {
         type: semanticTokenTypes.indexOf("property"),
+        modifiers: 1,
+      });
+      continue;
+    }
+    if (previous?.kind === "function" && methodDeclarations.has(previous.location.offset)) {
+      classifications.set(token.location.offset, {
+        type: semanticTokenTypes.indexOf("method"),
         modifiers: 1,
       });
       continue;
@@ -377,6 +387,16 @@ export function hover(source: string, fileName: string, offset: number): Hover |
   if (declaredField) {
     return markdownHover(`${declaredField.visibility} ${declaredField.name}: ${displayType(declaredField.type.name, context.typeDisplayNames)}`, source, word.start, word.end);
   }
+  const declaredMethod = context.sourceProgram.structs
+    .flatMap((declaration) => declaration.methods)
+    .find((method) => (
+      method.name === word.text
+      && method.location.offset <= word.start
+      && new RegExp(`^function\\s+${word.text}$`).test(source.slice(method.location.offset, word.end))
+    ));
+  if (declaredMethod) {
+    return markdownHover(methodDetail(declaredMethod, context.typeDisplayNames), source, word.start, word.end);
+  }
 
   const literalField = structLiteralFieldHover(context, word.start);
   if (literalField) return markdownHover(literalField, source, word.start, word.end);
@@ -444,7 +464,7 @@ export function hover(source: string, fileName: string, offset: number): Hover |
     if (details.size > 0) return markdownHover([...details].join("\n"), source, word.start, word.end);
   }
 
-  const memberPrefix = source.slice(0, word.start).match(/((?:Option(?:<[^<>]+>)?)|(?:[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*))\.$/);
+  const memberPrefix = source.slice(0, word.start).match(/([A-Za-z_][A-Za-z0-9_]*(?:<[^<>]+>)?(?:\.[A-Za-z_][A-Za-z0-9_]*)*)\.$/);
   if (memberPrefix) {
     if (memberPrefix[1] === "Option" || /^Option<[^<>]+>$/.test(memberPrefix[1])) {
       const explicit = memberPrefix[1].startsWith("Option<") ? memberPrefix[1].slice(7, -1) : "T";
@@ -461,6 +481,19 @@ export function hover(source: string, fileName: string, offset: number): Hover |
     }
     if (memberPrefix[1] === "String" && word.text === "from") {
       return markdownHover("from(value: cstring): String  // copies borrowed C bytes", source, word.start, word.end);
+    }
+    const staticOwner = sourceAggregateForType(context, memberPrefix[1]);
+    const staticMethod = staticOwner?.declaration.methods.find((item) => item.static && item.name === word.text);
+    if (staticOwner && staticMethod) {
+      const includePrivate = insideAggregateBody(source, fileName, word.start, staticOwner.declaration.name);
+      if ((staticMethod.visibility ?? "public") === "public" || includePrivate) {
+        return markdownHover(
+          methodDetail(staticMethod, context.typeDisplayNames, staticOwner.substitutions),
+          source,
+          word.start,
+          word.end,
+        );
+      }
     }
     const sourceImport = context.sourceProgram.imports.find((declaration) => (
       isLocalSourceModuleSpecifier(declaration.header)
@@ -487,7 +520,7 @@ export function hover(source: string, fileName: string, offset: number): Hover |
       const field = resolved.declaration.fields.find((item) => item.name === word.text);
       if (field) return markdownHover(`${field.visibility} ${field.name}: ${displayType(field.type.name, context.typeDisplayNames)}`, source, word.start, word.end);
       const method = resolved.declaration.methods.find((item) => item.name === word.text);
-      if (method) return markdownHover(zFunctionDetail(method.name, method.parameters, method.returnType.name, [], context.typeDisplayNames), source, word.start, word.end);
+      if (method) return markdownHover(methodDetail(method, context.typeDisplayNames), source, word.start, word.end);
     }
     if (resolved?.kind === "weak" && word.text === "upgrade") {
       return markdownHover(`upgrade(): ${displayType(resolved.target, context.typeDisplayNames)} throws WeakExpired`, source, word.start, word.end);
@@ -953,6 +986,23 @@ function memberCompletions(
   const lengthSanitized = source.slice(0, dotOffset) + ".length" + source.slice(tailOffset);
   const upgradeSanitized = source.slice(0, dotOffset) + ".upgrade()" + source.slice(tailOffset);
   const statementTailOffset = source[tailOffset] === ";" ? tailOffset + 1 : tailOffset;
+  const statementStart = Math.max(
+    source.lastIndexOf(";", receiverOffset - 1),
+    source.lastIndexOf("{", receiverOffset - 1),
+    source.lastIndexOf("}", receiverOffset - 1),
+  ) + 1;
+  const staticProbe = `${source.slice(0, statementStart)}${source.slice(statementTailOffset)}`
+    .replace(/(?:[A-Za-z_][A-Za-z0-9_]*|[A-Za-z_][A-Za-z0-9_]*<[^;{}]+>)\.\s*;/g, "");
+  const staticContext = safeAnalysis(staticProbe, fileName);
+  const staticOwner = staticContext ? sourceAggregateForType(staticContext, receiverText) : null;
+  if (staticOwner) {
+    const includePrivate = insideAggregateBody(source, fileName, offset, staticOwner.declaration.name);
+    return filterCompletions(
+      staticCompletions(staticOwner.declaration, staticContext.typeDisplayNames, staticOwner.substitutions, includePrivate),
+      prefix,
+      1000,
+    );
+  }
   const statementSanitized = source.slice(0, dotOffset) + ";" + source.slice(statementTailOffset);
   const lengthStatementSanitized = source.slice(0, dotOffset) + ".length;" + source.slice(statementTailOffset);
   let context = safeAnalysis(sanitized, fileName)
@@ -962,11 +1012,6 @@ function memberCompletions(
     ?? safeAnalysis(lengthStatementSanitized, fileName);
   let resolvedOffset = receiverOffset;
   if (!context) {
-    const statementStart = Math.max(
-      source.lastIndexOf(";", receiverOffset - 1),
-      source.lastIndexOf("{", receiverOffset - 1),
-      source.lastIndexOf("}", receiverOffset - 1),
-    ) + 1;
     const probePrefix = `${source.slice(0, statementStart)}const completionProbe = `;
     const probeSource = `${probePrefix}${receiverText};${source.slice(statementTailOffset)}`;
     context = safeAnalysis(probeSource, fileName);
@@ -1056,8 +1101,10 @@ function localSourceModule(context: AnalyzedSource, declaration: Program["import
   const importer = declaration.location.fileName;
   if (!importer) return null;
   const target = resolve(dirname(importer), declaration.header);
-  return context.sourceModules.get(target)
-    ?? [...context.sourceModules.values()].find((module) => resolve(module.fileName) === target)
+  const canonical = existsSync(target) ? realpathSync(target) : target;
+  return context.sourceModules.get(canonical)
+    ?? context.sourceModules.get(target)
+    ?? [...context.sourceModules.values()].find((module) => resolve(module.fileName) === canonical)
     ?? null;
 }
 
@@ -1359,13 +1406,85 @@ function structCompletions(
         kind: completionKinds.field,
         detail: `${field.visibility} ${displayType(field.type.name, typeDisplayNames)}`,
       })),
-    ...declaration.methods.map((method) => ({
+    ...declaration.methods
+      .filter((method) => !method.static && ((method.visibility ?? "public") === "public" || includePrivate))
+      .map((method) => ({
       label: method.name,
       kind: completionKinds.method,
-      detail: zFunctionDetail(method.name, method.parameters, method.returnType.name, [], typeDisplayNames),
+      detail: methodDetail(method, typeDisplayNames),
       insertText: `${method.name}()`,
     })),
   ];
+}
+
+function staticCompletions(
+  declaration: StructDeclaration,
+  typeDisplayNames: ReadonlyMap<string, string>,
+  substitutions: ReadonlyMap<string, string>,
+  includePrivate: boolean,
+): CompletionItem[] {
+  return declaration.methods
+    .filter((method) => method.static && ((method.visibility ?? "public") === "public" || includePrivate))
+    .map((method) => ({
+      label: method.name,
+      kind: completionKinds.method,
+      detail: methodDetail(method, typeDisplayNames, substitutions),
+      insertText: `${method.name}()`,
+    }));
+}
+
+function sourceAggregateForType(
+  context: AnalyzedSource,
+  typeName: string,
+): { readonly declaration: StructDeclaration; readonly substitutions: ReadonlyMap<string, string> } | null {
+  const generic = parseGenericType(typeName) ?? parseSourceGenericType(typeName);
+  const base = generic?.base ?? typeName;
+  const selective = localSourceBinding(context, base);
+  const selectiveDeclaration = selective
+    ? sourceExportDeclaration(selective.module, selective.importedName)
+    : null;
+  const namespaceParts = base.split(".");
+  const namespaceImport = namespaceParts.length === 2
+    ? context.sourceProgram.imports.find((item) => (
+      isLocalSourceModuleSpecifier(item.header) && !item.bindings && item.moduleName === namespaceParts[0]
+    ))
+    : null;
+  const namespaceModule = namespaceImport ? localSourceModule(context, namespaceImport) : null;
+  const namespaceDeclaration = namespaceModule && namespaceParts[1]
+    ? sourceExportDeclaration(namespaceModule, namespaceParts[1])
+    : null;
+  const importedDeclaration = selectiveDeclaration?.kind === "struct" || selectiveDeclaration?.kind === "class"
+    ? selectiveDeclaration
+    : namespaceDeclaration?.kind === "struct" || namespaceDeclaration?.kind === "class"
+      ? namespaceDeclaration
+      : null;
+  const declaration = importedDeclaration
+    ?? context.sourceProgram.structs.find((item) => item.name === base)
+    ?? context.program.structs.find((item) => item.name === typeName);
+  if (!declaration) return null;
+  const substitutions = new Map(
+    declaration.typeParameters?.map((parameter, index) => [parameter, generic?.arguments[index] ?? parameter]) ?? [],
+  );
+  return { declaration, substitutions };
+}
+
+function parseSourceGenericType(typeName: string): { readonly base: string; readonly arguments: string[] } | null {
+  const opening = typeName.indexOf("<");
+  if (opening < 1 || !typeName.endsWith(">")) return null;
+  const arguments_: string[] = [];
+  let depth = 0;
+  let start = opening + 1;
+  for (let index = start; index < typeName.length - 1; index += 1) {
+    const character = typeName[index];
+    if (character === "<") depth += 1;
+    else if (character === ">") depth -= 1;
+    else if (character === "," && depth === 0) {
+      arguments_.push(typeName.slice(start, index).trim());
+      start = index + 1;
+    }
+  }
+  arguments_.push(typeName.slice(start, -1).trim());
+  return { base: typeName.slice(0, opening), arguments: arguments_ };
 }
 
 function insideAggregateBody(source: string, fileName: string, offset: number, name: string): boolean {
@@ -1583,6 +1702,24 @@ function zFunctionDetail(
 ): string {
   const generic = formatTypeParameters(typeParameters, typeParameterConstraints, typeDisplayNames);
   return `function ${name}${generic}(${parameters.map((item) => `${item.name}: ${displayType(item.type.name, typeDisplayNames)}`).join(", ")}): ${displayType(returnType, typeDisplayNames)}`;
+}
+
+function methodDetail(
+  method: StructDeclaration["methods"][number],
+  typeDisplayNames: ReadonlyMap<string, string>,
+  substitutions: ReadonlyMap<string, string> = new Map(),
+): string {
+  const visibility = method.visibility ?? "public";
+  const staticPrefix = method.static ? " static" : "";
+  const parameters = method.parameters.map((parameter) => {
+    const capability = parameter.mode === "value" ? "" : `${parameter.mode} `;
+    return `${capability}${parameter.name}: ${displaySubstitutedType(parameter.type.name, substitutions, typeDisplayNames)}`;
+  });
+  const result = displaySubstitutedType(method.returnType.name, substitutions, typeDisplayNames);
+  const throws = method.errorType
+    ? ` throws ${displaySubstitutedType(method.errorType.name, substitutions, typeDisplayNames)}`
+    : "";
+  return `${visibility}${staticPrefix} function ${method.name}(${parameters.join(", ")}): ${result}${throws}`;
 }
 
 function formatTypeParameters(

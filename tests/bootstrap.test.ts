@@ -3146,6 +3146,151 @@ test("initializes private class state through safe user constructors", () => {
   assert.throws(() => compileToC(privatePattern, "private-pattern.z"), /field "value" is private to class "Secret"/);
 });
 
+test("runs visible type-scoped static methods on structs, classes, and generic instances", () => {
+  const example = resolve(projectRoot, "examples/static-methods.z");
+  const source = readFileSync(example, "utf8");
+  const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, "bounds=Bounds { min: 2, max: 9 }, session=0, checked=42\n");
+
+  const generated = compileToC(source, example);
+  assert.match(generated, /static Z_Bounds Z_Bounds_normalized\(int32_t left, int32_t right\)/);
+  assert.match(generated, /static Z_Session \*\s*Z_Session_create\(int32_t id\)/);
+  assert.match(generated, /Z_Session_normalizedId\(id\)/);
+  assert.match(generated, /Z_Result_Session_InvalidSession Z_Session_checked\(int32_t id\)/);
+
+  const generic = `
+    struct Box<T> {
+      value: T;
+      static function wrap(value: T): Box<T> { return Box<T>({ value }); }
+    }
+    function main(): i32 { const box = Box<i32>.wrap(42); return box.value - 42; }
+  `;
+  assert.match(compileToC(generic, "generic-static.z"), /Z___z_mono_Box_i32_wrap\(int32_t value\)/);
+
+  const directory = mkdtempSync("/tmp/z-static-module-");
+  const factory = resolve(directory, "factory.z");
+  const main = resolve(directory, "main.z");
+  writeFileSync(factory, `
+    export struct Factory {
+      static function answer(): i32 { return 42; }
+    }
+  `);
+  const imported = `
+    import { Factory } from "./factory.z";
+    function main(): i32 { return Factory.answer() - 42; }
+  `;
+  writeFileSync(main, imported);
+  assert.match(compileToC(imported, main), /__z_module_\d+_Factory_answer\(void\)/);
+  const importedCompletion = imported.replace("return Factory.answer() - 42;", "Factory.; return 0;");
+  const importedOffset = importedCompletion.indexOf("Factory.;") + "Factory.".length;
+  assert.equal(completions(importedCompletion, main, importedOffset).some((item) => item.label === "answer"), true);
+  const namespaced = `
+    import factory from "./factory.z";
+    function main(): i32 { return factory.Factory.answer() - 42; }
+  `;
+  assert.match(compileToC(namespaced, main), /__z_module_\d+_Factory_answer\(void\)/);
+  const namespaceCompletion = namespaced.replace("return factory.Factory.answer() - 42;", "factory.Factory.; return 0;");
+  const namespaceOffset = namespaceCompletion.indexOf("factory.Factory.;") + "factory.Factory.".length;
+  assert.equal(completions(namespaceCompletion, main, namespaceOffset).some((item) => item.label === "answer"), true);
+});
+
+test("keeps static and instance method capabilities distinct", () => {
+  const base = `
+    class Session {
+      private id: i32;
+      constructor(id: i32) { this.id = id; }
+      private static function secret(): i32 { return 42; }
+      private function hidden(): i32 { return this.id; }
+      static function create(id: i32): Session { return new Session(id); }
+      function identifier(): i32 { return this.id; }
+    }
+    function main(): i32 {
+      const session = Session.create(1);
+      return session.identifier();
+    }
+  `;
+  assert.doesNotThrow(() => compileToC(base, "static-capabilities.z"));
+  assert.throws(
+    () => compileToC(base.replace("session.identifier()", "session.create(1).identifier()"), "static-through-instance.z"),
+    /static method "create" must be called as Session\.create\(\)/,
+  );
+  assert.throws(
+    () => compileToC(base.replace("session.identifier()", "Session.identifier()"), "instance-through-type.z"),
+    /instance method "identifier" must be called through a Session value/,
+  );
+  assert.throws(
+    () => compileToC(base.replace("session.identifier()", "Session.secret()"), "private-static.z"),
+    /static method "secret" is private to class "Session"/,
+  );
+  assert.throws(
+    () => compileToC(base.replace("session.identifier()", "session.hidden()"), "private-instance.z"),
+    /method "hidden" is private to class "Session"/,
+  );
+  assert.throws(
+    () => compileToC(base.replace("static function create(id: i32)", "static function create(inout this, id: i32)"), "static-this.z"),
+    /static methods cannot declare a `this` receiver/,
+  );
+  assert.throws(
+    () => compileToC(base.replace("private id: i32;", "static id: i32;"), "static-field.z"),
+    /static fields are not implemented/,
+  );
+});
+
+test("completes and explains static methods on their type namespace", () => {
+  const source = `
+    class Session {
+      id: i32;
+      static function create(id: i32): Session { return new Session({ id }); }
+      private static function secret(): i32 { return 42; }
+      function identifier(): i32 { return this.id; }
+    }
+    function main(): i32 {
+      Session.;
+      const session = Session.create(42);
+      session.;
+      return session.identifier();
+    }
+  `;
+  const staticOffset = source.indexOf("Session.;") + "Session.".length;
+  const staticItems = completions(source, "static-editor.z", staticOffset);
+  assert.equal(staticItems.some((item) => item.label === "create"), true);
+  assert.equal(staticItems.some((item) => item.label === "secret"), false);
+  assert.equal(staticItems.some((item) => item.label === "identifier"), false);
+
+  const instanceSource = source.replace("      Session.;\n", "");
+  const instanceOffset = instanceSource.indexOf("session.;") + "session.".length;
+  const instanceItems = completions(instanceSource, "static-editor.z", instanceOffset);
+  assert.equal(instanceItems.some((item) => item.label === "identifier"), true);
+  assert.equal(instanceItems.some((item) => item.label === "create"), false);
+
+  const valid = source.replace("      Session.;\n", "").replace("      session.;\n", "");
+  const createOffset = valid.indexOf("Session.create") + "Session.".length;
+  assert.match(hover(valid, "static-editor.z", createOffset + 1)?.contents.value ?? "", /public static function create\(id: i32\): Session/);
+  const tokens = decodeSemanticTokens(semanticTokens(valid, "static-editor.z").data);
+  const declarationOffset = valid.indexOf("create(id");
+  assert.match(hover(valid, "static-editor.z", declarationOffset + 1)?.contents.value ?? "", /public static function create/);
+  const declarationPrefix = valid.slice(0, declarationOffset);
+  const declarationLine = declarationPrefix.split("\n").length - 1;
+  const declarationCharacter = declarationOffset - (declarationPrefix.lastIndexOf("\n") + 1);
+  assert.equal(tokens.some((token) => (
+    token.line === declarationLine
+    && token.character === declarationCharacter
+    && semanticTokenTypes[token.type] === "method"
+  )), true);
+
+  const genericSource = `
+    struct Box<T> {
+      value: T;
+      static function wrap(value: T): Box<T> { return Box<T>({ value }); }
+    }
+    function main(): i32 { Box<i32>.; return 0; }
+  `;
+  const genericOffset = genericSource.indexOf("Box<i32>.;") + "Box<i32>.".length;
+  const genericItems = completions(genericSource, "generic-static-editor.z", genericOffset);
+  assert.match(genericItems.find((item) => item.label === "wrap")?.detail ?? "", /value: i32.*Box<i32>/);
+});
+
 test("requires every struct field exactly once", () => {
   const source = `
     struct Point {

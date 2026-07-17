@@ -36,6 +36,7 @@ export type TokenKind =
   | "constructor"
   | "public"
   | "private"
+  | "static"
   | "const"
   | "let"
   | "return"
@@ -117,6 +118,7 @@ const keywords = new Map<string, TokenKind>([
   ["constructor", "constructor"],
   ["public", "public"],
   ["private", "private"],
+  ["static", "static"],
   ["const", "const"],
   ["let", "let"],
   ["return", "return"],

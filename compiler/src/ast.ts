@@ -92,6 +92,8 @@ export type EnumVariant = {
 export type FunctionDeclaration = {
   readonly kind: "function";
   readonly name: string;
+  readonly static?: boolean;
+  readonly visibility?: "public" | "private";
   readonly typeParameters?: string[];
   readonly typeParameterConstraints?: TypeParameterConstraint[];
   readonly receiverMode: "inout" | "move" | null;

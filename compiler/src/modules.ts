@@ -361,7 +361,7 @@ function transformFunction(
 ): FunctionDeclaration {
   const typeParameters = new Set(declaration.typeParameters ?? []);
   const locals = new Set(declaration.parameters.map((parameter) => parameter.name));
-  if (receiver) locals.add("this");
+  if (receiver && !declaration.static) locals.add("this");
   return {
     ...declaration,
     name: receiver ? declaration.name : node.ownNames.get(declaration.name) ?? declaration.name,

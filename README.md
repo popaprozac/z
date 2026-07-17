@@ -140,8 +140,33 @@ escape before that point. A constructor may `throw`, and `try`/`attempt` use the
 ordinary `Result<Class, Error>` model. Failure destroys only fields whose
 initialization completed, then releases the unfinished allocation.
 
-Type-scoped `static function` methods are the intended factory and utility
-surface, but are not implemented in this bootstrap slice yet.
+Type-scoped methods provide factories and utilities without an instance
+receiver:
+
+```z
+class Session {
+  private id: i32;
+
+  constructor(id: i32) { this.id = id; }
+
+  private static function normalizedId(id: i32): i32 {
+    if (id < 0) { return 0; }
+    return id;
+  }
+
+  static function create(id: i32): Session {
+    return new Session(Session.normalizedId(id));
+  }
+}
+
+const session = Session.create(42);
+```
+
+Methods default to `public`; `private` applies to instance and static methods
+as well as fields. A static method is called only as `Type.method()`, has no
+`this`, performs no implicit allocation, and may use ordinary generics,
+`throws`, and source-module imports. Generic owners retain their type namespace,
+for example `Box<i32>.wrap(42)`. Static fields remain deliberately deferred.
 
 `const` fixes the class reference binding; it does not make the referenced
 instance deeply immutable. This lets an explicitly mutating `inout this` method
@@ -800,6 +825,7 @@ bun run z run examples/swift-interop/main.z
 bun run z run examples/nswindow.z # macOS: opens a window and enters AppKit's event loop
 bun run z run examples/structs.z
 bun run z run examples/classes.z
+bun run z run examples/static-methods.z
 bun run z run examples/loops.z
 bun run z run examples/arrays.z
 bun run z run examples/slices.z

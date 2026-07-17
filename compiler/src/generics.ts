@@ -119,6 +119,15 @@ export function materializeGenerics(
           },
         };
       }
+      if (generic && structTemplates.has(generic.base)) {
+        return {
+          ...transformObject(value, substitutions),
+          object: {
+            ...value.object,
+            name: instantiateStruct(generic.base, generic.arguments.map((argument) => substituteName(argument, substitutions))),
+          },
+        };
+      }
     }
     if (value.kind === "structExpression") {
       return { ...transformObject(value, substitutions), typeName: substituteName(value.typeName, substitutions) };

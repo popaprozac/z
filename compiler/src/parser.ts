@@ -736,10 +736,6 @@ export function parse(tokens: Token[], fileName: string): Program {
         };
         continue;
       }
-      if (at("function")) {
-        methods.push(parseFunction());
-        continue;
-      }
       if (match("deinit")) {
         const deinitToken = previous();
         if (deinitializer) {
@@ -749,7 +745,16 @@ export function parse(tokens: Token[], fileName: string): Program {
         deinitializer = { kind: "deinit" as const, body: block.statements, location: deinitToken.location };
         continue;
       }
-      const visibility = match("public") ? "public" : match("private") ? "private" : "public";
+      const visibilityToken = match("public") ? "public" : match("private") ? "private" : null;
+      const visibility = visibilityToken ?? "public";
+      const isStatic = match("static");
+      if (at("function")) {
+        methods.push({ ...parseFunction(), static: isStatic, visibility });
+        continue;
+      }
+      if (isStatic) {
+        throw new DiagnosticError(fileName, previous().location, "static fields are not implemented; `static` currently applies only to functions");
+      }
       const field = expect("identifier", "a field or method declaration");
       expect("colon", "`:`");
       fields.push({ name: field.text, type: parseType(), visibility, location: field.location });
