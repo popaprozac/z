@@ -37,8 +37,9 @@ Currently structured codes include:
 | `Z0202` | value may move on another control-flow path |
 | `Z0203` | attempted ownership transfer through a borrow |
 | `Z0210` | mutation through an immutable closure capture |
-| `Z0211` | cleanup-bearing move capture needs an owned environment |
-| `Z0212` | capturing closure cannot become a storable function value yet |
+| `Z0211` | cleanup-bearing move capture needs an explicitly typed owned closure |
+| `Z0212` | borrowed capturing closure cannot become a storable function value |
+| `Z0213` | environment-carrying function value cannot cross a context-free C callback boundary |
 | `Z0301` | invalid or missing `inout` capability |
 | `Z0302` | invalid or missing `out` capability |
 | `Z0303` | read before initialization |

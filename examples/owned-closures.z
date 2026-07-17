@@ -1,0 +1,44 @@
+import stdio from "stdio.h";
+
+struct Resource {
+  value: i32;
+
+  deinit {
+    stdio.printf("drop=%d\n", this.value);
+  }
+}
+
+function makeCounter(start: i32): () => i32 {
+  let current = start;
+  const counter: () => i32 = move (): i32 => {
+    current = current + 1;
+    return current;
+  };
+  return counter;
+}
+
+function holdResource(resource: Resource): () => i32 {
+  const read: () => i32 = move (): i32 => resource.value;
+  return read;
+}
+
+function twice(value: i32): i32 {
+  return value * 2;
+}
+
+function defer(operation: (value: i32) => i32, value: i32): () => i32 {
+  const deferred: () => i32 = move (): i32 => operation(value);
+  return deferred;
+}
+
+function main(): i32 {
+  const counter = makeCounter(40);
+  const sameCounter = counter;
+  stdio.printf("counter=%d,%d\n", counter(), sameCounter());
+
+  const read = holdResource(Resource { value: 42 });
+  stdio.printf("resource=%d\n", read());
+  const deferred = defer(twice, 21);
+  stdio.printf("deferred=%d\n", deferred());
+  return 0;
+}

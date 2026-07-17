@@ -427,15 +427,32 @@ function apply(
 ```
 
 Named functions and non-capturing closures can be stored, passed, returned, and
-placed in aggregate fields. They lower to ordinary typed C function pointers
-with no allocation. Parameter names are documentary and do not affect function
-type compatibility; parameter capabilities and value types do.
+placed in aggregate fields without allocation. Function values have a uniform
+internal shape containing a call entry, an optional environment, and
+retain/release hooks. Parameter names are documentary and do not affect
+function type compatibility; parameter capabilities and value types do.
 
-Owned escaping environments, cleanup-bearing move captures, inferred
-single-parameter syntax, weak class captures, and converting capturing closures
-to storable function types are reserved for later tiers. Those features must
-preserve deterministic cleanup and ARC cycle safety rather than silently
-allocating an incomplete runtime representation.
+A capturing closure becomes storable when it uses `move` and initializes an
+explicit function type:
+
+```z
+const counter: () => i32 = move (): i32 => {
+  current = current + 1;
+  return current;
+};
+```
+
+Its heap environment uses ARC. Copyable captures are snapshotted, classes and
+function values retain their managed identity, and unique cleanup-bearing
+captures move out of the enclosing scope. Function-value copies share the
+environment, including mutable captured state. The final release destroys
+captured fields in reverse order and frees the environment. Borrowing closures
+remain non-escaping and allocation-free.
+
+The bootstrap reference count is single-threaded, matching the first class ARC
+tier. Inferred single-parameter syntax, weak class captures, capturing `this`,
+atomic cross-thread environments, and closure-cycle handling remain later
+tiers.
 
 ## Strings, formatting, and diagnostics
 
@@ -815,4 +832,5 @@ Clang declaration source locations rather than text-searching SDK headers.
 - nullability and ownership contracts;
 - typed synchronous call-only C callbacks (first ABI-compatible tier
   implemented);
-- generated context, calling-convention, escaping, and async adapters.
+- ARC-owned Z closure environments (implemented);
+- generated C context, calling-convention, escaping, and async adapters.

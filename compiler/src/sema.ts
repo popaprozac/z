@@ -60,6 +60,7 @@ export type ClosureCaptureInfo = {
   readonly type: string;
   readonly mode: "value" | "in" | "inout";
   readonly moved: boolean;
+  readonly location: SourceLocation;
 };
 
 export type ClosureInfo = {
@@ -67,6 +68,8 @@ export type ClosureInfo = {
   readonly declaration: FunctionDeclaration;
   readonly captures: readonly ClosureCaptureInfo[];
   readonly parameterCount: number;
+  readonly owned: boolean;
+  readonly storable: boolean;
 };
 
 type ValueType = string | "unknown" | "never";
@@ -92,7 +95,7 @@ export type IntegerOperation = {
 
 export type SemanticInfo = {
   readonly movedExpressions: ReadonlySet<number>;
-  readonly classCopies: ReadonlySet<number>;
+  readonly managedCopies: ReadonlySet<number>;
   readonly sliceConversions: ReadonlyMap<number, { readonly sourceType: string; readonly targetType: string }>;
   readonly foreignTypes: ReadonlyMap<string, ForeignPointerType>;
   readonly foreignCallTypes: ReadonlyMap<number, string>;
@@ -101,6 +104,7 @@ export type SemanticInfo = {
   readonly numericLiteralTypes: ReadonlyMap<number, string>;
   readonly integerOperations: ReadonlyMap<number, IntegerOperation>;
   readonly foreignArgumentAccesses: ReadonlyMap<number, "in" | "out" | "inout">;
+  readonly foreignCallbackTargets: ReadonlyMap<number, string>;
   readonly foreignFunctionNames: ReadonlyMap<number, string>;
   readonly foreignConstantNames: ReadonlyMap<number, string>;
   readonly nativeArgumentAccesses: ReadonlyMap<number, "in" | "inout" | "out">;
@@ -126,7 +130,7 @@ export type SemanticInfo = {
 
 type AnalysisState = {
   readonly movedExpressions: Set<number>;
-  readonly classCopies: Set<number>;
+  readonly managedCopies: Set<number>;
   readonly sliceConversions: Map<number, { readonly sourceType: string; readonly targetType: string }>;
   readonly foreignTypes: ReadonlyMap<string, ForeignPointerType>;
   readonly foreignCallTypes: Map<number, string>;
@@ -135,6 +139,7 @@ type AnalysisState = {
   readonly numericLiteralTypes: Map<number, string>;
   readonly integerOperations: Map<number, IntegerOperation>;
   readonly foreignArgumentAccesses: Map<number, "in" | "out" | "inout">;
+  readonly foreignCallbackTargets: Map<number, string>;
   readonly foreignFunctionNames: Map<number, string>;
   readonly foreignConstantNames: Map<number, string>;
   readonly nativeArgumentAccesses: Map<number, "in" | "inout" | "out">;
@@ -188,6 +193,7 @@ const uninitializedPrefix = "__z_uninitialized:";
 const maybeUninitializedPrefix = "__z_maybe_uninitialized:";
 const mutablePrefix = "__z_mutable:";
 const borrowedPrefix = "__z_borrowed:";
+const callTargetPrefix = "__z_calltarget:";
 
 export function analyze(
   program: Program,
@@ -214,7 +220,7 @@ export function analyze(
   }
   const state: AnalysisState = {
     movedExpressions: new Set(),
-    classCopies: new Set(),
+    managedCopies: new Set(),
     sliceConversions: new Map(),
     foreignTypes,
     foreignCallTypes: new Map(),
@@ -223,6 +229,7 @@ export function analyze(
     numericLiteralTypes: new Map(),
     integerOperations: new Map(),
     foreignArgumentAccesses: new Map(),
+    foreignCallbackTargets: new Map(),
     foreignFunctionNames: new Map(),
     foreignConstantNames: new Map(),
     nativeArgumentAccesses: new Map(),
@@ -819,17 +826,17 @@ function analyzeStatement(
         variableType = statement.type.name;
         if (statement.initializer.kind === "closure") {
           const expectedFunction = parseFunctionType(variableType)!;
-          const closure = state.closures.get(statement.initializer.location.offset)!;
-          if (closure.captures.length > 0) {
+          let closure = state.closures.get(statement.initializer.location.offset)!;
+          if (closure.captures.length > 0 && statement.initializer.captureMode !== "move") {
             throw new DiagnosticError(
               fileName,
               statement.initializer.location,
-              "a capturing closure cannot become a storable function value until owned closure environments are implemented",
+              "a borrowed capturing closure cannot become a storable function value",
               {
                 code: "Z0212",
-                length: statement.initializer.captureMode === "move" ? 4 : 1,
-                notes: ["plain function values contain only executable code and cannot carry borrowed captures"],
-                helps: ["pass captured values as explicit parameters, or keep the closure as an inferred non-escaping local"],
+                length: 1,
+                notes: ["a stored closure can outlive the local bindings it captures"],
+                helps: ["add `move` before the closure to place captured values in an owned environment"],
               },
             );
           }
@@ -840,6 +847,21 @@ function analyzeStatement(
               statement.initializer.location,
               `expected ${displayFunctionType(variableType)}, found ${displayFunctionType(functionTypeName(actualFunction.parameters, actualFunction.returnType))}`,
             );
+          }
+          closure = { ...closure, owned: closure.captures.length > 0, storable: true };
+          state.closures.set(statement.initializer.location.offset, closure);
+          if (closure.captures.length > 0) {
+            for (const capture of closure.captures) {
+              if (!hasCleanupType(capture.type, structs, state.foreignTypes)) continue;
+              consumeOwnedValue(
+                { kind: "identifier", name: capture.name, location: capture.location },
+                capture.type,
+                locals,
+                structs,
+                fileName,
+                state,
+              );
+            }
           }
           initializerType = variableType;
         } else {
@@ -865,11 +887,38 @@ function analyzeStatement(
           `integer literal ${statement.initializer.value} does not fit default i32; add an explicit integer type`,
         );
       }
+      if (statement.initializer.kind === "closure") {
+        const closure = state.closures.get(statement.initializer.location.offset)!;
+        const cleanupCapture = closure.captures.find((capture) => hasCleanupType(capture.type, structs, state.foreignTypes));
+        if (cleanupCapture && !closure.owned && statement.initializer.captureMode === "move") {
+          throw new DiagnosticError(
+            fileName,
+            cleanupCapture.location,
+            `move-capturing cleanup-bearing ${cleanupCapture.type} requires an explicitly typed owned closure`,
+            {
+              code: "Z0211",
+              length: cleanupCapture.name.length,
+              labels: [{ location: statement.initializer.location, message: "this closure needs an owned environment", length: 4 }],
+              notes: ["owned closure environments are created when a `move` closure initializes an explicit function type"],
+              helps: ["add a function type annotation to this closure binding"],
+            },
+          );
+        }
+      }
       consumeOwnedValue(statement.initializer, variableType, locals, structs, fileName, state);
       if (containsSliceType(String(variableType))) {
         throw new DiagnosticError(fileName, statement.location, "Slice values cannot be stored in local bindings yet");
       }
-      locals.set(statement.name, statement.mutable ? `${mutablePrefix}${variableType}` : variableType);
+      let storedVariableType = statement.mutable ? `${mutablePrefix}${variableType}` : variableType;
+      if (statement.initializer.kind === "closure") {
+        const closure = state.closures.get(statement.initializer.location.offset)!;
+        if (closure.captures.length === 0 && parseFunctionType(String(variableType))) {
+          storedVariableType = callTargetBinding(storedVariableType, closure.declaration.name);
+        }
+      } else if (statement.initializer.kind === "identifier" && globals.get(statement.initializer.name)?.kind === "function") {
+        storedVariableType = callTargetBinding(storedVariableType, statement.initializer.name);
+      }
+      locals.set(statement.name, storedVariableType);
       state.bindingTypes.set(statement.nameLocation.offset, String(variableType));
       return;
     }
@@ -1182,30 +1231,20 @@ function inferClosureExpression(
     if (parseSliceType(type)) {
       throw new DiagnosticError(fileName, capture.location, "capturing Slice values requires an explicit lifetime contract");
     }
-    if (expression.captureMode === "move" && hasCleanupType(type, structs, state.foreignTypes)) {
-      throw new DiagnosticError(
-        fileName,
-        capture.location,
-        `move-capturing cleanup-bearing ${type} requires an owned closure environment, which is not implemented yet`,
-        {
-          code: "Z0211",
-          length: capture.name.length,
-          labels: [{
-            location: expression.location,
-            message: "this `move` closure would need to own and later destroy its environment",
-            length: 4,
-          }],
-          notes: ["the bootstrap currently supports borrowed closures and copyable move snapshots"],
-          helps: ["remove `move` and keep the closure non-escaping, or keep ownership outside the closure for now"],
-        },
-      );
-    }
+    const cleanupBearing = hasCleanupType(type, structs, state.foreignTypes);
     const mode: ClosureCaptureInfo["mode"] = capture.mutated
       ? "inout"
-      : expression.captureMode === "move" || type === "cstring" ? "value" : "in";
-    captures.push({ name: capture.name, type, mode, moved: expression.captureMode === "move" });
-    closureLocals.set(capture.name, `${borrowedPrefix}${capture.mutated ? mutablePrefix : ""}${type}`);
-    if (expression.captureMode === "borrow" && hasCleanupType(type, structs, state.foreignTypes)) {
+      : (expression.captureMode === "move" && !cleanupBearing) || type === "cstring" ? "value" : "in";
+    captures.push({
+      name: capture.name,
+      type,
+      mode,
+      moved: expression.captureMode === "move",
+      location: capture.location,
+    });
+    const captureBorrow = expression.captureMode === "borrow" || cleanupBearing ? borrowedPrefix : "";
+    closureLocals.set(capture.name, `${captureBorrow}${capture.mutated ? mutablePrefix : ""}${type}`);
+    if (expression.captureMode === "borrow" && cleanupBearing) {
       locals.set(capture.name, `${borrowedPrefix}${isMutableBinding(stored) ? mutablePrefix : ""}${type}`);
       state.borrowOrigins.set(capture.name, { location: capture.location, kind: "closure" });
     }
@@ -1262,7 +1301,14 @@ function inferClosureExpression(
 
   const declaration = { ...syntheticBase, returnType: { name: String(returnType), location: provisionalReturn.location }, body };
   const type = closureTypeName(expression);
-  state.closures.set(expression.location.offset, { type, declaration, captures, parameterCount: expression.parameters.length });
+  state.closures.set(expression.location.offset, {
+    type,
+    declaration,
+    captures,
+    parameterCount: expression.parameters.length,
+    owned: false,
+    storable: false,
+  });
   return type;
 }
 
@@ -2745,10 +2791,11 @@ function consumeOwnedValue(
   state: AnalysisState,
 ): void {
   if (!hasCleanupType(type, structs, state.foreignTypes)) return;
-  const declaration = structs.get(underlyingType(type));
-  if (declaration?.kind === "class") {
+  const actual = String(underlyingType(type));
+  const declaration = structs.get(actual);
+  if (declaration?.kind === "class" || parseFunctionType(actual)) {
     if (expression.kind === "identifier" || expression.kind === "member" || expression.kind === "index") {
-      state.classCopies.add(expression.location.offset);
+      state.managedCopies.add(expression.location.offset);
     }
     return;
   }
@@ -2860,6 +2907,7 @@ function storageRoot(expression: Expression): Extract<Expression, { kind: "ident
 }
 
 function ownershipState(type: ValueType): "available" | "moved" | "maybeMoved" {
+  if (type.startsWith(callTargetPrefix)) return ownershipState(stripCallTarget(type));
   if (type.startsWith(movedPrefix)) return "moved";
   if (type.startsWith(maybeMovedPrefix)) return "maybeMoved";
   if (type.startsWith(uninitializedPrefix)) return ownershipState(type.slice(uninitializedPrefix.length));
@@ -2870,6 +2918,7 @@ function ownershipState(type: ValueType): "available" | "moved" | "maybeMoved" {
 }
 
 function initializationState(type: ValueType): "initialized" | "uninitialized" | "maybeUninitialized" {
+  if (type.startsWith(callTargetPrefix)) return initializationState(stripCallTarget(type));
   if (type.startsWith(uninitializedPrefix)) return "uninitialized";
   if (type.startsWith(maybeUninitializedPrefix)) return "maybeUninitialized";
   if (type.startsWith(movedPrefix)) return initializationState(type.slice(movedPrefix.length));
@@ -2880,6 +2929,7 @@ function initializationState(type: ValueType): "initialized" | "uninitialized" |
 }
 
 function underlyingType(type: ValueType): ValueType {
+  if (type.startsWith(callTargetPrefix)) return underlyingType(stripCallTarget(type));
   if (type.startsWith(movedPrefix)) return underlyingType(type.slice(movedPrefix.length));
   if (type.startsWith(maybeMovedPrefix)) return underlyingType(type.slice(maybeMovedPrefix.length));
   if (type.startsWith(uninitializedPrefix)) return underlyingType(type.slice(uninitializedPrefix.length));
@@ -2890,6 +2940,7 @@ function underlyingType(type: ValueType): ValueType {
 }
 
 function isMutableBinding(type: ValueType): boolean {
+  if (type.startsWith(callTargetPrefix)) return isMutableBinding(stripCallTarget(type));
   if (type.startsWith(movedPrefix)) return isMutableBinding(type.slice(movedPrefix.length));
   if (type.startsWith(maybeMovedPrefix)) return isMutableBinding(type.slice(maybeMovedPrefix.length));
   if (type.startsWith(uninitializedPrefix)) return isMutableBinding(type.slice(uninitializedPrefix.length));
@@ -2899,12 +2950,28 @@ function isMutableBinding(type: ValueType): boolean {
 }
 
 function isBorrowedBinding(type: ValueType): boolean {
+  if (type.startsWith(callTargetPrefix)) return isBorrowedBinding(stripCallTarget(type));
   if (type.startsWith(movedPrefix)) return isBorrowedBinding(type.slice(movedPrefix.length));
   if (type.startsWith(maybeMovedPrefix)) return isBorrowedBinding(type.slice(maybeMovedPrefix.length));
   if (type.startsWith(uninitializedPrefix)) return isBorrowedBinding(type.slice(uninitializedPrefix.length));
   if (type.startsWith(maybeUninitializedPrefix)) return isBorrowedBinding(type.slice(maybeUninitializedPrefix.length));
   if (type.startsWith(mutablePrefix)) return isBorrowedBinding(type.slice(mutablePrefix.length));
   return type.startsWith(borrowedPrefix);
+}
+
+function callTargetBinding(type: ValueType, target: string): ValueType {
+  return `${callTargetPrefix}${target}:${type}`;
+}
+
+function callTarget(type: ValueType | undefined): string | null {
+  if (!type?.startsWith(callTargetPrefix)) return null;
+  const separator = type.indexOf(":", callTargetPrefix.length);
+  return separator === -1 ? null : type.slice(callTargetPrefix.length, separator);
+}
+
+function stripCallTarget(type: ValueType): ValueType {
+  const separator = type.indexOf(":", callTargetPrefix.length);
+  return separator === -1 ? type : type.slice(separator + 1);
 }
 
 function initializedAvailableBinding(type: ValueType): ValueType {
@@ -3215,6 +3282,7 @@ function hasCleanupType(
   const actual = underlyingType(type);
   if (actual === "unknown" || actual === "never" || visiting.has(actual)) return false;
   if (actual === "String") return true;
+  if (parseFunctionType(String(actual))) return true;
   if (foreignTypes.get(actual)?.ownership === "owned") return true;
   const declaration = structs.get(actual);
   if (parseDynamicArrayType(actual)) return true;
@@ -3590,6 +3658,22 @@ function checkForeignCall(
         state.foreignNamedTypes,
         state.numericLiteralTypes,
       );
+      const global = argument.kind === "identifier" ? globals.get(argument.name) : null;
+      const target = argument.kind === "identifier"
+        ? callTarget(locals.get(argument.name)) ?? (global?.kind === "function" ? argument.name : null)
+        : null;
+      if (!target) {
+        throw new DiagnosticError(
+          fileName,
+          argument.location,
+          "this function value carries or may carry an environment; this C callback has no context parameter",
+          {
+            code: "Z0213",
+            helps: ["pass a named function or a directly bound non-capturing closure, or use a C API with a context-pointer callback"],
+          },
+        );
+      }
+      state.foreignCallbackTargets.set(argument.location.offset, target);
       continue;
     }
     if (parameter?.type.kind === "z") {

@@ -14,7 +14,11 @@ import {
   parseSliceType,
 } from "./array-types.ts";
 import type { ClosureInfo, IntegerOperation, SemanticInfo } from "./sema.ts";
-import { isStandardModuleSpecifier, standardFunctionSignature } from "./standard-library.ts";
+import {
+  isStandardModuleSpecifier,
+  standardFunctionSignature,
+  type StandardFunctionName,
+} from "./standard-library.ts";
 import {
   functionTypeAbiKey,
   parseFunctionType,
@@ -188,6 +192,9 @@ export function generateC(program: Program, sourceName: string, semanticInfo: Se
   }
 
   lines.push(...generateAggregateDefinitions(program.structs, program.enums, arrayTypes, structs, enums, semanticInfo.foreignNamedTypes));
+  for (const closure of closures.filter((candidate) => candidate.owned)) {
+    lines.push(generateClosureEnvironmentDefinition(closure, structs, enums, semanticInfo), "");
+  }
   for (const type of dynamicArrayPushTypes) {
     lines.push(generateDynamicArrayPush(type, structs, enums, semanticInfo.foreignNamedTypes), "");
   }
@@ -225,6 +232,18 @@ export function generateC(program: Program, sourceName: string, semanticInfo: Se
     for (const method of declaration.methods) {
       lines.push(generateFunction(method, structs, enums, functions, declaration, semanticInfo), "");
     }
+  }
+  for (const closure of closures.filter((candidate) => candidate.owned)) {
+    lines.push(generateClosureEnvironmentLifecycle(closure, structs, semanticInfo), "");
+  }
+  for (const closure of closures.filter((candidate) => candidate.storable)) {
+    lines.push(generateClosureAdapter(closure, structs, enums, semanticInfo.foreignNamedTypes), "");
+  }
+  for (const declaration of program.functions.filter((candidate) => candidate.errorType === null)) {
+    lines.push(generateFunctionAdapter(declaration, structs, enums, semanticInfo.foreignNamedTypes), "");
+  }
+  for (const name of new Set(semanticInfo.standardFunctionReferences.values())) {
+    lines.push(generateStandardFunctionAdapter(name, structs, enums, semanticInfo.foreignNamedTypes), "");
   }
   for (const closure of closures) {
     lines.push(generateFunction(closure.declaration, structs, enums, functions, null, semanticInfo), "");
@@ -352,7 +371,35 @@ function generateFunctionTypeDefinition(
   enums: Map<string, EnumDeclaration>,
   foreignNamedTypes: SemanticInfo["foreignNamedTypes"],
 ): string {
-  const parameters = functionType.parameters.map((parameter) => {
+  const parameters = generateFunctionTypeParameters(functionType, structs, enums, foreignNamedTypes);
+  const result = mapType(functionType.returnType, structs, enums, foreignNamedTypes);
+  const name = functionTypeCName(functionType);
+  const callParameters = ["void *context", ...parameters].join(", ");
+  return `typedef struct ${name} ${name};
+struct ${name} {
+  ${result} (*call)(${callParameters});
+  void *context;
+  void (*retain)(void *context);
+  void (*release)(void *context);
+};
+
+static inline __attribute__((unused)) ${name} ${functionTypeRetainName(functionType)}(${name} value) {
+  if (value.retain != NULL) value.retain(value.context);
+  return value;
+}
+
+static inline __attribute__((unused)) void ${functionTypeReleaseName(functionType)}(${name} value) {
+  if (value.release != NULL) value.release(value.context);
+}`;
+}
+
+function generateFunctionTypeParameters(
+  functionType: FunctionType,
+  structs: Map<string, StructDeclaration>,
+  enums: Map<string, EnumDeclaration>,
+  foreignNamedTypes: SemanticInfo["foreignNamedTypes"],
+): string[] {
+  return functionType.parameters.map((parameter) => {
     const name = cBindingName(parameter.name);
     const type = mapType(parameter.type, structs, enums, foreignNamedTypes);
     if (parseSliceType(parameter.type)) return `${type} ${name}`;
@@ -366,8 +413,6 @@ function generateFunctionTypeDefinition(
     if (parameter.mode === "inout" || parameter.mode === "out") return `${type} *${name}`;
     return `${type} ${name}`;
   });
-  const result = mapType(functionType.returnType, structs, enums, foreignNamedTypes);
-  return `typedef ${result} (*${functionTypeCName(functionType)})(${parameters.join(", ") || "void"});`;
 }
 
 function functionTypeCName(functionType: FunctionType): string {
@@ -377,6 +422,209 @@ function functionTypeCName(functionType: FunctionType): string {
     hash = BigInt.asUintN(64, hash * 1099511628211n);
   }
   return `Z_Function_${hash.toString(16).padStart(16, "0")}`;
+}
+
+function functionTypeRetainName(functionType: FunctionType): string {
+  return `${functionTypeCName(functionType)}_retain`;
+}
+
+function functionTypeReleaseName(functionType: FunctionType): string {
+  return `${functionTypeCName(functionType)}_release`;
+}
+
+function declarationFunctionType(declaration: FunctionDeclaration, skipParameters = 0): FunctionType {
+  return {
+    parameters: declaration.parameters.slice(skipParameters).map((parameter) => ({
+      name: parameter.name,
+      mode: parameter.mode,
+      type: parameter.type.name,
+    })),
+    returnType: declaration.returnType.name,
+  };
+}
+
+function closureFunctionType(closure: ClosureInfo): FunctionType {
+  return declarationFunctionType(closure.declaration, closure.captures.length);
+}
+
+function functionAdapterName(name: string): string {
+  return `__z_function_adapter_${nativeSymbolPart(name)}`;
+}
+
+function standardFunctionAdapterName(name: StandardFunctionName): string {
+  return `__z_standard_function_adapter_${name}`;
+}
+
+function closureAdapterName(closure: ClosureInfo): string {
+  return `${closure.declaration.name}_adapter`;
+}
+
+function closureEnvironmentName(closure: ClosureInfo): string {
+  return `Z_ClosureEnv_${closure.declaration.location.offset}`;
+}
+
+function closureEnvironmentRetainName(closure: ClosureInfo): string {
+  return `${closureEnvironmentName(closure)}_retain`;
+}
+
+function closureEnvironmentReleaseName(closure: ClosureInfo): string {
+  return `${closureEnvironmentName(closure)}_release`;
+}
+
+function functionValueLiteral(
+  functionType: FunctionType,
+  call: string,
+  context = "NULL",
+  retain = "NULL",
+  release = "NULL",
+): string {
+  return `(${functionTypeCName(functionType)}){ .call = ${call}, .context = ${context}, .retain = ${retain}, .release = ${release} }`;
+}
+
+function generateFunctionAdapter(
+  declaration: FunctionDeclaration,
+  structs: Map<string, StructDeclaration>,
+  enums: Map<string, EnumDeclaration>,
+  foreignNamedTypes: SemanticInfo["foreignNamedTypes"],
+): string {
+  const type = declarationFunctionType(declaration);
+  const parameters = generateFunctionTypeParameters(type, structs, enums, foreignNamedTypes);
+  const names = type.parameters.map((parameter) => cBindingName(parameter.name));
+  const result = mapType(type.returnType, structs, enums, foreignNamedTypes);
+  const invoke = `${declaration.name}(${names.join(", ") || ""})`;
+  const returned = type.returnType === "void" ? `${invoke};\n  return;` : `return ${invoke};`;
+  return `static __attribute__((unused)) ${result} ${functionAdapterName(declaration.name)}(void *context${parameters.length ? `, ${parameters.join(", ")}` : ""}) {
+  (void)context;
+  ${returned}
+}`;
+}
+
+function generateStandardFunctionAdapter(
+  name: StandardFunctionName,
+  structs: Map<string, StructDeclaration>,
+  enums: Map<string, EnumDeclaration>,
+  foreignNamedTypes: SemanticInfo["foreignNamedTypes"],
+): string {
+  const signature = standardFunctionSignature(name);
+  const functionType: FunctionType = {
+    parameters: signature.parameters,
+    returnType: signature.returnType,
+  };
+  const parameters = generateFunctionTypeParameters(functionType, structs, enums, foreignNamedTypes);
+  const names = signature.parameters.map((parameter) => cBindingName(parameter.name));
+  const invoke = `${signature.cName}(${names.join(", ")})`;
+  const returned = signature.returnType === "void" ? `${invoke};\n  return;` : `return ${invoke};`;
+  return `static __attribute__((unused)) ${mapType(signature.returnType, structs, enums, foreignNamedTypes)} ${standardFunctionAdapterName(name)}(void *context${parameters.length ? `, ${parameters.join(", ")}` : ""}) {
+  (void)context;
+  ${returned}
+}`;
+}
+
+function generateClosureAdapter(
+  closure: ClosureInfo,
+  structs: Map<string, StructDeclaration>,
+  enums: Map<string, EnumDeclaration>,
+  foreignNamedTypes: SemanticInfo["foreignNamedTypes"],
+): string {
+  const type = closureFunctionType(closure);
+  const parameters = generateFunctionTypeParameters(type, structs, enums, foreignNamedTypes);
+  const visible = type.parameters.map((parameter) => cBindingName(parameter.name));
+  const prefix: string[] = [];
+  const hidden = closure.captures.map((capture) => {
+    const stored = `environment->${capture.name}`;
+    if (capture.mode === "value") return stored;
+    if (capture.mode === "in" && structs.get(capture.type)?.kind === "class") return stored;
+    return `&(${stored})`;
+  });
+  if (closure.owned) {
+    prefix.push(`${closureEnvironmentName(closure)} *environment = (${closureEnvironmentName(closure)} *)context;`);
+  } else {
+    prefix.push("(void)context;");
+  }
+  const invoke = `${closure.declaration.name}(${[...hidden, ...visible].join(", ")})`;
+  const returned = type.returnType === "void" ? `${invoke};\n  return;` : `return ${invoke};`;
+  return `static ${mapType(type.returnType, structs, enums, foreignNamedTypes)} ${closureAdapterName(closure)}(void *context${parameters.length ? `, ${parameters.join(", ")}` : ""}) {
+  ${prefix.join("\n  ")}
+  ${returned}
+}`;
+}
+
+function generateClosureEnvironmentDefinition(
+  closure: ClosureInfo,
+  structs: Map<string, StructDeclaration>,
+  enums: Map<string, EnumDeclaration>,
+  semanticInfo: SemanticInfo,
+): string {
+  const name = closureEnvironmentName(closure);
+  const fields = closure.captures.map((capture) => (
+    `  ${mapType(capture.type, structs, enums, semanticInfo.foreignNamedTypes)} ${capture.name};`
+  ));
+  return `typedef struct ${name} {
+  size_t refcount;
+${fields.join("\n")}
+} ${name};`;
+}
+
+function generateClosureEnvironmentLifecycle(
+  closure: ClosureInfo,
+  structs: Map<string, StructDeclaration>,
+  semanticInfo: SemanticInfo,
+): string {
+  const name = closureEnvironmentName(closure);
+  const cleanupCounter = { value: 0 };
+  const cleanup = [...closure.captures].reverse().map((capture) => (
+    generateOwnedEnvironmentCleanup(`environment->${capture.name}`, capture.type, structs, semanticInfo, cleanupCounter)
+  )).filter(Boolean).map((line) => indent(line, 4));
+  return `static void ${closureEnvironmentRetainName(closure)}(void *context) {
+  ${name} *environment = (${name} *)context;
+  environment->refcount += 1;
+}
+
+static void ${closureEnvironmentReleaseName(closure)}(void *context) {
+  ${name} *environment = (${name} *)context;
+  environment->refcount -= 1;
+  if (environment->refcount == 0) {
+${cleanup.join("\n")}${cleanup.length ? "\n" : ""}    free(environment);
+  }
+}`;
+}
+
+function generateOwnedEnvironmentCleanup(
+  value: string,
+  type: string,
+  structs: Map<string, StructDeclaration>,
+  semanticInfo: SemanticInfo,
+  counter: { value: number },
+): string {
+  if (type === "String") return `if ((${value}).capacity > 0) free((void *)(${value}).data);`;
+  const functionType = parseFunctionType(type);
+  if (functionType) return `${functionTypeReleaseName(functionType)}(${value});`;
+  const dynamic = parseDynamicArrayType(type);
+  if (dynamic) {
+    const lines: string[] = [];
+    if (hasCleanupType(dynamic.elementType, structs, semanticInfo.foreignTypes)) {
+      const index = `_z_environment_index_${counter.value++}`;
+      const nested = generateOwnedEnvironmentCleanup(`(${value}).data[${index} - 1]`, dynamic.elementType, structs, semanticInfo, counter);
+      lines.push(`for (uintptr_t ${index} = (${value}).length; ${index} > 0; ${index} -= 1) {\n${indent(nested, 2)}\n}`);
+    }
+    lines.push(`free((${value}).data);`);
+    return lines.join("\n");
+  }
+  const array = parseFixedArrayType(type);
+  if (array) {
+    if (!hasCleanupType(array.elementType, structs, semanticInfo.foreignTypes)) return "";
+    const index = `_z_environment_index_${counter.value++}`;
+    const nested = generateOwnedEnvironmentCleanup(`(${value}).data[${index} - 1]`, array.elementType, structs, semanticInfo, counter);
+    return `for (uintptr_t ${index} = ${array.length}; ${index} > 0; ${index} -= 1) {\n${indent(nested, 2)}\n}`;
+  }
+  const foreign = semanticInfo.foreignTypes.get(type);
+  if (foreign?.ownership === "owned") {
+    return foreign.nullable ? `if (${value} != NULL) ${foreign.release}(${value});` : `${foreign.release}(${value});`;
+  }
+  const declaration = structs.get(type);
+  if (declaration?.kind === "class") return `${releaseName(type)}(${value});`;
+  if (declaration && hasCleanupType(type, structs, semanticInfo.foreignTypes)) return `${deinitName(type)}(&(${value}));`;
+  return "";
 }
 
 function programUsesIndex(program: Program): boolean {
@@ -900,7 +1148,31 @@ function generateStatement(statement: Statement, context: GenerationContext): st
             context.enums,
             context.semanticInfo.foreignNamedTypes,
           );
-          return `${declaration} = ${closure.declaration.name};`;
+          const functionType = parseFunctionType(statement.type.name)!;
+          if (!closure.owned) {
+            const liveFlag = ensureLiveFlag(statement.name, context);
+            return `${declaration} = ${functionValueLiteral(functionType, closureAdapterName(closure))};\nbool ${liveFlag} = true;`;
+          }
+          const environmentType = closureEnvironmentName(closure);
+          const environment = `_z_closure_environment_${closure.declaration.location.offset}`;
+          const captures = closure.captures.map((capture) => {
+            const expression: Expression = { kind: "identifier", name: capture.name, location: capture.location };
+            return `${environment}->${capture.name} = ${generateExpression(expression, context)};`;
+          });
+          const value = functionValueLiteral(
+            functionType,
+            closureAdapterName(closure),
+            environment,
+            closureEnvironmentRetainName(closure),
+            closureEnvironmentReleaseName(closure),
+          );
+          const liveFlag = ensureLiveFlag(statement.name, context);
+          return `${environmentType} *${environment} = (${environmentType} *)malloc(sizeof(${environmentType}));
+if (${environment} == NULL) abort();
+${environment}->refcount = 1;
+${captures.join("\n")}
+${declaration} = ${value};
+bool ${liveFlag} = true;`;
         }
         const snapshots = closure.captures.filter((capture) => capture.moved).map((capture) => {
           const name = closureCaptureStorageName(closure, capture.name);
@@ -1637,7 +1909,8 @@ function generateStoredValue(name: string, context: GenerationContext): string {
   const emittedName = cBindingName(name);
   const type = context.localTypes.get(name);
   if (type && context.structs.get(type)?.kind === "class" && context.parameterModes.get(name) === "in") return emittedName;
-  return context.parameterModes.get(name) ? `(*${emittedName})` : emittedName;
+  const mode = context.parameterModes.get(name);
+  return mode === "in" || mode === "inout" || mode === "out" ? `(*${emittedName})` : emittedName;
 }
 
 function generateBlock(statements: Statement[], context: GenerationContext): string {
@@ -1726,6 +1999,11 @@ function generateValueCleanup(
   liveFlag: string | null,
   context: GenerationContext,
 ): string {
+  const functionType = parseFunctionType(type);
+  if (functionType) {
+    const release = `${functionTypeReleaseName(functionType)}(${value});`;
+    return liveFlag ? `if (${liveFlag}) ${release}` : release;
+  }
   if (type === "String") {
     const capacity = `(${value}).capacity > 0`;
     const condition = liveFlag ? `${liveFlag} && ${capacity}` : capacity;
@@ -2048,13 +2326,20 @@ function generateExpression(expression: Expression, context: GenerationContext):
     case "identifier":
       if (context.semanticInfo.standardFunctionReferences.has(expression.location.offset)) {
         const name = context.semanticInfo.standardFunctionReferences.get(expression.location.offset)!;
-        return standardFunctionSignature(name).cName;
+        const signature = standardFunctionSignature(name);
+        const functionType = parseFunctionType(inferExpressionType(expression, context));
+        if (functionType) return functionValueLiteral(functionType, standardFunctionAdapterName(name));
+        return signature.cName;
       }
       if (context.semanticInfo.foreignFunctionNames.has(expression.location.offset)) {
         return context.semanticInfo.foreignFunctionNames.get(expression.location.offset)!;
       }
       if (context.semanticInfo.foreignConstantNames.has(expression.location.offset)) {
         return context.semanticInfo.foreignConstantNames.get(expression.location.offset)!;
+      }
+      if (context.functions.has(expression.name)) {
+        const functionType = parseFunctionType(inferExpressionType(expression, context));
+        if (functionType) return functionValueLiteral(functionType, functionAdapterName(expression.name));
       }
       if (expression.name === "this") {
         const value = context.receiver?.kind === "class"
@@ -2197,6 +2482,12 @@ function generateExpression(expression: Expression, context: GenerationContext):
       if (integerOperation && expression.callee.kind === "member") {
         return `${integerOperationName(integerOperation)}(${generateExpression(expression.callee.object, context)}, ${generateExpression(expression.arguments[0], context)})`;
       }
+      if (expression.callee.kind === "identifier") {
+        const standardName = context.semanticInfo.standardFunctionReferences.get(expression.callee.location.offset);
+        if (standardName) {
+          return `${standardFunctionSignature(standardName).cName}(${expression.arguments.map((argument) => generateCallArgument(argument, context)).join(", ")})`;
+        }
+      }
       if (
         expression.callee.kind === "member"
         && expression.callee.object.kind === "identifier"
@@ -2229,7 +2520,10 @@ function generateExpression(expression: Expression, context: GenerationContext):
         const declaration = context.structs.get(receiverType)!;
         const field = declaration.fields.find((candidate) => candidate.name === expression.callee.property);
         if (field && parseFunctionType(field.type.name)) {
-          return `${generateExpression(expression.callee, context)}(${expression.arguments.map((argument) => generateCallArgument(argument, context)).join(", ")})`;
+          return generateFunctionValueCall(
+            generateExpression(expression.callee, context),
+            expression.arguments.map((argument) => generateCallArgument(argument, context)),
+          );
         }
         const method = declaration.methods.find((candidate) => candidate.name === expression.callee.property)!;
         const receiver = generateExpression(expression.callee.object, context);
@@ -2257,21 +2551,39 @@ function generateExpression(expression: Expression, context: GenerationContext):
           const args = [...hidden, ...expression.arguments.map((argument) => generateCallArgument(argument, context))];
           return `${closure.declaration.name}(${args.join(", ") || ""})`;
         }
+        if (context.functions.has(expression.callee.name)) {
+          return `${expression.callee.name}(${expression.arguments.map((argument) => generateCallArgument(argument, context)).join(", ")})`;
+        }
+        const functionType = parseFunctionType(context.localTypes.get(expression.callee.name) ?? "");
+        if (functionType) {
+          return generateFunctionValueCall(
+            generateStoredValue(expression.callee.name, context),
+            expression.arguments.map((argument) => generateCallArgument(argument, context)),
+          );
+        }
       }
       return `${generateExpression(expression.callee, context)}(${expression.arguments.map((argument) => generateCallArgument(argument, context)).join(", ")})`;
     }
   }
 }
 
+function generateFunctionValueCall(value: string, arguments_: readonly string[]): string {
+  return `(${value}).call((${value}).context${arguments_.length ? `, ${arguments_.join(", ")}` : ""})`;
+}
+
 function maybeRetainClass(expression: Expression, value: string, context: GenerationContext): string {
-  if (!context.semanticInfo.classCopies.has(expression.location.offset)) return value;
+  if (!context.semanticInfo.managedCopies.has(expression.location.offset)) return value;
   const type = inferExpressionType(expression, context);
+  const functionType = parseFunctionType(type);
+  if (functionType) return `${functionTypeRetainName(functionType)}(${value})`;
   const declaration = context.structs.get(type);
   if (declaration?.kind !== "class") return value;
   return `${retainName(type)}(${value})`;
 }
 
 function generateCallArgument(expression: Expression, context: GenerationContext): string {
+  const callbackTarget = context.semanticInfo.foreignCallbackTargets.get(expression.location.offset);
+  if (callbackTarget) return callbackTarget;
   if (context.semanticInfo.cstringConversions.has(expression.location.offset)) {
     if (expression.kind === "string") return JSON.stringify(expression.value);
     const value = generateExpression(expression, context);
@@ -2742,6 +3054,7 @@ function hasCleanupType(
 ): boolean {
   if (visiting.has(type)) return false;
   if (type === "String") return true;
+  if (parseFunctionType(type)) return true;
   if (foreignTypes.get(type)?.ownership === "owned") return true;
   if (parseDynamicArrayType(type)) return true;
   const declaration = structs.get(type);

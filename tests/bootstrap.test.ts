@@ -341,8 +341,8 @@ test("passes typed non-capturing Z functions to call-only C callbacks", () => {
   const fixture = resolve(projectRoot, "tests/fixtures/callbacks-main.z");
   const source = readFileSync(fixture, "utf8");
   const generated = compileToC(source, fixture);
-  assert.match(generated, /z_apply_i32\(6, 7, operation\)/);
-  assert.match(generated, /z_apply_twice_i32\(40, add\)/);
+  assert.match(generated, /z_apply_i32\(6, 7, multiply\)/);
+  assert.match(generated, /z_apply_twice_i32\(40, __z_closure_call_[0-9]+\)/);
 
   const result = spawnSync(process.execPath, [cli, "run", fixture], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
@@ -369,6 +369,13 @@ test("passes typed non-capturing Z functions to call-only C callbacks", () => {
     () => compileToC(wrongShape, fixture),
     /expected \(argument1: i32, argument2: i32\) => i32, found \(left: i32\) => i32/,
   );
+
+  const capturedCallback = source.replace(
+    "const add: (left: i32, right: i32) => i32 =\n    (left: i32, right: i32): i32 => left + right;",
+    "const offset = 0;\n  const add: (left: i32, right: i32) => i32 =\n    move (left: i32, right: i32): i32 => left + right + offset;",
+  );
+  const capturedDiagnostic = diagnostics(capturedCallback, fixture).find((diagnostic) => diagnostic.code === "Z0213");
+  assert.match(capturedDiagnostic?.message ?? "", /function value carries or may carry an environment/);
 
   const unclassified = source.replace(
     "const product = callbacks.z_apply_i32(6, 7, operation);",
@@ -1332,7 +1339,7 @@ test("checks closure parameters, block return types, and immutable captures", ()
   );
 });
 
-test("defers move captures that require owned closure environments", () => {
+test("requires an explicit function type for cleanup-bearing move captures", () => {
   const source = `
     struct Resource {
       value: i32;
@@ -1346,7 +1353,34 @@ test("defers move captures that require owned closure environments", () => {
   `;
   assert.throws(
     () => compileToC(source, "closure-owned-move.z"),
-    /closure-owned-move\.z:8:39: error: move-capturing cleanup-bearing Resource requires an owned closure environment, which is not implemented yet/,
+    /closure-owned-move\.z:8:39: error: move-capturing cleanup-bearing Resource requires an explicitly typed owned closure/,
+  );
+});
+
+test("returns, copies, shares, and deterministically destroys owned closure environments", () => {
+  const example = resolve(projectRoot, "examples/owned-closures.z");
+  const source = readFileSync(example, "utf8");
+  const generated = compileToC(source, example);
+  assert.match(generated, /typedef struct Z_ClosureEnv_[0-9]+/);
+  assert.match(generated, /environment->refcount \+= 1/);
+  assert.match(generated, /environment->refcount -= 1/);
+  assert.match(generated, /Z_Resource_deinit\(&\(environment->resource\)\)/);
+
+  const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, "counter=41,42\nresource=42\ndeferred=42\ndrop=42\n");
+
+  const useAfterCapture = `
+    struct Resource { value: i32; deinit {} }
+    function main(): i32 {
+      const resource = Resource { value: 42 };
+      const read: () => i32 = move (): i32 => resource.value;
+      return resource.value;
+    }
+  `;
+  assert.throws(
+    () => compileToC(useAfterCapture, "owned-closure-move.z"),
+    /use of moved value "resource"/,
   );
 });
 
@@ -1398,12 +1432,12 @@ test("stores and calls explicitly typed non-capturing function values", () => {
     }
   `;
   const generated = compileToC(source, "function-values.z");
-  assert.match(generated, /typedef int32_t \(\*Z_Function_[0-9a-f]+\)\(int32_t (?:first|x|left), int32_t (?:second|y|right)\);/);
-  assert.match(generated, /const Z_Function_[0-9a-f]+ operation = add;/);
-  assert.match(generated, /const Z_Function_[0-9a-f]+ inferred = subtract;/);
-  assert.match(generated, /const Z_Function_[0-9a-f]+ z_double = __z_closure_call_/);
-  assert.match(generated, /return operation\(left, right\);/);
-  assert.match(generated, /\(calculator\)\.operation\(20, 22\)/);
+  assert.match(generated, /struct Z_Function_[0-9a-f]+ \{[\s\S]*int32_t \(\*call\)\(void \*context, int32_t (?:first|x|left), int32_t (?:second|y|right)\)/);
+  assert.match(generated, /operation = \(Z_Function_[0-9a-f]+\)\{ \.call = __z_function_adapter_add/);
+  assert.match(generated, /inferred = \(Z_Function_[0-9a-f]+\)\{ \.call = __z_function_adapter_subtract/);
+  assert.match(generated, /z_double = \(Z_Function_[0-9a-f]+\)\{ \.call = __z_closure_call_[0-9]+_adapter/);
+  assert.match(generated, /= \(operation\)\.call\(\(operation\)\.context, left, right\);/);
+  assert.match(generated, /\(\(calculator\)\.operation\)\.call\(\(\(calculator\)\.operation\)\.context, 20, 22\)/);
 
   const operationUse = source.indexOf("operation(left") + 1;
   assert.match(hover(source, "function-values.z", operationUse)?.contents.value ?? "", /operation: \(first: i32, second: i32\) => i32/);
@@ -1426,7 +1460,7 @@ test("stores and calls explicitly typed non-capturing function values", () => {
   );
   const capturedDiagnostic = diagnostics(captured, "captured-function-value.z")[0];
   assert.equal(capturedDiagnostic.code, "Z0212");
-  assert.match(capturedDiagnostic.message, /owned closure environments/);
+  assert.match(capturedDiagnostic.message, /borrowed capturing closure/);
 
   assert.throws(
     () => compileToC(source.replace("= add;", "= subtract;").replace("(x: i32, y: i32) => i32", "(x: i32) => i32"), "function-value-mismatch.z"),
@@ -1812,7 +1846,8 @@ test("sleeps the current thread through the portable std/time module", () => {
   assert.match(generated, /nanosleep\(&remaining, &remaining\)/);
   assert.match(generated, /Sleep\(\(DWORD\)milliseconds\)/);
   assert.match(generated, /z_sleep_ms\(1ULL\);/);
-  assert.match(generated, /delay = z_sleep_ms;/);
+  assert.match(generated, /delay = \(Z_Function_[0-9a-f]+\)\{ \.call = __z_standard_function_adapter_sleep/);
+  assert.match(generated, /\(delay\)\.call\(\(delay\)\.context, 1ULL\)/);
   assert.doesNotMatch(generated, /#include <std\/time>/);
 
   const directory = mkdtempSync("/tmp/z-sleep-");

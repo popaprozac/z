@@ -290,9 +290,9 @@ const accumulate = (value: i32): i32 => {
 const snapshot = move (value: i32): i32 => seed + value;
 ```
 
-Explicit function types make non-capturing callables first-class values. Named
-functions and non-capturing closures can be stored, passed, returned, and kept
-in aggregate fields without allocation:
+Explicit function types make callables first-class values. Named functions and
+non-capturing closures can be stored, passed, returned, and kept in aggregate
+fields without allocation:
 
 ```z
 function apply(operation: (left: i32, right: i32) => i32): i32 {
@@ -307,12 +307,20 @@ Run the closure example with:
 ```sh
 bun run z run examples/closures.z
 bun run z run examples/function-values.z
+bun run z run examples/owned-closures.z
 ```
 
-Capturing closures remain non-escaping. Converting one to a storable function
-type, escaping closure values, and cleanup-bearing move captures remain
-explicitly deferred until owned environments and their ARC/deterministic
-cleanup rules are implemented.
+Borrowing closures remain non-escaping and allocation-free. A capturing closure
+can become a stored or returned function value when it uses `move` and an
+explicit function type. Z then creates an ARC-managed environment: copyable
+captures are snapshotted, class and function values are retained, unique
+cleanup-bearing values transfer ownership, and the final release destroys
+captured fields in reverse order. Copies of the function value share the same
+environment and therefore share mutable captured state.
+
+Non-capturing function values use the same internal shape with a null
+environment and do not allocate. Weak captures, cross-thread reference counts,
+and capturing `this` remain later layers.
 
 Typed logging uses the explicit standard `console` module:
 
@@ -800,9 +808,11 @@ bun run z emit examples/callbacks.z # inspect the generated C
 Because a C header does not say whether a callback is retained, the parameter
 must have a sidecar API note with `"callback": { "lifetime": "call" }`. That
 contract means C finishes every callback invocation before the imported
-function returns. Unannotated, escaping, capturing, variadic, and
-calling-convention-specific callbacks remain rejected until their storage and
-adapter rules exist.
+function returns. Named functions and directly bound non-capturing closures
+still lower to raw C function pointers. Environment-carrying closures require a
+C context-pointer contract and remain rejected by context-free callback
+parameters. Unannotated, escaping, variadic, and calling-convention-specific C
+callbacks remain unsupported until their adapter rules exist.
 
 Unions, anonymous or incomplete layouts, plain `char` signedness, arrays,
 bitfield-specific validation, and pointers stored inside records remain
