@@ -380,7 +380,9 @@ export function inferGenericCalls(
         return { expression: { ...expression, payload: payload.expression }, type: expression.enumName };
       }
       case "attempt":
-      case "try": {
+      case "try":
+      case "await":
+      case "spawn": {
         const inner = rewriteExpression(expression.expression, environment);
         return { expression: { ...expression, expression: inner.expression }, type: inner.type };
       }
@@ -695,6 +697,11 @@ export function inferGenericCalls(
           arms: statement.arms.map((arm) => rewriteArm(arm, environment, matched.type, returnType)),
         };
       }
+      case "asyncScope":
+        return {
+          ...statement,
+          body: rewriteStatement(statement.body, new Map(environment), returnType) as typeof statement.body,
+        };
       case "break":
       case "continue":
         return statement;

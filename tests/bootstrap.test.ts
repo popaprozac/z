@@ -4497,3 +4497,65 @@ test("editor grammar tracks keywords without reserving Result variants", () => {
   assert.match(extension, /createFileSystemWatcher/);
   assert.match(extension, /restartLanguageServer/);
 });
+
+test("checks Phase 0 async calls, scoped tasks, typed errors, and editor details", () => {
+  const example = resolve(projectRoot, "examples/async-phase-0.z");
+  const source = readFileSync(example, "utf8");
+  check(source, example);
+
+  const fetchUse = source.indexOf("fetchValue(20)");
+  assert.match(
+    hover(source, example, fetchUse + 1)?.contents.value ?? "",
+    /async function fetchValue\(id: i32\): i32 throws NetworkError/,
+  );
+
+  const taskUse = source.indexOf("secondTask;");
+  assert.match(
+    hover(source, example, taskUse + 1)?.contents.value ?? "",
+    /secondTask: Task<i32, NetworkError>/,
+  );
+
+  assert.throws(() => compileToC(source, example), (error: unknown) => {
+    assert.ok(error instanceof DiagnosticError);
+    assert.equal(error.code, "Z0700");
+    assert.match(error.message, /async runtime lowering is not implemented in Phase 0/);
+    return true;
+  });
+});
+
+test("diagnoses unacknowledged async calls, unscoped spawn, and async borrows", () => {
+  const prelude = `
+    async function fetch(value: i32): i32 { return value; }
+  `;
+  const naked = `${prelude} async function use(): i32 { return fetch(42); }`;
+  assert.throws(() => check(naked, "async-naked.z"), (error: unknown) => {
+    assert.ok(error instanceof DiagnosticError);
+    assert.equal(error.code, "Z0702");
+    assert.match(error.message, /requires `await` or `spawn`/);
+    return true;
+  });
+
+  const unscoped = `${prelude} async function use(): i32 { const task = spawn fetch(42); return await task; }`;
+  assert.throws(() => check(unscoped, "async-unscoped.z"), (error: unknown) => {
+    assert.ok(error instanceof DiagnosticError);
+    assert.equal(error.code, "Z0703");
+    assert.match(error.message, /spawn requires an enclosing async scope/);
+    return true;
+  });
+
+  const borrowed = `async function inspect(in value: i32): i32 { return value; }`;
+  assert.throws(() => check(borrowed, "async-borrow.z"), (error: unknown) => {
+    assert.ok(error instanceof DiagnosticError);
+    assert.equal(error.code, "Z0704");
+    assert.match(error.message, /cannot borrow storage/);
+    return true;
+  });
+
+  const synchronousAwait = `function value(): i32 { return 42; } async function use(): i32 { return await value(); }`;
+  assert.throws(() => check(synchronousAwait, "async-sync-await.z"), (error: unknown) => {
+    assert.ok(error instanceof DiagnosticError);
+    assert.equal(error.code, "Z0701");
+    assert.match(error.message, /await requires an async call or Task value/);
+    return true;
+  });
+});

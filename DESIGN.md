@@ -717,7 +717,30 @@ The intended model combines:
 - pluggable native executors;
 - structural cancellation and deterministic task-frame cleanup.
 
-Async functions lower to stackless state machines. Async-free programs do not
+Async calls never start implicitly. A direct call must be covered by `await`
+for sequential work or by `spawn` inside an `async scope` for concurrent work.
+`spawn` produces a scope-bound `Task<T>` or `Task<T, E>`; child handles and work
+cannot escape the scope. Detached work requires an explicitly owned supervisor.
+
+An async function continues to declare its domain contract as `T throws E`.
+`spawn` preserves that contract as `Task<T, E>`, `try await` propagates `E`, and
+`attempt await` materializes `Result<T, E>`. Suspension composes with the
+existing error model rather than adding a second Result-shaped return layer.
+
+Cancellation is a structural third task outcome rather than an error silently
+added to every `throws E` contract. It propagates down the task tree and
+unwinds frames through ordinary synchronous cleanup. `deinit` cannot suspend;
+fallible or suspending shutdown remains an explicit async operation.
+
+The first ownership tier rejects borrowed async parameters and borrowed struct
+receivers, and rejects suspension while any other borrow is live. Owned values,
+ARC class references, and owned closures may be stored in task frames. This
+conservative boundary can later grow scoped async borrowing without exposing
+general lifetime syntax.
+
+Phase 0 implements syntax, typing, ownership diagnostics, and editor services;
+native emission reports `Z0700` until the Phase 1 runtime lands. Async functions
+then lower to stackless state machines. Async-free programs do not
 link an async runtime. Apple executors may integrate with Dispatch and the main
 run loop; Windows executors may integrate with the thread pool and IOCP.
 
@@ -878,7 +901,7 @@ Interop work proceeds in layers:
 ## Initial non-goals
 
 - inheritance for Z-defined types (foreign superclass metadata is imported);
-- async implementation;
+- executable async state-machine lowering beyond the Phase 0 frontend;
 - ORC cycle collection;
 - macros and compile-time execution;
 - direct LLVM or machine-code generation;
@@ -982,3 +1005,13 @@ Clang declaration source locations rather than text-searching SDK headers.
 - caller-thread escaping C callbacks with native destroy notification
   (implemented);
 - calling-convention, unregister-token, cross-thread, and async adapters.
+
+### 0.4: Async frontend and structured runtime
+
+- Phase 0 async syntax, typing, task handles, ownership restrictions,
+  diagnostics, and editor services (implemented);
+- stackless state-machine lowering and deterministic single-thread executor;
+- structured task scopes, cancellation, and deterministic frame cleanup;
+- scheduler-aware delay and bounded move-aware channels;
+- sendability, atomic ARC, and pluggable native executors;
+- callback-to-async synthesis and actor isolation.

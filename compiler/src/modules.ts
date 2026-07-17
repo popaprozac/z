@@ -459,6 +459,14 @@ function transformStatement(
           return { ...arm, body: transformStatement(arm.body, scope, armLocals, typeParameters) };
         }),
       };
+    case "asyncScope":
+      return {
+        ...statement,
+        body: {
+          ...statement.body,
+          statements: transformStatements(statement.body.statements, scope, new Set(locals), typeParameters),
+        },
+      };
     case "break":
     case "continue":
       return statement;
@@ -591,6 +599,8 @@ function transformExpression(
       };
     case "attempt":
     case "try":
+    case "await":
+    case "spawn":
     case "weak":
       return { ...expression, expression: transformExpression(expression.expression, scope, locals, typeParameters) };
     case "matchExpression":

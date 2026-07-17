@@ -1,0 +1,25 @@
+// Async Phase 0 validates syntax, types, task structure, and ownership.
+// Run `bun run z check examples/async-phase-0.z`; executable lowering follows in Phase 1.
+
+struct NetworkError {
+  code: i32;
+}
+
+async function fetchValue(id: i32): i32 throws NetworkError {
+  return id;
+}
+
+async function main(): i32 throws NetworkError {
+  const observed = attempt await fetchValue(0);
+  const baseline = match (observed) {
+    success(value) => value;
+    failure(error) => -error.code;
+  };
+  const first = try await fetchValue(20);
+
+  async scope {
+    const secondTask = spawn fetchValue(22);
+    const second = try await secondTask;
+    return baseline + first + second;
+  }
+}

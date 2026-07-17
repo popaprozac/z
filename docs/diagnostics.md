@@ -25,6 +25,7 @@ The bootstrap reserves these code families:
 | `Z02xx` | ownership, moves, borrows, and captures |
 | `Z03xx` | initialization, parameter capabilities, and collection access |
 | `Z04xx` | formatting, console, and string construction |
+| `Z07xx` | async effects, task structure, and suspension safety |
 
 Currently structured codes include:
 
@@ -55,6 +56,11 @@ Currently structured codes include:
 | `Z0601` | circular Z source-module import |
 | `Z0602` | missing Z module or exported declaration |
 | `Z0603` | duplicate source-module export or binding |
+| `Z0700` | async program is valid but executable lowering is not implemented yet |
+| `Z0701` | invalid `await` context or operand |
+| `Z0702` | async call is missing `await` or `spawn` |
+| `Z0703` | `spawn` or `async scope` is outside its required structured context |
+| `Z0704` | borrowed storage could remain live in a task or across suspension |
 
 CLI diagnostics render source context. Language-server diagnostics expose the
 same code and message, secondary locations through related information, and

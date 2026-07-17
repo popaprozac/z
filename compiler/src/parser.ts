@@ -335,6 +335,14 @@ export function parse(tokens: Token[], fileName: string): Program {
       expect("rightParen", "`)` after the match subject");
       return { kind: "matchExpression", mode, expression, arms: parseMatchArms(), location: token.location };
     }
+    if (match("await")) {
+      const token = previous();
+      return { kind: "await", expression: parsePostfix(), location: token.location };
+    }
+    if (match("spawn")) {
+      const token = previous();
+      return { kind: "spawn", expression: parsePostfix(), location: token.location };
+    }
     if (match("attempt")) {
       const token = previous();
       return { kind: "attempt", expression: parsePostfix(), location: token.location };
@@ -530,6 +538,12 @@ export function parse(tokens: Token[], fileName: string): Program {
   };
 
   parseStatement = (): Statement => {
+    if (match("async")) {
+      const token = previous();
+      expect("scope", "`scope` after `async`");
+      const body = parseRequiredBlock("an `async scope` body");
+      return { kind: "asyncScope", body, location: token.location };
+    }
     if (match("if")) {
       const ifToken = previous();
       expect("leftParen", "`(`");
@@ -658,7 +672,7 @@ export function parse(tokens: Token[], fileName: string): Program {
     return { kind: "block" as const, statements, location: start };
   }
 
-  const parseFunction = (signatureOnly = false): FunctionDeclaration => {
+  const parseFunction = (signatureOnly = false, isAsync = false): FunctionDeclaration => {
     const start = expect("function", "`function`").location;
     const name = expect("identifier", "a function name").text;
     const generic = parseTypeParameters();
@@ -690,6 +704,7 @@ export function parse(tokens: Token[], fileName: string): Program {
     return {
       kind: "function",
       name,
+      async: isAsync,
       typeParameters: generic.names,
       typeParameterConstraints: generic.constraints,
       receiverMode,
@@ -748,9 +763,13 @@ export function parse(tokens: Token[], fileName: string): Program {
       const visibilityToken = match("public") ? "public" : match("private") ? "private" : null;
       const visibility = visibilityToken ?? "public";
       const isStatic = match("static");
+      const isAsync = match("async");
       if (at("function")) {
-        methods.push({ ...parseFunction(), static: isStatic, visibility });
+        methods.push({ ...parseFunction(false, isAsync), static: isStatic, visibility });
         continue;
+      }
+      if (isAsync) {
+        throw new DiagnosticError(fileName, previous().location, "`async` must precede a function declaration");
       }
       if (isStatic) {
         throw new DiagnosticError(fileName, previous().location, "static fields are not implemented; `static` currently applies only to functions");
@@ -780,7 +799,10 @@ export function parse(tokens: Token[], fileName: string): Program {
     const name = expect("identifier", "a trait name").text;
     expect("leftBrace", "`{`");
     const methods: FunctionDeclaration[] = [];
-    while (!at("rightBrace") && !at("eof")) methods.push(parseFunction(true));
+    while (!at("rightBrace") && !at("eof")) {
+      const isAsync = match("async");
+      methods.push(parseFunction(true, isAsync));
+    }
     expect("rightBrace", "`}`");
     return { kind: "trait", name, methods, location: start };
   };
@@ -823,8 +845,9 @@ export function parse(tokens: Token[], fileName: string): Program {
       const declaration = parseEnum();
       enums.push(declaration);
       if (exportToken) exports.push({ name: declaration.name, declarationKind: "enum", location: exportToken.location });
-    } else if (at("function")) {
-      const declaration = parseFunction();
+    } else if (at("function") || at("async")) {
+      const isAsync = match("async");
+      const declaration = parseFunction(false, isAsync);
       functions.push(declaration);
       if (exportToken) exports.push({ name: declaration.name, declarationKind: "function", location: exportToken.location });
     } else {

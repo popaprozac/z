@@ -92,6 +92,7 @@ export type EnumVariant = {
 export type FunctionDeclaration = {
   readonly kind: "function";
   readonly name: string;
+  readonly async?: boolean;
   readonly static?: boolean;
   readonly visibility?: "public" | "private";
   readonly typeParameters?: string[];
@@ -142,7 +143,14 @@ export type Statement =
   | ForStatement
   | BreakStatement
   | ContinueStatement
+  | AsyncScopeStatement
   | MatchStatement;
+
+export type AsyncScopeStatement = {
+  readonly kind: "asyncScope";
+  readonly body: BlockStatement;
+  readonly location: SourceLocation;
+};
 
 export type VariableStatement = {
   readonly kind: "variable";
@@ -272,6 +280,8 @@ export type Expression =
   | VariantExpression
   | AttemptExpression
   | TryExpression
+  | AwaitExpression
+  | SpawnExpression
   | MatchExpression
   | IfExpression
   | ArgumentReferenceExpression;
@@ -430,6 +440,18 @@ export type AttemptExpression = {
 
 export type TryExpression = {
   readonly kind: "try";
+  readonly expression: Expression;
+  readonly location: SourceLocation;
+};
+
+export type AwaitExpression = {
+  readonly kind: "await";
+  readonly expression: Expression;
+  readonly location: SourceLocation;
+};
+
+export type SpawnExpression = {
+  readonly kind: "spawn";
   readonly expression: Expression;
   readonly location: SourceLocation;
 };

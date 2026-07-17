@@ -11,6 +11,7 @@ import type {
 } from "./ast.ts";
 import { DiagnosticError } from "./diagnostics.ts";
 import { resultTypeName } from "./results.ts";
+import { parseTaskType, taskTypeName } from "./async-types.ts";
 import {
   displayArrayType,
   dynamicArrayTypeName,
@@ -183,6 +184,9 @@ type AnalysisState = {
   readonly moveOrigins: Map<string, SourceLocation>;
   readonly borrowOrigins: Map<string, { readonly location: SourceLocation; readonly kind: "closure" | "iteration" | "match" }>;
   readonly iterationBorrowOrigins: Map<string, SourceLocation>;
+  readonly asyncCallContexts: { readonly mode: "await" | "spawn"; calls: number }[];
+  asyncScopeDepth: number;
+  activeFunction: FunctionDeclaration | null;
   activeReceiver: string | null;
 };
 
@@ -277,6 +281,9 @@ export function analyze(
     moveOrigins: new Map(),
     borrowOrigins: new Map(),
     iterationBorrowOrigins: new Map(),
+    asyncCallContexts: [],
+    asyncScopeDepth: 0,
+    activeFunction: null,
     activeReceiver: null,
   };
   const globals = new Map<string, SymbolValue>();
@@ -438,7 +445,7 @@ export function analyze(
   if (main?.kind === "function" && (main.declaration.parameters.length !== 0 || main.declaration.returnType.name !== "i32")) {
     throw new DiagnosticError(fileName, main.declaration.location, "`main` must have signature `function main(): i32`");
   }
-  if (main?.kind === "function" && main.declaration.errorType) {
+  if (main?.kind === "function" && main.declaration.errorType && !main.declaration.async) {
     throw new DiagnosticError(fileName, main.declaration.location, "`main` cannot throw in the bootstrap runtime");
   }
 
@@ -528,6 +535,13 @@ function analyzeStructDeclaration(
     if (method.static && method.receiverMode) {
       throw new DiagnosticError(fileName, method.location, "static methods cannot declare a `this` receiver");
     }
+    if (method.async && !method.static && declaration.kind === "struct" && method.receiverMode !== "move") {
+      throw new DiagnosticError(fileName, method.location, "an async struct method must take ownership with `move this` in the first async tier", {
+        code: "Z0704",
+        notes: ["a borrowed struct receiver cannot remain live in a suspended task frame"],
+        helps: ["use `move this`, make the operation synchronous, or move shared identity into a class"],
+      });
+    }
     validateFunctionSignature(method, structs, enums, foreignNamedTypes, fileName);
   }
   if (declaration.constructor) {
@@ -587,7 +601,8 @@ function validateTraitConformance(
 }
 
 function sameMethodSignature(actual: FunctionDeclaration, required: FunctionDeclaration): boolean {
-  return actual.receiverMode === required.receiverMode
+  return Boolean(actual.async) === Boolean(required.async)
+    && actual.receiverMode === required.receiverMode
     && actual.returnType.name === required.returnType.name
     && actual.errorType?.name === required.errorType?.name
     && actual.parameters.length === required.parameters.length
@@ -654,6 +669,13 @@ function validateFunctionSignature(
     validateUserName(parameter.name, parameter.location, fileName);
     validateType(parameter.type, structs, enums, foreignNamedTypes, fileName, false);
     const slice = parseSliceType(parameter.type.name);
+    if (declaration.async && (parameter.mode !== "value" || slice)) {
+      throw new DiagnosticError(fileName, parameter.location, `async parameter ${JSON.stringify(parameter.name)} cannot borrow storage in the first async tier`, {
+        code: "Z0704",
+        notes: ["in, inout, out, and Slice parameters could otherwise remain live across a suspension point"],
+        helps: ["pass an owned value or ARC class reference into the async function"],
+      });
+    }
     if (slice && parameter.mode === "in") {
       throw new DiagnosticError(fileName, parameter.location, "Slice parameters are already borrowed; omit `in`");
     }
@@ -744,13 +766,16 @@ function analyzeFunction(
   state: AnalysisState,
 ): void {
   const previousReceiver = state.activeReceiver;
+  const previousFunction = state.activeFunction;
   state.activeReceiver = receiver?.name ?? null;
+  state.activeFunction = declaration;
   state.moveOrigins.clear();
   state.borrowOrigins.clear();
   state.iterationBorrowOrigins.clear();
   const locals = new Map<string, ValueType>();
   if (receiver && !declaration.static) {
-    const borrowed = declaration.receiverMode === "move" ? "" : borrowedPrefix;
+    const ownedAsyncClassReceiver = Boolean(declaration.async && receiver.kind === "class");
+    const borrowed = declaration.receiverMode === "move" || ownedAsyncClassReceiver ? "" : borrowedPrefix;
     const mutable = declaration.receiverMode === "inout" || declaration.receiverMode === "move" ? mutablePrefix : "";
     locals.set("this", `${borrowed}${mutable}${receiver.name}`);
   }
@@ -772,6 +797,7 @@ function analyzeFunction(
     throw new DiagnosticError(fileName, declaration.location, `function ${JSON.stringify(declaration.name)} must end with a return value`);
   }
   state.activeReceiver = previousReceiver;
+  state.activeFunction = previousFunction;
 }
 
 function constructorFunction(declaration: StructDeclaration): FunctionDeclaration {
@@ -877,6 +903,8 @@ function analyzeConstructorInitialization(
         return;
       case "attempt":
       case "try":
+      case "await":
+      case "spawn":
         checkExpression(expression.expression, initialized);
         return;
       case "matchExpression":
@@ -952,6 +980,8 @@ function analyzeConstructorInitialization(
         if (!complete(initialized)) {
           throw new DiagnosticError(fileName, statement.location, `initialize field ${JSON.stringify(missing(initialized))} before entering a loop`);
         }
+      } else if (statement.kind === "asyncScope") {
+        throw new DiagnosticError(fileName, statement.location, "async scope requires an async function");
       }
       if (statementStopsFlow(statement)) return { initialized, stops: true };
     }
@@ -1001,6 +1031,7 @@ function analyzeStatements(
 function statementReturns(statement: Statement | undefined): boolean {
   if (!statement) return false;
   if (statement.kind === "return" || statement.kind === "throw") return true;
+  if (statement.kind === "asyncScope") return statementReturns(statement.body);
   if (statement.kind === "block") return statementReturns(statement.statements.at(-1));
   if (statement.kind === "if") {
     return Boolean(statement.elseBranch)
@@ -1021,6 +1052,7 @@ function statementStopsFlow(statement: Statement | undefined): boolean {
   ) {
     return true;
   }
+  if (statement.kind === "asyncScope") return statementStopsFlow(statement.body);
   if (statement.kind === "block") return statementStopsFlow(statement.statements.at(-1));
   if (statement.kind === "if") {
     return Boolean(statement.elseBranch)
@@ -1254,6 +1286,23 @@ function analyzeStatement(
     }
     case "select":
       throw new DiagnosticError(fileName, statement.location, "select requires an enclosing value-producing block");
+    case "asyncScope": {
+      if (!owner.async) {
+        throw new DiagnosticError(fileName, statement.location, "async scope requires an enclosing async function", {
+          code: "Z0703",
+          helps: [`add \`async\` before \`function ${owner.name}\``],
+        });
+      }
+      state.asyncScopeDepth += 1;
+      const scopeLocals = new Map(locals);
+      try {
+        analyzeStatements(statement.body.statements, owner, scopeLocals, globals, structs, enums, fileName, state);
+      } finally {
+        state.asyncScopeDepth -= 1;
+      }
+      propagateOuterOwnership(locals, scopeLocals);
+      return;
+    }
     case "block": {
       const blockLocals = new Map(locals);
       analyzeStatements(statement.statements, owner, blockLocals, globals, structs, enums, fileName, state);
@@ -1621,22 +1670,28 @@ function inferClosureExpression(
 
   let returnType: ValueType;
   let body: Statement[];
-  if (expression.body.kind === "block") {
-    body = expression.body.statements;
-    const returns = analyzeStatements(body, syntheticBase, closureLocals, globals, structs, enums, fileName, state);
-    if (syntheticBase.returnType.name !== "void" && !returns) {
-      throw new DiagnosticError(fileName, expression.location, "closure must end with a return value");
+  const previousFunction = state.activeFunction;
+  state.activeFunction = syntheticBase;
+  try {
+    if (expression.body.kind === "block") {
+      body = expression.body.statements;
+      const returns = analyzeStatements(body, syntheticBase, closureLocals, globals, structs, enums, fileName, state);
+      if (syntheticBase.returnType.name !== "void" && !returns) {
+        throw new DiagnosticError(fileName, expression.location, "closure must end with a return value");
+      }
+      returnType = syntheticBase.returnType.name;
+    } else {
+      returnType = inferDirectValue(expression.body, syntheticBase, closureLocals, globals, structs, enums, fileName, state);
+      if (contextualReturn) {
+        returnType = contextualCStringLiteral(contextualReturn.name, expression.body, state) ?? returnType;
+        requireAssignable(contextualReturn.name, returnType, expression.body, fileName, state.foreignNamedTypes, state.numericLiteralTypes);
+        returnType = contextualReturn.name;
+      }
+      consumeOwnedValue(expression.body, returnType, closureLocals, structs, enums, fileName, state);
+      body = [{ kind: "return", expression: expression.body, location: expression.body.location }];
     }
-    returnType = syntheticBase.returnType.name;
-  } else {
-    returnType = inferDirectValue(expression.body, syntheticBase, closureLocals, globals, structs, enums, fileName, state);
-    if (contextualReturn) {
-      returnType = contextualCStringLiteral(contextualReturn.name, expression.body, state) ?? returnType;
-      requireAssignable(contextualReturn.name, returnType, expression.body, fileName, state.foreignNamedTypes, state.numericLiteralTypes);
-      returnType = contextualReturn.name;
-    }
-    consumeOwnedValue(expression.body, returnType, closureLocals, structs, enums, fileName, state);
-    body = [{ kind: "return", expression: expression.body, location: expression.body.location }];
+  } finally {
+    state.activeFunction = previousFunction;
   }
 
   const declaration = { ...syntheticBase, returnType: { name: String(returnType), location: provisionalReturn.location }, body };
@@ -1782,6 +1837,8 @@ function collectClosureCaptures(
         return;
       case "attempt":
       case "try":
+      case "await":
+      case "spawn":
         walkExpression(expression.expression, localNames);
         return;
       case "matchExpression":
@@ -1856,6 +1913,9 @@ function collectClosureCaptures(
           for (const field of arm.objectBindings ?? []) armNames.add(field.bindingName);
           walkStatement(arm.body, armNames);
         }
+        return;
+      case "asyncScope":
+        walkStatement(statement.body, new Set(localNames));
         return;
       case "break":
       case "continue":
@@ -2244,6 +2304,33 @@ function inferExpression(
   return type;
 }
 
+function registerAsyncCall(
+  declaration: FunctionDeclaration,
+  location: SourceLocation,
+  fileName: string,
+  state: AnalysisState,
+): void {
+  if (!declaration.async) return;
+  const context = state.asyncCallContexts.at(-1);
+  if (!context) {
+    throw new DiagnosticError(fileName, location, `async call to ${JSON.stringify(declaration.name)} requires \`await\` or \`spawn\``, {
+      code: "Z0702",
+      notes: ["Z never starts asynchronous work from a naked function call"],
+      helps: ["use `await` for sequential work or `spawn` inside an `async scope` for concurrent work"],
+    });
+  }
+  context.calls += 1;
+}
+
+function firstLiveBorrow(locals: ReadonlyMap<string, ValueType>): string | null {
+  for (const [name, type] of locals) {
+    if (isBorrowedBinding(type)
+      && initializationState(type) === "initialized"
+      && ownershipState(type) === "available") return name;
+  }
+  return null;
+}
+
 function inferExpressionInner(
   expression: Expression,
   locals: Map<string, ValueType>,
@@ -2327,6 +2414,9 @@ function inferExpressionInner(
       }
       const global = globals.get(expression.name);
       if (global?.kind === "function") {
+        if (global.declaration.async) {
+          throw new DiagnosticError(fileName, expression.location, "async function values are deferred; call the function beneath `await` or `spawn`");
+        }
         if (global.declaration.typeParameters?.length) {
           throw new DiagnosticError(fileName, expression.location, "generic function values require explicit specialization, which is not implemented yet");
         }
@@ -2604,6 +2694,83 @@ function inferExpressionInner(
       consumeOwnedValue(expression.payload, variant.payload.name, locals, structs, enums, fileName, state);
       return declaration.name;
     }
+    case "await": {
+      if (!state.activeFunction?.async) {
+        throw new DiagnosticError(fileName, expression.location, "await requires an enclosing async function", {
+          code: "Z0701",
+          helps: ["add `async` before the enclosing function declaration"],
+        });
+      }
+      const borrowed = firstLiveBorrow(locals);
+      if (borrowed) {
+        throw new DiagnosticError(fileName, expression.location, `cannot await while borrowed storage ${JSON.stringify(borrowed)} is live`, {
+          code: "Z0704",
+          notes: ["the first async tier does not keep borrowed storage across suspension points"],
+          helps: ["finish the borrow before awaiting, or move an owned value or ARC class reference into the async operation"],
+        });
+      }
+      const context = { mode: "await" as const, calls: 0 };
+      state.asyncCallContexts.push(context);
+      let awaited: ValueType;
+      try {
+        awaited = inferExpression(expression.expression, locals, globals, structs, enums, fileName, state, allowThrowingCall);
+      } finally {
+        state.asyncCallContexts.pop();
+      }
+      const task = parseTaskType(String(awaited));
+      if (task) {
+        if (task.errorType) {
+          if (!allowThrowingCall) {
+            throw new DiagnosticError(fileName, expression.location, "awaiting a throwing task requires `attempt` or `try`");
+          }
+          return resultTypeName(task.successType, task.errorType);
+        }
+        return task.successType;
+      }
+      if (context.calls === 0) {
+        throw new DiagnosticError(fileName, expression.location, "await requires an async call or Task value", {
+          code: "Z0701",
+          helps: ["remove `await` from synchronous work"],
+        });
+      }
+      return awaited;
+    }
+    case "spawn": {
+      if (!state.activeFunction?.async) {
+        throw new DiagnosticError(fileName, expression.location, "spawn requires an enclosing async function", {
+          code: "Z0703",
+          helps: ["add `async` before the enclosing function declaration"],
+        });
+      }
+      if (state.asyncScopeDepth === 0) {
+        throw new DiagnosticError(fileName, expression.location, "spawn requires an enclosing async scope", {
+          code: "Z0703",
+          notes: ["scope-bound children cannot silently outlive their parent operation"],
+          helps: ["wrap the concurrent work in `async scope { ... }`"],
+        });
+      }
+      if (expression.expression.kind !== "call") {
+        throw new DiagnosticError(fileName, expression.location, "spawn requires a direct async function or method call");
+      }
+      const context = { mode: "spawn" as const, calls: 0 };
+      state.asyncCallContexts.push(context);
+      let spawned: ValueType;
+      try {
+        spawned = inferExpression(expression.expression, locals, globals, structs, enums, fileName, state, true);
+      } finally {
+        state.asyncCallContexts.pop();
+      }
+      if (context.calls !== 1) {
+        throw new DiagnosticError(fileName, expression.location, "spawn requires exactly one direct async call");
+      }
+      const result = enums.get(String(spawned));
+      if (result?.name.startsWith("__z_Result_")) {
+        const success = result.variants.find((variant) => variant.name === "success")!.payload!.name;
+        const failure = result.variants.find((variant) => variant.name === "failure")!.payload!.name;
+        return taskTypeName(success, failure);
+      }
+      return taskTypeName(String(spawned), null);
+    }
     case "attempt": {
       const result = inferExpression(expression.expression, locals, globals, structs, enums, fileName, state, true);
       if (!result.startsWith("__z_Result_")) {
@@ -2817,6 +2984,7 @@ function inferExpressionInner(
             }
             rejectLabeledArguments(expression.argumentLabels, expression.location, fileName);
             checkArguments(method, expression.arguments, locals, globals, structs, enums, fileName, expression.location, state);
+            registerAsyncCall(method, expression.location, fileName, state);
             if (method.errorType) {
               if (!allowThrowingCall) throw new DiagnosticError(fileName, expression.location, "throwing call requires `attempt` or `try`");
               return resultTypeName(method.returnType.name, method.errorType.name);
@@ -3043,6 +3211,7 @@ function inferExpressionInner(
               ? { name: consumingReceiverRoot.name, mode: "move" }
               : null,
         );
+        registerAsyncCall(method, expression.location, fileName, state);
         if (mutableReceiverRoot) {
           const receiverAfterArguments = locals.get(mutableReceiverRoot.name);
           if (receiverAfterArguments && ownershipState(receiverAfterArguments) !== "available") {
@@ -3130,6 +3299,7 @@ function inferExpressionInner(
       }
       rejectLabeledArguments(expression.argumentLabels, expression.location, fileName);
       checkArguments(target.declaration, expression.arguments, locals, globals, structs, enums, fileName, expression.location, state);
+      registerAsyncCall(target.declaration, expression.location, fileName, state);
       if (target.declaration.errorType) {
         if (!allowThrowingCall) throw new DiagnosticError(fileName, expression.location, "throwing call requires `attempt` or `try`");
         return resultTypeName(target.declaration.returnType.name, target.declaration.errorType.name);

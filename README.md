@@ -1081,6 +1081,39 @@ upcoming interop layers.
 
 See [DESIGN.md](DESIGN.md) for the language charter and roadmap.
 
+## Async Phase 0
+
+Z validates the explicit structured-async surface before executable runtime
+lowering lands:
+
+```z
+async function fetchValue(id: i32): i32 throws NetworkError {
+  return id;
+}
+
+async function main(): i32 throws NetworkError {
+  async scope {
+    const task = spawn fetchValue(42);
+    return try await task;
+  }
+}
+```
+
+Async calls require `await` or scope-bound `spawn`; borrowed parameters and
+live borrows across suspension are rejected in the first tier. `T throws E`
+remains the function contract, `Task<T, E>` represents spawned work, and
+`attempt await` materializes `Result<T, E>` when the outcome should be retained.
+
+Run the frontend example with:
+
+```sh
+bun run z check examples/async-phase-0.z
+```
+
+`emit` and `run` intentionally report `Z0700` until Phase 1 adds stackless
+state-machine lowering and a deterministic single-thread executor. See
+[docs/async-model.md](docs/async-model.md) for the complete model and phases.
+
 ## Editor support
 
 The repository includes a VS Code/Cursor extension in `editors/vscode`. Its

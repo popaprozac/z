@@ -26,6 +26,7 @@ import { dirname, resolve } from "node:path";
 import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { isLocalSourceModuleSpecifier, type SourceModuleInfo } from "./modules.ts";
 import { displayFunctionType, functionTypeName, parseFunctionType } from "./function-types.ts";
+import { displayTaskType, parseTaskType } from "./async-types.ts";
 import { parseWeakType } from "./weak-types.ts";
 
 export type Position = { readonly line: number; readonly character: number };
@@ -629,7 +630,16 @@ function symbolCompletions(source: string, fileName: string, offset: number): Co
     items.push({
       label: declaration.name,
       kind: completionKinds.function,
-      detail: zFunctionDetail(declaration.name, declaration.parameters, declaration.returnType.name),
+      detail: zFunctionDetail(
+        declaration.name,
+        declaration.parameters,
+        declaration.returnType.name,
+        declaration.typeParameters,
+        context.typeDisplayNames,
+        declaration.typeParameterConstraints,
+        declaration.async,
+        declaration.errorType?.name,
+      ),
     });
   }
   for (const declaration of context.program.structs) {
@@ -1171,6 +1181,8 @@ function sourceExportDetail(
       declaration.typeParameters,
       typeDisplayNames,
       declaration.typeParameterConstraints,
+      declaration.async,
+      declaration.errorType?.name,
     );
   }
   if (declaration.kind === "struct" || declaration.kind === "class") {
@@ -1643,6 +1655,8 @@ function declarationHover(
           fn.typeParameters,
           typeDisplayNames,
           fn.typeParameterConstraints,
+          fn.async,
+          fn.errorType?.name,
         ),
         source,
         start,
@@ -1699,9 +1713,13 @@ function zFunctionDetail(
   typeParameters: readonly string[] = [],
   typeDisplayNames: ReadonlyMap<string, string> = new Map(),
   typeParameterConstraints: readonly TypeParameterConstraint[] = [],
+  isAsync = false,
+  errorType: string | undefined = undefined,
 ): string {
   const generic = formatTypeParameters(typeParameters, typeParameterConstraints, typeDisplayNames);
-  return `function ${name}${generic}(${parameters.map((item) => `${item.name}: ${displayType(item.type.name, typeDisplayNames)}`).join(", ")}): ${displayType(returnType, typeDisplayNames)}`;
+  const asyncPrefix = isAsync ? "async " : "";
+  const throws = errorType ? ` throws ${displayType(errorType, typeDisplayNames)}` : "";
+  return `${asyncPrefix}function ${name}${generic}(${parameters.map((item) => `${item.name}: ${displayType(item.type.name, typeDisplayNames)}`).join(", ")}): ${displayType(returnType, typeDisplayNames)}${throws}`;
 }
 
 function methodDetail(
@@ -1711,6 +1729,7 @@ function methodDetail(
 ): string {
   const visibility = method.visibility ?? "public";
   const staticPrefix = method.static ? " static" : "";
+  const asyncPrefix = method.async ? " async" : "";
   const inferredOwnerParameters = method.static
     ? [...substitutions].filter(([parameter, value]) => parameter === value).map(([parameter]) => parameter)
     : [];
@@ -1724,7 +1743,7 @@ function methodDetail(
   const throws = method.errorType
     ? ` throws ${displaySubstitutedType(method.errorType.name, substitutions, typeDisplayNames)}`
     : "";
-  return `${visibility}${staticPrefix} function ${method.name}${generic}(${parameters.join(", ")}): ${result}${throws}`;
+  return `${visibility}${staticPrefix}${asyncPrefix} function ${method.name}${generic}(${parameters.join(", ")}): ${result}${throws}`;
 }
 
 function formatTypeParameters(
@@ -1761,6 +1780,8 @@ function displayType(type: string, typeDisplayNames: ReadonlyMap<string, string>
   if (functionType) return functionType;
   const weak = parseWeakType(type);
   if (weak) return `Weak<${displayType(weak.target, typeDisplayNames)}>`;
+  const task = parseTaskType(type);
+  if (task) return displayTaskType(task, (nested) => displayType(nested, typeDisplayNames));
   const generic = parseGenericType(type);
   if (generic) return `${generic.base}<${generic.arguments.map((argument) => displayType(argument, typeDisplayNames)).join(", ")}>`;
   const array = parseFixedArrayType(type);
