@@ -4449,6 +4449,9 @@ test("editor grammar tracks keywords without reserving Result variants", () => {
   const matchPattern = grammar.repository.matchPatterns.patterns
     .map((pattern: { match: string }) => pattern.match)
     .join(" ");
+  const matchScopes = grammar.repository.matchPatterns.patterns
+    .map((pattern: { name: string }) => pattern.name)
+    .join(" ");
   assert.match(keywordPattern, /throw/);
   assert.match(keywordPattern, /attempt/);
   assert.match(keywordPattern, /yield/);
@@ -4479,6 +4482,7 @@ test("editor grammar tracks keywords without reserving Result variants", () => {
   assert.match(operatorPattern, /=/);
   assert.match(operatorScopes, /keyword\.operator\.arrow\.z/);
   assert.match(matchPattern, /=>/);
+  assert.match(matchScopes, /constant\.language\.enum-member\.z/);
   assert.match(typePattern, /Slice/);
   assert.match(typePattern, /Array/);
   assert.match(typePattern, /Option/);
@@ -4514,6 +4518,25 @@ test("checks Phase 0 async calls, scoped tasks, typed errors, and editor details
     hover(source, example, taskUse + 1)?.contents.value ?? "",
     /secondTask: Task<i32, NetworkError>/,
   );
+
+  const tokens = decodeSemanticTokens(semanticTokens(source, example).data);
+  for (const offset of [
+    source.indexOf("observed ="),
+    source.indexOf("baseline ="),
+    source.indexOf("secondTask ="),
+    source.indexOf("second ="),
+  ]) {
+    const position = positionForOffset(source, offset);
+    assert.ok(tokens.some((token) => token.type === semanticTokenTypes.indexOf("variable")
+      && token.line === position.line
+      && token.character === position.character));
+  }
+  for (const offset of [source.indexOf("success(value)"), source.indexOf("failure(error)")]) {
+    const position = positionForOffset(source, offset);
+    assert.ok(tokens.some((token) => token.type === semanticTokenTypes.indexOf("enumMember")
+      && token.line === position.line
+      && token.character === position.character));
+  }
 
   assert.throws(() => compileToC(source, example), (error: unknown) => {
     assert.ok(error instanceof DiagnosticError);
@@ -4556,6 +4579,41 @@ test("diagnoses unacknowledged async calls, unscoped spawn, and async borrows", 
     assert.ok(error instanceof DiagnosticError);
     assert.equal(error.code, "Z0701");
     assert.match(error.message, /await requires an async call or Task value/);
+    return true;
+  });
+
+  const synchronousScope = `function use(): i32 { async scope {} return 42; }`;
+  assert.throws(() => check(synchronousScope, "async-sync-scope.z"), (error: unknown) => {
+    assert.ok(error instanceof DiagnosticError);
+    assert.equal(error.code, "Z0703");
+    assert.match(error.message, /async scope requires an enclosing async function/);
+    return true;
+  });
+});
+
+test("checks retained class receivers and consuming struct receivers in async methods", () => {
+  const source = `
+    class Client {
+      id: i32;
+      async function load(): i32 { return this.id; }
+    }
+    struct Request {
+      id: i32;
+      async function send(move this): i32 { return this.id; }
+    }
+    async function use(client: Client, request: Request): i32 {
+      const left = await client.load();
+      const right = await request.send();
+      return left + right;
+    }
+  `;
+  check(source, "async-methods.z");
+
+  const borrowedStruct = source.replace("send(move this)", "send()");
+  assert.throws(() => check(borrowedStruct, "async-borrowed-method.z"), (error: unknown) => {
+    assert.ok(error instanceof DiagnosticError);
+    assert.equal(error.code, "Z0704");
+    assert.match(error.message, /async struct method must take ownership with `move this`/);
     return true;
   });
 });

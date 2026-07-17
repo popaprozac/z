@@ -773,6 +773,7 @@ function collectBindings(context: AnalyzedSource): Binding[] {
         if (statement.elseBranch?.kind === "if") visitStatements([statement.elseBranch]);
       }
       if (statement.kind === "while") visitStatements(statement.body.statements);
+      if (statement.kind === "asyncScope") visitStatements(statement.body.statements);
       if (statement.kind === "for") {
         bindings.push({
           name: statement.binding,

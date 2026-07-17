@@ -22,6 +22,13 @@ const user = try await fetchUser(id); // sequential suspension
 fetchUser(id);                        // error: requires await or spawn
 ```
 
+`await fetchUser(id)` starts the operation as sequential work in the current
+task. It may run synchronously until its first actual suspension. `spawn
+fetchUser(id)` schedules a child immediately; the returned task is hot.
+`await userTask` later joins that child, returning immediately if it has already
+completed or suspending only the current task until it does. It does not block
+the executor's OS thread.
+
 Concurrency is explicit and structured:
 
 ```z
@@ -39,6 +46,14 @@ async scope {
 Children cannot outlive their scope. Failure cancels siblings and all task-frame
 locals are deterministically destroyed before the scope exits. Detached tasks
 require an explicit program-owned supervisor.
+
+`async function` permits suspension; `async scope` introduces a lexical region
+of concurrent child ownership. A scope therefore requires an async parent:
+leaving it implicitly joins its children and may suspend. `return` inside the
+scope still exits the enclosing function, but only after outstanding children
+are cancelled or joined and their frames are cleaned up. A future synchronous
+bridge for starting an async root will be an explicit blocking runtime API, not
+ordinary `async scope` syntax.
 
 `spawn` accepts exactly one direct async call and produces a scope-bound
 `Task<T>` or `Task<T, E>`. The task's source-level success and error types are
@@ -61,6 +76,11 @@ owned closures in task frames. It rejects `in`, `inout`, `out`, `Slice<T>`, and
 borrowed struct receivers in async signatures, and rejects any other live
 borrow at an `await`. Scoped async borrowing can be added later from real
 zero-copy APIs without exposing general lifetime syntax.
+
+Classes and structs may declare async methods. A class receiver is retained by
+the task frame. A struct async instance method must initially declare `move
+this`, transferring its value into the frame; static async methods on either
+kind have no receiver restriction. `deinit` is never async.
 
 Typed channels transfer ownership:
 

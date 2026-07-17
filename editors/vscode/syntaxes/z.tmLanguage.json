@@ -100,7 +100,7 @@
     },
     "matchPatterns": {
       "patterns": [{
-        "name": "constant.other.enum.variant.z",
+        "name": "constant.language.enum-member.z",
         "match": "\\b[A-Za-z_][A-Za-z0-9_]*(?=\\s*(?:\\([^)]*\\))?\\s*=>)"
       }]
     },
