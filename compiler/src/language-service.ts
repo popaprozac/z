@@ -385,6 +385,16 @@ export function hover(source: string, fileName: string, offset: number): Hover |
       word.end,
     );
   }
+  const matchBinding = collectMatchArmInfos(context).find((item) => item.bindingOffset === word.start);
+  if (matchBinding?.binding && matchBinding.payloadType) {
+    const capability = matchBinding.borrowed ? "in " : "";
+    return markdownHover(
+      `${capability}${matchBinding.binding}: ${displayType(matchBinding.payloadType, context.typeDisplayNames)}`,
+      source,
+      word.start,
+      word.end,
+    );
+  }
 
   const module = context.foreignModules.get(word.text);
   if (module) {
@@ -765,6 +775,7 @@ type MatchArmInfo = {
   readonly bindingFileName?: string;
   readonly enumName: string;
   readonly payloadType: string | null;
+  readonly borrowed: boolean;
 };
 
 function collectMatchArmInfos(context: AnalyzedSource): MatchArmInfo[] {
@@ -777,6 +788,7 @@ function collectMatchArmInfos(context: AnalyzedSource): MatchArmInfo[] {
     }
     const node = value as Record<string, unknown>;
     if ((node.kind === "match" || node.kind === "matchExpression") && node.expression && Array.isArray(node.arms)) {
+      const borrowed = node.mode === "in";
       const subject = node.expression as { readonly location?: SourceLocation };
       const enumName = subject.location
         ? context.semanticInfo.expressionTypes.get(subject.location.offset)
@@ -800,6 +812,7 @@ function collectMatchArmInfos(context: AnalyzedSource): MatchArmInfo[] {
             bindingFileName: arm.bindingLocation?.fileName,
             enumName,
             payloadType: variant.payload?.name ?? null,
+            borrowed,
           });
         }
       }

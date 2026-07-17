@@ -3125,7 +3125,7 @@ test("moves, matches, nests, and destroys cleanup-bearing enum payloads", () => 
   assert.equal(result.status, 0, result.stderr);
   assert.equal(
     result.stdout,
-    "released resource 40\ncaptured ResourceState.ready(Resource { id: 42 })\nreleased resource 42\nreleased resource 41\nreleased session 7\n",
+    "released resource 40\nreleased resource 42\nreleased resource 41\nreleased session 7\n",
   );
 
   const generated = compileToC(source, example);
@@ -3134,6 +3134,8 @@ test("moves, matches, nests, and destroys cleanup-bearing enum payloads", () => 
   assert.match(generated, /case Z_SessionOption_some:[\s\S]*Z_Session_release/);
   assert.match(generated, /Z_Container_deinit/);
   assert.match(generated, /Z_ClosureEnv_\d+_release[\s\S]*case Z_ResourceState_ready/);
+  assert.match(generated, /const Z_ResourceState \*_z_match_\d+ = &\(\(\*state\)\)/);
+  assert.match(generated, /Z_Session \* const session = _z_match_\d+->data\.some/);
 
   const moved = source.replace(
     "  const consumed = consume(state);",
@@ -3142,6 +3144,57 @@ test("moves, matches, nests, and destroys cleanup-bearing enum payloads", () => 
   assert.throws(
     () => compileToC(moved, "owned-enum-move.z"),
     /use of moved value "resource"/,
+  );
+
+  const borrowedBinding = source.indexOf("resource => resource.id", source.indexOf("function inspect")) + 1;
+  assert.match(hover(source, example, borrowedBinding)?.contents.value ?? "", /in resource: Resource/);
+
+  const borrowedTemporary = `
+    enum Choice { some i32, none, }
+    function main(): i32 {
+      return match in Choice.some(42) {
+        some value => value;
+        none => -1;
+      };
+    }
+  `;
+  assert.throws(
+    () => compileToC(borrowedTemporary, "borrowed-match-temporary.z"),
+    /match in requires stored enum storage/,
+  );
+
+  const borrowedMove = `
+    struct Item { id: i32; deinit {} }
+    enum Choice { some Item, none, }
+    function take(in choice: Choice): Item {
+      return match in choice {
+        some item => item;
+        none => Item { id: 0 };
+      };
+    }
+    function main(): i32 { return 0; }
+  `;
+  assert.throws(
+    () => compileToC(borrowedMove, "borrowed-match-move.z"),
+    /cannot move borrowed match binding "item"/,
+  );
+
+  const borrowedMutation = `
+    enum Choice { some i32, none, }
+    function reset(inout choice: Choice): i32 {
+      match in choice {
+        some value => {
+          choice = Choice.none;
+          return value;
+        }
+        none => return 0;
+      }
+    }
+    function main(): i32 { return 0; }
+  `;
+  assert.throws(
+    () => compileToC(borrowedMutation, "borrowed-match-mutation.z"),
+    /cannot assign to immutable binding "choice"/,
   );
 });
 

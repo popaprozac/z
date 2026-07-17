@@ -38,8 +38,17 @@ function consume(state: ResourceState): i32 {
 }
 
 function inspect(in state: ResourceState): i32 {
-  console.log(`captured ${state}`);
-  return 42;
+  return match in state {
+    ready resource => resource.id;
+    empty => -1;
+  };
+}
+
+function inspectSession(in option: SessionOption): i32 {
+  return match in option {
+    some session => session.id;
+    none => -1;
+  };
 }
 
 function main(): i32 {
@@ -49,6 +58,7 @@ function main(): i32 {
 
   const session = Session { id: 7 };
   const option = SessionOption.some(session);
+  const borrowedObserved = inspectSession(option);
   const observed = match option {
     some value => value.id;
     none => -1;
@@ -63,7 +73,7 @@ function main(): i32 {
   const reader: () => i32 = move (): i32 => inspect(captured);
   const capturedValue = reader();
 
-  if (consumed == 40 && observed == 7 && capturedValue == 42) {
+  if (consumed == 40 && borrowedObserved == 7 && observed == 7 && capturedValue == 42) {
     return 0;
   }
   return 1;

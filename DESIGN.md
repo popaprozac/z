@@ -221,6 +221,14 @@ An owned closure breaks a class/closure cycle by capturing a `Weak<T>` value.
 Capture-list sugar, automatic ORC cycle collection, and atomic cross-thread
 weak upgrades remain separate future layers.
 
+Pattern matching exposes ownership explicitly. `match value` consumes a
+cleanup-bearing enum and transfers its active payload to the arm binding.
+`match in value` requires stable stored enum storage, leaves the owner alive,
+and presents cleanup-bearing payloads as immutable borrows for the duration of
+the arm. Borrowed payloads cannot move out, and the matched root cannot be
+mutated while an arm is inspecting its storage. Copyable payloads may still be
+copied from the borrowed union.
+
 `trait` declarations contain method signatures, including receiver capability,
 parameter capability, return type, and error type. `struct T implements X` and
 `class T implements X` are checked explicitly and nominally. Generic parameters

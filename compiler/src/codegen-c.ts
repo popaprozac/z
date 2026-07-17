@@ -2412,20 +2412,31 @@ function generateMatch(statement: Extract<Statement, { kind: "match" }>, context
   const declaration = context.enums.get(type)!;
   const temporary = `_z_match_${context.matchCounter.value++}`;
   const subject = generateExpression(statement.expression, context);
+  const borrowed = statement.mode === "in";
+  const access = borrowed ? `${temporary}->` : `${temporary}.`;
   const arms = statement.arms.map((arm) => {
     const variant = declaration.variants.find((candidate) => candidate.name === arm.variantName)!;
     const armTypes = new Map(context.localTypes);
+    const armModes = new Map(context.parameterModes);
     if (variant.payload && arm.binding) armTypes.set(arm.binding, variant.payload.name);
+    const borrowedPayload = Boolean(borrowed && variant.payload && hasCleanupType(
+      variant.payload.name,
+      context.structs,
+      context.enums,
+      context.semanticInfo.foreignTypes,
+    ));
+    if (borrowedPayload && arm.binding) armModes.set(arm.binding, "in");
     const armContext = {
       ...context,
       localTypes: armTypes,
+      parameterModes: armModes,
       liveFlags: new Map(context.liveFlags),
       cleanupScopes: [...context.cleanupScopes, []],
     };
     let binding = variant.payload && arm.binding
-      ? `\n    ${generateLocalDeclaration(variant.payload.name, arm.binding, false, context.structs, context.enums, context.semanticInfo.foreignNamedTypes)} = ${temporary}.data.${variant.name};\n    (void)${cBindingName(arm.binding)};`
+      ? `\n    ${generateMatchBinding(variant.payload.name, arm.binding, `${access}data.${variant.name}`, borrowedPayload, context)}\n    (void)${cBindingName(arm.binding)};`
       : "";
-    if (variant.payload && arm.binding && hasCleanupType(variant.payload.name, context.structs, context.enums, context.semanticInfo.foreignTypes)) {
+    if (!borrowed && variant.payload && arm.binding && hasCleanupType(variant.payload.name, context.structs, context.enums, context.semanticInfo.foreignTypes)) {
       const liveFlag = ensureLiveFlag(arm.binding, armContext);
       armContext.cleanupScopes.at(-1)!.push({ name: arm.binding, type: variant.payload.name, liveFlag });
       binding += `\n    bool ${liveFlag} = true;`;
@@ -2438,7 +2449,10 @@ function generateMatch(statement: Extract<Statement, { kind: "match" }>, context
     const lines = [body, cleanup, statementTerminates(arm.body) ? "" : "break;"].filter(Boolean).join("\n");
     return `  case ${variantTag(type, variant.name)}: {${binding}\n${indent(lines, 4)}\n  }`;
   }).join("\n");
-  return `const ${enumName(type)} ${temporary} = ${subject};\nswitch (${temporary}.tag) {\n${arms}\n}`;
+  const storage = borrowed
+    ? `const ${enumName(type)} *${temporary} = &(${subject});`
+    : `const ${enumName(type)} ${temporary} = ${subject};`;
+  return `${storage}\nswitch (${access}tag) {\n${arms}\n}`;
 }
 
 function generateMatchExpression(
@@ -2451,20 +2465,31 @@ function generateMatchExpression(
   const declaration = context.enums.get(type)!;
   const temporary = `_z_match_${context.matchCounter.value++}`;
   const subject = generateExpression(expression.expression, context);
+  const borrowed = expression.mode === "in";
+  const access = borrowed ? `${temporary}->` : `${temporary}.`;
   const arms = expression.arms.map((arm) => {
     const variant = declaration.variants.find((candidate) => candidate.name === arm.variantName)!;
     const armTypes = new Map(context.localTypes);
+    const armModes = new Map(context.parameterModes);
     if (variant.payload && arm.binding) armTypes.set(arm.binding, variant.payload.name);
+    const borrowedPayload = Boolean(borrowed && variant.payload && hasCleanupType(
+      variant.payload.name,
+      context.structs,
+      context.enums,
+      context.semanticInfo.foreignTypes,
+    ));
+    if (borrowedPayload && arm.binding) armModes.set(arm.binding, "in");
     const armContext = {
       ...context,
       localTypes: armTypes,
+      parameterModes: armModes,
       liveFlags: new Map(context.liveFlags),
       cleanupScopes: [...context.cleanupScopes, []],
     };
     let binding = variant.payload && arm.binding
-      ? `\n    ${generateLocalDeclaration(variant.payload.name, arm.binding, false, context.structs, context.enums, context.semanticInfo.foreignNamedTypes)} = ${temporary}.data.${variant.name};\n    (void)${cBindingName(arm.binding)};`
+      ? `\n    ${generateMatchBinding(variant.payload.name, arm.binding, `${access}data.${variant.name}`, borrowedPayload, context)}\n    (void)${cBindingName(arm.binding)};`
       : "";
-    if (variant.payload && arm.binding && hasCleanupType(variant.payload.name, context.structs, context.enums, context.semanticInfo.foreignTypes)) {
+    if (!borrowed && variant.payload && arm.binding && hasCleanupType(variant.payload.name, context.structs, context.enums, context.semanticInfo.foreignTypes)) {
       const liveFlag = ensureLiveFlag(arm.binding, armContext);
       armContext.cleanupScopes.at(-1)!.push({ name: arm.binding, type: variant.payload.name, liveFlag });
       binding += `\n    bool ${liveFlag} = true;`;
@@ -2480,7 +2505,27 @@ function generateMatchExpression(
     ].filter(Boolean).join("\n");
     return `  case ${variantTag(type, variant.name)}: {${binding}\n${indent(lines, 4)}\n  }`;
   }).join("\n");
-  return `const ${enumName(type)} ${temporary} = ${subject};\nswitch (${temporary}.tag) {\n${arms}\n}`;
+  const storage = borrowed
+    ? `const ${enumName(type)} *${temporary} = &(${subject});`
+    : `const ${enumName(type)} ${temporary} = ${subject};`;
+  return `${storage}\nswitch (${access}tag) {\n${arms}\n}`;
+}
+
+function generateMatchBinding(
+  type: string,
+  name: string,
+  payload: string,
+  borrowed: boolean,
+  context: GenerationContext,
+): string {
+  if (!borrowed) {
+    return `${generateLocalDeclaration(type, name, false, context.structs, context.enums, context.semanticInfo.foreignNamedTypes)} = ${payload};`;
+  }
+  if (context.structs.get(type)?.kind === "class") {
+    return `${generateLocalDeclaration(type, name, false, context.structs, context.enums, context.semanticInfo.foreignNamedTypes)} = ${payload};`;
+  }
+  const mapped = mapType(type, context.structs, context.enums, context.semanticInfo.foreignNamedTypes);
+  return `${mapped} const *${cBindingName(name)} = &(${payload});`;
 }
 
 function generateIfExpression(

@@ -298,8 +298,9 @@ export function parse(tokens: Token[], fileName: string): Program {
     }
     if (match("match")) {
       const token = previous();
+      const mode = match("in") ? "in" : "value";
       const expression = parseExpression();
-      return { kind: "matchExpression", expression, arms: parseMatchArms(), location: token.location };
+      return { kind: "matchExpression", mode, expression, arms: parseMatchArms(), location: token.location };
     }
     if (match("attempt")) {
       const token = previous();
@@ -586,8 +587,9 @@ export function parse(tokens: Token[], fileName: string): Program {
     }
     if (match("match")) {
       const matchToken = previous();
+      const mode = match("in") ? "in" : "value";
       const expression = parseExpression();
-      return { kind: "match", expression, arms: parseMatchArms(), location: matchToken.location };
+      return { kind: "match", mode, expression, arms: parseMatchArms(), location: matchToken.location };
     }
     if (match("leftBrace")) {
       const blockToken = previous();

@@ -215,6 +215,7 @@ export type ContinueStatement = {
 
 export type MatchStatement = {
   readonly kind: "match";
+  readonly mode: "value" | "in";
   readonly expression: Expression;
   readonly arms: MatchArm[];
   readonly location: SourceLocation;
@@ -399,6 +400,7 @@ export type TryExpression = {
 
 export type MatchExpression = {
   readonly kind: "matchExpression";
+  readonly mode: "value" | "in";
   readonly expression: Expression;
   readonly arms: MatchArm[];
   readonly location: SourceLocation;

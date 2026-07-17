@@ -177,7 +177,7 @@ type AnalysisState = {
   readonly frameworks: readonly string[];
   readonly loopStack: LoopAnalysisFrame[];
   readonly moveOrigins: Map<string, SourceLocation>;
-  readonly borrowOrigins: Map<string, { readonly location: SourceLocation; readonly kind: "closure" | "iteration" }>;
+  readonly borrowOrigins: Map<string, { readonly location: SourceLocation; readonly kind: "closure" | "iteration" | "match" }>;
   readonly iterationBorrowOrigins: Map<string, SourceLocation>;
 };
 
@@ -1059,7 +1059,15 @@ function analyzeStatement(
       if (!declaration) {
         throw new DiagnosticError(fileName, statement.expression.location, `match requires an enum value, found ${subjectType}`);
       }
-      if (hasCleanupType(subjectType, structs, enums, state.foreignTypes)) {
+      const borrowedRoot = statement.mode === "in" ? storageRoot(statement.expression) : null;
+      const borrowedRootType = borrowedRoot ? locals.get(borrowedRoot.name) : null;
+      if (statement.mode === "in" && (!borrowedRoot || !borrowedRootType)) {
+        throw new DiagnosticError(fileName, statement.expression.location, "match in requires stored enum storage", {
+          code: "Z0230",
+          helps: ["bind the enum value before borrowing it, or omit `in` to consume the value"],
+        });
+      }
+      if (statement.mode === "value" && hasCleanupType(subjectType, structs, enums, state.foreignTypes)) {
         consumeOwnedValue(statement.expression, subjectType, locals, structs, enums, fileName, state);
       }
       const covered = new Set<string>();
@@ -1074,12 +1082,29 @@ function analyzeStatement(
         }
         if (arm.binding && arm.bindingLocation) validateUserName(arm.binding, arm.bindingLocation, fileName);
         const armLocals = new Map(locals);
+        if (borrowedRoot && borrowedRootType) {
+          armLocals.set(borrowedRoot.name, `${borrowedPrefix}${underlyingType(borrowedRootType)}`);
+        }
         if (variant.payload && arm.binding && arm.bindingLocation) {
-          armLocals.set(arm.binding, variant.payload.name);
+          armLocals.set(arm.binding, statement.mode === "in" ? `${borrowedPrefix}${variant.payload.name}` : variant.payload.name);
           state.bindingTypes.set(arm.bindingLocation.offset, variant.payload.name);
         }
-        analyzeStatement(arm.body, owner, armLocals, globals, structs, enums, fileName, state);
-        if (!statementStopsFlow(arm.body)) continuing.push(armLocals);
+        const previousBorrow = arm.binding ? state.borrowOrigins.get(arm.binding) : null;
+        if (statement.mode === "in" && arm.binding) {
+          state.borrowOrigins.set(arm.binding, { location: statement.location, kind: "match" });
+        }
+        try {
+          analyzeStatement(arm.body, owner, armLocals, globals, structs, enums, fileName, state);
+        } finally {
+          if (arm.binding) {
+            if (previousBorrow) state.borrowOrigins.set(arm.binding, previousBorrow);
+            else state.borrowOrigins.delete(arm.binding);
+          }
+        }
+        if (!statementStopsFlow(arm.body)) {
+          if (borrowedRoot && borrowedRootType) armLocals.set(borrowedRoot.name, borrowedRootType);
+          continuing.push(armLocals);
+        }
       }
       const missing = declaration.variants.find((variant) => !covered.has(variant.name));
       if (missing) throw new DiagnosticError(fileName, statement.location, `non-exhaustive match; missing ${declaration.name}.${missing.name}`);
@@ -1626,7 +1651,15 @@ function inferMatchExpression(
   if (!declaration) {
     throw new DiagnosticError(fileName, expression.expression.location, `match requires an enum value, found ${subjectType}`);
   }
-  if (hasCleanupType(subjectType, structs, enums, state.foreignTypes)) {
+  const borrowedRoot = expression.mode === "in" ? storageRoot(expression.expression) : null;
+  const borrowedRootType = borrowedRoot ? locals.get(borrowedRoot.name) : null;
+  if (expression.mode === "in" && (!borrowedRoot || !borrowedRootType)) {
+    throw new DiagnosticError(fileName, expression.expression.location, "match in requires stored enum storage", {
+      code: "Z0230",
+      helps: ["bind the enum value before borrowing it, or omit `in` to consume the value"],
+    });
+  }
+  if (expression.mode === "value" && hasCleanupType(subjectType, structs, enums, state.foreignTypes)) {
     consumeOwnedValue(expression.expression, subjectType, locals, structs, enums, fileName, state);
   }
 
@@ -1643,12 +1676,28 @@ function inferMatchExpression(
     }
     if (arm.binding && arm.bindingLocation) validateUserName(arm.binding, arm.bindingLocation, fileName);
     const armLocals = new Map(locals);
+    if (borrowedRoot && borrowedRootType) {
+      armLocals.set(borrowedRoot.name, `${borrowedPrefix}${underlyingType(borrowedRootType)}`);
+    }
     if (variant.payload && arm.binding && arm.bindingLocation) {
-      armLocals.set(arm.binding, variant.payload.name);
+      armLocals.set(arm.binding, expression.mode === "in" ? `${borrowedPrefix}${variant.payload.name}` : variant.payload.name);
       state.bindingTypes.set(arm.bindingLocation.offset, variant.payload.name);
     }
-    const armType = inferValueArm(arm.body, owner, armLocals, globals, structs, enums, fileName, state);
+    const previousBorrow = arm.binding ? state.borrowOrigins.get(arm.binding) : null;
+    if (expression.mode === "in" && arm.binding) {
+      state.borrowOrigins.set(arm.binding, { location: expression.location, kind: "match" });
+    }
+    let armType: ValueType = "never";
+    try {
+      armType = inferValueArm(arm.body, owner, armLocals, globals, structs, enums, fileName, state);
+    } finally {
+      if (arm.binding) {
+        if (previousBorrow) state.borrowOrigins.set(arm.binding, previousBorrow);
+        else state.borrowOrigins.delete(arm.binding);
+      }
+    }
     if (armType !== "never") {
+      if (borrowedRoot && borrowedRootType) armLocals.set(borrowedRoot.name, borrowedRootType);
       continuing.push(armLocals);
       if (resultType === "never" || resultType === "unknown") resultType = armType;
       else if (armType !== "unknown" && armType !== resultType) {
@@ -2992,6 +3041,15 @@ function consumeOwnedValue(
         labels: [{ location: borrow.location, message: "for...of borrows cleanup-bearing elements here", length: 3 }],
         notes: ["moving an element would leave a hole in collection storage that still owns its elements"],
         helps: ["borrow the element with an `in` parameter inside the loop; explicit element removal is a future collection operation"],
+      });
+    }
+    if (borrow?.kind === "match") {
+      throw new DiagnosticError(fileName, expression.location, `cannot move borrowed match binding ${JSON.stringify(expression.name)}`, {
+        code: "Z0231",
+        length: expression.name.length,
+        labels: [{ location: borrow.location, message: "borrowed match begins here", length: 5 }],
+        notes: ["`match in` inspects payload storage without taking it out of the enum"],
+        helps: ["omit `in` from the match when the enum and its payload should be consumed"],
       });
     }
     throw new DiagnosticError(fileName, expression.location, `cannot move borrowed parameter ${JSON.stringify(expression.name)}`, {

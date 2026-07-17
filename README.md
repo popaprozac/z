@@ -293,6 +293,24 @@ Enums may be stored directly in structs and fixed arrays or used as another
 enum's payload. The compiler orders generated native definitions from their
 value dependencies and rejects recursive struct/enum layouts.
 
+An ordinary match consumes a cleanup-bearing enum and transfers its active
+payload into the selected arm. Use `match in` to inspect stored enum storage
+without consuming either the enum or its payload:
+
+```z
+function resourceId(in state: ResourceState): i32 {
+  return match in state {
+    ready resource => resource.id;
+    empty => -1;
+  };
+}
+```
+
+Cleanup-bearing bindings introduced by `match in` are immutable borrows. They
+can be read or passed to `in` parameters, but cannot be moved out. The original
+enum remains available after the match. Borrowing a temporary is rejected;
+bind it first or omit `in` to consume it.
+
 `match` can produce a value. A concise arm provides its expression directly;
 use `select` when an arm needs multiple statements:
 
