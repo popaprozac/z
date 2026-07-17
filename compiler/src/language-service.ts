@@ -1273,7 +1273,7 @@ function describeModuleMember(module: ForeignModule, name: string): string | nul
 
 function foreignFunctionDetail(declaration: ForeignFunction): string {
   const parameters = declaration.parameters
-    .filter((parameter) => parameter.type.kind !== "callbackContext")
+    .filter((parameter) => parameter.type.kind !== "callbackContext" && parameter.type.kind !== "callbackRelease")
     .map((parameter, index) => (
       `${parameter.name ?? `argument${index + 1}`}: ${foreignTypeName(parameter.type)}`
     ));

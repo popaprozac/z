@@ -75,7 +75,43 @@ All indexes are zero-based. `parameter` identifies the C function's hidden
 the callback signature. The generated trampoline casts the native context back
 to the borrowed Z function value and invokes its `call` entry with the owned
 environment. Since the lifetime is call-only, the caller keeps the ARC owner
-alive and no native retain/release protocol is invented. Escaping callbacks
-still need retention and unregistration rules; callback-to-async additionally
-requires completion cardinality, threading, cancellation, and executor
-metadata.
+alive and no native retain/release protocol is invented.
+
+The first escaping tier requires the C API to accept a destroy callback:
+
+```json
+{
+  "functions": {
+    "retainOperation": {
+      "parameters": {
+        "0": {
+          "callback": {
+            "lifetime": "escape",
+            "thread": "caller",
+            "context": {
+              "parameter": 1,
+              "callbackParameter": 1
+            },
+            "release": {
+              "parameter": 2,
+              "callbackParameter": 0
+            }
+          }
+        }
+      }
+    }
+  }
+}
+```
+
+Z retains the function value in a stable heap box and passes generated callback
+and release thunks. The local function value can then leave scope while C owns
+the box. C must take ownership unconditionally, invoke both callbacks only on
+the thread that registered them, call release exactly once after the final
+invocation, and never invoke the callback afterward. Those requirements are a
+trusted foreign contract, just like pointer ownership API notes.
+
+Cross-thread callbacks wait for atomic ARC and sendability rules. Conditional
+ownership transfer and APIs that require a separate unregister call need an
+owned registration-token model. Callback-to-async additionally requires
+completion cardinality, cancellation, and executor metadata.

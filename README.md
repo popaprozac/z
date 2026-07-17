@@ -811,6 +811,26 @@ context plumbing from the Z signature and argument list. The backend emits a
 typed trampoline plus the closure value's address as the native context
 argument.
 
+An escaping callback is also ergonomic when C accepts a destroy callback:
+
+```z
+function installRetainedOperation(): void {
+  const offset = Offset { value: 2 };
+  const operation: (value: i32) => i32 =
+    move (value: i32): i32 => value + offset.value;
+  retainOperation(operation);
+}
+
+installRetainedOperation();
+const answer = invokeRetainedOperation(40);
+clearRetainedOperation(); // releases the retained closure and captured Offset
+```
+
+For this tier, API notes declare `lifetime: "escape"`, `thread: "caller"`,
+and paired context and release parameters. Z heap-boxes and retains the function
+value automatically. C receives a generated destroy thunk and must call it
+exactly once after the final callback invocation.
+
 The complete example keeps the Z source, C header, and API notes beside one
 another:
 
@@ -821,7 +841,8 @@ bun run z emit examples/callbacks.z # inspect the generated C
 
 - `examples/callbacks.z` passes the Z function.
 - `examples/callbacks.h` declares `BinaryOperation` and invokes it.
-- `examples/callbacks.h.zapi.json` states that C does not retain the callback.
+- `examples/callbacks.h.zapi.json` describes both call-only and retained
+  callback lifetimes.
 
 Because a C header does not say whether a callback is retained, the parameter
 must have a sidecar API note with `"callback": { "lifetime": "call" }`. That
@@ -830,8 +851,12 @@ function returns. Named functions and directly bound non-capturing closures
 still lower to raw C function pointers for context-free callbacks. For a paired
 call-only context, the generated trampoline borrows the Z function value for
 the duration of the native call; its owned ARC environment stays alive in the
-caller. Unannotated, escaping, variadic, and calling-convention-specific C
-callbacks remain unsupported until their adapter rules exist.
+caller. Unannotated callback lifetimes plus variadic and
+calling-convention-specific callbacks remain unsupported. Escaping callbacks
+are supported only for caller-thread APIs that unconditionally take ownership
+and provide an exactly-once destroy callback. Cross-thread callbacks,
+conditional ownership transfer, and unregister-shaped APIs without a native
+destroy notification remain unsupported.
 
 Unions, anonymous or incomplete layouts, plain `char` signedness, arrays,
 bitfield-specific validation, and pointers stored inside records remain

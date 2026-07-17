@@ -30,6 +30,24 @@
           }
         }
       }
+    },
+    "z_register_context_callback": {
+      "parameters": {
+        "0": {
+          "callback": {
+            "lifetime": "escape",
+            "thread": "caller",
+            "context": {
+              "parameter": 1,
+              "callbackParameter": 1
+            },
+            "release": {
+              "parameter": 2,
+              "callbackParameter": 0
+            }
+          }
+        }
+      }
     }
   }
 }

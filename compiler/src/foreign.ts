@@ -14,6 +14,7 @@ export type ForeignType =
   | { readonly kind: "named"; readonly type: ForeignNamedType; readonly cName: string }
   | ForeignCallbackType
   | ForeignCallbackContextType
+  | ForeignCallbackReleaseType
   | ForeignObjectType
   | ForeignRecordPointerType
   | ForeignPointerType
@@ -117,15 +118,26 @@ export type ForeignCallbackType = {
   readonly cName: string;
   readonly parameters: readonly ForeignType[];
   readonly returnType: ForeignType;
-  readonly lifetime: "call";
+  readonly lifetime: "call" | "escape";
   readonly context: {
     readonly parameter: number;
     readonly callbackParameter: number;
   } | null;
+  readonly release: {
+    readonly parameter: number;
+    readonly callbackParameter: number;
+  } | null;
+  readonly thread: "caller" | null;
 };
 
 export type ForeignCallbackContextType = {
   readonly kind: "callbackContext";
+  readonly cName: string;
+  readonly callbackParameter: number;
+};
+
+export type ForeignCallbackReleaseType = {
+  readonly kind: "callbackRelease";
   readonly cName: string;
   readonly callbackParameter: number;
 };
@@ -171,8 +183,13 @@ type PointerNote = {
   readonly nullable?: boolean;
   readonly release?: string;
   readonly callback?: {
-    readonly lifetime?: "call";
+    readonly lifetime?: "call" | "escape";
+    readonly thread?: "caller";
     readonly context?: {
+      readonly parameter?: number;
+      readonly callbackParameter?: number;
+    };
+    readonly release?: {
       readonly parameter?: number;
       readonly callbackParameter?: number;
     };
@@ -294,8 +311,29 @@ function readHeader(
     const parameterNodes = (node.inner ?? [])
       .filter((child) => child.kind === "ParmVarDecl" && child.type?.qualType);
     const callbackContexts = new Map<number, number>();
+    const callbackReleases = new Map<number, { callbackParameter: number; releaseContextParameter: number }>();
     for (let callbackParameter = 0; callbackParameter < parameterNodes.length; callbackParameter += 1) {
-      const context = functionNotes?.parameters?.[String(callbackParameter)]?.callback?.context;
+      const callback = functionNotes?.parameters?.[String(callbackParameter)]?.callback;
+      if (!callback) continue;
+      if (callback.lifetime === "escape" && (!callback.context || !callback.release || callback.thread !== "caller")) {
+        throw new DiagnosticError(
+          fileName,
+          declaration.location,
+          `escaping callback API notes for ${JSON.stringify(node.name)} require caller-thread context and release contracts`,
+          {
+            code: "Z0214",
+            helps: ["declare thread: caller plus valid context and release parameter pairs, or keep the callback call-only"],
+          },
+        );
+      }
+      if (callback.lifetime !== "escape" && (callback.release || callback.thread)) {
+        throw new DiagnosticError(
+          fileName,
+          declaration.location,
+          `call-only callback API notes for ${JSON.stringify(node.name)} cannot declare escape release or threading contracts`,
+        );
+      }
+      const context = callback.context;
       if (!context) continue;
       if (
         !Number.isInteger(context.parameter)
@@ -325,19 +363,47 @@ function readHeader(
         );
       }
       callbackContexts.set(context.parameter!, callbackParameter);
+      const release = callback.release;
+      if (!release) continue;
+      if (
+        !Number.isInteger(release.parameter)
+        || !Number.isInteger(release.callbackParameter)
+        || release.parameter! < 0
+        || release.parameter! >= parameterNodes.length
+        || release.callbackParameter! < 0
+        || release.parameter === callbackParameter
+        || release.parameter === context.parameter
+        || callbackReleases.has(release.parameter!)
+      ) {
+        throw new DiagnosticError(
+          fileName,
+          declaration.location,
+          `API notes for ${JSON.stringify(node.name)} contain an invalid callback release pair`,
+        );
+      }
+      callbackReleases.set(release.parameter!, {
+        callbackParameter,
+        releaseContextParameter: release.callbackParameter!,
+      });
     }
     const parameters = parameterNodes.map((child, index) => ({
       name: child.name ?? null,
       type: callbackContexts.has(index)
         ? mapCallbackContextType(child.type!.desugaredQualType ?? child.type!.qualType!, callbackContexts.get(index)!)
-        : mapForeignType(
-          child.type!.qualType!,
-          functionNotes?.parameters?.[String(index)],
-          "parameter",
-          types,
-          imported.byCName,
-          child.type!.desugaredQualType,
-        ),
+        : callbackReleases.has(index)
+          ? mapCallbackReleaseType(
+            child.type!.desugaredQualType ?? child.type!.qualType!,
+            callbackReleases.get(index)!.callbackParameter,
+            callbackReleases.get(index)!.releaseContextParameter,
+          )
+          : mapForeignType(
+            child.type!.qualType!,
+            functionNotes?.parameters?.[String(index)],
+            "parameter",
+            types,
+            imported.byCName,
+            child.type!.desugaredQualType,
+          ),
     }));
     for (let index = 0; index < parameters.length; index += 1) {
       const type = parameters[index].type;
@@ -349,6 +415,16 @@ function readHeader(
           declaration.location,
           `API notes for ${JSON.stringify(node.name)} do not describe a valid callback and void * context pair`,
         );
+      }
+      if (type.lifetime === "escape") {
+        const release = type.release ? parameters[type.release.parameter]?.type : null;
+        if (release?.kind !== "callbackRelease" || release.callbackParameter !== index) {
+          throw new DiagnosticError(
+            fileName,
+            declaration.location,
+            `API notes for ${JSON.stringify(node.name)} do not describe a valid escaping callback release pair`,
+          );
+        }
       }
     }
     const cSignature = node.type.qualType;
@@ -707,13 +783,13 @@ function mapForeignType(
   namedTypes: ReadonlyMap<string, ForeignNamedType>,
   desugaredCName?: string,
 ): ForeignType {
-  if (position === "parameter" && note?.callback?.lifetime === "call") {
-    const callback = mapCallOnlyCallbackType(
+  if (position === "parameter" && (note?.callback?.lifetime === "call" || note?.callback?.lifetime === "escape")) {
+    const callback = mapCallbackType(
       desugaredCName ?? cName,
       cName,
       types,
       namedTypes,
-      note.callback.context,
+      note.callback,
     );
     if (callback) return callback;
   }
@@ -771,12 +847,12 @@ function mapForeignType(
   return { kind: "unsupported", cName };
 }
 
-function mapCallOnlyCallbackType(
+function mapCallbackType(
   signature: string,
   cName: string,
   types: Map<string, ForeignPointerType>,
   namedTypes: ReadonlyMap<string, ForeignNamedType>,
-  contextNote?: { readonly parameter?: number; readonly callbackParameter?: number },
+  callbackNote: NonNullable<PointerNote["callback"]>,
 ): ForeignCallbackType | null {
   const normalized = signature
     .replace(/\b(restrict|_Nonnull|_Nullable|_Null_unspecified)\b/g, "")
@@ -786,9 +862,9 @@ function mapCallOnlyCallbackType(
   if (!match) return null;
   const parameterSpellings = splitCParameters(match[2]);
   if (parameterSpellings.includes("...")) return null;
-  const contextParameter = contextNote?.callbackParameter;
+  const contextParameter = callbackNote.context?.callbackParameter;
   if (
-    contextNote
+    callbackNote.context
     && (!Number.isInteger(contextParameter) || contextParameter! < 0 || contextParameter! >= parameterSpellings.length)
   ) return null;
   if (contextParameter !== undefined && normalizeCallbackContextType(parameterSpellings[contextParameter]) !== "void *") {
@@ -806,16 +882,37 @@ function mapCallOnlyCallbackType(
     cName,
     parameters,
     returnType,
-    lifetime: "call",
-    context: contextNote
-      ? { parameter: contextNote.parameter!, callbackParameter: contextParameter! }
+    lifetime: callbackNote.lifetime!,
+    context: callbackNote.context
+      ? { parameter: callbackNote.context.parameter!, callbackParameter: contextParameter! }
       : null,
+    release: callbackNote.release
+      ? { parameter: callbackNote.release.parameter!, callbackParameter: callbackNote.release.callbackParameter! }
+      : null,
+    thread: callbackNote.thread ?? null,
   };
 }
 
 function mapCallbackContextType(cName: string, callbackParameter: number): ForeignType {
   if (normalizeCallbackContextType(cName) !== "void *") return { kind: "unsupported", cName };
   return { kind: "callbackContext", cName, callbackParameter };
+}
+
+function mapCallbackReleaseType(cName: string, callbackParameter: number, contextParameter: number): ForeignType {
+  const normalized = cName
+    .replace(/\b(restrict|_Nonnull|_Nullable|_Null_unspecified)\b/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  const match = /^(.+?)\s*\(\s*\*\s*\)\s*\((.*)\)$/.exec(normalized);
+  const parameters = match ? splitCParameters(match[2]) : [];
+  if (
+    !match
+    || stripValueQualifiers(match[1]) !== "void"
+    || parameters.length !== 1
+    || contextParameter !== 0
+    || normalizeCallbackContextType(parameters[contextParameter]) !== "void *"
+  ) return { kind: "unsupported", cName };
+  return { kind: "callbackRelease", cName, callbackParameter };
 }
 
 function normalizeCallbackContextType(cName: string): string {

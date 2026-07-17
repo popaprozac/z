@@ -91,6 +91,7 @@ export function generateC(program: Program, sourceName: string, semanticInfo: Se
   const dynamicArrayPushTypes = collectDynamicArrayPushTypes(program, semanticInfo);
   const functionTypes = collectFunctionTypes(program, semanticInfo);
   const foreignCallbackAdapters = collectForeignCallbackAdapters(semanticInfo);
+  const foreignEscapeHelpers = collectForeignEscapeHelpers(foreignCallbackAdapters);
   const usesSleep = [...semanticInfo.standardFunctionReferences.values()].includes("sleep");
   const includedHeaders = new Set(["stdbool.h", "stddef.h", "stdint.h", "stdlib.h"]);
   const lines = [
@@ -174,6 +175,9 @@ export function generateC(program: Program, sourceName: string, semanticInfo: Se
     lines.push(generateFunctionTypeDefinition(functionType, structs, enums, semanticInfo.foreignNamedTypes));
   }
   if (functionTypes.length > 0) lines.push("");
+  for (const helper of foreignEscapeHelpers) {
+    lines.push(generateForeignEscapeHelpers(helper), "");
+  }
   for (const adapter of foreignCallbackAdapters) {
     lines.push(generateForeignCallbackAdapter(adapter), "");
   }
@@ -379,12 +383,51 @@ function collectForeignCallbackAdapters(semanticInfo: SemanticInfo): Extract<For
   for (const plan of semanticInfo.foreignCallArgumentPlans.values()) {
     for (const argument of plan) {
       if (argument.kind !== "callback") continue;
-      collected.set(foreignCallbackAdapterName(argument), argument);
+      const name = foreignCallbackAdapterName(argument);
+      const existing = collected.get(name);
+      if (!existing || argument.callback.lifetime === "escape") collected.set(name, argument);
     }
   }
   return [...collected.values()].sort((left, right) => (
     foreignCallbackAdapterName(left).localeCompare(foreignCallbackAdapterName(right))
   ));
+}
+
+function collectForeignEscapeHelpers(
+  adapters: readonly Extract<ForeignCallArgumentPlan, { kind: "callback" }>[],
+): Extract<ForeignCallArgumentPlan, { kind: "callback" }>[] {
+  const collected = new Map<string, Extract<ForeignCallArgumentPlan, { kind: "callback" }>>();
+  for (const adapter of adapters) {
+    if (adapter.callback.lifetime !== "escape") continue;
+    collected.set(foreignCallbackBoxName(adapter), adapter);
+  }
+  return [...collected.values()];
+}
+
+function foreignCallbackBoxName(plan: Exclude<ForeignCallArgumentPlan, { kind: "argument" }>): string {
+  return `${functionTypeCName(parseFunctionType(plan.functionType)!)}_c_escape_box`;
+}
+
+function foreignCallbackBoxReleaseName(plan: Exclude<ForeignCallArgumentPlan, { kind: "argument" }>): string {
+  return `${foreignCallbackBoxName(plan)}_release`;
+}
+
+function generateForeignEscapeHelpers(plan: Extract<ForeignCallArgumentPlan, { kind: "callback" }>): string {
+  const functionType = parseFunctionType(plan.functionType)!;
+  const type = functionTypeCName(functionType);
+  return `static __attribute__((unused)) void *${foreignCallbackBoxName(plan)}(${type} value) {
+  ${type} *boxed = (${type} *)malloc(sizeof(${type}));
+  if (boxed == NULL) abort();
+  *boxed = ${functionTypeRetainName(functionType)}(value);
+  return boxed;
+}
+
+static __attribute__((unused)) void ${foreignCallbackBoxReleaseName(plan)}(void *context) {
+  ${type} *boxed = (${type} *)context;
+  if (boxed == NULL) return;
+  ${functionTypeReleaseName(functionType)}(*boxed);
+  free(boxed);
+}`;
 }
 
 function foreignCallbackAdapterName(plan: Extract<ForeignCallArgumentPlan, { kind: "callback" }>): string {
@@ -2639,6 +2682,10 @@ function generateForeignCallArgument(
   const expression = arguments_[plan.source];
   if (plan.kind === "argument") return generateCallArgument(expression, context);
   if (plan.kind === "callback") return foreignCallbackAdapterName(plan);
+  if (plan.kind === "release") return foreignCallbackBoxReleaseName(plan);
+  if (plan.callback.lifetime === "escape") {
+    return `${foreignCallbackBoxName(plan)}(${generateExpression(expression, context)})`;
+  }
   return `(void *)&(${generateExpression(expression, context)})`;
 }
 

@@ -834,4 +834,6 @@ Clang declaration source locations rather than text-searching SDK headers.
   implemented);
 - ARC-owned Z closure environments (implemented);
 - generated call-only C context adapters (implemented);
-- calling-convention, escaping, and async adapters.
+- caller-thread escaping C callbacks with native destroy notification
+  (implemented);
+- calling-convention, unregister-token, cross-thread, and async adapters.

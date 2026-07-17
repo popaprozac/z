@@ -40,6 +40,7 @@ Currently structured codes include:
 | `Z0211` | cleanup-bearing move capture needs an explicitly typed owned closure |
 | `Z0212` | borrowed capturing closure cannot become a storable function value |
 | `Z0213` | environment-carrying function value cannot cross a context-free C callback boundary |
+| `Z0214` | escaping C callback API notes are missing a caller-thread context or release contract |
 | `Z0301` | invalid or missing `inout` capability |
 | `Z0302` | invalid or missing `out` capability |
 | `Z0303` | read before initialization |

@@ -97,7 +97,8 @@ export type IntegerOperation = {
 export type ForeignCallArgumentPlan =
   | { readonly kind: "argument"; readonly source: number }
   | { readonly kind: "callback"; readonly source: number; readonly callback: ForeignCallbackType; readonly functionType: string }
-  | { readonly kind: "context"; readonly source: number; readonly callback: ForeignCallbackType; readonly functionType: string };
+  | { readonly kind: "context"; readonly source: number; readonly callback: ForeignCallbackType; readonly functionType: string }
+  | { readonly kind: "release"; readonly source: number; readonly callback: ForeignCallbackType; readonly functionType: string };
 
 export type SemanticInfo = {
   readonly movedExpressions: ReadonlySet<number>;
@@ -3574,7 +3575,13 @@ function checkForeignCall(
   }
   const visibleParameters = target.parameters
     .map((parameter, nativeIndex) => ({ parameter, nativeIndex }))
-    .filter(({ parameter }) => parameter.type.kind !== "callbackContext");
+    .filter(({ parameter }) => parameter.type.kind !== "callbackContext" && parameter.type.kind !== "callbackRelease");
+  if (
+    target.variadic
+    && target.parameters.some((parameter) => parameter.type.kind === "callback" && parameter.type.lifetime === "escape")
+  ) {
+    throw new DiagnosticError(fileName, location, `escaping C callback ${JSON.stringify(target.name)} cannot be variadic`);
+  }
   const expected = visibleParameters.length;
   if ((!target.variadic && args.length !== expected) || (target.variadic && args.length < expected)) {
     const expectation = target.variadic ? `at least ${expected}` : String(expected);
@@ -3759,6 +3766,15 @@ function checkForeignCall(
         const callback = callbacksByNativeIndex.get(parameter.type.callbackParameter)!;
         return {
           kind: "context",
+          source: callback.source,
+          callback: callback.parameter.type,
+          functionType: String(foreignValueType(callback.parameter.type)),
+        };
+      }
+      if (parameter.type.kind === "callbackRelease") {
+        const callback = callbacksByNativeIndex.get(parameter.type.callbackParameter)!;
+        return {
+          kind: "release",
           source: callback.source,
           callback: callback.parameter.type,
           functionType: String(foreignValueType(callback.parameter.type)),

@@ -351,9 +351,16 @@ test("passes typed Z functions to call-only C callbacks with optional context ad
     generated,
     /static __attribute__\(\(unused\)\) int32_t __z_c_callback_Z_Function_[0-9a-f]+_context_1\(int32_t argument1, void \*callback_context\)/,
   );
+  assert.match(generated, /Z_Function_[0-9a-f]+_c_escape_box\(Z_Function_[0-9a-f]+ value\)/);
+  assert.match(generated, /Z_Function_[0-9a-f]+_c_escape_box_release\(void \*context\)/);
+  assert.match(
+    generated,
+    /z_register_context_callback\(__z_c_callback_Z_Function_[0-9a-f]+_context_1, Z_Function_[0-9a-f]+_c_escape_box\(escaped\), Z_Function_[0-9a-f]+_c_escape_box_release\)/,
+  );
 
   const result = spawnSync(process.execPath, [cli, "run", fixture], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, "escape-drop=2\n");
 
   const callbackUse = source.indexOf("operation);") + 1;
   assert.match(hover(source, fixture, callbackUse)?.contents.value ?? "", /operation: \(left: i32, right: i32\) => i32/);
@@ -365,6 +372,11 @@ test("passes typed Z functions to call-only C callbacks with optional context ad
   const contextUse = source.indexOf("z_apply_context_i32") + 1;
   const contextDetail = hover(source, fixture, contextUse)?.contents.value ?? "";
   assert.match(contextDetail, /z_apply_context_i32\(value: i32, callback: \(argument1: i32\) => i32\): i32/);
+  const escapingUse = source.indexOf("z_register_context_callback") + 1;
+  assert.match(
+    hover(source, fixture, escapingUse)?.contents.value ?? "",
+    /z_register_context_callback\(callback: \(argument1: i32\) => i32\): void/,
+  );
   const completionSource = source.replace("callbacks.z_apply_i32", "callbacks.z_app");
   const completionOffset = completionSource.indexOf("callbacks.z_app") + "callbacks.z_app".length;
   assert.match(
@@ -439,6 +451,44 @@ test("rejects invalid C callback and context API-note pairs", () => {
     () => compileToC(source, sourceFile),
     /do not describe a valid callback and void \* context pair/,
   );
+});
+
+test("rejects escaping C callbacks without complete release and threading contracts", () => {
+  const directory = mkdtempSync("/tmp/z-escaping-callback-notes-");
+  const header = resolve(directory, "escaping.h");
+  const sourceFile = resolve(directory, "main.z");
+  writeFileSync(header, `
+    #include <stdint.h>
+    typedef int32_t (*EscapingCallback)(int32_t value, void *context);
+    typedef void (*EscapingRelease)(void *context);
+    static inline void retain_callback(EscapingCallback callback, void *context, EscapingRelease release) {
+      (void)callback;
+      (void)context;
+      (void)release;
+    }
+  `);
+  writeFileSync(`${header}.zapi.json`, JSON.stringify({
+    functions: {
+      retain_callback: {
+        parameters: {
+          "0": {
+            callback: {
+              lifetime: "escape",
+              context: { parameter: 1, callbackParameter: 1 },
+            },
+          },
+        },
+      },
+    },
+  }));
+  const source = `
+    import escaping from "escaping.h";
+    function identity(value: i32): i32 { return value; }
+    function main(): i32 { escaping.retain_callback(identity); return 0; }
+  `;
+  writeFileSync(sourceFile, source);
+  const diagnostic = diagnostics(source, sourceFile).find((item) => item.code === "Z0214");
+  assert.match(diagnostic?.message ?? "", /require caller-thread context and release contracts/);
 });
 
 test("rejects unknown functions from imported headers", () => {
