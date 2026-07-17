@@ -45,6 +45,12 @@ import {
   standardFunctionSignature,
   type StandardFunctionName,
 } from "./standard-library.ts";
+import {
+  parseWeakResultType,
+  parseWeakType,
+  weakResultTypeName,
+  weakTypeName,
+} from "./weak-types.ts";
 
 export type ObjCCallInfo = {
   readonly selector: string;
@@ -578,7 +584,9 @@ function analyzeEnumDeclaration(
       if (variant.payload.name === declaration.name) {
         throw new DiagnosticError(fileName, variant.location, "an enum cannot contain itself directly by value");
       }
-      if (hasCleanupType(variant.payload.name, structs)) {
+      const weakResult = parseWeakResultType(declaration.name);
+      const managedWeakResult = weakResult && structs.get(weakResult.target)?.kind === "class";
+      if (hasCleanupType(variant.payload.name, structs) && !managedWeakResult) {
         throw new DiagnosticError(fileName, variant.location, "enum payloads with deterministic cleanup are not implemented in this bootstrap stage");
       }
     }
@@ -1056,6 +1064,9 @@ function analyzeStatement(
       if (!declaration) {
         throw new DiagnosticError(fileName, statement.expression.location, `match requires an enum value, found ${subjectType}`);
       }
+      if (hasCleanupType(subjectType, structs, state.foreignTypes)) {
+        consumeOwnedValue(statement.expression, subjectType, locals, structs, fileName, state);
+      }
       const covered = new Set<string>();
       const continuing: Map<string, ValueType>[] = [];
       for (const arm of statement.arms) {
@@ -1444,6 +1455,9 @@ function collectClosureCaptures(
         walkExpression(expression.thenExpression, localNames);
         walkExpression(expression.elseExpression, localNames);
         return;
+      case "weak":
+        walkExpression(expression.expression, localNames);
+        return;
       case "closure":
         return;
       case "call":
@@ -1614,6 +1628,9 @@ function inferMatchExpression(
   const declaration = enums.get(subjectType);
   if (!declaration) {
     throw new DiagnosticError(fileName, expression.expression.location, `match requires an enum value, found ${subjectType}`);
+  }
+  if (hasCleanupType(subjectType, structs, state.foreignTypes)) {
+    consumeOwnedValue(expression.expression, subjectType, locals, structs, fileName, state);
   }
 
   const covered = new Set<string>();
@@ -2082,6 +2099,22 @@ function inferExpressionInner(
       mergeOwnershipStates(locals, [thenLocals, elseLocals], state);
       return commonBranchType("conditional", thenType, elseType, expression.elseExpression.location, fileName);
     }
+    case "weak": {
+      if (!isNamedStorageExpression(expression.expression)) {
+        throw new DiagnosticError(fileName, expression.expression.location, "weak requires an existing stored class reference", {
+          code: "Z0220",
+          helps: ["bind the class instance to const or let before creating a weak reference"],
+        });
+      }
+      const target = inferExpression(expression.expression, locals, globals, structs, enums, fileName, state);
+      const declaration = structs.get(String(underlyingType(target)));
+      if (declaration?.kind !== "class") {
+        throw new DiagnosticError(fileName, expression.expression.location, `weak requires a class reference, found ${describeValueType(target, state)}`, {
+          code: "Z0220",
+        });
+      }
+      return weakTypeName(declaration.name);
+    }
     case "closure":
       throw new DiagnosticError(fileName, expression.location, "a closure must directly initialize a const binding in the initial non-escaping tier");
     case "structExpression": {
@@ -2403,6 +2436,20 @@ function inferExpressionInner(
           requireAssignable(dynamic.elementType, actual, expression.arguments[0], fileName, state.foreignNamedTypes, state.numericLiteralTypes);
           consumeOwnedValue(expression.arguments[0], dynamic.elementType, locals, structs, fileName, state);
           return "void";
+        }
+        const weak = parseWeakType(String(receiverType));
+        if (weak) {
+          rejectLabeledArguments(expression.argumentLabels, expression.location, fileName);
+          if (expression.callee.property !== "upgrade") {
+            throw new DiagnosticError(fileName, expression.callee.location, `Weak has no method ${JSON.stringify(expression.callee.property)}`);
+          }
+          if (expression.arguments.length !== 0) {
+            throw new DiagnosticError(fileName, expression.location, `"upgrade" expects 0 arguments, received ${expression.arguments.length}`);
+          }
+          if (!allowThrowingCall) {
+            throw new DiagnosticError(fileName, expression.location, "throwing call requires `attempt` or `try`");
+          }
+          return weakResultTypeName(weak.target);
         }
         const objcReceiverType = objcReceiver(receiverType, state);
         if (objcReceiverType) {
@@ -2866,7 +2913,7 @@ function validateDeinitExpression(expression: Expression, fileName: string): voi
     for (const field of expression.fields) validateDeinitExpression(field.expression, fileName);
   }
   if (expression.kind === "variantExpression") validateDeinitExpression(expression.payload, fileName);
-  if (expression.kind === "attempt" || expression.kind === "try") {
+  if (expression.kind === "attempt" || expression.kind === "try" || expression.kind === "weak") {
     validateDeinitExpression(expression.expression, fileName);
   }
   if (expression.kind === "matchExpression") {
@@ -2899,6 +2946,12 @@ function consumeOwnedValue(
 ): void {
   if (!hasCleanupType(type, structs, state.foreignTypes)) return;
   const actual = String(underlyingType(type));
+  if (parseWeakType(actual)) {
+    if (expression.kind === "identifier" || expression.kind === "member" || expression.kind === "index") {
+      state.managedCopies.add(expression.location.offset);
+    }
+    return;
+  }
   const declaration = structs.get(actual);
   if (declaration?.kind === "class" || parseFunctionType(actual)) {
     if (expression.kind === "identifier" || expression.kind === "member" || expression.kind === "index") {
@@ -3389,6 +3442,9 @@ function hasCleanupType(
   const actual = underlyingType(type);
   if (actual === "unknown" || actual === "never" || visiting.has(actual)) return false;
   if (actual === "String") return true;
+  if (parseWeakType(actual)) return true;
+  const weakResult = parseWeakResultType(actual);
+  if (weakResult && structs.get(weakResult.target)?.kind === "class") return true;
   if (parseFunctionType(String(actual))) return true;
   if (foreignTypes.get(actual)?.ownership === "owned") return true;
   const declaration = structs.get(actual);
@@ -3961,6 +4017,14 @@ function validateType(
       throw new DiagnosticError(fileName, type.location, "returning another function type is deferred beyond the first function-value tier");
     }
     validateType({ name: functionType.returnType, location: type.location }, structs, enums, foreignNamedTypes, fileName, true);
+    return;
+  }
+  const weak = parseWeakType(type.name);
+  if (weak) {
+    const target = structs.get(weak.target);
+    if (target?.kind !== "class") {
+      throw new DiagnosticError(fileName, type.location, `Weak requires a class type, found ${JSON.stringify(weak.target)}`);
+    }
     return;
   }
   const slice = parseSliceType(type.name);

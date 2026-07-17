@@ -309,6 +309,10 @@ export function parse(tokens: Token[], fileName: string): Program {
       const token = previous();
       return { kind: "try", expression: parsePostfix(), location: token.location };
     }
+    if (match("weak")) {
+      const token = previous();
+      return { kind: "weak", expression: parsePostfix(), location: token.location };
+    }
     if (match("number")) {
       const token = previous();
       return { kind: "number", value: token.text, location: token.location };

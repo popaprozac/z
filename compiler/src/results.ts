@@ -6,6 +6,7 @@ export function resultTypeName(successType: string, errorType: string): string {
 
 export function materializeResultTypes(program: Program): Program {
   const generated = new Map<string, EnumDeclaration>();
+  const existing = new Set(program.enums.map((declaration) => declaration.name));
   const functions: FunctionDeclaration[] = [
     ...program.functions,
     ...program.structs.flatMap((declaration) => declaration.methods),
@@ -14,7 +15,7 @@ export function materializeResultTypes(program: Program): Program {
   for (const declaration of functions) {
     if (!declaration.errorType) continue;
     const name = resultTypeName(declaration.returnType.name, declaration.errorType.name);
-    if (generated.has(name)) continue;
+    if (existing.has(name) || generated.has(name)) continue;
     generated.set(name, {
       kind: "enum",
       name,

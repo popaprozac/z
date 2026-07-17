@@ -11,6 +11,7 @@ import type { ForeignModule } from "./foreign.ts";
 import type { SemanticInfo } from "./sema.ts";
 import { prepareProject, type ProjectBuild } from "./project.ts";
 import { linkSourceModules, type SourceModuleInfo } from "./modules.ts";
+import { materializeWeakTypes } from "./weak-types.ts";
 
 export type NativeLanguage = "c" | "objective-c" | "c++" | "objective-c++";
 
@@ -46,7 +47,7 @@ export function analyzeSource(source: string, fileName: string, options: Analysi
   const foreignModules = resolveForeignModules(linked.program.imports, fileName, includeDirectories);
   const typeDisplayNames = new Map(linked.typeDisplayNames);
   const inferredProgram = inferGenericCalls(linked.program, fileName, foreignModules);
-  const program = materializeResultTypes(materializeGenerics(inferredProgram, fileName, typeDisplayNames));
+  const program = materializeResultTypes(materializeWeakTypes(materializeGenerics(inferredProgram, fileName, typeDisplayNames)));
   for (const declaration of program.enums) {
     if (!declaration.name.startsWith("__z_Result_")) continue;
     const success = declaration.variants.find((variant) => variant.name === "success")?.payload?.name;

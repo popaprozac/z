@@ -3750,7 +3750,7 @@ test("runs ARC classes with shared identity and one final deinit", () => {
   assert.match(generated, /static int32_t inspect\(const Z_Counter \*counter\)/);
   assert.match(generated, /inspect\(third\)/);
   assert.match(generated, /static void Z_Counter_release\(Z_Counter \*value\)/);
-  assert.match(generated, /if \(value->_z_refcount == 0\) \{\n\s+Z_Counter_deinit\(value\);\n\s+free\(value\);/);
+  assert.match(generated, /if \(value->_z_refcount == 0\) \{[\s\S]*if \(weak != NULL\) weak->value = NULL;[\s\S]*Z_Counter_deinit\(value\);[\s\S]*free\(value\);/);
 });
 
 test("checks explicit trait conformance for structs and classes", () => {
@@ -3906,6 +3906,39 @@ function dirnameFromImportMeta(): string {
   return new URL(".", import.meta.url).pathname;
 }
 
+test("zeroes weak class references and breaks owned closure cycles", () => {
+  const example = resolve(projectRoot, "examples/weak-references.z");
+  const source = readFileSync(example, "utf8");
+  const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(
+    result.stdout,
+    "released session 42\nalive=42, expired=-1\nreleased controller 9\nweak closure after release=-1\nreleased session 7\n",
+  );
+
+  const generated = compileToC(source, example);
+  assert.match(generated, /typedef struct Z_WeakControl/);
+  assert.match(generated, /weak->value = NULL/);
+  assert.match(generated, /Z_Controller_weak_upgrade/);
+  assert.match(generated, /Z_ClosureEnv_\d+_release/);
+
+  const incomplete = source.replace("observer.upgrade()", "observer.up");
+  const completionOffset = incomplete.indexOf("observer.up") + "observer.up".length;
+  const upgradeCompletion = completions(incomplete, example, completionOffset).find((item) => item.label === "upgrade");
+  assert.match(upgradeCompletion?.detail ?? "", /Session throws WeakExpired/);
+
+  const observerUse = source.indexOf("observer.upgrade") + 1;
+  assert.match(hover(source, example, observerUse)?.contents.value ?? "", /Weak<Session>/);
+  const upgradeUse = source.indexOf("upgrade", source.indexOf("observer.upgrade")) + 1;
+  assert.match(hover(source, example, upgradeUse)?.contents.value ?? "", /upgrade\(\): Session throws WeakExpired/);
+
+  const invalidTarget = `function main(): i32 { const value = 42; const observer = weak value; return 0; }`;
+  assert.throws(() => compileToC(invalidTarget, "weak-value.z"), /weak requires a class reference, found i32/);
+
+  const unhandled = source.replace("attempt observer.upgrade()", "observer.upgrade()");
+  assert.throws(() => compileToC(unhandled, example), /throwing call requires `attempt` or `try`/);
+});
+
 test("editor grammar tracks keywords without reserving Result variants", () => {
   const grammarPath = resolve(projectRoot, "editors/vscode/syntaxes/z.tmLanguage.json");
   const grammar = JSON.parse(readFileSync(grammarPath, "utf8"));
@@ -3923,6 +3956,7 @@ test("editor grammar tracks keywords without reserving Result variants", () => {
   assert.match(keywordPattern, /yield/);
   assert.match(keywordPattern, /select/);
   assert.match(keywordPattern, /move/);
+  assert.match(keywordPattern, /weak/);
   assert.match(keywordPattern, /deinit/);
   assert.match(keywordPattern, /out\|inout/);
   assert.match(keywordPattern, /\bin\b/);

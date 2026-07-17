@@ -1,0 +1,93 @@
+import console from "std/console";
+
+class Session {
+  id: i32;
+
+  deinit {
+    console.log(`released session ${this.id}`);
+  }
+}
+
+class Controller {
+  id: i32;
+  handler: () => i32;
+
+  function install(inout this): void {
+    const owner = weak this;
+    const handler: () => i32 = move (): i32 => {
+      const upgraded = attempt owner.upgrade();
+      return match upgraded {
+        success controller => controller.id;
+        failure expired => -1;
+      };
+    };
+    this.handler = handler;
+  }
+
+  deinit {
+    console.log(`released controller ${this.id}`);
+  }
+}
+
+function emptyHandler(): i32 {
+  return 0;
+}
+
+function read(in observer: Weak<Session>): i32 {
+  const upgraded = attempt observer.upgrade();
+  return match upgraded {
+    success session => session.id;
+    failure expired => -1;
+  };
+}
+
+function readStatement(in observer: Weak<Session>): i32 {
+  const upgraded = attempt observer.upgrade();
+  match upgraded {
+    success session => return session.id;
+    failure expired => return -1;
+  }
+}
+
+function inspectAndDiscard(in observer: Weak<Session>): void {
+  const upgraded = attempt observer.upgrade();
+}
+
+function require(in observer: Weak<Session>): i32 throws WeakExpired {
+  const session = try observer.upgrade();
+  return session.id;
+}
+
+function main(): i32 {
+  let current = Session { id: 42 };
+  const observer = weak current;
+  const alive = read(observer);
+  const statementAlive = readStatement(observer);
+  inspectAndDiscard(observer);
+  const required = attempt require(observer);
+  const requiredValue = match required {
+    success value => value;
+    failure expired => -1;
+  };
+
+  current = Session { id: 7 };
+  const expired = read(observer);
+  console.log(`alive=${alive}, expired=${expired}`);
+
+  let handler: () => i32 = emptyHandler;
+  {
+    let controller = Controller { id: 9, handler: emptyHandler };
+    controller.install();
+    handler = controller.handler;
+    if (handler() != 9) {
+      return 2;
+    }
+  }
+  const afterRelease = handler();
+  console.log(`weak closure after release=${afterRelease}`);
+
+  if (alive == 42 && statementAlive == 42 && requiredValue == 42 && expired == -1 && afterRelease == -1) {
+    return 0;
+  }
+  return 1;
+}

@@ -10,6 +10,7 @@ import {
 } from "./array-types.ts";
 import { monomorphizedName, parseGenericType } from "./generic-types.ts";
 import { functionTypeName, parseFunctionType } from "./function-types.ts";
+import { weakTypeName } from "./weak-types.ts";
 
 export function materializeGenerics(
   program: Program,
@@ -105,6 +106,14 @@ export function materializeGenerics(
   );
 
   function instantiateStruct(base: string, args: string[]): string {
+    if (base === "Weak") {
+      if (args.length !== 1) {
+        throw new DiagnosticError(fileName, { offset: 0, line: 1, column: 1 }, `Weak expects 1 type argument, received ${args.length}`);
+      }
+      const target = args[0];
+      typeDisplayNames.set(weakTypeName(target), `Weak<${displayName(target)}>`);
+      return weakTypeName(target);
+    }
     const template = structTemplates.get(base);
     if (!template) return monomorphizedName(base, args);
     if (args.length !== template.typeParameters!.length) {

@@ -25,6 +25,7 @@ import { dirname, resolve } from "node:path";
 import { readFileSync } from "node:fs";
 import { isLocalSourceModuleSpecifier, type SourceModuleInfo } from "./modules.ts";
 import { displayFunctionType, functionTypeName, parseFunctionType } from "./function-types.ts";
+import { parseWeakType } from "./weak-types.ts";
 
 export type Position = { readonly line: number; readonly character: number };
 export type Range = { readonly start: Position; readonly end: Position };
@@ -461,6 +462,9 @@ export function hover(source: string, fileName: string, offset: number): Hover |
       const method = resolved.declaration.methods.find((item) => item.name === word.text);
       if (method) return markdownHover(zFunctionDetail(method.name, method.parameters, method.returnType.name, [], context.typeDisplayNames), source, word.start, word.end);
     }
+    if (resolved?.kind === "weak" && word.text === "upgrade") {
+      return markdownHover(`upgrade(): ${displayType(resolved.target, context.typeDisplayNames)} throws WeakExpired`, source, word.start, word.end);
+    }
     if (resolved?.kind === "integer") {
       const detail = integerMethodDetail(word.text, resolved.type);
       if (detail) return markdownHover(detail, source, word.start, word.end);
@@ -853,12 +857,14 @@ function memberCompletions(
   const tailOffset = completionTailOffset(source, offset);
   const sanitized = source.slice(0, dotOffset) + source.slice(tailOffset);
   const lengthSanitized = source.slice(0, dotOffset) + ".length" + source.slice(tailOffset);
+  const upgradeSanitized = source.slice(0, dotOffset) + ".upgrade()" + source.slice(tailOffset);
   const statementTailOffset = source[tailOffset] === ";" ? tailOffset + 1 : tailOffset;
   const statementSanitized = source.slice(0, dotOffset) + ";" + source.slice(statementTailOffset);
   const lengthStatementSanitized = source.slice(0, dotOffset) + ".length;" + source.slice(statementTailOffset);
   const context = safeAnalysis(sanitized, fileName)
     ?? safeAnalysis(statementSanitized, fileName)
     ?? safeAnalysis(lengthSanitized, fileName)
+    ?? safeAnalysis(upgradeSanitized, fileName)
     ?? safeAnalysis(lengthStatementSanitized, fileName);
   if (!context) return [];
   const resolved = resolveReceiver(context, receiverText, receiverOffset);
@@ -882,6 +888,14 @@ function memberCompletions(
   }
   if (resolved?.kind === "integer") {
     return filterCompletions(integerCompletions(resolved.type), prefix, 1000);
+  }
+  if (resolved?.kind === "weak") {
+    return filterCompletions([{
+      label: "upgrade",
+      kind: completionKinds.method,
+      detail: `upgrade(): ${displayType(resolved.target, context.typeDisplayNames)} throws WeakExpired`,
+      insertText: "upgrade()",
+    }], prefix, 1000);
   }
   return [];
 }
@@ -1118,7 +1132,8 @@ type ResolvedReceiver =
   | { readonly kind: "objc"; readonly declaration: ForeignObjCInterface; readonly instance: boolean }
   | { readonly kind: "struct"; readonly declaration: StructDeclaration }
   | { readonly kind: "integer"; readonly type: string }
-  | { readonly kind: "array"; readonly type: string };
+  | { readonly kind: "array"; readonly type: string }
+  | { readonly kind: "weak"; readonly target: string };
 
 function resolveReceiver(context: AnalyzedSource, text: string, offset: number): ResolvedReceiver | null {
   const module = context.foreignModules.get(text);
@@ -1131,6 +1146,8 @@ function resolveReceiver(context: AnalyzedSource, text: string, offset: number):
   const type = context.semanticInfo.expressionTypes.get(offset);
   if (!type) return null;
   if (parseFixedArrayType(type) || parseSliceType(type) || parseDynamicArrayType(type)) return { kind: "array", type };
+  const weak = parseWeakType(type);
+  if (weak) return { kind: "weak", target: weak.target };
   if (isIntegerSourceType(type)) return { kind: "integer", type };
   const interfaceName = type.replace(/^__z_objc:(?:nullable|nonnull):/, "");
   const objc = context.semanticInfo.foreignInterfaces.get(interfaceName);
@@ -1449,6 +1466,8 @@ function displayType(type: string, typeDisplayNames: ReadonlyMap<string, string>
   if (known) return known;
   const functionType = displayFunctionType(type, (nested) => displayType(nested, typeDisplayNames));
   if (functionType) return functionType;
+  const weak = parseWeakType(type);
+  if (weak) return `Weak<${displayType(weak.target, typeDisplayNames)}>`;
   const generic = parseGenericType(type);
   if (generic) return `${generic.base}<${generic.arguments.map((argument) => displayType(argument, typeDisplayNames)).join(", ")}>`;
   const array = parseFixedArrayType(type);

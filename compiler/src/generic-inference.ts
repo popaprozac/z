@@ -19,6 +19,7 @@ import { DiagnosticError } from "./diagnostics.ts";
 import type { ForeignModule, ForeignType } from "./foreign.ts";
 import { genericTypeName, parseGenericType } from "./generic-types.ts";
 import { functionTypeName, parseFunctionType } from "./function-types.ts";
+import { parseWeakType, weakResultTypeName, weakTypeName } from "./weak-types.ts";
 
 type Environment = Map<string, string>;
 type RewrittenExpression = { readonly expression: Expression; readonly type: string | null };
@@ -191,6 +192,13 @@ export function inferGenericCalls(
           type: thenExpression.type ?? elseExpression.type,
         };
       }
+      case "weak": {
+        const inner = rewriteExpression(expression.expression, environment);
+        return {
+          expression: { ...expression, expression: inner.expression },
+          type: inner.type ? weakTypeName(inner.type) : null,
+        };
+      }
       case "closure": {
         const closureEnvironment = new Map(environment);
         for (const parameter of expression.parameters) {
@@ -224,6 +232,10 @@ export function inferGenericCalls(
       }
       case "member": {
         const object = rewriteExpression(expression.object, environment);
+        const weak = object.type ? parseWeakType(object.type) : null;
+        if (weak && expression.property === "upgrade") {
+          return { expression: { ...expression, object: object.expression }, type: weakResultTypeName(weak.target) };
+        }
         const dynamicArray = object.type ? parseDynamicArrayType(object.type) : null;
         if (dynamicArray && (expression.property === "length" || expression.property === "capacity")) {
           return { expression: { ...expression, object: object.expression }, type: "usize" };

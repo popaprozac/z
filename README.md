@@ -113,6 +113,43 @@ because another ARC alias may still refer to the same instance. This first trait
 slice checks concrete conformance only; trait-typed values and dynamic dispatch
 are not implemented yet.
 
+Zeroing weak references break intentional ARC cycles without making class
+references nullable:
+
+```z
+const observer = weak owner; // inferred Weak<Owner>
+const upgraded = attempt observer.upgrade();
+match upgraded {
+  success owner => use(owner);
+  failure expired => handleClosedOwner();
+}
+```
+
+`Weak<T>` accepts class types only. `weak value` borrows an existing stored
+class reference and lazily creates its control block; it never retains the
+class. `upgrade()` is a throwing operation that returns a retained strong
+reference on success or `WeakExpired` on failure, so callers use ordinary
+`attempt`, `try`, and `success`/`failure` matching. Weak values themselves are
+copyable managed handles and release the control block deterministically.
+
+An owned closure breaks a cycle by capturing a weak value rather than the class:
+
+```z
+const owner = weak this;
+const handler: () => i32 = move (): i32 => {
+  const upgraded = attempt owner.upgrade();
+  return match upgraded {
+    success owner => owner.value();
+    failure expired => -1;
+  };
+};
+```
+
+The bootstrap reference counts remain single-threaded. Atomic upgrade and
+cross-thread ownership are part of the concurrency design rather than implied
+by this first weak tier. See `examples/weak-references.z` for the full lifecycle
+and escaping-closure probe.
+
 Bindings make mutation explicit. `const` stores an immutable value; `let`
 stores a mutable value in the same lexical scope. Z does not have JavaScript's
 function-scoped, hoisted `var`:

@@ -558,6 +558,7 @@ function transformExpression(
       };
     case "attempt":
     case "try":
+    case "weak":
       return { ...expression, expression: transformExpression(expression.expression, scope, locals, typeParameters) };
     case "matchExpression":
       return {

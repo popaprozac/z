@@ -24,6 +24,12 @@ import {
   parseFunctionType,
   type FunctionType,
 } from "./function-types.ts";
+import {
+  parseWeakResultType,
+  parseWeakType,
+  weakExpiredType,
+  weakResultTypeName,
+} from "./weak-types.ts";
 
 type GenerationContext = {
   readonly structs: Map<string, StructDeclaration>;
@@ -171,6 +177,10 @@ export function generateC(program: Program, sourceName: string, semanticInfo: Se
     || dynamicArrayTypes.length > 0
   ) lines.push("");
 
+  if (program.structs.some((declaration) => declaration.kind === "class")) {
+    lines.push(generateWeakRuntime(), "");
+  }
+
   for (const functionType of functionTypes) {
     lines.push(generateFunctionTypeDefinition(functionType, structs, enums, semanticInfo.foreignNamedTypes));
   }
@@ -214,6 +224,8 @@ export function generateC(program: Program, sourceName: string, semanticInfo: Se
     if (declaration.kind === "class") {
       lines.push(`static ${moduleUnused}${structName(declaration.name)} *${retainName(declaration.name)}(${structName(declaration.name)} *value);`);
       lines.push(`static ${moduleUnused}void ${releaseName(declaration.name)}(${structName(declaration.name)} *value);`);
+      lines.push(`static ${moduleUnused}Z_Weak ${weakMakeName(declaration.name)}(const ${structName(declaration.name)} *borrowed);`);
+      lines.push(`static ${moduleUnused}${enumName(weakResultTypeName(declaration.name))} ${weakUpgradeName(declaration.name)}(Z_Weak value);`);
       lines.push(`${generateClassConstructorSignature(declaration, structs, enums, semanticInfo.foreignNamedTypes)};`);
     }
     for (const method of declaration.methods) {
@@ -225,6 +237,13 @@ export function generateC(program: Program, sourceName: string, semanticInfo: Se
   }
   for (const closure of closures) {
     lines.push(`${generateFunctionSignature(closure.declaration, structs, enums, null, semanticInfo.foreignNamedTypes)};`);
+    if (closure.owned) {
+      lines.push(`static void ${closureEnvironmentRetainName(closure)}(void *context);`);
+      lines.push(`static void ${closureEnvironmentReleaseName(closure)}(void *context);`);
+    }
+    if (closure.storable) {
+      lines.push(`${generateClosureAdapterSignature(closure, structs, enums, semanticInfo.foreignNamedTypes)};`);
+    }
   }
   if (program.structs.some((declaration) => declaration.methods.length > 0) || program.functions.length > 0) {
     lines.push("");
@@ -268,13 +287,37 @@ function generateStruct(
   enums: Map<string, EnumDeclaration>,
   foreignNamedTypes: SemanticInfo["foreignNamedTypes"],
 ): string {
-  const fields = [
-    ...(declaration.kind === "class" ? ["  size_t _z_refcount;"] : []),
+  const fieldLines = [
+    ...(declaration.kind === "class" ? ["  size_t _z_refcount;", "  Z_WeakControl *_z_weak;"] : []),
     ...declaration.fields.map(
       (field) => `  ${mapType(field.type.name, structs, enums, foreignNamedTypes)} ${field.name};`,
     ),
-  ].join("\n");
+  ];
+  if (fieldLines.length === 0) fieldLines.push("  unsigned char _z_empty;");
+  const fields = fieldLines.join("\n");
   return `struct ${structName(declaration.name)} {\n${fields}\n};`;
+}
+
+function generateWeakRuntime(): string {
+  return `typedef struct Z_WeakControl {
+  void *value;
+  size_t weak_count;
+} Z_WeakControl;
+
+typedef struct Z_Weak {
+  Z_WeakControl *control;
+} Z_Weak;
+
+static inline __attribute__((unused)) Z_Weak z_weak_retain(Z_Weak value) {
+  if (value.control != NULL) value.control->weak_count += 1;
+  return value;
+}
+
+static inline __attribute__((unused)) void z_weak_release(Z_Weak value) {
+  if (value.control == NULL) return;
+  value.control->weak_count -= 1;
+  if (value.control->weak_count == 0) free(value.control);
+}`;
 }
 
 function collectFixedArrayTypes(program: Program, semanticInfo: SemanticInfo): string[] {
@@ -640,10 +683,21 @@ function generateClosureAdapter(
   }
   const invoke = `${closure.declaration.name}(${[...hidden, ...visible].join(", ")})`;
   const returned = type.returnType === "void" ? `${invoke};\n  return;` : `return ${invoke};`;
-  return `static ${mapType(type.returnType, structs, enums, foreignNamedTypes)} ${closureAdapterName(closure)}(void *context${parameters.length ? `, ${parameters.join(", ")}` : ""}) {
+  return `${generateClosureAdapterSignature(closure, structs, enums, foreignNamedTypes)} {
   ${prefix.join("\n  ")}
   ${returned}
 }`;
+}
+
+function generateClosureAdapterSignature(
+  closure: ClosureInfo,
+  structs: Map<string, StructDeclaration>,
+  enums: Map<string, EnumDeclaration>,
+  foreignNamedTypes: SemanticInfo["foreignNamedTypes"],
+): string {
+  const type = closureFunctionType(closure);
+  const parameters = generateFunctionTypeParameters(type, structs, enums, foreignNamedTypes);
+  return `static ${mapType(type.returnType, structs, enums, foreignNamedTypes)} ${closureAdapterName(closure)}(void *context${parameters.length ? `, ${parameters.join(", ")}` : ""})`;
 }
 
 function generateClosureEnvironmentDefinition(
@@ -701,6 +755,7 @@ function generateOwnedEnvironmentCleanup(
   counter: { value: number },
 ): string {
   if (type === "String") return `if ((${value}).capacity > 0) free((void *)(${value}).data);`;
+  if (parseWeakType(type)) return `z_weak_release(${value});`;
   const functionType = parseFunctionType(type);
   if (functionType) return `${functionTypeReleaseName(functionType)}(${value});`;
   const dynamic = parseDynamicArrayType(type);
@@ -1039,15 +1094,49 @@ static ${unused}void ${releaseName(declaration.name)}(${cName} *value) {
   if (value == NULL) return;
   value->_z_refcount -= 1;
   if (value->_z_refcount == 0) {
+    Z_WeakControl *weak = value->_z_weak;
+    if (weak != NULL) weak->value = NULL;
     ${deinitName(declaration.name)}(value);
+    if (weak != NULL) {
+      weak->weak_count -= 1;
+      if (weak->weak_count == 0) free(weak);
+    }
     free(value);
   }
+}
+
+static ${unused}__attribute__((unused)) Z_Weak ${weakMakeName(declaration.name)}(const ${cName} *borrowed) {
+  ${cName} *value = (${cName} *)borrowed;
+  if (value->_z_weak == NULL) {
+    value->_z_weak = (Z_WeakControl *)malloc(sizeof(Z_WeakControl));
+    if (value->_z_weak == NULL) abort();
+    value->_z_weak->value = value;
+    value->_z_weak->weak_count = 1;
+  }
+  Z_Weak weak = { .control = value->_z_weak };
+  weak.control->weak_count += 1;
+  return weak;
+}
+
+static ${unused}__attribute__((unused)) ${enumName(weakResultTypeName(declaration.name))} ${weakUpgradeName(declaration.name)}(Z_Weak weak) {
+  ${cName} *value = (${cName} *)weak.control->value;
+  if (value == NULL) {
+    return (${enumName(weakResultTypeName(declaration.name))}){
+      .tag = ${variantTag(weakResultTypeName(declaration.name), "failure")},
+      .data.failure = (${structName(weakExpiredType)}){}
+    };
+  }
+  return (${enumName(weakResultTypeName(declaration.name))}){
+    .tag = ${variantTag(weakResultTypeName(declaration.name), "success")},
+    .data.success = ${retainName(declaration.name)}(value)
+  };
 }
 
 ${generateClassConstructorSignature(declaration, structs, enums, foreignNamedTypes)} {
   ${cName} *self = (${cName} *)malloc(sizeof(${cName}));
   if (self == NULL) abort();
   self->_z_refcount = 1;
+  self->_z_weak = NULL;
 ${assignments}
   return self;
 }`;
@@ -2155,6 +2244,15 @@ function generateValueCleanup(
     const release = `${functionTypeReleaseName(functionType)}(${value});`;
     return liveFlag ? `if (${liveFlag}) ${release}` : release;
   }
+  if (parseWeakType(type)) {
+    const release = `z_weak_release(${value});`;
+    return liveFlag ? `if (${liveFlag}) ${release}` : release;
+  }
+  const weakResult = parseWeakResultType(type);
+  if (weakResult && context.structs.get(weakResult.target)?.kind === "class") {
+    const release = `if ((${value}).tag == ${variantTag(type, "success")}) ${releaseName(weakResult.target)}((${value}).data.success);`;
+    return liveFlag ? `if (${liveFlag}) ${release}` : release;
+  }
   if (type === "String") {
     const capacity = `(${value}).capacity > 0`;
     const condition = liveFlag ? `${liveFlag} && ${capacity}` : capacity;
@@ -2242,7 +2340,10 @@ function throwingCallResultType(expression: Expression, context: GenerationConte
     return resultTypeName(target.returnType.name, target.errorType!.name);
   }
   if (expression.kind === "call" && expression.callee.kind === "member") {
-    const receiver = context.structs.get(inferExpressionType(expression.callee.object, context))!;
+    const receiverType = inferExpressionType(expression.callee.object, context);
+    const weak = parseWeakType(receiverType);
+    if (weak && expression.callee.property === "upgrade") return weakResultTypeName(weak.target);
+    const receiver = context.structs.get(receiverType)!;
     const method = receiver.methods.find((candidate) => candidate.name === expression.callee.property)!;
     return resultTypeName(method.returnType.name, method.errorType!.name);
   }
@@ -2286,9 +2387,6 @@ function generateMatch(statement: Extract<Statement, { kind: "match" }>, context
   const arms = statement.arms.map((arm) => {
     const variant = declaration.variants.find((candidate) => candidate.name === arm.variantName)!;
     const armTypes = new Map(context.localTypes);
-    const binding = variant.payload && arm.binding
-      ? `\n    const ${mapType(variant.payload.name, context.structs, context.enums, context.semanticInfo.foreignNamedTypes)} ${arm.binding} = ${temporary}.data.${variant.name};`
-      : "";
     if (variant.payload && arm.binding) armTypes.set(arm.binding, variant.payload.name);
     const armContext = {
       ...context,
@@ -2296,6 +2394,14 @@ function generateMatch(statement: Extract<Statement, { kind: "match" }>, context
       liveFlags: new Map(context.liveFlags),
       cleanupScopes: [...context.cleanupScopes, []],
     };
+    let binding = variant.payload && arm.binding
+      ? `\n    ${generateLocalDeclaration(variant.payload.name, arm.binding, false, context.structs, context.enums, context.semanticInfo.foreignNamedTypes)} = ${temporary}.data.${variant.name};\n    (void)${cBindingName(arm.binding)};`
+      : "";
+    if (variant.payload && arm.binding && hasCleanupType(variant.payload.name, context.structs, context.semanticInfo.foreignTypes)) {
+      const liveFlag = ensureLiveFlag(arm.binding, armContext);
+      armContext.cleanupScopes.at(-1)!.push({ name: arm.binding, type: variant.payload.name, liveFlag });
+      binding += `\n    bool ${liveFlag} = true;`;
+    }
     const body = generateStatement(arm.body, armContext);
     recordVariableType(arm.body, armContext);
     const cleanup = statementTerminates(arm.body)
@@ -2320,9 +2426,6 @@ function generateMatchExpression(
   const arms = expression.arms.map((arm) => {
     const variant = declaration.variants.find((candidate) => candidate.name === arm.variantName)!;
     const armTypes = new Map(context.localTypes);
-    const binding = variant.payload && arm.binding
-      ? `\n    const ${mapType(variant.payload.name, context.structs, context.enums, context.semanticInfo.foreignNamedTypes)} ${arm.binding} = ${temporary}.data.${variant.name};`
-      : "";
     if (variant.payload && arm.binding) armTypes.set(arm.binding, variant.payload.name);
     const armContext = {
       ...context,
@@ -2330,6 +2433,14 @@ function generateMatchExpression(
       liveFlags: new Map(context.liveFlags),
       cleanupScopes: [...context.cleanupScopes, []],
     };
+    let binding = variant.payload && arm.binding
+      ? `\n    ${generateLocalDeclaration(variant.payload.name, arm.binding, false, context.structs, context.enums, context.semanticInfo.foreignNamedTypes)} = ${temporary}.data.${variant.name};\n    (void)${cBindingName(arm.binding)};`
+      : "";
+    if (variant.payload && arm.binding && hasCleanupType(variant.payload.name, context.structs, context.semanticInfo.foreignTypes)) {
+      const liveFlag = ensureLiveFlag(arm.binding, armContext);
+      armContext.cleanupScopes.at(-1)!.push({ name: arm.binding, type: variant.payload.name, liveFlag });
+      binding += `\n    bool ${liveFlag} = true;`;
+    }
     const body = generateValueArm(arm.body, armContext, consumeValue, consumeTerminates);
     const cleanup = consumeTerminates || valueArmTerminates(arm.body)
       ? ""
@@ -2535,6 +2646,11 @@ function generateExpression(expression: Expression, context: GenerationContext):
     }
     case "conditional":
       return `(${generateExpression(expression.condition, context)} ? ${generateExpression(expression.thenExpression, context)} : ${generateExpression(expression.elseExpression, context)})`;
+    case "weak": {
+      const type = parseWeakType(inferExpressionType(expression, context));
+      if (!type) throw new Error("weak expression is missing its target type");
+      return `${weakMakeName(type.target)}(${generateExpression(expression.expression, context)})`;
+    }
     case "closure":
       throw new Error("closure must be lowered from its const binding");
     case "arrayExpression": {
@@ -2675,6 +2791,10 @@ function generateExpression(expression: Expression, context: GenerationContext):
           const argument = generateCallArgument(expression.arguments[0], context);
           return `${dynamicArrayPushName(receiverType)}(&(${receiver}), ${argument})`;
         }
+        const weak = parseWeakType(receiverType);
+        if (weak) {
+          return `${weakUpgradeName(weak.target)}(${generateExpression(expression.callee.object, context)})`;
+        }
         const declaration = context.structs.get(receiverType)!;
         const field = declaration.fields.find((candidate) => candidate.name === expression.callee.property);
         if (field && parseFunctionType(field.type.name)) {
@@ -2747,6 +2867,7 @@ function generateForeignCallArgument(
 function maybeRetainClass(expression: Expression, value: string, context: GenerationContext): string {
   if (!context.semanticInfo.managedCopies.has(expression.location.offset)) return value;
   const type = inferExpressionType(expression, context);
+  if (parseWeakType(type)) return `z_weak_retain(${value})`;
   const functionType = parseFunctionType(type);
   if (functionType) return `${functionTypeRetainName(functionType)}(${value})`;
   const declaration = context.structs.get(type);
@@ -2970,7 +3091,7 @@ function inferExpressionType(expression: Expression, context: GenerationContext)
   const integerOperation = context.semanticInfo.integerOperations.get(expression.location.offset);
   if (integerOperation) return integerOperation.type;
   const analyzedType = context.semanticInfo.expressionTypes.get(expression.location.offset);
-  if (analyzedType && parseFunctionType(analyzedType)) return analyzedType;
+  if (analyzedType && (parseFunctionType(analyzedType) || parseWeakType(analyzedType) || parseWeakResultType(analyzedType))) return analyzedType;
   const foreignExpressionType = context.semanticInfo.foreignExpressionTypes.get(expression.location.offset);
   if (foreignExpressionType) return foreignExpressionType;
   const foreignCallType = expression.kind === "call"
@@ -2993,6 +3114,8 @@ function inferExpressionType(expression: Expression, context: GenerationContext)
       return ["+", "-", "*", "/", "%", "&", "|", "^", "<<", ">>"].includes(expression.operator) ? "i32" : "bool";
     case "conditional":
       return inferExpressionType(expression.thenExpression, context);
+    case "weak":
+      return context.semanticInfo.expressionTypes.get(expression.location.offset)!;
     case "closure":
       return `__z_closure_${expression.location.offset}`;
     case "identifier":
@@ -3047,6 +3170,8 @@ function inferExpressionType(expression: Expression, context: GenerationContext)
         }
         const receiverType = inferExpressionType(expression.callee.object, context);
         if (parseDynamicArrayType(receiverType)) return "void";
+        const weak = parseWeakType(receiverType);
+        if (weak && expression.callee.property === "upgrade") return weakResultTypeName(weak.target);
         const owner = context.structs.get(receiverType);
         return owner?.methods.find((method) => method.name === expression.callee.property)?.returnType.name ?? "i32";
       }
@@ -3119,6 +3244,7 @@ function mapType(
 ): string {
   const functionType = parseFunctionType(name);
   if (functionType) return functionTypeCName(functionType);
+  if (parseWeakType(name)) return "Z_Weak";
   const primitive = primitiveTypeNames[name];
   if (primitive) return primitive;
   if (parseFixedArrayType(name)) return arrayName(name);
@@ -3200,6 +3326,14 @@ function releaseName(owner: string): string {
   return `${structName(owner)}_release`;
 }
 
+function weakMakeName(owner: string): string {
+  return `${structName(owner)}_weak`;
+}
+
+function weakUpgradeName(owner: string): string {
+  return `${structName(owner)}_weak_upgrade`;
+}
+
 function nextLiveFlag(name: string, counter: { value: number }): string {
   return `_z_live_${name}_${counter.value++}`;
 }
@@ -3227,6 +3361,9 @@ function hasCleanupType(
 ): boolean {
   if (visiting.has(type)) return false;
   if (type === "String") return true;
+  if (parseWeakType(type)) return true;
+  const weakResult = parseWeakResultType(type);
+  if (weakResult && structs.get(weakResult.target)?.kind === "class") return true;
   if (parseFunctionType(type)) return true;
   if (foreignTypes.get(type)?.ownership === "owned") return true;
   if (parseDynamicArrayType(type)) return true;

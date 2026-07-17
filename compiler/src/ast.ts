@@ -238,6 +238,7 @@ export type Expression =
   | UnaryExpression
   | BinaryExpression
   | ConditionalExpression
+  | WeakExpression
   | ClosureExpression
   | CallExpression
   | MemberExpression
@@ -311,6 +312,12 @@ export type ConditionalExpression = {
   readonly condition: Expression;
   readonly thenExpression: Expression;
   readonly elseExpression: Expression;
+  readonly location: SourceLocation;
+};
+
+export type WeakExpression = {
+  readonly kind: "weak";
+  readonly expression: Expression;
   readonly location: SourceLocation;
 };
 

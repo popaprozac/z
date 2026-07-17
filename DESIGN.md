@@ -191,8 +191,32 @@ storing, or returning an existing reference retains it; every owning scope and
 field releases it. The user `deinit` body and reverse-order field cleanup run
 when the last strong reference is released, followed by storage reclamation.
 The bootstrap counter is single-threaded; atomicity and actor/executor rules
-must be designed with concurrency rather than accidentally frozen now. Cycles
-require future weak references and/or ORC-style cycle handling.
+must be designed with concurrency rather than accidentally frozen now.
+
+Explicit `Weak<T>` handles provide the first cycle-breaking tier for classes.
+`weak owner` borrows stored class identity without incrementing its strong
+count. The first weak operation lazily allocates a separate control block; final
+strong release clears its object pointer before `deinit`, and the block remains
+until its final weak handle is released. `upgrade()` returns a retained strong
+reference through the ordinary typed throwing model or `WeakExpired` when the
+object has begun destruction:
+
+```z
+const observer = weak owner;
+const result = attempt observer.upgrade();
+match result {
+  success owner => use(owner);
+  failure expired => recover();
+}
+```
+
+The compiler implements cleanup ownership for the narrow generated
+`Result<T, WeakExpired>` shape: an uninspected success releases its strong
+payload, while exhaustive matching transfers that payload to the success arm
+binding. This does not yet lift the general restriction on arbitrary
+cleanup-bearing enum payloads. An owned closure breaks a class/closure cycle by
+capturing a `Weak<T>` value. Capture-list sugar, automatic ORC cycle collection,
+and atomic cross-thread weak upgrades remain separate future layers.
 
 `trait` declarations contain method signatures, including receiver capability,
 parameter capability, return type, and error type. `struct T implements X` and
@@ -489,9 +513,10 @@ captured fields in reverse order and frees the environment. Borrowing closures
 remain non-escaping and allocation-free.
 
 The bootstrap reference count is single-threaded, matching the first class ARC
-tier. Inferred single-parameter syntax, weak class captures, capturing `this`,
-atomic cross-thread environments, and closure-cycle handling remain later
-tiers.
+tier. Explicit weak values can now be captured to break class/closure cycles.
+Inferred single-parameter syntax, weak capture-list sugar, direct strong
+capturing of `this`, atomic cross-thread environments, and automatic cycle
+handling remain later tiers.
 
 ## Strings, formatting, and diagnostics
 
@@ -860,6 +885,7 @@ Clang declaration source locations rather than text-searching SDK headers.
 
 - ARC-managed classes with reference identity;
 - class lifecycle lowering and deterministic final `deinit`;
+- zeroing `Weak<T>` handles with typed upgrade failure and weak closure capture;
 - traits with explicit, statically checked `implements` conformance;
 - compiler and editor awareness for class and trait declarations;
 - trait values and dynamic dispatch deferred until real APIs shape them.
