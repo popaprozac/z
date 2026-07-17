@@ -643,6 +643,7 @@ bun run z run examples/selective-import.z
 bun run z run examples/selective-declarations.z
 bun run z run examples/apple-groundwork.z
 bun run z run examples/integer-safety.z
+bun run z run examples/callbacks.z
 bun run z run examples/cpp-interop.z
 bun run z run examples/swift-interop/main.z
 bun run z run examples/nswindow.z # macOS: opens a window and enters AppKit's event loop
@@ -775,14 +776,26 @@ ABI-compatible synchronous callbacks can accept named Z functions or explicitly
 typed non-capturing closures:
 
 ```z
-import callbacks from "callbacks.h";
+import { apply } from "callbacks.h";
 
 function multiply(left: i32, right: i32): i32 {
   return left * right;
 }
 
-const answer = callbacks.apply(6, 7, multiply);
+const answer = apply(6, 7, multiply);
 ```
+
+The complete example keeps the Z source, C header, and API notes beside one
+another:
+
+```sh
+bun run z run examples/callbacks.z
+bun run z emit examples/callbacks.z # inspect the generated C
+```
+
+- `examples/callbacks.z` passes the Z function.
+- `examples/callbacks.h` declares `BinaryOperation` and invokes it.
+- `examples/callbacks.h.zapi.json` states that C does not retain the callback.
 
 Because a C header does not say whether a callback is retained, the parameter
 must have a sidecar API note with `"callback": { "lifetime": "call" }`. That
