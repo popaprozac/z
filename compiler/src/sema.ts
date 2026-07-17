@@ -28,6 +28,7 @@ import {
 } from "./function-types.ts";
 import {
   pointerTypeName,
+  type ForeignCallbackType,
   type ForeignConstant,
   type ForeignFunction,
   type ForeignModule,
@@ -93,6 +94,11 @@ export type IntegerOperation = {
   readonly type: string;
 };
 
+export type ForeignCallArgumentPlan =
+  | { readonly kind: "argument"; readonly source: number }
+  | { readonly kind: "callback"; readonly source: number; readonly callback: ForeignCallbackType; readonly functionType: string }
+  | { readonly kind: "context"; readonly source: number; readonly callback: ForeignCallbackType; readonly functionType: string };
+
 export type SemanticInfo = {
   readonly movedExpressions: ReadonlySet<number>;
   readonly managedCopies: ReadonlySet<number>;
@@ -105,6 +111,7 @@ export type SemanticInfo = {
   readonly integerOperations: ReadonlyMap<number, IntegerOperation>;
   readonly foreignArgumentAccesses: ReadonlyMap<number, "in" | "out" | "inout">;
   readonly foreignCallbackTargets: ReadonlyMap<number, string>;
+  readonly foreignCallArgumentPlans: ReadonlyMap<number, readonly ForeignCallArgumentPlan[]>;
   readonly foreignFunctionNames: ReadonlyMap<number, string>;
   readonly foreignConstantNames: ReadonlyMap<number, string>;
   readonly nativeArgumentAccesses: ReadonlyMap<number, "in" | "inout" | "out">;
@@ -140,6 +147,7 @@ type AnalysisState = {
   readonly integerOperations: Map<number, IntegerOperation>;
   readonly foreignArgumentAccesses: Map<number, "in" | "out" | "inout">;
   readonly foreignCallbackTargets: Map<number, string>;
+  readonly foreignCallArgumentPlans: Map<number, readonly ForeignCallArgumentPlan[]>;
   readonly foreignFunctionNames: Map<number, string>;
   readonly foreignConstantNames: Map<number, string>;
   readonly nativeArgumentAccesses: Map<number, "in" | "inout" | "out">;
@@ -230,6 +238,7 @@ export function analyze(
     integerOperations: new Map(),
     foreignArgumentAccesses: new Map(),
     foreignCallbackTargets: new Map(),
+    foreignCallArgumentPlans: new Map(),
     foreignFunctionNames: new Map(),
     foreignConstantNames: new Map(),
     nativeArgumentAccesses: new Map(),
@@ -3563,14 +3572,17 @@ function checkForeignCall(
       `C function ${JSON.stringify(target.name)} uses unsupported type ${JSON.stringify(unsupported.cName)} in signature ${JSON.stringify(target.cSignature)}`,
     );
   }
-  const expected = target.parameters.length;
+  const visibleParameters = target.parameters
+    .map((parameter, nativeIndex) => ({ parameter, nativeIndex }))
+    .filter(({ parameter }) => parameter.type.kind !== "callbackContext");
+  const expected = visibleParameters.length;
   if ((!target.variadic && args.length !== expected) || (target.variadic && args.length < expected)) {
     const expectation = target.variadic ? `at least ${expected}` : String(expected);
     throw new DiagnosticError(fileName, location, `C function ${JSON.stringify(target.name)} expects ${expectation} argument(s), found ${args.length}`);
   }
   for (let index = 0; index < args.length; index += 1) {
     const argument = args[index];
-    const parameter = target.parameters[index];
+    const parameter = visibleParameters[index]?.parameter;
     if (argument.kind === "argumentReference") {
       if (parameter?.type.kind !== "recordPointer") {
         throw new DiagnosticError(
@@ -3658,22 +3670,24 @@ function checkForeignCall(
         state.foreignNamedTypes,
         state.numericLiteralTypes,
       );
-      const global = argument.kind === "identifier" ? globals.get(argument.name) : null;
-      const target = argument.kind === "identifier"
-        ? callTarget(locals.get(argument.name)) ?? (global?.kind === "function" ? argument.name : null)
-        : null;
-      if (!target) {
-        throw new DiagnosticError(
-          fileName,
-          argument.location,
-          "this function value carries or may carry an environment; this C callback has no context parameter",
-          {
-            code: "Z0213",
-            helps: ["pass a named function or a directly bound non-capturing closure, or use a C API with a context-pointer callback"],
-          },
-        );
+      if (!parameter.type.context) {
+        const global = argument.kind === "identifier" ? globals.get(argument.name) : null;
+        const callbackTarget = argument.kind === "identifier"
+          ? callTarget(locals.get(argument.name)) ?? (global?.kind === "function" ? argument.name : null)
+          : null;
+        if (!callbackTarget) {
+          throw new DiagnosticError(
+            fileName,
+            argument.location,
+            "this function value carries or may carry an environment; this C callback has no context parameter",
+            {
+              code: "Z0213",
+              helps: ["pass a named function or a directly bound non-capturing closure, or use a C API with a context-pointer callback"],
+            },
+          );
+        }
+        state.foreignCallbackTargets.set(argument.location.offset, callbackTarget);
       }
-      state.foreignCallbackTargets.set(argument.location.offset, target);
       continue;
     }
     if (parameter?.type.kind === "z") {
@@ -3731,6 +3745,38 @@ function checkForeignCall(
     if (!parameter && argument.kind === "number" && isIntegerLiteral(argument.value) && !integerLiteralFits(argument.value, "i32")) {
       throw new DiagnosticError(fileName, argument.location, `variadic integer literal ${argument.value} does not fit default i32; bind it to an explicit integer type first`);
     }
+  }
+  const contextualCallbacks = visibleParameters
+    .map(({ parameter, nativeIndex }, source) => ({ parameter, nativeIndex, source }))
+    .filter((entry): entry is typeof entry & { readonly parameter: { readonly type: ForeignCallbackType } } => (
+      entry.parameter.type.kind === "callback" && entry.parameter.type.context !== null
+    ));
+  if (contextualCallbacks.length > 0) {
+    const callbacksByNativeIndex = new Map(contextualCallbacks.map((entry) => [entry.nativeIndex, entry]));
+    const visibleByNativeIndex = new Map(visibleParameters.map((entry, source) => [entry.nativeIndex, source]));
+    const plan: ForeignCallArgumentPlan[] = target.parameters.map((parameter, nativeIndex) => {
+      if (parameter.type.kind === "callbackContext") {
+        const callback = callbacksByNativeIndex.get(parameter.type.callbackParameter)!;
+        return {
+          kind: "context",
+          source: callback.source,
+          callback: callback.parameter.type,
+          functionType: String(foreignValueType(callback.parameter.type)),
+        };
+      }
+      const source = visibleByNativeIndex.get(nativeIndex)!;
+      if (parameter.type.kind === "callback" && parameter.type.context) {
+        return {
+          kind: "callback",
+          source,
+          callback: parameter.type,
+          functionType: String(foreignValueType(parameter.type)),
+        };
+      }
+      return { kind: "argument", source };
+    });
+    for (let source = expected; source < args.length; source += 1) plan.push({ kind: "argument", source });
+    state.foreignCallArgumentPlans.set(location.offset, plan);
   }
   const result = target.returnType.kind === "z"
     ? target.returnType.name

@@ -1272,9 +1272,11 @@ function describeModuleMember(module: ForeignModule, name: string): string | nul
 }
 
 function foreignFunctionDetail(declaration: ForeignFunction): string {
-  const parameters = declaration.parameters.map((parameter, index) => (
-    `${parameter.name ?? `argument${index + 1}`}: ${foreignTypeName(parameter.type)}`
-  ));
+  const parameters = declaration.parameters
+    .filter((parameter) => parameter.type.kind !== "callbackContext")
+    .map((parameter, index) => (
+      `${parameter.name ?? `argument${index + 1}`}: ${foreignTypeName(parameter.type)}`
+    ));
   if (declaration.variadic) parameters.push("...arguments");
   return `${declaration.name}(${parameters.join(", ")}): ${foreignTypeName(declaration.returnType)}  // C: ${declaration.cSignature}`;
 }

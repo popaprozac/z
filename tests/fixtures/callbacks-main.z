@@ -10,7 +10,11 @@ function main(): i32 {
     (left: i32, right: i32): i32 => left + right;
   const product = callbacks.z_apply_i32(6, 7, operation);
   const incremented = callbacks.z_apply_twice_i32(40, add);
-  if (product == 42 && incremented == 42) {
+  const offset = 2;
+  const addOffset: (value: i32) => i32 =
+    move (value: i32): i32 => value + offset;
+  const captured = callbacks.z_apply_context_i32(40, addOffset);
+  if (product == 42 && incremented == 42 && captured == 42) {
     return 0;
   }
   return 1;

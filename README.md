@@ -781,7 +781,7 @@ namespaced or selective Z types and values. Numeric literals are contextually
 typed and rejected when they do not fit the destination width.
 
 ABI-compatible synchronous callbacks can accept named Z functions or explicitly
-typed non-capturing closures:
+typed closures. Context-free C callbacks require a non-capturing target:
 
 ```z
 import { apply } from "callbacks.h";
@@ -792,6 +792,24 @@ function multiply(left: i32, right: i32): i32 {
 
 const answer = apply(6, 7, multiply);
 ```
+
+Capturing closures work naturally when the C API carries a paired `void *`
+context parameter:
+
+```z
+import { applyWithContext } from "callbacks.h";
+
+const offset = 2;
+const addOffset: (value: i32) => i32 =
+  move (value: i32): i32 => value + offset;
+const answer = applyWithContext(40, addOffset);
+```
+
+The Z call contains only the closure. API notes identify the native context
+parameter and its position in the callback signature; the importer hides the
+context plumbing from the Z signature and argument list. The backend emits a
+typed trampoline plus the closure value's address as the native context
+argument.
 
 The complete example keeps the Z source, C header, and API notes beside one
 another:
@@ -809,9 +827,10 @@ Because a C header does not say whether a callback is retained, the parameter
 must have a sidecar API note with `"callback": { "lifetime": "call" }`. That
 contract means C finishes every callback invocation before the imported
 function returns. Named functions and directly bound non-capturing closures
-still lower to raw C function pointers. Environment-carrying closures require a
-C context-pointer contract and remain rejected by context-free callback
-parameters. Unannotated, escaping, variadic, and calling-convention-specific C
+still lower to raw C function pointers for context-free callbacks. For a paired
+call-only context, the generated trampoline borrows the Z function value for
+the duration of the native call; its owned ARC environment stays alive in the
+caller. Unannotated, escaping, variadic, and calling-convention-specific C
 callbacks remain unsupported until their adapter rules exist.
 
 Unions, anonymous or incomplete layouts, plain `char` signedness, arrays,

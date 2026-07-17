@@ -46,10 +46,36 @@ Clang supplies the function pointer's exact parameter and result ABI. The API
 note supplies the fact the header omits: C does not retain the callback after
 the call returns. Z can therefore pass a named function or explicitly typed
 non-capturing closure directly with no allocation or wrapper. A callback
-without this contract remains unsupported. Z-owned capturing closures now have
-ARC environments and deterministic release, but a context-free C function
-pointer still has nowhere to carry that environment. Passing one therefore
-waits for API-note-described context-pointer adapters. Escaping callbacks also
-need retention and unregistration rules; callback-to-async additionally
+without this contract remains unsupported.
+
+Capturing closures use a paired context contract:
+
+```json
+{
+  "functions": {
+    "applyWithContext": {
+      "parameters": {
+        "2": {
+          "callback": {
+            "lifetime": "call",
+            "context": {
+              "parameter": 1,
+              "callbackParameter": 1
+            }
+          }
+        }
+      }
+    }
+  }
+}
+```
+
+All indexes are zero-based. `parameter` identifies the C function's hidden
+`void *` parameter; `callbackParameter` identifies that context argument inside
+the callback signature. The generated trampoline casts the native context back
+to the borrowed Z function value and invokes its `call` entry with the owned
+environment. Since the lifetime is call-only, the caller keeps the ARC owner
+alive and no native retain/release protocol is invented. Escaping callbacks
+still need retention and unregistration rules; callback-to-async additionally
 requires completion cardinality, threading, cancellation, and executor
 metadata.

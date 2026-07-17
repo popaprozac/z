@@ -337,12 +337,20 @@ test("imports C function signatures through Clang", () => {
   assert.match(generated, /const int32_t written = puts\("typed"\);/);
 });
 
-test("passes typed non-capturing Z functions to call-only C callbacks", () => {
+test("passes typed Z functions to call-only C callbacks with optional context adapters", () => {
   const fixture = resolve(projectRoot, "tests/fixtures/callbacks-main.z");
   const source = readFileSync(fixture, "utf8");
   const generated = compileToC(source, fixture);
   assert.match(generated, /z_apply_i32\(6, 7, multiply\)/);
   assert.match(generated, /z_apply_twice_i32\(40, __z_closure_call_[0-9]+\)/);
+  assert.match(
+    generated,
+    /z_apply_context_i32\(40, \(void \*\)&\(addOffset\), __z_c_callback_Z_Function_[0-9a-f]+_context_1\)/,
+  );
+  assert.match(
+    generated,
+    /static __attribute__\(\(unused\)\) int32_t __z_c_callback_Z_Function_[0-9a-f]+_context_1\(int32_t argument1, void \*callback_context\)/,
+  );
 
   const result = spawnSync(process.execPath, [cli, "run", fixture], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
@@ -354,6 +362,9 @@ test("passes typed non-capturing Z functions to call-only C callbacks", () => {
     hover(source, fixture, importedUse)?.contents.value ?? "",
     /callback: \(argument1: i32, argument2: i32\) => i32/,
   );
+  const contextUse = source.indexOf("z_apply_context_i32") + 1;
+  const contextDetail = hover(source, fixture, contextUse)?.contents.value ?? "";
+  assert.match(contextDetail, /z_apply_context_i32\(value: i32, callback: \(argument1: i32\) => i32\): i32/);
   const completionSource = source.replace("callbacks.z_apply_i32", "callbacks.z_app");
   const completionOffset = completionSource.indexOf("callbacks.z_app") + "callbacks.z_app".length;
   assert.match(
@@ -372,7 +383,7 @@ test("passes typed non-capturing Z functions to call-only C callbacks", () => {
 
   const capturedCallback = source.replace(
     "const add: (left: i32, right: i32) => i32 =\n    (left: i32, right: i32): i32 => left + right;",
-    "const offset = 0;\n  const add: (left: i32, right: i32) => i32 =\n    move (left: i32, right: i32): i32 => left + right + offset;",
+    "const capturedOffset = 0;\n  const add: (left: i32, right: i32) => i32 =\n    move (left: i32, right: i32): i32 => left + right + capturedOffset;",
   );
   const capturedDiagnostic = diagnostics(capturedCallback, fixture).find((diagnostic) => diagnostic.code === "Z0213");
   assert.match(capturedDiagnostic?.message ?? "", /function value carries or may carry an environment/);
@@ -384,6 +395,49 @@ test("passes typed non-capturing Z functions to call-only C callbacks", () => {
   assert.throws(
     () => compileToC(unclassified, fixture),
     /z_store_callback.*unsupported type.*ZBinaryCallback/,
+  );
+});
+
+test("rejects invalid C callback and context API-note pairs", () => {
+  const directory = mkdtempSync("/tmp/z-callback-context-notes-");
+  const header = resolve(directory, "invalid-context.h");
+  const sourceFile = resolve(directory, "main.z");
+  writeFileSync(header, `
+    #include <stdint.h>
+    typedef int32_t (*InvalidContextCallback)(int32_t value, void *context);
+    static inline int32_t invalid_context(
+      int32_t value,
+      int32_t *not_context,
+      InvalidContextCallback callback
+    ) {
+      (void)not_context;
+      (void)callback;
+      return value;
+    }
+  `);
+  writeFileSync(`${header}.zapi.json`, JSON.stringify({
+    functions: {
+      invalid_context: {
+        parameters: {
+          "2": {
+            callback: {
+              lifetime: "call",
+              context: { parameter: 1, callbackParameter: 1 },
+            },
+          },
+        },
+      },
+    },
+  }));
+  const source = `
+    import invalid from "invalid-context.h";
+    function identity(value: i32): i32 { return value; }
+    function main(): i32 { return invalid.invalid_context(42, identity); }
+  `;
+  writeFileSync(sourceFile, source);
+  assert.throws(
+    () => compileToC(source, sourceFile),
+    /do not describe a valid callback and void \* context pair/,
   );
 });
 

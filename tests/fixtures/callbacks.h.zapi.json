@@ -17,6 +17,19 @@
           }
         }
       }
+    },
+    "z_apply_context_i32": {
+      "parameters": {
+        "2": {
+          "callback": {
+            "lifetime": "call",
+            "context": {
+              "parameter": 1,
+              "callbackParameter": 1
+            }
+          }
+        }
+      }
     }
   }
 }

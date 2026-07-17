@@ -1,5 +1,5 @@
 import console from "std/console";
-import { apply } from "callbacks.h";
+import { apply, applyWithContext } from "callbacks.h";
 
 function multiply(left: i32, right: i32): i32 {
   return left * right;
@@ -12,6 +12,11 @@ function main(): i32 {
     (left: i32, right: i32): i32 => left + right;
   const total = apply(20, 22, add);
 
-  console.log(`product=${product}, total=${total}`);
+  const offset = 2;
+  const addOffset: (value: i32) => i32 =
+    move (value: i32): i32 => value + offset;
+  const captured = applyWithContext(40, addOffset);
+
+  console.log(`product=${product}, total=${total}, captured=${captured}`);
   return 0;
 }

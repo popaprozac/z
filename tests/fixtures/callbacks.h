@@ -4,6 +4,7 @@
 #include <stdint.h>
 
 typedef int32_t (*ZBinaryCallback)(int32_t left, int32_t right);
+typedef int32_t (*ZContextCallback)(int32_t value, void *context);
 
 static inline int32_t z_apply_i32(int32_t left, int32_t right, ZBinaryCallback callback) {
   return callback(left, right);
@@ -15,6 +16,10 @@ static inline int32_t z_apply_twice_i32(int32_t value, ZBinaryCallback callback)
 
 static inline void z_store_callback(ZBinaryCallback callback) {
   (void)callback;
+}
+
+static inline int32_t z_apply_context_i32(int32_t value, void *context, ZContextCallback callback) {
+  return callback(value, context);
 }
 
 #endif

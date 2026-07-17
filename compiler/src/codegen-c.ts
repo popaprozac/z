@@ -13,7 +13,7 @@ import {
   parseFixedArrayType,
   parseSliceType,
 } from "./array-types.ts";
-import type { ClosureInfo, IntegerOperation, SemanticInfo } from "./sema.ts";
+import type { ClosureInfo, ForeignCallArgumentPlan, IntegerOperation, SemanticInfo } from "./sema.ts";
 import {
   isStandardModuleSpecifier,
   standardFunctionSignature,
@@ -90,6 +90,7 @@ export function generateC(program: Program, sourceName: string, semanticInfo: Se
   const dynamicArrayTypes = collectDynamicArrayTypes(program, semanticInfo);
   const dynamicArrayPushTypes = collectDynamicArrayPushTypes(program, semanticInfo);
   const functionTypes = collectFunctionTypes(program, semanticInfo);
+  const foreignCallbackAdapters = collectForeignCallbackAdapters(semanticInfo);
   const usesSleep = [...semanticInfo.standardFunctionReferences.values()].includes("sleep");
   const includedHeaders = new Set(["stdbool.h", "stddef.h", "stdint.h", "stdlib.h"]);
   const lines = [
@@ -173,6 +174,9 @@ export function generateC(program: Program, sourceName: string, semanticInfo: Se
     lines.push(generateFunctionTypeDefinition(functionType, structs, enums, semanticInfo.foreignNamedTypes));
   }
   if (functionTypes.length > 0) lines.push("");
+  for (const adapter of foreignCallbackAdapters) {
+    lines.push(generateForeignCallbackAdapter(adapter), "");
+  }
 
   for (const type of sliceTypes) {
     const slice = parseSliceType(type)!;
@@ -362,7 +366,56 @@ function collectFunctionTypes(program: Program, semanticInfo: SemanticInfo): Fun
   visit(program);
   for (const type of semanticInfo.expressionTypes.values()) add(type);
   for (const type of semanticInfo.bindingTypes.values()) add(type);
+  for (const plan of semanticInfo.foreignCallArgumentPlans.values()) {
+    for (const argument of plan) {
+      if (argument.kind !== "argument") add(argument.functionType);
+    }
+  }
   return [...collected.values()].sort((left, right) => functionTypeCName(left).localeCompare(functionTypeCName(right)));
+}
+
+function collectForeignCallbackAdapters(semanticInfo: SemanticInfo): Extract<ForeignCallArgumentPlan, { kind: "callback" }>[] {
+  const collected = new Map<string, Extract<ForeignCallArgumentPlan, { kind: "callback" }>>();
+  for (const plan of semanticInfo.foreignCallArgumentPlans.values()) {
+    for (const argument of plan) {
+      if (argument.kind !== "callback") continue;
+      collected.set(foreignCallbackAdapterName(argument), argument);
+    }
+  }
+  return [...collected.values()].sort((left, right) => (
+    foreignCallbackAdapterName(left).localeCompare(foreignCallbackAdapterName(right))
+  ));
+}
+
+function foreignCallbackAdapterName(plan: Extract<ForeignCallArgumentPlan, { kind: "callback" }>): string {
+  const functionType = parseFunctionType(plan.functionType)!;
+  return `__z_c_callback_${functionTypeCName(functionType)}_context_${plan.callback.context!.callbackParameter}`;
+}
+
+function generateForeignCallbackAdapter(plan: Extract<ForeignCallArgumentPlan, { kind: "callback" }>): string {
+  const functionType = parseFunctionType(plan.functionType)!;
+  const callback = plan.callback;
+  const contextIndex = callback.context!.callbackParameter;
+  const nativeParameters: string[] = [];
+  const argumentNames: string[] = [];
+  let visibleIndex = 0;
+  for (let nativeIndex = 0; nativeIndex < callback.parameters.length + 1; nativeIndex += 1) {
+    if (nativeIndex === contextIndex) {
+      nativeParameters.push("void *callback_context");
+      continue;
+    }
+    const name = `argument${visibleIndex + 1}`;
+    nativeParameters.push(`${callback.parameters[visibleIndex].cName} ${name}`);
+    argumentNames.push(name);
+    visibleIndex += 1;
+  }
+  const functionName = foreignCallbackAdapterName(plan);
+  const functionValue = `((${functionTypeCName(functionType)} *)callback_context)`;
+  const invoke = `${functionValue}->call(${functionValue}->context${argumentNames.length ? `, ${argumentNames.join(", ")}` : ""})`;
+  const body = functionType.returnType === "void" ? `${invoke};\n  return;` : `return ${invoke};`;
+  return `static __attribute__((unused)) ${callback.returnType.cName} ${functionName}(${nativeParameters.join(", ") || "void"}) {
+  ${body}
+}`;
 }
 
 function generateFunctionTypeDefinition(
@@ -2502,6 +2555,13 @@ function generateExpression(expression: Expression, context: GenerationContext):
         const args = expression.arguments.map((argument) => generateCallArgument(argument, context));
         return generateObjCMessage(receiver, objcCall.selector, args);
       }
+      const foreignArgumentPlan = context.semanticInfo.foreignCallArgumentPlans.get(expression.location.offset);
+      if (foreignArgumentPlan) {
+        const args = foreignArgumentPlan.map((argument) => (
+          generateForeignCallArgument(argument, expression.arguments, context)
+        ));
+        return `${generateExpression(expression.callee, context)}(${args.join(", ")})`;
+      }
       if (expression.callee.kind === "member" && !isForeignMember(expression.callee, context)) {
         if (expression.callee.object.kind === "identifier") {
           const declaration = context.enums.get(expression.callee.object.name);
@@ -2569,6 +2629,17 @@ function generateExpression(expression: Expression, context: GenerationContext):
 
 function generateFunctionValueCall(value: string, arguments_: readonly string[]): string {
   return `(${value}).call((${value}).context${arguments_.length ? `, ${arguments_.join(", ")}` : ""})`;
+}
+
+function generateForeignCallArgument(
+  plan: ForeignCallArgumentPlan,
+  arguments_: readonly Expression[],
+  context: GenerationContext,
+): string {
+  const expression = arguments_[plan.source];
+  if (plan.kind === "argument") return generateCallArgument(expression, context);
+  if (plan.kind === "callback") return foreignCallbackAdapterName(plan);
+  return `(void *)&(${generateExpression(expression, context)})`;
 }
 
 function maybeRetainClass(expression: Expression, value: string, context: GenerationContext): string {

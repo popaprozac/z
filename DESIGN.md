@@ -833,4 +833,5 @@ Clang declaration source locations rather than text-searching SDK headers.
 - typed synchronous call-only C callbacks (first ABI-compatible tier
   implemented);
 - ARC-owned Z closure environments (implemented);
-- generated C context, calling-convention, escaping, and async adapters.
+- generated call-only C context adapters (implemented);
+- calling-convention, escaping, and async adapters.
