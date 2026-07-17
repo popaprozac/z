@@ -310,6 +310,21 @@ parameters, public and FFI boundaries, aggregate fields, and uninitialized
 storage stay explicit. Access capabilities are never inferred from a closure
 body: a destination requiring `inout` still uses `(inout value) => ...`.
 
+Function parameters and imported C callbacks also provide contextual closure
+types, allowing TypeScript-style inline callbacks without wrapper declarations:
+
+```z
+const answer = apply((value) => value * 2, 21);
+const captured = applyWithContext(40, (value) => value + offset);
+mutate((inout value) => { value = value + 1; }, inout counter);
+```
+
+Noncapturing closures need no environment. An explicit `in` function parameter
+or call-scoped C callback borrows captures through an allocation-free stack
+environment. Owned/value and escaping callback parameters require explicit
+`move` and use the same ARC-managed environment as stored closures; an escaping
+C callback transfers it through the API-note release hook.
+
 Run the closure example with:
 
 ```sh

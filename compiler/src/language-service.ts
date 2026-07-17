@@ -1,4 +1,5 @@
 import type {
+  Expression,
   Program,
   SourceLocation,
   Statement,
@@ -657,7 +658,10 @@ type Binding = {
 
 function collectBindings(context: AnalyzedSource): Binding[] {
   const bindings: Binding[] = [];
-  const visitClosure = (expression: Extract<NonNullable<Extract<Statement, { kind: "variable" }>["initializer"]>, { kind: "closure" }>): void => {
+  const seenClosures = new Set<number>();
+  const visitClosure = (expression: Extract<Expression, { kind: "closure" }>): void => {
+    if (seenClosures.has(expression.location.offset)) return;
+    seenClosures.add(expression.location.offset);
     for (const parameter of expression.parameters) {
       bindings.push({
         name: parameter.name,
@@ -724,6 +728,17 @@ function collectBindings(context: AnalyzedSource): Binding[] {
     for (const method of declaration.methods) visitFunction(method);
     if (declaration.deinitializer) visitStatements(declaration.deinitializer.body);
   }
+  const visitClosures = (value: unknown): void => {
+    if (!value || typeof value !== "object") return;
+    if (Array.isArray(value)) {
+      for (const child of value) visitClosures(child);
+      return;
+    }
+    const node = value as Partial<Expression>;
+    if (node.kind === "closure") visitClosure(node as Extract<Expression, { kind: "closure" }>);
+    for (const child of Object.values(value as Record<string, unknown>)) visitClosures(child);
+  };
+  visitClosures(context.program);
   for (const arm of collectMatchArmInfos(context)) {
     if (!arm.binding || arm.bindingOffset === null || !arm.payloadType) continue;
     bindings.push({

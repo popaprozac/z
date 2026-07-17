@@ -75,6 +75,22 @@ to `(inout value: Counter) => void` must still spell `(inout value) => ...`.
 An untyped closure without a destination contract receives a diagnostic asking
 for either `parameter: Type` or an explicit function value type.
 
+Function and imported callback parameters are contextual destinations too, so
+closures may be written inline:
+
+```z
+apply((value) => value * 2, 21);
+applyWithContext(40, (value) => value + offset);
+mutate((inout value) => { value = value + 1; }, inout counter);
+```
+
+The parameter contract determines capture storage. An explicit `in` function
+parameter or call-scoped foreign callback cannot retain the closure, so captures
+borrow through an allocation-free stack environment. Owned/value and escaping
+parameters require `move` and use the ordinary ARC function-value environment;
+escaping callbacks transfer a retained value through the imported API's
+compiler-validated release hook. Noncapturing closures need no environment.
+
 Assignment is a statement, not an expression. Its target must be a mutable
 binding or a field path rooted in one, and its value must have the target's
 static type. Parameters and pattern bindings begin immutable.

@@ -21,22 +21,16 @@ function multiply(left: i32, right: i32): i32 {
 
 function installRetainedOperation(): void {
   const offset = Offset { value: 2 };
-  const operation: (value: i32) => i32 =
-    move (value: i32): i32 => value + offset.value;
-  retainOperation(operation);
+  retainOperation(move (value) => value + offset.value);
 }
 
 function main(): i32 {
   const product = apply(6, 7, multiply);
 
-  const add: (left: i32, right: i32) => i32 =
-    (left: i32, right: i32): i32 => left + right;
-  const total = apply(20, 22, add);
+  const total = apply(20, 22, (left, right) => left + right);
 
   const offset = 2;
-  const addOffset: (value: i32) => i32 =
-    move (value: i32): i32 => value + offset;
-  const captured = applyWithContext(40, addOffset);
+  const captured = applyWithContext(40, (value) => value + offset);
 
   installRetainedOperation();
   const escaped = invokeRetainedOperation(40);

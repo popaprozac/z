@@ -200,7 +200,7 @@ export function generateC(program: Program, sourceName: string, semanticInfo: Se
   }
 
   lines.push(...generateAggregateDefinitions(program.structs, program.enums, arrayTypes, structs, enums, semanticInfo.foreignNamedTypes));
-  for (const closure of closures.filter((candidate) => candidate.owned)) {
+  for (const closure of closures.filter((candidate) => candidate.captures.length > 0)) {
     lines.push(generateClosureEnvironmentDefinition(closure, structs, enums, semanticInfo), "");
   }
   for (const type of dynamicArrayPushTypes) {
@@ -628,11 +628,12 @@ function generateClosureAdapter(
   const prefix: string[] = [];
   const hidden = closure.captures.map((capture) => {
     const stored = `environment->${capture.name}`;
+    if (!closure.owned) return stored;
     if (capture.mode === "value") return stored;
     if (capture.mode === "in" && structs.get(capture.type)?.kind === "class") return stored;
     return `&(${stored})`;
   });
-  if (closure.owned) {
+  if (closure.captures.length > 0) {
     prefix.push(`${closureEnvironmentName(closure)} *environment = (${closureEnvironmentName(closure)} *)context;`);
   } else {
     prefix.push("(void)context;");
@@ -652,11 +653,18 @@ function generateClosureEnvironmentDefinition(
   semanticInfo: SemanticInfo,
 ): string {
   const name = closureEnvironmentName(closure);
-  const fields = closure.captures.map((capture) => (
-    `  ${mapType(capture.type, structs, enums, semanticInfo.foreignNamedTypes)} ${capture.name};`
-  ));
+  const fields = closure.captures.map((capture) => {
+    const type = mapType(capture.type, structs, enums, semanticInfo.foreignNamedTypes);
+    const borrowedPointer = !closure.owned
+      && capture.mode !== "value"
+      && !(capture.mode === "in" && structs.get(capture.type)?.kind === "class");
+    if (borrowedPointer) {
+      return `  ${capture.mode === "in" ? "const " : ""}${type} *${capture.name};`;
+    }
+    return `  ${type} ${capture.name};`;
+  });
   return `typedef struct ${name} {
-  size_t refcount;
+${closure.owned ? "  size_t refcount;\n" : ""}
 ${fields.join("\n")}
 } ${name};`;
 }
@@ -1713,6 +1721,9 @@ function generateDirectValue(
   if (context.expressionOverrides.has(expression.location.offset)) {
     return consumeValue(generateExpression(expression, context), context);
   }
+  if (expression.kind === "closure") {
+    return generateClosureValue(expression, context, consumeValue);
+  }
   if (expression.kind === "template") {
     return generateTemplateValue(expression, context, consumeValue);
   }
@@ -1770,10 +1781,54 @@ function requiresStatementValue(expression: Expression, context: GenerationConte
 
 function callArgumentNeedsLowering(expression: Expression, context: GenerationContext): boolean {
   if (context.expressionOverrides.has(expression.location.offset)) return false;
+  if (context.semanticInfo.foreignCallbackTargets.has(expression.location.offset)) return false;
+  if (expression.kind === "closure") return true;
   if (requiresStatementValue(expression, context)) return true;
   return context.semanticInfo.cstringConversions.has(expression.location.offset)
     && expression.kind !== "string"
     && !isStableStorageExpression(expression);
+}
+
+function generateClosureValue(
+  expression: Extract<Expression, { kind: "closure" }>,
+  context: GenerationContext,
+  consumeValue: (value: string, context: GenerationContext) => string,
+): string {
+  const closure = context.semanticInfo.closures.get(expression.location.offset)!;
+  const functionType = closureFunctionType(closure);
+  if (!closure.owned && closure.captures.length === 0) {
+    return consumeValue(functionValueLiteral(functionType, closureAdapterName(closure)), context);
+  }
+  const environmentType = closureEnvironmentName(closure);
+  const environment = closure.owned
+    ? `_z_closure_environment_${closure.declaration.location.offset}`
+    : `_z_borrowed_closure_environment_${closure.declaration.location.offset}`;
+  const captures = closure.captures.map((capture) => {
+    const captured: Expression = { kind: "identifier", name: capture.name, location: capture.location };
+    const value = generateExpression(captured, context);
+    const borrowedPointer = !closure.owned
+      && capture.mode !== "value"
+      && !(capture.mode === "in" && context.structs.get(capture.type)?.kind === "class");
+    const target = closure.owned ? `${environment}->${capture.name}` : `${environment}.${capture.name}`;
+    return `${target} = ${borrowedPointer ? `&(${value})` : value};`;
+  });
+  const value = functionValueLiteral(
+    functionType,
+    closureAdapterName(closure),
+    closure.owned ? environment : `&(${environment})`,
+    closure.owned ? closureEnvironmentRetainName(closure) : "NULL",
+    closure.owned ? closureEnvironmentReleaseName(closure) : "NULL",
+  );
+  if (!closure.owned) {
+    return `${environmentType} ${environment};
+${captures.join("\n")}
+${consumeValue(value, context)}`;
+  }
+  return `${environmentType} *${environment} = (${environmentType} *)malloc(sizeof(${environmentType}));
+if (${environment} == NULL) abort();
+${environment}->refcount = 1;
+${captures.join("\n")}
+${consumeValue(value, context)}`;
 }
 
 function isStableStorageExpression(expression: Expression): boolean {

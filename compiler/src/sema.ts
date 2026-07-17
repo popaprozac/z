@@ -833,7 +833,7 @@ function analyzeStatement(
         ? parseFunctionType(statement.type.name)
         : null;
       let initializerType = statement.initializer.kind === "closure"
-        ? inferClosureExpression(statement.initializer, owner, locals, globals, structs, enums, fileName, state, contextualFunction)
+        ? inferClosureExpression(statement.initializer, locals, globals, structs, enums, fileName, state, contextualFunction)
         : inferDirectValue(statement.initializer, owner, locals, globals, structs, enums, fileName, state);
       let variableType = initializerType;
       if (statement.type) {
@@ -841,43 +841,15 @@ function analyzeStatement(
         variableType = statement.type.name;
         if (statement.initializer.kind === "closure") {
           const expectedFunction = parseFunctionType(variableType)!;
-          let closure = state.closures.get(statement.initializer.location.offset)!;
-          if (closure.captures.length > 0 && statement.initializer.captureMode !== "move") {
-            throw new DiagnosticError(
-              fileName,
-              statement.initializer.location,
-              "a borrowed capturing closure cannot become a storable function value",
-              {
-                code: "Z0212",
-                length: 1,
-                notes: ["a stored closure can outlive the local bindings it captures"],
-                helps: ["add `move` before the closure to place captured values in an owned environment"],
-              },
-            );
-          }
-          const actualFunction = closureFunctionType(closure);
-          if (!functionTypesCompatible(expectedFunction, actualFunction)) {
-            throw new DiagnosticError(
-              fileName,
-              statement.initializer.location,
-              `expected ${displayFunctionType(variableType)}, found ${displayFunctionType(functionTypeName(actualFunction.parameters, actualFunction.returnType))}`,
-            );
-          }
-          closure = { ...closure, owned: closure.captures.length > 0, storable: true };
-          state.closures.set(statement.initializer.location.offset, closure);
-          if (closure.captures.length > 0) {
-            for (const capture of closure.captures) {
-              if (!hasCleanupType(capture.type, structs, state.foreignTypes)) continue;
-              consumeOwnedValue(
-                { kind: "identifier", name: capture.name, location: capture.location },
-                capture.type,
-                locals,
-                structs,
-                fileName,
-                state,
-              );
-            }
-          }
+          finalizeClosureFunctionValue(
+            statement.initializer,
+            expectedFunction,
+            variableType,
+            locals,
+            structs,
+            fileName,
+            state,
+          );
           initializerType = variableType;
         } else {
           initializerType = contextualCStringLiteral(variableType, statement.initializer, state) ?? initializerType;
@@ -1131,7 +1103,7 @@ function inferDirectValue(
     return inferIfExpression(expression, owner, locals, globals, structs, enums, fileName, state);
   }
   if (expression.kind === "closure") {
-    return inferClosureExpression(expression, owner, locals, globals, structs, enums, fileName, state);
+    return inferClosureExpression(expression, locals, globals, structs, enums, fileName, state);
   }
   return inferExpression(expression, locals, globals, structs, enums, fileName, state);
 }
@@ -1189,7 +1161,6 @@ function standardFunctionDeclaration(
 
 function inferClosureExpression(
   expression: Extract<Expression, { kind: "closure" }>,
-  owner: FunctionDeclaration,
   locals: Map<string, ValueType>,
   globals: Map<string, SymbolValue>,
   structs: Map<string, StructDeclaration>,
@@ -1197,6 +1168,7 @@ function inferClosureExpression(
   fileName: string,
   state: AnalysisState,
   expectedFunction: FunctionType | null = null,
+  transientBorrow = false,
 ): ValueType {
   if (expectedFunction && expression.parameters.length !== expectedFunction.parameters.length) {
     throw new DiagnosticError(
@@ -1304,7 +1276,7 @@ function inferClosureExpression(
     });
     const captureBorrow = expression.captureMode === "borrow" || cleanupBearing ? borrowedPrefix : "";
     closureLocals.set(capture.name, `${captureBorrow}${capture.mutated ? mutablePrefix : ""}${type}`);
-    if (expression.captureMode === "borrow" && cleanupBearing) {
+    if (expression.captureMode === "borrow" && cleanupBearing && !transientBorrow) {
       locals.set(capture.name, `${borrowedPrefix}${isMutableBinding(stored) ? mutablePrefix : ""}${type}`);
       state.borrowOrigins.set(capture.name, { location: capture.location, kind: "closure" });
     }
@@ -1373,6 +1345,59 @@ function inferClosureExpression(
     storable: false,
   });
   return type;
+}
+
+function finalizeClosureFunctionValue(
+  expression: Extract<Expression, { kind: "closure" }>,
+  expectedFunction: FunctionType,
+  expectedType: string,
+  locals: Map<string, ValueType>,
+  structs: Map<string, StructDeclaration>,
+  fileName: string,
+  state: AnalysisState,
+  allowBorrowedCaptures = false,
+): ClosureInfo {
+  let closure = state.closures.get(expression.location.offset)!;
+  if (closure.captures.length > 0 && expression.captureMode !== "move" && !allowBorrowedCaptures) {
+    throw new DiagnosticError(
+      fileName,
+      expression.location,
+      "a borrowed capturing closure cannot become a function value",
+      {
+        code: "Z0212",
+        length: 1,
+        notes: ["a function value can outlive the local bindings it captures"],
+        helps: ["add `move` before the closure to place captured values in an owned environment"],
+      },
+    );
+  }
+  const actualFunction = closureFunctionType(closure);
+  if (!functionTypesCompatible(expectedFunction, actualFunction)) {
+    throw new DiagnosticError(
+      fileName,
+      expression.location,
+      `expected ${displayFunctionType(expectedType)}, found ${displayFunctionType(functionTypeName(actualFunction.parameters, actualFunction.returnType))}`,
+    );
+  }
+  closure = {
+    ...closure,
+    owned: closure.captures.length > 0 && expression.captureMode === "move",
+    storable: true,
+  };
+  state.closures.set(expression.location.offset, closure);
+  state.expressionTypes.set(expression.location.offset, expectedType);
+  for (const capture of closure.owned ? closure.captures : []) {
+    if (!hasCleanupType(capture.type, structs, state.foreignTypes)) continue;
+    consumeOwnedValue(
+      { kind: "identifier", name: capture.name, location: capture.location },
+      capture.type,
+      locals,
+      structs,
+      fileName,
+      state,
+    );
+  }
+  return closure;
 }
 
 function collectClosureCaptures(
@@ -2721,6 +2746,25 @@ function checkArguments(
         `${argument.access} is not valid for ${parameter.mode === "in" ? "an immutable borrow" : "an owned value parameter"}`,
       );
     }
+    if (argument.kind === "closure") {
+      const expectedFunction = parseFunctionType(parameter.type.name);
+      if (!expectedFunction) {
+        throw new DiagnosticError(fileName, argument.location, `expected ${parameter.type.name}, found a closure`);
+      }
+      inferClosureExpression(argument, locals, globals, structs, enums, fileName, state, expectedFunction, true);
+      finalizeClosureFunctionValue(
+        argument,
+        expectedFunction,
+        parameter.type.name,
+        locals,
+        structs,
+        fileName,
+        state,
+        parameter.mode === "in",
+      );
+      if (parameter.mode === "in") state.nativeArgumentAccesses.set(argument.location.offset, "in");
+      continue;
+    }
     if (parameter.mode === "in") {
       if (!isNamedStorageExpression(argument) && argument.kind !== "structExpression" && argument.kind !== "template") {
         throw new DiagnosticError(
@@ -3719,7 +3763,26 @@ function checkForeignCall(
       state.foreignArgumentAccesses.set(argument.location.offset, "in");
       continue;
     }
-    let actual = inferExpression(argument, locals, globals, structs, enums, fileName, state);
+    let actual: ValueType;
+    if (parameter?.type.kind === "callback" && argument.kind === "closure") {
+      const expectedCallback = foreignValueType(parameter.type);
+      const expectedFunction = parseFunctionType(String(expectedCallback))!;
+      inferClosureExpression(argument, locals, globals, structs, enums, fileName, state, expectedFunction, true);
+      finalizeClosureFunctionValue(
+        argument,
+        expectedFunction,
+        String(expectedCallback),
+        locals,
+        structs,
+        fileName,
+        state,
+        parameter.type.lifetime === "call" && parameter.type.context !== null,
+      );
+      state.foreignArgumentAccesses.set(argument.location.offset, "in");
+      actual = expectedCallback;
+    } else {
+      actual = inferExpression(argument, locals, globals, structs, enums, fileName, state);
+    }
     if (parameter?.type.kind === "callback") {
       const expectedCallback = foreignValueType(parameter.type);
       requireAssignable(
@@ -3732,9 +3795,12 @@ function checkForeignCall(
       );
       if (!parameter.type.context) {
         const global = argument.kind === "identifier" ? globals.get(argument.name) : null;
+        const inlineClosure = argument.kind === "closure"
+          ? state.closures.get(argument.location.offset)
+          : null;
         const callbackTarget = argument.kind === "identifier"
           ? callTarget(locals.get(argument.name)) ?? (global?.kind === "function" ? argument.name : null)
-          : null;
+          : inlineClosure?.captures.length === 0 ? inlineClosure.declaration.name : null;
         if (!callbackTarget) {
           throw new DiagnosticError(
             fileName,
@@ -3745,6 +3811,9 @@ function checkForeignCall(
               helps: ["pass a named function or a directly bound non-capturing closure, or use a C API with a context-pointer callback"],
             },
           );
+        }
+        if (inlineClosure) {
+          state.closures.set(argument.location.offset, { ...inlineClosure, storable: false });
         }
         state.foreignCallbackTargets.set(argument.location.offset, callbackTarget);
       }

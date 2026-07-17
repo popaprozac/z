@@ -410,6 +410,22 @@ test("passes typed Z functions to call-only C callbacks with optional context ad
   );
 });
 
+test("passes contextual inline closures directly to imported C callbacks", () => {
+  const fixture = resolve(projectRoot, "tests/fixtures/callbacks-inline.z");
+  const source = readFileSync(fixture, "utf8");
+  const generated = compileToC(source, fixture);
+  assert.match(generated, /z_apply_i32\(6, 7, __z_closure_call_[0-9]+\)/);
+  assert.match(generated, /z_apply_context_i32\(_z_argument_[0-9]+, \(void \*\)&\(_z_argument_[0-9]+\), __z_c_callback_/);
+  assert.match(generated, /z_register_context_callback\(__z_c_callback_[^,]+, Z_Function_[0-9a-f]+_c_escape_box\(_z_argument_[0-9]+\)/);
+
+  const parameter = source.indexOf("(left, right)") + 2;
+  assert.match(hover(source, fixture, parameter)?.contents.value ?? "", /left: i32/);
+
+  const result = spawnSync(process.execPath, [cli, "run", fixture], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, "inline-escape-drop=2\n");
+});
+
 test("rejects invalid C callback and context API-note pairs", () => {
   const directory = mkdtempSync("/tmp/z-callback-context-notes-");
   const header = resolve(directory, "invalid-context.h");
@@ -1478,6 +1494,80 @@ test("contextually infers closure parameter and result types from function value
     () => compileToC(implicitCapability, "closure-capability.z"),
     /closure parameter "value" requires the `inout` capability from its destination function type/,
   );
+});
+
+test("passes contextual inline closures through borrowed and owned function parameters", () => {
+  const source = `
+    struct Resource {
+      value: i32;
+      deinit {}
+    }
+
+    function apply(in operation: (value: i32) => i32, value: i32): i32 {
+      return operation(value);
+    }
+
+    function consume(operation: (value: i32) => i32, value: i32): i32 {
+      return operation(value);
+    }
+
+    function mutate(in operation: (inout value: i32) => void, inout value: i32): void {
+      operation(inout value);
+    }
+
+    function invoke(in operation: () => void): void {
+      operation();
+    }
+
+    function inspect(in operation: () => i32): i32 {
+      return operation();
+    }
+
+    function main(): i32 {
+      let target = 40;
+      mutate((inout value) => { value = value + 2; }, inout target);
+      const offset = 1;
+      const borrowed = apply((value) => value + offset, 41);
+      let capturedTarget = 40;
+      invoke(() => { capturedTarget = capturedTarget + 2; });
+      const resource = Resource { value: 42 };
+      const inspected = inspect(() => resource.value);
+      const owned = consume(move (value) => value + offset, 41);
+      if (target == 42 && borrowed == 42 && capturedTarget == 42 && inspected == resource.value && owned == 42) { return 0; }
+      return 1;
+    }
+  `;
+  const generated = compileToC(source, "inline-closures.z");
+  assert.match(generated, /Z_ClosureEnv_/);
+  assert.match(generated, /malloc\(sizeof\(Z_ClosureEnv_/);
+  assert.match(generated, /_z_borrowed_closure_environment_/);
+  assert.match(generated, /_z_argument_/);
+
+  const parameter = source.indexOf("(value) => value + offset") + 2;
+  assert.match(hover(source, "inline-closures.z", parameter)?.contents.value ?? "", /value: i32/);
+  const completionSource = source.replace("value + offset, 41", "val + offset, 41");
+  const completionOffset = completionSource.indexOf("val + offset, 41") + 3;
+  assert.match(
+    completions(completionSource, "inline-closures.z", completionOffset).find((item) => item.label === "value")?.detail ?? "",
+    /value: i32/,
+  );
+
+  const borrowedCapture = source.replace("move (value) => value + offset", "(value) => value + offset");
+  const captureDiagnostic = diagnostics(borrowedCapture, "inline-borrowed-capture.z")[0];
+  assert.equal(captureDiagnostic.code, "Z0212");
+  assert.match(captureDiagnostic.message, /borrowed capturing closure cannot become a function value/);
+
+  const missingCapability = source.replace("(inout value) =>", "(value) =>");
+  assert.throws(
+    () => compileToC(missingCapability, "inline-capability.z"),
+    /closure parameter "value" requires the `inout` capability from its destination function type/,
+  );
+
+  const directory = mkdtempSync("/tmp/z-inline-closures-");
+  const fileName = resolve(directory, "main.z");
+  writeFileSync(fileName, source);
+  const result = spawnSync(process.execPath, [cli, "run", fileName], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
 });
 
 test("requires an explicit function type for cleanup-bearing move captures", () => {
