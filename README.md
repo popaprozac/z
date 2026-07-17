@@ -280,9 +280,18 @@ match result {
 }
 ```
 
-Copyable enums may also be stored directly in structs and fixed arrays or used
-as another enum's payload. The compiler orders the generated native definitions
-from their value dependencies and rejects recursive struct/enum layouts.
+Enums composed only from copyable payloads remain copyable. If any reachable
+payload has deterministic cleanup, the enum becomes an owned, move-only value:
+construction transfers that payload into the active variant, an uninspected
+enum destroys only its active payload, and exhaustive `match` transfers the
+payload into its arm binding. This supports option-like class enums, resources
+inside user enums, nested enum fields, and arrays of owned enums without a
+special runtime representation. Existing class references retain when placed
+in a variant; single-owner values move.
+
+Enums may be stored directly in structs and fixed arrays or used as another
+enum's payload. The compiler orders generated native definitions from their
+value dependencies and rejects recursive struct/enum layouts.
 
 `match` can produce a value. A concise arm provides its expression directly;
 use `select` when an arm needs multiple statements:

@@ -861,13 +861,25 @@ function memberCompletions(
   const statementTailOffset = source[tailOffset] === ";" ? tailOffset + 1 : tailOffset;
   const statementSanitized = source.slice(0, dotOffset) + ";" + source.slice(statementTailOffset);
   const lengthStatementSanitized = source.slice(0, dotOffset) + ".length;" + source.slice(statementTailOffset);
-  const context = safeAnalysis(sanitized, fileName)
+  let context = safeAnalysis(sanitized, fileName)
     ?? safeAnalysis(statementSanitized, fileName)
     ?? safeAnalysis(lengthSanitized, fileName)
     ?? safeAnalysis(upgradeSanitized, fileName)
     ?? safeAnalysis(lengthStatementSanitized, fileName);
+  let resolvedOffset = receiverOffset;
+  if (!context) {
+    const statementStart = Math.max(
+      source.lastIndexOf(";", receiverOffset - 1),
+      source.lastIndexOf("{", receiverOffset - 1),
+      source.lastIndexOf("}", receiverOffset - 1),
+    ) + 1;
+    const probePrefix = `${source.slice(0, statementStart)}const completionProbe = `;
+    const probeSource = `${probePrefix}${receiverText};${source.slice(statementTailOffset)}`;
+    context = safeAnalysis(probeSource, fileName);
+    resolvedOffset = probePrefix.length;
+  }
   if (!context) return [];
-  const resolved = resolveReceiver(context, receiverText, receiverOffset);
+  const resolved = resolveReceiver(context, receiverText, resolvedOffset);
   if (resolved?.kind === "objc") return filterCompletions(objcCompletions(resolved.declaration, resolved.instance, context), prefix, 1000);
   if (resolved?.kind === "struct") return filterCompletions(structCompletions(resolved.declaration, context.typeDisplayNames), prefix, 1000);
   if (resolved?.kind === "array") {

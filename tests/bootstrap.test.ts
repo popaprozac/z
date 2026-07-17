@@ -3118,6 +3118,33 @@ test("composes enums through value aggregates and emits dependency-ordered C lay
   );
 });
 
+test("moves, matches, nests, and destroys cleanup-bearing enum payloads", () => {
+  const example = resolve(projectRoot, "examples/owned-enums.z");
+  const source = readFileSync(example, "utf8");
+  const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(
+    result.stdout,
+    "released resource 40\ncaptured ResourceState.ready(Resource { id: 42 })\nreleased resource 42\nreleased resource 41\nreleased session 7\n",
+  );
+
+  const generated = compileToC(source, example);
+  assert.match(generated, /switch \(\(state\)\.tag\)/);
+  assert.match(generated, /case Z_ResourceState_ready:[\s\S]*Z_Resource_deinit/);
+  assert.match(generated, /case Z_SessionOption_some:[\s\S]*Z_Session_release/);
+  assert.match(generated, /Z_Container_deinit/);
+  assert.match(generated, /Z_ClosureEnv_\d+_release[\s\S]*case Z_ResourceState_ready/);
+
+  const moved = source.replace(
+    "  const consumed = consume(state);",
+    "  const consumed = consume(state);\n  console.log(resource.id);",
+  );
+  assert.throws(
+    () => compileToC(moved, "owned-enum-move.z"),
+    /use of moved value "resource"/,
+  );
+});
+
 test("compiles expression matches with concise and selecting block arms", () => {
   const example = resolve(projectRoot, "examples/match-expression.z");
   const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
@@ -3926,6 +3953,19 @@ test("zeroes weak class references and breaks owned closure cycles", () => {
   const completionOffset = incomplete.indexOf("observer.up") + "observer.up".length;
   const upgradeCompletion = completions(incomplete, example, completionOffset).find((item) => item.label === "upgrade");
   assert.match(upgradeCompletion?.detail ?? "", /Session throws WeakExpired/);
+
+  const bare = `
+    class CompletionSession { id: i32; }
+    function main(): i32 {
+      const session = CompletionSession { id: 1 };
+      const observer = weak session;
+      observer.;
+      return 0;
+    }
+  `;
+  const bareOffset = bare.indexOf("observer.") + "observer.".length;
+  const bareCompletion = completions(bare, example, bareOffset).find((item) => item.label === "upgrade");
+  assert.match(bareCompletion?.detail ?? "", /CompletionSession throws WeakExpired/);
 
   const observerUse = source.indexOf("observer.upgrade") + 1;
   assert.match(hover(source, example, observerUse)?.contents.value ?? "", /Weak<Session>/);

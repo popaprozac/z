@@ -46,7 +46,6 @@ import {
   type StandardFunctionName,
 } from "./standard-library.ts";
 import {
-  parseWeakResultType,
   parseWeakType,
   weakResultTypeName,
   weakTypeName,
@@ -584,11 +583,6 @@ function analyzeEnumDeclaration(
       if (variant.payload.name === declaration.name) {
         throw new DiagnosticError(fileName, variant.location, "an enum cannot contain itself directly by value");
       }
-      const weakResult = parseWeakResultType(declaration.name);
-      const managedWeakResult = weakResult && structs.get(weakResult.target)?.kind === "class";
-      if (hasCleanupType(variant.payload.name, structs) && !managedWeakResult) {
-        throw new DiagnosticError(fileName, variant.location, "enum payloads with deterministic cleanup are not implemented in this bootstrap stage");
-      }
     }
   }
   if (declaration.variants.length === 0) {
@@ -608,7 +602,7 @@ function validateFunctionSignature(
     throw new DiagnosticError(fileName, declaration.returnType.location, "returning Slice values requires an explicit lifetime contract and is not implemented yet");
   }
   if (declaration.errorType) validateType(declaration.errorType, structs, enums, foreignNamedTypes, fileName, false);
-  if (declaration.errorType && hasCleanupType(declaration.errorType.name, structs)) {
+  if (declaration.errorType && hasCleanupType(declaration.errorType.name, structs, enums)) {
     throw new DiagnosticError(fileName, declaration.errorType.location, "throwing cleanup-bearing error values is not implemented in this bootstrap stage");
   }
   if (declaration.errorType && declaration.returnType.name === "void") {
@@ -855,6 +849,7 @@ function analyzeStatement(
             variableType,
             locals,
             structs,
+            enums,
             fileName,
             state,
           );
@@ -884,7 +879,7 @@ function analyzeStatement(
       }
       if (statement.initializer.kind === "closure") {
         const closure = state.closures.get(statement.initializer.location.offset)!;
-        const cleanupCapture = closure.captures.find((capture) => hasCleanupType(capture.type, structs, state.foreignTypes));
+        const cleanupCapture = closure.captures.find((capture) => hasCleanupType(capture.type, structs, enums, state.foreignTypes));
         if (cleanupCapture && !closure.owned && statement.initializer.captureMode === "move") {
           throw new DiagnosticError(
             fileName,
@@ -900,7 +895,7 @@ function analyzeStatement(
           );
         }
       }
-      consumeOwnedValue(statement.initializer, variableType, locals, structs, fileName, state);
+      consumeOwnedValue(statement.initializer, variableType, locals, structs, enums, fileName, state);
       if (containsSliceType(String(variableType))) {
         throw new DiagnosticError(fileName, statement.location, "Slice values cannot be stored in local bindings yet");
       }
@@ -960,8 +955,8 @@ function analyzeStatement(
       let actual = inferDirectValue(statement.expression, owner, locals, globals, structs, enums, fileName, state);
       actual = contextualCStringLiteral(expected, statement.expression, state) ?? actual;
       requireAssignable(expected, actual, statement.expression, fileName, state.foreignNamedTypes, state.numericLiteralTypes);
-      if (hasCleanupType(expected, structs, state.foreignTypes)) {
-        consumeOwnedValue(statement.expression, expected, locals, structs, fileName, state);
+      if (hasCleanupType(expected, structs, enums, state.foreignTypes)) {
+        consumeOwnedValue(statement.expression, expected, locals, structs, enums, fileName, state);
         if (statement.target.kind === "identifier") {
           // A whole binding may move into the replacement expression and become
           // initialized again when that expression succeeds.
@@ -998,7 +993,7 @@ function analyzeStatement(
       let actual = inferDirectValue(statement.expression, owner, locals, globals, structs, enums, fileName, state);
       actual = contextualCStringLiteral(expected, statement.expression, state) ?? actual;
       requireAssignable(expected, actual, statement.expression, fileName, state.foreignNamedTypes, state.numericLiteralTypes);
-      consumeOwnedValue(statement.expression, expected, locals, structs, fileName, state);
+      consumeOwnedValue(statement.expression, expected, locals, structs, enums, fileName, state);
       requireOutParametersInitialized(owner, locals, statement.location, fileName);
       return;
     }
@@ -1053,7 +1048,7 @@ function analyzeStatement(
           throw new DiagnosticError(fileName, statement.expression.location, `integer literal ${statement.expression.value} does not fit default i32`);
         }
         const type = inferDirectValue(statement.expression, owner, locals, globals, structs, enums, fileName, state);
-        if (hasCleanupType(type, structs, state.foreignTypes)) {
+        if (hasCleanupType(type, structs, enums, state.foreignTypes)) {
           throw new DiagnosticError(fileName, statement.expression.location, "a cleanup-bearing value must be bound or transferred; it cannot be discarded");
         }
       }
@@ -1064,8 +1059,8 @@ function analyzeStatement(
       if (!declaration) {
         throw new DiagnosticError(fileName, statement.expression.location, `match requires an enum value, found ${subjectType}`);
       }
-      if (hasCleanupType(subjectType, structs, state.foreignTypes)) {
-        consumeOwnedValue(statement.expression, subjectType, locals, structs, fileName, state);
+      if (hasCleanupType(subjectType, structs, enums, state.foreignTypes)) {
+        consumeOwnedValue(statement.expression, subjectType, locals, structs, enums, fileName, state);
       }
       const covered = new Set<string>();
       const continuing: Map<string, ValueType>[] = [];
@@ -1274,7 +1269,7 @@ function inferClosureExpression(
     if (parseSliceType(type)) {
       throw new DiagnosticError(fileName, capture.location, "capturing Slice values requires an explicit lifetime contract");
     }
-    const cleanupBearing = hasCleanupType(type, structs, state.foreignTypes);
+    const cleanupBearing = hasCleanupType(type, structs, enums, state.foreignTypes);
     const mode: ClosureCaptureInfo["mode"] = capture.mutated
       ? "inout"
       : (expression.captureMode === "move" && !cleanupBearing) || type === "cstring" ? "value" : "in";
@@ -1341,7 +1336,7 @@ function inferClosureExpression(
       requireAssignable(contextualReturn.name, returnType, expression.body, fileName, state.foreignNamedTypes, state.numericLiteralTypes);
       returnType = contextualReturn.name;
     }
-    consumeOwnedValue(expression.body, returnType, closureLocals, structs, fileName, state);
+    consumeOwnedValue(expression.body, returnType, closureLocals, structs, enums, fileName, state);
     body = [{ kind: "return", expression: expression.body, location: expression.body.location }];
   }
 
@@ -1364,6 +1359,7 @@ function finalizeClosureFunctionValue(
   expectedType: string,
   locals: Map<string, ValueType>,
   structs: Map<string, StructDeclaration>,
+  enums: Map<string, EnumDeclaration>,
   fileName: string,
   state: AnalysisState,
   allowBorrowedCaptures = false,
@@ -1398,12 +1394,13 @@ function finalizeClosureFunctionValue(
   state.closures.set(expression.location.offset, closure);
   state.expressionTypes.set(expression.location.offset, expectedType);
   for (const capture of closure.owned ? closure.captures : []) {
-    if (!hasCleanupType(capture.type, structs, state.foreignTypes)) continue;
+    if (!hasCleanupType(capture.type, structs, enums, state.foreignTypes)) continue;
     consumeOwnedValue(
       { kind: "identifier", name: capture.name, location: capture.location },
       capture.type,
       locals,
       structs,
+      enums,
       fileName,
       state,
     );
@@ -1629,8 +1626,8 @@ function inferMatchExpression(
   if (!declaration) {
     throw new DiagnosticError(fileName, expression.expression.location, `match requires an enum value, found ${subjectType}`);
   }
-  if (hasCleanupType(subjectType, structs, state.foreignTypes)) {
-    consumeOwnedValue(expression.expression, subjectType, locals, structs, fileName, state);
+  if (hasCleanupType(subjectType, structs, enums, state.foreignTypes)) {
+    consumeOwnedValue(expression.expression, subjectType, locals, structs, enums, fileName, state);
   }
 
   const covered = new Set<string>();
@@ -1677,7 +1674,7 @@ function inferValueArm(
 ): ValueType {
   if (statement.kind === "expressionStatement" || statement.kind === "select") {
     const type = inferDirectValue(statement.expression, owner, locals, globals, structs, enums, fileName, state);
-    consumeOwnedValue(statement.expression, type, locals, structs, fileName, state);
+    consumeOwnedValue(statement.expression, type, locals, structs, enums, fileName, state);
     return type;
   }
   if (statement.kind === "return" || statement.kind === "throw") {
@@ -1767,7 +1764,7 @@ function requireConsoleFormattable(
   visiting = new Set<string>(),
 ): void {
   const actual = String(underlyingType(type));
-  if (hasCleanupType(actual, structs, state.foreignTypes)
+  if (hasCleanupType(actual, structs, enums, state.foreignTypes)
     && !isNamedStorageExpression(expression)
     && expression.kind !== "string") {
     throw new DiagnosticError(fileName, expression.location, "console formatting of a cleanup-bearing temporary requires stored ownership", {
@@ -2092,10 +2089,10 @@ function inferExpressionInner(
       const original = new Map(locals);
       const thenLocals = narrowedConditionLocals(original, expression.condition, true, state);
       const thenType = inferExpression(expression.thenExpression, thenLocals, globals, structs, enums, fileName, state);
-      consumeOwnedValue(expression.thenExpression, thenType, thenLocals, structs, fileName, state);
+      consumeOwnedValue(expression.thenExpression, thenType, thenLocals, structs, enums, fileName, state);
       const elseLocals = narrowedConditionLocals(original, expression.condition, false, state);
       const elseType = inferExpression(expression.elseExpression, elseLocals, globals, structs, enums, fileName, state);
-      consumeOwnedValue(expression.elseExpression, elseType, elseLocals, structs, fileName, state);
+      consumeOwnedValue(expression.elseExpression, elseType, elseLocals, structs, enums, fileName, state);
       mergeOwnershipStates(locals, [thenLocals, elseLocals], state);
       return commonBranchType("conditional", thenType, elseType, expression.elseExpression.location, fileName);
     }
@@ -2138,7 +2135,7 @@ function inferExpressionInner(
         let actual = inferExpression(initializer.expression, locals, globals, structs, enums, fileName, state);
         actual = contextualCStringLiteral(fieldType, initializer.expression, state) ?? actual;
         requireAssignable(fieldType, actual, initializer.expression, fileName, state.foreignNamedTypes, state.numericLiteralTypes);
-        consumeOwnedValue(initializer.expression, fieldType, locals, structs, fileName, state);
+        consumeOwnedValue(initializer.expression, fieldType, locals, structs, enums, fileName, state);
       }
       const expectedFields = declaration?.fields ?? (foreignDeclaration?.kind === "record" ? foreignDeclaration.fields : []);
       const missing = expectedFields.find((field) => !provided.has(field.name));
@@ -2156,11 +2153,11 @@ function inferExpressionInner(
       if (elementType === "unknown" || elementType === "never" || elementType === "null") {
         throw new DiagnosticError(fileName, expression.elements[0].location, "cannot infer a fixed array element type from this expression");
       }
-      consumeOwnedValue(expression.elements[0], elementType, locals, structs, fileName, state);
+      consumeOwnedValue(expression.elements[0], elementType, locals, structs, enums, fileName, state);
       for (const element of expression.elements.slice(1)) {
         const actual = inferExpression(element, locals, globals, structs, enums, fileName, state);
         requireAssignable(elementType, actual, element, fileName, state.foreignNamedTypes, state.numericLiteralTypes);
-        consumeOwnedValue(element, elementType, locals, structs, fileName, state);
+        consumeOwnedValue(element, elementType, locals, structs, enums, fileName, state);
       }
       return fixedArrayTypeName(String(elementType), expression.elements.length);
     }
@@ -2174,7 +2171,7 @@ function inferExpressionInner(
       if (!array && !slice && !dynamic) {
         throw new DiagnosticError(fileName, expression.object.location, `indexing requires an array or Slice, found ${ownerType}`);
       }
-      if (hasCleanupType(ownerType, structs, state.foreignTypes) && !isNamedStorageExpression(expression.object)) {
+      if (hasCleanupType(ownerType, structs, enums, state.foreignTypes) && !isNamedStorageExpression(expression.object)) {
         throw new DiagnosticError(fileName, expression.object.location, "a cleanup-bearing array temporary must be bound before indexing");
       }
       const indexType = inferExpression(expression.index, locals, globals, structs, enums, fileName, state);
@@ -2205,6 +2202,7 @@ function inferExpressionInner(
       let actual = inferExpression(expression.payload, locals, globals, structs, enums, fileName, state);
       actual = contextualCStringLiteral(variant.payload.name, expression.payload, state) ?? actual;
       requireAssignable(variant.payload.name, actual, expression.payload, fileName, state.foreignNamedTypes, state.numericLiteralTypes);
+      consumeOwnedValue(expression.payload, variant.payload.name, locals, structs, enums, fileName, state);
       return declaration.name;
     }
     case "attempt": {
@@ -2250,7 +2248,7 @@ function inferExpressionInner(
       const slice = parseSliceType(String(receiverType));
       const dynamic = parseDynamicArrayType(String(receiverType));
       if (array || slice || dynamic) {
-        if (hasCleanupType(receiverType, structs, state.foreignTypes) && !isNamedStorageExpression(expression.object)) {
+        if (hasCleanupType(receiverType, structs, enums, state.foreignTypes) && !isNamedStorageExpression(expression.object)) {
           throw new DiagnosticError(fileName, expression.object.location, "a cleanup-bearing array temporary must be bound before reading its length");
         }
         if (expression.property !== "length" && !(dynamic && expression.property === "capacity")) {
@@ -2274,7 +2272,7 @@ function inferExpressionInner(
         state.foreignExpressionTypes.set(expression.location.offset, String(propertyType));
         return propertyType;
       }
-      if (hasCleanupType(receiverType, structs, state.foreignTypes) && !isNamedStorageExpression(expression.object)) {
+      if (hasCleanupType(receiverType, structs, enums, state.foreignTypes) && !isNamedStorageExpression(expression.object)) {
         throw new DiagnosticError(fileName, expression.object.location, "a cleanup-bearing temporary must be bound before borrowing one of its members");
       }
       const declaration = structs.get(receiverType);
@@ -2359,6 +2357,7 @@ function inferExpressionInner(
             if (variant.payload) {
               const actual = inferExpression(expression.arguments[0], locals, globals, structs, enums, fileName, state);
               requireAssignable(variant.payload.name, actual, expression.arguments[0], fileName, state.foreignNamedTypes, state.numericLiteralTypes);
+              consumeOwnedValue(expression.arguments[0], variant.payload.name, locals, structs, enums, fileName, state);
             }
             return enumDeclaration.name;
           }
@@ -2434,7 +2433,7 @@ function inferExpressionInner(
           }
           const actual = inferExpression(expression.arguments[0], locals, globals, structs, enums, fileName, state);
           requireAssignable(dynamic.elementType, actual, expression.arguments[0], fileName, state.foreignNamedTypes, state.numericLiteralTypes);
-          consumeOwnedValue(expression.arguments[0], dynamic.elementType, locals, structs, fileName, state);
+          consumeOwnedValue(expression.arguments[0], dynamic.elementType, locals, structs, enums, fileName, state);
           return "void";
         }
         const weak = parseWeakType(String(receiverType));
@@ -2477,7 +2476,7 @@ function inferExpressionInner(
         const field = declaration?.fields.find((candidate) => candidate.name === expression.callee.property);
         const fieldFunctionType = field ? parseFunctionType(field.type.name) : null;
         if (declaration && field && fieldFunctionType) {
-          if (hasCleanupType(receiverType, structs, state.foreignTypes) && !isNamedStorageExpression(expression.callee.object)) {
+          if (hasCleanupType(receiverType, structs, enums, state.foreignTypes) && !isNamedStorageExpression(expression.callee.object)) {
             throw new DiagnosticError(fileName, expression.callee.object.location, "a cleanup-bearing temporary must be bound before calling one of its function fields");
           }
           rejectLabeledArguments(expression.argumentLabels, expression.location, fileName);
@@ -2502,7 +2501,7 @@ function inferExpressionInner(
         rejectLabeledArguments(expression.argumentLabels, expression.location, fileName);
         if (
           method.receiverMode !== "move"
-          && hasCleanupType(receiverType, structs, state.foreignTypes)
+          && hasCleanupType(receiverType, structs, enums, state.foreignTypes)
           && !isNamedStorageExpression(expression.callee.object)
         ) {
           throw new DiagnosticError(fileName, expression.callee.object.location, "a cleanup-bearing temporary must be bound before borrowing it for a method call");
@@ -2567,7 +2566,7 @@ function inferExpressionInner(
           }
         }
         if (method.receiverMode === "move") {
-          consumeOwnedValue(expression.callee.object, receiverType, locals, structs, fileName, state);
+          consumeOwnedValue(expression.callee.object, receiverType, locals, structs, enums, fileName, state);
         }
         if (method.errorType) {
           if (!allowThrowingCall) throw new DiagnosticError(fileName, expression.location, "throwing call requires `attempt` or `try`");
@@ -2805,6 +2804,7 @@ function checkArguments(
         parameter.type.name,
         locals,
         structs,
+        enums,
         fileName,
         state,
         parameter.mode === "in",
@@ -2822,7 +2822,7 @@ function checkArguments(
       }
       const actual = inferExpression(argument, locals, globals, structs, enums, fileName, state);
       if (
-        hasCleanupType(actual, structs, state.foreignTypes)
+        hasCleanupType(actual, structs, enums, state.foreignTypes)
         && !isNamedStorageExpression(argument)
         && argument.kind !== "template"
       ) {
@@ -2849,7 +2849,7 @@ function checkArguments(
       continue;
     }
     requireAssignable(parameter.type.name, actual, argument, fileName, state.foreignNamedTypes, state.numericLiteralTypes);
-    consumeOwnedValue(argument, parameter.type.name, locals, structs, fileName, state);
+    consumeOwnedValue(argument, parameter.type.name, locals, structs, enums, fileName, state);
   }
 }
 
@@ -2941,10 +2941,11 @@ function consumeOwnedValue(
   type: ValueType,
   locals: Map<string, ValueType>,
   structs: Map<string, StructDeclaration>,
+  enums: Map<string, EnumDeclaration>,
   fileName: string,
   state: AnalysisState,
 ): void {
-  if (!hasCleanupType(type, structs, state.foreignTypes)) return;
+  if (!hasCleanupType(type, structs, enums, state.foreignTypes)) return;
   const actual = String(underlyingType(type));
   if (parseWeakType(actual)) {
     if (expression.kind === "identifier" || expression.kind === "member" || expression.kind === "index") {
@@ -3044,10 +3045,11 @@ function rejectForeignOwnedMove(
   expression: Expression,
   type: ValueType,
   structs: Map<string, StructDeclaration>,
+  enums: Map<string, EnumDeclaration>,
   fileName: string,
   state: AnalysisState,
 ): void {
-  if (!hasCleanupType(type, structs, state.foreignTypes)) return;
+  if (!hasCleanupType(type, structs, enums, state.foreignTypes)) return;
   throw new DiagnosticError(
     fileName,
     expression.location,
@@ -3384,7 +3386,7 @@ function analyzeForLoop(
     const bodyLocals = new Map(header);
     const rootType = bodyLocals.get(root.name);
     if (rootType) bodyLocals.set(root.name, `${borrowedPrefix}${underlyingType(rootType)}`);
-    const elementBinding = hasCleanupType(collection.elementType, structs, state.foreignTypes)
+    const elementBinding = hasCleanupType(collection.elementType, structs, enums, state.foreignTypes)
       ? `${borrowedPrefix}${collection.elementType}`
       : collection.elementType;
     bodyLocals.set(statement.binding, elementBinding);
@@ -3393,7 +3395,7 @@ function analyzeForLoop(
     const previousIterationBorrow = state.iterationBorrowOrigins.get(root.name);
     const previousElementBorrow = state.borrowOrigins.get(statement.binding);
     state.iterationBorrowOrigins.set(root.name, statement.location);
-    if (hasCleanupType(collection.elementType, structs, state.foreignTypes)) {
+    if (hasCleanupType(collection.elementType, structs, enums, state.foreignTypes)) {
       state.borrowOrigins.set(statement.binding, { location: statement.location, kind: "iteration" });
     }
     state.loopStack.push(frame);
@@ -3436,6 +3438,7 @@ function sameLocalStates(left: Map<string, ValueType>, right: Map<string, ValueT
 function hasCleanupType(
   type: ValueType,
   structs: Map<string, StructDeclaration>,
+  enums: Map<string, EnumDeclaration>,
   foreignTypes: ReadonlyMap<string, ForeignPointerType> = new Map(),
   visiting = new Set<string>(),
 ): boolean {
@@ -3443,19 +3446,22 @@ function hasCleanupType(
   if (actual === "unknown" || actual === "never" || visiting.has(actual)) return false;
   if (actual === "String") return true;
   if (parseWeakType(actual)) return true;
-  const weakResult = parseWeakResultType(actual);
-  if (weakResult && structs.get(weakResult.target)?.kind === "class") return true;
   if (parseFunctionType(String(actual))) return true;
   if (foreignTypes.get(actual)?.ownership === "owned") return true;
   const declaration = structs.get(actual);
+  const enumDeclaration = enums.get(actual);
   if (parseDynamicArrayType(actual)) return true;
   const array = parseFixedArrayType(actual);
-  if (array) return hasCleanupType(array.elementType, structs, foreignTypes, visiting);
-  if (!declaration) return false;
-  if (declaration.kind === "class") return true;
-  if (declaration.deinitializer) return true;
+  if (array) return hasCleanupType(array.elementType, structs, enums, foreignTypes, visiting);
+  if (!declaration && !enumDeclaration) return false;
+  if (declaration?.kind === "class") return true;
+  if (declaration?.deinitializer) return true;
   visiting.add(actual);
-  const result = declaration.fields.some((field) => hasCleanupType(field.type.name, structs, foreignTypes, visiting));
+  const result = declaration
+    ? declaration.fields.some((field) => hasCleanupType(field.type.name, structs, enums, foreignTypes, visiting))
+    : enumDeclaration!.variants.some((variant) => (
+      variant.payload && hasCleanupType(variant.payload.name, structs, enums, foreignTypes, visiting)
+    ));
   visiting.delete(actual);
   return result;
 }
@@ -3830,6 +3836,7 @@ function checkForeignCall(
         String(expectedCallback),
         locals,
         structs,
+        enums,
         fileName,
         state,
         parameter.type.lifetime === "call" && parameter.type.context !== null,
@@ -3880,7 +3887,7 @@ function checkForeignCall(
         state.cstringConversions.add(argument.location.offset);
         actual = "cstring";
       } else {
-        rejectForeignOwnedMove(argument, actual, structs, fileName, state);
+        rejectForeignOwnedMove(argument, actual, structs, enums, fileName, state);
       }
       requireAssignable(parameter.type.name, actual, argument, fileName, state.foreignNamedTypes, state.numericLiteralTypes);
     }
@@ -3917,7 +3924,7 @@ function checkForeignCall(
         if (actualPointer.ownership !== "owned") {
           throw new DiagnosticError(fileName, argument.location, `C function ${JSON.stringify(target.name)} can only consume an owned ${actualPointer.cName}`);
         }
-        consumeOwnedValue(argument, actual, locals, structs, fileName, state);
+        consumeOwnedValue(argument, actual, locals, structs, enums, fileName, state);
       }
     }
     if (!parameter && actual === "String") {

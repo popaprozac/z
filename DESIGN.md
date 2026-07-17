@@ -210,13 +210,16 @@ match result {
 }
 ```
 
-The compiler implements cleanup ownership for the narrow generated
-`Result<T, WeakExpired>` shape: an uninspected success releases its strong
-payload, while exhaustive matching transfers that payload to the success arm
-binding. This does not yet lift the general restriction on arbitrary
-cleanup-bearing enum payloads. An owned closure breaks a class/closure cycle by
-capturing a `Weak<T>` value. Capture-list sugar, automatic ORC cycle collection,
-and atomic cross-thread weak upgrades remain separate future layers.
+Cleanup ownership is uniform across generated results and user enums. An enum
+is cleanup-bearing when any reachable payload is cleanup-bearing. Construction
+moves a single-owner payload or retains a managed class reference; an
+uninspected enum destroys only the active payload; and exhaustive matching
+transfers that payload into the selected arm binding. This covers
+`Result<Class, WeakExpired>`, option-like class enums, resources nested through
+enums and structs, and owned enum captures without a weak-specific exception.
+An owned closure breaks a class/closure cycle by capturing a `Weak<T>` value.
+Capture-list sugar, automatic ORC cycle collection, and atomic cross-thread
+weak upgrades remain separate future layers.
 
 `trait` declarations contain method signatures, including receiver capability,
 parameter capability, return type, and error type. `struct T implements X` and
@@ -874,8 +877,9 @@ Clang declaration source locations rather than text-searching SDK headers.
 - statically dispatched nominal trait constraints on generic parameters.
 - growable owned `Array<T>` buffers with checked indexing and deterministic
   element cleanup.
-- enum-valued fields, fixed arrays of enums, and nested copyable enum payloads
-  with dependency-ordered native layouts.
+- enum-valued fields, fixed arrays of enums, and nested copyable or
+  cleanup-bearing enum payloads with dependency-ordered native layouts and
+  active-variant destruction.
 - explicit source-module exports, selective and namespace imports, recursive
   graph loading, private symbol identities, and cross-file editor navigation.
 - checked integer arithmetic with constant diagnostics plus explicit wrapping
