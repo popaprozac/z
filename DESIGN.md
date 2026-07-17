@@ -703,6 +703,9 @@ Interop work proceeds in layers:
 1. Direct header syntax with native compilation.
 2. Clang-AST symbol and layout import.
 3. Ownership and lifetime API notes.
+   Call-only C function-pointer parameters with ABI-compatible scalar/value
+   signatures are implemented; unannotated or escaping callbacks remain
+   rejected.
 4. Objective-C methods, properties, protocols, blocks, and ARC conventions
    (ARC methods, labeled selectors, properties, and contextual string literals
    implemented).
@@ -810,4 +813,6 @@ Clang declaration source locations rather than text-searching SDK headers.
 - Clang-backed header modules;
 - target layout and calling conventions;
 - nullability and ownership contracts;
-- typed callbacks and generated adapters.
+- typed synchronous call-only C callbacks (first ABI-compatible tier
+  implemented);
+- generated context, calling-convention, escaping, and async adapters.

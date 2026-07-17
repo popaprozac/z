@@ -1,0 +1,17 @@
+import callbacks from "callbacks.h";
+
+function multiply(left: i32, right: i32): i32 {
+  return left * right;
+}
+
+function main(): i32 {
+  const operation = multiply;
+  const add: (left: i32, right: i32) => i32 =
+    (left: i32, right: i32): i32 => left + right;
+  const product = callbacks.z_apply_i32(6, 7, operation);
+  const incremented = callbacks.z_apply_twice_i32(40, add);
+  if (product == 42 && incremented == 42) {
+    return 0;
+  }
+  return 1;
+}

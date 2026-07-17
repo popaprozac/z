@@ -769,10 +769,31 @@ const moved = translate(origin, forward, 3);
 Complete typedef-named C structs with supported integer, enum, or nested-record
 fields, C enums and their constants, and integer typedefs are now usable as
 namespaced or selective Z types and values. Numeric literals are contextually
-typed and rejected when they do not fit the destination width. Unions,
-anonymous or incomplete layouts, plain `char` signedness, arrays,
-bitfield-specific validation, callbacks, and pointers stored inside records
-remain upcoming interop layers.
+typed and rejected when they do not fit the destination width.
+
+ABI-compatible synchronous callbacks can accept named Z functions or explicitly
+typed non-capturing closures:
+
+```z
+import callbacks from "callbacks.h";
+
+function multiply(left: i32, right: i32): i32 {
+  return left * right;
+}
+
+const answer = callbacks.apply(6, 7, multiply);
+```
+
+Because a C header does not say whether a callback is retained, the parameter
+must have a sidecar API note with `"callback": { "lifetime": "call" }`. That
+contract means C finishes every callback invocation before the imported
+function returns. Unannotated, escaping, capturing, variadic, and
+calling-convention-specific callbacks remain rejected until their storage and
+adapter rules exist.
+
+Unions, anonymous or incomplete layouts, plain `char` signedness, arrays,
+bitfield-specific validation, and pointers stored inside records remain
+upcoming interop layers.
 
 See [DESIGN.md](DESIGN.md) for the language charter and roadmap.
 

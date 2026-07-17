@@ -9,6 +9,7 @@ import type {
 import { analyzeSource, type AnalyzedSource } from "./compiler.ts";
 import { DiagnosticError } from "./diagnostics.ts";
 import type {
+  ForeignFunction,
   ForeignModule,
   ForeignObjCInterface,
   ForeignObjCMethod,
@@ -1169,7 +1170,7 @@ function moduleCompletions(module: ForeignModule, prefix: string): CompletionIte
     });
   }
   for (const declaration of module.functions.values()) {
-    items.push({ label: declaration.name, kind: completionKinds.function, detail: declaration.cSignature });
+    items.push({ label: declaration.name, kind: completionKinds.function, detail: foreignFunctionDetail(declaration) });
   }
   for (const declaration of module.constants.values()) {
     items.push({ label: declaration.name, kind: completionKinds.constant, detail: declaration.typeName });
@@ -1261,13 +1262,21 @@ function objCMethodDetail(method: ForeignObjCMethod): string {
 
 function describeModuleMember(module: ForeignModule, name: string): string | null {
   const fn = module.functions.get(name);
-  if (fn) return fn.cSignature;
+  if (fn) return foreignFunctionDetail(fn);
   const constant = module.constants.get(name);
   if (constant) return `${constant.name}: ${constant.typeName}`;
   const named = module.namedTypes.get(name);
   if (named) return `${named.exportName}: ${named.cName}`;
   const objc = module.interfaces.get(name);
   return objc ? `Objective-C class ${objc.className}` : null;
+}
+
+function foreignFunctionDetail(declaration: ForeignFunction): string {
+  const parameters = declaration.parameters.map((parameter, index) => (
+    `${parameter.name ?? `argument${index + 1}`}: ${foreignTypeName(parameter.type)}`
+  ));
+  if (declaration.variadic) parameters.push("...arguments");
+  return `${declaration.name}(${parameters.join(", ")}): ${foreignTypeName(declaration.returnType)}  // C: ${declaration.cSignature}`;
 }
 
 function structLiteralFieldHover(context: AnalyzedSource, offset: number): string | null {
@@ -1411,6 +1420,10 @@ function foreignTypeName(type: ForeignType): string {
   if (type.kind === "named") return type.type.typeName;
   if (type.kind === "object") return `${type.className ?? "id"}${type.nullable ? "?" : ""}`;
   if (type.kind === "pointer") return `${type.cName}${type.nullable ? "?" : ""}`;
+  if (type.kind === "callback") {
+    const parameters = type.parameters.map((parameter, index) => `argument${index + 1}: ${foreignTypeName(parameter)}`);
+    return `(${parameters.join(", ")}) => ${foreignTypeName(type.returnType)}`;
+  }
   return type.cName;
 }
 

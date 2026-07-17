@@ -12,6 +12,7 @@ export type ForeignScalarTypeName =
 export type ForeignType =
   | { readonly kind: "z"; readonly name: ForeignScalarTypeName | "cstring" | "void"; readonly cName: string }
   | { readonly kind: "named"; readonly type: ForeignNamedType; readonly cName: string }
+  | ForeignCallbackType
   | ForeignObjectType
   | ForeignRecordPointerType
   | ForeignPointerType
@@ -110,6 +111,14 @@ export type ForeignParameter = {
   readonly type: ForeignType;
 };
 
+export type ForeignCallbackType = {
+  readonly kind: "callback";
+  readonly cName: string;
+  readonly parameters: readonly ForeignType[];
+  readonly returnType: ForeignType;
+  readonly lifetime: "call";
+};
+
 export type ForeignFunction = {
   readonly name: string;
   readonly cName: string;
@@ -150,6 +159,9 @@ type PointerNote = {
   readonly access?: "in" | "out" | "inout";
   readonly nullable?: boolean;
   readonly release?: string;
+  readonly callback?: {
+    readonly lifetime?: "call";
+  };
 };
 
 type ApiNotes = {
@@ -268,7 +280,14 @@ function readHeader(
       .filter((child) => child.kind === "ParmVarDecl" && child.type?.qualType)
       .map((child, index) => ({
         name: child.name ?? null,
-        type: mapForeignType(child.type!.qualType!, functionNotes?.parameters?.[String(index)], "parameter", types, imported.byCName),
+        type: mapForeignType(
+          child.type!.qualType!,
+          functionNotes?.parameters?.[String(index)],
+          "parameter",
+          types,
+          imported.byCName,
+          child.type!.desugaredQualType,
+        ),
       }));
     const cSignature = node.type.qualType;
     const cName = cPlusPlus && namespaces.length > 0 ? `${namespaces.join("::")}::${node.name}` : node.name;
@@ -624,7 +643,12 @@ function mapForeignType(
   position: "return" | "parameter",
   types: Map<string, ForeignPointerType>,
   namedTypes: ReadonlyMap<string, ForeignNamedType>,
+  desugaredCName?: string,
 ): ForeignType {
+  if (position === "parameter" && note?.callback?.lifetime === "call") {
+    const callback = mapCallOnlyCallbackType(desugaredCName ?? cName, cName, types, namedTypes);
+    if (callback) return callback;
+  }
   const normalized = normalizeCType(cName);
   if (normalized === "const char *") {
     return { kind: "z", name: "cstring", cName };
@@ -677,6 +701,48 @@ function mapForeignType(
     return pointer;
   }
   return { kind: "unsupported", cName };
+}
+
+function mapCallOnlyCallbackType(
+  signature: string,
+  cName: string,
+  types: Map<string, ForeignPointerType>,
+  namedTypes: ReadonlyMap<string, ForeignNamedType>,
+): ForeignCallbackType | null {
+  const normalized = signature
+    .replace(/\b(restrict|_Nonnull|_Nullable|_Null_unspecified)\b/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  const match = /^(.+?)\s*\(\s*\*\s*\)\s*\((.*)\)$/.exec(normalized);
+  if (!match) return null;
+  const parameterSpellings = splitCParameters(match[2]);
+  if (parameterSpellings.includes("...")) return null;
+  const returnType = mapForeignType(match[1], undefined, "return", types, namedTypes);
+  const parameters = parameterSpellings.map((parameter) => (
+    mapForeignType(parameter, undefined, "parameter", types, namedTypes)
+  ));
+  if (returnType.kind === "unsupported" || parameters.some((parameter) => parameter.kind === "unsupported")) {
+    return null;
+  }
+  return { kind: "callback", cName, parameters, returnType, lifetime: "call" };
+}
+
+function splitCParameters(parameters: string): string[] {
+  const trimmed = parameters.trim();
+  if (!trimmed || trimmed === "void") return [];
+  const result: string[] = [];
+  let start = 0;
+  let depth = 0;
+  for (let index = 0; index < trimmed.length; index += 1) {
+    if (trimmed[index] === "(") depth += 1;
+    else if (trimmed[index] === ")") depth -= 1;
+    else if (trimmed[index] === "," && depth === 0) {
+      result.push(trimmed.slice(start, index).trim());
+      start = index + 1;
+    }
+  }
+  result.push(trimmed.slice(start).trim());
+  return result;
 }
 
 function mapBuiltinType(cName: string): ForeignScalarTypeName | "void" | null {

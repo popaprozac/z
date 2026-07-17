@@ -3363,6 +3363,16 @@ function foreignValueType(type: ForeignType): ValueType {
   if (type.kind === "z") return type.name;
   if (type.kind === "named") return type.type.typeName;
   if (type.kind === "pointer" || type.kind === "object") return type.typeName;
+  if (type.kind === "callback") {
+    const parameters = type.parameters.map((parameter, index) => ({
+      name: `argument${index + 1}`,
+      mode: "value" as const,
+      type: String(foreignValueType(parameter)),
+    }));
+    const returnType = foreignValueType(type.returnType);
+    if (parameters.some((parameter) => parameter.type === "unknown") || returnType === "unknown") return "unknown";
+    return functionTypeName(parameters, String(returnType));
+  }
   return "unknown";
 }
 
@@ -3570,6 +3580,18 @@ function checkForeignCall(
       continue;
     }
     let actual = inferExpression(argument, locals, globals, structs, enums, fileName, state);
+    if (parameter?.type.kind === "callback") {
+      const expectedCallback = foreignValueType(parameter.type);
+      requireAssignable(
+        expectedCallback,
+        actual,
+        argument,
+        fileName,
+        state.foreignNamedTypes,
+        state.numericLiteralTypes,
+      );
+      continue;
+    }
     if (parameter?.type.kind === "z") {
       if (parameter.type.name === "cstring" && actual === "String") {
         state.cstringConversions.add(argument.location.offset);
@@ -3632,6 +3654,8 @@ function checkForeignCall(
       ? target.returnType.type.typeName
     : target.returnType.kind === "pointer"
       ? target.returnType.typeName
+    : target.returnType.kind === "callback"
+      ? foreignValueType(target.returnType)
       : "unknown";
   state.foreignCallTypes.set(location.offset, result);
   return result;

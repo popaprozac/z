@@ -337,6 +337,49 @@ test("imports C function signatures through Clang", () => {
   assert.match(generated, /const int32_t written = puts\("typed"\);/);
 });
 
+test("passes typed non-capturing Z functions to call-only C callbacks", () => {
+  const fixture = resolve(projectRoot, "tests/fixtures/callbacks-main.z");
+  const source = readFileSync(fixture, "utf8");
+  const generated = compileToC(source, fixture);
+  assert.match(generated, /z_apply_i32\(6, 7, operation\)/);
+  assert.match(generated, /z_apply_twice_i32\(40, add\)/);
+
+  const result = spawnSync(process.execPath, [cli, "run", fixture], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+
+  const callbackUse = source.indexOf("operation);") + 1;
+  assert.match(hover(source, fixture, callbackUse)?.contents.value ?? "", /operation: \(left: i32, right: i32\) => i32/);
+  const importedUse = source.indexOf("z_apply_i32") + 1;
+  assert.match(
+    hover(source, fixture, importedUse)?.contents.value ?? "",
+    /callback: \(argument1: i32, argument2: i32\) => i32/,
+  );
+  const completionSource = source.replace("callbacks.z_apply_i32", "callbacks.z_app");
+  const completionOffset = completionSource.indexOf("callbacks.z_app") + "callbacks.z_app".length;
+  assert.match(
+    completions(completionSource, fixture, completionOffset).find((item) => item.label === "z_apply_i32")?.detail ?? "",
+    /callback: \(argument1: i32, argument2: i32\) => i32/,
+  );
+
+  const wrongShape = source.replace(
+    "function multiply(left: i32, right: i32): i32 {\n  return left * right;\n}",
+    "function multiply(left: i32): i32 {\n  return left;\n}",
+  );
+  assert.throws(
+    () => compileToC(wrongShape, fixture),
+    /expected \(argument1: i32, argument2: i32\) => i32, found \(left: i32\) => i32/,
+  );
+
+  const unclassified = source.replace(
+    "const product = callbacks.z_apply_i32(6, 7, operation);",
+    "callbacks.z_store_callback(operation); const product = callbacks.z_apply_i32(6, 7, operation);",
+  );
+  assert.throws(
+    () => compileToC(unclassified, fixture),
+    /z_store_callback.*unsupported type.*ZBinaryCallback/,
+  );
+});
+
 test("rejects unknown functions from imported headers", () => {
   const source = `
     import stdio from "stdio.h";
