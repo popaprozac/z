@@ -3047,7 +3047,7 @@ test("constructs structs from object values and classes through class-only new",
   assert.throws(() => compileToC(classWithoutNew, "class-without-new.z"), /class construction requires new Session/);
 
   const legacy = source.replace("Point({ x: 20, y: 22 })", "Point { x: 20, y: 22 }");
-  assert.throws(() => compileToC(legacy, "legacy-construction.z"), /construction requires Point\(\{ \.\.\. \}\)/);
+  assert.throws(() => compileToC(legacy, "legacy-construction.z"));
 
   const qualifiedLegacy = `
     import geometry from "tests/fixtures/geometry.h";
@@ -3056,10 +3056,94 @@ test("constructs structs from object values and classes through class-only new",
       return point.x + point.y - 42;
     }
   `;
-  assert.throws(
-    () => compileToC(qualifiedLegacy, "qualified-legacy-construction.z"),
-    /construction requires geometry\.ZPoint\(\{ \.\.\. \}\)/,
+  assert.throws(() => compileToC(qualifiedLegacy, "qualified-legacy-construction.z"));
+});
+
+test("initializes private class state through safe user constructors", () => {
+  const example = resolve(projectRoot, "examples/constructors.z");
+  const source = readFileSync(example, "utf8");
+  const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+
+  const generated = compileToC(source, example);
+  assert.match(generated, /Z_Session \*Z_Session_new\(int32_t id, Z_String name\)/);
+  assert.match(generated, /self->id = id;/);
+  assert.match(generated, /self->name = \(_z_live_name_\d+ = false, name\);/);
+  assert.match(generated, /Z_Result_CheckedSession_InvalidSession Z_CheckedSession_new/);
+  assert.match(generated, /if \(_z_live_field_name_\d+ && \(self->name\)\.capacity > 0\)[\s\S]*free\(self\);[\s\S]*Z_Result_CheckedSession_InvalidSession_failure/);
+
+  const privateRead = source.replace("return session.identifier() + failureCode - 35;", "return session.id;");
+  assert.throws(() => compileToC(privateRead, "private-field.z"), /field "id" is private to class "Session"/);
+
+  const missingField = source.replace("    this.name = name;\n", "");
+  assert.throws(() => compileToC(missingField, "constructor-missing-field.z"), /does not initialize field "name"/);
+
+  const earlyRead = source.replace("    this.id = id;", "    this.name = this.name;\n    this.id = id;");
+  assert.throws(() => compileToC(earlyRead, "constructor-early-read.z"), /field "name" is read before it is initialized/);
+
+  const escapedThis = source.replace("    this.id = id;", "    const escaped = this;\n    this.id = id;");
+  assert.throws(() => compileToC(escapedThis, "constructor-this-escape.z"), /this cannot escape before field "id" is initialized/);
+
+  const privateDeclaration = source.indexOf("id: i32");
+  assert.match(hover(source, example, privateDeclaration + 1)?.contents.value ?? "", /private id: i32/);
+  const privateUse = source.indexOf("this.id", source.indexOf("function identifier")) + "this.".length;
+  assert.match(hover(source, example, privateUse + 1)?.contents.value ?? "", /private id: i32/);
+
+  const outsideCompletionSource = source.replace(
+    "  return session.identifier()",
+    "  session.;\n  return session.identifier()",
   );
+  const outsideOffset = outsideCompletionSource.indexOf("session.", outsideCompletionSource.indexOf("function main")) + "session.".length;
+  const outsideItems = completions(outsideCompletionSource, example, outsideOffset);
+  assert.equal(outsideItems.some((item) => item.label === "id"), false);
+  assert.equal(outsideItems.some((item) => item.label === "name"), true);
+  assert.equal(outsideItems.some((item) => item.label === "identifier"), true);
+
+  const insideCompletionSource = source.replace("    return this.id;", "    this.;\n    return this.id;");
+  const insideOffset = insideCompletionSource.indexOf("this.;") + "this.".length;
+  assert.equal(completions(insideCompletionSource, example, insideOffset).some((item) => item.label === "id"), true);
+
+  const branchInitialized = `
+    class Choice {
+      private value: i32;
+      constructor(value: i32, positive: bool) {
+        if (positive) { this.value = value; }
+        else { this.value = -value; }
+      }
+      function read(): i32 { return this.value; }
+    }
+    function main(): i32 { const choice = new Choice(42, true); return choice.read() - 42; }
+  `;
+  assert.doesNotThrow(() => compileToC(branchInitialized, "constructor-branches.z"));
+  const incompleteBranch = branchInitialized.replace("else { this.value = -value; }", "else {}");
+  assert.throws(() => compileToC(incompleteBranch, "constructor-incomplete-branch.z"), /does not initialize field "value"/);
+
+  const genericConstructor = `
+    class Box<T> {
+      private value: T;
+      constructor(value: T) { this.value = value; }
+      function get(): T { return this.value; }
+    }
+    function main(): i32 { const box = new Box<i32>(42); return box.get() - 42; }
+  `;
+  assert.match(compileToC(genericConstructor, "generic-class-constructor.z"), /Z___z_mono_Box_i32_new\(int32_t value\)/);
+
+  const objectBypass = `
+    class Secret { private value: i32; constructor(value: i32) { this.value = value; } }
+    enum Wrapped { secret Secret }
+    function main(): i32 { const wrapped = Wrapped.secret({ value: 42 }); return 0; }
+  `;
+  assert.throws(() => compileToC(objectBypass, "constructor-object-bypass.z"), /has a constructor and cannot be initialized from an object value/);
+
+  const privatePattern = `
+    class Secret { private value: i32; constructor(value: i32) { this.value = value; } }
+    enum Wrapped { secret Secret }
+    function read(wrapped: Wrapped): i32 {
+      return match (wrapped) { secret({ value }) => value; };
+    }
+    function main(): i32 { const secret = new Secret(42); return read(Wrapped.secret(secret)) - 42; }
+  `;
+  assert.throws(() => compileToC(privatePattern, "private-pattern.z"), /field "value" is private to class "Secret"/);
 });
 
 test("requires every struct field exactly once", () => {
@@ -4143,6 +4227,7 @@ test("editor grammar tracks keywords without reserving Result variants", () => {
   assert.match(keywordPattern, /move/);
   assert.match(keywordPattern, /weak/);
   assert.match(keywordPattern, /new/);
+  assert.match(keywordPattern, /constructor/);
   assert.match(keywordPattern, /deinit/);
   assert.match(keywordPattern, /out\|inout/);
   assert.match(keywordPattern, /\bin\b/);

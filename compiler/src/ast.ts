@@ -42,6 +42,7 @@ export type StructDeclaration = {
   readonly typeParameterConstraints?: TypeParameterConstraint[];
   readonly implements: TypeReference[];
   readonly fields: FieldDeclaration[];
+  readonly constructor: ConstructorDeclaration | null;
   readonly methods: FunctionDeclaration[];
   readonly deinitializer: DeinitDeclaration | null;
   readonly location: SourceLocation;
@@ -63,6 +64,15 @@ export type DeinitDeclaration = {
 export type FieldDeclaration = {
   readonly name: string;
   readonly type: TypeReference;
+  readonly visibility: "public" | "private";
+  readonly location: SourceLocation;
+};
+
+export type ConstructorDeclaration = {
+  readonly kind: "constructor";
+  readonly parameters: Parameter[];
+  readonly errorType: TypeReference | null;
+  readonly body: Statement[];
   readonly location: SourceLocation;
 };
 
@@ -329,7 +339,8 @@ export type ConditionalExpression = {
 export type NewExpression = {
   readonly kind: "new";
   readonly typeName: string;
-  readonly initializer: Expression;
+  readonly arguments: Expression[];
+  readonly argumentLabels: (string | null)[];
   readonly location: SourceLocation;
 };
 

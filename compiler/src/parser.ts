@@ -250,9 +250,18 @@ export function parse(tokens: Token[], fileName: string): Program {
       const token = previous();
       const type = parseType();
       expect("leftParen", "`(` after a class name");
-      const initializer = parseExpression();
+      const arguments_: Expression[] = [];
+      const argumentLabels: (string | null)[] = [];
+      if (!at("rightParen")) {
+        do {
+          const hasLabel = at("identifier") && tokens[current + 1]?.kind === "colon";
+          argumentLabels.push(hasLabel ? take().text : null);
+          if (hasLabel) take();
+          arguments_.push(parseExpression());
+        } while (match("comma"));
+      }
       expect("rightParen", "`)` after a class initializer");
-      return { kind: "new", typeName: type.name, initializer, location: token.location };
+      return { kind: "new", typeName: type.name, arguments: arguments_, argumentLabels, location: token.location };
     }
     if (match("templateStart")) {
       const token = previous();
@@ -368,40 +377,6 @@ export function parse(tokens: Token[], fileName: string): Program {
         } catch {
           current = checkpoint;
         }
-      }
-      if (at("dot") && tokens[current + 1]?.kind === "identifier") {
-        const checkpoint = current;
-        let legacyQualifiedConstruction: string | null = null;
-        try {
-          take();
-          const qualifiedType = take();
-          let qualifiedTypeName = `${token.text}.${qualifiedType.text}`;
-          if (match("less")) {
-            const arguments_ = [];
-            do arguments_.push(parseType().name); while (match("comma"));
-            expectTypeGreater();
-            qualifiedTypeName = genericTypeName(qualifiedTypeName, arguments_);
-          }
-          const beginsQualifiedStructLiteral = at("leftBrace")
-            && (tokens[current + 1]?.kind === "rightBrace"
-              || (tokens[current + 1]?.kind === "identifier" && tokens[current + 2]?.kind === "colon"));
-          if (!beginsQualifiedStructLiteral) {
-            current = checkpoint;
-          } else {
-            legacyQualifiedConstruction = qualifiedTypeName;
-          }
-        } catch {
-          current = checkpoint;
-        }
-        if (legacyQualifiedConstruction) {
-          throw new DiagnosticError(fileName, token.location, `construction requires ${legacyQualifiedConstruction}({ ... })`);
-        }
-      }
-      const beginsStructLiteral = at("leftBrace")
-        && (tokens[current + 1]?.kind === "rightBrace"
-          || (tokens[current + 1]?.kind === "identifier" && tokens[current + 2]?.kind === "colon"));
-      if (beginsStructLiteral) {
-        throw new DiagnosticError(fileName, token.location, `construction requires ${identifierName}({ ... })`);
       }
       if (at("dot") && tokens[current + 1]?.kind === "identifier" && startsPrimary(tokens[current + 2]?.kind)) {
         take();
@@ -739,8 +714,28 @@ export function parse(tokens: Token[], fileName: string): Program {
     expect("leftBrace", "`{`");
     const fields = [];
     const methods: FunctionDeclaration[] = [];
+    let constructor = null;
     let deinitializer = null;
     while (!at("rightBrace") && !at("eof")) {
+      if (match("constructor")) {
+        const constructorToken = previous();
+        if (constructor) {
+          throw new DiagnosticError(fileName, constructorToken.location, `${kind} ${JSON.stringify(name)} cannot declare more than one constructor`);
+        }
+        expect("leftParen", "`(`");
+        const parameters = parseParameters();
+        expect("rightParen", "`)`");
+        const errorType = match("throws") ? parseType() : null;
+        const block = parseRequiredBlock("a `constructor` body");
+        constructor = {
+          kind: "constructor" as const,
+          parameters,
+          errorType,
+          body: block.statements,
+          location: constructorToken.location,
+        };
+        continue;
+      }
       if (at("function")) {
         methods.push(parseFunction());
         continue;
@@ -754,9 +749,10 @@ export function parse(tokens: Token[], fileName: string): Program {
         deinitializer = { kind: "deinit" as const, body: block.statements, location: deinitToken.location };
         continue;
       }
+      const visibility = match("public") ? "public" : match("private") ? "private" : "public";
       const field = expect("identifier", "a field or method declaration");
       expect("colon", "`:`");
-      fields.push({ name: field.text, type: parseType(), location: field.location });
+      fields.push({ name: field.text, type: parseType(), visibility, location: field.location });
       expect("semicolon", "`;`");
     }
     expect("rightBrace", "`}`");
@@ -767,6 +763,7 @@ export function parse(tokens: Token[], fileName: string): Program {
       typeParameterConstraints: generic.constraints,
       implements: implemented,
       fields,
+      constructor,
       methods,
       deinitializer,
       location: start,

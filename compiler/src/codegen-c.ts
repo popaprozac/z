@@ -51,12 +51,15 @@ type GenerationContext = {
   readonly liveFlagCounter: { value: number };
   readonly expressionOverrides: ReadonlyMap<number, string>;
   readonly semanticInfo: SemanticInfo;
+  readonly constructorSelf?: string;
+  readonly constructorFieldFlags?: ReadonlyMap<string, string>;
 };
 
 type CleanupLocal = {
   readonly name: string;
   readonly type: string;
   readonly liveFlag: string;
+  readonly value?: string;
 };
 
 type LoopGenerationFrame = {
@@ -254,7 +257,7 @@ export function generateC(program: Program, sourceName: string, semanticInfo: Se
       lines.push(generateDeinit(declaration, structs, enums, functions, semanticInfo), "");
     }
     if (declaration.kind === "class") {
-      lines.push(generateClassLifecycle(declaration, structs, enums, semanticInfo.foreignNamedTypes), "");
+      lines.push(generateClassLifecycle(declaration, structs, enums, functions, semanticInfo), "");
     }
     for (const method of declaration.methods) {
       lines.push(generateFunction(method, structs, enums, functions, declaration, semanticInfo), "");
@@ -1087,22 +1090,48 @@ function generateClassConstructorSignature(
   enums: Map<string, EnumDeclaration>,
   foreignNamedTypes: SemanticInfo["foreignNamedTypes"],
 ): string {
-  const parameters = declaration.fields.map((field) => (
-    `${mapType(field.type.name, structs, enums, foreignNamedTypes)} ${field.name}`
-  ));
+  const parameters = declaration.constructor
+    ? declaration.constructor.parameters.map((parameter) => {
+      const type = mapType(parameter.type.name, structs, enums, foreignNamedTypes);
+      const aggregate = structs.get(parameter.type.name);
+      if (parseSliceType(parameter.type.name)) return `${type} ${cBindingName(parameter.name)}`;
+      if (aggregate?.kind === "class") {
+        if (parameter.mode === "in") return `const ${structName(aggregate.name)} *${cBindingName(parameter.name)}`;
+        if (parameter.mode === "inout" || parameter.mode === "out") return `${structName(aggregate.name)} **${cBindingName(parameter.name)}`;
+      } else if (parameter.mode === "in") return `const ${type} *${cBindingName(parameter.name)}`;
+      else if (parameter.mode === "inout" || parameter.mode === "out") return `${type} *${cBindingName(parameter.name)}`;
+      return `${type} ${cBindingName(parameter.name)}`;
+    })
+    : declaration.fields.map((field) => (
+      `${mapType(field.type.name, structs, enums, foreignNamedTypes)} ${field.name}`
+    ));
+  const result = declaration.constructor?.errorType
+    ? mapType(resultTypeName(declaration.name, declaration.constructor.errorType.name), structs, enums, foreignNamedTypes)
+    : `${structName(declaration.name)} *`;
+  const separator = result.endsWith("*") ? "" : " ";
   const unused = declaration.name.startsWith("__z_module_") ? "__attribute__((unused)) " : "";
-  return `static ${unused}${structName(declaration.name)} *${constructorName(declaration.name)}(${parameters.join(", ") || "void"})`;
+  return `static ${unused}${result}${separator}${constructorName(declaration.name)}(${parameters.join(", ") || "void"})`;
 }
 
 function generateClassLifecycle(
   declaration: StructDeclaration,
   structs: Map<string, StructDeclaration>,
   enums: Map<string, EnumDeclaration>,
-  foreignNamedTypes: SemanticInfo["foreignNamedTypes"],
+  functions: Map<string, FunctionDeclaration>,
+  semanticInfo: SemanticInfo,
 ): string {
   const cName = structName(declaration.name);
   const unused = declaration.name.startsWith("__z_module_") ? "__attribute__((unused)) " : "";
-  const assignments = declaration.fields.map((field) => `  self->${field.name} = ${field.name};`).join("\n");
+  const constructor = declaration.constructor
+    ? generateUserClassConstructor(declaration, structs, enums, functions, semanticInfo)
+    : `${generateClassConstructorSignature(declaration, structs, enums, semanticInfo.foreignNamedTypes)} {
+  ${cName} *self = (${cName} *)malloc(sizeof(${cName}));
+  if (self == NULL) abort();
+  self->_z_refcount = 1;
+  self->_z_weak = NULL;
+${declaration.fields.map((field) => `  self->${field.name} = ${field.name};`).join("\n")}
+  return self;
+}`;
   return `static ${unused}${cName} *${retainName(declaration.name)}(${cName} *value) {
   if (value != NULL) value->_z_refcount += 1;
   return value;
@@ -1150,14 +1179,91 @@ static ${unused}__attribute__((unused)) ${enumName(weakResultTypeName(declaratio
   };
 }
 
-${generateClassConstructorSignature(declaration, structs, enums, foreignNamedTypes)} {
-  ${cName} *self = (${cName} *)malloc(sizeof(${cName}));
-  if (self == NULL) abort();
-  self->_z_refcount = 1;
-  self->_z_weak = NULL;
-${assignments}
-  return self;
-}`;
+${constructor}`;
+}
+
+function generateUserClassConstructor(
+  declaration: StructDeclaration,
+  structs: Map<string, StructDeclaration>,
+  enums: Map<string, EnumDeclaration>,
+  functions: Map<string, FunctionDeclaration>,
+  semanticInfo: SemanticInfo,
+): string {
+  const constructor = declaration.constructor!;
+  const owner: FunctionDeclaration = {
+    kind: "function",
+    name: "constructor",
+    receiverMode: "inout",
+    parameters: constructor.parameters,
+    returnType: { name: declaration.name, location: constructor.location },
+    errorType: constructor.errorType,
+    body: constructor.body,
+    location: constructor.location,
+  };
+  const localTypes = new Map(constructor.parameters.map((parameter) => [parameter.name, parameter.type.name]));
+  localTypes.set("this", declaration.name);
+  const liveFlagCounter = { value: 0 };
+  const liveFlags = new Map<string, string>();
+  const parameterCleanup = constructor.parameters
+    .filter((parameter) => parameter.mode === "value" && hasCleanupType(parameter.type.name, structs, enums, semanticInfo.foreignTypes))
+    .map((parameter) => {
+      const liveFlag = nextLiveFlag(parameter.name, liveFlagCounter);
+      liveFlags.set(parameter.name, liveFlag);
+      return { name: parameter.name, type: parameter.type.name, liveFlag };
+    });
+  const fieldFlags = new Map<string, string>();
+  const fieldCleanup = declaration.fields.flatMap((field) => {
+    if (!constructor.errorType) return [];
+    if (!hasCleanupType(field.type.name, structs, enums, semanticInfo.foreignTypes)) return [];
+    const liveFlag = nextLiveFlag(`field_${field.name}`, liveFlagCounter);
+    fieldFlags.set(field.name, liveFlag);
+    return [{ name: field.name, value: `self->${field.name}`, type: field.type.name, liveFlag }];
+  });
+  const context: GenerationContext = {
+    structs,
+    enums,
+    functions,
+    localTypes,
+    parameterModes: new Map(constructor.parameters.map((parameter) => [parameter.name, parameter.mode])),
+    receiver: declaration,
+    owner,
+    matchCounter: { value: 0 },
+    tryCounter: { value: 0 },
+    valueCounter: { value: 0 },
+    returnCounter: { value: 0 },
+    loopCounter: { value: 0 },
+    loopStack: [],
+    cleanupCounter: { value: 0 },
+    cleanupScopes: [fieldCleanup, parameterCleanup],
+    liveFlags,
+    liveFlagCounter,
+    expressionOverrides: new Map(),
+    semanticInfo,
+    constructorSelf: "self",
+    constructorFieldFlags: fieldFlags,
+  };
+  const cName = structName(declaration.name);
+  const body = [
+    `  ${cName} *self = (${cName} *)malloc(sizeof(${cName}));`,
+    "  if (self == NULL) abort();",
+    "  self->_z_refcount = 1;",
+    "  self->_z_weak = NULL;",
+    ...parameterCleanup.map((parameter) => `  bool ${parameter.liveFlag} = true;`),
+    ...fieldCleanup.map((field) => `  bool ${field.liveFlag} = false;`),
+  ];
+  for (const statement of constructor.body) {
+    body.push(indent(generateStatement(statement, context), 2));
+    recordVariableType(statement, context);
+  }
+  const parameterCleanupCode = generateCleanup([parameterCleanup], context);
+  if (parameterCleanupCode) body.push(indent(parameterCleanupCode, 2));
+  if (constructor.errorType) {
+    const result = resultTypeName(declaration.name, constructor.errorType.name);
+    body.push(`  return (${enumName(result)}){ .tag = ${variantTag(result, "success")}, .data.success = self };`);
+  } else {
+    body.push("  return self;");
+  }
+  return `${generateClassConstructorSignature(declaration, structs, enums, semanticInfo.foreignNamedTypes)} {\n${body.join("\n")}\n}`;
 }
 
 function generateEnum(
@@ -1439,6 +1545,19 @@ bool ${liveFlag} = true;`;
         );
       }
       const targetType = inferExpressionType(statement.target, context);
+      if (
+        context.semanticInfo.constructorFieldInitializations.has(statement.location.offset)
+        && statement.target.kind === "member"
+        && statement.target.object.kind === "identifier"
+        && statement.target.object.name === "this"
+      ) {
+        const liveFlag = context.constructorFieldFlags?.get(statement.target.property);
+        return generateDirectValue(
+          statement.expression,
+          context,
+          (value) => `${generateExpression(statement.target, context)} = ${value};${liveFlag ? `\n${liveFlag} = true;` : ""}`,
+        );
+      }
       if (hasCleanupType(targetType, context.structs, context.enums, context.semanticInfo.foreignTypes)) {
         return generateCleanupAwareAssignment(statement, targetType, context);
       }
@@ -1458,12 +1577,13 @@ bool ${liveFlag} = true;`;
       const result = resultTypeName(context.owner.returnType.name, context.owner.errorType!.name);
       const value = generateExpression(statement.expression, context);
       const cleanup = generateCleanup(context.cleanupScopes, context);
-      if (!cleanup) {
+      const releaseSelf = context.constructorSelf ? `free(${context.constructorSelf});\n` : "";
+      if (!cleanup && !releaseSelf) {
         return `return (${enumName(result)}){ .tag = ${variantTag(result, "failure")}, .data.failure = ${value} };`;
       }
       const temporary = `_z_error_${context.returnCounter.value++}`;
       const declaration = generateLocalDeclaration(context.owner.errorType!.name, temporary, false, context.structs, context.enums, context.semanticInfo.foreignNamedTypes);
-      return `${declaration} = ${value};\n${cleanup}\nreturn (${enumName(result)}){ .tag = ${variantTag(result, "failure")}, .data.failure = ${temporary} };`;
+      return `${declaration} = ${value};\n${cleanup ? `${cleanup}\n` : ""}${releaseSelf}return (${enumName(result)}){ .tag = ${variantTag(result, "failure")}, .data.failure = ${temporary} };`;
     }
     case "select":
       throw new Error("select must be lowered by its enclosing value-producing block");
@@ -1834,8 +1954,8 @@ function generateDirectValue(
   if (expression.kind === "template") {
     return generateTemplateValue(expression, context, consumeValue);
   }
-  if (expression.kind === "new" && requiresStatementValue(expression.initializer, context)) {
-    return generateDirectValue(expression.initializer, context, consumeValue, consumeTerminates);
+  if (expression.kind === "new" && expression.arguments.some((argument) => requiresStatementValue(argument, context))) {
+    return generateLoweredAggregate(expression, expression.arguments, context, consumeValue, consumeTerminates);
   }
   if (expression.kind === "conditional" && requiresStatementValue(expression, context)) {
     return generateConditionalValue(expression, context, consumeValue, consumeTerminates);
@@ -1875,7 +1995,7 @@ function requiresStatementValue(expression: Expression, context: GenerationConte
     return requiresStatementValue(expression.thenExpression, context)
       || requiresStatementValue(expression.elseExpression, context);
   }
-  if (expression.kind === "new") return requiresStatementValue(expression.initializer, context);
+  if (expression.kind === "new") return expression.arguments.some((argument) => requiresStatementValue(argument, context));
   if (expression.kind === "call") {
     return expression.arguments.some((argument) => requiresStatementValue(argument, context));
   }
@@ -2221,7 +2341,7 @@ function generateCleanup(scopes: CleanupLocal[][], context: GenerationContext): 
   const calls: string[] = [];
   for (const scope of [...scopes].reverse()) {
     for (const local of [...scope].reverse()) {
-      calls.push(generateValueCleanup(cBindingName(local.name), local.type, local.liveFlag, context));
+      calls.push(generateValueCleanup(local.value ?? cBindingName(local.name), local.type, local.liveFlag, context));
     }
   }
   return calls.join("\n");
@@ -2350,12 +2470,13 @@ function generateTry(
   const temporary = `_z_try_${context.tryCounter.value++}`;
   const ownerResult = resultTypeName(context.owner.returnType.name, context.owner.errorType!.name);
   const cleanup = generateCleanup(context.cleanupScopes, context);
-  const failureReturn = `return (${enumName(ownerResult)}){ .tag = ${variantTag(ownerResult, "failure")}, .data.failure = ${temporary}.data.failure };`;
+  const releaseSelf = context.constructorSelf ? `free(${context.constructorSelf});\n` : "";
+  const failureReturn = `${releaseSelf}return (${enumName(ownerResult)}){ .tag = ${variantTag(ownerResult, "failure")}, .data.failure = ${temporary}.data.failure };`;
   return generateDirectValue(expression.expression, context, (value) => (
     `const ${mapType(resultType, context.structs, context.enums, context.semanticInfo.foreignNamedTypes)} ${temporary} = ${value};\n`
       + `if (${temporary}.tag == ${variantTag(resultType, "failure")}) {\n`
       + `${cleanup ? `${indent(cleanup, 2)}\n` : ""}`
-      + `  ${failureReturn}\n`
+      + `${indent(failureReturn, 2)}\n`
       + `}\n`
       + consumeSuccess(`${temporary}.data.success`, context)
   ));
@@ -2367,6 +2488,11 @@ function trySuccessType(expression: Extract<Expression, { kind: "try" }>, contex
 }
 
 function throwingCallResultType(expression: Expression, context: GenerationContext): string {
+  if (expression.kind === "new") {
+    const constructor = context.structs.get(expression.typeName)?.constructor;
+    if (!constructor?.errorType) throw new Error("try lowering expected a throwing constructor");
+    return resultTypeName(expression.typeName, constructor.errorType.name);
+  }
   if (expression.kind === "call" && expression.callee.kind === "identifier") {
     const target = context.functions.get(expression.callee.name)!;
     return resultTypeName(target.returnType.name, target.errorType!.name);
@@ -2772,7 +2898,10 @@ function generateExpression(expression: Expression, context: GenerationContext):
     case "conditional":
       return `(${generateExpression(expression.condition, context)} ? ${generateExpression(expression.thenExpression, context)} : ${generateExpression(expression.elseExpression, context)})`;
     case "new":
-      return generateExpression(expression.initializer, context);
+      if (!context.structs.get(expression.typeName)?.constructor) {
+        return generateExpression(expression.arguments[0], context);
+      }
+      return `${constructorName(expression.typeName)}(${expression.arguments.map((argument) => generateCallArgument(argument, context)).join(", ")})`;
     case "weak": {
       const type = parseWeakType(inferExpressionType(expression, context));
       if (!type) throw new Error("weak expression is missing its target type");

@@ -27,5 +27,21 @@ export function materializeResultTypes(program: Program): Program {
     });
   }
 
+  for (const aggregate of program.structs) {
+    const constructor = aggregate.constructor;
+    if (!constructor?.errorType) continue;
+    const name = resultTypeName(aggregate.name, constructor.errorType.name);
+    if (existing.has(name) || generated.has(name)) continue;
+    generated.set(name, {
+      kind: "enum",
+      name,
+      location: constructor.location,
+      variants: [
+        { name: "success", payload: { name: aggregate.name, location: constructor.location }, location: constructor.location },
+        { name: "failure", payload: constructor.errorType, location: constructor.location },
+      ],
+    });
+  }
+
   return { ...program, enums: [...program.enums, ...generated.values()] };
 }

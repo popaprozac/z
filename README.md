@@ -113,7 +113,35 @@ struct value; `new Counter({ ... })` creates a class instance and its initial
 owning strong reference. `new` is class-only—not a general allocator or a manual
 memory primitive—and the compiler remains free to optimize physical allocation
 without changing class identity. The synthesized initializer currently requires
-every declared field exactly once. User-defined constructors are a later layer.
+every public field exactly once. Classes with invariants can declare a
+TypeScript-shaped constructor and private state:
+
+```z
+class Session {
+  private id: i32;
+  public name: String;
+
+  constructor(id: i32, name: String) {
+    this.id = id;
+    this.name = name;
+  }
+
+  function identifier(): i32 { return this.id; }
+}
+
+const session = new Session(42, "primary");
+```
+
+Fields default to `public`. A private field requires a constructor, cannot be
+accessed outside its declaring class, and is omitted from external completion.
+Constructors return the initialized instance implicitly. Every field must be
+initialized on every successful path; fields cannot be read and `this` cannot
+escape before that point. A constructor may `throw`, and `try`/`attempt` use the
+ordinary `Result<Class, Error>` model. Failure destroys only fields whose
+initialization completed, then releases the unfinished allocation.
+
+Type-scoped `static function` methods are the intended factory and utility
+surface, but are not implemented in this bootstrap slice yet.
 
 `const` fixes the class reference binding; it does not make the referenced
 instance deeply immutable. This lets an explicitly mutating `inout this` method

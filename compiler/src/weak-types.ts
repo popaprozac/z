@@ -33,6 +33,7 @@ export function materializeWeakTypes(program: Program): Program {
     name: weakExpiredType,
     implements: [],
     fields: [],
+    constructor: null,
     methods: [],
     deinitializer: null,
     location,

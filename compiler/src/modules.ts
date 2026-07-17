@@ -328,6 +328,24 @@ function transformStruct(declaration: StructDeclaration, node: ModuleNode, scope
     })),
     implements: declaration.implements.map((item) => renameTypeReference(item, scope, typeParameters)),
     fields: declaration.fields.map((field) => ({ ...field, type: renameTypeReference(field.type, scope, typeParameters) })),
+    constructor: declaration.constructor
+      ? {
+        ...declaration.constructor,
+        parameters: declaration.constructor.parameters.map((parameter) => ({
+          ...parameter,
+          type: renameTypeReference(parameter.type, scope, typeParameters),
+        })),
+        errorType: declaration.constructor.errorType
+          ? renameTypeReference(declaration.constructor.errorType, scope, typeParameters)
+          : null,
+        body: transformStatements(
+          declaration.constructor.body,
+          scope,
+          new Set(["this", ...declaration.constructor.parameters.map((parameter) => parameter.name)]),
+          typeParameters,
+        ),
+      }
+      : null,
     methods: declaration.methods.map((method) => transformFunction(method, node, scope, declaration.name)),
     deinitializer: declaration.deinitializer
       ? { ...declaration.deinitializer, body: transformStatements(declaration.deinitializer.body, scope, new Set(["this"]), typeParameters) }
@@ -485,7 +503,7 @@ function transformExpression(
       return {
         ...expression,
         typeName: renameTypeName(expression.typeName, scope, typeParameters),
-        initializer: transformExpression(expression.initializer, scope, locals, typeParameters),
+        arguments: expression.arguments.map((argument) => transformExpression(argument, scope, locals, typeParameters)),
       };
     case "template":
       return {

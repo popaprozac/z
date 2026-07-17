@@ -131,6 +131,7 @@ export type SemanticInfo = {
   readonly expressionTypes: ReadonlyMap<number, string>;
   readonly bindingTypes: ReadonlyMap<number, string>;
   readonly borrowedMatches: ReadonlySet<number>;
+  readonly constructorFieldInitializations: ReadonlySet<number>;
   readonly closures: ReadonlyMap<number, ClosureInfo>;
   readonly consoleCalls: ReadonlySet<number>;
   readonly consoleBindings: ReadonlySet<string>;
@@ -168,6 +169,7 @@ type AnalysisState = {
   readonly expressionTypes: Map<number, string>;
   readonly bindingTypes: Map<number, string>;
   readonly borrowedMatches: Set<number>;
+  readonly constructorFieldInitializations: Set<number>;
   readonly closures: Map<number, ClosureInfo>;
   readonly consoleCalls: Set<number>;
   readonly consoleBindings: Set<string>;
@@ -181,6 +183,7 @@ type AnalysisState = {
   readonly moveOrigins: Map<string, SourceLocation>;
   readonly borrowOrigins: Map<string, { readonly location: SourceLocation; readonly kind: "closure" | "iteration" | "match" }>;
   readonly iterationBorrowOrigins: Map<string, SourceLocation>;
+  activeReceiver: string | null;
 };
 
 type LoopAnalysisFrame = {
@@ -260,6 +263,7 @@ export function analyze(
     expressionTypes: new Map(),
     bindingTypes: new Map(),
     borrowedMatches: new Set(),
+    constructorFieldInitializations: new Set(),
     closures: new Map(),
     consoleCalls: new Set(),
     consoleBindings: new Set(),
@@ -273,6 +277,7 @@ export function analyze(
     moveOrigins: new Map(),
     borrowOrigins: new Map(),
     iterationBorrowOrigins: new Map(),
+    activeReceiver: null,
   };
   const globals = new Map<string, SymbolValue>();
   const structs = new Map<string, StructDeclaration>();
@@ -438,6 +443,21 @@ export function analyze(
   }
 
   for (const declaration of program.structs) {
+    if (declaration.constructor) {
+      analyzeConstructorInitialization(declaration, fileName, state);
+      analyzeFunction(
+        {
+          ...constructorFunction(declaration),
+          returnType: { name: "void", location: declaration.constructor.location },
+        },
+        globals,
+        structs,
+        enums,
+        fileName,
+        declaration,
+        state,
+      );
+    }
     for (const method of declaration.methods) {
       analyzeFunction(method, globals, structs, enums, fileName, declaration, state);
     }
@@ -476,6 +496,13 @@ function analyzeStructDeclaration(
   foreignNamedTypes: ReadonlyMap<string, ForeignNamedType>,
   fileName: string,
 ): void {
+  if (declaration.constructor && declaration.kind !== "class") {
+    throw new DiagnosticError(fileName, declaration.constructor.location, "constructors are currently class-only; structs use Type({ ... }) value construction");
+  }
+  if (declaration.kind === "class" && declaration.fields.some((field) => field.visibility === "private") && !declaration.constructor) {
+    const field = declaration.fields.find((candidate) => candidate.visibility === "private")!;
+    throw new DiagnosticError(fileName, field.location, `class ${JSON.stringify(declaration.name)} needs a constructor to initialize private field ${JSON.stringify(field.name)}`);
+  }
   if (declaration.kind === "class" && declaration.methods.some((method) => method.receiverMode === "move")) {
     const method = declaration.methods.find((candidate) => candidate.receiverMode === "move")!;
     throw new DiagnosticError(fileName, method.location, "class methods cannot declare `move this`; ARC references may have aliases");
@@ -499,6 +526,9 @@ function analyzeStructDeclaration(
     }
     members.add(method.name);
     validateFunctionSignature(method, structs, enums, foreignNamedTypes, fileName);
+  }
+  if (declaration.constructor) {
+    validateFunctionSignature(constructorFunction(declaration), structs, enums, foreignNamedTypes, fileName);
   }
 }
 
@@ -710,6 +740,8 @@ function analyzeFunction(
   receiver: StructDeclaration | null,
   state: AnalysisState,
 ): void {
+  const previousReceiver = state.activeReceiver;
+  state.activeReceiver = receiver?.name ?? null;
   state.moveOrigins.clear();
   state.borrowOrigins.clear();
   state.iterationBorrowOrigins.clear();
@@ -735,6 +767,202 @@ function analyzeFunction(
   if (!returns) requireOutParametersInitialized(declaration, locals, declaration.location, fileName);
   if (declaration.returnType.name !== "void" && !returns) {
     throw new DiagnosticError(fileName, declaration.location, `function ${JSON.stringify(declaration.name)} must end with a return value`);
+  }
+  state.activeReceiver = previousReceiver;
+}
+
+function constructorFunction(declaration: StructDeclaration): FunctionDeclaration {
+  const constructor = declaration.constructor!;
+  return {
+    kind: "function",
+    name: "constructor",
+    receiverMode: "inout",
+    parameters: constructor.parameters,
+    returnType: { name: declaration.name, location: constructor.location },
+    errorType: constructor.errorType,
+    body: constructor.body,
+    location: constructor.location,
+  };
+}
+
+function analyzeConstructorInitialization(
+  declaration: StructDeclaration,
+  fileName: string,
+  state: AnalysisState,
+): void {
+  const fields = new Map(declaration.fields.map((field) => [field.name, field]));
+  const allFields = new Set(fields.keys());
+  const complete = (initialized: ReadonlySet<string>): boolean => initialized.size === allFields.size;
+  const missing = (initialized: ReadonlySet<string>): string | null => (
+    declaration.fields.find((field) => !initialized.has(field.name))?.name ?? null
+  );
+
+  const checkExpression = (expression: Expression, initialized: ReadonlySet<string>): void => {
+    if (expression.kind === "identifier") {
+      if (expression.name === "this" && !complete(initialized)) {
+        throw new DiagnosticError(fileName, expression.location, `this cannot escape before field ${JSON.stringify(missing(initialized))} is initialized`);
+      }
+      return;
+    }
+    if (expression.kind === "member") {
+      if (expression.object.kind === "identifier" && expression.object.name === "this") {
+        const field = fields.get(expression.property);
+        if (field && !initialized.has(field.name)) {
+          throw new DiagnosticError(fileName, expression.location, `field ${JSON.stringify(field.name)} is read before it is initialized`);
+        }
+        if (!field && !complete(initialized)) {
+          throw new DiagnosticError(fileName, expression.location, `this cannot call methods before field ${JSON.stringify(missing(initialized))} is initialized`);
+        }
+        return;
+      }
+      checkExpression(expression.object, initialized);
+      return;
+    }
+    switch (expression.kind) {
+      case "number":
+      case "string":
+      case "boolean":
+      case "null":
+      case "dynamicArrayExpression":
+      case "argumentReference":
+        return;
+      case "template":
+        for (const part of expression.parts) if (part.kind === "value") checkExpression(part.expression, initialized);
+        return;
+      case "unary":
+        checkExpression(expression.operand, initialized);
+        return;
+      case "binary":
+        checkExpression(expression.left, initialized);
+        checkExpression(expression.right, initialized);
+        return;
+      case "conditional":
+        checkExpression(expression.condition, initialized);
+        checkExpression(expression.thenExpression, initialized);
+        checkExpression(expression.elseExpression, initialized);
+        return;
+      case "new":
+        for (const argument of expression.arguments) checkExpression(argument, initialized);
+        return;
+      case "weak":
+        checkExpression(expression.expression, initialized);
+        return;
+      case "closure":
+        if (expression.body.kind === "block") {
+          analyzeConstructorStatements(expression.body.statements, new Set(initialized));
+        } else {
+          checkExpression(expression.body, initialized);
+        }
+        return;
+      case "call":
+        checkExpression(expression.callee, initialized);
+        for (const argument of expression.arguments) checkExpression(argument, initialized);
+        return;
+      case "index":
+        checkExpression(expression.object, initialized);
+        checkExpression(expression.index, initialized);
+        return;
+      case "arrayExpression":
+        for (const element of expression.elements) checkExpression(element, initialized);
+        return;
+      case "structExpression":
+      case "objectExpression":
+        for (const field of expression.fields) checkExpression(field.expression, initialized);
+        return;
+      case "variantExpression":
+        checkExpression(expression.payload, initialized);
+        return;
+      case "attempt":
+      case "try":
+        checkExpression(expression.expression, initialized);
+        return;
+      case "matchExpression":
+        checkExpression(expression.expression, initialized);
+        for (const arm of expression.arms) analyzeConstructorStatements([arm.body], new Set(initialized));
+        return;
+      case "ifExpression":
+        checkExpression(expression.condition, initialized);
+        analyzeConstructorStatements(expression.thenBranch.statements, new Set(initialized));
+        if (expression.elseBranch.kind === "ifExpression") checkExpression(expression.elseBranch, initialized);
+        else analyzeConstructorStatements(expression.elseBranch.statements, new Set(initialized));
+        return;
+    }
+  };
+
+  const intersect = (sets: readonly Set<string>[]): Set<string> => {
+    if (sets.length === 0) return new Set(allFields);
+    return new Set([...sets[0]].filter((name) => sets.every((candidate) => candidate.has(name))));
+  };
+
+  const analyzeConstructorStatements = (
+    statements: readonly Statement[],
+    initial: Set<string>,
+  ): { readonly initialized: Set<string>; readonly stops: boolean } => {
+    let initialized = initial;
+    for (const statement of statements) {
+      if (statement.kind === "return") {
+        throw new DiagnosticError(fileName, statement.location, "constructors return the initialized instance implicitly; omit return");
+      }
+      if (statement.kind === "assignment"
+        && statement.target.kind === "member"
+        && statement.target.object.kind === "identifier"
+        && statement.target.object.name === "this"
+        && fields.has(statement.target.property)) {
+        checkExpression(statement.expression, initialized);
+        if (!initialized.has(statement.target.property)) {
+          state.constructorFieldInitializations.add(statement.location.offset);
+          initialized = new Set(initialized).add(statement.target.property);
+        }
+        continue;
+      }
+      if (statement.kind === "variable") {
+        if (statement.initializer) checkExpression(statement.initializer, initialized);
+      } else if (statement.kind === "assignment") {
+        checkExpression(statement.target, initialized);
+        checkExpression(statement.expression, initialized);
+      } else if (statement.kind === "throw" || statement.kind === "select" || statement.kind === "expressionStatement") {
+        checkExpression(statement.expression, initialized);
+      } else if (statement.kind === "block") {
+        const result = analyzeConstructorStatements(statement.statements, initialized);
+        initialized = result.initialized;
+        if (result.stops) return result;
+      } else if (statement.kind === "if") {
+        checkExpression(statement.condition, initialized);
+        const branches = [analyzeConstructorStatements(statement.thenBranch.statements, new Set(initialized))];
+        if (statement.elseBranch?.kind === "block") {
+          branches.push(analyzeConstructorStatements(statement.elseBranch.statements, new Set(initialized)));
+        } else if (statement.elseBranch?.kind === "if") {
+          branches.push(analyzeConstructorStatements([statement.elseBranch], new Set(initialized)));
+        } else {
+          branches.push({ initialized: new Set(initialized), stops: false });
+        }
+        const continuing = branches.filter((branch) => !branch.stops);
+        if (continuing.length === 0) return { initialized, stops: true };
+        initialized = intersect(continuing.map((branch) => branch.initialized));
+      } else if (statement.kind === "match") {
+        checkExpression(statement.expression, initialized);
+        const branches = statement.arms.map((arm) => analyzeConstructorStatements([arm.body], new Set(initialized)));
+        const continuing = branches.filter((branch) => !branch.stops);
+        if (continuing.length === 0) return { initialized, stops: true };
+        initialized = intersect(continuing.map((branch) => branch.initialized));
+      } else if (statement.kind === "while" || statement.kind === "for") {
+        if (!complete(initialized)) {
+          throw new DiagnosticError(fileName, statement.location, `initialize field ${JSON.stringify(missing(initialized))} before entering a loop`);
+        }
+      }
+      if (statementStopsFlow(statement)) return { initialized, stops: true };
+    }
+    return { initialized, stops: false };
+  };
+
+  const result = analyzeConstructorStatements(declaration.constructor!.body, new Set());
+  const missingField = missing(result.initialized);
+  if (!result.stops && missingField) {
+    throw new DiagnosticError(
+      fileName,
+      declaration.constructor!.location,
+      `constructor for ${JSON.stringify(declaration.name)} does not initialize field ${JSON.stringify(missingField)} on every successful path`,
+    );
   }
 }
 
@@ -1098,8 +1326,12 @@ function analyzeStatement(
           for (const fieldBinding of arm.objectBindings) {
             if (seen.has(fieldBinding.fieldName)) throw new DiagnosticError(fileName, fieldBinding.fieldLocation, `duplicate object pattern field ${JSON.stringify(fieldBinding.fieldName)}`);
             seen.add(fieldBinding.fieldName);
-            if (!payloadDeclaration.fields.some((field) => field.name === fieldBinding.fieldName)) {
+            const field = payloadDeclaration.fields.find((candidate) => candidate.name === fieldBinding.fieldName);
+            if (!field) {
               throw new DiagnosticError(fileName, fieldBinding.fieldLocation, `${payloadDeclaration.kind} ${JSON.stringify(payloadDeclaration.name)} has no field ${JSON.stringify(fieldBinding.fieldName)}`);
+            }
+            if (field.visibility === "private" && state.activeReceiver !== payloadDeclaration.name) {
+              throw new DiagnosticError(fileName, fieldBinding.fieldLocation, `field ${JSON.stringify(field.name)} is private to class ${JSON.stringify(payloadDeclaration.name)}`);
             }
             validateUserName(fieldBinding.bindingName, fieldBinding.bindingLocation, fileName);
           }
@@ -1517,7 +1749,7 @@ function collectClosureCaptures(
         walkExpression(expression.elseExpression, localNames);
         return;
       case "new":
-        walkExpression(expression.initializer, localNames);
+        for (const argument of expression.arguments) walkExpression(argument, localNames);
         return;
       case "weak":
         walkExpression(expression.expression, localNames);
@@ -1732,8 +1964,12 @@ function inferMatchExpression(
       for (const fieldBinding of arm.objectBindings) {
         if (seen.has(fieldBinding.fieldName)) throw new DiagnosticError(fileName, fieldBinding.fieldLocation, `duplicate object pattern field ${JSON.stringify(fieldBinding.fieldName)}`);
         seen.add(fieldBinding.fieldName);
-        if (!payloadDeclaration.fields.some((field) => field.name === fieldBinding.fieldName)) {
+        const field = payloadDeclaration.fields.find((candidate) => candidate.name === fieldBinding.fieldName);
+        if (!field) {
           throw new DiagnosticError(fileName, fieldBinding.fieldLocation, `${payloadDeclaration.kind} ${JSON.stringify(payloadDeclaration.name)} has no field ${JSON.stringify(fieldBinding.fieldName)}`);
+        }
+        if (field.visibility === "private" && state.activeReceiver !== payloadDeclaration.name) {
+          throw new DiagnosticError(fileName, fieldBinding.fieldLocation, `field ${JSON.stringify(field.name)} is private to class ${JSON.stringify(payloadDeclaration.name)}`);
         }
         validateUserName(fieldBinding.bindingName, fieldBinding.bindingLocation, fileName);
       }
@@ -2232,10 +2468,22 @@ function inferExpressionInner(
       if (declaration.kind !== "class") {
         throw new DiagnosticError(fileName, expression.location, `new requires a class type; construct ${expression.typeName} as ${expression.typeName}({ ... })`);
       }
-      if (expression.initializer.kind !== "objectExpression") {
-        throw new DiagnosticError(fileName, expression.initializer.location, "synthesized class initialization requires one object literal");
+      rejectLabeledArguments(expression.argumentLabels, expression.location, fileName);
+      if (declaration.constructor) {
+        const target = constructorFunction(declaration);
+        checkArguments(target, expression.arguments, locals, globals, structs, enums, fileName, expression.location, state);
+        if (target.errorType) {
+          if (!allowThrowingCall) {
+            throw new DiagnosticError(fileName, expression.location, "throwing constructor requires `attempt` or `try`");
+          }
+          return resultTypeName(declaration.name, target.errorType.name);
+        }
+        return expression.typeName;
       }
-      inferContextualObjectExpression(expression.initializer, expression.typeName, locals, globals, structs, enums, fileName, state);
+      if (expression.arguments.length !== 1 || expression.arguments[0].kind !== "objectExpression") {
+        throw new DiagnosticError(fileName, expression.location, "synthesized class initialization requires one object literal");
+      }
+      inferContextualObjectExpression(expression.arguments[0], expression.typeName, locals, globals, structs, enums, fileName, state);
       return expression.typeName;
     }
     case "weak": {
@@ -2437,7 +2685,12 @@ function inferExpressionInner(
         throw new DiagnosticError(fileName, expression.location, `type ${JSON.stringify(receiverType)} has no members`);
       }
       const field = declaration.fields.find((candidate) => candidate.name === expression.property);
-      if (field) return field.type.name;
+      if (field) {
+        if (field.visibility === "private" && state.activeReceiver !== declaration.name) {
+          throw new DiagnosticError(fileName, expression.location, `field ${JSON.stringify(field.name)} is private to class ${JSON.stringify(declaration.name)}`);
+        }
+        return field.type.name;
+      }
       const method = declaration.methods.find((candidate) => candidate.name === expression.property);
       if (method) {
         throw new DiagnosticError(fileName, expression.location, "method values are not implemented; call the method instead");
@@ -2664,6 +2917,9 @@ function inferExpressionInner(
         const field = declaration?.fields.find((candidate) => candidate.name === expression.callee.property);
         const fieldFunctionType = field ? parseFunctionType(field.type.name) : null;
         if (declaration && field && fieldFunctionType) {
+          if (field.visibility === "private" && state.activeReceiver !== declaration.name) {
+            throw new DiagnosticError(fileName, expression.callee.location, `field ${JSON.stringify(field.name)} is private to class ${JSON.stringify(declaration.name)}`);
+          }
           if (hasCleanupType(receiverType, structs, enums, state.foreignTypes) && !isNamedStorageExpression(expression.callee.object)) {
             throw new DiagnosticError(fileName, expression.callee.object.location, "a cleanup-bearing temporary must be bound before calling one of its function fields");
           }
@@ -2849,6 +3105,14 @@ function inferContextualObjectExpression(
   fileName: string,
   state: AnalysisState,
 ): ValueType {
+  const declaration = structs.get(expectedType);
+  if (declaration?.kind === "class" && declaration.constructor) {
+    throw new DiagnosticError(
+      fileName,
+      expression.location,
+      `class ${JSON.stringify(declaration.name)} has a constructor and cannot be initialized from an object value`,
+    );
+  }
   const actual = inferExpression(
     { kind: "structExpression", typeName: expectedType, fields: expression.fields, location: expression.location },
     locals,
@@ -3132,7 +3396,9 @@ function validateDeinitExpression(expression: Expression, fileName: string): voi
   if (expression.kind === "attempt" || expression.kind === "try" || expression.kind === "weak") {
     validateDeinitExpression(expression.expression, fileName);
   }
-  if (expression.kind === "new") validateDeinitExpression(expression.initializer, fileName);
+  if (expression.kind === "new") {
+    for (const argument of expression.arguments) validateDeinitExpression(argument, fileName);
+  }
   if (expression.kind === "matchExpression") {
     validateDeinitExpression(expression.expression, fileName);
     for (const arm of expression.arms) validateDeinitControlFlow([arm.body], fileName);

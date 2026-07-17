@@ -193,8 +193,8 @@ export function inferGenericCalls(
         };
       }
       case "new": {
-        const initializer = rewriteExpression(expression.initializer, environment);
-        return { expression: { ...expression, initializer: initializer.expression }, type: expression.typeName };
+        const arguments_ = expression.arguments.map((argument) => rewriteExpression(argument, environment));
+        return { expression: { ...expression, arguments: arguments_.map((argument) => argument.expression) }, type: expression.typeName };
       }
       case "weak": {
         const inner = rewriteExpression(expression.expression, environment);

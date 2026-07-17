@@ -205,8 +205,23 @@ Struct declarations and class declarations retain brace-delimited bodies, while
 initialization data is an object expression inside call parentheses. `new` is
 reserved for native class construction and is not a general allocation operator.
 It promises reference identity and an initial owning reference, not a particular
-physical heap strategy. The bootstrap synthesizes fieldwise initialization;
-user-defined constructor bodies remain future work.
+physical heap strategy. A class with no constructor receives synthesized
+fieldwise initialization through `new Type({ ... })`. A declared constructor
+changes the call shape to `new Type(arguments...)` and is the only construction
+path for that class.
+
+Fields default to `public`; `private` fields are visible only within the
+declaring class and require an explicit constructor. Constructor analysis tracks
+definite initialization across successful branches, rejects reads of
+uninitialized fields and escape of incomplete `this`, and returns the completed
+instance implicitly. Throwing constructors use `Result<Class, Error>` through
+ordinary `try` and `attempt`. Lowering maintains per-field liveness so failure
+destroys only initialized cleanup-bearing fields before reclaiming incomplete
+class storage.
+
+`static function` is reserved as the eventual type-scoped factory and utility
+surface. It performs no implicit allocation and has no `this` receiver; its
+implementation follows constructor safety rather than being conflated with it.
 
 Explicit `Weak<T>` handles provide the first cycle-breaking tier for classes.
 `weak owner` borrows stored class identity without incrementing its strong
@@ -924,6 +939,8 @@ Clang declaration source locations rather than text-searching SDK headers.
 ### 0.25: Portable object model
 
 - ARC-managed classes with reference identity;
+- definite, optionally throwing class constructors with partial-initialization cleanup;
+- public and private class fields with compiler and editor enforcement;
 - class lifecycle lowering and deterministic final `deinit`;
 - zeroing `Weak<T>` handles with typed upgrade failure and weak closure capture;
 - traits with explicit, statically checked `implements` conformance;

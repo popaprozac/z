@@ -375,7 +375,7 @@ export function hover(source: string, fileName: string, offset: number): Hover |
     .flatMap((declaration) => declaration.fields)
     .find((field) => field.location.offset === word.start && field.name === word.text);
   if (declaredField) {
-    return markdownHover(`${declaredField.name}: ${displayType(declaredField.type.name, context.typeDisplayNames)}`, source, word.start, word.end);
+    return markdownHover(`${declaredField.visibility} ${declaredField.name}: ${displayType(declaredField.type.name, context.typeDisplayNames)}`, source, word.start, word.end);
   }
 
   const literalField = structLiteralFieldHover(context, word.start);
@@ -485,7 +485,7 @@ export function hover(source: string, fileName: string, offset: number): Hover |
     }
     if (resolved?.kind === "struct") {
       const field = resolved.declaration.fields.find((item) => item.name === word.text);
-      if (field) return markdownHover(`${field.name}: ${displayType(field.type.name, context.typeDisplayNames)}`, source, word.start, word.end);
+      if (field) return markdownHover(`${field.visibility} ${field.name}: ${displayType(field.type.name, context.typeDisplayNames)}`, source, word.start, word.end);
       const method = resolved.declaration.methods.find((item) => item.name === word.text);
       if (method) return markdownHover(zFunctionDetail(method.name, method.parameters, method.returnType.name, [], context.typeDisplayNames), source, word.start, word.end);
     }
@@ -975,7 +975,10 @@ function memberCompletions(
   if (!context) return [];
   const resolved = resolveReceiver(context, receiverText, resolvedOffset);
   if (resolved?.kind === "objc") return filterCompletions(objcCompletions(resolved.declaration, resolved.instance, context), prefix, 1000);
-  if (resolved?.kind === "struct") return filterCompletions(structCompletions(resolved.declaration, context.typeDisplayNames), prefix, 1000);
+  if (resolved?.kind === "struct") {
+    const includePrivate = insideAggregateBody(source, fileName, offset, resolved.declaration.name);
+    return filterCompletions(structCompletions(resolved.declaration, context.typeDisplayNames, includePrivate), prefix, 1000);
+  }
   if (resolved?.kind === "array") {
     const items: CompletionItem[] = [{ label: "length", kind: completionKinds.property, detail: "usize" }];
     const dynamic = parseDynamicArrayType(resolved.type);
@@ -1343,9 +1346,19 @@ function objcCompletions(declaration: ForeignObjCInterface, instance: boolean, c
   return uniqueCompletions(items);
 }
 
-function structCompletions(declaration: StructDeclaration, typeDisplayNames: ReadonlyMap<string, string>): CompletionItem[] {
+function structCompletions(
+  declaration: StructDeclaration,
+  typeDisplayNames: ReadonlyMap<string, string>,
+  includePrivate: boolean,
+): CompletionItem[] {
   return [
-    ...declaration.fields.map((field) => ({ label: field.name, kind: completionKinds.field, detail: displayType(field.type.name, typeDisplayNames) })),
+    ...declaration.fields
+      .filter((field) => field.visibility === "public" || includePrivate)
+      .map((field) => ({
+        label: field.name,
+        kind: completionKinds.field,
+        detail: `${field.visibility} ${displayType(field.type.name, typeDisplayNames)}`,
+      })),
     ...declaration.methods.map((method) => ({
       label: method.name,
       kind: completionKinds.method,
@@ -1353,6 +1366,29 @@ function structCompletions(declaration: StructDeclaration, typeDisplayNames: Rea
       insertText: `${method.name}()`,
     })),
   ];
+}
+
+function insideAggregateBody(source: string, fileName: string, offset: number, name: string): boolean {
+  let tokens;
+  try {
+    tokens = lex(source, fileName);
+  } catch {
+    return false;
+  }
+  for (let index = 0; index < tokens.length - 2; index += 1) {
+    if ((tokens[index].kind !== "class" && tokens[index].kind !== "struct") || tokens[index + 1].text !== name) continue;
+    let brace = index + 2;
+    while (brace < tokens.length && tokens[brace].kind !== "leftBrace") brace += 1;
+    if (brace >= tokens.length || tokens[brace].location.offset >= offset) continue;
+    let depth = 0;
+    for (let cursor = brace; cursor < tokens.length; cursor += 1) {
+      if (tokens[cursor].kind === "leftBrace") depth += 1;
+      if (tokens[cursor].kind === "rightBrace") depth -= 1;
+      if (depth === 0) return offset < tokens[cursor].location.offset;
+    }
+    return true;
+  }
+  return false;
 }
 
 function collectObjCMethods(declaration: ForeignObjCInterface, instance: boolean, context: AnalyzedSource): ForeignObjCMethod[] {
