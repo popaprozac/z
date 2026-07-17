@@ -1,5 +1,6 @@
 import type {
   Expression,
+  ObjectExpression,
   Program,
   SourceLocation,
   Statement,
@@ -376,7 +377,7 @@ export function hover(source: string, fileName: string, offset: number): Hover |
   const matchVariant = collectMatchArmInfos(context).find((item) => item.variantOffset === word.start);
   if (matchVariant) {
     const payload = matchVariant.payloadType
-      ? ` ${displayType(matchVariant.payloadType, context.typeDisplayNames)}`
+      ? `(${displayType(matchVariant.payloadType, context.typeDisplayNames)})`
       : "";
     return markdownHover(
       `${displayType(matchVariant.enumName, context.typeDisplayNames)}.${matchVariant.variantName}${payload}`,
@@ -788,7 +789,8 @@ function collectMatchArmInfos(context: AnalyzedSource): MatchArmInfo[] {
     }
     const node = value as Record<string, unknown>;
     if ((node.kind === "match" || node.kind === "matchExpression") && node.expression && Array.isArray(node.arms)) {
-      const borrowed = node.mode === "in";
+      const matchLocation = (node.location as SourceLocation | undefined)?.offset;
+      const borrowed = matchLocation !== undefined && context.semanticInfo.borrowedMatches.has(matchLocation);
       const subject = node.expression as { readonly location?: SourceLocation };
       const enumName = subject.location
         ? context.semanticInfo.expressionTypes.get(subject.location.offset)
@@ -800,6 +802,11 @@ function collectMatchArmInfos(context: AnalyzedSource): MatchArmInfo[] {
             readonly variantName: string;
             readonly binding: string | null;
             readonly bindingLocation: SourceLocation | null;
+            readonly objectBindings: readonly {
+              readonly fieldName: string;
+              readonly bindingName: string;
+              readonly bindingLocation: SourceLocation;
+            }[] | null;
             readonly location: SourceLocation;
           };
           const variant = declaration.variants.find((item) => item.name === arm.variantName);
@@ -812,8 +819,25 @@ function collectMatchArmInfos(context: AnalyzedSource): MatchArmInfo[] {
             bindingFileName: arm.bindingLocation?.fileName,
             enumName,
             payloadType: variant.payload?.name ?? null,
-            borrowed,
+            borrowed: Boolean(borrowed && variant.payload && editorTypeHasCleanup(variant.payload.name, context.program)),
           });
+          const payload = variant.payload
+            ? context.program.structs.find((item) => item.name === variant.payload!.name)
+            : null;
+          for (const fieldBinding of arm.objectBindings ?? []) {
+            const field = payload?.fields.find((item) => item.name === fieldBinding.fieldName);
+            if (!field) continue;
+            collected.push({
+              variantName: arm.variantName,
+              variantOffset: arm.location.offset,
+              binding: fieldBinding.bindingName,
+              bindingOffset: fieldBinding.bindingLocation.offset,
+              bindingFileName: fieldBinding.bindingLocation.fileName,
+              enumName,
+              payloadType: field.type.name,
+              borrowed: editorTypeHasCleanup(field.type.name, context.program),
+            });
+          }
         }
       }
     }
@@ -821,6 +845,26 @@ function collectMatchArmInfos(context: AnalyzedSource): MatchArmInfo[] {
   };
   visit(context.sourceProgram);
   return collected;
+}
+
+function editorTypeHasCleanup(type: string, program: Program, visiting = new Set<string>()): boolean {
+  if (type === "String" || type.startsWith("Weak<") || type.startsWith("Array<") || type.startsWith("__z_closure_")) return true;
+  if (visiting.has(type)) return false;
+  visiting.add(type);
+  const aggregate = program.structs.find((item) => item.name === type);
+  if (aggregate) {
+    const cleanup = aggregate.kind === "class"
+      || Boolean(aggregate.deinitializer)
+      || aggregate.fields.some((field) => editorTypeHasCleanup(field.type.name, program, visiting));
+    visiting.delete(type);
+    return cleanup;
+  }
+  const enumDeclaration = program.enums.find((item) => item.name === type);
+  const cleanup = Boolean(enumDeclaration?.variants.some((variant) => (
+    variant.payload && editorTypeHasCleanup(variant.payload.name, program, visiting)
+  )));
+  visiting.delete(type);
+  return cleanup;
 }
 
 function memberCompletions(
@@ -1341,10 +1385,14 @@ function foreignFunctionDetail(declaration: ForeignFunction): string {
 function structLiteralFieldHover(context: AnalyzedSource, offset: number): string | null {
   const item = collectStructLiteralFields(context.sourceProgram).find((candidate) => candidate.location.offset === offset);
   if (!item) return null;
-  const generic = parseGenericType(item.expression.typeName);
-  const declaration = context.sourceProgram.structs.find((candidate) => candidate.name === (generic?.base ?? item.expression.typeName));
+  const typeName = item.expression.kind === "structExpression"
+    ? item.expression.typeName
+    : context.semanticInfo.expressionTypes.get(item.expression.location.offset);
+  if (!typeName) return null;
+  const generic = parseGenericType(typeName);
+  const declaration = context.sourceProgram.structs.find((candidate) => candidate.name === (generic?.base ?? typeName));
   if (!declaration) {
-    const foreign = context.semanticInfo.foreignNamedTypes.get(item.expression.typeName);
+    const foreign = context.semanticInfo.foreignNamedTypes.get(typeName);
     const field = foreign?.kind === "record" ? foreign.fields.find((candidate) => candidate.name === item.name) : null;
     return field ? `${field.name}: ${field.typeName}` : null;
   }
@@ -1357,11 +1405,11 @@ function structLiteralFieldHover(context: AnalyzedSource, offset: number): strin
 }
 
 function collectStructLiteralFields(program: Program): Array<{
-  readonly expression: StructExpression;
+  readonly expression: StructExpression | ObjectExpression;
   readonly name: string;
   readonly location: SourceLocation;
 }> {
-  const fields: Array<{ expression: StructExpression; name: string; location: SourceLocation }> = [];
+  const fields: Array<{ expression: StructExpression | ObjectExpression; name: string; location: SourceLocation }> = [];
   const visit = (value: unknown): void => {
     if (value === null || typeof value !== "object") return;
     if (Array.isArray(value)) {
@@ -1369,8 +1417,8 @@ function collectStructLiteralFields(program: Program): Array<{
       return;
     }
     const node = value as { readonly kind?: string };
-    if (node.kind === "structExpression") {
-      const expression = value as StructExpression;
+    if (node.kind === "structExpression" || node.kind === "objectExpression") {
+      const expression = value as StructExpression | ObjectExpression;
       for (const field of expression.fields) fields.push({ expression, name: field.name, location: field.location });
     }
     for (const child of Object.values(value as Record<string, unknown>)) visit(child);

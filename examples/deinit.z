@@ -77,13 +77,13 @@ function branchExit(): i32 {
 }
 
 function matchExit(): i32 {
-  const choice = Choice.yes 14;
-  return match choice {
-    yes id => {
+  const choice = Choice.yes(14);
+  return match (choice) {
+    yes(id) => {
       const resource = Resource { id: id };
       select resource.id;
     }
-    no id => id;
+    no(id) => id;
   };
 }
 

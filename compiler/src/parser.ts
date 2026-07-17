@@ -271,6 +271,20 @@ export function parse(tokens: Token[], fileName: string): Program {
       expect("rightBracket", "`]`");
       return { kind: "arrayExpression", elements, location: token.location };
     }
+    if (match("leftBrace")) {
+      const token = previous();
+      const fields = [];
+      while (!at("rightBrace")) {
+        const field = expect("identifier", "an object field name");
+        const expression = match("colon")
+          ? parseExpression()
+          : { kind: "identifier" as const, name: field.text, location: field.location };
+        fields.push({ name: field.text, expression, location: field.location });
+        if (!match("comma")) break;
+      }
+      expect("rightBrace", "`}`");
+      return { kind: "objectExpression", fields, location: token.location };
+    }
     if (match("out") || match("inout")) {
       const token = previous();
       const name = expect("identifier", "a mutable binding");
@@ -298,8 +312,10 @@ export function parse(tokens: Token[], fileName: string): Program {
     }
     if (match("match")) {
       const token = previous();
-      const mode = match("in") ? "in" : "value";
+      expect("leftParen", "`(` after `match`");
+      const mode = match("in") ? "in" : "auto";
       const expression = parseExpression();
+      expect("rightParen", "`)` after the match subject");
       return { kind: "matchExpression", mode, expression, arms: parseMatchArms(), location: token.location };
     }
     if (match("attempt")) {
@@ -519,12 +535,37 @@ export function parse(tokens: Token[], fileName: string): Program {
     const arms = [];
     while (!at("rightBrace") && !at("eof")) {
       const variantToken = expect("identifier", "a variant name");
-      const bindingToken = at("identifier") ? take() : null;
+      let bindingToken: Token | null = null;
+      let objectBindings = null;
+      if (match("leftParen")) {
+        if (match("leftBrace")) {
+          objectBindings = [];
+          if (!at("rightBrace")) {
+            do {
+              const field = expect("identifier", "a payload field name");
+              const binding = match("colon")
+                ? expect("identifier", "a pattern binding name")
+                : field;
+              objectBindings.push({
+                fieldName: field.text,
+                bindingName: binding.text,
+                fieldLocation: field.location,
+                bindingLocation: binding.location,
+              });
+            } while (match("comma") && !at("rightBrace"));
+          }
+          expect("rightBrace", "`}` ending an object pattern");
+        } else {
+          bindingToken = expect("identifier", "a payload binding");
+        }
+        expect("rightParen", "`)` ending a variant pattern");
+      }
       expect("fatArrow", "`=>`");
       arms.push({
         variantName: variantToken.text,
         binding: bindingToken?.text ?? null,
         bindingLocation: bindingToken?.location ?? null,
+        objectBindings,
         body: parseStatement(),
         location: variantToken.location,
       });
@@ -587,8 +628,10 @@ export function parse(tokens: Token[], fileName: string): Program {
     }
     if (match("match")) {
       const matchToken = previous();
-      const mode = match("in") ? "in" : "value";
+      expect("leftParen", "`(` after `match`");
+      const mode = match("in") ? "in" : "auto";
       const expression = parseExpression();
+      expect("rightParen", "`)` after the match subject");
       return { kind: "match", mode, expression, arms: parseMatchArms(), location: matchToken.location };
     }
     if (match("leftBrace")) {

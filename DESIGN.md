@@ -204,9 +204,9 @@ object has begun destruction:
 ```z
 const observer = weak owner;
 const result = attempt observer.upgrade();
-match result {
-  success owner => use(owner);
-  failure expired => recover();
+match (result) {
+  success(owner) => use(owner);
+  failure(expired) => recover();
 }
 ```
 
@@ -223,7 +223,7 @@ weak upgrades remain separate future layers.
 
 Pattern matching exposes ownership explicitly. `match value` consumes a
 cleanup-bearing enum and transfers its active payload to the arm binding.
-`match in value` requires stable stored enum storage, leaves the owner alive,
+`match (in value)` requires stable stored enum storage, leaves the owner alive,
 and presents cleanup-bearing payloads as immutable borrows for the duration of
 the arm. Borrowed payloads cannot move out, and the matched root cannot be
 mutated while an arm is inspecting its storage. Copyable payloads may still be
@@ -395,27 +395,26 @@ function load(path: String): Config throws ConfigError {
 
 ## Pattern matching
 
-Each enum variant currently has zero or one payload, so a match arm uses a bare
-variant name followed by at most one binding: `success user => ...` or
-`stopped => ...`. Parenthesized `success(user)` patterns are intentionally not
-another spelling. If variants later gain structured payloads, Z should add
-named structural destructuring rather than positional punctuation around the
-single-binding form.
+Each enum variant currently has zero or one payload. Payload patterns use the
+constructor-shaped spelling `success(user) => ...`; payloadless variants remain
+bare, as in `stopped => ...`. Struct payloads support contextual construction
+with `Enum.variant({ field })` and named destructuring with
+`variant({ field, other: alias })`.
 
 Result matching preserves the success/failure tag, including when its two
 payload types happen to be identical:
 
 ```z
-match attempt getUser(id) {
-  success user => show(user);
-  failure error => showError(error);
+match (attempt getUser(id)) {
+  success(user) => show(user);
+  failure(error) => showError(error);
 }
 ```
 
 Direct type patterns belong to union values:
 
 ```z
-match event {
+match (event) {
   User user => show(user);
   UserError error => showError(error);
 }
@@ -429,12 +428,12 @@ multi-statement arms use `select` to explicitly provide a value to the nearest
 enclosing value-producing construct:
 
 ```z
-const name: String = match result {
-  success user => {
+const name: String = match (result) {
+  success(user) => {
     log(user);
     select user.name;
   }
-  failure error => throw error;
+  failure(error) => throw error;
 };
 ```
 

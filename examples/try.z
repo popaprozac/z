@@ -32,21 +32,21 @@ function failedId(code: i32): i32 throws UserError {
 
 function main(): i32 {
   const found = attempt userId(42);
-  match found {
-    success id => stdio.printf("id=%d\n", id);
-    failure error => stdio.printf("error=%d\n", error.code);
+  match (found) {
+    success(id) => stdio.printf("id=%d\n", id);
+    failure(error) => stdio.printf("error=%d\n", error.code);
   }
 
   const forwarded = attempt forwardedUser(9);
-  match forwarded {
-    success user => stdio.printf("forwarded=%d\n", user.id);
-    failure error => stdio.printf("error=%d\n", error.code);
+  match (forwarded) {
+    success(user) => stdio.printf("forwarded=%d\n", user.id);
+    failure(error) => stdio.printf("error=%d\n", error.code);
   }
 
   const failed = attempt failedId(7);
-  match failed {
-    success id => stdio.printf("id=%d\n", id);
-    failure error => stdio.printf("error=%d\n", error.code);
+  match (failed) {
+    success(id) => stdio.printf("id=%d\n", id);
+    failure(error) => stdio.printf("error=%d\n", error.code);
   }
 
   return 0;

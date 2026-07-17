@@ -16,15 +16,15 @@ struct Snapshot {
 }
 
 function modeValue(mode: Mode): i32 {
-  return match mode {
+  return match (mode) {
     idle => 0;
-    active value => value;
+    active(value) => value;
   };
 }
 
 function activeValue(state: State): i32 {
-  return match state {
-    mode mode => modeValue(mode);
+  return match (state) {
+    mode(mode) => modeValue(mode);
     stopped => -1;
   };
 }

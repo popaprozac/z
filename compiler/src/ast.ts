@@ -215,7 +215,7 @@ export type ContinueStatement = {
 
 export type MatchStatement = {
   readonly kind: "match";
-  readonly mode: "value" | "in";
+  readonly mode: "auto" | "in";
   readonly expression: Expression;
   readonly arms: MatchArm[];
   readonly location: SourceLocation;
@@ -225,8 +225,16 @@ export type MatchArm = {
   readonly variantName: string;
   readonly binding: string | null;
   readonly bindingLocation: SourceLocation | null;
+  readonly objectBindings: MatchObjectBinding[] | null;
   readonly body: Statement;
   readonly location: SourceLocation;
+};
+
+export type MatchObjectBinding = {
+  readonly fieldName: string;
+  readonly bindingName: string;
+  readonly fieldLocation: SourceLocation;
+  readonly bindingLocation: SourceLocation;
 };
 
 export type Expression =
@@ -247,6 +255,7 @@ export type Expression =
   | ArrayExpression
   | DynamicArrayExpression
   | StructExpression
+  | ObjectExpression
   | VariantExpression
   | AttemptExpression
   | TryExpression
@@ -372,6 +381,12 @@ export type StructExpression = {
   readonly location: SourceLocation;
 };
 
+export type ObjectExpression = {
+  readonly kind: "objectExpression";
+  readonly fields: FieldInitializer[];
+  readonly location: SourceLocation;
+};
+
 export type FieldInitializer = {
   readonly name: string;
   readonly expression: Expression;
@@ -400,7 +415,7 @@ export type TryExpression = {
 
 export type MatchExpression = {
   readonly kind: "matchExpression";
-  readonly mode: "value" | "in";
+  readonly mode: "auto" | "in";
   readonly expression: Expression;
   readonly arms: MatchArm[];
   readonly location: SourceLocation;

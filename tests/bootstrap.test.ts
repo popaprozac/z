@@ -1827,14 +1827,14 @@ test("merges ownership state across exhaustive match arms", () => {
     enum Choice { move i32, keep i32, }
     function consume(resource: Resource): i32 { return resource.id; }
     function choose(choice: Choice, resource: Resource): i32 {
-      match choice {
-        move value => consume(resource);
-        keep value => value;
+      match (choice) {
+        move(value) => consume(resource);
+        keep(value) => value;
       }
       return resource.id;
     }
     function main(): i32 {
-      return choose(Choice.keep 1, Resource { id: 2 });
+      return choose(Choice.keep(1), Resource { id: 2 });
     }
   `;
   assert.throws(
@@ -2358,7 +2358,7 @@ test("lowers loop control through match without targeting the generated switch",
     function main(): i32 {
       let running = true;
       while (running) {
-        match Action.stop {
+        match (Action.stop) {
           skip => { continue; }
           stop => { break; }
         }
@@ -3073,9 +3073,9 @@ test("requires exhaustive enum matches", () => {
       failure i32,
     }
     function main(): i32 {
-      const outcome = Outcome.success 42;
-      match outcome {
-        success value => return value;
+      const outcome = Outcome.success(42);
+      match (outcome) {
+        success(value) => return value;
       }
     }
   `;
@@ -3125,7 +3125,7 @@ test("moves, matches, nests, and destroys cleanup-bearing enum payloads", () => 
   assert.equal(result.status, 0, result.stderr);
   assert.equal(
     result.stdout,
-    "released resource 40\nreleased resource 42\nreleased resource 41\nreleased session 7\n",
+    "released resource 40\ncaptured ResourceState.ready(Resource { id: 42 })\nreleased resource 42\nreleased resource 41\nreleased session 7\n",
   );
 
   const generated = compileToC(source, example);
@@ -3134,8 +3134,6 @@ test("moves, matches, nests, and destroys cleanup-bearing enum payloads", () => 
   assert.match(generated, /case Z_SessionOption_some:[\s\S]*Z_Session_release/);
   assert.match(generated, /Z_Container_deinit/);
   assert.match(generated, /Z_ClosureEnv_\d+_release[\s\S]*case Z_ResourceState_ready/);
-  assert.match(generated, /const Z_ResourceState \*_z_match_\d+ = &\(\(\*state\)\)/);
-  assert.match(generated, /Z_Session \* const session = _z_match_\d+->data\.some/);
 
   const moved = source.replace(
     "  const consumed = consume(state);",
@@ -3146,29 +3144,26 @@ test("moves, matches, nests, and destroys cleanup-bearing enum payloads", () => 
     /use of moved value "resource"/,
   );
 
-  const borrowedBinding = source.indexOf("resource => resource.id", source.indexOf("function inspect")) + 1;
-  assert.match(hover(source, example, borrowedBinding)?.contents.value ?? "", /in resource: Resource/);
-
   const borrowedTemporary = `
     enum Choice { some i32, none, }
     function main(): i32 {
-      return match in Choice.some(42) {
-        some value => value;
+      return match (in Choice.some(42)) {
+        some(value) => value;
         none => -1;
       };
     }
   `;
   assert.throws(
     () => compileToC(borrowedTemporary, "borrowed-match-temporary.z"),
-    /match in requires stored enum storage/,
+    /match \(in \.\.\.\) requires stored enum storage/,
   );
 
   const borrowedMove = `
     struct Item { id: i32; deinit {} }
     enum Choice { some Item, none, }
     function take(in choice: Choice): Item {
-      return match in choice {
-        some item => item;
+      return match (choice) {
+        some(item) => item;
         none => Item { id: 0 };
       };
     }
@@ -3182,8 +3177,8 @@ test("moves, matches, nests, and destroys cleanup-bearing enum payloads", () => 
   const borrowedMutation = `
     enum Choice { some i32, none, }
     function reset(inout choice: Choice): i32 {
-      match in choice {
-        some value => {
+      match (in choice) {
+        some(value) => {
           choice = Choice.none;
           return value;
         }
@@ -3205,6 +3200,26 @@ test("compiles expression matches with concise and selecting block arms", () => 
   assert.equal(result.stdout, "code=41\ndirect=41\nselected=42\n");
 });
 
+test("constructs contextual enum payloads and destructures their named fields", () => {
+  const example = resolve(projectRoot, "examples/enum-patterns.z");
+  const source = readFileSync(example, "utf8");
+  const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+
+  const generated = compileToC(source, example);
+  assert.match(generated, /\.data\.ready = \(Z_Response\)\{ \.status = 200/);
+  assert.match(generated, /const Z_ResponseState \*_z_match_\d+ = &\(\(\*state\)\)/);
+  assert.match(generated, /Z_Response const \*_z_match_\d+_ready_payload/);
+  assert.match(generated, /Z_Response_deinit\(&\(_z_match_\d+_ready_payload\)\)/);
+
+  const statusBinding = source.indexOf("status }) =>") + 1;
+  assert.match(hover(source, example, statusBinding)?.contents.value ?? "", /status: i32/);
+  const aliasBinding = source.indexOf("code, body") + 1;
+  assert.match(hover(source, example, aliasBinding)?.contents.value ?? "", /code: i32/);
+  const bodyBinding = source.indexOf("body }) =>") + 1;
+  assert.match(hover(source, example, bodyBinding)?.contents.value ?? "", /in body: String/);
+});
+
 test("exposes match variants, payload bindings, and source Result names to editor services", () => {
   const source = `
     struct User { id: i32; }
@@ -3212,27 +3227,27 @@ test("exposes match variants, payload bindings, and source Result names to edito
     function find(): User throws UserError { return User { id: 42 }; }
     function main(): i32 {
       const failed = attempt find();
-      return match failed {
-        success user => user.id;
-        failure error => error.code;
+      return match (failed) {
+        success(user) => user.id;
+        failure(error) => error.code;
       };
     }
   `;
-  const failedUse = source.indexOf("failed {") + 1;
+  const failedUse = source.indexOf("failed)") + 1;
   assert.match(hover(source, "match-editor.z", failedUse)?.contents.value ?? "", /failed: Result<User, UserError>/);
-  const successVariant = source.indexOf("success user") + 1;
-  assert.match(hover(source, "match-editor.z", successVariant)?.contents.value ?? "", /Result<User, UserError>\.success User/);
-  const userBinding = source.indexOf("user =>") + 1;
+  const successVariant = source.indexOf("success(user)") + 1;
+  assert.match(hover(source, "match-editor.z", successVariant)?.contents.value ?? "", /Result<User, UserError>\.success\(User\)/);
+  const userBinding = source.indexOf("user) =>") + 1;
   assert.match(hover(source, "match-editor.z", userBinding)?.contents.value ?? "", /user: User/);
-  const errorBinding = source.indexOf("error =>") + 1;
+  const errorBinding = source.indexOf("error) =>") + 1;
   assert.match(hover(source, "match-editor.z", errorBinding)?.contents.value ?? "", /error: UserError/);
 
   const tokens = decodeSemanticTokens(semanticTokens(source, "match-editor.z").data);
-  const successPosition = positionForOffset(source, source.indexOf("success user"));
+  const successPosition = positionForOffset(source, source.indexOf("success(user)"));
   assert.ok(tokens.some((token) => token.line === successPosition.line
     && token.character === successPosition.character
     && semanticTokenTypes[token.type] === "enumMember"));
-  const userPosition = positionForOffset(source, source.indexOf("user =>"));
+  const userPosition = positionForOffset(source, source.indexOf("user) =>"));
   assert.ok(tokens.some((token) => token.line === userPosition.line
     && token.character === userPosition.character
     && semanticTokenTypes[token.type] === "variable"
@@ -3269,10 +3284,10 @@ test("requires expression match arms to agree on a value type", () => {
   const source = `
     enum Choice { first i32, second i32, }
     function main(): i32 {
-      const choice = Choice.first 42;
-      const value = match choice {
-        first number => number;
-        second number => "wrong";
+      const choice = Choice.first(42);
+      const value = match (choice) {
+        first(number) => number;
+        second(number) => "wrong";
       };
       return value;
     }
@@ -4044,6 +4059,9 @@ test("editor grammar tracks keywords without reserving Result variants", () => {
   const selectiveImportPatterns = grammar.repository.imports.patterns[0].patterns
     .map((pattern: { match: string }) => pattern.match)
     .join(" ");
+  const matchPattern = grammar.repository.matchPatterns.patterns
+    .map((pattern: { match: string }) => pattern.match)
+    .join(" ");
   assert.match(keywordPattern, /throw/);
   assert.match(keywordPattern, /attempt/);
   assert.match(keywordPattern, /yield/);
@@ -4071,6 +4089,7 @@ test("editor grammar tracks keywords without reserving Result variants", () => {
   assert.match(operatorPattern, /%/);
   assert.match(operatorPattern, /=/);
   assert.match(operatorScopes, /keyword\.operator\.arrow\.z/);
+  assert.match(matchPattern, /=>/);
   assert.match(typePattern, /Slice/);
   assert.match(typePattern, /Array/);
   assert.match(typePattern, /String/);

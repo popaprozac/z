@@ -7,6 +7,7 @@
     { "include": "#strings" },
     { "include": "#imports" },
     { "include": "#declarations" },
+    { "include": "#matchPatterns" },
     { "include": "#keywords" },
     { "include": "#types" },
     { "include": "#constants" },
@@ -92,6 +93,12 @@
           "captures": { "1": { "name": "storage.type.z" }, "2": { "name": "entity.name.type.z" } }
         }
       ]
+    },
+    "matchPatterns": {
+      "patterns": [{
+        "name": "constant.other.enum.variant.z",
+        "match": "\\b[A-Za-z_][A-Za-z0-9_]*(?=\\s*(?:\\([^)]*\\))?\\s*=>)"
+      }]
     },
     "keywords": {
       "patterns": [{

@@ -16,9 +16,9 @@ class Controller {
     const owner = weak this;
     const handler: () => i32 = move (): i32 => {
       const upgraded = attempt owner.upgrade();
-      return match upgraded {
-        success controller => controller.id;
-        failure expired => -1;
+      return match (upgraded) {
+        success(controller) => controller.id;
+        failure(expired) => -1;
       };
     };
     this.handler = handler;
@@ -35,17 +35,17 @@ function emptyHandler(): i32 {
 
 function read(in observer: Weak<Session>): i32 {
   const upgraded = attempt observer.upgrade();
-  return match upgraded {
-    success session => session.id;
-    failure expired => -1;
+  return match (upgraded) {
+    success(session) => session.id;
+    failure(expired) => -1;
   };
 }
 
 function readStatement(in observer: Weak<Session>): i32 {
   const upgraded = attempt observer.upgrade();
-  match upgraded {
-    success session => return session.id;
-    failure expired => return -1;
+  match (upgraded) {
+    success(session) => return session.id;
+    failure(expired) => return -1;
   }
 }
 
@@ -65,9 +65,9 @@ function main(): i32 {
   const statementAlive = readStatement(observer);
   inspectAndDiscard(observer);
   const required = attempt require(observer);
-  const requiredValue = match required {
-    success value => value;
-    failure expired => -1;
+  const requiredValue = match (required) {
+    success(value) => value;
+    failure(expired) => -1;
   };
 
   current = Session { id: 7 };

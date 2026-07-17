@@ -3,9 +3,8 @@
 import users from "users.h";
 
 async function showUser(id: UserId): void throws UserError {
-  match attempt await users.getUser(id) {
-    success user => show(user),
-    failure error => showError(error),
+  match (attempt await users.getUser(id)) {
+    success(user) => show(user),
+    failure(error) => showError(error),
   }
 }
-

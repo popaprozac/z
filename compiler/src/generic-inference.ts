@@ -230,6 +230,13 @@ export function inferGenericCalls(
         });
         return { expression: { ...expression, fields }, type: expression.typeName };
       }
+      case "objectExpression": {
+        const fields = expression.fields.map((field) => {
+          const value = rewriteExpression(field.expression, environment);
+          return { ...field, expression: value.expression };
+        });
+        return { expression: { ...expression, fields }, type: null };
+      }
       case "member": {
         const object = rewriteExpression(expression.object, environment);
         const weak = object.type ? parseWeakType(object.type) : null;
@@ -378,6 +385,14 @@ export function inferGenericCalls(
     if (arm.binding && matchedType) {
       const variant = enums.get(matchedType)?.variants.find((item) => item.name === arm.variantName);
       if (variant?.payload) armEnvironment.set(arm.binding, variant.payload.name);
+    }
+    if (arm.objectBindings && matchedType) {
+      const variant = enums.get(matchedType)?.variants.find((item) => item.name === arm.variantName);
+      const payload = variant?.payload ? structs.get(variant.payload.name) : null;
+      for (const fieldBinding of arm.objectBindings) {
+        const field = payload?.fields.find((item) => item.name === fieldBinding.fieldName);
+        if (field) armEnvironment.set(fieldBinding.bindingName, field.type.name);
+      }
     }
     return { ...arm, body: rewriteStatement(arm.body, armEnvironment) };
   };

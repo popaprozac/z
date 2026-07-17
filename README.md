@@ -119,9 +119,9 @@ references nullable:
 ```z
 const observer = weak owner; // inferred Weak<Owner>
 const upgraded = attempt observer.upgrade();
-match upgraded {
-  success owner => use(owner);
-  failure expired => handleClosedOwner();
+match (upgraded) {
+  success(owner) => use(owner);
+  failure(expired) => handleClosedOwner();
 }
 ```
 
@@ -138,9 +138,9 @@ An owned closure breaks a cycle by capturing a weak value rather than the class:
 const owner = weak this;
 const handler: () => i32 = move (): i32 => {
   const upgraded = attempt owner.upgrade();
-  return match upgraded {
-    success owner => owner.value();
-    failure expired => -1;
+  return match (upgraded) {
+    success(owner) => owner.value();
+    failure(expired) => -1;
   };
 };
 ```
@@ -274,9 +274,9 @@ enum UserResult {
   failure UserError,
 }
 
-match result {
-  success user => show(user);
-  failure error => showError(error);
+match (result) {
+  success(user) => show(user);
+  failure(error) => showError(error);
 }
 ```
 
@@ -293,20 +293,21 @@ Enums may be stored directly in structs and fixed arrays or used as another
 enum's payload. The compiler orders generated native definitions from their
 value dependencies and rejects recursive struct/enum layouts.
 
-An ordinary match consumes a cleanup-bearing enum and transfers its active
-payload into the selected arm. Use `match in` to inspect stored enum storage
-without consuming either the enum or its payload:
+An ordinary match consumes an owned cleanup-bearing enum and transfers its active
+payload into the selected arm. A subject that is already an `in` binding is
+borrowed automatically. Use `match (in value)` to explicitly inspect owned,
+stored enum storage without consuming either the enum or its payload:
 
 ```z
 function resourceId(in state: ResourceState): i32 {
-  return match in state {
-    ready resource => resource.id;
+  return match (state) {
+    ready(resource) => resource.id;
     empty => -1;
   };
 }
 ```
 
-Cleanup-bearing bindings introduced by `match in` are immutable borrows. They
+Cleanup-bearing bindings introduced by a borrowed match are immutable borrows. They
 can be read or passed to `in` parameters, but cannot be moved out. The original
 enum remains available after the match. Borrowing a temporary is rejected;
 bind it first or omit `in` to consume it.
@@ -315,12 +316,12 @@ bind it first or omit `in` to consume it.
 use `select` when an arm needs multiple statements:
 
 ```z
-const id: i32 = match result {
-  success user => {
+const id: i32 = match (result) {
+  success(user) => {
     log(user);
     select user.id;
   }
-  failure error => throw error;
+  failure(error) => throw error;
 };
 ```
 
@@ -473,9 +474,9 @@ function findUser(id: i32): User throws UserError {
 }
 
 const result = attempt findUser(42);
-match result {
-  success user => show(user);
-  failure error => showError(error);
+match (result) {
+  success(user) => show(user);
+  failure(error) => showError(error);
 }
 ```
 

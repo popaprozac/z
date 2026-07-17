@@ -437,6 +437,7 @@ function transformStatement(
         arms: statement.arms.map((arm) => {
           const armLocals = new Set(locals);
           if (arm.binding) armLocals.add(arm.binding);
+          for (const field of arm.objectBindings ?? []) armLocals.add(field.bindingName);
           return { ...arm, body: transformStatement(arm.body, scope, armLocals, typeParameters) };
         }),
       };
@@ -550,6 +551,14 @@ function transformExpression(
           expression: transformExpression(field.expression, scope, locals, typeParameters),
         })),
       };
+    case "objectExpression":
+      return {
+        ...expression,
+        fields: expression.fields.map((field) => ({
+          ...field,
+          expression: transformExpression(field.expression, scope, locals, typeParameters),
+        })),
+      };
     case "variantExpression":
       return {
         ...expression,
@@ -567,6 +576,7 @@ function transformExpression(
         arms: expression.arms.map((arm) => {
           const armLocals = new Set(locals);
           if (arm.binding) armLocals.add(arm.binding);
+          for (const field of arm.objectBindings ?? []) armLocals.add(field.bindingName);
           return { ...arm, body: transformStatement(arm.body, scope, armLocals, typeParameters) };
         }),
       };

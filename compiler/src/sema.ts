@@ -130,6 +130,7 @@ export type SemanticInfo = {
   readonly cstringConversions: ReadonlySet<number>;
   readonly expressionTypes: ReadonlyMap<number, string>;
   readonly bindingTypes: ReadonlyMap<number, string>;
+  readonly borrowedMatches: ReadonlySet<number>;
   readonly closures: ReadonlyMap<number, ClosureInfo>;
   readonly consoleCalls: ReadonlySet<number>;
   readonly consoleBindings: ReadonlySet<string>;
@@ -166,6 +167,7 @@ type AnalysisState = {
   readonly cstringConversions: Set<number>;
   readonly expressionTypes: Map<number, string>;
   readonly bindingTypes: Map<number, string>;
+  readonly borrowedMatches: Set<number>;
   readonly closures: Map<number, ClosureInfo>;
   readonly consoleCalls: Set<number>;
   readonly consoleBindings: Set<string>;
@@ -257,6 +259,7 @@ export function analyze(
     cstringConversions: new Set(),
     expressionTypes: new Map(),
     bindingTypes: new Map(),
+    borrowedMatches: new Set(),
     closures: new Map(),
     consoleCalls: new Set(),
     consoleBindings: new Set(),
@@ -1059,15 +1062,19 @@ function analyzeStatement(
       if (!declaration) {
         throw new DiagnosticError(fileName, statement.expression.location, `match requires an enum value, found ${subjectType}`);
       }
-      const borrowedRoot = statement.mode === "in" ? storageRoot(statement.expression) : null;
+      const candidateRoot = storageRoot(statement.expression);
+      const candidateRootType = candidateRoot ? locals.get(candidateRoot.name) : null;
+      const borrowed = statement.mode === "in" || Boolean(candidateRootType && isBorrowedBinding(candidateRootType));
+      if (borrowed) state.borrowedMatches.add(statement.location.offset);
+      const borrowedRoot = borrowed ? candidateRoot : null;
       const borrowedRootType = borrowedRoot ? locals.get(borrowedRoot.name) : null;
       if (statement.mode === "in" && (!borrowedRoot || !borrowedRootType)) {
-        throw new DiagnosticError(fileName, statement.expression.location, "match in requires stored enum storage", {
+        throw new DiagnosticError(fileName, statement.expression.location, "match (in ...) requires stored enum storage", {
           code: "Z0230",
-          helps: ["bind the enum value before borrowing it, or omit `in` to consume the value"],
+        helps: ["bind the enum value before borrowing it, or remove `in` to consume the value"],
         });
       }
-      if (statement.mode === "value" && hasCleanupType(subjectType, structs, enums, state.foreignTypes)) {
+      if (!borrowed && hasCleanupType(subjectType, structs, enums, state.foreignTypes)) {
         consumeOwnedValue(statement.expression, subjectType, locals, structs, enums, fileName, state);
       }
       const covered = new Set<string>();
@@ -1077,28 +1084,60 @@ function analyzeStatement(
         if (!variant) throw new DiagnosticError(fileName, arm.location, `unknown variant ${JSON.stringify(arm.variantName)}`);
         if (covered.has(variant.name)) throw new DiagnosticError(fileName, arm.location, `duplicate match arm ${JSON.stringify(variant.name)}`);
         covered.add(variant.name);
-        if (Boolean(variant.payload) !== Boolean(arm.binding)) {
+        const hasPattern = Boolean(arm.binding || arm.objectBindings);
+        if (Boolean(variant.payload) !== hasPattern) {
           throw new DiagnosticError(fileName, arm.location, variant.payload ? "payload variant requires a binding" : "payloadless variant cannot bind a value");
         }
         if (arm.binding && arm.bindingLocation) validateUserName(arm.binding, arm.bindingLocation, fileName);
+        if (arm.objectBindings) {
+          const payloadDeclaration = variant.payload ? structs.get(variant.payload.name) : null;
+          if (!payloadDeclaration) {
+            throw new DiagnosticError(fileName, arm.location, "an object pattern requires a struct or class payload");
+          }
+          const seen = new Set<string>();
+          for (const fieldBinding of arm.objectBindings) {
+            if (seen.has(fieldBinding.fieldName)) throw new DiagnosticError(fileName, fieldBinding.fieldLocation, `duplicate object pattern field ${JSON.stringify(fieldBinding.fieldName)}`);
+            seen.add(fieldBinding.fieldName);
+            if (!payloadDeclaration.fields.some((field) => field.name === fieldBinding.fieldName)) {
+              throw new DiagnosticError(fileName, fieldBinding.fieldLocation, `${payloadDeclaration.kind} ${JSON.stringify(payloadDeclaration.name)} has no field ${JSON.stringify(fieldBinding.fieldName)}`);
+            }
+            validateUserName(fieldBinding.bindingName, fieldBinding.bindingLocation, fileName);
+          }
+        }
         const armLocals = new Map(locals);
         if (borrowedRoot && borrowedRootType) {
           armLocals.set(borrowedRoot.name, `${borrowedPrefix}${underlyingType(borrowedRootType)}`);
         }
         if (variant.payload && arm.binding && arm.bindingLocation) {
-          armLocals.set(arm.binding, statement.mode === "in" ? `${borrowedPrefix}${variant.payload.name}` : variant.payload.name);
+          const payloadBorrowed = borrowed && hasCleanupType(variant.payload.name, structs, enums, state.foreignTypes);
+          armLocals.set(arm.binding, payloadBorrowed ? `${borrowedPrefix}${variant.payload.name}` : variant.payload.name);
           state.bindingTypes.set(arm.bindingLocation.offset, variant.payload.name);
         }
-        const previousBorrow = arm.binding ? state.borrowOrigins.get(arm.binding) : null;
-        if (statement.mode === "in" && arm.binding) {
+        const payloadDeclaration = variant.payload ? structs.get(variant.payload.name) : null;
+        for (const fieldBinding of arm.objectBindings ?? []) {
+          const field = payloadDeclaration!.fields.find((candidate) => candidate.name === fieldBinding.fieldName)!;
+          const fieldBorrowed = hasCleanupType(field.type.name, structs, enums, state.foreignTypes);
+          armLocals.set(fieldBinding.bindingName, fieldBorrowed ? `${borrowedPrefix}${field.type.name}` : field.type.name);
+          state.bindingTypes.set(fieldBinding.bindingLocation.offset, field.type.name);
+        }
+        const patternNames = [arm.binding, ...(arm.objectBindings ?? []).map((field) => field.bindingName)].filter((name): name is string => Boolean(name));
+        const previousBorrows = new Map(patternNames.map((name) => [name, state.borrowOrigins.get(name)]));
+        if (borrowed && arm.binding && variant.payload && hasCleanupType(variant.payload.name, structs, enums, state.foreignTypes)) {
           state.borrowOrigins.set(arm.binding, { location: statement.location, kind: "match" });
+        }
+        for (const fieldBinding of arm.objectBindings ?? []) {
+          const field = payloadDeclaration!.fields.find((candidate) => candidate.name === fieldBinding.fieldName)!;
+          if (hasCleanupType(field.type.name, structs, enums, state.foreignTypes)) {
+            state.borrowOrigins.set(fieldBinding.bindingName, { location: statement.location, kind: "match" });
+          }
         }
         try {
           analyzeStatement(arm.body, owner, armLocals, globals, structs, enums, fileName, state);
         } finally {
-          if (arm.binding) {
-            if (previousBorrow) state.borrowOrigins.set(arm.binding, previousBorrow);
-            else state.borrowOrigins.delete(arm.binding);
+          for (const name of patternNames) {
+            const previousBorrow = previousBorrows.get(name);
+            if (previousBorrow) state.borrowOrigins.set(name, previousBorrow);
+            else state.borrowOrigins.delete(name);
           }
         }
         if (!statementStopsFlow(arm.body)) {
@@ -1497,6 +1536,7 @@ function collectClosureCaptures(
         for (const element of expression.elements) walkExpression(element, localNames);
         return;
       case "structExpression":
+      case "objectExpression":
         for (const field of expression.fields) walkExpression(field.expression, localNames);
         return;
       case "variantExpression":
@@ -1511,6 +1551,7 @@ function collectClosureCaptures(
         for (const arm of expression.arms) {
           const armNames = new Set(localNames);
           if (arm.binding) armNames.add(arm.binding);
+          for (const field of arm.objectBindings ?? []) armNames.add(field.bindingName);
           walkStatement(arm.body, armNames);
         }
         return;
@@ -1574,6 +1615,7 @@ function collectClosureCaptures(
         for (const arm of statement.arms) {
           const armNames = new Set(localNames);
           if (arm.binding) armNames.add(arm.binding);
+          for (const field of arm.objectBindings ?? []) armNames.add(field.bindingName);
           walkStatement(arm.body, armNames);
         }
         return;
@@ -1651,15 +1693,19 @@ function inferMatchExpression(
   if (!declaration) {
     throw new DiagnosticError(fileName, expression.expression.location, `match requires an enum value, found ${subjectType}`);
   }
-  const borrowedRoot = expression.mode === "in" ? storageRoot(expression.expression) : null;
+  const candidateRoot = storageRoot(expression.expression);
+  const candidateRootType = candidateRoot ? locals.get(candidateRoot.name) : null;
+  const borrowed = expression.mode === "in" || Boolean(candidateRootType && isBorrowedBinding(candidateRootType));
+  if (borrowed) state.borrowedMatches.add(expression.location.offset);
+  const borrowedRoot = borrowed ? candidateRoot : null;
   const borrowedRootType = borrowedRoot ? locals.get(borrowedRoot.name) : null;
   if (expression.mode === "in" && (!borrowedRoot || !borrowedRootType)) {
-    throw new DiagnosticError(fileName, expression.expression.location, "match in requires stored enum storage", {
+    throw new DiagnosticError(fileName, expression.expression.location, "match (in ...) requires stored enum storage", {
       code: "Z0230",
-      helps: ["bind the enum value before borrowing it, or omit `in` to consume the value"],
+      helps: ["bind the enum value before borrowing it, or remove `in` to consume the value"],
     });
   }
-  if (expression.mode === "value" && hasCleanupType(subjectType, structs, enums, state.foreignTypes)) {
+  if (!borrowed && hasCleanupType(subjectType, structs, enums, state.foreignTypes)) {
     consumeOwnedValue(expression.expression, subjectType, locals, structs, enums, fileName, state);
   }
 
@@ -1671,29 +1717,59 @@ function inferMatchExpression(
     if (!variant) throw new DiagnosticError(fileName, arm.location, `unknown variant ${JSON.stringify(arm.variantName)}`);
     if (covered.has(variant.name)) throw new DiagnosticError(fileName, arm.location, `duplicate match arm ${JSON.stringify(variant.name)}`);
     covered.add(variant.name);
-    if (Boolean(variant.payload) !== Boolean(arm.binding)) {
+    const hasPattern = Boolean(arm.binding || arm.objectBindings);
+    if (Boolean(variant.payload) !== hasPattern) {
       throw new DiagnosticError(fileName, arm.location, variant.payload ? "payload variant requires a binding" : "payloadless variant cannot bind a value");
     }
     if (arm.binding && arm.bindingLocation) validateUserName(arm.binding, arm.bindingLocation, fileName);
+    if (arm.objectBindings) {
+      const payloadDeclaration = variant.payload ? structs.get(variant.payload.name) : null;
+      if (!payloadDeclaration) throw new DiagnosticError(fileName, arm.location, "an object pattern requires a struct or class payload");
+      const seen = new Set<string>();
+      for (const fieldBinding of arm.objectBindings) {
+        if (seen.has(fieldBinding.fieldName)) throw new DiagnosticError(fileName, fieldBinding.fieldLocation, `duplicate object pattern field ${JSON.stringify(fieldBinding.fieldName)}`);
+        seen.add(fieldBinding.fieldName);
+        if (!payloadDeclaration.fields.some((field) => field.name === fieldBinding.fieldName)) {
+          throw new DiagnosticError(fileName, fieldBinding.fieldLocation, `${payloadDeclaration.kind} ${JSON.stringify(payloadDeclaration.name)} has no field ${JSON.stringify(fieldBinding.fieldName)}`);
+        }
+        validateUserName(fieldBinding.bindingName, fieldBinding.bindingLocation, fileName);
+      }
+    }
     const armLocals = new Map(locals);
     if (borrowedRoot && borrowedRootType) {
       armLocals.set(borrowedRoot.name, `${borrowedPrefix}${underlyingType(borrowedRootType)}`);
     }
     if (variant.payload && arm.binding && arm.bindingLocation) {
-      armLocals.set(arm.binding, expression.mode === "in" ? `${borrowedPrefix}${variant.payload.name}` : variant.payload.name);
+      const payloadBorrowed = borrowed && hasCleanupType(variant.payload.name, structs, enums, state.foreignTypes);
+      armLocals.set(arm.binding, payloadBorrowed ? `${borrowedPrefix}${variant.payload.name}` : variant.payload.name);
       state.bindingTypes.set(arm.bindingLocation.offset, variant.payload.name);
     }
-    const previousBorrow = arm.binding ? state.borrowOrigins.get(arm.binding) : null;
-    if (expression.mode === "in" && arm.binding) {
+    const payloadDeclaration = variant.payload ? structs.get(variant.payload.name) : null;
+    for (const fieldBinding of arm.objectBindings ?? []) {
+      const field = payloadDeclaration!.fields.find((candidate) => candidate.name === fieldBinding.fieldName)!;
+      const fieldBorrowed = hasCleanupType(field.type.name, structs, enums, state.foreignTypes);
+      armLocals.set(fieldBinding.bindingName, fieldBorrowed ? `${borrowedPrefix}${field.type.name}` : field.type.name);
+      state.bindingTypes.set(fieldBinding.bindingLocation.offset, field.type.name);
+    }
+    const patternNames = [arm.binding, ...(arm.objectBindings ?? []).map((field) => field.bindingName)].filter((name): name is string => Boolean(name));
+    const previousBorrows = new Map(patternNames.map((name) => [name, state.borrowOrigins.get(name)]));
+    if (borrowed && arm.binding && variant.payload && hasCleanupType(variant.payload.name, structs, enums, state.foreignTypes)) {
       state.borrowOrigins.set(arm.binding, { location: expression.location, kind: "match" });
+    }
+    for (const fieldBinding of arm.objectBindings ?? []) {
+      const field = payloadDeclaration!.fields.find((candidate) => candidate.name === fieldBinding.fieldName)!;
+      if (hasCleanupType(field.type.name, structs, enums, state.foreignTypes)) {
+        state.borrowOrigins.set(fieldBinding.bindingName, { location: expression.location, kind: "match" });
+      }
     }
     let armType: ValueType = "never";
     try {
       armType = inferValueArm(arm.body, owner, armLocals, globals, structs, enums, fileName, state);
     } finally {
-      if (arm.binding) {
-        if (previousBorrow) state.borrowOrigins.set(arm.binding, previousBorrow);
-        else state.borrowOrigins.delete(arm.binding);
+      for (const name of patternNames) {
+        const previousBorrow = previousBorrows.get(name);
+        if (previousBorrow) state.borrowOrigins.set(name, previousBorrow);
+        else state.borrowOrigins.delete(name);
       }
     }
     if (armType !== "never") {
@@ -2194,6 +2270,10 @@ function inferExpressionInner(
       if (foreignDeclaration?.kind === "record") state.foreignExpressionTypes.set(expression.location.offset, expression.typeName);
       return expression.typeName;
     }
+    case "objectExpression":
+      throw new DiagnosticError(fileName, expression.location, "cannot infer an object literal type here", {
+        helps: ["use a named struct literal, or pass the object literal where a concrete payload type is expected"],
+      });
     case "arrayExpression": {
       if (expression.elements.length === 0) {
         throw new DiagnosticError(fileName, expression.location, "cannot infer an empty fixed array; provide at least one element");
@@ -2248,7 +2328,9 @@ function inferExpressionInner(
       if (!variant.payload) {
         throw new DiagnosticError(fileName, expression.location, "payloadless variant does not accept a value");
       }
-      let actual = inferExpression(expression.payload, locals, globals, structs, enums, fileName, state);
+      let actual = expression.payload.kind === "objectExpression"
+        ? inferContextualObjectExpression(expression.payload, variant.payload.name, locals, globals, structs, enums, fileName, state)
+        : inferExpression(expression.payload, locals, globals, structs, enums, fileName, state);
       actual = contextualCStringLiteral(variant.payload.name, expression.payload, state) ?? actual;
       requireAssignable(variant.payload.name, actual, expression.payload, fileName, state.foreignNamedTypes, state.numericLiteralTypes);
       consumeOwnedValue(expression.payload, variant.payload.name, locals, structs, enums, fileName, state);
@@ -2404,7 +2486,10 @@ function inferExpressionInner(
             const expectedCount = variant.payload ? 1 : 0;
             if (expression.arguments.length !== expectedCount) throw new DiagnosticError(fileName, expression.location, `variant ${JSON.stringify(variant.name)} expects ${expectedCount} argument(s)`);
             if (variant.payload) {
-              const actual = inferExpression(expression.arguments[0], locals, globals, structs, enums, fileName, state);
+              const argument = expression.arguments[0];
+              const actual = argument.kind === "objectExpression"
+                ? inferContextualObjectExpression(argument, variant.payload.name, locals, globals, structs, enums, fileName, state)
+                : inferExpression(argument, locals, globals, structs, enums, fileName, state);
               requireAssignable(variant.payload.name, actual, expression.arguments[0], fileName, state.foreignNamedTypes, state.numericLiteralTypes);
               consumeOwnedValue(expression.arguments[0], variant.payload.name, locals, structs, enums, fileName, state);
             }
@@ -2700,6 +2785,29 @@ function inferExpressionInner(
   }
 }
 
+function inferContextualObjectExpression(
+  expression: Extract<Expression, { kind: "objectExpression" }>,
+  expectedType: string,
+  locals: Map<string, ValueType>,
+  globals: Map<string, SymbolValue>,
+  structs: Map<string, StructDeclaration>,
+  enums: Map<string, EnumDeclaration>,
+  fileName: string,
+  state: AnalysisState,
+): ValueType {
+  const actual = inferExpression(
+    { kind: "structExpression", typeName: expectedType, fields: expression.fields, location: expression.location },
+    locals,
+    globals,
+    structs,
+    enums,
+    fileName,
+    state,
+  );
+  state.expressionTypes.set(expression.location.offset, expectedType);
+  return actual;
+}
+
 function checkArguments(
   target: FunctionDeclaration,
   args: Expression[],
@@ -2958,7 +3066,7 @@ function validateDeinitExpression(expression: Expression, fileName: string): voi
   if (expression.kind === "arrayExpression") {
     for (const element of expression.elements) validateDeinitExpression(element, fileName);
   }
-  if (expression.kind === "structExpression") {
+  if (expression.kind === "structExpression" || expression.kind === "objectExpression") {
     for (const field of expression.fields) validateDeinitExpression(field.expression, fileName);
   }
   if (expression.kind === "variantExpression") validateDeinitExpression(expression.payload, fileName);
@@ -3048,8 +3156,8 @@ function consumeOwnedValue(
         code: "Z0231",
         length: expression.name.length,
         labels: [{ location: borrow.location, message: "borrowed match begins here", length: 5 }],
-        notes: ["`match in` inspects payload storage without taking it out of the enum"],
-        helps: ["omit `in` from the match when the enum and its payload should be consumed"],
+        notes: ["this match inspects payload storage without taking it out of the enum"],
+        helps: ["match an owned enum value when its payload should be consumed"],
       });
     }
     throw new DiagnosticError(fileName, expression.location, `cannot move borrowed parameter ${JSON.stringify(expression.name)}`, {

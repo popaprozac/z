@@ -1840,7 +1840,7 @@ function generateDirectValue(
   if (expression.kind === "call" && expression.arguments.some((argument) => callArgumentNeedsLowering(argument, context))) {
     return generateLoweredCall(expression, context, consumeValue, consumeTerminates);
   }
-  if (expression.kind === "structExpression" && expression.fields.some((field) => requiresStatementValue(field.expression, context))) {
+  if ((expression.kind === "structExpression" || expression.kind === "objectExpression") && expression.fields.some((field) => requiresStatementValue(field.expression, context))) {
     return generateLoweredAggregate(expression, expression.fields.map((field) => field.expression), context, consumeValue, consumeTerminates);
   }
   if (expression.kind === "arrayExpression" && expression.elements.some((element) => requiresStatementValue(element, context))) {
@@ -1875,7 +1875,7 @@ function requiresStatementValue(expression: Expression, context: GenerationConte
   if (expression.kind === "call") {
     return expression.arguments.some((argument) => requiresStatementValue(argument, context));
   }
-  if (expression.kind === "structExpression") {
+  if (expression.kind === "structExpression" || expression.kind === "objectExpression") {
     return expression.fields.some((field) => requiresStatementValue(field.expression, context));
   }
   if (expression.kind === "arrayExpression") {
@@ -2018,7 +2018,7 @@ function generateLoweredCall(
 }
 
 function generateLoweredAggregate(
-  expression: Extract<Expression, { kind: "structExpression" | "arrayExpression" | "variantExpression" }>,
+  expression: Extract<Expression, { kind: "structExpression" | "objectExpression" | "arrayExpression" | "variantExpression" }>,
   values: readonly Expression[],
   context: GenerationContext,
   consumeValue: (value: string, context: GenerationContext) => string,
@@ -2412,13 +2412,21 @@ function generateMatch(statement: Extract<Statement, { kind: "match" }>, context
   const declaration = context.enums.get(type)!;
   const temporary = `_z_match_${context.matchCounter.value++}`;
   const subject = generateExpression(statement.expression, context);
-  const borrowed = statement.mode === "in";
+  const borrowed = context.semanticInfo.borrowedMatches.has(statement.location.offset);
   const access = borrowed ? `${temporary}->` : `${temporary}.`;
   const arms = statement.arms.map((arm) => {
     const variant = declaration.variants.find((candidate) => candidate.name === arm.variantName)!;
     const armTypes = new Map(context.localTypes);
     const armModes = new Map(context.parameterModes);
     if (variant.payload && arm.binding) armTypes.set(arm.binding, variant.payload.name);
+    const payloadDeclaration = variant.payload ? context.structs.get(variant.payload.name) : null;
+    for (const fieldBinding of arm.objectBindings ?? []) {
+      const field = payloadDeclaration!.fields.find((candidate) => candidate.name === fieldBinding.fieldName)!;
+      armTypes.set(fieldBinding.bindingName, field.type.name);
+      if (hasCleanupType(field.type.name, context.structs, context.enums, context.semanticInfo.foreignTypes)) {
+        armModes.set(fieldBinding.bindingName, "in");
+      }
+    }
     const borrowedPayload = Boolean(borrowed && variant.payload && hasCleanupType(
       variant.payload.name,
       context.structs,
@@ -2440,6 +2448,22 @@ function generateMatch(statement: Extract<Statement, { kind: "match" }>, context
       const liveFlag = ensureLiveFlag(arm.binding, armContext);
       armContext.cleanupScopes.at(-1)!.push({ name: arm.binding, type: variant.payload.name, liveFlag });
       binding += `\n    bool ${liveFlag} = true;`;
+    }
+    if (variant.payload && arm.objectBindings) {
+      const hidden = `${temporary}_${variant.name}_payload`;
+      binding += `\n    ${generateMatchBinding(variant.payload.name, hidden, `${access}data.${variant.name}`, borrowedPayload, context)}`;
+      const hiddenAccess = payloadDeclaration?.kind === "class" || borrowedPayload ? `${hidden}->` : `${hidden}.`;
+      for (const fieldBinding of arm.objectBindings) {
+        const field = payloadDeclaration!.fields.find((candidate) => candidate.name === fieldBinding.fieldName)!;
+        const fieldBorrowed = hasCleanupType(field.type.name, context.structs, context.enums, context.semanticInfo.foreignTypes);
+        binding += `\n    ${generateMatchBinding(field.type.name, fieldBinding.bindingName, `${hiddenAccess}${field.name}`, fieldBorrowed, context)}`;
+        binding += `\n    (void)${cBindingName(fieldBinding.bindingName)};`;
+      }
+      if (!borrowedPayload && hasCleanupType(variant.payload.name, context.structs, context.enums, context.semanticInfo.foreignTypes)) {
+        const liveFlag = ensureLiveFlag(hidden, armContext);
+        armContext.cleanupScopes.at(-1)!.push({ name: hidden, type: variant.payload.name, liveFlag });
+        binding += `\n    bool ${liveFlag} = true;`;
+      }
     }
     const body = generateStatement(arm.body, armContext);
     recordVariableType(arm.body, armContext);
@@ -2465,13 +2489,21 @@ function generateMatchExpression(
   const declaration = context.enums.get(type)!;
   const temporary = `_z_match_${context.matchCounter.value++}`;
   const subject = generateExpression(expression.expression, context);
-  const borrowed = expression.mode === "in";
+  const borrowed = context.semanticInfo.borrowedMatches.has(expression.location.offset);
   const access = borrowed ? `${temporary}->` : `${temporary}.`;
   const arms = expression.arms.map((arm) => {
     const variant = declaration.variants.find((candidate) => candidate.name === arm.variantName)!;
     const armTypes = new Map(context.localTypes);
     const armModes = new Map(context.parameterModes);
     if (variant.payload && arm.binding) armTypes.set(arm.binding, variant.payload.name);
+    const payloadDeclaration = variant.payload ? context.structs.get(variant.payload.name) : null;
+    for (const fieldBinding of arm.objectBindings ?? []) {
+      const field = payloadDeclaration!.fields.find((candidate) => candidate.name === fieldBinding.fieldName)!;
+      armTypes.set(fieldBinding.bindingName, field.type.name);
+      if (hasCleanupType(field.type.name, context.structs, context.enums, context.semanticInfo.foreignTypes)) {
+        armModes.set(fieldBinding.bindingName, "in");
+      }
+    }
     const borrowedPayload = Boolean(borrowed && variant.payload && hasCleanupType(
       variant.payload.name,
       context.structs,
@@ -2493,6 +2525,22 @@ function generateMatchExpression(
       const liveFlag = ensureLiveFlag(arm.binding, armContext);
       armContext.cleanupScopes.at(-1)!.push({ name: arm.binding, type: variant.payload.name, liveFlag });
       binding += `\n    bool ${liveFlag} = true;`;
+    }
+    if (variant.payload && arm.objectBindings) {
+      const hidden = `${temporary}_${variant.name}_payload`;
+      binding += `\n    ${generateMatchBinding(variant.payload.name, hidden, `${access}data.${variant.name}`, borrowedPayload, context)}`;
+      const hiddenAccess = payloadDeclaration?.kind === "class" || borrowedPayload ? `${hidden}->` : `${hidden}.`;
+      for (const fieldBinding of arm.objectBindings) {
+        const field = payloadDeclaration!.fields.find((candidate) => candidate.name === fieldBinding.fieldName)!;
+        const fieldBorrowed = hasCleanupType(field.type.name, context.structs, context.enums, context.semanticInfo.foreignTypes);
+        binding += `\n    ${generateMatchBinding(field.type.name, fieldBinding.bindingName, `${hiddenAccess}${field.name}`, fieldBorrowed, context)}`;
+        binding += `\n    (void)${cBindingName(fieldBinding.bindingName)};`;
+      }
+      if (!borrowedPayload && hasCleanupType(variant.payload.name, context.structs, context.enums, context.semanticInfo.foreignTypes)) {
+        const liveFlag = ensureLiveFlag(hidden, armContext);
+        armContext.cleanupScopes.at(-1)!.push({ name: hidden, type: variant.payload.name, liveFlag });
+        binding += `\n    bool ${liveFlag} = true;`;
+      }
     }
     const body = generateValueArm(arm.body, armContext, consumeValue, consumeTerminates);
     const cleanup = consumeTerminates || valueArmTerminates(arm.body)
@@ -2762,6 +2810,19 @@ function generateExpression(expression: Expression, context: GenerationContext):
           ? mapType(expression.typeName, context.structs, context.enums, context.semanticInfo.foreignNamedTypes)
           : structName(expression.typeName);
       return `(${type}){ ${fields} }`;
+    }
+    case "objectExpression": {
+      const typeName = context.semanticInfo.expressionTypes.get(expression.location.offset)!;
+      const declaration = context.structs.get(typeName);
+      if (declaration?.kind === "class") {
+        const provided = new Map(expression.fields.map((field) => [field.name, field.expression]));
+        const fields = declaration.fields.map((field) => generateExpression(provided.get(field.name)!, context));
+        return `${constructorName(typeName)}(${fields.join(", ")})`;
+      }
+      const fields = expression.fields
+        .map((field) => `.${field.name} = ${generateExpression(field.expression, context)}`)
+        .join(", ");
+      return `(${structName(typeName)}){ ${fields} }`;
     }
     case "variantExpression":
       return `(${enumName(expression.enumName)}){ .tag = ${variantTag(expression.enumName, expression.variantName)}, .data.${expression.variantName} = ${generateExpression(expression.payload, context)} }`;
@@ -3197,6 +3258,8 @@ function inferExpressionType(expression: Expression, context: GenerationContext)
       return context.localTypes.get(expression.name) ?? "i32";
     case "structExpression":
       return expression.typeName;
+    case "objectExpression":
+      return context.semanticInfo.expressionTypes.get(expression.location.offset)!;
     case "arrayExpression":
       return context.semanticInfo.expressionTypes.get(expression.location.offset)!;
     case "dynamicArrayExpression":
@@ -3284,6 +3347,11 @@ function matchExpressionType(expression: Extract<Expression, { kind: "matchExpre
     const variant = declaration.variants.find((candidate) => candidate.name === arm.variantName)!;
     const armTypes = new Map(context.localTypes);
     if (variant.payload && arm.binding) armTypes.set(arm.binding, variant.payload.name);
+    const payload = variant.payload ? context.structs.get(variant.payload.name) : null;
+    for (const fieldBinding of arm.objectBindings ?? []) {
+      const field = payload!.fields.find((candidate) => candidate.name === fieldBinding.fieldName)!;
+      armTypes.set(fieldBinding.bindingName, field.type.name);
+    }
     const type = valueArmType(arm.body, { ...context, localTypes: armTypes });
     if (type) return type;
   }

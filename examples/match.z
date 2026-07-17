@@ -14,14 +14,14 @@ enum UserResult {
 }
 
 function userCode(result: UserResult): i32 {
-  match result {
-    success user => return user.id;
-    failure error => return error.code;
+  match (result) {
+    success(user) => return user.id;
+    failure(error) => return error.code;
   }
 }
 
 function main(): i32 {
-  const result = UserResult.success User { id: 42 };
+  const result = UserResult.success(User { id: 42 });
   stdio.printf("matched=%d\n", userCode(result));
   return 0;
 }
