@@ -30,7 +30,7 @@ function inspect(in counter: Counter): i32 {
 }
 
 function main(): i32 {
-  const first = Counter { count: 40 };
+  const first = new Counter({ count: 40 });
   first.add(2);
   const second = first;
   const third = share(second);

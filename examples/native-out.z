@@ -27,7 +27,7 @@ function initializeWithStatus(out value: i32): i32 {
 }
 
 function makeResource(id: i32, out resource: Resource): void {
-  resource = Resource { id: id };
+  resource = Resource({ id: id });
   stdio.printf("init=%d\n", resource.id);
 }
 

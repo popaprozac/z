@@ -39,7 +39,7 @@ function main(): i32 {
 
   stdio.printf("sum=%d slice=%d\n", total, sumSlice(dynamic));
 
-  const resources = [Resource { id: 8 }, Resource { id: 9 }];
+  const resources = [Resource({ id: 8 }), Resource({ id: 9 })];
   for (const resource of resources) {
     stdio.printf("visit=%d\n", resource.id);
   }

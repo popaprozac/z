@@ -2,7 +2,7 @@ import console from "std/console";
 import cpp from "cpp_math.hpp";
 
 function main(): i32 {
-  const origin = cpp.Point { x: 20, y: 22 };
+  const origin = cpp.Point({ x: 20, y: 22 });
   const moved = cpp.translate(origin, 1, -1);
   console.log(`cpp=${cpp.sum(moved)}, point=${moved}`);
   return 0;

@@ -46,10 +46,10 @@ For classes, `const` fixes the reference binding but does not make the shared
 instance deeply immutable.
 
 ```z
-const origin = Point { x: 1, y: 2 };
+const origin = Point({ x: 1, y: 2 });
 let position = origin;
 position.x = 10;
-position = Point { x: position.x, y: 20 };
+position = Point({ x: position.x, y: 20 });
 ```
 
 ## Type inference boundary
@@ -185,13 +185,28 @@ tracks available, moved, and possibly-moved states through branches and matches;
 using a value after ownership may have left is an error. Backend live flags
 preserve exactly-once cleanup when runtime branches move different values.
 
-Classes are the managed-reference exception to move-only cleanup. A class
-literal allocates one instance with a strong reference count. Binding, passing,
+Classes are the managed-reference exception to move-only cleanup. Class
+construction with `new` creates one instance and its initial owning strong
+reference. Binding, passing,
 storing, or returning an existing reference retains it; every owning scope and
 field releases it. The user `deinit` body and reverse-order field cleanup run
 when the last strong reference is released, followed by storage reclamation.
 The bootstrap counter is single-threaded; atomicity and actor/executor rules
 must be designed with concurrency rather than accidentally frozen now.
+
+Native aggregate construction intentionally distinguishes values from identity:
+
+```z
+const point = Point({ x: 20, y: 22 });
+const session = new Session({ id: 42 });
+```
+
+Struct declarations and class declarations retain brace-delimited bodies, while
+initialization data is an object expression inside call parentheses. `new` is
+reserved for native class construction and is not a general allocation operator.
+It promises reference identity and an initial owning reference, not a particular
+physical heap strategy. The bootstrap synthesizes fieldwise initialization;
+user-defined constructor bodies remain future work.
 
 Explicit `Weak<T>` handles provide the first cycle-breaking tier for classes.
 `weak owner` borrows stored class identity without incrementing its strong
@@ -218,6 +233,20 @@ transfers that payload into the selected arm binding. This covers
 `Result<Class, WeakExpired>`, option-like class enums, resources nested through
 enums and structs, and owned enum captures without a weak-specific exception.
 An owned closure breaks a class/closure cycle by capturing a `Weak<T>` value.
+
+`Option<T>` is compiler-provided sugar over that same enum representation:
+
+```z
+const present = Option.some(value);
+const absent: Option<Value> = Option.none;
+```
+
+`some` carries exactly one `T`; `none` carries no payload. `some` infers `T` from
+its argument. `none` requires contextual typing or the explicit spelling
+`Option<T>.none`. Matching uses the ordinary `some(value)` and bare `none`
+patterns, including the existing borrow and move rules. This keeps optional
+class references non-null and gives optional single-owner values deterministic
+cleanup without a second ownership model.
 Capture-list sugar, automatic ORC cycle collection, and atomic cross-thread
 weak upgrades remain separate future layers.
 

@@ -36,7 +36,7 @@ function main(): i32 {
   const sameCounter = counter;
   stdio.printf("counter=%d,%d\n", counter(), sameCounter());
 
-  const read = holdResource(Resource { value: 42 });
+  const read = holdResource(Resource({ value: 42 }));
   stdio.printf("resource=%d\n", read());
   const deferred = defer(twice, 21);
   stdio.printf("deferred=%d\n", deferred());

@@ -33,16 +33,16 @@ function inspect(in resource: Resource): i32 {
 }
 
 function main(): i32 {
-  let counter = Counter { value: 10 };
+  let counter = Counter({ value: 10 });
   add(inout counter, 3);
   forward(inout counter);
   counter.bump();
 
-  const resource = Resource { id: 42 };
+  const resource = Resource({ id: 42 });
   stdio.printf(
     "counter=%d literal=%d resource=%d\n",
     read(counter),
-    read(Counter { value: 7 }),
+    read(Counter({ value: 7 })),
     inspect(resource)
   );
   return 0;

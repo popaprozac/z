@@ -30,10 +30,10 @@ function activeValue(state: State): i32 {
 }
 
 function main(): i32 {
-  const snapshot = Snapshot {
+  const snapshot = Snapshot({
     current: State.mode(Mode.active(42)),
     history: [Mode.idle, Mode.active(7)],
-  };
+  });
   stdio.printf("state=%d history=%d\n", activeValue(snapshot.current), modeValue(snapshot.history[1]));
   return 0;
 }

@@ -192,6 +192,10 @@ export function inferGenericCalls(
           type: thenExpression.type ?? elseExpression.type,
         };
       }
+      case "new": {
+        const initializer = rewriteExpression(expression.initializer, environment);
+        return { expression: { ...expression, initializer: initializer.expression }, type: expression.typeName };
+      }
       case "weak": {
         const inner = rewriteExpression(expression.expression, environment);
         return {
@@ -239,6 +243,12 @@ export function inferGenericCalls(
       }
       case "member": {
         const object = rewriteExpression(expression.object, environment);
+        if (expression.object.kind === "identifier") {
+          const option = parseGenericType(expression.object.name);
+          if (option?.base === "Option") {
+            return { expression: { ...expression, object: object.expression }, type: expression.object.name };
+          }
+        }
         const weak = object.type ? parseWeakType(object.type) : null;
         if (weak && expression.property === "upgrade") {
           return { expression: { ...expression, object: object.expression }, type: weakResultTypeName(weak.target) };
@@ -319,9 +329,53 @@ export function inferGenericCalls(
       case "call": {
         const callee = rewriteExpression(expression.callee, environment);
         const args = expression.arguments.map((item) => rewriteExpression(item, environment));
+        if (callee.expression.kind === "member" && callee.expression.object.kind === "identifier") {
+          const qualifier = parseGenericType(callee.expression.object.name);
+          const optionBase = qualifier?.base ?? callee.expression.object.name;
+          if (optionBase === "Option") {
+            if (callee.expression.property !== "some") {
+              throw new DiagnosticError(fileName, expression.location, "Option.none is a value and must not be called");
+            }
+            if (args.length !== 1) {
+              throw new DiagnosticError(fileName, expression.location, `Option.some expects 1 argument, received ${args.length}`);
+            }
+            const target = qualifier?.arguments[0] ?? args[0].type;
+            if (!target) {
+              throw new DiagnosticError(fileName, args[0].expression.location, "cannot infer Option payload type from this value");
+            }
+            const optionType = genericTypeName("Option", [target]);
+            return {
+              expression: {
+                ...expression,
+                callee: {
+                  ...callee.expression,
+                  object: { ...callee.expression.object, name: optionType },
+                },
+                arguments: args.map((item) => item.expression),
+              },
+              type: optionType,
+            };
+          }
+        }
         let rewrittenCallee = callee.expression;
         let returnType = callee.type;
         if (rewrittenCallee.kind === "identifier") {
+          const aggregateConstructor = aggregate(rewrittenCallee.name);
+          if (aggregateConstructor) {
+            const explicitAggregate = parseGenericType(rewrittenCallee.name);
+            const expected = aggregateConstructor.declaration.typeParameters?.length ?? 0;
+            if (explicitAggregate && explicitAggregate.arguments.length !== expected) {
+              throw new DiagnosticError(
+                fileName,
+                rewrittenCallee.location,
+                `${explicitAggregate.base} expects ${expected} type argument(s), received ${explicitAggregate.arguments.length}`,
+              );
+            }
+            return {
+              expression: { ...expression, callee: rewrittenCallee, arguments: args.map((item) => item.expression) },
+              type: rewrittenCallee.name,
+            };
+          }
           const explicit = parseGenericType(rewrittenCallee.name);
           const template = genericFunctions.get(explicit?.base ?? rewrittenCallee.name);
           if (explicit && template) {
@@ -384,7 +438,9 @@ export function inferGenericCalls(
     const armEnvironment = new Map(environment);
     if (arm.binding && matchedType) {
       const variant = enums.get(matchedType)?.variants.find((item) => item.name === arm.variantName);
+      const option = parseGenericType(matchedType);
       if (variant?.payload) armEnvironment.set(arm.binding, variant.payload.name);
+      else if (option?.base === "Option" && arm.variantName === "some") armEnvironment.set(arm.binding, option.arguments[0]);
     }
     if (arm.objectBindings && matchedType) {
       const variant = enums.get(matchedType)?.variants.find((item) => item.name === arm.variantName);
@@ -400,8 +456,24 @@ export function inferGenericCalls(
   const rewriteStatement = (statement: Statement, environment: Environment): Statement => {
     switch (statement.kind) {
       case "variable": {
-        const initializer = statement.initializer ? rewriteExpression(statement.initializer, environment) : null;
+        let initializer = statement.initializer ? rewriteExpression(statement.initializer, environment) : null;
         const type = statement.type?.name ?? initializer?.type;
+        if (
+          statement.type
+          && parseGenericType(statement.type.name)?.base === "Option"
+          && initializer?.expression.kind === "member"
+          && initializer.expression.object.kind === "identifier"
+          && initializer.expression.object.name === "Option"
+          && initializer.expression.property === "none"
+        ) {
+          initializer = {
+            ...initializer,
+            expression: {
+              ...initializer.expression,
+              object: { ...initializer.expression.object, name: statement.type.name },
+            },
+          };
+        }
         if (type) environment.set(statement.name, type);
         return { ...statement, initializer: initializer?.expression ?? null };
       }

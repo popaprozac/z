@@ -279,6 +279,7 @@ function completionKind(kind) {
     9: vscode.CompletionItemKind.Module,
     10: vscode.CompletionItemKind.Property,
     13: vscode.CompletionItemKind.Enum,
+    20: vscode.CompletionItemKind.EnumMember,
     21: vscode.CompletionItemKind.Constant,
     22: vscode.CompletionItemKind.Struct,
   };

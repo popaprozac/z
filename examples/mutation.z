@@ -14,11 +14,11 @@ function main(): i32 {
   let count = 1;
   count = count + 1;
 
-  let point = Point { x: 10, y: 20 };
+  let point = Point({ x: 10, y: 20 });
   point.x = 40;
-  point = Point { x: point.x, y: count };
+  point = Point({ x: point.x, y: count });
 
-  let frame = Frame { origin: point, width: 100 };
+  let frame = Frame({ origin: point, width: 100 });
   frame.origin.y = 2;
   frame.width = 640;
 

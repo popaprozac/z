@@ -59,7 +59,7 @@ function require(in observer: Weak<Session>): i32 throws WeakExpired {
 }
 
 function main(): i32 {
-  let current = Session { id: 42 };
+  let current = new Session({ id: 42 });
   const observer = weak current;
   const alive = read(observer);
   const statementAlive = readStatement(observer);
@@ -70,13 +70,13 @@ function main(): i32 {
     failure(expired) => -1;
   };
 
-  current = Session { id: 7 };
+  current = new Session({ id: 7 });
   const expired = read(observer);
   console.log(`alive=${alive}, expired=${expired}`);
 
   let handler: () => i32 = emptyHandler;
   {
-    let controller = Controller { id: 9, handler: emptyHandler };
+    let controller = new Controller({ id: 9, handler: emptyHandler });
     controller.install();
     handler = controller.handler;
     if (handler() != 9) {

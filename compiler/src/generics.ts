@@ -1,4 +1,4 @@
-import type { FunctionDeclaration, Program, StructDeclaration } from "./ast.ts";
+import type { EnumDeclaration, FunctionDeclaration, Program, StructDeclaration } from "./ast.ts";
 import { DiagnosticError } from "./diagnostics.ts";
 import {
   dynamicArrayTypeName,
@@ -11,6 +11,7 @@ import {
 import { monomorphizedName, parseGenericType } from "./generic-types.ts";
 import { functionTypeName, parseFunctionType } from "./function-types.ts";
 import { weakTypeName } from "./weak-types.ts";
+import { optionTypeName } from "./option-types.ts";
 
 export function materializeGenerics(
   program: Program,
@@ -24,6 +25,13 @@ export function materializeGenerics(
   const functions: FunctionDeclaration[] = [];
   const structInstances = new Map<string, string>();
   const functionInstances = new Map<string, string>();
+  const optionInstances = new Map<string, EnumDeclaration>();
+
+  if (program.structs.some((item) => item.name === "Option") || program.enums.some((item) => item.name === "Option")) {
+    const declaration = program.structs.find((item) => item.name === "Option")
+      ?? program.enums.find((item) => item.name === "Option")!;
+    throw new DiagnosticError(fileName, declaration.location, "Option is a compiler-provided type and cannot be redeclared");
+  }
 
   for (const template of [...structTemplates.values(), ...functionTemplates.values()]) {
     for (const constraint of template.typeParameterConstraints ?? []) {
@@ -87,13 +95,39 @@ export function materializeGenerics(
           location: value.location,
         };
       }
+      if (generic && structTemplates.has(generic.base)) {
+        const name = instantiateStruct(generic.base, generic.arguments.map((argument) => substituteName(argument, substitutions)));
+        return {
+          ...value,
+          callee: { ...value.callee, name },
+          arguments: transform(value.arguments, substitutions),
+        };
+      }
       const callee = generic
         ? { ...value.callee, name: instantiateFunction(generic.base, generic.arguments.map((arg) => substituteName(arg, substitutions))) }
         : transform(value.callee, substitutions);
       return { ...value, callee, arguments: transform(value.arguments, substitutions) };
     }
+    if (value.kind === "member" && value.object?.kind === "identifier") {
+      const generic = parseGenericType(value.object.name);
+      if (generic?.base === "Option") {
+        return {
+          ...transformObject(value, substitutions),
+          object: {
+            ...value.object,
+            name: instantiateStruct("Option", generic.arguments.map((argument) => substituteName(argument, substitutions))),
+          },
+        };
+      }
+    }
     if (value.kind === "structExpression") {
       return { ...transformObject(value, substitutions), typeName: substituteName(value.typeName, substitutions) };
+    }
+    if (value.kind === "new") {
+      return {
+        ...transformObject(value, substitutions),
+        typeName: substituteName(value.typeName, substitutions),
+      };
     }
     const keys = Object.keys(value);
     if (!value.kind && keys.length === 2 && keys.includes("name") && keys.includes("location")) {
@@ -106,6 +140,31 @@ export function materializeGenerics(
   );
 
   function instantiateStruct(base: string, args: string[]): string {
+    if (base === "Option") {
+      if (args.length !== 1) {
+        throw new DiagnosticError(fileName, { offset: 0, line: 1, column: 1 }, `Option expects 1 type argument, received ${args.length}`);
+      }
+      const target = args[0];
+      if (target === "void") {
+        throw new DiagnosticError(fileName, { offset: 0, line: 1, column: 1 }, "Option<void> is invalid; use a payloadless enum variant instead");
+      }
+      const name = optionTypeName(target);
+      typeDisplayNames.set(name, `Option<${displayName(target)}>`);
+      if (!optionInstances.has(name)) {
+        const location = program.functions[0]?.location ?? program.structs[0]?.location ?? program.enums[0]?.location
+          ?? { offset: 0, line: 1, column: 1 };
+        optionInstances.set(name, {
+          kind: "enum",
+          name,
+          location,
+          variants: [
+            { name: "some", payload: { name: target, location }, location },
+            { name: "none", payload: null, location },
+          ],
+        });
+      }
+      return name;
+    }
     if (base === "Weak") {
       if (args.length !== 1) {
         throw new DiagnosticError(fileName, { offset: 0, line: 1, column: 1 }, `Weak expects 1 type argument, received ${args.length}`);
@@ -173,11 +232,12 @@ export function materializeGenerics(
   for (const declaration of program.functions.filter((item) => !item.typeParameters?.length)) {
     functions.push(transform(declaration, new Map()));
   }
+  const enums = transform(program.enums, new Map()) as EnumDeclaration[];
   return {
     ...program,
     structs,
     functions,
-    enums: transform(program.enums, new Map()),
+    enums: [...enums, ...optionInstances.values()],
     traits: transform(program.traits, new Map()),
   };
 }

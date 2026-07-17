@@ -106,14 +106,14 @@
         "match": "\\bmove(?=\\s+this\\b)"
       }, {
         "name": "keyword.control.z",
-        "match": "\\b(?:return|throws|throw|select|yield|try|attempt|match|if|else|while|for|of|break|continue|async|await|spawn|deinit|unsafe|in|out|inout|move|weak|as|implements)\\b"
+        "match": "\\b(?:return|throws|throw|select|yield|try|attempt|match|if|else|while|for|of|break|continue|async|await|spawn|deinit|unsafe|in|out|inout|move|weak|new|as|implements)\\b"
       }, {
         "name": "storage.modifier.z",
         "match": "\\b(?:export|const|let|mut|weak|static|private|public)\\b"
       }]
     },
     "types": {
-      "patterns": [{ "name": "storage.type.primitive.z", "match": "\\b(?:void|bool|String|cstring|Slice|Array|i8|i16|i32|i64|u8|u16|u32|u64|f32|f64|usize|isize)\\b" }]
+      "patterns": [{ "name": "storage.type.primitive.z", "match": "\\b(?:void|bool|String|cstring|Slice|Array|Option|i8|i16|i32|i64|u8|u16|u32|u64|f32|f64|usize|isize)\\b" }]
     },
     "constants": {
       "patterns": [

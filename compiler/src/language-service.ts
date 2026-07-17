@@ -62,6 +62,7 @@ const completionKinds = {
   property: 10,
   variable: 6,
   enum: 13,
+  enumMember: 20,
   constant: 21,
   struct: 22,
   interface: 8,
@@ -121,7 +122,7 @@ export function diagnostics(source: string, fileName: string): ServiceDiagnostic
 
 export function completions(source: string, fileName: string, offset: number): CompletionItem[] {
   const before = source.slice(0, offset);
-  const member = before.match(/([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*)\.([A-Za-z_][A-Za-z0-9_]*)?$/);
+  const member = before.match(/((?:Option(?:<[^<>]+>)?)|(?:[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*))\.([A-Za-z_][A-Za-z0-9_]*)?$/);
   if (member) return memberCompletions(source, fileName, offset, member[1], member[2] ?? "");
   const labels = labelCompletions(source, fileName, offset);
   return labels.length > 0 ? labels : symbolCompletions(source, fileName, offset);
@@ -204,7 +205,10 @@ export function semanticTokens(source: string, fileName: string): { readonly dat
       classifications.set(token.location.offset, { type: semanticTokenTypes.indexOf("method"), modifiers: 4 });
       continue;
     }
-    if (enumVariantDeclarations.has(token.location.offset) || matchVariants.has(token.location.offset)) {
+    const optionVariantMember = previous?.kind === "dot"
+      && (token.text === "some" || token.text === "none")
+      && /Option(?:<[^<>]+>)?\.$/.test(source.slice(0, token.location.offset));
+    if (enumVariantDeclarations.has(token.location.offset) || matchVariants.has(token.location.offset) || optionVariantMember) {
       classifications.set(token.location.offset, {
         type: semanticTokenTypes.indexOf("enumMember"),
         modifiers: enumVariantDeclarations.has(token.location.offset) ? 1 : 0,
@@ -289,7 +293,7 @@ export function semanticTokens(source: string, fileName: string): { readonly dat
       });
       continue;
     }
-    if (token.text === "Slice" || token.text === "Array") {
+    if (token.text === "Slice" || token.text === "Array" || token.text === "Option") {
       classifications.set(token.location.offset, { type: semanticTokenTypes.indexOf("type"), modifiers: 4 });
       continue;
     }
@@ -360,6 +364,9 @@ export function hover(source: string, fileName: string, offset: number): Hover |
   if (!word) return null;
   const context = safeAnalysis(source, fileName);
   if (!context) return declarationHover(source, null, word.text, word.start, word.end);
+  if (word.text === "Option") {
+    return markdownHover("compiler-provided enum Option<T>", source, word.start, word.end);
+  }
   const directWordType = context.semanticInfo.bindingTypes.get(word.start)
     ?? context.semanticInfo.numericLiteralTypes.get(word.start)
     ?? context.semanticInfo.expressionTypes.get(word.start);
@@ -437,8 +444,17 @@ export function hover(source: string, fileName: string, offset: number): Hover |
     if (details.size > 0) return markdownHover([...details].join("\n"), source, word.start, word.end);
   }
 
-  const memberPrefix = source.slice(0, word.start).match(/([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*)\.$/);
+  const memberPrefix = source.slice(0, word.start).match(/((?:Option(?:<[^<>]+>)?)|(?:[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*))\.$/);
   if (memberPrefix) {
+    if (memberPrefix[1] === "Option" || /^Option<[^<>]+>$/.test(memberPrefix[1])) {
+      const explicit = memberPrefix[1].startsWith("Option<") ? memberPrefix[1].slice(7, -1) : "T";
+      if (word.text === "some") {
+        return markdownHover(`some(value: ${explicit}): Option<${explicit}>`, source, word.start, word.end);
+      }
+      if (word.text === "none") {
+        return markdownHover(`none: Option<${explicit}>`, source, word.start, word.end);
+      }
+    }
     if (context.semanticInfo.consoleBindings.has(memberPrefix[1])) {
       const detail = consoleMethodDetail(word.text);
       if (detail) return markdownHover(detail, source, word.start, word.end);
@@ -553,13 +569,18 @@ export function offsetAt(source: string, position: Position): number {
 function symbolCompletions(source: string, fileName: string, offset: number): CompletionItem[] {
   const prefix = source.slice(0, offset).match(/([A-Za-z_][A-Za-z0-9_]*)$/)?.[1];
   if (!prefix) return [];
+  const builtIns: CompletionItem[] = [{
+    label: "Option",
+    kind: completionKinds.enum,
+    detail: "compiler-provided enum Option<T>",
+  }];
   const start = offset - prefix.length;
   const tailOffset = source[offset] === ";" ? offset + 1 : offset;
   const context = safeAnalysis(source, fileName)
     ?? safeAnalysis(source.slice(0, start) + "0;" + source.slice(tailOffset), fileName)
     ?? completionRecoveryAnalysis(source, fileName, start, tailOffset, prefix);
-  if (!context) return [];
-  const items: CompletionItem[] = [];
+  if (!context) return filterCompletions(builtIns, prefix, 500);
+  const items: CompletionItem[] = [...builtIns];
   for (const binding of collectBindings(context)) {
     if (binding.fileName && resolve(binding.fileName) !== resolve(fileName)) continue;
     if (binding.offset >= start) continue;
@@ -595,7 +616,7 @@ function symbolCompletions(source: string, fileName: string, offset: number): Co
     items.push({ label: declaration.name, kind: completionKinds.interface, detail: `trait ${declaration.name}` });
   }
   for (const declaration of context.program.enums) {
-    if (declaration.name.startsWith("__z_module_") || declaration.name.startsWith("__z_Result_")) continue;
+    if (declaration.name.startsWith("__z_module_") || declaration.name.startsWith("__z_Result_") || declaration.name.startsWith("__z_Option_")) continue;
     items.push({ label: declaration.name, kind: completionKinds.enum, detail: `enum ${declaration.name}` });
   }
   for (const [name, module] of context.foreignModules) {
@@ -874,6 +895,22 @@ function memberCompletions(
   receiverText: string,
   prefix: string,
 ): CompletionItem[] {
+  if (receiverText === "Option" || /^Option<[^<>]+>$/.test(receiverText)) {
+    const explicit = receiverText.startsWith("Option<") ? receiverText.slice(7, -1) : "T";
+    return filterCompletions([
+      {
+        label: "some",
+        kind: completionKinds.enumMember,
+        detail: `some(value: ${explicit}): Option<${explicit}>`,
+        insertText: "some()",
+      },
+      {
+        label: "none",
+        kind: completionKinds.enumMember,
+        detail: `none: Option<${explicit}>`,
+      },
+    ], prefix, 100);
+  }
   if (receiverText === "String") {
     return filterCompletions([{
       label: "from",
@@ -1392,6 +1429,11 @@ function structLiteralFieldHover(context: AnalyzedSource, offset: number): strin
   const generic = parseGenericType(typeName);
   const declaration = context.sourceProgram.structs.find((candidate) => candidate.name === (generic?.base ?? typeName));
   if (!declaration) {
+    const concrete = context.program.structs.find((candidate) => candidate.name === typeName);
+    const concreteField = concrete?.fields.find((candidate) => candidate.name === item.name);
+    if (concreteField) {
+      return `${concreteField.name}: ${displayType(concreteField.type.name, context.typeDisplayNames)}`;
+    }
     const foreign = context.semanticInfo.foreignNamedTypes.get(typeName);
     const field = foreign?.kind === "record" ? foreign.fields.find((candidate) => candidate.name === item.name) : null;
     return field ? `${field.name}: ${field.typeName}` : null;

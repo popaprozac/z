@@ -481,6 +481,12 @@ function transformExpression(
         thenExpression: transformExpression(expression.thenExpression, scope, locals, typeParameters),
         elseExpression: transformExpression(expression.elseExpression, scope, locals, typeParameters),
       };
+    case "new":
+      return {
+        ...expression,
+        typeName: renameTypeName(expression.typeName, scope, typeParameters),
+        initializer: transformExpression(expression.initializer, scope, locals, typeParameters),
+      };
     case "template":
       return {
         ...expression,

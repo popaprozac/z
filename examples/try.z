@@ -9,11 +9,11 @@ struct UserError {
 }
 
 function findUser(id: i32): User throws UserError {
-  return User { id: id };
+  return User({ id: id });
 }
 
 function failUser(code: i32): User throws UserError {
-  throw UserError { code: code };
+  throw UserError({ code: code });
 }
 
 function userId(id: i32): i32 throws UserError {

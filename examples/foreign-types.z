@@ -10,14 +10,14 @@ function nextIdentifier(identifier: geometry.ZIdentifier): geometry.ZIdentifier 
 }
 
 function main(): i32 {
-  const origin = geometry.ZPoint { x: 10, y: 20 };
+  const origin = geometry.ZPoint({ x: 10, y: 20 });
   const moved = move(origin, 3);
-  const rect = geometry.ZRect {
+  const rect = geometry.ZRect({
     origin: moved,
-    size: geometry.ZSize { width: 640, height: 480 },
+    size: geometry.ZSize({ width: 640, height: 480 }),
     flags: 7,
     identifier: nextIdentifier(41),
-  };
+  });
   stdio.printf(
     "point=%d,%d width=%u flags=%u id=%llu\n",
     rect.origin.x,

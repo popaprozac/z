@@ -14,7 +14,7 @@ function multiply(left: i32, right: i32): i32 {
 }
 
 function installEscapingCallback(): void {
-  const resource = EscapedResource { offset: 2 };
+  const resource = EscapedResource({ offset: 2 });
   const escaped: (value: i32) => i32 =
     move (value: i32): i32 => value + resource.offset;
   callbacks.z_register_context_callback(escaped);

@@ -169,7 +169,7 @@ test("preserves generic inference and local shadowing across Z modules", () => {
     import library from "./library.z";
     import { first } from "./library.z";
     function main(): i32 {
-      const pair = library.Pair<i32> { first: 20, second: 22 };
+      const pair = library.Pair<i32>({ first: 20, second: 22 });
       return library.first<i32>(pair) + first(pair) + library.shadowed() - 82;
     }
   `;
@@ -317,7 +317,7 @@ test("shares imported C type identity across namespace and selective imports", (
     import geometry from "tests/fixtures/geometry.h";
     import { ZPoint as Point, z_read } from "tests/fixtures/geometry.h";
     function main(): i32 {
-      const point: Point = geometry.ZPoint { x: 20, y: 22 };
+      const point: Point = geometry.ZPoint({ x: 20, y: 22 });
       return z_read(point);
     }
   `;
@@ -660,7 +660,7 @@ test("contextually types signed literals at their destination width", () => {
       let assigned: i16 = 0;
       assigned = -32768;
       const called = echo(-128);
-      const tiny = Tiny { value: -128 };
+      const tiny = Tiny({ value: -128 });
       if (narrow == called && tiny.value == narrow && assigned == minimum() && positive > 0 && fraction < 0.0) {
         return 0;
       }
@@ -1148,7 +1148,7 @@ test("checks imported C record fields and enum arguments in Z", () => {
   const missingField = `
     import geometry from "tests/fixtures/geometry.h";
     function main(): i32 {
-      const point = geometry.ZPoint { x: 1 };
+      const point = geometry.ZPoint({ x: 1 });
       return point.x;
     }
   `;
@@ -1160,7 +1160,7 @@ test("checks imported C record fields and enum arguments in Z", () => {
   const wrongEnum = `
     import geometry from "tests/fixtures/geometry.h";
     function main(): i32 {
-      const point = geometry.ZPoint { x: 1, y: 2 };
+      const point = geometry.ZPoint({ x: 1, y: 2 });
       const moved = geometry.z_translate(point, 1, 3);
       return moved.x;
     }
@@ -1202,7 +1202,7 @@ test("requires exact pointer modes and mutable storage at imported record bounda
   const immutable = `
     import geometry from "tests/fixtures/geometry.h";
     function main(): i32 {
-      const point = geometry.ZPoint { x: 1, y: 2 };
+      const point = geometry.ZPoint({ x: 1, y: 2 });
       geometry.z_reset(out point);
       return 0;
     }
@@ -1215,7 +1215,7 @@ test("requires exact pointer modes and mutable storage at imported record bounda
   const missingMode = `
     import geometry from "tests/fixtures/geometry.h";
     function main(): i32 {
-      let point = geometry.ZPoint { x: 1, y: 2 };
+      let point = geometry.ZPoint({ x: 1, y: 2 });
       geometry.z_offset(point, 3, 4);
       return 0;
     }
@@ -1228,7 +1228,7 @@ test("requires exact pointer modes and mutable storage at imported record bounda
   const wrongMode = `
     import geometry from "tests/fixtures/geometry.h";
     function main(): i32 {
-      let point = geometry.ZPoint { x: 1, y: 2 };
+      let point = geometry.ZPoint({ x: 1, y: 2 });
       geometry.z_reset(inout point);
       return 0;
     }
@@ -1530,7 +1530,7 @@ test("passes contextual inline closures through borrowed and owned function para
       const borrowed = apply((value) => value + offset, 41);
       let capturedTarget = 40;
       invoke(() => { capturedTarget = capturedTarget + 2; });
-      const resource = Resource { value: 42 };
+      const resource = Resource({ value: 42 });
       const inspected = inspect(() => resource.value);
       const owned = consume(move (value) => value + offset, 41);
       if (target == 42 && borrowed == 42 && capturedTarget == 42 && inspected == resource.value && owned == 42) { return 0; }
@@ -1577,7 +1577,7 @@ test("requires an explicit function type for cleanup-bearing move captures", () 
       deinit {}
     }
     function main(): i32 {
-      const resource = Resource { value: 42 };
+      const resource = Resource({ value: 42 });
       const consume = move (): i32 => resource.value;
       return consume();
     }
@@ -1604,7 +1604,7 @@ test("returns, copies, shares, and deterministically destroys owned closure envi
   const useAfterCapture = `
     struct Resource { value: i32; deinit {} }
     function main(): i32 {
-      const resource = Resource { value: 42 };
+      const resource = Resource({ value: 42 });
       const read: () => i32 = move (): i32 => resource.value;
       return resource.value;
     }
@@ -1655,7 +1655,7 @@ test("stores and calls explicitly typed non-capturing function values", () => {
       const inferred = subtract;
       const double: (value: i32) => i32 = (value: i32): i32 => value * 2;
       const selected = choose(false);
-      const calculator = Calculator { operation: add };
+      const calculator = Calculator({ operation: add });
       if (apply(operation, 20, 22) == 42 && inferred(50, 8) == 42 && double(21) == 42 && selected(50, 8) == 42 && calculator.operation(20, 22) == 42) {
         return 0;
       }
@@ -1738,7 +1738,7 @@ test("guides closure borrows and explicit mutable call-site capabilities", () =>
     struct Resource { id: i32; deinit {} }
     function consume(resource: Resource): i32 { return resource.id; }
     function main(): i32 {
-      const resource = Resource { id: 42 };
+      const resource = Resource({ id: 42 });
       const inspect = (): i32 => resource.id;
       return consume(resource) + inspect();
     }
@@ -1785,7 +1785,7 @@ test("rejects using a cleanup-bearing value after it moves", () => {
       deinit {}
     }
     function main(): i32 {
-      const first = Resource { id: 1 };
+      const first = Resource({ id: 1 });
       const second = first;
       return first.id + second.id;
     }
@@ -1804,7 +1804,7 @@ test("rejects values that may have moved on another branch", () => {
     }
     function consume(resource: Resource): i32 { return resource.id; }
     function choose(flag: bool): i32 {
-      const resource = Resource { id: 1 };
+      const resource = Resource({ id: 1 });
       if (flag) {
         consume(resource);
       }
@@ -1834,7 +1834,7 @@ test("merges ownership state across exhaustive match arms", () => {
       return resource.id;
     }
     function main(): i32 {
-      return choose(Choice.keep(1), Resource { id: 2 });
+      return choose(Choice.keep(1), Resource({ id: 2 }));
     }
   `;
   assert.throws(
@@ -1849,7 +1849,7 @@ test("rejects discarding cleanup-bearing return values", () => {
       id: i32;
       deinit {}
     }
-    function make(): Resource { return Resource { id: 1 }; }
+    function make(): Resource { return Resource({ id: 1 }); }
     function main(): i32 {
       make();
       return 0;
@@ -1957,7 +1957,7 @@ test("keeps for-of iteration storage stable and owned elements borrowed", () => 
     struct Resource { id: i32; deinit {} }
     function consume(resource: Resource): i32 { return resource.id; }
     function main(): i32 {
-      const resources = [Resource { id: 42 }];
+      const resources = [Resource({ id: 42 })];
       for (const resource of resources) {
         return consume(resource);
       }
@@ -1980,7 +1980,7 @@ test("keeps for-of iteration storage stable and owned elements borrowed", () => 
     function consume(resource: Resource): i32 { return resource.id; }
     function main(): i32 {
       const values = [1, 2];
-      const resource = Resource { id: 42 };
+      const resource = Resource({ id: 42 });
       for (const value of values) {
         if (value == 2) { consume(resource); }
       }
@@ -2198,7 +2198,7 @@ test("stores, returns, moves, and formats owned String values", () => {
     import console from "std/console";
     import cpp from "cpp_math.hpp";
     function main(): i32 {
-      const point = cpp.Point { x: 20, y: 22 };
+      const point = cpp.Point({ x: 20, y: 22 });
       const answer = cpp.sum(point);
       const text = \`cpp=\${answer}\`;
       console.log(text);
@@ -2217,7 +2217,7 @@ test("stores, returns, moves, and formats owned String values", () => {
   const cleanupTemporary = `
     import console from "std/console";
     struct Resource { value: i32; deinit {} }
-    function make(): Resource { return Resource { value: 42 }; }
+    function make(): Resource { return Resource({ value: 42 }); }
     function main(): i32 {
       console.log(make());
       return 0;
@@ -2313,7 +2313,7 @@ test("reaches a fixed ownership state across loop iterations", () => {
     function consume(resource: Resource): void {}
     function main(): i32 {
       let index = 0;
-      const resource = Resource { id: 1 };
+      const resource = Resource({ id: 1 });
       while (index < 2) {
         consume(resource);
         index = index + 1;
@@ -2339,10 +2339,10 @@ test("reaches a fixed ownership state across loop iterations", () => {
     function consume(resource: Resource): void {}
     function main(): i32 {
       let index = 0;
-      let resource = Resource { id: 1 };
+      let resource = Resource({ id: 1 });
       while (index < 2) {
         consume(resource);
-        resource = Resource { id: index + 2 };
+        resource = Resource({ id: index + 2 });
         index = index + 1;
       }
       consume(resource);
@@ -2442,7 +2442,7 @@ test("supports nested fixed arrays and arrays inside value structs", () => {
   const source = `
     struct Matrix { rows: i32[2][2]; }
     function main(): i32 {
-      let matrix = Matrix { rows: [[1, 2], [3, 4]] };
+      let matrix = Matrix({ rows: [[1, 2], [3, 4]] });
       matrix.rows[1][0] = 20;
       return matrix.rows[1][0] + matrix.rows[0][1];
     }
@@ -2464,7 +2464,7 @@ test("does not move cleanup-bearing elements out of fixed arrays", () => {
     struct Item { value: i32; deinit {} }
     function consume(item: Item): void {}
     function main(): i32 {
-      let items = [Item { value: 1 }, Item { value: 2 }];
+      let items = [Item({ value: 1 }), Item({ value: 2 })];
       consume(items[0]);
       return 0;
     }
@@ -2622,7 +2622,7 @@ test("creates distinct generic instances and preserves ownership semantics", () 
     struct Resource { id: i32; deinit {} }
     function identity<T>(value: T): T { return value; }
     function main(): i32 {
-      const resource = Resource { id: 1 };
+      const resource = Resource({ id: 1 });
       const other = identity(resource);
       return resource.id + other.id;
     }
@@ -2633,7 +2633,7 @@ test("creates distinct generic instances and preserves ownership semantics", () 
 test("infers generic calls while preserving explicit instantiation", () => {
   const wrongArity = `
     struct Pair<T, U> { first: T; second: U; }
-    function main(): i32 { const pair = Pair<i32> { first: 1, second: 2 }; return 0; }
+    function main(): i32 { const pair = Pair<i32>({ first: 1, second: 2 }); return 0; }
   `;
   assert.throws(() => compileToC(wrongArity, "generic-arity.z"), /Pair expects 2 type argument\(s\), received 1/);
 
@@ -2674,7 +2674,7 @@ test("infers nested generic calls and calls within generic functions", () => {
     function identity<T>(value: T): T { return value; }
     function unbox<T>(box: Box<T>): T { return identity(box.value); }
     function main(): i32 {
-      const box = Box<i32> { value: 42 };
+      const box = Box<i32>({ value: 42 });
       return identity(unbox(box));
     }
   `;
@@ -2716,7 +2716,7 @@ test("checks nominal trait constraints on inferred and explicit generic instance
     trait Measured { function measure(): i32; }
     struct Reading { function measure(): i32 { return 42; } }
     function read<T: Measured>(value: T): i32 { return value.measure(); }
-    function main(): i32 { return read(Reading {}); }
+    function main(): i32 { return read(Reading({})); }
   `;
   assert.throws(
     () => compileToC(structuralOnly, "generic-constraint-nominal.z"),
@@ -2764,7 +2764,7 @@ test("supports multiple trait constraints and constrained generic aggregates", (
     }
     function identity<T>(value: T): T { return value; }
     function main(): i32 {
-      const holder = Holder<Reading> { value: Reading {} };
+      const holder = Holder<Reading>({ value: Reading({}) });
       return read(holder.value);
     }
   `;
@@ -2774,7 +2774,7 @@ test("supports multiple trait constraints and constrained generic aggregates", (
     trait Measured { function measure(): i32; }
     struct Plain {}
     struct Holder<T: Measured> { value: T; }
-    function main(): i32 { const holder = Holder<Plain> { value: Plain {} }; return 0; }
+    function main(): i32 { const holder = Holder<Plain>({ value: Plain({}) }); return 0; }
   `;
   assert.throws(
     () => compileToC(invalidAggregate, "generic-aggregate-constraint.z"),
@@ -2823,7 +2823,7 @@ test("shows source generic fields and concrete generic binding types on hover", 
     }
     function first<T>(pair: Pair<T>): T { return pair.first; }
     function main(): i32 {
-      const pair = Pair<i32> { first: 20, second: 22 };
+      const pair = Pair<i32>({ first: 20, second: 22 });
       return pair.second;
     }
   `;
@@ -2967,7 +2967,7 @@ test("checks Array mutation, element types, and partial moves", () => {
     struct Item { id: i32; deinit {} }
     function main(): i32 {
       let values = Array<Item>();
-      values.push(Item { id: 1 });
+      values.push(Item({ id: 1 }));
       const item = values[0];
       return item.id;
     }
@@ -3019,7 +3019,7 @@ test("emits struct layouts, literals, fields, and borrowed methods", () => {
       }
     }
     function main(): i32 {
-      const point = Point { x: 20, y: 22 };
+      const point = Point({ x: 20, y: 22 });
       return point.sum();
     }
   `;
@@ -3030,6 +3030,38 @@ test("emits struct layouts, literals, fields, and borrowed methods", () => {
   assert.match(generated, /return Z_Point_sum\(&\(point\)\);/);
 });
 
+test("constructs structs from object values and classes through class-only new", () => {
+  const example = resolve(projectRoot, "examples/construction.z");
+  const source = readFileSync(example, "utf8");
+  const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+
+  const generated = compileToC(source, example);
+  assert.match(generated, /const Z_Point point = \(Z_Point\)\{ \.x = 20, \.y = 22 \}/);
+  assert.match(generated, /Z_Session \* const session = Z_Session_new/);
+
+  const structWithNew = source.replace("Point({ x: 20, y: 22 })", "new Point({ x: 20, y: 22 })");
+  assert.throws(() => compileToC(structWithNew, "new-struct.z"), /new requires a class type/);
+
+  const classWithoutNew = source.replace("new Session({ id: point.x + point.y })", "Session({ id: point.x + point.y })");
+  assert.throws(() => compileToC(classWithoutNew, "class-without-new.z"), /class construction requires new Session/);
+
+  const legacy = source.replace("Point({ x: 20, y: 22 })", "Point { x: 20, y: 22 }");
+  assert.throws(() => compileToC(legacy, "legacy-construction.z"), /construction requires Point\(\{ \.\.\. \}\)/);
+
+  const qualifiedLegacy = `
+    import geometry from "tests/fixtures/geometry.h";
+    function main(): i32 {
+      const point = geometry.ZPoint { x: 20, y: 22 };
+      return point.x + point.y - 42;
+    }
+  `;
+  assert.throws(
+    () => compileToC(qualifiedLegacy, "qualified-legacy-construction.z"),
+    /construction requires geometry\.ZPoint\(\{ \.\.\. \}\)/,
+  );
+});
+
 test("requires every struct field exactly once", () => {
   const source = `
     struct Point {
@@ -3037,13 +3069,13 @@ test("requires every struct field exactly once", () => {
       y: i32;
     }
     function main(): i32 {
-      const point = Point { x: 1 };
+      const point = Point({ x: 1 });
       return point.x;
     }
   `;
   assert.throws(
     () => compileToC(source, "missing-field.z"),
-    /missing-field\.z:7:21: error: missing field "y" when constructing "Point"/,
+    /missing-field\.z:7:27: error: missing field "y" when constructing "Point"/,
   );
 });
 
@@ -3056,7 +3088,7 @@ test("checks struct method arguments", () => {
       }
     }
     function main(): i32 {
-      const counter = Counter { value: 1 };
+      const counter = Counter({ value: 1 });
       return counter.add("wrong");
     }
   `;
@@ -3164,7 +3196,7 @@ test("moves, matches, nests, and destroys cleanup-bearing enum payloads", () => 
     function take(in choice: Choice): Item {
       return match (choice) {
         some(item) => item;
-        none => Item { id: 0 };
+        none => Item({ id: 0 });
       };
     }
     function main(): i32 { return 0; }
@@ -3220,11 +3252,53 @@ test("constructs contextual enum payloads and destructures their named fields", 
   assert.match(hover(source, example, bodyBinding)?.contents.value ?? "", /in body: String/);
 });
 
+test("materializes inferred and explicitly empty Option values with owned payloads", () => {
+  const example = resolve(projectRoot, "examples/option.z");
+  const source = readFileSync(example, "utf8");
+  const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+
+  const generated = compileToC(source, example);
+  assert.match(generated, /Z_Option_User_some/);
+  assert.match(generated, /case Z_Option_User_some:[\s\S]*Z_User_release/);
+
+  const presentUse = source.indexOf("present) ==") + 1;
+  assert.match(hover(source, example, presentUse)?.contents.value ?? "", /present: Option<User>/);
+  const someVariant = source.indexOf("some(user)") + 1;
+  assert.match(hover(source, example, someVariant)?.contents.value ?? "", /Option<User>\.some\(User\)/);
+  const someConstructor = source.indexOf("some(user)", source.indexOf("Option.some")) + 1;
+  assert.match(hover(source, example, someConstructor)?.contents.value ?? "", /some\(value: T\): Option<T>/);
+
+  const optionTypePosition = positionForOffset(source, source.indexOf("Option<User>"));
+  const someConstructorPosition = positionForOffset(source, source.indexOf("some(user)", source.indexOf("Option.some")));
+  const optionTokens = decodeSemanticTokens(semanticTokens(source, example).data);
+  assert.ok(optionTokens.some((token) => token.line === optionTypePosition.line
+    && token.character === optionTypePosition.character
+    && semanticTokenTypes[token.type] === "type"));
+  assert.ok(optionTokens.some((token) => token.line === someConstructorPosition.line
+    && token.character === someConstructorPosition.character
+    && semanticTokenTypes[token.type] === "enumMember"));
+  assert.match(hover(source, example, source.indexOf("Option<User>") + 1)?.contents.value ?? "", /Option<T>/);
+
+  const optionCompletionSource = source.replace("Option.some(user)", "Opt");
+  const optionCompletionOffset = optionCompletionSource.indexOf("Opt;") + 3;
+  assert.equal(
+    completions(optionCompletionSource, example, optionCompletionOffset).find((item) => item.label === "Option")?.detail,
+    "compiler-provided enum Option<T>",
+  );
+  const variantCompletionSource = source.replace("Option.some(user)", "Option.s");
+  const variantCompletionOffset = variantCompletionSource.indexOf("Option.s;") + "Option.s".length;
+  assert.match(
+    completions(variantCompletionSource, example, variantCompletionOffset).find((item) => item.label === "some")?.detail ?? "",
+    /some\(value: T\): Option<T>/,
+  );
+});
+
 test("exposes match variants, payload bindings, and source Result names to editor services", () => {
   const source = `
     struct User { id: i32; }
     struct UserError { code: i32; }
-    function find(): User throws UserError { return User { id: 42 }; }
+    function find(): User throws UserError { return User({ id: 42 }); }
     function main(): i32 {
       const failed = attempt find();
       return match (failed) {
@@ -3313,7 +3387,7 @@ test("requires explicit handling for throwing calls", () => {
 test("rejects throw outside a throwing function", () => {
   const source = `
     struct Problem { code: i32; }
-    function main(): i32 { throw Problem { code: 1 }; }
+    function main(): i32 { throw Problem({ code: 1 }); }
   `;
   assert.throws(
     () => compileToC(source, "invalid-throw.z"),
@@ -3407,7 +3481,7 @@ test("requires addressable mutable storage for inout method receivers", () => {
       }
     }
     function main(): i32 {
-      const counter = Counter { value: 1 };
+      const counter = Counter({ value: 1 });
       counter.add(2);
       return 0;
     }
@@ -3418,8 +3492,8 @@ test("requires addressable mutable storage for inout method receivers", () => {
   );
 
   const temporary = immutable.replace(
-    "const counter = Counter { value: 1 };\n      counter.add(2);",
-    "Counter { value: 1 }.add(2);",
+    "const counter = Counter({ value: 1 });\n      counter.add(2);",
+    "Counter({ value: 1 }).add(2);",
   );
   assert.throws(
     () => compileToC(temporary, "temporary-receiver.z"),
@@ -3473,7 +3547,7 @@ test("keeps receiver capabilities in method signatures", () => {
       deinit {}
     }
     function main(): i32 {
-      let resource = Resource { value: 1 };
+      let resource = Resource({ value: 1 });
       resource.merge(resource);
       return 0;
     }
@@ -3504,7 +3578,7 @@ test("moves consuming receivers and cleans them up exactly once", () => {
       deinit {}
     }
     function main(): i32 {
-      const resource = Resource { id: 1 };
+      const resource = Resource({ id: 1 });
       resource.finish();
       return resource.id;
     }
@@ -3535,7 +3609,7 @@ test("moves consuming receivers and cleans them up exactly once", () => {
       deinit {}
     }
     function main(): i32 {
-      const resource = Resource { id: 1 };
+      const resource = Resource({ id: 1 });
       resource.merge(resource);
       return 0;
     }
@@ -3770,7 +3844,7 @@ test("keeps const values, parameters, and borrowed receivers immutable", () => {
   const immutableField = `
     struct Point { x: i32; }
     function main(): i32 {
-      const point = Point { x: 1 };
+      const point = Point({ x: 1 });
       point.x = 2;
       return point.x;
     }
@@ -3858,7 +3932,7 @@ test("checks explicit trait conformance for structs and classes", () => {
       function measure(): i32 { return this.value; }
     }
     function main(): i32 {
-      const size = Size { value: 42 };
+      const size = Size({ value: 42 });
       return size.measure();
     }
   `;
@@ -3904,7 +3978,7 @@ test("keeps class binding immutability separate from instance mutation", () => {
       function consume(move this): i32 { return this.value; }
     }
     function main(): i32 {
-      const counter = Counter { value: 1 };
+      const counter = new Counter({ value: 1 });
       counter.add(2);
       return counter.value;
     }
@@ -3943,7 +4017,7 @@ test("exposes Z classes and traits to editor services", () => {
       function value(): i32 { return this.count; }
     }
     function main(): i32 {
-      const counter = Counter { count: 1 };
+      const counter = new Counter({ count: 1 });
       Cou;
       return counter.value();
     }
@@ -4025,7 +4099,7 @@ test("zeroes weak class references and breaks owned closure cycles", () => {
   const bare = `
     class CompletionSession { id: i32; }
     function main(): i32 {
-      const session = CompletionSession { id: 1 };
+      const session = new CompletionSession({ id: 1 });
       const observer = weak session;
       observer.;
       return 0;
@@ -4068,6 +4142,7 @@ test("editor grammar tracks keywords without reserving Result variants", () => {
   assert.match(keywordPattern, /select/);
   assert.match(keywordPattern, /move/);
   assert.match(keywordPattern, /weak/);
+  assert.match(keywordPattern, /new/);
   assert.match(keywordPattern, /deinit/);
   assert.match(keywordPattern, /out\|inout/);
   assert.match(keywordPattern, /\bin\b/);
@@ -4092,6 +4167,7 @@ test("editor grammar tracks keywords without reserving Result variants", () => {
   assert.match(matchPattern, /=>/);
   assert.match(typePattern, /Slice/);
   assert.match(typePattern, /Array/);
+  assert.match(typePattern, /Option/);
   assert.match(typePattern, /String/);
   assert.match(stringPatterns, /string\.quoted\.template\.z/);
   assert.match(stringPatterns, /string\.quoted\.single\.z/);
@@ -4102,6 +4178,7 @@ test("editor grammar tracks keywords without reserving Result variants", () => {
 
   const extension = readFileSync(resolve(projectRoot, "editors/vscode/extension.js"), "utf8");
   assert.match(extension, /6: vscode\.CompletionItemKind\.Variable/);
+  assert.match(extension, /20: vscode\.CompletionItemKind\.EnumMember/);
   assert.match(extension, /8: vscode\.CompletionItemKind\.Interface/);
   assert.match(extension, /createFileSystemWatcher/);
   assert.match(extension, /restartLanguageServer/);

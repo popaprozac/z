@@ -21,10 +21,10 @@ async scope {
   const userTask = spawn fetchUser(id);
   const postsTask = spawn fetchPosts(id);
 
-  return Dashboard {
+  return Dashboard({
     user: try await userTask,
     posts: try await postsTask,
-  };
+  });
 }
 ```
 

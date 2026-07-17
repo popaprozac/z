@@ -21,11 +21,11 @@ struct Panel {
 }
 
 function main(): i32 {
-  let counter = Counter { value: 1 };
+  let counter = Counter({ value: 1 });
   counter.add(2);
   const snapshot = counter;
 
-  let panel = Panel { counter: Counter { value: 10 } };
+  let panel = Panel({ counter: Counter({ value: 10 }) });
   panel.bump(5);
 
   stdio.printf(
@@ -33,7 +33,7 @@ function main(): i32 {
     counter.current(),
     snapshot.current(),
     panel.counter.current(),
-    Counter { value: 7 }.current()
+    Counter({ value: 7 }).current()
   );
   return 0;
 }

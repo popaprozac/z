@@ -31,7 +31,7 @@ function userId(result: UserResult): i32 throws UserError {
 }
 
 function main(): i32 {
-  const found = UserResult.success(User { id: 41 });
+  const found = UserResult.success(User({ id: 41 }));
   stdio.printf("code=%d\n", code(found));
 
   const direct = match (found) {

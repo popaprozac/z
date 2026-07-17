@@ -17,7 +17,7 @@ function shift(point: Point, amount: Count): Point {
 }
 
 function main(): i32 {
-  const point = Point { x: 20, y: 19 };
+  const point = Point({ x: 20, y: 19 });
   const moved = shift(point, 3);
   printf("selective point=%d,%d score=%d\n", moved.x, moved.y, score(moved));
   return 0;

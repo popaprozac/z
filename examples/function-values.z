@@ -31,7 +31,7 @@ function main(): i32 {
   const direct: (x: i32, y: i32) => i32 = add;
   const inferred = subtract;
   const selected = choose(false);
-  const calculator = Calculator { operation: selected };
+  const calculator = Calculator({ operation: selected });
   const doubled: (value: i32) => i32 = (value) => value * 2;
 
   console.log(`${apply(direct, 20, 22)}`);

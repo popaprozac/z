@@ -247,6 +247,7 @@ export type Expression =
   | UnaryExpression
   | BinaryExpression
   | ConditionalExpression
+  | NewExpression
   | WeakExpression
   | ClosureExpression
   | CallExpression
@@ -322,6 +323,13 @@ export type ConditionalExpression = {
   readonly condition: Expression;
   readonly thenExpression: Expression;
   readonly elseExpression: Expression;
+  readonly location: SourceLocation;
+};
+
+export type NewExpression = {
+  readonly kind: "new";
+  readonly typeName: string;
+  readonly initializer: Expression;
   readonly location: SourceLocation;
 };
 

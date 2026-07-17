@@ -1834,6 +1834,9 @@ function generateDirectValue(
   if (expression.kind === "template") {
     return generateTemplateValue(expression, context, consumeValue);
   }
+  if (expression.kind === "new" && requiresStatementValue(expression.initializer, context)) {
+    return generateDirectValue(expression.initializer, context, consumeValue, consumeTerminates);
+  }
   if (expression.kind === "conditional" && requiresStatementValue(expression, context)) {
     return generateConditionalValue(expression, context, consumeValue, consumeTerminates);
   }
@@ -1872,6 +1875,7 @@ function requiresStatementValue(expression: Expression, context: GenerationConte
     return requiresStatementValue(expression.thenExpression, context)
       || requiresStatementValue(expression.elseExpression, context);
   }
+  if (expression.kind === "new") return requiresStatementValue(expression.initializer, context);
   if (expression.kind === "call") {
     return expression.arguments.some((argument) => requiresStatementValue(argument, context));
   }
@@ -2767,6 +2771,8 @@ function generateExpression(expression: Expression, context: GenerationContext):
     }
     case "conditional":
       return `(${generateExpression(expression.condition, context)} ? ${generateExpression(expression.thenExpression, context)} : ${generateExpression(expression.elseExpression, context)})`;
+    case "new":
+      return generateExpression(expression.initializer, context);
     case "weak": {
       const type = parseWeakType(inferExpressionType(expression, context));
       if (!type) throw new Error("weak expression is missing its target type");
@@ -2822,7 +2828,10 @@ function generateExpression(expression: Expression, context: GenerationContext):
       const fields = expression.fields
         .map((field) => `.${field.name} = ${generateExpression(field.expression, context)}`)
         .join(", ");
-      return `(${structName(typeName)}){ ${fields} }`;
+      const mapped = context.semanticInfo.foreignNamedTypes.has(typeName)
+        ? mapType(typeName, context.structs, context.enums, context.semanticInfo.foreignNamedTypes)
+        : structName(typeName);
+      return `(${mapped}){ ${fields} }`;
     }
     case "variantExpression":
       return `(${enumName(expression.enumName)}){ .tag = ${variantTag(expression.enumName, expression.variantName)}, .data.${expression.variantName} = ${generateExpression(expression.payload, context)} }`;
@@ -2884,9 +2893,24 @@ function generateExpression(expression: Expression, context: GenerationContext):
         return `${integerOperationName(integerOperation)}(${generateExpression(expression.callee.object, context)}, ${generateExpression(expression.arguments[0], context)})`;
       }
       if (expression.callee.kind === "identifier") {
+        if (context.structs.get(expression.callee.name)?.kind === "struct") {
+          return generateExpression(expression.arguments[0], context);
+        }
+        if (expression.arguments[0]?.kind === "objectExpression") {
+          const objectType = context.semanticInfo.expressionTypes.get(expression.arguments[0].location.offset);
+          if (objectType && context.semanticInfo.foreignNamedTypes.get(objectType)?.kind === "record") {
+            return generateExpression(expression.arguments[0], context);
+          }
+        }
         const standardName = context.semanticInfo.standardFunctionReferences.get(expression.callee.location.offset);
         if (standardName) {
           return `${standardFunctionSignature(standardName).cName}(${expression.arguments.map((argument) => generateCallArgument(argument, context)).join(", ")})`;
+        }
+      }
+      if (expression.callee.kind === "member" && expression.arguments[0]?.kind === "objectExpression") {
+        const objectType = context.semanticInfo.expressionTypes.get(expression.arguments[0].location.offset);
+        if (objectType && context.semanticInfo.foreignNamedTypes.get(objectType)?.kind === "record") {
+          return generateExpression(expression.arguments[0], context);
         }
       }
       if (
@@ -3225,7 +3249,14 @@ function inferExpressionType(expression: Expression, context: GenerationContext)
   const integerOperation = context.semanticInfo.integerOperations.get(expression.location.offset);
   if (integerOperation) return integerOperation.type;
   const analyzedType = context.semanticInfo.expressionTypes.get(expression.location.offset);
-  if (analyzedType && (parseFunctionType(analyzedType) || parseWeakType(analyzedType) || parseWeakResultType(analyzedType))) return analyzedType;
+  if (analyzedType && (
+    parseFunctionType(analyzedType)
+    || parseWeakType(analyzedType)
+    || parseWeakResultType(analyzedType)
+    || context.structs.has(analyzedType)
+    || context.enums.has(analyzedType)
+    || context.semanticInfo.foreignNamedTypes.has(analyzedType)
+  )) return analyzedType;
   const foreignExpressionType = context.semanticInfo.foreignExpressionTypes.get(expression.location.offset);
   if (foreignExpressionType) return foreignExpressionType;
   const foreignCallType = expression.kind === "call"
@@ -3248,6 +3279,8 @@ function inferExpressionType(expression: Expression, context: GenerationContext)
       return ["+", "-", "*", "/", "%", "&", "|", "^", "<<", ">>"].includes(expression.operator) ? "i32" : "bool";
     case "conditional":
       return inferExpressionType(expression.thenExpression, context);
+    case "new":
+      return expression.typeName;
     case "weak":
       return context.semanticInfo.expressionTypes.get(expression.location.offset)!;
     case "closure":
@@ -3291,6 +3324,7 @@ function inferExpressionType(expression: Expression, context: GenerationContext)
     }
     case "call": {
       if (expression.callee.kind === "identifier") {
+        if (context.structs.get(expression.callee.name)?.kind === "struct") return expression.callee.name;
         const closure = closureForType(context.localTypes.get(expression.callee.name), context.semanticInfo);
         if (closure) return closure.declaration.returnType.name;
         return context.functions.get(expression.callee.name)?.returnType.name ?? "i32";

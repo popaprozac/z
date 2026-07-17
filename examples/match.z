@@ -21,7 +21,7 @@ function userCode(result: UserResult): i32 {
 }
 
 function main(): i32 {
-  const result = UserResult.success(User { id: 42 });
+  const result = UserResult.success(User({ id: 42 }));
   stdio.printf("matched=%d\n", userCode(result));
   return 0;
 }

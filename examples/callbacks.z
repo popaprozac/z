@@ -20,7 +20,7 @@ function multiply(left: i32, right: i32): i32 {
 }
 
 function installRetainedOperation(): void {
-  const offset = Offset { value: 2 };
+  const offset = Offset({ value: 2 });
   retainOperation(move (value) => value + offset.value);
 }
 

@@ -33,10 +33,10 @@ function inspect(in value: String): i32 {
 }
 
 function main(): i32 {
-  const point = Point { x: 20, y: 22 };
+  const point = Point({ x: 20, y: 22 });
   const first = describe(point);
   const second = relay(first);
-  const message = Message { text: `[${second}]` };
+  const message = Message({ text: `[${second}]` });
   console.log(message);
   const direct = join(`left=${mark(1)}`, `right=${mark(2)}`);
   console.log(direct);

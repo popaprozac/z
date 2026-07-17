@@ -5,10 +5,10 @@ struct Point {
   y: i32;
 
   function translated(dx: i32, dy: i32): Point {
-    return Point {
+    return Point({
       x: this.x + dx,
       y: this.y + dy,
-    };
+    });
   }
 
   function sum(): i32 {
@@ -17,7 +17,7 @@ struct Point {
 }
 
 function main(): i32 {
-  const original = Point { x: 20, y: 22 };
+  const original = Point({ x: 20, y: 22 });
   const copied = original;
   const translated = copied.translated(1, 2);
 

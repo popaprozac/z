@@ -21,10 +21,10 @@ function next(inout value: i32): i32 {
 
 function main(): i32 {
   const answer = 42;
-  const point = Point { x: 20, y: 22 };
+  const point = Point({ x: 20, y: 22 });
   const values = [1, 2, 3];
   const status = Status.ready 7;
-  const counter = Counter { value: answer };
+  const counter = new Counter({ value: answer });
   const sharedCounter = counter;
   let sequence = 0;
 

@@ -27,7 +27,7 @@ function main(): i32 {
   values[2] = 42;
   stdio.printf("length=%zu sum=%d\n", values.length, sum(values));
 
-  const box = Box { items: [Item { value: 1 }, Item { value: 2 }, Item { value: 3 }] };
+  const box = Box({ items: [Item({ value: 1 }), Item({ value: 2 }), Item({ value: 3 })] });
   stdio.printf("middle=%d\n", box.items[1].value);
   return 0;
 }

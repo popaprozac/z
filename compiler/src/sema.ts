@@ -1516,6 +1516,9 @@ function collectClosureCaptures(
         walkExpression(expression.thenExpression, localNames);
         walkExpression(expression.elseExpression, localNames);
         return;
+      case "new":
+        walkExpression(expression.initializer, localNames);
+        return;
       case "weak":
         walkExpression(expression.expression, localNames);
         return;
@@ -2221,6 +2224,20 @@ function inferExpressionInner(
       mergeOwnershipStates(locals, [thenLocals, elseLocals], state);
       return commonBranchType("conditional", thenType, elseType, expression.elseExpression.location, fileName);
     }
+    case "new": {
+      const declaration = structs.get(expression.typeName);
+      if (!declaration) {
+        throw new DiagnosticError(fileName, expression.location, `unknown class ${JSON.stringify(expression.typeName)}`);
+      }
+      if (declaration.kind !== "class") {
+        throw new DiagnosticError(fileName, expression.location, `new requires a class type; construct ${expression.typeName} as ${expression.typeName}({ ... })`);
+      }
+      if (expression.initializer.kind !== "objectExpression") {
+        throw new DiagnosticError(fileName, expression.initializer.location, "synthesized class initialization requires one object literal");
+      }
+      inferContextualObjectExpression(expression.initializer, expression.typeName, locals, globals, structs, enums, fileName, state);
+      return expression.typeName;
+    }
     case "weak": {
       if (!isNamedStorageExpression(expression.expression)) {
         throw new DiagnosticError(fileName, expression.expression.location, "weak requires an existing stored class reference", {
@@ -2428,6 +2445,43 @@ function inferExpressionInner(
       throw new DiagnosticError(fileName, expression.location, `struct ${JSON.stringify(declaration.name)} has no member ${JSON.stringify(expression.property)}`);
     }
     case "call": {
+      if (expression.callee.kind === "identifier") {
+        const aggregate = structs.get(expression.callee.name);
+        if (aggregate) {
+          rejectLabeledArguments(expression.argumentLabels, expression.location, fileName);
+          if (aggregate.kind === "class") {
+            throw new DiagnosticError(fileName, expression.callee.location, `class construction requires new ${aggregate.name}({ ... })`);
+          }
+          if (expression.arguments.length !== 1 || expression.arguments[0].kind !== "objectExpression") {
+            throw new DiagnosticError(fileName, expression.location, `${aggregate.name} construction requires one object literal`);
+          }
+          inferContextualObjectExpression(expression.arguments[0], aggregate.name, locals, globals, structs, enums, fileName, state);
+          return aggregate.name;
+        }
+        const imported = globals.get(expression.callee.name);
+        if (imported?.kind === "foreignType" && imported.declaration.kind === "record") {
+          rejectLabeledArguments(expression.argumentLabels, expression.location, fileName);
+          if (expression.arguments.length !== 1 || expression.arguments[0].kind !== "objectExpression") {
+            throw new DiagnosticError(fileName, expression.location, `${expression.callee.name} construction requires one object literal`);
+          }
+          inferContextualObjectExpression(expression.arguments[0], imported.declaration.typeName, locals, globals, structs, enums, fileName, state);
+          return imported.declaration.typeName;
+        }
+      }
+      if (expression.callee.kind === "member" && expression.callee.object.kind === "identifier") {
+        const imported = globals.get(expression.callee.object.name);
+        const record = imported?.kind === "foreignModule"
+          ? imported.module.namedTypes.get(expression.callee.property)
+          : null;
+        if (record?.kind === "record") {
+          rejectLabeledArguments(expression.argumentLabels, expression.location, fileName);
+          if (expression.arguments.length !== 1 || expression.arguments[0].kind !== "objectExpression") {
+            throw new DiagnosticError(fileName, expression.location, `${expression.callee.property} construction requires one object literal`);
+          }
+          inferContextualObjectExpression(expression.arguments[0], record.typeName, locals, globals, structs, enums, fileName, state);
+          return record.typeName;
+        }
+      }
       if (expression.callee.kind === "member") {
         if (
           expression.callee.object.kind === "identifier"
@@ -2970,7 +3024,12 @@ function checkArguments(
       continue;
     }
     if (parameter.mode === "in") {
-      if (!isNamedStorageExpression(argument) && argument.kind !== "structExpression" && argument.kind !== "template") {
+      const aggregateTemporary = argument.kind === "call"
+        && argument.callee.kind === "identifier"
+        && structs.has(argument.callee.name)
+        && argument.arguments.length === 1
+        && argument.arguments[0].kind === "objectExpression";
+      if (!isNamedStorageExpression(argument) && argument.kind !== "structExpression" && !aggregateTemporary && argument.kind !== "template") {
         throw new DiagnosticError(
           fileName,
           argument.location,
@@ -3073,6 +3132,7 @@ function validateDeinitExpression(expression: Expression, fileName: string): voi
   if (expression.kind === "attempt" || expression.kind === "try" || expression.kind === "weak") {
     validateDeinitExpression(expression.expression, fileName);
   }
+  if (expression.kind === "new") validateDeinitExpression(expression.initializer, fileName);
   if (expression.kind === "matchExpression") {
     validateDeinitExpression(expression.expression, fileName);
     for (const arm of expression.arms) validateDeinitControlFlow([arm.body], fileName);
@@ -3115,6 +3175,13 @@ function consumeOwnedValue(
     if (expression.kind === "identifier" || expression.kind === "member" || expression.kind === "index") {
       state.managedCopies.add(expression.location.offset);
     }
+    return;
+  }
+  if (
+    expression.kind === "member"
+    && expression.object.kind === "identifier"
+    && enums.get(expression.object.name)?.variants.some((variant) => variant.name === expression.property && !variant.payload)
+  ) {
     return;
   }
   if (expression.kind === "member" || expression.kind === "index") {

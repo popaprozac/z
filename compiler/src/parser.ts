@@ -246,6 +246,14 @@ export function parse(tokens: Token[], fileName: string): Program {
         current = closureCheckpoint;
       }
     }
+    if (match("new")) {
+      const token = previous();
+      const type = parseType();
+      expect("leftParen", "`(` after a class name");
+      const initializer = parseExpression();
+      expect("rightParen", "`)` after a class initializer");
+      return { kind: "new", typeName: type.name, initializer, location: token.location };
+    }
     if (match("templateStart")) {
       const token = previous();
       const parts = [];
@@ -355,7 +363,7 @@ export function parse(tokens: Token[], fileName: string): Program {
           const arguments_ = [];
           do arguments_.push(parseType().name); while (match("comma"));
           expectTypeGreater();
-          if (!at("leftParen") && !at("leftBrace")) current = checkpoint;
+          if (!at("leftParen") && !at("leftBrace") && !at("dot")) current = checkpoint;
           else identifierName = genericTypeName(token.text, arguments_);
         } catch {
           current = checkpoint;
@@ -363,6 +371,7 @@ export function parse(tokens: Token[], fileName: string): Program {
       }
       if (at("dot") && tokens[current + 1]?.kind === "identifier") {
         const checkpoint = current;
+        let legacyQualifiedConstruction: string | null = null;
         try {
           take();
           const qualifiedType = take();
@@ -379,49 +388,20 @@ export function parse(tokens: Token[], fileName: string): Program {
           if (!beginsQualifiedStructLiteral) {
             current = checkpoint;
           } else {
-            take();
-            const fields = [];
-            while (!at("rightBrace")) {
-              const field = expect("identifier", "a field name");
-              expect("colon", "`:`");
-              fields.push({ name: field.text, expression: parseExpression(), location: field.location });
-              if (!match("comma")) break;
-            }
-            expect("rightBrace", "`}`");
-            return {
-              kind: "structExpression",
-              typeName: qualifiedTypeName,
-              fields,
-              location: token.location,
-            };
+            legacyQualifiedConstruction = qualifiedTypeName;
           }
         } catch {
           current = checkpoint;
+        }
+        if (legacyQualifiedConstruction) {
+          throw new DiagnosticError(fileName, token.location, `construction requires ${legacyQualifiedConstruction}({ ... })`);
         }
       }
       const beginsStructLiteral = at("leftBrace")
         && (tokens[current + 1]?.kind === "rightBrace"
           || (tokens[current + 1]?.kind === "identifier" && tokens[current + 2]?.kind === "colon"));
       if (beginsStructLiteral) {
-        take();
-        const fields = [];
-        while (!at("rightBrace")) {
-          const field = expect("identifier", "a field name");
-          expect("colon", "`:`");
-          fields.push({
-            name: field.text,
-            expression: parseExpression(),
-            location: field.location,
-          });
-          if (!match("comma")) break;
-        }
-        expect("rightBrace", "`}`");
-        return {
-          kind: "structExpression",
-          typeName: identifierName,
-          fields,
-          location: token.location,
-        };
+        throw new DiagnosticError(fileName, token.location, `construction requires ${identifierName}({ ... })`);
       }
       if (at("dot") && tokens[current + 1]?.kind === "identifier" && startsPrimary(tokens[current + 2]?.kind)) {
         take();

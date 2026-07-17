@@ -14,7 +14,7 @@ function identity<T>(value: T): T {
 }
 
 function main(): i32 {
-  const pair = Pair<i32> { first: 20, second: 22 };
+  const pair = Pair<i32>({ first: 20, second: 22 });
   const left = first(pair);
   const right = identity(pair.second);
   stdio.printf("generic=%d\n", left + right);

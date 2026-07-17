@@ -17,7 +17,7 @@ function measure<T: Measured>(value: T): i32 {
 }
 
 function main(): i32 {
-  const reading = Reading { amount: 42 };
+  const reading = Reading({ amount: 42 });
   stdio.printf("measured=%d\n", measure(reading));
   return 0;
 }

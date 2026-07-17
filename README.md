@@ -51,7 +51,7 @@ export function total(in point: Point): i32 { return point.x + point.y; }
 import geometry from "./geometry.z";
 import { total as sum } from "./geometry.z";
 
-const point = geometry.Point { x: 20, y: 22 };
+const point = geometry.Point({ x: 20, y: 22 });
 const answer = sum(point);
 ```
 
@@ -75,9 +75,11 @@ struct Point {
   y: i32;
 
   function translated(dx: i32, dy: i32): Point {
-    return Point { x: this.x + dx, y: this.y + dy };
+    return Point({ x: this.x + dx, y: this.y + dy });
   }
 }
+
+const origin = Point({ x: 0, y: 0 });
 ```
 
 Classes use reference identity and automatic reference counting. Assigning or
@@ -101,10 +103,17 @@ class Counter implements Counted {
   }
 }
 
-const first = Counter { count: 1 };
+const first = new Counter({ count: 1 });
 const second = first;
 first.add(2); // Both references now observe 3.
 ```
+
+Construction follows the value/identity distinction. `Point({ ... })` creates a
+struct value; `new Counter({ ... })` creates a class instance and its initial
+owning strong reference. `new` is class-only—not a general allocator or a manual
+memory primitive—and the compiler remains free to optimize physical allocation
+without changing class identity. The synthesized initializer currently requires
+every declared field exactly once. User-defined constructors are a later layer.
 
 `const` fixes the class reference binding; it does not make the referenced
 instance deeply immutable. This lets an explicitly mutating `inout this` method
@@ -155,10 +164,10 @@ stores a mutable value in the same lexical scope. Z does not have JavaScript's
 function-scoped, hoisted `var`:
 
 ```z
-const origin = Point { x: 1, y: 2 };
+const origin = Point({ x: 1, y: 2 });
 let position = origin;
 position.x = 10;
-position = Point { x: position.x, y: 20 };
+position = Point({ x: position.x, y: 20 });
 ```
 
 Assignment is a statement rather than a value-producing expression. It is
@@ -186,7 +195,7 @@ struct Counter {
   }
 }
 
-let counter = Counter { value: 1 };
+let counter = Counter({ value: 1 });
 counter.add(2);
 ```
 
@@ -210,7 +219,7 @@ struct Resource {
   }
 }
 
-const resource = Resource { handle };
+const resource = Resource({ handle });
 resource.close();
 // `resource` has moved and cannot be used again.
 ```
@@ -279,6 +288,24 @@ match (result) {
   failure(error) => showError(error);
 }
 ```
+
+`Option<T>` is the compiler-provided form for a value that may be absent. It is
+implemented through the same enum and ownership machinery rather than through a
+nullable pointer or sentinel:
+
+```z
+const present = Option.some(user); // infers Option<User>
+const absent: Option<User> = Option.none;
+
+const id = match (present) {
+  some(user) => user.id;
+  none => -1;
+};
+```
+
+`Option.none` needs either a destination annotation, as above, or an explicit
+qualifier such as `Option<User>.none`, because an empty value contains no payload
+from which to infer `T`. `Option.none` is a value, so it is not called with `()`.
 
 Enums composed only from copyable payloads remain copyable. If any reachable
 payload has deterministic cleanup, the enum becomes an owned, move-only value:
@@ -470,7 +497,7 @@ ceremony:
 
 ```z
 function findUser(id: i32): User throws UserError {
-  return User { id: id };
+  return User({ id: id });
 }
 
 const result = attempt findUser(42);
@@ -593,7 +620,7 @@ retaining an explicit specialization escape hatch:
 struct Pair<T> { first: T; second: T; }
 function first<T>(pair: Pair<T>): T { return pair.first; }
 
-const pair = Pair<i32> { first: 20, second: 22 };
+const pair = Pair<i32>({ first: 20, second: 22 });
 const value = first(pair);
 const explicit = first<i32>(pair);
 ```
@@ -666,7 +693,7 @@ function move(point: geometry.Point, amount: geometry.Count): geometry.Point {
   return geometry.translate(point, geometry.Forward, amount);
 }
 
-const origin = geometry.Point { x: 10, y: 20 };
+const origin = geometry.Point({ x: 10, y: 20 });
 const moved = move(origin, 3);
 console.log(`moved to ${moved.x}, ${moved.y}`);
 ```
@@ -685,7 +712,7 @@ functions and plain aggregate records:
 import console from "std/console";
 import cpp from "cpp_math.hpp";
 
-const origin = cpp.Point { x: 20, y: 22 };
+const origin = cpp.Point({ x: 20, y: 22 });
 const moved = cpp.translate(origin, 1, -1);
 console.log(`sum=${cpp.sum(moved)}, point=${moved}`);
 ```
@@ -859,7 +886,7 @@ import {
   z_translate as translate
 } from "geometry.h";
 
-const origin = Point { x: 10, y: 20 };
+const origin = Point({ x: 10, y: 20 });
 const moved = translate(origin, forward, 3);
 ```
 
@@ -903,7 +930,7 @@ An escaping callback is also ergonomic when C accepts a destroy callback:
 
 ```z
 function installRetainedOperation(): void {
-  const offset = Offset { value: 2 };
+  const offset = Offset({ value: 2 });
   const operation: (value: i32) => i32 =
     move (value: i32): i32 => value + offset.value;
   retainOperation(operation);

@@ -14,7 +14,7 @@ function main(): i32 {
 
   while (index < 6) {
     index = index + 1;
-    const iteration = Iteration { value: index };
+    const iteration = Iteration({ value: index });
 
     if (index == 2) {
       continue;
