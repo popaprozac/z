@@ -54,6 +54,7 @@ while exposing the non-escaping view wall for future experiments.
 | Z source modules | Implemented | Explicit exports, namespace/selective imports, aliases, cycle diagnostics |
 | CLI | Implemented | `z check`, `z emit`, and `z run` through Bun |
 | Native backends | Partial | Readable C, C++20, Objective-C ARC, and Objective-C++ source generation |
+| Foreign Interface IR | Implemented foundation | Shared normalized declarations extracted from the Clang producer; validation/producer separation continues |
 | Language server | Partial | Diagnostics, semantic highlighting, local/import completion, hover, Z definitions |
 | Native definitions | Planned | Header source-location metadata is not yet exposed to go-to-definition |
 | Self-hosting | Planned | Stage 0 remains TypeScript/Bun; file/process APIs and sufficient Z surface come first |
@@ -116,7 +117,8 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
 1. Split and maintain tutorial, semantics, rationale, and bootstrap status
    documents (this structure is now in place).
 2. Introduce a backend-neutral Foreign Interface IR so Clang, API notes, Swift
-   interfaces, and future package metadata feed one ownership model.
+   interfaces, and future package metadata feed one ownership model (shared
+   type-contract extraction is now in place; producer/merge separation follows).
 3. Extend the desktop probe through one real native event callback into owned Z
    state.
 4. Test a real escaping-view need before choosing scoped callbacks, inferred

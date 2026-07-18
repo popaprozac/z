@@ -205,6 +205,8 @@ cancellation is a structural task outcome, not an invented member of `E`.
 Native declarations come from toolchain-owned headers and module interfaces.
 Z's foreign semantic model adds facts absent from those declarations: ownership,
 nullability, lifetime, callback retention, threading, and async behavior.
+Those facts normalize through the
+[`Foreign Interface IR`](foreign-interface-ir.md) before semantic checking.
 
 C imports may be direct and zero-wrapper. Objective-C references use ARC. C++
 values use their native construction and destruction rules. Swift interop uses
