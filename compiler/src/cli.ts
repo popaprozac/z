@@ -68,9 +68,8 @@ function runNative(inputPath: string, artifact: NativeArtifact): void {
     throw new Error(compilation.stderr || "Clang failed");
   }
 
-  const execution = spawnSync(executablePath, [], { encoding: "utf8" });
-  process.stdout.write(execution.stdout);
-  process.stderr.write(execution.stderr);
+  const execution = spawnSync(executablePath, [], { stdio: "inherit" });
+  if (execution.error) throw execution.error;
   if (execution.status !== 0) process.exitCode = execution.status ?? 1;
 }
 

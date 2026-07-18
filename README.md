@@ -6,7 +6,9 @@ interop with C-family platform APIs.
 
 The stage-0 compiler is written in TypeScript, runs on Bun, and emits readable C,
 C++, or Objective-C-family source before the platform compiler produces a native
-binary. It has no third-party package dependencies.
+binary. It has no third-party package dependencies. `z run` streams the native
+program's stdout and stderr as they are written, including while a GUI event loop
+is active.
 
 Documentation has four explicit roles:
 

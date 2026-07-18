@@ -1650,6 +1650,7 @@ function generateConsoleCall(
     }
   });
   if (expression.callee.property !== "write") lines.push(`fputc('\\n', ${stream});`);
+  lines.push(`fflush(${stream});`);
   return lines.join("\n");
 }
 

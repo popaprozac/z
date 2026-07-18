@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { resolve } from "node:path";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { test } from "bun:test";
@@ -2087,8 +2087,54 @@ test("formats typed values through the imported console namespace and interpolat
   assert.match(generated, /#include <stdio\.h>/);
   assert.match(generated, /fputs\(" with text in between, struct: ", stdout\)/);
   assert.match(generated, /fprintf\(stdout, "%lld", \(long long\)/);
+  assert.match(generated, /fflush\(stdout\)/);
+  assert.match(generated, /fflush\(stderr\)/);
   assert.match(generated, /switch \(\(_z_console_\d+\)\.tag\)/);
   assert.doesNotMatch(generated, /console\.log/);
+});
+
+test("streams native console output before z run exits", async () => {
+  const directory = mkdtempSync("/tmp/z-streaming-console-");
+  const fileName = resolve(directory, "main.z");
+  writeFileSync(fileName, `
+    import console from "std/console";
+    import { sleep } from "std/time";
+    function main(): i32 {
+      console.log("live");
+      sleep(300);
+      console.log("done");
+      return 0;
+    }
+  `);
+
+  const child = spawn(process.execPath, [cli, "run", fileName], {
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  let stdout = "";
+  let stderr = "";
+  let sawLive = false;
+  const streamedWhileRunning = new Promise<boolean>((resolveStream, reject) => {
+    child.once("error", reject);
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk.toString();
+      if (!sawLive && stdout.includes("live\n")) {
+        sawLive = true;
+        resolveStream(child.exitCode === null);
+      }
+    });
+    child.once("close", () => {
+      if (!sawLive) resolveStream(false);
+    });
+  });
+  child.stderr.on("data", (chunk) => { stderr += chunk.toString(); });
+  const completion = new Promise<number | null>((resolveExit, reject) => {
+    child.once("error", reject);
+    child.once("close", resolveExit);
+  });
+
+  assert.equal(await streamedWhileRunning, true);
+  assert.equal(await completion, 0, stderr);
+  assert.equal(stdout, "live\ndone\n");
 });
 
 test("resolves explicit standard console imports without routing them through Clang", () => {

@@ -52,7 +52,7 @@ while exposing the non-escaping view wall for future experiments.
 | Area | Status | Current boundary |
 | --- | --- | --- |
 | Z source modules | Implemented | Explicit exports, namespace/selective imports, aliases, cycle diagnostics |
-| CLI | Implemented | `z check`, `z emit`, and `z run` through Bun |
+| CLI | Implemented | `z check`, `z emit`, and `z run` through Bun; native run I/O streams live |
 | Native backends | Partial | Readable C, C++20, Objective-C ARC, and Objective-C++ source generation |
 | Foreign Interface IR | Implemented foundation | Shared normalized declarations extracted from the Clang producer; validation/producer separation continues |
 | Language server | Partial | Diagnostics, semantic highlighting, local/import completion, hover, Z definitions |
