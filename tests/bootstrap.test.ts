@@ -415,7 +415,7 @@ test("passes contextual inline closures directly to imported C callbacks", () =>
   const source = readFileSync(fixture, "utf8");
   const generated = compileToC(source, fixture);
   assert.match(generated, /z_apply_i32\(6, 7, __z_closure_call_[0-9]+\)/);
-  assert.match(generated, /z_apply_context_i32\(_z_argument_[0-9]+, \(void \*\)&\(_z_argument_[0-9]+\), __z_c_callback_/);
+  assert.match(generated, /z_apply_context_i32\(40, \(void \*\)&\(_z_argument_[0-9]+\), __z_c_callback_/);
   assert.match(generated, /z_register_context_callback\(__z_c_callback_[^,]+, Z_Function_[0-9a-f]+_c_escape_box\(_z_argument_[0-9]+\)/);
 
   const parameter = source.indexOf("(left, right)") + 2;
@@ -1114,6 +1114,70 @@ test("retains owned Z closure environments across Objective-C blocks", () => {
   assert.match(
     diagnostics(borrowed, example)[0].message,
     /borrowed capturing closure cannot become a function value/,
+  );
+});
+
+test("registers persistent Objective-C event callbacks with explicit token cleanup", () => {
+  if (process.platform !== "darwin") return;
+  const fixture = resolve(projectRoot, "tests/fixtures/objc-notifications.z");
+  const source = readFileSync(fixture, "utf8");
+  const artifact = compileToNative(source, fixture);
+  assert.equal(artifact.language, "objective-c");
+  assert.match(artifact.source, /addObserverForName:@"ZEvent" object:NULL queue:NULL usingBlock:_z_objc_block_/);
+  assert.match(artifact.source, /postNotificationName:@"ZEvent" object:NULL/);
+  assert.match(artifact.source, /removeObserver:token/);
+  assert.match(artifact.source, /\^void\(NSNotification \* _z_block_argument_1\)/);
+  assert.match(artifact.source, /Z_Weak observer;/);
+  assert.doesNotMatch(artifact.source, /Z_EventState \* state;/);
+
+  const result = spawnSync(process.execPath, [cli, "run", fixture], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, "event 1: ZEvent\nevent 2: ZEvent\nreleased event state 2\n");
+
+  const notificationUse = source.indexOf("notification.name") + 1;
+  assert.match(
+    hover(source, fixture, notificationUse)?.contents.value ?? "",
+    /notification: Foundation\.NSNotification/,
+  );
+  const tokenUse = source.indexOf("token);") + 1;
+  assert.match(hover(source, fixture, tokenUse)?.contents.value ?? "", /token: id/);
+  const completionSource = source.replace("notification.name", "notification.na");
+  const completionOffset = completionSource.indexOf("notification.na") + "notification.na".length;
+  assert.equal(
+    completions(completionSource, fixture, completionOffset).some((item) => item.label === "name"),
+    true,
+  );
+
+  const appKitExample = resolve(projectRoot, "examples/appkit-events.z");
+  const appKitSource = readFileSync(appKitExample, "utf8");
+  const appKitArtifact = compileToNative(appKitSource, appKitExample);
+  assert.match(appKitArtifact.source, /_z_argument_[0-9]+ = NSWindowDidBecomeKeyNotification;/);
+  assert.match(appKitArtifact.source, /_z_argument_[0-9]+ = NSWindowWillCloseNotification;/);
+  assert.match(appKitArtifact.source, /addObserverForName:_z_argument_[0-9]+ object:_z_argument_[0-9]+ queue:NULL usingBlock:_z_objc_block_/);
+  assert.match(appKitArtifact.source, /removeObserver:keyToken/);
+  assert.match(appKitArtifact.source, /removeObserver:closeToken/);
+  const compilation = spawnSync("clang", [
+    "-x", "objective-c",
+    "-fobjc-arc", "-fblocks",
+    "-Wall", "-Wextra", "-Werror",
+    "-fsyntax-only", "-",
+  ], { input: appKitArtifact.source, encoding: "utf8" });
+  assert.equal(compilation.status, 0, compilation.stderr);
+
+  const constantOffset = appKitSource.indexOf("NSWindowDidBecomeKeyNotification") + 1;
+  assert.match(
+    hover(appKitSource, appKitExample, constantOffset)?.contents.value ?? "",
+    /NSWindowDidBecomeKeyNotification: AppKit\.NSString/,
+  );
+  const namespaceCompletionSource = appKitSource.replace(
+    "AppKit.NSWindowDidBecomeKeyNotification",
+    "AppKit.NSWindowDid",
+  );
+  const namespaceCompletionOffset = namespaceCompletionSource.indexOf("AppKit.NSWindowDid") + "AppKit.NSWindowDid".length;
+  assert.equal(
+    completions(namespaceCompletionSource, appKitExample, namespaceCompletionOffset)
+      .some((item) => item.label === "NSWindowDidBecomeKeyNotification"),
+    true,
   );
 });
 

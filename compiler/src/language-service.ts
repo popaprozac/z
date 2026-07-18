@@ -1046,6 +1046,23 @@ function memberCompletions(
     context = safeAnalysis(probeSource, fileName);
     resolvedOffset = probePrefix.length;
   }
+  if (!context && prefix.length > 0) {
+    const completionStart = offset - prefix.length;
+    const propertyProbes = new Set<string>();
+    for (const declaration of importContext.semanticInfo.foreignInterfaces.values()) {
+      for (const property of declaration.properties) {
+        if (property.name.startsWith(prefix)) propertyProbes.add(property.name);
+      }
+    }
+    for (const candidate of [...propertyProbes].sort((left, right) => left.length - right.length || left.localeCompare(right))) {
+      const probeSource = source.slice(0, completionStart) + candidate + source.slice(tailOffset);
+      context = safeAnalysis(probeSource, fileName);
+      if (context) {
+        resolvedOffset = receiverOffset;
+        break;
+      }
+    }
+  }
   if (!context) return [];
   const resolved = resolveReceiver(context, receiverText, resolvedOffset);
   if (resolved?.kind === "objc") return filterCompletions(objcCompletions(resolved.declaration, resolved.instance, context), prefix, 1000);

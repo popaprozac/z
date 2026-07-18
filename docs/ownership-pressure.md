@@ -68,16 +68,26 @@ slices.
 
 ## Pressure 3: interactive AppKit adapter surfaces
 
-Resolved for the first Objective-C block shape: the desktop probe passes an
-owned `move` closure to `beginWithCompletionHandler`. AppKit copies the block;
-a generated ARC box retains the Z closure environment, and releases it exactly
-once when the native block dies. The completion event mutates the owned
-`Workspace`, proving a real AppKit-to-Z state path rather than a static window.
+Resolved for both one-shot and persistent Objective-C block shapes. The desktop
+probe passes an owned `move` closure to `beginWithCompletionHandler`. AppKit
+copies the block; a generated ARC box retains the Z closure environment and
+releases it exactly once when the native block dies. The completion event
+mutates the owned `Workspace`, proving a real AppKit-to-Z state path rather
+than a static window.
+
+The persistent notification probe registers blocks with
+`NSNotificationCenter`, retains each returned observer token, weakly captures
+ARC-managed Z state, receives repeated events, and explicitly unregisters both
+tokens after the AppKit event loop returns. A deterministic Foundation fixture
+posts twice, removes its token, and proves a third post cannot invoke the Z
+closure. This validates the native token/block lifetime without creating a
+strong reference cycle.
 
 Borrowed captures are rejected at an escaping block boundary. Non-escaping
 blocks can borrow lexically. Named function values, block returns with richer
-foreign object ownership, target/action selector adapters, delegates, and
-Z-defined Objective-C protocol conformance remain separate follow-ups.
+foreign object ownership, target/action selector adapters, delegates,
+cross-thread delivery, and Z-defined Objective-C protocol conformance remain
+separate follow-ups.
 
 ## Pressure 4: owned strings across Objective-C
 

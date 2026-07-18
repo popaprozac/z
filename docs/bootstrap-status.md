@@ -67,7 +67,7 @@ while exposing the non-escaping view wall for future experiments.
 | C records and enums | Implemented | Complete supported layouts, nested records, constants |
 | C pointers | Partial | Safe opaque handles and record borrows require API notes |
 | C callbacks | Partial | Call-only and caller-thread escaping callbacks with exact release contracts |
-| Objective-C | Partial | ARC classes/fields, methods, properties, labels, nullability, niche-backed `Option.fromNullable`, owned `String`/`NSString` copies, first escaping block adapter |
+| Objective-C | Partial | ARC classes/fields, methods, properties/global object constants, labels, nullability, niche-backed `Option.fromNullable`, owned `String`/`NSString` copies, escaping blocks and persistent observer tokens |
 | C++ | Partial | Namespace free functions, plain records, first opaque copyable RAII values |
 | Swift via Objective-C | Implemented slice | Generated compatibility header, classes/properties/methods, automatic local dylib build/link |
 | Swift value via C++ | Implemented probe | Native struct return/copy/round-trip/destruction without handwritten shim |
@@ -76,7 +76,7 @@ while exposing the non-escaping view wall for future experiments.
 Current interop gaps that block a richer desktop application include
 broader Objective-C block shapes, target/action adapters, protocol conformance,
 cross-thread callbacks, availability, and API notes at SDK scale. General
-General `T | null`/`Option<T>` representation unification remains language
+`T | null`/`Option<T>` representation unification remains language
 foundation work; Objective-C reference options now have the first one-pointer
 niche-backed specialization and explicit conversion bridge.
 
@@ -110,6 +110,9 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
   `some`/`none` matching.
 - [`examples/desktop-ownership`](../examples/desktop-ownership): ARC application
   model plus move-only owned documents and AppKit shell.
+- [`examples/appkit-events.z`](../examples/appkit-events.z): persistent native
+  notification callbacks, weak Z capture, imported notification constants, and
+  explicit observer-token removal.
 - [`examples/swift-interop`](../examples/swift-interop): Swift class through its
   generated Objective-C compatibility header.
 - [`examples/swift-value-interop`](../examples/swift-value-interop): Swift-native
@@ -125,7 +128,7 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    interfaces, and future package metadata feed one ownership model (shared
    type-contract extraction is now in place; producer/merge separation follows).
 3. Extend the desktop probe through one real native event callback into owned Z
-   state.
+   state (one-shot and persistent notification paths are now validated).
 4. Test a real escaping-view need before choosing scoped callbacks, inferred
    views, regions, or another borrow shape.
 5. Keep actors, channels, multithreaded executors, and atomic ARC provisional

@@ -980,7 +980,8 @@ app.run();
 
 The bootstrap imports Objective-C interfaces, superclass method lookup, class
 and instance methods, property getters and setters, `instancetype`, object
-nullability, and C values used inside method signatures. An inferred nullable
+nullability, external object constants, and C values used inside method
+signatures. An inferred nullable
 reference is shown by editor services as `AppKit.NSWindow | null`; member access
 requires a `reference != null` check, and the checked branch narrows to the
 non-null nominal type without changing its one-pointer native representation.
@@ -992,7 +993,11 @@ Objective-C selector. Imported custom property accessors are honored. String
 literals bridge contextually to `NSString` for compatible Objective-C method
 parameters and properties while remaining `cstring` everywhere else. ARC owns
 local object-reference retain/release behavior, and the generated `main` runs
-inside an autorelease pool. Protocols, delegates, broader block shapes,
+inside an autorelease pool. Escaping Objective-C blocks accept owned `move`
+closures, including persistent notification observers whose returned native
+tokens are explicitly removed. [`examples/appkit-events.z`](examples/appkit-events.z)
+demonstrates repeated AppKit events, weak Z state capture, imported notification
+constants, and deterministic unregistration. Protocols, delegates, broader block shapes,
 lightweight generics, availability checking, and actor isolation remain
 upcoming layers.
 

@@ -71,6 +71,7 @@ type ClangNode = {
   readonly class?: boolean;
   readonly getter?: { readonly name?: string };
   readonly setter?: { readonly name?: string };
+  readonly storageClass?: string;
   readonly isImplicit?: boolean;
   readonly returnType?: { readonly qualType?: string; readonly desugaredQualType?: string };
   readonly super?: { readonly name?: string };
@@ -158,9 +159,10 @@ function readHeader(
 
   const notes = readApiNotes(declaration, fileName, headerDirectory);
   const imported = collectNamedTypes(root, declaration.moduleName, cPlusPlus, swiftCxxNamespace);
+  const constants = new Map(imported.constants);
   const objectTypes = new Map<string, ForeignObjectType>();
   const interfaces = objectiveC
-    ? collectObjCInterfaces(root, declaration.moduleName, imported.byCName, objectTypes)
+    ? collectObjCInterfaces(root, declaration.moduleName, imported.byCName, objectTypes, constants)
     : new Map<string, ForeignObjCInterface>();
   const functions = new Map<string, ForeignFunction>();
   const types = new Map<string, ForeignPointerType>();
@@ -326,7 +328,7 @@ function readHeader(
       );
     }
   }
-  return { functions, types, namedTypes: imported.namedTypes, constants: imported.constants, objectTypes, interfaces, framework, objectiveC, cPlusPlus };
+  return { functions, types, namedTypes: imported.namedTypes, constants, objectTypes, interfaces, framework, objectiveC, cPlusPlus };
 }
 
 function collectNamedTypes(
@@ -481,6 +483,7 @@ function collectObjCInterfaces(
   moduleName: string,
   namedTypes: ReadonlyMap<string, ForeignNamedType>,
   objectTypes: Map<string, ForeignObjectType>,
+  constants: Map<string, ForeignConstant>,
 ): Map<string, ForeignObjCInterface> {
   const declarations = new Map<string, ClangNode>();
   visit(root, (node) => {
@@ -546,6 +549,12 @@ function collectObjCInterfaces(
     objectType(className, false);
     objectType(className, true);
   }
+  visit(root, (node) => {
+    if (node.kind !== "VarDecl" || node.storageClass !== "extern" || !node.name || !node.type?.qualType) return;
+    const type = mapObjCType(node.type, "", "return", namedTypes, typeNames, objectType);
+    if (type.kind !== "object") return;
+    constants.set(node.name, { name: node.name, cName: node.name, typeName: type.typeName });
+  });
   return interfaces;
 }
 
@@ -569,12 +578,16 @@ function mapObjCType(
     ? mapObjCBlockType(type.desugaredQualType, receiverClass, namedTypes, typeNames, objectType)
     : null);
   if (block) return block;
-  if (/\binstancetype\b/.test(qualified)) return objectType(receiverClass, nullable);
-  if (/^(?:__strong\s+)?id(?:\s|<|$)/.test(qualified.replace(/\b_(?:Nullable|Nonnull|Null_unspecified)\b/g, "").trim())) {
-    return objectType(null, nullable);
+  const objectSpellings = [qualified, type.desugaredQualType]
+    .filter((candidate): candidate is string => Boolean(candidate));
+  for (const spelling of objectSpellings) {
+    if (/\binstancetype\b/.test(spelling)) return objectType(receiverClass, nullable);
+    if (/^(?:__strong\s+)?id(?:\s|<|$)/.test(spelling.replace(/\b_(?:Nullable|Nonnull|Null_unspecified)\b/g, "").trim())) {
+      return objectType(null, nullable);
+    }
+    const objectMatch = /(?:__kindof\s+)?([A-Za-z_]\w*)\s*\*/.exec(spelling);
+    if (objectMatch && typeNames.has(objectMatch[1])) return objectType(objectMatch[1], nullable);
   }
-  const objectMatch = /(?:__kindof\s+)?([A-Za-z_]\w*)\s*\*/.exec(qualified);
-  if (objectMatch && typeNames.has(objectMatch[1])) return objectType(objectMatch[1], nullable);
 
   const pointerTypes = new Map<string, ForeignPointerType>();
   const mapped = mapForeignType(qualified, undefined, position, pointerTypes, namedTypes);

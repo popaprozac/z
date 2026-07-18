@@ -898,6 +898,14 @@ desktop probe uses `NSOpenPanel.beginWithCompletionHandler` to mutate its owned
 `Workspace` from a real AppKit completion event. This validates the first block
 shape without prematurely choosing target/action or delegate syntax.
 
+The next validated shape is a persistent `NSNotificationCenter` observer. Z
+keeps the returned native token, weakly captures its ARC-managed application
+state, handles repeated notifications, and explicitly removes the observer at
+the end of the event-loop lifetime. Imported external Objective-C object
+constants such as AppKit notification names retain their nominal interface
+types in Z. Persistent callbacks do not imply detached lifetime: native token
+ownership and unregistration remain visible in source.
+
 Computed Z `String` values bridge contextually to Objective-C `NSString`
 arguments and properties through their exact byte length, not `strlen`.
 Converting a non-null `NSString` to an explicitly typed Z `String` always makes

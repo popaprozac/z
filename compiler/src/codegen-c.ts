@@ -2259,6 +2259,12 @@ function generateLoweredCall(
   const overrides = new Map<number, string>();
   const borrowedTemporaries: Array<{ readonly name: string; readonly type: string }> = [];
   for (const argument of expression.arguments) {
+    if (
+      !callArgumentNeedsLowering(argument, context)
+      && ["number", "string", "boolean", "null"].includes(argument.kind)
+    ) {
+      continue;
+    }
     const access = context.semanticInfo.nativeArgumentAccesses.get(argument.location.offset)
       ?? context.semanticInfo.foreignArgumentAccesses.get(argument.location.offset)
       ?? (context.semanticInfo.cstringConversions.has(argument.location.offset) ? "in" : undefined);
