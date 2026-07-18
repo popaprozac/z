@@ -1081,10 +1081,31 @@ upcoming interop layers.
 
 See [DESIGN.md](DESIGN.md) for the language charter and roadmap.
 
-## Async Phase 0
+## Async frontend and Phase 1 lowering
 
-Z validates the explicit structured-async surface before executable runtime
-lowering lands:
+Z validates the complete structured-async surface. The first native Phase 1
+slice executes top-level, non-throwing scalar async functions with direct
+sequential awaits:
+
+```z
+async function fetchValue(value: i32): i32 {
+  return value;
+}
+
+async function main(): i32 {
+  const first = await fetchValue(20);
+  const second = await fetchValue(22);
+  return first == 20 && second == 22 ? 0 : 1;
+}
+```
+
+Run it with:
+
+```sh
+bun run z run examples/async-sequential.z
+```
+
+The frontend already accepts the broader intended surface:
 
 ```z
 async function fetchValue(id: i32): i32 throws NetworkError {
@@ -1104,15 +1125,17 @@ rejected in the first tier. `T throws E` remains the function contract,
 `Task<T, E>` represents spawned work, and `attempt await` materializes
 `Result<T, E>` when the outcome should be retained.
 
-Run the frontend example with:
+Check the broader frontend example with:
 
 ```sh
 bun run z check examples/async-phase-0.z
 ```
 
-`emit` and `run` intentionally report `Z0700` until Phase 1 adds stackless
-state-machine lowering and a deterministic single-thread executor. See
-[docs/async-model.md](docs/async-model.md) for the complete model and phases.
+Unsupported executable shapes report `Z0700` with the precise current boundary
+rather than receiving synchronous-looking lowering. Typed async errors, owned
+aggregate frames, methods, `spawn`, and explicit scope scheduling are the next
+runtime layers. See [docs/async-model.md](docs/async-model.md) for the complete
+model and phases.
 
 ## Editor support
 

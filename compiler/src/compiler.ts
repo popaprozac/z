@@ -12,7 +12,7 @@ import type { SemanticInfo } from "./sema.ts";
 import { prepareProject, type ProjectBuild } from "./project.ts";
 import { linkSourceModules, type SourceModuleInfo } from "./modules.ts";
 import { materializeWeakTypes } from "./weak-types.ts";
-import { DiagnosticError } from "./diagnostics.ts";
+import { generateAsyncC } from "./async-codegen-c.ts";
 
 export type NativeLanguage = "c" | "objective-c" | "c++" | "objective-c++";
 
@@ -51,7 +51,8 @@ export function analyzeSource(source: string, fileName: string, options: Analysi
   const program = materializeResultTypes(materializeWeakTypes(materializeGenerics(inferredProgram, fileName, typeDisplayNames)));
   for (const declaration of program.enums) {
     if (!declaration.name.startsWith("__z_Result_")) continue;
-    const success = declaration.variants.find((variant) => variant.name === "success")?.payload?.name;
+    const successVariant = declaration.variants.find((variant) => variant.name === "success");
+    const success = successVariant?.payload?.name ?? (successVariant ? "void" : null);
     const failure = declaration.variants.find((variant) => variant.name === "failure")?.payload?.name;
     if (!success || !failure) continue;
     typeDisplayNames.set(
@@ -82,15 +83,11 @@ export function compileToNative(source: string, fileName: string): NativeArtifac
     ...program.functions,
     ...program.structs.flatMap((declaration) => declaration.methods),
   ].find((declaration) => declaration.async);
-  if (asyncDeclaration) {
-    throw new DiagnosticError(fileName, asyncDeclaration.location, "async runtime lowering is not implemented in Phase 0", {
-      code: "Z0700",
-      notes: ["syntax, typing, ownership restrictions, diagnostics, and editor services are available now"],
-      helps: ["use `z check` while designing async code; executable state-machine lowering lands in Async Phase 1"],
-    });
-  }
+  const generated = asyncDeclaration ? generateAsyncC(program, fileName, semanticInfo) : null;
+  const synchronousProgram = generated?.synchronousProgram ?? program;
+  const synchronousSource = generateC(synchronousProgram, fileName, semanticInfo);
   return {
-    source: generateC(program, fileName, semanticInfo),
+    source: generated ? `${synchronousSource}\n${generated.source}\n` : synchronousSource,
     language: semanticInfo.objectiveC
       ? semanticInfo.cPlusPlus ? "objective-c++" : "objective-c"
       : semanticInfo.cPlusPlus ? "c++" : "c",

@@ -654,9 +654,6 @@ function validateFunctionSignature(
   if (declaration.errorType && hasCleanupType(declaration.errorType.name, structs, enums)) {
     throw new DiagnosticError(fileName, declaration.errorType.location, "throwing cleanup-bearing error values is not implemented in this bootstrap stage");
   }
-  if (declaration.errorType && declaration.returnType.name === "void") {
-    throw new DiagnosticError(fileName, declaration.returnType.location, "void success results are not implemented in this bootstrap stage");
-  }
   if (declaration.errorType && declaration.parameters.some((parameter) => parameter.mode === "out")) {
     throw new DiagnosticError(fileName, declaration.location, "throwing functions with out parameters are not implemented yet");
   }
@@ -2156,12 +2153,12 @@ function inferTrySuccess(
   if (!result || !result.name.startsWith("__z_Result_")) {
     throw new DiagnosticError(fileName, expression.location, "try requires a throwing function call");
   }
-  const success = result.variants.find((variant) => variant.name === "success")!.payload!;
+  const success = result.variants.find((variant) => variant.name === "success")!;
   const failure = result.variants.find((variant) => variant.name === "failure")!.payload!;
   if (failure.name !== owner.errorType.name) {
     throw new DiagnosticError(fileName, expression.location, `cannot propagate ${failure.name} from a function throwing ${owner.errorType.name}`);
   }
-  return success.name;
+  return success.payload?.name ?? "void";
 }
 
 function isConsoleMember(
@@ -2758,7 +2755,8 @@ function inferExpressionInner(
       }
       const result = enums.get(String(spawned));
       if (result?.name.startsWith("__z_Result_")) {
-        const success = result.variants.find((variant) => variant.name === "success")!.payload!.name;
+        const successVariant = result.variants.find((variant) => variant.name === "success")!;
+        const success = successVariant.payload?.name ?? "void";
         const failure = result.variants.find((variant) => variant.name === "failure")!.payload!.name;
         return taskTypeName(success, failure);
       }

@@ -21,7 +21,11 @@ export function materializeResultTypes(program: Program): Program {
       name,
       location: declaration.location,
       variants: [
-        { name: "success", payload: declaration.returnType, location: declaration.location },
+        {
+          name: "success",
+          payload: declaration.returnType.name === "void" ? null : declaration.returnType,
+          location: declaration.location,
+        },
         { name: "failure", payload: declaration.errorType, location: declaration.location },
       ],
     });

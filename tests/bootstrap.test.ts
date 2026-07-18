@@ -4487,6 +4487,7 @@ test("editor grammar tracks keywords without reserving Result variants", () => {
   assert.match(typePattern, /Array/);
   assert.match(typePattern, /Option/);
   assert.match(typePattern, /String/);
+  assert.match(typePattern, /void/);
   assert.match(stringPatterns, /string\.quoted\.template\.z/);
   assert.match(stringPatterns, /string\.quoted\.single\.z/);
   assert.match(stringPatterns, /meta\.interpolation\.z/);
@@ -4541,9 +4542,44 @@ test("checks Phase 0 async calls, scoped tasks, typed errors, and editor details
   assert.throws(() => compileToC(source, example), (error: unknown) => {
     assert.ok(error instanceof DiagnosticError);
     assert.equal(error.code, "Z0700");
-    assert.match(error.message, /async runtime lowering is not implemented in Phase 0/);
+    assert.match(error.message, /typed async errors are not executable in the first Phase 1 slice/);
     return true;
   });
+});
+
+test("runs scalar async functions as stackless Phase 1 task frames", () => {
+  const example = resolve(projectRoot, "examples/async-sequential.z");
+  const source = readFileSync(example, "utf8");
+  const generated = compileToC(source, example);
+  assert.match(generated, /struct Z_AsyncFrame_fetchValue/);
+  assert.match(generated, /static void z_async_poll_main/);
+  assert.match(generated, /z_async_run\(&root->task\)/);
+  assert.match(generated, /switch \(frame->state\)/);
+
+  const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+});
+
+test("represents fallible void success without an enum payload", () => {
+  const source = `
+    struct NetworkError { code: i32; }
+    function warm(): void throws NetworkError { return; }
+    function main(): i32 {
+      const result = attempt warm();
+      return match (result) {
+        success => 0;
+        failure(error) => error.code;
+      };
+    }
+  `;
+  const generated = compileToC(source, "fallible-void.z");
+  assert.match(generated, /Z_Result_void_NetworkError_success/);
+  assert.doesNotMatch(generated, /data\.success/);
+  const compilation = spawnSync("clang", ["-x", "c", "-Wall", "-Wextra", "-Werror", "-fsyntax-only", "-"], {
+    input: generated,
+    encoding: "utf8",
+  });
+  assert.equal(compilation.status, 0, compilation.stderr);
 });
 
 test("allows root-scoped spawn and diagnoses unacknowledged async calls and async borrows", () => {

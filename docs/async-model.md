@@ -122,11 +122,17 @@ engines, and deterministic tests.
 Phase 0 implements parsing, static typing, ownership restrictions, diagnostics,
 hover, completion, and highlighting for `async`, `await`, `try await`,
 `attempt await`, `async scope`, `spawn`, and inferred task handles. `z check`
-accepts these programs; `z emit` and `z run` report `Z0700` until executable
-lowering lands.
+accepts these programs.
 
-Phase 1 lowers async functions to stackless state machines and supplies a
-deterministic single-thread executor. Later phases add structured cancellation,
-scheduler-aware delay, channels, sendability and atomic ARC, native executors,
-actors, and callback-to-async synthesis. Async-free programs never link the
-runtime.
+Phase 1 has begun with executable top-level, non-throwing scalar async functions
+and direct sequential awaits. Each call allocates a typed task frame, each
+`await` becomes an explicit poll state, and async `main` runs through a
+deterministic single-thread root runner. `z emit` produces readable C for this
+subset and `z run` executes it. Unsupported but valid async shapes report
+`Z0700` with a specific boundary diagnostic.
+
+The next Phase 1 layers add Result-carrying task frames, owned aggregate locals
+and cleanup, receiver-aware method frames, a ready queue, `spawn`, nested scope
+join/cancellation, and scheduler-aware delay. Later phases add channels,
+sendability and atomic ARC, native executors, actors, and callback-to-async
+synthesis. Async-free programs never link the runtime.

@@ -751,11 +751,13 @@ structured child teardown. Async class methods retain `this` in their frame;
 async struct methods initially require `move this`; static async methods have
 no receiver.
 
-Phase 0 implements syntax, typing, ownership diagnostics, and editor services;
-native emission reports `Z0700` until the Phase 1 runtime lands. Async functions
-then lower to stackless state machines. Async-free programs do not
-link an async runtime. Apple executors may integrate with Dispatch and the main
-run loop; Windows executors may integrate with the thread pool and IOCP.
+Phase 0 implements syntax, typing, ownership diagnostics, and editor services.
+Phase 1's first native slice lowers top-level, non-throwing scalar async
+functions and direct sequential awaits to typed heap frames and explicit poll
+states, driven by a deterministic single-thread root runner. Valid shapes beyond
+the active native tier report `Z0700`. Async-free programs do not link an async
+runtime. Apple executors may integrate with Dispatch and the main run loop;
+Windows executors may integrate with the thread pool and IOCP.
 
 ## Interop and backends
 
@@ -914,7 +916,7 @@ Interop work proceeds in layers:
 ## Initial non-goals
 
 - inheritance for Z-defined types (foreign superclass metadata is imported);
-- executable async state-machine lowering beyond the Phase 0 frontend;
+- production async scheduling, cancellation, I/O reactors, and CPU-parallel execution;
 - ORC cycle collection;
 - macros and compile-time execution;
 - direct LLVM or machine-code generation;
@@ -1023,7 +1025,9 @@ Clang declaration source locations rather than text-searching SDK headers.
 
 - Phase 0 async syntax, typing, task handles, ownership restrictions,
   diagnostics, and editor services (implemented);
-- stackless state-machine lowering and deterministic single-thread executor;
+- scalar sequential stackless state-machine lowering and deterministic root
+  runner (implemented);
+- Result-carrying and owned aggregate task frames, then a ready-queue executor;
 - structured task scopes, cancellation, and deterministic frame cleanup;
 - scheduler-aware delay and bounded move-aware channels;
 - sendability, atomic ARC, and pluggable native executors;

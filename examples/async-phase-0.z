@@ -1,5 +1,7 @@
-// Async Phase 0 validates syntax, types, task structure, and ownership.
-// Run `bun run z check examples/async-phase-0.z`; executable lowering follows in Phase 1.
+// This example exercises async features that are checked but not all executable yet.
+// Run `bun run z check examples/async-phase-0.z`.
+
+import console from "std/console";
 
 struct NetworkError {
   code: i32;
@@ -7,6 +9,11 @@ struct NetworkError {
 
 async function fetchValue(id: i32): i32 throws NetworkError {
   return id;
+}
+
+async function warmValue(id: i32): void throws NetworkError {
+  const value = try await fetchValue(id);
+  console.log(`warmed ${value}`);
 }
 
 async function main(): i32 throws NetworkError {
@@ -19,11 +26,13 @@ async function main(): i32 throws NetworkError {
   const secondTask = spawn fetchValue(22);
   const second = try await secondTask;
 
-  // Explicit scopes are only needed when child tasks should finish before a
-  // narrower region exits; the async function body is already a root scope.
+  // The scope is an earlier implicit-join boundary. Both children are complete
+  // before the statement following the block executes.
   async scope {
-    const nestedTask = spawn fetchValue(1);
-    const nested = try await nestedTask;
-    return baseline + first + second + nested - 1;
+    spawn warmValue(1);
+    spawn warmValue(2);
   }
+
+  console.log("warm batch complete");
+  return baseline + first + second;
 }

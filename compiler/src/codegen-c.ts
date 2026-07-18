@@ -1345,6 +1345,10 @@ function generateFunction(
   if (declaration.returnType.name === "void" && !statementListTerminates(declaration.body)) {
     const cleanup = generateCleanup(context.cleanupScopes, context);
     if (cleanup) bodyParts.push(indent(cleanup, 2));
+    if (declaration.errorType) {
+      const result = resultTypeName("void", declaration.errorType.name);
+      bodyParts.push(indent(`return (${enumName(result)}){ .tag = ${variantTag(result, "success")} };`, 2));
+    }
   }
   const body = bodyParts.join("\n");
   const signature = generateFunctionSignature(declaration, structs, enums, receiver, semanticInfo.foreignNamedTypes);
@@ -1571,6 +1575,11 @@ bool ${liveFlag} = true;`;
     case "return":
       if (!statement.expression) {
         const cleanup = generateCleanup(context.cleanupScopes, context);
+        if (context.owner.errorType) {
+          const result = resultTypeName("void", context.owner.errorType.name);
+          const returned = `return (${enumName(result)}){ .tag = ${variantTag(result, "success")} };`;
+          return cleanup ? `${cleanup}\n${returned}` : returned;
+        }
         return cleanup ? `${cleanup}\nreturn;` : "return;";
       }
       return generateDirectValue(statement.expression, context, (value, valueContext) => generateSuccessReturn(value, valueContext), true);
@@ -2479,13 +2488,13 @@ function generateTry(
       + `${cleanup ? `${indent(cleanup, 2)}\n` : ""}`
       + `${indent(failureReturn, 2)}\n`
       + `}\n`
-      + consumeSuccess(`${temporary}.data.success`, context)
+      + consumeSuccess(trySuccessType(expression, context) === "void" ? "0" : `${temporary}.data.success`, context)
   ));
 }
 
 function trySuccessType(expression: Extract<Expression, { kind: "try" }>, context: GenerationContext): string {
   const result = context.enums.get(throwingCallResultType(expression.expression, context))!;
-  return result.variants.find((variant) => variant.name === "success")!.payload!.name;
+  return result.variants.find((variant) => variant.name === "success")!.payload?.name ?? "void";
 }
 
 function throwingCallResultType(expression: Expression, context: GenerationContext): string {
