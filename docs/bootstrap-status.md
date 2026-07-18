@@ -70,7 +70,7 @@ an inferred receiver-tied view.
 | C pointers | Partial | Safe opaque handles and record borrows require API notes |
 | C callbacks | Partial | Call-only and caller-thread escaping callbacks with exact release contracts |
 | Objective-C | Partial | ARC classes/fields, methods, properties/global object constants, labels, nullability, niche-backed `Option.fromNullable`, owned `String`/`NSString` copies, escaping blocks and persistent observer tokens |
-| C++ | Partial | Hierarchical functions and named types, typed overload selection, plain records, first opaque copyable RAII values |
+| C++ | Partial | Hierarchical and selectively aliased namespaces, functions and named types, typed overload selection, plain records, first opaque copyable RAII values |
 | Swift via Objective-C | Implemented slice | Generated compatibility header, classes/properties/methods, automatic local dylib build/link |
 | Swift value via C++ | Implemented probe | Native struct return/copy/round-trip/destruction without handwritten shim |
 | Swift methods/strings/generics | Planned vertical slices | Generated C++ methods, `swift::String`, protocols, errors, async, packages |

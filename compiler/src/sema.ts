@@ -226,6 +226,7 @@ type SymbolValue =
   | { readonly kind: "foreignConstant"; readonly declaration: ForeignConstant }
   | { readonly kind: "foreignType"; readonly declaration: ForeignNamedType }
   | { readonly kind: "foreignModule"; readonly module: ForeignModule }
+  | { readonly kind: "foreignNamespace"; readonly module: ForeignModule; readonly namespacePath: readonly string[] }
   | { readonly kind: "console" }
   | { readonly kind: "standardFunction"; readonly name: StandardFunctionName; readonly declaration: FunctionDeclaration }
   | { readonly kind: "struct"; readonly declaration: StructDeclaration }
@@ -431,6 +432,22 @@ export function analyze(
     }
     for (const binding of declaration.bindings) {
       validateUserName(binding.localName, binding.location, fileName);
+      if (module.namespaces.has(binding.importedName)) {
+        const namespacePath = binding.importedName.split(".");
+        declareGlobal(
+          globals,
+          binding.localName,
+          { kind: "foreignNamespace", module, namespacePath },
+          binding.location,
+          fileName,
+        );
+        for (const foreignType of module.namedTypes.values()) {
+          if (foreignType.namespacePath.slice(0, namespacePath.length).join(".") !== binding.importedName) continue;
+          const suffix = [...foreignType.namespacePath.slice(namespacePath.length), foreignType.exportName];
+          foreignNamedTypes.set([binding.localName, ...suffix].join("."), foreignType);
+        }
+        continue;
+      }
       const foreignFunction = resolveForeignFunction(module, [binding.importedName]);
       if (foreignFunction) {
         declareGlobal(
@@ -2634,8 +2651,8 @@ function inferExpressionInner(
       if (global?.kind === "foreignType") {
         throw new DiagnosticError(fileName, expression.location, "an imported type must be followed by a field initializer or used in a type position");
       }
-      if (global?.kind === "foreignModule") {
-        throw new DiagnosticError(fileName, expression.location, "an imported module must be followed by a member name");
+      if (global?.kind === "foreignModule" || global?.kind === "foreignNamespace") {
+        throw new DiagnosticError(fileName, expression.location, "an imported module or native namespace must be followed by a member name");
       }
       if (global?.kind === "console") {
         throw new DiagnosticError(fileName, expression.location, "the console module must be followed by a method name");
@@ -4575,7 +4592,11 @@ function foreignMemberTarget(
   }
   if (object.kind !== "identifier") return null;
   const symbol = globals.get(object.name);
-  return symbol?.kind === "foreignModule" ? { module: symbol.module, path } : null;
+  if (symbol?.kind === "foreignModule") return { module: symbol.module, path };
+  if (symbol?.kind === "foreignNamespace") {
+    return { module: symbol.module, path: [...symbol.namespacePath, ...path] };
+  }
+  return null;
 }
 
 function resolveForeignFunction(module: ForeignModule, path: readonly string[]): ForeignFunction | null {

@@ -48,6 +48,19 @@ const point: cpp.zcpp.Point = cpp.zcpp.Point({ x: 20, y: 22 });
 const answer = cpp.scale(6, 7); // unique short alias; selects the i32 overload
 ```
 
+A native C++ namespace can be selected and locally aliased without flattening
+its members:
+
+```z
+import { zcpp as math, alpha as left } from "cpp_math.hpp";
+
+const point = math.Point({ x: 20, y: 22 });
+const moved = math.translate(point, 1, -1);
+```
+
+This is a compile-time name binding. Calls still lower directly to
+`zcpp::translate`, with no namespace wrapper or dispatch cost.
+
 Functions and named types follow the same rule: if two namespaces export the
 same leaf name, Z omits the short alias and requires the qualified path. Every
 overload retains its own full contract and source location. `Z0803` reports

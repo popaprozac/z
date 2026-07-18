@@ -838,7 +838,11 @@ argument shape and type; `Z0803` reports no-match and genuine ambiguity with the
 native candidates. Imported record and value types use the same hierarchy and
 alias rule: `library.desktop.Point` is canonical, while `library.Point` exists
 only when the leaf type name is unique across the module. Plain aggregate
-structs import as Z value records. The
+structs import as Z value records. An ordinary selective import may bind a
+top-level native namespace, as in
+`import { desktop as ui } from "library.hpp";`; `ui.Point` and
+`ui.calculate(...)` preserve the original C++ namespace and add no runtime
+wrapper. The
 original header remains the ABI declaration and the generated artifact builds
 with `clang++`. The first RAII slice also imports opaque copyable values returned
 by and passed to those functions; C++ performs their copy construction and

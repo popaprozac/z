@@ -996,6 +996,47 @@ test("preserves C++ namespaces and resolves overload sets", () => {
   assert.throws(() => compileToNative(source.replace("= cpp.zcpp.Point", "= cpp.Point"), example), /native type "Point" is ambiguous across C\+\+ namespaces/);
 });
 
+test("selectively imports and aliases C++ namespaces", () => {
+  const example = resolve(projectRoot, "examples/cpp-selective-interop.z");
+  const source = readFileSync(example, "utf8");
+  const artifact = compileToNative(source, example);
+  assert.equal(artifact.language, "c++");
+  assert.match(artifact.source, /const zcpp::Point origin/);
+  assert.match(artifact.source, /zcpp::translate\(origin, 1, \(-1\)\)/);
+  assert.match(artifact.source, /alpha::adjust\(\(leftPoint\)\.value\)/);
+  assert.match(artifact.source, /beta::adjust\(\(rightPoint\)\.value\)/);
+
+  const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, "selective cpp=42, adjusted=40\n");
+
+  const namespaceOffset = source.indexOf("math.Point") + 1;
+  assert.match(hover(source, example, namespaceOffset)?.contents.value ?? "", /native namespace zcpp imported as math/);
+  const pointOffset = source.indexOf("math.Point") + "math.".length + 1;
+  assert.match(hover(source, example, pointOffset)?.contents.value ?? "", /Point: zcpp::Point/);
+  assert.match(definition(source, `file://${example}`, pointOffset)?.uri ?? "", /examples\/cpp_math\.hpp$/);
+
+  const completionSource = source.replace("math.translate", "math.tr");
+  const completionOffset = completionSource.indexOf("math.tr") + "math.tr".length;
+  assert.equal(completions(completionSource, example, completionOffset).find((item) => item.label === "translate")?.kind, 3);
+  const symbolSource = source.replace("const origin", "mat;\n  const origin");
+  const symbolOffset = symbolSource.indexOf("mat;") + 3;
+  assert.equal(completions(symbolSource, example, symbolOffset).find((item) => item.label === "math")?.kind, 9);
+
+  const semantic = decodeSemanticTokens(semanticTokens(source, example).data);
+  const namespacePosition = positionForOffset(source, source.indexOf("math.Point"));
+  const pointPosition = positionForOffset(source, source.indexOf("math.Point") + "math.".length);
+  assert.ok(semantic.some((token) => token.line === namespacePosition.line
+    && token.character === namespacePosition.character
+    && token.type === semanticTokenTypes.indexOf("namespace")));
+  assert.ok(semantic.some((token) => token.line === pointPosition.line
+    && token.character === pointPosition.character
+    && token.type === semanticTokenTypes.indexOf("type")));
+
+  const annotated = source.replace("const origin =", "const origin: math.Point =");
+  assert.match(compileToNative(annotated, example).source, /const zcpp::Point origin/);
+});
+
 test("imports AppKit classes and emits an ARC Objective-C NSWindow program", () => {
   if (process.platform !== "darwin") return;
   const example = resolve(projectRoot, "examples/nswindow.z");

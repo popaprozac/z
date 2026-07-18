@@ -183,6 +183,7 @@ export function semanticTokens(source: string, fileName: string): { readonly dat
   );
   const matchVariants = new Set(collectMatchArmInfos(context).map((item) => item.variantOffset));
   const modules = new Map([...context.foreignModules.keys()].map((name) => [name, context.foreignModules.get(name)!]));
+  const nativeNamespaceBindings = foreignNamespaceBindings(context);
   const localNamespaces = new Map(
     context.sourceProgram.imports
       .filter((declaration) => isLocalSourceModuleSpecifier(declaration.header) && !declaration.bindings)
@@ -291,7 +292,7 @@ export function semanticTokens(source: string, fileName: string): { readonly dat
       classifications.set(token.location.offset, { type: semanticTokenTypes.indexOf("method"), modifiers: 4 });
       continue;
     }
-    if (modules.has(token.text)) {
+    if (modules.has(token.text) || nativeNamespaceBindings.has(token.text)) {
       classifications.set(token.location.offset, { type: semanticTokenTypes.indexOf("namespace"), modifiers: 4 });
       continue;
     }
@@ -350,8 +351,9 @@ export function semanticTokens(source: string, fileName: string): { readonly dat
         if (tokens[cursor - 1]?.kind !== "dot") break;
         cursor -= 2;
       }
-      const module = modules.get(components[0]);
-      const memberPath = components.slice(1);
+      const namespaceBinding = nativeNamespaceBindings.get(components[0]);
+      const module = modules.get(components[0]) ?? namespaceBinding?.module;
+      const memberPath = [...(namespaceBinding?.namespacePath ?? []), ...components.slice(1)];
       const namespacePath = memberPath.slice(0, -1);
       const memberName = memberPath.at(-1) ?? "";
       const named = module ? resolveModuleNamedType(module, namespacePath, memberName) : null;
@@ -450,6 +452,15 @@ export function hover(source: string, fileName: string, offset: number): Hover |
   const module = context.foreignModules.get(word.text);
   if (module) {
     return markdownHover(`import ${word.text} from ${JSON.stringify(module.declaration.header)}`, source, word.start, word.end);
+  }
+  const nativeNamespace = foreignNamespaceBindings(context).get(word.text);
+  if (nativeNamespace && !directWordType && !sourceNameIsShadowed(context, word.text, word.start, fileName)) {
+    return markdownHover(
+      `native namespace ${nativeNamespace.namespacePath.join(".")} imported as ${word.text} from ${JSON.stringify(nativeNamespace.module.declaration.header)}`,
+      source,
+      word.start,
+      word.end,
+    );
   }
   const sourceNamespace = context.sourceProgram.imports.find((declaration) => (
     isLocalSourceModuleSpecifier(declaration.header) && !declaration.bindings && declaration.moduleName === word.text
@@ -768,7 +779,18 @@ function symbolCompletions(source: string, fileName: string, offset: number): Co
     items.push({ label: declaration.name, kind: completionKinds.enum, detail: `enum ${declaration.name}` });
   }
   for (const [name, module] of context.foreignModules) {
-    items.push({ label: name, kind: completionKinds.module, detail: `import from ${JSON.stringify(module.declaration.header)}` });
+    if (!module.declaration.bindings) {
+      items.push({ label: name, kind: completionKinds.module, detail: `import from ${JSON.stringify(module.declaration.header)}` });
+      continue;
+    }
+    for (const binding of module.declaration.bindings) {
+      if (!module.namespaces.has(binding.importedName)) continue;
+      items.push({
+        label: binding.localName,
+        kind: completionKinds.module,
+        detail: `native namespace ${binding.importedName} from ${JSON.stringify(module.declaration.header)}`,
+      });
+    }
   }
   for (const declaration of context.sourceProgram.imports) {
     if (!isLocalSourceModuleSpecifier(declaration.header)) continue;
@@ -1735,14 +1757,32 @@ function objCMethodDetail(method: ForeignObjCMethod): string {
 }
 
 function resolveForeignModuleNamespace(
-  context: Pick<AnalyzedSource, "foreignModules">,
+  context: Pick<AnalyzedSource, "foreignModules" | "sourceProgram">,
   text: string,
 ): { readonly module: ForeignModule; readonly namespacePath: readonly string[] } | null {
   const [moduleName, ...namespacePath] = text.split(".");
-  const module = context.foreignModules.get(moduleName);
+  const binding = foreignNamespaceBindings(context).get(moduleName);
+  const module = context.foreignModules.get(moduleName) ?? binding?.module;
   if (!module) return null;
-  if (namespacePath.length > 0 && !module.namespaces.has(namespacePath.join("."))) return null;
-  return { module, namespacePath };
+  const resolvedPath = [...(binding?.namespacePath ?? []), ...namespacePath];
+  if (resolvedPath.length > 0 && !module.namespaces.has(resolvedPath.join("."))) return null;
+  return { module, namespacePath: resolvedPath };
+}
+
+function foreignNamespaceBindings(
+  context: Pick<AnalyzedSource, "foreignModules" | "sourceProgram">,
+): Map<string, { readonly module: ForeignModule; readonly namespacePath: readonly string[] }> {
+  const bindings = new Map<string, { readonly module: ForeignModule; readonly namespacePath: readonly string[] }>();
+  for (const declaration of context.sourceProgram.imports) {
+    if (isLocalSourceModuleSpecifier(declaration.header) || !declaration.bindings) continue;
+    const module = context.foreignModules.get(declaration.moduleName);
+    if (!module) continue;
+    for (const binding of declaration.bindings) {
+      if (!module.namespaces.has(binding.importedName)) continue;
+      bindings.set(binding.localName, { module, namespacePath: binding.importedName.split(".") });
+    }
+  }
+  return bindings;
 }
 
 function resolveModuleFunction(

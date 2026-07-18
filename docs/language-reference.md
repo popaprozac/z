@@ -289,3 +289,16 @@ Imported C++ records and opaque values use that same hierarchy. For example,
 `cpp.zcpp.Point` is both a valid type annotation and record constructor path.
 `cpp.Point` is available only when `Point` is unique across the imported module;
 otherwise completion omits it and the qualified native namespace is required.
+
+Native namespaces may also be selected and aliased with ordinary import syntax:
+
+```z
+import { zcpp as math, alpha, beta } from "cpp_math.hpp";
+
+const origin = math.Point({ x: 20, y: 22 });
+const moved = math.translate(origin, 1, -1);
+```
+
+The binding is a compile-time Z namespace for the native C++ namespace; it does
+not create a runtime object or wrapper. Selecting the namespace is preferred
+when leaf declarations collide across C++ namespaces.

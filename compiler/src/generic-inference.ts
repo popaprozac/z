@@ -43,6 +43,7 @@ export function inferGenericCalls(
   const objectFieldTypes = new Map<number, ReadonlyMap<string, string | null>>();
   const selectiveFunctions = new Map<string, string>();
   const selectiveValues = new Map<string, string>();
+  const selectiveNamespaces = new Map<string, { readonly module: ForeignModule; readonly namespacePath: readonly string[] }>();
   const foreignInterfaces = new Map<string, ForeignObjCInterface>();
   const resolveForeignFunction = (module: ForeignModule, path: readonly string[]): ForeignFunction | null => {
     const qualifiedName = path.join(".");
@@ -69,7 +70,9 @@ export function inferGenericCalls(
     }
     if (object.kind !== "identifier") return null;
     const module = foreignModules.get(object.name);
-    return module ? { module, path } : null;
+    if (module) return { module, path };
+    const namespace = selectiveNamespaces.get(object.name);
+    return namespace ? { module: namespace.module, path: [...namespace.namespacePath, ...path] } : null;
   };
   const foreignReturnType = (declaration: ForeignFunction): string | null => {
     const returns = new Set(declaration.overloads.map((overload) => inferenceTypeName(overload.returnType)));
@@ -122,6 +125,13 @@ export function inferGenericCalls(
   for (const module of foreignModules.values()) {
     for (const declaration of module.interfaces.values()) foreignInterfaces.set(declaration.typeName, declaration);
     for (const binding of module.declaration.bindings ?? []) {
+      if (module.namespaces.has(binding.importedName)) {
+        selectiveNamespaces.set(binding.localName, {
+          module,
+          namespacePath: binding.importedName.split("."),
+        });
+        continue;
+      }
       const fn = resolveForeignFunction(module, [binding.importedName]);
       const returnType = fn ? foreignReturnType(fn) : null;
       if (returnType) selectiveFunctions.set(binding.localName, returnType);
