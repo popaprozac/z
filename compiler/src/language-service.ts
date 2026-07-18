@@ -1801,6 +1801,8 @@ function displayType(type: string, typeDisplayNames: ReadonlyMap<string, string>
 }
 
 function displayServiceType(type: string, context: AnalyzedSource): string {
+  const pointer = context.semanticInfo.foreignTypes.get(type);
+  if (pointer) return `${pointer.cName}${pointer.nullable ? " | null" : ""}`;
   const closure = [...context.semanticInfo.closures.values()].find((item) => item.type === type);
   if (!closure) return displayType(type, context.typeDisplayNames);
   const parameters = closure.declaration.parameters.slice(closure.captures.length).map((parameter) => {

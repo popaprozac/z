@@ -560,10 +560,18 @@ test("reports unsupported C signatures at the Z call site", () => {
 
 test("narrows, borrows, consumes, and cleans up owned C handles", () => {
   const example = resolve(projectRoot, "examples/foreign-handle.z");
+  const exampleSource = readFileSync(example, "utf8");
   const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stdout, "wrote handle\n");
   assert.equal(readFileSync("/tmp/z-lang-foreign-handle.txt", "utf8"), "owned by Z\n");
+
+  const declarationOffset = exampleSource.indexOf("file =") + 1;
+  const guardOffset = exampleSource.indexOf("file == null") + 1;
+  const narrowedOffset = exampleSource.indexOf("file);", exampleSource.indexOf("fputs")) + 1;
+  assert.match(hover(exampleSource, example, declarationOffset)?.contents.value ?? "", /file: FILE \* \| null/);
+  assert.match(hover(exampleSource, example, guardOffset)?.contents.value ?? "", /file: FILE \* \| null/);
+  assert.match(hover(exampleSource, example, narrowedOffset)?.contents.value ?? "", /file: FILE \*(?! \| null)/);
 
   const source = `
     import stdio from "stdio.h";
