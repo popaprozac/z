@@ -68,12 +68,19 @@ blocks can borrow lexically. Named function values, block returns with richer
 foreign object ownership, target/action selector adapters, delegates, and
 Z-defined Objective-C protocol conformance remain separate follow-ups.
 
-## Pressure 4: strings stop at literals
+## Pressure 4: owned strings across Objective-C
 
-String literals bridge contextually to `NSString`, but a computed Z `String`
-cannot yet populate an AppKit property. A real desktop view model will require a
-defined owned/borrowed bridge in both directions. This should share the future
-Foreign Interface IR rather than becoming an AppKit-specific conversion.
+Resolved for non-null `NSString` boundaries. Computed Z strings can populate
+Objective-C properties and arguments. Z passes `data + length` into an ARC
+`NSString`, so embedded NUL bytes are preserved. In the reverse direction, an
+explicit `String` destination copies a non-null `NSString` into fresh owned Z
+storage using its exact UTF-8 byte length.
+
+The copy is intentional: a Z `String` never borrows storage returned by
+`UTF8String`, whose lifetime belongs to the Objective-C object. Nullable
+`NSString` cannot convert until it is narrowed. Other encodings, zero-copy
+views, mutable strings, and explicit conversion APIs remain later pressure
+tests.
 
 ## Not tested yet
 

@@ -130,6 +130,8 @@ export type SemanticInfo = {
   readonly objcCalls: ReadonlyMap<number, ObjCCallInfo>;
   readonly objcBlockArguments: ReadonlyMap<number, ForeignBlockType>;
   readonly objcStringLiterals: ReadonlySet<number>;
+  readonly objcStringsToNative: ReadonlySet<number>;
+  readonly objcStringsToZ: ReadonlySet<number>;
   readonly cstringConversions: ReadonlySet<number>;
   readonly expressionTypes: ReadonlyMap<number, string>;
   readonly bindingTypes: ReadonlyMap<number, string>;
@@ -169,6 +171,8 @@ type AnalysisState = {
   readonly objcCalls: Map<number, ObjCCallInfo>;
   readonly objcBlockArguments: Map<number, ForeignBlockType>;
   readonly objcStringLiterals: Set<number>;
+  readonly objcStringsToNative: Set<number>;
+  readonly objcStringsToZ: Set<number>;
   readonly cstringConversions: Set<number>;
   readonly expressionTypes: Map<number, string>;
   readonly bindingTypes: Map<number, string>;
@@ -275,6 +279,8 @@ export function analyze(
     objcCalls: new Map(),
     objcBlockArguments: new Map(),
     objcStringLiterals: new Set(),
+    objcStringsToNative: new Set(),
+    objcStringsToZ: new Set(),
     cstringConversions: new Set(),
     expressionTypes: new Map(),
     bindingTypes: new Map(),
@@ -1129,7 +1135,9 @@ function analyzeStatement(
           );
           initializerType = variableType;
         } else {
-          initializerType = contextualCStringLiteral(variableType, statement.initializer, state) ?? initializerType;
+          initializerType = contextualCStringLiteral(variableType, statement.initializer, state)
+            ?? contextualObjCStringToZ(variableType, initializerType, statement.initializer, state)
+            ?? initializerType;
           requireAssignable(variableType, initializerType, statement.initializer, fileName, state.foreignNamedTypes, state.numericLiteralTypes);
         }
       } else if (initializerType === "unknown") {
@@ -1228,6 +1236,7 @@ function analyzeStatement(
         : inferExpression(statement.target, locals, globals, structs, enums, fileName, state);
       let actual = inferDirectValue(statement.expression, owner, locals, globals, structs, enums, fileName, state);
       actual = contextualCStringLiteral(expected, statement.expression, state) ?? actual;
+      actual = contextualObjCStringToZ(expected, actual, statement.expression, state) ?? actual;
       requireAssignable(expected, actual, statement.expression, fileName, state.foreignNamedTypes, state.numericLiteralTypes);
       if (hasCleanupType(expected, structs, enums, state.foreignTypes)) {
         consumeOwnedValue(statement.expression, expected, locals, structs, enums, fileName, state);
@@ -1266,6 +1275,7 @@ function analyzeStatement(
       }
       let actual = inferDirectValue(statement.expression, owner, locals, globals, structs, enums, fileName, state);
       actual = contextualCStringLiteral(expected, statement.expression, state) ?? actual;
+      actual = contextualObjCStringToZ(expected, actual, statement.expression, state) ?? actual;
       requireAssignable(expected, actual, statement.expression, fileName, state.foreignNamedTypes, state.numericLiteralTypes);
       consumeOwnedValue(statement.expression, expected, locals, structs, enums, fileName, state);
       requireOutParametersInitialized(owner, locals, statement.location, fileName);
@@ -3663,6 +3673,7 @@ function consumeOwnedValue(
   state: AnalysisState,
 ): void {
   if (!hasCleanupType(type, structs, enums, state.foreignTypes)) return;
+  if (state.objcStringsToZ.has(expression.location.offset)) return;
   const actual = String(underlyingType(type));
   if (parseWeakType(actual)) {
     if (expression.kind === "identifier" || expression.kind === "member" || expression.kind === "index") {
@@ -4426,6 +4437,22 @@ function contextualCStringLiteral(
   return "cstring";
 }
 
+function contextualObjCStringToZ(
+  expected: ValueType,
+  actual: ValueType,
+  expression: Expression,
+  state: AnalysisState,
+): ValueType | null {
+  if (underlyingType(expected) !== "String") return null;
+  const actualObject = state.foreignObjectTypes.get(String(underlyingType(actual)));
+  const stringType = [...state.foreignObjectTypes.values()].find((candidate) => (
+    candidate.className === "NSString" && !candidate.nullable
+  ));
+  if (!actualObject || actualObject.nullable || !stringType || !isObjCSubclass(actualObject, stringType, state)) return null;
+  state.objcStringsToZ.add(expression.location.offset);
+  return "String";
+}
+
 function requireObjCAssignable(
   expected: ForeignType,
   actual: ValueType,
@@ -4442,6 +4469,15 @@ function requireObjCAssignable(
   if (actual === "null") {
     if (!expected.nullable) throw new DiagnosticError(fileName, expression.location, `${subject} requires a non-null ${expected.cName}`);
     return;
+  }
+  if (actual === "String") {
+    const stringType = [...state.foreignObjectTypes.values()].find((candidate) => (
+      candidate.className === "NSString" && !candidate.nullable
+    ));
+    if (stringType && (!expected.className || isObjCSubclass(stringType, expected, state))) {
+      state.objcStringsToNative.add(expression.location.offset);
+      return;
+    }
   }
   const actualObject = state.foreignObjectTypes.get(String(underlyingType(actual)));
   if (!actualObject || (expected.className && !isObjCSubclass(actualObject, expected, state))) {

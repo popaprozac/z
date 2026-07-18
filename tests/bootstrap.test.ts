@@ -924,6 +924,22 @@ test("retains owned Z closure environments across Objective-C blocks", () => {
   );
 });
 
+test("copies owned Z strings across NSString boundaries without losing embedded nulls", () => {
+  if (process.platform !== "darwin") return;
+  const example = resolve(projectRoot, "tests/fixtures/objc-strings.z");
+  const source = readFileSync(example, "utf8");
+  const artifact = compileToNative(source, example);
+  assert.equal(artifact.language, "objective-c");
+  assert.match(artifact.source, /z_nsstring_from_string/);
+  assert.match(artifact.source, /z_string_from_nsstring/);
+  assert.match(artifact.source, /initWithBytes:bytes length:\(NSUInteger\)value\.length/);
+  assert.match(artifact.source, /lengthOfBytesUsingEncoding:NSUTF8StringEncoding/);
+
+  const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, "round trip=answer=42\nembedded=a\0b\n");
+});
+
 test("imports and executes Swift through its generated Objective-C compatibility header", () => {
   if (process.platform !== "darwin") return;
   const directory = mkdtempSync("/tmp/z-swift-interop-");

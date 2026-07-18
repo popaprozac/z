@@ -863,6 +863,13 @@ desktop probe uses `NSOpenPanel.beginWithCompletionHandler` to mutate its owned
 `Workspace` from a real AppKit completion event. This validates the first block
 shape without prematurely choosing target/action or delegate syntax.
 
+Computed Z `String` values bridge contextually to Objective-C `NSString`
+arguments and properties through their exact byte length, not `strlen`.
+Converting a non-null `NSString` to an explicitly typed Z `String` always makes
+a fresh owned UTF-8 copy; it never borrows `UTF8String` storage. The native
+round-trip fixture preserves an embedded NUL byte and the desktop probe sets and
+reads back a computed AppKit window title.
+
 A conventional local `Module-Swift.h` compatibility header also selects the
 Objective-C ARC backend. The bootstrap has an end-to-end fixture in which
 `swiftc` builds a Swift dylib and generated header, Z imports its class,

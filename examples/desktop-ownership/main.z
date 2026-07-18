@@ -33,7 +33,10 @@ function main(): i32 {
     defer: false
   );
 
-  window.title = "Z Desktop Ownership Probe";
+  const windowTitle = `Z Desktop Ownership Probe — ${workspace.documentCount()} documents`;
+  window.title = windowTitle;
+  const reflectedTitle: String = window.title;
+  console.log(`native title copied back to Z: ${reflectedTitle}`);
   const controller = new WindowController({ window, workspace });
   controller.present();
 

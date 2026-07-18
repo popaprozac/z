@@ -67,16 +67,16 @@ while exposing the non-escaping view wall for future experiments.
 | C records and enums | Implemented | Complete supported layouts, nested records, constants |
 | C pointers | Partial | Safe opaque handles and record borrows require API notes |
 | C callbacks | Partial | Call-only and caller-thread escaping callbacks with exact release contracts |
-| Objective-C | Partial | ARC classes/fields, methods, properties, labels, nullability, literal `NSString` bridging, first escaping block adapter |
+| Objective-C | Partial | ARC classes/fields, methods, properties, labels, nullability, owned `String`/`NSString` copies, first escaping block adapter |
 | C++ | Partial | Namespace free functions, plain records, first opaque copyable RAII values |
 | Swift via Objective-C | Implemented slice | Generated compatibility header, classes/properties/methods, automatic local dylib build/link |
 | Swift value via C++ | Implemented probe | Native struct return/copy/round-trip/destruction without handwritten shim |
 | Swift methods/strings/generics | Planned vertical slices | Generated C++ methods, `swift::String`, protocols, errors, async, packages |
 
-Current interop gaps that block a richer desktop application include general Z
-`String` to `NSString` conversion, source-level nullable foreign annotations,
-broader Objective-C block shapes, target/action adapters, protocol conformance,
-cross-thread callbacks, availability, and API notes at SDK scale.
+Current interop gaps that block a richer desktop application include
+source-level nullable foreign annotations, broader Objective-C block shapes,
+target/action adapters, protocol conformance, cross-thread callbacks,
+availability, and API notes at SDK scale.
 
 The Swift owned-value probe is intentionally honest about the toolchain: current
 generated wrappers copy and deterministically destroy Swift values, but delete

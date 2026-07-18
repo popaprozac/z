@@ -166,6 +166,9 @@ export function generateC(program: Program, sourceName: string, semanticInfo: Se
   lines.push("");
 
   if (usesString) lines.push(generateStringRuntime(), "");
+  if (semanticInfo.objcStringsToNative.size > 0 || semanticInfo.objcStringsToZ.size > 0) {
+    lines.push(generateObjCStringRuntime(), "");
+  }
   if (usesSleep) lines.push(generateSleepRuntime(), "");
 
   for (const declaration of program.structs) {
@@ -985,6 +988,25 @@ static Z_UNUSED_FUNCTION inline void z_string_append_pointer(Z_String *self, con
   int length = snprintf(buffer, sizeof(buffer), "%p", value);
   if (length < 0) abort();
   z_string_append_bytes(self, buffer, (uintptr_t)length);
+}`;
+}
+
+function generateObjCStringRuntime(): string {
+  return `static Z_UNUSED_FUNCTION NSString *z_nsstring_from_string(Z_String value) {
+  const void *bytes = value.data != NULL ? (const void *)value.data : (const void *)"";
+  NSString *result = [[NSString alloc] initWithBytes:bytes length:(NSUInteger)value.length encoding:NSUTF8StringEncoding];
+  if (result == nil) abort();
+  return result;
+}
+
+static Z_UNUSED_FUNCTION Z_String z_string_from_nsstring(NSString *value) {
+  if (value == nil) abort();
+  const NSUInteger length = [value lengthOfBytesUsingEncoding:NSUTF8StringEncoding];
+  const char *bytes = [value UTF8String];
+  if (bytes == NULL && length != 0) abort();
+  Z_String result = z_string_new();
+  z_string_append_bytes(&result, bytes != NULL ? bytes : "", (uintptr_t)length);
+  return result;
 }`;
 }
 
@@ -2016,13 +2038,17 @@ function generateDirectValue(
     return generateClosureValue(expression, context, consumeValue);
   }
   if (expression.kind === "template") {
-    return generateTemplateValue(expression, context, consumeValue);
+    return generateTemplateValue(expression, context, (value, valueContext) => (
+      consumeValue(generateBridgedStringValue(expression, value, valueContext), valueContext)
+    ));
   }
   if (expression.kind === "new" && expression.arguments.some((argument) => requiresStatementValue(argument, context))) {
     return generateLoweredAggregate(expression, expression.arguments, context, consumeValue, consumeTerminates);
   }
   if (expression.kind === "conditional" && requiresStatementValue(expression, context)) {
-    return generateConditionalValue(expression, context, consumeValue, consumeTerminates);
+    return generateConditionalValue(expression, context, (value, valueContext) => (
+      consumeValue(generateBridgedStringValue(expression, value, valueContext), valueContext)
+    ), consumeTerminates);
   }
   if (expression.kind === "call" && expression.arguments.some((argument) => callArgumentNeedsLowering(argument, context))) {
     return generateLoweredCall(expression, context, consumeValue, consumeTerminates);
@@ -2037,19 +2063,31 @@ function generateDirectValue(
     return generateLoweredAggregate(expression, [expression.payload], context, consumeValue, consumeTerminates);
   }
   if (expression.kind === "attempt" && requiresStatementValue(expression.expression, context)) {
-    return generateDirectValue(expression.expression, context, consumeValue, consumeTerminates);
+    return generateDirectValue(expression.expression, context, (value, valueContext) => (
+      consumeValue(generateBridgedStringValue(expression, value, valueContext), valueContext)
+    ), consumeTerminates);
   }
   if (expression.kind === "call" && hasNativeOutArguments(expression, context)) {
     return generateNativeOutCall(expression, context, consumeValue);
   }
   if (expression.kind === "try") return generateTry(expression, context, consumeValue);
   if (expression.kind === "matchExpression") {
-    return generateMatchExpression(expression, context, consumeValue, consumeTerminates);
+    return generateMatchExpression(expression, context, (value, valueContext) => (
+      consumeValue(generateBridgedStringValue(expression, value, valueContext), valueContext)
+    ), consumeTerminates);
   }
   if (expression.kind === "ifExpression") {
-    return generateIfExpression(expression, context, consumeValue, consumeTerminates);
+    return generateIfExpression(expression, context, (value, valueContext) => (
+      consumeValue(generateBridgedStringValue(expression, value, valueContext), valueContext)
+    ), consumeTerminates);
   }
   return consumeValue(generateExpression(expression, context), context);
+}
+
+function generateBridgedStringValue(expression: Expression, value: string, context: GenerationContext): string {
+  if (context.semanticInfo.objcStringsToNative.has(expression.location.offset)) return `z_nsstring_from_string(${value})`;
+  if (context.semanticInfo.objcStringsToZ.has(expression.location.offset)) return `z_string_from_nsstring(${value})`;
+  return value;
 }
 
 function requiresStatementValue(expression: Expression, context: GenerationContext): boolean {
@@ -2935,7 +2973,17 @@ function statementListTerminates(statements: Statement[]): boolean {
 
 function generateExpression(expression: Expression, context: GenerationContext): string {
   const override = context.expressionOverrides.get(expression.location.offset);
-  if (override) return override;
+  const value = override ?? generateExpressionInner(expression, context);
+  if (context.semanticInfo.objcStringsToNative.has(expression.location.offset)) {
+    return `z_nsstring_from_string(${value})`;
+  }
+  if (context.semanticInfo.objcStringsToZ.has(expression.location.offset)) {
+    return `z_string_from_nsstring(${value})`;
+  }
+  return value;
+}
+
+function generateExpressionInner(expression: Expression, context: GenerationContext): string {
   switch (expression.kind) {
     case "number":
       return generateNumericLiteral(
