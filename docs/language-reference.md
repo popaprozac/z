@@ -142,6 +142,11 @@ generators rather than overloaded for match blocks.
 value-producing `if` expressions. Statement blocks never return an implicit
 last expression; value-producing blocks use `select` explicitly.
 
+Statement `if`/`else` branches may contain one unbraced statement. `else` binds
+to the nearest unmatched `if`. Conditions are always `bool`; nullable pointers
+and references require an explicit comparison with `null` rather than
+truthiness.
+
 Integer arithmetic is checked. Intentional overflow uses explicit wrapping or
 saturating operations.
 
@@ -226,8 +231,10 @@ C imports may be direct and zero-wrapper. Imported non-null Objective-C classes
 are nominal types such as `AppKit.NSWindow`; references use ARC and can be stored
 in Z aggregates or named in signatures. Inferred nullable Objective-C
 references display as `T | null`, require a null check before member access,
-and narrow in the non-null control-flow path without a runtime wrapper. They do
-not yet have an explicit public annotation spelling. An imported
+and narrow in the non-null control-flow path without a runtime wrapper. This
+spelling is accepted for imported Objective-C reference fields, parameters,
+returns, and locals. General Z values use `Option<T>` while representation and
+matching are unified. An imported
 Objective-C block parameter accepts a contextual Z closure. Escaping blocks
 require `move`; the generated ARC adapter keeps the owned closure environment
 alive for exactly as long as the native block. A computed Z `String` converts

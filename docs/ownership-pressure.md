@@ -61,7 +61,8 @@ and clears the field before freeing the surrounding Z allocation.
 Nullable imported references remain a distinct one-pointer type and editor
 services display them as `T | null`. Z now rejects unchecked member access and
 narrows after explicit `value != null` / `value == null` control flow. An
-explicit source annotation spelling, protocol-qualified `id`, weak/unowned
+explicit source annotation is supported for imported Objective-C reference
+fields, parameters, returns, and locals. Protocol-qualified `id`, weak/unowned
 foreign fields, and ownership attributes imported from API notes remain later
 slices.
 

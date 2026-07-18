@@ -42,7 +42,10 @@ boundary**, not a claim that every bridge operation is free:
 
 Imported nullable references use the same one-pointer representation as their
 native ABI. A Z null check is an ordinary pointer comparison and narrows the
-reference statically; it does not allocate an `Option` wrapper.
+reference statically; the first reference specialization uses `T | null` in
+source and does not allocate a tagged `Option` wrapper. The language model treats
+this as niche-backed optionality, with general `Option<T>` representation and
+matching unification still to land.
 
 The bootstrap `z run` path currently asks Clang for a debuggable native build
 without an optimization flag. Its runtime measurements therefore validate

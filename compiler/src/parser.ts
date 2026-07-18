@@ -15,6 +15,7 @@ import { DiagnosticError } from "./diagnostics.ts";
 import { dynamicArrayTypeName, fixedArrayTypeName, sliceTypeName } from "./array-types.ts";
 import { genericTypeName } from "./generic-types.ts";
 import { functionTypeName } from "./function-types.ts";
+import { nullableObjCTypeName } from "./objc-types.ts";
 import type { Token, TokenKind } from "./lexer.ts";
 
 export function parse(tokens: Token[], fileName: string): Program {
@@ -95,6 +96,10 @@ export function parse(tokens: Token[], fileName: string): Program {
       }
       expect("rightBracket", "`]`");
       name = fixedArrayTypeName(name, Number(length.text));
+    }
+    if (match("bitOr")) {
+      expect("null", "`null` after `|` in an optional type");
+      name = nullableObjCTypeName(name);
     }
     return { name, location: token.location };
   };
@@ -549,13 +554,10 @@ export function parse(tokens: Token[], fileName: string): Program {
       expect("leftParen", "`(`");
       const condition = parseExpression();
       expect("rightParen", "`)`");
-      const thenBranch = parseRequiredBlock("an `if` body");
+      const thenBranch = parseStatementBlock();
       let elseBranch = null;
       if (match("else")) {
-        elseBranch = at("if") ? parseStatement() : parseRequiredBlock("an `else` body");
-        if (elseBranch.kind !== "if" && elseBranch.kind !== "block") {
-          throw new DiagnosticError(fileName, elseBranch.location, "expected an `if` or block after `else`");
-        }
+        elseBranch = at("if") ? parseStatement() : parseStatementBlock();
       }
       return { kind: "if", condition, thenBranch, elseBranch, location: ifToken.location };
     }
@@ -670,6 +672,12 @@ export function parse(tokens: Token[], fileName: string): Program {
     while (!at("rightBrace") && !at("eof")) statements.push(parseStatement());
     expect("rightBrace", "`}`");
     return { kind: "block" as const, statements, location: start };
+  }
+
+  function parseStatementBlock() {
+    if (at("leftBrace")) return parseRequiredBlock("a statement block");
+    const statement = parseStatement();
+    return { kind: "block" as const, statements: [statement], location: statement.location };
   }
 
   const parseFunction = (signatureOnly = false, isAsync = false): FunctionDeclaration => {

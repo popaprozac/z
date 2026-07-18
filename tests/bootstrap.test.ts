@@ -569,7 +569,7 @@ test("narrows, borrows, consumes, and cleans up owned C handles", () => {
     import stdio from "stdio.h";
     function main(): i32 {
       const file = stdio.fopen("/tmp/z-lang-double-close.txt", "w");
-      if (!file) { return 1; }
+      if (file == null) { return 1; }
       stdio.fclose(file);
       return stdio.fclose(file);
     }
@@ -585,7 +585,7 @@ test("discovers ownership notes beside project headers", () => {
     import handles from "tests/fixtures/foreign-handles.h";
     function main(): i32 {
       const handle = handles.z_test_open();
-      if (!handle) { return 1; }
+      if (handle == null) { return 1; }
       return handles.z_test_use(handle);
     }
   `;
@@ -905,6 +905,67 @@ test("narrows nullable Objective-C references before member access", () => {
   assert.match(
     diagnostics(unsafeAfterJoin, fileName)[0]?.message ?? "",
     /nullable Objective-C AppKit\.NSWindow must be checked before member access/,
+  );
+
+  const annotated = `
+    import AppKit from "AppKit/AppKit.h";
+    class WindowSlot {
+      window: AppKit.NSWindow | null;
+      constructor(window: AppKit.NSWindow | null) {
+        this.window = window;
+      }
+    }
+    function inspect(window: AppKit.NSWindow | null): i32 {
+      if (window == null) return 0;
+      window.center();
+      return 1;
+    }
+    function noWindow(): AppKit.NSWindow | null {
+      return null;
+    }
+    function main(): i32 {
+      const slot = new WindowSlot(null);
+      const window: AppKit.NSWindow | null = noWindow();
+      return inspect(window) + inspect(slot.window);
+    }
+  `;
+  const annotatedArtifact = compileToNative(annotated, fileName);
+  assert.deepEqual(diagnostics(annotated, fileName), []);
+  assert.match(annotatedArtifact.source, /static int32_t inspect\(NSWindow \*window\)/);
+  assert.match(annotatedArtifact.source, /static NSWindow \* noWindow\(void\)/);
+  assert.match(annotatedArtifact.source, /NSWindow \*\s*window;/);
+  assert.match(annotatedArtifact.source, /Z_WindowSlot_new\(NULL\)/);
+  assert.match(annotatedArtifact.source, /return NULL;/);
+  const annotatedCompilation = spawnSync("clang", [
+    "-x", "objective-c",
+    "-fobjc-arc",
+    "-Wall", "-Wextra", "-Werror",
+    "-fsyntax-only", "-",
+  ], { input: annotatedArtifact.source, encoding: "utf8" });
+  assert.equal(annotatedCompilation.status, 0, annotatedCompilation.stderr);
+  const annotationBinding = annotated.indexOf("window: AppKit.NSWindow") + 2;
+  assert.match(hover(annotated, fileName, annotationBinding)?.contents.value ?? "", /window: AppKit\.NSWindow \| null/);
+
+  const wrongOptional = `
+    function main(): i32 {
+      const value: i32 | null = null;
+      return 0;
+    }
+  `;
+  const wrongDiagnostic = diagnostics(wrongOptional, "value-nullability.z")[0];
+  assert.match(wrongDiagnostic?.message ?? "", /i32 \| null.*currently requires an imported Objective-C reference type/);
+
+  const unsafeArgument = `
+    import AppKit from "AppKit/AppKit.h";
+    function requireWindow(window: AppKit.NSWindow): void {}
+    function inspect(window: AppKit.NSWindow | null): void {
+      requireWindow(window);
+    }
+    function main(): i32 { return 0; }
+  `;
+  assert.throws(
+    () => compileToNative(unsafeArgument, fileName),
+    /expected AppKit\.NSWindow, found AppKit\.NSWindow \| null/,
   );
 });
 
@@ -1508,6 +1569,32 @@ test("compiles boolean expressions and path-complete if statements", () => {
   assert.equal(result.stdout, "disabled=0\nordinary=1\nspecial=2\n");
 });
 
+test("supports single-statement if, else-if, else, and void guards", () => {
+  const source = `
+    function choose(value: i32): i32 {
+      if (value > 0) return 1;
+      else if (value < 0) return -1;
+      else return 0;
+    }
+    function stopEarly(stop: bool): void {
+      if (stop) return;
+    }
+    function nested(first: bool, second: bool): i32 {
+      if (first) if (second) return 1; else return 2;
+      return 3;
+    }
+    function main(): i32 {
+      stopEarly(true);
+      return choose(0) + nested(false, false) - 3;
+    }
+  `;
+  const generated = compileToC(source, "single-statement-if.z");
+  assert.match(generated, /if \(value > 0\) \{\n\s+return 1;/);
+  assert.match(generated, /else if \(value < 0\)/);
+  assert.match(generated, /if \(stop\) \{\n\s+return;/);
+  assert.match(generated, /if \(first\) \{[\s\S]*if \(second\)/);
+});
+
 test("compiles ternaries and value-producing if expressions with select", () => {
   const example = resolve(projectRoot, "examples/conditional-expressions.z");
   const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
@@ -2035,6 +2122,19 @@ test("requires boolean if conditions", () => {
   assert.throws(
     () => compileToC(source, "if-condition.z"),
     /if-condition\.z:3:11: error: expected bool, found i32/,
+  );
+
+  const pointerTruthiness = `
+    import stdio from "stdio.h";
+    function main(): i32 {
+      const file = stdio.fopen("/tmp/z-no-truthiness.txt", "w");
+      if (file) return 1;
+      return 0;
+    }
+  `;
+  assert.throws(
+    () => compileToC(pointerTruthiness, "pointer-truthiness.z"),
+    /expected bool/,
   );
 });
 

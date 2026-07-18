@@ -21,6 +21,7 @@ import {
 import { DiagnosticError } from "./diagnostics.ts";
 import { genericTypeName, parseGenericType } from "./generic-types.ts";
 import { functionTypeName, parseFunctionType } from "./function-types.ts";
+import { isNullableObjCTypeName, nullableObjCTypeName, publicObjCTypeName } from "./objc-types.ts";
 import { lex } from "./lexer.ts";
 import { parse } from "./parser.ts";
 
@@ -638,6 +639,9 @@ function renameTypeReference(reference: TypeReference, scope: ModuleScope, typeP
 }
 
 function renameTypeName(name: string, scope: ModuleScope, typeParameters: ReadonlySet<string>): string {
+  if (isNullableObjCTypeName(name)) {
+    return nullableObjCTypeName(renameTypeName(publicObjCTypeName(name), scope, typeParameters));
+  }
   if (typeParameters.has(name)) return name;
   const functionType = parseFunctionType(name);
   if (functionType) {

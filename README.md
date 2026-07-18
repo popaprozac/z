@@ -376,9 +376,9 @@ match (result) {
 }
 ```
 
-`Option<T>` is the compiler-provided form for a value that may be absent. It is
-implemented through the same enum and ownership machinery rather than through a
-nullable pointer or sentinel:
+`Option<T>` is the compiler-provided form for a value that may be absent. Value
+payloads use the same enum and ownership machinery rather than an unsafe
+sentinel:
 
 ```z
 const present = Option.some(user); // infers Option<User>
@@ -393,6 +393,13 @@ const id = match (present) {
 `Option.none` needs either a destination annotation, as above, or an explicit
 qualifier such as `Option<User>.none`, because an empty value contains no payload
 from which to infer `T`. `Option.none` is a value, so it is not called with `()`.
+
+`T | null` is the TypeScript-shaped optional spelling. Plain `T` remains
+non-null, `null` requires an optional destination, and unchecked member access
+is rejected. The current executable specialization accepts imported
+Objective-C reference types and preserves their native one-pointer null niche;
+general values continue to use `Option<T>` until the two source spellings share
+all construction and matching paths.
 
 Enums composed only from copyable payloads remain copyable. If any reachable
 payload has deterministic cleanup, the enum becomes an owned, move-only value:
@@ -615,15 +622,15 @@ Boolean expressions. A non-void function must return on every reachable path:
 
 ```z
 function classify(value: i32, enabled: bool): i32 {
-  if (!enabled) {
-    return 0;
-  } else if (value >= 10 && value != 42) {
-    return 1;
-  } else {
-    return 2;
-  }
+  if (!enabled) return 0;
+  else if (value >= 10 && value != 42) return 1;
+  else return 2;
 }
 ```
+
+A statement branch may be one statement or a block; `else` binds to the nearest
+unmatched `if`. Value-producing `if` expressions still require braces and
+explicit `select`.
 
 `while`, `break`, and `continue` use the same familiar syntax. Every loop-control
 transfer runs deterministic cleanup for the local scopes it exits:
@@ -785,7 +792,7 @@ notes provide the facts missing from C headers:
 import stdio from "stdio.h";
 
 const file = stdio.fopen("notes.txt", "w");
-if (!file) {
+if (file == null) {
   return 1;
 }
 
@@ -793,7 +800,8 @@ stdio.fputs("owned by Z\n", file);
 // fclose(file) is inserted on every exit.
 ```
 
-The truthiness guard narrows nullable `FILE *` to non-null. `fputs` borrows the
+The explicit null guard narrows nullable `FILE *` to non-null. Z does not use
+pointer truthiness. `fputs` borrows the
 handle for the call; an explicit `fclose(file)` consumes it and makes any later
 use a compile-time error. If ownership remains local, generated cleanup calls
 `fclose` once and only when the handle is non-null.
@@ -886,6 +894,7 @@ bun run z run examples/callbacks.z
 bun run z run examples/cpp-interop.z
 bun run z run examples/swift-interop/main.z
 bun run z run examples/swift-value-interop/main.z
+bun run z run examples/objc-nullability.z # macOS: explicit nullable AppKit guard
 bun run z run examples/nswindow.z # macOS: opens a window and enters AppKit's event loop
 bun run z run examples/desktop-ownership/main.z # macOS: owned model plus AppKit shell
 bun run z run examples/structs.z
@@ -955,8 +964,9 @@ nullability, and C values used inside method signatures. An inferred nullable
 reference is shown by editor services as `AppKit.NSWindow | null`; member access
 requires a `reference != null` check, and the checked branch narrows to the
 non-null nominal type without changing its one-pointer native representation.
-Explicit source annotations using `T | null` remain a follow-up. Calls use a
-selector's first component as the TypeScript-style method name. Positional calls resolve by
+The same `T | null` spelling is accepted in fields, parameters, returns, and
+locals for imported Objective-C references. Calls use a selector's first
+component as the TypeScript-style method name. Positional calls resolve by
 argument count; labeling every argument after the first selects the complete
 Objective-C selector. Imported custom property accessors are honored. String
 literals bridge contextually to `NSString` for compatible Objective-C method

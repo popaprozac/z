@@ -1,0 +1,13 @@
+import AppKit from "AppKit/AppKit.h";
+
+function centerIfPresent(window: AppKit.NSWindow | null): i32 {
+  if (window == null) return 0;
+
+  window.center();
+  return 1;
+}
+
+function main(): i32 {
+  const app = AppKit.NSApplication.sharedApplication;
+  return centerIfPresent(app.keyWindow);
+}

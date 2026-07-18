@@ -2,7 +2,7 @@ import stdio from "stdio.h";
 
 function main(): i32 {
   const file = stdio.fopen("/tmp/z-lang-foreign-handle.txt", "w");
-  if (!file) {
+  if (file == null) {
     return 1;
   }
 

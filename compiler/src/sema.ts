@@ -52,6 +52,11 @@ import {
   weakResultTypeName,
   weakTypeName,
 } from "./weak-types.ts";
+import {
+  isNullableObjCTypeName,
+  nullableObjCTypeName,
+  publicObjCTypeName,
+} from "./objc-types.ts";
 
 export type ObjCCallInfo = {
   readonly selector: string;
@@ -244,12 +249,29 @@ export function analyze(
     for (const [name, type] of module.objectTypes) foreignObjectTypes.set(name, type);
     for (const type of module.interfaces.values()) {
       foreignInterfaces.set(type.typeName, type);
-      foreignNamedTypes.set(type.typeName, {
+      const named: ForeignNamedType = {
         kind: "object",
         exportName: type.exportName,
         typeName: type.typeName,
         cName: `${type.className} *`,
         className: type.className,
+      };
+      foreignNamedTypes.set(type.typeName, named);
+      foreignObjectTypes.set(type.typeName, {
+        kind: "object",
+        typeName: type.typeName,
+        cName: named.cName,
+        className: type.className,
+        nullable: false,
+      });
+      const nullableName = nullableObjCTypeName(type.typeName);
+      foreignNamedTypes.set(nullableName, { ...named, typeName: nullableName });
+      foreignObjectTypes.set(nullableName, {
+        kind: "object",
+        typeName: nullableName,
+        cName: named.cName,
+        className: type.className,
+        nullable: true,
       });
     }
     if (module.framework) frameworks.add(module.framework);
@@ -1324,7 +1346,7 @@ function analyzeStatement(
     }
     case "if": {
       const conditionType = inferExpression(statement.condition, locals, globals, structs, enums, fileName, state);
-      if (conditionType !== "bool" && !foreignPointer(conditionType, state)?.nullable) {
+      if (conditionType !== "bool") {
         requireAssignable("bool", conditionType, statement.condition, fileName, state.foreignNamedTypes, state.numericLiteralTypes);
       }
       analyzeIfBranches(statement, owner, locals, globals, structs, enums, fileName, state);
@@ -1962,7 +1984,7 @@ function inferIfExpression(
   state: AnalysisState,
 ): ValueType {
   const conditionType = inferExpression(expression.condition, locals, globals, structs, enums, fileName, state);
-  if (conditionType !== "bool" && !foreignPointer(conditionType, state)?.nullable) {
+  if (conditionType !== "bool") {
     requireAssignable("bool", conditionType, expression.condition, fileName, state.foreignNamedTypes, state.numericLiteralTypes);
   }
 
@@ -2390,7 +2412,6 @@ function inferExpressionInner(
       const operand = inferExpression(expression.operand, locals, globals, structs, enums, fileName, state);
       const canonicalOperand = canonicalType(operand, state.foreignNamedTypes);
       if (expression.operator === "!" && canonicalOperand === "bool") return "bool";
-      if (expression.operator === "!" && foreignPointer(operand, state)?.nullable) return "bool";
       if (["+", "-"].includes(expression.operator) && isNumericType(canonicalOperand)) {
         state.foreignExpressionTypes.set(expression.location.offset, canonicalOperand);
         if (expression.operator === "-" && isIntegerType(canonicalOperand)) {
@@ -2574,7 +2595,7 @@ function inferExpressionInner(
     }
     case "conditional": {
       const conditionType = inferExpression(expression.condition, locals, globals, structs, enums, fileName, state);
-      if (conditionType !== "bool" && !foreignPointer(conditionType, state)?.nullable) {
+      if (conditionType !== "bool") {
         requireAssignable("bool", conditionType, expression.condition, fileName, state.foreignNamedTypes, state.numericLiteralTypes);
       }
       const original = new Map(locals);
@@ -4101,7 +4122,7 @@ function analyzeWhileLoop(
       fileName,
       state,
     );
-    if (conditionType !== "bool" && !foreignPointer(conditionType, state)?.nullable) {
+    if (conditionType !== "bool") {
       requireAssignable(
         "bool",
         conditionType,
@@ -4870,6 +4891,7 @@ function describeValueType(type: ValueType, state: AnalysisState): string {
   const pointer = foreignPointer(type, state);
   if (pointer) return describePointer(pointer);
   const name = String(underlyingType(type));
+  if (isNullableObjCTypeName(name)) return `${publicObjCTypeName(name)} | null`;
   return displayFunctionType(name, displayArrayType) ?? displayArrayType(name);
 }
 
@@ -4881,6 +4903,18 @@ function validateType(
   fileName: string,
   allowVoid: boolean,
 ): void {
+  if (isNullableObjCTypeName(type.name)) {
+    const target = foreignNamedTypes.get(publicObjCTypeName(type.name));
+    if (target?.kind !== "object") {
+      throw new DiagnosticError(
+        fileName,
+        type.location,
+        `${JSON.stringify(`${publicObjCTypeName(type.name)} | null`)} currently requires an imported Objective-C reference type`,
+        { helps: [`use Option<${publicObjCTypeName(type.name)}> for an optional Z value`] },
+      );
+    }
+    return;
+  }
   const functionType = parseFunctionType(type.name);
   if (functionType) {
     for (const parameter of functionType.parameters) {
@@ -4976,9 +5010,14 @@ function requireAssignable(
     throw new DiagnosticError(
       fileName,
       expression.location,
-      `expected ${displayArrayType(String(expected))}, found ${displayArrayType(String(actual))}`,
+      `expected ${displayAssignableType(expected)}, found ${displayAssignableType(actual)}`,
     );
   }
+}
+
+function displayAssignableType(type: ValueType): string {
+  const name = String(underlyingType(type));
+  return isNullableObjCTypeName(name) ? `${publicObjCTypeName(name)} | null` : displayArrayType(name);
 }
 
 function requireContextualSignedLiteral(
@@ -5022,12 +5061,15 @@ function sameForeignNamedType(
   if (expected === "unknown" || expected === "never" || actual === "unknown" || actual === "never") return false;
   const expectedNamed = foreignNamedTypes.get(String(underlyingType(expected)));
   const actualNamed = foreignNamedTypes.get(String(underlyingType(actual)));
-  return Boolean(
-    expectedNamed
-    && actualNamed
-    && expectedNamed.kind === actualNamed.kind
-    && expectedNamed.cName === actualNamed.cName,
-  );
+  if (!expectedNamed || !actualNamed || expectedNamed.kind !== actualNamed.kind || expectedNamed.cName !== actualNamed.cName) {
+    return false;
+  }
+  if (expectedNamed.kind === "object" && actualNamed.kind === "object") {
+    const expectedNullable = isNullableObjCTypeName(String(underlyingType(expected)));
+    const actualNullable = isNullableObjCTypeName(String(underlyingType(actual)));
+    if (actualNullable && !expectedNullable) return false;
+  }
+  return true;
 }
 
 function isIntegerType(type: ValueType): type is string {
@@ -5186,7 +5228,7 @@ function requireNumericLiteralFits(
 }
 
 function isNullableForeignTypeName(type: string): boolean {
-  return type.startsWith("__z_ffi:") && type.includes(":nullable:");
+  return isNullableObjCTypeName(type) || (type.startsWith("__z_ffi:") && type.includes(":nullable:"));
 }
 
 function integerLiteralFits(value: string, type: string): boolean {

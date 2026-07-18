@@ -291,6 +291,14 @@ its argument. `none` requires contextual typing or the explicit spelling
 patterns, including the existing borrow and move rules. This keeps optional
 class references non-null and gives optional single-owner values deterministic
 cleanup without a second ownership model.
+
+`T | null` is the TypeScript-shaped spelling for the same optionality concept;
+`null` is contextual and never inhabits plain `T`. The first executable
+specialization accepts imported Objective-C reference types, preserves their
+native one-pointer null niche, and narrows after explicit comparison with
+`null`. General `T | null` normalization to `Option<T>` and `some`/`none`
+matching remains the next representation-unification layer rather than a
+second nullable-value model.
 Capture-list sugar, automatic ORC cycle collection, and atomic cross-thread
 weak upgrades remain separate future layers.
 
@@ -319,6 +327,10 @@ retain TypeScript-like spelling, while `break` and `continue` target the nearest
 enclosing loop. A control transfer first cleans every local scope it exits, so
 deterministic destruction is preserved on normal iteration, `break`,
 `continue`, `return`, `throw`, and `try` propagation.
+
+Statement `if` and `else` bodies may be either blocks or one statement. `else`
+binds to the nearest unmatched `if`, following TypeScript. Value-producing `if`
+expressions continue to require blocks and explicit `select` values.
 
 Ownership analysis computes a fixed state across loop back-edges. An owned value
 that may move during one iteration cannot be reused during a later iteration
@@ -841,8 +853,9 @@ Imported nullable Objective-C references preserve their native one-pointer
 representation and are displayed as `T | null`. Accessing a property or method
 requires an explicit comparison with `null`; flow analysis narrows the non-null
 branch (including the path after an early null return) and restores nullability
-when branches rejoin. The general source-level union grammar is not frozen by
-this imported-type display spelling.
+when branches rejoin. The spelling is accepted in imported Objective-C
+reference fields, parameters, returns, and locals. It is the first restricted
+optional form, not a commitment to arbitrary source-level unions.
 
 An immutable binding to an Objective-C object fixes the reference but does not
 claim that the foreign object is deeply immutable. Assignment to a writable

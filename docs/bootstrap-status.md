@@ -74,9 +74,10 @@ while exposing the non-escaping view wall for future experiments.
 | Swift methods/strings/generics | Planned vertical slices | Generated C++ methods, `swift::String`, protocols, errors, async, packages |
 
 Current interop gaps that block a richer desktop application include
-explicit source-level nullable foreign annotations, broader Objective-C block
-shapes, target/action adapters, protocol conformance, cross-thread callbacks,
-availability, and API notes at SDK scale.
+broader Objective-C block shapes, target/action adapters, protocol conformance,
+cross-thread callbacks, availability, and API notes at SDK scale. General
+`T | null`/`Option<T>` representation and match unification remains language
+foundation work rather than an interop-only gap.
 
 The Swift owned-value probe is intentionally honest about the toolchain: current
 generated wrappers copy and deterministically destroy Swift values, but delete
@@ -103,6 +104,8 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
 ## Validation probes
 
 - [`examples/nswindow.z`](../examples/nswindow.z): direct AppKit window.
+- [`examples/objc-nullability.z`](../examples/objc-nullability.z): explicit
+  `T | null` AppKit reference and guard narrowing.
 - [`examples/desktop-ownership`](../examples/desktop-ownership): ARC application
   model plus move-only owned documents and AppKit shell.
 - [`examples/swift-interop`](../examples/swift-interop): Swift class through its
