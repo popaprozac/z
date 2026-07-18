@@ -856,6 +856,13 @@ question remains separate from the now-resolved foreign type-surface gap.
 Candidate view-return experiments remain open until a real caller supplies
 comparative evidence.
 
+Imported Objective-C block parameters contextually type Z closures. An escaping
+block requires an owned `move` closure; a generated Objective-C ARC box retains
+and releases the Z closure environment with the copied native block. The
+desktop probe uses `NSOpenPanel.beginWithCompletionHandler` to mutate its owned
+`Workspace` from a real AppKit completion event. This validates the first block
+shape without prematurely choosing target/action or delegate syntax.
+
 A conventional local `Module-Swift.h` compatibility header also selects the
 Objective-C ARC backend. The bootstrap has an end-to-end fixture in which
 `swiftc` builds a Swift dylib and generated header, Z imports its class,

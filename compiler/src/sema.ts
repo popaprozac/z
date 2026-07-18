@@ -30,6 +30,7 @@ import {
 import {
   pointerTypeName,
   type ForeignCallbackType,
+  type ForeignBlockType,
   type ForeignConstant,
   type ForeignFunction,
   type ForeignModule,
@@ -127,6 +128,7 @@ export type SemanticInfo = {
   readonly objcClassNames: ReadonlyMap<number, string>;
   readonly objcProperties: ReadonlyMap<number, ObjCPropertyInfo>;
   readonly objcCalls: ReadonlyMap<number, ObjCCallInfo>;
+  readonly objcBlockArguments: ReadonlyMap<number, ForeignBlockType>;
   readonly objcStringLiterals: ReadonlySet<number>;
   readonly cstringConversions: ReadonlySet<number>;
   readonly expressionTypes: ReadonlyMap<number, string>;
@@ -165,6 +167,7 @@ type AnalysisState = {
   readonly objcClassNames: Map<number, string>;
   readonly objcProperties: Map<number, ObjCPropertyInfo>;
   readonly objcCalls: Map<number, ObjCCallInfo>;
+  readonly objcBlockArguments: Map<number, ForeignBlockType>;
   readonly objcStringLiterals: Set<number>;
   readonly cstringConversions: Set<number>;
   readonly expressionTypes: Map<number, string>;
@@ -270,6 +273,7 @@ export function analyze(
     objcClassNames: new Map(),
     objcProperties: new Map(),
     objcCalls: new Map(),
+    objcBlockArguments: new Map(),
     objcStringLiterals: new Set(),
     cstringConversions: new Set(),
     expressionTypes: new Map(),
@@ -1587,7 +1591,7 @@ function inferClosureExpression(
     }
   }
 
-  const discovered = collectClosureCaptures(expression, new Set(locals.keys()), parameterNames);
+  const discovered = collectClosureCaptures(expression, locals, structs, parameterNames);
   const captures: ClosureCaptureInfo[] = [];
   const closureLocals = new Map<string, ValueType>();
   for (const capture of discovered.values()) {
@@ -1763,9 +1767,11 @@ function finalizeClosureFunctionValue(
 
 function collectClosureCaptures(
   closure: Extract<Expression, { kind: "closure" }>,
-  outerNames: ReadonlySet<string>,
+  outerLocals: ReadonlyMap<string, ValueType>,
+  structs: ReadonlyMap<string, StructDeclaration>,
   parameterNames: ReadonlySet<string>,
 ): Map<string, { readonly name: string; readonly location: SourceLocation; mutated: boolean }> {
+  const outerNames = new Set(outerLocals.keys());
   const captures = new Map<string, { readonly name: string; readonly location: SourceLocation; mutated: boolean }>();
   const record = (name: string, location: SourceLocation, mutated = false, localNames: ReadonlySet<string>): void => {
     if (!outerNames.has(name) || localNames.has(name)) return;
@@ -1814,7 +1820,14 @@ function collectClosureCaptures(
       case "closure":
         return;
       case "call":
-        walkExpression(expression.callee, localNames);
+        if (expression.callee.kind === "member" && expression.callee.object.kind === "identifier") {
+          const receiverType = outerLocals.get(expression.callee.object.name);
+          const receiver = receiverType ? structs.get(String(underlyingType(receiverType))) : null;
+          const method = receiver?.methods.find((candidate) => candidate.name === expression.callee.property);
+          walkExpression(expression.callee, localNames, method?.receiverMode === "inout");
+        } else {
+          walkExpression(expression.callee, localNames);
+        }
         for (const argument of expression.arguments) walkExpression(argument, localNames);
         return;
       case "member":
@@ -4320,7 +4333,7 @@ function foreignValueType(type: ForeignType): ValueType {
   if (type.kind === "z") return type.name;
   if (type.kind === "named") return type.type.typeName;
   if (type.kind === "pointer" || type.kind === "object") return type.typeName;
-  if (type.kind === "callback") {
+  if (type.kind === "callback" || type.kind === "block") {
     const parameters = type.parameters.map((parameter, index) => ({
       name: `argument${index + 1}`,
       mode: "value" as const,
@@ -4350,7 +4363,36 @@ function checkObjCArguments(
       throw new DiagnosticError(fileName, argument.location, `Objective-C selector ${JSON.stringify(target.selector)} uses unsupported parameter type ${JSON.stringify(parameter.type.cName)}`);
     }
     const contextual = contextualObjCStringType(parameter.type, argument, state);
-    let actual = contextual ?? inferExpression(argument, locals, globals, structs, enums, fileName, state);
+    let actual: ValueType;
+    if (parameter.type.kind === "block" && argument.kind === "closure") {
+      const expectedType = foreignValueType(parameter.type);
+      const expectedFunction = parseFunctionType(String(expectedType))!;
+      inferClosureExpression(argument, locals, globals, structs, enums, fileName, state, expectedFunction, !parameter.type.escaping);
+      finalizeClosureFunctionValue(
+        argument,
+        expectedFunction,
+        String(expectedType),
+        locals,
+        structs,
+        enums,
+        fileName,
+        state,
+        !parameter.type.escaping,
+      );
+      state.foreignArgumentAccesses.set(argument.location.offset, "in");
+      state.objcBlockArguments.set(argument.location.offset, parameter.type);
+      actual = expectedType;
+    } else {
+      actual = contextual ?? inferExpression(argument, locals, globals, structs, enums, fileName, state);
+    }
+    if (parameter.type.kind === "block" && argument.kind !== "closure") {
+      throw new DiagnosticError(
+        fileName,
+        argument.location,
+        "the first Objective-C block interop slice requires an inline closure",
+        { helps: ["pass `move (value) => ...` directly at the Objective-C call site"] },
+      );
+    }
     if (parameter.type.kind === "z" && parameter.type.name === "cstring" && actual === "String") {
       state.cstringConversions.add(argument.location.offset);
       actual = "cstring";
@@ -4705,7 +4747,7 @@ function checkForeignCall(
       ? target.returnType.type.typeName
     : target.returnType.kind === "pointer"
       ? target.returnType.typeName
-    : target.returnType.kind === "callback"
+    : target.returnType.kind === "callback" || target.returnType.kind === "block"
       ? foreignValueType(target.returnType)
       : "unknown";
   state.foreignCallTypes.set(location.offset, result);

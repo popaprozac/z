@@ -9,6 +9,7 @@ import type {
   ForeignCallbackContextType,
   ForeignCallbackReleaseType,
   ForeignCallbackType,
+  ForeignBlockType,
   ForeignConstant,
   ForeignField,
   ForeignFunction,
@@ -97,7 +98,9 @@ export function resolveForeignModules(
     const localHeader = resolve(headerDirectory, declaration.header);
     const headerFreshness = existsSync(localHeader) ? statSync(localHeader).mtimeMs : 0;
     const framework = discoverFramework(declaration.header);
-    const objectiveC = Boolean(framework) || isSwiftCompatibilityHeader(declaration.header);
+    const objectiveC = Boolean(framework)
+      || isSwiftCompatibilityHeader(declaration.header)
+      || (existsSync(localHeader) && /(?:^|\n)\s*(?:@interface|@protocol|@class|#import\b)/.test(readFileSync(localHeader, "utf8")));
     const cPlusPlus = isCPlusPlusHeader(declaration.header);
     const language = objectiveC ? cPlusPlus ? "objective-c++" : "objective-c" : cPlusPlus ? "c++" : "c";
     const cacheKey = `${declarationIncludeDirectories.join("\0")}\0${declaration.header}\0${headerFreshness}\0${declaration.moduleName}\0${framework ?? language}`;
@@ -556,6 +559,16 @@ function mapObjCType(
 ): ForeignType {
   const qualified = type.qualType ?? "";
   const nullable = /\b(?:_Nullable|_Null_unspecified)\b/.test(qualified);
+  const block = mapObjCBlockType(
+    qualified,
+    receiverClass,
+    namedTypes,
+    typeNames,
+    objectType,
+  ) ?? (type.desugaredQualType && type.desugaredQualType !== qualified
+    ? mapObjCBlockType(type.desugaredQualType, receiverClass, namedTypes, typeNames, objectType)
+    : null);
+  if (block) return block;
   if (/\binstancetype\b/.test(qualified)) return objectType(receiverClass, nullable);
   if (/^(?:__strong\s+)?id(?:\s|<|$)/.test(qualified.replace(/\b_(?:Nullable|Nonnull|Null_unspecified)\b/g, "").trim())) {
     return objectType(null, nullable);
@@ -567,6 +580,50 @@ function mapObjCType(
   const mapped = mapForeignType(qualified, undefined, position, pointerTypes, namedTypes);
   if (mapped.kind !== "unsupported" || !type.desugaredQualType || type.desugaredQualType === qualified) return mapped;
   return mapForeignType(type.desugaredQualType, undefined, position, pointerTypes, namedTypes);
+}
+
+function mapObjCBlockType(
+  cName: string,
+  receiverClass: string,
+  namedTypes: ReadonlyMap<string, ForeignNamedType>,
+  typeNames: ReadonlyMap<string, string>,
+  objectType: (className: string | null, nullable: boolean) => ForeignObjectType,
+): ForeignBlockType | null {
+  const normalized = cName
+    .replace(/__attribute__\s*\(\(noescape\)\)/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  const match = /^(.+?)\s*\(\s*\^\s*(?:(?:__strong|__weak|__unsafe_unretained|__autoreleasing|_(?:Nonnull|Nullable|Null_unspecified))\s*)*\)\s*\((.*)\)$/.exec(normalized);
+  if (!match) return null;
+  const parameterSpellings = splitCParameters(match[2]);
+  if (parameterSpellings.includes("...")) return null;
+  const returnType = mapObjCType(
+    { qualType: match[1].trim() },
+    receiverClass,
+    "return",
+    namedTypes,
+    typeNames,
+    objectType,
+  );
+  const parameters = parameterSpellings
+    .filter((parameter) => stripValueQualifiers(parameter) !== "void")
+    .map((parameter) => mapObjCType(
+      { qualType: parameter },
+      receiverClass,
+      "parameter",
+      namedTypes,
+      typeNames,
+      objectType,
+    ));
+  if (returnType.kind === "unsupported" || parameters.some((parameter) => parameter.kind === "unsupported")) return null;
+  return {
+    kind: "block",
+    cName,
+    parameters,
+    returnType,
+    escaping: !/\bnoescape\b/.test(cName),
+    nullable: /\b(?:_Nullable|_Null_unspecified)\b/.test(cName),
+  };
 }
 
 function mapRecordFieldType(

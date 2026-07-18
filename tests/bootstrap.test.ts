@@ -873,7 +873,17 @@ test("compiles a desktop ownership slice and preserves its current pressure wall
   assert.match(artifact.source, /NSWindow \*\s*window;/);
   assert.match(artifact.source, /calloc\(1, sizeof\(Z_WindowController\)\)/);
   assert.match(artifact.source, /self->window = nil;/);
+  assert.match(artifact.source, /beginWithCompletionHandler:_z_objc_block_/);
+  assert.match(artifact.source, /Z_[A-Za-z0-9_]*Workspace_open/);
   assert.deepEqual(diagnostics(source, example), []);
+
+  const compilation = spawnSync("clang", [
+    "-x", "objective-c",
+    "-fobjc-arc", "-fblocks",
+    "-Wall", "-Wextra", "-Werror",
+    "-fsyntax-only", "-",
+  ], { input: artifact.source, encoding: "utf8" });
+  assert.equal(compilation.status, 0, compilation.stderr);
 
   const borrowedView = `
     struct Document { title: String; }
@@ -890,6 +900,28 @@ test("compiles a desktop ownership slice and preserves its current pressure wall
 
   const windowFieldOffset = source.indexOf("window: AppKit.NSWindow") + "window: AppKit.".length + 1;
   assert.match(hover(source, example, windowFieldOffset)?.contents.value ?? "", /class NSWindow/);
+});
+
+test("retains owned Z closure environments across Objective-C blocks", () => {
+  if (process.platform !== "darwin") return;
+  const example = resolve(projectRoot, "tests/fixtures/objc-blocks.z");
+  const source = readFileSync(example, "utf8");
+  const artifact = compileToNative(source, example);
+  assert.equal(artifact.language, "objective-c");
+  assert.match(artifact.source, /@interface Z_ObjCClosureBox : NSObject/);
+  assert.match(artifact.source, /\^void\(int32_t _z_block_argument_1\)/);
+  assert.match(artifact.source, /initWithContext:.*retainFunction:.*releaseFunction:/);
+  assert.doesNotMatch(artifact.source, /Z_EventState_retain\(\(\*state\)\)->value/);
+
+  const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, "event value=42\nreleased event state 42\n");
+
+  const borrowed = source.replace("move (value)", "(value)");
+  assert.match(
+    diagnostics(borrowed, example)[0].message,
+    /borrowed capturing closure cannot become a function value/,
+  );
 });
 
 test("imports and executes Swift through its generated Objective-C compatibility header", () => {
@@ -1593,7 +1625,7 @@ test("passes contextual inline closures through borrowed and owned function para
   `;
   const generated = compileToC(source, "inline-closures.z");
   assert.match(generated, /Z_ClosureEnv_/);
-  assert.match(generated, /malloc\(sizeof\(Z_ClosureEnv_/);
+  assert.match(generated, /calloc\(1, sizeof\(Z_ClosureEnv_/);
   assert.match(generated, /_z_borrowed_closure_environment_/);
   assert.match(generated, /_z_argument_/);
 

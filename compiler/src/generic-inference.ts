@@ -832,5 +832,6 @@ function inferenceTypeName(type: ForeignType | undefined): string | null {
   if (!type || type.kind === "unsupported" || type.kind === "recordPointer") return null;
   if (type.kind === "z") return type.name;
   if (type.kind === "named") return type.type.typeName;
+  if (type.kind === "callback" || type.kind === "block") return null;
   return type.typeName;
 }

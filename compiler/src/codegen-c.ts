@@ -14,6 +14,7 @@ import {
   parseSliceType,
 } from "./array-types.ts";
 import type { ClosureInfo, ForeignCallArgumentPlan, IntegerOperation, SemanticInfo } from "./sema.ts";
+import type { ForeignBlockType } from "./foreign.ts";
 import {
   isStandardModuleSpecifier,
   standardFunctionSignature,
@@ -147,6 +148,9 @@ export function generateC(program: Program, sourceName: string, semanticInfo: Se
     if (includedHeaders.has(declaration.header)) continue;
     lines.push(`#include <${declaration.header}>`);
     includedHeaders.add(declaration.header);
+  }
+  if (semanticInfo.objcBlockArguments.size > 0) {
+    lines.push("", generateObjCBlockRuntime());
   }
   const integerRuntime = generateIntegerRuntime(semanticInfo.integerOperations, semanticInfo.numericLiteralTypes);
   if (integerRuntime.length > 0) lines.push("", ...integerRuntime);
@@ -323,6 +327,36 @@ static inline __attribute__((unused)) void z_weak_release(Z_Weak value) {
   value.control->weak_count -= 1;
   if (value.control->weak_count == 0) free(value.control);
 }`;
+}
+
+function generateObjCBlockRuntime(): string {
+  return `@interface Z_ObjCClosureBox : NSObject {
+@public
+  void *_z_context;
+  void (*_z_release)(void *context);
+}
+- (instancetype)initWithContext:(void *)context
+                  retainFunction:(void (*)(void *context))retainFunction
+                 releaseFunction:(void (*)(void *context))releaseFunction;
+@end
+
+@implementation Z_ObjCClosureBox
+- (instancetype)initWithContext:(void *)context
+                  retainFunction:(void (*)(void *context))retainFunction
+                 releaseFunction:(void (*)(void *context))releaseFunction {
+  self = [super init];
+  if (self != nil) {
+    _z_context = context;
+    _z_release = releaseFunction;
+    if (retainFunction != NULL) retainFunction(context);
+  }
+  return self;
+}
+
+- (void)dealloc {
+  if (_z_release != NULL) _z_release(_z_context);
+}
+@end`;
 }
 
 function collectFixedArrayTypes(program: Program, semanticInfo: SemanticInfo): string[] {
@@ -807,6 +841,7 @@ function generateOwnedEnvironmentCleanup(
   if (foreign?.ownership === "owned") {
     return foreign.nullable ? `if (${value} != NULL) ${foreign.release}(${value});` : `${foreign.release}(${value});`;
   }
+  if (semanticInfo.foreignNamedTypes.get(type)?.kind === "object") return `${value} = nil;`;
   const declaration = structs.get(type);
   if (declaration?.kind === "class") return `${releaseName(type)}(${value});`;
   if (declaration && hasCleanupType(type, structs, enums, semanticInfo.foreignTypes)) return `${deinitName(type)}(&(${value}));`;
@@ -1503,7 +1538,7 @@ function generateStatement(statement: Statement, context: GenerationContext): st
             closureEnvironmentReleaseName(closure),
           );
           const liveFlag = ensureLiveFlag(statement.name, context);
-          return `${environmentType} *${environment} = (${environmentType} *)malloc(sizeof(${environmentType}));
+          return `${environmentType} *${environment} = (${environmentType} *)calloc(1, sizeof(${environmentType}));
 if (${environment} == NULL) abort();
 ${environment}->refcount = 1;
 ${captures.join("\n")}
@@ -1574,7 +1609,7 @@ bool ${liveFlag} = true;`;
         return generateDirectValue(
           statement.expression,
           context,
-          (value) => `${generateExpression(statement.target, context)} = ${value};${liveFlag ? `\n${liveFlag} = true;` : ""}`,
+          (value) => `${generateAssignmentTarget(statement.target, context)} = ${value};${liveFlag ? `\n${liveFlag} = true;` : ""}`,
         );
       }
       if (hasCleanupType(targetType, context.structs, context.enums, context.semanticInfo.foreignTypes)) {
@@ -1583,7 +1618,7 @@ bool ${liveFlag} = true;`;
       return generateDirectValue(
         statement.expression,
         context,
-        (value) => `${generateExpression(statement.target, context)} = ${value};`,
+        (value) => `${generateAssignmentTarget(statement.target, context)} = ${value};`,
       );
     }
     case "return":
@@ -2084,7 +2119,7 @@ function generateClosureValue(
 ${captures.join("\n")}
 ${consumeValue(value, context)}`;
   }
-  return `${environmentType} *${environment} = (${environmentType} *)malloc(sizeof(${environmentType}));
+  return `${environmentType} *${environment} = (${environmentType} *)calloc(1, sizeof(${environmentType}));
 if (${environment} == NULL) abort();
 ${environment}->refcount = 1;
 ${captures.join("\n")}
@@ -2113,6 +2148,29 @@ function temporaryValueType(expression: Expression, context: GenerationContext):
     ?? inferExpressionType(expression, context);
 }
 
+function generateObjCBlockArgument(
+  block: ForeignBlockType,
+  functionValue: string,
+  box: string,
+  nativeBlock: string,
+): string[] {
+  const parameters = block.parameters.map((parameter, index) => ({
+    type: parameter.cName,
+    name: `_z_block_argument_${index + 1}`,
+  }));
+  const parameterTypes = parameters.map((parameter) => parameter.type).join(", ") || "void";
+  const parameterDeclarations = parameters.map((parameter) => `${parameter.type} ${parameter.name}`).join(", ") || "void";
+  const arguments_ = parameters.map((parameter) => parameter.name);
+  const invoke = `(${functionValue}).call(${box}->_z_context${arguments_.length ? `, ${arguments_.join(", ")}` : ""})`;
+  const body = block.returnType.kind === "z" && block.returnType.name === "void"
+    ? `${invoke};`
+    : `return ${invoke};`;
+  return [
+    `Z_ObjCClosureBox * const ${box} = [[Z_ObjCClosureBox alloc] initWithContext:(${functionValue}).context retainFunction:(${functionValue}).retain releaseFunction:(${functionValue}).release];`,
+    `${block.returnType.cName} (^const ${nativeBlock})(${parameterTypes}) = ^${block.returnType.cName}(${parameterDeclarations}) { ${body} };`,
+  ];
+}
+
 function generateLoweredCall(
   expression: Extract<Expression, { kind: "call" }>,
   context: GenerationContext,
@@ -2139,7 +2197,15 @@ function generateLoweredCall(
     const temporary = `_z_argument_${context.valueCounter.value++}`;
     lines.push(`${generateLocalDeclaration(type, temporary, true, context.structs, context.enums, context.semanticInfo.foreignNamedTypes)};`);
     lines.push(generateDirectValue(argument, context, (value) => `${temporary} = ${value};`));
-    overrides.set(argument.location.offset, temporary);
+    const objcBlock = context.semanticInfo.objcBlockArguments.get(argument.location.offset);
+    if (objcBlock) {
+      const box = `_z_objc_block_box_${context.valueCounter.value++}`;
+      const nativeBlock = `_z_objc_block_${context.valueCounter.value++}`;
+      lines.push(...generateObjCBlockArgument(objcBlock, temporary, box, nativeBlock));
+      overrides.set(argument.location.offset, nativeBlock);
+    } else {
+      overrides.set(argument.location.offset, temporary);
+    }
     if (borrowedTemplate && hasCleanupType(type, context.structs, context.enums, context.semanticInfo.foreignTypes)) {
       borrowedTemporaries.push({ name: temporary, type });
     }
@@ -2319,6 +2385,7 @@ function generateStoredValue(name: string, context: GenerationContext): string {
   }
   const emittedName = cBindingName(name);
   const type = context.localTypes.get(name);
+  if (type && parseSliceType(type)) return emittedName;
   if (type && context.structs.get(type)?.kind === "class" && context.parameterModes.get(name) === "in") return emittedName;
   const mode = context.parameterModes.get(name);
   return mode === "in" || mode === "inout" || mode === "out" ? `(*${emittedName})` : emittedName;
@@ -2376,6 +2443,37 @@ function generateCleanup(scopes: CleanupLocal[][], context: GenerationContext): 
   return calls.join("\n");
 }
 
+function generateAssignmentTarget(expression: Expression, context: GenerationContext): string {
+  if (expression.kind === "identifier") return generateStoredValue(expression.name, context);
+  if (expression.kind === "member") {
+    if (expression.object.kind === "identifier" && expression.object.name === "this") {
+      if (context.receiver?.kind === "class" || context.owner.receiverMode !== "move") return `self->${expression.property}`;
+      return `self.${expression.property}`;
+    }
+    const ownerType = inferExpressionType(expression.object, context);
+    const owner = context.structs.get(ownerType);
+    const access = owner?.kind === "class" ? "->" : ".";
+    const object = expression.object.kind === "identifier"
+      || expression.object.kind === "member"
+      || expression.object.kind === "index"
+      ? generateAssignmentTarget(expression.object, context)
+      : generateExpression(expression.object, context);
+    return `(${object})${access}${expression.property}`;
+  }
+  if (expression.kind === "index") {
+    const ownerType = inferExpressionType(expression.object, context);
+    const array = parseFixedArrayType(ownerType);
+    const owner = expression.object.kind === "identifier"
+      || expression.object.kind === "member"
+      || expression.object.kind === "index"
+      ? generateAssignmentTarget(expression.object, context)
+      : generateExpression(expression.object, context);
+    const length = array ? String(array.length) : `(${owner}).length`;
+    return `((${owner}).data[z_bounds_index((uintptr_t)(${generateExpression(expression.index, context)}), ${length})])`;
+  }
+  return generateExpression(expression, context);
+}
+
 function generateCleanupAwareAssignment(
   statement: Extract<Statement, { kind: "assignment" }>,
   targetType: string,
@@ -2390,7 +2488,7 @@ function generateCleanupAwareAssignment(
     context.enums,
     context.semanticInfo.foreignNamedTypes,
   );
-  const target = generateExpression(statement.target, context);
+  const target = generateAssignmentTarget(statement.target, context);
   const liveFlag = statement.target.kind === "identifier"
     ? context.liveFlags.get(statement.target.name) ?? null
     : null;
@@ -3231,6 +3329,7 @@ function generateCallArgument(expression: Expression, context: GenerationContext
     return `(${target}){ .data = (${value}).data, .length = ${length} }`;
   }
   const value = generateExpression(expression, context);
+  if (context.semanticInfo.objcBlockArguments.has(expression.location.offset)) return value;
   const nativeIn = context.semanticInfo.nativeArgumentAccesses.get(expression.location.offset) === "in";
   const classIn = nativeIn && context.structs.get(inferExpressionType(expression, context))?.kind === "class";
   return context.semanticInfo.foreignArgumentAccesses.get(expression.location.offset) === "in"

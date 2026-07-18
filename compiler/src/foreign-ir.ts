@@ -7,6 +7,7 @@ export type ForeignType =
   | ForeignCallbackType
   | ForeignCallbackContextType
   | ForeignCallbackReleaseType
+  | ForeignBlockType
   | ForeignObjectType
   | ForeignRecordPointerType
   | ForeignPointerType
@@ -65,6 +66,15 @@ export type ForeignObjectType = {
   readonly typeName: string;
   readonly cName: string;
   readonly className: string | null;
+  readonly nullable: boolean;
+};
+
+export type ForeignBlockType = {
+  readonly kind: "block";
+  readonly cName: string;
+  readonly parameters: readonly ForeignType[];
+  readonly returnType: ForeignType;
+  readonly escaping: boolean;
   readonly nullable: boolean;
 };
 

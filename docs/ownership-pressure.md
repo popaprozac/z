@@ -55,13 +55,18 @@ source-level nullable spelling and narrowing rules. Protocol-qualified `id`,
 weak/unowned foreign fields, and ownership attributes imported from API notes
 remain later slices.
 
-## Pressure 3: interactive AppKit needs adapter surfaces
+## Pressure 3: interactive AppKit adapter surfaces
 
-A static native window works, but a real button/menu/delegate path needs
-Objective-C blocks, target/action selector adapters, or Z-defined Objective-C
-protocol conformance. Those are missing interop features. They should be tested
-with one real event flowing from AppKit into owned Z state before a broad binding
-design is committed.
+Resolved for the first Objective-C block shape: the desktop probe passes an
+owned `move` closure to `beginWithCompletionHandler`. AppKit copies the block;
+a generated ARC box retains the Z closure environment, and releases it exactly
+once when the native block dies. The completion event mutates the owned
+`Workspace`, proving a real AppKit-to-Z state path rather than a static window.
+
+Borrowed captures are rejected at an escaping block boundary. Non-escaping
+blocks can borrow lexically. Named function values, block returns with richer
+foreign object ownership, target/action selector adapters, delegates, and
+Z-defined Objective-C protocol conformance remain separate follow-ups.
 
 ## Pressure 4: strings stop at literals
 

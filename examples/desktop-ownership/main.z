@@ -14,7 +14,7 @@ class WindowController {
 }
 
 function main(): i32 {
-  const workspace = new Workspace({ documents: Array<Document>() });
+  let workspace = new Workspace({ documents: Array<Document>() });
   workspace.open(Document({ id: 1, title: "Welcome" }));
   workspace.open(Document({ id: 2, title: "Interop Notes" }));
 
@@ -36,6 +36,13 @@ function main(): i32 {
   window.title = "Z Desktop Ownership Probe";
   const controller = new WindowController({ window, workspace });
   controller.present();
+
+  const panel = AppKit.NSOpenPanel.openPanel();
+  panel.beginWithCompletionHandler(move (response) => {
+    workspace.open(Document({ id: 3, title: "Panel Event" }));
+    console.log(`panel response=${response}, documents=${workspace.documentCount()}`);
+  });
+
   app.activate();
   app.run();
   return 0;

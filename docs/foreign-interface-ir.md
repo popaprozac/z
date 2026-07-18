@@ -26,7 +26,8 @@ FIIR describes facts the rest of the compiler needs:
 - both Z-facing type identity and native declaration spelling;
 - nullability and owned, borrowed, or consuming pointer contracts;
 - non-escaping record access (`in`, `out`, `inout`);
-- callback lifetime, context, release, and threading contracts;
+- callback and Objective-C block lifetime, context, release, and threading
+  contracts;
 - native language/backend requirements such as Objective-C ARC or C++.
 
 Unsupported native types remain explicit IR nodes. The importer does not invent
@@ -106,6 +107,7 @@ toolchain is disposable.
    properties without flattening names;
 4. add explicit copy/move/destructor capabilities for general C++ and Swift
    values;
-5. describe block/callback adapters and callback-to-async synthesis;
+5. expand block/callback adapters with threading and callback-to-async
+   synthesis;
 6. add serialization only when caching or a self-hosted toolchain adapter needs
    it, then version that format separately from the in-memory IR.

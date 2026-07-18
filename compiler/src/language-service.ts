@@ -1769,7 +1769,7 @@ function foreignTypeName(type: ForeignType): string {
   if (type.kind === "named") return type.type.typeName;
   if (type.kind === "object") return `${type.className ?? "id"}${type.nullable ? "?" : ""}`;
   if (type.kind === "pointer") return `${type.cName}${type.nullable ? "?" : ""}`;
-  if (type.kind === "callback") {
+  if (type.kind === "callback" || type.kind === "block") {
     const parameters = type.parameters.map((parameter, index) => `argument${index + 1}: ${foreignTypeName(parameter)}`);
     return `(${parameters.join(", ")}) => ${foreignTypeName(type.returnType)}`;
   }
