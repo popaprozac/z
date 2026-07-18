@@ -16,10 +16,14 @@ async function main(): i32 throws NetworkError {
     failure(error) => -error.code;
   };
   const first = try await fetchValue(20);
+  const secondTask = spawn fetchValue(22);
+  const second = try await secondTask;
 
+  // Explicit scopes are only needed when child tasks should finish before a
+  // narrower region exits; the async function body is already a root scope.
   async scope {
-    const secondTask = spawn fetchValue(22);
-    const second = try await secondTask;
-    return baseline + first + second;
+    const nestedTask = spawn fetchValue(1);
+    const nested = try await nestedTask;
+    return baseline + first + second + nested - 1;
   }
 }

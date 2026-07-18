@@ -1092,17 +1092,17 @@ async function fetchValue(id: i32): i32 throws NetworkError {
 }
 
 async function main(): i32 throws NetworkError {
-  async scope {
-    const task = spawn fetchValue(42);
-    return try await task;
-  }
+  const task = spawn fetchValue(42);
+  return try await task;
 }
 ```
 
-Async calls require `await` or scope-bound `spawn`; borrowed parameters and
-live borrows across suspension are rejected in the first tier. `T throws E`
-remains the function contract, `Task<T, E>` represents spawned work, and
-`attempt await` materializes `Result<T, E>` when the outcome should be retained.
+Async calls require `await` or scope-bound `spawn`. An async function body is
+an implicit root task scope; explicit `async scope` blocks provide narrower
+child lifetimes. Borrowed parameters and live borrows across suspension are
+rejected in the first tier. `T throws E` remains the function contract,
+`Task<T, E>` represents spawned work, and `attempt await` materializes
+`Result<T, E>` when the outcome should be retained.
 
 Run the frontend example with:
 

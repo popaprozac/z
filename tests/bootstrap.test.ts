@@ -4546,7 +4546,7 @@ test("checks Phase 0 async calls, scoped tasks, typed errors, and editor details
   });
 });
 
-test("diagnoses unacknowledged async calls, unscoped spawn, and async borrows", () => {
+test("allows root-scoped spawn and diagnoses unacknowledged async calls and async borrows", () => {
   const prelude = `
     async function fetch(value: i32): i32 { return value; }
   `;
@@ -4558,11 +4558,22 @@ test("diagnoses unacknowledged async calls, unscoped spawn, and async borrows", 
     return true;
   });
 
-  const unscoped = `${prelude} async function use(): i32 { const task = spawn fetch(42); return await task; }`;
-  assert.throws(() => check(unscoped, "async-unscoped.z"), (error: unknown) => {
+  const rootScoped = `${prelude} async function use(): i32 { const task = spawn fetch(42); return await task; }`;
+  check(rootScoped, "async-root-scope.z");
+
+  const immediatelyJoined = `${prelude} async function use(): i32 { return await spawn fetch(42); }`;
+  assert.throws(() => check(immediatelyJoined, "async-await-spawn.z"), (error: unknown) => {
+    assert.ok(error instanceof DiagnosticError);
+    assert.equal(error.code, "Z0701");
+    assert.match(error.message, /`await spawn` is redundant/);
+    return true;
+  });
+
+  const synchronousSpawn = `${prelude} function use(): i32 { const task = spawn fetch(42); return 42; }`;
+  assert.throws(() => check(synchronousSpawn, "async-sync-spawn.z"), (error: unknown) => {
     assert.ok(error instanceof DiagnosticError);
     assert.equal(error.code, "Z0703");
-    assert.match(error.message, /spawn requires an enclosing async scope/);
+    assert.match(error.message, /spawn requires an enclosing async function/);
     return true;
   });
 

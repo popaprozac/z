@@ -718,9 +718,12 @@ The intended model combines:
 - structural cancellation and deterministic task-frame cleanup.
 
 Async calls never start implicitly. A direct call must be covered by `await`
-for sequential work or by `spawn` inside an `async scope` for concurrent work.
-`spawn` produces a scope-bound `Task<T>` or `Task<T, E>`; child handles and work
-cannot escape the scope. Detached work requires an explicitly owned supervisor.
+for sequential work or by `spawn` for concurrent work. Every async function
+body is an implicit root task scope; an explicit `async scope` creates a
+narrower child lifetime. `spawn` produces a scope-bound `Task<T>` or `Task<T,
+E>`; child handles and work cannot escape their owning scope. Detached work
+requires an explicitly owned supervisor. `await spawn operation()` is rejected
+as redundant; an immediately joined child creates no interval of concurrency.
 Spawned children are scheduled immediately. Awaiting a task joins already-hot
 work: it returns an available outcome or suspends the current task without
 blocking the executor thread.
@@ -741,11 +744,12 @@ ARC class references, and owned closures may be stored in task frames. This
 conservative boundary can later grow scoped async borrowing without exposing
 general lifetime syntax.
 
-An async scope requires an async parent because scope exit implicitly joins its
-children and may suspend. `return` inside the scope exits the enclosing
-function after structured child teardown. Async class methods retain `this` in
-their frame; async struct methods initially require `move this`; static async
-methods have no receiver.
+An explicit async scope requires an async parent because scope exit implicitly
+joins its children and may suspend. Async function exit does the same for root
+children. `return` inside a nested scope exits the enclosing function after
+structured child teardown. Async class methods retain `this` in their frame;
+async struct methods initially require `move this`; static async methods have
+no receiver.
 
 Phase 0 implements syntax, typing, ownership diagnostics, and editor services;
 native emission reports `Z0700` until the Phase 1 runtime lands. Async functions

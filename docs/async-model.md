@@ -29,10 +29,11 @@ fetchUser(id)` schedules a child immediately; the returned task is hot.
 completed or suspending only the current task until it does. It does not block
 the executor's OS thread.
 
-Concurrency is explicit and structured:
+Concurrency is explicit and structured. Every async function body is an
+implicit root task scope, so common concurrent work needs no wrapper:
 
 ```z
-async scope {
+async function loadDashboard(id: UserId): Dashboard throws NetworkError {
   const userTask = spawn fetchUser(id);
   const postsTask = spawn fetchPosts(id);
 
@@ -43,22 +44,44 @@ async scope {
 }
 ```
 
-Children cannot outlive their scope. Failure cancels siblings and all task-frame
-locals are deterministically destroyed before the scope exits. Detached tasks
-require an explicit program-owned supervisor.
+Children cannot outlive the async function that owns them. An explicit `async
+scope` creates a narrower ownership region when a group of children must finish
+before the rest of the function continues. Failure cancels siblings and all
+task-frame locals are deterministically destroyed before the owning scope
+exits. Detached tasks require an explicit program-owned supervisor.
 
-`async function` permits suspension; `async scope` introduces a lexical region
-of concurrent child ownership. A scope therefore requires an async parent:
-leaving it implicitly joins its children and may suspend. `return` inside the
-scope still exits the enclosing function, but only after outstanding children
-are cancelled or joined and their frames are cleaned up. A future synchronous
-bridge for starting an async root will be an explicit blocking runtime API, not
-ordinary `async scope` syntax.
+```z
+async function refresh(): void throws NetworkError {
+  async scope {
+    const cacheTask = spawn refreshCache();
+    const sessionTask = spawn refreshSession();
+    try await cacheTask;
+    try await sessionTask;
+  }
 
-`spawn` accepts exactly one direct async call and produces a scope-bound
-`Task<T>` or `Task<T, E>`. The task's source-level success and error types are
-the async function's declared `T throws E`; async functions do not expose a
-Promise or Future wrapper in their signatures.
+  // Both refresh tasks and their captured values are finished here.
+  showRefreshedState();
+}
+```
+
+`async function` permits suspension and its body owns root child tasks. `async
+scope` introduces a narrower lexical region of concurrent child ownership. An
+explicit scope therefore requires an async parent: leaving it implicitly joins
+its children and may suspend. Returning from an async function likewise joins
+or cancels its root children. `return` inside an explicit scope still exits the
+enclosing function, but only after outstanding children are cancelled or
+joined and their frames are cleaned up. A future synchronous bridge for
+starting an async root will be an explicit blocking runtime API, not ordinary
+`async scope` syntax.
+
+`spawn` accepts exactly one direct async call in an async function and produces
+a scope-bound `Task<T>` or `Task<T, E>`. The task's source-level success and
+error types are the async function's declared `T throws E`; async functions do
+not expose a Promise or Future wrapper in their signatures.
+
+`await spawn operation()` is rejected as redundant. Sequential work uses
+`await operation()`; concurrent work binds the spawned task and joins it after
+the parent has had an opportunity to continue.
 
 This keeps the existing Z error model intact: `try await` unwraps success and
 propagates `E`, while `attempt await` materializes `Result<T, E>` for matching or

@@ -185,7 +185,6 @@ type AnalysisState = {
   readonly borrowOrigins: Map<string, { readonly location: SourceLocation; readonly kind: "closure" | "iteration" | "match" }>;
   readonly iterationBorrowOrigins: Map<string, SourceLocation>;
   readonly asyncCallContexts: { readonly mode: "await" | "spawn"; calls: number }[];
-  asyncScopeDepth: number;
   activeFunction: FunctionDeclaration | null;
   activeReceiver: string | null;
 };
@@ -282,7 +281,6 @@ export function analyze(
     borrowOrigins: new Map(),
     iterationBorrowOrigins: new Map(),
     asyncCallContexts: [],
-    asyncScopeDepth: 0,
     activeFunction: null,
     activeReceiver: null,
   };
@@ -1293,13 +1291,8 @@ function analyzeStatement(
           helps: [`add \`async\` before \`function ${owner.name}\``],
         });
       }
-      state.asyncScopeDepth += 1;
       const scopeLocals = new Map(locals);
-      try {
-        analyzeStatements(statement.body.statements, owner, scopeLocals, globals, structs, enums, fileName, state);
-      } finally {
-        state.asyncScopeDepth -= 1;
-      }
+      analyzeStatements(statement.body.statements, owner, scopeLocals, globals, structs, enums, fileName, state);
       propagateOuterOwnership(locals, scopeLocals);
       return;
     }
@@ -2316,7 +2309,7 @@ function registerAsyncCall(
     throw new DiagnosticError(fileName, location, `async call to ${JSON.stringify(declaration.name)} requires \`await\` or \`spawn\``, {
       code: "Z0702",
       notes: ["Z never starts asynchronous work from a naked function call"],
-      helps: ["use `await` for sequential work or `spawn` inside an `async scope` for concurrent work"],
+      helps: ["use `await` for sequential work or `spawn` for concurrent work in an async function"],
     });
   }
   context.calls += 1;
@@ -2701,6 +2694,13 @@ function inferExpressionInner(
           helps: ["add `async` before the enclosing function declaration"],
         });
       }
+      if (expression.expression.kind === "spawn") {
+        throw new DiagnosticError(fileName, expression.location, "`await spawn` is redundant", {
+          code: "Z0701",
+          notes: ["an immediately joined child creates no interval of concurrent parent work"],
+          helps: ["use `await operation()` for sequential work, or bind `spawn operation()` and await the Task later"],
+        });
+      }
       const borrowed = firstLiveBorrow(locals);
       if (borrowed) {
         throw new DiagnosticError(fileName, expression.location, `cannot await while borrowed storage ${JSON.stringify(borrowed)} is live`, {
@@ -2740,13 +2740,6 @@ function inferExpressionInner(
         throw new DiagnosticError(fileName, expression.location, "spawn requires an enclosing async function", {
           code: "Z0703",
           helps: ["add `async` before the enclosing function declaration"],
-        });
-      }
-      if (state.asyncScopeDepth === 0) {
-        throw new DiagnosticError(fileName, expression.location, "spawn requires an enclosing async scope", {
-          code: "Z0703",
-          notes: ["scope-bound children cannot silently outlive their parent operation"],
-          helps: ["wrap the concurrent work in `async scope { ... }`"],
         });
       }
       if (expression.expression.kind !== "call") {
