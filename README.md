@@ -951,16 +951,20 @@ app.run();
 
 The bootstrap imports Objective-C interfaces, superclass method lookup, class
 and instance methods, property getters and setters, `instancetype`, object
-nullability, and C values used inside method signatures. Calls use a selector's
-first component as the TypeScript-style method name. Positional calls resolve by
+nullability, and C values used inside method signatures. An inferred nullable
+reference is shown by editor services as `AppKit.NSWindow | null`; member access
+requires a `reference != null` check, and the checked branch narrows to the
+non-null nominal type without changing its one-pointer native representation.
+Explicit source annotations using `T | null` remain a follow-up. Calls use a
+selector's first component as the TypeScript-style method name. Positional calls resolve by
 argument count; labeling every argument after the first selects the complete
 Objective-C selector. Imported custom property accessors are honored. String
 literals bridge contextually to `NSString` for compatible Objective-C method
 parameters and properties while remaining `cstring` everywhere else. ARC owns
 local object-reference retain/release behavior, and the generated `main` runs
-inside an autorelease pool. Protocols, delegates, blocks, general Z `String`
-bridging, lightweight generics, availability checking, and actor isolation
-remain upcoming layers.
+inside an autorelease pool. Protocols, delegates, broader block shapes,
+lightweight generics, availability checking, and actor isolation remain
+upcoming layers.
 
 [`examples/desktop-ownership`](examples/desktop-ownership) combines a real
 AppKit window with an ARC Z application model owning an `Array` of move-only

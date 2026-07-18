@@ -2550,6 +2550,14 @@ function inferExpressionInner(
         return "bool";
       }
       if (["==", "!="].includes(expression.operator)) {
+        const leftNullableReference = nullableForeignReference(left, state);
+        const rightNullableReference = nullableForeignReference(right, state);
+        if (
+          (canonicalLeft === "null" && rightNullableReference)
+          || (canonicalRight === "null" && leftNullableReference)
+        ) {
+          return "bool";
+        }
         const comparableNamed = left === right && state.foreignNamedTypes.get(String(left))?.kind === "enum";
         if (canonicalLeft !== canonicalRight || (!isNumericType(canonicalLeft) && canonicalLeft !== "bool" && !comparableNamed)) {
           throw new DiagnosticError(fileName, expression.location, `operator ${JSON.stringify(expression.operator)} requires matching numeric, bool, or enum operands`);
@@ -2863,6 +2871,7 @@ function inferExpressionInner(
         return "usize";
       }
       const objcReceiverType = objcReceiver(receiverType, state);
+      rejectNullableObjCReceiver(receiverType, expression.object.location, fileName, state);
       if (objcReceiverType) {
         const property = findObjCProperty(objcReceiverType, expression.property, state);
         if (!property) {
@@ -3125,6 +3134,7 @@ function inferExpressionInner(
           return weakResultTypeName(weak.target);
         }
         const objcReceiverType = objcReceiver(receiverType, state);
+        rejectNullableObjCReceiver(receiverType, expression.callee.object.location, fileName, state);
         if (objcReceiverType) {
           const method = findObjCMethod(
             objcReceiverType,
@@ -3945,6 +3955,13 @@ function mergeOwnershipStates(
       const nullable = pointerTypes.some((pointer) => pointer!.nullable);
       type = pointerTypeName(firstPointer.identity, firstPointer.ownership, nullable);
     }
+    const objectTypes = values.map((value) => foreignObject(value, state));
+    const firstObject = objectTypes[0];
+    if (firstObject?.className && objectTypes.every((object) => object?.className === firstObject.className)) {
+      const nullable = objectTypes.some((object) => object!.nullable);
+      const publicType = firstObject.typeName.replace(/^__z_objc:(?:nullable|nonnull):/, "");
+      type = nullable ? `__z_objc:nullable:${publicType}` : publicType;
+    }
     const states = new Set(values.map(ownershipState));
     const initializationStates = new Set(values.map(initializationState));
     const storedType = `${borrowed ? borrowedPrefix : ""}${mutable ? mutablePrefix : ""}${type}`;
@@ -3976,12 +3993,28 @@ function narrowedConditionLocals(
   } else if (condition.kind === "unary" && condition.operator === "!" && condition.operand.kind === "identifier") {
     name = condition.operand.name;
     nonnull = !truthy;
+  } else if (condition.kind === "binary" && ["==", "!="].includes(condition.operator)) {
+    const identifier = condition.left.kind === "identifier" && condition.right.kind === "null"
+      ? condition.left
+      : condition.right.kind === "identifier" && condition.left.kind === "null"
+        ? condition.right
+        : null;
+    if (identifier) {
+      name = identifier.name;
+      nonnull = condition.operator === "!=" ? truthy : !truthy;
+    }
   }
   if (!name || !nonnull) return narrowed;
   const current = narrowed.get(name);
   const pointer = current ? foreignPointer(current, state) : null;
   if (pointer?.nullable) {
-    narrowed.set(name, pointerTypeName(pointer.identity, pointer.ownership, false));
+    narrowed.set(name, replaceUnderlyingType(current!, pointerTypeName(pointer.identity, pointer.ownership, false)));
+    return narrowed;
+  }
+  const object = current ? foreignObject(current, state) : null;
+  if (object?.nullable && object.className) {
+    const publicType = object.typeName.replace(/^__z_objc:(?:nullable|nonnull):/, "");
+    narrowed.set(name, replaceUnderlyingType(current!, publicType));
   }
   return narrowed;
 }
@@ -3990,6 +4023,30 @@ function foreignPointer(type: ValueType, state: AnalysisState): ForeignPointerTy
   const actual = underlyingType(type);
   if (actual === "unknown" || actual === "never") return null;
   return state.foreignTypes.get(actual) ?? null;
+}
+
+function foreignObject(type: ValueType, state: AnalysisState): ForeignObjectType | null {
+  const actual = underlyingType(type);
+  if (actual === "unknown" || actual === "never") return null;
+  return state.foreignObjectTypes.get(String(actual)) ?? null;
+}
+
+function nullableForeignReference(type: ValueType, state: AnalysisState): boolean {
+  return foreignPointer(type, state)?.nullable === true || foreignObject(type, state)?.nullable === true;
+}
+
+function replaceUnderlyingType(type: ValueType, replacement: ValueType): ValueType {
+  const stored = `${isBorrowedBinding(type) ? borrowedPrefix : ""}${isMutableBinding(type) ? mutablePrefix : ""}${replacement}`;
+  const owned = ownershipState(type) === "moved"
+    ? `${movedPrefix}${stored}`
+    : ownershipState(type) === "maybeMoved"
+      ? `${maybeMovedPrefix}${stored}`
+      : stored;
+  return initializationState(type) === "uninitialized"
+    ? `${uninitializedPrefix}${owned}`
+    : initializationState(type) === "maybeUninitialized"
+      ? `${maybeUninitializedPrefix}${owned}`
+      : owned;
 }
 
 function analyzeIfBranches(
@@ -4265,6 +4322,20 @@ function objcReceiver(
   const interfaceName = actual.replace(/^__z_objc:(?:nullable|nonnull):/, "");
   const declaration = state.foreignInterfaces.get(interfaceName);
   return declaration ? { declaration, instance: true } : null;
+}
+
+function rejectNullableObjCReceiver(
+  type: ValueType,
+  location: SourceLocation,
+  fileName: string,
+  state: AnalysisState,
+): void {
+  const object = foreignObject(type, state);
+  if (!object?.nullable || !object.className) return;
+  const publicType = object.typeName.replace(/^__z_objc:(?:nullable|nonnull):/, "");
+  throw new DiagnosticError(fileName, location, `nullable Objective-C ${publicType} must be checked before member access`, {
+    helps: ["compare the reference with `null`; the non-null branch narrows it automatically"],
+  });
 }
 
 function findObjCMethod(

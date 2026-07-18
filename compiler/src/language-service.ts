@@ -1767,8 +1767,8 @@ function formatTypeParameters(
 function foreignTypeName(type: ForeignType): string {
   if (type.kind === "z") return type.name;
   if (type.kind === "named") return type.type.typeName;
-  if (type.kind === "object") return `${type.className ?? "id"}${type.nullable ? "?" : ""}`;
-  if (type.kind === "pointer") return `${type.cName}${type.nullable ? "?" : ""}`;
+  if (type.kind === "object") return `${type.className ?? "id"}${type.nullable ? " | null" : ""}`;
+  if (type.kind === "pointer") return `${type.cName}${type.nullable ? " | null" : ""}`;
   if (type.kind === "callback" || type.kind === "block") {
     const parameters = type.parameters.map((parameter, index) => `argument${index + 1}: ${foreignTypeName(parameter)}`);
     return `(${parameters.join(", ")}) => ${foreignTypeName(type.returnType)}`;
@@ -1779,6 +1779,10 @@ function foreignTypeName(type: ForeignType): string {
 function displayType(type: string, typeDisplayNames: ReadonlyMap<string, string> = new Map()): string {
   const known = typeDisplayNames.get(type);
   if (known) return known;
+  const nullableObjC = /^__z_objc:nullable:(.+)$/.exec(type);
+  if (nullableObjC) return `${displayType(nullableObjC[1], typeDisplayNames)} | null`;
+  const nonnullObjC = /^__z_objc:nonnull:(.+)$/.exec(type);
+  if (nonnullObjC) return displayType(nonnullObjC[1], typeDisplayNames);
   const functionType = displayFunctionType(type, (nested) => displayType(nested, typeDisplayNames));
   if (functionType) return functionType;
   const weak = parseWeakType(type);
@@ -1793,7 +1797,7 @@ function displayType(type: string, typeDisplayNames: ReadonlyMap<string, string>
   if (slice) return `Slice<${displayType(slice.elementType, typeDisplayNames)}>`;
   const dynamic = parseDynamicArrayType(type);
   if (dynamic) return `Array<${displayType(dynamic.elementType, typeDisplayNames)}>`;
-  return type.replace(/^__z_objc:(?:nullable|nonnull):/, "");
+  return type;
 }
 
 function displayServiceType(type: string, context: AnalyzedSource): string {

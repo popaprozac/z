@@ -74,8 +74,8 @@ while exposing the non-escaping view wall for future experiments.
 | Swift methods/strings/generics | Planned vertical slices | Generated C++ methods, `swift::String`, protocols, errors, async, packages |
 
 Current interop gaps that block a richer desktop application include
-source-level nullable foreign annotations, broader Objective-C block shapes,
-target/action adapters, protocol conformance, cross-thread callbacks,
+explicit source-level nullable foreign annotations, broader Objective-C block
+shapes, target/action adapters, protocol conformance, cross-thread callbacks,
 availability, and API notes at SDK scale.
 
 The Swift owned-value probe is intentionally honest about the toolchain: current

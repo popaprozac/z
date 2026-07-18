@@ -837,6 +837,13 @@ calls resolve exact selector components and remove ambiguity. For now labels are
 reserved for imported Objective-C methods so the bootstrap does not prematurely
 freeze named-argument semantics for ordinary Z functions.
 
+Imported nullable Objective-C references preserve their native one-pointer
+representation and are displayed as `T | null`. Accessing a property or method
+requires an explicit comparison with `null`; flow analysis narrows the non-null
+branch (including the path after an early null return) and restores nullability
+when branches rejoin. The general source-level union grammar is not frozen by
+this imported-type display spelling.
+
 An immutable binding to an Objective-C object fixes the reference but does not
 claim that the foreign object is deeply immutable. Assignment to a writable
 imported property therefore sends its Clang-declared setter, including custom

@@ -58,10 +58,12 @@ window on an ARC-managed Z `WindowController`. Generated Objective-C uses a
 strong field, zero-initializes class storage before the first ARC assignment,
 and clears the field before freeing the surrounding Z allocation.
 
-Nullable imported references remain a distinct internal type until Z has a
-source-level nullable spelling and narrowing rules. Protocol-qualified `id`,
-weak/unowned foreign fields, and ownership attributes imported from API notes
-remain later slices.
+Nullable imported references remain a distinct one-pointer type and editor
+services display them as `T | null`. Z now rejects unchecked member access and
+narrows after explicit `value != null` / `value == null` control flow. An
+explicit source annotation spelling, protocol-qualified `id`, weak/unowned
+foreign fields, and ownership attributes imported from API notes remain later
+slices.
 
 ## Pressure 3: interactive AppKit adapter surfaces
 

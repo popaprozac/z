@@ -861,6 +861,53 @@ test("imports AppKit classes and emits an ARC Objective-C NSWindow program", () 
   assert.match(customGetter.source, /\[window isVisible\]/);
 });
 
+test("narrows nullable Objective-C references before member access", () => {
+  if (process.platform !== "darwin") return;
+  const fileName = resolve(projectRoot, "objc-nullability.z");
+  const source = `
+    import AppKit from "AppKit/AppKit.h";
+    function main(): i32 {
+      const app = AppKit.NSApplication.sharedApplication;
+      const window = app.keyWindow;
+      if (window != null) {
+        window.center();
+        return 1;
+      }
+      return 0;
+    }
+  `;
+  const artifact = compileToNative(source, fileName);
+  assert.deepEqual(diagnostics(source, fileName), []);
+  assert.match(artifact.source, /NSWindow \* const window = \[app keyWindow\];/);
+  assert.match(artifact.source, /if \(window != NULL\)/);
+  assert.match(artifact.source, /\[window center\]/);
+
+  const windowBinding = source.indexOf("window =") + 2;
+  assert.match(hover(source, fileName, windowBinding)?.contents.value ?? "", /window: AppKit\.NSWindow \| null/);
+
+  const unsafe = source.replace(
+    `if (window != null) {\n        window.center();\n        return 1;\n      }`,
+    `window.center();\n      return 1;`,
+  );
+  const diagnostic = diagnostics(unsafe, fileName)[0];
+  assert.match(diagnostic?.message ?? "", /nullable Objective-C AppKit\.NSWindow must be checked before member access/);
+
+  const earlyReturn = source.replace(
+    `if (window != null) {\n        window.center();\n        return 1;\n      }\n      return 0;`,
+    `if (window == null) {\n        return 0;\n      }\n      window.center();\n      return 1;`,
+  );
+  assert.deepEqual(diagnostics(earlyReturn, fileName), []);
+
+  const unsafeAfterJoin = source.replace(
+    `if (window != null) {\n        window.center();\n        return 1;\n      }\n      return 0;`,
+    `if (window != null) {\n        window.center();\n      }\n      window.center();\n      return 0;`,
+  );
+  assert.match(
+    diagnostics(unsafeAfterJoin, fileName)[0]?.message ?? "",
+    /nullable Objective-C AppKit\.NSWindow must be checked before member access/,
+  );
+});
+
 test("compiles a desktop ownership slice and preserves its current pressure walls", () => {
   if (process.platform !== "darwin") return;
   const example = resolve(projectRoot, "examples/desktop-ownership/main.z");

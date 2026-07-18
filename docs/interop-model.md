@@ -24,6 +24,32 @@ Packages can therefore ship Z API notes without modifying upstream headers.
 Raw declarations remain accessible, while annotated declarations gain safe Z
 overloads.
 
+## Cost model
+
+Z's target is **no interop tax beyond the semantics requested at the
+boundary**, not a claim that every bridge operation is free:
+
+| Boundary shape | Intended/generated cost |
+| --- | --- |
+| C scalar or function call | Native ABI call; no wrapper or allocation |
+| C record by value or scoped borrow | Native layout and calling convention; no wrapper allocation |
+| Objective-C method or property | Ordinary `objc_msgSend`-family dispatch under Clang ARC |
+| Plain C++/Swift-C++ value | Native construction, copy, and destruction rules |
+| Non-capturing call-only callback | Function pointer or small adapter indirection; no environment allocation |
+| Escaping capturing closure / Objective-C block | Owned closure environment plus a native lifetime adapter, retains/releases, and indirect invocation |
+| `String` / `NSString` ownership bridge | Deliberate allocation and byte copy so neither runtime borrows unstable storage |
+| Z ARC class reference | Retain/release traffic; the bootstrap runtime is non-atomic and not yet optimized |
+
+Imported nullable references use the same one-pointer representation as their
+native ABI. A Z null check is an ordinary pointer comparison and narrows the
+reference statically; it does not allocate an `Option` wrapper.
+
+The bootstrap `z run` path currently asks Clang for a debuggable native build
+without an optimization flag. Its runtime measurements therefore validate
+behavior, not Z's eventual optimized performance ceiling. Release profiles,
+retain/release optimization, escape analysis, and generated-code benchmarking
+remain compiler work.
+
 The first callback tier requires a call-only lifetime:
 
 ```json

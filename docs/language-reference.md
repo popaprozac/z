@@ -224,8 +224,10 @@ Those facts normalize through the
 
 C imports may be direct and zero-wrapper. Imported non-null Objective-C classes
 are nominal types such as `AppKit.NSWindow`; references use ARC and can be stored
-in Z aggregates or named in signatures. Nullable foreign references remain
-distinct and do not yet have a public annotation spelling. An imported
+in Z aggregates or named in signatures. Inferred nullable Objective-C
+references display as `T | null`, require a null check before member access,
+and narrow in the non-null control-flow path without a runtime wrapper. They do
+not yet have an explicit public annotation spelling. An imported
 Objective-C block parameter accepts a contextual Z closure. Escaping blocks
 require `move`; the generated ARC adapter keeps the owned closure environment
 alive for exactly as long as the native block. A computed Z `String` converts
