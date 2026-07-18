@@ -3428,6 +3428,13 @@ function generateExpressionInner(expression: Expression, context: GenerationCont
         return generateObjCMessage(receiver, objcCall.selector, args);
       }
       const foreignArgumentPlan = context.semanticInfo.foreignCallArgumentPlans.get(expression.location.offset);
+      const foreignFunctionName = context.semanticInfo.foreignFunctionNames.get(expression.callee.location.offset);
+      if (foreignFunctionName) {
+        const args = foreignArgumentPlan
+          ? foreignArgumentPlan.map((argument) => generateForeignCallArgument(argument, expression.arguments, context))
+          : expression.arguments.map((argument) => generateCallArgument(argument, context));
+        return `${foreignFunctionName}(${args.join(", ")})`;
+      }
       if (foreignArgumentPlan) {
         const args = foreignArgumentPlan.map((argument) => (
           generateForeignCallArgument(argument, expression.arguments, context)

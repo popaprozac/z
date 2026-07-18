@@ -34,6 +34,7 @@ import {
   type ForeignConstant,
   type ForeignDeclarationMetadata,
   type ForeignFunction,
+  type ForeignFunctionOverload,
   type ForeignModule,
   type ForeignNamedType,
   type ForeignObjCInterface,
@@ -131,6 +132,7 @@ export type SemanticInfo = {
   readonly foreignCallbackTargets: ReadonlyMap<number, string>;
   readonly foreignCallArgumentPlans: ReadonlyMap<number, readonly ForeignCallArgumentPlan[]>;
   readonly foreignFunctionNames: ReadonlyMap<number, string>;
+  readonly foreignFunctionDefinitions: ReadonlyMap<number, ForeignDeclarationMetadata>;
   readonly foreignConstantNames: ReadonlyMap<number, string>;
   readonly nativeArgumentAccesses: ReadonlyMap<number, "in" | "inout" | "out">;
   readonly foreignObjectTypes: ReadonlyMap<string, ForeignObjectType>;
@@ -177,6 +179,7 @@ type AnalysisState = {
   readonly foreignCallbackTargets: Map<number, string>;
   readonly foreignCallArgumentPlans: Map<number, readonly ForeignCallArgumentPlan[]>;
   readonly foreignFunctionNames: Map<number, string>;
+  readonly foreignFunctionDefinitions: Map<number, ForeignDeclarationMetadata>;
   readonly foreignConstantNames: Map<number, string>;
   readonly nativeArgumentAccesses: Map<number, "in" | "inout" | "out">;
   readonly foreignObjectTypes: ReadonlyMap<string, ForeignObjectType>;
@@ -308,6 +311,7 @@ export function analyze(
     foreignCallbackTargets: new Map(),
     foreignCallArgumentPlans: new Map(),
     foreignFunctionNames: new Map(),
+    foreignFunctionDefinitions: new Map(),
     foreignConstantNames: new Map(),
     nativeArgumentAccesses: new Map(),
     foreignObjectTypes,
@@ -421,7 +425,7 @@ export function analyze(
     }
     for (const binding of declaration.bindings) {
       validateUserName(binding.localName, binding.location, fileName);
-      const foreignFunction = module.functions.get(binding.importedName);
+      const foreignFunction = resolveForeignFunction(module, [binding.importedName]);
       if (foreignFunction) {
         declareGlobal(
           globals,
@@ -3229,13 +3233,22 @@ function inferExpressionInner(
           const foreignFunction = getForeignFunction(expression.callee, globals);
           if (foreignFunction) {
             rejectLabeledArguments(expression.argumentLabels, expression.location, fileName);
-            rejectUnavailableForeign(foreignFunction.metadata, foreignFunction.name, expression.callee.location, fileName);
-            state.foreignFunctionNames.set(expression.callee.location.offset, foreignFunction.cName);
-            return checkForeignCall(foreignFunction, expression.arguments, locals, globals, structs, enums, fileName, expression.location, state);
+            return checkForeignFunctionCall(
+              foreignFunction,
+              expression.arguments,
+              locals,
+              globals,
+              structs,
+              enums,
+              fileName,
+              expression.location,
+              expression.callee.location.offset,
+              state,
+            );
           }
-          const symbol = expression.callee.object.kind === "identifier" ? globals.get(expression.callee.object.name) : null;
-          if (symbol?.kind === "foreignModule") {
-            throw new DiagnosticError(fileName, expression.callee.location, `header ${JSON.stringify(symbol.module.declaration.header)} has no function ${JSON.stringify(expression.callee.property)}`);
+          const target = foreignMemberTarget(expression.callee, globals);
+          if (target) {
+            throw new DiagnosticError(fileName, expression.callee.location, `header ${JSON.stringify(target.module.declaration.header)} has no function ${JSON.stringify(target.path.join("."))}`);
           }
         }
         const receiverType = inferExpression(expression.callee.object, locals, globals, structs, enums, fileName, state);
@@ -3536,8 +3549,18 @@ function inferExpressionInner(
       }
       if (target?.kind === "foreignFunction") {
         rejectLabeledArguments(expression.argumentLabels, expression.location, fileName);
-        state.foreignFunctionNames.set(expression.callee.location.offset, target.declaration.cName);
-        return checkForeignCall(target.declaration, expression.arguments, locals, globals, structs, enums, fileName, expression.location, state);
+        return checkForeignFunctionCall(
+          target.declaration,
+          expression.arguments,
+          locals,
+          globals,
+          structs,
+          enums,
+          fileName,
+          expression.location,
+          expression.callee.location.offset,
+          state,
+        );
       }
       if (target?.kind !== "function") {
         throw new DiagnosticError(fileName, expression.callee.location, `unknown function ${JSON.stringify(expression.callee.name)}`);
@@ -4513,18 +4536,43 @@ function isForeignMember(
   expression: Extract<Expression, { kind: "member" }>,
   globals: Map<string, SymbolValue>,
 ): boolean {
-  return expression.object.kind === "identifier"
-    && globals.get(expression.object.name)?.kind === "foreignModule";
+  const target = foreignMemberTarget(expression, globals);
+  if (!target) return false;
+  return target.path.length === 1
+    || resolveForeignFunction(target.module, target.path) !== null
+    || target.module.namespaces.has(target.path.slice(0, -1).join("."));
+}
+
+function foreignMemberTarget(
+  expression: Extract<Expression, { kind: "member" }>,
+  globals: Map<string, SymbolValue>,
+): { readonly module: ForeignModule; readonly path: readonly string[] } | null {
+  const path = [expression.property];
+  let object: Expression = expression.object;
+  while (object.kind === "member") {
+    path.unshift(object.property);
+    object = object.object;
+  }
+  if (object.kind !== "identifier") return null;
+  const symbol = globals.get(object.name);
+  return symbol?.kind === "foreignModule" ? { module: symbol.module, path } : null;
+}
+
+function resolveForeignFunction(module: ForeignModule, path: readonly string[]): ForeignFunction | null {
+  const qualifiedName = path.join(".");
+  const direct = module.functions.get(qualifiedName);
+  if (direct) return direct;
+  if (path.length !== 1) return null;
+  const alias = module.functionAliases.get(path[0]);
+  return alias ? module.functions.get(alias) ?? null : null;
 }
 
 function getForeignFunction(
   expression: Extract<Expression, { kind: "member" }>,
   globals: Map<string, SymbolValue>,
 ): ForeignFunction | null {
-  if (expression.object.kind !== "identifier") return null;
-  const symbol = globals.get(expression.object.name);
-  if (symbol?.kind !== "foreignModule") return null;
-  return symbol.module.functions.get(expression.property) ?? null;
+  const target = foreignMemberTarget(expression, globals);
+  return target ? resolveForeignFunction(target.module, target.path) : null;
 }
 
 function getObjCClass(
@@ -4853,8 +4901,108 @@ function isObjCSubclass(actual: ForeignObjectType, expected: ForeignObjectType, 
   }
 }
 
-function checkForeignCall(
+function checkForeignFunctionCall(
   target: ForeignFunction,
+  args: Expression[],
+  locals: Map<string, ValueType>,
+  globals: Map<string, SymbolValue>,
+  structs: Map<string, StructDeclaration>,
+  enums: Map<string, EnumDeclaration>,
+  fileName: string,
+  location: SourceLocation,
+  calleeOffset: number,
+  state: AnalysisState,
+): ValueType {
+  if (target.overloads.length === 1) {
+    const selected = target.overloads[0];
+    rejectUnavailableForeign(selected.metadata, target.qualifiedName, location, fileName);
+    state.foreignFunctionNames.set(calleeOffset, selected.cName);
+    state.foreignFunctionDefinitions.set(calleeOffset, selected.metadata);
+    return checkForeignCall(selected, args, locals, globals, structs, enums, fileName, location, state);
+  }
+  const matches: { readonly overload: ForeignFunctionOverload; readonly score: number }[] = [];
+  for (const overload of target.overloads) {
+    const trialLocals = new Map(locals);
+    const trialState = cloneAnalysisState(state);
+    try {
+      checkForeignCall(overload, args, trialLocals, globals, structs, enums, fileName, location, trialState);
+      matches.push({ overload, score: foreignOverloadScore(overload, args, trialState) });
+    } catch (error) {
+      if (!(error instanceof DiagnosticError)) throw error;
+    }
+  }
+  if (matches.length === 0) {
+    throw new DiagnosticError(
+      fileName,
+      location,
+      `no overload of foreign function ${JSON.stringify(target.qualifiedName)} accepts these arguments`,
+      {
+        code: "Z0803",
+        notes: target.overloads.map((candidate) => `${candidate.cName}: ${candidate.cSignature}`),
+        helps: ["check the argument count and types against one of the native signatures"],
+      },
+    );
+  }
+  const bestScore = Math.max(...matches.map((match) => match.score));
+  const best = matches.filter((match) => match.score === bestScore);
+  if (best.length !== 1) {
+    throw new DiagnosticError(
+      fileName,
+      location,
+      `call to foreign function ${JSON.stringify(target.qualifiedName)} is ambiguous`,
+      {
+        code: "Z0803",
+        notes: best.map(({ overload }) => `${overload.cName}: ${overload.cSignature}`),
+        helps: ["bind an argument to an explicit Z type or use the fully qualified native namespace path"],
+      },
+    );
+  }
+  const selected = best[0].overload;
+  rejectUnavailableForeign(selected.metadata, target.qualifiedName, location, fileName);
+  state.foreignFunctionNames.set(calleeOffset, selected.cName);
+  state.foreignFunctionDefinitions.set(calleeOffset, selected.metadata);
+  return checkForeignCall(selected, args, locals, globals, structs, enums, fileName, location, state);
+}
+
+function cloneAnalysisState(state: AnalysisState): AnalysisState {
+  const clone: Record<string, unknown> = {};
+  for (const [name, value] of Object.entries(state)) {
+    clone[name] = value instanceof Map ? new Map(value) : value instanceof Set ? new Set(value) : value;
+  }
+  return clone as AnalysisState;
+}
+
+function foreignOverloadScore(
+  target: ForeignFunctionOverload,
+  args: readonly Expression[],
+  state: AnalysisState,
+): number {
+  const parameters = target.parameters.filter((parameter) => (
+    parameter.type.kind !== "callbackContext" && parameter.type.kind !== "callbackRelease"
+  ));
+  let score = target.variadic ? 0 : 2;
+  for (let index = 0; index < args.length; index += 1) {
+    const parameter = parameters[index];
+    if (!parameter) continue;
+    const expected = canonicalType(foreignValueType(parameter.type), state.foreignNamedTypes);
+    const argument = args[index];
+    if (argument.kind === "number" && isNumericType(expected)) {
+      if (isIntegerLiteral(argument.value)) {
+        score += expected === "i32" ? 8 : isIntegerType(expected) ? 5 : 1;
+      } else {
+        score += expected === "f64" ? 8 : expected === "f32" ? 5 : 0;
+      }
+      continue;
+    }
+    const actual = state.expressionTypes.get(argument.location.offset);
+    if (actual && canonicalType(actual, state.foreignNamedTypes) === expected) score += 8;
+    else score += 1;
+  }
+  return score;
+}
+
+function checkForeignCall(
+  target: ForeignFunctionOverload,
   args: Expression[],
   locals: Map<string, ValueType>,
   globals: Map<string, SymbolValue>,
@@ -4864,17 +5012,6 @@ function checkForeignCall(
   location: SourceLocation,
   state: AnalysisState,
 ): ValueType {
-  if (target.alternatives.length > 1) {
-    throw new DiagnosticError(
-      fileName,
-      location,
-      `C++ function ${JSON.stringify(target.name)} is overloaded or ambiguous; overload selection is not implemented yet`,
-      {
-        notes: target.alternatives.map((candidate) => `${candidate.cName}: ${candidate.cSignature}`),
-        helps: ["expose a uniquely named wrapper in the C++ header for this bootstrap tier"],
-      },
-    );
-  }
   const unsupported = [target.returnType, ...target.parameters.map((parameter) => parameter.type)]
     .find((type) => type.kind === "unsupported");
   if (unsupported?.kind === "unsupported") {

@@ -643,13 +643,17 @@ test("merges API-note sources without allowing safety contracts to conflict", ()
 test("normalizes producer declarations without exposing Clang nodes to FIIR consumers", () => {
   const declaration: ForeignFunctionDeclaration = {
     name: "answer",
-    nativeName: "answer",
-    alternatives: [{ nativeName: "answer", nativeSignature: "int (void)" }],
-    returnType: { nativeName: "int" },
-    parameters: [],
-    variadic: false,
-    nativeSignature: "int (void)",
-    metadata: { source: null, availability: [] },
+    namespacePath: [],
+    qualifiedName: "answer",
+    overloads: [{
+      name: "answer",
+      nativeName: "answer",
+      returnType: { nativeName: "int" },
+      parameters: [],
+      variadic: false,
+      nativeSignature: "int (void)",
+      metadata: { source: null, availability: [] },
+    }],
   };
   const normalized = normalizeForeignContracts(
     new Map([[declaration.name, declaration]]),
@@ -667,8 +671,8 @@ test("normalizes producer declarations without exposing Clang nodes to FIIR cons
     "cached-producer.fiir",
     { offset: 0, line: 1, column: 1 },
   );
-  assert.equal(normalized.functions.get("answer")?.returnType.kind, "z");
-  assert.equal(normalized.functions.get("answer")?.cSignature, "int (void)");
+  assert.equal(normalized.functions.get("answer")?.overloads[0].returnType.kind, "z");
+  assert.equal(normalized.functions.get("answer")?.overloads[0].cSignature, "int (void)");
 });
 
 test("preserves native declaration locations for FIIR and editor definitions", () => {
@@ -677,8 +681,8 @@ test("preserves native declaration locations for FIIR and editor definitions", (
   const context = analyzeSource(source, example);
   const geometry = context.foreignModules.get("geometry")!;
   const translated = geometry.functions.get("z_translate")!;
-  assert.match(translated.metadata.source?.fileName ?? "", /tests\/fixtures\/geometry\.h$/);
-  assert.equal(translated.metadata.source?.line, 32);
+  assert.match(translated.overloads[0].metadata.source?.fileName ?? "", /tests\/fixtures\/geometry\.h$/);
+  assert.equal(translated.overloads[0].metadata.source?.line, 32);
 
   const functionUse = source.indexOf("z_translate") + 2;
   const functionDefinition = definition(source, `file://${example}`, functionUse);
@@ -698,7 +702,7 @@ test("surfaces native availability in hover and rejects universally unavailable 
   `;
   const context = analyzeSource(source, fileName);
   const legacy = context.foreignModules.get("native")!.functions.get("z_legacy")!;
-  assert.deepEqual(legacy.metadata.availability, [{
+  assert.deepEqual(legacy.overloads[0].metadata.availability, [{
     platform: "macos",
     introduced: "10.12",
     deprecated: true,
@@ -927,7 +931,7 @@ test("runs floating-point values and typed bitwise option masks", () => {
   assert.match(artifact.source, /const float scientific = 1\.5e2F;/);
 });
 
-test("imports uniquely named C++ namespace functions and plain value records", () => {
+test("preserves C++ namespaces and resolves overload sets", () => {
   const example = resolve(projectRoot, "examples/cpp-interop.z");
   const source = readFileSync(example, "utf8");
   const artifact = compileToNative(source, example);
@@ -937,23 +941,40 @@ test("imports uniquely named C++ namespace functions and plain value records", (
   assert.match(artifact.source, /const zcpp::Point origin/);
   assert.match(artifact.source, /zcpp::translate\(origin, 1, \(-1\)\)/);
   assert.match(artifact.source, /zcpp::sum\(moved\)/);
+  assert.match(artifact.source, /zcpp::scale\(6, 7\)/);
+  assert.match(artifact.source, /zcpp::scale\(2\.5, 2\.0\)/);
+  assert.match(artifact.source, /alpha::adjust\(20\)/);
+  assert.match(artifact.source, /beta::adjust\(20\)/);
 
   const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
-  assert.equal(result.stdout, "cpp=42, point=Point { x: 21, y: 21 }\n");
+  assert.equal(result.stdout, "cpp=42, integer=42, floating=5, adjusted=40, point=Point { x: 21, y: 21 }\n");
 
   const translateOffset = source.indexOf("translate") + 1;
   assert.match(hover(source, example, translateOffset)?.contents.value ?? "", /Point \(Point, int, int\)/);
-  const completionSource = source.replace("cpp.translate", "cpp.tr");
-  const completionOffset = completionSource.indexOf("cpp.tr") + "cpp.tr".length;
+  const completionSource = source.replace("cpp.zcpp.translate", "cpp.zcpp.tr");
+  const completionOffset = completionSource.indexOf("cpp.zcpp.tr") + "cpp.zcpp.tr".length;
   assert.equal(completions(completionSource, example, completionOffset).find((item) => item.label === "translate")?.kind, 3);
+  const rootCompletionSource = source.replace("cpp.zcpp.translate", "cpp.z");
+  const rootCompletionOffset = rootCompletionSource.indexOf("cpp.z") + "cpp.z".length;
+  assert.equal(completions(rootCompletionSource, example, rootCompletionOffset).find((item) => item.label === "zcpp")?.kind, 9);
   const fieldOffset = source.indexOf("x: 20") + 1;
   assert.match(hover(source, example, fieldOffset)?.contents.value ?? "", /x: i32/);
 
-  assert.throws(
-    () => compileToNative(source.replace("cpp.sum(moved)", "cpp.scale(2, 3)"), example),
-    /C\+\+ function "scale" is overloaded or ambiguous; overload selection is not implemented yet/,
-  );
+  const overloadHoverOffset = source.indexOf("cpp.zcpp.scale") + "cpp.zcpp.".length + 1;
+  const overloadHover = hover(source, example, overloadHoverOffset)?.contents.value ?? "";
+  assert.match(overloadHover, /scale\(value: i32, factor: i32\): i32/);
+  assert.match(overloadHover, /scale\(value: f64, factor: f64\): f64/);
+  const floatingScaleOffset = source.indexOf("cpp.zcpp.scale(2.5") + "cpp.zcpp.".length + 1;
+  const floatingScaleDefinition = definition(source, `file://${example}`, floatingScaleOffset);
+  assert.match(floatingScaleDefinition?.uri ?? "", /examples\/cpp_math\.hpp$/);
+  assert.equal(floatingScaleDefinition?.range.start.line, 21);
+  const genericOverload = source
+    .replace("function main(): i32 {", "function identity<T>(value: T): T { return value; }\n\nfunction main(): i32 {")
+    .replace("cpp.zcpp.scale(2.5, 2.0)", "identity(cpp.zcpp.scale(2.5, 2.0))");
+  assert.match(compileToNative(genericOverload, example).source, /__z_mono_identity_f64\(zcpp::scale\(2\.5, 2\.0\)\)/);
+  assert.throws(() => compileToNative(source.replace("cpp.sum(moved)", "cpp.choose(1)"), example), /call to foreign function "zcpp\.choose" is ambiguous/);
+  assert.throws(() => compileToNative(source.replace("cpp.sum(moved)", "cpp.adjust(1)"), example), /has no function "adjust"/);
 });
 
 test("imports AppKit classes and emits an ARC Objective-C NSWindow program", () => {

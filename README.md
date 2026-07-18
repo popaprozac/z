@@ -68,7 +68,7 @@ requiring lifetime syntax throughout ordinary application code.
 | Async | Stackless tasks, FIFO executor, spawn/join scopes, cancellation, delay |
 | C | Header imports, functions, records, enums, constants, pointers with API notes, callbacks |
 | Objective-C | ARC objects, nullability, selectors, blocks, persistent observers, AppKit |
-| C++ | Namespace functions, plain records, first copyable RAII values |
+| C++ | Hierarchical namespace functions, overload selection, plain records, first copyable RAII values |
 | Swift | Generated Objective-C compatibility headers and first generated C++ value probe |
 | Editor | VS Code/Cursor highlighting, diagnostics, hover, completion, and definitions |
 

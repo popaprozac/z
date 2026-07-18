@@ -6,6 +6,8 @@ import type {
   ForeignCallbackReleaseType,
   ForeignFunction,
   ForeignFunctionDeclaration,
+  ForeignFunctionOverload,
+  ForeignFunctionOverloadDeclaration,
   ForeignNamedType,
   ForeignPointerType,
   ForeignType,
@@ -26,8 +28,12 @@ export type ForeignContractTypeMapper = {
 
 export type NormalizedForeignContracts = {
   readonly functions: ReadonlyMap<string, ForeignFunction>;
+  readonly functionAliases: ReadonlyMap<string, string>;
+  readonly namespaces: ReadonlySet<string>;
   readonly pointerTypes: ReadonlyMap<string, ForeignPointerType>;
 };
+
+type FunctionApiNote = NonNullable<ApiNotes["functions"]>[string];
 
 export function normalizeForeignContracts(
   declarations: ReadonlyMap<string, ForeignFunctionDeclaration>,
@@ -39,9 +45,52 @@ export function normalizeForeignContracts(
 ): NormalizedForeignContracts {
   validateNoteTargets(declarations, notes, fileName, location);
   const functions = new Map<string, ForeignFunction>();
+  const aliases = new Map<string, string>();
+  const namespaces = new Set<string>();
   const pointerTypes = new Map<string, ForeignPointerType>();
   for (const declaration of declarations.values()) {
     const functionNotes = notes.functions?.[declaration.name];
+    const overloads = declaration.overloads.map((overload) => normalizeOverload(
+      overload,
+      functionNotes,
+      namedTypes,
+      mapper,
+      pointerTypes,
+      fileName,
+      location,
+    ));
+    functions.set(declaration.qualifiedName, {
+      name: declaration.name,
+      namespacePath: declaration.namespacePath,
+      qualifiedName: declaration.qualifiedName,
+      overloads,
+    });
+    for (let depth = 1; depth <= declaration.namespacePath.length; depth += 1) {
+      namespaces.add(declaration.namespacePath.slice(0, depth).join("."));
+    }
+  }
+  const qualificationsByName = new Map<string, string[]>();
+  for (const declaration of functions.values()) {
+    const qualifications = qualificationsByName.get(declaration.name) ?? [];
+    qualifications.push(declaration.qualifiedName);
+    qualificationsByName.set(declaration.name, qualifications);
+  }
+  for (const [name, qualifications] of qualificationsByName) {
+    if (qualifications.length === 1) aliases.set(name, qualifications[0]);
+  }
+  validateReleaseContracts(functions, aliases, fileName, location);
+  return { functions, functionAliases: aliases, namespaces, pointerTypes };
+}
+
+function normalizeOverload(
+  declaration: ForeignFunctionOverloadDeclaration,
+  functionNotes: FunctionApiNote | undefined,
+  namedTypes: ReadonlyMap<string, ForeignNamedType>,
+  mapper: ForeignContractTypeMapper,
+  pointerTypes: Map<string, ForeignPointerType>,
+  fileName: string,
+  location: SourceLocation,
+): ForeignFunctionOverload {
     const callbackContexts = new Map<number, number>();
     const callbackReleases = new Map<number, { callbackParameter: number; releaseContextParameter: number }>();
     for (let callbackParameter = 0; callbackParameter < declaration.parameters.length; callbackParameter += 1) {
@@ -89,22 +138,15 @@ export function normalizeForeignContracts(
         }
       }
     }
-    functions.set(declaration.name, {
+    return {
       name: declaration.name,
       cName: declaration.nativeName,
-      alternatives: declaration.alternatives.map((alternative) => ({
-        cName: alternative.nativeName,
-        cSignature: alternative.nativeSignature,
-      })),
       returnType: mapper.mapType(declaration.returnType, functionNotes?.return, "return", pointerTypes, namedTypes),
       parameters,
       variadic: declaration.variadic,
       cSignature: declaration.nativeSignature,
       metadata: declaration.metadata,
-    });
-  }
-  validateReleaseContracts(functions, fileName, location);
-  return { functions, pointerTypes };
+    };
 }
 
 function validateNoteTargets(
@@ -120,7 +162,10 @@ function validateNoteTargets(
     }
     for (const indexText of Object.keys(note.parameters ?? {})) {
       const index = Number(indexText);
-      if (!/^(?:0|[1-9][0-9]*)$/.test(indexText) || index >= declaration.parameters.length) {
+      if (
+        !/^(?:0|[1-9][0-9]*)$/.test(indexText)
+        || declaration.overloads.some((overload) => index >= overload.parameters.length)
+      ) {
         throw contractError(fileName, location, `API notes for ${JSON.stringify(name)} name missing parameter ${JSON.stringify(indexText)}`);
       }
     }
@@ -128,7 +173,7 @@ function validateNoteTargets(
 }
 
 function validateCallbackContract(
-  declaration: ForeignFunctionDeclaration,
+  declaration: ForeignFunctionOverloadDeclaration,
   callbackParameter: number,
   callback: NonNullable<PointerNote["callback"]>,
   callbackContexts: Map<number, number>,
@@ -190,24 +235,30 @@ function validateCallbackContract(
 
 function validateReleaseContracts(
   functions: ReadonlyMap<string, ForeignFunction>,
+  aliases: ReadonlyMap<string, string>,
   fileName: string,
   location: SourceLocation,
 ): void {
   for (const target of functions.values()) {
-    if (target.returnType.kind !== "pointer" || target.returnType.ownership !== "owned") continue;
-    const release = target.returnType.release ? functions.get(target.returnType.release) : null;
-    const released = release?.parameters[0]?.type;
-    const validRelease = release
-      && release.parameters.length === 1
-      && released?.kind === "pointer"
-      && released.ownership === "consuming"
-      && released.identity === target.returnType.identity;
-    if (!validRelease) {
-      throw contractError(
-        fileName,
-        location,
-        `API notes for ${JSON.stringify(target.name)} require ${JSON.stringify(target.returnType.release)} to consume exactly one ${target.returnType.cName}`,
-      );
+    for (const overload of target.overloads) {
+      if (overload.returnType.kind !== "pointer" || overload.returnType.ownership !== "owned") continue;
+      const releaseName = overload.returnType.release;
+      const releaseKey = releaseName ? aliases.get(releaseName) ?? releaseName : null;
+      const release = releaseKey ? functions.get(releaseKey) : null;
+      const validRelease = release?.overloads.some((candidate) => {
+        const released = candidate.parameters[0]?.type;
+        return candidate.parameters.length === 1
+          && released?.kind === "pointer"
+          && released.ownership === "consuming"
+          && released.identity === overload.returnType.identity;
+      }) ?? false;
+      if (!validRelease) {
+        throw contractError(
+          fileName,
+          location,
+          `API notes for ${JSON.stringify(target.name)} require ${JSON.stringify(releaseName)} to consume exactly one ${overload.returnType.cName}`,
+        );
+      }
     }
   }
 }

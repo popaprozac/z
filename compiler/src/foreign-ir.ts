@@ -185,15 +185,21 @@ export type ForeignCallbackReleaseType = {
   readonly callbackParameter: number;
 };
 
-export type ForeignFunction = {
+export type ForeignFunctionOverload = {
   readonly name: string;
   readonly cName: string;
-  readonly alternatives: readonly { readonly cName: string; readonly cSignature: string }[];
   readonly returnType: ForeignType;
   readonly parameters: readonly ForeignParameter[];
   readonly variadic: boolean;
   readonly cSignature: string;
   readonly metadata: ForeignDeclarationMetadata;
+};
+
+export type ForeignFunction = {
+  readonly name: string;
+  readonly namespacePath: readonly string[];
+  readonly qualifiedName: string;
+  readonly overloads: readonly ForeignFunctionOverload[];
 };
 
 // Producer-facing declarations intentionally contain only native spellings and
@@ -209,15 +215,21 @@ export type ForeignParameterDeclaration = {
   readonly type: ForeignTypeSpelling;
 };
 
-export type ForeignFunctionDeclaration = {
+export type ForeignFunctionOverloadDeclaration = {
   readonly name: string;
   readonly nativeName: string;
-  readonly alternatives: readonly { readonly nativeName: string; readonly nativeSignature: string }[];
   readonly returnType: ForeignTypeSpelling;
   readonly parameters: readonly ForeignParameterDeclaration[];
   readonly variadic: boolean;
   readonly nativeSignature: string;
   readonly metadata: ForeignDeclarationMetadata;
+};
+
+export type ForeignFunctionDeclaration = {
+  readonly name: string;
+  readonly namespacePath: readonly string[];
+  readonly qualifiedName: string;
+  readonly overloads: readonly ForeignFunctionOverloadDeclaration[];
 };
 
 export type ForeignDeclarationProducer = "clang" | "swift-interface" | "package-metadata" | "cache";
@@ -238,6 +250,8 @@ export type ForeignModuleDeclarations = {
 export type ForeignModuleIR = {
   readonly producer: ForeignDeclarationProducer;
   readonly functions: ReadonlyMap<string, ForeignFunction>;
+  readonly functionAliases: ReadonlyMap<string, string>;
+  readonly namespaces: ReadonlySet<string>;
   readonly types: ReadonlyMap<string, ForeignPointerType>;
   readonly namedTypes: ReadonlyMap<string, ForeignNamedType>;
   readonly constants: ReadonlyMap<string, ForeignConstant>;

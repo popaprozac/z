@@ -37,6 +37,21 @@ use site with `Z0802` and a related native location. Introduced, deprecated, and
 obsoleted versions are preserved for hover and future target checks; the
 bootstrap does not compare them against an invented deployment target.
 
+C++ namespace paths also survive normalization. A uniquely named function can
+use its short module alias, while the native hierarchy is available explicitly:
+
+```z
+import cpp from "cpp_math.hpp";
+
+const moved = cpp.zcpp.translate(origin, 1, -1);
+const answer = cpp.scale(6, 7); // unique short alias; selects the i32 overload
+```
+
+If two namespaces export the same leaf name, Z omits the short alias and
+requires the qualified path. Every overload retains its own full contract and
+source location. `Z0803` reports calls for which no candidate is viable or more
+than one best candidate remains; declaration order is never a tiebreaker.
+
 ## Cost model
 
 Z's target is **no interop tax beyond the semantics requested at the
@@ -53,6 +68,12 @@ boundary**, not a claim that every bridge operation is free:
 | `String` / `NSString` ownership bridge | Deliberate allocation and byte copy so neither runtime borrows unstable storage |
 | Logging an `NSString` | Reads its UTF-8 bytes for the duration of the console call; no Z `String` allocation |
 | Z ARC class reference | Retain/release traffic; the bootstrap runtime is non-atomic and not yet optimized |
+
+An eventual explicit `extern` declaration is the intended fallback for native
+declarations an automatic producer cannot express. Supplying an ABI signature
+is distinct from accepting an unverified memory-safety obligation: the latter
+also requires an explicit `unsafe` boundary. Both paths will feed the same
+contract normalizer and FIIR as generated declarations.
 
 Imported nullable references use the same one-pointer representation as their
 native ABI. A Z null check is an ordinary pointer comparison and narrows the

@@ -41,7 +41,7 @@ bun run z run examples/result.z
 | C records and enums | [`foreign-types.z`](../examples/foreign-types.z) | Native layouts and constants |
 | C pointers | [`foreign-pointers.z`](../examples/foreign-pointers.z), [`foreign-handle.z`](../examples/foreign-handle.z) | Borrowed and owned API-note contracts |
 | C callbacks | [`callbacks.z`](../examples/callbacks.z) | Call-only and escaping callback contracts |
-| C++ | [`cpp-interop.z`](../examples/cpp-interop.z) | Namespace functions and plain records |
+| C++ | [`cpp-interop.z`](../examples/cpp-interop.z) | Native namespaces, overload selection, and plain records |
 | AppKit window | [`nswindow.z`](../examples/nswindow.z) | Direct Objective-C ARC calls |
 | Objective-C nullability | [`objc-nullability.z`](../examples/objc-nullability.z) | `T | null`, narrowing, and `Option.fromNullable` |
 | Persistent AppKit events | [`appkit-events.z`](../examples/appkit-events.z) | Native blocks, weak capture, observer tokens |

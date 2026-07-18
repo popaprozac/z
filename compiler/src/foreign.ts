@@ -172,26 +172,34 @@ function readHeader(
     }));
     const cSignature = node.type.qualType;
     const cName = cPlusPlus && namespaces.length > 0 ? `${namespaces.join("::")}::${node.name}` : node.name;
-    const candidate: ForeignFunctionDeclaration = {
+    const namespacePath = cPlusPlus
+      ? swiftCxxNamespace ? namespaces.slice(1) : namespaces
+      : [];
+    const qualifiedName = [...namespacePath, node.name].join(".");
+    const overload = {
       name: node.name,
       nativeName: cName,
-      alternatives: [{ nativeName: cName, nativeSignature: cSignature }],
       returnType: { nativeName: returnTypeOf(cSignature) },
       parameters,
       variadic: node.variadic === true,
       nativeSignature: cSignature,
       metadata: foreignDeclarationMetadata(node),
     };
-    const existing = functionDeclarations.get(node.name);
+    const existing = functionDeclarations.get(qualifiedName);
     if (!existing) {
-      functionDeclarations.set(node.name, candidate);
+      functionDeclarations.set(qualifiedName, {
+        name: node.name,
+        namespacePath,
+        qualifiedName,
+        overloads: [overload],
+      });
       return;
     }
-    const alternatives = [...existing.alternatives];
-    if (!alternatives.some((item) => item.nativeName === cName && item.nativeSignature === cSignature)) {
-      alternatives.push({ nativeName: cName, nativeSignature: cSignature });
+    const overloads = [...existing.overloads];
+    if (!overloads.some((item) => item.nativeName === cName && item.nativeSignature === cSignature)) {
+      overloads.push(overload);
     }
-    functionDeclarations.set(node.name, { ...existing, alternatives });
+    functionDeclarations.set(qualifiedName, { ...existing, overloads });
   });
   const produced: ForeignModuleDeclarations = {
     producer: "clang",
@@ -228,6 +236,8 @@ function readHeader(
   return {
     producer: produced.producer,
     functions: contracts.functions,
+    functionAliases: contracts.functionAliases,
+    namespaces: contracts.namespaces,
     types: contracts.pointerTypes,
     namedTypes: produced.namedTypes,
     constants: produced.constants,

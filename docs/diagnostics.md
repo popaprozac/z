@@ -67,6 +67,7 @@ Currently structured codes include:
 | `Z0704` | borrowed storage could remain live in a task or across suspension |
 | `Z0801` | malformed, unmatched, or conflicting foreign API contract metadata |
 | `Z0802` | native declaration is explicitly unavailable for the current bootstrap target |
+| `Z0803` | no unique viable native overload exists for a foreign call |
 
 CLI diagnostics render source context. Language-server diagnostics expose the
 same code and message, secondary locations through related information, and

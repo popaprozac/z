@@ -830,17 +830,18 @@ Platform APIs continue to require explicit native imports; portable `std` APIs
 may provide common contracts over them without erasing platform differences.
 
 A `.hpp`, `.hh`, `.hxx`, or `.h++` import selects C++20 emission. The first C++
-tier preserves namespace-qualified names for uniquely named free functions and
-imports plain aggregate structs as Z value records. The original header remains
-the ABI declaration and the generated artifact builds with `clang++`. The first
-RAII slice also imports opaque copyable values returned by and passed to those
-functions; C++ performs their copy construction and deterministic destruction.
-This is intentionally narrower than general C++ class support. Overload
-selection, constructors, methods, mutable references, inheritance, and
-templates remain explicit later tiers; an ambiguous function name is rejected
-rather than silently choosing a declaration.
-The next namespace tier should preserve the native hierarchy at the Z surface,
-for example `library.desktop.calculate`, before overload resolution is added.
+tier preserves native namespace paths and full free-function overload sets.
+Unique leaf functions receive a convenient module-level alias, while qualified
+access such as `library.desktop.calculate(...)` is always available. Colliding
+leaf names are not flattened. Calls select a unique viable overload from
+argument shape and type; `Z0803` reports no-match and genuine ambiguity with the
+native candidates. Plain aggregate structs import as Z value records. The
+original header remains the ABI declaration and the generated artifact builds
+with `clang++`. The first RAII slice also imports opaque copyable values returned
+by and passed to those functions; C++ performs their copy construction and
+deterministic destruction. This is intentionally narrower than general C++
+class support. Constructors, methods, mutable references, inheritance, user
+defined conversions, and templates remain explicit later tiers.
 
 On macOS, an installed framework header such as `AppKit/AppKit.h` selects the
 Objective-C ARC backend and adds its framework to the native link plan. Imported
@@ -1018,8 +1019,12 @@ selective: typedef-named records can appear in signatures, are built with
 checked struct literals, and expose imported fields; C enum constants become
 typed values. The native compiler still includes the original header, so it
 does not redeclare layouts or guess padding and calling conventions. A future
-`unsafe raw { ... }` facility may cover operations the semantic importer cannot
-represent, but routine function and data interop must not require it.
+user-authored `extern` declaration may force an ABI contract when an automatic
+producer cannot represent a vendor declaration. `extern` means the programmer
+is supplying native identity and signature facts; operations whose memory or
+lifetime safety remains unverifiable additionally require an explicit
+`unsafe { ... }` boundary. Handwritten declarations and raw operations remain
+escape hatches rather than the routine function and data interop path.
 
 Interop work proceeds in architectural layers:
 

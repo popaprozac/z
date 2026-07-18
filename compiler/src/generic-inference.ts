@@ -16,7 +16,7 @@ import {
   sliceTypeName,
 } from "./array-types.ts";
 import { DiagnosticError } from "./diagnostics.ts";
-import { type ForeignModule, type ForeignObjCInterface, type ForeignType } from "./foreign.ts";
+import { type ForeignFunction, type ForeignModule, type ForeignObjCInterface, type ForeignType } from "./foreign.ts";
 import { genericTypeName, parseGenericType } from "./generic-types.ts";
 import { functionTypeName, parseFunctionType } from "./function-types.ts";
 import { isNullableObjCTypeName, publicObjCTypeName } from "./objc-types.ts";
@@ -41,14 +41,78 @@ export function inferGenericCalls(
   let activeTypeParameters = new Set<string>();
   const closureReturns = new Map<string, string | null>();
   const objectFieldTypes = new Map<number, ReadonlyMap<string, string | null>>();
-  const selectiveFunctions = new Map<string, ForeignType>();
+  const selectiveFunctions = new Map<string, string>();
   const selectiveValues = new Map<string, string>();
   const foreignInterfaces = new Map<string, ForeignObjCInterface>();
+  const resolveForeignFunction = (module: ForeignModule, path: readonly string[]): ForeignFunction | null => {
+    const qualifiedName = path.join(".");
+    const direct = module.functions.get(qualifiedName);
+    if (direct) return direct;
+    if (path.length !== 1) return null;
+    const alias = module.functionAliases.get(path[0]);
+    return alias ? module.functions.get(alias) ?? null : null;
+  };
+  const foreignReturnType = (declaration: ForeignFunction): string | null => {
+    const returns = new Set(declaration.overloads.map((overload) => inferenceTypeName(overload.returnType)));
+    return returns.size === 1 ? [...returns][0] : null;
+  };
+  const foreignMember = (expression: Extract<Expression, { kind: "member" }>): ForeignFunction | null => {
+    const path = [expression.property];
+    let object: Expression = expression.object;
+    while (object.kind === "member") {
+      path.unshift(object.property);
+      object = object.object;
+    }
+    if (object.kind !== "identifier") return null;
+    const module = foreignModules.get(object.name);
+    return module ? resolveForeignFunction(module, path) : null;
+  };
+  const foreignCallReturnType = (
+    declaration: ForeignFunction,
+    args: readonly RewrittenExpression[],
+  ): string | null => {
+    const matches: { readonly returnType: string; readonly score: number }[] = [];
+    for (const overload of declaration.overloads) {
+      const parameters = overload.parameters.filter((parameter) => (
+        parameter.type.kind !== "callbackContext" && parameter.type.kind !== "callbackRelease"
+      ));
+      if ((!overload.variadic && args.length !== parameters.length) || (overload.variadic && args.length < parameters.length)) continue;
+      let score = overload.variadic ? 0 : 2;
+      let viable = true;
+      for (let index = 0; index < parameters.length; index += 1) {
+        const expected = inferenceTypeName(parameters[index].type);
+        const actual = args[index]?.type;
+        const expression = args[index]?.expression;
+        if (expression?.kind === "number" && /^(?:i|u|f)(?:8|16|32|64)$|^(?:isize|usize)$/.test(expected)) {
+          const integer = !/[.eE]/.test(expression.value);
+          if (!integer && !expected.startsWith("f")) {
+            viable = false;
+            break;
+          }
+          score += integer
+            ? expected === "i32" ? 8 : expected.startsWith("i") || expected.startsWith("u") ? 5 : 1
+            : expected === "f64" ? 8 : expected === "f32" ? 5 : 0;
+          continue;
+        }
+        if (actual && actual !== expected) {
+          viable = false;
+          break;
+        }
+        score += actual === expected ? 8 : 1;
+      }
+      if (viable) matches.push({ returnType: inferenceTypeName(overload.returnType), score });
+    }
+    if (matches.length === 0) return null;
+    const bestScore = Math.max(...matches.map((match) => match.score));
+    const bestReturns = new Set(matches.filter((match) => match.score === bestScore).map((match) => match.returnType));
+    return bestReturns.size === 1 ? [...bestReturns][0] : null;
+  };
   for (const module of foreignModules.values()) {
     for (const declaration of module.interfaces.values()) foreignInterfaces.set(declaration.typeName, declaration);
     for (const binding of module.declaration.bindings ?? []) {
-      const fn = module.functions.get(binding.importedName);
-      if (fn) selectiveFunctions.set(binding.localName, fn.returnType);
+      const fn = resolveForeignFunction(module, [binding.importedName]);
+      const returnType = fn ? foreignReturnType(fn) : null;
+      if (returnType) selectiveFunctions.set(binding.localName, returnType);
       const constant = module.constants.get(binding.importedName);
       if (constant) selectiveValues.set(binding.localName, constant.typeName);
     }
@@ -343,6 +407,9 @@ export function inferGenericCalls(
       }
       case "member": {
         const object = rewriteExpression(expression.object, environment);
+        const importedFunction = foreignMember(expression);
+        const importedReturn = importedFunction ? foreignReturnType(importedFunction) : null;
+        if (importedReturn) return { expression: { ...expression, object: object.expression }, type: importedReturn };
         if (expression.object.kind === "identifier") {
           const owner = aggregate(expression.object.name);
           const staticMethod = owner?.declaration.methods.find((item) => item.static && item.name === expression.property);
@@ -377,10 +444,10 @@ export function inferGenericCalls(
               type: `${objcClassPrefix}${interface_.typeName}`,
             };
           }
-          const fn = module?.functions.get(expression.property);
+          const fn = module ? resolveForeignFunction(module, [expression.property]) : null;
           const constant = module?.constants.get(expression.property);
           const named = module?.namedTypes.get(expression.property);
-          const foreignType = fn ? inferenceTypeName(fn.returnType) : constant?.typeName ?? named?.typeName ?? null;
+          const foreignType = fn ? foreignReturnType(fn) : constant?.typeName ?? named?.typeName ?? null;
           if (foreignType) return { expression: { ...expression, object: object.expression }, type: foreignType };
         }
         const foreignPropertyType = objcPropertyType(object.type, expression.property);
@@ -574,6 +641,10 @@ export function inferGenericCalls(
         }
         let rewrittenCallee = callee.expression;
         let returnType = callee.type;
+        if (rewrittenCallee.kind === "member") {
+          const imported = foreignMember(rewrittenCallee);
+          returnType = imported ? foreignCallReturnType(imported, args) : returnType;
+        }
         if (rewrittenCallee.kind === "identifier") {
           const aggregateConstructor = aggregate(rewrittenCallee.name);
           if (aggregateConstructor) {
@@ -651,7 +722,7 @@ export function inferGenericCalls(
             returnType = closureReturns.get(callee.type) ?? returnType;
           } else {
             returnType = functions.get(rewrittenCallee.name)?.returnType.name
-              ?? inferenceTypeName(selectiveFunctions.get(rewrittenCallee.name))
+              ?? selectiveFunctions.get(rewrittenCallee.name)
               ?? returnType;
           }
         }

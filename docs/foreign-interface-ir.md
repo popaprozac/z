@@ -20,9 +20,11 @@ The boundary is implemented across three focused modules:
 - [`foreign-contracts.ts`](../compiler/src/foreign-contracts.ts) combines raw
   declarations with semantic facts and rejects incoherent boundaries.
 
-The Clang walk now emits function names, native spellings, canonical spellings,
-parameter order, overload alternatives, declaration locations, and availability
-facts before ownership metadata is read.
+The Clang walk now emits native namespace paths and complete overload candidates,
+including each candidate's native spelling, canonical type spellings, parameter
+order, declaration location, and availability facts before ownership metadata is
+read. Contract normalization maps every overload independently; FIIR never
+models an overload set as one signature plus a list of names.
 Only the normalized result is attached to `ForeignModule` and exposed to generic
 inference, semantic analysis, code generation, and the language server.
 
@@ -33,6 +35,8 @@ FIIR describes facts the rest of the compiler needs:
 - modules, functions, parameters, constants, records, enums, scalar aliases,
   opaque native values, Objective-C objects/interfaces, and callbacks;
 - both Z-facing type identity and native declaration spelling;
+- hierarchical native namespace identity, unambiguous short aliases, and full
+  callable overload sets;
 - native source locations and platform availability on functions, types,
   constants, Objective-C interfaces, methods, and properties;
 - nullability and owned, borrowed, or consuming pointer contracts;
@@ -97,7 +101,8 @@ facts are coherent:
    storage and cannot escape;
 5. an escaping callback has a complete context, threading, and exactly-once
    release contract;
-6. overload ambiguity remains visible until an explicit resolver selects one;
+6. overload resolution selects exactly one viable native signature; no-match and
+   ties remain visible diagnostics rather than first-declaration fallback;
 7. opaque RAII values preserve their native construction/copy/destruction
    semantics rather than being treated as plain byte records;
 8. explicit native unavailability is rejected at the Z use site and points back

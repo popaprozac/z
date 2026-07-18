@@ -520,7 +520,7 @@ export function hover(source: string, fileName: string, offset: number): Hover |
     }
     const resolved = resolveReceiver(context, memberPrefix[1], word.start - memberPrefix[1].length - 1);
     if (resolved?.kind === "module") {
-      const item = describeModuleMember(resolved.module, word.text);
+      const item = describeModuleMember(resolved.module, resolved.namespacePath, word.text);
       if (item) return markdownHover(item, source, word.start, word.end);
     }
     if (resolved?.kind === "objc") {
@@ -617,6 +617,9 @@ function nativeDefinition(
   fileName: string,
   word: { readonly text: string; readonly start: number; readonly end: number },
 ): Location | null {
+  const selectedForeign = context.semanticInfo.foreignFunctionDefinitions.get(word.start);
+  const selectedLocation = foreignMetadataLocation(selectedForeign);
+  if (selectedLocation) return selectedLocation;
   const chainedSelector = objectiveCSelectorAt(context, word.start);
   if (chainedSelector) {
     for (const declaration of context.semanticInfo.foreignInterfaces.values()) {
@@ -631,11 +634,14 @@ function nativeDefinition(
   if (memberPrefix) {
     const resolved = resolveReceiver(context, memberPrefix[1], word.start - memberPrefix[1].length - 1);
     if (resolved?.kind === "module") {
-      const declaration = resolved.module.functions.get(word.text)
+      const declaration = resolveModuleFunction(resolved.module, resolved.namespacePath, word.text)
         ?? resolved.module.constants.get(word.text)
         ?? resolved.module.namedTypes.get(word.text)
         ?? resolved.module.interfaces.get(word.text);
-      const target = declaration ? foreignMetadataLocation(declaration.metadata) : null;
+      const metadata = declaration && "overloads" in declaration
+        ? declaration.overloads[0]?.metadata
+        : declaration?.metadata;
+      const target = foreignMetadataLocation(metadata);
       if (target) return target;
     }
     if (resolved?.kind === "objc") {
@@ -653,11 +659,12 @@ function nativeDefinition(
     const binding = declaration.bindings.find((candidate) => candidate.localName === word.text);
     if (!binding) continue;
     const module = context.foreignModules.get(declaration.moduleName);
-    const target = module?.functions.get(binding.importedName)
+    const target = module ? resolveModuleFunction(module, [], binding.importedName)
       ?? module?.constants.get(binding.importedName)
       ?? module?.namedTypes.get(binding.importedName)
-      ?? module?.interfaces.get(binding.importedName);
-    const location = target ? foreignMetadataLocation(target.metadata) : null;
+      ?? module?.interfaces.get(binding.importedName) : null;
+    const metadata = target && "overloads" in target ? target.overloads[0]?.metadata : target?.metadata;
+    const location = foreignMetadataLocation(metadata);
     if (location) return location;
   }
   return null;
@@ -1074,8 +1081,8 @@ function memberCompletions(
       detail: sourceExportDetail(sourceModule, name, importContext.typeDisplayNames),
     })), prefix, 1000);
   }
-  const directModule = importContext.foreignModules.get(receiverText);
-  if (directModule) return moduleCompletions(directModule, prefix);
+  const nativeNamespace = resolveForeignModuleNamespace(importContext, receiverText);
+  if (nativeNamespace) return moduleCompletions(nativeNamespace.module, prefix, nativeNamespace.namespacePath);
 
   const [moduleName, className, extra] = receiverText.split(".");
   if (!extra && moduleName && className) {
@@ -1407,7 +1414,7 @@ function safeAnalysis(source: string, fileName: string): AnalyzedSource | null {
 }
 
 type ResolvedReceiver =
-  | { readonly kind: "module"; readonly module: ForeignModule }
+  | { readonly kind: "module"; readonly module: ForeignModule; readonly namespacePath: readonly string[] }
   | { readonly kind: "objc"; readonly declaration: ForeignObjCInterface; readonly instance: boolean }
   | { readonly kind: "struct"; readonly declaration: StructDeclaration }
   | { readonly kind: "integer"; readonly type: string }
@@ -1415,8 +1422,8 @@ type ResolvedReceiver =
   | { readonly kind: "weak"; readonly target: string };
 
 function resolveReceiver(context: AnalyzedSource, text: string, offset: number): ResolvedReceiver | null {
-  const module = context.foreignModules.get(text);
-  if (module) return { kind: "module", module };
+  const nativeNamespace = resolveForeignModuleNamespace(context, text);
+  if (nativeNamespace) return { kind: "module", ...nativeNamespace };
   const [moduleName, className, extra] = text.split(".");
   if (!extra && moduleName && className) {
     const declaration = context.foreignModules.get(moduleName)?.interfaces.get(className);
@@ -1470,23 +1477,45 @@ function integerCompletions(type: string): CompletionItem[] {
   }));
 }
 
-function moduleCompletions(module: ForeignModule, prefix: string): CompletionItem[] {
+function moduleCompletions(
+  module: ForeignModule,
+  prefix: string,
+  namespacePath: readonly string[] = [],
+): CompletionItem[] {
   const items: CompletionItem[] = [];
-  for (const declaration of module.interfaces.values()) {
-    items.push({ label: declaration.exportName, kind: completionKinds.class, detail: `Objective-C class ${declaration.className}` });
+  if (namespacePath.length === 0) {
+    for (const declaration of module.interfaces.values()) {
+      items.push({ label: declaration.exportName, kind: completionKinds.class, detail: `Objective-C class ${declaration.className}` });
+    }
+    for (const declaration of module.namedTypes.values()) {
+      items.push({
+        label: declaration.exportName,
+        kind: declaration.kind === "enum" ? completionKinds.enum : completionKinds.struct,
+        detail: declaration.cName,
+      });
+    }
+    for (const declaration of module.constants.values()) {
+      items.push({ label: declaration.name, kind: completionKinds.constant, detail: declaration.typeName });
+    }
   }
-  for (const declaration of module.namedTypes.values()) {
-    items.push({
-      label: declaration.exportName,
-      kind: declaration.kind === "enum" ? completionKinds.enum : completionKinds.struct,
-      detail: declaration.cName,
-    });
-  }
+  const namespaceName = namespacePath.join(".");
   for (const declaration of module.functions.values()) {
+    if (declaration.namespacePath.join(".") !== namespaceName) continue;
     items.push({ label: declaration.name, kind: completionKinds.function, detail: foreignFunctionDetail(declaration) });
   }
-  for (const declaration of module.constants.values()) {
-    items.push({ label: declaration.name, kind: completionKinds.constant, detail: declaration.typeName });
+  if (namespacePath.length === 0) {
+    for (const [alias, qualifiedName] of module.functionAliases) {
+      const declaration = module.functions.get(qualifiedName);
+      if (declaration?.namespacePath.length) {
+        items.push({ label: alias, kind: completionKinds.function, detail: foreignFunctionDetail(declaration) });
+      }
+    }
+  }
+  for (const namespace of module.namespaces) {
+    const parts = namespace.split(".");
+    if (parts.length !== namespacePath.length + 1) continue;
+    if (parts.slice(0, -1).join(".") !== namespaceName) continue;
+    items.push({ label: parts.at(-1)!, kind: completionKinds.module, detail: `native namespace ${namespace}` });
   }
   const unique = uniqueCompletions(items);
   if (prefix) return filterCompletions(unique, prefix, 1500);
@@ -1678,9 +1707,36 @@ function objCMethodDetail(method: ForeignObjCMethod): string {
   return `${method.baseName}(${parameters.join(", ")}): ${foreignTypeName(method.returnType)}  // ${method.selector}${foreignAvailabilityDetail(method.metadata)}`;
 }
 
-function describeModuleMember(module: ForeignModule, name: string): string | null {
-  const fn = module.functions.get(name);
+function resolveForeignModuleNamespace(
+  context: Pick<AnalyzedSource, "foreignModules">,
+  text: string,
+): { readonly module: ForeignModule; readonly namespacePath: readonly string[] } | null {
+  const [moduleName, ...namespacePath] = text.split(".");
+  const module = context.foreignModules.get(moduleName);
+  if (!module) return null;
+  if (namespacePath.length > 0 && !module.namespaces.has(namespacePath.join("."))) return null;
+  return { module, namespacePath };
+}
+
+function resolveModuleFunction(
+  module: ForeignModule,
+  namespacePath: readonly string[],
+  name: string,
+): ForeignFunction | null {
+  const qualifiedName = [...namespacePath, name].join(".");
+  const direct = module.functions.get(qualifiedName);
+  if (direct) return direct;
+  if (namespacePath.length > 0) return null;
+  const alias = module.functionAliases.get(name);
+  return alias ? module.functions.get(alias) ?? null : null;
+}
+
+function describeModuleMember(module: ForeignModule, namespacePath: readonly string[], name: string): string | null {
+  const fn = resolveModuleFunction(module, namespacePath, name);
   if (fn) return foreignFunctionDetail(fn);
+  const namespaceName = [...namespacePath, name].join(".");
+  if (module.namespaces.has(namespaceName)) return `native namespace ${namespaceName}`;
+  if (namespacePath.length > 0) return null;
   const constant = module.constants.get(name);
   if (constant) return `${constant.name}: ${constant.typeName}${foreignAvailabilityDetail(constant.metadata)}`;
   const named = module.namedTypes.get(name);
@@ -1690,13 +1746,15 @@ function describeModuleMember(module: ForeignModule, name: string): string | nul
 }
 
 function foreignFunctionDetail(declaration: ForeignFunction): string {
-  const parameters = declaration.parameters
-    .filter((parameter) => parameter.type.kind !== "callbackContext" && parameter.type.kind !== "callbackRelease")
-    .map((parameter, index) => (
-      `${parameter.name ?? `argument${index + 1}`}: ${foreignTypeName(parameter.type)}`
-    ));
-  if (declaration.variadic) parameters.push("...arguments");
-  return `${declaration.name}(${parameters.join(", ")}): ${foreignTypeName(declaration.returnType)}  // C: ${declaration.cSignature}${foreignAvailabilityDetail(declaration.metadata)}`;
+  return declaration.overloads.map((overload) => {
+    const parameters = overload.parameters
+      .filter((parameter) => parameter.type.kind !== "callbackContext" && parameter.type.kind !== "callbackRelease")
+      .map((parameter, index) => (
+        `${parameter.name ?? `argument${index + 1}`}: ${foreignTypeName(parameter.type)}`
+      ));
+    if (overload.variadic) parameters.push("...arguments");
+    return `${declaration.name}(${parameters.join(", ")}): ${foreignTypeName(overload.returnType)}  // C: ${overload.cSignature}${foreignAvailabilityDetail(overload.metadata)}`;
+  }).join("\n");
 }
 
 function foreignAvailabilityDetail(metadata: ForeignDeclarationMetadata): string {

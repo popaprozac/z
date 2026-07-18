@@ -23,4 +23,28 @@ inline double scale(double value, double factor) {
   return value * factor;
 }
 
+inline long choose(long value) {
+  return value;
+}
+
+inline unsigned long choose(unsigned long value) {
+  return value;
+}
+
 }  // namespace zcpp
+
+namespace alpha {
+
+inline int adjust(int value) {
+  return value + 1;
+}
+
+}  // namespace alpha
+
+namespace beta {
+
+inline int adjust(int value) {
+  return value - 1;
+}
+
+}  // namespace beta
