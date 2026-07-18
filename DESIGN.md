@@ -777,7 +777,10 @@ their cleanup states and remains distinct from the declared `throws E` domain.
 Handled `attempt await` failures do not cancel siblings. Valid shapes beyond
 the active native tier report `Z0700`. `await delay(milliseconds)` schedules a
 monotonic deadline without blocking other ready tasks, and cancellation removes
-pending timers. Async-free programs do not link an async runtime. Apple
+pending timers. Synchronous Z functions and methods—including borrowed and
+mutable parameter capabilities—and typed `console` operations run directly at
+their source-order poll state without introducing suspension. Async-free
+programs do not link an async runtime. Apple
 executors may integrate with Dispatch and the main run loop; Windows executors
 may integrate with the thread pool and IOCP.
 

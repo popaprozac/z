@@ -22,6 +22,22 @@ sleep(100);       // blocks the current OS thread
 await delay(100); // suspends this task on a monotonic executor timer
 ```
 
+An ordinary call inside an async function remains ordinary synchronous work:
+
+```z
+console.log("before"); // runs now on the executor thread
+calculateLayout();     // does not yield
+await delay(100);      // explicit suspension point
+console.log("after");
+```
+
+Top-level Z functions, static and instance methods, parameter capabilities, the
+blocking `sleep`, and typed `console` formatting execute in source order inside
+the current native task-frame tier. These synchronous calls block that executor
+thread until they return. Direct foreign-call lowering inside async frames
+remains follow-up work and will obey the same rule unless an API adapter exposes
+an explicitly suspending operation.
+
 An async call is valid only beneath `await` or `spawn`. Calling an async
 function never silently starts detached work:
 
@@ -163,7 +179,10 @@ cancellation of live siblings and descendants, redirecting their state machines
 through deterministic child and frame cleanup before failure completes. The
 executor now maintains a sorted monotonic timer queue for direct `await
 delay(...)`; it wakes expired tasks in deadline order and blocks the OS thread
-only when the ready queue is empty. The next Phase 1 layers expand async control
-flow—including `match` expressions—and brace-local value cleanup. Later phases
+only when the ready queue is empty. Synchronous Z calls, receiver methods,
+capability-aware arguments, and typed console output lower between suspension
+states without yielding. The next Phase 1 layers expand async control flow,
+including `match` expressions, direct foreign calls, and brace-local value
+cleanup. Later phases
 add channels, sendability and atomic ARC, native executors, actors, and
 callback-to-async synthesis. Async-free programs never link the runtime.

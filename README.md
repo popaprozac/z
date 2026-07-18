@@ -1159,7 +1159,9 @@ including nested boundaries. A propagated `throw` or failed `try await`
 cancels still-live siblings and descendants before the failing task completes;
 an `attempt await` failure remains a handled value and does not cancel them.
 `await delay(milliseconds)` suspends through the executor's monotonic timer
-queue without blocking other ready tasks. Async `match` lowering and
+queue without blocking other ready tasks. Ordinary synchronous Z functions,
+methods, imported blocking `sleep`, and typed `console` calls execute in source
+order inside async frames without yielding. Async `match` lowering and
 scope-local value cleanup remain active Phase 1 work. See
 [docs/async-model.md](docs/async-model.md) for the complete model and phases.
 

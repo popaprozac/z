@@ -11,6 +11,7 @@ import type {
 import { DiagnosticError } from "./diagnostics.ts";
 import { parseTaskType } from "./async-types.ts";
 import { resultTypeName } from "./results.ts";
+import { standardFunctionSignature } from "./standard-library.ts";
 import type { SemanticInfo } from "./sema.ts";
 
 type AwaitSite = {
@@ -61,6 +62,7 @@ type AsyncFunctionPlan = {
 type AsyncTypeContext = {
   readonly structs: ReadonlyMap<string, StructDeclaration>;
   readonly enums: ReadonlyMap<string, EnumDeclaration>;
+  readonly functions: ReadonlyMap<string, FunctionDeclaration>;
   readonly semanticInfo: SemanticInfo;
 };
 
@@ -84,6 +86,7 @@ const scalarTypes = new Map<string, string>([
   ["f64", "double"],
   ["bool", "bool"],
   ["void", "void"],
+  ["cstring", "const char *"],
 ]);
 
 const safeBinaryOperators = new Set([
@@ -113,6 +116,7 @@ export function generateAsyncC(
   const types: AsyncTypeContext = {
     structs: new Map(program.structs.map((declaration) => [declaration.name, declaration])),
     enums: new Map(program.enums.map((declaration) => [declaration.name, declaration])),
+    functions: new Map(program.functions.map((declaration) => [declaration.name, declaration])),
     semanticInfo,
   };
   const plans = targets.map((target) => planFunction(target, functions, fileName, semanticInfo, types));
@@ -271,12 +275,23 @@ function planFunction(
           children.set(site.index, site.target);
           continue;
         }
-        const operation = awaitOperation(statement.expression);
-        if (!operation) {
-          unsupported(fileName, statement.location, "only awaited async calls are executable as async expression statements yet");
+        if (
+          statement.expression.kind === "call"
+          && semanticInfo.consoleCalls.has(statement.expression.location.offset)
+        ) {
+          validateAsyncConsoleCall(statement.expression, locals, fileName, types);
+          continue;
         }
-        recordAwait(operation.mode, operation.expression);
-        continue;
+        const operation = awaitOperation(statement.expression);
+        if (operation) {
+          recordAwait(operation.mode, operation.expression);
+          continue;
+        }
+        if (statement.expression.kind === "call") {
+          validateFrameExpression(statement.expression, locals, fileName, types);
+          continue;
+        }
+        unsupported(fileName, statement.location, "this synchronous async expression statement is not executable yet");
       }
       unsupported(
         fileName,
@@ -1011,7 +1026,28 @@ function generatePoll(
         state += 1;
         continue;
       }
+      if (
+        statement.expression.kind === "call"
+        && plan.types.semanticInfo.consoleCalls.has(statement.expression.location.offset)
+      ) {
+        cases.push(caseBlock(state, [
+          ...emitAsyncConsoleCall(statement.expression, plan, fileName),
+          `frame->state = ${state + 1};`,
+          "continue;",
+        ]));
+        state += 1;
+        continue;
+      }
       const operation = awaitOperation(statement.expression)!;
+      if (!operation) {
+        cases.push(caseBlock(state, [
+          `(void)${emitFrameExpression(statement.expression, plan, fileName)};`,
+          `frame->state = ${state + 1};`,
+          "continue;",
+        ]));
+        state += 1;
+        continue;
+      }
       const site = plan.awaits.get(operation.expression.location.offset)!;
       if (site.intrinsic === "delay") {
         cases.push(caseBlock(state, scheduleDelay(site, plan, fileName, state + 1)));
@@ -1183,6 +1219,128 @@ function validateFrameExpression(
   emitFrameExpression(expression, { locals, types }, fileName);
 }
 
+function validateAsyncConsoleCall(
+  expression: CallExpression,
+  locals: ReadonlyMap<string, string>,
+  fileName: string,
+  types: AsyncTypeContext,
+): void {
+  emitAsyncConsoleCall(expression, { locals, types }, fileName);
+}
+
+function emitAsyncConsoleCall(
+  expression: CallExpression,
+  plan: Pick<AsyncFunctionPlan, "locals" | "types">,
+  fileName: string,
+): string[] {
+  if (expression.callee.kind !== "member") {
+    unsupported(fileName, expression.location, "console lowering requires a member call");
+  }
+  const stream = expression.callee.property === "log" || expression.callee.property === "write"
+    ? "stdout"
+    : "stderr";
+  const lines: string[] = [];
+  expression.arguments.forEach((argument, index) => {
+    if (index > 0) lines.push(`fputc(' ', ${stream});`);
+    if (argument.kind === "template") {
+      for (const part of argument.parts) {
+        if (part.kind === "text") {
+          if (part.value) lines.push(`fputs(${JSON.stringify(part.value)}, ${stream});`);
+        } else {
+          lines.push(...emitAsyncConsoleValue(part.expression, stream, plan, fileName));
+        }
+      }
+    } else if (argument.kind === "string") {
+      lines.push(`fputs(${JSON.stringify(argument.value)}, ${stream});`);
+    } else {
+      lines.push(...emitAsyncConsoleValue(argument, stream, plan, fileName));
+    }
+  });
+  if (expression.callee.property !== "write") lines.push(`fputc('\\n', ${stream});`);
+  return lines;
+}
+
+function emitAsyncConsoleValue(
+  expression: Expression,
+  stream: "stdout" | "stderr",
+  plan: Pick<AsyncFunctionPlan, "locals" | "types">,
+  fileName: string,
+): string[] {
+  const type = frameExpressionType(expression, plan);
+  if (type === "null") return [`fputs("null", ${stream});`];
+  if (expression.kind === "string") return [`fputs(${JSON.stringify(expression.value)}, ${stream});`];
+  const temporary = `_z_async_console_${expression.location.offset}`;
+  const value = emitFrameExpression(expression, plan, fileName);
+  return [
+    `${cFrameType(type, plan.types)} ${temporary} = ${value};`,
+    ...renderAsyncConsoleValue(temporary, type, stream, expression.location, plan, fileName),
+  ];
+}
+
+function renderAsyncConsoleValue(
+  value: string,
+  type: string,
+  stream: "stdout" | "stderr",
+  location: SourceLocation,
+  plan: Pick<AsyncFunctionPlan, "locals" | "types">,
+  fileName: string,
+): string[] {
+  if (["i8", "i16", "i32", "i64", "isize"].includes(type)) {
+    return [`fprintf(${stream}, "%lld", (long long)(${value}));`];
+  }
+  if (["u8", "u16", "u32", "u64", "usize"].includes(type)) {
+    return [`fprintf(${stream}, "%llu", (unsigned long long)(${value}));`];
+  }
+  if (type === "f32" || type === "f64") {
+    return [`fprintf(${stream}, "%g", (double)(${value}));`];
+  }
+  if (type === "bool") return [`fputs((${value}) ? "true" : "false", ${stream});`];
+  if (type === "cstring") return [`fputs((${value}) != NULL ? (${value}) : "null", ${stream});`];
+
+  const declaration = plan.types.structs.get(type);
+  if (declaration?.kind === "class") {
+    const displayName = plan.types.semanticInfo.typeDisplayNames.get(type) ?? type;
+    return [`fprintf(${stream}, ${JSON.stringify(`${displayName}@%p`)}, (void *)(${value}));`];
+  }
+  if (declaration?.kind === "struct") {
+    const displayName = plan.types.semanticInfo.typeDisplayNames.get(type) ?? type;
+    const lines = [`fputs(${JSON.stringify(`${displayName} { `)}, ${stream});`];
+    declaration.fields.forEach((field, index) => {
+      if (index > 0) lines.push(`fputs(", ", ${stream});`);
+      lines.push(`fputs(${JSON.stringify(`${field.name}: `)}, ${stream});`);
+      lines.push(...renderAsyncConsoleValue(`(${value}).${field.name}`, field.type.name, stream, location, plan, fileName));
+    });
+    lines.push(`fputs(" }", ${stream});`);
+    return lines;
+  }
+
+  const enumeration = plan.types.enums.get(type);
+  if (enumeration) {
+    const displayName = plan.types.semanticInfo.typeDisplayNames.get(type) ?? type;
+    const lines = [`switch ((${value}).tag) {`];
+    for (const variant of enumeration.variants) {
+      lines.push(`  case ${resultTag(type, variant.name)}:`);
+      lines.push(`    fputs(${JSON.stringify(`${displayName}.${variant.name}`)}, ${stream});`);
+      if (variant.payload) {
+        lines.push(`    fputc('(', ${stream});`);
+        lines.push(...renderAsyncConsoleValue(
+          `(${value}).data.${variant.name}`,
+          variant.payload.name,
+          stream,
+          location,
+          plan,
+          fileName,
+        ).map((line) => indent(line, 4)));
+        lines.push(`    fputc(')', ${stream});`);
+      }
+      lines.push("    break;");
+    }
+    lines.push("}");
+    return lines;
+  }
+  unsupported(fileName, location, `console formatting for ${JSON.stringify(type)} is not executable in async frames yet`);
+}
+
 function emitFrameExpression(
   expression: Expression,
   plan: Pick<AsyncFunctionPlan, "locals" | "types">,
@@ -1193,6 +1351,8 @@ function emitFrameExpression(
       return expression.value;
     case "boolean":
       return expression.value ? "true" : "false";
+    case "string":
+      return JSON.stringify(expression.value);
     case "identifier":
       if (!plan.locals.has(expression.name)) {
         unsupported(fileName, expression.location, "the first async lowering slice cannot reference this value");
@@ -1248,7 +1408,22 @@ function emitFrameExpression(
     case "variantExpression":
       return `(${resultCName(expression.enumName)}){ .tag = ${resultTag(expression.enumName, expression.variantName)}, .data.${expression.variantName} = ${emitFrameExpression(expression.payload, plan, fileName)} }`;
     case "call": {
+      const standard = plan.types.semanticInfo.standardFunctionReferences.get(expression.callee.location.offset);
+      if (standard) {
+        const signature = standardFunctionSignature(standard);
+        if (signature.async) {
+          unsupported(fileName, expression.location, "an async standard function must be lowered beneath await");
+        }
+        return `${signature.cName}(${emitSyncCallArguments(expression, plan, fileName).join(", ")})`;
+      }
       if (expression.callee.kind === "member" && expression.callee.object.kind === "identifier") {
+        const owner = plan.types.structs.get(expression.callee.object.name);
+        const staticMethod = owner?.methods.find((candidate) => (
+          candidate.static && !candidate.async && candidate.name === expression.callee.property
+        ));
+        if (owner && staticMethod) {
+          return `Z_${owner.name}_${staticMethod.name}(${emitSyncCallArguments(expression, plan, fileName).join(", ")})`;
+        }
         const enumeration = plan.types.enums.get(expression.callee.object.name);
         const variant = enumeration?.variants.find((candidate) => candidate.name === expression.callee.property);
         if (enumeration && variant) {
@@ -1271,6 +1446,27 @@ function emitFrameExpression(
           fileName,
           expression.location,
         );
+      }
+      if (expression.callee.kind === "member") {
+        const receiverType = frameExpressionType(expression.callee.object, plan);
+        const owner = plan.types.structs.get(receiverType);
+        const method = owner?.methods.find((candidate) => (
+          !candidate.static && !candidate.async && candidate.name === expression.callee.property
+        ));
+        if (owner && method) {
+          const receiverValue = emitFrameExpression(expression.callee.object, plan, fileName);
+          const receiver = owner.kind === "class" || method.receiverMode === "move"
+            ? receiverValue
+            : `&(${receiverValue})`;
+          const arguments_ = emitSyncCallArguments(expression, plan, fileName);
+          return `Z_${owner.name}_${method.name}(${[receiver, ...arguments_].join(", ")})`;
+        }
+      }
+      if (expression.callee.kind === "identifier") {
+        const declaration = plan.types.functions.get(expression.callee.name);
+        if (declaration && !declaration.async && !declaration.errorType) {
+          return `${declaration.name}(${emitSyncCallArguments(expression, plan, fileName).join(", ")})`;
+        }
       }
       unsupported(fileName, expression.location, "only aggregate construction is executable as a synchronous async-frame call yet");
     }
@@ -1299,6 +1495,21 @@ function emitFrameExpression(
         `expression ${JSON.stringify(expression.kind)} is not executable in the first Phase 1 async slice`,
       );
   }
+}
+
+function emitSyncCallArguments(
+  expression: CallExpression,
+  plan: Pick<AsyncFunctionPlan, "locals" | "types">,
+  fileName: string,
+): string[] {
+  return expression.arguments.map((argument) => {
+    const value = emitFrameExpression(argument, plan, fileName);
+    const access = plan.types.semanticInfo.nativeArgumentAccesses.get(argument.location.offset);
+    if (!access) return value;
+    const type = frameExpressionType(argument, plan);
+    if (access === "in" && plan.types.structs.get(type)?.kind === "class") return value;
+    return `&(${value})`;
+  });
 }
 
 function requireScalar(type: string, location: SourceLocation, fileName: string, role: string): void {
@@ -1438,7 +1649,7 @@ function resultCName(type: string): string {
   return `Z_${nativePart(type.replace(/^__z_/, ""))}`;
 }
 
-function resultTag(type: string, variant: "success" | "failure"): string {
+function resultTag(type: string, variant: string): string {
   return `${resultCName(type)}_${variant}`;
 }
 
@@ -1482,7 +1693,7 @@ function unsupported(
 ): never {
   throw new DiagnosticError(fileName, location, message, {
     code: "Z0700",
-    notes: ["Phase 1 executes ownership-aware task frames, FIFO scheduling, direct await, scoped spawn, structural cancellation, and timer delay"],
+    notes: ["Phase 1 executes owned task frames, synchronous calls and console output, FIFO scheduling, scoped spawn, cancellation, and timer delay"],
     helps: [help],
   });
 }

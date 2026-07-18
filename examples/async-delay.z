@@ -9,8 +9,14 @@ struct DelayedJob {
   }
 }
 
+function announceDelay(milliseconds: u64): void {
+  console.log(`waiting ${milliseconds}ms`);
+}
+
 async function finishAfter(job: DelayedJob, milliseconds: u64): void {
+  announceDelay(milliseconds);
   await delay(milliseconds);
+  console.log(`finished delayed job ${job.id}`);
   return;
 }
 

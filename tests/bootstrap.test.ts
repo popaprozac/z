@@ -4542,7 +4542,7 @@ test("checks Phase 0 async calls, scoped tasks, typed errors, and editor details
   assert.throws(() => compileToC(source, example), (error: unknown) => {
     assert.ok(error instanceof DiagnosticError);
     assert.equal(error.code, "Z0700");
-    assert.match(error.message, /only awaited async calls are executable as async expression statements yet/);
+    assert.match(error.message, /expression "matchExpression" is not executable/);
     return true;
   });
 });
@@ -4937,10 +4937,23 @@ test("suspends async tasks on scheduler-aware std/time delay", () => {
   assert.match(generated, /z_async_schedule_delay\(&frame->task, frame->value_milliseconds\)/);
   assert.match(generated, /z_async_wait_for_timer\(executor\)/);
   assert.match(generated, /z_async_remove_timer\(task\)/);
+  assert.match(generated, /announceDelay\(frame->value_milliseconds\)/);
+  assert.match(generated, /fputs\("finished delayed job ", stdout\)/);
 
   const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
-  assert.equal(result.stdout, "released delayed job 1\nreleased delayed job 2\n");
+  assert.equal(
+    result.stdout,
+    [
+      "waiting 5ms",
+      "waiting 1ms",
+      "finished delayed job 2",
+      "finished delayed job 1",
+      "released delayed job 1",
+      "released delayed job 2",
+      "",
+    ].join("\n"),
+  );
 
   const delayUse = source.indexOf("delay(milliseconds)") + 1;
   assert.match(
@@ -4992,4 +5005,45 @@ test("suspends async tasks on scheduler-aware std/time delay", () => {
   const cancelledResult = spawnSync(process.execPath, [cli, "run", cancelled], { encoding: "utf8" });
   assert.equal(cancelledResult.status, 1, cancelledResult.stderr);
   assert.equal(cancelledResult.stdout, "released timer 9\n");
+});
+
+test("runs synchronous calls and typed console output inside async frames", () => {
+  const source = `
+    import console from "std/console";
+    struct Point {
+      x: i32;
+      y: i32;
+      function total(): i32 { return this.x + this.y; }
+      static function unit(): i32 { return 1; }
+    }
+    enum State { ready i32, empty, }
+    function sum(left: i32, right: i32): i32 { return left + right; }
+    function show(in point: Point): void { console.log(\`helper \${point}\`); }
+    async function main(): i32 {
+      const point = Point({ x: 20, y: 22 });
+      const state = State.ready(7);
+      show(point);
+      console.write("answer ");
+      console.log(sum(20, 22), point.total(), Point.unit(), true, point, state);
+      console.error("debug", false);
+      return 0;
+    }
+  `;
+  const generated = compileToC(source, "async-sync-calls.z");
+  assert.match(generated, /show\(&\(frame->value_point\)\)/);
+  assert.match(generated, /sum\(20, 22\)/);
+  assert.match(generated, /Z_Point_total\(&\(frame->value_point\)\)/);
+  assert.match(generated, /Z_Point_unit\(\)/);
+  assert.match(generated, /fputs\("Point \{ ", stdout\)/);
+
+  const directory = mkdtempSync("/tmp/z-async-sync-calls-");
+  const fileName = resolve(directory, "main.z");
+  writeFileSync(fileName, source);
+  const result = spawnSync(process.execPath, [cli, "run", fileName], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(
+    result.stdout,
+    "helper Point { x: 20, y: 22 }\nanswer 42 42 1 true Point { x: 20, y: 22 } State.ready(7)\n",
+  );
+  assert.equal(result.stderr, "debug false\n");
 });
