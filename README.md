@@ -1084,9 +1084,11 @@ See [DESIGN.md](DESIGN.md) for the language charter and roadmap.
 ## Async frontend and Phase 1 lowering
 
 Z validates the complete structured-async surface. The native Phase 1 slice
-executes top-level cleanup-free value task frames with direct sequential awaits,
-typed errors, `throw`, `try await`, and `attempt await`. Scalars and recursively
-plain structs/enums can cross suspension boundaries:
+executes top-level owned task frames with direct sequential awaits, typed errors,
+`throw`, `try await`, and `attempt await`. Scalars, recursively plain enums,
+value structs, and ARC class references can cross suspension boundaries. Task
+frames track live cleanup-bearing values, transfer moved structs, retain shared
+classes, and deterministically destroy remaining ownership on success or error:
 
 ```z
 async function fetchValue(value: i32): i32 {
@@ -1106,6 +1108,7 @@ Run it with:
 bun run z run examples/async-sequential.z
 bun run z run examples/async-errors.z
 bun run z run examples/async-aggregates.z
+bun run z run examples/async-ownership.z
 ```
 
 The frontend already accepts the broader intended surface:
@@ -1135,10 +1138,10 @@ bun run z check examples/async-phase-0.z
 ```
 
 Unsupported executable shapes report `Z0700` with the precise current boundary
-rather than receiving synchronous-looking lowering. Cleanup-bearing aggregate
-frames, ARC classes, methods, `spawn`, and explicit scope scheduling are the
-next runtime layers. See [docs/async-model.md](docs/async-model.md) for the
-complete model and phases.
+rather than receiving synchronous-looking lowering. Cleanup-bearing enum
+payloads, methods, `spawn`, and explicit scope scheduling are the next runtime
+layers. See [docs/async-model.md](docs/async-model.md) for the complete model and
+phases.
 
 ## Editor support
 

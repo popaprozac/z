@@ -124,18 +124,21 @@ hover, completion, and highlighting for `async`, `await`, `try await`,
 `attempt await`, `async scope`, `spawn`, and inferred task handles. `z check`
 accepts these programs.
 
-Phase 1 executes top-level cleanup-free value async functions and direct
-sequential awaits. Each call allocates a typed task frame, each `await` becomes
-an explicit poll state, and async `main` runs through a deterministic
-single-thread root runner. Scalars and recursively plain structs/enums can be
-parameters, locals, success values, and error values. Task frames lower `throw`,
-`try await`, `attempt await`, payloadless `void` success, and root failure exit.
-`z emit` produces readable C for this subset and `z run` executes it.
+Phase 1 executes top-level owned async functions and direct sequential awaits.
+Each call allocates a typed task frame, each `await` becomes an explicit poll
+state, and async `main` runs through a deterministic single-thread root runner.
+Scalars, plain enums, value structs, and ARC class references can be parameters,
+locals, and success values; error values are currently cleanup-free. Live flags
+make struct moves explicit, ARC copies retain, awaited results transfer between
+frames, and frame destruction releases every value still owned on success or
+propagated error. Task frames also lower `throw`, `try await`, `attempt await`,
+payloadless `void` success, and root failure exit. `z emit` produces readable C
+for this subset and `z run` executes it.
 Unsupported but valid async shapes report `Z0700` with a specific boundary
 diagnostic.
 
-The next Phase 1 layers add cleanup-bearing aggregate live flags and destruction,
-ARC class frames, receiver-aware method frames, a ready queue, `spawn`, nested
-scope join/cancellation, and scheduler-aware delay. Later phases add channels,
-sendability and atomic ARC, native executors, actors, and callback-to-async
-synthesis. Async-free programs never link the runtime.
+The next Phase 1 layers add cleanup-bearing enum payloads, receiver-aware method
+frames, a ready queue, `spawn`, nested scope join/cancellation, and
+scheduler-aware delay. Later phases add channels, sendability and atomic ARC,
+native executors, actors, and callback-to-async synthesis. Async-free programs
+never link the runtime.

@@ -4600,23 +4600,41 @@ test("carries plain struct values and errors through async task frames", () => {
   const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
 
-  const cleanupBearing = `
-    struct Resource {
+});
+
+test("moves owned structs and retains ARC classes across async task frames", () => {
+  const example = resolve(projectRoot, "examples/async-ownership.z");
+  const source = readFileSync(example, "utf8");
+  const generated = compileToC(source, example);
+  assert.match(generated, /bool live_result;/);
+  assert.match(generated, /bool live_resource;/);
+  assert.match(generated, /frame->live_resource = false/);
+  assert.match(generated, /Z_Resource_deinit\(&\(frame->value_resource\)\)/);
+  assert.match(generated, /Z_Session_retain\(frame->value_session\)/);
+  assert.match(generated, /Z_Session_release\(frame->value_second\)/);
+  assert.match(generated, /z_async_destroy_main\(root\)/);
+
+  const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, "released resource 40\nreleased session 42\n");
+
+  const directory = mkdtempSync("/tmp/z-async-owned-error-");
+  const failing = resolve(directory, "main.z");
+  writeFileSync(failing, `
+    import console from "std/console";
+    class Session {
       id: i32;
-      deinit {}
+      deinit { console.log(\`released failed session \${this.id}\`); }
     }
-    async function make(): Resource { return Resource({ id: 42 }); }
-    async function main(): i32 {
-      const resource = await make();
-      return resource.id;
+    async function fail(): i32 throws i32 { throw 7; }
+    async function main(): i32 throws i32 {
+      const session = new Session({ id: 9 });
+      return try await fail();
     }
-  `;
-  assert.throws(() => compileToC(cleanupBearing, "async-owned-aggregate.z"), (error: unknown) => {
-    assert.ok(error instanceof DiagnosticError);
-    assert.equal(error.code, "Z0700");
-    assert.match(error.message, /async return type "Resource" needs owned task-frame lowering/);
-    return true;
-  });
+  `);
+  const failed = spawnSync(process.execPath, [cli, "run", failing], { encoding: "utf8" });
+  assert.equal(failed.status, 1, failed.stderr);
+  assert.equal(failed.stdout, "released failed session 9\n");
 });
 
 test("represents fallible void success without an enum payload", () => {

@@ -25,6 +25,7 @@ type AsyncFunctionPlan = {
   readonly frameName: string;
   readonly pollName: string;
   readonly startName: string;
+  readonly destroyName: string;
   readonly locals: ReadonlyMap<string, string>;
   readonly awaits: ReadonlyMap<number, AwaitSite>;
   readonly types: AsyncTypeContext;
@@ -33,6 +34,7 @@ type AsyncFunctionPlan = {
 type AsyncTypeContext = {
   readonly structs: ReadonlyMap<string, StructDeclaration>;
   readonly enums: ReadonlyMap<string, EnumDeclaration>;
+  readonly semanticInfo: SemanticInfo;
 };
 
 export type AsyncCGeneration = {
@@ -84,6 +86,7 @@ export function generateAsyncC(
   const types: AsyncTypeContext = {
     structs: new Map(program.structs.map((declaration) => [declaration.name, declaration])),
     enums: new Map(program.enums.map((declaration) => [declaration.name, declaration])),
+    semanticInfo,
   };
   const plans = declarations.map((declaration) => planFunction(declaration, functions, fileName, semanticInfo, types));
   const planByName = new Map(plans.map((plan) => [plan.declaration.name, plan]));
@@ -184,6 +187,7 @@ function planFunction(
     frameName: `Z_AsyncFrame_${part}`,
     pollName: `z_async_poll_${part}`,
     startName: `z_async_start_${part}`,
+    destroyName: `z_async_destroy_${part}`,
     locals,
     awaits,
     types,
@@ -240,7 +244,7 @@ function generateRuntime(
   fileName: string,
 ): string {
   const lines = [
-    "/* Z async Phase 1: stackless cleanup-free value task frames. */",
+    "/* Z async Phase 1: stackless ownership-aware task frames. */",
     "typedef struct Z_AsyncTask Z_AsyncTask;",
     "struct Z_AsyncTask {",
     "  void (*poll)(Z_AsyncTask *task);",
@@ -261,8 +265,10 @@ function generateRuntime(
   if (plans.length > 0) lines.push("");
   for (const plan of plans) lines.push(generateFrame(plan, planByName), "");
   for (const plan of plans) lines.push(`static void ${plan.pollName}(Z_AsyncTask *task);`);
+  for (const plan of plans) lines.push(`static void ${plan.destroyName}(${plan.frameName} *frame);`);
   for (const plan of plans) lines.push(`${generateStartSignature(plan)};`);
   if (plans.length > 0) lines.push("");
+  for (const plan of plans) lines.push(generateDestroy(plan, planByName), "");
   for (const plan of plans) lines.push(generateStart(plan), "");
   for (const plan of plans) lines.push(generatePoll(plan, planByName, fileName), "");
 
@@ -274,12 +280,14 @@ function generateRuntime(
       ...(main.declaration.errorType
         ? [
             "  if (root->failed) {",
+            `    ${main.destroyName}(root);`,
             "    free(root);",
             "    return 1;",
             "  }",
           ]
         : []),
       "  int32_t result = root->result;",
+      `  ${main.destroyName}(root);`,
       "  free(root);",
       "  return result;",
       "}",
@@ -299,6 +307,9 @@ function generateFrame(
   ];
   if (plan.declaration.returnType.name !== "void") {
     lines.push(`  ${cFrameType(plan.declaration.returnType.name, plan.types)} result;`);
+    if (hasFrameCleanup(plan.declaration.returnType.name, plan.types)) {
+      lines.push("  bool live_result;");
+    }
   }
   if (plan.declaration.errorType) {
     lines.push("  bool failed;");
@@ -306,11 +317,54 @@ function generateFrame(
   }
   for (const [name, type] of plan.locals) {
     lines.push(`  ${cFrameType(type, plan.types)} ${frameField(name)};`);
+    if (hasFrameCleanup(type, plan.types)) lines.push(`  bool ${frameLiveField(name)};`);
   }
   for (const site of plan.awaits.values()) {
     lines.push(`  ${planByName.get(site.target.name)!.frameName} *child_${site.index};`);
   }
   lines.push("};");
+  return lines.join("\n");
+}
+
+function generateDestroy(
+  plan: AsyncFunctionPlan,
+  planByName: ReadonlyMap<string, AsyncFunctionPlan>,
+): string {
+  const lines = [
+    `static void ${plan.destroyName}(${plan.frameName} *frame) {`,
+    "  if (frame == NULL) return;",
+  ];
+  for (const site of [...plan.awaits.values()].reverse()) {
+    const child = planByName.get(site.target.name)!;
+    lines.push(
+      `  if (frame->child_${site.index} != NULL) {`,
+      `    ${child.destroyName}(frame->child_${site.index});`,
+      `    free(frame->child_${site.index});`,
+      `    frame->child_${site.index} = NULL;`,
+      "  }",
+    );
+  }
+  if (
+    plan.declaration.returnType.name !== "void"
+    && hasFrameCleanup(plan.declaration.returnType.name, plan.types)
+  ) {
+    lines.push(
+      "  if (frame->live_result) {",
+      `    ${frameCleanup("frame->result", plan.declaration.returnType.name, plan.types)}`,
+      "    frame->live_result = false;",
+      "  }",
+    );
+  }
+  for (const [name, type] of [...plan.locals].reverse()) {
+    if (!hasFrameCleanup(type, plan.types)) continue;
+    lines.push(
+      `  if (frame->${frameLiveField(name)}) {`,
+      `    ${frameCleanup(`frame->${frameField(name)}`, type, plan.types)}`,
+      `    frame->${frameLiveField(name)} = false;`,
+      "  }",
+    );
+  }
+  lines.push("}");
   return lines.join("\n");
 }
 
@@ -331,6 +385,16 @@ function generateStart(plan: AsyncFunctionPlan): string {
     "  frame->state = 0;",
   ];
   if (plan.declaration.errorType) lines.push("  frame->failed = false;");
+  if (
+    plan.declaration.returnType.name !== "void"
+    && hasFrameCleanup(plan.declaration.returnType.name, plan.types)
+  ) lines.push("  frame->live_result = false;");
+  const parameters = new Set(plan.declaration.parameters.map((parameter) => parameter.name));
+  for (const [name, type] of plan.locals) {
+    if (hasFrameCleanup(type, plan.types)) {
+      lines.push(`  frame->${frameLiveField(name)} = ${parameters.has(name) ? "true" : "false"};`);
+    }
+  }
   for (const parameter of plan.declaration.parameters) {
     const name = frameField(parameter.name);
     lines.push(`  frame->${name} = ${name};`);
@@ -365,13 +429,24 @@ function generatePoll(
         cases.push(
           caseBlock(
             state + 1,
-            awaitCompletion(site, plan, `frame->${frameField(statement.name)}`, false, state + 2),
+            awaitCompletion(
+              site,
+              plan,
+              `frame->${frameField(statement.name)}`,
+              plan.locals.get(statement.name)!,
+              false,
+              state + 2,
+            ),
           ),
         );
         state += 2;
       } else {
+        const type = plan.locals.get(statement.name)!;
         cases.push(caseBlock(state, [
           `frame->${frameField(statement.name)} = ${emitFrameExpression(initializer, plan, fileName)};`,
+          ...(hasFrameCleanup(type, plan.types)
+            ? [`frame->${frameLiveField(statement.name)} = true;`]
+            : []),
           `frame->state = ${state + 1};`,
           "continue;",
         ]));
@@ -390,10 +465,22 @@ function generatePoll(
           `frame->state = ${state + 1};`,
           "return;",
         ]));
-        cases.push(caseBlock(state + 1, awaitCompletion(site, plan, "frame->result", true, state + 2)));
+        cases.push(caseBlock(state + 1, awaitCompletion(
+          site,
+          plan,
+          "frame->result",
+          plan.declaration.returnType.name,
+          true,
+          state + 2,
+        )));
       } else {
         const completion = statement.expression
-          ? [`frame->result = ${emitFrameExpression(statement.expression, plan, fileName)};`]
+          ? [
+              `frame->result = ${emitFrameExpression(statement.expression, plan, fileName)};`,
+              ...(hasFrameCleanup(plan.declaration.returnType.name, plan.types)
+                ? ["frame->live_result = true;"]
+                : []),
+            ]
           : [];
         cases.push(caseBlock(state, [
           ...completion,
@@ -425,7 +512,7 @@ function generatePoll(
         `frame->state = ${state + 1};`,
         "return;",
       ]));
-      cases.push(caseBlock(state + 1, awaitCompletion(site, plan, null, false, state + 2)));
+      cases.push(caseBlock(state + 1, awaitCompletion(site, plan, null, null, false, state + 2)));
       state += 2;
     }
   }
@@ -452,6 +539,7 @@ function awaitCompletion(
   site: AwaitSite,
   parent: AsyncFunctionPlan,
   destination: string | null,
+  destinationType: string | null,
   terminal: boolean,
   nextState: number,
 ): string[] {
@@ -464,6 +552,7 @@ function awaitCompletion(
     lines.push(
       `if (${child}->failed) {`,
       `  frame->error = ${child}->error;`,
+      `  z_async_destroy_${nativePart(site.target.name)}(${child});`,
       `  free(${child});`,
       `  frame->child_${site.index} = NULL;`,
       "  frame->failed = true;",
@@ -488,8 +577,18 @@ function awaitCompletion(
 
   if (site.mode !== "attempt" && destination && site.target.returnType.name !== "void") {
     lines.push(`${destination} = ${child}->result;`);
+    if (hasFrameCleanup(site.target.returnType.name, parent.types)) {
+      lines.push(`${child}->live_result = false;`);
+    }
   }
-  lines.push(`free(${child});`, `frame->child_${site.index} = NULL;`);
+  if (destination && destinationType && hasFrameCleanup(destinationType, parent.types)) {
+    lines.push(`${destinationLiveFlag(destination, parent)} = true;`);
+  }
+  lines.push(
+    `z_async_destroy_${nativePart(site.target.name)}(${child});`,
+    `free(${child});`,
+    `frame->child_${site.index} = NULL;`,
+  );
   if (terminal) {
     if (parent.declaration.errorType) lines.push("frame->failed = false;");
     lines.push("frame->task.completed = true;", "return;");
@@ -528,7 +627,20 @@ function emitFrameExpression(
       if (!plan.locals.has(expression.name)) {
         unsupported(fileName, expression.location, "the first async lowering slice cannot reference this value");
       }
-      return `frame->${frameField(expression.name)}`;
+      {
+        const value = `frame->${frameField(expression.name)}`;
+        if (plan.types.semanticInfo.movedExpressions.has(expression.location.offset)) {
+          return `(frame->${frameLiveField(expression.name)} = false, ${value})`;
+        }
+        const type = plan.locals.get(expression.name)!;
+        if (
+          plan.types.semanticInfo.managedCopies.has(expression.location.offset)
+          && plan.types.structs.get(type)?.kind === "class"
+        ) {
+          return `Z_${type}_retain(${value})`;
+        }
+        return value;
+      }
     case "unary":
       if (expression.operator !== "!") {
         unsupported(fileName, expression.location, "overflow-aware async arithmetic lowering has not landed yet");
@@ -541,8 +653,19 @@ function emitFrameExpression(
       return `(${emitFrameExpression(expression.left, plan, fileName)} ${expression.operator} ${emitFrameExpression(expression.right, plan, fileName)})`;
     case "conditional":
       return `(${emitFrameExpression(expression.condition, plan, fileName)} ? ${emitFrameExpression(expression.thenExpression, plan, fileName)} : ${emitFrameExpression(expression.elseExpression, plan, fileName)})`;
-    case "member":
-      return `((${emitFrameExpression(expression.object, plan, fileName)}).${expression.property})`;
+    case "member": {
+      const ownerType = frameExpressionType(expression.object, plan);
+      const access = plan.types.structs.get(ownerType)?.kind === "class" ? "->" : ".";
+      const value = `((${emitFrameExpression(expression.object, plan, fileName)})${access}${expression.property})`;
+      const type = frameExpressionType(expression, plan);
+      if (
+        plan.types.semanticInfo.managedCopies.has(expression.location.offset)
+        && plan.types.structs.get(type)?.kind === "class"
+      ) {
+        return `Z_${type}_retain(${value})`;
+      }
+      return value;
+    }
     case "structExpression":
       return emitStructValue(expression.typeName, expression.fields, plan, fileName, expression.location);
     case "call": {
@@ -561,6 +684,24 @@ function emitFrameExpression(
         );
       }
       unsupported(fileName, expression.location, "only plain struct construction is executable as a synchronous async-frame call yet");
+    }
+    case "new": {
+      const declaration = plan.types.structs.get(expression.typeName);
+      if (declaration?.kind !== "class") {
+        unsupported(fileName, expression.location, "async new requires a Z class type");
+      }
+      if (declaration.constructor) {
+        unsupported(fileName, expression.location, "user-defined class constructors in async frames have not landed yet");
+      }
+      const object = expression.arguments[0];
+      if (!object || object.kind !== "objectExpression") {
+        unsupported(fileName, expression.location, "synthesized async class initialization requires an object literal");
+      }
+      const provided = new Map(object.fields.map((field) => [field.name, field.expression]));
+      const fields = declaration.fields.map((field) => (
+        emitFrameExpression(provided.get(field.name)!, plan, fileName)
+      ));
+      return `Z_${expression.typeName}_new(${fields.join(", ")})`;
     }
     default:
       unsupported(
@@ -585,7 +726,7 @@ function emitStructValue(
   location: SourceLocation,
 ): string {
   const declaration = plan.types.structs.get(type);
-  if (!declaration || !isPlainFrameType(type, plan.types)) {
+  if (!declaration || declaration.kind !== "struct" || !isSupportedFrameType(type, plan.types)) {
     unsupported(fileName, location, `struct ${JSON.stringify(type)} needs owned cleanup-aware task-frame lowering`);
   }
   const provided = new Map(fields.map((field) => [field.name, field.expression]));
@@ -602,7 +743,7 @@ function requireFrameType(
   role: string,
   types: AsyncTypeContext,
 ): void {
-  if (!isPlainFrameType(type, types)) {
+  if (!isSupportedFrameType(type, types)) {
     unsupported(fileName, location, `${role} type ${JSON.stringify(type)} needs owned task-frame lowering`);
   }
 }
@@ -616,32 +757,80 @@ function cScalar(type: string): string {
 function cFrameType(type: string, types: AsyncTypeContext): string {
   if (scalarTypes.has(type)) return cScalar(type);
   const aggregate = types.structs.get(type);
-  if (aggregate) return `Z_${type}`;
+  if (aggregate) return aggregate.kind === "class" ? `Z_${type} *` : `Z_${type}`;
   if (types.enums.has(type)) return resultCName(type);
   throw new Error(`missing async aggregate ABI type ${JSON.stringify(type)}`);
 }
 
-function isPlainFrameType(type: string, types: AsyncTypeContext, visiting = new Set<string>()): boolean {
+function isSupportedFrameType(type: string, types: AsyncTypeContext, visiting = new Set<string>()): boolean {
   if (scalarTypes.has(type)) return true;
   if (visiting.has(type)) return true;
   const aggregate = types.structs.get(type);
   if (aggregate) {
-    if (aggregate.kind === "class" || aggregate.deinitializer) return false;
+    if (aggregate.kind === "class") return true;
     visiting.add(type);
-    const plain = aggregate.fields.every((field) => isPlainFrameType(field.type.name, types, visiting));
+    const supported = aggregate.fields.every((field) => isSupportedFrameType(field.type.name, types, visiting));
     visiting.delete(type);
-    return plain;
+    return supported;
   }
   const enumeration = types.enums.get(type);
   if (enumeration) {
+    if (hasFrameCleanup(type, types)) return false;
     visiting.add(type);
-    const plain = enumeration.variants.every((variant) => (
-      !variant.payload || isPlainFrameType(variant.payload.name, types, visiting)
+    const supported = enumeration.variants.every((variant) => (
+      !variant.payload || isSupportedFrameType(variant.payload.name, types, visiting)
     ));
     visiting.delete(type);
-    return plain;
+    return supported;
   }
   return false;
+}
+
+function hasFrameCleanup(type: string, types: AsyncTypeContext, visiting = new Set<string>()): boolean {
+  if (visiting.has(type)) return false;
+  const aggregate = types.structs.get(type);
+  if (aggregate?.kind === "class") return true;
+  const enumeration = types.enums.get(type);
+  if (!aggregate && !enumeration) return false;
+  if (aggregate?.deinitializer) return true;
+  visiting.add(type);
+  const cleanup = aggregate
+    ? aggregate.fields.some((field) => hasFrameCleanup(field.type.name, types, visiting))
+    : enumeration!.variants.some((variant) => (
+        variant.payload ? hasFrameCleanup(variant.payload.name, types, visiting) : false
+      ));
+  visiting.delete(type);
+  return cleanup;
+}
+
+function frameCleanup(value: string, type: string, types: AsyncTypeContext): string {
+  const aggregate = types.structs.get(type);
+  if (aggregate?.kind === "class") return `Z_${type}_release(${value});`;
+  if (aggregate?.kind === "struct") return `Z_${type}_deinit(&(${value}));`;
+  throw new Error(`missing async cleanup lowering for ${JSON.stringify(type)}`);
+}
+
+function frameExpressionType(
+  expression: Expression,
+  plan: Pick<AsyncFunctionPlan, "locals" | "types">,
+): string {
+  const analyzed = plan.types.semanticInfo.expressionTypes.get(expression.location.offset);
+  if (analyzed) return analyzed;
+  if (expression.kind === "identifier") return plan.locals.get(expression.name) ?? "i32";
+  if (expression.kind === "new" || expression.kind === "structExpression") return expression.typeName;
+  if (expression.kind === "boolean" || expression.kind === "binary" || expression.kind === "unary") return "bool";
+  if (expression.kind === "number") {
+    return plan.types.semanticInfo.numericLiteralTypes.get(expression.location.offset) ?? "i32";
+  }
+  return "i32";
+}
+
+function destinationLiveFlag(destination: string, plan: AsyncFunctionPlan): string {
+  if (destination === "frame->result") return "frame->live_result";
+  for (const name of plan.locals.keys()) {
+    if (destination === `frame->${frameField(name)}`) return `frame->${frameLiveField(name)}`;
+  }
+  throw new Error(`missing async live flag destination for ${JSON.stringify(destination)}`);
 }
 
 function resultCName(type: string): string {
@@ -658,6 +847,10 @@ function endsWithTermination(statements: readonly Statement[]): boolean {
 
 function frameField(name: string): string {
   return `value_${nativePart(name)}`;
+}
+
+function frameLiveField(name: string): string {
+  return `live_${nativePart(name)}`;
 }
 
 function nativePart(name: string): string {
@@ -678,7 +871,7 @@ function unsupported(
 ): never {
   throw new DiagnosticError(fileName, location, message, {
     code: "Z0700",
-    notes: ["Phase 1 currently executes top-level cleanup-free value task frames and direct sequential awaits"],
+    notes: ["Phase 1 currently executes top-level ownership-aware task frames and direct sequential awaits"],
     helps: [help],
   });
 }
