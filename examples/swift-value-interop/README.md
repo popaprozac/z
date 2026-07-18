@@ -1,0 +1,25 @@
+# Swift owned-value interop
+
+This probe imports a generated Swift C++ compatibility header directly from Z:
+
+```sh
+bun run z run examples/swift-value-interop/main.z
+```
+
+`OwnedCounter` is a Swift-native struct containing a reference to a Swift class.
+The Z program returns it from Swift, copies and round-trips it, and relies on the
+generated C++ value wrapper for copy construction and deterministic destruction.
+The shared Swift lifetime probe is released exactly once after every value wrapper
+leaves scope.
+
+Expected output:
+
+```text
+created 40
+first=40, copied=40, changed=42
+released 40
+```
+
+This is intentionally a narrow ownership probe. Generated Swift C++ wrappers are
+currently copyable but do not expose C++ move construction, and Z does not yet
+import their instance methods, properties, generic types, or `swift::String`.

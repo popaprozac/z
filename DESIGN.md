@@ -812,8 +812,11 @@ may provide common contracts over them without erasing platform differences.
 A `.hpp`, `.hh`, `.hxx`, or `.h++` import selects C++20 emission. The first C++
 tier preserves namespace-qualified names for uniquely named free functions and
 imports plain aggregate structs as Z value records. The original header remains
-the ABI declaration and the generated artifact builds with `clang++`. Overload
-selection, constructors, methods, references, RAII values, inheritance, and
+the ABI declaration and the generated artifact builds with `clang++`. The first
+RAII slice also imports opaque copyable values returned by and passed to those
+functions; C++ performs their copy construction and deterministic destruction.
+This is intentionally narrower than general C++ class support. Overload
+selection, constructors, methods, mutable references, inheritance, and
 templates remain explicit later tiers; an ambiguous function name is rejected
 rather than silently choosing a declaration.
 The next namespace tier should preserve the native hierarchy at the Z surface,
@@ -865,6 +868,19 @@ Package integration remain separate from native Swift module import.
 Manifest paths are relative to `z.json`, generated products live in a local
 ignored `.z-cache`, and manifest or Swift-source modification times invalidate
 both the Swift build and imported Clang metadata.
+
+A Swift manifest may select `interop: "cxx"`. In that mode `swiftc` emits its
+generated C++ compatibility header as `Module-Swift.hpp`, Z selects C++20, and
+ordinary namespace functions can carry Swift-native copyable structs across the
+boundary. The ownership probe uses a Swift struct containing a Swift class
+reference: Z receives it, copies it, round-trips it through Swift, and the
+shared reference is released exactly once after all generated C++ wrappers
+leave scope. This validates a thin native-value ownership path without a
+handwritten shim or a home-grown Swift ABI. The current Swift toolchain deletes
+C++ move construction for these wrappers, so Z does not describe this as Swift
+move support. Generated instance methods and properties, `swift::String`,
+generics, noncopyable values, protocols, errors, async, and package import remain
+open vertical slices.
 
 Clang supplies ABI identity and signatures but cannot generally say whether a C
 pointer is nullable, borrowed, transferred, retained, or consumed. Z therefore
@@ -938,14 +954,17 @@ Interop work proceeds in layers:
 4. Objective-C methods, properties, protocols, blocks, and ARC conventions
    (ARC methods, labeled selectors, properties, and contextual string literals
    implemented).
-5. C++ namespace functions and plain value records (first tier implemented),
-   followed by RAII, overloads, methods, and selected templates.
+5. C++ namespace functions, plain records, and opaque copyable RAII values
+   (first tiers implemented), followed by overloads, methods, and selected
+   templates.
 6. Callback-to-async synthesis.
 7. Swift-authored Objective-C compatibility-header import through the existing
    Objective-C path (generated-header compiler/runtime probe and initial
    `z.json` Swift build/link plan implemented).
-8. Native Swift module/interface and Swift Package import for Swift-only APIs,
-   value types, protocols, generics, errors, and concurrency.
+8. Swift-native copyable value ownership through the generated C++ interface
+   (thin return/copy/round-trip/destruction slice implemented).
+9. Broader Swift module/interface and Swift Package import for Swift-only APIs,
+   methods, strings, protocols, generics, errors, and concurrency.
 
 ## Initial non-goals
 

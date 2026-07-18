@@ -1,0 +1,10 @@
+{
+  "target": {
+    "entry": "main.z",
+    "swift": {
+      "module": "ZSwiftOwned",
+      "sources": ["OwnedCounter.swift"],
+      "interop": "cxx"
+    }
+  }
+}

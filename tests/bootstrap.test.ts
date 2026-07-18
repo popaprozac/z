@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { resolve } from "node:path";
-import { mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { test } from "bun:test";
 import { analyzeSource, check, compileToC, compileToNative } from "../compiler/src/compiler.ts";
 import { DiagnosticError, formatDiagnostic } from "../compiler/src/diagnostics.ts";
@@ -964,6 +964,29 @@ test("builds a declared Swift target for ordinary CLI and editor workflows", () 
     () => compileToNative(readFileSync(invalidSource, "utf8"), invalidSource),
     /target\.swift\.module must be a valid module name/,
   );
+});
+
+test("imports and owns a Swift value through its generated C++ compatibility header", () => {
+  if (process.platform !== "darwin") return;
+  const example = resolve(projectRoot, "examples/swift-value-interop/main.z");
+  const source = readFileSync(example, "utf8");
+  const artifact = compileToNative(source, example);
+  assert.equal(artifact.language, "c++");
+  assert.match(artifact.source, /#include <ZSwiftOwned-Swift\.hpp>/);
+  assert.match(artifact.source, /const ZSwiftOwned::OwnedCounter first = ZSwiftOwned::makeOwnedCounter\(40\)/);
+  assert.match(artifact.source, /const ZSwiftOwned::OwnedCounter copied = first/);
+  assert.match(artifact.source, /ZSwiftOwned::roundTrip\(copied\)/);
+  assert.deepEqual(diagnostics(source, example), []);
+  const firstOffset = source.indexOf("first =") + 1;
+  assert.match(hover(source, example, firstOffset)?.contents.value ?? "", /first: Swift\.OwnedCounter/);
+  const makeOffset = source.indexOf("makeOwnedCounter") + 1;
+  assert.match(hover(source, example, makeOffset)?.contents.value ?? "", /makeOwnedCounter\(value: i32\): Swift\.OwnedCounter/);
+
+  const generatedHeader = resolve(artifact.includeDirectories[0], "ZSwiftOwned-Swift.hpp");
+  assert.equal(existsSync(generatedHeader), true);
+  const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, "created 40\nfirst=40, copied=40, changed=42\nreleased 40\n");
 });
 
 test("keeps labeled arguments reserved for Objective-C selectors", () => {

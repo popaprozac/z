@@ -29,6 +29,12 @@ export type ForeignNamedType =
     readonly fields: readonly ForeignField[];
   }
   | {
+    readonly kind: "value";
+    readonly exportName: string;
+    readonly typeName: string;
+    readonly cName: string;
+  }
+  | {
     readonly kind: "enum";
     readonly exportName: string;
     readonly typeName: string;
@@ -266,6 +272,7 @@ function readHeader(
   cPlusPlus: boolean,
 ): HeaderInfo {
   const clangLanguage = objectiveC ? cPlusPlus ? "objective-c++" : "objective-c" : cPlusPlus ? "c++" : "c";
+  const swiftCxxNamespace = cPlusPlus ? swiftCompatibilityNamespace(declaration.header) : null;
   const clangArguments = [
     "-x", clangLanguage,
     ...(cPlusPlus ? ["-std=c++20"] : []),
@@ -278,7 +285,7 @@ function readHeader(
   ];
   const result = spawnSync(objectiveC ? "xcrun" : "clang", objectiveC ? ["clang", ...clangArguments] : clangArguments, {
     encoding: "utf8",
-    maxBuffer: objectiveC ? 512 * 1024 * 1024 : 64 * 1024 * 1024,
+    maxBuffer: objectiveC || swiftCxxNamespace ? 512 * 1024 * 1024 : 64 * 1024 * 1024,
   });
 
   if (result.error) {
@@ -298,7 +305,7 @@ function readHeader(
   }
 
   const notes = readApiNotes(declaration, fileName, headerDirectory);
-  const imported = collectNamedTypes(root, declaration.moduleName, cPlusPlus);
+  const imported = collectNamedTypes(root, declaration.moduleName, cPlusPlus, swiftCxxNamespace);
   const objectTypes = new Map<string, ForeignObjectType>();
   const interfaces = objectiveC
     ? collectObjCInterfaces(root, declaration.moduleName, imported.byCName, objectTypes)
@@ -307,6 +314,7 @@ function readHeader(
   const types = new Map<string, ForeignPointerType>();
   visitWithNamespaces(root, (node, namespaces) => {
     if (node.kind !== "FunctionDecl" || !node.name || !node.type?.qualType) return;
+    if (swiftCxxNamespace && namespaces[0] !== swiftCxxNamespace) return;
     const functionNotes = notes.functions?.[node.name];
     const parameterNodes = (node.inner ?? [])
       .filter((child) => child.kind === "ParmVarDecl" && child.type?.qualType);
@@ -473,6 +481,7 @@ function collectNamedTypes(
   root: ClangNode,
   moduleName: string,
   cPlusPlus: boolean,
+  swiftCxxNamespace: string | null,
 ): {
   namedTypes: ReadonlyMap<string, ForeignNamedType>;
   constants: ReadonlyMap<string, ForeignConstant>;
@@ -488,25 +497,35 @@ function collectNamedTypes(
     if (node.kind === "EnumDecl" && node.inner.some((child) => child.kind === "EnumConstantDecl")) enums.set(node.name, node);
   }
 
-  const cppRecords: { readonly exportName: string; readonly cName: string; readonly declaration: ClangNode }[] = [];
+  const cppRecords: {
+    readonly exportName: string;
+    readonly cName: string;
+    readonly declaration: ClangNode;
+    readonly opaque: boolean;
+  }[] = [];
   if (cPlusPlus) {
     visitWithNamespaces(root, (node, namespaces) => {
       if (
         node.kind !== "CXXRecordDecl"
-        || node.tagUsed !== "struct"
         || !node.name
-        || !node.inner?.some((child) => child.kind === "FieldDecl")
       ) return;
+      if (swiftCxxNamespace && namespaces[0] !== swiftCxxNamespace) return;
+      const fields = node.inner?.some((child) => child.kind === "FieldDecl") ?? false;
+      const opaque = swiftCxxNamespace !== null
+        && node.tagUsed === "class"
+        && (node.inner?.some((child) => child.kind === "CXXDestructorDecl") ?? false);
+      if (!(node.tagUsed === "struct" && fields) && !opaque) return;
       cppRecords.push({
         exportName: node.name,
         cName: [...namespaces, node.name].join("::"),
         declaration: node,
+        opaque,
       });
     });
   }
 
   type Seed = {
-    kind: "record" | "enum" | "scalar";
+    kind: "record" | "value" | "enum" | "scalar";
     exportName: string;
     typeName: string;
     cName: string;
@@ -548,7 +567,7 @@ function collectNamedTypes(
   for (const record of cppRecords) {
     if (seeds.has(record.exportName)) continue;
     seeds.set(record.exportName, {
-      kind: "record",
+      kind: record.opaque ? "value" : "record",
       exportName: record.exportName,
       typeName: `${moduleName}.${record.exportName}`,
       cName: record.cName,
@@ -576,6 +595,8 @@ function collectNamedTypes(
         flags: seed.flags ?? false,
         underlying: seed.underlying ?? "i32",
       };
+    } else if (seed.kind === "value") {
+      named = { kind: "value", exportName: seed.exportName, typeName: seed.typeName, cName: seed.cName };
     } else {
       const fields = (seed.declaration!.inner ?? []).filter((child) => child.kind === "FieldDecl");
       const mapped = fields.map((field) => field.name && field.type?.qualType
@@ -804,6 +825,14 @@ function mapForeignType(
   if (named) {
     if (named.kind === "scalar") return { kind: "z", name: named.underlying, cName };
     return { kind: "named", type: named, cName };
+  }
+  const reference = /^const\s+(.+?)\s*&$/.exec(normalized);
+  if (reference) {
+    const referenced = namedTypes.get(stripValueQualifiers(reference[1]));
+    if (referenced) {
+      if (referenced.kind === "scalar") return { kind: "z", name: referenced.underlying, cName };
+      return { kind: "named", type: referenced, cName };
+    }
   }
   const stars = normalized.match(/\*/g)?.length ?? 0;
   if (stars === 1 && normalized.endsWith(" *")) {
@@ -1054,4 +1083,8 @@ function isCPlusPlusHeader(header: string): boolean {
 
 function isSwiftCompatibilityHeader(header: string): boolean {
   return /-Swift\.h$/i.test(header);
+}
+
+function swiftCompatibilityNamespace(header: string): string | null {
+  return /^([A-Za-z_]\w*)-Swift\.(?:hh|hpp|hxx|h\+\+)$/i.exec(basename(header))?.[1] ?? null;
 }

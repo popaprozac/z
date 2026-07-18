@@ -876,6 +876,7 @@ bun run z run examples/integer-safety.z
 bun run z run examples/callbacks.z
 bun run z run examples/cpp-interop.z
 bun run z run examples/swift-interop/main.z
+bun run z run examples/swift-value-interop/main.z
 bun run z run examples/nswindow.z # macOS: opens a window and enters AppKit's event loop
 bun run z run examples/structs.z
 bun run z run examples/classes.z
@@ -914,8 +915,11 @@ and discovers project notes beside a header as `<header>.zapi.json`; this JSON i
 a stage-0 representation, not yet a frozen language format. Unannotated
 pointers, borrowed returns without lifetime provenance, mutable strings,
 globals, and macros remain conservative errors or future layers rather than
-being silently treated as safe. C++ support currently stops at uniquely named
-namespace functions and plain aggregate records.
+being silently treated as safe. C++ support currently includes uniquely named
+namespace functions, plain aggregate records, and the first opaque copyable
+RAII value slice used by Swift-generated C++ compatibility headers. General C++
+classes, constructors, methods, overloads, inheritance, and templates remain
+future layers.
 
 On macOS, importing an installed framework header selects the Objective-C ARC
 backend and carries the framework into the native link plan:
@@ -986,6 +990,32 @@ The runnable example is in [`examples/swift-interop`](examples/swift-interop):
 ```sh
 bun run z run examples/swift-interop/main.z
 ```
+
+A Swift target may instead set `"interop": "cxx"`. Z then asks `swiftc` for
+the module's generated C++ compatibility surface, imports
+`Module-Swift.hpp`, emits C++20, and links the same dylib automatically:
+
+```json
+{
+  "target": {
+    "entry": "main.z",
+    "swift": {
+      "module": "ZSwiftOwned",
+      "sources": ["OwnedCounter.swift"],
+      "interop": "cxx"
+    }
+  }
+}
+```
+
+[`examples/swift-value-interop`](examples/swift-value-interop) exercises a
+Swift-native struct that owns a Swift class reference. It returns the value to
+Z, copies and round-trips it, and observes exactly-once release through the
+generated wrapper's copy constructor and destructor. Swift's current generated
+C++ value wrappers delete move construction, so this tier is deliberately
+modeled as foreign copyable RAII rather than claiming native Swift move support.
+Instance methods, properties, `swift::String`, generics, and noncopyable Swift
+values remain later importer tiers.
 
 ```z
 import {

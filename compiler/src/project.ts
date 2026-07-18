@@ -17,6 +17,7 @@ type ProjectManifest = {
       readonly module?: string;
       readonly sources?: readonly string[];
       readonly frameworks?: readonly string[];
+      readonly interop?: "objc" | "cxx";
     };
   };
 };
@@ -60,8 +61,11 @@ export function prepareProject(fileName: string): ProjectBuild {
   if (swift.frameworks && (!Array.isArray(swift.frameworks) || swift.frameworks.some((framework) => typeof framework !== "string" || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(framework)))) {
     throw projectDiagnostic(fileName, "z.json target.swift.frameworks must contain framework names");
   }
+  if (swift.interop !== undefined && swift.interop !== "objc" && swift.interop !== "cxx") {
+    throw projectDiagnostic(fileName, "z.json target.swift.interop must be either \"objc\" or \"cxx\"");
+  }
   if (process.platform !== "darwin") {
-    throw projectDiagnostic(fileName, "Swift Objective-C compatibility targets currently require macOS");
+    throw projectDiagnostic(fileName, "Swift targets currently require macOS");
   }
 
   const sources = swift.sources.map((source) => resolve(directory, source));
@@ -69,7 +73,8 @@ export function prepareProject(fileName: string): ProjectBuild {
     if (!existsSync(source)) throw projectDiagnostic(fileName, `Swift source ${JSON.stringify(source)} does not exist`);
   }
   const buildDirectory = resolve(directory, ".z-cache", "swift", moduleName);
-  const header = resolve(buildDirectory, `${moduleName}-Swift.h`);
+  const cxxInterop = swift.interop === "cxx";
+  const header = resolve(buildDirectory, `${moduleName}-Swift.${cxxInterop ? "hpp" : "h"}`);
   const library = resolve(buildDirectory, `lib${moduleName}.dylib`);
   const freshness = Math.max(statSync(manifestPath).mtimeMs, ...sources.map((source) => statSync(source).mtimeMs));
   const cached = buildCache.get(manifestPath);
@@ -84,6 +89,7 @@ export function prepareProject(fileName: string): ProjectBuild {
       "-emit-library",
       "-emit-module",
       "-module-name", moduleName,
+      ...(cxxInterop ? ["-cxx-interoperability-mode=default"] : []),
       "-emit-objc-header-path", header,
       ...sources,
       "-o", library,
