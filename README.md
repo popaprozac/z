@@ -1113,6 +1113,7 @@ bun run z run examples/async-ownership.z
 bun run z run examples/async-owned-enums.z
 bun run z run examples/async-methods.z
 bun run z run examples/async-spawn.z
+bun run z run examples/async-scopes.z
 ```
 
 Spawned tasks are scheduled immediately. A bound handle may be joined once;
@@ -1145,7 +1146,9 @@ bun run z check examples/async-phase-0.z
 
 Unsupported executable shapes report `Z0700` with the precise current boundary
 rather than receiving synchronous-looking lowering. Explicit `async scope`
-joining and cancellation are the next runtime layers. See
+blocks now join and destroy their directly owned children at the closing brace,
+including nested boundaries. Structural sibling cancellation and
+scheduler-aware delay are the next runtime layers. See
 [docs/async-model.md](docs/async-model.md) for the complete model and phases.
 
 ## Editor support

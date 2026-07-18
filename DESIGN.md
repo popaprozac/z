@@ -762,9 +762,12 @@ preserve moves and ARC copies, while tag-directed destruction handles active
 `Option<T>` and `Result<T, E>` payloads. Class receiver frames retain `this`,
 consuming struct receiver frames move it, and static methods carry no receiver.
 Function exit implicitly joins non-throwing root children; throwing children
-must be acknowledged explicitly. Frames lower `throw`, `try await`, `attempt
-await`, and payloadless `void` success. Valid shapes beyond the active native
-tier report `Z0700`. Async-free programs do not link an async runtime. Apple
+must be acknowledged explicitly. Nested `async scope` blocks join and destroy
+their directly owned children before execution continues after the closing
+brace. Frames lower `throw`, `try await`, `attempt await`, and payloadless
+`void` success. Structural sibling cancellation remains the next task-tree
+layer. Valid shapes beyond the active native tier report `Z0700`. Async-free
+programs do not link an async runtime. Apple
 executors may integrate with Dispatch and the main run loop; Windows executors
 may integrate with the thread pool and IOCP.
 

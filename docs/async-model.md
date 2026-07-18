@@ -46,9 +46,10 @@ async function loadDashboard(id: UserId): Dashboard throws NetworkError {
 
 Children cannot outlive the async function that owns them. An explicit `async
 scope` creates a narrower ownership region when a group of children must finish
-before the rest of the function continues. Failure cancels siblings and all
-task-frame locals are deterministically destroyed before the owning scope
-exits. Detached tasks require an explicit program-owned supervisor.
+before the rest of the function continues. In the full model, failure cancels
+siblings and all task-frame locals are deterministically destroyed before the
+owning scope exits. Detached tasks require an explicit program-owned
+supervisor.
 
 ```z
 async function refresh(): void throws NetworkError {
@@ -142,7 +143,10 @@ diagnostic.
 Class method frames retain `this`; consuming struct methods move `this`; static
 async methods carry no receiver. Function exit implicitly joins unacknowledged
 non-throwing root children, while throwing children require an explicit `try
-await` or `attempt await`. The next Phase 1 layers add nested scope
-join/cancellation and scheduler-aware delay. Later phases add channels,
+await` or `attempt await`. Nested explicit scopes now join and destroy their
+directly owned children at each lexical closing brace. Scope-local task handles
+are executable; other scope-local frame values remain diagnosed until their
+brace-local cleanup states land. The next Phase 1 layers add structural sibling
+cancellation and scheduler-aware delay. Later phases add channels,
 sendability and atomic ARC, native executors, actors, and callback-to-async
 synthesis. Async-free programs never link the runtime.

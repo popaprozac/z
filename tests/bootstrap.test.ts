@@ -4841,3 +4841,50 @@ test("schedules hot spawned functions and methods on the FIFO executor", () => {
   assert.equal(failed.status, 1, failed.stderr);
   assert.equal(failed.stdout, "released sibling 9\n");
 });
+
+test("joins nested async scopes at their lexical boundaries", () => {
+  const example = resolve(projectRoot, "examples/async-scopes.z");
+  const source = readFileSync(example, "utf8");
+  const generated = compileToC(source, example);
+  assert.match(generated, /z_async_wait\(&frame->task, &frame->child_\d+->task\)/);
+
+  const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(
+    result.stdout,
+    [
+      "released scoped job 20",
+      "released scoped job 21",
+      "released scoped job 10",
+      "released scoped job 11",
+      "released scoped job 30",
+      "",
+    ].join("\n"),
+  );
+
+  const acknowledged = `
+    async function finish(): void throws i32 { return; }
+    async function main(): i32 throws i32 {
+      async scope {
+        const task = spawn finish();
+        try await task;
+      }
+      return 0;
+    }
+  `;
+  const acknowledgedC = compileToC(acknowledged, "async-scoped-error.z");
+  assert.match(acknowledgedC, /frame->value_task = NULL/);
+
+  const localValue = `
+    async function main(): i32 {
+      async scope { const value = 42; }
+      return 0;
+    }
+  `;
+  assert.throws(() => compileToC(localValue, "async-scope-local.z"), (error: unknown) => {
+    assert.ok(error instanceof DiagnosticError);
+    assert.equal(error.code, "Z0700");
+    assert.match(error.message, /scope-local value bindings are not executable yet/);
+    return true;
+  });
+});

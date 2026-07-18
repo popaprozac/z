@@ -25,12 +25,17 @@ type AwaitSite = {
 
 type SpawnSite = {
   readonly index: number;
+  readonly scope: number;
   readonly expression: Extract<Expression, { kind: "spawn" }>;
   readonly call: CallExpression;
   readonly target: AsyncTarget;
   readonly receiver: Expression | null;
   readonly binding: string | null;
 };
+
+type AsyncOperation =
+  | { readonly kind: "statement"; readonly statement: Statement }
+  | { readonly kind: "scopeExit"; readonly scope: number };
 
 type AsyncTarget = {
   readonly declaration: FunctionDeclaration;
@@ -44,6 +49,7 @@ type AsyncFunctionPlan = {
   readonly pollName: string;
   readonly startName: string;
   readonly destroyName: string;
+  readonly operations: readonly AsyncOperation[];
   readonly locals: ReadonlyMap<string, string>;
   readonly awaits: ReadonlyMap<number, AwaitSite>;
   readonly spawns: ReadonlyMap<number, SpawnSite>;
@@ -159,6 +165,8 @@ function planFunction(
   const children = new Map<number, AsyncTarget>();
   const joinedSpawns = new Set<number>();
   const nextChild = { value: 0 };
+  const nextScope = { value: 1 };
+  const operations: AsyncOperation[] = [];
   const recordAwait = (
     mode: AwaitSite["mode"],
     expression: Extract<Expression, { kind: "await" }>,
@@ -177,80 +185,107 @@ function planFunction(
     awaits.set(expression.location.offset, site);
     children.set(site.index, site.target);
   };
-  for (const statement of declaration.body) {
-    if (statement.kind === "variable") {
-      if (!statement.initializer) {
-        unsupported(fileName, statement.location, "uninitialized async frame locals are not executable yet");
-      }
-      const type = statement.type?.name ?? semanticInfo.bindingTypes.get(statement.nameLocation.offset);
-      if (!type) unsupported(fileName, statement.location, `could not determine async frame type for ${JSON.stringify(statement.name)}`);
-      requireFrameType(type, statement.type?.location ?? statement.nameLocation, fileName, "async local", types);
-      locals.set(statement.name, type);
-      if (statement.initializer.kind === "spawn") {
-        const site = spawnSite(
-          nextChild.value++,
-          statement.initializer,
-          statement.name,
-          functions,
-          fileName,
-          locals,
-          types,
-        );
-        spawns.set(statement.initializer.location.offset, site);
-        spawnBindings.set(statement.name, site);
-        children.set(site.index, site.target);
+  const planStatements = (statements: readonly Statement[], scope: number): void => {
+    for (const statement of statements) {
+      if (statement.kind === "asyncScope") {
+        const childScope = nextScope.value++;
+        planStatements(statement.body.statements, childScope);
+        operations.push({ kind: "scopeExit", scope: childScope });
         continue;
       }
-      const operation = awaitOperation(statement.initializer);
-      if (operation) {
-        recordAwait(operation.mode, operation.expression);
-      } else {
-        validateFrameExpression(statement.initializer, locals, fileName, types);
+      operations.push({ kind: "statement", statement });
+      if (statement.kind === "variable") {
+        if (!statement.initializer) {
+          unsupported(fileName, statement.location, "uninitialized async frame locals are not executable yet");
+        }
+        if (scope !== 0 && statement.initializer.kind !== "spawn") {
+          unsupported(
+            fileName,
+            statement.location,
+            "scope-local value bindings are not executable yet",
+            "bind values outside the `async scope`; scope-local spawned task handles are supported",
+          );
+        }
+        if (scope !== 0 && locals.has(statement.name)) {
+          unsupported(
+            fileName,
+            statement.nameLocation,
+            "shadowing an async frame binding inside `async scope` is not executable yet",
+          );
+        }
+        const type = statement.type?.name ?? semanticInfo.bindingTypes.get(statement.nameLocation.offset);
+        if (!type) unsupported(fileName, statement.location, `could not determine async frame type for ${JSON.stringify(statement.name)}`);
+        requireFrameType(type, statement.type?.location ?? statement.nameLocation, fileName, "async local", types);
+        locals.set(statement.name, type);
+        if (statement.initializer.kind === "spawn") {
+          const site = spawnSite(
+            nextChild.value++,
+            scope,
+            statement.initializer,
+            statement.name,
+            functions,
+            fileName,
+            locals,
+            types,
+          );
+          spawns.set(statement.initializer.location.offset, site);
+          spawnBindings.set(statement.name, site);
+          children.set(site.index, site.target);
+          continue;
+        }
+        const operation = awaitOperation(statement.initializer);
+        if (operation) {
+          recordAwait(operation.mode, operation.expression);
+        } else {
+          validateFrameExpression(statement.initializer, locals, fileName, types);
+        }
+        continue;
       }
-      continue;
-    }
-    if (statement.kind === "return") {
-      const operation = statement.expression ? awaitOperation(statement.expression) : null;
-      if (operation) {
-        recordAwait(operation.mode, operation.expression);
-      } else if (statement.expression) {
+      if (statement.kind === "return") {
+        const operation = statement.expression ? awaitOperation(statement.expression) : null;
+        if (operation) {
+          recordAwait(operation.mode, operation.expression);
+        } else if (statement.expression) {
+          validateFrameExpression(statement.expression, locals, fileName, types);
+        }
+        continue;
+      }
+      if (statement.kind === "throw") {
         validateFrameExpression(statement.expression, locals, fileName, types);
-      }
-      continue;
-    }
-    if (statement.kind === "throw") {
-      validateFrameExpression(statement.expression, locals, fileName, types);
-      continue;
-    }
-    if (statement.kind === "expressionStatement") {
-      if (statement.expression.kind === "spawn") {
-        const site = spawnSite(
-          nextChild.value++,
-          statement.expression,
-          null,
-          functions,
-          fileName,
-          locals,
-          types,
-        );
-        spawns.set(statement.expression.location.offset, site);
-        children.set(site.index, site.target);
         continue;
       }
-      const operation = awaitOperation(statement.expression);
-      if (!operation) {
-        unsupported(fileName, statement.location, "only awaited async calls are executable as async expression statements yet");
+      if (statement.kind === "expressionStatement") {
+        if (statement.expression.kind === "spawn") {
+          const site = spawnSite(
+            nextChild.value++,
+            scope,
+            statement.expression,
+            null,
+            functions,
+            fileName,
+            locals,
+            types,
+          );
+          spawns.set(statement.expression.location.offset, site);
+          children.set(site.index, site.target);
+          continue;
+        }
+        const operation = awaitOperation(statement.expression);
+        if (!operation) {
+          unsupported(fileName, statement.location, "only awaited async calls are executable as async expression statements yet");
+        }
+        recordAwait(operation.mode, operation.expression);
+        continue;
       }
-      recordAwait(operation.mode, operation.expression);
-      continue;
+      unsupported(
+        fileName,
+        statement.location,
+        `statement ${JSON.stringify(statement.kind)} is not executable in the first Phase 1 async slice`,
+        "the current state-machine lowering supports owned bindings, direct await, spawn, throw, and return",
+      );
     }
-    unsupported(
-      fileName,
-      statement.location,
-      `statement ${JSON.stringify(statement.kind)} is not executable in the first Phase 1 async slice`,
-      "the current state-machine lowering supports owned bindings, direct await, spawn, throw, and return",
-    );
-  }
+  };
+  planStatements(declaration.body, 0);
 
   const unjoinedThrowing = [...spawns.values()].find((site) => (
     !joinedSpawns.has(site.index) && site.target.declaration.errorType
@@ -272,6 +307,7 @@ function planFunction(
     pollName: `z_async_poll_${part}`,
     startName: `z_async_start_${part}`,
     destroyName: `z_async_destroy_${part}`,
+    operations,
     locals,
     awaits,
     spawns,
@@ -332,6 +368,7 @@ function awaitSite(
 
 function spawnSite(
   index: number,
+  scope: number,
   expression: Extract<Expression, { kind: "spawn" }>,
   binding: string | null,
   functions: ReadonlyMap<string, AsyncTarget>,
@@ -345,6 +382,7 @@ function spawnSite(
   const resolved = resolveAsyncCall(expression.expression, functions, fileName, locals, types);
   return {
     index,
+    scope,
     expression,
     call: expression.expression,
     target: resolved.target,
@@ -663,7 +701,27 @@ function generatePoll(
 ): string {
   const cases: string[] = [];
   let state = 0;
-  for (const statement of plan.declaration.body) {
+  for (const operation of plan.operations) {
+    if (operation.kind === "scopeExit") {
+      for (const site of [...plan.spawns.values()].filter((candidate) => candidate.scope === operation.scope)) {
+        const target = planByKey.get(targetKey(site.target))!;
+        const child = `frame->child_${site.index}`;
+        cases.push(caseBlock(state, [
+          `if (${child} != NULL) {`,
+          `  if (!z_async_wait(&frame->task, &${child}->task)) return;`,
+          `  ${target.destroyName}(${child});`,
+          `  free(${child});`,
+          `  frame->child_${site.index} = NULL;`,
+          ...(site.binding ? [`  frame->${frameField(site.binding)} = NULL;`] : []),
+          "}",
+          `frame->state = ${state + 1};`,
+          "continue;",
+        ]));
+        state += 1;
+      }
+      continue;
+    }
+    const statement = operation.statement;
     if (statement.kind === "variable") {
       const initializer = statement.initializer!;
       if (initializer.kind === "spawn") {
@@ -1234,7 +1292,7 @@ function unsupported(
 ): never {
   throw new DiagnosticError(fileName, location, message, {
     code: "Z0700",
-    notes: ["Phase 1 currently executes ownership-aware task frames, FIFO scheduling, direct await, and root-scoped spawn"],
+    notes: ["Phase 1 currently executes ownership-aware task frames, FIFO scheduling, direct await, and lexically scoped spawn"],
     helps: [help],
   });
 }
