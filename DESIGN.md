@@ -299,6 +299,14 @@ native one-pointer null niche, and narrows after explicit comparison with
 `null`. General `T | null` normalization to `Option<T>` and `some`/`none`
 matching remains the next representation-unification layer rather than a
 second nullable-value model.
+
+`Option.fromNullable(reference)` is the explicit bridge from an imported
+nullable Objective-C reference to the ordinary Z enum API. The bootstrap
+already niche-lowers `Option<ObjC reference>` into the original pointer word:
+`nil` represents `none`, a non-null pointer represents `some`, and matching is a
+null comparison. General `Option<T>` remains tag-plus-payload when the compiler
+has no proven invalid representation to reuse.
+
 Capture-list sugar, automatic ORC cycle collection, and atomic cross-thread
 weak upgrades remain separate future layers.
 

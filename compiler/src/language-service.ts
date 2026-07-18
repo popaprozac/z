@@ -209,6 +209,13 @@ export function semanticTokens(source: string, fileName: string): { readonly dat
       classifications.set(token.location.offset, { type: semanticTokenTypes.indexOf("method"), modifiers: 4 });
       continue;
     }
+    const optionMethodMember = previous?.kind === "dot"
+      && token.text === "fromNullable"
+      && /Option(?:<[^<>]+>)?\.$/.test(source.slice(0, token.location.offset));
+    if (optionMethodMember) {
+      classifications.set(token.location.offset, { type: semanticTokenTypes.indexOf("method"), modifiers: 4 });
+      continue;
+    }
     const optionVariantMember = previous?.kind === "dot"
       && (token.text === "some" || token.text === "none")
       && /Option(?:<[^<>]+>)?\.$/.test(source.slice(0, token.location.offset));
@@ -474,6 +481,9 @@ export function hover(source: string, fileName: string, offset: number): Hover |
       }
       if (word.text === "none") {
         return markdownHover(`none: Option<${explicit}>`, source, word.start, word.end);
+      }
+      if (word.text === "fromNullable") {
+        return markdownHover(`fromNullable(value: ${explicit} | null): Option<${explicit}>`, source, word.start, word.end);
       }
     }
     if (context.semanticInfo.consoleBindings.has(memberPrefix[1])) {
@@ -954,6 +964,12 @@ function memberCompletions(
         label: "none",
         kind: completionKinds.enumMember,
         detail: `none: Option<${explicit}>`,
+      },
+      {
+        label: "fromNullable",
+        kind: completionKinds.method,
+        detail: `fromNullable(value: ${explicit} | null): Option<${explicit}>`,
+        insertText: "fromNullable()",
       },
     ], prefix, 100);
   }

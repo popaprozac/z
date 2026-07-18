@@ -234,7 +234,10 @@ references display as `T | null`, require a null check before member access,
 and narrow in the non-null control-flow path without a runtime wrapper. This
 spelling is accepted for imported Objective-C reference fields, parameters,
 returns, and locals. General Z values use `Option<T>` while representation and
-matching are unified. An imported
+matching are unified. `Option.fromNullable(reference)` explicitly converts the
+native nullable form into `Option<T>` for `some`/`none` matching. Objective-C
+reference options use `nil` as the `none` niche and remain one pointer with no
+wrapper allocation; general options use the ordinary tagged enum layout. An imported
 Objective-C block parameter accepts a contextual Z closure. Escaping blocks
 require `move`; the generated ARC adapter keeps the owned closure environment
 alive for exactly as long as the native block. A computed Z `String` converts

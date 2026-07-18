@@ -67,7 +67,7 @@ while exposing the non-escaping view wall for future experiments.
 | C records and enums | Implemented | Complete supported layouts, nested records, constants |
 | C pointers | Partial | Safe opaque handles and record borrows require API notes |
 | C callbacks | Partial | Call-only and caller-thread escaping callbacks with exact release contracts |
-| Objective-C | Partial | ARC classes/fields, methods, properties, labels, nullability, owned `String`/`NSString` copies, first escaping block adapter |
+| Objective-C | Partial | ARC classes/fields, methods, properties, labels, nullability, niche-backed `Option.fromNullable`, owned `String`/`NSString` copies, first escaping block adapter |
 | C++ | Partial | Namespace free functions, plain records, first opaque copyable RAII values |
 | Swift via Objective-C | Implemented slice | Generated compatibility header, classes/properties/methods, automatic local dylib build/link |
 | Swift value via C++ | Implemented probe | Native struct return/copy/round-trip/destruction without handwritten shim |
@@ -76,8 +76,9 @@ while exposing the non-escaping view wall for future experiments.
 Current interop gaps that block a richer desktop application include
 broader Objective-C block shapes, target/action adapters, protocol conformance,
 cross-thread callbacks, availability, and API notes at SDK scale. General
-`T | null`/`Option<T>` representation and match unification remains language
-foundation work rather than an interop-only gap.
+General `T | null`/`Option<T>` representation unification remains language
+foundation work; Objective-C reference options now have the first one-pointer
+niche-backed specialization and explicit conversion bridge.
 
 The Swift owned-value probe is intentionally honest about the toolchain: current
 generated wrappers copy and deterministically destroy Swift values, but delete
@@ -105,7 +106,8 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
 
 - [`examples/nswindow.z`](../examples/nswindow.z): direct AppKit window.
 - [`examples/objc-nullability.z`](../examples/objc-nullability.z): explicit
-  `T | null` AppKit reference and guard narrowing.
+  `T | null` AppKit guard narrowing alongside `Option.fromNullable` and
+  `some`/`none` matching.
 - [`examples/desktop-ownership`](../examples/desktop-ownership): ARC application
   model plus move-only owned documents and AppKit shell.
 - [`examples/swift-interop`](../examples/swift-interop): Swift class through its

@@ -16,9 +16,10 @@ import {
   sliceTypeName,
 } from "./array-types.ts";
 import { DiagnosticError } from "./diagnostics.ts";
-import type { ForeignModule, ForeignType } from "./foreign.ts";
+import { type ForeignModule, type ForeignObjCInterface, type ForeignType } from "./foreign.ts";
 import { genericTypeName, parseGenericType } from "./generic-types.ts";
 import { functionTypeName, parseFunctionType } from "./function-types.ts";
+import { isNullableObjCTypeName, publicObjCTypeName } from "./objc-types.ts";
 import { parseWeakType, weakResultTypeName, weakTypeName } from "./weak-types.ts";
 
 type Environment = Map<string, string>;
@@ -42,7 +43,9 @@ export function inferGenericCalls(
   const objectFieldTypes = new Map<number, ReadonlyMap<string, string | null>>();
   const selectiveFunctions = new Map<string, ForeignType>();
   const selectiveValues = new Map<string, string>();
+  const foreignInterfaces = new Map<string, ForeignObjCInterface>();
   for (const module of foreignModules.values()) {
+    for (const declaration of module.interfaces.values()) foreignInterfaces.set(declaration.typeName, declaration);
     for (const binding of module.declaration.bindings ?? []) {
       const fn = module.functions.get(binding.importedName);
       if (fn) selectiveFunctions.set(binding.localName, fn.returnType);
@@ -50,6 +53,32 @@ export function inferGenericCalls(
       if (constant) selectiveValues.set(binding.localName, constant.typeName);
     }
   }
+
+  const objcClassPrefix = "__z_objc_class:";
+  const objcReceiver = (type: string | null): { readonly declaration: ForeignObjCInterface; readonly instance: boolean } | null => {
+    if (!type) return null;
+    if (type.startsWith(objcClassPrefix)) {
+      const declaration = foreignInterfaces.get(type.slice(objcClassPrefix.length));
+      return declaration ? { declaration, instance: false } : null;
+    }
+    const declaration = foreignInterfaces.get(publicObjCTypeName(type));
+    return declaration ? { declaration, instance: true } : null;
+  };
+  const objcPropertyType = (type: string | null, name: string): string | null => {
+    const receiver = objcReceiver(type);
+    if (!receiver) return null;
+    let declaration: ForeignObjCInterface | undefined = receiver.declaration;
+    while (declaration) {
+      const property = declaration.properties.find((candidate) => (
+        candidate.classProperty === !receiver.instance && candidate.name === name
+      ));
+      if (property) return inferenceTypeName(property.type);
+      if (!declaration.superName) break;
+      const moduleName = declaration.typeName.slice(0, declaration.typeName.lastIndexOf("."));
+      declaration = foreignInterfaces.get(`${moduleName}.${declaration.superName}`);
+    }
+    return null;
+  };
 
   const substituteType = (type: string, substitutions: ReadonlyMap<string, string>): string => {
     const direct = substitutions.get(type);
@@ -341,12 +370,21 @@ export function inferGenericCalls(
         }
         if (expression.object.kind === "identifier") {
           const module = foreignModules.get(expression.object.name);
+          const interface_ = module?.interfaces.get(expression.property);
+          if (interface_) {
+            return {
+              expression: { ...expression, object: object.expression },
+              type: `${objcClassPrefix}${interface_.typeName}`,
+            };
+          }
           const fn = module?.functions.get(expression.property);
           const constant = module?.constants.get(expression.property);
           const named = module?.namedTypes.get(expression.property);
           const foreignType = fn ? inferenceTypeName(fn.returnType) : constant?.typeName ?? named?.typeName ?? null;
           if (foreignType) return { expression: { ...expression, object: object.expression }, type: foreignType };
         }
+        const foreignPropertyType = objcPropertyType(object.type, expression.property);
+        if (foreignPropertyType) return { expression: { ...expression, object: object.expression }, type: foreignPropertyType };
         const owner = object.type ? aggregate(object.type) : null;
         const field = owner?.declaration.fields.find((item) => item.name === expression.property);
         const method = owner?.declaration.methods.find((item) => item.name === expression.property);
@@ -482,6 +520,34 @@ export function inferGenericCalls(
           const qualifier = parseGenericType(callee.expression.object.name);
           const optionBase = qualifier?.base ?? callee.expression.object.name;
           if (optionBase === "Option") {
+            if (callee.expression.property === "fromNullable") {
+              if (args.length !== 1) {
+                throw new DiagnosticError(fileName, expression.location, `Option.fromNullable expects 1 argument, received ${args.length}`);
+              }
+              const inferredTarget = args[0].type && isNullableObjCTypeName(args[0].type)
+                ? publicObjCTypeName(args[0].type)
+                : null;
+              const target = qualifier?.arguments[0] ?? inferredTarget;
+              if (!target) {
+                throw new DiagnosticError(
+                  fileName,
+                  args[0].expression.location,
+                  "Option.fromNullable requires a nullable imported Objective-C reference",
+                );
+              }
+              const optionType = genericTypeName("Option", [target]);
+              return {
+                expression: {
+                  ...expression,
+                  callee: {
+                    ...callee.expression,
+                    object: { ...callee.expression.object, name: optionType },
+                  },
+                  arguments: args.map((item) => item.expression),
+                },
+                type: optionType,
+              };
+            }
             if (callee.expression.property !== "some") {
               throw new DiagnosticError(fileName, expression.location, "Option.none is a value and must not be called");
             }

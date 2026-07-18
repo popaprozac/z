@@ -977,6 +977,81 @@ test("narrows nullable Objective-C references before member access", () => {
   );
 });
 
+test("lifts nullable Objective-C references into Option values", () => {
+  if (process.platform !== "darwin") return;
+  const example = resolve(projectRoot, "examples/objc-nullability.z");
+  const source = readFileSync(example, "utf8");
+  const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+
+  const artifact = compileToNative(source, example);
+  assert.match(artifact.source, /typedef NSWindow \*Z_Option_AppKit_2e_NSWindow;/);
+  assert.match(artifact.source, /const Z_Option_AppKit_2e_NSWindow option = \[app keyWindow\];/);
+  assert.match(artifact.source, /if \(_z_match_\d+ != nil\)/);
+  assert.doesNotMatch(artifact.source, /Z_Option_AppKit_2e_NSWindow_(?:some|none)|\.data\.some/);
+
+  const printable = source
+    .replace('import AppKit from "AppKit/AppKit.h";', 'import AppKit from "AppKit/AppKit.h";\nimport console from "std/console";')
+    .replace(
+      "return direct + centerOption(option);",
+      "console.log(option);\n  console.log(`${option}`);\n  return direct + centerOption(option);",
+    );
+  const printableArtifact = compileToNative(printable, example);
+  assert.match(printableArtifact.source, /Option<AppKit\.NSWindow>\.none/);
+  assert.match(printableArtifact.source, /Option<AppKit\.NSWindow>\.some\(/);
+  const printableCompilation = spawnSync("clang", [
+    "-x", "objective-c",
+    "-fobjc-arc",
+    "-Wall", "-Wextra", "-Werror",
+    "-fsyntax-only", "-",
+  ], { input: printableArtifact.source, encoding: "utf8" });
+  assert.equal(printableCompilation.status, 0, printableCompilation.stderr);
+
+  const methodOffset = source.indexOf("fromNullable") + 1;
+  assert.match(
+    hover(source, example, methodOffset)?.contents.value ?? "",
+    /fromNullable\(value: T \| null\): Option<T>/,
+  );
+  const methodPosition = positionForOffset(source, source.indexOf("fromNullable"));
+  const tokens = decodeSemanticTokens(semanticTokens(source, example).data);
+  assert.ok(tokens.some((token) => token.line === methodPosition.line
+    && token.character === methodPosition.character
+    && semanticTokenTypes[token.type] === "method"));
+
+  const completionSource = source.replace("Option.fromNullable", "Option.fromN");
+  const completionOffset = completionSource.indexOf("Option.fromN") + "Option.fromN".length;
+  assert.match(
+    completions(completionSource, example, completionOffset).find((item) => item.label === "fromNullable")?.detail ?? "",
+    /fromNullable\(value: T \| null\): Option<T>/,
+  );
+
+  const explicitNull = `
+    import AppKit from "AppKit/AppKit.h";
+    function main(): i32 {
+      const option = Option<AppKit.NSWindow>.fromNullable(null);
+      return match (option) {
+        some(window) => 1;
+        none => 0;
+      };
+    }
+  `;
+  const explicitNullArtifact = compileToNative(explicitNull, example);
+  assert.match(explicitNullArtifact.source, /const Z_Option_AppKit_2e_NSWindow option = NULL;/);
+
+  const nonnullable = `
+    import AppKit from "AppKit/AppKit.h";
+    function main(): i32 {
+      const window: AppKit.NSWindow = AppKit.NSWindow.alloc();
+      const option = Option<AppKit.NSWindow>.fromNullable(window);
+      return 0;
+    }
+  `;
+  assert.throws(
+    () => compileToNative(nonnullable, example),
+    /Option\.fromNullable requires AppKit\.NSWindow \| null, found AppKit\.NSWindow/,
+  );
+});
+
 test("compiles a desktop ownership slice and preserves its current pressure walls", () => {
   if (process.platform !== "darwin") return;
   const example = resolve(projectRoot, "examples/desktop-ownership/main.z");

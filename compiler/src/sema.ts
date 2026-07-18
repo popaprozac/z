@@ -57,6 +57,7 @@ import {
   nullableObjCTypeName,
   publicObjCTypeName,
 } from "./objc-types.ts";
+import { parseOptionType } from "./option-types.ts";
 
 export type ObjCCallInfo = {
   readonly selector: string;
@@ -138,6 +139,7 @@ export type SemanticInfo = {
   readonly objcStringsToNative: ReadonlySet<number>;
   readonly objcStringsToZ: ReadonlySet<number>;
   readonly cstringConversions: ReadonlySet<number>;
+  readonly optionFromNullable: ReadonlySet<number>;
   readonly expressionTypes: ReadonlyMap<number, string>;
   readonly bindingTypes: ReadonlyMap<number, string>;
   readonly borrowedMatches: ReadonlySet<number>;
@@ -179,6 +181,7 @@ type AnalysisState = {
   readonly objcStringsToNative: Set<number>;
   readonly objcStringsToZ: Set<number>;
   readonly cstringConversions: Set<number>;
+  readonly optionFromNullable: Set<number>;
   readonly expressionTypes: Map<number, string>;
   readonly bindingTypes: Map<number, string>;
   readonly borrowedMatches: Set<number>;
@@ -304,6 +307,7 @@ export function analyze(
     objcStringsToNative: new Set(),
     objcStringsToZ: new Set(),
     cstringConversions: new Set(),
+    optionFromNullable: new Set(),
     expressionTypes: new Map(),
     bindingTypes: new Map(),
     borrowedMatches: new Set(),
@@ -3051,6 +3055,25 @@ function inferExpressionInner(
           const enumDeclaration = enums.get(expression.callee.object.name);
           if (enumDeclaration) {
             rejectLabeledArguments(expression.argumentLabels, expression.location, fileName);
+            const option = parseOptionType(enumDeclaration.name);
+            if (option && expression.callee.property === "fromNullable") {
+              if (expression.arguments.length !== 1) {
+                throw new DiagnosticError(fileName, expression.location, `Option.fromNullable expects 1 argument, received ${expression.arguments.length}`);
+              }
+              const argument = expression.arguments[0];
+              const actual = inferExpression(argument, locals, globals, structs, enums, fileName, state);
+              const object = foreignObject(actual, state);
+              const contextualNull = actual === "null";
+              if (!contextualNull && (!object?.nullable || publicObjCTypeName(object.typeName) !== option.target)) {
+                throw new DiagnosticError(
+                  fileName,
+                  argument.location,
+                  `Option.fromNullable requires ${option.target} | null, found ${describeValueType(actual, state)}`,
+                );
+              }
+              state.optionFromNullable.add(expression.location.offset);
+              return enumDeclaration.name;
+            }
             const variant = enumDeclaration.variants.find((candidate) => candidate.name === expression.callee.property);
             if (!variant) throw new DiagnosticError(fileName, expression.callee.location, `enum ${JSON.stringify(enumDeclaration.name)} has no variant ${JSON.stringify(expression.callee.property)}`);
             const expectedCount = variant.payload ? 1 : 0;

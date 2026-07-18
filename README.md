@@ -401,6 +401,26 @@ Objective-C reference types and preserves their native one-pointer null niche;
 general values continue to use `Option<T>` until the two source spellings share
 all construction and matching paths.
 
+At a native boundary, `Option.fromNullable` explicitly lifts a nullable
+Objective-C reference into the Z enum model:
+
+```z
+const option = Option.fromNullable(app.keyWindow);
+const centered = match (option) {
+  some(window) => {
+    window.center();
+    select true;
+  }
+  none => false;
+};
+```
+
+The bootstrap implements Objective-C reference options with the pointer's null
+niche: `none` is `nil`, `some(reference)` is the reference, and matching is a
+null comparison. The lift does not allocate a wrapper or add a tag, so
+`Option<AppKit.NSWindow>` remains one pointer. General `Option<T>` values still
+use the ordinary tag-plus-payload enum layout when `T` has no proven niche.
+
 Enums composed only from copyable payloads remain copyable. If any reachable
 payload has deterministic cleanup, the enum becomes an owned, move-only value:
 construction transfers that payload into the active variant, an uninspected
@@ -894,7 +914,7 @@ bun run z run examples/callbacks.z
 bun run z run examples/cpp-interop.z
 bun run z run examples/swift-interop/main.z
 bun run z run examples/swift-value-interop/main.z
-bun run z run examples/objc-nullability.z # macOS: explicit nullable AppKit guard
+bun run z run examples/objc-nullability.z # macOS: nullable AppKit guard and Option matching
 bun run z run examples/nswindow.z # macOS: opens a window and enters AppKit's event loop
 bun run z run examples/desktop-ownership/main.z # macOS: owned model plus AppKit shell
 bun run z run examples/structs.z

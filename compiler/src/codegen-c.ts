@@ -31,6 +31,7 @@ import {
   weakExpiredType,
   weakResultTypeName,
 } from "./weak-types.ts";
+import { parseOptionType } from "./option-types.ts";
 
 type GenerationContext = {
   readonly structs: Map<string, StructDeclaration>;
@@ -178,7 +179,10 @@ export function generateC(program: Program, sourceName: string, semanticInfo: Se
   for (const type of sliceTypes) lines.push(`typedef struct ${sliceName(type)} ${sliceName(type)};`);
   for (const type of dynamicArrayTypes) lines.push(`typedef struct ${dynamicArrayName(type)} ${dynamicArrayName(type)};`);
   for (const declaration of program.enums) {
-    lines.push(`typedef struct ${enumName(declaration.name)} ${enumName(declaration.name)};`);
+    const niche = nicheOptionPayload(declaration, semanticInfo.foreignNamedTypes);
+    lines.push(niche
+      ? `typedef ${mapType(niche, structs, enums, semanticInfo.foreignNamedTypes)}${enumName(declaration.name)};`
+      : `typedef struct ${enumName(declaration.name)} ${enumName(declaration.name)};`);
   }
   if (
     program.structs.length > 0
@@ -1338,11 +1342,21 @@ function generateEnum(
   enums: Map<string, EnumDeclaration>,
   foreignNamedTypes: SemanticInfo["foreignNamedTypes"],
 ): string {
+  if (nicheOptionPayload(declaration, foreignNamedTypes)) return "";
   const tag = declaration.variants.map((variant) => `  ${variantTag(declaration.name, variant.name)},`).join("\n");
   const payloads = declaration.variants.filter((variant) => variant.payload)
     .map((variant) => `    ${mapType(variant.payload!.name, structs, enums, foreignNamedTypes)} ${variant.name};`).join("\n");
   const union = payloads ? `\n  union {\n${payloads}\n  } data;` : "";
   return `typedef enum {\n${tag}\n} ${enumName(declaration.name)}_Tag;\n\nstruct ${enumName(declaration.name)} {\n  ${enumName(declaration.name)}_Tag tag;${union}\n};`;
+}
+
+function nicheOptionPayload(
+  declaration: EnumDeclaration,
+  foreignNamedTypes: SemanticInfo["foreignNamedTypes"],
+): string | null {
+  const option = parseOptionType(declaration.name);
+  if (!option || foreignNamedTypes.get(option.target)?.kind !== "object") return null;
+  return option.target;
 }
 
 function generateFunction(
@@ -1817,6 +1831,18 @@ function renderConsoleValue(
   const enumDeclaration = context.enums.get(type);
   if (enumDeclaration) {
     const displayName = context.semanticInfo.typeDisplayNames.get(enumDeclaration.name) ?? enumDeclaration.name;
+    const niche = nicheOptionPayload(enumDeclaration, context.semanticInfo.foreignNamedTypes);
+    if (niche) {
+      return [
+        `if (${value} == nil) {`,
+        `  fputs(${JSON.stringify(`${displayName}.none`)}, ${stream});`,
+        `} else {`,
+        `  fputs(${JSON.stringify(`${displayName}.some(`)}, ${stream});`,
+        ...renderConsoleValue(value, niche, stream, context).map((line) => indent(line, 2)),
+        `  fputc(')', ${stream});`,
+        `}`,
+      ];
+    }
     const lines = [`switch ((${value}).tag) {`];
     for (const variant of enumDeclaration.variants) {
       lines.push(`  case ${variantTag(type, variant.name)}:`);
@@ -1920,6 +1946,20 @@ function renderStringValue(
   const enumDeclaration = context.enums.get(type);
   if (enumDeclaration) {
     const displayName = context.semanticInfo.typeDisplayNames.get(enumDeclaration.name) ?? enumDeclaration.name;
+    const niche = nicheOptionPayload(enumDeclaration, context.semanticInfo.foreignNamedTypes);
+    if (niche) {
+      const none = `${displayName}.none`;
+      const some = `${displayName}.some(`;
+      return [
+        `if (${value} == nil) {`,
+        `  z_string_append_bytes(&${target}, ${JSON.stringify(none)}, sizeof(${JSON.stringify(none)}) - 1);`,
+        `} else {`,
+        `  z_string_append_bytes(&${target}, ${JSON.stringify(some)}, sizeof(${JSON.stringify(some)}) - 1);`,
+        ...renderStringValue(value, niche, target, context).map((line) => indent(line, 2)),
+        `  z_string_append_bytes(&${target}, ")", 1);`,
+        `}`,
+      ];
+    }
     const lines = [`switch ((${value}).tag) {`];
     for (const variant of enumDeclaration.variants) {
       const label = `${displayName}.${variant.name}`;
@@ -2718,6 +2758,8 @@ function generateLocalDeclaration(
 function generateMatch(statement: Extract<Statement, { kind: "match" }>, context: GenerationContext): string {
   const type = inferExpressionType(statement.expression, context);
   const declaration = context.enums.get(type)!;
+  const niche = nicheOptionPayload(declaration, context.semanticInfo.foreignNamedTypes);
+  if (niche) return generateNicheOptionMatch(statement, context, declaration, niche);
   const temporary = `_z_match_${context.matchCounter.value++}`;
   const subject = generateExpression(statement.expression, context);
   const borrowed = context.semanticInfo.borrowedMatches.has(statement.location.offset);
@@ -2795,6 +2837,10 @@ function generateMatchExpression(
 ): string {
   const type = inferExpressionType(expression.expression, context);
   const declaration = context.enums.get(type)!;
+  const niche = nicheOptionPayload(declaration, context.semanticInfo.foreignNamedTypes);
+  if (niche) {
+    return generateNicheOptionMatchExpression(expression, context, declaration, niche, consumeValue, consumeTerminates);
+  }
   const temporary = `_z_match_${context.matchCounter.value++}`;
   const subject = generateExpression(expression.expression, context);
   const borrowed = context.semanticInfo.borrowedMatches.has(expression.location.offset);
@@ -2865,6 +2911,75 @@ function generateMatchExpression(
     ? `const ${enumName(type)} *${temporary} = &(${subject});`
     : `const ${enumName(type)} ${temporary} = ${subject};`;
   return `${storage}\nswitch (${access}tag) {\n${arms}\n}`;
+}
+
+function generateNicheOptionMatch(
+  statement: Extract<Statement, { kind: "match" }>,
+  context: GenerationContext,
+  declaration: EnumDeclaration,
+  payloadType: string,
+): string {
+  const type = declaration.name;
+  const temporary = `_z_match_${context.matchCounter.value++}`;
+  const localDeclaration = generateLocalDeclaration(
+    type,
+    temporary,
+    requiresStatementValue(statement.expression, context),
+    context.structs,
+    context.enums,
+    context.semanticInfo.foreignNamedTypes,
+  );
+  const storage = requiresStatementValue(statement.expression, context)
+    ? `${localDeclaration};\n${generateDirectValue(statement.expression, context, (value) => `${temporary} = ${value};`)}`
+    : `${localDeclaration} = ${generateExpression(statement.expression, context)};`;
+  const some = statement.arms.find((arm) => arm.variantName === "some")!;
+  const none = statement.arms.find((arm) => arm.variantName === "none")!;
+  const renderArm = (arm: typeof some, present: boolean): string => {
+    const localTypes = new Map(context.localTypes);
+    if (present && arm.binding) localTypes.set(arm.binding, payloadType);
+    const armContext = { ...context, localTypes, cleanupScopes: [...context.cleanupScopes, []] };
+    const binding = present && arm.binding
+      ? `${generateLocalDeclaration(payloadType, arm.binding, false, context.structs, context.enums, context.semanticInfo.foreignNamedTypes)} = ${temporary};\n(void)${cBindingName(arm.binding)};\n`
+      : "";
+    return `{\n${indent(binding + generateStatement(arm.body, armContext), 2)}\n}`;
+  };
+  return `${storage}\nif (${temporary} != nil) ${renderArm(some, true)} else ${renderArm(none, false)}`;
+}
+
+function generateNicheOptionMatchExpression(
+  expression: Extract<Expression, { kind: "matchExpression" }>,
+  context: GenerationContext,
+  declaration: EnumDeclaration,
+  payloadType: string,
+  consumeValue: (value: string, context: GenerationContext) => string,
+  consumeTerminates: boolean,
+): string {
+  const type = declaration.name;
+  const temporary = `_z_match_${context.matchCounter.value++}`;
+  const needsLowering = requiresStatementValue(expression.expression, context);
+  const localDeclaration = generateLocalDeclaration(
+    type,
+    temporary,
+    needsLowering,
+    context.structs,
+    context.enums,
+    context.semanticInfo.foreignNamedTypes,
+  );
+  const storage = needsLowering
+    ? `${localDeclaration};\n${generateDirectValue(expression.expression, context, (value) => `${temporary} = ${value};`)}`
+    : `${localDeclaration} = ${generateExpression(expression.expression, context)};`;
+  const some = expression.arms.find((arm) => arm.variantName === "some")!;
+  const none = expression.arms.find((arm) => arm.variantName === "none")!;
+  const renderArm = (arm: typeof some, present: boolean): string => {
+    const localTypes = new Map(context.localTypes);
+    if (present && arm.binding) localTypes.set(arm.binding, payloadType);
+    const armContext = { ...context, localTypes, cleanupScopes: [...context.cleanupScopes, []] };
+    const binding = present && arm.binding
+      ? `${generateLocalDeclaration(payloadType, arm.binding, false, context.structs, context.enums, context.semanticInfo.foreignNamedTypes)} = ${temporary};\n(void)${cBindingName(arm.binding)};\n`
+      : "";
+    return `{\n${indent(binding + generateValueArm(arm.body, armContext, consumeValue, consumeTerminates), 2)}\n}`;
+  };
+  return `${storage}\nif (${temporary} != nil) ${renderArm(some, true)} else ${renderArm(none, false)}`;
 }
 
 function generateMatchBinding(
@@ -3150,8 +3265,13 @@ function generateExpressionInner(expression: Expression, context: GenerationCont
         : structName(typeName);
       return `(${mapped}){ ${fields} }`;
     }
-    case "variantExpression":
+    case "variantExpression": {
+      const declaration = context.enums.get(expression.enumName);
+      if (declaration && nicheOptionPayload(declaration, context.semanticInfo.foreignNamedTypes)) {
+        return generateExpression(expression.payload, context);
+      }
       return `(${enumName(expression.enumName)}){ .tag = ${variantTag(expression.enumName, expression.variantName)}, .data.${expression.variantName} = ${generateExpression(expression.payload, context)} }`;
+    }
     case "attempt":
       return generateExpression(expression.expression, context);
     case "try":
@@ -3184,6 +3304,7 @@ function generateExpressionInner(expression: Expression, context: GenerationCont
         const declaration = context.enums.get(expression.object.name);
         const variant = declaration?.variants.find((candidate) => candidate.name === expression.property);
         if (declaration && variant) {
+          if (nicheOptionPayload(declaration, context.semanticInfo.foreignNamedTypes)) return "nil";
           return `(${enumName(declaration.name)}){ .tag = ${variantTag(declaration.name, variant.name)} }`;
         }
       }
@@ -3205,6 +3326,9 @@ function generateExpressionInner(expression: Expression, context: GenerationCont
       );
     }
     case "call": {
+      if (context.semanticInfo.optionFromNullable.has(expression.location.offset)) {
+        return generateExpression(expression.arguments[0], context);
+      }
       const integerOperation = context.semanticInfo.integerOperations.get(expression.location.offset);
       if (integerOperation && expression.callee.kind === "member") {
         return `${integerOperationName(integerOperation)}(${generateExpression(expression.callee.object, context)}, ${generateExpression(expression.arguments[0], context)})`;
@@ -3262,6 +3386,9 @@ function generateExpressionInner(expression: Expression, context: GenerationCont
           const declaration = context.enums.get(expression.callee.object.name);
           const variant = declaration?.variants.find((candidate) => candidate.name === expression.callee.property);
           if (declaration && variant) {
+            if (nicheOptionPayload(declaration, context.semanticInfo.foreignNamedTypes)) {
+              return variant.payload ? generateExpression(expression.arguments[0], context) : "nil";
+            }
             const payload = variant.payload ? `, .data.${variant.name} = ${generateExpression(expression.arguments[0], context)}` : "";
             return `(${enumName(declaration.name)}){ .tag = ${variantTag(declaration.name, variant.name)}${payload} }`;
           }
