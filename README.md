@@ -1083,9 +1083,9 @@ See [DESIGN.md](DESIGN.md) for the language charter and roadmap.
 
 ## Async frontend and Phase 1 lowering
 
-Z validates the complete structured-async surface. The first native Phase 1
-slice executes top-level, non-throwing scalar async functions with direct
-sequential awaits:
+Z validates the complete structured-async surface. The native Phase 1 slice
+executes top-level scalar async functions with direct sequential awaits, typed
+scalar errors, `throw`, `try await`, and `attempt await`:
 
 ```z
 async function fetchValue(value: i32): i32 {
@@ -1103,6 +1103,7 @@ Run it with:
 
 ```sh
 bun run z run examples/async-sequential.z
+bun run z run examples/async-errors.z
 ```
 
 The frontend already accepts the broader intended surface:
@@ -1132,10 +1133,9 @@ bun run z check examples/async-phase-0.z
 ```
 
 Unsupported executable shapes report `Z0700` with the precise current boundary
-rather than receiving synchronous-looking lowering. Typed async errors, owned
-aggregate frames, methods, `spawn`, and explicit scope scheduling are the next
-runtime layers. See [docs/async-model.md](docs/async-model.md) for the complete
-model and phases.
+rather than receiving synchronous-looking lowering. Owned aggregate frames,
+methods, `spawn`, and explicit scope scheduling are the next runtime layers.
+See [docs/async-model.md](docs/async-model.md) for the complete model and phases.
 
 ## Editor support
 

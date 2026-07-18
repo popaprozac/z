@@ -752,12 +752,13 @@ async struct methods initially require `move this`; static async methods have
 no receiver.
 
 Phase 0 implements syntax, typing, ownership diagnostics, and editor services.
-Phase 1's first native slice lowers top-level, non-throwing scalar async
-functions and direct sequential awaits to typed heap frames and explicit poll
-states, driven by a deterministic single-thread root runner. Valid shapes beyond
-the active native tier report `Z0700`. Async-free programs do not link an async
-runtime. Apple executors may integrate with Dispatch and the main run loop;
-Windows executors may integrate with the thread pool and IOCP.
+Phase 1 lowers top-level scalar async functions and direct sequential awaits to
+typed heap frames and explicit poll states, driven by a deterministic
+single-thread root runner. Frames carry scalar success/error outcomes and lower
+`throw`, `try await`, `attempt await`, and payloadless `void` success. Valid
+shapes beyond the active native tier report `Z0700`. Async-free programs do not
+link an async runtime. Apple executors may integrate with Dispatch and the main
+run loop; Windows executors may integrate with the thread pool and IOCP.
 
 ## Interop and backends
 
@@ -1027,7 +1028,8 @@ Clang declaration source locations rather than text-searching SDK headers.
   diagnostics, and editor services (implemented);
 - scalar sequential stackless state-machine lowering and deterministic root
   runner (implemented);
-- Result-carrying and owned aggregate task frames, then a ready-queue executor;
+- Result-carrying scalar task frames (implemented);
+- owned aggregate task frames, then a ready-queue executor;
 - structured task scopes, cancellation, and deterministic frame cleanup;
 - scheduler-aware delay and bounded move-aware channels;
 - sendability, atomic ARC, and pluggable native executors;

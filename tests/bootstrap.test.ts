@@ -4542,7 +4542,7 @@ test("checks Phase 0 async calls, scoped tasks, typed errors, and editor details
   assert.throws(() => compileToC(source, example), (error: unknown) => {
     assert.ok(error instanceof DiagnosticError);
     assert.equal(error.code, "Z0700");
-    assert.match(error.message, /typed async errors are not executable in the first Phase 1 slice/);
+    assert.match(error.message, /async error type "NetworkError" needs owned task-frame lowering/);
     return true;
   });
 });
@@ -4558,6 +4558,32 @@ test("runs scalar async functions as stackless Phase 1 task frames", () => {
 
   const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
+});
+
+test("runs typed scalar async errors through try and attempt await", () => {
+  const example = resolve(projectRoot, "examples/async-errors.z");
+  const source = readFileSync(example, "utf8");
+  const generated = compileToC(source, example);
+  assert.match(generated, /bool failed;/);
+  assert.match(generated, /frame->error = 7;/);
+  assert.match(generated, /Z_Result_i32_i32_failure/);
+  assert.match(generated, /Z_AsyncFrame_finish/);
+  assert.match(generated, /if \(frame->child_2->failed\)/);
+  assert.match(generated, /if \(root->failed\)/);
+
+  const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+
+  const directory = mkdtempSync("/tmp/z-async-error-");
+  const failing = resolve(directory, "main.z");
+  writeFileSync(failing, `
+    async function fail(): i32 throws i32 { throw 7; }
+    async function main(): i32 throws i32 {
+      return try await fail();
+    }
+  `);
+  const failed = spawnSync(process.execPath, [cli, "run", failing], { encoding: "utf8" });
+  assert.equal(failed.status, 1, failed.stderr);
 });
 
 test("represents fallible void success without an enum payload", () => {

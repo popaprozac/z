@@ -7,10 +7,12 @@ import type {
   Statement,
 } from "./ast.ts";
 import { DiagnosticError } from "./diagnostics.ts";
+import { resultTypeName } from "./results.ts";
 import type { SemanticInfo } from "./sema.ts";
 
 type AwaitSite = {
   readonly index: number;
+  readonly mode: "await" | "try" | "attempt";
   readonly expression: Extract<Expression, { kind: "await" }>;
   readonly call: CallExpression;
   readonly target: FunctionDeclaration;
@@ -93,15 +95,10 @@ function planFunction(
   fileName: string,
   semanticInfo: SemanticInfo,
 ): AsyncFunctionPlan {
-  if (declaration.errorType) {
-    unsupported(
-      fileName,
-      declaration.errorType.location,
-      "typed async errors are not executable in the first Phase 1 slice",
-      "use `z check`; Result-carrying task frames are the next async ABI step",
-    );
-  }
   requireScalar(declaration.returnType.name, declaration.returnType.location, fileName, "async return");
+  if (declaration.errorType) {
+    requireScalar(declaration.errorType.name, declaration.errorType.location, fileName, "async error");
+  }
   const locals = new Map<string, string>();
   for (const parameter of declaration.parameters) {
     if (parameter.mode !== "value") {
@@ -120,21 +117,44 @@ function planFunction(
       }
       const type = statement.type?.name ?? semanticInfo.bindingTypes.get(statement.nameLocation.offset);
       if (!type) unsupported(fileName, statement.location, `could not determine async frame type for ${JSON.stringify(statement.name)}`);
-      requireScalar(type, statement.type?.location ?? statement.nameLocation, fileName, "async local");
+      requireFrameType(type, statement.type?.location ?? statement.nameLocation, fileName, "async local");
       locals.set(statement.name, type);
-      if (statement.initializer.kind === "await") {
-        awaits.set(statement.initializer.location.offset, awaitSite(awaitIndex++, statement.initializer, functions, fileName));
+      const operation = awaitOperation(statement.initializer);
+      if (operation) {
+        awaits.set(
+          operation.expression.location.offset,
+          awaitSite(awaitIndex++, operation.mode, operation.expression, functions, fileName),
+        );
       } else {
         validateScalarExpression(statement.initializer, locals, fileName);
       }
       continue;
     }
     if (statement.kind === "return") {
-      if (statement.expression?.kind === "await") {
-        awaits.set(statement.expression.location.offset, awaitSite(awaitIndex++, statement.expression, functions, fileName));
+      const operation = statement.expression ? awaitOperation(statement.expression) : null;
+      if (operation) {
+        awaits.set(
+          operation.expression.location.offset,
+          awaitSite(awaitIndex++, operation.mode, operation.expression, functions, fileName),
+        );
       } else if (statement.expression) {
         validateScalarExpression(statement.expression, locals, fileName);
       }
+      continue;
+    }
+    if (statement.kind === "throw") {
+      validateScalarExpression(statement.expression, locals, fileName);
+      continue;
+    }
+    if (statement.kind === "expressionStatement") {
+      const operation = awaitOperation(statement.expression);
+      if (!operation) {
+        unsupported(fileName, statement.location, "only awaited async calls are executable as async expression statements yet");
+      }
+      awaits.set(
+        operation.expression.location.offset,
+        awaitSite(awaitIndex++, operation.mode, operation.expression, functions, fileName),
+      );
       continue;
     }
     unsupported(
@@ -158,6 +178,7 @@ function planFunction(
 
 function awaitSite(
   index: number,
+  mode: AwaitSite["mode"],
   expression: Extract<Expression, { kind: "await" }>,
   functions: ReadonlyMap<string, FunctionDeclaration>,
   fileName: string,
@@ -174,15 +195,26 @@ function awaitSite(
   if (!target?.async) {
     unsupported(fileName, expression.location, "async lowering could not resolve the awaited async function");
   }
-  return { index, expression, call, target };
+  return { index, mode, expression, call, target };
+}
+
+function awaitOperation(expression: Expression): {
+  readonly mode: AwaitSite["mode"];
+  readonly expression: Extract<Expression, { kind: "await" }>;
+} | null {
+  if (expression.kind === "await") return { mode: "await", expression };
+  if ((expression.kind === "try" || expression.kind === "attempt") && expression.expression.kind === "await") {
+    return { mode: expression.kind, expression: expression.expression };
+  }
+  return null;
 }
 
 function validateAsyncMain(declaration: FunctionDeclaration, fileName: string): void {
-  if (declaration.parameters.length > 0 || declaration.returnType.name !== "i32" || declaration.errorType) {
+  if (declaration.parameters.length > 0 || declaration.returnType.name !== "i32") {
     unsupported(
       fileName,
       declaration.location,
-      "the first executable async main must have signature `async function main(): i32`",
+      "executable async main must have signature `async function main(): i32` with an optional scalar `throws E`",
     );
   }
 }
@@ -225,6 +257,14 @@ function generateRuntime(
       "int32_t main(void) {",
       `  ${main.frameName} *root = ${main.startName}();`,
       "  z_async_run(&root->task);",
+      ...(main.declaration.errorType
+        ? [
+            "  if (root->failed) {",
+            "    free(root);",
+            "    return 1;",
+            "  }",
+          ]
+        : []),
       "  int32_t result = root->result;",
       "  free(root);",
       "  return result;",
@@ -244,10 +284,14 @@ function generateFrame(
     "  uint32_t state;",
   ];
   if (plan.declaration.returnType.name !== "void") {
-    lines.push(`  ${cScalar(plan.declaration.returnType.name)} result;`);
+    lines.push(`  ${cFrameType(plan.declaration.returnType.name)} result;`);
+  }
+  if (plan.declaration.errorType) {
+    lines.push("  bool failed;");
+    lines.push(`  ${cFrameType(plan.declaration.errorType.name)} error;`);
   }
   for (const [name, type] of plan.locals) {
-    lines.push(`  ${cScalar(type)} ${frameField(name)};`);
+    lines.push(`  ${cFrameType(type)} ${frameField(name)};`);
   }
   for (const site of plan.awaits.values()) {
     lines.push(`  ${planByName.get(site.target.name)!.frameName} *child_${site.index};`);
@@ -258,7 +302,7 @@ function generateFrame(
 
 function generateStartSignature(plan: AsyncFunctionPlan): string {
   const parameters = plan.declaration.parameters.map((parameter) => (
-    `${cScalar(parameter.type.name)} ${frameField(parameter.name)}`
+    `${cFrameType(parameter.type.name)} ${frameField(parameter.name)}`
   ));
   return `static __attribute__((unused)) ${plan.frameName} *${plan.startName}(${parameters.join(", ") || "void"})`;
 }
@@ -272,6 +316,7 @@ function generateStart(plan: AsyncFunctionPlan): string {
     "  frame->task.completed = false;",
     "  frame->state = 0;",
   ];
+  if (plan.declaration.errorType) lines.push("  frame->failed = false;");
   for (const parameter of plan.declaration.parameters) {
     const name = frameField(parameter.name);
     lines.push(`  frame->${name} = ${name};`);
@@ -291,8 +336,9 @@ function generatePoll(
   for (const statement of plan.declaration.body) {
     if (statement.kind === "variable") {
       const initializer = statement.initializer!;
-      if (initializer.kind === "await") {
-        const site = plan.awaits.get(initializer.location.offset)!;
+      const operation = awaitOperation(initializer);
+      if (operation) {
+        const site = plan.awaits.get(operation.expression.location.offset)!;
         const target = planByName.get(site.target.name)!;
         const arguments_ = site.call.arguments.map((argument) => emitScalarExpression(argument, plan.locals, fileName));
         cases.push(
@@ -303,17 +349,10 @@ function generatePoll(
           ]),
         );
         cases.push(
-          caseBlock(state + 1, [
-            `z_async_poll_task(&frame->child_${site.index}->task);`,
-            `if (!frame->child_${site.index}->task.completed) return;`,
-            ...(site.target.returnType.name === "void"
-              ? []
-              : [`frame->${frameField(statement.name)} = frame->child_${site.index}->result;`]),
-            `free(frame->child_${site.index});`,
-            `frame->child_${site.index} = NULL;`,
-            `frame->state = ${state + 2};`,
-            "continue;",
-          ]),
+          caseBlock(
+            state + 1,
+            awaitCompletion(site, plan, `frame->${frameField(statement.name)}`, false, state + 2),
+          ),
         );
         state += 2;
       } else {
@@ -327,8 +366,9 @@ function generatePoll(
       continue;
     }
     if (statement.kind === "return") {
-      if (statement.expression?.kind === "await") {
-        const site = plan.awaits.get(statement.expression.location.offset)!;
+      const operation = statement.expression ? awaitOperation(statement.expression) : null;
+      if (operation) {
+        const site = plan.awaits.get(operation.expression.location.offset)!;
         const target = planByName.get(site.target.name)!;
         const arguments_ = site.call.arguments.map((argument) => emitScalarExpression(argument, plan.locals, fileName));
         cases.push(caseBlock(state, [
@@ -336,28 +376,51 @@ function generatePoll(
           `frame->state = ${state + 1};`,
           "return;",
         ]));
-        cases.push(caseBlock(state + 1, [
-          `z_async_poll_task(&frame->child_${site.index}->task);`,
-          `if (!frame->child_${site.index}->task.completed) return;`,
-          ...(plan.declaration.returnType.name === "void"
-            ? []
-            : [`frame->result = frame->child_${site.index}->result;`]),
-          `free(frame->child_${site.index});`,
-          `frame->child_${site.index} = NULL;`,
-          "frame->task.completed = true;",
-          "return;",
-        ]));
+        cases.push(caseBlock(state + 1, awaitCompletion(site, plan, "frame->result", true, state + 2)));
       } else {
         const completion = statement.expression
           ? [`frame->result = ${emitScalarExpression(statement.expression, plan.locals, fileName)};`]
           : [];
-        cases.push(caseBlock(state, [...completion, "frame->task.completed = true;", "return;"]));
+        cases.push(caseBlock(state, [
+          ...completion,
+          ...(plan.declaration.errorType ? ["frame->failed = false;"] : []),
+          "frame->task.completed = true;",
+          "return;",
+        ]));
       }
-      state += statement.expression?.kind === "await" ? 2 : 1;
+      state += operation ? 2 : 1;
+      continue;
+    }
+    if (statement.kind === "throw") {
+      cases.push(caseBlock(state, [
+        `frame->error = ${emitScalarExpression(statement.expression, plan.locals, fileName)};`,
+        "frame->failed = true;",
+        "frame->task.completed = true;",
+        "return;",
+      ]));
+      state += 1;
+      continue;
+    }
+    if (statement.kind === "expressionStatement") {
+      const operation = awaitOperation(statement.expression)!;
+      const site = plan.awaits.get(operation.expression.location.offset)!;
+      const target = planByName.get(site.target.name)!;
+      const arguments_ = site.call.arguments.map((argument) => emitScalarExpression(argument, plan.locals, fileName));
+      cases.push(caseBlock(state, [
+        `frame->child_${site.index} = ${target.startName}(${arguments_.join(", ")});`,
+        `frame->state = ${state + 1};`,
+        "return;",
+      ]));
+      cases.push(caseBlock(state + 1, awaitCompletion(site, plan, null, false, state + 2)));
+      state += 2;
     }
   }
-  if (plan.declaration.returnType.name === "void" && !endsWithReturn(plan.declaration.body)) {
-    cases.push(caseBlock(state, ["frame->task.completed = true;", "return;"]));
+  if (plan.declaration.returnType.name === "void" && !endsWithTermination(plan.declaration.body)) {
+    cases.push(caseBlock(state, [
+      ...(plan.declaration.errorType ? ["frame->failed = false;"] : []),
+      "frame->task.completed = true;",
+      "return;",
+    ]));
   }
   return `static void ${plan.pollName}(Z_AsyncTask *task) {
   ${plan.frameName} *frame = (${plan.frameName} *)task;
@@ -369,6 +432,57 @@ ${cases.map((item) => indent(item, 6)).join("\n")}
     }
   }
 }`;
+}
+
+function awaitCompletion(
+  site: AwaitSite,
+  parent: AsyncFunctionPlan,
+  destination: string | null,
+  terminal: boolean,
+  nextState: number,
+): string[] {
+  const child = `frame->child_${site.index}`;
+  const lines = [
+    `z_async_poll_task(&${child}->task);`,
+    `if (!${child}->task.completed) return;`,
+  ];
+  if (site.mode === "try") {
+    lines.push(
+      `if (${child}->failed) {`,
+      `  frame->error = ${child}->error;`,
+      `  free(${child});`,
+      `  frame->child_${site.index} = NULL;`,
+      "  frame->failed = true;",
+      "  frame->task.completed = true;",
+      "  return;",
+      "}",
+    );
+  } else if (site.mode === "attempt" && destination) {
+    const result = resultTypeName(site.target.returnType.name, site.target.errorType!.name);
+    const cResult = resultCName(result);
+    lines.push(`if (${child}->failed) {`);
+    lines.push(
+      `  ${destination} = (${cResult}){ .tag = ${resultTag(result, "failure")}, .data.failure = ${child}->error };`,
+      "} else {",
+    );
+    const successPayload = site.target.returnType.name === "void"
+      ? ""
+      : `, .data.success = ${child}->result`;
+    lines.push(`  ${destination} = (${cResult}){ .tag = ${resultTag(result, "success")}${successPayload} };`);
+    lines.push("}");
+  }
+
+  if (site.mode !== "attempt" && destination && site.target.returnType.name !== "void") {
+    lines.push(`${destination} = ${child}->result;`);
+  }
+  lines.push(`free(${child});`, `frame->child_${site.index} = NULL;`);
+  if (terminal) {
+    if (parent.declaration.errorType) lines.push("frame->failed = false;");
+    lines.push("frame->task.completed = true;", "return;");
+  } else {
+    lines.push(`frame->state = ${nextState};`, "continue;");
+  }
+  return lines;
 }
 
 function caseBlock(state: number, statements: readonly string[]): string {
@@ -427,14 +541,33 @@ function requireScalar(type: string, location: SourceLocation, fileName: string,
   }
 }
 
+function requireFrameType(type: string, location: SourceLocation, fileName: string, role: string): void {
+  if (!scalarTypes.has(type) && !type.startsWith("__z_Result_")) {
+    unsupported(fileName, location, `${role} type ${JSON.stringify(type)} needs owned task-frame lowering`);
+  }
+}
+
 function cScalar(type: string): string {
   const mapped = scalarTypes.get(type);
   if (!mapped) throw new Error(`missing async scalar ABI type ${JSON.stringify(type)}`);
   return mapped;
 }
 
-function endsWithReturn(statements: readonly Statement[]): boolean {
-  return statements.at(-1)?.kind === "return";
+function cFrameType(type: string): string {
+  if (type.startsWith("__z_Result_")) return resultCName(type);
+  return cScalar(type);
+}
+
+function resultCName(type: string): string {
+  return `Z_${nativePart(type.replace(/^__z_/, ""))}`;
+}
+
+function resultTag(type: string, variant: "success" | "failure"): string {
+  return `${resultCName(type)}_${variant}`;
+}
+
+function endsWithTermination(statements: readonly Statement[]): boolean {
+  return statements.at(-1)?.kind === "return" || statements.at(-1)?.kind === "throw";
 }
 
 function frameField(name: string): string {
@@ -459,7 +592,7 @@ function unsupported(
 ): never {
   throw new DiagnosticError(fileName, location, message, {
     code: "Z0700",
-    notes: ["Phase 1 currently executes top-level non-throwing scalar async functions with direct sequential awaits"],
+    notes: ["Phase 1 currently executes top-level scalar async functions, typed scalar errors, and direct sequential awaits"],
     helps: [help],
   });
 }
