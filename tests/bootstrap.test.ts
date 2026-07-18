@@ -4503,7 +4503,7 @@ test("editor grammar tracks keywords without reserving Result variants", () => {
   assert.match(extension, /restartLanguageServer/);
 });
 
-test("checks Phase 0 async calls, scoped tasks, typed errors, and editor details", () => {
+test("runs async match expressions with checked arithmetic and editor details", () => {
   const example = resolve(projectRoot, "examples/async-phase-0.z");
   const source = readFileSync(example, "utf8");
   check(source, example);
@@ -4539,10 +4539,84 @@ test("checks Phase 0 async calls, scoped tasks, typed errors, and editor details
       && token.character === position.character));
   }
 
-  assert.throws(() => compileToC(source, example), (error: unknown) => {
+  const generated = compileToC(source, example);
+  assert.match(generated, /const Z_Result_i32_NetworkError _z_async_match_/);
+  assert.match(generated, /case Z_Result_i32_NetworkError_success:/);
+  assert.match(generated, /z_checked_negate_i32/);
+  assert.match(generated, /z_checked_add_i32/);
+
+  const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, "warmed 1\nwarmed 2\nwarm batch complete\n");
+});
+
+test("executes async failure matches with scalar and object payload bindings", () => {
+  const directory = mkdtempSync("/tmp/z-async-match-");
+  const scalarFile = resolve(directory, "scalar.z");
+  writeFileSync(scalarFile, `
+    async function fail(): i32 throws i32 { throw 7; }
+    async function main(): i32 {
+      const result = attempt await fail();
+      return match (result) {
+        success(value) => value;
+        failure(value) => value - 7;
+      };
+    }
+  `);
+  const scalar = spawnSync(process.execPath, [cli, "run", scalarFile], { encoding: "utf8" });
+  assert.equal(scalar.status, 0, scalar.stderr);
+
+  const objectFile = resolve(directory, "object.z");
+  writeFileSync(objectFile, `
+    struct NetworkError { code: i32; }
+    async function fail(): i32 throws NetworkError {
+      throw NetworkError({ code: 7 });
+    }
+    async function main(): i32 {
+      const result = attempt await fail();
+      const code = match (result) {
+        success(value) => value;
+        failure({ code }) => code;
+      };
+      return code - 7;
+    }
+  `);
+  const object = spawnSync(process.execPath, [cli, "run", objectFile], { encoding: "utf8" });
+  assert.equal(object.status, 0, object.stderr);
+});
+
+test("keeps async match ownership and suspending-arm boundaries explicit", () => {
+  const owned = `
+    class Session { id: i32; }
+    async function main(): i32 {
+      const option = Option.some(new Session({ id: 42 }));
+      return match (option) {
+        some(session) => session.id;
+        none => 0;
+      };
+    }
+  `;
+  assert.throws(() => compileToC(owned, "async-owned-match.z"), (error: unknown) => {
     assert.ok(error instanceof DiagnosticError);
     assert.equal(error.code, "Z0700");
-    assert.match(error.message, /expression "matchExpression" is not executable/);
+    assert.match(error.message, /ownership-bearing enum/);
+    return true;
+  });
+
+  const blockArm = `
+    enum State { ready i32, empty, }
+    async function main(): i32 {
+      const state = State.ready(42);
+      return match (state) {
+        ready(value) => { select value; }
+        empty => 0;
+      };
+    }
+  `;
+  assert.throws(() => compileToC(blockArm, "async-block-match.z"), (error: unknown) => {
+    assert.ok(error instanceof DiagnosticError);
+    assert.equal(error.code, "Z0700");
+    assert.match(error.message, /single synchronous expressions/);
     return true;
   });
 });

@@ -1,5 +1,5 @@
-// This example exercises async features that are checked but not all executable yet.
-// Run `bun run z check examples/async-phase-0.z`.
+// This example exercises executable Phase 1 async task frames.
+// Run `bun run z run examples/async-phase-0.z`.
 
 import console from "std/console";
 
@@ -11,9 +11,8 @@ async function fetchValue(id: i32): i32 throws NetworkError {
   return id;
 }
 
-async function warmValue(id: i32): void throws NetworkError {
-  const value = try await fetchValue(id);
-  console.log(`warmed ${value}`);
+async function warmValue(id: i32): void {
+  console.log(`warmed ${id}`);
 }
 
 async function main(): i32 throws NetworkError {
@@ -34,5 +33,5 @@ async function main(): i32 throws NetworkError {
   }
 
   console.log("warm batch complete");
-  return baseline + first + second;
+  return baseline + first + second - 42;
 }

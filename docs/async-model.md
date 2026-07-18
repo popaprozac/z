@@ -181,8 +181,10 @@ executor now maintains a sorted monotonic timer queue for direct `await
 delay(...)`; it wakes expired tasks in deadline order and blocks the OS thread
 only when the ready queue is empty. Synchronous Z calls, receiver methods,
 capability-aware arguments, and typed console output lower between suspension
-states without yielding. The next Phase 1 layers expand async control flow,
-including `match` expressions, direct foreign calls, and brace-local value
-cleanup. Later phases
+states without yielding. Concise synchronous `match` expressions over
+cleanup-free enum subjects and results lower atomically in a poll state, with
+payload bindings, plain-data object destructuring, and checked integer
+arithmetic. The next Phase 1 layers add owned match-payload transfer, block and
+suspending arms, direct foreign calls, and brace-local value cleanup. Later phases
 add channels, sendability and atomic ARC, native executors, actors, and
 callback-to-async synthesis. Async-free programs never link the runtime.

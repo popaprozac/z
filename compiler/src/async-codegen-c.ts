@@ -12,7 +12,7 @@ import { DiagnosticError } from "./diagnostics.ts";
 import { parseTaskType } from "./async-types.ts";
 import { resultTypeName } from "./results.ts";
 import { standardFunctionSignature } from "./standard-library.ts";
-import type { SemanticInfo } from "./sema.ts";
+import type { IntegerOperation, SemanticInfo } from "./sema.ts";
 
 type AwaitSite = {
   readonly index: number;
@@ -64,6 +64,12 @@ type AsyncTypeContext = {
   readonly enums: ReadonlyMap<string, EnumDeclaration>;
   readonly functions: ReadonlyMap<string, FunctionDeclaration>;
   readonly semanticInfo: SemanticInfo;
+};
+
+type FrameExpressionContext = {
+  readonly locals: ReadonlyMap<string, string>;
+  readonly types: AsyncTypeContext;
+  readonly bindings?: ReadonlyMap<string, string>;
 };
 
 export type AsyncCGeneration = {
@@ -241,6 +247,8 @@ function planFunction(
         const operation = awaitOperation(statement.initializer);
         if (operation) {
           recordAwait(operation.mode, operation.expression);
+        } else if (statement.initializer.kind === "matchExpression") {
+          validateAsyncMatchExpression(statement.initializer, locals, fileName, types);
         } else {
           validateFrameExpression(statement.initializer, locals, fileName, types);
         }
@@ -250,6 +258,8 @@ function planFunction(
         const operation = statement.expression ? awaitOperation(statement.expression) : null;
         if (operation) {
           recordAwait(operation.mode, operation.expression);
+        } else if (statement.expression?.kind === "matchExpression") {
+          validateAsyncMatchExpression(statement.expression, locals, fileName, types);
         } else if (statement.expression) {
           validateFrameExpression(statement.expression, locals, fileName, types);
         }
@@ -934,6 +944,18 @@ function generatePoll(
           ),
         );
         state += 1;
+      } else if (initializer.kind === "matchExpression") {
+        const type = plan.locals.get(statement.name)!;
+        cases.push(caseBlock(state, emitAsyncMatchExpression(
+          initializer,
+          plan,
+          fileName,
+          `frame->${frameField(statement.name)}`,
+          type,
+          false,
+          state + 1,
+        )));
+        state += 1;
       } else {
         const type = plan.locals.get(statement.name)!;
         cases.push(caseBlock(state, [
@@ -977,6 +999,16 @@ function generatePoll(
         cases.push(caseBlock(state, awaitCompletion(
           site,
           plan,
+          "frame->result",
+          plan.declaration.returnType.name,
+          true,
+          state + 1,
+        )));
+      } else if (statement.expression?.kind === "matchExpression") {
+        cases.push(caseBlock(state, emitAsyncMatchExpression(
+          statement.expression,
+          plan,
+          fileName,
           "frame->result",
           plan.declaration.returnType.name,
           true,
@@ -1210,6 +1242,132 @@ ${statements.map((statement) => `  ${statement}`).join("\n")}
 }`;
 }
 
+function validateAsyncMatchExpression(
+  expression: Extract<Expression, { kind: "matchExpression" }>,
+  locals: ReadonlyMap<string, string>,
+  fileName: string,
+  types: AsyncTypeContext,
+): void {
+  inspectAsyncMatchExpression(expression, { locals, types }, fileName);
+}
+
+function emitAsyncMatchExpression(
+  expression: Extract<Expression, { kind: "matchExpression" }>,
+  plan: AsyncFunctionPlan,
+  fileName: string,
+  destination: string,
+  destinationType: string,
+  terminal: boolean,
+  nextState: number,
+): string[] {
+  const inspected = inspectAsyncMatchExpression(expression, plan, fileName);
+  const temporary = `_z_async_match_${expression.location.offset}`;
+  const lines = [
+    `const ${cFrameType(inspected.subjectType, plan.types)} ${temporary} = ${emitFrameExpression(expression.expression, plan, fileName)};`,
+    `switch (${temporary}.tag) {`,
+  ];
+  for (const arm of expression.arms) {
+    const variant = inspected.declaration.variants.find((candidate) => candidate.name === arm.variantName)!;
+    const armContext = asyncMatchArmContext(arm, variant, temporary, plan);
+    const value = emitFrameExpression(asyncMatchArmValue(arm, fileName), armContext, fileName);
+    lines.push(
+      `  case ${resultTag(inspected.subjectType, variant.name)}: {`,
+      `    ${destination} = ${value};`,
+      "    break;",
+      "  }",
+    );
+  }
+  lines.push("}");
+  if (hasFrameCleanup(destinationType, plan.types)) {
+    lines.push(`${destinationLiveFlag(destination, plan)} = true;`);
+  }
+  if (terminal) {
+    if (plan.declaration.errorType) lines.push("frame->failed = false;");
+    lines.push(`frame->state = ${finalizeStateMarker};`, "continue;");
+  } else {
+    lines.push(`frame->state = ${nextState};`, "continue;");
+  }
+  return lines;
+}
+
+function inspectAsyncMatchExpression(
+  expression: Extract<Expression, { kind: "matchExpression" }>,
+  plan: FrameExpressionContext,
+  fileName: string,
+): { readonly subjectType: string; readonly declaration: EnumDeclaration } {
+  const subjectType = frameExpressionType(expression.expression, plan);
+  const declaration = plan.types.enums.get(subjectType);
+  if (!declaration) {
+    unsupported(fileName, expression.expression.location, "async match lowering requires an enum subject");
+  }
+  if (hasFrameCleanup(subjectType, plan.types)) {
+    unsupported(
+      fileName,
+      expression.location,
+      "matching an ownership-bearing enum inside an async frame has not landed yet",
+      "match scalar and plain-data payloads for now; owned payload arm lifetimes are the next ownership tier",
+    );
+  }
+  const resultType = frameExpressionType(expression, plan);
+  if (hasFrameCleanup(resultType, plan.types)) {
+    unsupported(
+      fileName,
+      expression.location,
+      "an async match cannot produce an ownership-bearing value yet",
+      "produce a scalar or plain-data value while owned match-result transfer is implemented",
+    );
+  }
+  emitFrameExpression(expression.expression, plan, fileName);
+  for (const arm of expression.arms) {
+    const variant = declaration.variants.find((candidate) => candidate.name === arm.variantName)!;
+    const armContext = asyncMatchArmContext(arm, variant, "_z_async_match_subject", plan);
+    emitFrameExpression(asyncMatchArmValue(arm, fileName), armContext, fileName);
+  }
+  return { subjectType, declaration };
+}
+
+function asyncMatchArmContext(
+  arm: Extract<Expression, { kind: "matchExpression" }>["arms"][number],
+  variant: EnumDeclaration["variants"][number],
+  subject: string,
+  plan: FrameExpressionContext,
+): FrameExpressionContext {
+  const locals = new Map(plan.locals);
+  const bindings = new Map(plan.bindings ?? []);
+  if (variant.payload && arm.binding) {
+    locals.set(arm.binding, variant.payload.name);
+    bindings.set(arm.binding, `(${subject}.data.${variant.name})`);
+  }
+  if (variant.payload && arm.objectBindings) {
+    const payload = plan.types.structs.get(variant.payload.name)!;
+    const access = payload.kind === "class" ? "->" : ".";
+    for (const fieldBinding of arm.objectBindings) {
+      const field = payload.fields.find((candidate) => candidate.name === fieldBinding.fieldName)!;
+      locals.set(fieldBinding.bindingName, field.type.name);
+      bindings.set(
+        fieldBinding.bindingName,
+        `((${subject}.data.${variant.name})${access}${field.name})`,
+      );
+    }
+  }
+  return { locals, types: plan.types, bindings };
+}
+
+function asyncMatchArmValue(
+  arm: Extract<Expression, { kind: "matchExpression" }>["arms"][number],
+  fileName: string,
+): Expression {
+  if (arm.body.kind === "expressionStatement" || arm.body.kind === "select") {
+    return arm.body.expression;
+  }
+  unsupported(
+    fileName,
+    arm.body.location,
+    "async match arms must be single synchronous expressions in this lowering tier",
+    "use `variant(binding) => expression;`; block arms and suspending arms will land in a later tier",
+  );
+}
+
 function validateFrameExpression(
   expression: Expression,
   locals: ReadonlyMap<string, string>,
@@ -1343,7 +1501,7 @@ function renderAsyncConsoleValue(
 
 function emitFrameExpression(
   expression: Expression,
-  plan: Pick<AsyncFunctionPlan, "locals" | "types">,
+  plan: FrameExpressionContext,
   fileName: string,
 ): string {
   switch (expression.kind) {
@@ -1354,6 +1512,9 @@ function emitFrameExpression(
     case "string":
       return JSON.stringify(expression.value);
     case "identifier":
+      if (plan.bindings?.has(expression.name)) {
+        return plan.bindings.get(expression.name)!;
+      }
       if (!plan.locals.has(expression.name)) {
         unsupported(fileName, expression.location, "the first async lowering slice cannot reference this value");
       }
@@ -1372,15 +1533,27 @@ function emitFrameExpression(
         return value;
       }
     case "unary":
-      if (expression.operator !== "!") {
-        unsupported(fileName, expression.location, "overflow-aware async arithmetic lowering has not landed yet");
+      {
+        const integerOperation = plan.types.semanticInfo.integerOperations.get(expression.location.offset);
+        if (integerOperation) {
+          return `${asyncIntegerOperationName(integerOperation.kind, integerOperation.type)}(${emitFrameExpression(expression.operand, plan, fileName)})`;
+        }
+        if (expression.operator === "+" || expression.operator === "-" || expression.operator === "!" || expression.operator === "~") {
+          return `(${expression.operator}${emitFrameExpression(expression.operand, plan, fileName)})`;
+        }
+        unsupported(fileName, expression.location, "this unary expression is not executable in an async frame yet");
       }
-      return `(!${emitFrameExpression(expression.operand, plan, fileName)})`;
     case "binary":
-      if (!safeBinaryOperators.has(expression.operator)) {
-        unsupported(fileName, expression.location, "overflow-aware async arithmetic lowering has not landed yet");
+      {
+        const integerOperation = plan.types.semanticInfo.integerOperations.get(expression.location.offset);
+        if (integerOperation) {
+          return `${asyncIntegerOperationName(integerOperation.kind, integerOperation.type)}(${emitFrameExpression(expression.left, plan, fileName)}, ${emitFrameExpression(expression.right, plan, fileName)})`;
+        }
+        if (!safeBinaryOperators.has(expression.operator)) {
+          unsupported(fileName, expression.location, "this arithmetic expression is not executable in an async frame yet");
+        }
+        return `(${emitFrameExpression(expression.left, plan, fileName)} ${expression.operator} ${emitFrameExpression(expression.right, plan, fileName)})`;
       }
-      return `(${emitFrameExpression(expression.left, plan, fileName)} ${expression.operator} ${emitFrameExpression(expression.right, plan, fileName)})`;
     case "conditional":
       return `(${emitFrameExpression(expression.condition, plan, fileName)} ? ${emitFrameExpression(expression.thenExpression, plan, fileName)} : ${emitFrameExpression(expression.elseExpression, plan, fileName)})`;
     case "member": {
@@ -1624,7 +1797,7 @@ function frameCleanup(value: string, type: string, types: AsyncTypeContext): str
 
 function frameExpressionType(
   expression: Expression,
-  plan: Pick<AsyncFunctionPlan, "locals" | "types">,
+  plan: FrameExpressionContext,
 ): string {
   const analyzed = plan.types.semanticInfo.expressionTypes.get(expression.location.offset);
   if (analyzed) return analyzed;
@@ -1635,6 +1808,26 @@ function frameExpressionType(
     return plan.types.semanticInfo.numericLiteralTypes.get(expression.location.offset) ?? "i32";
   }
   return "i32";
+}
+
+function asyncIntegerOperationName(kind: IntegerOperation["kind"], type: string): string {
+  const names: Readonly<Record<IntegerOperation["kind"], string>> = {
+    checkedAdd: "checked_add",
+    checkedSubtract: "checked_subtract",
+    checkedMultiply: "checked_multiply",
+    checkedDivide: "checked_divide",
+    checkedRemainder: "checked_remainder",
+    checkedNegate: "checked_negate",
+    checkedShiftLeft: "checked_shift_left",
+    checkedShiftRight: "checked_shift_right",
+    wrappingAdd: "wrapping_add",
+    wrappingSubtract: "wrapping_subtract",
+    wrappingMultiply: "wrapping_multiply",
+    saturatingAdd: "saturating_add",
+    saturatingSubtract: "saturating_subtract",
+    saturatingMultiply: "saturating_multiply",
+  };
+  return `z_${names[kind]}_${type}`;
 }
 
 function destinationLiveFlag(destination: string, plan: AsyncFunctionPlan): string {

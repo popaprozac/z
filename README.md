@@ -1122,6 +1122,7 @@ bun run z run examples/async-spawn.z
 bun run z run examples/async-scopes.z
 bun run z run examples/async-cancellation.z
 bun run z run examples/async-delay.z
+bun run z run examples/async-phase-0.z
 ```
 
 Spawned tasks are scheduled immediately. A bound handle may be joined once;
@@ -1146,10 +1147,10 @@ rejected in the first tier. `T throws E` remains the function contract,
 `Result<T, E>` when the outcome should be retained. A throwing spawned child
 must be joined explicitly so its domain error cannot disappear silently.
 
-Check the broader frontend example with:
+Run the broader structured-async example with:
 
 ```sh
-bun run z check examples/async-phase-0.z
+bun run z run examples/async-phase-0.z
 ```
 
 Unsupported executable shapes report `Z0700` with the precise current boundary
@@ -1161,8 +1162,11 @@ an `attempt await` failure remains a handled value and does not cancel them.
 `await delay(milliseconds)` suspends through the executor's monotonic timer
 queue without blocking other ready tasks. Ordinary synchronous Z functions,
 methods, imported blocking `sleep`, and typed `console` calls execute in source
-order inside async frames without yielding. Async `match` lowering and
-scope-local value cleanup remain active Phase 1 work. See
+order inside async frames without yielding. Concise synchronous `match` arms
+over scalar and plain-data enum payloads execute inside a poll state, including
+payload bindings, object destructuring, and checked integer arithmetic.
+Ownership-bearing match payload transfer, block or suspending arms, direct
+foreign calls, and scope-local value cleanup remain active Phase 1 work. See
 [docs/async-model.md](docs/async-model.md) for the complete model and phases.
 
 ## Editor support
