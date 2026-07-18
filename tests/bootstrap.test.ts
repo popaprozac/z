@@ -4595,7 +4595,7 @@ test("carries plain struct values and errors through async task frames", () => {
   assert.match(generated, /frame->error = \(Z_NetworkError\)\{ \.code = 7 \};/);
   assert.match(generated, /Z_Result_User_NetworkError_failure/);
   assert.match(generated, /frame->result = \(Z_User\)\{ \.id = frame->value_id \};/);
-  assert.match(generated, /z_async_start_copyUser\(Z_User value_user\)/);
+  assert.match(generated, /z_async_start_copyUser\(Z_AsyncExecutor \*executor, Z_User value_user\)/);
 
   const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
@@ -4772,11 +4772,11 @@ test("runs retained class, consuming struct, and static async methods", () => {
   assert.match(generated, /struct Z_AsyncFrame_Request_send/);
   assert.match(generated, /struct Z_AsyncFrame_Client_share/);
   assert.match(generated, /struct Z_AsyncFrame_Request_relay/);
-  assert.match(generated, /z_async_start_Client_load\(Z_Client_retain\(frame->value_this\)\)/);
-  assert.match(generated, /z_async_start_Request_send\(\(frame->live_this = false, frame->value_this\)\)/);
+  assert.match(generated, /z_async_start_Client_load\(frame->task.executor, Z_Client_retain\(frame->value_this\)\)/);
+  assert.match(generated, /z_async_start_Request_send\(frame->task.executor, \(frame->live_this = false, frame->value_this\)\)/);
   assert.match(generated, /struct Z_AsyncFrame_Client_echo/);
   assert.match(generated, /struct Z_AsyncFrame_Request_echo/);
-  assert.match(generated, /z_async_start_Client_load\(Z_Client \* value_this\)/);
+  assert.match(generated, /z_async_start_Client_load\(Z_AsyncExecutor \*executor, Z_Client \* value_this\)/);
   assert.match(generated, /Z_Client_retain\(frame->value_client\)/);
   assert.match(generated, /Z_Result_i32_i32 value_failed;/);
   assert.match(generated, /frame->live_request = false/);
@@ -4785,4 +4785,59 @@ test("runs retained class, consuming struct, and static async methods", () => {
   const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stdout, "released async request 7\nreleased async client 5\n");
+});
+
+test("schedules hot spawned functions and methods on the FIFO executor", () => {
+  const example = resolve(projectRoot, "examples/async-spawn.z");
+  const source = readFileSync(example, "utf8");
+  const generated = compileToC(source, example);
+  assert.match(generated, /struct Z_AsyncExecutor/);
+  assert.match(generated, /z_async_enqueue\(frame->task.executor, &frame->child_\d+->task\)/);
+  assert.match(generated, /z_async_wait\(&frame->task, &frame->child_\d+->task\)/);
+  assert.match(generated, /frame->value_firstTask = &frame->child_\d+->task/);
+  assert.match(generated, /Z_Result_i32_i32 value_failure;/);
+  assert.match(generated, /Z_Worker_retain\(frame->value_worker\)/);
+  assert.match(generated, /frame->live_job = false/);
+
+  const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(
+    result.stdout,
+    "released spawned job 22\nreleased spawned job 23\nreleased spawn worker 24\n",
+  );
+
+  const unacknowledgedFailure = `
+    async function fail(): i32 throws i32 { throw 7; }
+    async function main(): i32 {
+      spawn fail();
+      return 0;
+    }
+  `;
+  assert.throws(() => compileToC(unacknowledgedFailure, "async-unjoined-error.z"), (error: unknown) => {
+    assert.ok(error instanceof DiagnosticError);
+    assert.equal(error.code, "Z0700");
+    assert.match(error.message, /throwing spawned task must be joined explicitly/);
+    return true;
+  });
+
+  const directory = mkdtempSync("/tmp/z-async-spawn-error-");
+  const failing = resolve(directory, "main.z");
+  writeFileSync(failing, `
+    import console from "std/console";
+    struct Resource {
+      id: i32;
+      deinit { console.log(\`released sibling \${this.id}\`); }
+    }
+    async function finish(resource: Resource): void { return; }
+    async function fail(): i32 throws i32 { throw 7; }
+    async function main(): i32 throws i32 {
+      const resource = Resource({ id: 9 });
+      spawn finish(resource);
+      const failureTask = spawn fail();
+      return try await failureTask;
+    }
+  `);
+  const failed = spawnSync(process.execPath, [cli, "run", failing], { encoding: "utf8" });
+  assert.equal(failed.status, 1, failed.stderr);
+  assert.equal(failed.stdout, "released sibling 9\n");
 });

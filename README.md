@@ -1084,12 +1084,12 @@ See [DESIGN.md](DESIGN.md) for the language charter and roadmap.
 ## Async frontend and Phase 1 lowering
 
 Z validates the complete structured-async surface. The native Phase 1 slice
-executes owned function and method task frames with direct sequential awaits,
-typed errors, `throw`, `try await`, and `attempt await`. Scalars, enums with
-owned payloads, value structs, and ARC class references can cross suspension
-boundaries. Task frames track live cleanup-bearing values, transfer moved
-structs and enums, retain shared classes, and deterministically destroy the
-active ownership on success or error:
+executes owned function and method task frames on a deterministic FIFO executor
+with direct awaits, hot root-scoped `spawn`, typed errors, `throw`, `try await`,
+and `attempt await`. Scalars, enums with owned payloads, value structs, and ARC
+class references can cross suspension boundaries. Task frames track live
+cleanup-bearing values, transfer moved structs and enums, retain shared classes,
+and deterministically destroy the active ownership on success or error:
 
 ```z
 async function fetchValue(value: i32): i32 {
@@ -1112,9 +1112,11 @@ bun run z run examples/async-aggregates.z
 bun run z run examples/async-ownership.z
 bun run z run examples/async-owned-enums.z
 bun run z run examples/async-methods.z
+bun run z run examples/async-spawn.z
 ```
 
-The frontend already accepts the broader intended surface:
+Spawned tasks are scheduled immediately. A bound handle may be joined once;
+non-throwing children left unbound are joined implicitly before function exit:
 
 ```z
 async function fetchValue(id: i32): i32 throws NetworkError {
@@ -1132,7 +1134,8 @@ an implicit root task scope; explicit `async scope` blocks provide narrower
 child lifetimes. Borrowed parameters and live borrows across suspension are
 rejected in the first tier. `T throws E` remains the function contract,
 `Task<T, E>` represents spawned work, and `attempt await` materializes
-`Result<T, E>` when the outcome should be retained.
+`Result<T, E>` when the outcome should be retained. A throwing spawned child
+must be joined explicitly so its domain error cannot disappear silently.
 
 Check the broader frontend example with:
 
@@ -1141,8 +1144,8 @@ bun run z check examples/async-phase-0.z
 ```
 
 Unsupported executable shapes report `Z0700` with the precise current boundary
-rather than receiving synchronous-looking lowering. The ready queue, `spawn`,
-and explicit scope scheduling are the next runtime layers. See
+rather than receiving synchronous-looking lowering. Explicit `async scope`
+joining and cancellation are the next runtime layers. See
 [docs/async-model.md](docs/async-model.md) for the complete model and phases.
 
 ## Editor support

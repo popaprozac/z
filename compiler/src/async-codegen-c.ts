@@ -9,6 +9,7 @@ import type {
   EnumDeclaration,
 } from "./ast.ts";
 import { DiagnosticError } from "./diagnostics.ts";
+import { parseTaskType } from "./async-types.ts";
 import { resultTypeName } from "./results.ts";
 import type { SemanticInfo } from "./sema.ts";
 
@@ -19,6 +20,16 @@ type AwaitSite = {
   readonly call: CallExpression;
   readonly target: AsyncTarget;
   readonly receiver: Expression | null;
+  readonly spawn: SpawnSite | null;
+};
+
+type SpawnSite = {
+  readonly index: number;
+  readonly expression: Extract<Expression, { kind: "spawn" }>;
+  readonly call: CallExpression;
+  readonly target: AsyncTarget;
+  readonly receiver: Expression | null;
+  readonly binding: string | null;
 };
 
 type AsyncTarget = {
@@ -35,6 +46,8 @@ type AsyncFunctionPlan = {
   readonly destroyName: string;
   readonly locals: ReadonlyMap<string, string>;
   readonly awaits: ReadonlyMap<number, AwaitSite>;
+  readonly spawns: ReadonlyMap<number, SpawnSite>;
+  readonly children: ReadonlyMap<number, AsyncTarget>;
   readonly types: AsyncTypeContext;
 };
 
@@ -69,6 +82,8 @@ const scalarTypes = new Map<string, string>([
 const safeBinaryOperators = new Set([
   "==", "!=", "<", "<=", ">", ">=", "&&", "||",
 ]);
+
+const finalizeStateMarker = "__Z_ASYNC_FINALIZE_STATE__";
 
 export function generateAsyncC(
   program: Program,
@@ -139,7 +154,29 @@ function planFunction(
   }
 
   const awaits = new Map<number, AwaitSite>();
-  let awaitIndex = 0;
+  const spawns = new Map<number, SpawnSite>();
+  const spawnBindings = new Map<string, SpawnSite>();
+  const children = new Map<number, AsyncTarget>();
+  const joinedSpawns = new Set<number>();
+  const nextChild = { value: 0 };
+  const recordAwait = (
+    mode: AwaitSite["mode"],
+    expression: Extract<Expression, { kind: "await" }>,
+  ): void => {
+    const site = awaitSite(
+      mode,
+      expression,
+      functions,
+      fileName,
+      locals,
+      types,
+      spawnBindings,
+      joinedSpawns,
+      nextChild,
+    );
+    awaits.set(expression.location.offset, site);
+    children.set(site.index, site.target);
+  };
   for (const statement of declaration.body) {
     if (statement.kind === "variable") {
       if (!statement.initializer) {
@@ -149,12 +186,24 @@ function planFunction(
       if (!type) unsupported(fileName, statement.location, `could not determine async frame type for ${JSON.stringify(statement.name)}`);
       requireFrameType(type, statement.type?.location ?? statement.nameLocation, fileName, "async local", types);
       locals.set(statement.name, type);
+      if (statement.initializer.kind === "spawn") {
+        const site = spawnSite(
+          nextChild.value++,
+          statement.initializer,
+          statement.name,
+          functions,
+          fileName,
+          locals,
+          types,
+        );
+        spawns.set(statement.initializer.location.offset, site);
+        spawnBindings.set(statement.name, site);
+        children.set(site.index, site.target);
+        continue;
+      }
       const operation = awaitOperation(statement.initializer);
       if (operation) {
-        awaits.set(
-          operation.expression.location.offset,
-          awaitSite(awaitIndex++, operation.mode, operation.expression, functions, fileName, locals, types),
-        );
+        recordAwait(operation.mode, operation.expression);
       } else {
         validateFrameExpression(statement.initializer, locals, fileName, types);
       }
@@ -163,10 +212,7 @@ function planFunction(
     if (statement.kind === "return") {
       const operation = statement.expression ? awaitOperation(statement.expression) : null;
       if (operation) {
-        awaits.set(
-          operation.expression.location.offset,
-          awaitSite(awaitIndex++, operation.mode, operation.expression, functions, fileName, locals, types),
-        );
+        recordAwait(operation.mode, operation.expression);
       } else if (statement.expression) {
         validateFrameExpression(statement.expression, locals, fileName, types);
       }
@@ -177,21 +223,44 @@ function planFunction(
       continue;
     }
     if (statement.kind === "expressionStatement") {
+      if (statement.expression.kind === "spawn") {
+        const site = spawnSite(
+          nextChild.value++,
+          statement.expression,
+          null,
+          functions,
+          fileName,
+          locals,
+          types,
+        );
+        spawns.set(statement.expression.location.offset, site);
+        children.set(site.index, site.target);
+        continue;
+      }
       const operation = awaitOperation(statement.expression);
       if (!operation) {
         unsupported(fileName, statement.location, "only awaited async calls are executable as async expression statements yet");
       }
-      awaits.set(
-        operation.expression.location.offset,
-        awaitSite(awaitIndex++, operation.mode, operation.expression, functions, fileName, locals, types),
-      );
+      recordAwait(operation.mode, operation.expression);
       continue;
     }
     unsupported(
       fileName,
       statement.location,
       `statement ${JSON.stringify(statement.kind)} is not executable in the first Phase 1 async slice`,
-      "the current state-machine lowering supports owned bindings, direct sequential await, throw, and return",
+      "the current state-machine lowering supports owned bindings, direct await, spawn, throw, and return",
+    );
+  }
+
+  const unjoinedThrowing = [...spawns.values()].find((site) => (
+    !joinedSpawns.has(site.index) && site.target.declaration.errorType
+  ));
+  if (unjoinedThrowing) {
+    unsupported(
+      fileName,
+      unjoinedThrowing.expression.location,
+      "a throwing spawned task must be joined explicitly",
+      "bind the spawned task and acknowledge its error with `try await` or `attempt await`",
     );
   }
 
@@ -205,19 +274,42 @@ function planFunction(
     destroyName: `z_async_destroy_${part}`,
     locals,
     awaits,
+    spawns,
+    children,
     types,
   };
 }
 
 function awaitSite(
-  index: number,
   mode: AwaitSite["mode"],
   expression: Extract<Expression, { kind: "await" }>,
   functions: ReadonlyMap<string, AsyncTarget>,
   fileName: string,
   locals: ReadonlyMap<string, string>,
   types: AsyncTypeContext,
+  spawnBindings: ReadonlyMap<string, SpawnSite>,
+  joinedSpawns: Set<number>,
+  nextChild: { value: number },
 ): AwaitSite {
+  if (expression.expression.kind === "identifier" && parseTaskType(locals.get(expression.expression.name) ?? "")) {
+    const spawn = spawnBindings.get(expression.expression.name);
+    if (!spawn) {
+      unsupported(fileName, expression.location, "awaiting task parameters or aliases is not executable yet");
+    }
+    if (joinedSpawns.has(spawn.index)) {
+      unsupported(fileName, expression.location, "a spawned task handle can only be joined once");
+    }
+    joinedSpawns.add(spawn.index);
+    return {
+      index: spawn.index,
+      mode,
+      expression,
+      call: spawn.call,
+      target: spawn.target,
+      receiver: null,
+      spawn,
+    };
+  }
   if (expression.expression.kind !== "call") {
     unsupported(
       fileName,
@@ -226,12 +318,51 @@ function awaitSite(
     );
   }
   const call = expression.expression;
+  const resolved = resolveAsyncCall(call, functions, fileName, locals, types);
+  return {
+    index: nextChild.value++,
+    mode,
+    expression,
+    call,
+    target: resolved.target,
+    receiver: resolved.receiver,
+    spawn: null,
+  };
+}
+
+function spawnSite(
+  index: number,
+  expression: Extract<Expression, { kind: "spawn" }>,
+  binding: string | null,
+  functions: ReadonlyMap<string, AsyncTarget>,
+  fileName: string,
+  locals: ReadonlyMap<string, string>,
+  types: AsyncTypeContext,
+): SpawnSite {
+  if (expression.expression.kind !== "call") {
+    unsupported(fileName, expression.location, "spawn lowering requires a direct async call");
+  }
+  const resolved = resolveAsyncCall(expression.expression, functions, fileName, locals, types);
+  return {
+    index,
+    expression,
+    call: expression.expression,
+    target: resolved.target,
+    receiver: resolved.receiver,
+    binding,
+  };
+}
+
+function resolveAsyncCall(
+  call: CallExpression,
+  functions: ReadonlyMap<string, AsyncTarget>,
+  fileName: string,
+  locals: ReadonlyMap<string, string>,
+  types: AsyncTypeContext,
+): { readonly target: AsyncTarget; readonly receiver: Expression | null } {
   if (call.callee.kind === "identifier") {
     const target = functions.get(call.callee.name);
-    if (!target?.declaration.async) {
-      unsupported(fileName, expression.location, "async lowering could not resolve the awaited async function");
-    }
-    return { index, mode, expression, call, target, receiver: null };
+    if (target?.declaration.async) return { target, receiver: null };
   }
   if (call.callee.kind === "member") {
     const object = call.callee.object;
@@ -241,14 +372,7 @@ function awaitSite(
         candidate.static && candidate.async && candidate.name === call.callee.property
       ));
       if (staticOwner && staticMethod) {
-        return {
-          index,
-          mode,
-          expression,
-          call,
-          target: { declaration: staticMethod, owner: staticOwner },
-          receiver: null,
-        };
+        return { target: { declaration: staticMethod, owner: staticOwner }, receiver: null };
       }
     }
     const ownerType = frameExpressionType(object, { locals, types });
@@ -257,17 +381,10 @@ function awaitSite(
       !candidate.static && candidate.async && candidate.name === call.callee.property
     ));
     if (owner && method) {
-      return {
-        index,
-        mode,
-        expression,
-        call,
-        target: { declaration: method, owner },
-        receiver: object,
-      };
+      return { target: { declaration: method, owner }, receiver: object };
     }
   }
-  unsupported(fileName, expression.location, "async lowering could not resolve the awaited async function");
+  unsupported(fileName, call.location, "async lowering could not resolve the async call");
 }
 
 function awaitOperation(expression: Expression): {
@@ -298,19 +415,63 @@ function generateRuntime(
   fileName: string,
 ): string {
   const lines = [
-    "/* Z async Phase 1: stackless ownership-aware task frames. */",
+    "/* Z async Phase 1: FIFO-scheduled ownership-aware task frames. */",
     "typedef struct Z_AsyncTask Z_AsyncTask;",
+    "typedef struct Z_AsyncExecutor Z_AsyncExecutor;",
     "struct Z_AsyncTask {",
     "  void (*poll)(Z_AsyncTask *task);",
     "  bool completed;",
+    "  bool queued;",
+    "  bool suspended;",
+    "  Z_AsyncTask *waiter;",
+    "  Z_AsyncTask *next;",
+    "  Z_AsyncExecutor *executor;",
     "};",
     "",
-    "static __attribute__((unused)) void z_async_poll_task(Z_AsyncTask *task) {",
-    "  if (!task->completed) task->poll(task);",
+    "struct Z_AsyncExecutor {",
+    "  Z_AsyncTask *head;",
+    "  Z_AsyncTask *tail;",
+    "};",
+    "",
+    "static __attribute__((unused)) void z_async_enqueue(Z_AsyncExecutor *executor, Z_AsyncTask *task) {",
+    "  if (task->completed || task->queued || task->suspended) return;",
+    "  task->queued = true;",
+    "  task->next = NULL;",
+    "  if (executor->tail != NULL) executor->tail->next = task;",
+    "  else executor->head = task;",
+    "  executor->tail = task;",
+    "}",
+    "",
+    "static __attribute__((unused)) bool z_async_wait(Z_AsyncTask *parent, Z_AsyncTask *child) {",
+    "  if (child->completed) return true;",
+    "  if (child->waiter != NULL && child->waiter != parent) abort();",
+    "  child->waiter = parent;",
+    "  parent->suspended = true;",
+    "  return false;",
     "}",
     "",
     "static __attribute__((unused)) void z_async_run(Z_AsyncTask *root) {",
-    "  while (!root->completed) z_async_poll_task(root);",
+    "  Z_AsyncExecutor *executor = root->executor;",
+    "  z_async_enqueue(executor, root);",
+    "  while (!root->completed) {",
+    "    Z_AsyncTask *task = executor->head;",
+    "    if (task == NULL) abort();",
+    "    executor->head = task->next;",
+    "    if (executor->head == NULL) executor->tail = NULL;",
+    "    task->queued = false;",
+    "    task->next = NULL;",
+    "    if (!task->completed) task->poll(task);",
+    "    if (task->completed) {",
+    "      if (task->waiter != NULL) {",
+    "        Z_AsyncTask *waiter = task->waiter;",
+    "        task->waiter = NULL;",
+    "        waiter->suspended = false;",
+    "        z_async_enqueue(executor, waiter);",
+    "      }",
+    "    } else if (!task->suspended) {",
+    "      z_async_enqueue(executor, task);",
+    "    }",
+    "  }",
     "}",
     "",
   ];
@@ -329,7 +490,8 @@ function generateRuntime(
   if (main) {
     lines.push(
       "int32_t main(void) {",
-      `  ${main.frameName} *root = ${main.startName}();`,
+      "  Z_AsyncExecutor executor = { .head = NULL, .tail = NULL };",
+      `  ${main.frameName} *root = ${main.startName}(&executor);`,
       "  z_async_run(&root->task);",
       ...(main.declaration.errorType
         ? [
@@ -373,8 +535,8 @@ function generateFrame(
     lines.push(`  ${cFrameType(type, plan.types)} ${frameField(name)};`);
     if (hasFrameCleanup(type, plan.types)) lines.push(`  bool ${frameLiveField(name)};`);
   }
-  for (const site of plan.awaits.values()) {
-    lines.push(`  ${planByKey.get(targetKey(site.target))!.frameName} *child_${site.index};`);
+  for (const [index, target] of plan.children) {
+    lines.push(`  ${planByKey.get(targetKey(target))!.frameName} *child_${index};`);
   }
   lines.push("};");
   return lines.join("\n");
@@ -388,13 +550,13 @@ function generateDestroy(
     `static void ${plan.destroyName}(${plan.frameName} *frame) {`,
     "  if (frame == NULL) return;",
   ];
-  for (const site of [...plan.awaits.values()].reverse()) {
-    const child = planByKey.get(targetKey(site.target))!;
+  for (const [index, target] of [...plan.children].reverse()) {
+    const child = planByKey.get(targetKey(target))!;
     lines.push(
-      `  if (frame->child_${site.index} != NULL) {`,
-      `    ${child.destroyName}(frame->child_${site.index});`,
-      `    free(frame->child_${site.index});`,
-      `    frame->child_${site.index} = NULL;`,
+      `  if (frame->child_${index} != NULL) {`,
+      `    ${child.destroyName}(frame->child_${index});`,
+      `    free(frame->child_${index});`,
+      `    frame->child_${index} = NULL;`,
       "  }",
     );
   }
@@ -423,10 +585,10 @@ function generateDestroy(
 }
 
 function generateStartSignature(plan: AsyncFunctionPlan): string {
-  const parameters = frameInputs(plan).map((input) => (
+  const parameters = ["Z_AsyncExecutor *executor", ...frameInputs(plan).map((input) => (
     `${cFrameType(input.type, plan.types)} ${frameField(input.name)}`
-  ));
-  return `static __attribute__((unused)) ${plan.frameName} *${plan.startName}(${parameters.join(", ") || "void"})`;
+  ))];
+  return `static __attribute__((unused)) ${plan.frameName} *${plan.startName}(${parameters.join(", ")})`;
 }
 
 function generateStart(plan: AsyncFunctionPlan): string {
@@ -438,6 +600,11 @@ function generateStart(plan: AsyncFunctionPlan): string {
     "  frame->task.completed = false;",
     "  frame->state = 0;",
   ];
+  lines.push("  frame->task.queued = false;");
+  lines.push("  frame->task.suspended = false;");
+  lines.push("  frame->task.waiter = NULL;");
+  lines.push("  frame->task.next = NULL;");
+  lines.push("  frame->task.executor = executor;");
   if (plan.declaration.errorType) lines.push("  frame->failed = false;");
   if (
     plan.declaration.returnType.name !== "void"
@@ -453,7 +620,7 @@ function generateStart(plan: AsyncFunctionPlan): string {
     const name = frameField(input.name);
     lines.push(`  frame->${name} = ${name};`);
   }
-  for (const site of plan.awaits.values()) lines.push(`  frame->child_${site.index} = NULL;`);
+  for (const index of plan.children.keys()) lines.push(`  frame->child_${index} = NULL;`);
   lines.push("  return frame;", "}");
   return lines.join("\n");
 }
@@ -471,7 +638,7 @@ function frameInputs(plan: AsyncFunctionPlan): readonly { readonly name: string;
 }
 
 function emitAwaitArguments(
-  site: AwaitSite,
+  site: Pick<AwaitSite, "receiver" | "target" | "call">,
   parent: AsyncFunctionPlan,
   fileName: string,
 ): string[] {
@@ -499,32 +666,50 @@ function generatePoll(
   for (const statement of plan.declaration.body) {
     if (statement.kind === "variable") {
       const initializer = statement.initializer!;
+      if (initializer.kind === "spawn") {
+        const site = plan.spawns.get(initializer.location.offset)!;
+        const target = planByKey.get(targetKey(site.target))!;
+        const arguments_ = emitAwaitArguments(site, plan, fileName);
+        cases.push(caseBlock(state, [
+          `frame->child_${site.index} = ${target.startName}(${["frame->task.executor", ...arguments_].join(", ")});`,
+          `frame->${frameField(statement.name)} = &frame->child_${site.index}->task;`,
+          `z_async_enqueue(frame->task.executor, &frame->child_${site.index}->task);`,
+          `frame->state = ${state + 1};`,
+          "continue;",
+        ]));
+        state += 1;
+        continue;
+      }
       const operation = awaitOperation(initializer);
       if (operation) {
         const site = plan.awaits.get(operation.expression.location.offset)!;
-        const target = planByKey.get(targetKey(site.target))!;
-        const arguments_ = emitAwaitArguments(site, plan, fileName);
-        cases.push(
-          caseBlock(state, [
-            `frame->child_${site.index} = ${target.startName}(${arguments_.join(", ")});`,
-            `frame->state = ${state + 1};`,
-            "return;",
-          ]),
-        );
+        if (!site.spawn) {
+          const target = planByKey.get(targetKey(site.target))!;
+          const arguments_ = emitAwaitArguments(site, plan, fileName);
+          cases.push(
+            caseBlock(state, [
+              `frame->child_${site.index} = ${target.startName}(${["frame->task.executor", ...arguments_].join(", ")});`,
+              `z_async_enqueue(frame->task.executor, &frame->child_${site.index}->task);`,
+              `frame->state = ${state + 1};`,
+              "continue;",
+            ]),
+          );
+          state += 1;
+        }
         cases.push(
           caseBlock(
-            state + 1,
+            state,
             awaitCompletion(
               site,
               plan,
               `frame->${frameField(statement.name)}`,
               plan.locals.get(statement.name)!,
               false,
-              state + 2,
+              state + 1,
             ),
           ),
         );
-        state += 2;
+        state += 1;
       } else {
         const type = plan.locals.get(statement.name)!;
         cases.push(caseBlock(state, [
@@ -543,20 +728,24 @@ function generatePoll(
       const operation = statement.expression ? awaitOperation(statement.expression) : null;
       if (operation) {
         const site = plan.awaits.get(operation.expression.location.offset)!;
-        const target = planByKey.get(targetKey(site.target))!;
-        const arguments_ = emitAwaitArguments(site, plan, fileName);
-        cases.push(caseBlock(state, [
-          `frame->child_${site.index} = ${target.startName}(${arguments_.join(", ")});`,
-          `frame->state = ${state + 1};`,
-          "return;",
-        ]));
-        cases.push(caseBlock(state + 1, awaitCompletion(
+        if (!site.spawn) {
+          const target = planByKey.get(targetKey(site.target))!;
+          const arguments_ = emitAwaitArguments(site, plan, fileName);
+          cases.push(caseBlock(state, [
+            `frame->child_${site.index} = ${target.startName}(${["frame->task.executor", ...arguments_].join(", ")});`,
+            `z_async_enqueue(frame->task.executor, &frame->child_${site.index}->task);`,
+            `frame->state = ${state + 1};`,
+            "continue;",
+          ]));
+          state += 1;
+        }
+        cases.push(caseBlock(state, awaitCompletion(
           site,
           plan,
           "frame->result",
           plan.declaration.returnType.name,
           true,
-          state + 2,
+          state + 1,
         )));
       } else {
         const completion = statement.expression
@@ -570,49 +759,90 @@ function generatePoll(
         cases.push(caseBlock(state, [
           ...completion,
           ...(plan.declaration.errorType ? ["frame->failed = false;"] : []),
-          "frame->task.completed = true;",
-          "return;",
+          `frame->state = ${finalizeStateMarker};`,
+          "continue;",
         ]));
       }
-      state += operation ? 2 : 1;
+      state += 1;
       continue;
     }
     if (statement.kind === "throw") {
       cases.push(caseBlock(state, [
         `frame->error = ${emitFrameExpression(statement.expression, plan, fileName)};`,
         "frame->failed = true;",
-        "frame->task.completed = true;",
-        "return;",
+        `frame->state = ${finalizeStateMarker};`,
+        "continue;",
       ]));
       state += 1;
       continue;
     }
     if (statement.kind === "expressionStatement") {
+      if (statement.expression.kind === "spawn") {
+        const site = plan.spawns.get(statement.expression.location.offset)!;
+        const target = planByKey.get(targetKey(site.target))!;
+        const arguments_ = emitAwaitArguments(site, plan, fileName);
+        cases.push(caseBlock(state, [
+          `frame->child_${site.index} = ${target.startName}(${["frame->task.executor", ...arguments_].join(", ")});`,
+          `z_async_enqueue(frame->task.executor, &frame->child_${site.index}->task);`,
+          `frame->state = ${state + 1};`,
+          "continue;",
+        ]));
+        state += 1;
+        continue;
+      }
       const operation = awaitOperation(statement.expression)!;
       const site = plan.awaits.get(operation.expression.location.offset)!;
-      const target = planByKey.get(targetKey(site.target))!;
-      const arguments_ = emitAwaitArguments(site, plan, fileName);
-      cases.push(caseBlock(state, [
-        `frame->child_${site.index} = ${target.startName}(${arguments_.join(", ")});`,
-        `frame->state = ${state + 1};`,
-        "return;",
-      ]));
-      cases.push(caseBlock(state + 1, awaitCompletion(site, plan, null, null, false, state + 2)));
-      state += 2;
+      if (!site.spawn) {
+        const target = planByKey.get(targetKey(site.target))!;
+        const arguments_ = emitAwaitArguments(site, plan, fileName);
+        cases.push(caseBlock(state, [
+          `frame->child_${site.index} = ${target.startName}(${["frame->task.executor", ...arguments_].join(", ")});`,
+          `z_async_enqueue(frame->task.executor, &frame->child_${site.index}->task);`,
+          `frame->state = ${state + 1};`,
+          "continue;",
+        ]));
+        state += 1;
+      }
+      cases.push(caseBlock(state, awaitCompletion(site, plan, null, null, false, state + 1)));
+      state += 1;
     }
   }
   if (plan.declaration.returnType.name === "void" && !endsWithTermination(plan.declaration.body)) {
     cases.push(caseBlock(state, [
       ...(plan.declaration.errorType ? ["frame->failed = false;"] : []),
-      "frame->task.completed = true;",
-      "return;",
+      `frame->state = ${finalizeStateMarker};`,
+      "continue;",
     ]));
+    state += 1;
   }
+  const finalizeState = state;
+  for (const site of plan.spawns.values()) {
+    const target = planByKey.get(targetKey(site.target))!;
+    const child = `frame->child_${site.index}`;
+    cases.push(caseBlock(state, [
+      `if (${child} != NULL) {`,
+      `  if (!z_async_wait(&frame->task, &${child}->task)) return;`,
+      `  ${target.destroyName}(${child});`,
+      `  free(${child});`,
+      `  frame->child_${site.index} = NULL;`,
+      ...(site.binding ? [`  frame->${frameField(site.binding)} = NULL;`] : []),
+      "}",
+      `frame->state = ${state + 1};`,
+      "continue;",
+    ]));
+    state += 1;
+  }
+  cases.push(caseBlock(state, [
+    "frame->task.completed = true;",
+    "return;",
+  ]));
+  const renderedCases = cases
+    .map((item) => item.replaceAll(finalizeStateMarker, String(finalizeState)));
   return `static void ${plan.pollName}(Z_AsyncTask *task) {
   ${plan.frameName} *frame = (${plan.frameName} *)task;
   for (;;) {
     switch (frame->state) {
-${cases.map((item) => indent(item, 6)).join("\n")}
+${renderedCases.map((item) => indent(item, 6)).join("\n")}
       default:
         abort();
     }
@@ -630,8 +860,7 @@ function awaitCompletion(
 ): string[] {
   const child = `frame->child_${site.index}`;
   const lines = [
-    `z_async_poll_task(&${child}->task);`,
-    `if (!${child}->task.completed) return;`,
+    `if (!z_async_wait(&frame->task, &${child}->task)) return;`,
   ];
   if (site.mode === "try") {
     lines.push(
@@ -640,9 +869,10 @@ function awaitCompletion(
       `  z_async_destroy_${targetPart(site.target)}(${child});`,
       `  free(${child});`,
       `  frame->child_${site.index} = NULL;`,
+      ...(site.spawn?.binding ? [`  frame->${frameField(site.spawn.binding)} = NULL;`] : []),
       "  frame->failed = true;",
-      "  frame->task.completed = true;",
-      "  return;",
+      `  frame->state = ${finalizeStateMarker};`,
+      "  continue;",
       "}",
     );
   } else if (site.mode === "attempt" && destination) {
@@ -680,9 +910,10 @@ function awaitCompletion(
     `free(${child});`,
     `frame->child_${site.index} = NULL;`,
   );
+  if (site.spawn?.binding) lines.push(`frame->${frameField(site.spawn.binding)} = NULL;`);
   if (terminal) {
     if (parent.declaration.errorType) lines.push("frame->failed = false;");
-    lines.push("frame->task.completed = true;", "return;");
+    lines.push(`frame->state = ${finalizeStateMarker};`, "continue;");
   } else {
     lines.push(`frame->state = ${nextState};`, "continue;");
   }
@@ -865,6 +1096,7 @@ function cScalar(type: string): string {
 }
 
 function cFrameType(type: string, types: AsyncTypeContext): string {
+  if (parseTaskType(type)) return "Z_AsyncTask *";
   if (scalarTypes.has(type)) return cScalar(type);
   const aggregate = types.structs.get(type);
   if (aggregate) return aggregate.kind === "class" ? `Z_${type} *` : `Z_${type}`;
@@ -873,6 +1105,7 @@ function cFrameType(type: string, types: AsyncTypeContext): string {
 }
 
 function isSupportedFrameType(type: string, types: AsyncTypeContext, visiting = new Set<string>()): boolean {
+  if (parseTaskType(type)) return true;
   if (scalarTypes.has(type)) return true;
   if (visiting.has(type)) return true;
   const aggregate = types.structs.get(type);
@@ -1001,7 +1234,7 @@ function unsupported(
 ): never {
   throw new DiagnosticError(fileName, location, message, {
     code: "Z0700",
-    notes: ["Phase 1 currently executes ownership-aware function and method task frames with direct sequential awaits"],
+    notes: ["Phase 1 currently executes ownership-aware task frames, FIFO scheduling, direct await, and root-scoped spawn"],
     helps: [help],
   });
 }
