@@ -58,6 +58,7 @@ import {
   publicObjCTypeName,
 } from "./objc-types.ts";
 import { parseOptionType } from "./option-types.ts";
+import { parseViewType } from "./view-types.ts";
 
 export type ObjCCallInfo = {
   readonly selector: string;
@@ -114,6 +115,8 @@ export type ForeignCallArgumentPlan =
   | { readonly kind: "release"; readonly source: number; readonly callback: ForeignCallbackType; readonly functionType: string };
 
 export type SemanticInfo = {
+  readonly viewReturnExpressions: ReadonlySet<number>;
+  readonly viewBindingOwners: ReadonlyMap<number, string>;
   readonly movedExpressions: ReadonlySet<number>;
   readonly managedCopies: ReadonlySet<number>;
   readonly sliceConversions: ReadonlyMap<number, { readonly sourceType: string; readonly targetType: string }>;
@@ -156,6 +159,10 @@ export type SemanticInfo = {
 };
 
 type AnalysisState = {
+  readonly viewReturnExpressions: Set<number>;
+  readonly viewBindingOwners: Map<number, string>;
+  readonly viewCallOrigins: Map<number, { readonly owner: string; readonly location: SourceLocation }>;
+  readonly viewOrigins: Map<string, { readonly owner: string; readonly location: SourceLocation }>;
   readonly movedExpressions: Set<number>;
   readonly managedCopies: Set<number>;
   readonly sliceConversions: Map<number, { readonly sourceType: string; readonly targetType: string }>;
@@ -282,6 +289,10 @@ export function analyze(
     if (module.cPlusPlus) cPlusPlus = true;
   }
   const state: AnalysisState = {
+    viewReturnExpressions: new Set(),
+    viewBindingOwners: new Map(),
+    viewCallOrigins: new Map(),
+    viewOrigins: new Map(),
     movedExpressions: new Set(),
     managedCopies: new Set(),
     sliceConversions: new Map(),
@@ -477,6 +488,12 @@ export function analyze(
       );
     }
     validateFunctionSignature(declaration, structs, enums, foreignNamedTypes, fileName);
+    if (parseViewType(declaration.returnType.name)) {
+      throw new DiagnosticError(fileName, declaration.returnType.location, "view returns require a borrowed instance method receiver", {
+        code: "Z0206",
+        helps: ["declare the projection as a synchronous instance method on the owner type"],
+      });
+    }
   }
 
   validateValueLayouts(program.structs, program.enums, structs, enums, fileName);
@@ -565,6 +582,9 @@ function analyzeStructDeclaration(
     }
     members.add(field.name);
     validateType(field.type, structs, enums, foreignNamedTypes, fileName, false);
+    if (containsViewType(field.type.name)) {
+      throw new DiagnosticError(fileName, field.type.location, "view values cannot be stored in fields", { code: "Z0206" });
+    }
     if (containsSliceType(field.type.name)) {
       throw new DiagnosticError(fileName, field.location, "Slice values cannot be stored in struct or class fields");
     }
@@ -586,6 +606,25 @@ function analyzeStructDeclaration(
       });
     }
     validateFunctionSignature(method, structs, enums, foreignNamedTypes, fileName);
+    const view = parseViewType(method.returnType.name);
+    if (view) {
+      if (declaration.kind !== "struct") {
+        throw new DiagnosticError(fileName, method.returnType.location, "the zero-overhead view tier requires a value-struct owner", {
+          code: "Z0206",
+          notes: ["ARC class aliases could otherwise mutate or reallocate projected storage through another reference"],
+          helps: ["move the projected storage into a value struct, or return an owned snapshot from the class"],
+        });
+      }
+      if (method.static || method.async || method.receiverMode === "inout" || method.receiverMode === "move" || method.errorType) {
+        throw new DiagnosticError(fileName, method.returnType.location, "a view return requires a synchronous, non-throwing borrowed instance method", {
+          code: "Z0206",
+          notes: ["the first view tier ties the result directly to an immutable `this` receiver"],
+        });
+      }
+      if (structs.get(view.target)?.kind !== "struct") {
+        throw new DiagnosticError(fileName, method.returnType.location, "the first view tier requires a concrete Z struct target", { code: "Z0206" });
+      }
+    }
   }
   if (declaration.constructor) {
     validateFunctionSignature(constructorFunction(declaration), structs, enums, foreignNamedTypes, fileName);
@@ -607,6 +646,9 @@ function analyzeTraitDeclaration(
     }
     methods.add(method.name);
     validateFunctionSignature(method, structs, enums, foreignNamedTypes, fileName);
+    if (containsViewType(method.returnType.name)) {
+      throw new DiagnosticError(fileName, method.returnType.location, "trait requirements cannot expose receiver-tied views in the first view tier", { code: "Z0206" });
+    }
   }
 }
 
@@ -671,6 +713,9 @@ function analyzeEnumDeclaration(
     names.add(variant.name);
     if (variant.payload) {
       validateType(variant.payload, structs, enums, foreignNamedTypes, fileName, false);
+      if (containsViewType(variant.payload.name)) {
+        throw new DiagnosticError(fileName, variant.payload.location, "view values cannot be stored in enum payloads", { code: "Z0206" });
+      }
       if (containsSliceType(variant.payload.name)) {
         throw new DiagnosticError(fileName, variant.location, "Slice values cannot be stored in enum payloads");
       }
@@ -692,6 +737,9 @@ function validateFunctionSignature(
   fileName: string,
 ): void {
   validateType(declaration.returnType, structs, enums, foreignNamedTypes, fileName, true);
+  if (containsViewType(declaration.returnType.name) && !parseViewType(declaration.returnType.name)) {
+    throw new DiagnosticError(fileName, declaration.returnType.location, "view values cannot be nested inside returned storage", { code: "Z0206" });
+  }
   if (containsSliceType(declaration.returnType.name)) {
     throw new DiagnosticError(fileName, declaration.returnType.location, "returning Slice values requires an explicit lifetime contract and is not implemented yet");
   }
@@ -708,6 +756,9 @@ function validateFunctionSignature(
     }
     validateUserName(parameter.name, parameter.location, fileName);
     validateType(parameter.type, structs, enums, foreignNamedTypes, fileName, false);
+    if (containsViewType(parameter.type.name)) {
+      throw new DiagnosticError(fileName, parameter.type.location, "view is a receiver-tied return capability, not a parameter type", { code: "Z0206" });
+    }
     const slice = parseSliceType(parameter.type.name);
     if (declaration.async && (parameter.mode !== "value" || slice)) {
       throw new DiagnosticError(fileName, parameter.location, `async parameter ${JSON.stringify(parameter.name)} cannot borrow storage in the first async tier`, {
@@ -812,6 +863,8 @@ function analyzeFunction(
   state.moveOrigins.clear();
   state.borrowOrigins.clear();
   state.iterationBorrowOrigins.clear();
+  state.viewCallOrigins.clear();
+  state.viewOrigins.clear();
   const locals = new Map<string, ValueType>();
   if (receiver && !declaration.static) {
     const ownedAsyncClassReceiver = Boolean(declaration.async && receiver.kind === "class");
@@ -1049,9 +1102,17 @@ function analyzeStatements(
   fileName: string,
   state: AnalysisState,
 ): boolean {
+  const inheritedViews = new Set(state.viewOrigins.keys());
   let returns = false;
   let stops = false;
-  for (const statement of statements) {
+  for (let index = 0; index < statements.length; index += 1) {
+    const statement = statements[index];
+    for (const name of state.viewOrigins.keys()) {
+      if (inheritedViews.has(name)) continue;
+      if (!statements.slice(index).some((candidate) => syntaxReferencesName(candidate, name))) {
+        state.viewOrigins.delete(name);
+      }
+    }
     if (stops) {
       throw new DiagnosticError(
         fileName,
@@ -1065,7 +1126,19 @@ function analyzeStatements(
     returns = statementReturns(statement);
     stops = statementStopsFlow(statement);
   }
+  for (const name of state.viewOrigins.keys()) {
+    if (!inheritedViews.has(name)) state.viewOrigins.delete(name);
+  }
   return returns;
+}
+
+function syntaxReferencesName(value: unknown, name: string): boolean {
+  if (!value || typeof value !== "object") return false;
+  if ((value as { kind?: string; name?: string }).kind === "identifier"
+    && (value as { name?: string }).name === name) return true;
+  if (Array.isArray(value)) return value.some((item) => syntaxReferencesName(item, name));
+  return Object.entries(value as Record<string, unknown>)
+    .some(([key, item]) => key !== "location" && key !== "nameLocation" && syntaxReferencesName(item, name));
 }
 
 function statementReturns(statement: Statement | undefined): boolean {
@@ -1122,12 +1195,21 @@ function analyzeStatement(
       if (!statement.initializer) {
         const declaredType = statement.type!;
         validateType(declaredType, structs, enums, state.foreignNamedTypes, fileName, false);
+        if (containsViewType(declaredType.name)) {
+          throw new DiagnosticError(fileName, declaredType.location, "view values cannot be declared as uninitialized storage", { code: "Z0206" });
+        }
         if (containsSliceType(declaredType.name)) {
           throw new DiagnosticError(fileName, declaredType.location, "Slice values cannot be stored in local bindings yet");
         }
         locals.set(statement.name, `${uninitializedPrefix}${mutablePrefix}${declaredType.name}`);
         state.bindingTypes.set(statement.nameLocation.offset, declaredType.name);
         return;
+      }
+      if (statement.type && parseViewType(statement.type.name)) {
+        throw new DiagnosticError(fileName, statement.type.location, "view locals are inferred from a receiver-tied method call", {
+          code: "Z0206",
+          helps: ["omit the annotation and bind the view with `const`"],
+        });
       }
       if (statement.initializer.kind === "closure") {
         if (statement.mutable) {
@@ -1184,6 +1266,21 @@ function analyzeStatement(
           statement.initializer.location,
           `integer literal ${statement.initializer.value} does not fit default i32; add an explicit integer type`,
         );
+      }
+      const view = parseViewType(String(variableType));
+      if (view) {
+        if (statement.mutable) {
+          throw new DiagnosticError(fileName, statement.location, "a view binding must use const", { code: "Z0206" });
+        }
+        const origin = state.viewCallOrigins.get(statement.initializer.location.offset);
+        if (!origin) {
+          throw new DiagnosticError(fileName, statement.initializer.location, "a view must be bound directly from a receiver-tied method call", { code: "Z0206" });
+        }
+        locals.set(statement.name, String(variableType));
+        state.bindingTypes.set(statement.nameLocation.offset, String(variableType));
+        state.viewOrigins.set(statement.name, origin);
+        state.viewBindingOwners.set(statement.nameLocation.offset, origin.owner);
+        return;
       }
       if (statement.initializer.kind === "closure") {
         const closure = state.closures.get(statement.initializer.location.offset)!;
@@ -1247,6 +1344,7 @@ function analyzeStatement(
         inferExpression(statement.target, locals, globals, structs, enums, fileName, state);
         throw new DiagnosticError(fileName, statement.target.location, "assignment target must be local mutable storage");
       }
+      rejectOwnerMutationWhileViewed(root.name, statement.target.location, fileName, state);
       const rootDeclaration = structs.get(underlyingType(stored));
       const mutatesThroughClassReference = statement.target.kind !== "identifier"
         && rootDeclaration?.kind === "class"
@@ -1298,6 +1396,21 @@ function analyzeStatement(
       }
       if (expected === "void") {
         throw new DiagnosticError(fileName, statement.location, "a void function cannot return a value");
+      }
+      const view = parseViewType(expected);
+      if (view) {
+        const root = storageRoot(statement.expression);
+        if (!root || root.name !== "this" || (statement.expression.kind !== "member" && statement.expression.kind !== "index")) {
+          throw new DiagnosticError(fileName, statement.expression.location, "a view method must return a field or indexed element derived directly from this", {
+            code: "Z0206",
+            notes: ["forwarding another view or returning local storage would let it escape the wrong owner"],
+          });
+        }
+        const actual = inferExpression(statement.expression, locals, globals, structs, enums, fileName, state);
+        requireAssignable(view.target, actual, statement.expression, fileName, state.foreignNamedTypes, state.numericLiteralTypes);
+        state.viewReturnExpressions.add(statement.expression.location.offset);
+        requireOutParametersInitialized(owner, locals, statement.location, fileName);
+        return;
       }
       let actual = inferDirectValue(statement.expression, owner, locals, globals, structs, enums, fileName, state);
       actual = contextualCStringLiteral(expected, statement.expression, state) ?? actual;
@@ -1650,6 +1763,13 @@ function inferClosureExpression(
       });
     }
     const type = String(underlyingType(stored));
+    if (parseViewType(type)) {
+      throw new DiagnosticError(fileName, capture.location, `view ${JSON.stringify(capture.name)} cannot be captured by a closure`, {
+        code: "Z0206",
+        notes: ["the closure could outlive the owner storage projected by the view"],
+        helps: ["use the view directly in its lexical scope or capture an explicitly owned snapshot"],
+      });
+    }
     if (type.startsWith("__z_closure_")) {
       throw new DiagnosticError(fileName, capture.location, "capturing another closure requires escaping closure environments");
     }
@@ -1685,6 +1805,9 @@ function inferClosureExpression(
     ?? (expectedFunction ? { name: expectedFunction.returnType, location: expression.location } : null);
   if (expression.body.kind === "block" && !contextualReturn) {
     throw new DiagnosticError(fileName, expression.location, "a block-bodied closure requires an explicit or contextual return type");
+  }
+  if (contextualReturn && parseViewType(contextualReturn.name)) {
+    throw new DiagnosticError(fileName, contextualReturn.location, "closures cannot return receiver-tied views", { code: "Z0206" });
   }
   const provisionalReturn = contextualReturn ?? { name: "void", location: expression.location };
   if (expression.returnType) validateType(expression.returnType, structs, enums, state.foreignNamedTypes, fileName, true);
@@ -2883,9 +3006,17 @@ function inferExpressionInner(
         }
       }
       const receiverType = inferExpression(expression.object, locals, globals, structs, enums, fileName, state);
-      const array = parseFixedArrayType(String(receiverType));
-      const slice = parseSliceType(String(receiverType));
-      const dynamic = parseDynamicArrayType(String(receiverType));
+      const receiverView = parseViewType(String(receiverType));
+      if (receiverView && expression.object.kind !== "identifier") {
+        throw new DiagnosticError(fileName, expression.object.location, "bind a returned view to const before reading its fields", {
+          code: "Z0206",
+          helps: ["use `const projected = owner.viewMethod();`"],
+        });
+      }
+      const receiverValueType = receiverView?.target ?? String(receiverType);
+      const array = parseFixedArrayType(receiverValueType);
+      const slice = parseSliceType(receiverValueType);
+      const dynamic = parseDynamicArrayType(receiverValueType);
       if (array || slice || dynamic) {
         if (hasCleanupType(receiverType, structs, enums, state.foreignTypes) && !isNamedStorageExpression(expression.object)) {
           throw new DiagnosticError(fileName, expression.object.location, "a cleanup-bearing array temporary must be bound before reading its length");
@@ -2915,8 +3046,8 @@ function inferExpressionInner(
       if (hasCleanupType(receiverType, structs, enums, state.foreignTypes) && !isNamedStorageExpression(expression.object)) {
         throw new DiagnosticError(fileName, expression.object.location, "a cleanup-bearing temporary must be bound before borrowing one of its members");
       }
-      const declaration = structs.get(receiverType);
-      const foreignRecord = state.foreignNamedTypes.get(String(receiverType));
+      const declaration = structs.get(receiverValueType);
+      const foreignRecord = state.foreignNamedTypes.get(receiverValueType);
       if (foreignRecord?.kind === "record") {
         const field = foreignRecord.fields.find((candidate) => candidate.name === expression.property);
         if (field) {
@@ -3102,7 +3233,9 @@ function inferExpressionInner(
           }
         }
         const receiverType = inferExpression(expression.callee.object, locals, globals, structs, enums, fileName, state);
-        const integerReceiverType = canonicalType(receiverType, state.foreignNamedTypes);
+        const receiverView = parseViewType(String(receiverType));
+        const receiverValueType = receiverView?.target ?? String(receiverType);
+        const integerReceiverType = canonicalType(receiverValueType, state.foreignNamedTypes);
         const integerMethod = isIntegerType(integerReceiverType)
           ? integerMethodKind(expression.callee.property)
           : null;
@@ -3129,7 +3262,7 @@ function inferExpressionInner(
           state.integerOperations.set(expression.location.offset, { kind: integerMethod, type: integerReceiverType });
           return integerReceiverType;
         }
-        const dynamic = parseDynamicArrayType(String(receiverType));
+        const dynamic = parseDynamicArrayType(receiverValueType);
         if (dynamic) {
           rejectLabeledArguments(expression.argumentLabels, expression.location, fileName);
           if (expression.callee.property !== "push") {
@@ -3139,6 +3272,7 @@ function inferExpressionInner(
             throw new DiagnosticError(fileName, expression.location, `"push" expects 1 argument, received ${expression.arguments.length}`);
           }
           const root = storageRoot(expression.callee.object);
+          if (root) rejectOwnerMutationWhileViewed(root.name, expression.callee.location, fileName, state);
           const stored = root ? locals.get(root.name) : null;
           if (!root || !stored || !isMutableBinding(stored)) {
             const iteration = root ? state.iterationBorrowOrigins.get(root.name) : null;
@@ -3163,7 +3297,7 @@ function inferExpressionInner(
           consumeOwnedValue(expression.arguments[0], dynamic.elementType, locals, structs, enums, fileName, state);
           return "void";
         }
-        const weak = parseWeakType(String(receiverType));
+        const weak = parseWeakType(receiverValueType);
         if (weak) {
           rejectLabeledArguments(expression.argumentLabels, expression.location, fileName);
           if (expression.callee.property !== "upgrade") {
@@ -3177,7 +3311,7 @@ function inferExpressionInner(
           }
           return weakResultTypeName(weak.target);
         }
-        const objcReceiverType = objcReceiver(receiverType, state);
+        const objcReceiverType = objcReceiver(receiverValueType, state);
         rejectNullableObjCReceiver(receiverType, expression.callee.object.location, fileName, state);
         if (objcReceiverType) {
           const method = findObjCMethod(
@@ -3202,7 +3336,7 @@ function inferExpressionInner(
           state.foreignCallTypes.set(expression.location.offset, String(result));
           return result;
         }
-        const declaration = structs.get(receiverType);
+        const declaration = structs.get(receiverValueType);
         const field = declaration?.fields.find((candidate) => candidate.name === expression.callee.property);
         const fieldFunctionType = field ? parseFunctionType(field.type.name) : null;
         if (declaration && field && fieldFunctionType) {
@@ -3234,6 +3368,12 @@ function inferExpressionInner(
         if (method.static) {
           throw new DiagnosticError(fileName, expression.callee.location, `static method ${JSON.stringify(method.name)} must be called as ${declaration.name}.${method.name}()`);
         }
+        if (receiverView && (method.receiverMode === "inout" || method.receiverMode === "move")) {
+          throw new DiagnosticError(fileName, expression.callee.object.location, `view ${JSON.stringify(receiverView.target)} is read-only`, {
+            code: "Z0205",
+            helps: ["call the mutating or consuming method on the owner after the view's last use"],
+          });
+        }
         if (method.visibility === "private" && state.activeReceiver !== declaration.name) {
           throw new DiagnosticError(fileName, expression.callee.location, `method ${JSON.stringify(method.name)} is private to ${declaration.kind} ${JSON.stringify(declaration.name)}`);
         }
@@ -3262,6 +3402,7 @@ function inferExpressionInner(
             );
           }
           const storedReceiver = locals.get(mutableReceiverRoot.name);
+          rejectOwnerMutationWhileViewed(mutableReceiverRoot.name, expression.callee.object.location, fileName, state);
           const unavailableClassBorrow = declaration.kind === "class"
             && storedReceiver
             && isBorrowedBinding(storedReceiver)
@@ -3306,11 +3447,24 @@ function inferExpressionInner(
           }
         }
         if (method.receiverMode === "move") {
+          if (consumingReceiverRoot) rejectOwnerMutationWhileViewed(consumingReceiverRoot.name, expression.callee.object.location, fileName, state);
           consumeOwnedValue(expression.callee.object, receiverType, locals, structs, enums, fileName, state);
         }
         if (method.errorType) {
           if (!allowThrowingCall) throw new DiagnosticError(fileName, expression.location, "throwing call requires `attempt` or `try`");
           return resultTypeName(method.returnType.name, method.errorType.name);
+        }
+        const returnedView = parseViewType(method.returnType.name);
+        if (returnedView) {
+          const root = storageRoot(expression.callee.object);
+          if (!root || !locals.has(root.name)) {
+            throw new DiagnosticError(fileName, expression.callee.object.location, "a view-returning method requires a named owner binding", {
+              code: "Z0206",
+              helps: ["bind the owner before requesting a view"],
+            });
+          }
+          const ownerName = state.viewOrigins.get(root.name)?.owner ?? root.name;
+          state.viewCallOrigins.set(expression.location.offset, { owner: ownerName, location: expression.callee.object.location });
         }
         return method.returnType.name;
       }
@@ -3466,6 +3620,12 @@ function checkArguments(
   for (let index = 0; index < target.parameters.length; index += 1) {
     const parameter = target.parameters[index];
     const argument = args[index];
+    if (argument.kind === "identifier" && parseViewType(String(underlyingType(locals.get(argument.name) ?? "unknown")))) {
+      throw new DiagnosticError(fileName, argument.location, `view ${JSON.stringify(argument.name)} cannot be forwarded to another function`, {
+        code: "Z0206",
+        helps: ["read the needed fields in this scope, or create an explicitly owned snapshot"],
+      });
+    }
     if (parameter.mode === "out") {
       if (argument.kind !== "argumentReference" || argument.access !== "out") {
         const binding = argument.kind === "identifier" ? argument.name : "value";
@@ -3482,6 +3642,7 @@ function checkArguments(
         );
       }
       const stored = locals.get(argument.name);
+      rejectOwnerMutationWhileViewed(argument.name, argument.location, fileName, state);
       if (!stored) throw new DiagnosticError(fileName, argument.location, `unknown name ${JSON.stringify(argument.name)}`);
       if (!isMutableBinding(stored)) {
         throw new DiagnosticError(fileName, argument.location, `out argument ${JSON.stringify(argument.name)} requires a mutable let binding`, {
@@ -3519,6 +3680,7 @@ function checkArguments(
         );
       }
       const stored = locals.get(argument.name);
+      rejectOwnerMutationWhileViewed(argument.name, argument.location, fileName, state);
       if (!stored) throw new DiagnosticError(fileName, argument.location, `unknown name ${JSON.stringify(argument.name)}`);
       if (initializationState(stored) === "uninitialized") {
         throw new DiagnosticError(fileName, argument.location, `inout argument ${JSON.stringify(argument.name)} must be initialized before the call`);
@@ -3599,14 +3761,15 @@ function checkArguments(
         );
       }
       const actual = inferExpression(argument, locals, globals, structs, enums, fileName, state);
+      const borrowedActual = parseViewType(String(actual))?.target ?? actual;
       if (
-        hasCleanupType(actual, structs, enums, state.foreignTypes)
+        hasCleanupType(borrowedActual, structs, enums, state.foreignTypes)
         && !isNamedStorageExpression(argument)
         && argument.kind !== "template"
       ) {
         throw new DiagnosticError(fileName, argument.location, "a cleanup-bearing borrowed temporary must be bound before the call");
       }
-      requireAssignable(parameter.type.name, actual, argument, fileName, state.foreignNamedTypes, state.numericLiteralTypes);
+      requireAssignable(parameter.type.name, borrowedActual, argument, fileName, state.foreignNamedTypes, state.numericLiteralTypes);
       state.nativeArgumentAccesses.set(argument.location.offset, "in");
       continue;
     }
@@ -3754,14 +3917,15 @@ function consumeOwnedValue(
       code: "Z0204",
       notes: [
         "the containing aggregate still owns this value and remains responsible for its deterministic cleanup",
-        "receiver-tied returned views are not implemented yet",
+        "moving the field would leave the containing aggregate responsible for emptied storage",
       ],
       helps: [
-        "inspect the value through an `in` parameter or non-escaping callback, or construct an explicitly owned snapshot",
+        "inspect it through `in`, a non-escaping callback, or a value-struct `view`; use an explicitly owned snapshot when it must escape",
       ],
     });
   }
   if (expression.kind !== "identifier") return;
+  rejectOwnerMutationWhileViewed(expression.name, expression.location, fileName, state, "move");
   const stored = locals.get(expression.name);
   if (!stored) return;
   if (isBorrowedBinding(stored)) {
@@ -3814,6 +3978,24 @@ function consumeOwnedValue(
   );
   state.movedExpressions.add(expression.location.offset);
   state.moveOrigins.set(expression.name, expression.location);
+}
+
+function rejectOwnerMutationWhileViewed(
+  owner: string,
+  location: SourceLocation,
+  fileName: string,
+  state: AnalysisState,
+  action = "mutate",
+): void {
+  const active = [...state.viewOrigins.entries()].find(([, origin]) => origin.owner === owner);
+  if (!active) return;
+  const [viewName, origin] = active;
+  throw new DiagnosticError(fileName, location, `cannot ${action} ${JSON.stringify(owner)} while view ${JSON.stringify(viewName)} is live`, {
+    code: "Z0205",
+    labels: [{ location: origin.location, message: `view ${JSON.stringify(viewName)} begins here`, length: owner.length }],
+    notes: ["a receiver-tied view reads directly from its owner's storage"],
+    helps: [`finish using ${JSON.stringify(viewName)} before mutating or moving ${JSON.stringify(owner)}`],
+  });
 }
 
 function movedValueError(
@@ -3925,7 +4107,7 @@ function isBorrowedBinding(type: ValueType): boolean {
   if (type.startsWith(uninitializedPrefix)) return isBorrowedBinding(type.slice(uninitializedPrefix.length));
   if (type.startsWith(maybeUninitializedPrefix)) return isBorrowedBinding(type.slice(maybeUninitializedPrefix.length));
   if (type.startsWith(mutablePrefix)) return isBorrowedBinding(type.slice(mutablePrefix.length));
-  return type.startsWith(borrowedPrefix);
+  return type.startsWith(borrowedPrefix) || Boolean(parseViewType(String(type)));
 }
 
 function callTargetBinding(type: ValueType, target: string): ValueType {
@@ -4935,6 +5117,14 @@ function validateType(
   fileName: string,
   allowVoid: boolean,
 ): void {
+  const view = parseViewType(type.name);
+  if (view) {
+    if (parseViewType(view.target)) {
+      throw new DiagnosticError(fileName, type.location, "nested view types are not valid", { code: "Z0206" });
+    }
+    validateType({ name: view.target, location: type.location }, structs, enums, foreignNamedTypes, fileName, false);
+    return;
+  }
   if (isNullableObjCTypeName(type.name)) {
     const target = foreignNamedTypes.get(publicObjCTypeName(type.name));
     if (target?.kind !== "object") {
@@ -4949,6 +5139,9 @@ function validateType(
   }
   const functionType = parseFunctionType(type.name);
   if (functionType) {
+    if (functionType.parameters.some((parameter) => containsViewType(parameter.type)) || containsViewType(functionType.returnType)) {
+      throw new DiagnosticError(fileName, type.location, "function values cannot store or return receiver-tied views", { code: "Z0206" });
+    }
     for (const parameter of functionType.parameters) {
       if (parseFunctionType(parameter.type)) {
         throw new DiagnosticError(fileName, type.location, "nested function types are deferred beyond the first function-value tier");
@@ -4998,6 +5191,21 @@ function containsSliceType(name: string): boolean {
   if (dynamic) return containsSliceType(dynamic.elementType);
   const array = parseFixedArrayType(name);
   return array ? containsSliceType(array.elementType) : false;
+}
+
+function containsViewType(name: string): boolean {
+  if (parseViewType(name)) return true;
+  const functionType = parseFunctionType(name);
+  if (functionType) {
+    return functionType.parameters.some((parameter) => containsViewType(parameter.type))
+      || containsViewType(functionType.returnType);
+  }
+  const dynamic = parseDynamicArrayType(name);
+  if (dynamic) return containsViewType(dynamic.elementType);
+  const slice = parseSliceType(name);
+  if (slice) return containsViewType(slice.elementType);
+  const array = parseFixedArrayType(name);
+  return array ? containsViewType(array.elementType) : false;
 }
 
 function requireAssignable(

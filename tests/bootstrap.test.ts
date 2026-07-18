@@ -1078,20 +1078,6 @@ test("compiles a desktop ownership slice and preserves its current pressure wall
   ], { input: artifact.source, encoding: "utf8" });
   assert.equal(compilation.status, 0, compilation.stderr);
 
-  const borrowedView = `
-    struct Document { title: String; }
-    class Workspace { document: Document; }
-    function activeTitle(in workspace: Workspace): String {
-      return workspace.document.title;
-    }
-    function main(): i32 { return 0; }
-  `;
-  const borrowedViewDiagnostic = diagnostics(borrowedView, "desktop-borrowed-view.z")[0];
-  assert.equal(borrowedViewDiagnostic.code, "Z0204");
-  assert.match(borrowedViewDiagnostic.message, /cannot move a cleanup-bearing field or element out of its owner/);
-  assert.match(borrowedViewDiagnostic.message, /receiver-tied returned views are not implemented yet/);
-  assert.match(borrowedViewDiagnostic.message, /non-escaping callback.*owned snapshot/);
-
   const windowFieldOffset = source.indexOf("window: AppKit.NSWindow") + "window: AppKit.".length + 1;
   assert.match(hover(source, example, windowFieldOffset)?.contents.value ?? "", /class NSWindow/);
 });
@@ -1102,16 +1088,116 @@ test("compares scoped document borrows with independently owned snapshots", () =
   const generated = compileToC(source, example);
   assert.match(
     generated,
-    /Workspace_withDocument\(const Z_[A-Za-z0-9_]*Workspace \*self, int32_t id, const Z_Function_[A-Za-z0-9_]+ \*visit\)/,
+    /DocumentStore_withDocument\(const Z_[A-Za-z0-9_]*DocumentStore \*self, int32_t id, const Z_Function_[A-Za-z0-9_]+ \*visit\)/,
   );
   assert.match(generated, /const Z_[A-Za-z0-9_]*Document \*document = &/);
-  assert.match(generated, /Workspace_documentSnapshot\(const Z_[A-Za-z0-9_]*Workspace \*self, int32_t id\)/);
+  assert.match(generated, /DocumentStore_documentSnapshot\(const Z_[A-Za-z0-9_]*DocumentStore \*self, int32_t id\)/);
+  assert.match(generated, /const Z_[A-Za-z0-9_]*Document \*\s*Z_[A-Za-z0-9_]*DocumentStore_documentAt\(const Z_[A-Za-z0-9_]*DocumentStore \*self, uintptr_t index\)/);
+  assert.match(generated, /return &\(\(\(self->documents\)\.data\[/);
   assert.match(generated, /Z_String _z_string_[0-9]+ = z_string_new\(\);/);
   assert.match(generated, /z_string_append_bytes\([^;]+document[^;]+title[^;]+length\);/);
 
   const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
-  assert.equal(result.stdout, "scoped 2: Interop Notes\nsnapshot 2: Interop Notes\n");
+  assert.equal(result.stdout, "scoped 2: Interop Notes\nview 2: Interop Notes\nsnapshot 2: Interop Notes\n");
+
+  const liveMutation = source.replace(
+    "console.log(`view ${projected.id}: ${projected.title}`);",
+    "documents.open(Document({ id: 9, title: \"Invalidation\" }));\n  console.log(`view ${projected.id}: ${projected.title}`);",
+  );
+  const mutationDiagnostic = diagnostics(liveMutation, example)[0];
+  assert.equal(mutationDiagnostic.code, "Z0205");
+  assert.match(mutationDiagnostic.message, /cannot mutate .*documents.* while view .*projected.* is live/);
+
+  const viewOffset = source.indexOf("projected =") + 1;
+  assert.match(hover(source, example, viewOffset)?.contents.value ?? "", /view Document.*view of documents/);
+});
+
+test("keeps receiver-tied views read-only, local, and value-struct-owned", () => {
+  const base = `
+    struct Item { value: i32; }
+    struct Store {
+      items: Array<Item>;
+      function at(index: usize): view Item { return this.items[index]; }
+      function append(inout this, item: Item): void { this.items.push(item); }
+    }
+  `;
+
+  const liveMutation = `${base}
+    function main(): i32 {
+      let store = Store({ items: Array<Item>() });
+      store.append(Item({ value: 1 }));
+      const item = store.at(0);
+      store.append(Item({ value: 2 }));
+      return item.value;
+    }
+  `;
+  assert.equal(diagnostics(liveMutation, "view-live-mutation.z")[0].code, "Z0205");
+
+  const mutationAfterBranch = `${base}
+    function main(): i32 {
+      let store = Store({ items: Array<Item>() });
+      store.append(Item({ value: 1 }));
+      const item = store.at(0);
+      if (true) { const observed = 1; }
+      store.append(Item({ value: 2 }));
+      return item.value;
+    }
+  `;
+  assert.equal(diagnostics(mutationAfterBranch, "view-live-after-branch.z")[0].code, "Z0205");
+
+  const capture = `${base}
+    function main(): i32 {
+      let store = Store({ items: Array<Item>() });
+      store.append(Item({ value: 1 }));
+      const item = store.at(0);
+      const read = () => item.value;
+      return read();
+    }
+  `;
+  const captureDiagnostic = diagnostics(capture, "view-capture.z")[0];
+  assert.equal(captureDiagnostic.code, "Z0206");
+  assert.match(captureDiagnostic.message, /cannot be captured/);
+
+  const forwarded = `${base}
+    function inspect(in item: Item): i32 { return item.value; }
+    function main(): i32 {
+      let store = Store({ items: Array<Item>() });
+      store.append(Item({ value: 1 }));
+      const item = store.at(0);
+      return inspect(item);
+    }
+  `;
+  const forwardDiagnostic = diagnostics(forwarded, "view-forward.z")[0];
+  assert.equal(forwardDiagnostic.code, "Z0206");
+  assert.match(forwardDiagnostic.message, /cannot be forwarded/);
+
+  const classOwner = `
+    struct Item { value: i32; }
+    class Store {
+      item: Item;
+      function current(): view Item { return this.item; }
+    }
+    function main(): i32 { return 0; }
+  `;
+  const classDiagnostic = diagnostics(classOwner, "view-class-owner.z")[0];
+  assert.equal(classDiagnostic.code, "Z0206");
+  assert.match(classDiagnostic.message, /value-struct owner/);
+
+  const wrongProjection = `
+    struct Item { value: i32; }
+    struct Store {
+      item: Item;
+      function current(): view Item {
+        const local = Item({ value: 1 });
+        return local;
+      }
+    }
+    function main(): i32 { return 0; }
+  `;
+  const projectionDiagnostic = diagnostics(wrongProjection, "view-wrong-projection.z")[0];
+  assert.equal(projectionDiagnostic.code, "Z0206");
+  assert.match(projectionDiagnostic.message, /derived directly from this/);
 });
 
 test("retains owned Z closure environments across Objective-C blocks", () => {
@@ -4929,6 +5015,7 @@ test("editor grammar tracks keywords without reserving Result variants", () => {
   assert.match(keywordPattern, /yield/);
   assert.match(keywordPattern, /select/);
   assert.match(keywordPattern, /move/);
+  assert.match(keywordPattern, /view/);
   assert.match(keywordPattern, /weak/);
   assert.match(keywordPattern, /new/);
   assert.match(keywordPattern, /constructor/);

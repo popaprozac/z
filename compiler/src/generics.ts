@@ -12,6 +12,7 @@ import { monomorphizedName, parseGenericType } from "./generic-types.ts";
 import { functionTypeName, parseFunctionType } from "./function-types.ts";
 import { weakTypeName } from "./weak-types.ts";
 import { optionTypeName } from "./option-types.ts";
+import { parseViewType, viewTypeName } from "./view-types.ts";
 
 export function materializeGenerics(
   program: Program,
@@ -46,6 +47,8 @@ export function materializeGenerics(
   const displayName = (name: string): string => {
     const known = typeDisplayNames.get(name);
     if (known) return known;
+    const view = parseViewType(name);
+    if (view) return `view ${displayName(view.target)}`;
     const array = parseFixedArrayType(name);
     if (array) return `${displayName(array.elementType)}[${array.length}]`;
     const slice = parseSliceType(name);
@@ -58,6 +61,8 @@ export function materializeGenerics(
 
   const substituteName = (name: string, substitutions: Map<string, string>): string => {
     if (substitutions.has(name)) return substitutions.get(name)!;
+    const view = parseViewType(name);
+    if (view) return viewTypeName(substituteName(view.target, substitutions));
     const functionType = parseFunctionType(name);
     if (functionType) {
       return functionTypeName(

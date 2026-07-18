@@ -39,13 +39,15 @@ Status meanings:
 | Fixed arrays | Implemented | Checked indexing and reverse element cleanup |
 | `Array<T>` | Implemented | Growable owned storage and move-aware elements |
 | `Slice<T>` | Partial | Parameter-only, non-escaping lexical views |
-| Returning/storing borrows | Planned experiment | Scoped callback and owned snapshot costs are measured; a receiver-tied read-only view is the next narrow candidate |
+| Receiver-tied `view T` | Implemented narrow tier | Direct field/index projections from synchronous value-struct methods; inferred const local, read-only, non-storable, non-forwardable, no class owners |
+| General returned/stored borrows | Planned | Parameter provenance, optional views, class alias safety, and retained views remain open |
 | ORC cycle collection | Planned | `Weak<T>` works now; arbitrary strong cycles are not collected |
 
 The ongoing empirical record is
 [`ownership-pressure.md`](ownership-pressure.md). The first desktop probe shows
 the core model handling ARC application state plus move-only documents cleanly,
-while exposing the non-escaping view wall for future experiments.
+while the value-struct lookup probe now crosses the first non-escaping wall with
+an inferred receiver-tied view.
 
 ## Modules and tooling
 
@@ -131,8 +133,8 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    type-contract extraction is now in place; producer/merge separation follows).
 3. Extend the desktop probe through one real native event callback into owned Z
    state (one-shot and persistent notification paths are now validated).
-4. Test a real escaping-view need before choosing scoped callbacks, inferred
-   views, regions, or another borrow shape (scoped and snapshot costs are now
-   measured; a narrow receiver-tied view is the supported next experiment).
+4. Expand receiver-tied views only from real pressure: the value-struct tier is
+   implemented; optional results, parameter provenance, stable/class-owned
+   storage, and regions remain evidence-driven experiments.
 5. Keep actors, channels, multithreaded executors, and atomic ARC provisional
    until sendability and cross-thread frame probes provide evidence.

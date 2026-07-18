@@ -3,6 +3,40 @@ export struct Document {
   title: String;
 }
 
+export struct DocumentStore {
+  documents: Array<Document>;
+
+  function open(inout this, document: Document): void {
+    this.documents.push(document);
+  }
+
+  function documentCount(): usize {
+    return this.documents.length;
+  }
+
+  function withDocument(id: i32, in visit: (in document: Document) => void): bool {
+    for (const document of this.documents) {
+      if (document.id == id) {
+        visit(document);
+        return true;
+      }
+    }
+    return false;
+  }
+
+  function documentAt(index: usize): view Document {
+    return this.documents[index];
+  }
+
+  function documentSnapshot(id: i32): Option<Document> {
+    let result: Option<Document> = Option.none;
+    this.withDocument(id, (in document) => {
+      result = Option.some(Document({ id: document.id, title: `${document.title}` }));
+    });
+    return result;
+  }
+}
+
 export class Workspace {
   documents: Array<Document>;
 

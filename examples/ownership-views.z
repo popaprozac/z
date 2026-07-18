@@ -1,17 +1,20 @@
 import console from "std/console";
-import { Document, Workspace } from "./desktop-ownership/model.z";
+import { Document, DocumentStore } from "./desktop-ownership/model.z";
 
 function main(): i32 {
-  let workspace = new Workspace({ documents: Array<Document>() });
-  workspace.open(Document({ id: 1, title: "Welcome" }));
-  workspace.open(Document({ id: 2, title: "Interop Notes" }));
+  let documents = DocumentStore({ documents: Array<Document>() });
+  documents.open(Document({ id: 1, title: "Welcome" }));
+  documents.open(Document({ id: 2, title: "Interop Notes" }));
 
-  const found = workspace.withDocument(2, (in document) => {
+  const found = documents.withDocument(2, (in document) => {
     console.log(`scoped ${document.id}: ${document.title}`);
   });
 
-  const snapshot = workspace.documentSnapshot(2);
-  workspace.open(Document({ id: 3, title: "Added Later" }));
+  const projected = documents.documentAt(1);
+  console.log(`view ${projected.id}: ${projected.title}`);
+
+  const snapshot = documents.documentSnapshot(2);
+  documents.open(Document({ id: 3, title: "Added Later" }));
 
   const retained = match (snapshot) {
     some(document) => {
@@ -21,7 +24,7 @@ function main(): i32 {
     none => -1;
   };
 
-  if (found && retained == 2 && workspace.documentCount() == 3) {
+  if (found && retained == 2 && documents.documentCount() == 3) {
     return 0;
   }
   return 1;

@@ -28,6 +28,7 @@ import { isLocalSourceModuleSpecifier, type SourceModuleInfo } from "./modules.t
 import { displayFunctionType, functionTypeName, parseFunctionType } from "./function-types.ts";
 import { displayTaskType, parseTaskType } from "./async-types.ts";
 import { parseWeakType } from "./weak-types.ts";
+import { parseViewType } from "./view-types.ts";
 
 export type Position = { readonly line: number; readonly character: number };
 export type Range = { readonly start: Position; readonly end: Position };
@@ -553,7 +554,14 @@ export function hover(source: string, fileName: string, offset: number): Hover |
   }
 
   const type = directWordType;
-  if (type) return markdownHover(`${word.text}: ${displayServiceType(type, context)}`, source, word.start, word.end);
+  if (type) {
+    const binding = collectBindings(context)
+      .filter((candidate) => candidate.name === word.text && candidate.offset <= word.start)
+      .at(-1);
+    const owner = context.semanticInfo.viewBindingOwners.get(binding?.offset ?? word.start);
+    const provenance = owner ? `  // view of ${owner}` : "";
+    return markdownHover(`${word.text}: ${displayServiceType(type, context)}${provenance}`, source, word.start, word.end);
+  }
   return declarationHover(source, context.sourceProgram, word.text, word.start, word.end, context.typeDisplayNames);
 }
 
@@ -1349,14 +1357,16 @@ function resolveReceiver(context: AnalyzedSource, text: string, offset: number):
   }
   const type = context.semanticInfo.expressionTypes.get(offset);
   if (!type) return null;
-  if (parseFixedArrayType(type) || parseSliceType(type) || parseDynamicArrayType(type)) return { kind: "array", type };
-  const weak = parseWeakType(type);
+  const view = parseViewType(type);
+  const receiverType = view?.target ?? type;
+  if (parseFixedArrayType(receiverType) || parseSliceType(receiverType) || parseDynamicArrayType(receiverType)) return { kind: "array", type: receiverType };
+  const weak = parseWeakType(receiverType);
   if (weak) return { kind: "weak", target: weak.target };
-  if (isIntegerSourceType(type)) return { kind: "integer", type };
-  const interfaceName = type.replace(/^__z_objc:(?:nullable|nonnull):/, "");
+  if (isIntegerSourceType(receiverType)) return { kind: "integer", type: receiverType };
+  const interfaceName = receiverType.replace(/^__z_objc:(?:nullable|nonnull):/, "");
   const objc = context.semanticInfo.foreignInterfaces.get(interfaceName);
   if (objc) return { kind: "objc", declaration: objc, instance: true };
-  const declaration = context.program.structs.find((item) => item.name === type);
+  const declaration = context.program.structs.find((item) => item.name === receiverType);
   return declaration ? { kind: "struct", declaration } : null;
 }
 
@@ -1812,6 +1822,8 @@ function foreignTypeName(type: ForeignType): string {
 function displayType(type: string, typeDisplayNames: ReadonlyMap<string, string> = new Map()): string {
   const known = typeDisplayNames.get(type);
   if (known) return known;
+  const view = parseViewType(type);
+  if (view) return `view ${displayType(view.target, typeDisplayNames)}`;
   const nullableObjC = /^__z_objc:nullable:(.+)$/.exec(type);
   if (nullableObjC) return `${displayType(nullableObjC[1], typeDisplayNames)} | null`;
   const nonnullObjC = /^__z_objc:nonnull:(.+)$/.exec(type);

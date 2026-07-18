@@ -82,6 +82,7 @@ an AppKit shell. Its findings are recorded in
 [`ownership-pressure.md`](ownership-pressure.md); it exists to pressure-test the
 ownership model rather than present a finished framework API.
 
-[`ownership-views.z`](../examples/ownership-views.z) isolates the most important
-borrow-return question without a GUI: it compares a zero-copy scoped document
-callback with an owned snapshot that remains valid after workspace mutation.
+[`ownership-views.z`](../examples/ownership-views.z) compares three lookup
+contracts without a GUI: a zero-copy scoped callback, a receiver-tied
+`view Document` with straight-line access, and an owned snapshot that remains
+valid after collection mutation.

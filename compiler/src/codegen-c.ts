@@ -32,6 +32,7 @@ import {
   weakResultTypeName,
 } from "./weak-types.ts";
 import { parseOptionType } from "./option-types.ts";
+import { parseViewType } from "./view-types.ts";
 
 type GenerationContext = {
   readonly structs: Map<string, StructDeclaration>;
@@ -1667,7 +1668,16 @@ bool ${liveFlag} = true;`;
         }
         return cleanup ? `${cleanup}\nreturn;` : "return;";
       }
-      return generateDirectValue(statement.expression, context, (value, valueContext) => generateSuccessReturn(value, valueContext), true);
+      return generateDirectValue(
+        statement.expression,
+        context,
+        (value, valueContext) => generateSuccessReturn(
+          value,
+          valueContext,
+          context.semanticInfo.viewReturnExpressions.has(statement.expression!.location.offset),
+        ),
+        true,
+      );
     case "throw": {
       const result = resultTypeName(context.owner.returnType.name, context.owner.errorType!.name);
       const value = generateExpression(statement.expression, context);
@@ -2692,8 +2702,12 @@ function generateValueCleanup(
   return liveFlag ? `if (${liveFlag}) ${cleanup}` : cleanup;
 }
 
-function generateSuccessReturn(value: string, context: GenerationContext): string {
+function generateSuccessReturn(value: string, context: GenerationContext, view = false): string {
   const cleanup = generateCleanup(context.cleanupScopes, context);
+  if (view) {
+    const returned = `return &(${value});`;
+    return cleanup ? `${cleanup}\n${returned}` : returned;
+  }
   if (!cleanup) {
     if (!context.owner.errorType) return `return ${value};`;
     const result = resultTypeName(context.owner.returnType.name, context.owner.errorType.name);
@@ -2770,6 +2784,10 @@ function generateLocalDeclaration(
   name = cBindingName(name);
   if (type === "cstring") {
     return mutable ? `const char *${name}` : `const char * const ${name}`;
+  }
+  if (parseViewType(type)) {
+    const cType = mapType(type, structs, enums, foreignNamedTypes);
+    return mutable ? `${cType} ${name}` : `${cType} const ${name}`;
   }
   if (type.startsWith("__z_ffi:")) {
     const cType = mapType(type, structs, enums, foreignNamedTypes);
@@ -3261,9 +3279,11 @@ function generateExpressionInner(expression: Expression, context: GenerationCont
     }
     case "index": {
       const ownerType = inferExpressionType(expression.object, context);
-      const array = parseFixedArrayType(ownerType);
-      const slice = parseSliceType(ownerType);
-      const dynamic = parseDynamicArrayType(ownerType);
+      const ownerView = parseViewType(ownerType);
+      const ownerValueType = ownerView?.target ?? ownerType;
+      const array = parseFixedArrayType(ownerValueType);
+      const slice = parseSliceType(ownerValueType);
+      const dynamic = parseDynamicArrayType(ownerValueType);
       const owner = generateExpression(expression.object, context);
       const length = array ? String(array.length) : `(${owner}).length`;
       const value = `((${owner}).data[z_bounds_index((uintptr_t)(${generateExpression(expression.index, context)}), ${length})])`;
@@ -3323,9 +3343,11 @@ function generateExpressionInner(expression: Expression, context: GenerationCont
       const foreignConstantName = context.semanticInfo.foreignConstantNames.get(expression.location.offset);
       if (foreignConstantName) return foreignConstantName;
       const ownerType = inferExpressionType(expression.object, context);
-      const array = parseFixedArrayType(ownerType);
-      const slice = parseSliceType(ownerType);
-      const dynamic = parseDynamicArrayType(ownerType);
+      const ownerView = parseViewType(ownerType);
+      const ownerValueType = ownerView?.target ?? ownerType;
+      const array = parseFixedArrayType(ownerValueType);
+      const slice = parseSliceType(ownerValueType);
+      const dynamic = parseDynamicArrayType(ownerValueType);
       if (array || slice || dynamic) {
         if (dynamic) {
           return `(${generateExpression(expression.object, context)}).${expression.property}`;
@@ -3354,8 +3376,8 @@ function generateExpressionInner(expression: Expression, context: GenerationCont
           : `self->${expression.property}`;
         return maybeRetainClass(expression, value, context);
       }
-      const owner = context.structs.get(inferExpressionType(expression.object, context));
-      const access = owner?.kind === "class" ? "->" : ".";
+      const owner = context.structs.get(ownerValueType);
+      const access = ownerView || owner?.kind === "class" ? "->" : ".";
       return maybeRetainClass(
         expression,
         `(${generateExpression(expression.object, context)})${access}${expression.property}`,
@@ -3741,6 +3763,7 @@ function inferExpressionType(expression: Expression, context: GenerationContext)
     parseFunctionType(analyzedType)
     || parseWeakType(analyzedType)
     || parseWeakResultType(analyzedType)
+    || parseViewType(analyzedType)
     || context.structs.has(analyzedType)
     || context.enums.has(analyzedType)
     || context.semanticInfo.foreignNamedTypes.has(analyzedType)
@@ -3802,12 +3825,13 @@ function inferExpressionType(expression: Expression, context: GenerationContext)
       return ifExpressionType(expression, context);
     case "member": {
       const ownerType = inferExpressionType(expression.object, context);
-      if (parseFixedArrayType(ownerType) || parseSliceType(ownerType) || parseDynamicArrayType(ownerType)) return "usize";
+      const ownerValueType = parseViewType(ownerType)?.target ?? ownerType;
+      if (parseFixedArrayType(ownerValueType) || parseSliceType(ownerValueType) || parseDynamicArrayType(ownerValueType)) return "usize";
       if (expression.object.kind === "identifier" && context.enums.has(expression.object.name)) {
         return expression.object.name;
       }
       if (isForeignMember(expression, context)) return "i32";
-      const owner = context.structs.get(inferExpressionType(expression.object, context));
+      const owner = context.structs.get(ownerValueType);
       return owner?.fields.find((field) => field.name === expression.property)?.type.name ?? "i32";
     }
     case "call": {
@@ -3910,6 +3934,8 @@ function mapType(
   enums: Map<string, EnumDeclaration>,
   foreignNamedTypes: SemanticInfo["foreignNamedTypes"] = new Map(),
 ): string {
+  const view = parseViewType(name);
+  if (view) return `const ${mapType(view.target, structs, enums, foreignNamedTypes)} *`;
   const functionType = parseFunctionType(name);
   if (functionType) return functionTypeCName(functionType);
   if (parseWeakType(name)) return "Z_Weak";

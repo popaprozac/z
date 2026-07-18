@@ -16,6 +16,7 @@ import { dynamicArrayTypeName, fixedArrayTypeName, sliceTypeName } from "./array
 import { genericTypeName } from "./generic-types.ts";
 import { functionTypeName } from "./function-types.ts";
 import { nullableObjCTypeName } from "./objc-types.ts";
+import { viewTypeName } from "./view-types.ts";
 import type { Token, TokenKind } from "./lexer.ts";
 
 export function parse(tokens: Token[], fileName: string): Program {
@@ -72,7 +73,9 @@ export function parse(tokens: Token[], fileName: string): Program {
     }
     const token = expect("identifier", "a type name");
     let name = token.text;
-    if (token.text === "Slice" && match("less")) {
+    if (token.text === "view") {
+      name = viewTypeName(parseType().name);
+    } else if (token.text === "Slice" && match("less")) {
       name = sliceTypeName(parseType().name);
       expectTypeGreater();
     } else if (token.text === "Array" && match("less")) {

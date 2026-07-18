@@ -24,6 +24,7 @@ import { functionTypeName, parseFunctionType } from "./function-types.ts";
 import { isNullableObjCTypeName, nullableObjCTypeName, publicObjCTypeName } from "./objc-types.ts";
 import { lex } from "./lexer.ts";
 import { parse } from "./parser.ts";
+import { parseViewType, viewTypeName } from "./view-types.ts";
 
 export type SourceModuleInfo = {
   readonly fileName: string;
@@ -639,6 +640,8 @@ function renameTypeReference(reference: TypeReference, scope: ModuleScope, typeP
 }
 
 function renameTypeName(name: string, scope: ModuleScope, typeParameters: ReadonlySet<string>): string {
+  const view = parseViewType(name);
+  if (view) return viewTypeName(renameTypeName(view.target, scope, typeParameters));
   if (isNullableObjCTypeName(name)) {
     return nullableObjCTypeName(renameTypeName(publicObjCTypeName(name), scope, typeParameters));
   }

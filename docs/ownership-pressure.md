@@ -33,8 +33,8 @@ Keep these candidate spikes available when a real caller needs a view:
 1. a scoped callback such as `withDocument(index, (in document) => ...)`, which
    keeps the borrow lexical;
 2. an explicit owned snapshot/copy API when copying is the desired contract;
-3. a future inferred `view` return whose lifetime is tied to a receiver or
-   parameter, without exposing general lifetime annotations;
+3. the implemented inferred `view` return whose lifetime is tied to a
+   value-struct receiver, without exposing general lifetime annotations;
 4. a region or generational-borrow experiment if scoped callbacks become common
    enough to harm readability.
 
@@ -43,25 +43,25 @@ program needs to retain or return a view, then compare call sites, diagnostics,
 code generation, and optimizer results.
 
 The deterministic [`ownership-views.z`](../examples/ownership-views.z) probe now
-exercises candidates 1 and 2 against the same lookup:
+exercises candidates 1 through 3 against the same lookup:
 
 | Shape | Source contract | Generated cost | Usability boundary |
 | --- | --- | --- | --- |
 | `withDocument(id, callback)` | callback receives `in Document` | `const Document *`, stack closure environment, indirect call; no title copy | zero-copy, but all use is nested inside the callback |
 | `documentSnapshot(id)` | returns owned `Option<Document>` | option tag plus a new `String` allocation and exact byte copy | straight-line and remains valid across workspace mutation |
-| receiver-tied view | not implemented | intended `const Document *`, no copy | straight-line only while the workspace remains alive and unmodified |
+| `documentAt(index): view Document` | inferred receiver-tied borrow | `const Document *`, bounds check, no document or string copy | straight-line until the view's last use; owner mutation is then permitted |
 
 The scoped form reads naturally for enumeration and one operation. It becomes
 awkward when several later statements need the selected document. The snapshot
 is semantically honest when the result must survive `Workspace.open`, but its
 copy would be accidental overhead for immediate read-only use.
 
-This evidence supports a narrow receiver-tied read-only view experiment rather
-than general lifetime parameters. The first slice should have one unambiguous
-provenance source (a borrowed receiver), remain non-storable and non-capturable,
-and prevent mutation of that receiver until the view's last use. It should not
-pretend to survive array reallocation; callers needing that contract must use
-an owned snapshot or a future stable reference-shaped model.
+This evidence produced a narrow receiver-tied read-only view rather than general
+lifetime parameters. Its provenance is one borrowed value-struct receiver; it
+is non-storable, non-forwardable, and non-capturable, and receiver mutation is
+rejected until the view's last use. ARC class owners remain excluded because an
+alias could mutate the same storage. Callers needing aliasing or survival across
+reallocation must use an owned snapshot or a future stable reference model.
 
 ## Pressure 2: imported Objective-C references in owned Z state
 

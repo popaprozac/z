@@ -76,8 +76,30 @@ Function declarations and function types include the same capabilities. This
 keeps callbacks and ordinary functions substitutable.
 
 Borrow lifetimes are inferred and lexical. Safe code does not expose general
-lifetime parameters. A borrow cannot currently be retained, stored, or returned
-without a future scoped-view contract.
+lifetime parameters. Ordinary borrows cannot be retained or stored. A narrow
+`view T` method result may project read-only value-struct storage into an
+inferred `const` local:
+
+```z
+struct DocumentStore {
+  documents: Array<Document>;
+
+  function documentAt(index: usize): view Document {
+    return this.documents[index];
+  }
+}
+
+const document = store.documentAt(0);
+console.log(document.title);
+store.open(next); // valid after document's last use
+```
+
+The first tier is deliberately receiver-tied and zero-overhead: only a
+synchronous, non-throwing borrowed method on a value struct may return a direct
+field or indexed projection. The view cannot be annotated as storage, copied,
+forwarded, captured, returned again, or held across `await`. Its owner cannot
+mutate or move before the view's last use. ARC class owners are excluded because
+another alias could invalidate growable projected storage.
 
 A borrowed callback can expose a scoped view without returning it:
 
@@ -155,6 +177,8 @@ saturating operations.
 - `T[N]` is a fixed-size owned array.
 - `Array<T>` is a growable owned buffer.
 - `Slice<T>` is a non-owning contiguous view.
+- `view T` is a non-storable read-only projection returned from value-struct
+  storage and tied to the receiver's inferred lifetime.
 
 Indexing is bounds-checked in safe code. Owned elements are destroyed in reverse
 initialization order. Mutation that may reallocate requires exclusive mutable

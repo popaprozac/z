@@ -402,12 +402,13 @@ element according to its ordinary ownership rules. Safe indexing uses the same
 bounds check as fixed arrays. Destruction walks initialized elements in reverse
 order before freeing the buffer.
 
-A growable array can be borrowed as `Slice<T>` for a non-escaping call. The
-first slice intentionally omits removal, reservation, and fallible allocation;
-those APIs need an optional/result and allocator policy rather than sentinel
-values. Allocation failure currently traps. Escaping slices, subslices, and
-returned views require an explicit inferred or declared lifetime contract
-informed by real APIs. `T[]` remains unassigned until those contracts are proven.
+A growable array can be borrowed as `Slice<T>` for a non-escaping call. A
+value-struct method may also return a direct element as `view T`; the compiler
+ties that read-only projection to the receiver and prevents invalidating
+mutation until last use. The first slice intentionally omits removal,
+reservation, fallible allocation, escaping slices, subslices, class-owned
+views, and general lifetime parameters. Allocation failure currently traps.
+`T[]` remains unassigned until those broader contracts are proven.
 
 ## Generics
 
@@ -879,10 +880,9 @@ owned growable array of move-only documents and strings, and a native AppKit
 window. Its ongoing findings live in
 [`docs/ownership-pressure.md`](docs/ownership-pressure.md). Imported non-null
 Objective-C classes are nominal Z types and can be stored in ARC-managed Z
-aggregates. Borrowed owned fields or slices still cannot escape; that ownership
-question remains separate from the now-resolved foreign type-surface gap.
-Candidate view-return experiments remain open until a real caller supplies
-comparative evidence.
+aggregates. General borrowed fields or slices still cannot escape; that
+ownership question remains separate from the now-resolved foreign type-surface
+gap.
 
 The first empirical scoped-view experiment is
 `eachDocument(in visit: (in document: Document) => void)`. It lowers each array
@@ -891,15 +891,17 @@ so owned strings are inspected without copies or source lifetime syntax. This
 is a good fit for enumeration, but its inversion of control is not treated as a
 universal replacement for future retained or receiver-tied views.
 
-The follow-up lookup probe compares `withDocument(id, callback)` with an owned
-`documentSnapshot(id)`. Generated C confirms the scoped callback is a borrowed
-`const Document *` with a stack environment and no string copy. The snapshot
-keeps straight-line source and survives later workspace mutation, but allocates
-and copies the selected title. This justifies exploring a narrow read-only
-`view` result whose provenance is an unambiguous borrowed receiver, whose last
-use ends the borrow, and which cannot be stored, captured, returned again, or
-held across receiver mutation. It does not justify general lifetime parameters
-or views that survive backing-array reallocation.
+The follow-up lookup probe compares `withDocument(id, callback)`,
+`documentAt(index): view Document`, and an owned `documentSnapshot(id)`.
+Generated C confirms both borrowed shapes use `const Document *` without a
+string copy, while the snapshot allocates and copies the selected title. The
+implemented `view` tier has one provenance source: a synchronous borrowed
+value-struct receiver returning one of its direct fields or indexed elements.
+Last use ends the borrow; the view cannot be stored, forwarded, captured,
+returned again, or held across receiver mutation or suspension. ARC class
+owners are excluded because aliases could invalidate projected growable
+storage. This does not introduce general lifetime parameters or views that
+survive backing-array reallocation.
 
 Imported Objective-C block parameters contextually type Z closures. An escaping
 block requires an owned `move` closure; a generated Objective-C ARC box retains
