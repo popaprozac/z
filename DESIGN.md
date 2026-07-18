@@ -1026,14 +1026,24 @@ selective: typedef-named records can appear in signatures, are built with
 checked struct literals, and expose imported fields; C enum constants become
 typed values. The native compiler still includes the original header, so it
 does not redeclare layouts or guess padding and calling conventions. A future
-foreign-declaration mechanism (working spelling: `extern`) may force an ABI
-contract when an automatic producer cannot represent a vendor declaration.
-That mechanism means the programmer is supplying native identity and signature
-facts; operations whose memory or lifetime safety remains unverifiable
-additionally require a separate unchecked-safety boundary (working spelling:
-`unsafe`). The exact declaration, annotation, block, and file syntax remains an
-open design decision. Handwritten declarations and raw operations remain escape
-hatches rather than the routine function and data interop path.
+explicit contract uses a TypeScript-shaped ambient declaration:
+
+```z
+declare module "vendor.h" {
+  export function vendor_version(): i32;
+}
+```
+
+The declaration describes an externally implemented module; a normal `import`
+still chooses its local namespace or selective bindings. Header-backed
+declarations augment Clang's raw facts and must agree with every ABI property Z
+can verify. They may supply missing ownership, lifetime, release, and callback
+facts, but cannot override contradictory native facts. Operations whose memory
+or lifetime safety remains unverifiable require the separate `unsafe` boundary.
+`extern` is not currently part of the accepted user-facing grammar; ABI and
+linkage remain inferred contract metadata unless a future binary-only boundary
+needs them explicitly. Handwritten declarations and raw operations remain
+escape hatches rather than the routine function and data interop path.
 
 Interop work proceeds in architectural layers:
 
