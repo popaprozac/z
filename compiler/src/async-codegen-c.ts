@@ -35,9 +35,19 @@ type SpawnSite = {
   readonly binding: string | null;
 };
 
+type NestedAwaitSite = {
+  readonly expression: Expression;
+  readonly await: AwaitSite;
+  readonly type: string;
+  readonly field: string;
+};
+
 type AsyncOperation =
   | { readonly kind: "statement"; readonly statement: Statement }
-  | { readonly kind: "scopeExit"; readonly scope: number };
+  | { readonly kind: "scopeExit"; readonly scope: number }
+  | { readonly kind: "branch"; readonly condition: Expression; readonly thenLabel: number; readonly elseLabel: number }
+  | { readonly kind: "jump"; readonly label: number }
+  | { readonly kind: "label"; readonly label: number };
 
 type AsyncTarget = {
   readonly declaration: FunctionDeclaration;
@@ -54,6 +64,8 @@ type AsyncFunctionPlan = {
   readonly operations: readonly AsyncOperation[];
   readonly locals: ReadonlyMap<string, string>;
   readonly awaits: ReadonlyMap<number, AwaitSite>;
+  readonly nestedAwaits: ReadonlyMap<number, readonly NestedAwaitSite[]>;
+  readonly suspensions: ReadonlyMap<number, NestedAwaitSite>;
   readonly spawns: ReadonlyMap<number, SpawnSite>;
   readonly children: ReadonlyMap<number, AsyncTarget>;
   readonly types: AsyncTypeContext;
@@ -70,6 +82,7 @@ type FrameExpressionContext = {
   readonly locals: ReadonlyMap<string, string>;
   readonly types: AsyncTypeContext;
   readonly bindings?: ReadonlyMap<string, string>;
+  readonly suspensions?: ReadonlyMap<number, NestedAwaitSite>;
 };
 
 export type AsyncCGeneration = {
@@ -171,17 +184,20 @@ function planFunction(
   }
 
   const awaits = new Map<number, AwaitSite>();
+  const nestedAwaits = new Map<number, readonly NestedAwaitSite[]>();
+  const suspensions = new Map<number, NestedAwaitSite>();
   const spawns = new Map<number, SpawnSite>();
   const spawnBindings = new Map<string, SpawnSite>();
   const children = new Map<number, AsyncTarget>();
   const joinedSpawns = new Set<number>();
   const nextChild = { value: 0 };
   const nextScope = { value: 1 };
+  const nextLabel = { value: 0 };
   const operations: AsyncOperation[] = [];
   const recordAwait = (
     mode: AwaitSite["mode"],
     expression: Extract<Expression, { kind: "await" }>,
-  ): void => {
+  ): AwaitSite => {
     const site = awaitSite(
       mode,
       expression,
@@ -195,13 +211,63 @@ function planFunction(
     );
     awaits.set(expression.location.offset, site);
     if (!site.intrinsic) children.set(site.index, site.target);
+    return site;
   };
-  const planStatements = (statements: readonly Statement[], scope: number): void => {
+  const recordNestedAwaits = (expression: Expression, group: Expression = expression): void => {
+    const found = collectNestedAwaitOperations(expression, fileName);
+    if (found.length === 0) return;
+    const sites = found.map((operation) => {
+      const site = recordAwait(operation.mode, operation.expression);
+      const type = semanticInfo.expressionTypes.get(operation.source.location.offset)
+        ?? nestedAwaitResultType(site);
+      requireFrameType(type, operation.source.location, fileName, "nested await result", types);
+      if (type === "void") {
+        unsupported(fileName, operation.source.location, "a void await cannot be embedded in a value expression");
+      }
+      if (hasFrameCleanup(type, types)) {
+        unsupported(
+          fileName,
+          operation.source.location,
+          "an ownership-bearing nested await result is not executable yet",
+          "bind the awaited result first while hidden suspension-slot ownership transfer is implemented",
+        );
+      }
+      const nested: NestedAwaitSite = {
+        expression: operation.source,
+        await: site,
+        type,
+        field: nestedAwaitField(operation.source.location.offset),
+      };
+      suspensions.set(operation.source.location.offset, nested);
+      return nested;
+    });
+    nestedAwaits.set(group.location.offset, sites);
+  };
+  const planStatements = (statements: readonly Statement[], scope: number, controlDepth = 0): void => {
     for (const statement of statements) {
       if (statement.kind === "asyncScope") {
         const childScope = nextScope.value++;
-        planStatements(statement.body.statements, childScope);
+        planStatements(statement.body.statements, childScope, controlDepth);
         operations.push({ kind: "scopeExit", scope: childScope });
+        continue;
+      }
+      if (statement.kind === "if") {
+        recordNestedAwaits(statement.condition);
+        validateFrameExpression(statement.condition, locals, fileName, types, suspensions);
+        const thenLabel = nextLabel.value++;
+        const elseLabel = nextLabel.value++;
+        const endLabel = nextLabel.value++;
+        operations.push({ kind: "branch", condition: statement.condition, thenLabel, elseLabel });
+        operations.push({ kind: "label", label: thenLabel });
+        planStatements(statement.thenBranch.statements, scope, controlDepth + 1);
+        operations.push({ kind: "jump", label: endLabel });
+        operations.push({ kind: "label", label: elseLabel });
+        if (statement.elseBranch?.kind === "block") {
+          planStatements(statement.elseBranch.statements, scope, controlDepth + 1);
+        } else if (statement.elseBranch?.kind === "if") {
+          planStatements([statement.elseBranch], scope, controlDepth + 1);
+        }
+        operations.push({ kind: "label", label: endLabel });
         continue;
       }
       operations.push({ kind: "statement", statement });
@@ -227,8 +293,23 @@ function planFunction(
         const type = statement.type?.name ?? semanticInfo.bindingTypes.get(statement.nameLocation.offset);
         if (!type) unsupported(fileName, statement.location, `could not determine async frame type for ${JSON.stringify(statement.name)}`);
         requireFrameType(type, statement.type?.location ?? statement.nameLocation, fileName, "async local", types);
+        if (controlDepth > 0 && locals.has(statement.name)) {
+          unsupported(
+            fileName,
+            statement.nameLocation,
+            "shadowing or reusing an async frame binding inside conditional control flow is not executable yet",
+          );
+        }
+        if (controlDepth > 0 && hasFrameCleanup(type, types)) {
+          unsupported(
+            fileName,
+            statement.nameLocation,
+            "a cleanup-bearing conditional-local binding needs lexical frame cleanup states",
+          );
+        }
         locals.set(statement.name, type);
         if (statement.initializer.kind === "spawn") {
+          recordNestedAwaits(statement.initializer.expression, statement.initializer);
           const site = spawnSite(
             nextChild.value++,
             scope,
@@ -246,31 +327,39 @@ function planFunction(
         }
         const operation = awaitOperation(statement.initializer);
         if (operation) {
+          recordNestedAwaits(operation.expression.expression, operation.source);
           recordAwait(operation.mode, operation.expression);
         } else if (statement.initializer.kind === "matchExpression") {
-          validateAsyncMatchExpression(statement.initializer, locals, fileName, types);
+          recordNestedAwaits(statement.initializer);
+          validateAsyncMatchExpression(statement.initializer, locals, fileName, types, suspensions);
         } else {
-          validateFrameExpression(statement.initializer, locals, fileName, types);
+          recordNestedAwaits(statement.initializer);
+          validateFrameExpression(statement.initializer, locals, fileName, types, suspensions);
         }
         continue;
       }
       if (statement.kind === "return") {
         const operation = statement.expression ? awaitOperation(statement.expression) : null;
         if (operation) {
+          recordNestedAwaits(operation.expression.expression, operation.source);
           recordAwait(operation.mode, operation.expression);
         } else if (statement.expression?.kind === "matchExpression") {
-          validateAsyncMatchExpression(statement.expression, locals, fileName, types);
+          recordNestedAwaits(statement.expression);
+          validateAsyncMatchExpression(statement.expression, locals, fileName, types, suspensions);
         } else if (statement.expression) {
-          validateFrameExpression(statement.expression, locals, fileName, types);
+          recordNestedAwaits(statement.expression);
+          validateFrameExpression(statement.expression, locals, fileName, types, suspensions);
         }
         continue;
       }
       if (statement.kind === "throw") {
-        validateFrameExpression(statement.expression, locals, fileName, types);
+        recordNestedAwaits(statement.expression);
+        validateFrameExpression(statement.expression, locals, fileName, types, suspensions);
         continue;
       }
       if (statement.kind === "expressionStatement") {
         if (statement.expression.kind === "spawn") {
+          recordNestedAwaits(statement.expression.expression, statement.expression);
           const site = spawnSite(
             nextChild.value++,
             scope,
@@ -289,16 +378,19 @@ function planFunction(
           statement.expression.kind === "call"
           && semanticInfo.consoleCalls.has(statement.expression.location.offset)
         ) {
-          validateAsyncConsoleCall(statement.expression, locals, fileName, types);
+          recordNestedAwaits(statement.expression);
+          validateAsyncConsoleCall(statement.expression, locals, fileName, types, suspensions);
           continue;
         }
         const operation = awaitOperation(statement.expression);
         if (operation) {
+          recordNestedAwaits(operation.expression.expression, operation.source);
           recordAwait(operation.mode, operation.expression);
           continue;
         }
         if (statement.expression.kind === "call") {
-          validateFrameExpression(statement.expression, locals, fileName, types);
+          recordNestedAwaits(statement.expression);
+          validateFrameExpression(statement.expression, locals, fileName, types, suspensions);
           continue;
         }
         unsupported(fileName, statement.location, "this synchronous async expression statement is not executable yet");
@@ -336,6 +428,8 @@ function planFunction(
     operations,
     locals,
     awaits,
+    nestedAwaits,
+    suspensions,
     spawns,
     children,
     types,
@@ -498,12 +592,193 @@ function resolveAsyncCall(
 function awaitOperation(expression: Expression): {
   readonly mode: AwaitSite["mode"];
   readonly expression: Extract<Expression, { kind: "await" }>;
+  readonly source: Expression;
 } | null {
-  if (expression.kind === "await") return { mode: "await", expression };
+  if (expression.kind === "await") return { mode: "await", expression, source: expression };
   if ((expression.kind === "try" || expression.kind === "attempt") && expression.expression.kind === "await") {
-    return { mode: expression.kind, expression: expression.expression };
+    return { mode: expression.kind, expression: expression.expression, source: expression };
   }
   return null;
+}
+
+function nestedAwaitResultType(site: AwaitSite): string {
+  if (site.mode === "attempt") {
+    return resultTypeName(
+      site.target.declaration.returnType.name,
+      site.target.declaration.errorType!.name,
+    );
+  }
+  return site.target.declaration.returnType.name;
+}
+
+function collectNestedAwaitOperations(
+  expression: Expression,
+  fileName: string,
+): readonly NonNullable<ReturnType<typeof awaitOperation>>[] {
+  const operations: NonNullable<ReturnType<typeof awaitOperation>>[] = [];
+  const walk = (candidate: Expression): void => {
+    const operation = awaitOperation(candidate);
+    if (operation) {
+      walk(operation.expression.expression);
+      operations.push(operation);
+      return;
+    }
+    switch (candidate.kind) {
+      case "number":
+      case "string":
+      case "boolean":
+      case "null":
+      case "identifier":
+      case "argumentReference":
+      case "dynamicArrayExpression":
+      case "closure":
+        return;
+      case "template":
+        for (const part of candidate.parts) {
+          if (part.kind === "value") walk(part.expression);
+        }
+        return;
+      case "unary":
+      case "weak":
+        walk(candidate.kind === "unary" ? candidate.operand : candidate.expression);
+        return;
+      case "binary":
+        if ((candidate.operator === "&&" || candidate.operator === "||")
+          && (containsAwait(candidate.left) || containsAwait(candidate.right))) {
+          unsupported(
+            fileName,
+            candidate.location,
+            "await inside short-circuit logic needs branch-aware expression lowering",
+            "bind the awaited operand first; lazy `&&` and `||` suspension lowering is a following tier",
+          );
+        }
+        walk(candidate.left);
+        walk(candidate.right);
+        return;
+      case "conditional":
+      case "ifExpression":
+        if (containsAwait(candidate)) {
+          unsupported(
+            fileName,
+            candidate.location,
+            "await inside a conditional expression needs selected-branch suspension lowering",
+            "use an awaited `if` statement for now; ternary and value-producing-if suspension will preserve lazy branch evaluation",
+          );
+        }
+        return;
+      case "new":
+        for (const argument of candidate.arguments) walk(argument);
+        return;
+      case "call":
+        walk(candidate.callee);
+        for (const argument of candidate.arguments) walk(argument);
+        return;
+      case "member":
+        walk(candidate.object);
+        return;
+      case "index":
+        walk(candidate.object);
+        walk(candidate.index);
+        return;
+      case "arrayExpression":
+        for (const element of candidate.elements) walk(element);
+        return;
+      case "structExpression":
+      case "objectExpression":
+        for (const field of candidate.fields) walk(field.expression);
+        return;
+      case "variantExpression":
+        walk(candidate.payload);
+        return;
+      case "attempt":
+      case "try":
+      case "await":
+      case "spawn":
+        walk(candidate.expression);
+        return;
+      case "matchExpression":
+        walk(candidate.expression);
+        for (const arm of candidate.arms) {
+          if (statementContainsAwait(arm.body)) {
+            unsupported(
+              fileName,
+              arm.body.location,
+              "await inside a match arm needs selected-arm suspension lowering",
+              "await before the match for now; suspending arms will preserve single-arm evaluation in a following tier",
+            );
+          }
+        }
+        return;
+    }
+  };
+  walk(expression);
+  return operations;
+}
+
+function containsAwait(expression: Expression): boolean {
+  let found = false;
+  const visit = (candidate: Expression): void => {
+    if (found) return;
+    if (candidate.kind === "await") {
+      found = true;
+      return;
+    }
+    switch (candidate.kind) {
+      case "template":
+        for (const part of candidate.parts) if (part.kind === "value") visit(part.expression);
+        return;
+      case "unary": visit(candidate.operand); return;
+      case "binary": visit(candidate.left); visit(candidate.right); return;
+      case "conditional": visit(candidate.condition); visit(candidate.thenExpression); visit(candidate.elseExpression); return;
+      case "new": for (const value of candidate.arguments) visit(value); return;
+      case "weak":
+      case "attempt":
+      case "try":
+      case "spawn": visit(candidate.expression); return;
+      case "call": visit(candidate.callee); for (const value of candidate.arguments) visit(value); return;
+      case "member": visit(candidate.object); return;
+      case "index": visit(candidate.object); visit(candidate.index); return;
+      case "arrayExpression": for (const value of candidate.elements) visit(value); return;
+      case "structExpression":
+      case "objectExpression": for (const field of candidate.fields) visit(field.expression); return;
+      case "variantExpression": visit(candidate.payload); return;
+      case "matchExpression":
+        visit(candidate.expression);
+        for (const arm of candidate.arms) if (statementContainsAwait(arm.body)) found = true;
+        return;
+      case "ifExpression":
+        visit(candidate.condition);
+        if (statementContainsAwait(candidate.thenBranch)) found = true;
+        if (candidate.elseBranch.kind === "ifExpression") visit(candidate.elseBranch);
+        else if (statementContainsAwait(candidate.elseBranch)) found = true;
+        return;
+      default:
+        return;
+    }
+  };
+  visit(expression);
+  return found;
+}
+
+function statementContainsAwait(statement: Statement): boolean {
+  switch (statement.kind) {
+    case "variable": return Boolean(statement.initializer && containsAwait(statement.initializer));
+    case "assignment": return containsAwait(statement.target) || containsAwait(statement.expression);
+    case "return": return Boolean(statement.expression && containsAwait(statement.expression));
+    case "throw":
+    case "select":
+    case "expressionStatement": return containsAwait(statement.expression);
+    case "block": return statement.statements.some(statementContainsAwait);
+    case "if": return containsAwait(statement.condition)
+      || statementContainsAwait(statement.thenBranch)
+      || Boolean(statement.elseBranch && statementContainsAwait(statement.elseBranch));
+    case "while": return containsAwait(statement.condition) || statementContainsAwait(statement.body);
+    case "for": return containsAwait(statement.iterable) || statementContainsAwait(statement.body);
+    case "match": return containsAwait(statement.expression) || statement.arms.some((arm) => statementContainsAwait(arm.body));
+    case "asyncScope": return statementContainsAwait(statement.body);
+    case "break":
+    case "continue": return false;
+  }
 }
 
 function validateAsyncMain(declaration: FunctionDeclaration, fileName: string): void {
@@ -740,6 +1015,9 @@ function generateFrame(
     lines.push(`  ${cFrameType(type, plan.types)} ${frameField(name)};`);
     if (hasFrameCleanup(type, plan.types)) lines.push(`  bool ${frameLiveField(name)};`);
   }
+  for (const site of plan.suspensions.values()) {
+    lines.push(`  ${cFrameType(site.type, plan.types)} ${site.field};`);
+  }
   for (const [index, target] of plan.children) {
     lines.push(`  ${planByKey.get(targetKey(target))!.frameName} *child_${index};`);
   }
@@ -873,8 +1151,59 @@ function generatePoll(
   fileName: string,
 ): string {
   const cases: string[] = [];
+  const labels = new Map<number, number>();
   let state = 0;
+  const emitNestedAwaits = (expression: Expression): void => {
+    for (const nested of plan.nestedAwaits.get(expression.location.offset) ?? []) {
+      const site = nested.await;
+      if (site.intrinsic === "delay") {
+        unsupported(fileName, nested.expression.location, "a void delay cannot be embedded in a value expression");
+      }
+      if (!site.spawn) {
+        const target = planByKey.get(targetKey(site.target))!;
+        const arguments_ = emitAwaitArguments(site, plan, fileName);
+        cases.push(caseBlock(state, [
+          `frame->child_${site.index} = ${target.startName}(${["frame->task.executor", ...arguments_].join(", ")});`,
+          `z_async_enqueue(frame->task.executor, &frame->child_${site.index}->task);`,
+          `frame->state = ${state + 1};`,
+          "continue;",
+        ]));
+        state += 1;
+      }
+      cases.push(caseBlock(state, awaitCompletion(
+        site,
+        plan,
+        `frame->${nested.field}`,
+        nested.type,
+        false,
+        state + 1,
+      )));
+      state += 1;
+    }
+  };
   for (const operation of plan.operations) {
+    if (operation.kind === "label") {
+      labels.set(operation.label, state);
+      continue;
+    }
+    if (operation.kind === "jump") {
+      cases.push(caseBlock(state, [
+        `frame->state = ${asyncLabelMarker(operation.label)};`,
+        "continue;",
+      ]));
+      state += 1;
+      continue;
+    }
+    if (operation.kind === "branch") {
+      emitNestedAwaits(operation.condition);
+      const condition = emitFrameExpression(operation.condition, plan, fileName);
+      cases.push(caseBlock(state, [
+        `frame->state = (${condition}) ? ${asyncLabelMarker(operation.thenLabel)} : ${asyncLabelMarker(operation.elseLabel)};`,
+        "continue;",
+      ]));
+      state += 1;
+      continue;
+    }
     if (operation.kind === "scopeExit") {
       for (const site of [...plan.spawns.values()].filter((candidate) => candidate.scope === operation.scope)) {
         const target = planByKey.get(targetKey(site.target))!;
@@ -895,6 +1224,11 @@ function generatePoll(
       continue;
     }
     const statement = operation.statement;
+    if (statement.kind === "variable") emitNestedAwaits(statement.initializer!);
+    else if (statement.kind === "return" && statement.expression) emitNestedAwaits(statement.expression);
+    else if (statement.kind === "throw" || statement.kind === "expressionStatement") {
+      emitNestedAwaits(statement.expression);
+    }
     if (statement.kind === "variable") {
       const initializer = statement.initializer!;
       if (initializer.kind === "spawn") {
@@ -1133,8 +1467,13 @@ function generatePoll(
     "frame->task.completed = true;",
     "return;",
   ]));
-  const renderedCases = cases
-    .map((item) => item.replaceAll(finalizeStateMarker, String(finalizeState)));
+  const renderedCases = cases.map((item) => {
+    let rendered = item.replaceAll(finalizeStateMarker, String(finalizeState));
+    for (const [label, target] of labels) {
+      rendered = rendered.replaceAll(asyncLabelMarker(label), String(target));
+    }
+    return rendered;
+  });
   return `static void ${plan.pollName}(Z_AsyncTask *task) {
   ${plan.frameName} *frame = (${plan.frameName} *)task;
   if (frame->task.cancellation_requested) {
@@ -1247,8 +1586,9 @@ function validateAsyncMatchExpression(
   locals: ReadonlyMap<string, string>,
   fileName: string,
   types: AsyncTypeContext,
+  suspensions: ReadonlyMap<number, NestedAwaitSite>,
 ): void {
-  inspectAsyncMatchExpression(expression, { locals, types }, fileName);
+  inspectAsyncMatchExpression(expression, { locals, types, suspensions }, fileName);
 }
 
 function emitAsyncMatchExpression(
@@ -1350,7 +1690,7 @@ function asyncMatchArmContext(
       );
     }
   }
-  return { locals, types: plan.types, bindings };
+  return { locals, types: plan.types, bindings, suspensions: plan.suspensions };
 }
 
 function asyncMatchArmValue(
@@ -1373,8 +1713,9 @@ function validateFrameExpression(
   locals: ReadonlyMap<string, string>,
   fileName: string,
   types: AsyncTypeContext,
+  suspensions: ReadonlyMap<number, NestedAwaitSite>,
 ): void {
-  emitFrameExpression(expression, { locals, types }, fileName);
+  emitFrameExpression(expression, { locals, types, suspensions }, fileName);
 }
 
 function validateAsyncConsoleCall(
@@ -1382,13 +1723,14 @@ function validateAsyncConsoleCall(
   locals: ReadonlyMap<string, string>,
   fileName: string,
   types: AsyncTypeContext,
+  suspensions: ReadonlyMap<number, NestedAwaitSite>,
 ): void {
-  emitAsyncConsoleCall(expression, { locals, types }, fileName);
+  emitAsyncConsoleCall(expression, { locals, types, suspensions }, fileName);
 }
 
 function emitAsyncConsoleCall(
   expression: CallExpression,
-  plan: Pick<AsyncFunctionPlan, "locals" | "types">,
+  plan: FrameExpressionContext,
   fileName: string,
 ): string[] {
   if (expression.callee.kind !== "member") {
@@ -1421,7 +1763,7 @@ function emitAsyncConsoleCall(
 function emitAsyncConsoleValue(
   expression: Expression,
   stream: "stdout" | "stderr",
-  plan: Pick<AsyncFunctionPlan, "locals" | "types">,
+  plan: FrameExpressionContext,
   fileName: string,
 ): string[] {
   const type = frameExpressionType(expression, plan);
@@ -1440,7 +1782,7 @@ function renderAsyncConsoleValue(
   type: string,
   stream: "stdout" | "stderr",
   location: SourceLocation,
-  plan: Pick<AsyncFunctionPlan, "locals" | "types">,
+  plan: FrameExpressionContext,
   fileName: string,
 ): string[] {
   if (["i8", "i16", "i32", "i64", "isize"].includes(type)) {
@@ -1504,6 +1846,8 @@ function emitFrameExpression(
   plan: FrameExpressionContext,
   fileName: string,
 ): string {
+  const suspension = plan.suspensions?.get(expression.location.offset);
+  if (suspension) return `frame->${suspension.field}`;
   switch (expression.kind) {
     case "number":
       return expression.value;
@@ -1534,6 +1878,14 @@ function emitFrameExpression(
       }
     case "unary":
       {
+        const contextualType = plan.types.semanticInfo.numericLiteralTypes.get(expression.location.offset);
+        if (
+          contextualType
+          && expression.operand.kind === "number"
+          && (expression.operator === "+" || expression.operator === "-")
+        ) {
+          return asyncContextualSignedLiteral(expression.operator, expression.operand.value, contextualType);
+        }
         const integerOperation = plan.types.semanticInfo.integerOperations.get(expression.location.offset);
         if (integerOperation) {
           return `${asyncIntegerOperationName(integerOperation.kind, integerOperation.type)}(${emitFrameExpression(expression.operand, plan, fileName)})`;
@@ -1830,6 +2182,39 @@ function asyncIntegerOperationName(kind: IntegerOperation["kind"], type: string)
   return `z_${names[kind]}_${type}`;
 }
 
+function asyncContextualSignedLiteral(operator: "+" | "-", value: string, type: string): string {
+  const literal = asyncNumericLiteral(value, type);
+  if (operator === "+") return literal;
+  if (/[.eE]/.test(value)) return `(-${literal})`;
+  const widths: Readonly<Record<string, number>> = {
+    i8: 8,
+    i16: 16,
+    i32: 32,
+    i64: 64,
+    isize: process.arch.includes("64") ? 64 : 32,
+  };
+  const minimums: Readonly<Record<string, string>> = {
+    i8: "INT8_MIN",
+    i16: "INT16_MIN",
+    i32: "INT32_MIN",
+    i64: "INT64_MIN",
+    isize: "INTPTR_MIN",
+  };
+  const width = widths[type];
+  if (width && -BigInt(value) === -(1n << BigInt(width - 1))) return minimums[type];
+  return `(-${literal})`;
+}
+
+function asyncNumericLiteral(value: string, type: string): string {
+  const floating = /[.eE]/.test(value);
+  if (type === "f32") return `${value}${floating ? "F" : ".0F"}`;
+  if (type === "f64") return floating ? value : `${value}.0`;
+  if (type === "u32") return `${value}U`;
+  if (type === "u64" || type === "usize") return `${value}ULL`;
+  if (type === "i64" || type === "isize") return `${value}LL`;
+  return value;
+}
+
 function destinationLiveFlag(destination: string, plan: AsyncFunctionPlan): string {
   if (destination === "frame->result") return "frame->live_result";
   for (const name of plan.locals.keys()) {
@@ -1856,6 +2241,14 @@ function frameField(name: string): string {
 
 function frameLiveField(name: string): string {
   return `live_${nativePart(name)}`;
+}
+
+function nestedAwaitField(offset: number): string {
+  return `suspend_${offset}`;
+}
+
+function asyncLabelMarker(label: number): string {
+  return `__Z_ASYNC_LABEL_${label}__`;
 }
 
 function targetKey(target: Pick<AsyncTarget, "declaration" | "owner">): string {

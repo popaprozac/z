@@ -1164,9 +1164,15 @@ queue without blocking other ready tasks. Ordinary synchronous Z functions,
 methods, imported blocking `sleep`, and typed `console` calls execute in source
 order inside async frames without yielding. Concise synchronous `match` arms
 over scalar and plain-data enum payloads execute inside a poll state, including
-payload bindings, object destructuring, and checked integer arithmetic.
-Ownership-bearing match payload transfer, block or suspending arms, direct
-foreign calls, and scope-local value cleanup remain active Phase 1 work. See
+payload bindings, object destructuring, and checked integer arithmetic. Awaited
+cleanup-free values may appear inside otherwise synchronous expressions: the
+compiler stores each result in a hidden frame slot, preserves left-to-right
+evaluation, and resumes awaited `if` conditions through explicit branch states.
+This includes inline `match (attempt await operation())` subjects, ordinary call
+arguments, and arguments to another awaited call. Ownership-bearing hidden
+results, lazy suspension beneath `&&`, `||`, ternaries, value-producing `if`, or
+match arms, owned match payload transfer, direct foreign calls, and scope-local
+value cleanup remain active Phase 1 work. See
 [docs/async-model.md](docs/async-model.md) for the complete model and phases.
 
 ## Editor support

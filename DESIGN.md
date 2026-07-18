@@ -782,8 +782,13 @@ mutable parameter capabilities—and typed `console` operations run directly at
 their source-order poll state without introducing suspension. Concise
 synchronous `match` arms over cleanup-free enum values lower atomically within
 one poll state; payload bindings, plain-data object destructuring, and checked
-integer expressions preserve ordinary Z semantics. Owned match payload
-lifetimes and suspending arms remain later Phase 1 tiers. Async-free
+integer expressions preserve ordinary Z semantics. Embedded awaits with
+cleanup-free results normalize into hidden frame slots in left-to-right order;
+awaited statement conditions resume through explicit branch labels. Inline
+attempted-await match subjects and nested call arguments use the same lowering.
+Lazy short-circuit, conditional-expression, and selected match-arm suspension,
+along with owned hidden-result and match-payload lifetimes, remain later Phase 1
+tiers. Async-free
 programs do not link an async runtime. Apple
 executors may integrate with Dispatch and the main run loop; Windows executors
 may integrate with the thread pool and IOCP.

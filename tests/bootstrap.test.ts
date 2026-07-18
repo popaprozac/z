@@ -4522,7 +4522,6 @@ test("runs async match expressions with checked arithmetic and editor details", 
 
   const tokens = decodeSemanticTokens(semanticTokens(source, example).data);
   for (const offset of [
-    source.indexOf("observed ="),
     source.indexOf("baseline ="),
     source.indexOf("secondTask ="),
     source.indexOf("second ="),
@@ -4540,14 +4539,93 @@ test("runs async match expressions with checked arithmetic and editor details", 
   }
 
   const generated = compileToC(source, example);
+  assert.match(generated, /Z_Result_i32_NetworkError suspend_\d+;/);
+  assert.match(generated, /bool suspend_\d+;/);
   assert.match(generated, /const Z_Result_i32_NetworkError _z_async_match_/);
   assert.match(generated, /case Z_Result_i32_NetworkError_success:/);
   assert.match(generated, /z_checked_negate_i32/);
   assert.match(generated, /z_checked_add_i32/);
+  assert.match(generated, /z_async_start_isExpected/);
+  assert.match(generated, /frame->state = \(frame->suspend_\d+\) \? \d+ : \d+;/);
 
   const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stdout, "warmed 1\nwarmed 2\nwarm batch complete\n");
+});
+
+test("normalizes embedded awaits left-to-right and resumes awaited branches", () => {
+  const directory = mkdtempSync("/tmp/z-async-expressions-");
+  const fileName = resolve(directory, "main.z");
+  writeFileSync(fileName, `
+    import console from "std/console";
+    function combine(left: i32, right: i32): i32 { return left + right; }
+    async function value(id: i32): i32 {
+      console.log(id);
+      return id;
+    }
+    async function combineAsync(left: i32, right: i32): i32 { return left + right; }
+    async function positive(value: i32): bool { return value > 0; }
+    async function main(): i32 {
+      const answer = combine(await value(20), await value(22));
+      const nested = await combineAsync(await value(1), await value(2));
+      const deep = combine(await combineAsync(await value(3), await value(4)), 0);
+      if (await positive(answer + nested + deep)) {
+        console.log("positive");
+      } else {
+        return 1;
+      }
+      if (await positive(-1)) {
+        return 1;
+      } else {
+        console.log("not positive");
+      }
+      return answer + nested + deep - 52;
+    }
+  `);
+  const generated = compileToC(readFileSync(fileName, "utf8"), fileName);
+  const firstStart = generated.indexOf("z_async_start_value(frame->task.executor, 20)");
+  const secondStart = generated.indexOf("z_async_start_value(frame->task.executor, 22)");
+  assert.ok(firstStart >= 0 && secondStart > firstStart);
+  assert.match(generated, /combine\(frame->suspend_\d+, frame->suspend_\d+\)/);
+  assert.match(generated, /z_async_start_combineAsync\(frame->task.executor, frame->suspend_\d+, frame->suspend_\d+\)/);
+
+  const result = spawnSync(process.execPath, [cli, "run", fileName], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, "20\n22\n1\n2\n3\n4\npositive\nnot positive\n");
+});
+
+test("diagnoses embedded awaits whose lazy branch lowering has not landed", () => {
+  const shortCircuit = `
+    async function flag(): bool { return true; }
+    async function main(): i32 {
+      if (false && await flag()) { return 1; }
+      return 0;
+    }
+  `;
+  assert.throws(() => compileToC(shortCircuit, "async-short-circuit.z"), (error: unknown) => {
+    assert.ok(error instanceof DiagnosticError);
+    assert.equal(error.code, "Z0700");
+    assert.match(error.message, /short-circuit logic/);
+    return true;
+  });
+
+  const selectedArm = `
+    enum State { ready, empty, }
+    async function value(): i32 { return 42; }
+    async function main(): i32 {
+      const state = State.ready;
+      return match (state) {
+        ready => await value();
+        empty => 0;
+      };
+    }
+  `;
+  assert.throws(() => compileToC(selectedArm, "async-selected-arm.z"), (error: unknown) => {
+    assert.ok(error instanceof DiagnosticError);
+    assert.equal(error.code, "Z0700");
+    assert.match(error.message, /selected-arm suspension/);
+    return true;
+  });
 });
 
 test("executes async failure matches with scalar and object payload bindings", () => {
@@ -4556,8 +4634,7 @@ test("executes async failure matches with scalar and object payload bindings", (
   writeFileSync(scalarFile, `
     async function fail(): i32 throws i32 { throw 7; }
     async function main(): i32 {
-      const result = attempt await fail();
-      return match (result) {
+      return match (attempt await fail()) {
         success(value) => value;
         failure(value) => value - 7;
       };

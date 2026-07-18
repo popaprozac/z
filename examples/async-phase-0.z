@@ -15,9 +15,12 @@ async function warmValue(id: i32): void {
   console.log(`warmed ${id}`);
 }
 
+async function isExpected(value: i32): bool {
+  return value == 42;
+}
+
 async function main(): i32 throws NetworkError {
-  const observed = attempt await fetchValue(0);
-  const baseline = match (observed) {
+  const baseline = match (attempt await fetchValue(0)) {
     success(value) => value;
     failure(error) => -error.code;
   };
@@ -33,5 +36,8 @@ async function main(): i32 throws NetworkError {
   }
 
   console.log("warm batch complete");
-  return baseline + first + second - 42;
+  if (await isExpected(baseline + first + second)) {
+    return 0;
+  }
+  return 1;
 }

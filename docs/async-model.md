@@ -184,7 +184,15 @@ capability-aware arguments, and typed console output lower between suspension
 states without yielding. Concise synchronous `match` expressions over
 cleanup-free enum subjects and results lower atomically in a poll state, with
 payload bindings, plain-data object destructuring, and checked integer
-arithmetic. The next Phase 1 layers add owned match-payload transfer, block and
-suspending arms, direct foreign calls, and brace-local value cleanup. Later phases
+arithmetic. Embedded awaits with cleanup-free results normalize into hidden
+task-frame slots. Their calls run once in left-to-right order, including awaits
+inside ordinary call arguments or another awaited call, and awaited `if`
+conditions resume through explicit branch states. Inline `match (attempt await
+operation())` therefore needs no source-level temporary. Lazy suspension under
+short-circuit operators, ternaries, value-producing `if`, and match arms is
+diagnosed until branch-aware expression lowering can preserve selected-branch
+evaluation. The next Phase 1 layers add owned hidden-result and match-payload
+transfer, block and suspending arms, direct foreign calls, and brace-local value
+cleanup. Later phases
 add channels, sendability and atomic ARC, native executors, actors, and
 callback-to-async synthesis. Async-free programs never link the runtime.
