@@ -548,6 +548,10 @@ function generateFunctionTypeParameters(
     const type = mapType(parameter.type, structs, enums, foreignNamedTypes);
     if (parseSliceType(parameter.type)) return `${type} ${name}`;
     const aggregate = structs.get(parameter.type);
+    if (foreignNamedTypes.get(parameter.type)?.kind === "object") {
+      if (parameter.mode === "inout" || parameter.mode === "out") return `${type} *${name}`;
+      return `${type}${name}`;
+    }
     if (aggregate?.kind === "class") {
       if (parameter.mode === "in") return `const ${structName(aggregate.name)} *${name}`;
       if (parameter.mode === "inout" || parameter.mode === "out") return `${structName(aggregate.name)} **${name}`;
@@ -1097,7 +1101,9 @@ function generateClassConstructorSignature(
       const type = mapType(parameter.type.name, structs, enums, foreignNamedTypes);
       const aggregate = structs.get(parameter.type.name);
       if (parseSliceType(parameter.type.name)) return `${type} ${cBindingName(parameter.name)}`;
-      if (aggregate?.kind === "class") {
+      if (foreignNamedTypes.get(parameter.type.name)?.kind === "object") {
+        if (parameter.mode === "inout" || parameter.mode === "out") return `${type} *${cBindingName(parameter.name)}`;
+      } else if (aggregate?.kind === "class") {
         if (parameter.mode === "in") return `const ${structName(aggregate.name)} *${cBindingName(parameter.name)}`;
         if (parameter.mode === "inout" || parameter.mode === "out") return `${structName(aggregate.name)} **${cBindingName(parameter.name)}`;
       } else if (parameter.mode === "in") return `const ${type} *${cBindingName(parameter.name)}`;
@@ -1127,7 +1133,7 @@ function generateClassLifecycle(
   const constructor = declaration.constructor
     ? generateUserClassConstructor(declaration, structs, enums, functions, semanticInfo)
     : `${generateClassConstructorSignature(declaration, structs, enums, semanticInfo.foreignNamedTypes)} {
-  ${cName} *self = (${cName} *)malloc(sizeof(${cName}));
+  ${cName} *self = (${cName} *)calloc(1, sizeof(${cName}));
   if (self == NULL) abort();
   self->_z_refcount = 1;
   self->_z_weak = NULL;
@@ -1216,7 +1222,8 @@ function generateUserClassConstructor(
   const fieldFlags = new Map<string, string>();
   const fieldCleanup = declaration.fields.flatMap((field) => {
     if (!constructor.errorType) return [];
-    if (!hasCleanupType(field.type.name, structs, enums, semanticInfo.foreignTypes)) return [];
+    if (!hasCleanupType(field.type.name, structs, enums, semanticInfo.foreignTypes)
+      && semanticInfo.foreignNamedTypes.get(field.type.name)?.kind !== "object") return [];
     const liveFlag = nextLiveFlag(`field_${field.name}`, liveFlagCounter);
     fieldFlags.set(field.name, liveFlag);
     return [{ name: field.name, value: `self->${field.name}`, type: field.type.name, liveFlag }];
@@ -1246,7 +1253,7 @@ function generateUserClassConstructor(
   };
   const cName = structName(declaration.name);
   const body = [
-    `  ${cName} *self = (${cName} *)malloc(sizeof(${cName}));`,
+    `  ${cName} *self = (${cName} *)calloc(1, sizeof(${cName}));`,
     "  if (self == NULL) abort();",
     "  self->_z_refcount = 1;",
     "  self->_z_weak = NULL;",
@@ -1407,7 +1414,8 @@ function generateDeinit(
   const localCleanup = generateCleanup(context.cleanupScopes, context);
   if (localCleanup) body.push(indent(localCleanup, 2));
   for (const field of [...declaration.fields].reverse()) {
-    if (hasCleanupType(field.type.name, structs, enums)) {
+    if (hasCleanupType(field.type.name, structs, enums)
+      || semanticInfo.foreignNamedTypes.get(field.type.name)?.kind === "object") {
       body.push(indent(generateValueCleanup(`self->${field.name}`, field.type.name, null, context), 2));
     }
   }
@@ -1432,6 +1440,10 @@ function generateFunctionSignature(
     const type = mapType(parameter.type.name, structs, enums, foreignNamedTypes);
     if (parseSliceType(parameter.type.name)) return `${type} ${name}`;
     const aggregate = structs.get(parameter.type.name);
+    if (foreignNamedTypes.get(parameter.type.name)?.kind === "object") {
+      if (parameter.mode === "inout" || parameter.mode === "out") return `${type} *${name}`;
+      return `${type}${name}`;
+    }
     if (aggregate?.kind === "class") {
       if (parameter.mode === "in") return `const ${structName(aggregate.name)} *${name}`;
       if (parameter.mode === "inout" || parameter.mode === "out") return `${structName(aggregate.name)} **${name}`;
@@ -1702,6 +1714,7 @@ function renderConsoleValue(
   if (context.semanticInfo.foreignTypes.has(type)) {
     return [`fprintf(${stream}, "%p", (void *)(${value}));`];
   }
+  if (foreign?.kind === "object") return [`fputs("<Objective-C object>", ${stream});`];
   if (type.startsWith("__z_objc:")) return [`fputs("<Objective-C object>", ${stream});`];
   if (type.startsWith("__z_objc_class:")) return [`fputs("<Objective-C class>", ${stream});`];
 
@@ -1792,6 +1805,9 @@ function renderStringValue(
   }
   if (context.semanticInfo.foreignTypes.has(type)) {
     return [`z_string_append_pointer(&${target}, (void *)(${value}));`];
+  }
+  if (foreign?.kind === "object") {
+    return [`z_string_append_bytes(&${target}, "<Objective-C object>", 20);`];
   }
   if (type.startsWith("__z_objc:")) {
     return [`z_string_append_bytes(&${target}, "<Objective-C object>", 20);`];
@@ -2408,6 +2424,10 @@ function generateValueCleanup(
     const condition = liveFlag ? `${liveFlag} && ${capacity}` : capacity;
     return `if (${condition}) free((void *)(${value}).data);`;
   }
+  if (context.semanticInfo.foreignNamedTypes.get(type)?.kind === "object") {
+    const release = `${value} = nil;`;
+    return liveFlag ? `if (${liveFlag}) ${release}` : release;
+  }
   const dynamic = parseDynamicArrayType(type);
   if (dynamic) {
     const lines: string[] = [];
@@ -2543,6 +2563,10 @@ function generateLocalDeclaration(
     return mutable ? `${cType}${name}` : `${cType} const ${name}`;
   }
   if (type.startsWith("__z_objc:")) {
+    const cType = mapType(type, structs, enums, foreignNamedTypes);
+    return mutable ? `${cType}${name}` : `${cType} const ${name}`;
+  }
+  if (foreignNamedTypes.get(type)?.kind === "object") {
     const cType = mapType(type, structs, enums, foreignNamedTypes);
     return mutable ? `${cType}${name}` : `${cType} const ${name}`;
   }

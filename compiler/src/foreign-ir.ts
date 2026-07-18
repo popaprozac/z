@@ -27,6 +27,13 @@ export type ForeignNamedType =
     readonly cName: string;
   }
   | {
+    readonly kind: "object";
+    readonly exportName: string;
+    readonly typeName: string;
+    readonly cName: string;
+    readonly className: string;
+  }
+  | {
     readonly kind: "enum";
     readonly exportName: string;
     readonly typeName: string;

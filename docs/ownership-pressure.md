@@ -15,8 +15,10 @@ What works:
 - `Array<Document>` owns move-only struct elements containing owned `String`
   values, and `push` transfers each document into stable application state;
 - borrowed methods inspect scalar state without copying or exposing storage;
-- inferred AppKit object references use Objective-C ARC and coexist with Z-owned
-  model state in the same native program.
+- imported AppKit classes are nominal Z types, so an ARC-managed
+  `WindowController` stores both `AppKit.NSWindow` and the Z-owned `Workspace`;
+- native run output streams immediately, so diagnostics emitted before entering
+  AppKit's event loop are visible while the window is still open.
 
 ## Pressure 1: borrowed views cannot escape
 
@@ -40,14 +42,18 @@ Do not choose among them from syntax alone. Add the smallest spike when a real
 program needs to retain or return a view, then compare call sites, diagnostics,
 code generation, and optimizer results.
 
-## Pressure 2: imported Objective-C references are inferred-only
+## Pressure 2: imported Objective-C references in owned Z state
 
-`AppKit.NSWindow` is understood when inferred from an imported call, but the
-bootstrap does not yet accept that spelling in a Z field, parameter, or return
-annotation. Consequently the native window cannot yet be stored directly on
-`Workspace`. This is an interop type-surface gap, not evidence against the
-ownership model. The follow-up must expose imported reference types as nominal
-source types and define ARC behavior when they are fields of Z structs/classes.
+Resolved for non-null class references: `AppKit.NSWindow` is a nominal source
+type and can be used in Z fields and signatures. The desktop probe stores a
+window on an ARC-managed Z `WindowController`. Generated Objective-C uses a
+strong field, zero-initializes class storage before the first ARC assignment,
+and clears the field before freeing the surrounding Z allocation.
+
+Nullable imported references remain a distinct internal type until Z has a
+source-level nullable spelling and narrowing rules. Protocol-qualified `id`,
+weak/unowned foreign fields, and ownership attributes imported from API notes
+remain later slices.
 
 ## Pressure 3: interactive AppKit needs adapter surfaces
 

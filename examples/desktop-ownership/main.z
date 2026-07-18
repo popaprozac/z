@@ -2,11 +2,21 @@ import console from "std/console";
 import AppKit from "AppKit/AppKit.h";
 import { Document, Workspace } from "./model.z";
 
+class WindowController {
+  window: AppKit.NSWindow;
+  workspace: Workspace;
+
+  function present(): void {
+    console.log(`documents=${this.workspace.documentCount()}, active=${this.workspace.activeDocumentId()}`);
+    this.window.center();
+    this.window.makeKeyAndOrderFront(null);
+  }
+}
+
 function main(): i32 {
   const workspace = new Workspace({ documents: Array<Document>() });
   workspace.open(Document({ id: 1, title: "Welcome" }));
   workspace.open(Document({ id: 2, title: "Interop Notes" }));
-  console.log(`documents=${workspace.documentCount()}, active=${workspace.activeDocumentId()}`);
 
   const app = AppKit.NSApplication.sharedApplication;
   app.setActivationPolicy(AppKit.NSApplicationActivationPolicyRegular);
@@ -24,8 +34,8 @@ function main(): i32 {
   );
 
   window.title = "Z Desktop Ownership Probe";
-  window.center();
-  window.makeKeyAndOrderFront(null);
+  const controller = new WindowController({ window, workspace });
+  controller.present();
   app.activate();
   app.run();
   return 0;

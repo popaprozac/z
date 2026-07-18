@@ -870,6 +870,9 @@ test("compiles a desktop ownership slice and preserves its current pressure wall
   assert.match(artifact.source, /typedef struct Z_[A-Za-z0-9_]*Workspace Z_[A-Za-z0-9_]*Workspace/);
   assert.match(artifact.source, /Z_DynamicArray_[A-Za-z0-9_]*Document documents/);
   assert.match(artifact.source, /\[\[NSWindow alloc\] initWithContentRect/);
+  assert.match(artifact.source, /NSWindow \*\s*window;/);
+  assert.match(artifact.source, /calloc\(1, sizeof\(Z_WindowController\)\)/);
+  assert.match(artifact.source, /self->window = nil;/);
   assert.deepEqual(diagnostics(source, example), []);
 
   const borrowedView = `
@@ -885,15 +888,8 @@ test("compiles a desktop ownership slice and preserves its current pressure wall
     /moving a cleanup-bearing element out of its owner is not implemented yet/,
   );
 
-  const importedField = `
-    import AppKit from "AppKit/AppKit.h";
-    class WindowState { window: AppKit.NSWindow; }
-    function main(): i32 { return 0; }
-  `;
-  assert.match(
-    diagnostics(importedField, "desktop-imported-field.z")[0].message,
-    /unknown type "AppKit\.NSWindow"/,
-  );
+  const windowFieldOffset = source.indexOf("window: AppKit.NSWindow") + "window: AppKit.".length + 1;
+  assert.match(hover(source, example, windowFieldOffset)?.contents.value ?? "", /class NSWindow/);
 });
 
 test("imports and executes Swift through its generated Objective-C compatibility header", () => {

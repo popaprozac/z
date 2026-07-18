@@ -235,7 +235,16 @@ export function analyze(
     for (const [name, type] of module.types) foreignTypes.set(name, type);
     for (const type of module.namedTypes.values()) foreignNamedTypes.set(type.typeName, type);
     for (const [name, type] of module.objectTypes) foreignObjectTypes.set(name, type);
-    for (const type of module.interfaces.values()) foreignInterfaces.set(type.typeName, type);
+    for (const type of module.interfaces.values()) {
+      foreignInterfaces.set(type.typeName, type);
+      foreignNamedTypes.set(type.typeName, {
+        kind: "object",
+        exportName: type.exportName,
+        typeName: type.typeName,
+        cName: `${type.className} *`,
+        className: type.className,
+      });
+    }
     if (module.framework) frameworks.add(module.framework);
     if (module.objectiveC) objectiveC = true;
     if (module.cPlusPlus) cPlusPlus = true;
@@ -2190,7 +2199,8 @@ function requireConsoleFormattable(
     });
   }
   if (actual === "null" || (primitiveTypes.has(actual) && actual !== "void")) return;
-  if (actual.startsWith("__z_objc:") || actual.startsWith(objcClassPrefix) || state.foreignTypes.has(actual)) return;
+  if (actual.startsWith("__z_objc:") || actual.startsWith(objcClassPrefix)
+    || state.foreignObjectTypes.has(actual) || state.foreignTypes.has(actual)) return;
   if (visiting.has(actual)) return;
   visiting.add(actual);
   const array = parseFixedArrayType(actual) ?? parseDynamicArrayType(actual) ?? parseSliceType(actual);
@@ -3107,7 +3117,9 @@ function inferExpressionInner(
           let result = foreignValueType(method.returnType);
           if (method.returnsInstanceType) {
             const nullable = method.returnType.kind === "object" && method.returnType.nullable;
-            result = `__z_objc:${nullable ? "nullable" : "nonnull"}:${objcReceiverType.declaration.typeName}`;
+            result = nullable
+              ? `__z_objc:nullable:${objcReceiverType.declaration.typeName}`
+              : objcReceiverType.declaration.typeName;
           }
           if (result === "unknown") throw new DiagnosticError(fileName, expression.location, `Objective-C selector ${JSON.stringify(method.selector)} uses an unsupported return type`);
           state.foreignCallTypes.set(expression.location.offset, String(result));

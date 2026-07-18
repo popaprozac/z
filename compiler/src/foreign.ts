@@ -489,7 +489,7 @@ function collectObjCInterfaces(
   const typeNames = new Map([...declarations.keys()].map((name) => [name, `${moduleName}.${name}`]));
   const objectType = (className: string | null, nullable: boolean): ForeignObjectType => {
     const baseName = className ? typeNames.get(className) ?? `${moduleName}.${className}` : "id";
-    const typeName = nullable ? `__z_objc:nullable:${baseName}` : `__z_objc:nonnull:${baseName}`;
+    const typeName = nullable || !className ? `__z_objc:${nullable ? "nullable" : "nonnull"}:${baseName}` : baseName;
     const existing = objectTypes.get(typeName);
     if (existing) return existing;
     const created: ForeignObjectType = {
