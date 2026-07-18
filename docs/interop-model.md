@@ -44,13 +44,15 @@ use its short module alias, while the native hierarchy is available explicitly:
 import cpp from "cpp_math.hpp";
 
 const moved = cpp.zcpp.translate(origin, 1, -1);
+const point: cpp.zcpp.Point = cpp.zcpp.Point({ x: 20, y: 22 });
 const answer = cpp.scale(6, 7); // unique short alias; selects the i32 overload
 ```
 
-If two namespaces export the same leaf name, Z omits the short alias and
-requires the qualified path. Every overload retains its own full contract and
-source location. `Z0803` reports calls for which no candidate is viable or more
-than one best candidate remains; declaration order is never a tiebreaker.
+Functions and named types follow the same rule: if two namespaces export the
+same leaf name, Z omits the short alias and requires the qualified path. Every
+overload retains its own full contract and source location. `Z0803` reports
+calls for which no candidate is viable or more than one best candidate remains;
+declaration order is never a tiebreaker.
 
 ## Cost model
 
@@ -69,11 +71,13 @@ boundary**, not a claim that every bridge operation is free:
 | Logging an `NSString` | Reads its UTF-8 bytes for the duration of the console call; no Z `String` allocation |
 | Z ARC class reference | Retain/release traffic; the bootstrap runtime is non-atomic and not yet optimized |
 
-An eventual explicit `extern` declaration is the intended fallback for native
-declarations an automatic producer cannot express. Supplying an ABI signature
-is distinct from accepting an unverified memory-safety obligation: the latter
-also requires an explicit `unsafe` boundary. Both paths will feed the same
-contract normalizer and FIIR as generated declarations.
+An eventual explicit foreign-declaration mechanism (working spelling:
+`extern`) is the intended fallback for native declarations an automatic
+producer cannot express. Supplying an ABI signature is distinct from accepting
+an unverified memory-safety obligation: the latter also requires a separate
+unchecked-safety boundary (working spelling: `unsafe`). The exact keywords and
+grammar remain open. Both paths will feed the same contract normalizer and FIIR
+as generated declarations.
 
 Imported nullable references use the same one-pointer representation as their
 native ABI. A Z null check is an ordinary pointer comparison and narrows the

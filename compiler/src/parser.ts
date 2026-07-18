@@ -81,9 +81,11 @@ export function parse(tokens: Token[], fileName: string): Program {
     } else if (token.text === "Array" && match("less")) {
       name = dynamicArrayTypeName(parseType().name);
       expectTypeGreater();
-    } else if (match("dot")) {
-      const member = expect("identifier", "an imported type name");
-      name = `${name}.${member.text}`;
+    } else {
+      while (match("dot")) {
+        const member = expect("identifier", "an imported type name");
+        name = `${name}.${member.text}`;
+      }
     }
     if (at("less")) {
       take();

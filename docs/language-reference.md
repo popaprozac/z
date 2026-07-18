@@ -284,3 +284,8 @@ qualified namespace path. Imported overloads are selected from argument count
 and type, with integer literals preferring `i32` and floating literals
 preferring `f64`. If no unique best native signature exists, compilation fails
 with `Z0803` and lists the remaining candidates.
+
+Imported C++ records and opaque values use that same hierarchy. For example,
+`cpp.zcpp.Point` is both a valid type annotation and record constructor path.
+`cpp.Point` is available only when `Point` is unique across the imported module;
+otherwise completion omits it and the qualified native namespace is required.

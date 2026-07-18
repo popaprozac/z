@@ -163,13 +163,16 @@ function readHeader(
     if (swiftCxxNamespace && namespaces[0] !== swiftCxxNamespace) return;
     const parameterNodes = (node.inner ?? [])
       .filter((child) => child.kind === "ParmVarDecl" && child.type?.qualType);
-    const parameters = parameterNodes.map((child) => ({
-      name: child.name ?? null,
-      type: {
-        nativeName: child.type!.qualType!,
-        canonicalNativeName: child.type!.desugaredQualType,
-      },
-    }));
+    const parameters = parameterNodes.map((child) => {
+      const nativeName = qualifyNativeTypeSpelling(child.type!.qualType!, namespaces, imported.byCName);
+      const canonicalNativeName = child.type!.desugaredQualType
+        ? qualifyNativeTypeSpelling(child.type!.desugaredQualType, namespaces, imported.byCName)
+        : undefined;
+      return {
+        name: child.name ?? null,
+        type: { nativeName, canonicalNativeName },
+      };
+    });
     const cSignature = node.type.qualType;
     const cName = cPlusPlus && namespaces.length > 0 ? `${namespaces.join("::")}::${node.name}` : node.name;
     const namespacePath = cPlusPlus
@@ -179,7 +182,7 @@ function readHeader(
     const overload = {
       name: node.name,
       nativeName: cName,
-      returnType: { nativeName: returnTypeOf(cSignature) },
+      returnType: { nativeName: qualifyNativeTypeSpelling(returnTypeOf(cSignature), namespaces, imported.byCName) },
       parameters,
       variadic: node.variadic === true,
       nativeSignature: cSignature,
@@ -237,9 +240,10 @@ function readHeader(
     producer: produced.producer,
     functions: contracts.functions,
     functionAliases: contracts.functionAliases,
-    namespaces: contracts.namespaces,
     types: contracts.pointerTypes,
     namedTypes: produced.namedTypes,
+    namedTypeAliases: imported.namedTypeAliases,
+    namespaces: new Set([...contracts.namespaces, ...imported.namespaces]),
     constants: produced.constants,
     objectTypes: produced.objectTypes,
     interfaces: produced.interfaces,
@@ -256,6 +260,8 @@ function collectNamedTypes(
   swiftCxxNamespace: string | null,
 ): {
   namedTypes: ReadonlyMap<string, ForeignNamedType>;
+  namedTypeAliases: ReadonlyMap<string, string>;
+  namespaces: ReadonlySet<string>;
   constants: ReadonlyMap<string, ForeignConstant>;
   byCName: ReadonlyMap<string, ForeignNamedType>;
 } {
@@ -271,6 +277,8 @@ function collectNamedTypes(
 
   const cppRecords: {
     readonly exportName: string;
+    readonly namespacePath: readonly string[];
+    readonly qualifiedName: string;
     readonly cName: string;
     readonly declaration: ClangNode;
     readonly opaque: boolean;
@@ -287,8 +295,11 @@ function collectNamedTypes(
         && node.tagUsed === "class"
         && (node.inner?.some((child) => child.kind === "CXXDestructorDecl") ?? false);
       if (!(node.tagUsed === "struct" && fields) && !opaque) return;
+      const namespacePath = swiftCxxNamespace ? namespaces.slice(1) : namespaces;
       cppRecords.push({
         exportName: node.name,
+        namespacePath,
+        qualifiedName: [...namespacePath, node.name].join("."),
         cName: [...namespaces, node.name].join("::"),
         declaration: node,
         opaque,
@@ -299,6 +310,8 @@ function collectNamedTypes(
   type Seed = {
     kind: "record" | "value" | "enum" | "scalar";
     exportName: string;
+    namespacePath: readonly string[];
+    qualifiedName: string;
     typeName: string;
     cName: string;
     declaration?: ClangNode;
@@ -326,6 +339,8 @@ function collectNamedTypes(
     seeds.set(node.name, {
       kind,
       exportName: node.name,
+      namespacePath: [],
+      qualifiedName: node.name,
       typeName: `${moduleName}.${node.name}`,
       cName: node.name,
       declaration: kind === "record" ? records.get(recordMatch![1]) : kind === "enum" ? enums.get(enumMatch![1]) : undefined,
@@ -339,21 +354,30 @@ function collectNamedTypes(
     });
   }
   for (const record of cppRecords) {
-    if (seeds.has(record.exportName)) continue;
-    seeds.set(record.exportName, {
+    if (seeds.has(record.qualifiedName)) continue;
+    seeds.set(record.qualifiedName, {
       kind: record.opaque ? "value" : "record",
       exportName: record.exportName,
-      typeName: `${moduleName}.${record.exportName}`,
+      namespacePath: record.namespacePath,
+      qualifiedName: record.qualifiedName,
+      typeName: `${moduleName}.${record.qualifiedName}`,
       cName: record.cName,
       declaration: record.declaration,
       sourceDeclaration: record.declaration,
     });
   }
 
-  const potential = new Map<string, { typeName: string; kind: Seed["kind"]; underlying?: ForeignScalarTypeName; declaration?: ClangNode }>();
+  const potential = new Map<string, Seed>();
+  const seedNames = new Map<string, Seed[]>();
   for (const seed of seeds.values()) {
     potential.set(seed.cName, seed);
-    potential.set(seed.exportName, seed);
+    potential.set(seed.qualifiedName, seed);
+    const matching = seedNames.get(seed.exportName) ?? [];
+    matching.push(seed);
+    seedNames.set(seed.exportName, matching);
+  }
+  for (const [name, matching] of seedNames) {
+    if (matching.length === 1) potential.set(name, matching[0]);
   }
   const namedTypes = new Map<string, ForeignNamedType>();
   const byCName = new Map<string, ForeignNamedType>();
@@ -361,11 +385,13 @@ function collectNamedTypes(
     let named: ForeignNamedType | null = null;
     const metadata = foreignDeclarationMetadata(seed.sourceDeclaration ?? seed.declaration);
     if (seed.kind === "scalar") {
-      named = { kind: "scalar", exportName: seed.exportName, typeName: seed.typeName, cName: seed.cName, underlying: seed.underlying!, metadata };
+      named = { kind: "scalar", exportName: seed.exportName, namespacePath: seed.namespacePath, qualifiedName: seed.qualifiedName, typeName: seed.typeName, cName: seed.cName, underlying: seed.underlying!, metadata };
     } else if (seed.kind === "enum") {
       named = {
         kind: "enum",
         exportName: seed.exportName,
+        namespacePath: seed.namespacePath,
+        qualifiedName: seed.qualifiedName,
         typeName: seed.typeName,
         cName: seed.cName,
         flags: seed.flags ?? false,
@@ -373,32 +399,51 @@ function collectNamedTypes(
         metadata,
       };
     } else if (seed.kind === "value") {
-      named = { kind: "value", exportName: seed.exportName, typeName: seed.typeName, cName: seed.cName, metadata };
+      named = { kind: "value", exportName: seed.exportName, namespacePath: seed.namespacePath, qualifiedName: seed.qualifiedName, typeName: seed.typeName, cName: seed.cName, metadata };
     } else {
       const fields = (seed.declaration!.inner ?? []).filter((child) => child.kind === "FieldDecl");
       const mapped = fields.map((field) => field.name && field.type?.qualType
-        ? { name: field.name, typeName: mapRecordFieldType(field.type.qualType, potential), metadata: foreignDeclarationMetadata(field) }
+        ? { name: field.name, typeName: mapRecordFieldType(field.type.qualType, seed.namespacePath, potential), metadata: foreignDeclarationMetadata(field) }
         : null);
       if (recordIsSupported(seed, potential, new Set()) && mapped.every((field): field is ForeignField => Boolean(field?.typeName))) {
-        named = { kind: "record", exportName: seed.exportName, typeName: seed.typeName, cName: seed.cName, fields: mapped, metadata };
+        named = { kind: "record", exportName: seed.exportName, namespacePath: seed.namespacePath, qualifiedName: seed.qualifiedName, typeName: seed.typeName, cName: seed.cName, fields: mapped, metadata };
       }
     }
     if (!named) continue;
-    namedTypes.set(named.exportName, named);
+    namedTypes.set(named.qualifiedName, named);
     byCName.set(named.cName, named);
-    byCName.set(named.exportName, named);
+    byCName.set(named.qualifiedName, named);
+  }
+
+  const namedTypeAliases = new Map<string, string>();
+  const namedByLeaf = new Map<string, ForeignNamedType[]>();
+  for (const named of namedTypes.values()) {
+    const matching = namedByLeaf.get(named.exportName) ?? [];
+    matching.push(named);
+    namedByLeaf.set(named.exportName, matching);
+  }
+  for (const [name, matching] of namedByLeaf) {
+    if (matching.length !== 1) continue;
+    namedTypeAliases.set(name, matching[0].qualifiedName);
+    byCName.set(name, matching[0]);
   }
 
   const constants = new Map<string, ForeignConstant>();
   for (const named of namedTypes.values()) {
     if (named.kind !== "enum") continue;
-    const declaration = seeds.get(named.exportName)?.declaration;
+    const declaration = seeds.get(named.qualifiedName)?.declaration;
     for (const constant of declaration?.inner ?? []) {
       if (constant.kind !== "EnumConstantDecl" || !constant.name) continue;
       constants.set(constant.name, { name: constant.name, cName: constant.name, typeName: named.typeName, metadata: foreignDeclarationMetadata(constant) });
     }
   }
-  return { namedTypes, constants, byCName };
+  const namespaces = new Set<string>();
+  for (const named of namedTypes.values()) {
+    for (let depth = 1; depth <= named.namespacePath.length; depth += 1) {
+      namespaces.add(named.namespacePath.slice(0, depth).join("."));
+    }
+  }
+  return { namedTypes, namedTypeAliases, namespaces, constants, byCName };
 }
 
 function collectObjCInterfaces(
@@ -567,19 +612,20 @@ function mapObjCBlockType(
 
 function mapRecordFieldType(
   cName: string,
+  namespacePath: readonly string[],
   named: ReadonlyMap<string, { typeName: string; kind: string; underlying?: ForeignScalarTypeName }>,
 ): string {
   const builtin = mapBuiltinType(cName);
   if (builtin && builtin !== "void") return builtin;
-  const imported = named.get(stripValueQualifiers(cName));
+  const imported = resolvePotentialNamedType(cName, namespacePath, named);
   if (imported?.kind === "scalar") return imported.underlying!;
   if (imported?.kind === "enum" || imported?.kind === "record") return imported.typeName;
   return "";
 }
 
 function recordIsSupported(
-  seed: { typeName: string; kind: string; declaration?: ClangNode },
-  named: ReadonlyMap<string, { typeName: string; kind: string; declaration?: ClangNode }>,
+  seed: { typeName: string; kind: string; namespacePath: readonly string[]; declaration?: ClangNode },
+  named: ReadonlyMap<string, { typeName: string; kind: string; namespacePath: readonly string[]; declaration?: ClangNode }>,
   visiting: Set<string>,
 ): boolean {
   if (seed.kind !== "record" || !seed.declaration || visiting.has(seed.typeName)) return seed.kind !== "record";
@@ -590,12 +636,28 @@ function recordIsSupported(
       if (!field.name || !field.type?.qualType) return false;
       const builtin = mapBuiltinType(field.type.qualType);
       if (builtin) return builtin !== "void";
-      const nested = named.get(stripValueQualifiers(field.type.qualType));
+      const nested = resolvePotentialNamedType(field.type.qualType, seed.namespacePath, named);
       if (!nested) return false;
       return nested.kind !== "record" || recordIsSupported(nested, named, visiting);
     });
   visiting.delete(seed.typeName);
   return supported;
+}
+
+function resolvePotentialNamedType<T>(
+  cName: string,
+  namespacePath: readonly string[],
+  named: ReadonlyMap<string, T>,
+): T | undefined {
+  const normalized = stripValueQualifiers(cName);
+  const direct = named.get(normalized);
+  if (direct) return direct;
+  for (let depth = namespacePath.length; depth > 0; depth -= 1) {
+    const qualified = `${namespacePath.slice(0, depth).join("::")}::${normalized}`;
+    const candidate = named.get(qualified);
+    if (candidate) return candidate;
+  }
+  return undefined;
 }
 
 function foreignDeclarationMetadata(node: ClangNode | undefined): ForeignDeclarationMetadata {
@@ -719,6 +781,27 @@ function visitWithNamespaces(
 function returnTypeOf(signature: string): string {
   const parameterList = signature.indexOf("(");
   return (parameterList === -1 ? signature : signature.slice(0, parameterList)).trim();
+}
+
+function qualifyNativeTypeSpelling(
+  spelling: string,
+  namespacePath: readonly string[],
+  namedTypes: ReadonlyMap<string, ForeignNamedType>,
+): string {
+  const normalized = normalizeCType(spelling);
+  const reference = /^(?:const\s+)?(.+?)\s*&$/.exec(normalized);
+  const pointer = /^(.+?)\s*\*$/.exec(normalized);
+  const base = stripValueQualifiers(reference?.[1] ?? pointer?.[1] ?? normalized);
+  if (namedTypes.has(base)) return normalized;
+  for (let depth = namespacePath.length; depth > 0; depth -= 1) {
+    const qualified = `${namespacePath.slice(0, depth).join("::")}::${base}`;
+    if (!namedTypes.has(qualified)) continue;
+    const offset = normalized.lastIndexOf(base);
+    return offset < 0
+      ? normalized
+      : `${normalized.slice(0, offset)}${qualified}${normalized.slice(offset + base.length)}`;
+  }
+  return normalized;
 }
 
 function mapForeignType(

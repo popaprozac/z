@@ -71,7 +71,11 @@ export type ForeignNamedType = (
     readonly cName: string;
     readonly underlying: ForeignScalarTypeName;
   }
-) & { readonly metadata: ForeignDeclarationMetadata };
+) & {
+  readonly namespacePath: readonly string[];
+  readonly qualifiedName: string;
+  readonly metadata: ForeignDeclarationMetadata;
+};
 
 export type ForeignField = {
   readonly name: string;
@@ -254,6 +258,7 @@ export type ForeignModuleIR = {
   readonly namespaces: ReadonlySet<string>;
   readonly types: ReadonlyMap<string, ForeignPointerType>;
   readonly namedTypes: ReadonlyMap<string, ForeignNamedType>;
+  readonly namedTypeAliases: ReadonlyMap<string, string>;
   readonly constants: ReadonlyMap<string, ForeignConstant>;
   readonly objectTypes: ReadonlyMap<string, ForeignObjectType>;
   readonly interfaces: ReadonlyMap<string, ForeignObjCInterface>;

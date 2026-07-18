@@ -35,6 +35,10 @@ inline unsigned long choose(unsigned long value) {
 
 namespace alpha {
 
+struct Point {
+  int value;
+};
+
 inline int adjust(int value) {
   return value + 1;
 }
@@ -42,6 +46,10 @@ inline int adjust(int value) {
 }  // namespace alpha
 
 namespace beta {
+
+struct Point {
+  int value;
+};
 
 inline int adjust(int value) {
   return value - 1;

@@ -35,8 +35,8 @@ FIIR describes facts the rest of the compiler needs:
 - modules, functions, parameters, constants, records, enums, scalar aliases,
   opaque native values, Objective-C objects/interfaces, and callbacks;
 - both Z-facing type identity and native declaration spelling;
-- hierarchical native namespace identity, unambiguous short aliases, and full
-  callable overload sets;
+- hierarchical native namespace identity for functions and named types,
+  unambiguous short aliases, and full callable overload sets;
 - native source locations and platform availability on functions, types,
   constants, Objective-C interfaces, methods, and properties;
 - nullability and owned, borrowed, or consuming pointer contracts;

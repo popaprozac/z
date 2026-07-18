@@ -835,7 +835,10 @@ Unique leaf functions receive a convenient module-level alias, while qualified
 access such as `library.desktop.calculate(...)` is always available. Colliding
 leaf names are not flattened. Calls select a unique viable overload from
 argument shape and type; `Z0803` reports no-match and genuine ambiguity with the
-native candidates. Plain aggregate structs import as Z value records. The
+native candidates. Imported record and value types use the same hierarchy and
+alias rule: `library.desktop.Point` is canonical, while `library.Point` exists
+only when the leaf type name is unique across the module. Plain aggregate
+structs import as Z value records. The
 original header remains the ABI declaration and the generated artifact builds
 with `clang++`. The first RAII slice also imports opaque copyable values returned
 by and passed to those functions; C++ performs their copy construction and
@@ -1019,12 +1022,14 @@ selective: typedef-named records can appear in signatures, are built with
 checked struct literals, and expose imported fields; C enum constants become
 typed values. The native compiler still includes the original header, so it
 does not redeclare layouts or guess padding and calling conventions. A future
-user-authored `extern` declaration may force an ABI contract when an automatic
-producer cannot represent a vendor declaration. `extern` means the programmer
-is supplying native identity and signature facts; operations whose memory or
-lifetime safety remains unverifiable additionally require an explicit
-`unsafe { ... }` boundary. Handwritten declarations and raw operations remain
-escape hatches rather than the routine function and data interop path.
+foreign-declaration mechanism (working spelling: `extern`) may force an ABI
+contract when an automatic producer cannot represent a vendor declaration.
+That mechanism means the programmer is supplying native identity and signature
+facts; operations whose memory or lifetime safety remains unverifiable
+additionally require a separate unchecked-safety boundary (working spelling:
+`unsafe`). The exact declaration, annotation, block, and file syntax remains an
+open design decision. Handwritten declarations and raw operations remain escape
+hatches rather than the routine function and data interop path.
 
 Interop work proceeds in architectural layers:
 

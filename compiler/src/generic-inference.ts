@@ -52,11 +52,15 @@ export function inferGenericCalls(
     const alias = module.functionAliases.get(path[0]);
     return alias ? module.functions.get(alias) ?? null : null;
   };
-  const foreignReturnType = (declaration: ForeignFunction): string | null => {
-    const returns = new Set(declaration.overloads.map((overload) => inferenceTypeName(overload.returnType)));
-    return returns.size === 1 ? [...returns][0] : null;
+  const resolveForeignNamedType = (module: ForeignModule, path: readonly string[]) => {
+    const qualifiedName = path.join(".");
+    const direct = module.namedTypes.get(qualifiedName);
+    if (direct) return direct;
+    if (path.length !== 1) return null;
+    const alias = module.namedTypeAliases.get(path[0]);
+    return alias ? module.namedTypes.get(alias) ?? null : null;
   };
-  const foreignMember = (expression: Extract<Expression, { kind: "member" }>): ForeignFunction | null => {
+  const foreignMemberPath = (expression: Extract<Expression, { kind: "member" }>) => {
     const path = [expression.property];
     let object: Expression = expression.object;
     while (object.kind === "member") {
@@ -65,7 +69,15 @@ export function inferGenericCalls(
     }
     if (object.kind !== "identifier") return null;
     const module = foreignModules.get(object.name);
-    return module ? resolveForeignFunction(module, path) : null;
+    return module ? { module, path } : null;
+  };
+  const foreignReturnType = (declaration: ForeignFunction): string | null => {
+    const returns = new Set(declaration.overloads.map((overload) => inferenceTypeName(overload.returnType)));
+    return returns.size === 1 ? [...returns][0] : null;
+  };
+  const foreignMember = (expression: Extract<Expression, { kind: "member" }>): ForeignFunction | null => {
+    const target = foreignMemberPath(expression);
+    return target ? resolveForeignFunction(target.module, target.path) : null;
   };
   const foreignCallReturnType = (
     declaration: ForeignFunction,
@@ -410,6 +422,9 @@ export function inferGenericCalls(
         const importedFunction = foreignMember(expression);
         const importedReturn = importedFunction ? foreignReturnType(importedFunction) : null;
         if (importedReturn) return { expression: { ...expression, object: object.expression }, type: importedReturn };
+        const importedTarget = foreignMemberPath(expression);
+        const importedType = importedTarget ? resolveForeignNamedType(importedTarget.module, importedTarget.path) : null;
+        if (importedType) return { expression: { ...expression, object: object.expression }, type: importedType.typeName };
         if (expression.object.kind === "identifier") {
           const owner = aggregate(expression.object.name);
           const staticMethod = owner?.declaration.methods.find((item) => item.static && item.name === expression.property);
@@ -446,7 +461,7 @@ export function inferGenericCalls(
           }
           const fn = module ? resolveForeignFunction(module, [expression.property]) : null;
           const constant = module?.constants.get(expression.property);
-          const named = module?.namedTypes.get(expression.property);
+          const named = module ? resolveForeignNamedType(module, [expression.property]) : null;
           const foreignType = fn ? foreignReturnType(fn) : constant?.typeName ?? named?.typeName ?? null;
           if (foreignType) return { expression: { ...expression, object: object.expression }, type: foreignType };
         }

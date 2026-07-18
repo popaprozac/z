@@ -939,12 +939,14 @@ test("preserves C++ namespaces and resolves overload sets", () => {
   assert.deepEqual(artifact.frameworks, []);
   assert.match(artifact.source, /#include <cpp_math\.hpp>/);
   assert.match(artifact.source, /const zcpp::Point origin/);
+  assert.match(artifact.source, /const alpha::Point alphaPoint/);
+  assert.match(artifact.source, /const beta::Point betaPoint/);
   assert.match(artifact.source, /zcpp::translate\(origin, 1, \(-1\)\)/);
   assert.match(artifact.source, /zcpp::sum\(moved\)/);
   assert.match(artifact.source, /zcpp::scale\(6, 7\)/);
   assert.match(artifact.source, /zcpp::scale\(2\.5, 2\.0\)/);
-  assert.match(artifact.source, /alpha::adjust\(20\)/);
-  assert.match(artifact.source, /beta::adjust\(20\)/);
+  assert.match(artifact.source, /alpha::adjust\(\(alphaPoint\)\.value\)/);
+  assert.match(artifact.source, /beta::adjust\(\(betaPoint\)\.value\)/);
 
   const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
@@ -958,8 +960,24 @@ test("preserves C++ namespaces and resolves overload sets", () => {
   const rootCompletionSource = source.replace("cpp.zcpp.translate", "cpp.z");
   const rootCompletionOffset = rootCompletionSource.indexOf("cpp.z") + "cpp.z".length;
   assert.equal(completions(rootCompletionSource, example, rootCompletionOffset).find((item) => item.label === "zcpp")?.kind, 9);
+  const typeCompletionSource = source.replace("cpp.zcpp.Point", "cpp.zcpp.Po");
+  const typeCompletionOffset = typeCompletionSource.indexOf("cpp.zcpp.Po") + "cpp.zcpp.Po".length;
+  assert.equal(completions(typeCompletionSource, example, typeCompletionOffset).find((item) => item.label === "Point")?.kind, 22);
+  const ambiguousTypeCompletionSource = source.replace("cpp.zcpp.Point", "cpp.Po");
+  const ambiguousTypeCompletionOffset = ambiguousTypeCompletionSource.indexOf("cpp.Po") + "cpp.Po".length;
+  assert.equal(completions(ambiguousTypeCompletionSource, example, ambiguousTypeCompletionOffset).find((item) => item.label === "Point"), undefined);
   const fieldOffset = source.indexOf("x: 20") + 1;
   assert.match(hover(source, example, fieldOffset)?.contents.value ?? "", /x: i32/);
+  const pointOffset = source.indexOf("cpp.zcpp.Point") + "cpp.zcpp.".length + 1;
+  assert.match(hover(source, example, pointOffset)?.contents.value ?? "", /Point: zcpp::Point/);
+  const pointDefinition = definition(source, `file://${example}`, pointOffset);
+  assert.match(pointDefinition?.uri ?? "", /examples\/cpp_math\.hpp$/);
+  assert.equal(pointDefinition?.range.start.line, 4);
+  const semantic = decodeSemanticTokens(semanticTokens(source, example).data);
+  const pointPosition = positionForOffset(source, source.indexOf("cpp.zcpp.Point") + "cpp.zcpp.".length);
+  assert.ok(semantic.some((token) => token.line === pointPosition.line
+    && token.character === pointPosition.character
+    && token.type === semanticTokenTypes.indexOf("type")));
 
   const overloadHoverOffset = source.indexOf("cpp.zcpp.scale") + "cpp.zcpp.".length + 1;
   const overloadHover = hover(source, example, overloadHoverOffset)?.contents.value ?? "";
@@ -975,6 +993,7 @@ test("preserves C++ namespaces and resolves overload sets", () => {
   assert.match(compileToNative(genericOverload, example).source, /__z_mono_identity_f64\(zcpp::scale\(2\.5, 2\.0\)\)/);
   assert.throws(() => compileToNative(source.replace("cpp.sum(moved)", "cpp.choose(1)"), example), /call to foreign function "zcpp\.choose" is ambiguous/);
   assert.throws(() => compileToNative(source.replace("cpp.sum(moved)", "cpp.adjust(1)"), example), /has no function "adjust"/);
+  assert.throws(() => compileToNative(source.replace("= cpp.zcpp.Point", "= cpp.Point"), example), /native type "Point" is ambiguous across C\+\+ namespaces/);
 });
 
 test("imports AppKit classes and emits an ARC Objective-C NSWindow program", () => {
@@ -2933,7 +2952,7 @@ test("stores, returns, moves, and formats owned String values", () => {
     import console from "std/console";
     import cpp from "cpp_math.hpp";
     function main(): i32 {
-      const point = cpp.Point({ x: 20, y: 22 });
+      const point = cpp.zcpp.Point({ x: 20, y: 22 });
       const answer = cpp.sum(point);
       const text = \`cpp=\${answer}\`;
       console.log(text);
@@ -5187,6 +5206,9 @@ test("editor grammar tracks keywords without reserving Result variants", () => {
   const matchScopes = grammar.repository.matchPatterns.patterns
     .map((pattern: { name: string }) => pattern.name)
     .join(" ");
+  const exportPattern = grammar.repository.keywords.patterns
+    .find((pattern: { match: string }) => pattern.match.includes("export"));
+  assert.equal(exportPattern?.name, "keyword.control.export.z");
   assert.match(keywordPattern, /throw/);
   assert.match(keywordPattern, /attempt/);
   assert.match(keywordPattern, /yield/);

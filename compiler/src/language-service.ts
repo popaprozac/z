@@ -343,16 +343,29 @@ export function semanticTokens(source: string, fileName: string): { readonly dat
         });
         continue;
       }
-      const module = namespaceToken ? modules.get(namespaceToken.text) : null;
-      if (module?.interfaces.has(token.text)) {
+      const components = [token.text];
+      let cursor = index - 2;
+      while (cursor >= 0 && tokens[cursor]?.kind === "identifier") {
+        components.unshift(tokens[cursor].text);
+        if (tokens[cursor - 1]?.kind !== "dot") break;
+        cursor -= 2;
+      }
+      const module = modules.get(components[0]);
+      const memberPath = components.slice(1);
+      const namespacePath = memberPath.slice(0, -1);
+      const memberName = memberPath.at(-1) ?? "";
+      const named = module ? resolveModuleNamedType(module, namespacePath, memberName) : null;
+      const fn = module ? resolveModuleFunction(module, namespacePath, memberName) : null;
+      if (module?.namespaces.has(memberPath.join("."))) {
+        classifications.set(token.location.offset, { type: semanticTokenTypes.indexOf("namespace"), modifiers: 4 });
+      } else if (namespacePath.length === 0 && module?.interfaces.has(memberName)) {
         classifications.set(token.location.offset, { type: semanticTokenTypes.indexOf("class"), modifiers: 4 });
-      } else if (module?.namedTypes.has(token.text)) {
-        const named = module.namedTypes.get(token.text)!;
+      } else if (named) {
         classifications.set(token.location.offset, {
           type: semanticTokenTypes.indexOf(named.kind === "enum" ? "enum" : "type"),
           modifiers: 4,
         });
-      } else if (module?.functions.has(token.text)) {
+      } else if (fn) {
         classifications.set(token.location.offset, { type: semanticTokenTypes.indexOf("function"), modifiers: 4 });
       } else {
         classifications.set(token.location.offset, {
@@ -636,7 +649,7 @@ function nativeDefinition(
     if (resolved?.kind === "module") {
       const declaration = resolveModuleFunction(resolved.module, resolved.namespacePath, word.text)
         ?? resolved.module.constants.get(word.text)
-        ?? resolved.module.namedTypes.get(word.text)
+        ?? resolveModuleNamedType(resolved.module, resolved.namespacePath, word.text)
         ?? resolved.module.interfaces.get(word.text);
       const metadata = declaration && "overloads" in declaration
         ? declaration.overloads[0]?.metadata
@@ -661,7 +674,7 @@ function nativeDefinition(
     const module = context.foreignModules.get(declaration.moduleName);
     const target = module ? resolveModuleFunction(module, [], binding.importedName)
       ?? module?.constants.get(binding.importedName)
-      ?? module?.namedTypes.get(binding.importedName)
+      ?? resolveModuleNamedType(module, [], binding.importedName)
       ?? module?.interfaces.get(binding.importedName) : null;
     const metadata = target && "overloads" in target ? target.overloads[0]?.metadata : target?.metadata;
     const location = foreignMetadataLocation(metadata);
@@ -1487,18 +1500,31 @@ function moduleCompletions(
     for (const declaration of module.interfaces.values()) {
       items.push({ label: declaration.exportName, kind: completionKinds.class, detail: `Objective-C class ${declaration.className}` });
     }
-    for (const declaration of module.namedTypes.values()) {
-      items.push({
-        label: declaration.exportName,
-        kind: declaration.kind === "enum" ? completionKinds.enum : completionKinds.struct,
-        detail: declaration.cName,
-      });
-    }
     for (const declaration of module.constants.values()) {
       items.push({ label: declaration.name, kind: completionKinds.constant, detail: declaration.typeName });
     }
   }
   const namespaceName = namespacePath.join(".");
+  for (const declaration of module.namedTypes.values()) {
+    if (declaration.namespacePath.join(".") !== namespaceName) continue;
+    items.push({
+      label: declaration.exportName,
+      kind: declaration.kind === "enum" ? completionKinds.enum : completionKinds.struct,
+      detail: declaration.cName,
+    });
+  }
+  if (namespacePath.length === 0) {
+    for (const [alias, qualifiedName] of module.namedTypeAliases) {
+      const declaration = module.namedTypes.get(qualifiedName);
+      if (declaration?.namespacePath.length) {
+        items.push({
+          label: alias,
+          kind: declaration.kind === "enum" ? completionKinds.enum : completionKinds.struct,
+          detail: declaration.cName,
+        });
+      }
+    }
+  }
   for (const declaration of module.functions.values()) {
     if (declaration.namespacePath.join(".") !== namespaceName) continue;
     items.push({ label: declaration.name, kind: completionKinds.function, detail: foreignFunctionDetail(declaration) });
@@ -1519,6 +1545,7 @@ function moduleCompletions(
   }
   const unique = uniqueCompletions(items);
   if (prefix) return filterCompletions(unique, prefix, 1500);
+  if (module.cPlusPlus) return unique.slice(0, 2500);
   return unique.filter((item) => (
     item.kind === completionKinds.class
     || ((item.kind === completionKinds.struct || item.kind === completionKinds.enum) && /^(?:NS|CG)/.test(item.label))
@@ -1731,16 +1758,29 @@ function resolveModuleFunction(
   return alias ? module.functions.get(alias) ?? null : null;
 }
 
+function resolveModuleNamedType(
+  module: ForeignModule,
+  namespacePath: readonly string[],
+  name: string,
+) {
+  const qualifiedName = [...namespacePath, name].join(".");
+  const direct = module.namedTypes.get(qualifiedName);
+  if (direct) return direct;
+  if (namespacePath.length > 0) return null;
+  const alias = module.namedTypeAliases.get(name);
+  return alias ? module.namedTypes.get(alias) ?? null : null;
+}
+
 function describeModuleMember(module: ForeignModule, namespacePath: readonly string[], name: string): string | null {
   const fn = resolveModuleFunction(module, namespacePath, name);
   if (fn) return foreignFunctionDetail(fn);
+  const named = resolveModuleNamedType(module, namespacePath, name);
+  if (named) return `${named.exportName}: ${named.cName}${foreignAvailabilityDetail(named.metadata)}`;
   const namespaceName = [...namespacePath, name].join(".");
   if (module.namespaces.has(namespaceName)) return `native namespace ${namespaceName}`;
   if (namespacePath.length > 0) return null;
   const constant = module.constants.get(name);
   if (constant) return `${constant.name}: ${constant.typeName}${foreignAvailabilityDetail(constant.metadata)}`;
-  const named = module.namedTypes.get(name);
-  if (named) return `${named.exportName}: ${named.cName}${foreignAvailabilityDetail(named.metadata)}`;
   const objc = module.interfaces.get(name);
   return objc ? `Objective-C class ${objc.className}${foreignAvailabilityDetail(objc.metadata)}` : null;
 }

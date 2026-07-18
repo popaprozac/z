@@ -106,6 +106,9 @@
     },
     "keywords": {
       "patterns": [{
+        "name": "keyword.control.export.z",
+        "match": "\\bexport\\b"
+      }, {
         "name": "storage.modifier.z",
         "match": "\\bmove(?=\\s+this\\b)"
       }, {
@@ -113,7 +116,7 @@
         "match": "\\b(?:return|throws|throw|select|yield|try|attempt|match|if|else|while|for|of|break|continue|async|await|spawn|scope|deinit|constructor|unsafe|in|out|inout|move|view|weak|new|as|implements)\\b"
       }, {
         "name": "storage.modifier.z",
-        "match": "\\b(?:export|const|let|mut|weak|static|private|public)\\b"
+        "match": "\\b(?:const|let|mut|weak|static|private|public)\\b"
       }]
     },
     "types": {

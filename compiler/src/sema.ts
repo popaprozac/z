@@ -260,12 +260,18 @@ export function analyze(
   for (const module of foreignModules.values()) {
     for (const [name, type] of module.types) foreignTypes.set(name, type);
     for (const type of module.namedTypes.values()) foreignNamedTypes.set(type.typeName, type);
+    for (const [alias, qualifiedName] of module.namedTypeAliases) {
+      const type = module.namedTypes.get(qualifiedName);
+      if (type) foreignNamedTypes.set(`${module.declaration.moduleName}.${alias}`, type);
+    }
     for (const [name, type] of module.objectTypes) foreignObjectTypes.set(name, type);
     for (const type of module.interfaces.values()) {
       foreignInterfaces.set(type.typeName, type);
       const named: ForeignNamedType = {
         kind: "object",
         exportName: type.exportName,
+        namespacePath: [],
+        qualifiedName: type.exportName,
         typeName: type.typeName,
         cName: `${type.className} *`,
         className: type.className,
@@ -436,7 +442,7 @@ export function analyze(
         );
         continue;
       }
-      const foreignType = module.namedTypes.get(binding.importedName);
+      const foreignType = resolveForeignNamedType(module, [binding.importedName]);
       if (foreignType) {
         foreignNamedTypes.set(binding.localName, foreignType);
         declareGlobal(globals, binding.localName, { kind: "foreignType", declaration: foreignType }, binding.location, fileName);
@@ -3105,18 +3111,32 @@ function inferExpressionInner(
           return imported.declaration.typeName;
         }
       }
-      if (expression.callee.kind === "member" && expression.callee.object.kind === "identifier") {
-        const imported = globals.get(expression.callee.object.name);
-        const record = imported?.kind === "foreignModule"
-          ? imported.module.namedTypes.get(expression.callee.property)
-          : null;
+      if (expression.callee.kind === "member") {
+        const imported = foreignMemberTarget(expression.callee, globals);
+        const record = imported ? resolveForeignNamedType(imported.module, imported.path) : null;
         if (record?.kind === "record") {
           rejectLabeledArguments(expression.argumentLabels, expression.location, fileName);
           if (expression.arguments.length !== 1 || expression.arguments[0].kind !== "objectExpression") {
-            throw new DiagnosticError(fileName, expression.location, `${expression.callee.property} construction requires one object literal`);
+            throw new DiagnosticError(fileName, expression.location, `${record.qualifiedName} construction requires one object literal`);
           }
           inferContextualObjectExpression(expression.arguments[0], record.typeName, locals, globals, structs, enums, fileName, state);
           return record.typeName;
+        }
+        if (imported && imported.path.length === 1) {
+          const matches = [...imported.module.namedTypes.values()].filter((candidate) => (
+            candidate.exportName === imported.path[0]
+          ));
+          if (matches.length > 1) {
+            throw new DiagnosticError(
+              fileName,
+              expression.callee.location,
+              `native type ${JSON.stringify(imported.path[0])} is ambiguous across C++ namespaces`,
+              {
+                notes: matches.map((candidate) => `${candidate.qualifiedName}: ${candidate.cName}`),
+                helps: ["construct the type through its fully qualified native namespace path"],
+              },
+            );
+          }
         }
       }
       if (expression.callee.kind === "member") {
@@ -4565,6 +4585,15 @@ function resolveForeignFunction(module: ForeignModule, path: readonly string[]):
   if (path.length !== 1) return null;
   const alias = module.functionAliases.get(path[0]);
   return alias ? module.functions.get(alias) ?? null : null;
+}
+
+function resolveForeignNamedType(module: ForeignModule, path: readonly string[]): ForeignNamedType | null {
+  const qualifiedName = path.join(".");
+  const direct = module.namedTypes.get(qualifiedName);
+  if (direct) return direct;
+  if (path.length !== 1) return null;
+  const alias = module.namedTypeAliases.get(path[0]);
+  return alias ? module.namedTypes.get(alias) ?? null : null;
 }
 
 function getForeignFunction(
