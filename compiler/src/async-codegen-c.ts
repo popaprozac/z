@@ -5,6 +5,8 @@ import type {
   Program,
   SourceLocation,
   Statement,
+  StructDeclaration,
+  EnumDeclaration,
 } from "./ast.ts";
 import { DiagnosticError } from "./diagnostics.ts";
 import { resultTypeName } from "./results.ts";
@@ -25,6 +27,12 @@ type AsyncFunctionPlan = {
   readonly startName: string;
   readonly locals: ReadonlyMap<string, string>;
   readonly awaits: ReadonlyMap<number, AwaitSite>;
+  readonly types: AsyncTypeContext;
+};
+
+type AsyncTypeContext = {
+  readonly structs: ReadonlyMap<string, StructDeclaration>;
+  readonly enums: ReadonlyMap<string, EnumDeclaration>;
 };
 
 export type AsyncCGeneration = {
@@ -73,7 +81,11 @@ export function generateAsyncC(
 
   const declarations = program.functions.filter((declaration) => declaration.async);
   const functions = new Map(program.functions.map((declaration) => [declaration.name, declaration]));
-  const plans = declarations.map((declaration) => planFunction(declaration, functions, fileName, semanticInfo));
+  const types: AsyncTypeContext = {
+    structs: new Map(program.structs.map((declaration) => [declaration.name, declaration])),
+    enums: new Map(program.enums.map((declaration) => [declaration.name, declaration])),
+  };
+  const plans = declarations.map((declaration) => planFunction(declaration, functions, fileName, semanticInfo, types));
   const planByName = new Map(plans.map((plan) => [plan.declaration.name, plan]));
   const main = planByName.get("main");
   if (main) validateAsyncMain(main.declaration, fileName);
@@ -94,17 +106,18 @@ function planFunction(
   functions: ReadonlyMap<string, FunctionDeclaration>,
   fileName: string,
   semanticInfo: SemanticInfo,
+  types: AsyncTypeContext,
 ): AsyncFunctionPlan {
-  requireScalar(declaration.returnType.name, declaration.returnType.location, fileName, "async return");
+  requireFrameType(declaration.returnType.name, declaration.returnType.location, fileName, "async return", types);
   if (declaration.errorType) {
-    requireScalar(declaration.errorType.name, declaration.errorType.location, fileName, "async error");
+    requireFrameType(declaration.errorType.name, declaration.errorType.location, fileName, "async error", types);
   }
   const locals = new Map<string, string>();
   for (const parameter of declaration.parameters) {
     if (parameter.mode !== "value") {
       unsupported(fileName, parameter.location, "borrowed async parameters are not executable yet");
     }
-    requireScalar(parameter.type.name, parameter.type.location, fileName, "async parameter");
+    requireFrameType(parameter.type.name, parameter.type.location, fileName, "async parameter", types);
     locals.set(parameter.name, parameter.type.name);
   }
 
@@ -117,7 +130,7 @@ function planFunction(
       }
       const type = statement.type?.name ?? semanticInfo.bindingTypes.get(statement.nameLocation.offset);
       if (!type) unsupported(fileName, statement.location, `could not determine async frame type for ${JSON.stringify(statement.name)}`);
-      requireFrameType(type, statement.type?.location ?? statement.nameLocation, fileName, "async local");
+      requireFrameType(type, statement.type?.location ?? statement.nameLocation, fileName, "async local", types);
       locals.set(statement.name, type);
       const operation = awaitOperation(statement.initializer);
       if (operation) {
@@ -126,7 +139,7 @@ function planFunction(
           awaitSite(awaitIndex++, operation.mode, operation.expression, functions, fileName),
         );
       } else {
-        validateScalarExpression(statement.initializer, locals, fileName);
+        validateFrameExpression(statement.initializer, locals, fileName, types);
       }
       continue;
     }
@@ -138,12 +151,12 @@ function planFunction(
           awaitSite(awaitIndex++, operation.mode, operation.expression, functions, fileName),
         );
       } else if (statement.expression) {
-        validateScalarExpression(statement.expression, locals, fileName);
+        validateFrameExpression(statement.expression, locals, fileName, types);
       }
       continue;
     }
     if (statement.kind === "throw") {
-      validateScalarExpression(statement.expression, locals, fileName);
+      validateFrameExpression(statement.expression, locals, fileName, types);
       continue;
     }
     if (statement.kind === "expressionStatement") {
@@ -173,6 +186,7 @@ function planFunction(
     startName: `z_async_start_${part}`,
     locals,
     awaits,
+    types,
   };
 }
 
@@ -226,7 +240,7 @@ function generateRuntime(
   fileName: string,
 ): string {
   const lines = [
-    "/* Z async Phase 1: stackless scalar task frames. */",
+    "/* Z async Phase 1: stackless cleanup-free value task frames. */",
     "typedef struct Z_AsyncTask Z_AsyncTask;",
     "struct Z_AsyncTask {",
     "  void (*poll)(Z_AsyncTask *task);",
@@ -284,14 +298,14 @@ function generateFrame(
     "  uint32_t state;",
   ];
   if (plan.declaration.returnType.name !== "void") {
-    lines.push(`  ${cFrameType(plan.declaration.returnType.name)} result;`);
+    lines.push(`  ${cFrameType(plan.declaration.returnType.name, plan.types)} result;`);
   }
   if (plan.declaration.errorType) {
     lines.push("  bool failed;");
-    lines.push(`  ${cFrameType(plan.declaration.errorType.name)} error;`);
+    lines.push(`  ${cFrameType(plan.declaration.errorType.name, plan.types)} error;`);
   }
   for (const [name, type] of plan.locals) {
-    lines.push(`  ${cFrameType(type)} ${frameField(name)};`);
+    lines.push(`  ${cFrameType(type, plan.types)} ${frameField(name)};`);
   }
   for (const site of plan.awaits.values()) {
     lines.push(`  ${planByName.get(site.target.name)!.frameName} *child_${site.index};`);
@@ -302,7 +316,7 @@ function generateFrame(
 
 function generateStartSignature(plan: AsyncFunctionPlan): string {
   const parameters = plan.declaration.parameters.map((parameter) => (
-    `${cFrameType(parameter.type.name)} ${frameField(parameter.name)}`
+    `${cFrameType(parameter.type.name, plan.types)} ${frameField(parameter.name)}`
   ));
   return `static __attribute__((unused)) ${plan.frameName} *${plan.startName}(${parameters.join(", ") || "void"})`;
 }
@@ -340,7 +354,7 @@ function generatePoll(
       if (operation) {
         const site = plan.awaits.get(operation.expression.location.offset)!;
         const target = planByName.get(site.target.name)!;
-        const arguments_ = site.call.arguments.map((argument) => emitScalarExpression(argument, plan.locals, fileName));
+        const arguments_ = site.call.arguments.map((argument) => emitFrameExpression(argument, plan, fileName));
         cases.push(
           caseBlock(state, [
             `frame->child_${site.index} = ${target.startName}(${arguments_.join(", ")});`,
@@ -357,7 +371,7 @@ function generatePoll(
         state += 2;
       } else {
         cases.push(caseBlock(state, [
-          `frame->${frameField(statement.name)} = ${emitScalarExpression(initializer, plan.locals, fileName)};`,
+          `frame->${frameField(statement.name)} = ${emitFrameExpression(initializer, plan, fileName)};`,
           `frame->state = ${state + 1};`,
           "continue;",
         ]));
@@ -370,7 +384,7 @@ function generatePoll(
       if (operation) {
         const site = plan.awaits.get(operation.expression.location.offset)!;
         const target = planByName.get(site.target.name)!;
-        const arguments_ = site.call.arguments.map((argument) => emitScalarExpression(argument, plan.locals, fileName));
+        const arguments_ = site.call.arguments.map((argument) => emitFrameExpression(argument, plan, fileName));
         cases.push(caseBlock(state, [
           `frame->child_${site.index} = ${target.startName}(${arguments_.join(", ")});`,
           `frame->state = ${state + 1};`,
@@ -379,7 +393,7 @@ function generatePoll(
         cases.push(caseBlock(state + 1, awaitCompletion(site, plan, "frame->result", true, state + 2)));
       } else {
         const completion = statement.expression
-          ? [`frame->result = ${emitScalarExpression(statement.expression, plan.locals, fileName)};`]
+          ? [`frame->result = ${emitFrameExpression(statement.expression, plan, fileName)};`]
           : [];
         cases.push(caseBlock(state, [
           ...completion,
@@ -393,7 +407,7 @@ function generatePoll(
     }
     if (statement.kind === "throw") {
       cases.push(caseBlock(state, [
-        `frame->error = ${emitScalarExpression(statement.expression, plan.locals, fileName)};`,
+        `frame->error = ${emitFrameExpression(statement.expression, plan, fileName)};`,
         "frame->failed = true;",
         "frame->task.completed = true;",
         "return;",
@@ -405,7 +419,7 @@ function generatePoll(
       const operation = awaitOperation(statement.expression)!;
       const site = plan.awaits.get(operation.expression.location.offset)!;
       const target = planByName.get(site.target.name)!;
-      const arguments_ = site.call.arguments.map((argument) => emitScalarExpression(argument, plan.locals, fileName));
+      const arguments_ = site.call.arguments.map((argument) => emitFrameExpression(argument, plan, fileName));
       cases.push(caseBlock(state, [
         `frame->child_${site.index} = ${target.startName}(${arguments_.join(", ")});`,
         `frame->state = ${state + 1};`,
@@ -491,17 +505,18 @@ ${statements.map((statement) => `  ${statement}`).join("\n")}
 }`;
 }
 
-function validateScalarExpression(
+function validateFrameExpression(
   expression: Expression,
   locals: ReadonlyMap<string, string>,
   fileName: string,
+  types: AsyncTypeContext,
 ): void {
-  emitScalarExpression(expression, locals, fileName);
+  emitFrameExpression(expression, { locals, types }, fileName);
 }
 
-function emitScalarExpression(
+function emitFrameExpression(
   expression: Expression,
-  locals: ReadonlyMap<string, string>,
+  plan: Pick<AsyncFunctionPlan, "locals" | "types">,
   fileName: string,
 ): string {
   switch (expression.kind) {
@@ -510,7 +525,7 @@ function emitScalarExpression(
     case "boolean":
       return expression.value ? "true" : "false";
     case "identifier":
-      if (!locals.has(expression.name)) {
+      if (!plan.locals.has(expression.name)) {
         unsupported(fileName, expression.location, "the first async lowering slice cannot reference this value");
       }
       return `frame->${frameField(expression.name)}`;
@@ -518,14 +533,35 @@ function emitScalarExpression(
       if (expression.operator !== "!") {
         unsupported(fileName, expression.location, "overflow-aware async arithmetic lowering has not landed yet");
       }
-      return `(!${emitScalarExpression(expression.operand, locals, fileName)})`;
+      return `(!${emitFrameExpression(expression.operand, plan, fileName)})`;
     case "binary":
       if (!safeBinaryOperators.has(expression.operator)) {
         unsupported(fileName, expression.location, "overflow-aware async arithmetic lowering has not landed yet");
       }
-      return `(${emitScalarExpression(expression.left, locals, fileName)} ${expression.operator} ${emitScalarExpression(expression.right, locals, fileName)})`;
+      return `(${emitFrameExpression(expression.left, plan, fileName)} ${expression.operator} ${emitFrameExpression(expression.right, plan, fileName)})`;
     case "conditional":
-      return `(${emitScalarExpression(expression.condition, locals, fileName)} ? ${emitScalarExpression(expression.thenExpression, locals, fileName)} : ${emitScalarExpression(expression.elseExpression, locals, fileName)})`;
+      return `(${emitFrameExpression(expression.condition, plan, fileName)} ? ${emitFrameExpression(expression.thenExpression, plan, fileName)} : ${emitFrameExpression(expression.elseExpression, plan, fileName)})`;
+    case "member":
+      return `((${emitFrameExpression(expression.object, plan, fileName)}).${expression.property})`;
+    case "structExpression":
+      return emitStructValue(expression.typeName, expression.fields, plan, fileName, expression.location);
+    case "call": {
+      if (
+        expression.callee.kind === "identifier"
+        && plan.types.structs.get(expression.callee.name)?.kind === "struct"
+        && expression.arguments.length === 1
+        && expression.arguments[0].kind === "objectExpression"
+      ) {
+        return emitStructValue(
+          expression.callee.name,
+          expression.arguments[0].fields,
+          plan,
+          fileName,
+          expression.location,
+        );
+      }
+      unsupported(fileName, expression.location, "only plain struct construction is executable as a synchronous async-frame call yet");
+    }
     default:
       unsupported(
         fileName,
@@ -541,8 +577,32 @@ function requireScalar(type: string, location: SourceLocation, fileName: string,
   }
 }
 
-function requireFrameType(type: string, location: SourceLocation, fileName: string, role: string): void {
-  if (!scalarTypes.has(type) && !type.startsWith("__z_Result_")) {
+function emitStructValue(
+  type: string,
+  fields: readonly { readonly name: string; readonly expression: Expression }[],
+  plan: Pick<AsyncFunctionPlan, "locals" | "types">,
+  fileName: string,
+  location: SourceLocation,
+): string {
+  const declaration = plan.types.structs.get(type);
+  if (!declaration || !isPlainFrameType(type, plan.types)) {
+    unsupported(fileName, location, `struct ${JSON.stringify(type)} needs owned cleanup-aware task-frame lowering`);
+  }
+  const provided = new Map(fields.map((field) => [field.name, field.expression]));
+  const initialized = declaration.fields.map((field) => (
+    `.${field.name} = ${emitFrameExpression(provided.get(field.name)!, plan, fileName)}`
+  ));
+  return `(${cFrameType(type, plan.types)}){ ${initialized.join(", ")} }`;
+}
+
+function requireFrameType(
+  type: string,
+  location: SourceLocation,
+  fileName: string,
+  role: string,
+  types: AsyncTypeContext,
+): void {
+  if (!isPlainFrameType(type, types)) {
     unsupported(fileName, location, `${role} type ${JSON.stringify(type)} needs owned task-frame lowering`);
   }
 }
@@ -553,9 +613,35 @@ function cScalar(type: string): string {
   return mapped;
 }
 
-function cFrameType(type: string): string {
-  if (type.startsWith("__z_Result_")) return resultCName(type);
-  return cScalar(type);
+function cFrameType(type: string, types: AsyncTypeContext): string {
+  if (scalarTypes.has(type)) return cScalar(type);
+  const aggregate = types.structs.get(type);
+  if (aggregate) return `Z_${type}`;
+  if (types.enums.has(type)) return resultCName(type);
+  throw new Error(`missing async aggregate ABI type ${JSON.stringify(type)}`);
+}
+
+function isPlainFrameType(type: string, types: AsyncTypeContext, visiting = new Set<string>()): boolean {
+  if (scalarTypes.has(type)) return true;
+  if (visiting.has(type)) return true;
+  const aggregate = types.structs.get(type);
+  if (aggregate) {
+    if (aggregate.kind === "class" || aggregate.deinitializer) return false;
+    visiting.add(type);
+    const plain = aggregate.fields.every((field) => isPlainFrameType(field.type.name, types, visiting));
+    visiting.delete(type);
+    return plain;
+  }
+  const enumeration = types.enums.get(type);
+  if (enumeration) {
+    visiting.add(type);
+    const plain = enumeration.variants.every((variant) => (
+      !variant.payload || isPlainFrameType(variant.payload.name, types, visiting)
+    ));
+    visiting.delete(type);
+    return plain;
+  }
+  return false;
 }
 
 function resultCName(type: string): string {
@@ -592,7 +678,7 @@ function unsupported(
 ): never {
   throw new DiagnosticError(fileName, location, message, {
     code: "Z0700",
-    notes: ["Phase 1 currently executes top-level scalar async functions, typed scalar errors, and direct sequential awaits"],
+    notes: ["Phase 1 currently executes top-level cleanup-free value task frames and direct sequential awaits"],
     helps: [help],
   });
 }

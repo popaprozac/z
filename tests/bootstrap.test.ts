@@ -4542,7 +4542,7 @@ test("checks Phase 0 async calls, scoped tasks, typed errors, and editor details
   assert.throws(() => compileToC(source, example), (error: unknown) => {
     assert.ok(error instanceof DiagnosticError);
     assert.equal(error.code, "Z0700");
-    assert.match(error.message, /async error type "NetworkError" needs owned task-frame lowering/);
+    assert.match(error.message, /only awaited async calls are executable as async expression statements yet/);
     return true;
   });
 });
@@ -4584,6 +4584,39 @@ test("runs typed scalar async errors through try and attempt await", () => {
   `);
   const failed = spawnSync(process.execPath, [cli, "run", failing], { encoding: "utf8" });
   assert.equal(failed.status, 1, failed.stderr);
+});
+
+test("carries plain struct values and errors through async task frames", () => {
+  const example = resolve(projectRoot, "examples/async-aggregates.z");
+  const source = readFileSync(example, "utf8");
+  const generated = compileToC(source, example);
+  assert.match(generated, /Z_User result;/);
+  assert.match(generated, /Z_NetworkError error;/);
+  assert.match(generated, /frame->error = \(Z_NetworkError\)\{ \.code = 7 \};/);
+  assert.match(generated, /Z_Result_User_NetworkError_failure/);
+  assert.match(generated, /frame->result = \(Z_User\)\{ \.id = frame->value_id \};/);
+  assert.match(generated, /z_async_start_copyUser\(Z_User value_user\)/);
+
+  const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+
+  const cleanupBearing = `
+    struct Resource {
+      id: i32;
+      deinit {}
+    }
+    async function make(): Resource { return Resource({ id: 42 }); }
+    async function main(): i32 {
+      const resource = await make();
+      return resource.id;
+    }
+  `;
+  assert.throws(() => compileToC(cleanupBearing, "async-owned-aggregate.z"), (error: unknown) => {
+    assert.ok(error instanceof DiagnosticError);
+    assert.equal(error.code, "Z0700");
+    assert.match(error.message, /async return type "Resource" needs owned task-frame lowering/);
+    return true;
+  });
 });
 
 test("represents fallible void success without an enum payload", () => {
