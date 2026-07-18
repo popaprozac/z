@@ -1,4 +1,11 @@
-# Z Language Charter
+# Z language charter and design
+
+This document owns the rationale, tradeoffs, intended architecture, and open
+design questions behind Z. Accepted source semantics are summarized in
+[`docs/language-reference.md`](docs/language-reference.md). Temporary stage-0
+implementation coverage belongs in
+[`docs/bootstrap-status.md`](docs/bootstrap-status.md), not in the language
+contract.
 
 ## Thesis
 
@@ -757,41 +764,19 @@ structured child teardown. Async class methods retain `this` in their frame;
 async struct methods initially require `move this`; static async methods have
 no receiver.
 
-Phase 0 implements syntax, typing, ownership diagnostics, and editor services.
-Phase 1 lowers owned async functions and methods to typed heap frames and
-explicit poll states, driven by a deterministic single-thread FIFO executor.
+The intended lowering uses typed heap frames, explicit poll states, and live
+flags that preserve moves, ARC copies, and active enum payload destruction.
 Direct awaits suspend their parent; hot `spawn` enqueues children immediately;
-task handles join an already-running frame. Scalars, value structs, ARC class
-references, and enums with cleanup-bearing payloads may be parameters, locals,
-and success values; errors are currently cleanup-free. Frame live flags
-preserve moves and ARC copies, while tag-directed destruction handles active
-`Option<T>` and `Result<T, E>` payloads. Class receiver frames retain `this`,
+task handles join already-running frames. Class receiver frames retain `this`,
 consuming struct receiver frames move it, and static methods carry no receiver.
-Function exit implicitly joins non-throwing root children; throwing children
-must be acknowledged explicitly. Nested `async scope` blocks join and destroy
-their directly owned children before execution continues after the closing
-brace. Frames lower `throw`, `try await`, `attempt await`, and payloadless
-`void` success. A propagated failure requests structural cancellation of every
-still-live sibling and descendant; cancellation redirects those tasks into
-their cleanup states and remains distinct from the declared `throws E` domain.
-Handled `attempt await` failures do not cancel siblings. Valid shapes beyond
-the active native tier report `Z0700`. `await delay(milliseconds)` schedules a
-monotonic deadline without blocking other ready tasks, and cancellation removes
-pending timers. Synchronous Z functions and methods—including borrowed and
-mutable parameter capabilities—and typed `console` operations run directly at
-their source-order poll state without introducing suspension. Concise
-synchronous `match` arms over cleanup-free enum values lower atomically within
-one poll state; payload bindings, plain-data object destructuring, and checked
-integer expressions preserve ordinary Z semantics. Embedded awaits with
-cleanup-free results normalize into hidden frame slots in left-to-right order;
-awaited statement conditions resume through explicit branch labels. Inline
-attempted-await match subjects and nested call arguments use the same lowering.
-Lazy short-circuit, conditional-expression, and selected match-arm suspension,
-along with owned hidden-result and match-payload lifetimes, remain later Phase 1
-tiers. Async-free
-programs do not link an async runtime. Apple
-executors may integrate with Dispatch and the main run loop; Windows executors
-may integrate with the thread pool and IOCP.
+Propagation redirects live siblings and descendants through their cleanup
+states, while handled `attempt await` failures remain values and do not cancel
+siblings. Awaited subexpressions normalize into hidden frame slots in
+left-to-right evaluation order. Async-free programs should not link an async
+runtime. Apple executors may integrate with Dispatch and the main run loop;
+Windows executors may integrate with the thread pool and IOCP. Exact stage-0
+lowering coverage is tracked separately in
+[`docs/bootstrap-status.md`](docs/bootstrap-status.md#async-and-concurrency).
 
 ## Interop and backends
 
@@ -953,28 +938,23 @@ does not redeclare layouts or guess padding and calling conventions. A future
 `unsafe raw { ... }` facility may cover operations the semantic importer cannot
 represent, but routine function and data interop must not require it.
 
-Interop work proceeds in layers:
+Interop work proceeds in architectural layers:
 
 1. Direct header syntax with native compilation.
 2. Clang-AST symbol and layout import.
 3. Ownership and lifetime API notes.
-   Call-only C function-pointer parameters with ABI-compatible scalar/value
-   signatures are implemented; unannotated or escaping callbacks remain
-   rejected.
 4. Objective-C methods, properties, protocols, blocks, and ARC conventions
-   (ARC methods, labeled selectors, properties, and contextual string literals
-   implemented).
-5. C++ namespace functions, plain records, and opaque copyable RAII values
-   (first tiers implemented), followed by overloads, methods, and selected
+5. C++ namespaces, records, RAII values, overloads, methods, and selected
    templates.
 6. Callback-to-async synthesis.
-7. Swift-authored Objective-C compatibility-header import through the existing
-   Objective-C path (generated-header compiler/runtime probe and initial
-   `z.json` Swift build/link plan implemented).
-8. Swift-native copyable value ownership through the generated C++ interface
-   (thin return/copy/round-trip/destruction slice implemented).
+7. Swift-authored Objective-C compatibility-header import through the
+   Objective-C path.
+8. Swift-native copyable value ownership through the generated C++ interface.
 9. Broader Swift module/interface and Swift Package import for Swift-only APIs,
    methods, strings, protocols, generics, errors, and concurrency.
+
+Completed slices and precise unsupported boundaries are tracked in
+[`docs/bootstrap-status.md`](docs/bootstrap-status.md#foreign-interfaces).
 
 ## Initial non-goals
 
@@ -1013,89 +993,16 @@ language. An early TextMate grammar can provide immediate syntax highlighting.
 The language server should then reuse source files, tokens, syntax trees,
 symbols, types, and diagnostics from a compiler-service API for semantic
 highlighting, completion, hover, navigation, references, and rename operations.
-The initial Bun stdio server now shares compiler diagnostics and analyzed
-expression types, and exposes imported namespace members, type-directed Z and
-Objective-C members, selector snippets and labels, hover, and same-file
-definitions. It also publishes compiler-backed semantic tokens and completes
-bare local bindings, so editor symbol awareness does not begin only after a
-member-access dot. Document diagnostics are debounced because importing a large SDK
-header must not run once per keystroke. Imported-header definitions will use
-Clang declaration source locations rather than text-searching SDK headers.
+Document diagnostics should be debounced because importing a large SDK header
+must not run once per keystroke. Imported-header definitions should use Clang
+declaration source locations rather than text-searching SDK headers. Current
+editor coverage is tracked in
+[`docs/bootstrap-status.md`](docs/bootstrap-status.md#modules-and-tooling).
 
-## Bootstrap milestones
+## Bootstrap implementation status
 
-### 0.1: Native vertical slice
-
-- lexer and parser;
-- useful source diagnostics;
-- functions and primitive expressions;
-- local bindings and return statements;
-- direct header import syntax;
-- readable C emission;
-- `check`, `emit`, and `run` commands;
-- parser, diagnostic, and native execution tests.
-
-### 0.2: Values and errors
-
-- structs with methods;
-- name resolution and static type checking;
-- moves and deterministic `deinit`;
-- tagged enums and exhaustive `match`;
-- typed `throws`, `try`, and `attempt`;
-- cleanup lowering across every exit path.
-- cleanup-aware `while`, `break`, and `continue` with loop ownership analysis.
-- fixed arrays with checked indexing and deterministic element cleanup.
-- non-escaping `Slice<T>` parameters with shared and exclusive borrow checking.
-- argument-inferred generic function calls and explicit generic aggregates with
-  C monomorphization.
-- statically dispatched nominal trait constraints on generic parameters.
-- growable owned `Array<T>` buffers with checked indexing and deterministic
-  element cleanup.
-- enum-valued fields, fixed arrays of enums, and nested copyable or
-  cleanup-bearing enum payloads with dependency-ordered native layouts and
-  active-variant destruction.
-- explicit source-module exports, selective and namespace imports, recursive
-  graph loading, private symbol identities, and cross-file editor navigation.
-- checked integer arithmetic with constant diagnostics plus explicit wrapping
-  and saturating operations.
-
-### 0.25: Portable object model
-
-- ARC-managed classes with reference identity;
-- definite, optionally throwing class constructors with partial-initialization cleanup;
-- public and private class fields with compiler and editor enforcement;
-- public and private type-scoped static methods on structs and classes;
-- class lifecycle lowering and deterministic final `deinit`;
-- zeroing `Weak<T>` handles with typed upgrade failure and weak closure capture;
-- traits with explicit, statically checked `implements` conformance;
-- compiler and editor awareness for class and trait declarations;
-- trait values and dynamic dispatch deferred until real APIs shape them.
-
-### 0.3: Safe native import
-
-- Clang-backed header modules;
-- target layout and calling conventions;
-- nullability and ownership contracts;
-- typed synchronous call-only C callbacks (first ABI-compatible tier
-  implemented);
-- ARC-owned Z closure environments (implemented);
-- generated call-only C context adapters (implemented);
-- caller-thread escaping C callbacks with native destroy notification
-  (implemented);
-- calling-convention, unregister-token, cross-thread, and async adapters.
-
-### 0.4: Async frontend and structured runtime
-
-- Phase 0 async syntax, typing, task handles, ownership restrictions,
-  diagnostics, and editor services (implemented);
-- scalar sequential stackless state-machine lowering and deterministic root
-  runner (implemented);
-- Result-carrying scalar task frames (implemented);
-- cleanup-free aggregate task frames (implemented);
-- cleanup-bearing struct, enum, and ARC class frames (implemented);
-- receiver-aware async method frames (implemented);
-- ready-queue executor, executable `spawn`, and implicit root joins (implemented);
-- structured task scopes, cancellation, and deterministic frame cleanup;
-- scheduler-aware delay and bounded move-aware channels;
-- sendability, atomic ARC, and pluggable native executors;
-- callback-to-async synthesis and actor isolation.
+The stage-0 capability matrix, temporary lowering limits, validation probes, and
+near-term implementation order live in
+[`docs/bootstrap-status.md`](docs/bootstrap-status.md). Keeping that report
+separate prevents current compiler breadth from silently becoming language
+semantics.

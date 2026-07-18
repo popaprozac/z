@@ -4,15 +4,22 @@ Z is an experimental native systems language with TypeScript-inspired syntax,
 safe value semantics, deterministic cleanup, typed errors, and first-class
 interop with C-family platform APIs.
 
-The bootstrap compiler currently implements a deliberately small vertical
-slice: imports, functions, local bindings, primitive expressions, value structs,
-ARC reference classes, statically checked traits, fixed arrays, borrowed slices,
-tagged enums, exhaustive statement and expression matches, typed errors,
-deterministic cleanup, owned interpolated strings, TypeScript-style collection iteration, name
-resolution, static checking, and readable native-source emission. Header
-imports use Clang's AST to type-check
-an initial subset of C and Objective-C APIs. The compiler has no third-party
-package dependencies and runs directly on Bun.
+The stage-0 compiler is written in TypeScript, runs on Bun, and emits readable C,
+C++, or Objective-C-family source before the platform compiler produces a native
+binary. It has no third-party package dependencies.
+
+Documentation has four explicit roles:
+
+- this README is the approachable tour and runnable cookbook;
+- [`docs/language-reference.md`](docs/language-reference.md) states accepted
+  source semantics;
+- [`DESIGN.md`](DESIGN.md) records rationale, tradeoffs, and open design work;
+- [`docs/bootstrap-status.md`](docs/bootstrap-status.md) says exactly what the
+  stage-0 implementation supports today.
+
+Temporary lowering limits belong in the status document, not in the language
+contract. New language decisions should update the reference and design files;
+new implementation slices should update status and their runnable example.
 
 ```z
 import stdio from "stdio.h";
@@ -1124,17 +1131,17 @@ Unions, anonymous or incomplete layouts, plain `char` signedness, arrays,
 bitfield-specific validation, and pointers stored inside records remain
 upcoming interop layers.
 
-See [DESIGN.md](DESIGN.md) for the language charter and roadmap.
+See the [`language reference`](docs/language-reference.md) for accepted
+semantics, [`DESIGN.md`](DESIGN.md) for rationale, and the
+[`bootstrap status`](docs/bootstrap-status.md#foreign-interfaces) for the exact
+native-import boundary.
 
-## Async frontend and Phase 1 lowering
+## Async quick start
 
-Z validates the complete structured-async surface. The native Phase 1 slice
-executes owned function and method task frames on a deterministic FIFO executor
-with direct awaits, hot root-scoped `spawn`, typed errors, `throw`, `try await`,
-and `attempt await`. Scalars, enums with owned payloads, value structs, and ARC
-class references can cross suspension boundaries. Task frames track live
-cleanup-bearing values, transfer moved structs and enums, retain shared classes,
-and deterministically destroy the active ownership on success or error:
+Z uses structured concurrency: async function bodies are root task scopes,
+`spawn` starts a child immediately, `await` observes completion, and explicit
+`async scope` blocks create narrower join boundaries. Typed domain failures keep
+the same `throws`, `try`, and `attempt` model as synchronous code:
 
 ```z
 async function fetchValue(value: i32): i32 {
@@ -1192,49 +1199,19 @@ Run the broader structured-async example with:
 bun run z run examples/async-phase-0.z
 ```
 
-Unsupported executable shapes report `Z0700` with the precise current boundary
-rather than receiving synchronous-looking lowering. Explicit `async scope`
-blocks now join and destroy their directly owned children at the closing brace,
-including nested boundaries. A propagated `throw` or failed `try await`
-cancels still-live siblings and descendants before the failing task completes;
-an `attempt await` failure remains a handled value and does not cancel them.
-`await delay(milliseconds)` suspends through the executor's monotonic timer
-queue without blocking other ready tasks. Ordinary synchronous Z functions,
-methods, imported blocking `sleep`, and typed `console` calls execute in source
-order inside async frames without yielding. Concise synchronous `match` arms
-over scalar and plain-data enum payloads execute inside a poll state, including
-payload bindings, object destructuring, and checked integer arithmetic. Awaited
-cleanup-free values may appear inside otherwise synchronous expressions: the
-compiler stores each result in a hidden frame slot, preserves left-to-right
-evaluation, and resumes awaited `if` conditions through explicit branch states.
-This includes inline `match (attempt await operation())` subjects, ordinary call
-arguments, and arguments to another awaited call. Ownership-bearing hidden
-results, lazy suspension beneath `&&`, `||`, ternaries, value-producing `if`, or
-match arms, owned match payload transfer, direct foreign calls, and scope-local
-value cleanup remain active Phase 1 work. See
-[docs/async-model.md](docs/async-model.md) for the complete model and phases.
+See [`docs/async-model.md`](docs/async-model.md) for the complete concurrency
+model. The exact executable stage-0 lowering surface and current `Z0700`
+boundaries live in
+[`docs/bootstrap-status.md`](docs/bootstrap-status.md#async-and-concurrency).
 
-## Editor support
+## Editor setup
 
 The repository includes a VS Code/Cursor extension in `editors/vscode`. Its
 TextMate grammar recognizes `.z` syntax immediately, and it starts the Bun-based
-compiler language server when a Z document opens. The initial language-server
-slice provides:
-
-- live compiler diagnostics with debounced document checking;
-- completion for imported C/Objective-C namespaces;
-- type-directed Z struct/class and Objective-C instance/class member completion;
-- local-symbol completion and semantic highlighting for bindings, parameters,
-  namespaces, types, functions, methods, and properties;
-- selector-aware Objective-C method snippets and argument-label completion;
-- hover types and signatures; and
-- go-to-definition for declarations in the current Z source file.
-
-The server and compiler share lexer, AST, imported Clang metadata, semantic
-types, and diagnostics. AppKit completions therefore come from the installed SDK
-rather than a generated editor-only binding database. Definition links into C,
-Objective-C, and Swift headers require importer source-location metadata and are
-the next definition layer.
+compiler language server when a Z document opens. The server and compiler share
+the frontend and imported native metadata. See the
+[`bootstrap status`](docs/bootstrap-status.md#modules-and-tooling) for the
+current completion, hover, diagnostics, semantic-token, and definition surface.
 
 Install it locally for VS Code and/or Cursor, then reload the editor window:
 
