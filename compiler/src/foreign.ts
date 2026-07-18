@@ -8,8 +8,10 @@ import { normalizeForeignContracts } from "./foreign-contracts.ts";
 import { isStandardModuleSpecifier } from "./standard-library.ts";
 import type {
   ForeignCallbackType,
+  ForeignAvailability,
   ForeignBlockType,
   ForeignConstant,
+  ForeignDeclarationMetadata,
   ForeignField,
   ForeignFunctionDeclaration,
   ForeignModuleIR,
@@ -22,6 +24,7 @@ import type {
   ForeignPointerType,
   ForeignRecordPointerType,
   ForeignScalarTypeName,
+  ForeignSourceLocation,
   ForeignType,
 } from "./foreign-ir.ts";
 export type * from "./foreign-ir.ts";
@@ -49,10 +52,25 @@ type ClangNode = {
   readonly returnType?: { readonly qualType?: string; readonly desugaredQualType?: string };
   readonly super?: { readonly name?: string };
   readonly fixedUnderlyingType?: { readonly qualType?: string; readonly desugaredQualType?: string };
+  readonly loc?: ClangLocation;
+  readonly range?: { readonly begin?: ClangLocation; readonly end?: ClangLocation };
   readonly inner?: readonly ClangNode[];
 };
 
+type ClangLocation = {
+  readonly offset?: number;
+  readonly file?: string;
+  readonly line?: number;
+  readonly presumedLine?: number;
+  readonly col?: number;
+  readonly tokLen?: number;
+  readonly spellingLoc?: ClangLocation;
+  readonly expansionLoc?: ClangLocation;
+};
+
 const headerCache = new Map<string, HeaderInfo>();
+const foreignSourceCache = new Map<string, { readonly freshness: string; readonly source: string }>();
+const clangNodeSourceFiles = new WeakMap<ClangNode, string>();
 let cachedSdkPath: string | null | undefined;
 
 export function resolveForeignModules(
@@ -70,7 +88,8 @@ export function resolveForeignModules(
     const headerDirectory = declarationIncludeDirectories.find((directory) => existsSync(resolve(directory, declaration.header)))
       ?? declarationDirectory;
     const localHeader = resolve(headerDirectory, declaration.header);
-    const headerFreshness = existsSync(localHeader) ? statSync(localHeader).mtimeMs : 0;
+    const headerStat = existsSync(localHeader) ? statSync(localHeader) : null;
+    const headerFreshness = headerStat ? `${headerStat.mtimeMs}:${headerStat.size}` : "0";
     const framework = discoverFramework(declaration.header);
     const objectiveC = Boolean(framework)
       || isSwiftCompatibilityHeader(declaration.header)
@@ -130,6 +149,7 @@ function readHeader(
   } catch {
     throw new DiagnosticError(fileName, declaration.location, `Clang returned an invalid AST for header ${JSON.stringify(declaration.header)}`);
   }
+  hydrateClangSourceFiles(root);
 
   const imported = collectNamedTypes(root, declaration.moduleName, cPlusPlus, swiftCxxNamespace);
   const constants = new Map(imported.constants);
@@ -160,6 +180,7 @@ function readHeader(
       parameters,
       variadic: node.variadic === true,
       nativeSignature: cSignature,
+      metadata: foreignDeclarationMetadata(node),
     };
     const existing = functionDeclarations.get(node.name);
     if (!existing) {
@@ -271,6 +292,7 @@ function collectNamedTypes(
     typeName: string;
     cName: string;
     declaration?: ClangNode;
+    sourceDeclaration?: ClangNode;
     underlying?: ForeignScalarTypeName;
     flags?: boolean;
   };
@@ -297,6 +319,7 @@ function collectNamedTypes(
       typeName: `${moduleName}.${node.name}`,
       cName: node.name,
       declaration: kind === "record" ? records.get(recordMatch![1]) : kind === "enum" ? enums.get(enumMatch![1]) : undefined,
+      sourceDeclaration: node,
       underlying: kind === "scalar"
         ? underlying as ForeignScalarTypeName
         : kind === "enum"
@@ -313,6 +336,7 @@ function collectNamedTypes(
       typeName: `${moduleName}.${record.exportName}`,
       cName: record.cName,
       declaration: record.declaration,
+      sourceDeclaration: record.declaration,
     });
   }
 
@@ -325,8 +349,9 @@ function collectNamedTypes(
   const byCName = new Map<string, ForeignNamedType>();
   for (const seed of seeds.values()) {
     let named: ForeignNamedType | null = null;
+    const metadata = foreignDeclarationMetadata(seed.sourceDeclaration ?? seed.declaration);
     if (seed.kind === "scalar") {
-      named = { kind: "scalar", exportName: seed.exportName, typeName: seed.typeName, cName: seed.cName, underlying: seed.underlying! };
+      named = { kind: "scalar", exportName: seed.exportName, typeName: seed.typeName, cName: seed.cName, underlying: seed.underlying!, metadata };
     } else if (seed.kind === "enum") {
       named = {
         kind: "enum",
@@ -335,16 +360,17 @@ function collectNamedTypes(
         cName: seed.cName,
         flags: seed.flags ?? false,
         underlying: seed.underlying ?? "i32",
+        metadata,
       };
     } else if (seed.kind === "value") {
-      named = { kind: "value", exportName: seed.exportName, typeName: seed.typeName, cName: seed.cName };
+      named = { kind: "value", exportName: seed.exportName, typeName: seed.typeName, cName: seed.cName, metadata };
     } else {
       const fields = (seed.declaration!.inner ?? []).filter((child) => child.kind === "FieldDecl");
       const mapped = fields.map((field) => field.name && field.type?.qualType
-        ? { name: field.name, typeName: mapRecordFieldType(field.type.qualType, potential) }
+        ? { name: field.name, typeName: mapRecordFieldType(field.type.qualType, potential), metadata: foreignDeclarationMetadata(field) }
         : null);
       if (recordIsSupported(seed, potential, new Set()) && mapped.every((field): field is ForeignField => Boolean(field?.typeName))) {
-        named = { kind: "record", exportName: seed.exportName, typeName: seed.typeName, cName: seed.cName, fields: mapped };
+        named = { kind: "record", exportName: seed.exportName, typeName: seed.typeName, cName: seed.cName, fields: mapped, metadata };
       }
     }
     if (!named) continue;
@@ -359,7 +385,7 @@ function collectNamedTypes(
     const declaration = seeds.get(named.exportName)?.declaration;
     for (const constant of declaration?.inner ?? []) {
       if (constant.kind !== "EnumConstantDecl" || !constant.name) continue;
-      constants.set(constant.name, { name: constant.name, cName: constant.name, typeName: named.typeName });
+      constants.set(constant.name, { name: constant.name, cName: constant.name, typeName: named.typeName, metadata: foreignDeclarationMetadata(constant) });
     }
   }
   return { namedTypes, constants, byCName };
@@ -412,6 +438,7 @@ function collectObjCInterfaces(
             name: parameter.name ?? null,
             type: mapObjCType(parameter.type!, className, "parameter", namedTypes, typeNames, objectType),
           })),
+        metadata: foreignDeclarationMetadata(method),
       }));
     const properties = (declaration.inner ?? [])
       .filter((child) => child.kind === "ObjCPropertyDecl" && child.name && child.type?.qualType)
@@ -424,6 +451,7 @@ function collectObjCInterfaces(
         classProperty: property.class === true,
         readonly: property.readonly === true,
         type: mapObjCType(property.type!, className, "return", namedTypes, typeNames, objectType),
+        metadata: foreignDeclarationMetadata(property),
       }));
     interfaces.set(className, {
       exportName: className,
@@ -432,6 +460,7 @@ function collectObjCInterfaces(
       superName: declaration.super?.name ?? null,
       methods,
       properties,
+      metadata: foreignDeclarationMetadata(declaration),
     });
     objectType(className, false);
     objectType(className, true);
@@ -440,7 +469,7 @@ function collectObjCInterfaces(
     if (node.kind !== "VarDecl" || node.storageClass !== "extern" || !node.name || !node.type?.qualType) return;
     const type = mapObjCType(node.type, "", "return", namedTypes, typeNames, objectType);
     if (type.kind !== "object") return;
-    constants.set(node.name, { name: node.name, cName: node.name, typeName: type.typeName });
+    constants.set(node.name, { name: node.name, cName: node.name, typeName: type.typeName, metadata: foreignDeclarationMetadata(node) });
   });
   return interfaces;
 }
@@ -557,6 +586,109 @@ function recordIsSupported(
     });
   visiting.delete(seed.typeName);
   return supported;
+}
+
+function foreignDeclarationMetadata(node: ClangNode | undefined): ForeignDeclarationMetadata {
+  if (!node) return { source: null, availability: [] };
+  const fallbackFile = clangNodeSourceFiles.get(node) ?? null;
+  const source = foreignSourceLocation(node.loc ?? node.range?.begin, node.name?.length ?? 1, fallbackFile);
+  const availability = (node.inner ?? [])
+    .filter((child) => child.kind === "AvailabilityAttr" || child.kind === "DeprecatedAttr" || child.kind === "UnavailableAttr")
+    .map((attribute) => foreignAvailability(attribute, source?.fileName ?? null))
+    .filter((item): item is ForeignAvailability => Boolean(item));
+  return { source, availability };
+}
+
+function foreignSourceLocation(
+  location: ClangLocation | undefined,
+  fallbackLength: number,
+  fallbackFile: string | null,
+): ForeignSourceLocation | null {
+  const concrete = location?.expansionLoc ?? location?.spellingLoc ?? location;
+  const fileName = concrete?.file && !concrete.file.startsWith("<") ? resolve(concrete.file) : fallbackFile;
+  const line = concrete?.presumedLine ?? concrete?.line;
+  const column = concrete?.col;
+  if (!fileName || !line || !column) return null;
+  return {
+    fileName,
+    line,
+    column,
+    length: concrete?.tokLen ?? fallbackLength,
+  };
+}
+
+function hydrateClangSourceFiles(root: ClangNode): void {
+  let currentFile: string | null = null;
+  const walk = (node: ClangNode): void => {
+    const explicit = explicitClangFile(node.loc) ?? explicitClangFile(node.range?.begin);
+    if (explicit) currentFile = explicit;
+    if (currentFile) clangNodeSourceFiles.set(node, currentFile);
+    for (const child of node.inner ?? []) walk(child);
+  };
+  walk(root);
+}
+
+function explicitClangFile(location: ClangLocation | undefined): string | null {
+  const candidates = [location?.expansionLoc?.file, location?.spellingLoc?.file, location?.file];
+  const file = candidates.find((candidate) => candidate && !candidate.startsWith("<"));
+  return file ? resolve(file) : null;
+}
+
+function foreignAvailability(attribute: ClangNode, fallbackFile: string | null): ForeignAvailability | null {
+  if (attribute.kind === "UnavailableAttr") {
+    return {
+      platform: null,
+      introduced: null,
+      deprecated: false,
+      deprecatedVersion: null,
+      obsoleted: null,
+      unavailable: true,
+      message: attributeText(attribute, fallbackFile)?.match(/"((?:\\.|[^"\\])*)"/)?.[1] ?? null,
+    };
+  }
+  if (attribute.kind === "DeprecatedAttr") {
+    return {
+      platform: null,
+      introduced: null,
+      deprecated: true,
+      deprecatedVersion: null,
+      obsoleted: null,
+      unavailable: false,
+      message: attributeText(attribute, fallbackFile)?.match(/"((?:\\.|[^"\\])*)"/)?.[1] ?? null,
+    };
+  }
+  const text = attributeText(attribute, fallbackFile);
+  const parsed = text?.match(/availability\s*\(\s*([A-Za-z_][A-Za-z0-9_]*)\s*,([\s\S]*)\)/);
+  if (!parsed) return null;
+  const body = parsed[2];
+  const introduced = body.match(/\bintroduced\s*=\s*([0-9]+(?:\.[0-9]+)*)/)?.[1] ?? null;
+  const deprecatedVersion = body.match(/\bdeprecated\s*=\s*([0-9]+(?:\.[0-9]+)*)/)?.[1] ?? null;
+  const obsoleted = body.match(/\bobsoleted\s*=\s*([0-9]+(?:\.[0-9]+)*)/)?.[1] ?? null;
+  const message = body.match(/\bmessage\s*=\s*"((?:\\.|[^"\\])*)"/)?.[1] ?? null;
+  return {
+    platform: parsed[1].toLowerCase(),
+    introduced,
+    deprecated: deprecatedVersion !== null || /\bdeprecated\b/.test(body),
+    deprecatedVersion,
+    obsoleted,
+    unavailable: /\bunavailable\b/.test(body),
+    message,
+  };
+}
+
+function attributeText(attribute: ClangNode, fallbackFile: string | null): string | null {
+  const begin = attribute.range?.begin?.spellingLoc ?? attribute.range?.begin;
+  const end = attribute.range?.end?.spellingLoc ?? attribute.range?.end;
+  const rawFile = begin?.file && !begin.file.startsWith("<") ? begin.file : fallbackFile;
+  if (!rawFile || begin?.offset === undefined || end?.offset === undefined) return null;
+  const fileName = resolve(rawFile);
+  if (!existsSync(fileName)) return null;
+  const stat = statSync(fileName);
+  const freshness = `${stat.mtimeMs}:${stat.size}`;
+  const cached = foreignSourceCache.get(fileName);
+  const source = cached?.freshness === freshness ? cached.source : readFileSync(fileName, "utf8");
+  if (cached?.freshness !== freshness) foreignSourceCache.set(fileName, { freshness, source });
+  return source.slice(begin.offset, end.offset + (end.tokLen ?? 1));
 }
 
 function visit(node: ClangNode, callback: (node: ClangNode) => void): void {

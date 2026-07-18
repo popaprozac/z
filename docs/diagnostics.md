@@ -63,9 +63,10 @@ Currently structured codes include:
 | `Z0700` | async program is valid but uses a shape outside the current executable lowering tier |
 | `Z0701` | invalid `await` context or operand |
 | `Z0702` | async call is missing `await` or `spawn` |
-| `Z0801` | malformed, unmatched, or conflicting foreign API contract metadata |
 | `Z0703` | `spawn` or `async scope` is outside its required structured context |
 | `Z0704` | borrowed storage could remain live in a task or across suspension |
+| `Z0801` | malformed, unmatched, or conflicting foreign API contract metadata |
+| `Z0802` | native declaration is explicitly unavailable for the current bootstrap target |
 
 CLI diagnostics render source context. Language-server diagnostics expose the
 same code and message, secondary locations through related information, and

@@ -278,17 +278,23 @@ test("resolves native headers relative to the Z module that imports them", () =>
 
 test("selectively imports C types and constants with the same aliases used by functions", () => {
   const example = resolve(projectRoot, "examples/selective-declarations.z");
+  const source = readFileSync(example, "utf8");
   const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stdout, "selective point=23,19 score=42\n");
 
-  const generated = compileToC(readFileSync(example, "utf8"), example);
+  const generated = compileToC(source, example);
   assert.match(generated, /static ZDirection direction\(void\)/);
   assert.match(generated, /return ZForward;/);
   assert.match(generated, /static ZPoint shift\(ZPoint point, ZCount amount\)/);
   assert.match(generated, /return z_translate\(point, direction\(\), amount\);/);
   assert.match(generated, /const ZPoint point = \(ZPoint\)\{ \.x = 20, \.y = 19 \};/);
   assert.doesNotMatch(generated, /\b(Point|Direction|Count|forward|translate|score)\s*\(/);
+
+  const translateUse = source.lastIndexOf("translate(") + 2;
+  const translateDefinition = definition(source, `file://${example}`, translateUse);
+  assert.match(translateDefinition?.uri ?? "", /tests\/fixtures\/geometry\.h$/);
+  assert.equal(translateDefinition?.range.start.line, 31);
 });
 
 test("keeps unselected C types and constants out of scope", () => {
@@ -643,6 +649,7 @@ test("normalizes producer declarations without exposing Clang nodes to FIIR cons
     parameters: [],
     variadic: false,
     nativeSignature: "int (void)",
+    metadata: { source: null, availability: [] },
   };
   const normalized = normalizeForeignContracts(
     new Map([[declaration.name, declaration]]),
@@ -662,6 +669,56 @@ test("normalizes producer declarations without exposing Clang nodes to FIIR cons
   );
   assert.equal(normalized.functions.get("answer")?.returnType.kind, "z");
   assert.equal(normalized.functions.get("answer")?.cSignature, "int (void)");
+});
+
+test("preserves native declaration locations for FIIR and editor definitions", () => {
+  const example = resolve(projectRoot, "examples/foreign-types.z");
+  const source = readFileSync(example, "utf8");
+  const context = analyzeSource(source, example);
+  const geometry = context.foreignModules.get("geometry")!;
+  const translated = geometry.functions.get("z_translate")!;
+  assert.match(translated.metadata.source?.fileName ?? "", /tests\/fixtures\/geometry\.h$/);
+  assert.equal(translated.metadata.source?.line, 32);
+
+  const functionUse = source.indexOf("z_translate") + 2;
+  const functionDefinition = definition(source, `file://${example}`, functionUse);
+  assert.match(functionDefinition?.uri ?? "", /tests\/fixtures\/geometry\.h$/);
+  assert.equal(functionDefinition?.range.start.line, 31);
+
+  const typeUse = source.indexOf("geometry.ZPoint") + "geometry.".length + 2;
+  const typeDefinition = definition(source, `file://${example}`, typeUse);
+  assert.match(typeDefinition?.uri ?? "", /tests\/fixtures\/geometry\.h$/);
+});
+
+test("surfaces native availability in hover and rejects universally unavailable APIs", () => {
+  const fileName = resolve(projectRoot, "examples/availability-metadata-test.z");
+  const source = `
+    import native from "../tests/fixtures/z-availability.h";
+    function main(): i32 { return native.z_legacy(1); }
+  `;
+  const context = analyzeSource(source, fileName);
+  const legacy = context.foreignModules.get("native")!.functions.get("z_legacy")!;
+  assert.deepEqual(legacy.metadata.availability, [{
+    platform: "macos",
+    introduced: "10.12",
+    deprecated: true,
+    deprecatedVersion: "13.0",
+    obsoleted: null,
+    unavailable: false,
+    message: "use z_current",
+  }]);
+  const legacyUse = source.indexOf("z_legacy") + 2;
+  assert.match(hover(source, fileName, legacyUse)?.contents.value ?? "", /Availability: macos: introduced 10\.12, deprecated 13\.0/);
+  const legacyDefinition = definition(source, `file://${fileName}`, legacyUse);
+  assert.match(legacyDefinition?.uri ?? "", /tests\/fixtures\/z-availability\.h$/);
+  assert.equal(legacyDefinition?.range.start.line, 5);
+
+  const unavailable = source.replace("z_legacy", "z_never");
+  const diagnostic = diagnostics(unavailable, fileName)[0];
+  assert.equal(diagnostic.code, "Z0802");
+  assert.match(diagnostic.message, /foreign declaration "z_never" is unavailable/);
+  assert.match(diagnostic.message, /not supported anywhere/);
+  assert.match(diagnostic.relatedInformation?.[0]?.location.uri ?? "", /tests\/fixtures\/z-availability\.h$/);
 });
 
 test("rejects malformed or unmatched API notes before FIIR reaches sema", () => {
@@ -1466,6 +1523,8 @@ test("imports and executes Swift through its generated Objective-C compatibility
 
   const addOffset = source.indexOf("add(1)") + 1;
   assert.match(hover(source, zSource, addOffset)?.contents.value ?? "", /add\(amount: i32\): i32/);
+  const addDefinition = definition(source, `file://${zSource}`, addOffset);
+  assert.match(addDefinition?.uri ?? "", /ZSwiftFixture-Swift\.h$/);
   const completionSource = source.replace("counter.add", "counter.ad");
   const completionOffset = completionSource.indexOf("counter.ad") + "counter.ad".length;
   assert.equal(completions(completionSource, zSource, completionOffset).find((item) => item.label === "add")?.kind, 2);
@@ -1525,6 +1584,8 @@ test("imports and owns a Swift value through its generated C++ compatibility hea
 
   const generatedHeader = resolve(artifact.includeDirectories[0], "ZSwiftOwned-Swift.hpp");
   assert.equal(existsSync(generatedHeader), true);
+  const makeDefinition = definition(source, `file://${example}`, makeOffset);
+  assert.match(makeDefinition?.uri ?? "", /ZSwiftOwned-Swift\.hpp$/);
   const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stdout, "created 40\nfirst=40, copied=40, changed=42\nreleased 40\n");
@@ -1613,6 +1674,10 @@ test("provides compiler-backed AppKit completion, labels, hover, diagnostics, an
   const styleUse = source.indexOf("styleMask: style") + "styleMask: ".length;
   const styleDefinition = definition(source, `file://${example}`, styleUse);
   assert.equal(styleDefinition?.range.start.line, 7);
+
+  const centerUse = source.indexOf("window.center") + "window.".length + 2;
+  const centerDefinition = definition(source, `file://${example}`, centerUse);
+  assert.match(centerDefinition?.uri ?? "", /AppKit\.framework\/Headers\/NSWindow\.h$/);
 });
 
 test("speaks the LSP initialize and shutdown protocol over stdio", () => {

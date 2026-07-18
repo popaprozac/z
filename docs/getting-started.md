@@ -118,6 +118,8 @@ Install the repository's development extension:
 Reload VS Code or Cursor, then open a `.z` file. The extension provides TextMate
 highlighting immediately and starts the compiler-backed language server for
 diagnostics, semantic highlighting, hover, completion, and definitions.
+Definitions include Z modules plus imported project, SDK, and generated native
+headers when the toolchain reports a concrete declaration location.
 
 The extension watches `compiler/src` and restarts its language server after
 compiler changes. Grammar or extension-host changes still require an editor

@@ -814,7 +814,11 @@ and native-identity contracts must have one validated representation. The
 bootstrap now makes that boundary executable: Clang first emits raw declaration
 records, API-note sources are parsed and conflict-checked independently, and a
 contract normalizer is the only path to the FIIR consumed by sema, codegen, and
-editor services.
+editor services. Native declaration locations and availability facts cross that
+boundary as backend-neutral metadata: editor definitions can open project, SDK,
+and generated headers, while explicit unavailability is diagnosed at the Z use
+site. Version comparisons remain deferred until Z has an explicit deployment
+target model.
 
 Core language behavior and standard-library contracts remain target-neutral.
 Compile-time target metadata will live behind an explicit `std/target` module

@@ -21,7 +21,8 @@ The boundary is implemented across three focused modules:
   declarations with semantic facts and rejects incoherent boundaries.
 
 The Clang walk now emits function names, native spellings, canonical spellings,
-parameter order, and overload alternatives before ownership metadata is read.
+parameter order, overload alternatives, declaration locations, and availability
+facts before ownership metadata is read.
 Only the normalized result is attached to `ForeignModule` and exposed to generic
 inference, semantic analysis, code generation, and the language server.
 
@@ -32,6 +33,8 @@ FIIR describes facts the rest of the compiler needs:
 - modules, functions, parameters, constants, records, enums, scalar aliases,
   opaque native values, Objective-C objects/interfaces, and callbacks;
 - both Z-facing type identity and native declaration spelling;
+- native source locations and platform availability on functions, types,
+  constants, Objective-C interfaces, methods, and properties;
 - nullability and owned, borrowed, or consuming pointer contracts;
 - non-escaping record access (`in`, `out`, `inout`);
 - callback and Objective-C block lifetime, context, release, and threading
@@ -61,8 +64,10 @@ the frontend adapter, not to FIIR itself.
 
 The current producer reads C, Objective-C, C++, and generated Swift compatibility
 headers through Clang. It produces `ForeignModuleDeclarations` while preserving
-the native spelling used by generated source. It does not decide pointer
-ownership, callback escape, record access, or release behavior.
+the native spelling, source location, and availability used by generated source.
+Clang's elided repeated filenames are hydrated inside this producer; that
+serialization detail never reaches FIIR consumers. The producer does not decide
+pointer ownership, callback escape, record access, or release behavior.
 
 ### API notes
 
@@ -94,7 +99,10 @@ facts are coherent:
    release contract;
 6. overload ambiguity remains visible until an explicit resolver selects one;
 7. opaque RAII values preserve their native construction/copy/destruction
-   semantics rather than being treated as plain byte records.
+   semantics rather than being treated as plain byte records;
+8. explicit native unavailability is rejected at the Z use site and points back
+   to the native declaration. Introduced/deprecated/obsoleted versions remain
+   data until a deployment-target model exists.
 
 ## Self-hosting shape
 
@@ -129,8 +137,8 @@ separately from the in-memory normalized FIIR.
 
 ## Next slices
 
-1. add source-location and availability metadata so editor definitions and
-   diagnostics point into native interfaces;
+1. connect introduced/deprecated/obsoleted versions to explicit deployment
+   targets once `std/target` semantics are implemented;
 2. represent namespace hierarchy, overload sets, constructors, methods, and
    properties without flattening names;
 3. add explicit copy/move/destructor capabilities for general C++ and Swift

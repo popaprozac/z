@@ -11,6 +11,7 @@ import type {
 import { analyzeSource, type AnalyzedSource } from "./compiler.ts";
 import { DiagnosticError } from "./diagnostics.ts";
 import type {
+  ForeignDeclarationMetadata,
   ForeignFunction,
   ForeignModule,
   ForeignObjCInterface,
@@ -524,7 +525,7 @@ export function hover(source: string, fileName: string, offset: number): Hover |
     }
     if (resolved?.kind === "objc") {
       const property = collectObjCProperties(resolved.declaration, resolved.instance, context).find((item) => item.name === word.text);
-      if (property) return markdownHover(`${property.name}: ${foreignTypeName(property.type)}`, source, word.start, word.end);
+      if (property) return markdownHover(`${property.name}: ${foreignTypeName(property.type)}${foreignAvailabilityDetail(property.metadata)}`, source, word.start, word.end);
       const methods = collectObjCMethods(resolved.declaration, resolved.instance, context).filter((item) => item.baseName === word.text);
       if (methods.length) return markdownHover(methods.map(objCMethodDetail).join("\n"), source, word.start, word.end);
     }
@@ -583,6 +584,8 @@ export function definition(source: string, uri: string, offset: number): Locatio
     if (namespaceModule?.exports.has(word.text)) return sourceExportLocation(namespaceModule, word.text);
     const binding = localSourceBinding(context, word.text);
     if (binding) return sourceExportLocation(binding.module, binding.importedName);
+    const native = nativeDefinition(context, source, fileName, word);
+    if (native) return native;
   }
   let tokens;
   try {
@@ -606,6 +609,70 @@ export function definition(source: string, uri: string, offset: number): Locatio
   if (!target) return null;
   const start = { line: target.line - 1, character: target.column - 1 };
   return { uri, range: { start, end: { line: start.line, character: start.character + word.text.length } } };
+}
+
+function nativeDefinition(
+  context: AnalyzedSource,
+  source: string,
+  fileName: string,
+  word: { readonly text: string; readonly start: number; readonly end: number },
+): Location | null {
+  const chainedSelector = objectiveCSelectorAt(context, word.start);
+  if (chainedSelector) {
+    for (const declaration of context.semanticInfo.foreignInterfaces.values()) {
+      const method = declaration.methods.find((candidate) => (
+        candidate.selector === chainedSelector && candidate.baseName === word.text
+      ));
+      const target = method ? foreignMetadataLocation(method.metadata) : null;
+      if (target) return target;
+    }
+  }
+  const memberPrefix = source.slice(0, word.start).match(/([A-Za-z_][A-Za-z0-9_]*(?:<[^<>]+>)?(?:\.[A-Za-z_][A-Za-z0-9_]*)*)\.$/);
+  if (memberPrefix) {
+    const resolved = resolveReceiver(context, memberPrefix[1], word.start - memberPrefix[1].length - 1);
+    if (resolved?.kind === "module") {
+      const declaration = resolved.module.functions.get(word.text)
+        ?? resolved.module.constants.get(word.text)
+        ?? resolved.module.namedTypes.get(word.text)
+        ?? resolved.module.interfaces.get(word.text);
+      const target = declaration ? foreignMetadataLocation(declaration.metadata) : null;
+      if (target) return target;
+    }
+    if (resolved?.kind === "objc") {
+      const property = collectObjCProperties(resolved.declaration, resolved.instance, context)
+        .find((candidate) => candidate.name === word.text);
+      const method = collectObjCMethods(resolved.declaration, resolved.instance, context)
+        .find((candidate) => candidate.baseName === word.text);
+      const target = foreignMetadataLocation((property ?? method)?.metadata);
+      if (target) return target;
+    }
+  }
+  if (sourceNameIsShadowed(context, word.text, word.start, fileName)) return null;
+  for (const declaration of context.sourceProgram.imports) {
+    if (isLocalSourceModuleSpecifier(declaration.header) || !declaration.bindings) continue;
+    const binding = declaration.bindings.find((candidate) => candidate.localName === word.text);
+    if (!binding) continue;
+    const module = context.foreignModules.get(declaration.moduleName);
+    const target = module?.functions.get(binding.importedName)
+      ?? module?.constants.get(binding.importedName)
+      ?? module?.namedTypes.get(binding.importedName)
+      ?? module?.interfaces.get(binding.importedName);
+    const location = target ? foreignMetadataLocation(target.metadata) : null;
+    if (location) return location;
+  }
+  return null;
+}
+
+function foreignMetadataLocation(metadata: ForeignDeclarationMetadata | undefined): Location | null {
+  if (!metadata?.source) return null;
+  const start = { line: metadata.source.line - 1, character: metadata.source.column - 1 };
+  return {
+    uri: pathToFileURL(metadata.source.fileName).href,
+    range: {
+      start,
+      end: { line: start.line, character: start.character + metadata.source.length },
+    },
+  };
 }
 
 export function offsetAt(source: string, position: Position): number {
@@ -1608,18 +1675,18 @@ function objCMethodDetail(method: ForeignObjCMethod): string {
     const sourceName = index === 0 ? parameter.name ?? "value" : label;
     return `${sourceName}: ${foreignTypeName(parameter.type)}`;
   });
-  return `${method.baseName}(${parameters.join(", ")}): ${foreignTypeName(method.returnType)}  // ${method.selector}`;
+  return `${method.baseName}(${parameters.join(", ")}): ${foreignTypeName(method.returnType)}  // ${method.selector}${foreignAvailabilityDetail(method.metadata)}`;
 }
 
 function describeModuleMember(module: ForeignModule, name: string): string | null {
   const fn = module.functions.get(name);
   if (fn) return foreignFunctionDetail(fn);
   const constant = module.constants.get(name);
-  if (constant) return `${constant.name}: ${constant.typeName}`;
+  if (constant) return `${constant.name}: ${constant.typeName}${foreignAvailabilityDetail(constant.metadata)}`;
   const named = module.namedTypes.get(name);
-  if (named) return `${named.exportName}: ${named.cName}`;
+  if (named) return `${named.exportName}: ${named.cName}${foreignAvailabilityDetail(named.metadata)}`;
   const objc = module.interfaces.get(name);
-  return objc ? `Objective-C class ${objc.className}` : null;
+  return objc ? `Objective-C class ${objc.className}${foreignAvailabilityDetail(objc.metadata)}` : null;
 }
 
 function foreignFunctionDetail(declaration: ForeignFunction): string {
@@ -1629,7 +1696,24 @@ function foreignFunctionDetail(declaration: ForeignFunction): string {
       `${parameter.name ?? `argument${index + 1}`}: ${foreignTypeName(parameter.type)}`
     ));
   if (declaration.variadic) parameters.push("...arguments");
-  return `${declaration.name}(${parameters.join(", ")}): ${foreignTypeName(declaration.returnType)}  // C: ${declaration.cSignature}`;
+  return `${declaration.name}(${parameters.join(", ")}): ${foreignTypeName(declaration.returnType)}  // C: ${declaration.cSignature}${foreignAvailabilityDetail(declaration.metadata)}`;
+}
+
+function foreignAvailabilityDetail(metadata: ForeignDeclarationMetadata): string {
+  const details = metadata.availability.map((availability) => {
+    const platform = availability.platform ?? "all targets";
+    const message = availability.message ? ` — ${availability.message}` : "";
+    if (availability.unavailable) return `unavailable on ${platform}${message}`;
+    const parts = [
+      availability.introduced ? `introduced ${availability.introduced}` : null,
+      availability.deprecated
+        ? `deprecated${availability.deprecatedVersion ? ` ${availability.deprecatedVersion}` : ""}`
+        : null,
+      availability.obsoleted ? `obsoleted ${availability.obsoleted}` : null,
+    ].filter(Boolean);
+    return parts.length > 0 ? `${platform}: ${parts.join(", ")}${message}` : null;
+  }).filter((detail): detail is string => Boolean(detail));
+  return details.length > 0 ? `\n\nAvailability: ${details.join("; ")}` : "";
 }
 
 function structLiteralFieldHover(context: AnalyzedSource, offset: number): string | null {

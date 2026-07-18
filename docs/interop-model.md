@@ -30,6 +30,13 @@ ownership contracts. Unannotated declarations remain visible, but operations
 whose safety cannot be established retain an explicit unsupported type rather
 than gaining a guessed Z signature.
 
+Native declaration locations and availability survive the same normalization
+boundary. Go-to-definition opens project headers, SDK interfaces, and generated
+Swift compatibility headers. Explicitly unavailable declarations fail at the Z
+use site with `Z0802` and a related native location. Introduced, deprecated, and
+obsoleted versions are preserved for hover and future target checks; the
+bootstrap does not compare them against an invented deployment target.
+
 ## Cost model
 
 Z's target is **no interop tax beyond the semantics requested at the

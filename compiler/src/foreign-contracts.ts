@@ -100,6 +100,7 @@ export function normalizeForeignContracts(
       parameters,
       variadic: declaration.variadic,
       cSignature: declaration.nativeSignature,
+      metadata: declaration.metadata,
     });
   }
   validateReleaseContracts(functions, fileName, location);

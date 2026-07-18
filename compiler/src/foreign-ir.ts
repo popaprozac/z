@@ -1,6 +1,28 @@
 export type ForeignScalarTypeName =
   | "i8" | "u8" | "i16" | "u16" | "i32" | "u32" | "i64" | "u64" | "isize" | "usize" | "f32" | "f64" | "bool";
 
+export type ForeignSourceLocation = {
+  readonly fileName: string;
+  readonly line: number;
+  readonly column: number;
+  readonly length: number;
+};
+
+export type ForeignAvailability = {
+  readonly platform: string | null;
+  readonly introduced: string | null;
+  readonly deprecated: boolean;
+  readonly deprecatedVersion: string | null;
+  readonly obsoleted: string | null;
+  readonly unavailable: boolean;
+  readonly message: string | null;
+};
+
+export type ForeignDeclarationMetadata = {
+  readonly source: ForeignSourceLocation | null;
+  readonly availability: readonly ForeignAvailability[];
+};
+
 export type ForeignType =
   | { readonly kind: "z"; readonly name: ForeignScalarTypeName | "cstring" | "void"; readonly cName: string }
   | { readonly kind: "named"; readonly type: ForeignNamedType; readonly cName: string }
@@ -13,7 +35,7 @@ export type ForeignType =
   | ForeignPointerType
   | { readonly kind: "unsupported"; readonly cName: string };
 
-export type ForeignNamedType =
+export type ForeignNamedType = (
   | {
     readonly kind: "record";
     readonly exportName: string;
@@ -48,17 +70,20 @@ export type ForeignNamedType =
     readonly typeName: string;
     readonly cName: string;
     readonly underlying: ForeignScalarTypeName;
-  };
+  }
+) & { readonly metadata: ForeignDeclarationMetadata };
 
 export type ForeignField = {
   readonly name: string;
   readonly typeName: string;
+  readonly metadata: ForeignDeclarationMetadata;
 };
 
 export type ForeignConstant = {
   readonly name: string;
   readonly cName: string;
   readonly typeName: string;
+  readonly metadata: ForeignDeclarationMetadata;
 };
 
 export type ForeignObjectType = {
@@ -85,6 +110,7 @@ export type ForeignObjCMethod = {
   readonly returnsInstanceType: boolean;
   readonly returnType: ForeignType;
   readonly parameters: readonly ForeignParameter[];
+  readonly metadata: ForeignDeclarationMetadata;
 };
 
 export type ForeignObjCProperty = {
@@ -94,6 +120,7 @@ export type ForeignObjCProperty = {
   readonly classProperty: boolean;
   readonly readonly: boolean;
   readonly type: ForeignType;
+  readonly metadata: ForeignDeclarationMetadata;
 };
 
 export type ForeignObjCInterface = {
@@ -103,6 +130,7 @@ export type ForeignObjCInterface = {
   readonly superName: string | null;
   readonly methods: readonly ForeignObjCMethod[];
   readonly properties: readonly ForeignObjCProperty[];
+  readonly metadata: ForeignDeclarationMetadata;
 };
 
 export type ForeignPointerType = {
@@ -165,6 +193,7 @@ export type ForeignFunction = {
   readonly parameters: readonly ForeignParameter[];
   readonly variadic: boolean;
   readonly cSignature: string;
+  readonly metadata: ForeignDeclarationMetadata;
 };
 
 // Producer-facing declarations intentionally contain only native spellings and
@@ -188,6 +217,7 @@ export type ForeignFunctionDeclaration = {
   readonly parameters: readonly ForeignParameterDeclaration[];
   readonly variadic: boolean;
   readonly nativeSignature: string;
+  readonly metadata: ForeignDeclarationMetadata;
 };
 
 export type ForeignDeclarationProducer = "clang" | "swift-interface" | "package-metadata" | "cache";

@@ -56,9 +56,9 @@ an inferred receiver-tied view.
 | Z source modules | Implemented | Explicit exports, namespace/selective imports, aliases, cycle diagnostics |
 | CLI | Implemented | `z check`, `z emit`, and `z run` through Bun; native run I/O streams live |
 | Native backends | Partial | Readable C, C++20, Objective-C ARC, and Objective-C++ source generation |
-| Foreign Interface IR | Implemented foundation | Raw producer declarations are separate from API-note parsing/merge and normalized contracts; source locations and richer native hierarchies remain |
-| Language server | Partial | Diagnostics, semantic highlighting, local/import completion, hover, Z definitions |
-| Native definitions | Planned | Header source-location metadata is not yet exposed to go-to-definition |
+| Foreign Interface IR | Implemented foundation | Raw declarations, API-note merge, normalized contracts, source locations, and availability metadata are separate; richer native hierarchies remain |
+| Language server | Partial | Diagnostics, semantic highlighting, completion, hover, and Z/native definitions |
+| Native definitions | Implemented slice | Namespace/selective C symbols, Objective-C members, and generated Swift compatibility declarations jump to their native headers |
 | Self-hosting | Planned | Stage 0 remains TypeScript/Bun; file/process APIs and sufficient Z surface come first |
 
 ## Foreign interfaces
@@ -77,7 +77,7 @@ an inferred receiver-tied view.
 
 Current interop gaps that block a richer desktop application include
 broader Objective-C block shapes, target/action adapters, protocol conformance,
-cross-thread callbacks, availability, and API notes at SDK scale. General
+cross-thread callbacks, deployment-target-aware availability, and API notes at SDK scale. General
 `T | null`/`Option<T>` representation unification remains language
 foundation work; Objective-C reference options now have the first one-pointer
 niche-backed specialization and explicit conversion bridge.
@@ -128,9 +128,9 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
 
 1. Split and maintain tutorial, semantics, rationale, and bootstrap status
    documents (this structure is now in place).
-2. Extend the backend-neutral Foreign Interface IR now that raw Clang
-   declarations, API-note sources, and validated contracts are separate; native
-   source locations and availability metadata are the next tooling layer.
+2. Extend the backend-neutral Foreign Interface IR now that raw declarations,
+   API-note sources, normalized contracts, native definitions, and availability
+   facts are separate; native hierarchy and deployment-target semantics follow.
 3. Extend the desktop probe through one real native event callback into owned Z
    state (one-shot and persistent notification paths are now validated).
 4. Expand receiver-tied views only from real pressure: the value-struct tier is
