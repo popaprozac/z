@@ -531,18 +531,24 @@ language types and intrinsics remain implicit; standard facilities are imports.
 `std` and `std/...` are compiler-reserved module paths and are never mistaken
 for native headers by Clang.
 
-Blocking delays live in the focused `std/time` module:
+Blocking and suspending delays live in the focused `std/time` module:
 
 ```z
-import { sleep } from "std/time";
+import { sleep, delay } from "std/time";
 
 sleep(250); // milliseconds; blocks the current OS thread
+
+async function waitWithoutBlocking(): void {
+  await delay(250); // suspends this task; other ready tasks keep running
+}
 ```
 
 `sleep(milliseconds: u64): void` lowers to the host timing primitive and is
-useful in synchronous applications and smoke tests. It will remain explicitly
-blocking when async arrives; scheduler-aware delay will be a separate
-suspending operation rather than silently changing `sleep` semantics.
+useful in synchronous applications and smoke tests. It remains explicitly
+blocking inside async code. `delay(milliseconds: u64): void` is async: its
+monotonic deadline enters the executor timer queue, and the executor sleeps the
+OS thread only when it has no ready work. Cancelling a delayed task removes its
+pending timer.
 
 ```sh
 bun run z run examples/sleep.z
@@ -1115,6 +1121,7 @@ bun run z run examples/async-methods.z
 bun run z run examples/async-spawn.z
 bun run z run examples/async-scopes.z
 bun run z run examples/async-cancellation.z
+bun run z run examples/async-delay.z
 ```
 
 Spawned tasks are scheduled immediately. A bound handle may be joined once;
@@ -1151,7 +1158,9 @@ blocks now join and destroy their directly owned children at the closing brace,
 including nested boundaries. A propagated `throw` or failed `try await`
 cancels still-live siblings and descendants before the failing task completes;
 an `attempt await` failure remains a handled value and does not cancel them.
-Scheduler-aware delay is the next runtime layer. See
+`await delay(milliseconds)` suspends through the executor's monotonic timer
+queue without blocking other ready tasks. Async `match` lowering and
+scope-local value cleanup remain active Phase 1 work. See
 [docs/async-model.md](docs/async-model.md) for the complete model and phases.
 
 ## Editor support

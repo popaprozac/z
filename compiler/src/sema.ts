@@ -327,18 +327,18 @@ export function analyze(
         if (!declaration.bindings) {
           throw new DiagnosticError(fileName, declaration.location, "std/time requires a selective import", {
             code: "Z0501",
-            helps: ["use `import { sleep } from \"std/time\";`"],
+            helps: ["use `import { sleep, delay } from \"std/time\";`"],
           });
         }
         for (const binding of declaration.bindings) {
-          if (binding.importedName !== "sleep") {
+          if (binding.importedName !== "sleep" && binding.importedName !== "delay") {
             throw new DiagnosticError(fileName, binding.location, `std/time has no export ${JSON.stringify(binding.importedName)}`, {
               code: "Z0501",
-              helps: ["the bootstrap std/time module currently exports `sleep`"],
+              helps: ["the bootstrap std/time module currently exports `sleep` and `delay`"],
             });
           }
           validateUserName(binding.localName, binding.location, fileName);
-          const name: StandardFunctionName = "sleep";
+          const name: StandardFunctionName = binding.importedName;
           declareGlobal(
             globals,
             binding.localName,
@@ -1497,10 +1497,10 @@ function standardFunctionDeclaration(
   location: SourceLocation,
 ): FunctionDeclaration {
   const signature = standardFunctionSignature(name);
-  return functionTypeDeclaration(localName, {
+  return { ...functionTypeDeclaration(localName, {
     parameters: signature.parameters,
     returnType: signature.returnType,
-  }, location);
+  }, location), async: signature.async };
 }
 
 function inferClosureExpression(
@@ -2424,6 +2424,9 @@ function inferExpressionInner(
       }
       if (global?.kind === "standardFunction") {
         const signature = standardFunctionSignature(global.name);
+        if (signature.async) {
+          throw new DiagnosticError(fileName, expression.location, "async function values are deferred; call the function beneath `await` or `spawn`");
+        }
         state.standardFunctionReferences.set(expression.location.offset, global.name);
         return functionTypeName(signature.parameters, signature.returnType);
       }
@@ -3278,6 +3281,7 @@ function inferExpressionInner(
           ),
         );
         checkArguments(target.declaration, expression.arguments, locals, globals, structs, enums, fileName, expression.location, state);
+        registerAsyncCall(target.declaration, expression.location, fileName, state);
         return target.declaration.returnType.name;
       }
       if (target?.kind === "foreignFunction") {

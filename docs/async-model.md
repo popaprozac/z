@@ -11,8 +11,16 @@ async function fetchUser(id: UserId): User throws NetworkError {
 Synchronous functions are freely callable from async code. A fallible async
 operation is consumed with `try await` or retained with `attempt await`.
 The synchronous `sleep` imported from `std/time` remains a blocking OS-thread
-operation even inside async code. Scheduler-aware delay will be a distinct
-suspending API.
+operation even inside async code. `await delay(milliseconds)` is the explicit
+scheduler-aware alternative: it suspends the current task without blocking
+other ready tasks.
+
+```z
+import { sleep, delay } from "std/time";
+
+sleep(100);       // blocks the current OS thread
+await delay(100); // suspends this task on a monotonic executor timer
+```
 
 An async call is valid only beneath `await` or `spawn`. Calling an async
 function never silently starts detached work:
@@ -96,7 +104,8 @@ from parents to children, unwinds task frames, and runs ordinary synchronous
 operation such as `try await connection.close()`; `deinit` never suspends.
 Cancellation is cooperative at poll boundaries: it cannot interrupt a blocking
 synchronous or foreign call. A failure retained with `attempt await` is handled
-as a `Result` value and therefore does not cancel sibling work.
+as a `Result` value and therefore does not cancel sibling work. Cancelling a
+task suspended on `delay` removes its pending timer before task-frame cleanup.
 
 The first async ownership tier permits owned values, ARC class references, and
 owned closures in task frames. It rejects `in`, `inout`, `out`, `Slice<T>`, and
@@ -152,6 +161,9 @@ are executable; other scope-local frame values remain diagnosed until their
 brace-local cleanup states land. Propagated failures now request structural
 cancellation of live siblings and descendants, redirecting their state machines
 through deterministic child and frame cleanup before failure completes. The
-next Phase 1 layer adds scheduler-aware delay. Later phases add channels,
-sendability and atomic ARC, native executors, actors, and callback-to-async
-synthesis. Async-free programs never link the runtime.
+executor now maintains a sorted monotonic timer queue for direct `await
+delay(...)`; it wakes expired tasks in deadline order and blocks the OS thread
+only when the ready queue is empty. The next Phase 1 layers expand async control
+flow—including `match` expressions—and brace-local value cleanup. Later phases
+add channels, sendability and atomic ARC, native executors, actors, and
+callback-to-async synthesis. Async-free programs never link the runtime.

@@ -16,6 +16,7 @@ import type { SemanticInfo } from "./sema.ts";
 type AwaitSite = {
   readonly index: number;
   readonly mode: "await" | "try" | "attempt";
+  readonly intrinsic: "delay" | null;
   readonly expression: Extract<Expression, { kind: "await" }>;
   readonly call: CallExpression;
   readonly target: AsyncTarget;
@@ -183,7 +184,7 @@ function planFunction(
       nextChild,
     );
     awaits.set(expression.location.offset, site);
-    children.set(site.index, site.target);
+    if (!site.intrinsic) children.set(site.index, site.target);
   };
   const planStatements = (statements: readonly Statement[], scope: number): void => {
     for (const statement of statements) {
@@ -339,6 +340,7 @@ function awaitSite(
     return {
       index: spawn.index,
       mode,
+      intrinsic: null,
       expression,
       call: spawn.call,
       target: spawn.target,
@@ -354,15 +356,50 @@ function awaitSite(
     );
   }
   const call = expression.expression;
+  if (types.semanticInfo.standardFunctionReferences.get(call.callee.location.offset) === "delay") {
+    return {
+      index: nextChild.value++,
+      mode,
+      intrinsic: "delay",
+      expression,
+      call,
+      target: intrinsicDelayTarget(call.location),
+      receiver: null,
+      spawn: null,
+    };
+  }
   const resolved = resolveAsyncCall(call, functions, fileName, locals, types);
   return {
     index: nextChild.value++,
     mode,
+    intrinsic: null,
     expression,
     call,
     target: resolved.target,
     receiver: resolved.receiver,
     spawn: null,
+  };
+}
+
+function intrinsicDelayTarget(location: SourceLocation): AsyncTarget {
+  return {
+    owner: null,
+    declaration: {
+      kind: "function",
+      name: "delay",
+      async: true,
+      receiverMode: null,
+      parameters: [{
+        name: "milliseconds",
+        mode: "value",
+        type: { name: "u64", location },
+        location,
+      }],
+      returnType: { name: "void", location },
+      errorType: null,
+      body: [],
+      location,
+    },
   };
 }
 
@@ -378,6 +415,14 @@ function spawnSite(
 ): SpawnSite {
   if (expression.expression.kind !== "call") {
     unsupported(fileName, expression.location, "spawn lowering requires a direct async call");
+  }
+  if (types.semanticInfo.standardFunctionReferences.get(expression.expression.callee.location.offset) === "delay") {
+    unsupported(
+      fileName,
+      expression.location,
+      "spawning the delay intrinsic is not executable yet",
+      "await `delay(...)` directly, or spawn an async function that awaits it",
+    );
   }
   const resolved = resolveAsyncCall(expression.expression, functions, fileName, locals, types);
   return {
@@ -452,6 +497,7 @@ function generateRuntime(
   main: AsyncFunctionPlan | undefined,
   fileName: string,
 ): string {
+  const usesDelay = plans.some((plan) => [...plan.awaits.values()].some((site) => site.intrinsic === "delay"));
   const lines = [
     "/* Z async Phase 1: FIFO-scheduled ownership-aware task frames. */",
     "typedef struct Z_AsyncTask Z_AsyncTask;",
@@ -463,14 +509,18 @@ function generateRuntime(
     "  bool suspended;",
     "  bool cancellation_requested;",
     "  bool cancelled;",
+    "  bool timer_scheduled;",
+    "  uint64_t wake_at_ms;",
     "  Z_AsyncTask *waiter;",
     "  Z_AsyncTask *next;",
+    "  Z_AsyncTask *timer_next;",
     "  Z_AsyncExecutor *executor;",
     "};",
     "",
     "struct Z_AsyncExecutor {",
     "  Z_AsyncTask *head;",
     "  Z_AsyncTask *tail;",
+    "  Z_AsyncTask *timers;",
     "};",
     "",
     "static __attribute__((unused)) void z_async_enqueue(Z_AsyncExecutor *executor, Z_AsyncTask *task) {",
@@ -482,9 +532,87 @@ function generateRuntime(
     "  executor->tail = task;",
     "}",
     "",
+    ...(usesDelay ? [
+    "static __attribute__((unused)) uint64_t z_async_now_ms(void) {",
+    "#if defined(_WIN32)",
+    "  return (uint64_t)GetTickCount64();",
+    "#else",
+    "  struct timespec now;",
+    "  if (clock_gettime(CLOCK_MONOTONIC, &now) != 0) abort();",
+    "  return (uint64_t)now.tv_sec * UINT64_C(1000) + (uint64_t)now.tv_nsec / UINT64_C(1000000);",
+    "#endif",
+    "}",
+    "",
+    "static __attribute__((unused)) void z_async_os_sleep_ms(uint64_t milliseconds) {",
+    "#if defined(_WIN32)",
+    "  while (milliseconds > UINT32_MAX) {",
+    "    Sleep(UINT32_MAX);",
+    "    milliseconds -= UINT32_MAX;",
+    "  }",
+    "  Sleep((DWORD)milliseconds);",
+    "#else",
+    "  while (milliseconds > 0) {",
+    "    const uint64_t chunk = milliseconds > UINT64_C(86400000) ? UINT64_C(86400000) : milliseconds;",
+    "    struct timespec remaining = {",
+    "      .tv_sec = (time_t)(chunk / UINT64_C(1000)),",
+    "      .tv_nsec = (long)((chunk % UINT64_C(1000)) * UINT64_C(1000000)),",
+    "    };",
+    "    while (nanosleep(&remaining, &remaining) == -1) {",
+    "      if (errno != EINTR) abort();",
+    "    }",
+    "    milliseconds -= chunk;",
+    "  }",
+    "#endif",
+    "}",
+    "",
+    "static __attribute__((unused)) void z_async_remove_timer(Z_AsyncTask *task) {",
+    "  if (!task->timer_scheduled) return;",
+    "  Z_AsyncTask **link = &task->executor->timers;",
+    "  while (*link != NULL && *link != task) link = &(*link)->timer_next;",
+    "  if (*link == NULL) abort();",
+    "  *link = task->timer_next;",
+    "  task->timer_scheduled = false;",
+    "  task->timer_next = NULL;",
+    "}",
+    "",
+    "static __attribute__((unused)) void z_async_schedule_delay(Z_AsyncTask *task, uint64_t milliseconds) {",
+    "  z_async_remove_timer(task);",
+    "  const uint64_t now = z_async_now_ms();",
+    "  task->wake_at_ms = milliseconds > UINT64_MAX - now ? UINT64_MAX : now + milliseconds;",
+    "  task->timer_scheduled = true;",
+    "  task->suspended = true;",
+    "  Z_AsyncTask **link = &task->executor->timers;",
+    "  while (*link != NULL && (*link)->wake_at_ms <= task->wake_at_ms) link = &(*link)->timer_next;",
+    "  task->timer_next = *link;",
+    "  *link = task;",
+    "}",
+    "",
+    "static __attribute__((unused)) void z_async_release_timers(Z_AsyncExecutor *executor) {",
+    "  const uint64_t now = z_async_now_ms();",
+    "  while (executor->timers != NULL && executor->timers->wake_at_ms <= now) {",
+    "    Z_AsyncTask *task = executor->timers;",
+    "    executor->timers = task->timer_next;",
+    "    task->timer_scheduled = false;",
+    "    task->timer_next = NULL;",
+    "    task->suspended = false;",
+    "    z_async_enqueue(executor, task);",
+    "  }",
+    "}",
+    "",
+    "static __attribute__((unused)) void z_async_wait_for_timer(Z_AsyncExecutor *executor) {",
+    "  if (executor->timers == NULL) abort();",
+    "  const uint64_t now = z_async_now_ms();",
+    "  if (executor->timers->wake_at_ms > now) {",
+    "    z_async_os_sleep_ms(executor->timers->wake_at_ms - now);",
+    "  }",
+    "  z_async_release_timers(executor);",
+    "}",
+    "",
+    ] : []),
     "static __attribute__((unused)) void z_async_cancel(Z_AsyncTask *task) {",
     "  if (task->completed) return;",
     "  task->cancellation_requested = true;",
+    ...(usesDelay ? ["  z_async_remove_timer(task);"] : []),
     "  task->suspended = false;",
     "  z_async_enqueue(task->executor, task);",
     "}",
@@ -501,6 +629,10 @@ function generateRuntime(
     "  Z_AsyncExecutor *executor = root->executor;",
     "  z_async_enqueue(executor, root);",
     "  while (!root->completed) {",
+    ...(usesDelay ? [
+      "    z_async_release_timers(executor);",
+      "    if (executor->head == NULL) z_async_wait_for_timer(executor);",
+    ] : []),
     "    Z_AsyncTask *task = executor->head;",
     "    if (task == NULL) abort();",
     "    executor->head = task->next;",
@@ -537,7 +669,7 @@ function generateRuntime(
   if (main) {
     lines.push(
       "int32_t main(void) {",
-      "  Z_AsyncExecutor executor = { .head = NULL, .tail = NULL };",
+      "  Z_AsyncExecutor executor = { .head = NULL, .tail = NULL, .timers = NULL };",
       `  ${main.frameName} *root = ${main.startName}(&executor);`,
       "  z_async_run(&root->task);",
       ...(main.declaration.errorType
@@ -648,6 +780,8 @@ function generateStart(plan: AsyncFunctionPlan): string {
     "  frame->task.completed = false;",
     "  frame->task.cancellation_requested = false;",
     "  frame->task.cancelled = false;",
+    "  frame->task.timer_scheduled = false;",
+    "  frame->task.wake_at_ms = 0;",
     "  frame->state = 0;",
     "  frame->cancel_children = false;",
   ];
@@ -655,6 +789,7 @@ function generateStart(plan: AsyncFunctionPlan): string {
   lines.push("  frame->task.suspended = false;");
   lines.push("  frame->task.waiter = NULL;");
   lines.push("  frame->task.next = NULL;");
+  lines.push("  frame->task.timer_next = NULL;");
   lines.push("  frame->task.executor = executor;");
   if (plan.declaration.errorType) lines.push("  frame->failed = false;");
   if (
@@ -754,6 +889,9 @@ function generatePoll(
       const operation = awaitOperation(initializer);
       if (operation) {
         const site = plan.awaits.get(operation.expression.location.offset)!;
+        if (site.intrinsic === "delay") {
+          unsupported(fileName, statement.location, "the void delay operation cannot initialize a binding");
+        }
         if (!site.spawn) {
           const target = planByKey.get(targetKey(site.target))!;
           const arguments_ = emitAwaitArguments(site, plan, fileName);
@@ -799,6 +937,17 @@ function generatePoll(
       const operation = statement.expression ? awaitOperation(statement.expression) : null;
       if (operation) {
         const site = plan.awaits.get(operation.expression.location.offset)!;
+        if (site.intrinsic === "delay") {
+          cases.push(caseBlock(state, scheduleDelay(site, plan, fileName, state + 1)));
+          state += 1;
+          cases.push(caseBlock(state, [
+            ...(plan.declaration.errorType ? ["frame->failed = false;"] : []),
+            `frame->state = ${finalizeStateMarker};`,
+            "continue;",
+          ]));
+          state += 1;
+          continue;
+        }
         if (!site.spawn) {
           const target = planByKey.get(targetKey(site.target))!;
           const arguments_ = emitAwaitArguments(site, plan, fileName);
@@ -864,6 +1013,11 @@ function generatePoll(
       }
       const operation = awaitOperation(statement.expression)!;
       const site = plan.awaits.get(operation.expression.location.offset)!;
+      if (site.intrinsic === "delay") {
+        cases.push(caseBlock(state, scheduleDelay(site, plan, fileName, state + 1)));
+        state += 1;
+        continue;
+      }
       if (!site.spawn) {
         const target = planByKey.get(targetKey(site.target))!;
         const arguments_ = emitAwaitArguments(site, plan, fileName);
@@ -927,6 +1081,20 @@ ${renderedCases.map((item) => indent(item, 6)).join("\n")}
     }
   }
 }`;
+}
+
+function scheduleDelay(
+  site: AwaitSite,
+  parent: AsyncFunctionPlan,
+  fileName: string,
+  nextState: number,
+): string[] {
+  const milliseconds = emitFrameExpression(site.call.arguments[0], parent, fileName);
+  return [
+    `z_async_schedule_delay(&frame->task, ${milliseconds});`,
+    `frame->state = ${nextState};`,
+    "return;",
+  ];
 }
 
 function awaitCompletion(
@@ -1314,7 +1482,7 @@ function unsupported(
 ): never {
   throw new DiagnosticError(fileName, location, message, {
     code: "Z0700",
-    notes: ["Phase 1 currently executes ownership-aware task frames, FIFO scheduling, direct await, and lexically scoped spawn"],
+    notes: ["Phase 1 executes ownership-aware task frames, FIFO scheduling, direct await, scoped spawn, structural cancellation, and timer delay"],
     helps: [help],
   });
 }

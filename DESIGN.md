@@ -612,18 +612,24 @@ and `debug` append a newline; `write` does not. This namespaced surface remains
 the canonical logging API instead of reserving competing global `print` and
 `println` functions.
 
-The focused time module provides an explicitly blocking delay:
+The focused time module keeps blocking and suspending delays distinct:
 
 ```z
-import { sleep } from "std/time";
+import { sleep, delay } from "std/time";
 
 sleep(100);
+
+async function wait(): void {
+  await delay(100);
+}
 ```
 
 `sleep(milliseconds: u64): void` blocks the current OS thread and lowers to
 `Sleep` on Windows or interruption-safe `nanosleep` on POSIX platforms.
-Async delay remains a separate scheduler-aware operation so this synchronous
-API never changes behavior based on calling context.
+`delay(milliseconds: u64): void` is async and backed by the executor's
+monotonic timer queue. It suspends only the current task; cancellation removes
+its pending timer. The separate names ensure `sleep` never changes behavior
+based on calling context.
 
 An interpolated template evaluates expressions exactly once from left to right.
 Interpolation uses TypeScript's `${expression}` spelling. Plain braces remain
@@ -769,8 +775,9 @@ brace. Frames lower `throw`, `try await`, `attempt await`, and payloadless
 still-live sibling and descendant; cancellation redirects those tasks into
 their cleanup states and remains distinct from the declared `throws E` domain.
 Handled `attempt await` failures do not cancel siblings. Valid shapes beyond
-the active native tier report `Z0700`. Async-free programs do not link an async
-runtime. Apple
+the active native tier report `Z0700`. `await delay(milliseconds)` schedules a
+monotonic deadline without blocking other ready tasks, and cancellation removes
+pending timers. Async-free programs do not link an async runtime. Apple
 executors may integrate with Dispatch and the main run loop; Windows executors
 may integrate with the thread pool and IOCP.
 

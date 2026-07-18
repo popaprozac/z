@@ -2,7 +2,7 @@ export function isStandardModuleSpecifier(specifier: string): boolean {
   return specifier === "std" || specifier.startsWith("std/");
 }
 
-export type StandardFunctionName = "sleep";
+export type StandardFunctionName = "sleep" | "delay";
 
 export type StandardFunctionSignature = {
   readonly cName: string;
@@ -12,6 +12,7 @@ export type StandardFunctionSignature = {
     readonly type: string;
   }[];
   readonly returnType: string;
+  readonly async?: boolean;
 };
 
 const standardFunctions: Record<StandardFunctionName, StandardFunctionSignature> = {
@@ -19,6 +20,12 @@ const standardFunctions: Record<StandardFunctionName, StandardFunctionSignature>
     cName: "z_sleep_ms",
     parameters: [{ name: "milliseconds", mode: "value", type: "u64" }],
     returnType: "void",
+  },
+  delay: {
+    cName: "z_async_schedule_delay",
+    parameters: [{ name: "milliseconds", mode: "value", type: "u64" }],
+    returnType: "void",
+    async: true,
   },
 };
 

@@ -703,8 +703,10 @@ function symbolCompletions(source: string, fileName: string, offset: number): Co
   return filterCompletions(uniqueCompletions(items), prefix, 500);
 }
 
-function standardFunctionDetail(localName: string, name: "sleep"): string {
-  const signature = `${localName}(milliseconds: u64): void  // blocks the current thread`;
+function standardFunctionDetail(localName: string, name: "sleep" | "delay"): string {
+  const signature = name === "delay"
+    ? `async ${localName}(milliseconds: u64): void  // suspends the current task`
+    : `${localName}(milliseconds: u64): void  // blocks the current thread`;
   return localName === name ? signature : `${signature} — alias of ${name} from "std/time"`;
 }
 

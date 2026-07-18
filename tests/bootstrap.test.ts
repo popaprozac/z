@@ -2106,8 +2106,8 @@ test("sleeps the current thread through the portable std/time module", () => {
 
   const defaultImport = `import time from "std/time"; function main(): i32 { return 0; }`;
   assert.equal(diagnostics(defaultImport, "sleep-default.z")[0].code, "Z0501");
-  const unknownExport = `import { delay } from "std/time"; function main(): i32 { return 0; }`;
-  assert.match(diagnostics(unknownExport, "sleep-export.z")[0].message, /std\/time has no export "delay"/);
+  const unknownExport = `import { timer } from "std/time"; function main(): i32 { return 0; }`;
+  assert.match(diagnostics(unknownExport, "sleep-export.z")[0].message, /std\/time has no export "timer"/);
   const wrongType = `import { sleep } from "std/time"; function main(): i32 { sleep(-1); return 0; }`;
   assert.match(diagnostics(wrongType, "sleep-type.z")[0].message, /integer literal -1 does not fit u64/);
 });
@@ -4926,4 +4926,70 @@ test("cancels live siblings and descendants when an async failure propagates", (
       "",
     ].join("\n"),
   );
+});
+
+test("suspends async tasks on scheduler-aware std/time delay", () => {
+  const example = resolve(projectRoot, "examples/async-delay.z");
+  const source = readFileSync(example, "utf8");
+  const generated = compileToC(source, example);
+  assert.match(generated, /clock_gettime\(CLOCK_MONOTONIC, &now\)/);
+  assert.match(generated, /Z_AsyncTask \*timers;/);
+  assert.match(generated, /z_async_schedule_delay\(&frame->task, frame->value_milliseconds\)/);
+  assert.match(generated, /z_async_wait_for_timer\(executor\)/);
+  assert.match(generated, /z_async_remove_timer\(task\)/);
+
+  const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, "released delayed job 1\nreleased delayed job 2\n");
+
+  const delayUse = source.indexOf("delay(milliseconds)") + 1;
+  assert.match(
+    hover(source, example, delayUse)?.contents.value ?? "",
+    /async delay\(milliseconds: u64\): void/,
+  );
+  const completionOffset = source.indexOf("delay(milliseconds)") + 3;
+  assert.match(
+    completions(source, example, completionOffset).find((item) => item.label === "delay")?.detail ?? "",
+    /suspends the current task/,
+  );
+
+  const naked = `import { delay } from "std/time"; function main(): i32 { delay(1); return 0; }`;
+  assert.throws(() => check(naked, "naked-delay.z"), (error: unknown) => {
+    assert.ok(error instanceof DiagnosticError);
+    assert.equal(error.code, "Z0702");
+    assert.match(error.message, /requires `await` or `spawn`/);
+    return true;
+  });
+
+  const spawned = `
+    import { delay } from "std/time";
+    async function main(): i32 { spawn delay(1); return 0; }
+  `;
+  assert.throws(() => compileToC(spawned, "spawn-delay.z"), (error: unknown) => {
+    assert.ok(error instanceof DiagnosticError);
+    assert.equal(error.code, "Z0700");
+    assert.match(error.message, /spawning the delay intrinsic is not executable yet/);
+    return true;
+  });
+
+  const directory = mkdtempSync("/tmp/z-async-delay-cancel-");
+  const cancelled = resolve(directory, "main.z");
+  writeFileSync(cancelled, `
+    import console from "std/console";
+    import { delay } from "std/time";
+    struct TimerResource {
+      id: i32;
+      deinit { console.log(\`released timer \${this.id}\`); }
+    }
+    async function linger(resource: TimerResource): void { await delay(1000); return; }
+    async function fail(): i32 throws i32 { throw 7; }
+    async function main(): i32 throws i32 {
+      const failure = spawn fail();
+      spawn linger(TimerResource({ id: 9 }));
+      return try await failure;
+    }
+  `);
+  const cancelledResult = spawnSync(process.execPath, [cli, "run", cancelled], { encoding: "utf8" });
+  assert.equal(cancelledResult.status, 1, cancelledResult.stderr);
+  assert.equal(cancelledResult.stdout, "released timer 9\n");
 });
