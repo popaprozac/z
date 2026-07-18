@@ -8,6 +8,9 @@ class WindowController {
 
   function present(): void {
     console.log(`documents=${this.workspace.documentCount()}, active=${this.workspace.activeDocumentId()}`);
+    this.workspace.eachDocument((in document) => {
+      console.log(`document ${document.id}: ${document.title}`);
+    });
     this.window.center();
     this.window.makeKeyAndOrderFront(null);
   }

@@ -79,6 +79,20 @@ Borrow lifetimes are inferred and lexical. Safe code does not expose general
 lifetime parameters. A borrow cannot currently be retained, stored, or returned
 without a future scoped-view contract.
 
+A borrowed callback can expose a scoped view without returning it:
+
+```z
+function each(in visit: (in item: Item) => void): void {
+  for (const item of this.items) {
+    visit(item);
+  }
+}
+```
+
+The immutable `in` capability appears in the function type; its call site does
+not repeat `in`. Mutable `inout` and initializing `out` remain explicit at both
+declaration and call sites.
+
 ## Cleanup and weak references
 
 `deinit` is deterministic, synchronous, infallible, and runs exactly once for

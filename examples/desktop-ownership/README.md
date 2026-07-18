@@ -12,6 +12,9 @@ visible, and borrowed methods can inspect the model without copying it. A Z
 `WindowController` stores both the imported `AppKit.NSWindow` nominal type and
 the owned `Workspace`; Objective-C ARC keeps the native window alive. Its first
 log line streams before AppKit enters the event loop, while the window is open.
+`Workspace.eachDocument` lends each move-only document to a scoped
+`(in document: Document) => void` callback, allowing the controller to read
+owned titles without copying them or exposing a source lifetime.
 The computed Z window title crosses into `NSString`, then is copied back into an
 owned Z `String` and logged.
 An `NSOpenPanel` completion handler then crosses back through an escaping

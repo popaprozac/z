@@ -20,4 +20,10 @@ export class Workspace {
     }
     return this.documents[this.documents.length - 1].id;
   }
+
+  function eachDocument(in visit: (in document: Document) => void): void {
+    for (const document of this.documents) {
+      visit(document);
+    }
+  }
 }

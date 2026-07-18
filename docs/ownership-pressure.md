@@ -42,6 +42,14 @@ Do not choose among them from syntax alone. Add the smallest spike when a real
 program needs to retain or return a view, then compare call sites, diagnostics,
 code generation, and optimizer results.
 
+The desktop probe now exercises candidate 1 through
+`eachDocument(in visit: (in document: Document) => void)`. Its call site is an
+ordinary contextual closure, and generated C passes each element as a
+`const Document *` without copying its owned `String`. This reads naturally for
+enumeration and keeps the lifetime entirely lexical. It does introduce
+inversion of control and does not replace a future view-return solution for APIs
+that genuinely need one retained result, so the broader question remains open.
+
 ## Pressure 2: imported Objective-C references in owned Z state
 
 Resolved for non-null class references: `AppKit.NSWindow` is a nominal source

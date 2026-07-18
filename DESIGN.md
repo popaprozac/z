@@ -856,6 +856,13 @@ question remains separate from the now-resolved foreign type-surface gap.
 Candidate view-return experiments remain open until a real caller supplies
 comparative evidence.
 
+The first empirical scoped-view experiment is
+`eachDocument(in visit: (in document: Document) => void)`. It lowers each array
+element to a `const Document *` for the duration of a contextual closure call,
+so owned strings are inspected without copies or source lifetime syntax. This
+is a good fit for enumeration, but its inversion of control is not treated as a
+universal replacement for future retained or receiver-tied views.
+
 Imported Objective-C block parameters contextually type Z closures. An escaping
 block requires an owned `move` closure; a generated Objective-C ARC box retains
 and releases the Z closure environment with the copied native block. The

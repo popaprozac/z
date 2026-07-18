@@ -875,6 +875,8 @@ test("compiles a desktop ownership slice and preserves its current pressure wall
   assert.match(artifact.source, /self->window = nil;/);
   assert.match(artifact.source, /beginWithCompletionHandler:_z_objc_block_/);
   assert.match(artifact.source, /Z_[A-Za-z0-9_]*Workspace_open/);
+  assert.match(artifact.source, /Workspace_eachDocument\(const Z_[A-Za-z0-9_]*Workspace \*self, const Z_Function_[A-Za-z0-9_]+ \*visit\)/);
+  assert.match(artifact.source, /const Z_[A-Za-z0-9_]*Document \*document = &/);
   assert.deepEqual(diagnostics(source, example), []);
 
   const compilation = spawnSync("clang", [
