@@ -878,6 +878,7 @@ bun run z run examples/cpp-interop.z
 bun run z run examples/swift-interop/main.z
 bun run z run examples/swift-value-interop/main.z
 bun run z run examples/nswindow.z # macOS: opens a window and enters AppKit's event loop
+bun run z run examples/desktop-ownership/main.z # macOS: owned model plus AppKit shell
 bun run z run examples/structs.z
 bun run z run examples/classes.z
 bun run z run examples/static-methods.z
@@ -951,6 +952,14 @@ local object-reference retain/release behavior, and the generated `main` runs
 inside an autorelease pool. Protocols, delegates, blocks, general Z `String`
 bridging, lightweight generics, availability checking, and actor isolation
 remain upcoming layers.
+
+[`examples/desktop-ownership`](examples/desktop-ownership) combines a real
+AppKit window with an ARC Z application model owning an `Array` of move-only
+documents and strings. The companion
+[`docs/ownership-pressure.md`](docs/ownership-pressure.md) records the concrete
+walls found by extending that program, classifies ownership questions separately
+from missing interop surfaces, and preserves candidate borrowing experiments for
+later evidence-driven spikes.
 
 Swift interop is deliberately split into two tiers. Swift-authored APIs exposed
 through a generated Objective-C compatibility header can reuse this importer

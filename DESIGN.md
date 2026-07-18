@@ -855,6 +855,16 @@ parameter or property accepts `NSString` (or a compatible supertype). Otherwise
 the literal is a Z `String`; raw Objective-C/C `cstring` parameters receive the
 same call-scoped byte borrow used by C interop.
 
+The first application-shaped ownership probe combines an ARC Z `Workspace`, an
+owned growable array of move-only documents and strings, and a native AppKit
+window. Its ongoing findings live in
+[`docs/ownership-pressure.md`](docs/ownership-pressure.md). In particular, the
+bootstrap currently cannot name inferred Objective-C reference types in Z
+fields/signatures, and borrowed owned fields or slices cannot escape. Those are
+kept as separate interop and ownership investigations rather than being blurred
+into one language change. Candidate view-return experiments remain open until a
+real caller supplies comparative evidence.
+
 A conventional local `Module-Swift.h` compatibility header also selects the
 Objective-C ARC backend. The bootstrap has an end-to-end fixture in which
 `swiftc` builds a Swift dylib and generated header, Z imports its class,

@@ -861,6 +861,41 @@ test("imports AppKit classes and emits an ARC Objective-C NSWindow program", () 
   assert.match(customGetter.source, /\[window isVisible\]/);
 });
 
+test("compiles a desktop ownership slice and preserves its current pressure walls", () => {
+  if (process.platform !== "darwin") return;
+  const example = resolve(projectRoot, "examples/desktop-ownership/main.z");
+  const source = readFileSync(example, "utf8");
+  const artifact = compileToNative(source, example);
+  assert.equal(artifact.language, "objective-c");
+  assert.match(artifact.source, /typedef struct Z_[A-Za-z0-9_]*Workspace Z_[A-Za-z0-9_]*Workspace/);
+  assert.match(artifact.source, /Z_DynamicArray_[A-Za-z0-9_]*Document documents/);
+  assert.match(artifact.source, /\[\[NSWindow alloc\] initWithContentRect/);
+  assert.deepEqual(diagnostics(source, example), []);
+
+  const borrowedView = `
+    struct Document { title: String; }
+    class Workspace { document: Document; }
+    function activeTitle(in workspace: Workspace): String {
+      return workspace.document.title;
+    }
+    function main(): i32 { return 0; }
+  `;
+  assert.match(
+    diagnostics(borrowedView, "desktop-borrowed-view.z")[0].message,
+    /moving a cleanup-bearing element out of its owner is not implemented yet/,
+  );
+
+  const importedField = `
+    import AppKit from "AppKit/AppKit.h";
+    class WindowState { window: AppKit.NSWindow; }
+    function main(): i32 { return 0; }
+  `;
+  assert.match(
+    diagnostics(importedField, "desktop-imported-field.z")[0].message,
+    /unknown type "AppKit\.NSWindow"/,
+  );
+});
+
 test("imports and executes Swift through its generated Objective-C compatibility header", () => {
   if (process.platform !== "darwin") return;
   const directory = mkdtempSync("/tmp/z-swift-interop-");

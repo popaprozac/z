@@ -1,0 +1,23 @@
+export struct Document {
+  id: i32;
+  title: String;
+}
+
+export class Workspace {
+  documents: Array<Document>;
+
+  function open(inout this, document: Document): void {
+    this.documents.push(document);
+  }
+
+  function documentCount(): usize {
+    return this.documents.length;
+  }
+
+  function activeDocumentId(): i32 {
+    if (this.documents.length == 0) {
+      return -1;
+    }
+    return this.documents[this.documents.length - 1].id;
+  }
+}
