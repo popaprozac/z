@@ -3750,7 +3750,16 @@ function consumeOwnedValue(
     return;
   }
   if (expression.kind === "member" || expression.kind === "index") {
-    throw new DiagnosticError(fileName, expression.location, "moving a cleanup-bearing element out of its owner is not implemented yet");
+    throw new DiagnosticError(fileName, expression.location, "cannot move a cleanup-bearing field or element out of its owner", {
+      code: "Z0204",
+      notes: [
+        "the containing aggregate still owns this value and remains responsible for its deterministic cleanup",
+        "receiver-tied returned views are not implemented yet",
+      ],
+      helps: [
+        "inspect the value through an `in` parameter or non-escaping callback, or construct an explicitly owned snapshot",
+      ],
+    });
   }
   if (expression.kind !== "identifier") return;
   const stored = locals.get(expression.name);

@@ -81,3 +81,7 @@ application model, move-only documents and strings, borrowed enumeration, and
 an AppKit shell. Its findings are recorded in
 [`ownership-pressure.md`](ownership-pressure.md); it exists to pressure-test the
 ownership model rather than present a finished framework API.
+
+[`ownership-views.z`](../examples/ownership-views.z) isolates the most important
+borrow-return question without a GUI: it compares a zero-copy scoped document
+callback with an owned snapshot that remains valid after workspace mutation.

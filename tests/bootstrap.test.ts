@@ -1086,13 +1086,32 @@ test("compiles a desktop ownership slice and preserves its current pressure wall
     }
     function main(): i32 { return 0; }
   `;
-  assert.match(
-    diagnostics(borrowedView, "desktop-borrowed-view.z")[0].message,
-    /moving a cleanup-bearing element out of its owner is not implemented yet/,
-  );
+  const borrowedViewDiagnostic = diagnostics(borrowedView, "desktop-borrowed-view.z")[0];
+  assert.equal(borrowedViewDiagnostic.code, "Z0204");
+  assert.match(borrowedViewDiagnostic.message, /cannot move a cleanup-bearing field or element out of its owner/);
+  assert.match(borrowedViewDiagnostic.message, /receiver-tied returned views are not implemented yet/);
+  assert.match(borrowedViewDiagnostic.message, /non-escaping callback.*owned snapshot/);
 
   const windowFieldOffset = source.indexOf("window: AppKit.NSWindow") + "window: AppKit.".length + 1;
   assert.match(hover(source, example, windowFieldOffset)?.contents.value ?? "", /class NSWindow/);
+});
+
+test("compares scoped document borrows with independently owned snapshots", () => {
+  const example = resolve(projectRoot, "examples/ownership-views.z");
+  const source = readFileSync(example, "utf8");
+  const generated = compileToC(source, example);
+  assert.match(
+    generated,
+    /Workspace_withDocument\(const Z_[A-Za-z0-9_]*Workspace \*self, int32_t id, const Z_Function_[A-Za-z0-9_]+ \*visit\)/,
+  );
+  assert.match(generated, /const Z_[A-Za-z0-9_]*Document \*document = &/);
+  assert.match(generated, /Workspace_documentSnapshot\(const Z_[A-Za-z0-9_]*Workspace \*self, int32_t id\)/);
+  assert.match(generated, /Z_String _z_string_[0-9]+ = z_string_new\(\);/);
+  assert.match(generated, /z_string_append_bytes\([^;]+document[^;]+title[^;]+length\);/);
+
+  const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, "scoped 2: Interop Notes\nsnapshot 2: Interop Notes\n");
 });
 
 test("retains owned Z closure environments across Objective-C blocks", () => {
@@ -2924,7 +2943,7 @@ test("does not move cleanup-bearing elements out of fixed arrays", () => {
   `;
   assert.throws(
     () => compileToC(source, "array-element-move.z"),
-    /moving a cleanup-bearing element out of its owner is not implemented yet/,
+    /cannot move a cleanup-bearing field or element out of its owner/,
   );
 });
 
@@ -3505,7 +3524,7 @@ test("checks Array mutation, element types, and partial moves", () => {
       return item.id;
     }
   `;
-  assert.throws(() => compileToC(partialMove, "dynamic-array-partial-move.z"), /moving a cleanup-bearing element out of its owner is not implemented/);
+  assert.throws(() => compileToC(partialMove, "dynamic-array-partial-move.z"), /cannot move a cleanup-bearing field or element out of its owner/);
 });
 
 test("exposes Array members and source-level types to editor services", () => {

@@ -26,4 +26,22 @@ export class Workspace {
       visit(document);
     }
   }
+
+  function withDocument(id: i32, in visit: (in document: Document) => void): bool {
+    for (const document of this.documents) {
+      if (document.id == id) {
+        visit(document);
+        return true;
+      }
+    }
+    return false;
+  }
+
+  function documentSnapshot(id: i32): Option<Document> {
+    let result: Option<Document> = Option.none;
+    this.withDocument(id, (in document) => {
+      result = Option.some(Document({ id: document.id, title: `${document.title}` }));
+    });
+    return result;
+  }
 }

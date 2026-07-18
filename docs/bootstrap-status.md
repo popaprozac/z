@@ -39,7 +39,7 @@ Status meanings:
 | Fixed arrays | Implemented | Checked indexing and reverse element cleanup |
 | `Array<T>` | Implemented | Growable owned storage and move-aware elements |
 | `Slice<T>` | Partial | Parameter-only, non-escaping lexical views |
-| Returning/storing borrows | Planned experiment | Compare scoped callbacks, owned snapshots, inferred views, and regions against real programs |
+| Returning/storing borrows | Planned experiment | Scoped callback and owned snapshot costs are measured; a receiver-tied read-only view is the next narrow candidate |
 | ORC cycle collection | Planned | `Weak<T>` works now; arbitrary strong cycles are not collected |
 
 The ongoing empirical record is
@@ -110,6 +110,8 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
   `some`/`none` matching.
 - [`examples/desktop-ownership`](../examples/desktop-ownership): ARC application
   model plus move-only owned documents and AppKit shell.
+- [`examples/ownership-views.z`](../examples/ownership-views.z): zero-copy scoped
+  lookup compared with an independently owned document snapshot.
 - [`examples/appkit-events.z`](../examples/appkit-events.z): persistent native
   notification callbacks, weak Z capture, imported notification constants, and
   explicit observer-token removal.
@@ -130,6 +132,7 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
 3. Extend the desktop probe through one real native event callback into owned Z
    state (one-shot and persistent notification paths are now validated).
 4. Test a real escaping-view need before choosing scoped callbacks, inferred
-   views, regions, or another borrow shape.
+   views, regions, or another borrow shape (scoped and snapshot costs are now
+   measured; a narrow receiver-tied view is the supported next experiment).
 5. Keep actors, channels, multithreaded executors, and atomic ARC provisional
    until sendability and cross-thread frame probes provide evidence.

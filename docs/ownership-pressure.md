@@ -42,13 +42,26 @@ Do not choose among them from syntax alone. Add the smallest spike when a real
 program needs to retain or return a view, then compare call sites, diagnostics,
 code generation, and optimizer results.
 
-The desktop probe now exercises candidate 1 through
-`eachDocument(in visit: (in document: Document) => void)`. Its call site is an
-ordinary contextual closure, and generated C passes each element as a
-`const Document *` without copying its owned `String`. This reads naturally for
-enumeration and keeps the lifetime entirely lexical. It does introduce
-inversion of control and does not replace a future view-return solution for APIs
-that genuinely need one retained result, so the broader question remains open.
+The deterministic [`ownership-views.z`](../examples/ownership-views.z) probe now
+exercises candidates 1 and 2 against the same lookup:
+
+| Shape | Source contract | Generated cost | Usability boundary |
+| --- | --- | --- | --- |
+| `withDocument(id, callback)` | callback receives `in Document` | `const Document *`, stack closure environment, indirect call; no title copy | zero-copy, but all use is nested inside the callback |
+| `documentSnapshot(id)` | returns owned `Option<Document>` | option tag plus a new `String` allocation and exact byte copy | straight-line and remains valid across workspace mutation |
+| receiver-tied view | not implemented | intended `const Document *`, no copy | straight-line only while the workspace remains alive and unmodified |
+
+The scoped form reads naturally for enumeration and one operation. It becomes
+awkward when several later statements need the selected document. The snapshot
+is semantically honest when the result must survive `Workspace.open`, but its
+copy would be accidental overhead for immediate read-only use.
+
+This evidence supports a narrow receiver-tied read-only view experiment rather
+than general lifetime parameters. The first slice should have one unambiguous
+provenance source (a borrowed receiver), remain non-storable and non-capturable,
+and prevent mutation of that receiver until the view's last use. It should not
+pretend to survive array reallocation; callers needing that contract must use
+an owned snapshot or a future stable reference-shaped model.
 
 ## Pressure 2: imported Objective-C references in owned Z state
 
@@ -106,6 +119,7 @@ tests.
 ## Not tested yet
 
 - a borrow that must survive suspension;
+- a receiver-tied view returned from a lookup method;
 - cross-thread ownership, atomic ARC, and sendability;
 - cyclic application graphs under ORC;
 - storing Swift-native or general C++ RAII values inside Z aggregates;

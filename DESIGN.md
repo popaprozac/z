@@ -891,6 +891,16 @@ so owned strings are inspected without copies or source lifetime syntax. This
 is a good fit for enumeration, but its inversion of control is not treated as a
 universal replacement for future retained or receiver-tied views.
 
+The follow-up lookup probe compares `withDocument(id, callback)` with an owned
+`documentSnapshot(id)`. Generated C confirms the scoped callback is a borrowed
+`const Document *` with a stack environment and no string copy. The snapshot
+keeps straight-line source and survives later workspace mutation, but allocates
+and copies the selected title. This justifies exploring a narrow read-only
+`view` result whose provenance is an unambiguous borrowed receiver, whose last
+use ends the borrow, and which cannot be stored, captured, returned again, or
+held across receiver mutation. It does not justify general lifetime parameters
+or views that survive backing-array reallocation.
+
 Imported Objective-C block parameters contextually type Z closures. An escaping
 block requires an owned `move` closure; a generated Objective-C ARC box retains
 and releases the Z closure environment with the copied native block. The

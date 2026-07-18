@@ -37,6 +37,7 @@ Currently structured codes include:
 | `Z0201` | use or capture after ownership transfer |
 | `Z0202` | value may move on another control-flow path |
 | `Z0203` | attempted ownership transfer through a borrow |
+| `Z0204` | attempted extraction of a cleanup-bearing field or element from owning aggregate storage |
 | `Z0210` | mutation through an immutable closure capture |
 | `Z0211` | cleanup-bearing move capture needs an explicitly typed owned closure |
 | `Z0212` | borrowed capturing closure cannot become a storable function value |

@@ -1,0 +1,28 @@
+import console from "std/console";
+import { Document, Workspace } from "./desktop-ownership/model.z";
+
+function main(): i32 {
+  let workspace = new Workspace({ documents: Array<Document>() });
+  workspace.open(Document({ id: 1, title: "Welcome" }));
+  workspace.open(Document({ id: 2, title: "Interop Notes" }));
+
+  const found = workspace.withDocument(2, (in document) => {
+    console.log(`scoped ${document.id}: ${document.title}`);
+  });
+
+  const snapshot = workspace.documentSnapshot(2);
+  workspace.open(Document({ id: 3, title: "Added Later" }));
+
+  const retained = match (snapshot) {
+    some(document) => {
+      console.log(`snapshot ${document.id}: ${document.title}`);
+      select document.id;
+    }
+    none => -1;
+  };
+
+  if (found && retained == 2 && workspace.documentCount() == 3) {
+    return 0;
+  }
+  return 1;
+}
