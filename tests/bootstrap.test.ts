@@ -4763,3 +4763,26 @@ test("checks retained class receivers and consuming struct receivers in async me
     return true;
   });
 });
+
+test("runs retained class, consuming struct, and static async methods", () => {
+  const example = resolve(projectRoot, "examples/async-methods.z");
+  const source = readFileSync(example, "utf8");
+  const generated = compileToC(source, example);
+  assert.match(generated, /struct Z_AsyncFrame_Client_load/);
+  assert.match(generated, /struct Z_AsyncFrame_Request_send/);
+  assert.match(generated, /struct Z_AsyncFrame_Client_share/);
+  assert.match(generated, /struct Z_AsyncFrame_Request_relay/);
+  assert.match(generated, /z_async_start_Client_load\(Z_Client_retain\(frame->value_this\)\)/);
+  assert.match(generated, /z_async_start_Request_send\(\(frame->live_this = false, frame->value_this\)\)/);
+  assert.match(generated, /struct Z_AsyncFrame_Client_echo/);
+  assert.match(generated, /struct Z_AsyncFrame_Request_echo/);
+  assert.match(generated, /z_async_start_Client_load\(Z_Client \* value_this\)/);
+  assert.match(generated, /Z_Client_retain\(frame->value_client\)/);
+  assert.match(generated, /Z_Result_i32_i32 value_failed;/);
+  assert.match(generated, /frame->live_request = false/);
+  assert.doesNotMatch(generated, /static .*Z_Client_load\(/);
+
+  const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, "released async request 7\nreleased async client 5\n");
+});

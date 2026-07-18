@@ -124,9 +124,9 @@ hover, completion, and highlighting for `async`, `await`, `try await`,
 `attempt await`, `async scope`, `spawn`, and inferred task handles. `z check`
 accepts these programs.
 
-Phase 1 executes top-level owned async functions and direct sequential awaits.
-Each call allocates a typed task frame, each `await` becomes an explicit poll
-state, and async `main` runs through a deterministic single-thread root runner.
+Phase 1 executes owned async functions and methods with direct sequential
+awaits. Each call allocates a typed task frame, each `await` becomes an explicit
+poll state, and async `main` runs through a deterministic single-thread root runner.
 Scalars, enums with owned payloads, value structs, and ARC class references can
 be parameters, locals, and success values; error values are currently
 cleanup-free. Live flags make struct and enum moves explicit, ARC copies retain,
@@ -138,7 +138,8 @@ emit` produces readable C for this subset and `z run` executes it.
 Unsupported but valid async shapes report `Z0700` with a specific boundary
 diagnostic.
 
-The next Phase 1 layers add receiver-aware method frames, a ready queue,
+Class method frames retain `this`; consuming struct methods move `this`; static
+async methods carry no receiver. The next Phase 1 layers add a ready queue,
 `spawn`, nested scope join/cancellation, and scheduler-aware delay. Later phases
 add channels, sendability and atomic ARC, native executors, actors, and
 callback-to-async synthesis. Async-free programs never link the runtime.

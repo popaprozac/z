@@ -17,11 +17,18 @@ type AwaitSite = {
   readonly mode: "await" | "try" | "attempt";
   readonly expression: Extract<Expression, { kind: "await" }>;
   readonly call: CallExpression;
-  readonly target: FunctionDeclaration;
+  readonly target: AsyncTarget;
+  readonly receiver: Expression | null;
+};
+
+type AsyncTarget = {
+  readonly declaration: FunctionDeclaration;
+  readonly owner: StructDeclaration | null;
 };
 
 type AsyncFunctionPlan = {
   readonly declaration: FunctionDeclaration;
+  readonly owner: StructDeclaration | null;
   readonly frameName: string;
   readonly pollName: string;
   readonly startName: string;
@@ -68,54 +75,61 @@ export function generateAsyncC(
   fileName: string,
   semanticInfo: SemanticInfo,
 ): AsyncCGeneration {
-  const asyncMethods = program.structs.flatMap((owner) => (
-    owner.methods.filter((method) => method.async).map((method) => ({ owner: owner.name, method }))
-  ));
-  if (asyncMethods.length > 0) {
-    const first = asyncMethods[0];
-    unsupported(
-      fileName,
-      first.method.location,
-      `async method ${JSON.stringify(`${first.owner}.${first.method.name}`)} is not executable in the first Phase 1 slice`,
-      "use `z check` for async methods until receiver-aware task frames land",
-    );
-  }
-
-  const declarations = program.functions.filter((declaration) => declaration.async);
-  const functions = new Map(program.functions.map((declaration) => [declaration.name, declaration]));
+  const targets: AsyncTarget[] = [
+    ...program.functions.filter((declaration) => declaration.async).map((declaration) => ({
+      declaration,
+      owner: null,
+    })),
+    ...program.structs.flatMap((owner) => owner.methods.filter((method) => method.async).map((declaration) => ({
+      declaration,
+      owner,
+    }))),
+  ];
+  const functions = new Map(
+    targets.filter((target) => !target.owner).map((target) => [target.declaration.name, target]),
+  );
   const types: AsyncTypeContext = {
     structs: new Map(program.structs.map((declaration) => [declaration.name, declaration])),
     enums: new Map(program.enums.map((declaration) => [declaration.name, declaration])),
     semanticInfo,
   };
-  const plans = declarations.map((declaration) => planFunction(declaration, functions, fileName, semanticInfo, types));
-  const planByName = new Map(plans.map((plan) => [plan.declaration.name, plan]));
-  const main = planByName.get("main");
+  const plans = targets.map((target) => planFunction(target, functions, fileName, semanticInfo, types));
+  const planByKey = new Map(plans.map((plan) => [targetKey(plan), plan]));
+  const main = planByKey.get("main");
   if (main) validateAsyncMain(main.declaration, fileName);
 
   const synchronousProgram: Program = {
     ...program,
     functions: program.functions.filter((declaration) => !declaration.async),
+    structs: program.structs.map((owner) => ({
+      ...owner,
+      methods: owner.methods.filter((declaration) => !declaration.async),
+    })),
   };
 
   return {
     synchronousProgram,
-    source: generateRuntime(plans, planByName, main, fileName),
+    source: generateRuntime(plans, planByKey, main, fileName),
   };
 }
 
 function planFunction(
-  declaration: FunctionDeclaration,
-  functions: ReadonlyMap<string, FunctionDeclaration>,
+  target: AsyncTarget,
+  functions: ReadonlyMap<string, AsyncTarget>,
   fileName: string,
   semanticInfo: SemanticInfo,
   types: AsyncTypeContext,
 ): AsyncFunctionPlan {
+  const { declaration, owner } = target;
   requireFrameType(declaration.returnType.name, declaration.returnType.location, fileName, "async return", types);
   if (declaration.errorType) {
     requireFrameType(declaration.errorType.name, declaration.errorType.location, fileName, "async error", types);
   }
   const locals = new Map<string, string>();
+  if (owner && !declaration.static) {
+    requireFrameType(owner.name, declaration.location, fileName, "async receiver", types);
+    locals.set("this", owner.name);
+  }
   for (const parameter of declaration.parameters) {
     if (parameter.mode !== "value") {
       unsupported(fileName, parameter.location, "borrowed async parameters are not executable yet");
@@ -139,7 +153,7 @@ function planFunction(
       if (operation) {
         awaits.set(
           operation.expression.location.offset,
-          awaitSite(awaitIndex++, operation.mode, operation.expression, functions, fileName),
+          awaitSite(awaitIndex++, operation.mode, operation.expression, functions, fileName, locals, types),
         );
       } else {
         validateFrameExpression(statement.initializer, locals, fileName, types);
@@ -151,7 +165,7 @@ function planFunction(
       if (operation) {
         awaits.set(
           operation.expression.location.offset,
-          awaitSite(awaitIndex++, operation.mode, operation.expression, functions, fileName),
+          awaitSite(awaitIndex++, operation.mode, operation.expression, functions, fileName, locals, types),
         );
       } else if (statement.expression) {
         validateFrameExpression(statement.expression, locals, fileName, types);
@@ -169,7 +183,7 @@ function planFunction(
       }
       awaits.set(
         operation.expression.location.offset,
-        awaitSite(awaitIndex++, operation.mode, operation.expression, functions, fileName),
+        awaitSite(awaitIndex++, operation.mode, operation.expression, functions, fileName, locals, types),
       );
       continue;
     }
@@ -181,9 +195,10 @@ function planFunction(
     );
   }
 
-  const part = nativePart(declaration.name);
+  const part = nativePart(owner ? `${owner.name}_${declaration.name}` : declaration.name);
   return {
     declaration,
+    owner,
     frameName: `Z_AsyncFrame_${part}`,
     pollName: `z_async_poll_${part}`,
     startName: `z_async_start_${part}`,
@@ -198,22 +213,61 @@ function awaitSite(
   index: number,
   mode: AwaitSite["mode"],
   expression: Extract<Expression, { kind: "await" }>,
-  functions: ReadonlyMap<string, FunctionDeclaration>,
+  functions: ReadonlyMap<string, AsyncTarget>,
   fileName: string,
+  locals: ReadonlyMap<string, string>,
+  types: AsyncTypeContext,
 ): AwaitSite {
-  if (expression.expression.kind !== "call" || expression.expression.callee.kind !== "identifier") {
+  if (expression.expression.kind !== "call") {
     unsupported(
       fileName,
       expression.location,
-      "the first Phase 1 slice awaits direct top-level async calls only",
+      "the current Phase 1 slice awaits direct async calls only",
     );
   }
   const call = expression.expression;
-  const target = functions.get(call.callee.name);
-  if (!target?.async) {
-    unsupported(fileName, expression.location, "async lowering could not resolve the awaited async function");
+  if (call.callee.kind === "identifier") {
+    const target = functions.get(call.callee.name);
+    if (!target?.declaration.async) {
+      unsupported(fileName, expression.location, "async lowering could not resolve the awaited async function");
+    }
+    return { index, mode, expression, call, target, receiver: null };
   }
-  return { index, mode, expression, call, target };
+  if (call.callee.kind === "member") {
+    const object = call.callee.object;
+    if (object.kind === "identifier") {
+      const staticOwner = types.structs.get(object.name);
+      const staticMethod = staticOwner?.methods.find((candidate) => (
+        candidate.static && candidate.async && candidate.name === call.callee.property
+      ));
+      if (staticOwner && staticMethod) {
+        return {
+          index,
+          mode,
+          expression,
+          call,
+          target: { declaration: staticMethod, owner: staticOwner },
+          receiver: null,
+        };
+      }
+    }
+    const ownerType = frameExpressionType(object, { locals, types });
+    const owner = types.structs.get(ownerType);
+    const method = owner?.methods.find((candidate) => (
+      !candidate.static && candidate.async && candidate.name === call.callee.property
+    ));
+    if (owner && method) {
+      return {
+        index,
+        mode,
+        expression,
+        call,
+        target: { declaration: method, owner },
+        receiver: object,
+      };
+    }
+  }
+  unsupported(fileName, expression.location, "async lowering could not resolve the awaited async function");
 }
 
 function awaitOperation(expression: Expression): {
@@ -239,7 +293,7 @@ function validateAsyncMain(declaration: FunctionDeclaration, fileName: string): 
 
 function generateRuntime(
   plans: readonly AsyncFunctionPlan[],
-  planByName: ReadonlyMap<string, AsyncFunctionPlan>,
+  planByKey: ReadonlyMap<string, AsyncFunctionPlan>,
   main: AsyncFunctionPlan | undefined,
   fileName: string,
 ): string {
@@ -263,14 +317,14 @@ function generateRuntime(
 
   for (const plan of plans) lines.push(`typedef struct ${plan.frameName} ${plan.frameName};`);
   if (plans.length > 0) lines.push("");
-  for (const plan of plans) lines.push(generateFrame(plan, planByName), "");
+  for (const plan of plans) lines.push(generateFrame(plan, planByKey), "");
   for (const plan of plans) lines.push(`static void ${plan.pollName}(Z_AsyncTask *task);`);
   for (const plan of plans) lines.push(`static void ${plan.destroyName}(${plan.frameName} *frame);`);
   for (const plan of plans) lines.push(`${generateStartSignature(plan)};`);
   if (plans.length > 0) lines.push("");
-  for (const plan of plans) lines.push(generateDestroy(plan, planByName), "");
+  for (const plan of plans) lines.push(generateDestroy(plan, planByKey), "");
   for (const plan of plans) lines.push(generateStart(plan), "");
-  for (const plan of plans) lines.push(generatePoll(plan, planByName, fileName), "");
+  for (const plan of plans) lines.push(generatePoll(plan, planByKey, fileName), "");
 
   if (main) {
     lines.push(
@@ -298,7 +352,7 @@ function generateRuntime(
 
 function generateFrame(
   plan: AsyncFunctionPlan,
-  planByName: ReadonlyMap<string, AsyncFunctionPlan>,
+  planByKey: ReadonlyMap<string, AsyncFunctionPlan>,
 ): string {
   const lines = [
     `struct ${plan.frameName} {`,
@@ -320,7 +374,7 @@ function generateFrame(
     if (hasFrameCleanup(type, plan.types)) lines.push(`  bool ${frameLiveField(name)};`);
   }
   for (const site of plan.awaits.values()) {
-    lines.push(`  ${planByName.get(site.target.name)!.frameName} *child_${site.index};`);
+    lines.push(`  ${planByKey.get(targetKey(site.target))!.frameName} *child_${site.index};`);
   }
   lines.push("};");
   return lines.join("\n");
@@ -328,14 +382,14 @@ function generateFrame(
 
 function generateDestroy(
   plan: AsyncFunctionPlan,
-  planByName: ReadonlyMap<string, AsyncFunctionPlan>,
+  planByKey: ReadonlyMap<string, AsyncFunctionPlan>,
 ): string {
   const lines = [
     `static void ${plan.destroyName}(${plan.frameName} *frame) {`,
     "  if (frame == NULL) return;",
   ];
   for (const site of [...plan.awaits.values()].reverse()) {
-    const child = planByName.get(site.target.name)!;
+    const child = planByKey.get(targetKey(site.target))!;
     lines.push(
       `  if (frame->child_${site.index} != NULL) {`,
       `    ${child.destroyName}(frame->child_${site.index});`,
@@ -369,8 +423,8 @@ function generateDestroy(
 }
 
 function generateStartSignature(plan: AsyncFunctionPlan): string {
-  const parameters = plan.declaration.parameters.map((parameter) => (
-    `${cFrameType(parameter.type.name, plan.types)} ${frameField(parameter.name)}`
+  const parameters = frameInputs(plan).map((input) => (
+    `${cFrameType(input.type, plan.types)} ${frameField(input.name)}`
   ));
   return `static __attribute__((unused)) ${plan.frameName} *${plan.startName}(${parameters.join(", ") || "void"})`;
 }
@@ -389,14 +443,14 @@ function generateStart(plan: AsyncFunctionPlan): string {
     plan.declaration.returnType.name !== "void"
     && hasFrameCleanup(plan.declaration.returnType.name, plan.types)
   ) lines.push("  frame->live_result = false;");
-  const parameters = new Set(plan.declaration.parameters.map((parameter) => parameter.name));
+  const parameters = new Set(frameInputs(plan).map((input) => input.name));
   for (const [name, type] of plan.locals) {
     if (hasFrameCleanup(type, plan.types)) {
       lines.push(`  frame->${frameLiveField(name)} = ${parameters.has(name) ? "true" : "false"};`);
     }
   }
-  for (const parameter of plan.declaration.parameters) {
-    const name = frameField(parameter.name);
+  for (const input of frameInputs(plan)) {
+    const name = frameField(input.name);
     lines.push(`  frame->${name} = ${name};`);
   }
   for (const site of plan.awaits.values()) lines.push(`  frame->child_${site.index} = NULL;`);
@@ -404,9 +458,40 @@ function generateStart(plan: AsyncFunctionPlan): string {
   return lines.join("\n");
 }
 
+function frameInputs(plan: AsyncFunctionPlan): readonly { readonly name: string; readonly type: string }[] {
+  return [
+    ...(plan.owner && !plan.declaration.static
+      ? [{ name: "this", type: plan.owner.name }]
+      : []),
+    ...plan.declaration.parameters.map((parameter) => ({
+      name: parameter.name,
+      type: parameter.type.name,
+    })),
+  ];
+}
+
+function emitAwaitArguments(
+  site: AwaitSite,
+  parent: AsyncFunctionPlan,
+  fileName: string,
+): string[] {
+  const arguments_: string[] = [];
+  if (site.receiver) {
+    let receiver = emitFrameExpression(site.receiver, parent, fileName);
+    if (site.target.owner?.kind === "class") {
+      receiver = `Z_${site.target.owner.name}_retain(${receiver})`;
+    }
+    arguments_.push(receiver);
+  }
+  arguments_.push(...site.call.arguments.map((argument) => (
+    emitFrameExpression(argument, parent, fileName)
+  )));
+  return arguments_;
+}
+
 function generatePoll(
   plan: AsyncFunctionPlan,
-  planByName: ReadonlyMap<string, AsyncFunctionPlan>,
+  planByKey: ReadonlyMap<string, AsyncFunctionPlan>,
   fileName: string,
 ): string {
   const cases: string[] = [];
@@ -417,8 +502,8 @@ function generatePoll(
       const operation = awaitOperation(initializer);
       if (operation) {
         const site = plan.awaits.get(operation.expression.location.offset)!;
-        const target = planByName.get(site.target.name)!;
-        const arguments_ = site.call.arguments.map((argument) => emitFrameExpression(argument, plan, fileName));
+        const target = planByKey.get(targetKey(site.target))!;
+        const arguments_ = emitAwaitArguments(site, plan, fileName);
         cases.push(
           caseBlock(state, [
             `frame->child_${site.index} = ${target.startName}(${arguments_.join(", ")});`,
@@ -458,8 +543,8 @@ function generatePoll(
       const operation = statement.expression ? awaitOperation(statement.expression) : null;
       if (operation) {
         const site = plan.awaits.get(operation.expression.location.offset)!;
-        const target = planByName.get(site.target.name)!;
-        const arguments_ = site.call.arguments.map((argument) => emitFrameExpression(argument, plan, fileName));
+        const target = planByKey.get(targetKey(site.target))!;
+        const arguments_ = emitAwaitArguments(site, plan, fileName);
         cases.push(caseBlock(state, [
           `frame->child_${site.index} = ${target.startName}(${arguments_.join(", ")});`,
           `frame->state = ${state + 1};`,
@@ -505,8 +590,8 @@ function generatePoll(
     if (statement.kind === "expressionStatement") {
       const operation = awaitOperation(statement.expression)!;
       const site = plan.awaits.get(operation.expression.location.offset)!;
-      const target = planByName.get(site.target.name)!;
-      const arguments_ = site.call.arguments.map((argument) => emitFrameExpression(argument, plan, fileName));
+      const target = planByKey.get(targetKey(site.target))!;
+      const arguments_ = emitAwaitArguments(site, plan, fileName);
       cases.push(caseBlock(state, [
         `frame->child_${site.index} = ${target.startName}(${arguments_.join(", ")});`,
         `frame->state = ${state + 1};`,
@@ -552,7 +637,7 @@ function awaitCompletion(
     lines.push(
       `if (${child}->failed) {`,
       `  frame->error = ${child}->error;`,
-      `  z_async_destroy_${nativePart(site.target.name)}(${child});`,
+      `  z_async_destroy_${targetPart(site.target)}(${child});`,
       `  free(${child});`,
       `  frame->child_${site.index} = NULL;`,
       "  frame->failed = true;",
@@ -561,26 +646,29 @@ function awaitCompletion(
       "}",
     );
   } else if (site.mode === "attempt" && destination) {
-    const result = resultTypeName(site.target.returnType.name, site.target.errorType!.name);
+    const result = resultTypeName(
+      site.target.declaration.returnType.name,
+      site.target.declaration.errorType!.name,
+    );
     const cResult = resultCName(result);
     lines.push(`if (${child}->failed) {`);
     lines.push(
       `  ${destination} = (${cResult}){ .tag = ${resultTag(result, "failure")}, .data.failure = ${child}->error };`,
       "} else {",
     );
-    const successPayload = site.target.returnType.name === "void"
+    const successPayload = site.target.declaration.returnType.name === "void"
       ? ""
       : `, .data.success = ${child}->result`;
     lines.push(`  ${destination} = (${cResult}){ .tag = ${resultTag(result, "success")}${successPayload} };`);
-    if (hasFrameCleanup(site.target.returnType.name, parent.types)) {
+    if (hasFrameCleanup(site.target.declaration.returnType.name, parent.types)) {
       lines.push(`  ${child}->live_result = false;`);
     }
     lines.push("}");
   }
 
-  if (site.mode !== "attempt" && destination && site.target.returnType.name !== "void") {
+  if (site.mode !== "attempt" && destination && site.target.declaration.returnType.name !== "void") {
     lines.push(`${destination} = ${child}->result;`);
-    if (hasFrameCleanup(site.target.returnType.name, parent.types)) {
+    if (hasFrameCleanup(site.target.declaration.returnType.name, parent.types)) {
       lines.push(`${child}->live_result = false;`);
     }
   }
@@ -588,7 +676,7 @@ function awaitCompletion(
     lines.push(`${destinationLiveFlag(destination, parent)} = true;`);
   }
   lines.push(
-    `z_async_destroy_${nativePart(site.target.name)}(${child});`,
+    `z_async_destroy_${targetPart(site.target)}(${child});`,
     `free(${child});`,
     `frame->child_${site.index} = NULL;`,
   );
@@ -885,6 +973,16 @@ function frameLiveField(name: string): string {
   return `live_${nativePart(name)}`;
 }
 
+function targetKey(target: Pick<AsyncTarget, "declaration" | "owner">): string {
+  return target.owner ? `${target.owner.name}.${target.declaration.name}` : target.declaration.name;
+}
+
+function targetPart(target: Pick<AsyncTarget, "declaration" | "owner">): string {
+  return nativePart(target.owner
+    ? `${target.owner.name}_${target.declaration.name}`
+    : target.declaration.name);
+}
+
 function nativePart(name: string): string {
   const sanitized = name.replace(/[^A-Za-z0-9_]/g, "_");
   return /^[0-9]/.test(sanitized) ? `_${sanitized}` : sanitized;
@@ -903,7 +1001,7 @@ function unsupported(
 ): never {
   throw new DiagnosticError(fileName, location, message, {
     code: "Z0700",
-    notes: ["Phase 1 currently executes top-level ownership-aware task frames and direct sequential awaits"],
+    notes: ["Phase 1 currently executes ownership-aware function and method task frames with direct sequential awaits"],
     helps: [help],
   });
 }
