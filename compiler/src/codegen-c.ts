@@ -1785,8 +1785,26 @@ function renderConsoleValue(
   if (context.semanticInfo.foreignTypes.has(type)) {
     return [`fprintf(${stream}, "%p", (void *)(${value}));`];
   }
-  if (foreign?.kind === "object") return [`fputs("<Objective-C object>", ${stream});`];
-  if (type.startsWith("__z_objc:")) return [`fputs("<Objective-C object>", ${stream});`];
+  if (foreign?.kind === "object" || type.startsWith("__z_objc:")) {
+    if (isObjCStringType(type, context)) {
+      const length = `_z_console_nsstring_length_${context.valueCounter.value++}`;
+      const bytes = `_z_console_nsstring_bytes_${context.valueCounter.value++}`;
+      return [
+        `if ((${value}) == nil) {`,
+        `  fputs("null", ${stream});`,
+        `} else {`,
+        `  const NSUInteger ${length} = [(${value}) lengthOfBytesUsingEncoding:NSUTF8StringEncoding];`,
+        `  const char *${bytes} = [(${value}) UTF8String];`,
+        `  if (${bytes} == NULL && ${length} != 0) abort();`,
+        `  if (${length} > 0) fwrite(${bytes}, 1, ${length}, ${stream});`,
+        `}`,
+      ];
+    }
+    const displayName = foreign?.kind === "object"
+      ? foreign.exportName
+      : type.replace(/^__z_objc:(?:nullable|nonnull):/, "").split(".").at(-1) ?? "Objective-C object";
+    return [`fprintf(${stream}, ${JSON.stringify(`${displayName}@%p`)}, (__bridge void *)(${value}));`];
+  }
   if (type.startsWith("__z_objc_class:")) return [`fputs("<Objective-C class>", ${stream});`];
 
   const fixed = parseFixedArrayType(type);
@@ -1858,6 +1876,19 @@ function renderConsoleValue(
     return lines;
   }
   throw new Error(`console lowering does not support ${JSON.stringify(type)}`);
+}
+
+function isObjCStringType(type: string, context: GenerationContext): boolean {
+  let interfaceName = type.replace(/^__z_objc:(?:nullable|nonnull):/, "");
+  while (true) {
+    const declaration = context.semanticInfo.foreignInterfaces.get(interfaceName);
+    if (!declaration) return false;
+    if (declaration.className === "NSString") return true;
+    if (!declaration.superName) return false;
+    const separator = interfaceName.lastIndexOf(".");
+    if (separator < 0) return false;
+    interfaceName = `${interfaceName.slice(0, separator)}.${declaration.superName}`;
+  }
 }
 
 function renderStringValue(

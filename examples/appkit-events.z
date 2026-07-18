@@ -57,7 +57,7 @@ function main(): i32 {
     object: window,
     queue: null,
     usingBlock: move (notification) => {
-      const name: String = notification.name;
+      const name = notification.name;
       console.log(`native ${name}: stopping AppKit`);
       app.stop(null);
     }

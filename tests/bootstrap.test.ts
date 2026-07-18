@@ -1156,6 +1156,8 @@ test("registers persistent Objective-C event callbacks with explicit token clean
   assert.match(appKitArtifact.source, /addObserverForName:_z_argument_[0-9]+ object:_z_argument_[0-9]+ queue:NULL usingBlock:_z_objc_block_/);
   assert.match(appKitArtifact.source, /removeObserver:keyToken/);
   assert.match(appKitArtifact.source, /removeObserver:closeToken/);
+  assert.match(appKitArtifact.source, /lengthOfBytesUsingEncoding:NSUTF8StringEncoding/);
+  assert.match(appKitArtifact.source, /UTF8String/);
   const compilation = spawnSync("clang", [
     "-x", "objective-c",
     "-fobjc-arc", "-fblocks",
@@ -1168,6 +1170,13 @@ test("registers persistent Objective-C event callbacks with explicit token clean
   assert.match(
     hover(appKitSource, appKitExample, constantOffset)?.contents.value ?? "",
     /NSWindowDidBecomeKeyNotification: AppKit\.NSString/,
+  );
+  const copiedNameOffset = appKitSource.indexOf("name: String") + 1;
+  assert.match(hover(appKitSource, appKitExample, copiedNameOffset)?.contents.value ?? "", /name: String/);
+  const inferredNameOffset = appKitSource.lastIndexOf("const name =") + "const ".length + 1;
+  assert.match(
+    hover(appKitSource, appKitExample, inferredNameOffset)?.contents.value ?? "",
+    /name: AppKit\.NSString/,
   );
   const namespaceCompletionSource = appKitSource.replace(
     "AppKit.NSWindowDidBecomeKeyNotification",

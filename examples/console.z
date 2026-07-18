@@ -23,7 +23,7 @@ function main(): i32 {
   const answer = 42;
   const point = Point({ x: 20, y: 22 });
   const values = [1, 2, 3];
-  const status = Status.ready 7;
+  const status = Status.ready(7);
   const counter = new Counter({ value: answer });
   const sharedCounter = counter;
   let sequence = 0;

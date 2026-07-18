@@ -310,7 +310,7 @@ has no proven invalid representation to reuse.
 Capture-list sugar, automatic ORC cycle collection, and atomic cross-thread
 weak upgrades remain separate future layers.
 
-Pattern matching exposes ownership explicitly. `match value` consumes a
+Pattern matching exposes ownership explicitly. `match (value)` consumes a
 cleanup-bearing enum and transfers its active payload to the arm binding.
 `match (in value)` requires stable stored enum storage, leaves the owner alive,
 and presents cleanup-bearing payloads as immutable borrows for the duration of

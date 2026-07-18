@@ -38,6 +38,7 @@ boundary**, not a claim that every bridge operation is free:
 | Non-capturing call-only callback | Function pointer or small adapter indirection; no environment allocation |
 | Escaping capturing closure / Objective-C block | Owned closure environment plus a native lifetime adapter, retains/releases, and indirect invocation |
 | `String` / `NSString` ownership bridge | Deliberate allocation and byte copy so neither runtime borrows unstable storage |
+| Logging an `NSString` | Reads its UTF-8 bytes for the duration of the console call; no Z `String` allocation |
 | Z ARC class reference | Retain/release traffic; the bootstrap runtime is non-atomic and not yet optimized |
 
 Imported nullable references use the same one-pointer representation as their
@@ -143,7 +144,11 @@ the thread that registered them, call release exactly once after the final
 invocation, and never invoke the callback afterward. Those requirements are a
 trusted foreign contract, just like pointer ownership API notes.
 
-Cross-thread callbacks wait for atomic ARC and sendability rules. Conditional
-ownership transfer and APIs that require a separate unregister call need an
-owned registration-token model. Callback-to-async additionally requires
-completion cardinality, cancellation, and executor metadata.
+Objective-C APIs that return a separate observer token already use that native
+token directly: an owned `move` block may persist across calls, Z keeps the
+token, and source code explicitly unregisters it. Weak capture prevents the
+block from strongly cycling back to ARC-managed application state. The current
+probe remains caller-thread/AppKit-executor work; cross-thread callbacks still
+wait for atomic ARC and sendability rules. Conditional C ownership transfer and
+callback-to-async synthesis additionally require completion cardinality,
+cancellation, executor, and release metadata.
