@@ -996,11 +996,12 @@ before return. These modes authorize a compiler-generated address for one call;
 they do not introduce a general safe-code address-of operator.
 
 The Bun bootstrap currently represents project notes as adjacent
-`<header>.zapi.json` files and can ship notes for platform headers. That file
-format is an implementation scaffold, not the final authoring experience. Over
-time, Clang attributes, Apple's API notes, Windows SAL annotations, package
-metadata, and generated bindings should populate the same semantic model so the
-common case remains simply:
+`<header>.zapi.json` files and can ship notes for platform headers. That JSON
+format is an implementation scaffold, not the final authoring experience. The
+intended source form is an adjacent `<header>.zd` Z declaration file using
+`declare module`. Over time, Clang attributes, Apple's API notes, Windows SAL
+annotations, package metadata, and generated bindings should populate the same
+semantic model so the common case remains simply:
 
 ```z
 import platform from "platform.h";

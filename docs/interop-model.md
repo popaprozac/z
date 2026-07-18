@@ -99,8 +99,9 @@ must agree with every verifiable ABI fact. A future binary-only declaration may
 carry explicit ABI and library metadata. Supplying a declaration is distinct
 from accepting an unverified memory-safety obligation: unsafe functions and raw
 operations still require a separate `unsafe` boundary. Inline declarations,
-adjacent `.zapi` files, and built-in toolchain contracts will feed the same
-normalizer and FIIR; the current JSON sidecar is not promised source syntax.
+adjacent `<header>.zd` Z declaration files, and built-in toolchain contracts
+will feed the same normalizer and FIIR; the current `.zapi.json` sidecar is
+stage-0 input rather than promised source syntax.
 
 Imported nullable references use the same one-pointer representation as their
 native ABI. A Z null check is an ordinary pointer comparison and narrows the
