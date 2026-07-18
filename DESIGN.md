@@ -810,7 +810,11 @@ All native metadata producers normalize into the
 [`Foreign Interface IR`](docs/foreign-interface-ir.md) before Z semantic
 analysis. Clang declarations, API notes, Swift interfaces, and future package
 metadata may differ as inputs, but ownership, nullability, lifetime, callback,
-and native-identity contracts must have one validated representation.
+and native-identity contracts must have one validated representation. The
+bootstrap now makes that boundary executable: Clang first emits raw declaration
+records, API-note sources are parsed and conflict-checked independently, and a
+contract normalizer is the only path to the FIIR consumed by sema, codegen, and
+editor services.
 
 Core language behavior and standard-library contracts remain target-neutral.
 Compile-time target metadata will live behind an explicit `std/target` module

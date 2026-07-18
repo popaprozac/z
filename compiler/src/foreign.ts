@@ -1,25 +1,24 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { basename, dirname, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
 import type { ImportDeclaration } from "./ast.ts";
 import { DiagnosticError } from "./diagnostics.ts";
+import { apiNotesFreshness, readApiNotes, type PointerNote } from "./foreign-api-notes.ts";
+import { normalizeForeignContracts } from "./foreign-contracts.ts";
 import { isStandardModuleSpecifier } from "./standard-library.ts";
 import type {
-  ForeignCallbackContextType,
-  ForeignCallbackReleaseType,
   ForeignCallbackType,
   ForeignBlockType,
   ForeignConstant,
   ForeignField,
-  ForeignFunction,
+  ForeignFunctionDeclaration,
   ForeignModuleIR,
+  ForeignModuleDeclarations,
   ForeignNamedType,
   ForeignObjCInterface,
   ForeignObjCMethod,
   ForeignObjCProperty,
   ForeignObjectType,
-  ForeignParameter,
   ForeignPointerType,
   ForeignRecordPointerType,
   ForeignScalarTypeName,
@@ -32,32 +31,6 @@ export type ForeignModule = ForeignModuleIR & {
 };
 
 type HeaderInfo = ForeignModuleIR;
-
-type PointerNote = {
-  readonly ownership?: "owned" | "borrowed" | "consuming";
-  readonly access?: "in" | "out" | "inout";
-  readonly nullable?: boolean;
-  readonly release?: string;
-  readonly callback?: {
-    readonly lifetime?: "call" | "escape";
-    readonly thread?: "caller";
-    readonly context?: {
-      readonly parameter?: number;
-      readonly callbackParameter?: number;
-    };
-    readonly release?: {
-      readonly parameter?: number;
-      readonly callbackParameter?: number;
-    };
-  };
-};
-
-type ApiNotes = {
-  readonly functions?: Readonly<Record<string, {
-    readonly return?: PointerNote;
-    readonly parameters?: Readonly<Record<string, PointerNote>>;
-  }>>;
-};
 
 type ClangNode = {
   readonly id?: string;
@@ -104,7 +77,8 @@ export function resolveForeignModules(
       || (existsSync(localHeader) && /(?:^|\n)\s*(?:@interface|@protocol|@class|#import\b)/.test(readFileSync(localHeader, "utf8")));
     const cPlusPlus = isCPlusPlusHeader(declaration.header);
     const language = objectiveC ? cPlusPlus ? "objective-c++" : "objective-c" : cPlusPlus ? "c++" : "c";
-    const cacheKey = `${declarationIncludeDirectories.join("\0")}\0${declaration.header}\0${headerFreshness}\0${declaration.moduleName}\0${framework ?? language}`;
+    const notesFreshness = apiNotesFreshness(declaration, headerDirectory);
+    const cacheKey = `${declarationIncludeDirectories.join("\0")}\0${declaration.header}\0${headerFreshness}\0${notesFreshness}\0${declaration.moduleName}\0${framework ?? language}`;
     let header = headerCache.get(cacheKey);
     if (!header) {
       header = readHeader(declaration, fileName, declarationIncludeDirectories, headerDirectory, framework, objectiveC, cPlusPlus);
@@ -157,178 +131,91 @@ function readHeader(
     throw new DiagnosticError(fileName, declaration.location, `Clang returned an invalid AST for header ${JSON.stringify(declaration.header)}`);
   }
 
-  const notes = readApiNotes(declaration, fileName, headerDirectory);
   const imported = collectNamedTypes(root, declaration.moduleName, cPlusPlus, swiftCxxNamespace);
   const constants = new Map(imported.constants);
   const objectTypes = new Map<string, ForeignObjectType>();
   const interfaces = objectiveC
     ? collectObjCInterfaces(root, declaration.moduleName, imported.byCName, objectTypes, constants)
     : new Map<string, ForeignObjCInterface>();
-  const functions = new Map<string, ForeignFunction>();
-  const types = new Map<string, ForeignPointerType>();
+  const functionDeclarations = new Map<string, ForeignFunctionDeclaration>();
   visitWithNamespaces(root, (node, namespaces) => {
     if (node.kind !== "FunctionDecl" || !node.name || !node.type?.qualType) return;
     if (swiftCxxNamespace && namespaces[0] !== swiftCxxNamespace) return;
-    const functionNotes = notes.functions?.[node.name];
     const parameterNodes = (node.inner ?? [])
       .filter((child) => child.kind === "ParmVarDecl" && child.type?.qualType);
-    const callbackContexts = new Map<number, number>();
-    const callbackReleases = new Map<number, { callbackParameter: number; releaseContextParameter: number }>();
-    for (let callbackParameter = 0; callbackParameter < parameterNodes.length; callbackParameter += 1) {
-      const callback = functionNotes?.parameters?.[String(callbackParameter)]?.callback;
-      if (!callback) continue;
-      if (callback.lifetime === "escape" && (!callback.context || !callback.release || callback.thread !== "caller")) {
-        throw new DiagnosticError(
-          fileName,
-          declaration.location,
-          `escaping callback API notes for ${JSON.stringify(node.name)} require caller-thread context and release contracts`,
-          {
-            code: "Z0214",
-            helps: ["declare thread: caller plus valid context and release parameter pairs, or keep the callback call-only"],
-          },
-        );
-      }
-      if (callback.lifetime !== "escape" && (callback.release || callback.thread)) {
-        throw new DiagnosticError(
-          fileName,
-          declaration.location,
-          `call-only callback API notes for ${JSON.stringify(node.name)} cannot declare escape release or threading contracts`,
-        );
-      }
-      const context = callback.context;
-      if (!context) continue;
-      if (
-        !Number.isInteger(context.parameter)
-        || !Number.isInteger(context.callbackParameter)
-        || context.parameter! < 0
-        || context.parameter! >= parameterNodes.length
-        || context.callbackParameter! < 0
-      ) {
-        throw new DiagnosticError(
-          fileName,
-          declaration.location,
-          `API notes for ${JSON.stringify(node.name)} contain an invalid callback context pair`,
-        );
-      }
-      if (context.parameter === callbackParameter) {
-        throw new DiagnosticError(
-          fileName,
-          declaration.location,
-          `API notes for ${JSON.stringify(node.name)} cannot use the callback parameter as its own context parameter`,
-        );
-      }
-      if (callbackContexts.has(context.parameter!)) {
-        throw new DiagnosticError(
-          fileName,
-          declaration.location,
-          `API notes for ${JSON.stringify(node.name)} pair context parameter ${context.parameter} more than once`,
-        );
-      }
-      callbackContexts.set(context.parameter!, callbackParameter);
-      const release = callback.release;
-      if (!release) continue;
-      if (
-        !Number.isInteger(release.parameter)
-        || !Number.isInteger(release.callbackParameter)
-        || release.parameter! < 0
-        || release.parameter! >= parameterNodes.length
-        || release.callbackParameter! < 0
-        || release.parameter === callbackParameter
-        || release.parameter === context.parameter
-        || callbackReleases.has(release.parameter!)
-      ) {
-        throw new DiagnosticError(
-          fileName,
-          declaration.location,
-          `API notes for ${JSON.stringify(node.name)} contain an invalid callback release pair`,
-        );
-      }
-      callbackReleases.set(release.parameter!, {
-        callbackParameter,
-        releaseContextParameter: release.callbackParameter!,
-      });
-    }
-    const parameters = parameterNodes.map((child, index) => ({
+    const parameters = parameterNodes.map((child) => ({
       name: child.name ?? null,
-      type: callbackContexts.has(index)
-        ? mapCallbackContextType(child.type!.desugaredQualType ?? child.type!.qualType!, callbackContexts.get(index)!)
-        : callbackReleases.has(index)
-          ? mapCallbackReleaseType(
-            child.type!.desugaredQualType ?? child.type!.qualType!,
-            callbackReleases.get(index)!.callbackParameter,
-            callbackReleases.get(index)!.releaseContextParameter,
-          )
-          : mapForeignType(
-            child.type!.qualType!,
-            functionNotes?.parameters?.[String(index)],
-            "parameter",
-            types,
-            imported.byCName,
-            child.type!.desugaredQualType,
-          ),
+      type: {
+        nativeName: child.type!.qualType!,
+        canonicalNativeName: child.type!.desugaredQualType,
+      },
     }));
-    for (let index = 0; index < parameters.length; index += 1) {
-      const type = parameters[index].type;
-      if (type.kind !== "callback" || !type.context) continue;
-      const paired = parameters[type.context.parameter]?.type;
-      if (paired?.kind !== "callbackContext" || paired.callbackParameter !== index) {
-        throw new DiagnosticError(
-          fileName,
-          declaration.location,
-          `API notes for ${JSON.stringify(node.name)} do not describe a valid callback and void * context pair`,
-        );
-      }
-      if (type.lifetime === "escape") {
-        const release = type.release ? parameters[type.release.parameter]?.type : null;
-        if (release?.kind !== "callbackRelease" || release.callbackParameter !== index) {
-          throw new DiagnosticError(
-            fileName,
-            declaration.location,
-            `API notes for ${JSON.stringify(node.name)} do not describe a valid escaping callback release pair`,
-          );
-        }
-      }
-    }
     const cSignature = node.type.qualType;
     const cName = cPlusPlus && namespaces.length > 0 ? `${namespaces.join("::")}::${node.name}` : node.name;
-    const candidate: ForeignFunction = {
+    const candidate: ForeignFunctionDeclaration = {
       name: node.name,
-      cName,
-      alternatives: [{ cName, cSignature }],
-      returnType: mapForeignType(returnTypeOf(cSignature), functionNotes?.return, "return", types, imported.byCName),
+      nativeName: cName,
+      alternatives: [{ nativeName: cName, nativeSignature: cSignature }],
+      returnType: { nativeName: returnTypeOf(cSignature) },
       parameters,
       variadic: node.variadic === true,
-      cSignature,
+      nativeSignature: cSignature,
     };
-    const existing = functions.get(node.name);
+    const existing = functionDeclarations.get(node.name);
     if (!existing) {
-      functions.set(node.name, candidate);
+      functionDeclarations.set(node.name, candidate);
       return;
     }
     const alternatives = [...existing.alternatives];
-    if (!alternatives.some((item) => item.cName === cName && item.cSignature === cSignature)) {
-      alternatives.push({ cName, cSignature });
+    if (!alternatives.some((item) => item.nativeName === cName && item.nativeSignature === cSignature)) {
+      alternatives.push({ nativeName: cName, nativeSignature: cSignature });
     }
-    functions.set(node.name, { ...existing, alternatives });
+    functionDeclarations.set(node.name, { ...existing, alternatives });
   });
-  for (const target of functions.values()) {
-    if (target.returnType.kind !== "pointer" || target.returnType.ownership !== "owned") continue;
-    const release = target.returnType.release ? functions.get(target.returnType.release) : null;
-    const released = release?.parameters[0]?.type;
-    const validRelease = release
-      && release.parameters.length === 1
-      && released?.kind === "pointer"
-      && released.ownership === "consuming"
-      && released.identity === target.returnType.identity;
-    if (!validRelease) {
-      throw new DiagnosticError(
-        fileName,
-        declaration.location,
-        `API notes for ${JSON.stringify(target.name)} require ${JSON.stringify(target.returnType.release)} to consume exactly one ${target.returnType.cName}`,
-      );
-    }
-  }
-  return { functions, types, namedTypes: imported.namedTypes, constants, objectTypes, interfaces, framework, objectiveC, cPlusPlus };
+  const produced: ForeignModuleDeclarations = {
+    producer: "clang",
+    functions: functionDeclarations,
+    nativeTypes: imported.byCName,
+    namedTypes: imported.namedTypes,
+    constants,
+    objectTypes,
+    interfaces,
+    framework,
+    objectiveC,
+    cPlusPlus,
+  };
+  const notes = readApiNotes(declaration, fileName, headerDirectory);
+  const contracts = normalizeForeignContracts(
+    produced.functions,
+    produced.nativeTypes,
+    notes,
+    {
+      mapType: (spelling, note, position, pointerTypes, namedTypes) => mapForeignType(
+        spelling.nativeName,
+        note,
+        position,
+        pointerTypes,
+        namedTypes,
+        spelling.canonicalNativeName,
+      ),
+      mapCallbackContext: mapCallbackContextType,
+      mapCallbackRelease: mapCallbackReleaseType,
+    },
+    fileName,
+    declaration.location,
+  );
+  return {
+    producer: produced.producer,
+    functions: contracts.functions,
+    types: contracts.pointerTypes,
+    namedTypes: produced.namedTypes,
+    constants: produced.constants,
+    objectTypes: produced.objectTypes,
+    interfaces: produced.interfaces,
+    framework: produced.framework,
+    objectiveC: produced.objectiveC,
+    cPlusPlus: produced.cPlusPlus,
+  };
 }
 
 function collectNamedTypes(
@@ -670,29 +557,6 @@ function recordIsSupported(
     });
   visiting.delete(seed.typeName);
   return supported;
-}
-
-function readApiNotes(
-  declaration: ImportDeclaration,
-  fileName: string,
-  includeDirectory: string,
-): ApiNotes {
-  const localPath = resolve(includeDirectory, `${declaration.header}.zapi.json`);
-  const localHeader = resolve(includeDirectory, declaration.header);
-  const builtInPath = resolve(dirname(fileURLToPath(import.meta.url)), "../api-notes", `${basename(declaration.header)}.json`);
-  const canUseBuiltIn = declaration.header === basename(declaration.header) && !existsSync(localHeader);
-  const notesPath = existsSync(localPath)
-    ? localPath
-    : canUseBuiltIn && existsSync(builtInPath)
-      ? builtInPath
-      : null;
-  if (!notesPath) return {};
-  try {
-    return JSON.parse(readFileSync(notesPath, "utf8")) as ApiNotes;
-  } catch (error) {
-    const detail = error instanceof Error ? error.message : String(error);
-    throw new DiagnosticError(fileName, declaration.location, `could not read API notes ${JSON.stringify(notesPath)}: ${detail}`);
-  }
 }
 
 function visit(node: ClangNode, callback: (node: ClangNode) => void): void {

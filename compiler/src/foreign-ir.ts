@@ -167,7 +167,46 @@ export type ForeignFunction = {
   readonly cSignature: string;
 };
 
+// Producer-facing declarations intentionally contain only native spellings and
+// ordering. Ownership, nullability, access, callback escape, and release facts
+// are attached by the contract-normalization stage before sema sees the FIIR.
+export type ForeignTypeSpelling = {
+  readonly nativeName: string;
+  readonly canonicalNativeName?: string;
+};
+
+export type ForeignParameterDeclaration = {
+  readonly name: string | null;
+  readonly type: ForeignTypeSpelling;
+};
+
+export type ForeignFunctionDeclaration = {
+  readonly name: string;
+  readonly nativeName: string;
+  readonly alternatives: readonly { readonly nativeName: string; readonly nativeSignature: string }[];
+  readonly returnType: ForeignTypeSpelling;
+  readonly parameters: readonly ForeignParameterDeclaration[];
+  readonly variadic: boolean;
+  readonly nativeSignature: string;
+};
+
+export type ForeignDeclarationProducer = "clang" | "swift-interface" | "package-metadata" | "cache";
+
+export type ForeignModuleDeclarations = {
+  readonly producer: ForeignDeclarationProducer;
+  readonly functions: ReadonlyMap<string, ForeignFunctionDeclaration>;
+  readonly nativeTypes: ReadonlyMap<string, ForeignNamedType>;
+  readonly namedTypes: ReadonlyMap<string, ForeignNamedType>;
+  readonly constants: ReadonlyMap<string, ForeignConstant>;
+  readonly objectTypes: ReadonlyMap<string, ForeignObjectType>;
+  readonly interfaces: ReadonlyMap<string, ForeignObjCInterface>;
+  readonly framework: string | null;
+  readonly objectiveC: boolean;
+  readonly cPlusPlus: boolean;
+};
+
 export type ForeignModuleIR = {
+  readonly producer: ForeignDeclarationProducer;
   readonly functions: ReadonlyMap<string, ForeignFunction>;
   readonly types: ReadonlyMap<string, ForeignPointerType>;
   readonly namedTypes: ReadonlyMap<string, ForeignNamedType>;

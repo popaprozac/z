@@ -5,6 +5,9 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSy
 import { test } from "bun:test";
 import { analyzeSource, check, compileToC, compileToNative } from "../compiler/src/compiler.ts";
 import { DiagnosticError, formatDiagnostic } from "../compiler/src/diagnostics.ts";
+import { ApiNoteConflictError, mergeApiNotes } from "../compiler/src/foreign-api-notes.ts";
+import { normalizeForeignContracts } from "../compiler/src/foreign-contracts.ts";
+import type { ForeignFunctionDeclaration } from "../compiler/src/foreign-ir.ts";
 import {
   completions,
   definition,
@@ -335,6 +338,7 @@ test("imports C function signatures through Clang", () => {
   `;
   const generated = compileToC(source, "typed-header.z");
   assert.match(generated, /const int32_t written = puts\("typed"\);/);
+  assert.equal(analyzeSource(source, "typed-header.z").foreignModules.get("stdio")?.producer, "clang");
 });
 
 test("passes typed Z functions to call-only C callbacks with optional context adapters", () => {
@@ -600,6 +604,93 @@ test("discovers ownership notes beside project headers", () => {
   const generated = compileToC(source, resolve(projectRoot, "foreign-local-notes.z"));
   assert.match(generated, /ZTestHandle \* const handle = z_test_open\(\);/);
   assert.match(generated, /if \(_z_live_handle_0 && handle != NULL\) z_test_close\(handle\);/);
+});
+
+test("merges API-note sources without allowing safety contracts to conflict", () => {
+  const merged = mergeApiNotes([
+    {
+      name: "base",
+      notes: { functions: { open: { return: { ownership: "owned", release: "close" } } } },
+    },
+    {
+      name: "overlay",
+      notes: { functions: { open: { return: { nullable: false } } } },
+    },
+  ]);
+  assert.deepEqual(merged.functions?.open.return, {
+    ownership: "owned",
+    release: "close",
+    nullable: false,
+  });
+  assert.throws(
+    () => mergeApiNotes([
+      { name: "base", notes: { functions: { use: { parameters: { "0": { ownership: "borrowed" } } } } } },
+      { name: "overlay", notes: { functions: { use: { parameters: { "0": { ownership: "consuming" } } } } } },
+    ]),
+    (error) => error instanceof ApiNoteConflictError
+      && error.path === "functions.use.parameters.0.ownership"
+      && error.firstSource === "base"
+      && error.secondSource === "overlay",
+  );
+});
+
+test("normalizes producer declarations without exposing Clang nodes to FIIR consumers", () => {
+  const declaration: ForeignFunctionDeclaration = {
+    name: "answer",
+    nativeName: "answer",
+    alternatives: [{ nativeName: "answer", nativeSignature: "int (void)" }],
+    returnType: { nativeName: "int" },
+    parameters: [],
+    variadic: false,
+    nativeSignature: "int (void)",
+  };
+  const normalized = normalizeForeignContracts(
+    new Map([[declaration.name, declaration]]),
+    new Map(),
+    {},
+    {
+      mapType: (spelling) => ({
+        kind: "z",
+        name: spelling.nativeName === "void" ? "void" : "i32",
+        cName: spelling.nativeName,
+      }),
+      mapCallbackContext: (cName) => ({ kind: "unsupported", cName }),
+      mapCallbackRelease: (cName) => ({ kind: "unsupported", cName }),
+    },
+    "cached-producer.fiir",
+    { offset: 0, line: 1, column: 1 },
+  );
+  assert.equal(normalized.functions.get("answer")?.returnType.kind, "z");
+  assert.equal(normalized.functions.get("answer")?.cSignature, "int (void)");
+});
+
+test("rejects malformed or unmatched API notes before FIIR reaches sema", () => {
+  const directory = mkdtempSync("/tmp/z-fiir-notes-");
+  const header = resolve(directory, "contract.h");
+  const sourceFile = resolve(directory, "main.z");
+  const source = `
+    import contract from "contract.h";
+    function main(): i32 { return contract.known(); }
+  `;
+  writeFileSync(header, "int known(void);\n");
+  writeFileSync(sourceFile, source);
+
+  writeFileSync(`${header}.zapi.json`, "{}");
+  assert.match(compileToC(source, sourceFile), /return known\(\);/);
+
+  writeFileSync(`${header}.zapi.json`, JSON.stringify({
+    functions: { missing: { return: { nullable: false } } },
+  }));
+  const missing = diagnostics(source, sourceFile)[0];
+  assert.equal(missing.code, "Z0801");
+  assert.match(missing.message, /unknown foreign function "missing"/);
+
+  writeFileSync(`${header}.zapi.json`, JSON.stringify({
+    functions: { known: { return: { nullible: false } } },
+  }));
+  const malformed = diagnostics(source, sourceFile)[0];
+  assert.equal(malformed.code, "Z0801");
+  assert.match(malformed.message, /unknown field functions\.known\.return\.nullible/);
 });
 
 test("imports C typedefs, records, enums, constants, and qualified signatures", () => {

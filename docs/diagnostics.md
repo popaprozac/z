@@ -26,6 +26,7 @@ The bootstrap reserves these code families:
 | `Z03xx` | initialization, parameter capabilities, and collection access |
 | `Z04xx` | formatting, console, and string construction |
 | `Z07xx` | async effects, task structure, and suspension safety |
+| `Z08xx` | foreign declaration and API-contract normalization |
 
 Currently structured codes include:
 
@@ -62,6 +63,7 @@ Currently structured codes include:
 | `Z0700` | async program is valid but uses a shape outside the current executable lowering tier |
 | `Z0701` | invalid `await` context or operand |
 | `Z0702` | async call is missing `await` or `spawn` |
+| `Z0801` | malformed, unmatched, or conflicting foreign API contract metadata |
 | `Z0703` | `spawn` or `async scope` is outside its required structured context |
 | `Z0704` | borrowed storage could remain live in a task or across suspension |
 

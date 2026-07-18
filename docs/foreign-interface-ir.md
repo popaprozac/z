@@ -6,16 +6,24 @@ Swift interface details, API-note storage, or a stage-0 JSON shape from leaking
 through the compiler.
 
 ```text
-Clang AST ───────────────┐
-API notes ───────────────┤
-Swift interfaces ────────┼─> FIIR validation/merge ─> Z sema ─> native backend
-package metadata ────────┘
+Clang AST ────────────────> raw declarations ─┐
+Swift/package adapters ───> raw declarations ─┼─> contract normalization ─> FIIR ─> Z sema/backend
+API-note sources ─────────> semantic facts ───┘
 ```
 
-The first code extraction lives in
-[`compiler/src/foreign-ir.ts`](../compiler/src/foreign-ir.ts). It is deliberately
-behavior-preserving: the Clang importer still produces the same data and all
-existing semantic/code-generation consumers keep their public types.
+The boundary is implemented across three focused modules:
+
+- [`foreign-ir.ts`](../compiler/src/foreign-ir.ts) owns raw producer declarations
+  and normalized FIIR contracts;
+- [`foreign-api-notes.ts`](../compiler/src/foreign-api-notes.ts) parses, validates,
+  merges, and tracks the freshness of stage-0 API-note sources;
+- [`foreign-contracts.ts`](../compiler/src/foreign-contracts.ts) combines raw
+  declarations with semantic facts and rejects incoherent boundaries.
+
+The Clang walk now emits function names, native spellings, canonical spellings,
+parameter order, and overload alternatives before ownership metadata is read.
+Only the normalized result is attached to `ForeignModule` and exposed to generic
+inference, semantic analysis, code generation, and the language server.
 
 ## What FIIR owns
 
@@ -52,15 +60,19 @@ the frontend adapter, not to FIIR itself.
 ### Clang declarations
 
 The current producer reads C, Objective-C, C++, and generated Swift compatibility
-headers through Clang. It maps supported declarations into FIIR while preserving
-the native spelling used by generated source.
+headers through Clang. It produces `ForeignModuleDeclarations` while preserving
+the native spelling used by generated source. It does not decide pointer
+ownership, callback escape, record access, or release behavior.
 
 ### API notes
 
 Headers often omit semantic facts required for memory safety. API notes enrich
 the declaration result with ownership, nullability, record access, callback
-escape, release, and threading. The adjacent JSON used today is stage-0 input;
-it is not FIIR and is not a promised user-authored format.
+escape, release, and threading. Multiple sources may contribute disjoint facts,
+but contradictory safety facts are rejected rather than resolved by source
+order. Unknown fields, functions, and parameter indices are also rejected before
+FIIR reaches sema. The adjacent JSON used today is stage-0 input; it is not FIIR
+and is not a promised user-authored format.
 
 ### Swift and package metadata
 
@@ -93,21 +105,37 @@ and owned `String` values for source/native names. No part requires executing
 TypeScript objects or embedding a Clang node in semantic analysis.
 
 The eventual self-hosted compiler may invoke a small toolchain adapter process
-or stable C API to obtain declaration metadata. That adapter is replaceable as
-long as it validates and serializes the same FIIR contract. This keeps “how to
-talk to Clang” outside the Z type checker without pretending the native
-toolchain is disposable.
+or stable C API to obtain `ForeignModuleDeclarations`. The Z compiler then owns
+contract normalization and receives the same normalized FIIR regardless of
+whether declarations came from Clang, a Swift interface reader, package
+metadata, or a versioned cache. No Clang node, TypeScript object identity, or
+API-note JSON shape crosses into the type checker.
+
+That gives self-hosting a concrete seam:
+
+```text
+toolchain adapter process/C API
+    -> raw declaration stream
+Z-owned metadata readers
+    -> ownership/nullability/callback facts
+Z-owned normalizer
+    -> validated FIIR
+Z sema and native backends
+```
+
+Serialization remains intentionally deferred. When caching or the adapter
+process requires a wire format, it will version the raw declaration stream
+separately from the in-memory normalized FIIR.
 
 ## Next slices
 
 1. add source-location and availability metadata so editor definitions and
    diagnostics point into native interfaces;
-2. separate raw declaration extraction from API-note merge/validation;
-3. represent namespace hierarchy, overload sets, constructors, methods, and
+2. represent namespace hierarchy, overload sets, constructors, methods, and
    properties without flattening names;
-4. add explicit copy/move/destructor capabilities for general C++ and Swift
+3. add explicit copy/move/destructor capabilities for general C++ and Swift
    values;
-5. expand block/callback adapters with threading and callback-to-async
+4. expand block/callback adapters with threading and callback-to-async
    synthesis;
-6. add serialization only when caching or a self-hosted toolchain adapter needs
+5. add serialization only when caching or a self-hosted toolchain adapter needs
    it, then version that format separately from the in-memory IR.

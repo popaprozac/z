@@ -21,8 +21,14 @@ in a cached foreign module.
 
 Headers do not reliably encode ownership or asynchronous callback contracts.
 Packages can therefore ship Z API notes without modifying upstream headers.
-Raw declarations remain accessible, while annotated declarations gain safe Z
-overloads.
+The toolchain producer first records raw native declarations; a separate
+normalizer applies API-note facts and emits the FIIR used by the compiler and
+editor. Disjoint metadata sources compose, while malformed, unmatched, or
+contradictory safety contracts fail with `Z0801`. API-note edits participate in
+the importer cache key, so language-server analysis does not retain stale
+ownership contracts. Unannotated declarations remain visible, but operations
+whose safety cannot be established retain an explicit unsupported type rather
+than gaining a guessed Z signature.
 
 ## Cost model
 
