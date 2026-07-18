@@ -46,10 +46,10 @@ async function loadDashboard(id: UserId): Dashboard throws NetworkError {
 
 Children cannot outlive the async function that owns them. An explicit `async
 scope` creates a narrower ownership region when a group of children must finish
-before the rest of the function continues. In the full model, failure cancels
-siblings and all task-frame locals are deterministically destroyed before the
-owning scope exits. Detached tasks require an explicit program-owned
-supervisor.
+before the rest of the function continues. A propagated failure cancels
+still-live siblings and descendants, and task-frame locals are deterministically
+destroyed before their owner finishes. Detached tasks require an explicit
+program-owned supervisor.
 
 ```z
 async function refresh(): void throws NetworkError {
@@ -94,6 +94,9 @@ Cancellation is a structural task outcome distinct from `throws E`. It flows
 from parents to children, unwinds task frames, and runs ordinary synchronous
 `deinit` cleanup. Suspending or fallible cleanup remains an explicit async
 operation such as `try await connection.close()`; `deinit` never suspends.
+Cancellation is cooperative at poll boundaries: it cannot interrupt a blocking
+synchronous or foreign call. A failure retained with `attempt await` is handled
+as a `Result` value and therefore does not cancel sibling work.
 
 The first async ownership tier permits owned values, ARC class references, and
 owned closures in task frames. It rejects `in`, `inout`, `out`, `Slice<T>`, and
@@ -146,7 +149,9 @@ non-throwing root children, while throwing children require an explicit `try
 await` or `attempt await`. Nested explicit scopes now join and destroy their
 directly owned children at each lexical closing brace. Scope-local task handles
 are executable; other scope-local frame values remain diagnosed until their
-brace-local cleanup states land. The next Phase 1 layers add structural sibling
-cancellation and scheduler-aware delay. Later phases add channels,
+brace-local cleanup states land. Propagated failures now request structural
+cancellation of live siblings and descendants, redirecting their state machines
+through deterministic child and frame cleanup before failure completes. The
+next Phase 1 layer adds scheduler-aware delay. Later phases add channels,
 sendability and atomic ARC, native executors, actors, and callback-to-async
 synthesis. Async-free programs never link the runtime.

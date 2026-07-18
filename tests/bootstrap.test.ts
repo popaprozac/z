@@ -4888,3 +4888,42 @@ test("joins nested async scopes at their lexical boundaries", () => {
     return true;
   });
 });
+
+test("cancels live siblings and descendants when an async failure propagates", () => {
+  const example = resolve(projectRoot, "examples/async-cancellation.z");
+  const source = readFileSync(example, "utf8");
+  const generated = compileToC(source, example);
+  assert.match(generated, /bool cancellation_requested;/);
+  assert.match(generated, /bool cancel_children;/);
+  assert.match(generated, /z_async_cancel\(&frame->child_\d+->task\)/);
+  assert.match(generated, /frame->cancel_children = true;/);
+
+  const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
+  assert.equal(result.status, 1, result.stderr);
+  assert.equal(
+    result.stdout,
+    "released cancellation work 2\nreleased cancellation work 1\n",
+  );
+  assert.doesNotMatch(result.stdout, /work 3/);
+
+  const directory = mkdtempSync("/tmp/z-async-handled-failure-");
+  const handled = resolve(directory, "main.z");
+  writeFileSync(
+    handled,
+    source.replace(
+      "return try await failure;",
+      "const observed = attempt await failure; return 0;",
+    ),
+  );
+  const handledResult = spawnSync(process.execPath, [cli, "run", handled], { encoding: "utf8" });
+  assert.equal(handledResult.status, 0, handledResult.stderr);
+  assert.equal(
+    handledResult.stdout,
+    [
+      "released cancellation work 2",
+      "released cancellation work 3",
+      "released cancellation work 1",
+      "",
+    ].join("\n"),
+  );
+});

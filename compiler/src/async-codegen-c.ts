@@ -461,6 +461,8 @@ function generateRuntime(
     "  bool completed;",
     "  bool queued;",
     "  bool suspended;",
+    "  bool cancellation_requested;",
+    "  bool cancelled;",
     "  Z_AsyncTask *waiter;",
     "  Z_AsyncTask *next;",
     "  Z_AsyncExecutor *executor;",
@@ -478,6 +480,13 @@ function generateRuntime(
     "  if (executor->tail != NULL) executor->tail->next = task;",
     "  else executor->head = task;",
     "  executor->tail = task;",
+    "}",
+    "",
+    "static __attribute__((unused)) void z_async_cancel(Z_AsyncTask *task) {",
+    "  if (task->completed) return;",
+    "  task->cancellation_requested = true;",
+    "  task->suspended = false;",
+    "  z_async_enqueue(task->executor, task);",
     "}",
     "",
     "static __attribute__((unused)) bool z_async_wait(Z_AsyncTask *parent, Z_AsyncTask *child) {",
@@ -558,6 +567,7 @@ function generateFrame(
     `struct ${plan.frameName} {`,
     "  Z_AsyncTask task;",
     "  uint32_t state;",
+    "  bool cancel_children;",
   ];
   if (plan.declaration.returnType.name !== "void") {
     lines.push(`  ${cFrameType(plan.declaration.returnType.name, plan.types)} result;`);
@@ -636,7 +646,10 @@ function generateStart(plan: AsyncFunctionPlan): string {
     "  if (frame == NULL) abort();",
     `  frame->task.poll = ${plan.pollName};`,
     "  frame->task.completed = false;",
+    "  frame->task.cancellation_requested = false;",
+    "  frame->task.cancelled = false;",
     "  frame->state = 0;",
+    "  frame->cancel_children = false;",
   ];
   lines.push("  frame->task.queued = false;");
   lines.push("  frame->task.suspended = false;");
@@ -828,6 +841,7 @@ function generatePoll(
       cases.push(caseBlock(state, [
         `frame->error = ${emitFrameExpression(statement.expression, plan, fileName)};`,
         "frame->failed = true;",
+        "frame->cancel_children = true;",
         `frame->state = ${finalizeStateMarker};`,
         "continue;",
       ]));
@@ -874,16 +888,18 @@ function generatePoll(
     state += 1;
   }
   const finalizeState = state;
-  for (const site of plan.spawns.values()) {
-    const target = planByKey.get(targetKey(site.target))!;
-    const child = `frame->child_${site.index}`;
+  for (const [index, childTarget] of plan.children) {
+    const target = planByKey.get(targetKey(childTarget))!;
+    const site = [...plan.spawns.values()].find((candidate) => candidate.index === index);
+    const child = `frame->child_${index}`;
     cases.push(caseBlock(state, [
       `if (${child} != NULL) {`,
+      `  if (frame->cancel_children) z_async_cancel(&${child}->task);`,
       `  if (!z_async_wait(&frame->task, &${child}->task)) return;`,
       `  ${target.destroyName}(${child});`,
       `  free(${child});`,
-      `  frame->child_${site.index} = NULL;`,
-      ...(site.binding ? [`  frame->${frameField(site.binding)} = NULL;`] : []),
+      `  frame->child_${index} = NULL;`,
+      ...(site?.binding ? [`  frame->${frameField(site.binding)} = NULL;`] : []),
       "}",
       `frame->state = ${state + 1};`,
       "continue;",
@@ -891,6 +907,7 @@ function generatePoll(
     state += 1;
   }
   cases.push(caseBlock(state, [
+    "frame->task.cancelled = frame->task.cancellation_requested;",
     "frame->task.completed = true;",
     "return;",
   ]));
@@ -898,6 +915,10 @@ function generatePoll(
     .map((item) => item.replaceAll(finalizeStateMarker, String(finalizeState)));
   return `static void ${plan.pollName}(Z_AsyncTask *task) {
   ${plan.frameName} *frame = (${plan.frameName} *)task;
+  if (frame->task.cancellation_requested) {
+    frame->cancel_children = true;
+    if (frame->state < ${finalizeState}) frame->state = ${finalizeState};
+  }
   for (;;) {
     switch (frame->state) {
 ${renderedCases.map((item) => indent(item, 6)).join("\n")}
@@ -929,6 +950,7 @@ function awaitCompletion(
       `  frame->child_${site.index} = NULL;`,
       ...(site.spawn?.binding ? [`  frame->${frameField(site.spawn.binding)} = NULL;`] : []),
       "  frame->failed = true;",
+      "  frame->cancel_children = true;",
       `  frame->state = ${finalizeStateMarker};`,
       "  continue;",
       "}",
