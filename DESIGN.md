@@ -752,15 +752,17 @@ async struct methods initially require `move this`; static async methods have
 no receiver.
 
 Phase 0 implements syntax, typing, ownership diagnostics, and editor services.
-Phase 1 lowers top-level cleanup-free value async functions and direct
-sequential awaits to typed heap frames and explicit poll states, driven by a
-deterministic single-thread root runner. Scalars and recursively plain
-structs/enums may be parameters, locals, success values, and errors. Frames
-lower `throw`, `try await`, `attempt await`, and payloadless `void` success.
-Valid shapes beyond the active native tier report `Z0700`. Async-free programs
-do not link an async runtime. Apple executors may integrate with Dispatch and
-the main run loop; Windows executors may integrate with the thread pool and
-IOCP.
+Phase 1 lowers top-level owned async functions and direct sequential awaits to
+typed heap frames and explicit poll states, driven by a deterministic
+single-thread root runner. Scalars, value structs, ARC class references, and
+enums with cleanup-bearing payloads may be parameters, locals, and success
+values; errors are currently cleanup-free. Frame live flags preserve moves and
+ARC copies, while tag-directed destruction handles active `Option<T>` and
+`Result<T, E>` payloads. Frames lower `throw`, `try await`, `attempt await`, and
+payloadless `void` success. Valid shapes beyond the active native tier report
+`Z0700`. Async-free programs do not link an async runtime. Apple executors may
+integrate with Dispatch and the main run loop; Windows executors may integrate
+with the thread pool and IOCP.
 
 ## Interop and backends
 
@@ -1032,7 +1034,8 @@ Clang declaration source locations rather than text-searching SDK headers.
   runner (implemented);
 - Result-carrying scalar task frames (implemented);
 - cleanup-free aggregate task frames (implemented);
-- cleanup-bearing aggregate and ARC class frames, then a ready-queue executor;
+- cleanup-bearing struct, enum, and ARC class frames (implemented);
+- receiver-aware async method frames, then a ready-queue executor;
 - structured task scopes, cancellation, and deterministic frame cleanup;
 - scheduler-aware delay and bounded move-aware channels;
 - sendability, atomic ARC, and pluggable native executors;

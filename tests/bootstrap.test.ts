@@ -4637,6 +4637,28 @@ test("moves owned structs and retains ARC classes across async task frames", () 
   assert.equal(failed.stdout, "released failed session 9\n");
 });
 
+test("destroys active Option and Result payloads in async task frames", () => {
+  const example = resolve(projectRoot, "examples/async-owned-enums.z");
+  const source = readFileSync(example, "utf8");
+  const generated = compileToC(source, example);
+  assert.match(generated, /Z_Option_Session result;/);
+  assert.match(generated, /Z_Result_Session_i32 value_outcome;/);
+  assert.match(generated, /case Z_Option_Session_some:/);
+  assert.match(generated, /case Z_Result_Session_i32_success:/);
+  assert.match(generated, /case Z_Result_Resource_i32_success:/);
+  assert.match(generated, /case Z_Result___z_Option_Session_i32_success:/);
+  assert.match(generated, /Z_Resource_deinit/);
+  assert.match(generated, /frame->live_optional = false/);
+  assert.match(generated, /frame->child_\d+->live_result = false;/);
+
+  const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(
+    result.stdout,
+    "released enum session 44\nreleased enum resource 43\nreleased enum session 42\nreleased enum session 41\n",
+  );
+});
+
 test("represents fallible void success without an enum payload", () => {
   const source = `
     struct NetworkError { code: i32; }

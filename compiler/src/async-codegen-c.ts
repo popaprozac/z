@@ -177,7 +177,7 @@ function planFunction(
       fileName,
       statement.location,
       `statement ${JSON.stringify(statement.kind)} is not executable in the first Phase 1 async slice`,
-      "the initial state-machine lowering supports scalar bindings, direct sequential await, and return",
+      "the current state-machine lowering supports owned bindings, direct sequential await, throw, and return",
     );
   }
 
@@ -572,6 +572,9 @@ function awaitCompletion(
       ? ""
       : `, .data.success = ${child}->result`;
     lines.push(`  ${destination} = (${cResult}){ .tag = ${resultTag(result, "success")}${successPayload} };`);
+    if (hasFrameCleanup(site.target.returnType.name, parent.types)) {
+      lines.push(`  ${child}->live_result = false;`);
+    }
     lines.push("}");
   }
 
@@ -654,6 +657,13 @@ function emitFrameExpression(
     case "conditional":
       return `(${emitFrameExpression(expression.condition, plan, fileName)} ? ${emitFrameExpression(expression.thenExpression, plan, fileName)} : ${emitFrameExpression(expression.elseExpression, plan, fileName)})`;
     case "member": {
+      if (expression.object.kind === "identifier") {
+        const enumeration = plan.types.enums.get(expression.object.name);
+        const variant = enumeration?.variants.find((candidate) => candidate.name === expression.property);
+        if (enumeration && variant && !variant.payload) {
+          return `(${resultCName(enumeration.name)}){ .tag = ${resultTag(enumeration.name, variant.name)} }`;
+        }
+      }
       const ownerType = frameExpressionType(expression.object, plan);
       const access = plan.types.structs.get(ownerType)?.kind === "class" ? "->" : ".";
       const value = `((${emitFrameExpression(expression.object, plan, fileName)})${access}${expression.property})`;
@@ -668,7 +678,19 @@ function emitFrameExpression(
     }
     case "structExpression":
       return emitStructValue(expression.typeName, expression.fields, plan, fileName, expression.location);
+    case "variantExpression":
+      return `(${resultCName(expression.enumName)}){ .tag = ${resultTag(expression.enumName, expression.variantName)}, .data.${expression.variantName} = ${emitFrameExpression(expression.payload, plan, fileName)} }`;
     case "call": {
+      if (expression.callee.kind === "member" && expression.callee.object.kind === "identifier") {
+        const enumeration = plan.types.enums.get(expression.callee.object.name);
+        const variant = enumeration?.variants.find((candidate) => candidate.name === expression.callee.property);
+        if (enumeration && variant) {
+          const payload = variant.payload
+            ? `, .data.${variant.name} = ${emitFrameExpression(expression.arguments[0], plan, fileName)}`
+            : "";
+          return `(${resultCName(enumeration.name)}){ .tag = ${resultTag(enumeration.name, variant.name)}${payload} }`;
+        }
+      }
       if (
         expression.callee.kind === "identifier"
         && plan.types.structs.get(expression.callee.name)?.kind === "struct"
@@ -683,7 +705,7 @@ function emitFrameExpression(
           expression.location,
         );
       }
-      unsupported(fileName, expression.location, "only plain struct construction is executable as a synchronous async-frame call yet");
+      unsupported(fileName, expression.location, "only aggregate construction is executable as a synchronous async-frame call yet");
     }
     case "new": {
       const declaration = plan.types.structs.get(expression.typeName);
@@ -775,7 +797,6 @@ function isSupportedFrameType(type: string, types: AsyncTypeContext, visiting = 
   }
   const enumeration = types.enums.get(type);
   if (enumeration) {
-    if (hasFrameCleanup(type, types)) return false;
     visiting.add(type);
     const supported = enumeration.variants.every((variant) => (
       !variant.payload || isSupportedFrameType(variant.payload.name, types, visiting)
@@ -807,6 +828,17 @@ function frameCleanup(value: string, type: string, types: AsyncTypeContext): str
   const aggregate = types.structs.get(type);
   if (aggregate?.kind === "class") return `Z_${type}_release(${value});`;
   if (aggregate?.kind === "struct") return `Z_${type}_deinit(&(${value}));`;
+  const enumeration = types.enums.get(type);
+  if (enumeration) {
+    const cases = enumeration.variants.flatMap((variant) => {
+      if (!variant.payload || !hasFrameCleanup(variant.payload.name, types)) return [];
+      const cleanup = frameCleanup(`(${value}).data.${variant.name}`, variant.payload.name, types);
+      return [
+        `case ${resultTag(type, variant.name)}:\n${indent(cleanup, 2)}\n  break;`,
+      ];
+    });
+    return `switch ((${value}).tag) {\n${indent(cases.join("\n"), 2)}\n  default:\n    break;\n}`;
+  }
   throw new Error(`missing async cleanup lowering for ${JSON.stringify(type)}`);
 }
 
