@@ -67,7 +67,7 @@ support or producing language-server diagnostics from hypothetical imports.
 - [`async-sequential.z`](async/async-sequential.z), [`async-spawn.z`](async/async-spawn.z), and [`async-scopes.z`](async/async-scopes.z)
 - [`async-errors.z`](async/async-errors.z), [`async-cancellation.z`](async/async-cancellation.z), and [`async-delay.z`](async/async-delay.z)
 - [`async-aggregates.z`](async/async-aggregates.z), [`async-ownership.z`](async/async-ownership.z), and [`async-owned-enums.z`](async/async-owned-enums.z)
-- [`async-native-ownership.z`](async/async-native-ownership.z): move-only C++ ownership across suspension and infallible task-result relays
+- [`async-native-ownership.z`](async/async-native-ownership.z): move-only C++ ownership across suspension, fallible task-result relays, `try await`, `attempt await`, and match
 - [`async-methods.z`](async/async-methods.z)
 
 ## Native interop

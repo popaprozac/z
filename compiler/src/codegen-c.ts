@@ -1558,7 +1558,7 @@ function generateUserClassConstructor(
   if (parameterCleanupCode) body.push(indent(parameterCleanupCode, 2));
   if (constructor.errorType) {
     const result = resultTypeName(declaration.name, constructor.errorType.name);
-    body.push(`  return (${enumName(result)}){ .tag = ${variantTag(result, "success")}, .data.success = self };`);
+    body.push(`  return ${generateCompilerVariantConstruction(result, "success", "self", context)};`);
   } else {
     body.push("  return self;");
   }
@@ -1759,7 +1759,7 @@ function generateFunction(
     if (cleanup) bodyParts.push(indent(cleanup, 2));
     if (declaration.errorType) {
       const result = resultTypeName("void", declaration.errorType.name);
-      bodyParts.push(indent(`return (${enumName(result)}){ .tag = ${variantTag(result, "success")} };`, 2));
+      bodyParts.push(indent(`return ${generateCompilerVariantConstruction(result, "success", null, context)};`, 2));
     }
   }
   const body = bodyParts.join("\n");
@@ -1997,7 +1997,7 @@ bool ${liveFlag} = true;`;
         const cleanup = generateCleanup(context.cleanupScopes, context);
         if (context.owner.errorType) {
           const result = resultTypeName("void", context.owner.errorType.name);
-          const returned = `return (${enumName(result)}){ .tag = ${variantTag(result, "success")} };`;
+          const returned = `return ${generateCompilerVariantConstruction(result, "success", null, context)};`;
           return cleanup ? `${cleanup}\n${returned}` : returned;
         }
         return cleanup ? `${cleanup}\nreturn;` : "return;";
@@ -2018,7 +2018,7 @@ bool ${liveFlag} = true;`;
         const cleanup = generateCleanup(valueContext.cleanupScopes, valueContext);
         const releaseSelf = valueContext.constructorSelf ? `free(${valueContext.constructorSelf});\n` : "";
         if (!cleanup && !releaseSelf) {
-          return `return (${enumName(result)}){ .tag = ${variantTag(result, "failure")}, .data.failure = ${value} };`;
+          return `return ${generateCompilerVariantConstruction(result, "failure", value, valueContext)};`;
         }
         const temporary = `_z_error_${valueContext.returnCounter.value++}`;
         const declaration = generateLocalDeclaration(
@@ -2029,7 +2029,14 @@ bool ${liveFlag} = true;`;
           valueContext.enums,
           valueContext.semanticInfo.foreignNamedTypes,
         );
-        return `${declaration} = ${value};\n${cleanup ? `${cleanup}\n` : ""}${releaseSelf}return (${enumName(result)}){ .tag = ${variantTag(result, "failure")}, .data.failure = ${temporary} };`;
+        const failureValue = requiresNativeMove(
+          valueContext.owner.errorType!.name,
+          valueContext.structs,
+          valueContext.enums,
+          valueContext.semanticInfo.foreignNamedTypes,
+        ) ? `std::move(${temporary})` : temporary;
+        const returned = generateCompilerVariantConstruction(result, "failure", failureValue, valueContext);
+        return `${declaration} = ${value};\n${cleanup ? `${cleanup}\n` : ""}${releaseSelf}return ${returned};`;
       }, true);
     }
     case "select":
@@ -3100,12 +3107,22 @@ function generateSuccessReturn(value: string, context: GenerationContext, view =
       return `return ${redundant ? redundant[1] : value};`;
     }
     const result = resultTypeName(context.owner.returnType.name, context.owner.errorType.name);
-    return `return (${enumName(result)}){ .tag = ${variantTag(result, "success")}, .data.success = ${value} };`;
+    return `return ${generateCompilerVariantConstruction(result, "success", value, context)};`;
   }
   const temporary = `_z_return_${context.returnCounter.value++}`;
   const declaration = generateLocalDeclaration(context.owner.returnType.name, temporary, false, context.structs, context.enums, context.semanticInfo.foreignNamedTypes);
   const returned = context.owner.errorType
-    ? `return (${enumName(resultTypeName(context.owner.returnType.name, context.owner.errorType.name))}){ .tag = ${variantTag(resultTypeName(context.owner.returnType.name, context.owner.errorType.name), "success")}, .data.success = ${temporary} };`
+    ? `return ${generateCompilerVariantConstruction(
+        resultTypeName(context.owner.returnType.name, context.owner.errorType.name),
+        "success",
+        requiresNativeMove(
+          context.owner.returnType.name,
+          context.structs,
+          context.enums,
+          context.semanticInfo.foreignNamedTypes,
+        ) ? `std::move(${temporary})` : temporary,
+        context,
+      )};`
     : `return ${temporary};`;
   return `${declaration} = ${value};\n${cleanup}\n${returned}`;
 }
@@ -3120,14 +3137,26 @@ function generateTry(
   const ownerResult = resultTypeName(context.owner.returnType.name, context.owner.errorType!.name);
   const cleanup = generateCleanup(context.cleanupScopes, context);
   const releaseSelf = context.constructorSelf ? `free(${context.constructorSelf});\n` : "";
-  const failureReturn = `${releaseSelf}return (${enumName(ownerResult)}){ .tag = ${variantTag(ownerResult, "failure")}, .data.failure = ${temporary}.data.failure };`;
+  const propagatedError = context.owner.errorType && requiresNativeMove(
+    context.owner.errorType.name,
+    context.structs,
+    context.enums,
+    context.semanticInfo.foreignNamedTypes,
+  ) ? `std::move(${temporary}.data.failure)` : `${temporary}.data.failure`;
+  const failureReturn = `${releaseSelf}return ${generateCompilerVariantConstruction(ownerResult, "failure", propagatedError, context)};`;
+  const successType = trySuccessType(expression, context);
+  const successValue = successType === "void"
+    ? "0"
+    : requiresNativeMove(successType, context.structs, context.enums, context.semanticInfo.foreignNamedTypes)
+      ? `std::move(${temporary}.data.success)`
+      : `${temporary}.data.success`;
   return generateDirectValue(expression.expression, context, (value) => (
-    `const ${mapType(resultType, context.structs, context.enums, context.semanticInfo.foreignNamedTypes)} ${temporary} = ${value};\n`
+    `${generateLocalDeclaration(resultType, temporary, false, context.structs, context.enums, context.semanticInfo.foreignNamedTypes)} = ${value};\n`
       + `if (${temporary}.tag == ${variantTag(resultType, "failure")}) {\n`
       + `${cleanup ? `${indent(cleanup, 2)}\n` : ""}`
       + `${indent(failureReturn, 2)}\n`
       + `}\n`
-      + consumeSuccess(trySuccessType(expression, context) === "void" ? "0" : `${temporary}.data.success`, context)
+      + consumeSuccess(successValue, context)
   ));
 }
 
@@ -4081,6 +4110,17 @@ function generateEnumVariantConstruction(
   }
   const initializedPayload = payload === null ? "" : `, .data.${variant} = ${payload}`;
   return `(${enumName(declaration.name)}){ .tag = ${variantTag(declaration.name, variant)}${initializedPayload} }`;
+}
+
+function generateCompilerVariantConstruction(
+  enumType: string,
+  variant: string,
+  payload: string | null,
+  context: GenerationContext,
+): string {
+  const declaration = context.enums.get(enumType);
+  if (!declaration) throw new Error(`missing compiler enum ${JSON.stringify(enumType)}`);
+  return generateEnumVariantConstruction(declaration, variant, payload, context);
 }
 
 function generateFunctionValueCall(value: string, arguments_: readonly string[]): string {

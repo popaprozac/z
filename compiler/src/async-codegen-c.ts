@@ -224,7 +224,7 @@ function planFunction(
       if (type === "void") {
         unsupported(fileName, operation.source.location, "a void await cannot be embedded in a value expression");
       }
-      if (hasFrameCleanup(type, types)) {
+      if (hasFrameCleanup(type, types) && !/^__z_Result_/.test(type)) {
         unsupported(
           fileName,
           operation.source.location,
@@ -799,7 +799,9 @@ function generateRuntime(
 ): string {
   const usesDelay = plans.some((plan) => [...plan.awaits.values()].some((site) => site.intrinsic === "delay"));
   const usesNativeFrameStorage = plans.some((plan) => (
-    [...plan.locals.values()].some((type) => isDirectForeignFrameValue(type, plan.types))
+    requiresNativeFramePlacement(plan.declaration.returnType.name, plan.types)
+    || [...plan.locals.values()].some((type) => requiresNativeFramePlacement(type, plan.types))
+    || [...plan.suspensions.values()].some((site) => requiresNativeFramePlacement(site.type, plan.types))
   ));
   const lines = [
     ...(usesNativeFrameStorage ? ["#include <memory>", "#include <new>", ""] : []),
@@ -1011,9 +1013,9 @@ function generateFrame(
     "  bool cancel_children;",
   ];
   if (plan.declaration.returnType.name !== "void") {
-    const foreign = directForeignFrameValue(plan.declaration.returnType.name, plan.types);
-    if (foreign) {
-      lines.push(`  alignas(${foreign.cName}) unsigned char result[sizeof(${foreign.cName})];`);
+    const type = cFrameType(plan.declaration.returnType.name, plan.types);
+    if (requiresNativeFramePlacement(plan.declaration.returnType.name, plan.types)) {
+      lines.push(`  alignas(${type}) unsigned char result[sizeof(${type})];`);
     } else {
       lines.push(`  ${cFrameType(plan.declaration.returnType.name, plan.types)} result;`);
     }
@@ -1026,16 +1028,22 @@ function generateFrame(
     lines.push(`  ${cFrameType(plan.declaration.errorType.name, plan.types)} error;`);
   }
   for (const [name, type] of plan.locals) {
-    const foreign = directForeignFrameValue(type, plan.types);
-    if (foreign) {
-      lines.push(`  alignas(${foreign.cName}) unsigned char ${frameField(name)}[sizeof(${foreign.cName})];`);
+    const cType = cFrameType(type, plan.types);
+    if (requiresNativeFramePlacement(type, plan.types)) {
+      lines.push(`  alignas(${cType}) unsigned char ${frameField(name)}[sizeof(${cType})];`);
     } else {
       lines.push(`  ${cFrameType(type, plan.types)} ${frameField(name)};`);
     }
     if (hasFrameCleanup(type, plan.types)) lines.push(`  bool ${frameLiveField(name)};`);
   }
   for (const site of plan.suspensions.values()) {
-    lines.push(`  ${cFrameType(site.type, plan.types)} ${site.field};`);
+    const cType = cFrameType(site.type, plan.types);
+    if (requiresNativeFramePlacement(site.type, plan.types)) {
+      lines.push(`  alignas(${cType}) unsigned char ${site.field}[sizeof(${cType})];`);
+    } else {
+      lines.push(`  ${cType} ${site.field};`);
+    }
+    if (hasFrameCleanup(site.type, plan.types)) lines.push(`  bool ${site.field}_live;`);
   }
   for (const [index, target] of plan.children) {
     lines.push(`  ${planByKey.get(targetKey(target))!.frameName} *child_${index};`);
@@ -1082,6 +1090,15 @@ function generateDestroy(
       "  }",
     );
   }
+  for (const site of [...plan.suspensions.values()].reverse()) {
+    if (!hasFrameCleanup(site.type, plan.types)) continue;
+    lines.push(
+      `  if (frame->${site.field}_live) {`,
+      `    ${frameCleanup(frameSuspensionValue(site, plan.types), site.type, plan.types)}`,
+      `    frame->${site.field}_live = false;`,
+      "  }",
+    );
+  }
   lines.push("}");
   return lines.join("\n");
 }
@@ -1123,6 +1140,9 @@ function generateStart(plan: AsyncFunctionPlan): string {
     if (hasFrameCleanup(type, plan.types)) {
       lines.push(`  frame->${frameLiveField(name)} = ${parameters.has(name) ? "true" : "false"};`);
     }
+  }
+  for (const site of plan.suspensions.values()) {
+    if (hasFrameCleanup(site.type, plan.types)) lines.push(`  frame->${site.field}_live = false;`);
   }
   for (const input of frameInputs(plan)) {
     const name = frameField(input.name);
@@ -1312,9 +1332,8 @@ function generatePoll(
       } else {
         const type = plan.locals.get(statement.name)!;
         const value = emitFrameExpression(initializer, plan, fileName);
-        const foreign = directForeignFrameValue(type, plan.types);
-        const initialize = foreign
-          ? `new (frame->${frameField(statement.name)}) ${foreign.cName}(${value});`
+        const initialize = requiresNativeFramePlacement(type, plan.types)
+          ? `new (frame->${frameField(statement.name)}) ${cFrameType(type, plan.types)}(${value});`
           : `frame->${frameField(statement.name)} = ${value};`;
         cases.push(caseBlock(state, [
           initialize,
@@ -1376,9 +1395,8 @@ function generatePoll(
         const completion: string[] = [];
         if (statement.expression) {
           const value = emitFrameExpression(statement.expression, plan, fileName);
-          const foreign = directForeignFrameValue(plan.declaration.returnType.name, plan.types);
-          completion.push(foreign
-            ? `new (frame->result) ${foreign.cName}(${value});`
+          completion.push(requiresNativeFramePlacement(plan.declaration.returnType.name, plan.types)
+            ? `new (frame->result) ${cFrameType(plan.declaration.returnType.name, plan.types)}(${value});`
             : `frame->result = ${value};`);
           if (hasFrameCleanup(plan.declaration.returnType.name, plan.types)) {
             completion.push("frame->live_result = true;");
@@ -1567,15 +1585,23 @@ function awaitCompletion(
       site.target.declaration.errorType!.name,
     );
     const cResult = resultCName(result);
+    const placed = requiresNativeFramePlacement(result, parent.types);
+    const construct = (variant: "success" | "failure", payload: string | null): string => {
+      if (placed) {
+        const value = `${cResult}::make_${nativePart(variant)}(${payload ?? ""})`;
+        return `new (${destination}) ${cResult}(${value});`;
+      }
+      const initialized = payload === null ? "" : `, .data.${variant} = ${payload}`;
+      return `${destination} = (${cResult}){ .tag = ${resultTag(result, variant)}${initialized} };`;
+    };
     lines.push(`if (${child}->failed) {`);
-    lines.push(
-      `  ${destination} = (${cResult}){ .tag = ${resultTag(result, "failure")}, .data.failure = ${child}->error };`,
-      "} else {",
-    );
+    lines.push(`  ${construct("failure", `${child}->error`)}`, "} else {");
     const successPayload = site.target.declaration.returnType.name === "void"
-      ? ""
-      : `, .data.success = ${childResult}`;
-    lines.push(`  ${destination} = (${cResult}){ .tag = ${resultTag(result, "success")}${successPayload} };`);
+      ? null
+      : requiresNativeFramePlacement(site.target.declaration.returnType.name, parent.types)
+        ? `std::move(${childResult})`
+        : childResult;
+    lines.push(`  ${construct("success", successPayload)}`);
     if (hasFrameCleanup(site.target.declaration.returnType.name, parent.types)) {
       lines.push(`  ${child}->live_result = false;`);
     }
@@ -1583,9 +1609,9 @@ function awaitCompletion(
   }
 
   if (site.mode !== "attempt" && destination && site.target.declaration.returnType.name !== "void") {
-    const foreign = destinationType ? directForeignFrameValue(destinationType, parent.types) : null;
-    lines.push(foreign
-      ? `new (${destination}) ${foreign.cName}(std::move(${childResult}));`
+    const placed = destinationType ? requiresNativeFramePlacement(destinationType, parent.types) : false;
+    lines.push(placed
+      ? `new (${destination}) ${cFrameType(destinationType!, parent.types)}(std::move(${childResult}));`
       : `${destination} = ${childResult};`);
     if (hasFrameCleanup(site.target.declaration.returnType.name, parent.types)) {
       lines.push(`${child}->live_result = false;`);
@@ -1636,13 +1662,20 @@ function emitAsyncMatchExpression(
 ): string[] {
   const inspected = inspectAsyncMatchExpression(expression, plan, fileName);
   const temporary = `_z_async_match_${expression.location.offset}`;
-  const lines = [
-    `const ${cFrameType(inspected.subjectType, plan.types)} ${temporary} = ${emitFrameExpression(expression.expression, plan, fileName)};`,
-    `switch (${temporary}.tag) {`,
-  ];
+  const borrowed = plan.types.semanticInfo.borrowedMatches.has(expression.location.offset);
+  const subject = emitFrameExpression(expression.expression, plan, fileName);
+  const cType = cFrameType(inspected.subjectType, plan.types);
+  const ownershipFlag = borrowed ? null : asyncExpressionLiveFlag(expression.expression, plan);
+  const storage = borrowed
+    ? `const ${cType} *${temporary} = &(${subject});`
+    : requiresNativeFramePlacement(inspected.subjectType, plan.types)
+      ? `${cType} ${temporary} = std::move(${subject});${ownershipFlag ? `\n${ownershipFlag} = false;` : ""}`
+      : `const ${cType} ${temporary} = ${subject};`;
+  const storedSubject = borrowed ? `(*${temporary})` : temporary;
+  const lines = [storage, `switch (${storedSubject}.tag) {`];
   for (const arm of expression.arms) {
     const variant = inspected.declaration.variants.find((candidate) => candidate.name === arm.variantName)!;
-    const armContext = asyncMatchArmContext(arm, variant, temporary, plan);
+    const armContext = asyncMatchArmContext(arm, variant, storedSubject, plan);
     const value = emitFrameExpression(asyncMatchArmValue(arm, fileName), armContext, fileName);
     lines.push(
       `  case ${resultTag(inspected.subjectType, variant.name)}: {`,
@@ -1650,6 +1683,9 @@ function emitAsyncMatchExpression(
       "    break;",
       "  }",
     );
+  }
+  if (requiresNativeFramePlacement(inspected.subjectType, plan.types)) {
+    lines.push("  default:", "    abort();");
   }
   lines.push("}");
   if (hasFrameCleanup(destinationType, plan.types)) {
@@ -1674,12 +1710,17 @@ function inspectAsyncMatchExpression(
   if (!declaration) {
     unsupported(fileName, expression.expression.location, "async match lowering requires an enum subject");
   }
-  if (hasFrameCleanup(subjectType, plan.types)) {
+  const borrowed = plan.types.semanticInfo.borrowedMatches.has(expression.location.offset);
+  if (
+    hasFrameCleanup(subjectType, plan.types)
+    && !borrowed
+    && !requiresNativeFramePlacement(subjectType, plan.types)
+  ) {
     unsupported(
       fileName,
       expression.location,
-      "matching an ownership-bearing enum inside an async frame has not landed yet",
-      "match scalar and plain-data payloads for now; owned payload arm lifetimes are the next ownership tier",
+      "consuming this ownership-bearing enum inside an async frame has not landed yet",
+      "use `match (in value)` to inspect it without consuming, or match a move-only native Result/Option whose frame transfer is supported",
     );
   }
   const resultType = frameExpressionType(expression, plan);
@@ -1710,7 +1751,7 @@ function asyncMatchArmContext(
   const bindings = new Map(plan.bindings ?? []);
   if (variant.payload && arm.binding) {
     locals.set(arm.binding, variant.payload.name);
-    bindings.set(arm.binding, `(${subject}.data.${variant.name})`);
+    bindings.set(arm.binding, `((${subject}).data.${variant.name})`);
   }
   if (variant.payload && arm.objectBindings) {
     const payload = plan.types.structs.get(variant.payload.name)!;
@@ -1720,7 +1761,7 @@ function asyncMatchArmContext(
       locals.set(fieldBinding.bindingName, field.type.name);
       bindings.set(
         fieldBinding.bindingName,
-        `((${subject}.data.${variant.name})${access}${field.name})`,
+        `(((${subject}).data.${variant.name})${access}${field.name})`,
       );
     }
   }
@@ -1882,7 +1923,7 @@ function emitFrameExpression(
   fileName: string,
 ): string {
   const suspension = plan.suspensions?.get(expression.location.offset);
-  if (suspension) return `frame->${suspension.field}`;
+  if (suspension) return frameSuspensionValue(suspension, plan.types);
   switch (expression.kind) {
     case "number":
       return expression.value;
@@ -1892,7 +1933,13 @@ function emitFrameExpression(
       return JSON.stringify(expression.value);
     case "identifier":
       if (plan.bindings?.has(expression.name)) {
-        return plan.bindings.get(expression.name)!;
+        const value = plan.bindings.get(expression.name)!;
+        const type = plan.locals.get(expression.name);
+        return type
+          && plan.types.semanticInfo.movedExpressions.has(expression.location.offset)
+          && requiresNativeFramePlacement(type, plan.types)
+          ? `std::move(${value})`
+          : value;
       }
       if (!plan.locals.has(expression.name)) {
         unsupported(fileName, expression.location, "the first async lowering slice cannot reference this value");
@@ -1901,7 +1948,7 @@ function emitFrameExpression(
         const type = plan.locals.get(expression.name)!;
         const value = frameStoredValue(expression.name, type, plan.types);
         if (plan.types.semanticInfo.movedExpressions.has(expression.location.offset)) {
-          const moved = isDirectForeignFrameValue(type, plan.types) ? `std::move(${value})` : value;
+          const moved = requiresNativeFramePlacement(type, plan.types) ? `std::move(${value})` : value;
           return `(frame->${frameLiveField(expression.name)} = false, ${moved})`;
         }
         if (
@@ -1967,7 +2014,12 @@ function emitFrameExpression(
     case "structExpression":
       return emitStructValue(expression.typeName, expression.fields, plan, fileName, expression.location);
     case "variantExpression":
-      return `(${resultCName(expression.enumName)}){ .tag = ${resultTag(expression.enumName, expression.variantName)}, .data.${expression.variantName} = ${emitFrameExpression(expression.payload, plan, fileName)} }`;
+      return emitAsyncEnumVariant(
+        expression.enumName,
+        expression.variantName,
+        emitFrameExpression(expression.payload, plan, fileName),
+        plan.types,
+      );
     case "call": {
       const standard = plan.types.semanticInfo.standardFunctionReferences.get(expression.callee.location.offset);
       if (standard) {
@@ -1988,10 +2040,12 @@ function emitFrameExpression(
         const enumeration = plan.types.enums.get(expression.callee.object.name);
         const variant = enumeration?.variants.find((candidate) => candidate.name === expression.callee.property);
         if (enumeration && variant) {
-          const payload = variant.payload
-            ? `, .data.${variant.name} = ${emitFrameExpression(expression.arguments[0], plan, fileName)}`
-            : "";
-          return `(${resultCName(enumeration.name)}){ .tag = ${resultTag(enumeration.name, variant.name)}${payload} }`;
+          return emitAsyncEnumVariant(
+            enumeration.name,
+            variant.name,
+            variant.payload ? emitFrameExpression(expression.arguments[0], plan, fileName) : null,
+            plan.types,
+          );
         }
       }
       const cxxMethod = plan.types.semanticInfo.foreignCxxMethodCalls.get(expression.location.offset);
@@ -2167,6 +2221,7 @@ function isSupportedFrameType(type: string, types: AsyncTypeContext, visiting = 
 
 function hasFrameCleanup(type: string, types: AsyncTypeContext, visiting = new Set<string>()): boolean {
   if (visiting.has(type)) return false;
+  if (requiresNativeFramePlacement(type, types)) return true;
   if (directForeignFrameValue(type, types)?.lifecycle.deinit) return true;
   const aggregate = types.structs.get(type);
   if (aggregate?.kind === "class") return true;
@@ -2184,7 +2239,11 @@ function hasFrameCleanup(type: string, types: AsyncTypeContext, visiting = new S
 }
 
 function frameCleanup(value: string, type: string, types: AsyncTypeContext): string {
-  if (directForeignFrameValue(type, types)?.lifecycle.deinit) return `std::destroy_at(&(${value}));`;
+  if (requiresNativeFramePlacement(type, types)) {
+    const managed = frameManagedCleanup(value, type, types);
+    const native = `std::destroy_at(&(${value}));`;
+    return managed ? `${managed}\n${native}` : native;
+  }
   const aggregate = types.structs.get(type);
   if (aggregate?.kind === "class") return `Z_${type}_release(${value});`;
   if (aggregate?.kind === "struct") return `Z_${type}_deinit(&(${value}));`;
@@ -2202,6 +2261,41 @@ function frameCleanup(value: string, type: string, types: AsyncTypeContext): str
   throw new Error(`missing async cleanup lowering for ${JSON.stringify(type)}`);
 }
 
+function frameManagedCleanup(value: string, type: string, types: AsyncTypeContext): string {
+  if (isDirectForeignFrameValue(type, types)) return "";
+  const aggregate = types.structs.get(type);
+  if (aggregate?.kind === "class") return `Z_${type}_release(${value});`;
+  if (aggregate?.kind === "struct") return hasManagedFrameCleanup(type, types) ? `Z_${type}_deinit(&(${value}));` : "";
+  const enumeration = types.enums.get(type);
+  if (!enumeration) return "";
+  const cases = enumeration.variants.flatMap((variant) => {
+    if (!variant.payload) return [];
+    const cleanup = frameManagedCleanup(`(${value}).data.${variant.name}`, variant.payload.name, types);
+    return cleanup
+      ? [`case ${resultTag(type, variant.name)}:\n${indent(cleanup, 2)}\n  break;`]
+      : [];
+  });
+  if (cases.length === 0) return "";
+  return `switch ((${value}).tag) {\n${indent(cases.join("\n"), 2)}\n  default:\n    break;\n}`;
+}
+
+function hasManagedFrameCleanup(type: string, types: AsyncTypeContext, visiting = new Set<string>()): boolean {
+  if (visiting.has(type) || isDirectForeignFrameValue(type, types)) return false;
+  const aggregate = types.structs.get(type);
+  if (aggregate?.kind === "class") return true;
+  const enumeration = types.enums.get(type);
+  if (!aggregate && !enumeration) return false;
+  if (aggregate?.deinitializer) return true;
+  visiting.add(type);
+  const result = aggregate
+    ? aggregate.fields.some((field) => hasManagedFrameCleanup(field.type.name, types, visiting))
+    : enumeration!.variants.some((variant) => (
+        variant.payload ? hasManagedFrameCleanup(variant.payload.name, types, visiting) : false
+      ));
+  visiting.delete(type);
+  return result;
+}
+
 function directForeignFrameValue(type: string, types: AsyncTypeContext) {
   const foreign = types.semanticInfo.foreignNamedTypes.get(type);
   return foreign?.kind === "value" && foreign.lifecycle.move && !foreign.lifecycle.copy
@@ -2213,16 +2307,75 @@ function isDirectForeignFrameValue(type: string, types: AsyncTypeContext): boole
   return directForeignFrameValue(type, types) !== null;
 }
 
+function requiresNativeFramePlacement(
+  type: string,
+  types: AsyncTypeContext,
+  visiting = new Set<string>(),
+): boolean {
+  if (visiting.has(type)) return false;
+  if (isDirectForeignFrameValue(type, types)) return true;
+  const aggregate = types.structs.get(type);
+  const enumeration = types.enums.get(type);
+  if (!aggregate && !enumeration) return false;
+  if (aggregate?.kind === "class") return false;
+  visiting.add(type);
+  const result = aggregate
+    ? aggregate.fields.some((field) => requiresNativeFramePlacement(field.type.name, types, visiting))
+    : enumeration!.variants.some((variant) => (
+        variant.payload ? requiresNativeFramePlacement(variant.payload.name, types, visiting) : false
+      ));
+  visiting.delete(type);
+  return result;
+}
+
 function frameStoredValue(name: string, type: string, types: AsyncTypeContext): string {
   const field = `frame->${frameField(name)}`;
-  const foreign = directForeignFrameValue(type, types);
-  return foreign ? `(*std::launder(reinterpret_cast<${foreign.cName} *>(${field})))` : field;
+  const cType = cFrameType(type, types);
+  return requiresNativeFramePlacement(type, types)
+    ? `(*std::launder(reinterpret_cast<${cType} *>(${field})))`
+    : field;
 }
 
 function frameResultValue(frame: string, type: string, types: AsyncTypeContext): string {
   const field = `${frame}->result`;
-  const foreign = directForeignFrameValue(type, types);
-  return foreign ? `(*std::launder(reinterpret_cast<${foreign.cName} *>(${field})))` : field;
+  const cType = cFrameType(type, types);
+  return requiresNativeFramePlacement(type, types)
+    ? `(*std::launder(reinterpret_cast<${cType} *>(${field})))`
+    : field;
+}
+
+function frameSuspensionValue(site: NestedAwaitSite, types: AsyncTypeContext): string {
+  const field = `frame->${site.field}`;
+  const cType = cFrameType(site.type, types);
+  return requiresNativeFramePlacement(site.type, types)
+    ? `(*std::launder(reinterpret_cast<${cType} *>(${field})))`
+    : field;
+}
+
+function asyncExpressionLiveFlag(expression: Expression, plan: AsyncFunctionPlan): string | null {
+  const suspension = plan.suspensions.get(expression.location.offset);
+  if (suspension && hasFrameCleanup(suspension.type, plan.types)) {
+    return `frame->${suspension.field}_live`;
+  }
+  if (expression.kind === "identifier") {
+    const type = plan.locals.get(expression.name);
+    if (type && hasFrameCleanup(type, plan.types)) return `frame->${frameLiveField(expression.name)}`;
+  }
+  return null;
+}
+
+function emitAsyncEnumVariant(
+  enumType: string,
+  variant: string,
+  payload: string | null,
+  types: AsyncTypeContext,
+): string {
+  const cType = resultCName(enumType);
+  if (requiresNativeFramePlacement(enumType, types)) {
+    return `${cType}::make_${nativePart(variant)}(${payload ?? ""})`;
+  }
+  const initialized = payload === null ? "" : `, .data.${variant} = ${payload}`;
+  return `(${cType}){ .tag = ${resultTag(enumType, variant)}${initialized} }`;
 }
 
 function frameExpressionType(
@@ -2298,11 +2451,18 @@ function destinationLiveFlag(destination: string, plan: AsyncFunctionPlan): stri
   for (const name of plan.locals.keys()) {
     if (destination === `frame->${frameField(name)}`) return `frame->${frameLiveField(name)}`;
   }
+  for (const site of plan.suspensions.values()) {
+    if (destination === `frame->${site.field}`) return `frame->${site.field}_live`;
+  }
   throw new Error(`missing async live flag destination for ${JSON.stringify(destination)}`);
 }
 
 function resultCName(type: string): string {
-  return `Z_${nativePart(type.replace(/^__z_/, ""))}`;
+  const name = type.replace(/^__z_/, "");
+  const encoded = [...name].map((character) => (
+    /[A-Za-z0-9_]/.test(character) ? character : `_${character.codePointAt(0)!.toString(16)}_`
+  )).join("");
+  return `Z_${encoded}`;
 }
 
 function resultTag(type: string, variant: string): string {

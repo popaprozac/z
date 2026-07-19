@@ -464,9 +464,12 @@ it into the arm under consuming `match (value)`; their active native payload is
 destroyed automatically. These storage shapes also compose with ordinary
 Z-managed fields such as `String`.
 
-Compiler-provided `Option<T>` and `Result<T, E>`, ARC class fields, owned closure
-environments, and async frames still reject move-only native storage until their
-distinct non-trivial construction paths land.
+Compiler-provided `Option<T>` and `Result<T, E>` use the same non-trivial
+tagged-union lifetime machinery, including borrowed and consuming matches.
+Direct async frame locals and fallible task results also support move-only native
+storage through `try await` and `attempt await`. ARC class fields, owned closure
+environments, async parameters, and async aggregates containing native values
+remain later construction paths.
 
 Swift-generated C++ compatibility values use this same surface. For example,
 the current owned-value probe supports `Swift.OwnedCounter.init(40)`,

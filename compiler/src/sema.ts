@@ -820,16 +820,6 @@ function analyzeEnumDeclaration(
     names.add(variant.name);
     if (variant.payload) {
       validateType(variant.payload, structs, enums, foreignNamedTypes, fileName, false);
-      if (
-        (/^__z_(?:Option|Result)_/.test(declaration.name))
-        && hasMoveOnlyForeignType(variant.payload.name, structs, enums, foreignNamedTypes)
-      ) {
-        throw new DiagnosticError(fileName, variant.payload.location, "enum payloads cannot store move-only native values in the first C++ ownership tier", {
-          code: "Z0240",
-          notes: ["compiler-provided Option and Result storage has separate construction paths that are not part of the first move-only enum slice"],
-          helps: ["use a named Z enum for the move-only payload, or keep Option/Result payloads copyable for now"],
-        });
-      }
       const optionalViewPayload = Boolean(parseOptionType(declaration.name) && parseViewType(variant.payload.name));
       if (containsViewType(variant.payload.name) && !optionalViewPayload) {
         throw new DiagnosticError(fileName, variant.payload.location, "view values cannot be stored in enum payloads", { code: "Z0206" });
@@ -859,16 +849,12 @@ function validateFunctionSignature(
   if (
     declaration.async
     && hasMoveOnlyForeignType(declaration.returnType.name, structs, enums, foreignNamedTypes)
-    && (directNativeReturn?.kind !== "value" || Boolean(declaration.errorType))
+    && directNativeReturn?.kind !== "value"
   ) {
     throw new DiagnosticError(fileName, declaration.returnType.location, "async functions cannot return move-only native values in the first C++ ownership tier", {
       code: "Z0704",
-      notes: [directNativeReturn?.kind === "value"
-        ? "fallible move-only native results still require compiler Result payload storage"
-        : "direct move-only native returns work; containing aggregates need recursive async-result construction"],
-      helps: [directNativeReturn?.kind === "value"
-        ? "return the native value from an infallible async function for now"
-        : "return the native value directly until aggregate native async-result storage is implemented"],
+      notes: ["direct move-only native returns work; containing aggregates need recursive async-result construction"],
+      helps: ["return the native value directly until aggregate native async-result storage is implemented"],
     });
   }
   if (containsViewType(declaration.returnType.name) && !parseReceiverViewReturnType(declaration.returnType.name)) {
@@ -1452,6 +1438,7 @@ function analyzeStatement(
         state.activeFunction?.async
         && hasMoveOnlyForeignType(variableType, structs, enums, state.foreignNamedTypes)
         && directForeignValue?.kind !== "value"
+        && !/^__z_(?:Option|Result)_/.test(String(underlyingType(variableType)))
       ) {
         throw new DiagnosticError(fileName, statement.location, "async locals cannot store move-only native values in the first C++ ownership tier", {
           code: "Z0704",

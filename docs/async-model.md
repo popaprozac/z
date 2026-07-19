@@ -127,12 +127,14 @@ The first async ownership tier permits owned values, ARC class references,
 owned closures, and direct move-only native locals in task frames. Native
 locals use aligned raw storage so a non-default-constructible C++ value begins
 its lifetime through placement construction and ends exactly once through its
-live flag. Infallible native task results use matching raw result storage and
-move through ordinary `return`, `return await`, and awaited local bindings.
-This path is exercised across normal completion, consuming transfer, failure,
-cancellation, and destruction of a completed-but-unclaimed child result. Async
-parameters, fallible `Result` payloads, embedded owned awaits, and aggregates
-containing move-only native storage remain deferred. Z also rejects `in`,
+live flag. Native task results use matching raw result storage and move through
+ordinary `return`, `return await`, and awaited local bindings. Fallible native
+results propagate through `try await`; `attempt await` placement-constructs
+`Result<T, E>` in named or hidden suspension storage, with borrowed and consuming
+match lowering. These paths are exercised across normal completion, consuming
+transfer, failure, cancellation, and destruction of completed-but-unclaimed
+storage. Async parameters and aggregates containing move-only native storage
+remain deferred. Z also rejects `in`,
 `inout`, `out`, `Slice<T>`, borrowed struct receivers, and any other live borrow
 at an `await`. Scoped async borrowing can be added later from real zero-copy
 APIs without exposing general lifetime syntax.
@@ -171,7 +173,9 @@ cleanup-free. Live flags make struct and enum moves explicit, ARC copies retain,
 awaited results transfer between frames, and active `Option<T>`/`Result<T, E>`
 payloads are destroyed by tag. Frame destruction releases every value still
 owned on success or propagated error. Task frames also lower `throw`, `try
-await`, `attempt await`, payloadless `void` success, and root failure exit. `z
+await`, `attempt await`, payloadless `void` success, and root failure exit.
+Move-only native Results use aligned placement storage and their generated
+tagged-union destructor instead of plain aggregate assignment. `z
 emit` produces readable C for this subset and `z run` executes it.
 Unsupported but valid async shapes report `Z0700` with a specific boundary
 diagnostic.

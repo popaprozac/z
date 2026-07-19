@@ -804,11 +804,14 @@ receivers, and rejects suspension while any other borrow is live. Owned values,
 ARC class references, owned closures, and direct move-only native locals may be
 stored in task frames. A native local occupies aligned raw frame storage and is
 placement-constructed and destroyed exactly once according to its semantic live
-flag. An infallible native result uses matching aligned storage and moves through
-`return`, `return await`, and an awaited caller binding; cancellation destroys a
-completed result if it was never claimed. Native async parameters, fallible
-`Result` payloads, embedded hidden results, and containing aggregates remain
-later construction paths. This conservative boundary can later grow scoped
+flag. Native results use matching aligned storage and move through `return`,
+`return await`, and awaited caller bindings. Fallible native tasks preserve that
+storage through `try await`, while `attempt await` placement-constructs a
+non-trivial `Result<T, E>` in either a named local or hidden expression slot;
+borrowed and consuming matches retain or transfer the active payload accordingly.
+Cancellation destroys a completed result if it was never claimed. Native async
+parameters and containing aggregates remain later construction paths. This
+conservative boundary can later grow scoped
 async borrowing without exposing general lifetime syntax.
 
 An explicit async scope requires an async parent because scope exit implicitly
@@ -923,11 +926,12 @@ elements in reverse order. Named enums use an explicit tagged-union lifetime
 wrapper with deleted copying, native move construction/assignment, and active
 payload destruction. These paths also compose with Z-managed fields: Z cleanup
 runs before the enclosing C++ object's destructor. Compiler-provided
-`Option<T>`/`Result<T, E>`, ARC fields, and owned closure environments remain
-separate non-trivial storage tiers. Direct move-only native locals now use
-aligned placement storage inside async frames, and infallible task results use
-the same representation for return and await transfer. Parameters, fallible
-results, embedded hidden results, and aggregates containing them remain deferred.
+`Option<T>`/`Result<T, E>` reuse that non-trivial tagged-union lifetime wrapper.
+ARC fields and owned closure environments remain separate storage tiers. Direct
+move-only native locals and task results use aligned placement storage inside
+async frames; fallible results compose with `try await`, `attempt await`, hidden
+expression slots, and match. Parameters and aggregates containing native values
+remain deferred.
 Named-value `const T&`, `T&`, and move-only `T&&` parameters reuse Z's `in`,
 `inout`, and owned-value capabilities. Receiver-qualified `const &`, `&`, and
 move-only `&&` methods likewise map to borrowed, mutable, and consuming

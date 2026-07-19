@@ -1674,16 +1674,53 @@ test("stores move-only C++ values in Array and named enum payloads", () => {
   const elementDiagnostic = diagnostics(movedElement, arrayExample)[0];
   assert.match(elementDiagnostic.message, /cannot move an ownership-bearing field or element out of its owner/);
 
+  const optionDirectory = mkdtempSync("/tmp/z-native-option-");
+  const optionFile = resolve(optionDirectory, "main.z");
   const compilerOption = `
-    import native from "../../../tests/fixtures/move-only.hpp";
+    import native from ${JSON.stringify(resolve(projectRoot, "tests/fixtures/move-only.hpp"))};
+
+    function open(fail: bool): native.zcpp.UniqueValue throws i32 {
+      if (fail) throw 7;
+      return native.zcpp.UniqueValue(42);
+    }
+
+    function relay(): native.zcpp.UniqueValue throws i32 {
+      return try open(false);
+    }
+
     function main(): i32 {
       const option: Option<native.zcpp.UniqueValue> = Option.some(native.zcpp.UniqueValue(42));
-      return 0;
+      const optionAnswer = match (option) {
+        some(value) => value.finish(0);
+        none => 0;
+      };
+      const empty: Option<native.zcpp.UniqueValue> = Option.none;
+      const emptyAnswer = match (empty) {
+        some(value) => value.finish(0);
+        none => 0;
+      };
+      const result = attempt relay();
+      const resultAnswer = match (result) {
+        success(value) => value.finish(0);
+        failure(error) => -error;
+      };
+      const failed = attempt open(true);
+      const failureCode = match (failed) {
+        success(value) => value.finish(0);
+        failure(error) => error;
+      };
+      return optionAnswer - 42 + emptyAnswer + resultAnswer - 42 + failureCode - 7 + native.zcpp.unique_live();
     }
   `;
-  const optionDiagnostic = diagnostics(compilerOption, enumExample)[0];
-  assert.equal(optionDiagnostic.code, "Z0240");
-  assert.match(optionDiagnostic.message, /enum payloads cannot store move-only native values/);
+  writeFileSync(optionFile, compilerOption);
+  const optionGenerated = compileToNative(compilerOption, optionFile).source;
+  assert.match(optionGenerated, /Z_Option_[^:]+::make_some/);
+  assert.match(optionGenerated, /Z_Option_[^:]+::make_none/);
+  assert.match(optionGenerated, /Z_Result_[^:]+::make_success/);
+  assert.match(optionGenerated, /Z_Result_[^:]+::make_failure/);
+  assert.match(optionGenerated, /zcpp::UniqueValue value = std::move/);
+  const optionResult = spawnSync(process.execPath, [cli, "run", optionFile], { encoding: "utf8" });
+  assert.equal(optionResult.status, 0, optionResult.stderr);
 
   const mixedStructReplacement = `
     import native from "../../../tests/fixtures/move-only.hpp";
@@ -6899,14 +6936,14 @@ test("constructs and destroys move-only C++ values across async suspension", () 
   assert.match(generated, /new \(frame->value_resource\) zcpp::UniqueValue\(zcpp::UniqueValue\(42\)\)/);
   assert.match(generated, /new \(frame->result\) zcpp::UniqueValue\(\(frame->live_resource = false, std::move/);
   assert.match(generated, /new \(frame->result\) zcpp::UniqueValue\(std::move\(\(\*std::launder\(reinterpret_cast<zcpp::UniqueValue \*>\(frame->child_\d+->result\)/);
-  assert.match(generated, /new \(frame->value_resource\) zcpp::UniqueValue\(std::move\(\(\*std::launder\(reinterpret_cast<zcpp::UniqueValue \*>\(frame->child_\d+->result\)/);
+  assert.match(generated, /::make_success\(std::move\(\(\*std::launder\(reinterpret_cast<zcpp::UniqueValue \*>\(frame->child_\d+->result\)/);
   assert.match(generated, /frame->child_\d+->live_result = false;/);
   assert.match(generated, /std::launder\(reinterpret_cast<zcpp::UniqueValue \*>\(frame->value_resource\)\)/);
   assert.match(generated, /std::destroy_at\(&\(\(\*std::launder\(reinterpret_cast<zcpp::UniqueValue \*>\(frame->value_resource\)\)\)\)\)/);
 
   const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
-  assert.equal(result.stdout, "answer=42, live=0\n");
+  assert.equal(result.stdout, "answer=42, failure=7, live=0\n");
 
   const resourceOffset = source.indexOf("resource =") + 2;
   assert.match(hover(source, example, resourceOffset)?.contents.value ?? "", /resource: native\.zcpp\.UniqueValue/);
@@ -6985,13 +7022,47 @@ test("constructs and destroys move-only C++ values across async suspension", () 
   assert.equal(parameterDiagnostic.code, "Z0704");
   assert.match(parameterDiagnostic.message, /async parameter "resource" cannot store a move-only native value/);
 
-  const fallibleBoundary = `
+  const fallible = resolve(directory, "fallible.z");
+  writeFileSync(fallible, `
+    import { delay } from "std/time";
     import native from ${JSON.stringify(header)};
-    async function open(): native.zcpp.UniqueValue throws i32 { return native.zcpp.UniqueValue(42); }
-  `;
-  const fallibleDiagnostic = diagnostics(fallibleBoundary, resolve(directory, "fallible.z"))[0];
-  assert.equal(fallibleDiagnostic.code, "Z0240");
-  assert.match(fallibleDiagnostic.message, /enum payloads cannot store move-only native values/);
+
+    async function open(fail: bool): native.zcpp.UniqueValue throws i32 {
+      await delay(1);
+      if (fail) throw 7;
+      return native.zcpp.UniqueValue(42);
+    }
+
+    async function openWithTry(): i32 throws i32 {
+      const resource = try await open(false);
+      return resource.finish(0);
+    }
+
+    async function main(): i32 {
+      const propagated = attempt await openWithTry();
+      const propagatedAnswer = match (propagated) {
+        success(value) => value;
+        failure(error) => -error;
+      };
+      const directAnswer = match (attempt await open(false)) {
+        success(resource) => resource.finish(0);
+        failure(error) => -error;
+      };
+      const failed = attempt await open(true);
+      const failureCode = match (failed) {
+        success(resource) => resource.finish(0);
+        failure(error) => error;
+      };
+      return propagatedAnswer - 42 + directAnswer - 42 + failureCode - 7 + native.zcpp.unique_live();
+    }
+  `);
+  const fallibleGenerated = compileToNative(readFileSync(fallible, "utf8"), fallible).source;
+  assert.match(fallibleGenerated, /::make_success\(std::move/);
+  assert.match(fallibleGenerated, /::make_failure\(frame->child_\d+->error\)/);
+  assert.match(fallibleGenerated, /alignas\(Z_Result_[^)]+\) unsigned char suspend_\d+/);
+  assert.match(fallibleGenerated, /std::destroy_at\(&\(\(\*std::launder\(reinterpret_cast<Z_Result_/);
+  const fallibleResult = spawnSync(process.execPath, [cli, "run", fallible], { encoding: "utf8" });
+  assert.equal(fallibleResult.status, 0, fallibleResult.stderr);
 
   const aggregateBoundary = `
     import { delay } from "std/time";
