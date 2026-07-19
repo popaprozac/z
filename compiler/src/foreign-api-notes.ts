@@ -77,6 +77,7 @@ export function readApiNotes(
           parseForeignDeclarationContracts(readFileSync(source.path, "utf8"), source.path),
           declarations,
           declaration.header,
+          includeDirectory,
           source.path,
         )
         : parseApiNotes(JSON.parse(readFileSync(source.path, "utf8")), source.path),
@@ -103,14 +104,12 @@ function apiNoteSources(
   declaration: ImportDeclaration,
   includeDirectory: string,
 ): { readonly path: string; readonly kind: "json" | "declaration" }[] {
-  const localJsonPath = resolve(includeDirectory, `${declaration.header}.zapi.json`);
   const localDeclarationPath = resolve(includeDirectory, `${declaration.header}.zd`);
   const localHeader = resolve(includeDirectory, declaration.header);
   const builtInPath = resolve(dirname(fileURLToPath(import.meta.url)), "../api-notes", `${basename(declaration.header)}.json`);
   const canUseBuiltIn = declaration.header === basename(declaration.header) && !existsSync(localHeader);
   return [
     ...(canUseBuiltIn && existsSync(builtInPath) ? [{ path: builtInPath, kind: "json" as const }] : []),
-    ...(existsSync(localJsonPath) ? [{ path: localJsonPath, kind: "json" as const }] : []),
     ...(existsSync(localDeclarationPath) ? [{ path: localDeclarationPath, kind: "declaration" as const }] : []),
   ];
 }

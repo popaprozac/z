@@ -23,9 +23,8 @@ const environment = try await webview.createEnvironment();
 ```
 
 Header imports are progressively parsed through Clang into cached, typed foreign
-modules. The bootstrap begins with C functions and a small set of scalar types.
-Sidecar API notes will supply ownership, lifetime, nullability, callback, and
-async semantics that are absent from the header itself.
+modules. Adjacent `.zd` declarations supply ownership, lifetime, nullability,
+callback, and async semantics that are absent from the header itself.
 
 ## Core semantics
 
@@ -995,11 +994,10 @@ allows the callee to read and mutate, and `out` promises complete initialization
 before return. These modes authorize a compiler-generated address for one call;
 they do not introduce a general safe-code address-of operator.
 
-The Bun bootstrap currently represents project notes as adjacent
-`<header>.zapi.json` files and can ship notes for platform headers. That JSON
-format is an implementation scaffold, not the final authoring experience. The
-intended source form is an adjacent `<header>.zd` Z declaration file using
-`declare module`. Over time, Clang attributes, Apple's API notes, Windows SAL
+The toolchain may ship internal notes for platform headers. Project-authored
+contracts use adjacent `<header>.zd` Z declaration files with `declare module`;
+there is no second project-sidecar format to keep synchronized.
+Over time, Clang attributes, Apple's API notes, Windows SAL
 annotations, package metadata, and generated bindings should populate the same
 semantic model so the common case remains simply:
 

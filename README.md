@@ -66,7 +66,7 @@ requiring lifetime syntax throughout ordinary application code.
 | Errors | Typed `throws`, `try` propagation, `attempt`, `Result<T, E>` |
 | Control flow | Checked arithmetic, loops, ternaries, value `if`, exhaustive `match` |
 | Async | Stackless tasks, FIFO executor, spawn/join scopes, cancellation, delay |
-| C | Header imports, functions, records, enums, constants, pointers with API notes, callbacks |
+| C | Header imports, functions, records, enums, constants, pointers with `.zd` contracts, callbacks |
 | Objective-C | ARC objects, nullability, selectors, blocks, persistent observers, AppKit |
 | C++ | Hierarchical functions/types, overload selection, plain records, first copyable RAII values |
 | Swift | Generated Objective-C compatibility headers and first generated C++ value probe |

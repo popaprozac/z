@@ -1,3 +1,4 @@
+import { dirname, resolve } from "node:path";
 import type { SourceLocation } from "./ast.ts";
 import { DiagnosticError } from "./diagnostics.ts";
 import type { ApiNotes, PointerNote } from "./foreign-api-notes.ts";
@@ -218,13 +219,16 @@ export function foreignDeclarationApiNotes(
   contracts: ForeignDeclarationContracts,
   declarations: ReadonlyMap<string, ForeignFunctionDeclaration>,
   expectedModuleSpecifier: string,
+  includeDirectory: string,
   fileName: string,
 ): ApiNotes {
-  if (contracts.moduleSpecifier !== expectedModuleSpecifier) {
+  const declaredHeader = resolve(dirname(fileName), contracts.moduleSpecifier);
+  const importedHeader = resolve(includeDirectory, expectedModuleSpecifier);
+  if (declaredHeader !== importedHeader) {
     throw new DiagnosticError(
       fileName,
       { offset: 0, line: 1, column: 1, fileName },
-      `Z declaration module ${JSON.stringify(contracts.moduleSpecifier)} does not match imported header ${JSON.stringify(expectedModuleSpecifier)}`,
+      `Z declaration module ${JSON.stringify(contracts.moduleSpecifier)} does not match imported header ${JSON.stringify(expectedModuleSpecifier)}; resolved ${JSON.stringify(declaredHeader)} instead of ${JSON.stringify(importedHeader)}`,
       { code: "Z0801" },
     );
   }

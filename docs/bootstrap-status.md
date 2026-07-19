@@ -67,7 +67,7 @@ an inferred receiver-tied view.
 | --- | --- | --- |
 | C functions and scalars | Implemented | Clang AST signatures, selective imports, aliases, variadics |
 | C records and enums | Implemented | Complete supported layouts, nested records, constants |
-| C pointers | Partial | Safe opaque handles and record borrows accept adjacent `.zd` contracts; nullable declared handles lift into niche-backed `Option`; built-in and stage-0 JSON notes remain |
+| C pointers | Partial | Safe opaque handles and record borrows use adjacent `.zd` contracts; nullable declared handles lift into niche-backed `Option`; internal toolchain notes remain |
 | C callbacks | Partial | Call-only and caller-thread escaping callbacks use `.zd` with named context and exact release contracts; cross-thread callbacks remain unsupported |
 | Objective-C | Partial | ARC classes/fields, methods, properties/global object constants, labels, nullability, niche-backed `Option.fromNullable`, owned `String`/`NSString` copies, escaping blocks and persistent observer tokens |
 | C++ | Partial | Hierarchical and selectively aliased namespaces, functions and named types, typed overload selection, plain records, first opaque copyable RAII values |

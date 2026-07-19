@@ -20,7 +20,8 @@ modeled safely, overloads, calling conventions, availability, and documentation
 in a cached foreign module.
 
 Headers do not reliably encode ownership or asynchronous callback contracts.
-Packages can therefore ship Z API notes without modifying upstream headers.
+Packages can therefore ship adjacent `.zd` declarations without modifying
+upstream headers.
 The toolchain producer first records raw native declarations; a separate
 normalizer applies API-note facts and emits the FIIR used by the compiler and
 editor. Disjoint metadata sources compose, while malformed, unmatched, or
@@ -100,8 +101,8 @@ carry explicit ABI and library metadata. Supplying a declaration is distinct
 from accepting an unverified memory-safety obligation: unsafe functions and raw
 operations still require a separate `unsafe` boundary. Inline declarations,
 adjacent `<header>.zd` Z declaration files, and built-in toolchain contracts
-will feed the same normalizer and FIIR; the current `.zapi.json` sidecar is
-stage-0 input rather than promised source syntax.
+feed the same normalizer and FIIR. `.zd` is the sole project-authored foreign
+contract format.
 
 The first `.zd` slice augments Clang declarations without repeating their ABI
 types. `_` means "use the header-derived type," while ordinary Z capabilities,
@@ -122,11 +123,14 @@ The declaration is not a wrapper or implementation. `in`, `move`, and `| null`
 retain their ordinary Z meanings. A function contract block is declarative,
 not executable; associating `deinit vendor_close` with the result implies
 ownership and deterministic release of each non-null value. Functions without
-additional contracts end in `;`. The module specifier, function names,
-parameter order, and parameter names must match Clang's raw interface, and
-`.zd` facts conflict-check with any built-in or stage-0 JSON source. Explicit
-ABI types and callback lifetime/context relationships remain later
-declaration-file slices.
+additional contracts end in `;`. The function names, parameter order, and
+parameter names must match Clang's raw interface. The module specifier is
+resolved relative to the declaration file, so one canonical header contract
+works whether importing Z code reaches the header through a local,
+parent-relative, or project-relative spelling. `.zd` facts conflict-check with
+built-in toolchain facts. Explicit ABI types remain a later declaration-file
+slice; callback lifetime, context, release, and caller-thread contracts are
+supported now.
 
 The language server reads the same header while editing a `.zd` file. It can
 complete native function and parameter names, filter `deinit` candidates by the

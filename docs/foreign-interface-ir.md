@@ -80,9 +80,9 @@ the declaration result with ownership, nullability, record access, callback
 escape, release, and threading. Multiple sources may contribute disjoint facts,
 but contradictory safety facts are rejected rather than resolved by source
 order. Unknown fields, functions, and parameter indices are also rejected before
-FIIR reaches sema. The adjacent `.zapi.json` used today is stage-0 input; it is
-not FIIR and is not a promised user-authored format. The intended source form is
-an adjacent `<header>.zd` Z declaration file using `declare module`.
+FIIR reaches sema. Project contracts use adjacent `<header>.zd` Z declaration
+files with `declare module`. Internal toolchain metadata may feed the same
+normalizer without becoming a second project-authored contract format.
 
 ### Swift and package metadata
 

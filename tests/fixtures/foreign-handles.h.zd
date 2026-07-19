@@ -1,4 +1,4 @@
-declare module "tests/fixtures/foreign-handles.h" {
+declare module "foreign-handles.h" {
   export function z_test_open(): _ | null {
     deinit z_test_close;
   }

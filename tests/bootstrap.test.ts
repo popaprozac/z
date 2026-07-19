@@ -538,7 +538,7 @@ test("passes contextual inline closures directly to imported C callbacks", () =>
   assert.equal(result.stdout, "inline-escape-drop=2\n");
 });
 
-test("rejects invalid C callback and context API-note pairs", () => {
+test("rejects invalid C callback and context declaration pairs", () => {
   const directory = mkdtempSync("/tmp/z-callback-context-notes-");
   const header = resolve(directory, "invalid-context.h");
   const sourceFile = resolve(directory, "main.z");
@@ -555,20 +555,15 @@ test("rejects invalid C callback and context API-note pairs", () => {
       return value;
     }
   `);
-  writeFileSync(`${header}.zapi.json`, JSON.stringify({
-    functions: {
-      invalid_context: {
-        parameters: {
-          "2": {
-            callback: {
-              lifetime: "call",
-              context: { parameter: 1, callbackParameter: 1 },
-            },
-          },
-        },
-      },
-    },
-  }));
+  writeFileSync(`${header}.zd`, `
+    declare module "invalid-context.h" {
+      export function invalid_context(value: _, not_context: _, in callback: _): _ {
+        callback callback {
+          context not_context;
+        }
+      }
+    }
+  `);
   const source = `
     import invalid from "invalid-context.h";
     function identity(value: i32): i32 { return value; }
@@ -595,20 +590,15 @@ test("rejects escaping C callbacks without complete release and threading contra
       (void)release;
     }
   `);
-  writeFileSync(`${header}.zapi.json`, JSON.stringify({
-    functions: {
-      retain_callback: {
-        parameters: {
-          "0": {
-            callback: {
-              lifetime: "escape",
-              context: { parameter: 1, callbackParameter: 1 },
-            },
-          },
-        },
-      },
-    },
-  }));
+  writeFileSync(`${header}.zd`, `
+    declare module "escaping.h" {
+      export function retain_callback(move callback: _, context: _, release: _): _ {
+        callback callback {
+          context context;
+        }
+      }
+    }
+  `);
   const source = `
     import escaping from "escaping.h";
     function identity(value: i32): i32 { return value; }
@@ -616,7 +606,7 @@ test("rejects escaping C callbacks without complete release and threading contra
   `;
   writeFileSync(sourceFile, source);
   const diagnostic = diagnostics(source, sourceFile).find((item) => item.code === "Z0214");
-  assert.match(diagnostic?.message ?? "", /require caller-thread context and release contracts/);
+  assert.match(diagnostic?.message ?? "", /requires deinit and caller-thread contracts/);
 });
 
 test("rejects unknown functions from imported headers", () => {
@@ -975,7 +965,7 @@ test("surfaces native availability in hover and rejects universally unavailable 
   assert.match(diagnostic.relatedInformation?.[0]?.location.uri ?? "", /tests\/fixtures\/z-availability\.h$/);
 });
 
-test("rejects malformed or unmatched API notes before FIIR reaches sema", () => {
+test("rejects malformed or unmatched Z declarations before FIIR reaches sema", () => {
   const directory = mkdtempSync("/tmp/z-fiir-notes-");
   const header = resolve(directory, "contract.h");
   const sourceFile = resolve(directory, "main.z");
@@ -986,22 +976,30 @@ test("rejects malformed or unmatched API notes before FIIR reaches sema", () => 
   writeFileSync(header, "int known(void);\n");
   writeFileSync(sourceFile, source);
 
-  writeFileSync(`${header}.zapi.json`, "{}");
+  writeFileSync(`${header}.zd`, `
+    declare module "contract.h" {
+      export function known(): _;
+    }
+  `);
   assert.match(compileToC(source, sourceFile), /return known\(\);/);
 
-  writeFileSync(`${header}.zapi.json`, JSON.stringify({
-    functions: { missing: { return: { nullable: false } } },
-  }));
+  writeFileSync(`${header}.zd`, `
+    declare module "contract.h" {
+      export function missing(): _;
+    }
+  `);
   const missing = diagnostics(source, sourceFile)[0];
   assert.equal(missing.code, "Z0801");
-  assert.match(missing.message, /unknown foreign function "missing"/);
+  assert.match(missing.message, /declaration names unknown foreign function "missing"/);
 
-  writeFileSync(`${header}.zapi.json`, JSON.stringify({
-    functions: { known: { return: { nullible: false } } },
-  }));
+  writeFileSync(`${header}.zd`, `
+    declare module "contract.h" {
+      export function known(): _ nullible;
+    }
+  `);
   const malformed = diagnostics(source, sourceFile)[0];
   assert.equal(malformed.code, "Z0801");
-  assert.match(malformed.message, /unknown field functions\.known\.return\.nullible/);
+  assert.match(malformed.message, /expected ";" in Z declaration file, found "nullible"/);
 });
 
 test("imports C typedefs, records, enums, constants, and qualified signatures", () => {
@@ -2141,6 +2139,27 @@ test("borrows and explicitly mutates imported C records through safe pointer mod
   assert.match(generated, /z_offset\(&\(point\), 3, 4\);/);
   assert.match(generated, /z_read\(&\(point\)\)/);
   assert.match(generated, /z_reset\(&\(point\)\);/);
+
+  const declarationFile = resolve(projectRoot, "tests/fixtures/geometry.h.zd");
+  const declarationSource = readFileSync(declarationFile, "utf8");
+  assert.deepEqual(diagnostics(declarationSource, declarationFile), []);
+  const offsetFunction = declarationSource.indexOf("z_offset") + 2;
+  assert.match(
+    hover(declarationSource, declarationFile, offsetFunction)?.contents.value ?? "",
+    /z_offset\(point: ZPoint \*, dx: i32, dy: i32\): void/,
+  );
+  const pointParameter = declarationSource.indexOf("point: _") + 2;
+  assert.match(
+    hover(declarationSource, declarationFile, pointParameter)?.contents.value ?? "",
+    /inout point: ZPoint \*/,
+  );
+  const completionSource = declarationSource.replace("z_reset", "z_res");
+  const completionOffset = completionSource.indexOf("z_res") + "z_res".length;
+  assert.equal(
+    completions(completionSource, declarationFile, completionOffset)
+      .find((item) => item.label === "z_reset")?.kind,
+    3,
+  );
 });
 
 test("requires exact pointer modes and mutable storage at imported record boundaries", () => {

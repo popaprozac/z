@@ -1,0 +1,5 @@
+declare module "geometry.h" {
+  export function z_offset(inout point: _, dx: _, dy: _): _;
+  export function z_reset(out point: _): _;
+  export function z_read(in point: _): _;
+}
