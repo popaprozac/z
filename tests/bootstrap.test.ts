@@ -7013,13 +7013,78 @@ test("constructs and destroys move-only C++ values across async suspension", () 
   const consumed = spawnSync(process.execPath, [cli, "run", consuming], { encoding: "utf8" });
   assert.equal(consumed.status, 0, consumed.stderr);
 
-  const parameterBoundary = `
+  const parameterExample = resolve(projectRoot, "examples/async/async-native-parameters.z");
+  const parameterSource = readFileSync(parameterExample, "utf8");
+  const parameterGenerated = compileToNative(parameterSource, parameterExample).source;
+  assert.match(
+    parameterGenerated,
+    /z_async_start_inspectNative\(Z_AsyncExecutor \*executor, zcpp::UniqueValue &&value_resource\)/,
+  );
+  assert.match(
+    parameterGenerated,
+    /new \(frame->value_resource\) zcpp::UniqueValue\(std::move\(value_resource\)\)/,
+  );
+  assert.match(
+    parameterGenerated,
+    /z_async_start_saveDocument\(Z_AsyncExecutor \*executor, Z_DocumentLease &&value_document\)/,
+  );
+  assert.match(
+    parameterGenerated,
+    /new \(frame->value_document\) Z_DocumentLease\(std::move\(value_document\)\)/,
+  );
+  assert.match(parameterGenerated, /z_async_start_inspectNative\(frame->task.executor, z_async_take/);
+  const parameterResult = spawnSync(process.execPath, [cli, "run", parameterExample], { encoding: "utf8" });
+  assert.equal(parameterResult.status, 0, parameterResult.stderr);
+  assert.equal(parameterResult.stdout, "native=42, document=42, live=0\n");
+  const ownedParameterOffset = parameterSource.indexOf("resource: zcpp.UniqueValue") + 2;
+  assert.match(
+    hover(parameterSource, parameterExample, ownedParameterOffset)?.contents.value ?? "",
+    /resource: zcpp\.UniqueValue/,
+  );
+
+  const parameterUseAfterMove = `
     import native from ${JSON.stringify(header)};
-    async function inspect(resource: native.zcpp.UniqueValue): i32 { return resource.value(); }
+    async function consume(resource: native.zcpp.UniqueValue): void { return; }
+    async function main(): i32 {
+      const resource = native.zcpp.UniqueValue(42);
+      const task = spawn consume(resource);
+      return resource.value();
+    }
   `;
-  const parameterDiagnostic = diagnostics(parameterBoundary, resolve(directory, "parameter.z"))[0];
-  assert.equal(parameterDiagnostic.code, "Z0704");
-  assert.match(parameterDiagnostic.message, /async parameter "resource" cannot store a move-only native value/);
+  const parameterMoveDiagnostic = diagnostics(parameterUseAfterMove, resolve(directory, "parameter-move.z"))[0];
+  assert.equal(parameterMoveDiagnostic.code, "Z0201");
+  assert.match(parameterMoveDiagnostic.message, /use of moved value "resource"/);
+
+  const borrowedParameter = `
+    import native from ${JSON.stringify(header)};
+    async function inspect(in resource: native.zcpp.UniqueValue): i32 { return resource.value(); }
+  `;
+  const borrowedParameterDiagnostic = diagnostics(borrowedParameter, resolve(directory, "borrowed-parameter.z"))[0];
+  assert.equal(borrowedParameterDiagnostic.code, "Z0704");
+  assert.match(borrowedParameterDiagnostic.message, /cannot borrow storage in the first async tier/);
+
+  const parameterCancellation = resolve(directory, "parameter-cancellation.z");
+  writeFileSync(parameterCancellation, `
+    import { delay } from "std/time";
+    import native from ${JSON.stringify(header)};
+
+    async function hold(resource: native.zcpp.UniqueValue): void {
+      await delay(1000);
+      return;
+    }
+
+    async function cancelBeforeChildPoll(): i32 throws i32 {
+      spawn hold(native.zcpp.UniqueValue(9));
+      throw 7;
+    }
+
+    async function main(): i32 {
+      const observed = attempt await cancelBeforeChildPoll();
+      return native.zcpp.unique_live();
+    }
+  `);
+  const parameterCancelled = spawnSync(process.execPath, [cli, "run", parameterCancellation], { encoding: "utf8" });
+  assert.equal(parameterCancelled.status, 0, parameterCancelled.stderr);
 
   const fallible = resolve(directory, "fallible.z");
   writeFileSync(fallible, `
@@ -7145,7 +7210,7 @@ test("constructs and destroys move-only C++ values across async suspension", () 
   `);
   const enumResult = spawnSync(process.execPath, [cli, "run", enumAggregate], { encoding: "utf8" });
   assert.equal(enumResult.status, 0, enumResult.stderr);
-});
+}, 15000);
 
 test("destroys active Option and Result payloads in async task frames", () => {
   const example = resolve(projectRoot, "examples/async/async-owned-enums.z");

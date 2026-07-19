@@ -69,6 +69,7 @@ support or producing language-server diagnostics from hypothetical imports.
 - [`async-aggregates.z`](async/async-aggregates.z), [`async-ownership.z`](async/async-ownership.z), and [`async-owned-enums.z`](async/async-owned-enums.z)
 - [`async-native-ownership.z`](async/async-native-ownership.z): move-only C++ ownership across suspension, fallible task-result relays, `try await`, `attempt await`, and match
 - [`async-native-aggregate.z`](async/async-native-aggregate.z): a native-owning Z value struct across suspension, fallible relay, consuming match, and deterministic aggregate/native cleanup
+- [`async-native-parameters.z`](async/async-native-parameters.z): direct C++ and native-owning Z values transferred into hot spawned task frames
 - [`async-methods.z`](async/async-methods.z)
 
 ## Native interop

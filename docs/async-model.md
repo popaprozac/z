@@ -134,8 +134,10 @@ bindings. Fallible native results propagate through `try await`; `attempt await`
 placement-constructs `Result<T, E>` in named or hidden suspension storage, with
 borrowed and consuming match lowering. These paths are exercised across normal
 completion, consuming transfer, failure, cancellation, and destruction of
-completed-but-unclaimed storage. Async parameters containing move-only native
-storage remain deferred. Z also rejects `in`,
+completed-but-unclaimed storage. Owned native arguments, including whole Z
+value aggregates containing them, move into child-frame parameter storage when
+`await` or `spawn` creates the task. Cancellation cleans those parameters even
+when the child body has not been polled. Z still rejects `in`,
 `inout`, `out`, `Slice<T>`, borrowed struct receivers, and any other live borrow
 at an `await`. Scoped async borrowing can be added later from real zero-copy
 APIs without exposing general lifetime syntax.

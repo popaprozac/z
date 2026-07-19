@@ -1115,9 +1115,10 @@ function generateDestroy(
 }
 
 function generateStartSignature(plan: AsyncFunctionPlan): string {
-  const parameters = ["Z_AsyncExecutor *executor", ...frameInputs(plan).map((input) => (
-    `${cFrameType(input.type, plan.types)} ${frameField(input.name)}`
-  ))];
+  const parameters = ["Z_AsyncExecutor *executor", ...frameInputs(plan).map((input) => {
+    const separator = requiresNativeFramePlacement(input.type, plan.types) ? " &&" : " ";
+    return `${cFrameType(input.type, plan.types)}${separator}${frameField(input.name)}`;
+  })];
   return `static __attribute__((unused)) ${plan.frameName} *${plan.startName}(${parameters.join(", ")})`;
 }
 
@@ -1157,7 +1158,11 @@ function generateStart(plan: AsyncFunctionPlan): string {
   }
   for (const input of frameInputs(plan)) {
     const name = frameField(input.name);
-    lines.push(`  frame->${name} = ${name};`);
+    if (requiresNativeFramePlacement(input.type, plan.types)) {
+      lines.push(`  new (frame->${name}) ${cFrameType(input.type, plan.types)}(std::move(${name}));`);
+    } else {
+      lines.push(`  frame->${name} = ${name};`);
+    }
   }
   for (const index of plan.children.keys()) lines.push(`  frame->child_${index} = NULL;`);
   lines.push("  return frame;", "}");

@@ -105,9 +105,11 @@ Infallible async functions may return these values; task results move through
 construction or an extra wrapper allocation. Unclaimed completed results are
 destroyed during cancellation. Fallible native tasks transfer through `try
 await`; `attempt await` constructs a non-trivial Result in named or hidden frame
-storage and match either borrows or consumes its active payload. Async parameters
-containing native values remain a separate construction path. ARC class fields
-and owned closure environments likewise remain deferred.
+storage and match either borrows or consumes its active payload. Owned async
+parameters use the same aligned storage: task creation move-constructs each
+child-frame slot, and cancellation destroys it even before the child body is
+polled. Borrowed async parameters remain a separate scoped-lifetime path. ARC
+class fields and owned closure environments likewise remain deferred.
 
 C++ named-value references map onto the existing Z capability model:
 

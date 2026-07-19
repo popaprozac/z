@@ -876,13 +876,6 @@ function validateFunctionSignature(
     }
     validateUserName(parameter.name, parameter.location, fileName);
     validateType(parameter.type, structs, enums, foreignNamedTypes, fileName, false);
-    if (declaration.async && hasMoveOnlyForeignType(parameter.type.name, structs, enums, foreignNamedTypes)) {
-      throw new DiagnosticError(fileName, parameter.type.location, `async parameter ${JSON.stringify(parameter.name)} cannot store a move-only native value in the first C++ ownership tier`, {
-        code: "Z0704",
-        notes: ["async frame storage does not yet construct non-trivial C++ values"],
-        helps: ["perform the native ownership transfer in a synchronous helper"],
-      });
-    }
     if (containsViewType(parameter.type.name)) {
       throw new DiagnosticError(fileName, parameter.type.location, "view is a receiver-tied return capability, not a parameter type", { code: "Z0206" });
     }

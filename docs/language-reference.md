@@ -468,8 +468,11 @@ Compiler-provided `Option<T>` and `Result<T, E>` use the same non-trivial
 tagged-union lifetime machinery, including borrowed and consuming matches.
 Direct async frame locals, whole Z value structs/enums containing them, and
 fallible task results also support move-only native storage through `try await`
-and `attempt await`. ARC class fields, owned closure environments, and async
-parameters containing native values remain later construction paths.
+and `attempt await`. Unqualified owned async parameters move native values or
+whole native-owning Z aggregates into the child frame at `await`/`spawn`; the
+source is unavailable immediately after task creation. ARC class fields, owned
+closure environments, and borrowed async parameters remain later construction
+paths.
 
 Swift-generated C++ compatibility values use this same surface. For example,
 the current owned-value probe supports `Swift.OwnedCounter.init(40)`,
