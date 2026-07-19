@@ -8,8 +8,9 @@ struct NativeOwner {
 function exercise(): i32 {
   const first = native.zcpp.make_managed(40);
   const owner = NativeOwner({ value: first });
-  const copied = owner;
-  return native.zcpp.read_managed(copied.value) + 2;
+  let copied = owner;
+  copied.value.add(2);
+  return copied.value.value();
 }
 
 function main(): i32 {

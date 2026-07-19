@@ -308,6 +308,20 @@ type and records which of `copy`, `move`, and deterministic `deinit` are safe.
 Capabilities must agree with Clang. The current backend executes copyable native
 RAII values; move-only values remain unsupported.
 
+Public instance methods on contracted C++ values are imported from the header
+without a wrapper declaration. A native `const` method borrows its receiver;
+a non-const method requires addressable `let` storage:
+
+```z
+let copied = owner;
+copied.value.add(2);       // C++ mutable receiver
+const answer = copied.value.value(); // C++ const receiver
+```
+
+Calls lower to ordinary C++ member calls. Native overloads use the same exact
+selection and `Z0803` diagnostics as imported free functions. Constructors,
+static methods, move-only receivers, and general templates remain later tiers.
+
 Native namespaces may also be selected and aliased with ordinary import syntax:
 
 ```z

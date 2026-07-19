@@ -16,6 +16,8 @@ import type {
   ForeignAvailability,
   ForeignBlockType,
   ForeignConstant,
+  ForeignCxxMethod,
+  ForeignCxxMethodOverload,
   ForeignDeclarationMetadata,
   ForeignField,
   ForeignFunctionDeclaration,
@@ -429,7 +431,7 @@ function collectNamedTypes(
         metadata,
       };
     } else if (seed.kind === "value") {
-      named = { kind: "value", exportName: seed.exportName, namespacePath: seed.namespacePath, qualifiedName: seed.qualifiedName, typeName: seed.typeName, cName: seed.cName, lifecycle: seed.lifecycle!, metadata };
+      named = { kind: "value", exportName: seed.exportName, namespacePath: seed.namespacePath, qualifiedName: seed.qualifiedName, typeName: seed.typeName, cName: seed.cName, lifecycle: seed.lifecycle!, methods: [], metadata };
     } else {
       const fields = (seed.declaration!.inner ?? []).filter((child) => child.kind === "FieldDecl");
       const mapped = fields.map((field) => field.name && field.type?.qualType
@@ -443,6 +445,17 @@ function collectNamedTypes(
     namedTypes.set(named.qualifiedName, named);
     byCName.set(named.cName, named);
     byCName.set(named.qualifiedName, named);
+  }
+
+  for (const seed of seeds.values()) {
+    const named = namedTypes.get(seed.qualifiedName);
+    if (seed.kind !== "value" || named?.kind !== "value" || !seed.declaration) continue;
+    const methods = collectCxxValueMethods(seed.declaration, seed.cName, byCName);
+    const updated: ForeignNamedType = { ...named, methods };
+    namedTypes.set(seed.qualifiedName, updated);
+    for (const [key, value] of byCName) {
+      if (value.typeName === named.typeName) byCName.set(key, updated);
+    }
   }
 
   const namedTypeAliases = new Map<string, string>();
@@ -484,6 +497,62 @@ function collectNamedTypes(
     }
   }
   return { namedTypes, namedTypeAliases, namespaces, constants, byCName };
+}
+
+function collectCxxValueMethods(
+  declaration: ClangNode,
+  ownerCName: string,
+  namedTypes: ReadonlyMap<string, ForeignNamedType>,
+): ForeignCxxMethod[] {
+  const namespaces = ownerCName.split("::").slice(0, -1);
+  const methods = new Map<string, ForeignCxxMethodOverload[]>();
+  let access = declaration.tagUsed === "class" ? "private" : "public";
+  for (const member of declaration.inner ?? []) {
+    if (member.kind === "AccessSpecDecl") {
+      access = member.access ?? access;
+      continue;
+    }
+    if (
+      access !== "public"
+      || member.kind !== "CXXMethodDecl"
+      || member.isImplicit
+      || member.explicitlyDeleted
+      || member.storageClass === "static"
+      || !member.name
+      || member.name.startsWith("operator")
+      || !member.type?.qualType
+    ) continue;
+    const parameterNodes = (member.inner ?? [])
+      .filter((child) => child.kind === "ParmVarDecl" && child.type?.qualType);
+    const returnSpelling = qualifyNativeTypeSpelling(returnTypeOf(member.type.qualType), namespaces, namedTypes);
+    const returnType = mapForeignType(returnSpelling, undefined, "return", new Map(), namedTypes);
+    const parameters = parameterNodes.map((parameter) => {
+      const spelling = qualifyNativeTypeSpelling(parameter.type!.qualType!, namespaces, namedTypes);
+      const canonical = parameter.type!.desugaredQualType
+        ? qualifyNativeTypeSpelling(parameter.type!.desugaredQualType, namespaces, namedTypes)
+        : undefined;
+      return {
+        name: parameter.name ?? null,
+        type: mapForeignType(spelling, undefined, "parameter", new Map(), namedTypes, canonical),
+      };
+    });
+    if (returnType.kind === "unsupported" || parameters.some((parameter) => parameter.type.kind === "unsupported")) continue;
+    const overload: ForeignCxxMethodOverload = {
+      name: member.name,
+      cName: member.name,
+      returnType,
+      parameters,
+      variadic: member.variadic === true,
+      cSignature: member.type.qualType,
+      receiverAccess: /\)\s*const(?:\s|$)/.test(member.type.qualType) ? "in" : "inout",
+      metadata: foreignDeclarationMetadata(member),
+    };
+    const existing = methods.get(member.name) ?? [];
+    if (!existing.some((candidate) => candidate.cSignature === overload.cSignature)) {
+      methods.set(member.name, [...existing, overload]);
+    }
+  }
+  return [...methods].map(([name, overloads]) => ({ name, overloads }));
 }
 
 function cxxValueLifecycle(declaration: ClangNode): ForeignValueLifecycle {

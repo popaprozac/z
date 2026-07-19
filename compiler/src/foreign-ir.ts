@@ -49,6 +49,7 @@ export type ForeignNamedType = (
     readonly typeName: string;
     readonly cName: string;
     readonly lifecycle: ForeignValueLifecycle;
+    readonly methods: readonly ForeignCxxMethod[];
   }
   | {
     readonly kind: "object";
@@ -82,6 +83,15 @@ export type ForeignValueLifecycle = {
   readonly copy: boolean;
   readonly move: boolean;
   readonly deinit: boolean;
+};
+
+export type ForeignCxxMethodOverload = ForeignFunctionOverload & {
+  readonly receiverAccess: "in" | "inout";
+};
+
+export type ForeignCxxMethod = {
+  readonly name: string;
+  readonly overloads: readonly ForeignCxxMethodOverload[];
 };
 
 export type ForeignField = {

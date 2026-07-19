@@ -862,10 +862,14 @@ Omitting a capability denies it, and a contract cannot grant a capability the
 native interface does not provide. FIIR records `copy`, `move`, and `deinit`
 separately. The implemented lowering supports copyable RAII values, including
 values nested in Z structs; C++ performs their copy construction, assignment,
-and deterministic destruction. Truly move-only foreign values remain
+and deterministic destruction. Public C++ instance methods retain overload and
+source metadata in FIIR. Const methods borrow their receiver; non-const methods
+require mutable addressable storage, and both lower directly to native member
+calls. Truly move-only foreign values remain
 unsupported until Z can lower native move construction and moved-from storage
-explicitly. Constructors, methods, mutable references, inheritance,
-user-defined conversions, and templates remain later tiers.
+explicitly. Constructors, static methods, arbitrary mutable-reference
+parameters, inheritance, user-defined conversions, and templates remain later
+tiers.
 
 On macOS, an installed framework header such as `AppKit/AppKit.h` selects the
 Objective-C ARC backend and adds its framework to the native link plan. Imported

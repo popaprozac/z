@@ -3500,6 +3500,15 @@ function generateExpressionInner(expression: Expression, context: GenerationCont
         const args = expression.arguments.map((argument) => generateCallArgument(argument, context));
         return generateObjCMessage(receiver, objcCall.selector, args);
       }
+      const cxxMethod = context.semanticInfo.foreignCxxMethodCalls.get(expression.location.offset);
+      if (cxxMethod && expression.callee.kind === "member") {
+        const receiver = generateExpression(expression.callee.object, context);
+        const plan = context.semanticInfo.foreignCallArgumentPlans.get(expression.location.offset);
+        const args = plan
+          ? plan.map((argument) => generateForeignCallArgument(argument, expression.arguments, context))
+          : expression.arguments.map((argument) => generateCallArgument(argument, context));
+        return `${receiver}.${cxxMethod.name}(${args.join(", ")})`;
+      }
       const foreignArgumentPlan = context.semanticInfo.foreignCallArgumentPlans.get(expression.location.offset);
       const foreignFunctionName = context.semanticInfo.foreignFunctionNames.get(expression.callee.location.offset);
       if (foreignFunctionName) {

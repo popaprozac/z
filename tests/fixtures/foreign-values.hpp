@@ -35,6 +35,18 @@ public:
     return value_;
   }
 
+  void add(int32_t amount) {
+    value_ += amount;
+  }
+
+  int32_t plus(int32_t amount) const {
+    return value_ + amount;
+  }
+
+  double plus(double amount) const {
+    return static_cast<double>(value_) + amount;
+  }
+
 private:
   int32_t value_;
 };

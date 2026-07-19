@@ -11,6 +11,7 @@ import type {
 import { analyzeSource, type AnalyzedSource } from "./compiler.ts";
 import { DiagnosticError } from "./diagnostics.ts";
 import type {
+  ForeignCxxMethod,
   ForeignDeclarationMetadata,
   ForeignFunction,
   ForeignModule,
@@ -587,6 +588,10 @@ export function hover(source: string, fileName: string, offset: number): Hover |
       const method = resolved.declaration.methods.find((item) => item.name === word.text);
       if (method) return markdownHover(methodDetail(method, context.typeDisplayNames), source, word.start, word.end);
     }
+    if (resolved?.kind === "foreignValue") {
+      const method = resolved.declaration.methods.find((candidate) => candidate.name === word.text);
+      if (method) return markdownHover(foreignCxxMethodDetail(method), source, word.start, word.end);
+    }
     if (resolved?.kind === "weak" && word.text === "upgrade") {
       return markdownHover(`upgrade(): ${displayType(resolved.target, context.typeDisplayNames)} throws WeakExpired`, source, word.start, word.end);
     }
@@ -679,6 +684,11 @@ function nativeDefinition(
         candidate.selector === chainedSelector && candidate.baseName === word.text
       ));
       const target = method ? foreignMetadataLocation(method.metadata) : null;
+      if (target) return target;
+    }
+    if (resolved?.kind === "foreignValue") {
+      const method = resolved.declaration.methods.find((candidate) => candidate.name === word.text);
+      const target = foreignMetadataLocation(method?.overloads[0]?.metadata);
       if (target) return target;
     }
   }
@@ -1550,6 +1560,14 @@ function memberCompletions(
     const includePrivate = insideAggregateBody(source, fileName, offset, resolved.declaration.name);
     return filterCompletions(structCompletions(resolved.declaration, context.typeDisplayNames, includePrivate), prefix, 1000);
   }
+  if (resolved?.kind === "foreignValue") {
+    return filterCompletions(resolved.declaration.methods.map((method) => ({
+      label: method.name,
+      kind: completionKinds.method,
+      detail: foreignCxxMethodDetail(method),
+      insertText: `${method.name}()`,
+    })), prefix, 1000);
+  }
   if (resolved?.kind === "array") {
     const items: CompletionItem[] = [{ label: "length", kind: completionKinds.property, detail: "usize" }];
     const dynamic = parseDynamicArrayType(resolved.type);
@@ -1815,6 +1833,7 @@ type ResolvedReceiver =
   | { readonly kind: "module"; readonly module: ForeignModule; readonly namespacePath: readonly string[] }
   | { readonly kind: "objc"; readonly declaration: ForeignObjCInterface; readonly instance: boolean }
   | { readonly kind: "struct"; readonly declaration: StructDeclaration }
+  | { readonly kind: "foreignValue"; readonly declaration: Extract<ForeignNamedType, { kind: "value" }> }
   | { readonly kind: "integer"; readonly type: string }
   | { readonly kind: "array"; readonly type: string }
   | { readonly kind: "weak"; readonly target: string };
@@ -1827,7 +1846,10 @@ function resolveReceiver(context: AnalyzedSource, text: string, offset: number):
     const declaration = context.foreignModules.get(moduleName)?.interfaces.get(className);
     if (declaration) return { kind: "objc", declaration, instance: false };
   }
-  const type = context.semanticInfo.expressionTypes.get(offset);
+  const finalSegment = text.lastIndexOf(".");
+  const expressionOffset = finalSegment === -1 ? offset : offset + finalSegment + 1;
+  const type = context.semanticInfo.expressionTypes.get(expressionOffset)
+    ?? context.semanticInfo.expressionTypes.get(offset);
   if (!type) return null;
   const view = parseViewType(type);
   const receiverType = view?.target ?? type;
@@ -1839,7 +1861,9 @@ function resolveReceiver(context: AnalyzedSource, text: string, offset: number):
   const objc = context.semanticInfo.foreignInterfaces.get(interfaceName);
   if (objc) return { kind: "objc", declaration: objc, instance: true };
   const declaration = context.program.structs.find((item) => item.name === receiverType);
-  return declaration ? { kind: "struct", declaration } : null;
+  if (declaration) return { kind: "struct", declaration };
+  const foreignValue = context.semanticInfo.foreignNamedTypes.get(receiverType);
+  return foreignValue?.kind === "value" ? { kind: "foreignValue", declaration: foreignValue } : null;
 }
 
 function isIntegerSourceType(type: string): boolean {
@@ -2212,6 +2236,17 @@ function foreignFunctionDetail(declaration: ForeignFunction): string {
       ));
     if (overload.variadic) parameters.push("...arguments");
     return `${declaration.name}(${parameters.join(", ")}): ${foreignTypeName(overload.returnType)}  // C: ${overload.cSignature}${foreignAvailabilityDetail(overload.metadata)}`;
+  }).join("\n");
+}
+
+function foreignCxxMethodDetail(method: ForeignCxxMethod): string {
+  return method.overloads.map((overload) => {
+    const parameters = overload.parameters.map((parameter, index) => (
+      `${parameter.name ?? `argument${index + 1}`}: ${foreignTypeName(parameter.type)}`
+    ));
+    if (overload.variadic) parameters.push("...arguments");
+    const receiver = overload.receiverAccess === "in" ? "C++ const" : "C++ mutable";
+    return `${method.name}(${parameters.join(", ")}): ${foreignTypeName(overload.returnType)}  // ${receiver}; ${overload.cSignature}${foreignAvailabilityDetail(overload.metadata)}`;
   }).join("\n");
 }
 

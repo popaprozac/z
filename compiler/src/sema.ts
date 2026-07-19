@@ -33,6 +33,7 @@ import {
   type ForeignCallbackType,
   type ForeignBlockType,
   type ForeignConstant,
+  type ForeignCxxMethodOverload,
   type ForeignDeclarationMetadata,
   type ForeignFunction,
   type ForeignFunctionOverload,
@@ -134,6 +135,7 @@ export type SemanticInfo = {
   readonly foreignCallArgumentPlans: ReadonlyMap<number, readonly ForeignCallArgumentPlan[]>;
   readonly foreignFunctionNames: ReadonlyMap<number, string>;
   readonly foreignFunctionDefinitions: ReadonlyMap<number, ForeignDeclarationMetadata>;
+  readonly foreignCxxMethodCalls: ReadonlyMap<number, { readonly name: string }>;
   readonly foreignConstantNames: ReadonlyMap<number, string>;
   readonly nativeArgumentAccesses: ReadonlyMap<number, "in" | "inout" | "out">;
   readonly foreignObjectTypes: ReadonlyMap<string, ForeignObjectType>;
@@ -181,6 +183,7 @@ type AnalysisState = {
   readonly foreignCallArgumentPlans: Map<number, readonly ForeignCallArgumentPlan[]>;
   readonly foreignFunctionNames: Map<number, string>;
   readonly foreignFunctionDefinitions: Map<number, ForeignDeclarationMetadata>;
+  readonly foreignCxxMethodCalls: Map<number, { readonly name: string }>;
   readonly foreignConstantNames: Map<number, string>;
   readonly nativeArgumentAccesses: Map<number, "in" | "inout" | "out">;
   readonly foreignObjectTypes: ReadonlyMap<string, ForeignObjectType>;
@@ -320,6 +323,7 @@ export function analyze(
     foreignCallArgumentPlans: new Map(),
     foreignFunctionNames: new Map(),
     foreignFunctionDefinitions: new Map(),
+    foreignCxxMethodCalls: new Map(),
     foreignConstantNames: new Map(),
     nativeArgumentAccesses: new Map(),
     foreignObjectTypes,
@@ -3089,6 +3093,11 @@ function inferExpressionInner(
         }
         throw new DiagnosticError(fileName, expression.location, `record ${JSON.stringify(foreignRecord.typeName)} has no field ${JSON.stringify(expression.property)}`);
       }
+      if (foreignRecord?.kind === "value") {
+        const method = foreignRecord.methods.find((candidate) => candidate.name === expression.property);
+        if (method) throw new DiagnosticError(fileName, expression.location, "native method values are not implemented; call the method instead");
+        throw new DiagnosticError(fileName, expression.location, `native value ${JSON.stringify(foreignRecord.typeName)} has no member ${JSON.stringify(expression.property)}`);
+      }
       if (!declaration) {
         throw new DiagnosticError(fileName, expression.location, `type ${JSON.stringify(receiverType)} has no members`);
       }
@@ -3402,6 +3411,48 @@ function inferExpressionInner(
           }
           if (result === "unknown") throw new DiagnosticError(fileName, expression.location, `Objective-C selector ${JSON.stringify(method.selector)} uses an unsupported return type`);
           state.foreignCallTypes.set(expression.location.offset, String(result));
+          return result;
+        }
+        const foreignValue = state.foreignNamedTypes.get(receiverValueType);
+        if (foreignValue?.kind === "value") {
+          const method = foreignValue.methods.find((candidate) => candidate.name === expression.callee.property);
+          if (!method) {
+            throw new DiagnosticError(fileName, expression.callee.location, `native value ${JSON.stringify(foreignValue.typeName)} has no method ${JSON.stringify(expression.callee.property)}`);
+          }
+          rejectLabeledArguments(expression.argumentLabels, expression.location, fileName);
+          if (!isNamedStorageExpression(expression.callee.object)) {
+            throw new DiagnosticError(fileName, expression.callee.object.location, "a native value temporary must be bound before borrowing it for a method call");
+          }
+          let selected: ForeignCxxMethodOverload | null = null;
+          const result = checkForeignFunctionCall(
+            { name: method.name, namespacePath: foreignValue.namespacePath, qualifiedName: `${foreignValue.qualifiedName}.${method.name}`, overloads: method.overloads },
+            expression.arguments,
+            locals,
+            globals,
+            structs,
+            enums,
+            fileName,
+            expression.location,
+            expression.callee.location.offset,
+            state,
+            (overload) => { selected = overload as ForeignCxxMethodOverload; },
+            "native method",
+          );
+          state.foreignFunctionNames.delete(expression.callee.location.offset);
+          if (selected!.receiverAccess === "inout") {
+            const root = storageRoot(expression.callee.object);
+            const stored = root ? locals.get(root.name) : null;
+            if (!root || !stored || !isMutableBinding(stored)) {
+              throw new DiagnosticError(
+                fileName,
+                expression.callee.object.location,
+                `mutable native method ${JSON.stringify(method.name)} requires addressable let storage`,
+                { helps: ["bind the native value with `let` before calling this method"] },
+              );
+            }
+            rejectOwnerMutationWhileViewed(root.name, expression.callee.object.location, fileName, state);
+          }
+          state.foreignCxxMethodCalls.set(expression.location.offset, { name: selected!.cName });
           return result;
         }
         const declaration = structs.get(receiverValueType);
@@ -4973,12 +5024,15 @@ function checkForeignFunctionCall(
   location: SourceLocation,
   calleeOffset: number,
   state: AnalysisState,
+  onSelected?: (overload: ForeignFunctionOverload) => void,
+  subject = "foreign function",
 ): ValueType {
   if (target.overloads.length === 1) {
     const selected = target.overloads[0];
     rejectUnavailableForeign(selected.metadata, target.qualifiedName, location, fileName);
     state.foreignFunctionNames.set(calleeOffset, selected.cName);
     state.foreignFunctionDefinitions.set(calleeOffset, selected.metadata);
+    onSelected?.(selected);
     return checkForeignCall(selected, args, locals, globals, structs, enums, fileName, location, state);
   }
   const matches: { readonly overload: ForeignFunctionOverload; readonly score: number }[] = [];
@@ -4996,7 +5050,7 @@ function checkForeignFunctionCall(
     throw new DiagnosticError(
       fileName,
       location,
-      `no overload of foreign function ${JSON.stringify(target.qualifiedName)} accepts these arguments`,
+      `no overload of ${subject} ${JSON.stringify(target.qualifiedName)} accepts these arguments`,
       {
         code: "Z0803",
         notes: target.overloads.map((candidate) => `${candidate.cName}: ${candidate.cSignature}`),
@@ -5010,7 +5064,7 @@ function checkForeignFunctionCall(
     throw new DiagnosticError(
       fileName,
       location,
-      `call to foreign function ${JSON.stringify(target.qualifiedName)} is ambiguous`,
+      `call to ${subject} ${JSON.stringify(target.qualifiedName)} is ambiguous`,
       {
         code: "Z0803",
         notes: best.map(({ overload }) => `${overload.cName}: ${overload.cSignature}`),
@@ -5022,6 +5076,7 @@ function checkForeignFunctionCall(
   rejectUnavailableForeign(selected.metadata, target.qualifiedName, location, fileName);
   state.foreignFunctionNames.set(calleeOffset, selected.cName);
   state.foreignFunctionDefinitions.set(calleeOffset, selected.metadata);
+  onSelected?.(selected);
   return checkForeignCall(selected, args, locals, globals, structs, enums, fileName, location, state);
 }
 

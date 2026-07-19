@@ -88,6 +88,13 @@ and native lexical destruction handles values stored in Z aggregates. FIIR can
 record native move availability, but move-only foreign values remain rejected
 until dedicated move lowering lands.
 
+Clang-proven public instance methods on those values are callable directly.
+Const methods borrow (`in`) the receiver, while non-const methods require a
+mutable, addressable (`inout`) Z owner. Method overloads retain their native
+signatures, source definitions, and availability metadata, and lower as direct
+C++ member calls without generated wrappers. Constructors, static methods,
+ref-qualified methods, and templates are not yet part of this slice.
+
 ## Cost model
 
 Z's target is **no interop tax beyond the semantics requested at the
@@ -98,7 +105,7 @@ boundary**, not a claim that every bridge operation is free:
 | C scalar or function call | Native ABI call; no wrapper or allocation |
 | C record by value or scoped borrow | Native layout and calling convention; no wrapper allocation |
 | Objective-C method or property | Ordinary `objc_msgSend`-family dispatch under Clang ARC |
-| Plain C++/Swift-C++ value | Native construction, copy, and destruction rules |
+| Plain C++/Swift-C++ value or method | Native construction, copy, destruction, and member-call rules; no Z wrapper dispatch |
 | Non-capturing call-only callback | Function pointer or small adapter indirection; no environment allocation |
 | Escaping capturing closure / Objective-C block | Owned closure environment plus a native lifetime adapter, retains/releases, and indirect invocation |
 | `String` / `NSString` ownership bridge | Deliberate allocation and byte copy so neither runtime borrows unstable storage |

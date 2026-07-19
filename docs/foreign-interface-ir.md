@@ -107,7 +107,10 @@ facts are coherent:
 7. opaque RAII values carry explicit copy/move/deinit capabilities, `.zd`
    cannot exceed what Clang proves, and values are never treated as plain byte
    records;
-8. explicit native unavailability is rejected at the Z use site and points back
+8. public C++ value methods retain const/mutable receiver access, overload
+   signatures, and native source metadata; non-const calls require addressable
+   mutable storage;
+9. explicit native unavailability is rejected at the Z use site and points back
    to the native declaration. Introduced/deprecated/obsoleted versions remain
    data until a deployment-target model exists.
 

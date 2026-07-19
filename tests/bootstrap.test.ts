@@ -1292,7 +1292,9 @@ test("declares, copies, aggregates, and destroys foreign C++ values", () => {
   assert.equal(artifact.language, "c++");
   assert.match(artifact.source, /struct Z_NativeOwner \{\s*zcpp::ManagedValue value;/);
   assert.match(artifact.source, /const Z_NativeOwner owner = .*\.value = first/);
-  assert.match(artifact.source, /const Z_NativeOwner copied = owner/);
+  assert.match(artifact.source, /Z_NativeOwner copied = owner/);
+  assert.match(artifact.source, /\(copied\)\.value\.add\(2\)/);
+  assert.match(artifact.source, /\(copied\)\.value\.value\(\)/);
 
   const context = analyzeSource(source, example);
   const managed = context.foreignModules.get("native")?.namedTypes.get("zcpp.ManagedValue");
@@ -1308,14 +1310,49 @@ test("declares, copies, aggregates, and destroys foreign C++ values", () => {
     "```z\nvalue: native.zcpp.ManagedValue\n```",
   );
   const publicFieldCompletionSource = source.replace(
-    "  return native.zcpp.read_managed(copied.value) + 2;",
-    "  copied.;\n  return native.zcpp.read_managed(copied.value) + 2;",
+    "  copied.value.add(2);",
+    "  copied.;\n  copied.value.add(2);",
   );
   const publicFieldCompletionOffset = publicFieldCompletionSource.indexOf("copied.;") + "copied.".length;
   assert.equal(
     completions(publicFieldCompletionSource, example, publicFieldCompletionOffset).find((item) => item.label === "value")?.detail,
     "native.zcpp.ManagedValue",
   );
+  const nativeValue = context.foreignModules.get("native")?.namedTypes.get("zcpp.ManagedValue");
+  assert.equal(nativeValue?.kind, "value");
+  if (nativeValue?.kind === "value") {
+    assert.equal(nativeValue.methods.find((method) => method.name === "value")?.overloads[0]?.receiverAccess, "in");
+    assert.equal(nativeValue.methods.find((method) => method.name === "add")?.overloads[0]?.receiverAccess, "inout");
+    assert.equal(nativeValue.methods.find((method) => method.name === "plus")?.overloads.length, 2);
+  }
+  const methodOffset = source.lastIndexOf("value()") + 1;
+  assert.match(hover(source, example, methodOffset)?.contents.value ?? "", /value\(\): i32.*C\+\+ const/);
+  const methodCompletionSource = source.replace(
+    "  return copied.value.value();",
+    "  copied.value.;\n  return copied.value.value();",
+  );
+  const methodCompletionOffset = methodCompletionSource.indexOf("copied.value.;") + "copied.value.".length;
+  const methodItems = completions(methodCompletionSource, example, methodCompletionOffset);
+  assert.match(methodItems.find((item) => item.label === "add")?.detail ?? "", /C\+\+ mutable/);
+  assert.match(methodItems.find((item) => item.label === "value")?.detail ?? "", /C\+\+ const/);
+  assert.match(definition(source, `file://${example}`, methodOffset)?.uri ?? "", /foreign-values\.hpp$/);
+
+  const overloadedMethod = source.replace("copied.value.value()", "copied.value.plus(0)");
+  assert.match(compileToNative(overloadedMethod, example).source, /\(copied\)\.value\.plus\(0\)/);
+  assert.throws(
+    () => compileToNative(source.replace("copied.value.value()", 'copied.value.plus("no")'), example),
+    /no overload of native method "zcpp\.ManagedValue\.plus" accepts these arguments/,
+  );
+
+  const immutableMutation = source.replace("let copied = owner;", "const copied = owner;");
+  assert.throws(
+    () => compileToNative(immutableMutation, example),
+    /mutable native method "add" requires addressable let storage/,
+  );
+  const immutableRead = immutableMutation
+    .replace("  copied.value.add(2);\n", "")
+    .replace("copied.value.value()", "copied.value.plus(2)");
+  assert.match(compileToNative(immutableRead, example).source, /\(copied\)\.value\.plus\(2\)/);
 
   const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
