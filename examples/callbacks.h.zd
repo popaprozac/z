@@ -5,4 +5,11 @@ declare module "callbacks.h" {
       context context;
     }
   }
+  export function retainOperation(move operation: _, context: _, release: _): _ {
+    callback operation {
+      context context;
+      deinit release;
+      thread caller;
+    }
+  }
 }

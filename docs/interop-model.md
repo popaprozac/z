@@ -199,40 +199,35 @@ invokes its `call` entry with the owned environment. Since the lifetime is
 call-only, the caller keeps the ARC owner alive and no native retain/release
 protocol is invented.
 
-The first escaping tier still uses stage-0 metadata and requires the C API to
-accept a destroy callback:
+The first escaping tier requires the C API to accept a destroy callback and
+declares the full ownership relationship in the same block:
 
-```json
-{
-  "functions": {
-    "retainOperation": {
-      "parameters": {
-        "0": {
-          "callback": {
-            "lifetime": "escape",
-            "thread": "caller",
-            "context": {
-              "parameter": 1,
-              "callbackParameter": 1
-            },
-            "release": {
-              "parameter": 2,
-              "callbackParameter": 0
-            }
-          }
-        }
-      }
+```z
+declare module "callbacks.h" {
+  export function retainOperation(
+    move operation: _,
+    context: _,
+    release: _
+  ): _ {
+    callback operation {
+      context context;
+      deinit release;
+      thread caller;
     }
   }
 }
 ```
 
-Z retains the function value in a stable heap box and passes generated callback
-and release thunks. The local function value can then leave scope while C owns
-the box. C must take ownership unconditionally, invoke both callbacks only on
-the thread that registered them, call release exactly once after the final
-invocation, and never invoke the callback afterward. Those requirements are a
-trusted foreign contract, just like pointer ownership API notes.
+`move` is type-directed here: for a native callback it means the API retains an
+owned callback adapter beyond the call. `deinit` names the native release
+parameter and `thread caller` limits invocation and release to the registering
+thread. Z retains the function value in a stable heap box and passes generated
+callback and release thunks; the context and release parameters disappear from
+the Z call surface. The local ARC function value can then leave scope while C
+owns its retained reference. C must take ownership unconditionally, invoke both
+callbacks only on the registering thread, call release exactly once after the
+final invocation, and never invoke the callback afterward. Those requirements
+are a trusted foreign contract, just like pointer ownership API notes.
 
 Objective-C APIs that return a separate observer token already use that native
 token directly: an owned `move` block may persist across calls, Z keeps the

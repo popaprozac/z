@@ -92,7 +92,7 @@ const primitiveTypeTokens = [
 
 const declarationKeywordTokens = [
   "declare", "module", "export", "function", "in", "inout", "out", "move", "deinit",
-  "callback", "context",
+  "callback", "context", "thread", "caller",
 ] as const;
 
 export function diagnostics(source: string, fileName: string): ServiceDiagnostic[] {
@@ -924,6 +924,27 @@ function foreignDeclarationCompletions(source: string, fileName: string, offset:
     }
   }
 
+  const callbackDeinitPrefix = /\bcallback\s+[A-Za-z_][A-Za-z0-9_]*\s*\{[^}]*\bdeinit\s+([A-Za-z_][A-Za-z0-9_]*)?$/.exec(before)?.[1];
+  if (owner && callbackDeinitPrefix !== undefined) {
+    const candidates = new Map<string, string>();
+    for (const overload of owner.overloads) {
+      for (const parameter of overload.parameters) {
+        if (parameter.name && parameter.type.kind === "callbackRelease") {
+          candidates.set(parameter.name, foreignTypeName(parameter.type));
+        }
+      }
+    }
+    for (const [name, type] of candidates) {
+      if (!name.toLowerCase().startsWith(callbackDeinitPrefix.toLowerCase())) continue;
+      contextual.push({
+        label: name,
+        kind: completionKinds.variable,
+        detail: `native callback release parameter ${name}: ${type}`,
+        sortText: `0-${name}`,
+      });
+    }
+  }
+
   const callbackContractPrefix = /\bcallback\s+([A-Za-z_][A-Za-z0-9_]*)?$/.exec(before)?.[1];
   if (owner && callbackContractPrefix !== undefined) {
     const candidates = new Map<string, string>();
@@ -1054,6 +1075,9 @@ function foreignDeclarationHover(source: string, fileName: string, offset: numbe
     for (const callback of contract.callbacks) {
       const callbackIndex = contract.parameters.findIndex((parameter) => parameter.name === callback.parameter);
       const contextIndex = contract.parameters.findIndex((parameter) => parameter.name === callback.context);
+      const releaseIndex = callback.release
+        ? contract.parameters.findIndex((parameter) => parameter.name === callback.release)
+        : -1;
       if (callback.parameterLocation.offset === word.start) {
         const types = new Set(
           declaration?.overloads
@@ -1061,8 +1085,10 @@ function foreignDeclarationHover(source: string, fileName: string, offset: numbe
             .filter(Boolean)
             .map((native) => foreignTypeName(native.type)) ?? [],
         );
+        const mode = contract.parameters[callbackIndex]?.mode ?? "in";
+        const lifetime = mode === "move" ? "escaping retained callback" : "call-scoped callback";
         return markdownHover(
-          `in ${callback.parameter}: ${[...types].join(" | ") || "_"}  // call-scoped callback using native context ${callback.context}`,
+          `${mode} ${callback.parameter}: ${[...types].join(" | ") || "_"}  // ${lifetime} using native context ${callback.context}`,
           source,
           word.start,
           word.end,
@@ -1077,6 +1103,28 @@ function foreignDeclarationHover(source: string, fileName: string, offset: numbe
         );
         return markdownHover(
           `${callback.context}: ${[...types].join(" | ") || "_"}  // native context for callback ${callback.parameter}`,
+          source,
+          word.start,
+          word.end,
+        );
+      }
+      if (callback.release && callback.releaseLocation?.offset === word.start) {
+        const types = new Set(
+          declaration?.overloads
+            .map((overload) => overload.parameters[releaseIndex])
+            .filter(Boolean)
+            .map((native) => foreignTypeName(native.type)) ?? [],
+        );
+        return markdownHover(
+          `${callback.release}: ${[...types].join(" | ") || "_"}  // exactly-once native release for callback ${callback.parameter}`,
+          source,
+          word.start,
+          word.end,
+        );
+      }
+      if (callback.threadLocation?.offset === word.start) {
+        return markdownHover(
+          "caller  // native code invokes and releases this callback only on the registering thread",
           source,
           word.start,
           word.end,

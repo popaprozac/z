@@ -103,12 +103,10 @@ import stdio from "stdio.h";
 import { sqlite3_open, sqlite3_close as closeDatabase } from "sqlite3.h";
 ```
 
-Namespace and selective imports do not introduce wrapper calls. Some pointer
-and richer callback contracts currently need adjacent `.zapi.json` API notes
-because C headers cannot state ownership or retention. Adjacent `<header>.zd`
-Z declaration files now express owned handles plus call-scoped callbacks with
-optional named native context relationships; escaping callback release and
-threading relationships remain stage-0 JSON input. See
+Namespace and selective imports do not introduce wrapper calls. Some foreign
+contracts still use adjacent `.zapi.json` stage-0 notes, but authored pointer
+ownership and callback lifetime/context/release/threading contracts now use
+adjacent `<header>.zd` Z declaration files. See
 [the interop model](interop-model.md).
 
 ## Editor setup

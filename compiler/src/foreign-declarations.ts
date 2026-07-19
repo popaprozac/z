@@ -28,9 +28,13 @@ export type ForeignFunctionContract = {
 export type ForeignCallbackContract = {
   readonly parameter: string;
   readonly context: string;
+  readonly release: string | null;
+  readonly thread: "caller" | null;
   readonly location: SourceLocation;
   readonly parameterLocation: SourceLocation;
   readonly contextLocation: SourceLocation;
+  readonly releaseLocation: SourceLocation | null;
+  readonly threadLocation: SourceLocation | null;
 };
 
 export type ForeignDeclarationContracts = {
@@ -128,20 +132,54 @@ export function parseForeignDeclarationContracts(source: string, fileName: strin
             fail(callback, `foreign function ${JSON.stringify(name)} cannot declare callback ${JSON.stringify(callback.text)} more than once`);
           }
           expectText("{");
-          const contextKeyword = peek();
-          if (!at("context")) {
-            fail(contextKeyword, `expected "context" in foreign callback contract, found ${JSON.stringify(contextKeyword.text)}`);
+          let context: Token | null = null;
+          let callbackRelease: Token | null = null;
+          let callbackThread: Token | null = null;
+          while (!at("}")) {
+            const callbackFact = peek();
+            if (at("context")) {
+              if (context) fail(callbackFact, `callback ${JSON.stringify(callback.text)} cannot declare more than one context parameter`);
+              take();
+              context = expectIdentifier("a native callback context parameter name");
+              expectText(";");
+              continue;
+            }
+            if (at("deinit")) {
+              if (callbackRelease) fail(callbackFact, `callback ${JSON.stringify(callback.text)} cannot declare more than one deinit parameter`);
+              take();
+              callbackRelease = expectIdentifier("a native callback release parameter name");
+              expectText(";");
+              continue;
+            }
+            if (at("thread")) {
+              if (callbackThread) fail(callbackFact, `callback ${JSON.stringify(callback.text)} cannot declare more than one thread guarantee`);
+              take();
+              callbackThread = expectIdentifier("a callback thread guarantee");
+              if (callbackThread.text !== "caller") {
+                fail(callbackThread, `the first escaping callback tier requires "caller" threading, found ${JSON.stringify(callbackThread.text)}`);
+              }
+              expectText(";");
+              continue;
+            }
+            fail(
+              callbackFact,
+              `expected "context", "deinit", or "thread" in foreign callback contract, found ${JSON.stringify(callbackFact.text)}`,
+            );
           }
-          take();
-          const context = expectIdentifier("a native callback context parameter name");
-          expectText(";");
           expectText("}");
+          if (!context) {
+            fail(callback, `callback ${JSON.stringify(callback.text)} requires a named native context parameter`);
+          }
           callbacks.push({
             parameter: callback.text,
             context: context.text,
+            release: callbackRelease?.text ?? null,
+            thread: callbackThread ? "caller" : null,
             location: contract.location,
             parameterLocation: callback.location,
             contextLocation: context.location,
+            releaseLocation: callbackRelease?.location ?? null,
+            threadLocation: callbackThread?.location ?? null,
           });
           continue;
         }
@@ -246,12 +284,31 @@ export function foreignDeclarationApiNotes(
         throw new DiagnosticError(fileName, callback.location, "a callback cannot use itself as its native context parameter", { code: "Z0801" });
       }
       const parameter = contract.parameters[callbackIndex];
-      if (parameter.mode !== "in") {
+      if (parameter.mode !== "in" && parameter.mode !== "move") {
         throw new DiagnosticError(
           fileName,
           callback.parameterLocation,
-          `call-scoped callback ${JSON.stringify(callback.parameter)} must use the \`in\` capability`,
+          `callback ${JSON.stringify(callback.parameter)} must use \`in\` for call-scoped borrowing or \`move\` for escaping retention`,
           { code: "Z0801" },
+        );
+      }
+      if (parameter.mode === "in" && (callback.release || callback.thread)) {
+        throw new DiagnosticError(
+          fileName,
+          callback.location,
+          `call-scoped callback ${JSON.stringify(callback.parameter)} cannot declare deinit or threading contracts`,
+          { code: "Z0801" },
+        );
+      }
+      if (parameter.mode === "move" && (!callback.release || callback.thread !== "caller")) {
+        throw new DiagnosticError(
+          fileName,
+          callback.location,
+          `escaping callback ${JSON.stringify(callback.parameter)} requires deinit and caller-thread contracts`,
+          {
+            code: "Z0214",
+            helps: [`add \`deinit <release parameter>;\` and \`thread caller;\` to the callback contract`],
+          },
         );
       }
       const callbackParameter = inferCallbackContextPosition(
@@ -260,13 +317,48 @@ export function foreignDeclarationApiNotes(
         callback,
         fileName,
       );
+      const releaseIndex = callback.release
+        ? contract.parameters.findIndex((candidate) => candidate.name === callback.release)
+        : -1;
+      if (callback.release && releaseIndex < 0) {
+        throw new DiagnosticError(
+          fileName,
+          callback.releaseLocation!,
+          `callback contract names unknown release parameter ${JSON.stringify(callback.release)} on ${JSON.stringify(contract.name)}`,
+          { code: "Z0801" },
+        );
+      }
+      if (releaseIndex === callbackIndex || releaseIndex === contextIndex) {
+        throw new DiagnosticError(
+          fileName,
+          callback.releaseLocation!,
+          "a callback release parameter must be distinct from its callback and context parameters",
+          { code: "Z0801" },
+        );
+      }
+      const releaseParameter = callback.release
+        ? inferCallbackContextPosition(
+          declaration,
+          releaseIndex,
+          {
+            ...callback,
+            parameter: callback.release,
+            location: callback.releaseLocation!,
+          },
+          fileName,
+        )
+        : null;
       const note = parameters[String(callbackIndex)] ?? {};
       parameters[String(callbackIndex)] = {
         ...note,
         callback: {
           ...note.callback,
-          lifetime: "call",
+          lifetime: parameter.mode === "move" ? "escape" : "call",
+          ...(callback.thread ? { thread: callback.thread } : {}),
           context: { parameter: contextIndex, callbackParameter },
+          ...(callback.release && releaseParameter !== null
+            ? { release: { parameter: releaseIndex, callbackParameter: releaseParameter } }
+            : {}),
         },
       };
     }

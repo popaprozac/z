@@ -259,6 +259,10 @@ test("suggests Z tokens while source and declaration syntax is incomplete", () =
   assert.equal(callbackItems.find((item) => item.label === "callback")?.detail, "Z declaration keyword");
   const contextItems = completions("cont", "vendor.h.zd", 4);
   assert.equal(contextItems.find((item) => item.label === "context")?.kind, 14);
+  const threadItems = completions("thr", "vendor.h.zd", 3);
+  assert.equal(threadItems.find((item) => item.label === "thread")?.kind, 14);
+  const callerItems = completions("call", "vendor.h.zd", 4);
+  assert.equal(callerItems.find((item) => item.label === "caller")?.detail, "Z declaration keyword");
 });
 
 test("analyzes export-only files as modules while executable commands still require main", () => {
@@ -467,6 +471,28 @@ test("passes typed Z functions to call-only C callbacks with optional context ad
   assert.equal(
     completions(contextRelationSource, declarationFile, contextRelationOffset)
       .find((item) => item.label === "context")?.kind,
+    6,
+  );
+  const escapingCallbackRelation = declarationSource.lastIndexOf("callback callback") + "callback ".length + 2;
+  assert.match(
+    hover(declarationSource, declarationFile, escapingCallbackRelation)?.contents.value ?? "",
+    /move callback:.*escaping retained callback using native context context/,
+  );
+  const releaseRelation = declarationSource.lastIndexOf("deinit release") + "deinit ".length + 2;
+  assert.match(
+    hover(declarationSource, declarationFile, releaseRelation)?.contents.value ?? "",
+    /release: void \(\s*\*\)\(void \*\).*exactly-once native release/,
+  );
+  const callerRelation = declarationSource.lastIndexOf("caller") + 2;
+  assert.match(
+    hover(declarationSource, declarationFile, callerRelation)?.contents.value ?? "",
+    /only on the registering thread/,
+  );
+  const releaseCompletionSource = declarationSource.replace("deinit release;", "deinit rel;");
+  const releaseCompletionOffset = releaseCompletionSource.indexOf("deinit rel") + "deinit rel".length;
+  assert.equal(
+    completions(releaseCompletionSource, declarationFile, releaseCompletionOffset)
+      .find((item) => item.label === "release")?.kind,
     6,
   );
 
@@ -821,6 +847,19 @@ test("diagnoses malformed and mismatched Z declaration contracts", () => {
   const missingContext = diagnostics(callbackImport, callbackSource)[0];
   assert.equal(missingContext.code, "Z0801");
   assert.match(missingContext.message, /unknown context parameter "missing"/);
+
+  writeFileSync(`${callbackHeader}.zd`, `
+    declare module "contract.h" {
+      export function apply(value: _, context: _, move operation: _): _ {
+        callback operation {
+          context context;
+        }
+      }
+    }
+  `);
+  const incompleteEscape = diagnostics(callbackImport, callbackSource)[0];
+  assert.equal(incompleteEscape.code, "Z0214");
+  assert.match(incompleteEscape.message, /requires deinit and caller-thread contracts/);
 });
 
 test("merges API-note sources without allowing safety contracts to conflict", () => {
@@ -5486,6 +5525,8 @@ test("editor grammar tracks keywords without reserving Result variants", () => {
   assert.equal(foreignDeclarationPatterns[3].captures[1].name, "storage.type.inferred.z");
   assert.equal(foreignDeclarationPatterns[4].captures[1].name, "keyword.control.declaration.callback.z");
   assert.equal(foreignDeclarationPatterns[4].captures[3].name, "keyword.control.declaration.callback.z");
+  assert.equal(foreignDeclarationPatterns[5].captures[1].name, "keyword.control.declaration.callback.z");
+  assert.equal(foreignDeclarationPatterns[5].captures[2].name, "constant.language.callback-thread.z");
   assert.match(selectiveImportPatterns, /\\bas\\b/);
   assert.match(keywordPattern, /while/);
   assert.match(keywordPattern, /for\|of/);

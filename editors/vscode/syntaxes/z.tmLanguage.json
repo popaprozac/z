@@ -57,6 +57,13 @@
           "3": { "name": "keyword.control.declaration.callback.z" },
           "4": { "name": "variable.parameter.context.z" }
         }
+      }, {
+        "name": "meta.declaration.callback-thread.foreign.z",
+        "match": "\\b(thread)\\s+(caller)(?=\\s*;)",
+        "captures": {
+          "1": { "name": "keyword.control.declaration.callback.z" },
+          "2": { "name": "constant.language.callback-thread.z" }
+        }
       }]
     },
     "strings": {
