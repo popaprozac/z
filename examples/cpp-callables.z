@@ -1,0 +1,10 @@
+import console from "std/console";
+import native from "../tests/fixtures/foreign-values.hpp";
+
+function main(): i32 {
+  const direct = native.zcpp.ManagedValue(20);
+  const made = native.zcpp.ManagedValue.from(22);
+  const answer = native.zcpp.ManagedValue.sum(direct.value(), made.value());
+  console.log(`answer=${answer}`);
+  return answer - 42;
+}

@@ -19,9 +19,11 @@ import type {
   ForeignConstant,
   ForeignCxxMethod,
   ForeignCxxMethodOverload,
+  ForeignCxxStaticMethod,
   ForeignDeclarationMetadata,
   ForeignField,
   ForeignFunctionDeclaration,
+  ForeignFunctionOverload,
   ForeignModuleIR,
   ForeignModuleDeclarations,
   ForeignNamedType,
@@ -436,7 +438,19 @@ function collectNamedTypes(
         metadata,
       };
     } else if (seed.kind === "value") {
-      named = { kind: "value", exportName: seed.exportName, namespacePath: seed.namespacePath, qualifiedName: seed.qualifiedName, typeName: seed.typeName, cName: seed.cName, lifecycle: seed.lifecycle!, methods: [], metadata };
+      named = {
+        kind: "value",
+        exportName: seed.exportName,
+        namespacePath: seed.namespacePath,
+        qualifiedName: seed.qualifiedName,
+        typeName: seed.typeName,
+        cName: seed.cName,
+        lifecycle: seed.lifecycle!,
+        constructors: [],
+        staticMethods: [],
+        methods: [],
+        metadata,
+      };
     } else {
       const fields = (seed.declaration!.inner ?? []).filter((child) => child.kind === "FieldDecl");
       const mapped = fields.map((field) => field.name && field.type?.qualType
@@ -455,8 +469,8 @@ function collectNamedTypes(
   for (const seed of seeds.values()) {
     const named = namedTypes.get(seed.qualifiedName);
     if (seed.kind !== "value" || named?.kind !== "value" || !seed.declaration) continue;
-    const methods = collectCxxValueMethods(seed.declaration, seed.cName, byCName);
-    const updated: ForeignNamedType = { ...named, methods };
+    const callables = collectCxxValueCallables(seed.declaration, seed.cName, byCName);
+    const updated: ForeignNamedType = { ...named, ...callables };
     namedTypes.set(seed.qualifiedName, updated);
     for (const [key, value] of byCName) {
       if (value.typeName === named.typeName) byCName.set(key, updated);
@@ -504,12 +518,19 @@ function collectNamedTypes(
   return { namedTypes, namedTypeAliases, namespaces, constants, byCName };
 }
 
-function collectCxxValueMethods(
+function collectCxxValueCallables(
   declaration: ClangNode,
   ownerCName: string,
   namedTypes: ReadonlyMap<string, ForeignNamedType>,
-): ForeignCxxMethod[] {
+): {
+  readonly constructors: readonly ForeignFunctionOverload[];
+  readonly staticMethods: readonly ForeignCxxStaticMethod[];
+  readonly methods: readonly ForeignCxxMethod[];
+} {
   const namespaces = ownerCName.split("::").slice(0, -1);
+  const owner = namedTypes.get(ownerCName);
+  const constructors: ForeignFunctionOverload[] = [];
+  const staticMethods = new Map<string, ForeignFunctionOverload[]>();
   const methods = new Map<string, ForeignCxxMethodOverload[]>();
   let access = declaration.tagUsed === "class" ? "private" : "public";
   for (const member of declaration.inner ?? []) {
@@ -517,20 +538,22 @@ function collectCxxValueMethods(
       access = member.access ?? access;
       continue;
     }
-    if (
-      access !== "public"
-      || member.kind !== "CXXMethodDecl"
-      || member.isImplicit
-      || member.explicitlyDeleted
-      || member.storageClass === "static"
-      || !member.name
-      || member.name.startsWith("operator")
-      || !member.type?.qualType
-    ) continue;
+    if (access !== "public" || member.isImplicit || member.explicitlyDeleted || !member.name || !member.type?.qualType) continue;
+    const constructor = member.kind === "CXXConstructorDecl";
+    const method = member.kind === "CXXMethodDecl" && !member.name.startsWith("operator");
+    if (!constructor && !method) continue;
     const parameterNodes = (member.inner ?? [])
       .filter((child) => child.kind === "ParmVarDecl" && child.type?.qualType);
-    const returnSpelling = qualifyNativeTypeSpelling(returnTypeOf(member.type.qualType), namespaces, namedTypes);
-    const returnType = mapForeignType(returnSpelling, undefined, "return", new Map(), namedTypes);
+    if (constructor && isCopyOrMoveConstructor(parameterNodes, ownerCName)) continue;
+    const returnType = constructor && owner
+      ? { kind: "named" as const, type: owner, cName: ownerCName }
+      : mapForeignType(
+        qualifyNativeTypeSpelling(returnTypeOf(member.type.qualType), namespaces, namedTypes),
+        undefined,
+        "return",
+        new Map(),
+        namedTypes,
+      );
     const parameters = parameterNodes.map((parameter) => {
       const spelling = qualifyNativeTypeSpelling(parameter.type!.qualType!, namespaces, namedTypes);
       const canonical = parameter.type!.desugaredQualType
@@ -542,22 +565,52 @@ function collectCxxValueMethods(
       };
     });
     if (returnType.kind === "unsupported" || parameters.some((parameter) => parameter.type.kind === "unsupported")) continue;
-    const overload: ForeignCxxMethodOverload = {
+    const base: ForeignFunctionOverload = {
       name: member.name,
-      cName: member.name,
+      cName: constructor ? ownerCName : member.storageClass === "static" ? `${ownerCName}::${member.name}` : member.name,
       returnType,
       parameters,
       variadic: member.variadic === true,
       cSignature: member.type.qualType,
-      receiverAccess: /\)\s*const(?:\s|$)/.test(member.type.qualType) ? "in" : "inout",
       metadata: foreignDeclarationMetadata(member),
+    };
+    if (constructor) {
+      if (!constructors.some((candidate) => candidate.cSignature === base.cSignature)) constructors.push(base);
+      continue;
+    }
+    if (member.storageClass === "static") {
+      const existing = staticMethods.get(member.name) ?? [];
+      if (!existing.some((candidate) => candidate.cSignature === base.cSignature)) {
+        staticMethods.set(member.name, [...existing, base]);
+      }
+      continue;
+    }
+    const overload: ForeignCxxMethodOverload = {
+      ...base,
+      receiverAccess: /\)\s*const(?:\s|$)/.test(member.type.qualType) ? "in" : "inout",
     };
     const existing = methods.get(member.name) ?? [];
     if (!existing.some((candidate) => candidate.cSignature === overload.cSignature)) {
       methods.set(member.name, [...existing, overload]);
     }
   }
-  return [...methods].map(([name, overloads]) => ({ name, overloads }));
+  return {
+    constructors,
+    staticMethods: [...staticMethods].map(([name, overloads]) => ({ name, overloads })),
+    methods: [...methods].map(([name, overloads]) => ({ name, overloads })),
+  };
+}
+
+function isCopyOrMoveConstructor(parameters: readonly ClangNode[], ownerCName: string): boolean {
+  if (parameters.length !== 1) return false;
+  const spelling = normalizeCType(parameters[0].type?.qualType ?? "");
+  if (!/\s&&?$/.test(spelling)) return false;
+  const subject = spelling
+    .replace(/^const\s+/, "")
+    .replace(/\s&&?$/, "")
+    .replace(/^(?:class|struct)\s+/, "")
+    .trim();
+  return subject === ownerCName || subject === ownerCName.split("::").at(-1);
 }
 
 function cxxValueLifecycle(declaration: ClangNode): ForeignValueLifecycle {

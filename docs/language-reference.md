@@ -318,9 +318,18 @@ type and records which of `copy`, `move`, and deterministic `deinit` are safe.
 Capabilities must agree with Clang. The current backend executes copyable native
 RAII values; move-only values remain unsupported.
 
-Public instance methods on contracted C++ values are imported from the header
-without a wrapper declaration. A native `const` method borrows its receiver;
-a non-const method requires addressable `let` storage:
+Public constructors plus static and instance methods on contracted C++ values are
+imported from the header without wrapper declarations. Construction and static
+calls live on the native type:
+
+```z
+const direct = native.zcpp.ManagedValue(20);
+const made = native.zcpp.ManagedValue.from(22);
+```
+
+`Type(args)` constructs an owning native value. It intentionally omits `new`,
+which is reserved for ARC-managed Z classes. A native `const` instance method
+borrows its receiver; a non-const method requires addressable `let` storage:
 
 ```z
 let copied = owner;
@@ -328,9 +337,11 @@ copied.value.add(2);       // C++ mutable receiver
 const answer = copied.value.value(); // C++ const receiver
 ```
 
-Calls lower to ordinary C++ member calls. Native overloads use the same exact
-selection and `Z0803` diagnostics as imported free functions. Constructors,
-static methods, move-only receivers, and general templates remain later tiers.
+Calls lower to ordinary C++ construction, static calls, or member calls. Native
+overloads use the same exact selection and `Z0803` diagnostics as imported free
+functions. Copy/move constructors are ownership mechanics rather than ordinary
+constructor overloads. Move-only values, ref-qualified methods, conversions,
+and general templates remain later tiers.
 
 Native namespaces may also be selected and aliased with ordinary import syntax:
 

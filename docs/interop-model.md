@@ -92,12 +92,17 @@ and native lexical destruction handles values stored in Z aggregates. FIIR can
 record native move availability, but move-only foreign values remain rejected
 until dedicated move lowering lands.
 
-Clang-proven public instance methods on those values are callable directly.
-Const methods borrow (`in`) the receiver, while non-const methods require a
-mutable, addressable (`inout`) Z owner. Method overloads retain their native
-signatures, source definitions, and availability metadata, and lower as direct
-C++ member calls without generated wrappers. Constructors, static methods,
-ref-qualified methods, and templates are not yet part of this slice.
+Clang-proven public constructors plus static and instance methods on those values
+are callable directly. A native value constructor uses `Type(args)` rather than
+`new Type(args)`: `new` remains Z's signal for ARC-managed class identity, while
+the C++ result is an ordinary owning value. Static methods use
+`Type.method(args)`. Const instance methods borrow (`in`) the receiver, while
+non-const methods require a mutable, addressable (`inout`) Z owner. All overloads
+retain their native signatures, source definitions, and availability metadata,
+and lower as direct C++ calls without generated wrappers. Copy/move constructors
+remain ownership operations rather than an overloaded source-level constructor
+surface. Ref-qualified methods, conversions, and templates are not yet part of
+this slice.
 
 ## Cost model
 

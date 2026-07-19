@@ -12,6 +12,7 @@ import { analyzeSource, type AnalyzedSource } from "./compiler.ts";
 import { DiagnosticError } from "./diagnostics.ts";
 import type {
   ForeignCxxMethod,
+  ForeignCxxStaticMethod,
   ForeignDeclarationMetadata,
   ForeignFunction,
   ForeignModule,
@@ -554,6 +555,11 @@ export function hover(source: string, fileName: string, offset: number): Hover |
     }
     if (memberPrefix[1] === "String" && word.text === "from") {
       return markdownHover("from(value: cstring): String  // copies borrowed C bytes", source, word.start, word.end);
+    }
+    const foreignStaticOwner = resolveForeignValueType(context, memberPrefix[1]);
+    const foreignStaticMethod = foreignStaticOwner?.staticMethods.find((item) => item.name === word.text);
+    if (foreignStaticMethod) {
+      return markdownHover(foreignCxxStaticMethodDetail(foreignStaticMethod), source, word.start, word.end);
     }
     const staticOwner = sourceAggregateForType(context, memberPrefix[1]);
     const staticMethod = staticOwner?.declaration.methods.find((item) => item.static && item.name === word.text);
@@ -1498,6 +1504,15 @@ function memberCompletions(
   }
   const nativeNamespace = resolveForeignModuleNamespace(importContext, receiverText);
   if (nativeNamespace) return moduleCompletions(nativeNamespace.module, prefix, nativeNamespace.namespacePath);
+  const nativeType = resolveForeignValueType(importContext, receiverText);
+  if (nativeType) {
+    return filterCompletions(nativeType.staticMethods.map((method) => ({
+      label: method.name,
+      kind: completionKinds.method,
+      detail: foreignCxxStaticMethodDetail(method),
+      insertText: `${method.name}()`,
+    })), prefix, 1000);
+  }
 
   const [moduleName, className, extra] = receiverText.split(".");
   if (!extra && moduleName && className) {
@@ -2170,6 +2185,29 @@ function resolveForeignModuleNamespace(
   return { module, namespacePath: resolvedPath };
 }
 
+function resolveForeignValueType(
+  context: Pick<AnalyzedSource, "foreignModules" | "sourceProgram">,
+  text: string,
+): Extract<ForeignNamedType, { readonly kind: "value" }> | null {
+  const [moduleName, ...path] = text.split(".");
+  const namespaceBinding = foreignNamespaceBindings(context).get(moduleName);
+  const module = context.foreignModules.get(moduleName) ?? namespaceBinding?.module;
+  if (module && path.length > 0) {
+    const named = resolveModuleNamedType(module, [...(namespaceBinding?.namespacePath ?? []), ...path.slice(0, -1)], path.at(-1)!);
+    return named?.kind === "value" ? named : null;
+  }
+  if (path.length > 0) return null;
+  for (const declaration of context.sourceProgram.imports) {
+    if (isLocalSourceModuleSpecifier(declaration.header) || !declaration.bindings) continue;
+    const binding = declaration.bindings.find((candidate) => candidate.localName === text);
+    if (!binding) continue;
+    const importedModule = context.foreignModules.get(declaration.moduleName);
+    const named = importedModule ? resolveModuleNamedType(importedModule, [], binding.importedName) : null;
+    if (named?.kind === "value") return named;
+  }
+  return null;
+}
+
 function foreignNamespaceBindings(
   context: Pick<AnalyzedSource, "foreignModules" | "sourceProgram">,
 ): Map<string, { readonly module: ForeignModule; readonly namespacePath: readonly string[] }> {
@@ -2231,7 +2269,14 @@ function foreignNamedTypeDetail(named: ForeignNamedType): string {
   const available = (["copy", "move", "deinit"] as const).filter((capability) => named.lifecycle[capability]);
   const unavailable = (["copy", "move", "deinit"] as const).filter((capability) => !named.lifecycle[capability]);
   const missing = unavailable.length ? `; unavailable: ${unavailable.join(", ")}` : "";
-  return `${named.exportName}: ${named.cName}  // native value: ${available.join(", ")}${missing}`;
+  const constructors = named.constructors.map((overload) => {
+    const parameters = overload.parameters.map((parameter, index) => (
+      `${parameter.name ?? `argument${index + 1}`}: ${foreignTypeName(parameter.type)}`
+    ));
+    return `${named.exportName}(${parameters.join(", ")}): ${named.typeName}  // C++ constructor`;
+  });
+  const constructorDetail = constructors.length ? `\n${constructors.join("\n")}` : "";
+  return `${named.exportName}: ${named.cName}  // native value: ${available.join(", ")}${missing}${constructorDetail}`;
 }
 
 function foreignFunctionDetail(declaration: ForeignFunction): string {
@@ -2254,6 +2299,16 @@ function foreignCxxMethodDetail(method: ForeignCxxMethod): string {
     if (overload.variadic) parameters.push("...arguments");
     const receiver = overload.receiverAccess === "in" ? "C++ const" : "C++ mutable";
     return `${method.name}(${parameters.join(", ")}): ${foreignTypeName(overload.returnType)}  // ${receiver}; ${overload.cSignature}${foreignAvailabilityDetail(overload.metadata)}`;
+  }).join("\n");
+}
+
+function foreignCxxStaticMethodDetail(method: ForeignCxxStaticMethod): string {
+  return method.overloads.map((overload) => {
+    const parameters = overload.parameters.map((parameter, index) => (
+      `${parameter.name ?? `argument${index + 1}`}: ${foreignTypeName(parameter.type)}`
+    ));
+    if (overload.variadic) parameters.push("...arguments");
+    return `${method.name}(${parameters.join(", ")}): ${foreignTypeName(overload.returnType)}  // C++ static; ${overload.cSignature}${foreignAvailabilityDetail(overload.metadata)}`;
   }).join("\n");
 }
 

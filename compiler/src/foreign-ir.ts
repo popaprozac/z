@@ -49,6 +49,8 @@ export type ForeignNamedType = (
     readonly typeName: string;
     readonly cName: string;
     readonly lifecycle: ForeignValueLifecycle;
+    readonly constructors: readonly ForeignFunctionOverload[];
+    readonly staticMethods: readonly ForeignCxxStaticMethod[];
     readonly methods: readonly ForeignCxxMethod[];
   }
   | {
@@ -92,6 +94,11 @@ export type ForeignCxxMethodOverload = ForeignFunctionOverload & {
 export type ForeignCxxMethod = {
   readonly name: string;
   readonly overloads: readonly ForeignCxxMethodOverload[];
+};
+
+export type ForeignCxxStaticMethod = {
+  readonly name: string;
+  readonly overloads: readonly ForeignFunctionOverload[];
 };
 
 export type ForeignField = {

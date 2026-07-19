@@ -44,7 +44,7 @@ bun run z run examples/result.z
 | C callbacks | [`callbacks.z`](../examples/callbacks.z), [`callbacks.h.zd`](../examples/callbacks.h.zd) | `.zd` call-only borrowing plus escaping ownership, named context/release pairing, and caller-thread guarantees |
 | Deployment target | [`deployment-target`](../examples/deployment-target) | Explicit macOS minimum version, Clang/Swift target propagation, and Z-native deprecation warnings |
 | C++ | [`cpp-interop.z`](../examples/cpp-interop.z), [`cpp-selective-interop.z`](../examples/cpp-selective-interop.z) | Qualified and selective namespace imports, aliases, overloads, and records |
-| C++ lifecycle value | [`foreign-values.z`](../examples/foreign-values.z), [`foreign-values.hpp.zd`](../tests/fixtures/foreign-values.hpp.zd) | `.zd` copy/deinit contract, native aggregate copies, direct const/mutable methods, overloads, and deterministic RAII destruction |
+| C++ lifecycle value | [`foreign-values.z`](../examples/foreign-values.z), [`cpp-callables.z`](../examples/cpp-callables.z), [`foreign-values.hpp.zd`](../tests/fixtures/foreign-values.hpp.zd) | `.zd` copy/deinit contract, native aggregate copies, constructors, static/const/mutable methods, overloads, and deterministic RAII destruction |
 | AppKit window | [`nswindow.z`](../examples/nswindow.z) | Direct Objective-C ARC calls |
 | Objective-C nullability | [`objc-nullability.z`](../examples/objc-nullability.z) | `T | null`, narrowing, and `Option.fromNullable` |
 | Persistent AppKit events | [`appkit-events.z`](../examples/appkit-events.z) | Native blocks, weak capture, observer tokens |

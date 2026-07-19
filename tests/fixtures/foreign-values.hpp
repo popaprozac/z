@@ -31,6 +31,18 @@ public:
     managed_released += 1;
   }
 
+  static ManagedValue from(int32_t value) {
+    return ManagedValue(value);
+  }
+
+  static int32_t sum(int32_t left, int32_t right) {
+    return left + right;
+  }
+
+  static double sum(double left, double right) {
+    return left + right;
+  }
+
   int32_t value() const {
     return value_;
   }

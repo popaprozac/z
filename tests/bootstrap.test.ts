@@ -1383,6 +1383,10 @@ test("declares, copies, aggregates, and destroys foreign C++ values", () => {
   const nativeValue = context.foreignModules.get("native")?.namedTypes.get("zcpp.ManagedValue");
   assert.equal(nativeValue?.kind, "value");
   if (nativeValue?.kind === "value") {
+    assert.equal(nativeValue.constructors.length, 1);
+    assert.equal(nativeValue.constructors[0]?.parameters[0]?.name, "value");
+    assert.equal(nativeValue.staticMethods.find((method) => method.name === "from")?.overloads.length, 1);
+    assert.equal(nativeValue.staticMethods.find((method) => method.name === "sum")?.overloads.length, 2);
     assert.equal(nativeValue.methods.find((method) => method.name === "value")?.overloads[0]?.receiverAccess, "in");
     assert.equal(nativeValue.methods.find((method) => method.name === "add")?.overloads[0]?.receiverAccess, "inout");
     assert.equal(nativeValue.methods.find((method) => method.name === "plus")?.overloads.length, 2);
@@ -1493,6 +1497,61 @@ test("declares, copies, aggregates, and destroys foreign C++ values", () => {
   assert.equal(moveOnlyDiagnostic.code, "Z0801");
   assert.match(moveOnlyDiagnostic.message, /move-only foreign value type "zcpp\.MoveOnly" is not executable/);
   assert.match(moveOnlyDiagnostic.message, /dedicated foreign move lowering/);
+});
+
+test("imports C++ constructors and static methods as direct type-level calls", () => {
+  const example = resolve(projectRoot, "examples/cpp-callables.z");
+  const source = readFileSync(example, "utf8");
+  const generated = compileToNative(source, example).source;
+  assert.match(generated, /const zcpp::ManagedValue direct = zcpp::ManagedValue\(20\);/);
+  assert.match(generated, /const zcpp::ManagedValue made = zcpp::ManagedValue::from\(22\);/);
+  assert.match(generated, /zcpp::ManagedValue::sum\(direct\.value\(\), made\.value\(\)\)/);
+
+  const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+
+  const constructorOffset = source.indexOf("ManagedValue(20)");
+  assert.match(hover(source, example, constructorOffset)?.contents.value ?? "", /ManagedValue\(value: i32\).*C\+\+ constructor/);
+  assert.match(definition(source, `file://${example}`, constructorOffset)?.uri ?? "", /foreign-values\.hpp$/);
+
+  const staticOffset = source.indexOf("from(22)");
+  assert.match(hover(source, example, staticOffset)?.contents.value ?? "", /from\(value: i32\): native\.zcpp\.ManagedValue.*C\+\+ static/);
+  assert.match(definition(source, `file://${example}`, staticOffset)?.uri ?? "", /foreign-values\.hpp$/);
+
+  const completionSource = source.replace("native.zcpp.ManagedValue.from(22)", "native.zcpp.ManagedValue.");
+  const completionOffset = completionSource.indexOf("native.zcpp.ManagedValue.") + "native.zcpp.ManagedValue.".length;
+  const items = completions(completionSource, example, completionOffset);
+  assert.match(items.find((item) => item.label === "from")?.detail ?? "", /C\+\+ static/);
+  assert.match(items.find((item) => item.label === "sum")?.detail ?? "", /sum\(left: i32, right: i32\)/);
+  assert.equal(items.some((item) => item.label === "value"), false);
+
+  const selective = source
+    .replace('import native from "../tests/fixtures/foreign-values.hpp";', 'import { ManagedValue as Value } from "../tests/fixtures/foreign-values.hpp";')
+    .replaceAll("native.zcpp.ManagedValue", "Value");
+  const selectiveGenerated = compileToNative(selective, example).source;
+  assert.match(selectiveGenerated, /zcpp::ManagedValue::from\(22\)/);
+  const selectiveStaticOffset = selective.indexOf("from(22)");
+  assert.match(hover(selective, example, selectiveStaticOffset)?.contents.value ?? "", /C\+\+ static/);
+  const selectiveCompletionSource = selective.replace("Value.from(22)", "Value.");
+  const selectiveCompletionOffset = selectiveCompletionSource.indexOf("Value.") + "Value.".length;
+  assert.equal(
+    completions(selectiveCompletionSource, example, selectiveCompletionOffset)
+      .find((item) => item.label === "from")?.insertText,
+    "from()",
+  );
+
+  assert.throws(
+    () => compileToNative(source.replace("ManagedValue.sum(direct.value(), made.value())", 'ManagedValue.sum("left", "right")'), example),
+    /no overload of native static method "zcpp\.ManagedValue\.sum" accepts these arguments/,
+  );
+  assert.throws(
+    () => compileToNative(source.replace("ManagedValue.from(22)", "ManagedValue.missing(22)"), example),
+    /native value type "native\.zcpp\.ManagedValue" has no static method "missing"/,
+  );
+  assert.throws(
+    () => compileToNative(source.replace("ManagedValue.from(22)", "ManagedValue.value()"), example),
+    /native instance method "value" must be called through a native\.zcpp\.ManagedValue value/,
+  );
 });
 
 test("imports AppKit classes and emits an ARC Objective-C NSWindow program", () => {

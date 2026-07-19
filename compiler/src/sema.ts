@@ -3144,25 +3144,94 @@ function inferExpressionInner(
           return aggregate.name;
         }
         const imported = globals.get(expression.callee.name);
-        if (imported?.kind === "foreignType" && imported.declaration.kind === "record") {
-          rejectLabeledArguments(expression.argumentLabels, expression.location, fileName);
-          if (expression.arguments.length !== 1 || expression.arguments[0].kind !== "objectExpression") {
-            throw new DiagnosticError(fileName, expression.location, `${expression.callee.name} construction requires one object literal`);
+        if (imported?.kind === "foreignType") {
+          if (imported.declaration.kind === "record") {
+            rejectLabeledArguments(expression.argumentLabels, expression.location, fileName);
+            if (expression.arguments.length !== 1 || expression.arguments[0].kind !== "objectExpression") {
+              throw new DiagnosticError(fileName, expression.location, `${expression.callee.name} construction requires one object literal`);
+            }
+            inferContextualObjectExpression(expression.arguments[0], imported.declaration.typeName, locals, globals, structs, enums, fileName, state);
+            return imported.declaration.typeName;
           }
-          inferContextualObjectExpression(expression.arguments[0], imported.declaration.typeName, locals, globals, structs, enums, fileName, state);
-          return imported.declaration.typeName;
+          if (imported.declaration.kind === "value") {
+            rejectLabeledArguments(expression.argumentLabels, expression.location, fileName);
+            return checkForeignCxxConstructorCall(
+              imported.declaration,
+              expression.arguments,
+              locals,
+              globals,
+              structs,
+              enums,
+              fileName,
+              expression.location,
+              expression.callee.location.offset,
+              state,
+            );
+          }
         }
       }
       if (expression.callee.kind === "member") {
         const imported = foreignMemberTarget(expression.callee, globals);
-        const record = imported ? resolveForeignNamedType(imported.module, imported.path) : null;
-        if (record?.kind === "record") {
+        const named = imported ? resolveForeignNamedType(imported.module, imported.path) : null;
+        if (named?.kind === "record") {
           rejectLabeledArguments(expression.argumentLabels, expression.location, fileName);
           if (expression.arguments.length !== 1 || expression.arguments[0].kind !== "objectExpression") {
-            throw new DiagnosticError(fileName, expression.location, `${record.qualifiedName} construction requires one object literal`);
+            throw new DiagnosticError(fileName, expression.location, `${named.qualifiedName} construction requires one object literal`);
           }
-          inferContextualObjectExpression(expression.arguments[0], record.typeName, locals, globals, structs, enums, fileName, state);
-          return record.typeName;
+          inferContextualObjectExpression(expression.arguments[0], named.typeName, locals, globals, structs, enums, fileName, state);
+          return named.typeName;
+        }
+        if (named?.kind === "value") {
+          rejectLabeledArguments(expression.argumentLabels, expression.location, fileName);
+          return checkForeignCxxConstructorCall(
+            named,
+            expression.arguments,
+            locals,
+            globals,
+            structs,
+            enums,
+            fileName,
+            expression.location,
+            expression.callee.location.offset,
+            state,
+          );
+        }
+        if (imported && imported.path.length > 1) {
+          const owner = resolveForeignNamedType(imported.module, imported.path.slice(0, -1));
+          const method = owner?.kind === "value"
+            ? owner.staticMethods.find((candidate) => candidate.name === imported.path.at(-1))
+            : null;
+          if (owner?.kind === "value" && method) {
+            rejectLabeledArguments(expression.argumentLabels, expression.location, fileName);
+            return checkForeignCxxStaticMethodCall(
+              owner,
+              method,
+              expression.arguments,
+              locals,
+              globals,
+              structs,
+              enums,
+              fileName,
+              expression.location,
+              expression.callee.location.offset,
+              state,
+            );
+          }
+          if (owner?.kind === "value") {
+            const instanceMethod = owner.methods.find((candidate) => candidate.name === imported.path.at(-1));
+            if (instanceMethod) {
+              throw new DiagnosticError(
+                fileName,
+                expression.callee.location,
+                `native instance method ${JSON.stringify(instanceMethod.name)} must be called through a ${owner.typeName} value`,
+              );
+            }
+            throw new DiagnosticError(
+              fileName,
+              expression.callee.location,
+              `native value type ${JSON.stringify(owner.typeName)} has no static method ${JSON.stringify(imported.path.at(-1))}`,
+            );
+          }
         }
         if (imported && imported.path.length === 1) {
           const matches = [...imported.module.namedTypes.values()].filter((candidate) => (
@@ -3231,6 +3300,29 @@ function inferExpressionInner(
           return "String";
         }
         if (expression.callee.object.kind === "identifier") {
+          const foreignOwner = !locals.has(expression.callee.object.name)
+            ? globals.get(expression.callee.object.name)
+            : null;
+          if (foreignOwner?.kind === "foreignType" && foreignOwner.declaration.kind === "value") {
+            const method = foreignOwner.declaration.staticMethods.find((candidate) => candidate.name === expression.callee.property);
+            if (!method) {
+              throw new DiagnosticError(fileName, expression.callee.location, `native value type ${JSON.stringify(foreignOwner.declaration.typeName)} has no static method ${JSON.stringify(expression.callee.property)}`);
+            }
+            rejectLabeledArguments(expression.argumentLabels, expression.location, fileName);
+            return checkForeignCxxStaticMethodCall(
+              foreignOwner.declaration,
+              method,
+              expression.arguments,
+              locals,
+              globals,
+              structs,
+              enums,
+              fileName,
+              expression.location,
+              expression.callee.location.offset,
+              state,
+            );
+          }
           const aggregate = !locals.has(expression.callee.object.name)
             ? structs.get(expression.callee.object.name)
             : null;
@@ -5153,6 +5245,80 @@ function checkForeignFunctionCall(
   state.foreignFunctionDefinitions.set(calleeOffset, selected.metadata);
   onSelected?.(selected);
   return checkForeignCall(selected, args, locals, globals, structs, enums, fileName, location, state);
+}
+
+function checkForeignCxxConstructorCall(
+  declaration: Extract<ForeignNamedType, { readonly kind: "value" }>,
+  args: Expression[],
+  locals: Map<string, ValueType>,
+  globals: Map<string, SymbolValue>,
+  structs: Map<string, StructDeclaration>,
+  enums: Map<string, EnumDeclaration>,
+  fileName: string,
+  location: SourceLocation,
+  calleeOffset: number,
+  state: AnalysisState,
+): ValueType {
+  if (declaration.constructors.length === 0) {
+    throw new DiagnosticError(
+      fileName,
+      location,
+      `native value ${JSON.stringify(declaration.typeName)} has no imported public constructor`,
+    );
+  }
+  return checkForeignFunctionCall(
+    {
+      name: declaration.exportName,
+      namespacePath: declaration.namespacePath,
+      qualifiedName: declaration.qualifiedName,
+      overloads: declaration.constructors,
+    },
+    args,
+    locals,
+    globals,
+    structs,
+    enums,
+    fileName,
+    location,
+    calleeOffset,
+    state,
+    undefined,
+    "native constructor",
+  );
+}
+
+function checkForeignCxxStaticMethodCall(
+  declaration: Extract<ForeignNamedType, { readonly kind: "value" }>,
+  method: Extract<ForeignNamedType, { readonly kind: "value" }>["staticMethods"][number],
+  args: Expression[],
+  locals: Map<string, ValueType>,
+  globals: Map<string, SymbolValue>,
+  structs: Map<string, StructDeclaration>,
+  enums: Map<string, EnumDeclaration>,
+  fileName: string,
+  location: SourceLocation,
+  calleeOffset: number,
+  state: AnalysisState,
+): ValueType {
+  return checkForeignFunctionCall(
+    {
+      name: method.name,
+      namespacePath: declaration.namespacePath,
+      qualifiedName: `${declaration.qualifiedName}.${method.name}`,
+      overloads: method.overloads,
+    },
+    args,
+    locals,
+    globals,
+    structs,
+    enums,
+    fileName,
+    location,
+    calleeOffset,
+    state,
+    undefined,
+    "native static method",
+  );
 }
 
 function cloneAnalysisState(state: AnalysisState): AnalysisState {

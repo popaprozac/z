@@ -107,9 +107,9 @@ facts are coherent:
 7. opaque RAII values carry explicit copy/move/deinit capabilities, `.zd`
    cannot exceed what Clang proves, and values are never treated as plain byte
    records;
-8. public C++ value methods retain const/mutable receiver access, overload
-   signatures, and native source metadata; non-const calls require addressable
-   mutable storage;
+8. public C++ constructors and static/instance methods retain overload signatures
+   and native source metadata. Instance methods additionally retain const/mutable
+   receiver access; non-const calls require addressable mutable storage;
 9. explicit native unavailability is rejected at the Z use site and points back
    to the native declaration. An explicit project deployment target also makes
    introduced/obsoleted versions errors and applicable deprecations warnings;
@@ -150,8 +150,8 @@ separately from the in-memory normalized FIIR.
 
 1. extend the host deployment-target slice with cross-compilation and explicit
    runtime availability guards when their semantics are designed;
-2. represent constructors, static methods, ref-qualified methods, and richer
-   properties without flattening names;
+2. represent ref-qualified methods, inheritance, user-defined conversions, and
+   richer properties without flattening names;
 3. extend the implemented copy/move/deinit value capabilities from copyable
    aggregate storage to move-only values and native methods;
 4. expand block/callback adapters with threading and callback-to-async
