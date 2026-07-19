@@ -12,7 +12,7 @@
     "languages": [{
       "id": "z",
       "aliases": ["Z", "z"],
-      "extensions": [".z"],
+      "extensions": [".z", ".zd"],
       "configuration": "./language-configuration.json"
     }],
     "grammars": [{

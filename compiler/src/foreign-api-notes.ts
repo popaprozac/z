@@ -3,6 +3,8 @@ import { basename, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ImportDeclaration } from "./ast.ts";
 import { DiagnosticError } from "./diagnostics.ts";
+import { foreignDeclarationApiNotes, parseForeignDeclarationContracts } from "./foreign-declarations.ts";
+import type { ForeignFunctionDeclaration } from "./foreign-ir.ts";
 
 export type PointerNote = {
   readonly ownership?: "owned" | "borrowed" | "consuming";
@@ -64,14 +66,23 @@ export function readApiNotes(
   declaration: ImportDeclaration,
   fileName: string,
   includeDirectory: string,
+  declarations: ReadonlyMap<string, ForeignFunctionDeclaration>,
 ): ApiNotes {
-  const paths = apiNoteSourcePaths(declaration, includeDirectory);
+  const sources = apiNoteSources(declaration, includeDirectory);
   try {
-    return mergeApiNotes(paths.map((path) => ({
-      name: path,
-      notes: parseApiNotes(JSON.parse(readFileSync(path, "utf8")), path),
+    return mergeApiNotes(sources.map((source) => ({
+      name: source.path,
+      notes: source.kind === "declaration"
+        ? foreignDeclarationApiNotes(
+          parseForeignDeclarationContracts(readFileSync(source.path, "utf8"), source.path),
+          declarations,
+          declaration.header,
+          source.path,
+        )
+        : parseApiNotes(JSON.parse(readFileSync(source.path, "utf8")), source.path),
     })));
   } catch (error) {
+    if (error instanceof DiagnosticError) throw error;
     const detail = error instanceof Error ? error.message : String(error);
     throw new DiagnosticError(fileName, declaration.location, `could not merge API notes for ${JSON.stringify(declaration.header)}: ${detail}`, {
       code: "Z0801",
@@ -80,22 +91,27 @@ export function readApiNotes(
 }
 
 export function apiNotesFreshness(declaration: ImportDeclaration, includeDirectory: string): string {
-  return apiNoteSourcePaths(declaration, includeDirectory)
-    .map((path) => {
-      const stat = statSync(path);
-      return `${path}:${stat.mtimeMs}:${stat.size}`;
+  return apiNoteSources(declaration, includeDirectory)
+    .map((source) => {
+      const stat = statSync(source.path);
+      return `${source.path}:${stat.mtimeMs}:${stat.size}`;
     })
     .join("\0");
 }
 
-function apiNoteSourcePaths(declaration: ImportDeclaration, includeDirectory: string): string[] {
-  const localPath = resolve(includeDirectory, `${declaration.header}.zapi.json`);
+function apiNoteSources(
+  declaration: ImportDeclaration,
+  includeDirectory: string,
+): { readonly path: string; readonly kind: "json" | "declaration" }[] {
+  const localJsonPath = resolve(includeDirectory, `${declaration.header}.zapi.json`);
+  const localDeclarationPath = resolve(includeDirectory, `${declaration.header}.zd`);
   const localHeader = resolve(includeDirectory, declaration.header);
   const builtInPath = resolve(dirname(fileURLToPath(import.meta.url)), "../api-notes", `${basename(declaration.header)}.json`);
   const canUseBuiltIn = declaration.header === basename(declaration.header) && !existsSync(localHeader);
   return [
-    ...(canUseBuiltIn && existsSync(builtInPath) ? [builtInPath] : []),
-    ...(existsSync(localPath) ? [localPath] : []),
+    ...(canUseBuiltIn && existsSync(builtInPath) ? [{ path: builtInPath, kind: "json" as const }] : []),
+    ...(existsSync(localJsonPath) ? [{ path: localJsonPath, kind: "json" as const }] : []),
+    ...(existsSync(localDeclarationPath) ? [{ path: localDeclarationPath, kind: "declaration" as const }] : []),
   ];
 }
 

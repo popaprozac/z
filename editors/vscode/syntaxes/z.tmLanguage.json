@@ -109,11 +109,14 @@
         "name": "keyword.control.export.z",
         "match": "\\bexport\\b"
       }, {
+        "name": "keyword.control.declaration.z",
+        "match": "\\bdeclare\\b"
+      }, {
         "name": "storage.modifier.z",
         "match": "\\bmove(?=\\s+this\\b)"
       }, {
         "name": "keyword.control.z",
-        "match": "\\b(?:return|throws|throw|select|yield|try|attempt|match|if|else|while|for|of|break|continue|async|await|spawn|scope|deinit|constructor|unsafe|in|out|inout|move|view|weak|new|as|implements)\\b"
+        "match": "\\b(?:return|throws|throw|select|yield|try|attempt|match|if|else|while|for|of|break|continue|async|await|spawn|scope|deinit|constructor|unsafe|in|out|inout|move|view|weak|new|as|implements|module)\\b"
       }, {
         "name": "storage.modifier.z",
         "match": "\\b(?:const|let|mut|weak|static|private|public)\\b"

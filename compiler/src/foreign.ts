@@ -216,7 +216,7 @@ function readHeader(
     objectiveC,
     cPlusPlus,
   };
-  const notes = readApiNotes(declaration, fileName, headerDirectory);
+  const notes = readApiNotes(declaration, fileName, headerDirectory, produced.functions);
   const contracts = normalizeForeignContracts(
     produced.functions,
     produced.nativeTypes,

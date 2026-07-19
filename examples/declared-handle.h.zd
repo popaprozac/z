@@ -1,0 +1,7 @@
+declare module "declared-handle.h" {
+  export function z_declared_open(value: _): _ | null {
+    deinit z_declared_close;
+  }
+  export function z_declared_read(in handle: _): _;
+  export function z_declared_close(move handle: _): _;
+}

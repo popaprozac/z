@@ -598,7 +598,7 @@ test("narrows, borrows, consumes, and cleans up owned C handles", () => {
   );
 });
 
-test("discovers ownership notes beside project headers", () => {
+test("discovers owned-handle contracts from adjacent Z declaration files", () => {
   const source = `
     import handles from "tests/fixtures/foreign-handles.h";
     function main(): i32 {
@@ -610,6 +610,67 @@ test("discovers ownership notes beside project headers", () => {
   const generated = compileToC(source, resolve(projectRoot, "foreign-local-notes.z"));
   assert.match(generated, /ZTestHandle \* const handle = z_test_open\(\);/);
   assert.match(generated, /if \(_z_live_handle_0 && handle != NULL\) z_test_close\(handle\);/);
+
+  const declarationFile = resolve(projectRoot, "tests/fixtures/foreign-handles.h.zd");
+  assert.deepEqual(diagnostics(readFileSync(declarationFile, "utf8"), declarationFile), []);
+  const declarationCheck = spawnSync(process.execPath, [cli, "check", declarationFile], { encoding: "utf8" });
+  assert.equal(declarationCheck.status, 0, declarationCheck.stderr);
+  assert.match(declarationCheck.stdout, /foreign-handles\.h\.zd: ok/);
+
+  const example = resolve(projectRoot, "examples/declared-handle.z");
+  const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, "declared handle=42\n");
+  assert.match(compileToC(readFileSync(example, "utf8"), example), /z_declared_close\(handle\);/);
+});
+
+test("diagnoses malformed and mismatched Z declaration contracts", () => {
+  const malformed = `
+    declare module "contract.h" {
+      export function known(): invented;
+    }
+  `;
+  const malformedDiagnostic = diagnostics(malformed, "/tmp/contract.h.zd")[0];
+  assert.equal(malformedDiagnostic.code, "Z0801");
+  assert.match(malformedDiagnostic.message, /requires `_` for a header-derived type/);
+
+  const executableContract = `
+    declare module "contract.h" {
+      export function known(): _ {
+        return 1;
+      }
+    }
+  `;
+  const executableDiagnostic = diagnostics(executableContract, "/tmp/contract.h.zd")[0];
+  assert.equal(executableDiagnostic.code, "Z0801");
+  assert.match(executableDiagnostic.message, /expected "deinit" in foreign result contract/);
+
+  const mismatchDirectory = mkdtempSync("/tmp/z-zd-module-");
+  const mismatchHeader = resolve(mismatchDirectory, "contract.h");
+  const mismatchSource = resolve(mismatchDirectory, "main.z");
+  writeFileSync(mismatchHeader, "int known(void);\n");
+  writeFileSync(`${mismatchHeader}.zd`, `
+    declare module "other.h" {
+      export function known(): _;
+    }
+  `);
+  const imported = `import contract from "contract.h"; function main(): i32 { return contract.known(); }`;
+  const mismatch = diagnostics(imported, mismatchSource)[0];
+  assert.equal(mismatch.code, "Z0801");
+  assert.match(mismatch.message, /does not match imported header "contract\.h"/);
+
+  const parameterDirectory = mkdtempSync("/tmp/z-zd-parameter-");
+  const parameterHeader = resolve(parameterDirectory, "contract.h");
+  const parameterSource = resolve(parameterDirectory, "main.z");
+  writeFileSync(parameterHeader, "int use(void *handle);\n");
+  writeFileSync(`${parameterHeader}.zd`, `
+    declare module "contract.h" {
+      export function use(in missing: _): _;
+    }
+  `);
+  const missingParameter = diagnostics(imported.replace("known", "use"), parameterSource)[0];
+  assert.equal(missingParameter.code, "Z0801");
+  assert.match(missingParameter.message, /does not match native parameter "handle"/);
 });
 
 test("merges API-note sources without allowing safety contracts to conflict", () => {
@@ -5232,6 +5293,7 @@ test("zeroes weak class references and breaks owned closure cycles", () => {
 test("editor grammar tracks keywords without reserving Result variants", () => {
   const grammarPath = resolve(projectRoot, "editors/vscode/syntaxes/z.tmLanguage.json");
   const grammar = JSON.parse(readFileSync(grammarPath, "utf8"));
+  const editorPackage = JSON.parse(readFileSync(resolve(projectRoot, "editors/vscode/package.json"), "utf8"));
   const keywordPattern = grammar.repository.keywords.patterns.map((pattern: { match: string }) => pattern.match).join(" ");
   const constantPattern = grammar.repository.constants.patterns.map((pattern: { match: string }) => pattern.match).join(" ");
   const operatorPattern = grammar.repository.operators.patterns.map((pattern: { match: string }) => pattern.match).join(" ");
@@ -5265,6 +5327,8 @@ test("editor grammar tracks keywords without reserving Result variants", () => {
   assert.match(keywordPattern, /\bas\b/);
   assert.match(keywordPattern, /implements/);
   assert.match(keywordPattern, /export/);
+  assert.match(keywordPattern, /declare/);
+  assert.ok(editorPackage.contributes.languages[0].extensions.includes(".zd"));
   assert.match(selectiveImportPatterns, /\\bas\\b/);
   assert.match(keywordPattern, /while/);
   assert.match(keywordPattern, /for\|of/);

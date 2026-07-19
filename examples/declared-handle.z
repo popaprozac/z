@@ -1,0 +1,13 @@
+import console from "std/console";
+import native from "declared-handle.h";
+
+function main(): i32 {
+  const handle = native.z_declared_open(42);
+  if (handle == null) {
+    return 1;
+  }
+
+  const value = native.z_declared_read(handle);
+  console.log(`declared handle=${value}`);
+  return value - 42;
+}

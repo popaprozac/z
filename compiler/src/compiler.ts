@@ -13,6 +13,7 @@ import { prepareProject, type ProjectBuild } from "./project.ts";
 import { linkSourceModules, type SourceModuleInfo } from "./modules.ts";
 import { materializeWeakTypes } from "./weak-types.ts";
 import { generateAsyncC } from "./async-codegen-c.ts";
+import { parseForeignDeclarationContracts } from "./foreign-declarations.ts";
 
 export type NativeLanguage = "c" | "objective-c" | "c++" | "objective-c++";
 
@@ -98,5 +99,6 @@ export function compileToNative(source: string, fileName: string): NativeArtifac
 }
 
 export function check(source: string, fileName: string): void {
-  analyzeSource(source, fileName, { requireMain: false });
+  if (fileName.endsWith(".zd")) parseForeignDeclarationContracts(source, fileName);
+  else analyzeSource(source, fileName, { requireMain: false });
 }

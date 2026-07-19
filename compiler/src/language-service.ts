@@ -30,6 +30,7 @@ import { displayFunctionType, functionTypeName, parseFunctionType } from "./func
 import { displayTaskType, parseTaskType } from "./async-types.ts";
 import { parseWeakType } from "./weak-types.ts";
 import { parseViewType } from "./view-types.ts";
+import { parseForeignDeclarationContracts } from "./foreign-declarations.ts";
 
 export type Position = { readonly line: number; readonly character: number };
 export type Range = { readonly start: Position; readonly end: Position };
@@ -73,7 +74,8 @@ const completionKinds = {
 
 export function diagnostics(source: string, fileName: string): ServiceDiagnostic[] {
   try {
-    analyzeSource(source, fileName, { requireMain: false });
+    if (fileName.endsWith(".zd")) parseForeignDeclarationContracts(source, fileName);
+    else analyzeSource(source, fileName, { requireMain: false });
     return [];
   } catch (error) {
     const diagnostic = error instanceof DiagnosticError ? error : null;
@@ -106,7 +108,7 @@ export function diagnostics(source: string, fileName: string): ServiceDiagnostic
             end: { line: origin.line, character: origin.character + diagnostic.length },
           },
         },
-        message: "error originates in an imported Z module",
+        message: "error originates in an imported Z module or declaration contract",
       });
     }
     return [{

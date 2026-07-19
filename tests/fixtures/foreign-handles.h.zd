@@ -1,0 +1,8 @@
+declare module "tests/fixtures/foreign-handles.h" {
+  export function z_test_open(): _ | null {
+    deinit z_test_close;
+  }
+  export function z_test_close(move handle: _): _;
+  export function z_test_use(in handle: _): _;
+  export function z_test_optional(in handle: _ | null): _;
+}

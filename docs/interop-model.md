@@ -103,6 +103,31 @@ adjacent `<header>.zd` Z declaration files, and built-in toolchain contracts
 will feed the same normalizer and FIIR; the current `.zapi.json` sidecar is
 stage-0 input rather than promised source syntax.
 
+The first `.zd` slice augments Clang declarations without repeating their ABI
+types. `_` means "use the header-derived type," while ordinary Z capabilities,
+nullability, and `deinit` describe the missing safety facts:
+
+```z
+declare module "vendor.h" {
+  export function vendor_open(path: _): _ | null {
+    deinit vendor_close;
+  }
+  export function vendor_close(move handle: _): _;
+  export function vendor_use(in handle: _): _;
+  export function vendor_optional(in handle: _ | null): _;
+}
+```
+
+The declaration is not a wrapper or implementation. `in`, `move`, and `| null`
+retain their ordinary Z meanings. A function contract block is declarative,
+not executable; associating `deinit vendor_close` with the result implies
+ownership and deterministic release of each non-null value. Functions without
+additional contracts end in `;`. The module specifier, function names,
+parameter order, and parameter names must match Clang's raw interface, and
+`.zd` facts conflict-check with any built-in or stage-0 JSON source. Explicit
+ABI types and callback lifetime/context relationships remain later
+declaration-file slices.
+
 Imported nullable references use the same one-pointer representation as their
 native ABI. A Z null check is an ordinary pointer comparison and narrows the
 reference statically; the first reference specialization uses `T | null` in

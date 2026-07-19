@@ -40,6 +40,7 @@ bun run z run examples/result.z
 | Selective C import | [`selective-import.z`](../examples/selective-import.z) | Header declarations with local aliases |
 | C records and enums | [`foreign-types.z`](../examples/foreign-types.z) | Native layouts and constants |
 | C pointers | [`foreign-pointers.z`](../examples/foreign-pointers.z), [`foreign-handle.z`](../examples/foreign-handle.z) | Borrowed and owned API-note contracts |
+| Z declaration contract | [`declared-handle.z`](../examples/declared-handle.z), [`declared-handle.h.zd`](../examples/declared-handle.h.zd) | Adjacent `.zd` capabilities, nullability, and `deinit` release |
 | C callbacks | [`callbacks.z`](../examples/callbacks.z) | Call-only and escaping callback contracts |
 | C++ | [`cpp-interop.z`](../examples/cpp-interop.z), [`cpp-selective-interop.z`](../examples/cpp-selective-interop.z) | Qualified and selective namespace imports, aliases, overloads, and records |
 | AppKit window | [`nswindow.z`](../examples/nswindow.z) | Direct Objective-C ARC calls |
