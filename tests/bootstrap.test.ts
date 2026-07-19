@@ -6934,10 +6934,9 @@ test("constructs and destroys move-only C++ values across async suspension", () 
   assert.match(generated, /alignas\(zcpp::UniqueValue\) unsigned char result\[sizeof\(zcpp::UniqueValue\)\]/);
   assert.match(generated, /alignas\(zcpp::UniqueValue\) unsigned char value_resource\[sizeof\(zcpp::UniqueValue\)\]/);
   assert.match(generated, /new \(frame->value_resource\) zcpp::UniqueValue\(zcpp::UniqueValue\(42\)\)/);
-  assert.match(generated, /new \(frame->result\) zcpp::UniqueValue\(\(frame->live_resource = false, std::move/);
-  assert.match(generated, /new \(frame->result\) zcpp::UniqueValue\(std::move\(\(\*std::launder\(reinterpret_cast<zcpp::UniqueValue \*>\(frame->child_\d+->result\)/);
-  assert.match(generated, /::make_success\(std::move\(\(\*std::launder\(reinterpret_cast<zcpp::UniqueValue \*>\(frame->child_\d+->result\)/);
-  assert.match(generated, /frame->child_\d+->live_result = false;/);
+  assert.match(generated, /T result\(std::move\(\*value\)\);\n  std::destroy_at\(value\);\n  \*live = false;/);
+  assert.match(generated, /new \(frame->result\) zcpp::UniqueValue\(z_async_take\(&\(\(\*std::launder\(reinterpret_cast<zcpp::UniqueValue \*>\(frame->value_resource\)/);
+  assert.match(generated, /::make_success\(z_async_take\(&\(\(\*std::launder\(reinterpret_cast<zcpp::UniqueValue \*>\(frame->child_\d+->result\)/);
   assert.match(generated, /std::launder\(reinterpret_cast<zcpp::UniqueValue \*>\(frame->value_resource\)\)/);
   assert.match(generated, /std::destroy_at\(&\(\(\*std::launder\(reinterpret_cast<zcpp::UniqueValue \*>\(frame->value_resource\)\)\)\)\)/);
 
@@ -6946,7 +6945,7 @@ test("constructs and destroys move-only C++ values across async suspension", () 
   assert.equal(result.stdout, "answer=42, failure=7, live=0\n");
 
   const resourceOffset = source.indexOf("resource =") + 2;
-  assert.match(hover(source, example, resourceOffset)?.contents.value ?? "", /resource: native\.zcpp\.UniqueValue/);
+  assert.match(hover(source, example, resourceOffset)?.contents.value ?? "", /resource: .*zcpp\.UniqueValue/);
   const methodSource = source.replace("resource.value()", "resource.va");
   const methodOffset = methodSource.indexOf("resource.va") + "resource.va".length;
   assert.match(
@@ -7010,7 +7009,7 @@ test("constructs and destroys move-only C++ values across async suspension", () 
     }
   `);
   const consumingGenerated = compileToNative(readFileSync(consuming, "utf8"), consuming).source;
-  assert.match(consumingGenerated, /live_resource = false, std::move\(\(\*std::launder\(reinterpret_cast<zcpp::UniqueValue/);
+  assert.match(consumingGenerated, /z_async_take\(&\(\(\*std::launder\(reinterpret_cast<zcpp::UniqueValue/);
   const consumed = spawnSync(process.execPath, [cli, "run", consuming], { encoding: "utf8" });
   assert.equal(consumed.status, 0, consumed.stderr);
 
@@ -7057,27 +7056,95 @@ test("constructs and destroys move-only C++ values across async suspension", () 
     }
   `);
   const fallibleGenerated = compileToNative(readFileSync(fallible, "utf8"), fallible).source;
-  assert.match(fallibleGenerated, /::make_success\(std::move/);
+  assert.match(fallibleGenerated, /::make_success\(z_async_take/);
   assert.match(fallibleGenerated, /::make_failure\(frame->child_\d+->error\)/);
   assert.match(fallibleGenerated, /alignas\(Z_Result_[^)]+\) unsigned char suspend_\d+/);
   assert.match(fallibleGenerated, /std::destroy_at\(&\(\(\*std::launder\(reinterpret_cast<Z_Result_/);
   const fallibleResult = spawnSync(process.execPath, [cli, "run", fallible], { encoding: "utf8" });
   assert.equal(fallibleResult.status, 0, fallibleResult.stderr);
 
-  const aggregateBoundary = `
+  const aggregateExample = resolve(projectRoot, "examples/async/async-native-aggregate.z");
+  const aggregateSource = readFileSync(aggregateExample, "utf8");
+  const aggregateGenerated = compileToNative(aggregateSource, aggregateExample).source;
+  assert.match(aggregateGenerated, /alignas\(Z_DocumentLease\) unsigned char result\[sizeof\(Z_DocumentLease\)\]/);
+  assert.match(aggregateGenerated, /alignas\(Z_DocumentLease\) unsigned char value_document\[sizeof\(Z_DocumentLease\)\]/);
+  assert.match(aggregateGenerated, /z_async_take\(&\(\(\*std::launder\(reinterpret_cast<Z_DocumentLease \*>/);
+  assert.match(aggregateGenerated, /Z_DocumentLease_deinit[\s\S]*std::destroy_at\(&\(\(\*std::launder\(reinterpret_cast<Z_DocumentLease \*>/);
+  const aggregateResult = spawnSync(process.execPath, [cli, "run", aggregateExample], { encoding: "utf8" });
+  assert.equal(aggregateResult.status, 0, aggregateResult.stderr);
+  assert.equal(
+    aggregateResult.stdout,
+    "released document 42\nreleased document 7\nanswer=42, failure=7, live=0\n",
+  );
+  const documentOffset = aggregateSource.indexOf("document.close()") + 2;
+  assert.match(
+    hover(aggregateSource, aggregateExample, documentOffset)?.contents.value ?? "",
+    /document: DocumentLease/,
+  );
+
+  const aggregateCancellation = resolve(directory, "aggregate-cancellation.z");
+  writeFileSync(aggregateCancellation, `
     import { delay } from "std/time";
     import native from ${JSON.stringify(header)};
-    struct Owner { resource: native.zcpp.UniqueValue; }
-    async function use(): i32 {
-      const owner = Owner({ resource: native.zcpp.UniqueValue(42) });
-      await delay(1);
-      return owner.resource.value();
+
+    struct Job { resource: native.zcpp.UniqueValue; }
+
+    async function makeJob(): Job {
+      return Job({ resource: native.zcpp.UniqueValue(9) });
     }
-  `;
-  const boundaryDiagnostic = diagnostics(aggregateBoundary, resolve(directory, "aggregate.z"))[0];
-  assert.equal(boundaryDiagnostic.code, "Z0704");
-  assert.match(boundaryDiagnostic.message, /async locals cannot store move-only native values/);
-  assert.match(boundaryDiagnostic.message, /direct move-only native locals work across suspension/);
+
+    async function linger(): void {
+      const completed = spawn makeJob();
+      await delay(1000);
+      const returned = await completed;
+      return;
+    }
+
+    async function fail(): i32 throws i32 {
+      await delay(1);
+      throw 7;
+    }
+
+    async function coordinate(): i32 throws i32 {
+      spawn linger();
+      return try await fail();
+    }
+
+    async function main(): i32 {
+      const observed = attempt await coordinate();
+      return native.zcpp.unique_live();
+    }
+  `);
+  const aggregateCancelled = spawnSync(process.execPath, [cli, "run", aggregateCancellation], { encoding: "utf8" });
+  assert.equal(aggregateCancelled.status, 0, aggregateCancelled.stderr);
+
+  const enumAggregate = resolve(directory, "native-enum.z");
+  writeFileSync(enumAggregate, `
+    import { delay } from "std/time";
+    import native from ${JSON.stringify(header)};
+
+    enum LeaseState {
+      open native.zcpp.UniqueValue,
+      closed,
+    }
+
+    async function loadState(): LeaseState {
+      const state = LeaseState.open(native.zcpp.UniqueValue(42));
+      await delay(1);
+      return state;
+    }
+
+    async function main(): i32 {
+      const state = await loadState();
+      const answer = match (state) {
+        open(resource) => resource.finish(0);
+        closed => 0;
+      };
+      return answer - 42 + native.zcpp.unique_live();
+    }
+  `);
+  const enumResult = spawnSync(process.execPath, [cli, "run", enumAggregate], { encoding: "utf8" });
+  assert.equal(enumResult.status, 0, enumResult.stderr);
 });
 
 test("destroys active Option and Result payloads in async task frames", () => {

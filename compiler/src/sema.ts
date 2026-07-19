@@ -846,10 +846,13 @@ function validateFunctionSignature(
 ): void {
   validateType(declaration.returnType, structs, enums, foreignNamedTypes, fileName, true);
   const directNativeReturn = foreignNamedTypes.get(declaration.returnType.name);
+  const aggregateNativeReturn = structs.get(declaration.returnType.name)?.kind === "struct"
+    || enums.has(declaration.returnType.name);
   if (
     declaration.async
     && hasMoveOnlyForeignType(declaration.returnType.name, structs, enums, foreignNamedTypes)
     && directNativeReturn?.kind !== "value"
+    && !aggregateNativeReturn
   ) {
     throw new DiagnosticError(fileName, declaration.returnType.location, "async functions cannot return move-only native values in the first C++ ownership tier", {
       code: "Z0704",
@@ -1434,10 +1437,13 @@ function analyzeStatement(
         return;
       }
       const directForeignValue = state.foreignNamedTypes.get(String(underlyingType(variableType)));
+      const aggregateForeignValue = structs.get(String(underlyingType(variableType)))?.kind === "struct"
+        || enums.has(String(underlyingType(variableType)));
       if (
         state.activeFunction?.async
         && hasMoveOnlyForeignType(variableType, structs, enums, state.foreignNamedTypes)
         && directForeignValue?.kind !== "value"
+        && !aggregateForeignValue
         && !/^__z_(?:Option|Result)_/.test(String(underlyingType(variableType)))
       ) {
         throw new DiagnosticError(fileName, statement.location, "async locals cannot store move-only native values in the first C++ ownership tier", {

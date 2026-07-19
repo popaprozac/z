@@ -72,7 +72,7 @@ an inferred receiver-tied view.
 | C callbacks | Partial | Call-only and caller-thread escaping callbacks use `.zd` with named context and exact release contracts; cross-thread callbacks remain unsupported |
 | Native availability | Implemented host slice | Explicit `z.json` platform/minimum target, introduced/obsoleted errors, deprecation warnings, native source locations, and matching Clang/Swift deployment flags; cross-compilation and runtime guards remain |
 | Objective-C | Partial | ARC classes/fields, methods, properties/global object constants, labels, nullability, niche-backed `Option.fromNullable`, owned `String`/`NSString` copies, escaping blocks and persistent observer tokens |
-| C++ | Partial | Hierarchical/selectively aliased namespaces, typed overloads, records, and `.zd`-contracted copyable or move-only RAII values; move-only values work in synchronous locals/calls/returns, Z structs, dynamic arrays, named enums, compiler `Option`/`Result`, direct async locals, and fallible async results through `try`/`attempt`/match; named references and receiver qualifiers map to existing Z capabilities with direct native lowering; reference returns, async parameters, aggregate async storage, ARC/closure storage, capability-changing overloads, and templates remain |
+| C++ | Partial | Hierarchical/selectively aliased namespaces, typed overloads, records, and `.zd`-contracted copyable or move-only RAII values; move-only values work in synchronous locals/calls/returns, Z structs, dynamic arrays, named enums, compiler `Option`/`Result`, direct async locals, whole Z async value aggregates, and fallible async results through `try`/`attempt`/match; named references and receiver qualifiers map to existing Z capabilities with direct native lowering; reference returns, async parameters, ARC/closure storage, capability-changing overloads, and templates remain |
 | Swift via Objective-C | Implemented slice | Generated compatibility header, classes/properties/methods, automatic local dylib build/link |
 | Swift value via C++ | Implemented probe | Native static construction, const/mutable instance methods, struct return/copy/aggregate storage/round-trip/destruction, and exact owned `String` returns without handwritten shim |
 | Broader Swift surface | Planned vertical slices | Length-aware `String` inputs, property sugar, generics, noncopyable values, protocols, errors, async, packages |
@@ -100,7 +100,7 @@ until the boundary is length-aware in both directions.
 | Area | Status | Current boundary |
 | --- | --- | --- |
 | Async syntax and typing | Implemented | Functions/methods, `await`, `spawn`, task scopes, typed errors |
-| Stackless task frames | Partial | Scalars, aggregates, owned structs/enums/classes, direct move-only C++ locals, and fallible native result transfer through `try`/`attempt`/match across suspension |
+| Stackless task frames | Partial | Scalars, aggregates, owned structs/enums/classes, direct move-only C++ locals, whole Z value aggregates containing them, and fallible native result transfer through `try`/`attempt`/match across suspension |
 | Executor | Implemented bootstrap | Deterministic single-thread FIFO ready queue |
 | Structured scopes | Implemented slice | Lexical child joins, sibling/descendant cancellation on propagation |
 | Timers | Implemented slice | Scheduler-aware monotonic `delay`; blocking `sleep` remains synchronous |
@@ -172,9 +172,10 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    destruction. Named enums manage the active tagged-union payload across moves
    and replacement. Compiler `Option` and `Result` use the same non-trivial
    tagged-union lifetime machinery, and all compose with Z-managed cleanup. Direct
-   move-only C++ async locals and fallible returns work across suspension,
-   `return await`, `try await`, `attempt await`, hidden result slots, and match;
-   nested aggregates, parameters, ARC fields, and closure environments remain.
+   move-only C++ async locals, whole Z value structs/enums containing them, and
+   fallible returns work across suspension, `return await`, `try await`,
+   `attempt await`, hidden result slots, match, and cancellation; async
+   parameters, ARC fields, and closure environments remain.
 3. **Larger application probe — implemented.** The multi-module
    `document-workspace` combines a move-only native lease, dynamic arrays,
    named enum transfer, cleanup-bearing errors, `try`/`attempt`, mutable methods,

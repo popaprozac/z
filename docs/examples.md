@@ -75,6 +75,7 @@ Read [`async-model.md`](async-model.md) alongside these examples:
 | Scheduler-aware timers | [`async-delay.z`](../examples/async/async-delay.z) |
 | Owned values across suspension | [`async-ownership.z`](../examples/async/async-ownership.z), [`async-owned-enums.z`](../examples/async/async-owned-enums.z) |
 | Move-only native values across suspension | [`async-native-ownership.z`](../examples/async/async-native-ownership.z) — local ownership plus fallible return/await relay, `try`, `attempt`, direct match, and deterministic Result cleanup |
+| Native-owning Z aggregates across suspension | [`async-native-aggregate.z`](../examples/async/async-native-aggregate.z) — whole-owner relay, success/failure, consuming match, cancellation cleanup, and zero leaked native values |
 | Async methods | [`async-methods.z`](../examples/async/async-methods.z) |
 
 ```sh

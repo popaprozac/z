@@ -805,6 +805,17 @@ function generateRuntime(
   ));
   const lines = [
     ...(usesNativeFrameStorage ? ["#include <memory>", "#include <new>", ""] : []),
+    ...(usesNativeFrameStorage ? [
+      "template <typename T>",
+      "static __attribute__((unused)) T z_async_take(T *value, bool *live) {",
+      "  if (!*live) abort();",
+      "  T result(std::move(*value));",
+      "  std::destroy_at(value);",
+      "  *live = false;",
+      "  return result;",
+      "}",
+      "",
+    ] : []),
     "/* Z async Phase 1: FIFO-scheduled ownership-aware task frames. */",
     "typedef struct Z_AsyncTask Z_AsyncTask;",
     "typedef struct Z_AsyncExecutor Z_AsyncExecutor;",
@@ -1596,13 +1607,17 @@ function awaitCompletion(
     };
     lines.push(`if (${child}->failed) {`);
     lines.push(`  ${construct("failure", `${child}->error`)}`, "} else {");
+    const transferredResult = requiresNativeFramePlacement(site.target.declaration.returnType.name, parent.types)
+      ? frameTakeExpression(childResult, `${child}->live_result`)
+      : childResult;
     const successPayload = site.target.declaration.returnType.name === "void"
       ? null
-      : requiresNativeFramePlacement(site.target.declaration.returnType.name, parent.types)
-        ? `std::move(${childResult})`
-        : childResult;
+      : transferredResult;
     lines.push(`  ${construct("success", successPayload)}`);
-    if (hasFrameCleanup(site.target.declaration.returnType.name, parent.types)) {
+    if (
+      hasFrameCleanup(site.target.declaration.returnType.name, parent.types)
+      && !requiresNativeFramePlacement(site.target.declaration.returnType.name, parent.types)
+    ) {
       lines.push(`  ${child}->live_result = false;`);
     }
     lines.push("}");
@@ -1611,9 +1626,12 @@ function awaitCompletion(
   if (site.mode !== "attempt" && destination && site.target.declaration.returnType.name !== "void") {
     const placed = destinationType ? requiresNativeFramePlacement(destinationType, parent.types) : false;
     lines.push(placed
-      ? `new (${destination}) ${cFrameType(destinationType!, parent.types)}(std::move(${childResult}));`
+      ? `new (${destination}) ${cFrameType(destinationType!, parent.types)}(${frameTakeExpression(childResult, `${child}->live_result`)});`
       : `${destination} = ${childResult};`);
-    if (hasFrameCleanup(site.target.declaration.returnType.name, parent.types)) {
+    if (
+      hasFrameCleanup(site.target.declaration.returnType.name, parent.types)
+      && !requiresNativeFramePlacement(site.target.declaration.returnType.name, parent.types)
+    ) {
       lines.push(`${child}->live_result = false;`);
     }
   }
@@ -1665,11 +1683,14 @@ function emitAsyncMatchExpression(
   const borrowed = plan.types.semanticInfo.borrowedMatches.has(expression.location.offset);
   const subject = emitFrameExpression(expression.expression, plan, fileName);
   const cType = cFrameType(inspected.subjectType, plan.types);
-  const ownershipFlag = borrowed ? null : asyncExpressionLiveFlag(expression.expression, plan);
+  const subjectTransfersItself = plan.types.semanticInfo.movedExpressions.has(expression.expression.location.offset);
+  const ownershipFlag = borrowed || subjectTransfersItself ? null : asyncExpressionLiveFlag(expression.expression, plan);
   const storage = borrowed
     ? `const ${cType} *${temporary} = &(${subject});`
     : requiresNativeFramePlacement(inspected.subjectType, plan.types)
-      ? `${cType} ${temporary} = std::move(${subject});${ownershipFlag ? `\n${ownershipFlag} = false;` : ""}`
+      ? `${cType} ${temporary} = ${ownershipFlag
+          ? frameTakeExpression(subject, ownershipFlag)
+          : subjectTransfersItself ? subject : `std::move(${subject})`};`
       : `const ${cType} ${temporary} = ${subject};`;
   const storedSubject = borrowed ? `(*${temporary})` : temporary;
   const lines = [storage, `switch (${storedSubject}.tag) {`];
@@ -1948,8 +1969,10 @@ function emitFrameExpression(
         const type = plan.locals.get(expression.name)!;
         const value = frameStoredValue(expression.name, type, plan.types);
         if (plan.types.semanticInfo.movedExpressions.has(expression.location.offset)) {
-          const moved = requiresNativeFramePlacement(type, plan.types) ? `std::move(${value})` : value;
-          return `(frame->${frameLiveField(expression.name)} = false, ${moved})`;
+          if (requiresNativeFramePlacement(type, plan.types)) {
+            return frameTakeExpression(value, `frame->${frameLiveField(expression.name)}`);
+          }
+          return `(frame->${frameLiveField(expression.name)} = false, ${value})`;
         }
         if (
           plan.types.semanticInfo.managedCopies.has(expression.location.offset)
@@ -2350,6 +2373,10 @@ function frameSuspensionValue(site: NestedAwaitSite, types: AsyncTypeContext): s
   return requiresNativeFramePlacement(site.type, types)
     ? `(*std::launder(reinterpret_cast<${cType} *>(${field})))`
     : field;
+}
+
+function frameTakeExpression(value: string, liveFlag: string): string {
+  return `z_async_take(&(${value}), &(${liveFlag}))`;
 }
 
 function asyncExpressionLiveFlag(expression: Expression, plan: AsyncFunctionPlan): string | null {

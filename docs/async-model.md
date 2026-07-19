@@ -124,17 +124,18 @@ as a `Result` value and therefore does not cancel sibling work. Cancelling a
 task suspended on `delay` removes its pending timer before task-frame cleanup.
 
 The first async ownership tier permits owned values, ARC class references,
-owned closures, and direct move-only native locals in task frames. Native
-locals use aligned raw storage so a non-default-constructible C++ value begins
-its lifetime through placement construction and ends exactly once through its
-live flag. Native task results use matching raw result storage and move through
-ordinary `return`, `return await`, and awaited local bindings. Fallible native
-results propagate through `try await`; `attempt await` placement-constructs
-`Result<T, E>` in named or hidden suspension storage, with borrowed and consuming
-match lowering. These paths are exercised across normal completion, consuming
-transfer, failure, cancellation, and destruction of completed-but-unclaimed
-storage. Async parameters and aggregates containing move-only native storage
-remain deferred. Z also rejects `in`,
+owned closures, direct move-only native values, and whole Z value structs or
+enums containing them in task frames. Non-default-constructible C++ storage
+begins its lifetime through placement construction. Transfer uses a typed take
+that move-constructs the destination, destroys the moved-from object, and clears
+its live flag before raw frame storage is released. Task results use matching
+storage and move through ordinary `return`, `return await`, and awaited local
+bindings. Fallible native results propagate through `try await`; `attempt await`
+placement-constructs `Result<T, E>` in named or hidden suspension storage, with
+borrowed and consuming match lowering. These paths are exercised across normal
+completion, consuming transfer, failure, cancellation, and destruction of
+completed-but-unclaimed storage. Async parameters containing move-only native
+storage remain deferred. Z also rejects `in`,
 `inout`, `out`, `Slice<T>`, borrowed struct receivers, and any other live borrow
 at an `await`. Scoped async borrowing can be added later from real zero-copy
 APIs without exposing general lifetime syntax.

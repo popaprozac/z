@@ -801,17 +801,18 @@ fallible or suspending shutdown remains an explicit async operation.
 
 The first ownership tier rejects borrowed async parameters and borrowed struct
 receivers, and rejects suspension while any other borrow is live. Owned values,
-ARC class references, owned closures, and direct move-only native locals may be
-stored in task frames. A native local occupies aligned raw frame storage and is
-placement-constructed and destroyed exactly once according to its semantic live
-flag. Native results use matching aligned storage and move through `return`,
-`return await`, and awaited caller bindings. Fallible native tasks preserve that
-storage through `try await`, while `attempt await` placement-constructs a
-non-trivial `Result<T, E>` in either a named local or hidden expression slot;
-borrowed and consuming matches retain or transfer the active payload accordingly.
-Cancellation destroys a completed result if it was never claimed. Native async
-parameters and containing aggregates remain later construction paths. This
-conservative boundary can later grow scoped
+ARC class references, owned closures, direct move-only native values, and whole
+Z value structs or enums containing them may be stored in task frames. Native
+storage is aligned, placement-constructed, and destroyed exactly once according
+to its semantic live flag. A typed take operation move-constructs the destination
+and ends the moved-from object's C++ lifetime before its raw frame storage is
+released. Results move through `return`, `return await`, and awaited caller
+bindings. Fallible native tasks preserve that storage through `try await`, while
+`attempt await` placement-constructs a non-trivial `Result<T, E>` in either a
+named local or hidden expression slot; borrowed and consuming matches retain or
+transfer the active payload accordingly. Cancellation destroys a completed
+result if it was never claimed. Native async parameters remain a later
+construction path. This conservative boundary can later grow scoped
 async borrowing without exposing general lifetime syntax.
 
 An explicit async scope requires an async parent because scope exit implicitly
@@ -928,10 +929,10 @@ payload destruction. These paths also compose with Z-managed fields: Z cleanup
 runs before the enclosing C++ object's destructor. Compiler-provided
 `Option<T>`/`Result<T, E>` reuse that non-trivial tagged-union lifetime wrapper.
 ARC fields and owned closure environments remain separate storage tiers. Direct
-move-only native locals and task results use aligned placement storage inside
-async frames; fallible results compose with `try await`, `attempt await`, hidden
-expression slots, and match. Parameters and aggregates containing native values
-remain deferred.
+move-only native locals and whole Z value aggregates containing them use aligned
+placement storage inside async frames and task results; fallible results compose
+with `try await`, `attempt await`, hidden expression slots, and match. Async
+parameters containing native values remain deferred.
 Named-value `const T&`, `T&`, and move-only `T&&` parameters reuse Z's `in`,
 `inout`, and owned-value capabilities. Receiver-qualified `const &`, `&`, and
 move-only `&&` methods likewise map to borrowed, mutable, and consuming
