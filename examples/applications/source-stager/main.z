@@ -1,0 +1,31 @@
+import console from "std/console";
+import fs from "std/fs";
+import process from "std/process";
+
+function stageCompilerInput(in path: String): i32 throws String {
+  const source = try fs.readText(path);
+  const stagedPath = ".z-cache/self-host-input.z";
+  try fs.writeText(stagedPath, source);
+
+  const compilerArguments = ["--version"];
+  const compilerExitCode = try process.run("clang", compilerArguments);
+  console.log(`staged ${path} at ${stagedPath}; clang exited ${compilerExitCode}`);
+  return compilerExitCode;
+}
+
+function main(): i32 {
+  const arguments = process.args();
+  if (arguments.length == 0) {
+    console.error("usage: source-stager <input.z>");
+    return 2;
+  }
+
+  const outcome = attempt stageCompilerInput(arguments[0]);
+  return match (outcome) {
+    success(exitCode) => exitCode;
+    failure(message) => {
+      console.error(`could not stage compiler input: ${message}`);
+      select 1;
+    }
+  };
+}

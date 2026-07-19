@@ -1,6 +1,6 @@
 # Bootstrap implementation status
 
-Last reviewed: 2026-07-18.
+Last reviewed: 2026-07-19.
 
 This document answers “what does the Bun/TypeScript stage-0 compiler implement
 today?” It is not the language specification. Accepted source semantics live in
@@ -54,12 +54,13 @@ an inferred receiver-tied view.
 | Area | Status | Current boundary |
 | --- | --- | --- |
 | Z source modules | Implemented | Explicit exports, namespace/selective imports, aliases, cycle diagnostics |
-| CLI | Implemented | `z check`, `z emit`, and `z run` through Bun; native run I/O streams live |
+| CLI | Implemented | `z check`, `z emit`, and `z run` through Bun; native run I/O streams live and arguments after `--` are forwarded |
+| System standard APIs | Implemented foundation | Default `std/fs` and `std/process` modules; owned reads/arguments, borrowed writes/process argv, direct no-shell child launch, typed OS failures |
 | Native backends | Partial | Readable C, C++20, Objective-C ARC, and Objective-C++ source generation |
 | Foreign Interface IR | Implemented foundation | Raw declarations, API-note merge, normalized contracts, source locations, and availability metadata are separate; richer native hierarchies remain |
 | Language server | Partial | Diagnostics, semantic highlighting, contextual selective-import/object-pattern completion, hover, and Z/native definitions |
 | Native definitions | Implemented slice | Namespace/selective C symbols, Objective-C members, and generated Swift compatibility declarations jump to their native headers |
-| Self-hosting | Planned | Stage 0 remains TypeScript/Bun; file/process APIs and sufficient Z surface come first |
+| Self-hosting | Partial groundwork | Stage 0 remains TypeScript/Bun; file/process/argv contracts now run through a generated native substrate, while portable stdlib and compiler phases have not yet moved to Z |
 
 ## Foreign interfaces
 
@@ -116,6 +117,9 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
 - [`examples/applications/document-workspace`](../examples/applications/document-workspace): cross-platform,
   multi-module document registration and saving with move-only native leases,
   cleanup-bearing errors, optional views, array growth, and zero live resources.
+- [`examples/applications/source-stager`](../examples/applications/source-stager): reads a requested Z
+  source file, writes a staged copy, observes native argv, and launches Clang
+  directly through the first self-hosting standard APIs.
 - [`examples/interop/objc/nswindow.z`](../examples/interop/objc/nswindow.z): direct AppKit window.
 - [`examples/interop/objc/objc-nullability.z`](../examples/interop/objc/objc-nullability.z): explicit
   `T | null` AppKit guard narrowing alongside `Option.fromNullable` and
@@ -169,9 +173,10 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    and `Option<view T>`, then verifies zero live native resources. It exposed and
    closed module-linked enum classification, view-method dispatch, and
    statement-valued `throw` lowering gaps.
-4. **Self-hosting prerequisites.** Establish target-neutral `std/fs`,
-   `std/process`, and program-argument APIs, then use them to begin moving viable
-   compiler components into Z.
+4. **Self-hosting prerequisites — first substrate implemented.** Target-neutral
+   `std/fs`, `std/process`, and owned program-argument APIs now run on macOS and
+   have Windows/POSIX native branches. Next, use these contracts to move a small
+   viable compiler component and portable standard-library logic into Z.
 5. **Threaded concurrency evidence.** Probe sendability, cross-thread task
    frames, and atomic ARC before committing actors, channels, or a
    multithreaded executor as settled language design.

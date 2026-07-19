@@ -3895,6 +3895,92 @@ test("sleeps the current thread through the portable std/time module", () => {
   assert.match(diagnostics(wrongType, "sleep-type.z")[0].message, /integer literal -1 does not fit u64/);
 });
 
+test("reads files, exposes program arguments, and runs child processes through standard modules", () => {
+  const directory = mkdtempSync("/tmp/z-system-std-");
+  const fileName = resolve(directory, "main.z");
+  const copyPath = resolve(directory, "copy.z");
+  const source = `
+    import console from "std/console";
+    import fs from "std/fs";
+    import process from "std/process";
+
+    function runTool(): i32 throws String {
+      const source = try fs.readText(${JSON.stringify(fileName)});
+      try fs.writeText(${JSON.stringify(copyPath)}, source);
+      if (!fs.exists(${JSON.stringify(copyPath)})) return 90;
+      const arguments = process.args();
+      const childArguments = ["-e", "process.exit(0)"];
+      const exitCode = try process.run(${JSON.stringify(process.execPath)}, childArguments);
+      const missing = attempt process.run("/z/definitely/missing/executable", childArguments);
+      const missingWasTypedFailure = match (missing) {
+        success(code) => code < 0;
+        failure(message) => !fs.exists(message);
+      };
+      if (!missingWasTypedFailure) return 89;
+      console.log(\`args=\${arguments.length}, child=\${exitCode}\`);
+      return exitCode;
+    }
+
+    function main(): i32 {
+      const result = attempt runTool();
+      return match (result) {
+        success(code) => code;
+        failure(message) => {
+          console.error(message);
+          select 91;
+        }
+      };
+    }
+  `;
+  writeFileSync(fileName, source);
+  const result = spawnSync(process.execPath, [cli, "run", fileName, "--", "alpha", "beta"], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, "args=2, child=0\n");
+  assert.equal(readFileSync(copyPath, "utf8"), source);
+
+  const generated = compileToC(source, fileName);
+  assert.match(generated, /static Z_Result_String_String z_fs_read_text/);
+  assert.match(generated, /static Z_DynamicArray_.* z_process_args\(void\)/);
+  assert.match(generated, /execvp\(argv\[0\], argv\)/);
+  assert.match(generated, /int32_t main\(int argc, char \*\*argv\)/);
+  assert.doesNotMatch(generated, /#include <std\/(?:fs|process)>/);
+
+  const readOffset = source.indexOf("readText") + 2;
+  assert.match(hover(source, fileName, readOffset)?.contents.value ?? "", /readText\(in path: String\): String throws String/);
+  const completionSource = source.replace("fs.readText", "fs.re");
+  const completionOffset = completionSource.indexOf("fs.re") + "fs.re".length;
+  assert.match(
+    completions(completionSource, fileName, completionOffset).find((item) => item.label === "readText")?.detail ?? "",
+    /throws String/,
+  );
+  const tokens = decodeSemanticTokens(semanticTokens(source, fileName).data);
+  const readPosition = positionForOffset(source, source.indexOf("readText"));
+  assert.ok(tokens.some((token) => (
+    token.line === readPosition.line
+    && token.character === readPosition.character
+    && token.type === semanticTokenTypes.indexOf("method")
+  )));
+
+  const unchecked = `import fs from "std/fs"; function main(): i32 { fs.readText("missing"); return 0; }`;
+  assert.match(diagnostics(unchecked, "unchecked-fs.z")[0].message, /requires `attempt` or `try`/);
+  const selective = `import { readText } from "std/fs"; function main(): i32 { return 0; }`;
+  assert.match(diagnostics(selective, "selective-fs.z")[0].message, /default module import/);
+
+  const mixedFile = resolve(directory, "mixed.z");
+  const nativeHeader = resolve(projectRoot, "tests/fixtures/foreign-values.hpp");
+  writeFileSync(mixedFile, `
+    import fs from "std/fs";
+    import native from ${JSON.stringify(nativeHeader)};
+    function main(): i32 {
+      const value = native.zcpp.ManagedValue(42);
+      if (!fs.exists(${JSON.stringify(mixedFile)})) return 1;
+      return value.value() - 42;
+    }
+  `);
+  const mixed = spawnSync(process.execPath, [cli, "run", mixedFile], { encoding: "utf8" });
+  assert.equal(mixed.status, 0, mixed.stderr);
+});
+
 test("stores, returns, moves, and formats owned String values", () => {
   const example = resolve(projectRoot, "examples/language/basics/strings.z");
   const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });

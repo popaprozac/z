@@ -7,7 +7,8 @@ import { check, compileToNative, type NativeArtifact } from "./compiler.ts";
 import { DiagnosticError, formatDiagnostic } from "./diagnostics.ts";
 import { deploymentTargetFlags } from "./project.ts";
 
-const [command, inputArgument] = process.argv.slice(2);
+const [command, inputArgument, ...trailingArguments] = process.argv.slice(2);
+const programArguments = trailingArguments[0] === "--" ? trailingArguments.slice(1) : trailingArguments;
 
 if (!command || !inputArgument || !["check", "emit", "run"].includes(command)) {
   usage();
@@ -25,7 +26,7 @@ if (!command || !inputArgument || !["check", "emit", "run"].includes(command)) {
       if (command === "emit") {
         process.stdout.write(artifact.source);
       } else {
-        runNative(inputPath, artifact);
+        runNative(inputPath, artifact, programArguments);
       }
     }
   } catch (error) {
@@ -44,7 +45,7 @@ function readSourceIfAvailable(path: string): string | undefined {
   }
 }
 
-function runNative(inputPath: string, artifact: NativeArtifact): void {
+function runNative(inputPath: string, artifact: NativeArtifact, programArguments: readonly string[]): void {
   const projectRoot = resolve(dirname(new URL(import.meta.url).pathname), "../..");
   const cacheDirectory = join(projectRoot, ".z-cache");
   mkdirSync(cacheDirectory, { recursive: true });
@@ -77,7 +78,7 @@ function runNative(inputPath: string, artifact: NativeArtifact): void {
     throw new Error(compilation.stderr || "Clang failed");
   }
 
-  const execution = spawnSync(executablePath, [], { stdio: "inherit" });
+  const execution = spawnSync(executablePath, programArguments, { stdio: "inherit" });
   if (execution.error) throw execution.error;
   if (execution.status !== 0) process.exitCode = execution.status ?? 1;
 }
@@ -101,5 +102,5 @@ function nativeLanguageFlags(language: NativeArtifact["language"]): string[] {
 }
 
 function usage(): void {
-  console.error("usage: z <check|emit|run> <file.z>");
+  console.error("usage: z <check|emit|run> <file.z> [-- program arguments]");
 }

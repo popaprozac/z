@@ -55,7 +55,10 @@ import {
 import {
   isStandardModuleSpecifier,
   standardFunctionSignature,
+  standardModuleFunction,
+  standardModuleMemberNames,
   type StandardFunctionName,
+  type StandardModuleName,
 } from "./standard-library.ts";
 import {
   parseWeakType,
@@ -168,6 +171,7 @@ export type SemanticInfo = {
   readonly consoleBindings: ReadonlySet<string>;
   readonly standardFunctionReferences: ReadonlyMap<number, StandardFunctionName>;
   readonly standardFunctionBindings: ReadonlyMap<string, StandardFunctionName>;
+  readonly standardModuleBindings: ReadonlyMap<string, StandardModuleName>;
   readonly typeDisplayNames: ReadonlyMap<string, string>;
   readonly objectiveC: boolean;
   readonly cPlusPlus: boolean;
@@ -221,6 +225,7 @@ type AnalysisState = {
   readonly consoleBindings: Set<string>;
   readonly standardFunctionReferences: Map<number, StandardFunctionName>;
   readonly standardFunctionBindings: Map<string, StandardFunctionName>;
+  readonly standardModuleBindings: Map<string, StandardModuleName>;
   readonly typeDisplayNames: ReadonlyMap<string, string>;
   readonly objectiveC: boolean;
   readonly cPlusPlus: boolean;
@@ -247,6 +252,7 @@ type SymbolValue =
   | { readonly kind: "foreignModule"; readonly module: ForeignModule }
   | { readonly kind: "foreignNamespace"; readonly module: ForeignModule; readonly namespacePath: readonly string[] }
   | { readonly kind: "console" }
+  | { readonly kind: "standardModule"; readonly module: StandardModuleName }
   | { readonly kind: "standardFunction"; readonly name: StandardFunctionName; readonly declaration: FunctionDeclaration }
   | { readonly kind: "struct"; readonly declaration: StructDeclaration }
   | { readonly kind: "trait"; readonly declaration: TraitDeclaration }
@@ -368,6 +374,7 @@ export function analyze(
     consoleBindings: new Set(),
     standardFunctionReferences: new Map(),
     standardFunctionBindings: new Map(),
+    standardModuleBindings: new Map(),
     typeDisplayNames,
     objectiveC,
     cPlusPlus,
@@ -446,9 +453,22 @@ export function analyze(
         }
         continue;
       }
+      if (declaration.header === "std/fs" || declaration.header === "std/process") {
+        const module: StandardModuleName = declaration.header === "std/fs" ? "fs" : "process";
+        if (declaration.bindings) {
+          throw new DiagnosticError(fileName, declaration.location, `${declaration.header} is a default module import`, {
+            code: "Z0501",
+            helps: [`use \`import ${module} from ${JSON.stringify(declaration.header)};\``],
+          });
+        }
+        validateUserName(declaration.moduleName, declaration.location, fileName);
+        declareGlobal(globals, declaration.moduleName, { kind: "standardModule", module }, declaration.location, fileName);
+        state.standardModuleBindings.set(declaration.moduleName, module);
+        continue;
+      }
       throw new DiagnosticError(fileName, declaration.location, `unknown standard module ${JSON.stringify(declaration.header)}`, {
         code: "Z0501",
-        helps: ["the bootstrap standard library currently provides `std`, `std/console`, and `std/time`"],
+        helps: ["the bootstrap standard library currently provides `std`, `std/console`, `std/time`, `std/fs`, and `std/process`"],
       });
     }
     const module = foreignModules.get(declaration.moduleName);
@@ -1827,10 +1847,14 @@ function standardFunctionDeclaration(
   location: SourceLocation,
 ): FunctionDeclaration {
   const signature = standardFunctionSignature(name);
-  return { ...functionTypeDeclaration(localName, {
+  const declaration = { ...functionTypeDeclaration(localName, {
     parameters: signature.parameters,
     returnType: signature.returnType,
   }, location), async: signature.async };
+  return {
+    ...declaration,
+    errorType: signature.errorType ? { name: signature.errorType, location } : null,
+  };
 }
 
 function inferClosureExpression(
@@ -2835,6 +2859,9 @@ function inferExpressionInner(
       if (global?.kind === "console") {
         throw new DiagnosticError(fileName, expression.location, "the console module must be followed by a method name");
       }
+      if (global?.kind === "standardModule") {
+        throw new DiagnosticError(fileName, expression.location, `the ${global.module} module must be followed by a method name`);
+      }
       if (global?.kind === "struct") {
         throw new DiagnosticError(fileName, expression.location, "a struct type must be followed by a field initializer");
       }
@@ -3449,6 +3476,41 @@ function inferExpressionInner(
           state.consoleCalls.add(expression.location.offset);
           return "void";
         }
+        if (expression.callee.object.kind === "identifier" && !locals.has(expression.callee.object.name)) {
+          const localModuleName = expression.callee.object.name;
+          const owner = globals.get(localModuleName);
+          if (owner?.kind === "standardModule") {
+            const name = standardModuleFunction(owner.module, expression.callee.property);
+            if (!name) {
+              throw new DiagnosticError(
+                fileName,
+                expression.callee.location,
+                `${owner.module} has no method ${JSON.stringify(expression.callee.property)}`,
+                { helps: [`use ${standardModuleMemberNames(owner.module).map((member) => `${localModuleName}.${member}`).join(", ")}`] },
+              );
+            }
+            rejectLabeledArguments(expression.argumentLabels, expression.location, fileName);
+            const declaration = standardFunctionDeclaration(expression.callee.property, name, expression.callee.location);
+            state.standardFunctionReferences.set(expression.callee.location.offset, name);
+            state.expressionTypes.set(
+              expression.callee.location.offset,
+              functionTypeName(
+                declaration.parameters.map((parameter) => ({
+                  name: parameter.name,
+                  mode: parameter.mode,
+                  type: parameter.type.name,
+                })),
+                declaration.returnType.name,
+              ),
+            );
+            checkArguments(declaration, expression.arguments, locals, globals, structs, enums, fileName, expression.location, state);
+            if (declaration.errorType) {
+              if (!allowThrowingCall) throw new DiagnosticError(fileName, expression.location, "throwing call requires `attempt` or `try`");
+              return resultTypeName(declaration.returnType.name, declaration.errorType.name);
+            }
+            return declaration.returnType.name;
+          }
+        }
         if (
           expression.callee.object.kind === "identifier"
           && expression.callee.object.name === "String"
@@ -3939,6 +4001,10 @@ function inferExpressionInner(
         );
         checkArguments(target.declaration, expression.arguments, locals, globals, structs, enums, fileName, expression.location, state);
         registerAsyncCall(target.declaration, expression.location, fileName, state);
+        if (target.declaration.errorType) {
+          if (!allowThrowingCall) throw new DiagnosticError(fileName, expression.location, "throwing call requires `attempt` or `try`");
+          return resultTypeName(target.declaration.returnType.name, target.declaration.errorType.name);
+        }
         return target.declaration.returnType.name;
       }
       if (target?.kind === "foreignFunction") {
@@ -4177,7 +4243,13 @@ function checkArguments(
         && structs.has(argument.callee.name)
         && argument.arguments.length === 1
         && argument.arguments[0].kind === "objectExpression";
-      if (!isNamedStorageExpression(argument) && argument.kind !== "structExpression" && !aggregateTemporary && argument.kind !== "template") {
+      if (
+        !isNamedStorageExpression(argument)
+        && argument.kind !== "structExpression"
+        && !aggregateTemporary
+        && argument.kind !== "template"
+        && argument.kind !== "string"
+      ) {
         throw new DiagnosticError(
           fileName,
           argument.location,
@@ -4190,6 +4262,7 @@ function checkArguments(
         hasOwnershipType(borrowedActual, structs, enums, state)
         && !isNamedStorageExpression(argument)
         && argument.kind !== "template"
+        && argument.kind !== "string"
       ) {
         throw new DiagnosticError(fileName, argument.location, "a cleanup-bearing borrowed temporary must be bound before the call");
       }

@@ -12,6 +12,7 @@ import {
   parseDynamicArrayType,
   parseFixedArrayType,
   parseSliceType,
+  sliceTypeName,
 } from "./array-types.ts";
 import type { ClosureInfo, ForeignCallArgumentPlan, IntegerOperation, SemanticInfo } from "./sema.ts";
 import { parsePointerTypeName, type ForeignBlockType } from "./foreign.ts";
@@ -98,7 +99,7 @@ export function generateC(program: Program, sourceName: string, semanticInfo: Se
   const functions = new Map(program.functions.map((declaration) => [declaration.name, declaration]));
   const closures = [...semanticInfo.closures.values()];
   const arrayTypes = collectFixedArrayTypes(program, semanticInfo);
-  const sliceTypes = collectSliceTypes(program);
+  const sliceTypes = collectSliceTypes(program, semanticInfo);
   const dynamicArrayTypes = collectDynamicArrayTypes(program, semanticInfo);
   const dynamicArrayPushTypes = collectDynamicArrayPushTypes(program, semanticInfo);
   const functionTypes = collectFunctionTypes(program, semanticInfo);
@@ -106,6 +107,9 @@ export function generateC(program: Program, sourceName: string, semanticInfo: Se
   const foreignEscapeHelpers = collectForeignEscapeHelpers(foreignCallbackAdapters);
   const usesSleep = [...semanticInfo.standardFunctionReferences.values()].includes("sleep");
   const usesTiming = usesSleep || [...semanticInfo.standardFunctionReferences.values()].includes("delay");
+  const usedStandardFunctions = new Set(semanticInfo.standardFunctionReferences.values());
+  const usesFileSystem = [...usedStandardFunctions].some((name) => name.startsWith("fs."));
+  const usesProcess = [...usedStandardFunctions].some((name) => name.startsWith("process."));
   const usesNativeMove = [...semanticInfo.foreignNamedTypes.values()].some((type) => (
     type.kind === "value" && type.lifecycle.move && !type.lifecycle.copy
   ));
@@ -126,6 +130,39 @@ export function generateC(program: Program, sourceName: string, semanticInfo: Se
       "#define _POSIX_C_SOURCE 200809L",
       "#endif",
     );
+  }
+  if (usesFileSystem || usesProcess) {
+    lines.push("#include <errno.h>");
+    includedHeaders.add("errno.h");
+  }
+  if (usesProcess) {
+    lines.push(
+      "#if defined(_WIN32)",
+      "#include <io.h>",
+      "#include <process.h>",
+      "#else",
+      "#include <fcntl.h>",
+      "#include <sys/types.h>",
+      "#include <sys/wait.h>",
+      "#include <unistd.h>",
+      "#endif",
+    );
+    includedHeaders.add("io.h");
+    includedHeaders.add("process.h");
+    includedHeaders.add("fcntl.h");
+    includedHeaders.add("sys/types.h");
+    includedHeaders.add("sys/wait.h");
+    includedHeaders.add("unistd.h");
+  } else if (usesFileSystem) {
+    lines.push(
+      "#if defined(_WIN32)",
+      "#include <io.h>",
+      "#else",
+      "#include <unistd.h>",
+      "#endif",
+    );
+    includedHeaders.add("io.h");
+    includedHeaders.add("unistd.h");
   }
   lines.push(
     "#include <stdbool.h>",
@@ -158,7 +195,7 @@ export function generateC(program: Program, sourceName: string, semanticInfo: Se
   }
 
   const usesString = programUsesString(program, semanticInfo);
-  if (semanticInfo.consoleCalls.size > 0 || usesString) {
+  if (semanticInfo.consoleCalls.size > 0 || usesString || usesFileSystem) {
     lines.push("#include <stdio.h>");
     includedHeaders.add("stdio.h");
   }
@@ -249,6 +286,9 @@ export function generateC(program: Program, sourceName: string, semanticInfo: Se
   }
 
   lines.push(...generateAggregateDefinitions(program.structs, program.enums, arrayTypes, structs, enums, semanticInfo.foreignNamedTypes));
+  if (usesFileSystem || usesProcess) {
+    lines.push(generateSystemStandardRuntime(usedStandardFunctions), "");
+  }
   for (const closure of closures.filter((candidate) => candidate.captures.length > 0)) {
     lines.push(generateClosureEnvironmentDefinition(closure, structs, enums, semanticInfo), "");
   }
@@ -305,7 +345,7 @@ export function generateC(program: Program, sourceName: string, semanticInfo: Se
   for (const closure of closures.filter((candidate) => candidate.storable)) {
     lines.push(generateClosureAdapter(closure, structs, enums, semanticInfo.foreignNamedTypes), "");
   }
-  for (const declaration of program.functions.filter((candidate) => candidate.errorType === null)) {
+  for (const declaration of program.functions.filter((candidate) => candidate.errorType === null && candidate.name !== "main")) {
     lines.push(generateFunctionAdapter(declaration, structs, enums, semanticInfo.foreignNamedTypes), "");
   }
   for (const name of new Set(semanticInfo.standardFunctionReferences.values())) {
@@ -420,8 +460,14 @@ function collectFixedArrayTypes(program: Program, semanticInfo: SemanticInfo): s
   return [...collected];
 }
 
-function collectSliceTypes(program: Program): string[] {
+function collectSliceTypes(program: Program, semanticInfo: SemanticInfo): string[] {
   const collected = new Set<string>();
+  const add = (name: string): void => {
+    const slice = parseSliceType(name);
+    if (!slice || collected.has(name)) return;
+    collected.add(name);
+    add(slice.elementType);
+  };
   const visit = (value: unknown): void => {
     if (!value || typeof value !== "object") return;
     if (Array.isArray(value)) {
@@ -429,11 +475,19 @@ function collectSliceTypes(program: Program): string[] {
       return;
     }
     for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
-      if (key === "name" && typeof child === "string" && parseSliceType(child)) collected.add(child);
+      if (key === "name" && typeof child === "string") add(child);
       else visit(child);
     }
   };
   visit(program);
+  for (const type of semanticInfo.expressionTypes.values()) add(type);
+  for (const type of semanticInfo.bindingTypes.values()) add(type);
+  for (const conversion of semanticInfo.sliceConversions.values()) add(conversion.targetType);
+  for (const name of semanticInfo.standardFunctionReferences.values()) {
+    const signature = standardFunctionSignature(name);
+    for (const parameter of signature.parameters) add(parameter.type);
+    add(signature.returnType);
+  }
   return [...collected];
 }
 
@@ -459,6 +513,11 @@ function collectDynamicArrayTypes(program: Program, semanticInfo: SemanticInfo):
   visit(program);
   for (const type of semanticInfo.expressionTypes.values()) add(type);
   for (const type of semanticInfo.bindingTypes.values()) add(type);
+  for (const name of semanticInfo.standardFunctionReferences.values()) {
+    const signature = standardFunctionSignature(name);
+    for (const parameter of signature.parameters) add(parameter.type);
+    add(signature.returnType);
+  }
   return [...collected];
 }
 
@@ -665,7 +724,7 @@ function functionAdapterName(name: string): string {
 }
 
 function standardFunctionAdapterName(name: StandardFunctionName): string {
-  return `__z_standard_function_adapter_${name}`;
+  return `__z_standard_function_adapter_${nativeSymbolPart(name)}`;
 }
 
 function closureAdapterName(closure: ClosureInfo): string {
@@ -729,10 +788,17 @@ function generateStandardFunctionAdapter(
     returnType: signature.returnType,
   };
   const parameters = generateFunctionTypeParameters(functionType, structs, enums, foreignNamedTypes);
-  const names = signature.parameters.map((parameter) => cBindingName(parameter.name));
+  const names = signature.parameters.map((parameter) => (
+    parameter.abi === "value" && parameter.mode === "in"
+      ? `*${cBindingName(parameter.name)}`
+      : cBindingName(parameter.name)
+  ));
   const invoke = `${signature.cName}(${names.join(", ")})`;
-  const returned = signature.returnType === "void" ? `${invoke};\n  return;` : `return ${invoke};`;
-  return `static __attribute__((unused)) ${mapType(signature.returnType, structs, enums, foreignNamedTypes)} ${standardFunctionAdapterName(name)}(void *context${parameters.length ? `, ${parameters.join(", ")}` : ""}) {
+  const effectiveReturnType = signature.errorType
+    ? resultTypeName(signature.returnType, signature.errorType)
+    : signature.returnType;
+  const returned = effectiveReturnType === "void" ? `${invoke};\n  return;` : `return ${invoke};`;
+  return `static __attribute__((unused)) ${mapType(effectiveReturnType, structs, enums, foreignNamedTypes)} ${standardFunctionAdapterName(name)}(void *context${parameters.length ? `, ${parameters.join(", ")}` : ""}) {
   (void)context;
   ${returned}
 }`;
@@ -1589,6 +1655,15 @@ function generateFunction(
     semanticInfo,
   };
   const bodyParts = [
+    ...(!receiver && declaration.name === "main"
+      ? [
+          "(void)argc;",
+          "(void)argv;",
+          ...([...semanticInfo.standardFunctionReferences.values()].some((name) => name.startsWith("process."))
+            ? ["z_process_set_arguments(argc, argv);"]
+            : []),
+        ]
+      : []),
     ...parameterCleanup.map((parameter) => indent(`bool ${parameter.liveFlag} = true;`, 2)),
     ...outParameterFlags.map((liveFlag) => indent(`bool ${liveFlag} = false;`, 2)),
   ];
@@ -1699,6 +1774,9 @@ function generateFunctionSignature(
     if (parameter.mode === "inout" || parameter.mode === "out") return `${type} *${name}`;
     return `${type} ${name}`;
   });
+  if (!receiver && declaration.name === "main") {
+    parameters.push("int argc", "char **argv");
+  }
   if (receiver && !declaration.static) {
     if (receiver.kind === "class") {
       const receiverConst = declaration.receiverMode === "inout" ? "" : "const ";
@@ -2979,6 +3057,12 @@ function throwingCallResultType(expression: Expression, context: GenerationConte
     return resultTypeName(target.returnType.name, target.errorType!.name);
   }
   if (expression.kind === "call" && expression.callee.kind === "member") {
+    const standard = context.semanticInfo.standardFunctionReferences.get(expression.callee.location.offset);
+    if (standard) {
+      const signature = standardFunctionSignature(standard);
+      if (!signature.errorType) throw new Error("try lowering expected a throwing standard call");
+      return resultTypeName(signature.returnType, signature.errorType);
+    }
     if (expression.callee.object.kind === "identifier") {
       const owner = context.structs.get(expression.callee.object.name);
       const method = owner?.methods.find((candidate) => candidate.static && candidate.name === expression.callee.property);
@@ -3702,6 +3786,16 @@ function generateExpressionInner(expression: Expression, context: GenerationCont
       if (integerOperation && expression.callee.kind === "member") {
         return `${integerOperationName(integerOperation)}(${generateExpression(expression.callee.object, context)}, ${generateExpression(expression.arguments[0], context)})`;
       }
+      const referencedStandard = context.semanticInfo.standardFunctionReferences.get(expression.callee.location.offset);
+      if (referencedStandard) {
+        const signature = standardFunctionSignature(referencedStandard);
+        const arguments_ = expression.arguments.map((argument, index) => (
+          signature.parameters[index]?.abi === "value"
+            ? generateExpression(argument, context)
+            : generateCallArgument(argument, context)
+        ));
+        return `${signature.cName}(${arguments_.join(", ")})`;
+      }
       if (expression.callee.kind === "identifier") {
         if (context.structs.get(expression.callee.name)?.kind === "struct") {
           return generateExpression(expression.arguments[0], context);
@@ -3711,10 +3805,6 @@ function generateExpressionInner(expression: Expression, context: GenerationCont
           if (objectType && context.semanticInfo.foreignNamedTypes.get(objectType)?.kind === "record") {
             return generateExpression(expression.arguments[0], context);
           }
-        }
-        const standardName = context.semanticInfo.standardFunctionReferences.get(expression.callee.location.offset);
-        if (standardName) {
-          return `${standardFunctionSignature(standardName).cName}(${expression.arguments.map((argument) => generateCallArgument(argument, context)).join(", ")})`;
         }
       }
       if (expression.callee.kind === "member" && expression.arguments[0]?.kind === "objectExpression") {
@@ -3959,6 +4049,223 @@ function generateSleepRuntime(): string {
 }`;
 }
 
+function generateSystemStandardRuntime(used: ReadonlySet<StandardFunctionName>): string {
+  const sections: string[] = [];
+  const stringResult = enumName(resultTypeName("String", "String"));
+  const voidResult = enumName(resultTypeName("void", "String"));
+  const processResult = enumName(resultTypeName("i32", "String"));
+  const stringSuccess = variantTag(resultTypeName("String", "String"), "success");
+  const stringFailure = variantTag(resultTypeName("String", "String"), "failure");
+  const voidSuccess = variantTag(resultTypeName("void", "String"), "success");
+  const voidFailure = variantTag(resultTypeName("void", "String"), "failure");
+  const processSuccess = variantTag(resultTypeName("i32", "String"), "success");
+  const processFailure = variantTag(resultTypeName("i32", "String"), "failure");
+
+  if ([...used].some((name) => name.startsWith("fs.")) || used.has("process.run")) {
+    sections.push(`static bool z_standard_string_is_cstring(const Z_String *value) {
+  return value != NULL && (value->length == 0 || (value->data != NULL && memchr(value->data, '\\0', value->length) == NULL));
+}`);
+  }
+  if (used.has("fs.readText") || used.has("fs.writeText") || used.has("process.run")) {
+    sections.push(`static Z_String z_standard_error(const char *message) {
+  return z_string_from_cstring(message != NULL ? message : "unknown operating-system error");
+}`);
+  }
+
+  if (used.has("fs.readText")) {
+    sections.push(`static ${stringResult} z_fs_read_text(Z_String path) {
+  if (!z_standard_string_is_cstring(&path)) {
+    return (${stringResult}){ .tag = ${stringFailure}, .data.failure = z_standard_error("path contains an embedded null byte") };
+  }
+  const char *native_path = path.data != NULL ? path.data : "";
+  FILE *file = fopen(native_path, "rb");
+  if (file == NULL) {
+    return (${stringResult}){ .tag = ${stringFailure}, .data.failure = z_standard_error(strerror(errno)) };
+  }
+  if (fseek(file, 0, SEEK_END) != 0) {
+    const int code = errno;
+    fclose(file);
+    return (${stringResult}){ .tag = ${stringFailure}, .data.failure = z_standard_error(strerror(code)) };
+  }
+  const long measured = ftell(file);
+  if (measured < 0 || fseek(file, 0, SEEK_SET) != 0) {
+    const int code = errno;
+    fclose(file);
+    return (${stringResult}){ .tag = ${stringFailure}, .data.failure = z_standard_error(strerror(code)) };
+  }
+  Z_String contents = z_string_new();
+  if (measured > 0) {
+    z_string_reserve(&contents, (uintptr_t)measured);
+    const size_t count = fread((void *)contents.data, 1, (size_t)measured, file);
+    if (count != (size_t)measured) {
+      const int code = ferror(file) ? errno : EIO;
+      fclose(file);
+      if (contents.capacity > 0) free((void *)contents.data);
+      return (${stringResult}){ .tag = ${stringFailure}, .data.failure = z_standard_error(strerror(code)) };
+    }
+    contents.length = (uintptr_t)count;
+    ((char *)contents.data)[contents.length] = '\\0';
+  }
+  if (fclose(file) != 0) {
+    const int code = errno;
+    if (contents.capacity > 0) free((void *)contents.data);
+    return (${stringResult}){ .tag = ${stringFailure}, .data.failure = z_standard_error(strerror(code)) };
+  }
+  return (${stringResult}){ .tag = ${stringSuccess}, .data.success = contents };
+}`);
+  }
+
+  if (used.has("fs.writeText")) {
+    sections.push(`static ${voidResult} z_fs_write_text(Z_String path, Z_String contents) {
+  if (!z_standard_string_is_cstring(&path)) {
+    return (${voidResult}){ .tag = ${voidFailure}, .data.failure = z_standard_error("path contains an embedded null byte") };
+  }
+  const char *native_path = path.data != NULL ? path.data : "";
+  FILE *file = fopen(native_path, "wb");
+  if (file == NULL) {
+    return (${voidResult}){ .tag = ${voidFailure}, .data.failure = z_standard_error(strerror(errno)) };
+  }
+  const char *data = contents.data != NULL ? contents.data : "";
+  if (contents.length > 0 && fwrite(data, 1, (size_t)contents.length, file) != (size_t)contents.length) {
+    const int code = errno;
+    fclose(file);
+    return (${voidResult}){ .tag = ${voidFailure}, .data.failure = z_standard_error(strerror(code)) };
+  }
+  if (fclose(file) != 0) {
+    return (${voidResult}){ .tag = ${voidFailure}, .data.failure = z_standard_error(strerror(errno)) };
+  }
+  return (${voidResult}){ .tag = ${voidSuccess} };
+}`);
+  }
+
+  if (used.has("fs.exists")) {
+    sections.push(`static bool z_fs_exists(Z_String path) {
+  if (!z_standard_string_is_cstring(&path)) return false;
+  const char *native_path = path.data != NULL ? path.data : "";
+#if defined(_WIN32)
+  return _access(native_path, 0) == 0;
+#else
+  return access(native_path, F_OK) == 0;
+#endif
+}`);
+  }
+
+  if ([...used].some((name) => name.startsWith("process."))) {
+    const array = dynamicArrayName(dynamicArrayTypeName("String"));
+    sections.push(`static int z_process_argc = 0;
+static char **z_process_argv = NULL;
+
+static void z_process_set_arguments(int argc, char **argv) {
+  z_process_argc = argc;
+  z_process_argv = argv;
+}`);
+    if (used.has("process.args")) {
+      sections.push(`static ${array} z_process_args(void) {
+  ${array} result = { .data = NULL, .length = 0, .capacity = 0 };
+  if (z_process_argc <= 1 || z_process_argv == NULL) return result;
+  result.length = (uintptr_t)(z_process_argc - 1);
+  result.capacity = result.length;
+  result.data = (Z_String *)calloc(result.capacity, sizeof(Z_String));
+  if (result.data == NULL) abort();
+  for (uintptr_t index = 0; index < result.length; index += 1) {
+    result.data[index] = z_string_from_cstring(z_process_argv[index + 1]);
+  }
+  return result;
+}`);
+    }
+  }
+
+  if (used.has("process.run")) {
+    const slice = sliceName(sliceTypeName("String"));
+    sections.push(`static ${processResult} z_process_run(Z_String program, ${slice} arguments) {
+  if (!z_standard_string_is_cstring(&program)) {
+    return (${processResult}){ .tag = ${processFailure}, .data.failure = z_standard_error("program contains an embedded null byte") };
+  }
+  for (uintptr_t index = 0; index < arguments.length; index += 1) {
+    if (!z_standard_string_is_cstring(&arguments.data[index])) {
+      return (${processResult}){ .tag = ${processFailure}, .data.failure = z_standard_error("process argument contains an embedded null byte") };
+    }
+  }
+  if (arguments.length > SIZE_MAX / sizeof(char *) - 2) abort();
+  char **argv = (char **)calloc(arguments.length + 2, sizeof(char *));
+  if (argv == NULL) abort();
+  argv[0] = (char *)(program.data != NULL ? program.data : "");
+  for (uintptr_t index = 0; index < arguments.length; index += 1) {
+    argv[index + 1] = (char *)(arguments.data[index].data != NULL ? arguments.data[index].data : "");
+  }
+#if defined(_WIN32)
+  const intptr_t status = _spawnvp(_P_WAIT, argv[0], (const char * const *)argv);
+  if (status == -1) {
+    const int code = errno;
+    free(argv);
+    return (${processResult}){ .tag = ${processFailure}, .data.failure = z_standard_error(strerror(code)) };
+  }
+  free(argv);
+  return (${processResult}){ .tag = ${processSuccess}, .data.success = (int32_t)status };
+#else
+  int error_pipe[2];
+  if (pipe(error_pipe) != 0) {
+    const int code = errno;
+    free(argv);
+    return (${processResult}){ .tag = ${processFailure}, .data.failure = z_standard_error(strerror(code)) };
+  }
+  if (fcntl(error_pipe[1], F_SETFD, FD_CLOEXEC) == -1) {
+    const int code = errno;
+    close(error_pipe[0]);
+    close(error_pipe[1]);
+    free(argv);
+    return (${processResult}){ .tag = ${processFailure}, .data.failure = z_standard_error(strerror(code)) };
+  }
+  const pid_t child = fork();
+  if (child < 0) {
+    const int code = errno;
+    close(error_pipe[0]);
+    close(error_pipe[1]);
+    free(argv);
+    return (${processResult}){ .tag = ${processFailure}, .data.failure = z_standard_error(strerror(code)) };
+  }
+  if (child == 0) {
+    close(error_pipe[0]);
+    execvp(argv[0], argv);
+    const int code = errno;
+    (void)write(error_pipe[1], &code, sizeof(code));
+    close(error_pipe[1]);
+    _exit(127);
+  }
+  close(error_pipe[1]);
+  int exec_error = 0;
+  ssize_t error_bytes;
+  do {
+    error_bytes = read(error_pipe[0], &exec_error, sizeof(exec_error));
+  } while (error_bytes < 0 && errno == EINTR);
+  const int pipe_error = error_bytes < 0 ? errno : 0;
+  close(error_pipe[0]);
+  int status = 0;
+  pid_t waited;
+  do {
+    waited = waitpid(child, &status, 0);
+  } while (waited < 0 && errno == EINTR);
+  free(argv);
+  if (waited < 0) {
+    return (${processResult}){ .tag = ${processFailure}, .data.failure = z_standard_error(strerror(errno)) };
+  }
+  if (pipe_error != 0) {
+    return (${processResult}){ .tag = ${processFailure}, .data.failure = z_standard_error(strerror(pipe_error)) };
+  }
+  if (error_bytes == (ssize_t)sizeof(exec_error)) {
+    return (${processResult}){ .tag = ${processFailure}, .data.failure = z_standard_error(strerror(exec_error)) };
+  }
+  const int32_t exit_code = WIFEXITED(status)
+    ? (int32_t)WEXITSTATUS(status)
+    : WIFSIGNALED(status) ? (int32_t)(128 + WTERMSIG(status)) : 1;
+  return (${processResult}){ .tag = ${processSuccess}, .data.success = exit_code };
+#endif
+}`);
+  }
+
+  return sections.join("\n\n");
+}
+
 function generateIntegerRuntime(
   operations: ReadonlyMap<number, IntegerOperation>,
   contextualLiterals: ReadonlyMap<number, string>,
@@ -4198,6 +4505,13 @@ function inferExpressionType(expression: Expression, context: GenerationContext)
       return owner?.fields.find((field) => field.name === expression.property)?.type.name ?? "i32";
     }
     case "call": {
+      const standard = context.semanticInfo.standardFunctionReferences.get(expression.callee.location.offset);
+      if (standard) {
+        const signature = standardFunctionSignature(standard);
+        return signature.errorType
+          ? resultTypeName(signature.returnType, signature.errorType)
+          : signature.returnType;
+      }
       if (expression.callee.kind === "identifier") {
         if (context.structs.get(expression.callee.name)?.kind === "struct") return expression.callee.name;
         const closure = closureForType(context.localTypes.get(expression.callee.name), context.semanticInfo);

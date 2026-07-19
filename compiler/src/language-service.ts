@@ -23,7 +23,7 @@ import type {
   ForeignNamedType,
 } from "./foreign.ts";
 import { lex } from "./lexer.ts";
-import { parseDynamicArrayType, parseFixedArrayType, parseSliceType } from "./array-types.ts";
+import { displayArrayType, parseDynamicArrayType, parseFixedArrayType, parseSliceType } from "./array-types.ts";
 import { parseGenericType } from "./generic-types.ts";
 import { pathToFileURL } from "node:url";
 import { dirname, resolve } from "node:path";
@@ -37,6 +37,12 @@ import {
   parseForeignDeclarationContracts,
   type ForeignDeclarationContracts,
 } from "./foreign-declarations.ts";
+import {
+  standardFunctionSignature,
+  standardModuleFunction,
+  standardModuleMemberNames,
+  type StandardFunctionName,
+} from "./standard-library.ts";
 
 export type Position = { readonly line: number; readonly character: number };
 export type Range = { readonly start: Position; readonly end: Position };
@@ -308,6 +314,10 @@ export function semanticTokens(source: string, fileName: string): { readonly dat
       classifications.set(token.location.offset, { type: semanticTokenTypes.indexOf("namespace"), modifiers: 4 });
       continue;
     }
+    if (context.semanticInfo.standardModuleBindings.has(token.text)) {
+      classifications.set(token.location.offset, { type: semanticTokenTypes.indexOf("namespace"), modifiers: 4 });
+      continue;
+    }
     if (context.semanticInfo.standardFunctionBindings.has(token.text)) {
       classifications.set(token.location.offset, { type: semanticTokenTypes.indexOf("function"), modifiers: 4 });
       continue;
@@ -328,6 +338,13 @@ export function semanticTokens(source: string, fileName: string): { readonly dat
       previous?.kind === "dot"
       && consoleBindings.has(tokens[index - 2]?.text ?? "")
       && ["log", "write", "error", "debug"].includes(token.text)
+    ) {
+      classifications.set(token.location.offset, { type: semanticTokenTypes.indexOf("method"), modifiers: 4 });
+      continue;
+    }
+    if (
+      previous?.kind === "dot"
+      && context.semanticInfo.standardModuleBindings.has(tokens[index - 2]?.text ?? "")
     ) {
       classifications.set(token.location.offset, { type: semanticTokenTypes.indexOf("method"), modifiers: 4 });
       continue;
@@ -526,6 +543,10 @@ export function hover(source: string, fileName: string, offset: number): Hover |
   if (context.semanticInfo.consoleBindings.has(word.text)) {
     return markdownHover(`standard console imported as ${word.text}`, source, word.start, word.end);
   }
+  const standardModule = context.semanticInfo.standardModuleBindings.get(word.text);
+  if (standardModule) {
+    return markdownHover(`standard ${standardModule} module imported as ${word.text}`, source, word.start, word.end);
+  }
   const standardFunction = context.semanticInfo.standardFunctionBindings.get(word.text);
   if (standardFunction) {
     return markdownHover(standardFunctionDetail(word.text, standardFunction), source, word.start, word.end);
@@ -559,6 +580,11 @@ export function hover(source: string, fileName: string, offset: number): Hover |
     if (context.semanticInfo.consoleBindings.has(memberPrefix[1])) {
       const detail = consoleMethodDetail(word.text);
       if (detail) return markdownHover(detail, source, word.start, word.end);
+    }
+    const standardOwner = context.semanticInfo.standardModuleBindings.get(memberPrefix[1]);
+    const standardName = standardOwner ? standardModuleFunction(standardOwner, word.text) : null;
+    if (standardName) {
+      return markdownHover(standardFunctionDetail(word.text, standardName), source, word.start, word.end);
     }
     if (memberPrefix[1] === "String" && word.text === "from") {
       return markdownHover("from(value: cstring): String  // copies borrowed C bytes", source, word.start, word.end);
@@ -1192,6 +1218,9 @@ function symbolCompletions(source: string, fileName: string, offset: number): Co
   for (const name of context.semanticInfo.consoleBindings) {
     items.push({ label: name, kind: completionKinds.module, detail: `standard console imported as ${name}` });
   }
+  for (const [name, module] of context.semanticInfo.standardModuleBindings) {
+    items.push({ label: name, kind: completionKinds.module, detail: `standard ${module} module imported as ${name}` });
+  }
   for (const [name, standardFunction] of context.semanticInfo.standardFunctionBindings) {
     items.push({
       label: name,
@@ -1537,11 +1566,23 @@ function containsDeclarationName(start: number, name: string, offset: number): b
   return offset >= start && offset < start + name.length;
 }
 
-function standardFunctionDetail(localName: string, name: "sleep" | "delay"): string {
-  const signature = name === "delay"
-    ? `async ${localName}(milliseconds: u64): void  // suspends the current task`
-    : `${localName}(milliseconds: u64): void  // blocks the current thread`;
-  return localName === name ? signature : `${signature} — alias of ${name} from "std/time"`;
+function standardFunctionDetail(localName: string, name: StandardFunctionName): string {
+  const signature = standardFunctionSignature(name);
+  const parameters = signature.parameters.map((parameter) => {
+    const capability = parameter.mode === "value" ? "" : `${parameter.mode} `;
+    return `${capability}${parameter.name}: ${displayArrayType(parameter.type)}`;
+  }).join(", ");
+  const asynchronous = signature.async ? "async " : "";
+  const throws = signature.errorType ? ` throws ${displayArrayType(signature.errorType)}` : "";
+  const behavior = name === "delay"
+    ? "  // suspends the current task"
+    : name === "sleep"
+    ? "  // blocks the current thread"
+    : "";
+  const detail = `${asynchronous}${localName}(${parameters}): ${displayArrayType(signature.returnType)}${throws}${behavior}`;
+  return localName === name || name.includes(".")
+    ? detail
+    : `${detail} — alias of ${name} from "std/time"`;
 }
 
 function completionRecoveryAnalysis(
@@ -1809,6 +1850,18 @@ function memberCompletions(
   if (!importContext) return [];
   if (importContext.semanticInfo.consoleBindings.has(receiverText)) {
     return filterCompletions(consoleCompletions(), prefix, 100);
+  }
+  const standardModule = importContext.semanticInfo.standardModuleBindings.get(receiverText);
+  if (standardModule) {
+    return filterCompletions(standardModuleMemberNames(standardModule).map((member) => {
+      const name = standardModuleFunction(standardModule, member)!;
+      return {
+        label: member,
+        kind: completionKinds.method,
+        detail: standardFunctionDetail(member, name),
+        insertText: `${member}()`,
+      };
+    }), prefix, 100);
   }
   const sourceImport = importContext.sourceProgram.imports.find((declaration) => (
     isLocalSourceModuleSpecifier(declaration.header)

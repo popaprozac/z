@@ -264,6 +264,38 @@ import console from "std/console";
 console.log(`answer=${answer}`);
 ```
 
+## Files, processes, and program arguments
+
+System facilities are explicit standard-module imports. File operations and
+child launch use ordinary Z typed errors; `try` propagates them and `attempt`
+materializes their `Result` for local handling:
+
+```z
+import fs from "std/fs";
+import process from "std/process";
+
+function stage(in path: String): i32 throws String {
+  const source = try fs.readText(path);
+  try fs.writeText(".z-cache/input.z", source);
+  const clangArguments = ["--version"];
+  return try process.run("clang", clangArguments);
+}
+```
+
+`fs.readText(path)` returns an owned `String`; `fs.writeText(path, contents)`
+borrows both strings for the call; and `fs.exists(path)` performs a non-throwing
+existence probe. `process.args()` returns an owned `Array<String>` containing
+the arguments after the executable name. `process.run(program, arguments)`
+borrows a stored fixed array or `Array<String>` as a non-escaping
+`Slice<String>`, launches the executable directly without a shell, inherits the
+parent standard streams, and returns its exit code. Failure to launch or wait is
+a typed failure; a child program's nonzero exit is a successful `i32` result.
+
+`z run file.z -- one two` forwards `one` and `two` to the native program.
+Stage 0 currently lowers these APIs to a small cross-platform C runtime. The
+portable standard-library layers are intended to become ordinary Z modules;
+OS/ABI calls remain a thin platform substrate.
+
 ## Async and structured concurrency
 
 `async function` returns a task conceptually, while `await` observes its

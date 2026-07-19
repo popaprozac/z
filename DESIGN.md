@@ -1148,9 +1148,11 @@ ported independently rather than translated as one monolith.
 
 1. **Stage 0:** Bun runs the bootstrap lexer, parser, semantic analysis, IR, and
    native-source backend.
-2. **Stage 1:** With source modules now implemented, once Z also has safe
-   file/process APIs, reimplement the frontend in the supported Z subset of
-   structs, tagged enums, matching, generics, and collections.
+2. **Stage 1:** With source modules and the first safe file/process/argv
+   contracts now implemented, move portable standard-library behavior and a
+   small frontend component into the supported Z subset of structs, tagged
+   enums, matching, generics, and collections. Keep OS/ABI calls behind a thin
+   platform substrate.
 3. **Stage 2:** Compile the Z compiler with stage 0, then use that result to
    compile itself.
 4. **Bootstrap verification:** Compare generated native source and compiler test

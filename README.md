@@ -62,6 +62,7 @@ requiring lifetime syntax throughout ordinary application code.
 | Area | Implemented stage-0 slice |
 | --- | --- |
 | Values | Structs, classes, traits, generics, arrays, slices, owned strings |
+| Standard library | Explicit console/time plus initial `std/fs`, `std/process`, and owned program arguments |
 | Ownership | Lexical borrows, moves, deterministic cleanup, ARC, `Weak<T>` |
 | Errors | Typed `throws`, `try` propagation, `attempt`, `Result<T, E>` |
 | Control flow | Checked arithmetic, loops, ternaries, value `if`, exhaustive `match` |
@@ -113,6 +114,7 @@ bun test
 bun run z check examples/language/basics/first.z
 bun run z emit examples/language/basics/first.z
 bun run z run examples/language/basics/first.z
+bun run z run examples/applications/source-stager/main.z -- examples/language/basics/first.z
 ```
 
 Install the development editor extension for VS Code and Cursor:

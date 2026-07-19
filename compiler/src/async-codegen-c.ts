@@ -967,8 +967,13 @@ function generateRuntime(
   for (const plan of plans) lines.push(generatePoll(plan, planByKey, fileName), "");
 
   if (main) {
+    const usesProcess = [...main.types.semanticInfo.standardFunctionReferences.values()]
+      .some((name) => name.startsWith("process."));
     lines.push(
-      "int32_t main(void) {",
+      "int32_t main(int argc, char **argv) {",
+      "  (void)argc;",
+      "  (void)argv;",
+      ...(usesProcess ? ["  z_process_set_arguments(argc, argv);"] : []),
       "  Z_AsyncExecutor executor = { .head = NULL, .tail = NULL, .timers = NULL };",
       `  ${main.frameName} *root = ${main.startName}(&executor);`,
       "  z_async_run(&root->task);",
@@ -1940,7 +1945,7 @@ function emitFrameExpression(
         if (signature.async) {
           unsupported(fileName, expression.location, "an async standard function must be lowered beneath await");
         }
-        return `${signature.cName}(${emitSyncCallArguments(expression, plan, fileName).join(", ")})`;
+        return `${signature.cName}(${emitSyncCallArguments(expression, plan, fileName, signature).join(", ")})`;
       }
       if (expression.callee.kind === "member" && expression.callee.object.kind === "identifier") {
         const owner = plan.types.structs.get(expression.callee.object.name);
@@ -2027,9 +2032,11 @@ function emitSyncCallArguments(
   expression: CallExpression,
   plan: Pick<AsyncFunctionPlan, "locals" | "types">,
   fileName: string,
+  standardSignature?: ReturnType<typeof standardFunctionSignature>,
 ): string[] {
-  return expression.arguments.map((argument) => {
+  return expression.arguments.map((argument, index) => {
     const value = emitFrameExpression(argument, plan, fileName);
+    if (standardSignature?.parameters[index]?.abi === "value") return value;
     const access = plan.types.semanticInfo.nativeArgumentAccesses.get(argument.location.offset);
     if (!access) return value;
     const type = frameExpressionType(argument, plan);

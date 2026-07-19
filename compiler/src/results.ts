@@ -1,4 +1,5 @@
 import type { EnumDeclaration, FunctionDeclaration, Program } from "./ast.ts";
+import { importedStandardFunctions, standardFunctionSignature } from "./standard-library.ts";
 
 export function resultTypeName(successType: string, errorType: string): string {
   return `__z_Result_${successType}_${errorType}`;
@@ -11,6 +12,32 @@ export function materializeResultTypes(program: Program): Program {
     ...program.functions,
     ...program.structs.flatMap((declaration) => declaration.methods),
   ];
+
+  for (const name of importedStandardFunctions(program.imports)) {
+    const signature = standardFunctionSignature(name);
+    if (!signature.errorType) continue;
+    functions.push({
+      kind: "function",
+      name,
+      receiverMode: null,
+      parameters: signature.parameters.map((parameter) => ({
+        name: parameter.name,
+        mode: parameter.mode,
+        type: { name: parameter.type, location: program.imports[0]?.location ?? { offset: 0, line: 1, column: 1 } },
+        location: program.imports[0]?.location ?? { offset: 0, line: 1, column: 1 },
+      })),
+      returnType: {
+        name: signature.returnType,
+        location: program.imports[0]?.location ?? { offset: 0, line: 1, column: 1 },
+      },
+      errorType: {
+        name: signature.errorType,
+        location: program.imports[0]?.location ?? { offset: 0, line: 1, column: 1 },
+      },
+      body: [],
+      location: program.imports[0]?.location ?? { offset: 0, line: 1, column: 1 },
+    });
+  }
 
   for (const declaration of functions) {
     if (!declaration.errorType) continue;

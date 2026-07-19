@@ -53,6 +53,10 @@ support or producing language-server diagnostics from hypothetical imports.
   domain errors, move-only C++ leases, dynamic arrays, optional views, saving,
   and zero-live-resource verification. Start with its
   [`README.md`](applications/document-workspace/README.md).
+- [`source-stager`](applications/source-stager): a small compiler-tool-shaped
+  program using `std/fs`, owned program arguments, typed OS failures, and direct
+  child-process execution. Its [`README.md`](applications/source-stager/README.md)
+  explains the self-hosting boundary.
 
 ## Async
 
