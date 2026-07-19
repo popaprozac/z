@@ -5297,6 +5297,7 @@ test("editor grammar tracks keywords without reserving Result variants", () => {
   const keywordPattern = grammar.repository.keywords.patterns.map((pattern: { match: string }) => pattern.match).join(" ");
   const constantPattern = grammar.repository.constants.patterns.map((pattern: { match: string }) => pattern.match).join(" ");
   const operatorPattern = grammar.repository.operators.patterns.map((pattern: { match: string }) => pattern.match).join(" ");
+  const foreignDeclarationPatterns = grammar.repository.foreignDeclarations.patterns;
   const operatorScopes = grammar.repository.operators.patterns.map((pattern: { name: string }) => pattern.name).join(" ");
   const typePattern = grammar.repository.types.patterns.map((pattern: { match: string }) => pattern.match).join(" ");
   const stringPatterns = JSON.stringify(grammar.repository.strings.patterns);
@@ -5329,6 +5330,10 @@ test("editor grammar tracks keywords without reserving Result variants", () => {
   assert.match(keywordPattern, /export/);
   assert.match(keywordPattern, /declare/);
   assert.ok(editorPackage.contributes.languages[0].extensions.includes(".zd"));
+  assert.equal(foreignDeclarationPatterns[0].captures[2].name, "storage.type.module.z");
+  assert.equal(foreignDeclarationPatterns[1].captures[2].name, "variable.parameter.z");
+  assert.equal(foreignDeclarationPatterns[2].captures[2].name, "entity.name.function.destructor.z");
+  assert.equal(foreignDeclarationPatterns[3].captures[1].name, "storage.type.inferred.z");
   assert.match(selectiveImportPatterns, /\\bas\\b/);
   assert.match(keywordPattern, /while/);
   assert.match(keywordPattern, /for\|of/);

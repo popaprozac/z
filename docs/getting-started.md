@@ -117,9 +117,11 @@ Install the repository's development extension:
 ./scripts/install-editor-extension.sh
 ```
 
-Reload VS Code or Cursor, then open a `.z` file. The extension provides TextMate
-highlighting immediately and starts the compiler-backed language server for
-diagnostics, semantic highlighting, hover, completion, and definitions.
+Reload VS Code or Cursor, then open a `.z` source or `.zd` declaration file.
+The extension provides TextMate highlighting immediately and starts the
+compiler-backed language server. Z source receives diagnostics, semantic
+highlighting, hover, completion, and definitions; the first `.zd` slice
+provides declaration-aware highlighting and diagnostics.
 Definitions include Z modules plus imported project, SDK, and generated native
 headers when the toolchain reports a concrete declaration location.
 

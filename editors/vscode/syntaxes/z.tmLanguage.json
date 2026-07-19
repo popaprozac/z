@@ -4,6 +4,7 @@
   "scopeName": "source.z",
   "patterns": [
     { "include": "#comments" },
+    { "include": "#foreignDeclarations" },
     { "include": "#strings" },
     { "include": "#imports" },
     { "include": "#declarations" },
@@ -17,6 +18,37 @@
   "repository": {
     "comments": {
       "patterns": [{ "name": "comment.line.double-slash.z", "match": "//.*$" }]
+    },
+    "foreignDeclarations": {
+      "patterns": [{
+        "name": "meta.declaration.module.foreign.z",
+        "match": "\\b(declare)\\s+(module)\\s+((?:\"(?:\\\\.|[^\"])*\")|(?:'(?:\\\\.|[^'])*'))",
+        "captures": {
+          "1": { "name": "keyword.control.declaration.z" },
+          "2": { "name": "storage.type.module.z" },
+          "3": { "name": "string.quoted.header.z" }
+        }
+      }, {
+        "name": "meta.declaration.parameter.inferred.z",
+        "match": "(?:(\\b(?:inout|in|out|move)\\b)\\s+)?([A-Za-z_][A-Za-z0-9_]*)(?=\\s*:\\s*_(?:\\s*\\|\\s*null)?\\s*[,\\)])",
+        "captures": {
+          "1": { "name": "storage.modifier.capability.z" },
+          "2": { "name": "variable.parameter.z" }
+        }
+      }, {
+        "name": "meta.declaration.lifecycle.foreign.z",
+        "match": "\\b(deinit)\\s+([A-Za-z_][A-Za-z0-9_]*(?:\\.[A-Za-z_][A-Za-z0-9_]*)*)(?=\\s*;)",
+        "captures": {
+          "1": { "name": "keyword.control.declaration.lifecycle.z" },
+          "2": { "name": "entity.name.function.destructor.z" }
+        }
+      }, {
+        "name": "meta.type.inferred.z",
+        "match": "(?<=:)\\s*(_)(?=\\s*(?:\\||[,;){}=]|$))",
+        "captures": {
+          "1": { "name": "storage.type.inferred.z" }
+        }
+      }]
     },
     "strings": {
       "patterns": [{

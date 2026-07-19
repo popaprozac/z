@@ -121,8 +121,8 @@ Install the development editor extension for VS Code and Cursor:
 ./scripts/install-editor-extension.sh
 ```
 
-Then reload the editor window and open a `.z` file. The extension starts the
-Bun-based language server automatically.
+Then reload the editor window and open a `.z` source or `.zd` declaration file.
+The extension starts the Bun-based language server automatically.
 
 Continue with [Getting started](docs/getting-started.md), then use the
 [examples guide](docs/examples.md) to explore the implemented language in small
