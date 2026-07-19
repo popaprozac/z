@@ -291,6 +291,22 @@ Imported C++ records and opaque values use that same hierarchy. For example,
 `cpp.Point` is available only when `Point` is unique across the imported module;
 otherwise completion omits it and the qualified native namespace is required.
 
+An adjacent `.zd` file may constrain an opaque native value's lifecycle:
+
+```z
+declare module "library.hpp" {
+  export type zcpp.ManagedValue {
+    copy;
+    deinit;
+  }
+}
+```
+
+This does not define a Z type or repeat C++ layout. It names an existing native
+type and records which of `copy`, `move`, and deterministic `deinit` are safe.
+Capabilities must agree with Clang. The current backend executes copyable native
+RAII values; move-only values remain unsupported.
+
 Native namespaces may also be selected and aliased with ordinary import syntax:
 
 ```z

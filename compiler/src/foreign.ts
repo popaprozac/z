@@ -5,6 +5,7 @@ import type { ImportDeclaration } from "./ast.ts";
 import { DiagnosticError } from "./diagnostics.ts";
 import { apiNotesFreshness, readApiNotes, type PointerNote } from "./foreign-api-notes.ts";
 import { normalizeForeignContracts } from "./foreign-contracts.ts";
+import { parseForeignDeclarationContracts, type ForeignValueContract } from "./foreign-declarations.ts";
 import {
   normalizeCallbackContextType,
   splitCParameters,
@@ -30,6 +31,7 @@ import type {
   ForeignScalarTypeName,
   ForeignSourceLocation,
   ForeignType,
+  ForeignValueLifecycle,
 } from "./foreign-ir.ts";
 export type * from "./foreign-ir.ts";
 
@@ -53,6 +55,8 @@ type ClangNode = {
   readonly setter?: { readonly name?: string };
   readonly storageClass?: string;
   readonly isImplicit?: boolean;
+  readonly access?: string;
+  readonly explicitlyDeleted?: boolean;
   readonly returnType?: { readonly qualType?: string; readonly desugaredQualType?: string };
   readonly super?: { readonly name?: string };
   readonly fixedUnderlyingType?: { readonly qualType?: string; readonly desugaredQualType?: string };
@@ -155,7 +159,12 @@ function readHeader(
   }
   hydrateClangSourceFiles(root);
 
-  const imported = collectNamedTypes(root, declaration.moduleName, cPlusPlus, swiftCxxNamespace);
+  const declarationContractPath = resolve(headerDirectory, `${declaration.header}.zd`);
+  const declarationContracts = existsSync(declarationContractPath)
+    ? parseForeignDeclarationContracts(readFileSync(declarationContractPath, "utf8"), declarationContractPath)
+    : null;
+  const valueContracts = new Map((declarationContracts?.types ?? []).map((contract) => [contract.name, contract]));
+  const imported = collectNamedTypes(root, declaration.moduleName, cPlusPlus, swiftCxxNamespace, valueContracts, fileName);
   const constants = new Map(imported.constants);
   const objectTypes = new Map<string, ForeignObjectType>();
   const interfaces = objectiveC
@@ -262,6 +271,8 @@ function collectNamedTypes(
   moduleName: string,
   cPlusPlus: boolean,
   swiftCxxNamespace: string | null,
+  valueContracts: ReadonlyMap<string, ForeignValueContract>,
+  fileName: string,
 ): {
   namedTypes: ReadonlyMap<string, ForeignNamedType>;
   namedTypeAliases: ReadonlyMap<string, string>;
@@ -286,6 +297,7 @@ function collectNamedTypes(
     readonly cName: string;
     readonly declaration: ClangNode;
     readonly opaque: boolean;
+    readonly lifecycle: ForeignValueLifecycle;
   }[] = [];
   if (cPlusPlus) {
     visitWithNamespaces(root, (node, namespaces) => {
@@ -295,18 +307,30 @@ function collectNamedTypes(
       ) return;
       if (swiftCxxNamespace && namespaces[0] !== swiftCxxNamespace) return;
       const fields = node.inner?.some((child) => child.kind === "FieldDecl") ?? false;
-      const opaque = swiftCxxNamespace !== null
-        && node.tagUsed === "class"
-        && (node.inner?.some((child) => child.kind === "CXXDestructorDecl") ?? false);
-      if (!(node.tagUsed === "struct" && fields) && !opaque) return;
       const namespacePath = swiftCxxNamespace ? namespaces.slice(1) : namespaces;
+      const qualifiedName = [...namespacePath, node.name].join(".");
+      const contract = valueContracts.get(qualifiedName);
+      const detectedLifecycle = cxxValueLifecycle(node);
+      const definition = node.inner?.some((child) => (
+        child.kind === "AccessSpecDecl"
+        || child.kind === "FieldDecl"
+        || child.kind === "CXXConstructorDecl"
+        || child.kind === "CXXDestructorDecl"
+      )) ?? false;
+      const opaque = node.tagUsed === "class" && definition
+        && ((swiftCxxNamespace !== null && detectedLifecycle.deinit) || Boolean(contract));
+      if (!(node.tagUsed === "struct" && fields) && !opaque) return;
+      if (contract) validateForeignValueLifecycle(contract, detectedLifecycle, fileName);
       cppRecords.push({
         exportName: node.name,
         namespacePath,
-        qualifiedName: [...namespacePath, node.name].join("."),
+        qualifiedName,
         cName: [...namespaces, node.name].join("::"),
         declaration: node,
         opaque,
+        lifecycle: contract
+          ? { copy: contract.copy, move: contract.move, deinit: contract.deinit }
+          : detectedLifecycle,
       });
     });
   }
@@ -322,6 +346,7 @@ function collectNamedTypes(
     sourceDeclaration?: ClangNode;
     underlying?: ForeignScalarTypeName;
     flags?: boolean;
+    lifecycle?: ForeignValueLifecycle;
   };
   const seeds = new Map<string, Seed>();
   for (const node of nodes) {
@@ -368,6 +393,7 @@ function collectNamedTypes(
       cName: record.cName,
       declaration: record.declaration,
       sourceDeclaration: record.declaration,
+      lifecycle: record.lifecycle,
     });
   }
 
@@ -403,7 +429,7 @@ function collectNamedTypes(
         metadata,
       };
     } else if (seed.kind === "value") {
-      named = { kind: "value", exportName: seed.exportName, namespacePath: seed.namespacePath, qualifiedName: seed.qualifiedName, typeName: seed.typeName, cName: seed.cName, metadata };
+      named = { kind: "value", exportName: seed.exportName, namespacePath: seed.namespacePath, qualifiedName: seed.qualifiedName, typeName: seed.typeName, cName: seed.cName, lifecycle: seed.lifecycle!, metadata };
     } else {
       const fields = (seed.declaration!.inner ?? []).filter((child) => child.kind === "FieldDecl");
       const mapped = fields.map((field) => field.name && field.type?.qualType
@@ -431,6 +457,16 @@ function collectNamedTypes(
     namedTypeAliases.set(name, matching[0].qualifiedName);
     byCName.set(name, matching[0]);
   }
+  for (const contract of valueContracts.values()) {
+    if (!namedTypes.has(contract.name)) {
+      throw new DiagnosticError(
+        contract.nameLocation.fileName ?? fileName,
+        contract.nameLocation,
+        `declaration names unknown foreign value type ${JSON.stringify(contract.name)}`,
+        { code: "Z0801" },
+      );
+    }
+  }
 
   const constants = new Map<string, ForeignConstant>();
   for (const named of namedTypes.values()) {
@@ -448,6 +484,80 @@ function collectNamedTypes(
     }
   }
   return { namedTypes, namedTypeAliases, namespaces, constants, byCName };
+}
+
+function cxxValueLifecycle(declaration: ClangNode): ForeignValueLifecycle {
+  let access = declaration.tagUsed === "class" ? "private" : "public";
+  let copyConstructor = false;
+  let copyAssignment = false;
+  let moveConstructor = false;
+  let moveAssignment = false;
+  let deinit = false;
+  for (const member of declaration.inner ?? []) {
+    if (member.kind === "AccessSpecDecl") {
+      access = member.access ?? access;
+      continue;
+    }
+    if (access !== "public" || member.explicitlyDeleted === true) continue;
+    if (member.kind === "CXXDestructorDecl") {
+      deinit = true;
+      continue;
+    }
+    if (member.kind !== "CXXConstructorDecl" && !(member.kind === "CXXMethodDecl" && member.name === "operator=")) continue;
+    const parameters = (member.inner ?? []).filter((child) => child.kind === "ParmVarDecl");
+    if (parameters.length !== 1) continue;
+    const parameterType = normalizeCType(parameters[0].type?.qualType ?? "");
+    const copy = parameterType.startsWith("const ") && parameterType.endsWith(" &") && !parameterType.endsWith(" &&");
+    const move = parameterType.endsWith(" &&");
+    if (member.kind === "CXXConstructorDecl") {
+      copyConstructor ||= copy;
+      moveConstructor ||= move;
+    } else {
+      copyAssignment ||= copy;
+      moveAssignment ||= move;
+    }
+  }
+  return {
+    copy: copyConstructor && copyAssignment,
+    move: moveConstructor && moveAssignment,
+    deinit,
+  };
+}
+
+function validateForeignValueLifecycle(
+  contract: ForeignValueContract,
+  detected: ForeignValueLifecycle,
+  fallbackFileName: string,
+): void {
+  const fileName = contract.location.fileName ?? fallbackFileName;
+  const requireCapability = (
+    capability: keyof ForeignValueLifecycle,
+    requested: boolean,
+    location: ForeignValueContract["copyLocation"],
+  ): void => {
+    if (!requested || detected[capability]) return;
+    throw new DiagnosticError(
+      fileName,
+      location ?? contract.location,
+      `foreign type ${JSON.stringify(contract.name)} declares ${capability}, but Clang cannot prove that capability`,
+      { code: "Z0801" },
+    );
+  };
+  requireCapability("copy", contract.copy, contract.copyLocation);
+  requireCapability("move", contract.move, contract.moveLocation);
+  requireCapability("deinit", contract.deinit, contract.deinitLocation);
+  if (!contract.copy) {
+    throw new DiagnosticError(
+      fileName,
+      contract.moveLocation ?? contract.location,
+      `move-only foreign value type ${JSON.stringify(contract.name)} is not executable in the first lifecycle tier`,
+      {
+        code: "Z0801",
+        notes: ["FIIR records native move capability, but Z lowering does not yet model moved-from foreign storage"],
+        helps: ["use a copyable native value contract until dedicated foreign move lowering lands"],
+      },
+    );
+  }
 }
 
 function collectObjCInterfaces(

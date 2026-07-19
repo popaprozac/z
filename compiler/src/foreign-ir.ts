@@ -48,6 +48,7 @@ export type ForeignNamedType = (
     readonly exportName: string;
     readonly typeName: string;
     readonly cName: string;
+    readonly lifecycle: ForeignValueLifecycle;
   }
   | {
     readonly kind: "object";
@@ -75,6 +76,12 @@ export type ForeignNamedType = (
   readonly namespacePath: readonly string[];
   readonly qualifiedName: string;
   readonly metadata: ForeignDeclarationMetadata;
+};
+
+export type ForeignValueLifecycle = {
+  readonly copy: boolean;
+  readonly move: boolean;
+  readonly deinit: boolean;
 };
 
 export type ForeignField = {

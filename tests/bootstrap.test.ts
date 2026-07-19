@@ -1285,6 +1285,103 @@ test("selectively imports and aliases C++ namespaces", () => {
   assert.match(compileToNative(annotated, example).source, /const zcpp::Point origin/);
 });
 
+test("declares, copies, aggregates, and destroys foreign C++ values", () => {
+  const example = resolve(projectRoot, "examples/foreign-values.z");
+  const source = readFileSync(example, "utf8");
+  const artifact = compileToNative(source, example);
+  assert.equal(artifact.language, "c++");
+  assert.match(artifact.source, /struct Z_NativeOwner \{\s*zcpp::ManagedValue value;/);
+  assert.match(artifact.source, /const Z_NativeOwner owner = .*\.value = first/);
+  assert.match(artifact.source, /const Z_NativeOwner copied = owner/);
+
+  const context = analyzeSource(source, example);
+  const managed = context.foreignModules.get("native")?.namedTypes.get("zcpp.ManagedValue");
+  assert.equal(managed?.kind, "value");
+  if (managed?.kind === "value") {
+    assert.deepEqual(managed.lifecycle, { copy: true, move: false, deinit: true });
+  }
+  const typeOffset = source.indexOf("ManagedValue") + 2;
+  assert.match(hover(source, example, typeOffset)?.contents.value ?? "", /native value: copy, deinit; unavailable: move/);
+
+  const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, "answer=42, copies=2, drops=3, live=0\n");
+
+  const declarationFile = resolve(projectRoot, "tests/fixtures/foreign-values.hpp.zd");
+  const declarationSource = readFileSync(declarationFile, "utf8");
+  assert.deepEqual(diagnostics(declarationSource, declarationFile), []);
+  const declaredType = declarationSource.indexOf("ManagedValue") + 2;
+  assert.match(
+    hover(declarationSource, declarationFile, declaredType)?.contents.value ?? "",
+    /type ManagedValue: zcpp::ManagedValue.*native value: copy, deinit; unavailable: move/,
+  );
+  const copyCapability = declarationSource.indexOf("copy") + 1;
+  assert.match(hover(declarationSource, declarationFile, copyCapability)?.contents.value ?? "", /copy: native lifecycle capability/);
+  const typeCompletionSource = declarationSource.replace("zcpp.ManagedValue {", "zcpp.Man");
+  const typeCompletionOffset = typeCompletionSource.indexOf("zcpp.Man") + "zcpp.Man".length;
+  assert.equal(
+    completions(typeCompletionSource, declarationFile, typeCompletionOffset)
+      .find((item) => item.label === "zcpp.ManagedValue")?.kind,
+    22,
+  );
+  const lifecycleCompletionSource = declarationSource.replace("copy;", "cop");
+  const lifecycleCompletionOffset = lifecycleCompletionSource.indexOf("cop") + "cop".length;
+  assert.equal(
+    completions(lifecycleCompletionSource, declarationFile, lifecycleCompletionOffset)
+      .find((item) => item.label === "copy")?.insertText,
+    "copy;",
+  );
+
+  const invalidDirectory = mkdtempSync("/tmp/z-foreign-value-lifecycle-");
+  const invalidHeader = resolve(invalidDirectory, "foreign-values.hpp");
+  const invalidSource = resolve(invalidDirectory, "main.z");
+  writeFileSync(invalidHeader, readFileSync(resolve(projectRoot, "tests/fixtures/foreign-values.hpp"), "utf8"));
+  writeFileSync(`${invalidHeader}.zd`, `
+    declare module "foreign-values.hpp" {
+      export type zcpp.ManagedValue {
+        move;
+        deinit;
+      }
+    }
+  `);
+  const invalidProgram = `import native from "foreign-values.hpp"; function main(): i32 { return 0; }`;
+  const invalidDiagnostic = diagnostics(invalidProgram, invalidSource)[0];
+  assert.equal(invalidDiagnostic.code, "Z0801");
+  assert.match(invalidDiagnostic.message, /declares move, but Clang cannot prove that capability/);
+
+  const moveOnlyDirectory = mkdtempSync("/tmp/z-foreign-move-only-");
+  const moveOnlyHeader = resolve(moveOnlyDirectory, "move-only.hpp");
+  const moveOnlySource = resolve(moveOnlyDirectory, "main.z");
+  writeFileSync(moveOnlyHeader, `
+    namespace zcpp {
+      class MoveOnly {
+      public:
+        explicit MoveOnly(int value) : value_(value) {}
+        MoveOnly(const MoveOnly &) = delete;
+        MoveOnly &operator=(const MoveOnly &) = delete;
+        MoveOnly(MoveOnly &&other) : value_(other.value_) { other.value_ = 0; }
+        MoveOnly &operator=(MoveOnly &&other) { value_ = other.value_; other.value_ = 0; return *this; }
+        ~MoveOnly() {}
+      private:
+        int value_;
+      };
+    }
+  `);
+  writeFileSync(`${moveOnlyHeader}.zd`, `
+    declare module "move-only.hpp" {
+      export type zcpp.MoveOnly {
+        move;
+        deinit;
+      }
+    }
+  `);
+  const moveOnlyProgram = `import native from "move-only.hpp"; function main(): i32 { return 0; }`;
+  const moveOnlyDiagnostic = diagnostics(moveOnlyProgram, moveOnlySource)[0];
+  assert.equal(moveOnlyDiagnostic.code, "Z0801");
+  assert.match(moveOnlyDiagnostic.message, /move-only foreign value type "zcpp\.MoveOnly" is not executable/);
+  assert.match(moveOnlyDiagnostic.message, /dedicated foreign move lowering/);
+});
+
 test("imports AppKit classes and emits an ARC Objective-C NSWindow program", () => {
   if (process.platform !== "darwin") return;
   const example = resolve(projectRoot, "examples/nswindow.z");
@@ -1902,10 +1999,19 @@ test("imports and owns a Swift value through its generated C++ compatibility hea
   const artifact = compileToNative(source, example);
   assert.equal(artifact.language, "c++");
   assert.match(artifact.source, /#include <ZSwiftOwned-Swift\.hpp>/);
+  assert.match(artifact.source, /struct Z_CounterOwner \{\s*ZSwiftOwned::OwnedCounter counter;/);
   assert.match(artifact.source, /const ZSwiftOwned::OwnedCounter first = ZSwiftOwned::makeOwnedCounter\(40\)/);
   assert.match(artifact.source, /const ZSwiftOwned::OwnedCounter copied = first/);
-  assert.match(artifact.source, /ZSwiftOwned::roundTrip\(copied\)/);
+  assert.match(artifact.source, /const Z_CounterOwner owner = .*\.counter = copied/);
+  assert.match(artifact.source, /const Z_CounterOwner ownerCopy = owner/);
+  assert.match(artifact.source, /ZSwiftOwned::roundTrip\(\(ownerCopy\)\.counter\)/);
   assert.deepEqual(diagnostics(source, example), []);
+  const context = analyzeSource(source, example);
+  const counter = context.foreignModules.get("Swift")?.namedTypes.get("OwnedCounter");
+  assert.equal(counter?.kind, "value");
+  if (counter?.kind === "value") {
+    assert.deepEqual(counter.lifecycle, { copy: true, move: false, deinit: true });
+  }
   const firstOffset = source.indexOf("first =") + 1;
   assert.match(hover(source, example, firstOffset)?.contents.value ?? "", /first: Swift\.OwnedCounter/);
   const makeOffset = source.indexOf("makeOwnedCounter") + 1;
@@ -5539,14 +5645,17 @@ test("editor grammar tracks keywords without reserving Result variants", () => {
   assert.match(keywordPattern, /declare/);
   assert.ok(editorPackage.contributes.languages[0].extensions.includes(".zd"));
   assert.equal(foreignDeclarationPatterns[0].captures[2].name, "storage.type.module.z");
-  assert.equal(foreignDeclarationPatterns[1].captures[2].name, "variable.parameter.z");
-  assert.equal(foreignDeclarationPatterns[2].captures[2].name, "entity.name.function.destructor.z");
-  assert.equal(foreignDeclarationPatterns[3].captures[1].name, "storage.type.inferred.z");
-  assert.equal(foreignDeclarationPatterns[4].captures[1].name, "keyword.control.declaration.callback.z");
-  assert.equal(foreignDeclarationPatterns[5].captures[1].name, "keyword.control.declaration.callback.z");
-  assert.equal(foreignDeclarationPatterns[5].captures[2].name, "variable.parameter.context.z");
+  assert.equal(foreignDeclarationPatterns[1].captures[1].name, "storage.type.declaration.z");
+  assert.equal(foreignDeclarationPatterns[1].captures[2].name, "entity.name.type.z");
+  assert.equal(foreignDeclarationPatterns[2].captures[1].name, "storage.modifier.capability.z");
+  assert.equal(foreignDeclarationPatterns[3].captures[2].name, "variable.parameter.z");
+  assert.equal(foreignDeclarationPatterns[4].captures[2].name, "entity.name.function.destructor.z");
+  assert.equal(foreignDeclarationPatterns[5].captures[1].name, "storage.type.inferred.z");
   assert.equal(foreignDeclarationPatterns[6].captures[1].name, "keyword.control.declaration.callback.z");
-  assert.equal(foreignDeclarationPatterns[6].captures[2].name, "constant.language.callback-thread.z");
+  assert.equal(foreignDeclarationPatterns[7].captures[1].name, "keyword.control.declaration.callback.z");
+  assert.equal(foreignDeclarationPatterns[7].captures[2].name, "variable.parameter.context.z");
+  assert.equal(foreignDeclarationPatterns[8].captures[1].name, "keyword.control.declaration.callback.z");
+  assert.equal(foreignDeclarationPatterns[8].captures[2].name, "constant.language.callback-thread.z");
   assert.match(selectiveImportPatterns, /\\bas\\b/);
   assert.match(keywordPattern, /while/);
   assert.match(keywordPattern, /for\|of/);

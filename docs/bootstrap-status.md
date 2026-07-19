@@ -70,9 +70,9 @@ an inferred receiver-tied view.
 | C pointers | Partial | Safe opaque handles and record borrows use adjacent `.zd` contracts; nullable declared handles lift into niche-backed `Option`; internal toolchain notes remain |
 | C callbacks | Partial | Call-only and caller-thread escaping callbacks use `.zd` with named context and exact release contracts; cross-thread callbacks remain unsupported |
 | Objective-C | Partial | ARC classes/fields, methods, properties/global object constants, labels, nullability, niche-backed `Option.fromNullable`, owned `String`/`NSString` copies, escaping blocks and persistent observer tokens |
-| C++ | Partial | Hierarchical and selectively aliased namespaces, functions and named types, typed overload selection, plain records, first opaque copyable RAII values |
+| C++ | Partial | Hierarchical and selectively aliased namespaces, typed overloads, records, and `.zd`-contracted copyable RAII values inside Z aggregates; move-only values and methods remain |
 | Swift via Objective-C | Implemented slice | Generated compatibility header, classes/properties/methods, automatic local dylib build/link |
-| Swift value via C++ | Implemented probe | Native struct return/copy/round-trip/destruction without handwritten shim |
+| Swift value via C++ | Implemented probe | Native struct return/copy/aggregate storage/round-trip/destruction without handwritten shim |
 | Swift methods/strings/generics | Planned vertical slices | Generated C++ methods, `swift::String`, protocols, errors, async, packages |
 
 Current interop gaps that block a richer desktop application include
@@ -84,7 +84,7 @@ niche-backed specialization and explicit conversion bridge.
 
 The Swift owned-value probe is intentionally honest about the toolchain: current
 generated wrappers copy and deterministically destroy Swift values, but delete
-C++ move construction. Z therefore treats this as copyable foreign RAII, not as
+C++ move assignment. Z therefore treats this as copyable foreign RAII, not as
 native Swift move support.
 
 ## Async and concurrency
@@ -120,7 +120,11 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
 - [`examples/swift-interop`](../examples/swift-interop): Swift class through its
   generated Objective-C compatibility header.
 - [`examples/swift-value-interop`](../examples/swift-value-interop): Swift-native
-  owned value through its generated C++ compatibility header.
+  owned value stored in a Z aggregate through its generated C++ compatibility
+  header.
+- [`examples/foreign-values.z`](../examples/foreign-values.z): `.zd`-contracted
+  copyable C++ RAII value copied through an owning Z aggregate with zero live
+  native values after scope exit.
 - `bun test`: compiler, runtime, diagnostics, interop, async, and editor
   regression suite.
 
@@ -129,8 +133,9 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
 1. Split and maintain tutorial, semantics, rationale, and bootstrap status
    documents (this structure is now in place).
 2. Extend the backend-neutral Foreign Interface IR now that raw declarations,
-   API-note sources, normalized contracts, native definitions, and availability
-   facts are separate; native hierarchy and deployment-target semantics follow.
+   API-note sources, normalized contracts, native definitions, availability,
+   and first value-lifecycle facts are separate; methods and deployment-target
+   semantics follow.
 3. Extend the desktop probe through one real native event callback into owned Z
    state (one-shot and persistent notification paths are now validated).
 4. Expand receiver-tied views only from real pressure: the value-struct tier is

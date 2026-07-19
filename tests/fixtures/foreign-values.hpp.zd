@@ -1,0 +1,6 @@
+declare module "foreign-values.hpp" {
+  export type zcpp.ManagedValue {
+    copy;
+    deinit;
+  }
+}

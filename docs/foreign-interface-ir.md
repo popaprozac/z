@@ -104,8 +104,9 @@ facts are coherent:
    release contract;
 6. overload resolution selects exactly one viable native signature; no-match and
    ties remain visible diagnostics rather than first-declaration fallback;
-7. opaque RAII values preserve their native construction/copy/destruction
-   semantics rather than being treated as plain byte records;
+7. opaque RAII values carry explicit copy/move/deinit capabilities, `.zd`
+   cannot exceed what Clang proves, and values are never treated as plain byte
+   records;
 8. explicit native unavailability is rejected at the Z use site and points back
    to the native declaration. Introduced/deprecated/obsoleted versions remain
    data until a deployment-target model exists.
@@ -147,8 +148,8 @@ separately from the in-memory normalized FIIR.
    targets once `std/target` semantics are implemented;
 2. represent namespace hierarchy, overload sets, constructors, methods, and
    properties without flattening names;
-3. add explicit copy/move/destructor capabilities for general C++ and Swift
-   values;
+3. extend the implemented copy/move/deinit value capabilities from copyable
+   aggregate storage to move-only values and native methods;
 4. expand block/callback adapters with threading and callback-to-async
    synthesis;
 5. add serialization only when caching or a self-hosted toolchain adapter needs

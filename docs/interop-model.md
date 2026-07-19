@@ -68,6 +68,26 @@ overload retains its own full contract and source location. `Z0803` reports
 calls for which no candidate is viable or more than one best candidate remains;
 declaration order is never a tiebreaker.
 
+Opaque C++ values can carry an adjacent lifecycle contract without repeating
+their native layout:
+
+```z
+declare module "library.hpp" {
+  export type zcpp.ManagedValue {
+    copy;
+    deinit;
+  }
+}
+```
+
+`type` refers to the existing Clang declaration. `copy`, `move`, and `deinit`
+are capabilities rather than function calls; omission denies a capability, and
+`.zd` cannot grant an operation Clang cannot prove. The current executable tier
+supports `copy + deinit`: C++ copy construction and assignment remain direct,
+and native lexical destruction handles values stored in Z aggregates. FIIR can
+record native move availability, but move-only foreign values remain rejected
+until dedicated move lowering lands.
+
 ## Cost model
 
 Z's target is **no interop tax beyond the semantics requested at the

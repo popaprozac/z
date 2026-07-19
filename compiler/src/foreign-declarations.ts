@@ -41,6 +41,19 @@ export type ForeignCallbackContract = {
 export type ForeignDeclarationContracts = {
   readonly moduleSpecifier: string;
   readonly functions: readonly ForeignFunctionContract[];
+  readonly types: readonly ForeignValueContract[];
+};
+
+export type ForeignValueContract = {
+  readonly name: string;
+  readonly copy: boolean;
+  readonly move: boolean;
+  readonly deinit: boolean;
+  readonly location: SourceLocation;
+  readonly nameLocation: SourceLocation;
+  readonly copyLocation: SourceLocation | null;
+  readonly moveLocation: SourceLocation | null;
+  readonly deinitLocation: SourceLocation | null;
 };
 
 export function parseForeignDeclarationContracts(source: string, fileName: string): ForeignDeclarationContracts {
@@ -98,14 +111,63 @@ export function parseForeignDeclarationContracts(source: string, fileName: strin
   const moduleSpecifier = take().text;
   expectText("{");
   const functions: ForeignFunctionContract[] = [];
-  const names = new Set<string>();
+  const types: ForeignValueContract[] = [];
+  const functionNames = new Set<string>();
+  const typeNames = new Set<string>();
   while (!at("}")) {
     expectText("export");
+    if (at("type")) {
+      const start = take();
+      const parsedName = parseQualifiedName();
+      const name = parsedName.name;
+      if (typeNames.has(name)) fail(start, `duplicate declaration contract for foreign type ${JSON.stringify(name)}`);
+      typeNames.add(name);
+      expectText("{");
+      let copyLocation: SourceLocation | null = null;
+      let moveLocation: SourceLocation | null = null;
+      let deinitLocation: SourceLocation | null = null;
+      while (!at("}")) {
+        const capability = take();
+        if (!["copy", "move", "deinit"].includes(capability.text)) {
+          fail(capability, `expected "copy", "move", or "deinit" in foreign type contract, found ${JSON.stringify(capability.text)}`);
+        }
+        if (capability.text === "copy") {
+          if (copyLocation) fail(capability, `foreign type ${JSON.stringify(name)} cannot declare copy more than once`);
+          copyLocation = capability.location;
+        } else if (capability.text === "move") {
+          if (moveLocation) fail(capability, `foreign type ${JSON.stringify(name)} cannot declare move more than once`);
+          moveLocation = capability.location;
+        } else {
+          if (deinitLocation) fail(capability, `foreign type ${JSON.stringify(name)} cannot declare deinit more than once`);
+          deinitLocation = capability.location;
+        }
+        expectText(";");
+      }
+      expectText("}");
+      if (!deinitLocation) {
+        fail(start, `foreign value type ${JSON.stringify(name)} must declare deterministic deinit`);
+      }
+      if (!copyLocation && !moveLocation) {
+        fail(start, `foreign value type ${JSON.stringify(name)} must declare copy or move`);
+      }
+      types.push({
+        name,
+        copy: Boolean(copyLocation),
+        move: Boolean(moveLocation),
+        deinit: true,
+        location: start.location,
+        nameLocation: parsedName.location,
+        copyLocation,
+        moveLocation,
+        deinitLocation,
+      });
+      continue;
+    }
     const start = expectText("function");
     const parsedName = parseQualifiedName();
     const name = parsedName.name;
-    if (names.has(name)) fail(start, `duplicate declaration contract for foreign function ${JSON.stringify(name)}`);
-    names.add(name);
+    if (functionNames.has(name)) fail(start, `duplicate declaration contract for foreign function ${JSON.stringify(name)}`);
+    functionNames.add(name);
     expectText("(");
     const parameters: ContractParameter[] = [];
     if (!at(")")) {
@@ -212,7 +274,7 @@ export function parseForeignDeclarationContracts(source: string, fileName: strin
   }
   expectText("}");
   if (peek().kind !== "eof") fail(peek(), `expected the end of the declaration file, found ${JSON.stringify(peek().text)}`);
-  return { moduleSpecifier, functions };
+  return { moduleSpecifier, functions, types };
 }
 
 export function foreignDeclarationApiNotes(

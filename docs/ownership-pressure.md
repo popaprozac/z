@@ -116,13 +116,27 @@ The copy is intentional: a Z `String` never borrows storage returned by
 views, mutable strings, and explicit conversion APIs remain later pressure
 tests.
 
+## Pressure 5: foreign RAII values inside Z aggregates
+
+Resolved for copyable C++ and generated Swift C++ wrapper values. An adjacent
+`.zd` type contract may constrain Clang-proven `copy`, `move`, and `deinit`
+capabilities without repeating layout. The C++ probe copies a contracted value
+into an owning Z struct, copies that struct, and observes three native drops with
+zero live values. The Swift probe stores and copies `OwnedCounter` inside a Z
+struct while its shared Swift class payload is released exactly once.
+
+This relies on the C++ backend's native member construction, assignment, and
+lexical destruction rather than byte copying or synthesized destructor calls.
+Move-only values remain a separate pressure test because they require explicit
+move construction and moved-from storage handling in Z lowering.
+
 ## Not tested yet
 
 - a borrow that must survive suspension;
 - a receiver-tied view returned from a lookup method;
 - cross-thread ownership, atomic ARC, and sendability;
 - cyclic application graphs under ORC;
-- storing Swift-native or general C++ RAII values inside Z aggregates;
+- storing move-only Swift-native or general C++ RAII values inside Z aggregates;
 - Windows C++ UI ownership and callback shapes.
 
 Each belongs in a vertical application probe before its design is treated as

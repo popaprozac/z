@@ -1,14 +1,20 @@
 import console from "std/console";
 import Swift from "ZSwiftOwned-Swift.hpp";
 
+struct CounterOwner {
+  counter: Swift.OwnedCounter;
+}
+
 function main(): i32 {
   const first = Swift.makeOwnedCounter(40);
   const copied = first;
-  const roundTripped = Swift.roundTrip(copied);
+  const owner = CounterOwner({ counter: copied });
+  const ownerCopy = owner;
+  const roundTripped = Swift.roundTrip(ownerCopy.counter);
   const changed = Swift.offsetOwnedCounter(roundTripped, 2);
 
   const firstValue = Swift.readOwnedCounter(first);
-  const copiedValue = Swift.readOwnedCounter(copied);
+  const copiedValue = Swift.readOwnedCounter(owner.counter);
   const changedValue = Swift.readOwnedCounter(changed);
   console.log(`first=${firstValue}, copied=${copiedValue}, changed=${changedValue}`);
   return changedValue - 42;

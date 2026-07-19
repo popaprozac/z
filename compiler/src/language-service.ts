@@ -18,6 +18,7 @@ import type {
   ForeignObjCMethod,
   ForeignObjCProperty,
   ForeignType,
+  ForeignNamedType,
 } from "./foreign.ts";
 import { lex } from "./lexer.ts";
 import { parseDynamicArrayType, parseFixedArrayType, parseSliceType } from "./array-types.ts";
@@ -91,7 +92,7 @@ const primitiveTypeTokens = [
 ] as const;
 
 const declarationKeywordTokens = [
-  "declare", "module", "export", "function", "in", "inout", "out", "move", "deinit",
+  "declare", "module", "export", "function", "type", "copy", "in", "inout", "out", "move", "deinit",
   "callback", "context", "thread", "caller",
 ] as const;
 
@@ -885,12 +886,48 @@ function languageTokenCompletions(fileName: string): CompletionItem[] {
 
 function foreignDeclarationCompletions(source: string, fileName: string, offset: number): CompletionItem[] {
   const before = source.slice(0, offset);
-  const prefix = before.match(/([A-Za-z_][A-Za-z0-9_]*)$/)?.[1] ?? "";
+  const prefix = before.match(/([A-Za-z_][A-Za-z0-9_.]*)$/)?.[1] ?? "";
   if (!prefix) return [];
   const module = foreignDeclarationNativeModule(source, fileName);
   const contextual: CompletionItem[] = [];
   const ownerName = [...before.matchAll(/\bexport\s+function\s+([A-Za-z_][A-Za-z0-9_.]*)\s*\(/g)].at(-1)?.[1];
   const owner = ownerName ? module?.functions.get(ownerName) : null;
+
+  const typePrefix = /\bexport\s+type\s+([A-Za-z_][A-Za-z0-9_.]*)?$/.exec(before)?.[1];
+  if (module && typePrefix !== undefined) {
+    const declared = new Set([...source.matchAll(/\bexport\s+type\s+([A-Za-z_][A-Za-z0-9_.]*)\s*\{/g)].map((match) => match[1]));
+    for (const declaration of module.namedTypes.values()) {
+      if (declaration.kind !== "value"
+        || declared.has(declaration.qualifiedName)
+        || !declaration.qualifiedName.toLowerCase().startsWith(typePrefix.toLowerCase())) continue;
+      contextual.push({
+        label: declaration.qualifiedName,
+        kind: completionKinds.struct,
+        detail: foreignNamedTypeDetail(declaration),
+        sortText: `0-${declaration.qualifiedName}`,
+      });
+    }
+  }
+
+  const lifecycleContext = /\bexport\s+type\s+([A-Za-z_][A-Za-z0-9_.]*)\s*\{[^}]*?([A-Za-z_]*)$/.exec(before);
+  if (module && lifecycleContext) {
+    const declaration = module.namedTypes.get(lifecycleContext[1]);
+    if (declaration?.kind === "value") {
+      const existing = new Set([...lifecycleContext[0].matchAll(/\b(copy|move|deinit)\s*;/g)].map((match) => match[1]));
+      for (const capability of ["copy", "move", "deinit"] as const) {
+        if (!declaration.lifecycle[capability]
+          || existing.has(capability)
+          || !capability.startsWith(lifecycleContext[2])) continue;
+        contextual.push({
+          label: capability,
+          kind: completionKinds.keyword,
+          detail: `native ${capability} capability for ${declaration.cName}`,
+          insertText: `${capability};`,
+          sortText: `0-${capability}`,
+        });
+      }
+    }
+  }
 
   const functionPrefix = /\bexport\s+function\s+([A-Za-z_][A-Za-z0-9_.]*)?$/.exec(before)?.[1];
   if (module && functionPrefix !== undefined) {
@@ -1042,6 +1079,23 @@ function foreignDeclarationHover(source: string, fileName: string, offset: numbe
   }
   const module = foreignDeclarationNativeModule(source, fileName);
   if (!module) return null;
+
+  for (const contract of contracts.types) {
+    const declaration = module.namedTypes.get(contract.name);
+    if (!declaration || declaration.kind !== "value") continue;
+    if (containsDeclarationName(contract.nameLocation.offset, contract.name, word.start)) {
+      return markdownHover(`type ${foreignNamedTypeDetail(declaration)}`, source, word.start, word.end);
+    }
+    for (const [capability, location] of [
+      ["copy", contract.copyLocation],
+      ["move", contract.moveLocation],
+      ["deinit", contract.deinitLocation],
+    ] as const) {
+      if (location?.offset === word.start) {
+        return markdownHover(`${capability}: native lifecycle capability of ${declaration.cName}`, source, word.start, word.end);
+      }
+    }
+  }
 
   for (const contract of contracts.functions) {
     const declaration = module.functions.get(contract.name);
@@ -2124,7 +2178,7 @@ function describeModuleMember(module: ForeignModule, namespacePath: readonly str
   const fn = resolveModuleFunction(module, namespacePath, name);
   if (fn) return foreignFunctionDetail(fn);
   const named = resolveModuleNamedType(module, namespacePath, name);
-  if (named) return `${named.exportName}: ${named.cName}${foreignAvailabilityDetail(named.metadata)}`;
+  if (named) return `${foreignNamedTypeDetail(named)}${foreignAvailabilityDetail(named.metadata)}`;
   const namespaceName = [...namespacePath, name].join(".");
   if (module.namespaces.has(namespaceName)) return `native namespace ${namespaceName}`;
   if (namespacePath.length > 0) return null;
@@ -2132,6 +2186,14 @@ function describeModuleMember(module: ForeignModule, namespacePath: readonly str
   if (constant) return `${constant.name}: ${constant.typeName}${foreignAvailabilityDetail(constant.metadata)}`;
   const objc = module.interfaces.get(name);
   return objc ? `Objective-C class ${objc.className}${foreignAvailabilityDetail(objc.metadata)}` : null;
+}
+
+function foreignNamedTypeDetail(named: ForeignNamedType): string {
+  if (named.kind !== "value") return `${named.exportName}: ${named.cName}`;
+  const available = (["copy", "move", "deinit"] as const).filter((capability) => named.lifecycle[capability]);
+  const unavailable = (["copy", "move", "deinit"] as const).filter((capability) => !named.lifecycle[capability]);
+  const missing = unavailable.length ? `; unavailable: ${unavailable.join(", ")}` : "";
+  return `${named.exportName}: ${named.cName}  // native value: ${available.join(", ")}${missing}`;
 }
 
 function foreignFunctionDetail(declaration: ForeignFunction): string {

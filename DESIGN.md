@@ -844,10 +844,27 @@ top-level native namespace, as in
 wrapper. The
 original header remains the ABI declaration and the generated artifact builds
 with `clang++`. The first RAII slice also imports opaque copyable values returned
-by and passed to those functions; C++ performs their copy construction and
-deterministic destruction. This is intentionally narrower than general C++
-class support. Constructors, methods, mutable references, inheritance, user
-defined conversions, and templates remain explicit later tiers.
+by and passed to those functions. An adjacent `.zd` contract names an existing
+native type without redeclaring layout and may constrain the lifecycle Clang
+proves:
+
+```z
+declare module "library.hpp" {
+  export type desktop.ManagedValue {
+    copy;
+    deinit;
+  }
+}
+```
+
+Omitting a capability denies it, and a contract cannot grant a capability the
+native interface does not provide. FIIR records `copy`, `move`, and `deinit`
+separately. The implemented lowering supports copyable RAII values, including
+values nested in Z structs; C++ performs their copy construction, assignment,
+and deterministic destruction. Truly move-only foreign values remain
+unsupported until Z can lower native move construction and moved-from storage
+explicitly. Constructors, methods, mutable references, inheritance,
+user-defined conversions, and templates remain later tiers.
 
 On macOS, an installed framework header such as `AppKit/AppKit.h` selects the
 Objective-C ARC backend and adds its framework to the native link plan. Imported
@@ -958,12 +975,13 @@ A Swift manifest may select `interop: "cxx"`. In that mode `swiftc` emits its
 generated C++ compatibility header as `Module-Swift.hpp`, Z selects C++20, and
 ordinary namespace functions can carry Swift-native copyable structs across the
 boundary. The ownership probe uses a Swift struct containing a Swift class
-reference: Z receives it, copies it, round-trips it through Swift, and the
-shared reference is released exactly once after all generated C++ wrappers
-leave scope. This validates a thin native-value ownership path without a
-handwritten shim or a home-grown Swift ABI. The current Swift toolchain deletes
-C++ move construction for these wrappers, so Z does not describe this as Swift
-move support. Generated instance methods and properties, `swift::String`,
+reference: Z receives it, copies it, stores and copies it inside a Z struct,
+round-trips it through Swift, and releases the shared reference exactly once
+after all generated C++ wrappers leave scope. This validates a thin native-value
+ownership path without a handwritten shim or a home-grown Swift ABI. The
+current Swift toolchain deletes C++ move assignment for these wrappers, so FIIR
+records `copy + deinit` and Z does not describe this as Swift move support.
+Generated instance methods and properties, `swift::String`,
 generics, noncopyable values, protocols, errors, async, and package import remain
 open vertical slices.
 

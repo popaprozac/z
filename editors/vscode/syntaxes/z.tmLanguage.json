@@ -29,6 +29,19 @@
           "3": { "name": "string.quoted.header.z" }
         }
       }, {
+        "name": "meta.declaration.type-lifecycle.foreign.z",
+        "match": "\\b(type)\\s+([A-Za-z_][A-Za-z0-9_]*(?:\\.[A-Za-z_][A-Za-z0-9_]*)*)(?=\\s*\\{)",
+        "captures": {
+          "1": { "name": "storage.type.declaration.z" },
+          "2": { "name": "entity.name.type.z" }
+        }
+      }, {
+        "name": "meta.declaration.type-capability.foreign.z",
+        "match": "\\b(copy|move|deinit)\\b(?=\\s*;)",
+        "captures": {
+          "1": { "name": "storage.modifier.capability.z" }
+        }
+      }, {
         "name": "meta.declaration.parameter.inferred.z",
         "match": "(?:(\\b(?:inout|in|out|move)\\b)\\s+)?([A-Za-z_][A-Za-z0-9_]*)(?=\\s*:\\s*_(?:\\s*\\|\\s*null)?\\s*[,\\)])",
         "captures": {
