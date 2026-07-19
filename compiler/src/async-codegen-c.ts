@@ -1011,7 +1011,12 @@ function generateFrame(
     "  bool cancel_children;",
   ];
   if (plan.declaration.returnType.name !== "void") {
-    lines.push(`  ${cFrameType(plan.declaration.returnType.name, plan.types)} result;`);
+    const foreign = directForeignFrameValue(plan.declaration.returnType.name, plan.types);
+    if (foreign) {
+      lines.push(`  alignas(${foreign.cName}) unsigned char result[sizeof(${foreign.cName})];`);
+    } else {
+      lines.push(`  ${cFrameType(plan.declaration.returnType.name, plan.types)} result;`);
+    }
     if (hasFrameCleanup(plan.declaration.returnType.name, plan.types)) {
       lines.push("  bool live_result;");
     }
@@ -1063,7 +1068,7 @@ function generateDestroy(
   ) {
     lines.push(
       "  if (frame->live_result) {",
-      `    ${frameCleanup("frame->result", plan.declaration.returnType.name, plan.types)}`,
+      `    ${frameCleanup(frameResultValue("frame", plan.declaration.returnType.name, plan.types), plan.declaration.returnType.name, plan.types)}`,
       "    frame->live_result = false;",
       "  }",
     );
@@ -1368,14 +1373,17 @@ function generatePoll(
           state + 1,
         )));
       } else {
-        const completion = statement.expression
-          ? [
-              `frame->result = ${emitFrameExpression(statement.expression, plan, fileName)};`,
-              ...(hasFrameCleanup(plan.declaration.returnType.name, plan.types)
-                ? ["frame->live_result = true;"]
-                : []),
-            ]
-          : [];
+        const completion: string[] = [];
+        if (statement.expression) {
+          const value = emitFrameExpression(statement.expression, plan, fileName);
+          const foreign = directForeignFrameValue(plan.declaration.returnType.name, plan.types);
+          completion.push(foreign
+            ? `new (frame->result) ${foreign.cName}(${value});`
+            : `frame->result = ${value};`);
+          if (hasFrameCleanup(plan.declaration.returnType.name, plan.types)) {
+            completion.push("frame->live_result = true;");
+          }
+        }
         cases.push(caseBlock(state, [
           ...completion,
           ...(plan.declaration.errorType ? ["frame->failed = false;"] : []),
@@ -1532,6 +1540,10 @@ function awaitCompletion(
   nextState: number,
 ): string[] {
   const child = `frame->child_${site.index}`;
+  const resultType = site.target.declaration.returnType.name;
+  const childResult = resultType === "void"
+    ? ""
+    : frameResultValue(child, resultType, parent.types);
   const lines = [
     `if (!z_async_wait(&frame->task, &${child}->task)) return;`,
   ];
@@ -1562,7 +1574,7 @@ function awaitCompletion(
     );
     const successPayload = site.target.declaration.returnType.name === "void"
       ? ""
-      : `, .data.success = ${child}->result`;
+      : `, .data.success = ${childResult}`;
     lines.push(`  ${destination} = (${cResult}){ .tag = ${resultTag(result, "success")}${successPayload} };`);
     if (hasFrameCleanup(site.target.declaration.returnType.name, parent.types)) {
       lines.push(`  ${child}->live_result = false;`);
@@ -1571,7 +1583,10 @@ function awaitCompletion(
   }
 
   if (site.mode !== "attempt" && destination && site.target.declaration.returnType.name !== "void") {
-    lines.push(`${destination} = ${child}->result;`);
+    const foreign = destinationType ? directForeignFrameValue(destinationType, parent.types) : null;
+    lines.push(foreign
+      ? `new (${destination}) ${foreign.cName}(std::move(${childResult}));`
+      : `${destination} = ${childResult};`);
     if (hasFrameCleanup(site.target.declaration.returnType.name, parent.types)) {
       lines.push(`${child}->live_result = false;`);
     }
@@ -2200,6 +2215,12 @@ function isDirectForeignFrameValue(type: string, types: AsyncTypeContext): boole
 
 function frameStoredValue(name: string, type: string, types: AsyncTypeContext): string {
   const field = `frame->${frameField(name)}`;
+  const foreign = directForeignFrameValue(type, types);
+  return foreign ? `(*std::launder(reinterpret_cast<${foreign.cName} *>(${field})))` : field;
+}
+
+function frameResultValue(frame: string, type: string, types: AsyncTypeContext): string {
+  const field = `${frame}->result`;
   const foreign = directForeignFrameValue(type, types);
   return foreign ? `(*std::launder(reinterpret_cast<${foreign.cName} *>(${field})))` : field;
 }

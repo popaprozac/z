@@ -173,8 +173,8 @@ interpolated messages.
 - cyclic application graphs under ORC;
 - storing move-only native values in compiler `Option`/`Result` payloads, ARC
   fields, owned closure environments, or nested async aggregates/parameters/
-  returns; direct native async locals now survive suspension, transfer,
-  failure, and cancellation;
+  fallible results; direct native async locals and infallible results now
+  survive suspension, return/await relay, transfer, failure, and cancellation;
 - Windows C++ UI ownership and callback shapes.
 
 Each belongs in a vertical application probe before its design is treated as

@@ -127,12 +127,15 @@ The first async ownership tier permits owned values, ARC class references,
 owned closures, and direct move-only native locals in task frames. Native
 locals use aligned raw storage so a non-default-constructible C++ value begins
 its lifetime through placement construction and ends exactly once through its
-live flag. This path is exercised across normal completion, consuming transfer,
-failure, and cancellation. Async parameters/returns and aggregates containing
-move-only native storage remain deferred. Z also rejects `in`, `inout`, `out`,
-`Slice<T>`, borrowed struct receivers, and any other live borrow at an `await`.
-Scoped async borrowing can be added later from real zero-copy APIs without
-exposing general lifetime syntax.
+live flag. Infallible native task results use matching raw result storage and
+move through ordinary `return`, `return await`, and awaited local bindings.
+This path is exercised across normal completion, consuming transfer, failure,
+cancellation, and destruction of a completed-but-unclaimed child result. Async
+parameters, fallible `Result` payloads, embedded owned awaits, and aggregates
+containing move-only native storage remain deferred. Z also rejects `in`,
+`inout`, `out`, `Slice<T>`, borrowed struct receivers, and any other live borrow
+at an `await`. Scoped async borrowing can be added later from real zero-copy
+APIs without exposing general lifetime syntax.
 
 Classes and structs may declare async methods. A class receiver is retained by
 the task frame. A struct async instance method must initially declare `move

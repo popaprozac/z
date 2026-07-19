@@ -97,11 +97,13 @@ The first move-only tier covers direct synchronous locals, owned parameters and
 returns, whole Z value structs, dynamic arrays, and named enum payloads. A
 direct move-only native local may also survive an async suspension: its task
 frame uses aligned raw storage, placement construction, a semantic live flag,
-and deterministic `destroy_at` cleanup. Async parameters, returns, hidden
+and deterministic `destroy_at` cleanup. Infallible async functions may return
+that value; task results use the same storage and move it through `return`,
+`return await`, and a caller's awaited binding without default construction or
+an extra wrapper allocation. Unclaimed completed results are destroyed during
+cancellation. Async parameters, fallible `Result` payloads, embedded hidden
 results, and aggregates containing native values remain separate construction
-paths. ARC class fields and owned closure environments likewise remain deferred
-until those generated storage paths can construct and relocate non-trivial C++
-objects correctly.
+paths. ARC class fields and owned closure environments likewise remain deferred.
 
 C++ named-value references map onto the existing Z capability model:
 

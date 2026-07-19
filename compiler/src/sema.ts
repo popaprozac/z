@@ -855,11 +855,20 @@ function validateFunctionSignature(
   fileName: string,
 ): void {
   validateType(declaration.returnType, structs, enums, foreignNamedTypes, fileName, true);
-  if (declaration.async && hasMoveOnlyForeignType(declaration.returnType.name, structs, enums, foreignNamedTypes)) {
+  const directNativeReturn = foreignNamedTypes.get(declaration.returnType.name);
+  if (
+    declaration.async
+    && hasMoveOnlyForeignType(declaration.returnType.name, structs, enums, foreignNamedTypes)
+    && (directNativeReturn?.kind !== "value" || Boolean(declaration.errorType))
+  ) {
     throw new DiagnosticError(fileName, declaration.returnType.location, "async functions cannot return move-only native values in the first C++ ownership tier", {
       code: "Z0704",
-      notes: ["async result storage does not yet construct non-trivial C++ values"],
-      helps: ["move the native value through synchronous functions until native async-frame storage is implemented"],
+      notes: [directNativeReturn?.kind === "value"
+        ? "fallible move-only native results still require compiler Result payload storage"
+        : "direct move-only native returns work; containing aggregates need recursive async-result construction"],
+      helps: [directNativeReturn?.kind === "value"
+        ? "return the native value from an infallible async function for now"
+        : "return the native value directly until aggregate native async-result storage is implemented"],
     });
   }
   if (containsViewType(declaration.returnType.name) && !parseReceiverViewReturnType(declaration.returnType.name)) {

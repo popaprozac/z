@@ -6894,8 +6894,13 @@ test("constructs and destroys move-only C++ values across async suspension", () 
   const generated = compileToNative(source, example).source;
   assert.match(generated, /#include <memory>/);
   assert.match(generated, /#include <new>/);
+  assert.match(generated, /alignas\(zcpp::UniqueValue\) unsigned char result\[sizeof\(zcpp::UniqueValue\)\]/);
   assert.match(generated, /alignas\(zcpp::UniqueValue\) unsigned char value_resource\[sizeof\(zcpp::UniqueValue\)\]/);
   assert.match(generated, /new \(frame->value_resource\) zcpp::UniqueValue\(zcpp::UniqueValue\(42\)\)/);
+  assert.match(generated, /new \(frame->result\) zcpp::UniqueValue\(\(frame->live_resource = false, std::move/);
+  assert.match(generated, /new \(frame->result\) zcpp::UniqueValue\(std::move\(\(\*std::launder\(reinterpret_cast<zcpp::UniqueValue \*>\(frame->child_\d+->result\)/);
+  assert.match(generated, /new \(frame->value_resource\) zcpp::UniqueValue\(std::move\(\(\*std::launder\(reinterpret_cast<zcpp::UniqueValue \*>\(frame->child_\d+->result\)/);
+  assert.match(generated, /frame->child_\d+->live_result = false;/);
   assert.match(generated, /std::launder\(reinterpret_cast<zcpp::UniqueValue \*>\(frame->value_resource\)\)/);
   assert.match(generated, /std::destroy_at\(&\(\(\*std::launder\(reinterpret_cast<zcpp::UniqueValue \*>\(frame->value_resource\)\)\)\)\)/);
 
@@ -6925,9 +6930,15 @@ test("constructs and destroys move-only C++ values across async suspension", () 
       throw resource.value();
     }
 
+    async function makeOwned(): native.zcpp.UniqueValue {
+      return native.zcpp.UniqueValue(11);
+    }
+
     async function linger(): void {
       const resource = native.zcpp.UniqueValue(9);
+      const completed = spawn makeOwned();
       await delay(1000);
+      const returned = await completed;
       return;
     }
 
@@ -6965,6 +6976,22 @@ test("constructs and destroys move-only C++ values across async suspension", () 
   assert.match(consumingGenerated, /live_resource = false, std::move\(\(\*std::launder\(reinterpret_cast<zcpp::UniqueValue/);
   const consumed = spawnSync(process.execPath, [cli, "run", consuming], { encoding: "utf8" });
   assert.equal(consumed.status, 0, consumed.stderr);
+
+  const parameterBoundary = `
+    import native from ${JSON.stringify(header)};
+    async function inspect(resource: native.zcpp.UniqueValue): i32 { return resource.value(); }
+  `;
+  const parameterDiagnostic = diagnostics(parameterBoundary, resolve(directory, "parameter.z"))[0];
+  assert.equal(parameterDiagnostic.code, "Z0704");
+  assert.match(parameterDiagnostic.message, /async parameter "resource" cannot store a move-only native value/);
+
+  const fallibleBoundary = `
+    import native from ${JSON.stringify(header)};
+    async function open(): native.zcpp.UniqueValue throws i32 { return native.zcpp.UniqueValue(42); }
+  `;
+  const fallibleDiagnostic = diagnostics(fallibleBoundary, resolve(directory, "fallible.z"))[0];
+  assert.equal(fallibleDiagnostic.code, "Z0240");
+  assert.match(fallibleDiagnostic.message, /enum payloads cannot store move-only native values/);
 
   const aggregateBoundary = `
     import { delay } from "std/time";
