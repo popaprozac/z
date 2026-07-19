@@ -1555,6 +1555,100 @@ test("moves non-copyable C++ values through owned Z bindings and value structs",
   );
 });
 
+test("maps C++ references and receiver qualifiers onto existing Z capabilities", () => {
+  const example = resolve(projectRoot, "examples/cpp-references.z");
+  const source = readFileSync(example, "utf8");
+  const analysis = analyzeSource(source, example);
+  const module = analysis.foreignModules.get("native")!;
+  const inspectParameter = module.functions.get("zcpp.inspect_unique")?.overloads[0]?.parameters[0]?.type;
+  const adjustParameter = module.functions.get("zcpp.adjust_unique")?.overloads[0]?.parameters[0]?.type;
+  const consumeParameter = module.functions.get("zcpp.consume_unique")?.overloads[0]?.parameters[0]?.type;
+  assert.equal(inspectParameter?.kind === "reference" ? inspectParameter.access : null, "in");
+  assert.equal(adjustParameter?.kind === "reference" ? adjustParameter.access : null, "inout");
+  assert.equal(consumeParameter?.kind === "reference" ? consumeParameter.access : null, "move");
+  const nativeValue = module.namedTypes.get("zcpp.UniqueValue");
+  assert.equal(nativeValue?.kind === "value"
+    ? nativeValue.methods.find((method) => method.name === "value")?.overloads[0]?.receiverAccess
+    : null, "in");
+  assert.equal(nativeValue?.kind === "value"
+    ? nativeValue.methods.find((method) => method.name === "add")?.overloads[0]?.receiverAccess
+    : null, "inout");
+  assert.equal(nativeValue?.kind === "value"
+    ? nativeValue.methods.find((method) => method.name === "finish")?.overloads[0]?.receiverAccess
+    : null, "move");
+  const generated = compileToNative(source, example).source;
+  assert.match(generated, /inspect_unique\(functionValue\)/);
+  assert.match(generated, /adjust_unique\(functionValue, 2\)/);
+  assert.match(generated, /consume_unique\(std::move\(functionValue\)\)/);
+  assert.match(generated, /methodValue\.value\(\)/);
+  assert.match(generated, /methodValue\.add\(2\)/);
+  assert.match(generated, /std::move\(methodValue\)\.finish\(0\)/);
+
+  const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, "answer=42, live=0\n");
+
+  const inspectHover = hover(source, example, source.indexOf("inspect_unique") + 2)?.contents.value ?? "";
+  assert.match(inspectHover, /inspect_unique\(in value: .*UniqueValue\): i32/);
+  const adjustHover = hover(source, example, source.indexOf("adjust_unique") + 2)?.contents.value ?? "";
+  assert.match(adjustHover, /adjust_unique\(inout value: .*UniqueValue, amount: i32\): void/);
+  const consumeHover = hover(source, example, source.indexOf("consume_unique") + 2)?.contents.value ?? "";
+  assert.match(consumeHover, /consume_unique\(value: .*UniqueValue\): i32.*UniqueValue &&/s);
+  const finishHover = hover(source, example, source.lastIndexOf("finish(") + 2)?.contents.value ?? "";
+  assert.match(finishHover, /finish\(move this, offset: i32\): i32.*C\+\+ consuming receiver/s);
+  const completionSource = `
+    import native from "../tests/fixtures/move-only.hpp";
+    function main(): i32 {
+      let value = native.zcpp.UniqueValue(1);
+      value.;
+      return 0;
+    }
+  `;
+  const completionOffset = completionSource.indexOf("value.;") + "value.".length;
+  const finishCompletion = completions(completionSource, example, completionOffset)
+    .find((item) => item.label === "finish");
+  assert.match(finishCompletion?.detail ?? "", /move this.*C\+\+ consuming receiver/s);
+
+  const missingInout = source.replace("adjust_unique(inout functionValue", "adjust_unique(functionValue");
+  assert.match(
+    diagnostics(missingInout, example)[0]?.message ?? "",
+    /C\+\+ mutable reference parameter requires inout <mutable binding>/,
+  );
+
+  const immutableReceiver = source
+    .replace("let methodValue", "const methodValue")
+    .replace("methodValue.finish(0)", "native.zcpp.consume_unique(methodValue)");
+  assert.match(
+    diagnostics(immutableReceiver, example)[0]?.message ?? "",
+    /mutable native method "add" requires addressable let storage/,
+  );
+
+  const useAfterFunctionMove = source.replace(
+    "const consumed = native.zcpp.consume_unique(functionValue);",
+    "const consumed = native.zcpp.consume_unique(functionValue);\n  const invalid = functionValue.value();",
+  );
+  assert.equal(diagnostics(useAfterFunctionMove, example)[0]?.code, "Z0201");
+
+  const useAfterMethodMove = source.replace(
+    "const finished = methodValue.finish(0);",
+    "const finished = methodValue.finish(0);\n  const invalid = methodValue.value();",
+  );
+  assert.equal(diagnostics(useAfterMethodMove, example)[0]?.code, "Z0201");
+
+  const ambiguousReceiver = source.replace("methodValue.finish(0)", "methodValue.qualified()");
+  const ambiguousDiagnostic = diagnostics(ambiguousReceiver, example)[0];
+  assert.equal(ambiguousDiagnostic?.code, "Z0803");
+  assert.match(ambiguousDiagnostic?.message ?? "", /receiver-qualified overloads that require an explicit receiver capability choice/);
+
+  const ambiguousArgument = source.replace(
+    "native.zcpp.consume_unique(functionValue)",
+    "native.zcpp.qualified_unique(functionValue)",
+  );
+  const argumentDiagnostic = diagnostics(ambiguousArgument, example)[0];
+  assert.equal(argumentDiagnostic?.code, "Z0803");
+  assert.match(argumentDiagnostic?.message ?? "", /requires an explicit argument capability choice/);
+});
+
 test("imports C++ constructors and static methods as direct type-level calls", () => {
   const example = resolve(projectRoot, "examples/cpp-callables.z");
   const source = readFileSync(example, "utf8");

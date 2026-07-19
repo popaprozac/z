@@ -26,6 +26,7 @@ export type ForeignDeclarationMetadata = {
 export type ForeignType =
   | { readonly kind: "z"; readonly name: ForeignScalarTypeName | "cstring" | "void"; readonly cName: string }
   | { readonly kind: "named"; readonly type: ForeignNamedType; readonly cName: string }
+  | ForeignReferenceType
   | ForeignCallbackType
   | ForeignCallbackContextType
   | ForeignCallbackReleaseType
@@ -88,7 +89,7 @@ export type ForeignValueLifecycle = {
 };
 
 export type ForeignCxxMethodOverload = ForeignFunctionOverload & {
-  readonly receiverAccess: "in" | "inout";
+  readonly receiverAccess: "in" | "inout" | "move";
 };
 
 export type ForeignCxxMethod = {
@@ -177,6 +178,13 @@ export type ForeignRecordPointerType = {
   readonly record: Extract<ForeignNamedType, { kind: "record" }>;
   readonly access: "in" | "out" | "inout";
   readonly nullable: boolean;
+};
+
+export type ForeignReferenceType = {
+  readonly kind: "reference";
+  readonly cName: string;
+  readonly type: ForeignNamedType;
+  readonly access: "in" | "inout" | "move";
 };
 
 export type ForeignParameter = {

@@ -99,6 +99,24 @@ arrays, enum payloads, ARC class fields, owned closure environments, and async
 frames reject move-only native storage until those generated storage paths can
 construct and relocate non-trivial C++ objects correctly.
 
+C++ named-value references map onto the existing Z capability model:
+
+| C++ boundary | Z call shape | Effect |
+| --- | --- | --- |
+| `const T&` | `native.read(value)` | Call-scoped immutable borrow |
+| `T&` | `native.update(inout value)` | Call-scoped mutable borrow; requires initialized `let` storage |
+| move-only `T&&` | `native.consume(value)` | Ownership transfer; later source use is rejected |
+| method `const &` | `value.read()` | Borrowed receiver |
+| method `&` | `value.update()` | Mutable receiver; requires `let` |
+| move-only method `&&` | `value.finish()` | Consuming receiver; later source use is rejected |
+
+These calls lower directly to lvalue references or `std::move`; there is no
+reference wrapper or dispatch layer. A C++ reference does not prove that native
+code will avoid storing it, so the callee remains part of the trusted FFI
+boundary. Returned references and capability-changing argument or receiver
+overload sets are rejected until Z has explicit lifetime and overload-selection
+designs.
+
 Clang-proven public constructors plus static and instance methods on those values
 are callable directly. A native value constructor uses `Type(args)` rather than
 `new Type(args)`: `new` remains Z's signal for ARC-managed class identity, while
@@ -108,8 +126,8 @@ non-const methods require a mutable, addressable (`inout`) Z owner. All overload
 retain their native signatures, source definitions, and availability metadata,
 and lower as direct C++ calls without generated wrappers. Copy/move constructors
 remain ownership operations rather than an overloaded source-level constructor
-surface. Ref-qualified methods, conversions, and templates are not yet part of
-this slice.
+surface. Reference returns, copyable rvalue references, conversions, and
+templates are not yet part of this slice.
 
 ## Cost model
 

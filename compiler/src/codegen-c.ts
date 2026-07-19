@@ -3697,6 +3697,11 @@ function generateCallArgument(expression: Expression, context: GenerationContext
     if (!source && !dynamic) throw new Error("slice conversion requires fixed or growable array storage");
     return `(${target}){ .data = (${value}).data, .length = ${length} }`;
   }
+  if (context.semanticInfo.foreignCxxArgumentAccesses.has(expression.location.offset)) {
+    return expression.kind === "argumentReference"
+      ? generateStoredValue(expression.name, context)
+      : generateExpression(expression, context);
+  }
   const value = generateExpression(expression, context);
   if (context.semanticInfo.objcBlockArguments.has(expression.location.offset)) return value;
   const nativeIn = context.semanticInfo.nativeArgumentAccesses.get(expression.location.offset) === "in";

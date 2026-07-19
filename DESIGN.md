@@ -877,8 +877,14 @@ native C++ form. The first move-only tier covers synchronous locals, owned
 parameters and returns, and whole Z value structs. Dynamic arrays, enum payloads,
 ARC fields, owned closure environments, and async frames require dedicated
 non-trivial C++ storage construction before they can admit these values.
-Ref-qualified methods, arbitrary mutable-reference parameters,
-inheritance, user-defined conversions, and templates remain later tiers.
+Named-value `const T&`, `T&`, and move-only `T&&` parameters reuse Z's `in`,
+`inout`, and owned-value capabilities. Receiver-qualified `const &`, `&`, and
+move-only `&&` methods likewise map to borrowed, mutable, and consuming
+receivers. C++ references are treated as call-scoped borrows across a trusted
+native boundary; they do not themselves prove non-escape behavior. Reference
+returns, copyable rvalue references, argument or receiver overload sets whose
+selection changes capability, inheritance, user-defined conversions, and
+templates remain later tiers.
 
 On macOS, an installed framework header such as `AppKit/AppKit.h` selects the
 Objective-C ARC backend and adds its framework to the native link plan. Imported

@@ -46,6 +46,7 @@ bun run z run examples/result.z
 | C++ | [`cpp-interop.z`](../examples/cpp-interop.z), [`cpp-selective-interop.z`](../examples/cpp-selective-interop.z) | Qualified and selective namespace imports, aliases, overloads, and records |
 | C++ lifecycle value | [`foreign-values.z`](../examples/foreign-values.z), [`cpp-callables.z`](../examples/cpp-callables.z), [`foreign-values.hpp.zd`](../tests/fixtures/foreign-values.hpp.zd) | `.zd` copy/deinit contract, native aggregate copies, constructors, static/const/mutable methods, overloads, and deterministic RAII destruction |
 | C++ move-only value | [`cpp-move-only.z`](../examples/cpp-move-only.z), [`move-only.hpp.zd`](../tests/fixtures/move-only.hpp.zd) | `.zd` move/deinit contract, `in` borrow, owned calls/returns, whole-struct moves, use-after-move diagnostics, and deterministic native destruction |
+| C++ references | [`cpp-references.z`](../examples/cpp-references.z) | `const T&`, `T&`, move-only `T&&`, and receiver-qualified methods mapped onto existing Z capabilities with no wrapper overhead |
 | AppKit window | [`nswindow.z`](../examples/nswindow.z) | Direct Objective-C ARC calls |
 | Objective-C nullability | [`objc-nullability.z`](../examples/objc-nullability.z) | `T | null`, narrowing, and `Option.fromNullable` |
 | Persistent AppKit events | [`appkit-events.z`](../examples/appkit-events.z) | Native blocks, weak capture, observer tokens |

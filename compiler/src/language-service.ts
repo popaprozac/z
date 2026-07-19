@@ -2271,7 +2271,7 @@ function foreignNamedTypeDetail(named: ForeignNamedType): string {
   const missing = unavailable.length ? `; unavailable: ${unavailable.join(", ")}` : "";
   const constructors = named.constructors.map((overload) => {
     const parameters = overload.parameters.map((parameter, index) => (
-      `${parameter.name ?? `argument${index + 1}`}: ${foreignTypeName(parameter.type)}`
+      foreignParameterDetail(parameter, index)
     ));
     return `${named.exportName}(${parameters.join(", ")}): ${named.typeName}  // C++ constructor`;
   });
@@ -2284,7 +2284,7 @@ function foreignFunctionDetail(declaration: ForeignFunction): string {
     const parameters = overload.parameters
       .filter((parameter) => parameter.type.kind !== "callbackContext" && parameter.type.kind !== "callbackRelease")
       .map((parameter, index) => (
-        `${parameter.name ?? `argument${index + 1}`}: ${foreignTypeName(parameter.type)}`
+        foreignParameterDetail(parameter, index)
       ));
     if (overload.variadic) parameters.push("...arguments");
     return `${declaration.name}(${parameters.join(", ")}): ${foreignTypeName(overload.returnType)}  // C: ${overload.cSignature}${foreignAvailabilityDetail(overload.metadata)}`;
@@ -2294,10 +2294,13 @@ function foreignFunctionDetail(declaration: ForeignFunction): string {
 function foreignCxxMethodDetail(method: ForeignCxxMethod): string {
   return method.overloads.map((overload) => {
     const parameters = overload.parameters.map((parameter, index) => (
-      `${parameter.name ?? `argument${index + 1}`}: ${foreignTypeName(parameter.type)}`
+      foreignParameterDetail(parameter, index)
     ));
+    if (overload.receiverAccess !== "in") parameters.unshift(`${overload.receiverAccess} this`);
     if (overload.variadic) parameters.push("...arguments");
-    const receiver = overload.receiverAccess === "in" ? "C++ const" : "C++ mutable";
+    const receiver = overload.receiverAccess === "in"
+      ? "C++ const borrow"
+      : overload.receiverAccess === "inout" ? "C++ mutable borrow" : "C++ consuming receiver";
     return `${method.name}(${parameters.join(", ")}): ${foreignTypeName(overload.returnType)}  // ${receiver}; ${overload.cSignature}${foreignAvailabilityDetail(overload.metadata)}`;
   }).join("\n");
 }
@@ -2305,7 +2308,7 @@ function foreignCxxMethodDetail(method: ForeignCxxMethod): string {
 function foreignCxxStaticMethodDetail(method: ForeignCxxStaticMethod): string {
   return method.overloads.map((overload) => {
     const parameters = overload.parameters.map((parameter, index) => (
-      `${parameter.name ?? `argument${index + 1}`}: ${foreignTypeName(parameter.type)}`
+      foreignParameterDetail(parameter, index)
     ));
     if (overload.variadic) parameters.push("...arguments");
     return `${method.name}(${parameters.join(", ")}): ${foreignTypeName(overload.returnType)}  // C++ static; ${overload.cSignature}${foreignAvailabilityDetail(overload.metadata)}`;
@@ -2507,6 +2510,7 @@ function formatTypeParameters(
 function foreignTypeName(type: ForeignType): string {
   if (type.kind === "z") return type.name;
   if (type.kind === "named") return type.type.typeName;
+  if (type.kind === "reference") return type.type.kind === "scalar" ? type.type.underlying : type.type.typeName;
   if (type.kind === "object") return `${type.className ?? "id"}${type.nullable ? " | null" : ""}`;
   if (type.kind === "pointer") return `${type.cName}${type.nullable ? " | null" : ""}`;
   if (type.kind === "callback" || type.kind === "block") {
@@ -2514,6 +2518,13 @@ function foreignTypeName(type: ForeignType): string {
     return `(${parameters.join(", ")}) => ${foreignTypeName(type.returnType)}`;
   }
   return type.cName;
+}
+
+function foreignParameterDetail(parameter: { readonly name: string | null; readonly type: ForeignType }, index: number): string {
+  const name = parameter.name ?? `argument${index + 1}`;
+  if (parameter.type.kind !== "reference") return `${name}: ${foreignTypeName(parameter.type)}`;
+  const capability = parameter.type.access === "move" ? "" : `${parameter.type.access} `;
+  return `${capability}${name}: ${foreignTypeName(parameter.type)}`;
 }
 
 function displayType(type: string, typeDisplayNames: ReadonlyMap<string, string> = new Map()): string {

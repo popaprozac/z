@@ -139,11 +139,12 @@ export type SemanticInfo = {
   readonly numericLiteralTypes: ReadonlyMap<number, string>;
   readonly integerOperations: ReadonlyMap<number, IntegerOperation>;
   readonly foreignArgumentAccesses: ReadonlyMap<number, "in" | "out" | "inout">;
+  readonly foreignCxxArgumentAccesses: ReadonlyMap<number, "in" | "inout" | "move">;
   readonly foreignCallbackTargets: ReadonlyMap<number, string>;
   readonly foreignCallArgumentPlans: ReadonlyMap<number, readonly ForeignCallArgumentPlan[]>;
   readonly foreignFunctionNames: ReadonlyMap<number, string>;
   readonly foreignFunctionDefinitions: ReadonlyMap<number, ForeignDeclarationMetadata>;
-  readonly foreignCxxMethodCalls: ReadonlyMap<number, { readonly name: string }>;
+  readonly foreignCxxMethodCalls: ReadonlyMap<number, { readonly name: string; readonly receiverAccess: "in" | "inout" | "move" }>;
   readonly foreignConstantNames: ReadonlyMap<number, string>;
   readonly nativeArgumentAccesses: ReadonlyMap<number, "in" | "inout" | "out">;
   readonly foreignObjectTypes: ReadonlyMap<string, ForeignObjectType>;
@@ -190,11 +191,12 @@ type AnalysisState = {
   readonly numericLiteralTypes: Map<number, string>;
   readonly integerOperations: Map<number, IntegerOperation>;
   readonly foreignArgumentAccesses: Map<number, "in" | "out" | "inout">;
+  readonly foreignCxxArgumentAccesses: Map<number, "in" | "inout" | "move">;
   readonly foreignCallbackTargets: Map<number, string>;
   readonly foreignCallArgumentPlans: Map<number, readonly ForeignCallArgumentPlan[]>;
   readonly foreignFunctionNames: Map<number, string>;
   readonly foreignFunctionDefinitions: Map<number, ForeignDeclarationMetadata>;
-  readonly foreignCxxMethodCalls: Map<number, { readonly name: string }>;
+  readonly foreignCxxMethodCalls: Map<number, { readonly name: string; readonly receiverAccess: "in" | "inout" | "move" }>;
   readonly foreignConstantNames: Map<number, string>;
   readonly nativeArgumentAccesses: Map<number, "in" | "inout" | "out">;
   readonly foreignObjectTypes: ReadonlyMap<string, ForeignObjectType>;
@@ -334,6 +336,7 @@ export function analyze(
     numericLiteralTypes: new Map(),
     integerOperations: new Map(),
     foreignArgumentAccesses: new Map(),
+    foreignCxxArgumentAccesses: new Map(),
     foreignCallbackTargets: new Map(),
     foreignCallArgumentPlans: new Map(),
     foreignFunctionNames: new Map(),
@@ -3596,6 +3599,14 @@ function inferExpressionInner(
           if (!isNamedStorageExpression(expression.callee.object)) {
             throw new DiagnosticError(fileName, expression.callee.object.location, "a native value temporary must be bound before borrowing it for a method call");
           }
+          const receiverCapabilities = new Set(method.overloads.map((overload) => overload.receiverAccess));
+          if (receiverCapabilities.size > 1) {
+            throw new DiagnosticError(fileName, expression.callee.location, `native method ${JSON.stringify(method.name)} has receiver-qualified overloads that require an explicit receiver capability choice`, {
+              code: "Z0803",
+              notes: method.overloads.map((overload) => `${overload.cName}: ${overload.cSignature}`),
+              helps: ["use a uniquely named native method until Z has syntax for selecting borrowed, mutable, or consuming receiver overloads"],
+            });
+          }
           let selected: ForeignCxxMethodOverload | null = null;
           const result = checkForeignFunctionCall(
             { name: method.name, namespacePath: foreignValue.namespacePath, qualifiedName: `${foreignValue.qualifiedName}.${method.name}`, overloads: method.overloads },
@@ -3625,7 +3636,19 @@ function inferExpressionInner(
             }
             rejectOwnerMutationWhileViewed(root.name, expression.callee.object.location, fileName, state);
           }
-          state.foreignCxxMethodCalls.set(expression.location.offset, { name: selected!.cName });
+          if (selected!.receiverAccess === "move") {
+            if (!(foreignValue.lifecycle.move && !foreignValue.lifecycle.copy)) {
+              throw new DiagnosticError(fileName, expression.callee.object.location, `consuming native method ${JSON.stringify(method.name)} currently requires a move-only native receiver`, {
+                code: "Z0801",
+                notes: ["copyable receiver rvalue calls need an explicit copy-versus-consume design before they can be exposed safely"],
+              });
+            }
+            consumeOwnedValue(expression.callee.object, receiverType, locals, structs, enums, fileName, state, true);
+          }
+          state.foreignCxxMethodCalls.set(expression.location.offset, {
+            name: selected!.cName,
+            receiverAccess: selected!.receiverAccess,
+          });
           return result;
         }
         const declaration = structs.get(receiverValueType);
@@ -4190,8 +4213,9 @@ function consumeOwnedValue(
   enums: Map<string, EnumDeclaration>,
   fileName: string,
   state: AnalysisState,
+  force = false,
 ): void {
-  if (!hasOwnershipType(type, structs, enums, state)) return;
+  if (!force && !hasOwnershipType(type, structs, enums, state)) return;
   if (state.objcStringsToZ.has(expression.location.offset)) return;
   const actual = String(underlyingType(type));
   if (parseWeakType(actual)) {
@@ -5129,6 +5153,7 @@ function findObjCProperty(
 function foreignValueType(type: ForeignType): ValueType {
   if (type.kind === "z") return type.name;
   if (type.kind === "named") return type.type.typeName;
+  if (type.kind === "reference") return type.type.kind === "scalar" ? type.type.underlying : type.type.typeName;
   if (type.kind === "pointer" || type.kind === "object") return type.typeName;
   if (type.kind === "callback" || type.kind === "block") {
     const parameters = type.parameters.map((parameter, index) => ({
@@ -5333,14 +5358,22 @@ function checkForeignFunctionCall(
   const bestScore = Math.max(...matches.map((match) => match.score));
   const best = matches.filter((match) => match.score === bestScore);
   if (best.length !== 1) {
+    const capabilityShapes = new Set(best.map(({ overload }) => overload.parameters.map((parameter) => (
+      parameter.type.kind === "reference" ? parameter.type.access : "value"
+    )).join(",")));
+    const capabilityChoice = capabilityShapes.size > 1;
     throw new DiagnosticError(
       fileName,
       location,
-      `call to ${subject} ${JSON.stringify(target.qualifiedName)} is ambiguous`,
+      capabilityChoice
+        ? `call to ${subject} ${JSON.stringify(target.qualifiedName)} requires an explicit argument capability choice`
+        : `call to ${subject} ${JSON.stringify(target.qualifiedName)} is ambiguous`,
       {
         code: "Z0803",
         notes: best.map(({ overload }) => `${overload.cName}: ${overload.cSignature}`),
-        helps: ["bind an argument to an explicit Z type or use the fully qualified native namespace path"],
+        helps: [capabilityChoice
+          ? "use a uniquely named native function until Z has syntax for selecting borrowed, mutable, or consuming reference overloads"
+          : "bind an argument to an explicit Z type or use the fully qualified native namespace path"],
       },
     );
   }
@@ -5501,6 +5534,37 @@ function checkForeignCall(
     const argument = args[index];
     const parameter = visibleParameters[index]?.parameter;
     if (argument.kind === "argumentReference") {
+      if (parameter?.type.kind === "reference") {
+        if (parameter.type.access !== "inout" || argument.access !== "inout") {
+          throw new DiagnosticError(
+            fileName,
+            argument.location,
+            `C++ reference parameter expects ${parameter.type.access === "move" ? "an owned value" : parameter.type.access}, found ${argument.access} ${argument.name}`,
+          );
+        }
+        const stored = locals.get(argument.name);
+        if (!stored) throw new DiagnosticError(fileName, argument.location, `unknown name ${JSON.stringify(argument.name)}`);
+        if (initializationState(stored) !== "initialized") {
+          throw new DiagnosticError(fileName, argument.location, `inout argument ${JSON.stringify(argument.name)} must be initialized before the call`);
+        }
+        if (ownershipState(stored) !== "available") {
+          throw movedValueError(fileName, { name: argument.name, location: argument.location }, state, ownershipState(stored) === "maybeMoved");
+        }
+        if (!isMutableBinding(stored)) {
+          throw new DiagnosticError(fileName, argument.location, `inout argument ${JSON.stringify(argument.name)} requires a mutable let binding`);
+        }
+        requireAssignable(
+          foreignValueType(parameter.type),
+          underlyingType(stored),
+          argument,
+          fileName,
+          state.foreignNamedTypes,
+          state.numericLiteralTypes,
+        );
+        rejectOwnerMutationWhileViewed(argument.name, argument.location, fileName, state);
+        state.foreignCxxArgumentAccesses.set(argument.location.offset, "inout");
+        continue;
+      }
       if (parameter?.type.kind !== "recordPointer") {
         throw new DiagnosticError(
           fileName,
@@ -5574,6 +5638,23 @@ function checkForeignCall(
         state.numericLiteralTypes,
       );
       state.foreignArgumentAccesses.set(argument.location.offset, "in");
+      continue;
+    }
+    if (parameter?.type.kind === "reference") {
+      if (parameter.type.access === "inout") {
+        throw new DiagnosticError(
+          fileName,
+          argument.location,
+          `C++ mutable reference parameter requires inout <mutable binding> for parameter ${index + 1}`,
+        );
+      }
+      const actual = inferExpression(argument, locals, globals, structs, enums, fileName, state);
+      const expectedReference = foreignValueType(parameter.type);
+      requireAssignable(expectedReference, actual, argument, fileName, state.foreignNamedTypes, state.numericLiteralTypes);
+      state.foreignCxxArgumentAccesses.set(argument.location.offset, parameter.type.access);
+      if (parameter.type.access === "move") {
+        consumeOwnedValue(argument, actual, locals, structs, enums, fileName, state, true);
+      }
       continue;
     }
     let actual: ValueType;

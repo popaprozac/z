@@ -33,6 +33,7 @@ import type {
   ForeignObjectType,
   ForeignPointerType,
   ForeignRecordPointerType,
+  ForeignReferenceType,
   ForeignScalarTypeName,
   ForeignSourceLocation,
   ForeignType,
@@ -585,9 +586,12 @@ function collectCxxValueCallables(
       }
       continue;
     }
+    const rvalueReceiver = /\)\s*(?:const\s+)?&&(?:\s|$)/.test(member.type.qualType);
     const overload: ForeignCxxMethodOverload = {
       ...base,
-      receiverAccess: /\)\s*const(?:\s|$)/.test(member.type.qualType) ? "in" : "inout",
+      receiverAccess: rvalueReceiver
+        ? "move"
+        : /\)\s*const(?:\s+&)?(?:\s|$)/.test(member.type.qualType) ? "in" : "inout",
     };
     const existing = methods.get(member.name) ?? [];
     if (!existing.some((candidate) => candidate.cSignature === overload.cSignature)) {
@@ -1030,7 +1034,7 @@ function qualifyNativeTypeSpelling(
   namedTypes: ReadonlyMap<string, ForeignNamedType>,
 ): string {
   const normalized = normalizeCType(spelling);
-  const reference = /^(?:const\s+)?(.+?)\s*&$/.exec(normalized);
+  const reference = /^(?:const\s+)?(.+?)\s*&&?$/.exec(normalized);
   const pointer = /^(.+?)\s*\*$/.exec(normalized);
   const base = stripValueQualifiers(reference?.[1] ?? pointer?.[1] ?? normalized);
   if (namedTypes.has(base)) return normalized;
@@ -1067,6 +1071,19 @@ function mapForeignType(
   if (normalized === "const char *") {
     return { kind: "z", name: "cstring", cName };
   }
+  const reference = /^(const\s+)?(.+?)\s*(&&|&)$/.exec(normalized);
+  if (reference) {
+    if (position !== "parameter") return { kind: "unsupported", cName };
+    const referenced = namedTypes.get(stripValueQualifiers(reference[2]));
+    if (!referenced) return { kind: "unsupported", cName };
+    const access: ForeignReferenceType["access"] = reference[3] === "&&"
+      ? "move"
+      : reference[1] ? "in" : "inout";
+    if (access === "move" && !(referenced.kind === "value" && referenced.lifecycle.move && !referenced.lifecycle.copy)) {
+      return { kind: "unsupported", cName };
+    }
+    return { kind: "reference", cName, type: referenced, access };
+  }
   const valueName = stripValueQualifiers(normalized);
   const builtin = mapBuiltinType(valueName);
   if (builtin) return { kind: "z", name: builtin, cName };
@@ -1074,14 +1091,6 @@ function mapForeignType(
   if (named) {
     if (named.kind === "scalar") return { kind: "z", name: named.underlying, cName };
     return { kind: "named", type: named, cName };
-  }
-  const reference = /^const\s+(.+?)\s*&$/.exec(normalized);
-  if (reference) {
-    const referenced = namedTypes.get(stripValueQualifiers(reference[1]));
-    if (referenced) {
-      if (referenced.kind === "scalar") return { kind: "z", name: referenced.underlying, cName };
-      return { kind: "named", type: referenced, cName };
-    }
   }
   const stars = normalized.match(/\*/g)?.length ?? 0;
   if (stars === 1 && normalized.endsWith(" *")) {

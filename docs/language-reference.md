@@ -348,8 +348,28 @@ constructor overloads. The first move-only tier is synchronous and supports
 locals, owned parameters and returns, and whole Z value structs. Dynamic arrays,
 enum payloads, ARC class fields, owned closure environments, and async frames
 reject move-only native storage until their non-trivial C++ construction paths
-land. Ref-qualified methods, conversions, and general templates remain later
-tiers.
+land.
+
+Named C++ value references reuse Z's existing parameter capabilities. No C++
+reference punctuation enters Z source:
+
+```z
+native.inspect(value);              // const T&: call-scoped in borrow
+native.adjust(inout value, 2);      // T&: explicit mutable borrow
+native.consume(value);              // T&&: owned move-only transfer
+```
+
+The same mapping applies to receiver-qualified methods. `const &` borrows an
+immutable receiver, `&` requires addressable `let` storage, and `&&` consumes a
+move-only receiver. Hover and signature help show `in`, `inout`, or `move this`
+using Z terminology. C++ references do not prove non-escape behavior; imported
+native code remains a trusted boundary and the first tier treats reference
+borrows as call-scoped.
+
+Reference returns, builtin scalar references, copyable `T&&`, and overload sets
+whose only distinction changes an argument or receiver capability remain
+deferred. The last case is diagnosed rather than silently choosing borrow or
+consume. Conversions and general templates also remain later tiers.
 
 Native namespaces may also be selected and aliased with ordinary import syntax:
 
