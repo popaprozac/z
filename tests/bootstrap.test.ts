@@ -234,6 +234,27 @@ test("provides completion, hover, definitions, and semantic tokens across Z modu
     && token.type === semanticTokenTypes.indexOf("type")));
 });
 
+test("suggests Z tokens while source and declaration syntax is incomplete", () => {
+  const functionItems = completions("fun", "tokens.z", 3);
+  assert.equal(functionItems.find((item) => item.label === "function")?.kind, 14);
+  assert.equal(functionItems.find((item) => item.label === "function")?.detail, "Z keyword");
+
+  const returnItems = completions("function main(): i32 { ret", "tokens.z", 26);
+  assert.equal(returnItems.find((item) => item.label === "return")?.kind, 14);
+
+  const declaration = `declare module "vendor.h" {\n  exp`;
+  const declarationItems = completions(declaration, "vendor.h.zd", declaration.length);
+  assert.equal(declarationItems.find((item) => item.label === "export")?.detail, "Z declaration keyword");
+  assert.equal(declarationItems.some((item) => item.label === "match"), false);
+
+  const capability = `declare module "vendor.h" {\n  export function use(ino`;
+  const capabilityItems = completions(capability, "vendor.h.zd", capability.length);
+  assert.equal(capabilityItems.find((item) => item.label === "inout")?.kind, 14);
+
+  const inferredItems = completions("_", "vendor.h.zd", 1);
+  assert.equal(inferredItems.find((item) => item.label === "_")?.detail, "infer type from the native declaration");
+});
+
 test("analyzes export-only files as modules while executable commands still require main", () => {
   const moduleFile = resolve(projectRoot, "examples/modules/geometry.z");
   const source = readFileSync(moduleFile, "utf8");

@@ -70,7 +70,26 @@ const completionKinds = {
   constant: 21,
   struct: 22,
   interface: 8,
+  keyword: 14,
 } as const;
+
+const sourceKeywordTokens = [
+  "as", "async", "attempt", "await", "break", "class", "const", "constructor",
+  "continue", "declare", "deinit", "else", "enum", "export", "for", "from",
+  "function", "if", "implements", "import", "in", "inout", "let", "match", "module",
+  "move", "mut", "new", "of", "out", "private", "public", "return", "scope", "select",
+  "spawn", "static", "struct", "throw", "throws", "trait", "try", "unsafe", "view",
+  "weak", "while", "yield",
+] as const;
+
+const primitiveTypeTokens = [
+  "void", "bool", "String", "cstring", "Slice", "Array", "i8", "i16", "i32", "i64",
+  "u8", "u16", "u32", "u64", "f32", "f64", "usize", "isize",
+] as const;
+
+const declarationKeywordTokens = [
+  "declare", "module", "export", "function", "in", "inout", "out", "move", "deinit",
+] as const;
 
 export function diagnostics(source: string, fileName: string): ServiceDiagnostic[] {
   try {
@@ -726,12 +745,13 @@ function symbolCompletions(source: string, fileName: string, offset: number): Co
     kind: completionKinds.enum,
     detail: "compiler-provided enum Option<T>",
   }];
+  const tokenItems = languageTokenCompletions(fileName);
   const start = offset - prefix.length;
   const tailOffset = source[offset] === ";" ? offset + 1 : offset;
   const context = safeAnalysis(source, fileName)
     ?? safeAnalysis(source.slice(0, start) + "0;" + source.slice(tailOffset), fileName)
     ?? completionRecoveryAnalysis(source, fileName, start, tailOffset, prefix);
-  if (!context) return filterCompletions(builtIns, prefix, 500);
+  if (!context) return filterCompletions([...builtIns, ...tokenItems], prefix, 500);
   const items: CompletionItem[] = [...builtIns];
   for (const binding of collectBindings(context)) {
     if (binding.fileName && resolve(binding.fileName) !== resolve(fileName)) continue;
@@ -829,7 +849,32 @@ function symbolCompletions(source: string, fileName: string, offset: number): Co
       sortText: `0-${name}`,
     });
   }
+  const semanticLabels = new Set(items.map((item) => item.label));
+  items.push(...tokenItems.filter((item) => !semanticLabels.has(item.label)));
   return filterCompletions(uniqueCompletions(items), prefix, 500);
+}
+
+function languageTokenCompletions(fileName: string): CompletionItem[] {
+  const keywords = fileName.endsWith(".zd") ? declarationKeywordTokens : sourceKeywordTokens;
+  const items: CompletionItem[] = keywords.map((label) => ({
+    label,
+    kind: completionKinds.keyword,
+    detail: fileName.endsWith(".zd") ? "Z declaration keyword" : "Z keyword",
+    sortText: `8-${label}`,
+  }));
+  items.push(...primitiveTypeTokens.map((label) => ({
+    label,
+    kind: completionKinds.keyword,
+    detail: "Z type",
+    sortText: `7-${label}`,
+  })));
+  if (fileName.endsWith(".zd")) {
+    items.push(
+      { label: "_", kind: completionKinds.keyword, detail: "infer type from the native declaration", sortText: "6-_" },
+      { label: "null", kind: completionKinds.constant, detail: "nullable foreign value", sortText: "7-null" },
+    );
+  }
+  return items;
 }
 
 function standardFunctionDetail(localName: string, name: "sleep" | "delay"): string {
