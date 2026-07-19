@@ -3979,6 +3979,32 @@ test("reads files, exposes program arguments, and runs child processes through s
   `);
   const mixed = spawnSync(process.execPath, [cli, "run", mixedFile], { encoding: "utf8" });
   assert.equal(mixed.status, 0, mixed.stderr);
+
+  const invalidUtf8Path = resolve(directory, "invalid-utf8.txt");
+  writeFileSync(invalidUtf8Path, Buffer.from([0xc3, 0x28]));
+  const invalidUtf8File = resolve(directory, "invalid-utf8.z");
+  writeFileSync(invalidUtf8File, `
+    import fs from "std/fs";
+    function main(): i32 {
+      const result = attempt fs.readText(${JSON.stringify(invalidUtf8Path)});
+      return match (result) {
+        success(contents) => 1;
+        failure(message) => fs.exists(message) ? 2 : 0;
+      };
+    }
+  `);
+  const invalidUtf8 = spawnSync(process.execPath, [cli, "run", invalidUtf8File], { encoding: "utf8" });
+  assert.equal(invalidUtf8.status, 0, invalidUtf8.stderr);
+});
+
+test("scans real Z source through checked UTF-8 String byte operations", () => {
+  const application = resolve(projectRoot, "examples/applications/source-inspector/main.z");
+  const scanner = resolve(projectRoot, "examples/applications/source-inspector/scanner.z");
+  const result = spawnSync(process.execPath, [cli, "run", application, "--", scanner], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /scanner\.z: \d+ lines, \d+ UTF-8 bytes/);
+  assert.match(result.stdout, /\d+ identifiers, \d+ numbers, \d+ comments/);
+  assert.match(result.stdout, /first identifier: export/);
 });
 
 test("stores, returns, moves, and formats owned String values", () => {
@@ -4016,6 +4042,67 @@ test("stores, returns, moves, and formats owned String values", () => {
   const completionSource = source.replace("String.from(boundary)", "String.fr");
   const completionOffset = completionSource.indexOf("String.fr") + "String.fr".length;
   assert.equal(completions(completionSource, example, completionOffset).find((item) => item.label === "from")?.kind, 2);
+
+  const byteSource = `
+    import console from "std/console";
+    function main(): i32 {
+      const word = "éZ";
+      console.log(\`\${word.byteLength}|\${word.byteAt(0)}|\${word.isEmpty}\`);
+      const first = word.copyBytes(0, 2);
+      console.log(first);
+      const empty = "";
+      console.log(empty.isEmpty);
+      return 0;
+    }
+  `;
+  const byteFile = resolve(mkdtempSync("/tmp/z-string-bytes-"), "main.z");
+  writeFileSync(byteFile, byteSource);
+  const byteResult = spawnSync(process.execPath, [cli, "run", byteFile], { encoding: "utf8" });
+  assert.equal(byteResult.status, 0, byteResult.stderr);
+  assert.equal(byteResult.stdout, "3|195|false\né\ntrue\n");
+  const byteGenerated = compileToC(byteSource, byteFile);
+  assert.match(byteGenerated, /z_string_byte_at\(word, 0ULL\)/);
+  assert.match(byteGenerated, /z_string_copy_bytes\(word, 0ULL, 2ULL\)/);
+  assert.match(byteGenerated, /z_string_is_utf8_boundary/);
+
+  const byteLengthOffset = byteSource.indexOf("byteLength") + 2;
+  assert.match(hover(byteSource, byteFile, byteLengthOffset)?.contents.value ?? "", /byteLength: usize/);
+  const byteAtOffset = byteSource.indexOf("byteAt") + 2;
+  assert.match(hover(byteSource, byteFile, byteAtOffset)?.contents.value ?? "", /byteAt\(index: usize\): u8/);
+  const byteCompletionSource = byteSource.replace("word.byteLength", "word.by");
+  const byteCompletionOffset = byteCompletionSource.indexOf("word.by") + "word.by".length;
+  const byteLabels = completions(byteCompletionSource, byteFile, byteCompletionOffset).map((item) => item.label);
+  assert.ok(byteLabels.includes("byteLength"));
+  assert.ok(byteLabels.includes("byteAt"));
+  const byteTokens = decodeSemanticTokens(semanticTokens(byteSource, byteFile).data);
+  const byteLengthPosition = positionForOffset(byteSource, byteSource.indexOf("byteLength"));
+  const byteAtPosition = positionForOffset(byteSource, byteSource.indexOf("byteAt"));
+  assert.ok(byteTokens.some((token) => (
+    token.line === byteLengthPosition.line
+    && token.character === byteLengthPosition.character
+    && token.type === semanticTokenTypes.indexOf("property")
+  )));
+  assert.ok(byteTokens.some((token) => (
+    token.line === byteAtPosition.line
+    && token.character === byteAtPosition.character
+    && token.type === semanticTokenTypes.indexOf("method")
+  )));
+
+  const invalidByteCall = `function main(): i32 { const text = "hello"; return text.byteAt("0"); }`;
+  assert.match(diagnostics(invalidByteCall, "invalid-string-byte.z")[0].message, /expected usize, found String/);
+  const reservedLength = `function main(): i32 { const text = "hello"; return text.length; }`;
+  assert.match(diagnostics(reservedLength, "reserved-string-length.z")[0].message, /String has no property "length"/);
+
+  const invalidBoundaryFile = resolve(mkdtempSync("/tmp/z-string-boundary-"), "main.z");
+  writeFileSync(invalidBoundaryFile, `
+    function main(): i32 {
+      const text = "é";
+      const invalid = text.copyBytes(1, 2);
+      return 0;
+    }
+  `);
+  const invalidBoundary = spawnSync(process.execPath, [cli, "run", invalidBoundaryFile], { encoding: "utf8" });
+  assert.notEqual(invalidBoundary.status, 0);
 
   const escapingBorrow = `
     function main(): i32 {

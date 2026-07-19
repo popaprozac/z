@@ -1062,18 +1062,81 @@ static Z_UNUSED_FUNCTION inline void z_string_append_bytes(Z_String *self, const
   ((char *)self->data)[self->length] = '\\0';
 }
 
+static Z_UNUSED_FUNCTION inline bool z_string_is_valid_utf8(const char *data, uintptr_t length) {
+  uintptr_t index = 0;
+  while (index < length) {
+    const uint8_t first = (uint8_t)data[index];
+    if (first <= 0x7Fu) {
+      index += 1;
+      continue;
+    }
+    if (first >= 0xC2u && first <= 0xDFu) {
+      if (index + 1 >= length || ((uint8_t)data[index + 1] & 0xC0u) != 0x80u) return false;
+      index += 2;
+      continue;
+    }
+    if (first >= 0xE0u && first <= 0xEFu) {
+      if (index + 2 >= length) return false;
+      const uint8_t second = (uint8_t)data[index + 1];
+      const uint8_t third = (uint8_t)data[index + 2];
+      if ((third & 0xC0u) != 0x80u) return false;
+      if (first == 0xE0u ? second < 0xA0u || second > 0xBFu
+          : first == 0xEDu ? second < 0x80u || second > 0x9Fu
+          : (second & 0xC0u) != 0x80u) return false;
+      index += 3;
+      continue;
+    }
+    if (first >= 0xF0u && first <= 0xF4u) {
+      if (index + 3 >= length) return false;
+      const uint8_t second = (uint8_t)data[index + 1];
+      const uint8_t third = (uint8_t)data[index + 2];
+      const uint8_t fourth = (uint8_t)data[index + 3];
+      if ((third & 0xC0u) != 0x80u || (fourth & 0xC0u) != 0x80u) return false;
+      if (first == 0xF0u ? second < 0x90u || second > 0xBFu
+          : first == 0xF4u ? second < 0x80u || second > 0x8Fu
+          : (second & 0xC0u) != 0x80u) return false;
+      index += 4;
+      continue;
+    }
+    return false;
+  }
+  return true;
+}
+
 static Z_UNUSED_FUNCTION inline void z_string_append_cstring(Z_String *self, const char *value) {
   if (value == NULL) {
     z_string_append_bytes(self, "null", 4);
     return;
   }
-  z_string_append_bytes(self, value, (uintptr_t)strlen(value));
+  const uintptr_t length = (uintptr_t)strlen(value);
+  if (!z_string_is_valid_utf8(value, length)) abort();
+  z_string_append_bytes(self, value, length);
 }
 
 static Z_UNUSED_FUNCTION inline Z_String z_string_from_cstring(const char *value) {
   if (value == NULL) abort();
+  const uintptr_t length = (uintptr_t)strlen(value);
+  if (!z_string_is_valid_utf8(value, length)) abort();
   Z_String result = z_string_new();
-  z_string_append_bytes(&result, value, (uintptr_t)strlen(value));
+  z_string_append_bytes(&result, value, length);
+  return result;
+}
+
+static Z_UNUSED_FUNCTION inline uint8_t z_string_byte_at(Z_String value, uintptr_t index) {
+  if (index >= value.length) abort();
+  return (uint8_t)value.data[index];
+}
+
+static Z_UNUSED_FUNCTION inline bool z_string_is_utf8_boundary(Z_String value, uintptr_t index) {
+  return index == 0 || index == value.length || (((uint8_t)value.data[index] & 0xC0u) != 0x80u);
+}
+
+static Z_UNUSED_FUNCTION inline Z_String z_string_copy_bytes(Z_String value, uintptr_t start, uintptr_t end) {
+  if (start > end || end > value.length) abort();
+  if (!z_string_is_utf8_boundary(value, start) || !z_string_is_utf8_boundary(value, end)) abort();
+  Z_String result = z_string_new();
+  const char *bytes = value.data != NULL ? value.data + start : "";
+  z_string_append_bytes(&result, bytes, end - start);
   return result;
 }
 
@@ -3741,6 +3804,11 @@ function generateExpressionInner(expression: Expression, context: GenerationCont
       const array = parseFixedArrayType(ownerValueType);
       const slice = parseSliceType(ownerValueType);
       const dynamic = parseDynamicArrayType(ownerValueType);
+      if (ownerValueType === "String") {
+        const owner = generateExpression(expression.object, context);
+        if (expression.property === "byteLength") return `(${owner}).length`;
+        if (expression.property === "isEmpty") return `((${owner}).length == 0)`;
+      }
       if (array || slice || dynamic) {
         if (dynamic) {
           return `(${generateExpression(expression.object, context)}).${expression.property}`;
@@ -3876,6 +3944,15 @@ function generateExpressionInner(expression: Expression, context: GenerationCont
         const receiverType = inferExpressionType(expression.callee.object, context);
         const receiverView = parseViewType(receiverType);
         const receiverValueType = receiverView?.target ?? receiverType;
+        if (receiverValueType === "String") {
+          const receiver = generateExpression(expression.callee.object, context);
+          if (expression.callee.property === "byteAt") {
+            return `z_string_byte_at(${receiver}, ${generateExpression(expression.arguments[0], context)})`;
+          }
+          if (expression.callee.property === "copyBytes") {
+            return `z_string_copy_bytes(${receiver}, ${generateExpression(expression.arguments[0], context)}, ${generateExpression(expression.arguments[1], context)})`;
+          }
+        }
         if (parseDynamicArrayType(receiverValueType)) {
           const receiver = generateExpression(expression.callee.object, context);
           const argument = generateCallArgument(expression.arguments[0], context);
@@ -4110,6 +4187,10 @@ function generateSystemStandardRuntime(used: ReadonlySet<StandardFunctionName>):
     const int code = errno;
     if (contents.capacity > 0) free((void *)contents.data);
     return (${stringResult}){ .tag = ${stringFailure}, .data.failure = z_standard_error(strerror(code)) };
+  }
+  if (!z_string_is_valid_utf8(contents.data != NULL ? contents.data : "", contents.length)) {
+    if (contents.capacity > 0) free((void *)contents.data);
+    return (${stringResult}){ .tag = ${stringFailure}, .data.failure = z_standard_error("file is not valid UTF-8") };
   }
   return (${stringResult}){ .tag = ${stringSuccess}, .data.success = contents };
 }`);
@@ -4430,7 +4511,11 @@ function inferExpressionType(expression: Expression, context: GenerationContext)
   if (integerOperation) return integerOperation.type;
   const analyzedType = context.semanticInfo.expressionTypes.get(expression.location.offset);
   if (analyzedType && (
-    parseFunctionType(analyzedType)
+    analyzedType === "String"
+    || analyzedType === "bool"
+    || analyzedType === "u8"
+    || analyzedType === "usize"
+    || parseFunctionType(analyzedType)
     || parseWeakType(analyzedType)
     || parseWeakResultType(analyzedType)
     || parseViewType(analyzedType)

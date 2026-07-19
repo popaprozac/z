@@ -692,6 +692,17 @@ initialize stored `cstring` state or escape through an ordinary Z call. A quoted
 literal may explicitly initialize `cstring` because its bytes have static
 lifetime. `String.from(value)` performs the reverse operation by copying a
 borrowed `cstring` into owned storage.
+
+`String` distinguishes text length from representation length. `byteLength` is
+the constant-time UTF-8 storage size, `byteAt(index)` is checked byte access,
+and `copyBytes(start, end)` creates an owned half-open-range copy after checking
+bounds and UTF-8 boundaries. The name `copyBytes` is intentional: `slice` in Z
+denotes a borrowed view, while this operation allocates independent ownership.
+`String.length` is reserved for Unicode extended-grapheme counting rather than
+inheriting JavaScript's UTF-16 code-unit behavior. It may be linear-time. Stage
+0 validates native C-string copies and text files before they enter owned Z
+`String` storage; a future `Bytes`, `OsString`, and path layer will represent
+data that is not necessarily UTF-8.
 Formatting traits, format specifiers, release-build debug behavior, and
 structured logging remain later design work.
 

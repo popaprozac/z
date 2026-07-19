@@ -3255,6 +3255,14 @@ function inferExpressionInner(
         });
       }
       const receiverValueType = receiverView?.target ?? String(receiverType);
+      if (receiverValueType === "String") {
+        if (hasOwnershipType(receiverType, structs, enums, state) && !isNamedStorageExpression(expression.object)) {
+          throw new DiagnosticError(fileName, expression.object.location, "a String temporary must be bound before reading one of its properties");
+        }
+        if (expression.property === "byteLength") return "usize";
+        if (expression.property === "isEmpty") return "bool";
+        throw new DiagnosticError(fileName, expression.location, `String has no property ${JSON.stringify(expression.property)}`);
+      }
       const array = parseFixedArrayType(receiverValueType);
       const slice = parseSliceType(receiverValueType);
       const dynamic = parseDynamicArrayType(receiverValueType);
@@ -3648,6 +3656,40 @@ function inferExpressionInner(
         const receiverType = inferExpression(expression.callee.object, locals, globals, structs, enums, fileName, state);
         const receiverView = parseViewType(String(receiverType));
         const receiverValueType = receiverView?.target ?? String(receiverType);
+        if (receiverValueType === "String") {
+          rejectLabeledArguments(expression.argumentLabels, expression.location, fileName);
+          const signatures: Readonly<Record<string, { readonly parameters: readonly string[]; readonly result: string }>> = {
+            byteAt: { parameters: ["usize"], result: "u8" },
+            copyBytes: { parameters: ["usize", "usize"], result: "String" },
+          };
+          const signature = signatures[expression.callee.property];
+          if (!signature) {
+            throw new DiagnosticError(fileName, expression.callee.location, `String has no method ${JSON.stringify(expression.callee.property)}`);
+          }
+          if (!isNamedStorageExpression(expression.callee.object)) {
+            throw new DiagnosticError(fileName, expression.callee.object.location, "a String temporary must be bound before calling one of its methods");
+          }
+          if (expression.arguments.length !== signature.parameters.length) {
+            throw new DiagnosticError(
+              fileName,
+              expression.location,
+              `${JSON.stringify(expression.callee.property)} expects ${signature.parameters.length} argument(s), received ${expression.arguments.length}`,
+            );
+          }
+          for (let index = 0; index < signature.parameters.length; index += 1) {
+            const argument = expression.arguments[index];
+            const actual = inferExpression(argument, locals, globals, structs, enums, fileName, state);
+            requireAssignable(
+              signature.parameters[index],
+              actual,
+              argument,
+              fileName,
+              state.foreignNamedTypes,
+              state.numericLiteralTypes,
+            );
+          }
+          return signature.result;
+        }
         const integerReceiverType = canonicalType(receiverValueType, state.foreignNamedTypes);
         const integerMethod = isIntegerType(integerReceiverType)
           ? integerMethodKind(expression.callee.property)

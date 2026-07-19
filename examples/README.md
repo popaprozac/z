@@ -57,6 +57,8 @@ support or producing language-server diagnostics from hypothetical imports.
   program using `std/fs`, owned program arguments, typed OS failures, and direct
   child-process execution. Its [`README.md`](applications/source-stager/README.md)
   explains the self-hosting boundary.
+- [`source-inspector`](applications/source-inspector): a multi-module source tool
+  that scans real Z code with checked UTF-8 byte offsets and owned token copies.
 
 ## Async
 

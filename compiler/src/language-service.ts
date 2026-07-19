@@ -655,6 +655,18 @@ export function hover(source: string, fileName: string, offset: number): Hover |
         return markdownHover(`push(value: ${displayType(element, context.typeDisplayNames)}): void`, source, word.start, word.end);
       }
     }
+    if (resolved?.kind === "string") {
+      if (word.text === "byteLength") {
+        return markdownHover("byteLength: usize  // UTF-8 storage bytes", source, word.start, word.end);
+      }
+      if (word.text === "isEmpty") return markdownHover("isEmpty: bool", source, word.start, word.end);
+      if (word.text === "byteAt") {
+        return markdownHover("byteAt(index: usize): u8  // checked UTF-8 byte access", source, word.start, word.end);
+      }
+      if (word.text === "copyBytes") {
+        return markdownHover("copyBytes(start: usize, end: usize): String  // checked owned copy", source, word.start, word.end);
+      }
+    }
   }
 
   const type = directWordType;
@@ -1980,6 +1992,24 @@ function memberCompletions(
     }
     return filterCompletions(items, prefix, 1000);
   }
+  if (resolved?.kind === "string") {
+    return filterCompletions([
+      { label: "byteLength", kind: completionKinds.property, detail: "usize  // UTF-8 storage bytes" },
+      { label: "isEmpty", kind: completionKinds.property, detail: "bool" },
+      {
+        label: "byteAt",
+        kind: completionKinds.method,
+        detail: "byteAt(index: usize): u8  // checked UTF-8 byte access",
+        insertText: "byteAt()",
+      },
+      {
+        label: "copyBytes",
+        kind: completionKinds.method,
+        detail: "copyBytes(start: usize, end: usize): String  // checked owned copy",
+        insertText: "copyBytes()",
+      },
+    ], prefix, 1000);
+  }
   if (resolved?.kind === "integer") {
     return filterCompletions(integerCompletions(resolved.type), prefix, 1000);
   }
@@ -2232,6 +2262,7 @@ type ResolvedReceiver =
   | { readonly kind: "foreignValue"; readonly declaration: Extract<ForeignNamedType, { kind: "value" }> }
   | { readonly kind: "integer"; readonly type: string }
   | { readonly kind: "array"; readonly type: string }
+  | { readonly kind: "string" }
   | { readonly kind: "weak"; readonly target: string };
 
 function resolveReceiver(context: AnalyzedSource, text: string, offset: number): ResolvedReceiver | null {
@@ -2249,6 +2280,7 @@ function resolveReceiver(context: AnalyzedSource, text: string, offset: number):
   if (!type) return null;
   const view = parseViewType(type);
   const receiverType = view?.target ?? type;
+  if (receiverType === "String") return { kind: "string" };
   if (parseFixedArrayType(receiverType) || parseSliceType(receiverType) || parseDynamicArrayType(receiverType)) return { kind: "array", type: receiverType };
   const weak = parseWeakType(receiverType);
   if (weak) return { kind: "weak", target: weak.target };

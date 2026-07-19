@@ -264,6 +264,24 @@ import console from "std/console";
 console.log(`answer=${answer}`);
 ```
 
+String storage operations name their unit explicitly:
+
+```z
+const source = "export function main() {}";
+const bytes: usize = source.byteLength;
+const first: u8 = source.byteAt(0);
+const keyword = source.copyBytes(0, 6);
+if (source.isEmpty) console.log("empty source");
+```
+
+`byteAt(index)` checks its index. `copyBytes(start, end)` uses a half-open range,
+creates an independently owned `String`, and checks both bounds and UTF-8
+boundaries. Compiler offsets and binary-facing code should use these explicit
+byte operations. `String.length` is reserved for a Unicode grapheme-counting
+text API; it is not implemented by treating UTF-8 bytes or JavaScript UTF-16
+code units as characters. `byteLength` is constant-time; the eventual
+grapheme-aware `length` may require a text scan.
+
 ## Files, processes, and program arguments
 
 System facilities are explicit standard-module imports. File operations and
@@ -284,7 +302,8 @@ function stage(in path: String): i32 throws String {
 
 `fs.readText(path)` returns an owned `String`; `fs.writeText(path, contents)`
 borrows both strings for the call; and `fs.exists(path)` performs a non-throwing
-existence probe. `process.args()` returns an owned `Array<String>` containing
+existence probe. `readText` reports invalid UTF-8 as a typed `String` failure.
+`process.args()` returns an owned `Array<String>` containing
 the arguments after the executable name. `process.run(program, arguments)`
 borrows a stored fixed array or `Array<String>` as a non-escaping
 `Slice<String>`, launches the executable directly without a shell, inherits the
