@@ -46,6 +46,14 @@ inspect the generated C-family source. The broader guided index lives in
 syntax sketch. It records intended language shape without claiming bootstrap
 support or producing language-server diagnostics from hypothetical imports.
 
+## Applications
+
+- [`document-workspace`](applications/document-workspace): a readable,
+  multi-module native application model combining document registration,
+  domain errors, move-only C++ leases, dynamic arrays, optional views, saving,
+  and zero-live-resource verification. Start with its
+  [`README.md`](applications/document-workspace/README.md).
+
 ## Async
 
 - [`async-phase-0.z`](async/async-phase-0.z): overview of the implemented model

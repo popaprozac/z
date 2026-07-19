@@ -1854,15 +1854,23 @@ bool ${liveFlag} = true;`;
       );
     case "throw": {
       const result = resultTypeName(context.owner.returnType.name, context.owner.errorType!.name);
-      const value = generateExpression(statement.expression, context);
-      const cleanup = generateCleanup(context.cleanupScopes, context);
-      const releaseSelf = context.constructorSelf ? `free(${context.constructorSelf});\n` : "";
-      if (!cleanup && !releaseSelf) {
-        return `return (${enumName(result)}){ .tag = ${variantTag(result, "failure")}, .data.failure = ${value} };`;
-      }
-      const temporary = `_z_error_${context.returnCounter.value++}`;
-      const declaration = generateLocalDeclaration(context.owner.errorType!.name, temporary, false, context.structs, context.enums, context.semanticInfo.foreignNamedTypes);
-      return `${declaration} = ${value};\n${cleanup ? `${cleanup}\n` : ""}${releaseSelf}return (${enumName(result)}){ .tag = ${variantTag(result, "failure")}, .data.failure = ${temporary} };`;
+      return generateDirectValue(statement.expression, context, (value, valueContext) => {
+        const cleanup = generateCleanup(valueContext.cleanupScopes, valueContext);
+        const releaseSelf = valueContext.constructorSelf ? `free(${valueContext.constructorSelf});\n` : "";
+        if (!cleanup && !releaseSelf) {
+          return `return (${enumName(result)}){ .tag = ${variantTag(result, "failure")}, .data.failure = ${value} };`;
+        }
+        const temporary = `_z_error_${valueContext.returnCounter.value++}`;
+        const declaration = generateLocalDeclaration(
+          valueContext.owner.errorType!.name,
+          temporary,
+          false,
+          valueContext.structs,
+          valueContext.enums,
+          valueContext.semanticInfo.foreignNamedTypes,
+        );
+        return `${declaration} = ${value};\n${cleanup ? `${cleanup}\n` : ""}${releaseSelf}return (${enumName(result)}){ .tag = ${variantTag(result, "failure")}, .data.failure = ${temporary} };`;
+      }, true);
     }
     case "select":
       throw new Error("select must be lowered by its enclosing value-producing block");
@@ -3776,16 +3784,18 @@ function generateExpressionInner(expression: Expression, context: GenerationCont
           }
         }
         const receiverType = inferExpressionType(expression.callee.object, context);
-        if (parseDynamicArrayType(receiverType)) {
+        const receiverView = parseViewType(receiverType);
+        const receiverValueType = receiverView?.target ?? receiverType;
+        if (parseDynamicArrayType(receiverValueType)) {
           const receiver = generateExpression(expression.callee.object, context);
           const argument = generateCallArgument(expression.arguments[0], context);
-          return `${dynamicArrayPushName(receiverType)}(&(${receiver}), ${argument})`;
+          return `${dynamicArrayPushName(receiverValueType)}(&(${receiver}), ${argument})`;
         }
-        const weak = parseWeakType(receiverType);
+        const weak = parseWeakType(receiverValueType);
         if (weak) {
           return `${weakUpgradeName(weak.target)}(${generateExpression(expression.callee.object, context)})`;
         }
-        const declaration = context.structs.get(receiverType)!;
+        const declaration = context.structs.get(receiverValueType)!;
         const field = declaration.fields.find((candidate) => candidate.name === expression.callee.property);
         if (field && parseFunctionType(field.type.name)) {
           return generateFunctionValueCall(
@@ -3797,13 +3807,15 @@ function generateExpressionInner(expression: Expression, context: GenerationCont
         const receiver = generateExpression(expression.callee.object, context);
         const receiverArgument = declaration.kind === "class"
           ? receiver
+          : receiverView
+          ? receiver
           : method.receiverMode === "move"
           ? receiver
           : expression.callee.object.kind === "identifier" && expression.callee.object.name === "this"
             ? context.owner.receiverMode === "move" ? "&(self)" : "self"
             : `&(${receiver})`;
         const args = [receiverArgument, ...expression.arguments.map((argument) => generateCallArgument(argument, context))];
-        return `${methodName(receiverType, expression.callee.property)}(${args.join(", ")})`;
+        return `${methodName(receiverValueType, expression.callee.property)}(${args.join(", ")})`;
       }
       if (expression.callee.kind === "identifier") {
         const closure = closureForType(context.localTypes.get(expression.callee.name), context.semanticInfo);

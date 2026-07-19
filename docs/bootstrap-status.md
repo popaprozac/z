@@ -23,7 +23,7 @@ Status meanings:
 | ARC classes | Implemented | Identity, sharing, constructors, private fields, weak references |
 | Traits | Partial | Nominal static conformance and generic constraints; no trait values/dynamic dispatch |
 | Enums and `Option`/`Result` | Implemented | Payloads, nesting, exhaustive statement/expression matches |
-| Errors | Implemented | Typed `throws`, `throw`, `try`, and `attempt` |
+| Errors | Implemented | Typed `throws`, `throw`, `try`, and `attempt`, including synchronous cleanup-bearing error values |
 | Closures | Implemented | Borrowed and owned ARC environments; weak captures |
 | Strings and console | Implemented | Owned UTF-8 strings, templates, typed formatting |
 | Integer safety | Implemented | Checked arithmetic plus explicit wrapping/saturating operations |
@@ -113,6 +113,9 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
 
 ## Validation probes
 
+- [`examples/applications/document-workspace`](../examples/applications/document-workspace): cross-platform,
+  multi-module document registration and saving with move-only native leases,
+  cleanup-bearing errors, optional views, array growth, and zero live resources.
 - [`examples/interop/objc/nswindow.z`](../examples/interop/objc/nswindow.z): direct AppKit window.
 - [`examples/interop/objc/objc-nullability.z`](../examples/interop/objc/objc-nullability.z): explicit
   `T | null` AppKit guard narrowing alongside `Option.fromNullable` and
@@ -160,9 +163,12 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    and replacement. Both compose with Z-managed cleanup. Compiler `Option` and
    `Result` payloads, ARC fields, closure environments, and async frames remain
    later storage tiers.
-3. **Larger application probe.** Write non-trivial Z code that combines the
-   ownership shapes, collections, errors, modules, native calls, and cleanup so
-   restrictions are evaluated from real use rather than isolated syntax.
+3. **Larger application probe — implemented.** The multi-module
+   `document-workspace` combines a move-only native lease, dynamic arrays,
+   named enum transfer, cleanup-bearing errors, `try`/`attempt`, mutable methods,
+   and `Option<view T>`, then verifies zero live native resources. It exposed and
+   closed module-linked enum classification, view-method dispatch, and
+   statement-valued `throw` lowering gaps.
 4. **Self-hosting prerequisites.** Establish target-neutral `std/fs`,
    `std/process`, and program-argument APIs, then use them to begin moving viable
    compiler components into Z.

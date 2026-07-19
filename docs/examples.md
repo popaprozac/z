@@ -14,6 +14,7 @@ compile-only probes and `emit` to inspect generated native code.
 | Construction | [`construction.z`](../examples/language/basics/construction.z) | Struct object construction and class-only `new` |
 | Results | [`result.z`](../examples/language/control-flow/result.z) | `return`, `throw`, `attempt`, and exhaustive matching |
 | Options | [`option.z`](../examples/language/types/option.z) | `Option.some`, `Option.none`, and payload matching |
+| Application walkthrough | [`document-workspace`](../examples/applications/document-workspace) | A native document model combining modules, errors, arrays, named enums, optional views, mutation, and deterministic cleanup |
 
 ```sh
 bun run z run examples/language/basics/first.z
@@ -82,6 +83,15 @@ bun run z run examples/async/async-delay.z
 ```
 
 ## Application-shaped probes
+
+[`document-workspace`](../examples/applications/document-workspace) is the
+recommended non-GUI application walkthrough. It uses domain-oriented names to
+combine three Z modules, a move-only C++ document lease, dynamic storage, a
+move-only named enum, cleanup-bearing errors, `try`/`attempt`, mutable methods,
+and `Option<view DocumentSession>`. Its deterministic run ends with three saved
+documents and zero live native leases. Read its adjacent
+[`README.md`](../examples/applications/document-workspace/README.md) for the
+scenario and an ownership-by-ownership explanation.
 
 [`desktop-ownership`](../examples/interop/objc/desktop-ownership) combines an ARC-managed Z
 application model, move-only documents and strings, borrowed enumeration, and

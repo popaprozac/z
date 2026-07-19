@@ -777,7 +777,7 @@ function analyzeEnumDeclaration(
     if (variant.payload) {
       validateType(variant.payload, structs, enums, foreignNamedTypes, fileName, false);
       if (
-        declaration.name.startsWith("__z_")
+        (/^__z_(?:Option|Result)_/.test(declaration.name))
         && hasMoveOnlyForeignType(variant.payload.name, structs, enums, foreignNamedTypes)
       ) {
         throw new DiagnosticError(fileName, variant.payload.location, "enum payloads cannot store move-only native values in the first C++ ownership tier", {
@@ -825,9 +825,6 @@ function validateFunctionSignature(
     throw new DiagnosticError(fileName, declaration.returnType.location, "returning Slice values requires an explicit lifetime contract and is not implemented yet");
   }
   if (declaration.errorType) validateType(declaration.errorType, structs, enums, foreignNamedTypes, fileName, false);
-  if (declaration.errorType && hasCleanupType(declaration.errorType.name, structs, enums)) {
-    throw new DiagnosticError(fileName, declaration.errorType.location, "throwing cleanup-bearing error values is not implemented in this bootstrap stage");
-  }
   if (declaration.errorType && declaration.parameters.some((parameter) => parameter.mode === "out")) {
     throw new DiagnosticError(fileName, declaration.location, "throwing functions with out parameters are not implemented yet");
   }
@@ -1568,6 +1565,7 @@ function analyzeStatement(
       let actual = inferExpression(statement.expression, locals, globals, structs, enums, fileName, state);
       actual = contextualCStringLiteral(owner.errorType.name, statement.expression, state) ?? actual;
       requireAssignable(owner.errorType.name, actual, statement.expression, fileName, state.foreignNamedTypes, state.numericLiteralTypes);
+      consumeOwnedValue(statement.expression, owner.errorType.name, locals, structs, enums, fileName, state);
       return;
     }
     case "break": {

@@ -2125,6 +2125,26 @@ test("compiles a desktop ownership slice and preserves its current pressure wall
   assert.match(hover(source, example, windowFieldOffset)?.contents.value ?? "", /class NSWindow/);
 });
 
+test("runs an application-shaped document workspace across ownership and interop features", () => {
+  const example = resolve(projectRoot, "examples/applications/document-workspace/main.z");
+  const source = readFileSync(example, "utf8");
+  const artifact = compileToNative(source, example);
+  assert.equal(artifact.language, "c++");
+  assert.match(artifact.source, /#include .*document-lease\.hpp/);
+  assert.match(artifact.source, /std::construct_at\(&storage\[index\], std::move\(self->data\[index\]\)\)/);
+  assert.match(artifact.source, /struct Z_[A-Za-z0-9_]*DocumentOpenResult/);
+  assert.match(artifact.source, /Z_[A-Za-z0-9_]*WorkspaceError_deinit/);
+  assert.match(artifact.source, /Z_[A-Za-z0-9_]*DocumentSession_documentId\(document\)/);
+  assert.deepEqual(diagnostics(source, example), []);
+
+  const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(
+    result.stdout,
+    /^workspace registered=3, saved=3, found=42, save count=1, rejected=100, empty save=200, native moves=[1-9][0-9]*, live=0\n$/,
+  );
+});
+
 test("compares scoped document borrows with independently owned snapshots", () => {
   const example = resolve(projectRoot, "examples/interop/objc/desktop-ownership/ownership-views.z");
   const source = readFileSync(example, "utf8");

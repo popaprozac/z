@@ -1,0 +1,6 @@
+declare module "document-lease.hpp" {
+  export type desktop.DocumentLease {
+    move;
+    deinit;
+  }
+}

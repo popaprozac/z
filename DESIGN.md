@@ -484,6 +484,8 @@ function load(path: String): Config throws ConfigError {
 - `throw error` produces failure; it does not perform exception unwinding.
 - `try operation()` obtains success or propagates failure.
 - `attempt operation()` retains `Result<T, E>` as a value.
+- Cleanup-bearing error values move through `throw`, `try`, and consuming
+  `match`; synchronous error messages can therefore be owned `String` values.
 - `panic` is reserved for violated invariants and programmer defects.
 - Foreign exceptions are caught and converted at explicit interop boundaries.
 

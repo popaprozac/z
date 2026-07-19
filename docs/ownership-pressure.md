@@ -135,6 +135,36 @@ destructor calls. The move-only probe borrows a native value, transfers it
 through an owned function and a whole Z value struct, rejects later source use,
 and observes zero live native values after scope exit.
 
+## Application probe 2: document workspace
+
+Source: [`examples/applications/document-workspace`](../examples/applications/document-workspace)
+
+This cross-platform command-line probe uses application vocabulary rather than
+ownership-test verbs. A `DocumentWorkspace` registers documents, rejects an
+invalid draft, finds a session, grows after the lookup borrow ends, saves every
+open document, and reports a summary. Each `DocumentSession` owns a `String`
+title and a move-only C++ `DocumentLease`; the workspace owns a growable array
+of sessions.
+
+What the complete run proves:
+
+- an exported named enum can move a native-owning `DocumentSession` across a Z
+  module boundary and into `Array<DocumentSession>`;
+- array growth native-move-constructs the mixed Z/C++ aggregate and final
+  cleanup leaves zero live leases;
+- `Option<view DocumentSession>` supports borrowing method calls, ends at last
+  use, and permits later collection growth;
+- a typed `WorkspaceError` owns an interpolated `String`, moves through
+  `throw`, `try`, `attempt`, and `match`, and is cleaned on the handled path;
+- `inout` at the ordinary function boundary makes workspace mutation visible
+  without a callback-specific capability model.
+
+The probe found three implementation bugs that are now closed: module-mangled
+named enums were misclassified as compiler-generated result storage, calls
+through optional views generated a pointer-to-pointer, and `throw` bypassed the
+ordinary statement-valued lowering needed by directly constructed errors with
+interpolated messages.
+
 ## Not tested yet
 
 - a borrow that must survive suspension;
