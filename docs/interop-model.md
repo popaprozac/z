@@ -86,11 +86,18 @@ declare module "library.hpp" {
 
 `type` refers to the existing Clang declaration. `copy`, `move`, and `deinit`
 are capabilities rather than function calls; omission denies a capability, and
-`.zd` cannot grant an operation Clang cannot prove. The current executable tier
-supports `copy + deinit`: C++ copy construction and assignment remain direct,
-and native lexical destruction handles values stored in Z aggregates. FIIR can
-record native move availability, but move-only foreign values remain rejected
-until dedicated move lowering lands.
+`.zd` cannot grant an operation Clang cannot prove. `copy + deinit` uses direct
+C++ copy construction and assignment. `move + deinit` is single-owner storage:
+Z diagnoses use after transfer and C++ receives `std::move` at owned bindings,
+calls, and aggregate construction. Native lexical destruction handles both the
+destination and the valid moved-from source storage; no wrapper allocation or
+Z destructor dispatch is added.
+
+The first move-only tier is deliberately synchronous. Direct locals, owned
+parameters and returns, and whole Z value structs are executable. Dynamic
+arrays, enum payloads, ARC class fields, owned closure environments, and async
+frames reject move-only native storage until those generated storage paths can
+construct and relocate non-trivial C++ objects correctly.
 
 Clang-proven public constructors plus static and instance methods on those values
 are callable directly. A native value constructor uses `Type(args)` rather than

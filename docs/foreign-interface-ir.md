@@ -152,8 +152,9 @@ separately from the in-memory normalized FIIR.
    runtime availability guards when their semantics are designed;
 2. represent ref-qualified methods, inheritance, user-defined conversions, and
    richer properties without flattening names;
-3. extend the implemented copy/move/deinit value capabilities from copyable
-   aggregate storage to move-only values and native methods;
+3. extend implemented move/deinit value capabilities from synchronous locals,
+   calls, returns, and Z structs into non-trivial container, closure, and async
+   frame storage;
 4. expand block/callback adapters with threading and callback-to-async
    synthesis;
 5. add serialization only when caching or a self-hosted toolchain adapter needs

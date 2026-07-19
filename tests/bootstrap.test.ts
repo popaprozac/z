@@ -1493,10 +1493,66 @@ test("declares, copies, aggregates, and destroys foreign C++ values", () => {
     }
   `);
   const moveOnlyProgram = `import native from "move-only.hpp"; function main(): i32 { return 0; }`;
-  const moveOnlyDiagnostic = diagnostics(moveOnlyProgram, moveOnlySource)[0];
-  assert.equal(moveOnlyDiagnostic.code, "Z0801");
-  assert.match(moveOnlyDiagnostic.message, /move-only foreign value type "zcpp\.MoveOnly" is not executable/);
-  assert.match(moveOnlyDiagnostic.message, /dedicated foreign move lowering/);
+  assert.deepEqual(diagnostics(moveOnlyProgram, moveOnlySource), []);
+  assert.match(compileToNative(moveOnlyProgram, moveOnlySource).source, /#include <utility>/);
+});
+
+test("moves non-copyable C++ values through owned Z bindings and value structs", () => {
+  const example = resolve(projectRoot, "examples/cpp-move-only.z");
+  const source = readFileSync(example, "utf8");
+  const generated = compileToNative(source, example).source;
+  assert.match(generated, /#include <utility>/);
+  assert.match(generated, /zcpp::UniqueValue first = zcpp::UniqueValue\(40\);/);
+  assert.match(generated, /relay\(std::move\(first\)\)/);
+  assert.match(generated, /\.value = std::move\(second\)/);
+  assert.match(generated, /Z_NativeOwner moved = std::move\(owner\);/);
+  assert.doesNotMatch(generated, /const zcpp::UniqueValue first/);
+
+  const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /^answer=42, moves=[1-9][0-9]*, live=0\n$/);
+
+  const movedUse = `
+    import native from "../tests/fixtures/move-only.hpp";
+    function main(): i32 {
+      const first = native.zcpp.UniqueValue(42);
+      const second = first;
+      return first.value();
+    }
+  `;
+  const movedDiagnostic = diagnostics(movedUse, example)[0];
+  assert.equal(movedDiagnostic.code, "Z0201");
+  assert.match(movedDiagnostic.message, /use of moved value "first"/);
+
+  const classStorage = `
+    import native from "../tests/fixtures/move-only.hpp";
+    class Session {
+      value: native.zcpp.UniqueValue;
+    }
+    function main(): i32 { return 0; }
+  `;
+  const classDiagnostic = diagnostics(classStorage, example)[0];
+  assert.equal(classDiagnostic.code, "Z0240");
+  assert.match(classDiagnostic.message, /ARC class fields cannot store move-only native values/);
+
+  const uninitializedStorage = `
+    import native from "../tests/fixtures/move-only.hpp";
+    function main(): i32 {
+      let value: native.zcpp.UniqueValue;
+      return 0;
+    }
+  `;
+  const uninitializedDiagnostic = diagnostics(uninitializedStorage, example)[0];
+  assert.equal(uninitializedDiagnostic.code, "Z0240");
+  assert.match(uninitializedDiagnostic.message, /must be initialized when their storage is declared/);
+
+  const declarationFile = resolve(projectRoot, "tests/fixtures/move-only.hpp.zd");
+  const declarationSource = readFileSync(declarationFile, "utf8");
+  const typeOffset = declarationSource.indexOf("UniqueValue") + 2;
+  assert.match(
+    hover(declarationSource, declarationFile, typeOffset)?.contents.value ?? "",
+    /native value: move, deinit; unavailable: copy/,
+  );
 });
 
 test("imports C++ constructors and static methods as direct type-level calls", () => {
@@ -3000,7 +3056,7 @@ test("renders structured ownership diagnostics in the CLI and language server", 
   const rendered = formatDiagnostic(caught, source);
   assert.match(rendered, /error\[Z0201\]: use of moved value "first"/);
   assert.match(rendered, /ownership was transferred here/);
-  assert.match(rendered, /note: cleanup-bearing values have a single owner/);
+  assert.match(rendered, /note: ownership-bearing values have a single owner/);
   assert.match(rendered, /help: borrow the value with an `in` parameter/);
 
   const cliResult = spawnSync(process.execPath, [cli, "check", fixture], { encoding: "utf8" });
@@ -3140,7 +3196,7 @@ test("rejects discarding cleanup-bearing return values", () => {
   `;
   assert.throws(
     () => compileToC(source, "owned-discard.z"),
-    /a cleanup-bearing value must be bound or transferred; it cannot be discarded/,
+    /an ownership-bearing value must be bound or transferred; it cannot be discarded/,
   );
 });
 
@@ -3813,7 +3869,7 @@ test("does not move cleanup-bearing elements out of fixed arrays", () => {
   `;
   assert.throws(
     () => compileToC(source, "array-element-move.z"),
-    /cannot move a cleanup-bearing field or element out of its owner/,
+    /cannot move an ownership-bearing field or element out of its owner/,
   );
 });
 
@@ -4394,7 +4450,7 @@ test("checks Array mutation, element types, and partial moves", () => {
       return item.id;
     }
   `;
-  assert.throws(() => compileToC(partialMove, "dynamic-array-partial-move.z"), /cannot move a cleanup-bearing field or element out of its owner/);
+  assert.throws(() => compileToC(partialMove, "dynamic-array-partial-move.z"), /cannot move an ownership-bearing field or element out of its owner/);
 });
 
 test("exposes Array members and source-level types to editor services", () => {

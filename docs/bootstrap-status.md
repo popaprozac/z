@@ -71,7 +71,7 @@ an inferred receiver-tied view.
 | C callbacks | Partial | Call-only and caller-thread escaping callbacks use `.zd` with named context and exact release contracts; cross-thread callbacks remain unsupported |
 | Native availability | Implemented host slice | Explicit `z.json` platform/minimum target, introduced/obsoleted errors, deprecation warnings, native source locations, and matching Clang/Swift deployment flags; cross-compilation and runtime guards remain |
 | Objective-C | Partial | ARC classes/fields, methods, properties/global object constants, labels, nullability, niche-backed `Option.fromNullable`, owned `String`/`NSString` copies, escaping blocks and persistent observer tokens |
-| C++ | Partial | Hierarchical/selectively aliased namespaces, typed overloads, records, and `.zd`-contracted copyable RAII values; public constructors and static/const/mutable instance methods call directly with ownership-aware receiver checks; move-only values, ref-qualified methods, and templates remain |
+| C++ | Partial | Hierarchical/selectively aliased namespaces, typed overloads, records, and `.zd`-contracted copyable or move-only RAII values; synchronous move-only locals/owned calls/returns/Z structs diagnose use-after-move and lower to native moves; public constructors and static/const/mutable instance methods call directly; move-only containers/ARC fields/closures/async frames, ref-qualified methods, and templates remain |
 | Swift via Objective-C | Implemented slice | Generated compatibility header, classes/properties/methods, automatic local dylib build/link |
 | Swift value via C++ | Implemented probe | Native struct return/copy/aggregate storage/round-trip/destruction without handwritten shim |
 | Swift methods/strings/generics | Planned vertical slices | Generated C++ methods, `swift::String`, protocols, errors, async, packages |
@@ -127,6 +127,9 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
 - [`examples/foreign-values.z`](../examples/foreign-values.z): `.zd`-contracted
   copyable C++ RAII value copied through an owning Z aggregate with zero live
   native values after scope exit.
+- [`examples/cpp-move-only.z`](../examples/cpp-move-only.z): `.zd`-contracted
+  non-copyable C++ RAII value borrowed, moved through an owned function and a Z
+  value struct, then deterministically released with zero live native values.
 - `bun test`: compiler, runtime, diagnostics, interop, async, and editor
   regression suite.
 
@@ -137,8 +140,8 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
 2. Extend the backend-neutral Foreign Interface IR now that raw declarations,
    API-note sources, normalized contracts, native definitions, availability,
    deployment-target checks, value-lifecycle facts, and C++ constructors/static/
-   instance methods are separate; next pressure should come from move-only values
-   and richer native declaration shapes.
+   instance methods and move-only native value facts are separate; next pressure
+   should come from richer native declaration shapes and storage contexts.
 3. Extend the desktop probe through one real native event callback into owned Z
    state (one-shot and persistent notification paths are now validated).
 4. Expand receiver-tied views only from real pressure: the value-struct tier is

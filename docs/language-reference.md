@@ -315,8 +315,12 @@ declare module "library.hpp" {
 
 This does not define a Z type or repeat C++ layout. It names an existing native
 type and records which of `copy`, `move`, and deterministic `deinit` are safe.
-Capabilities must agree with Clang. The current backend executes copyable native
-RAII values; move-only values remain unsupported.
+Capabilities must agree with Clang. Copyable native values follow ordinary C++
+copy construction. A value declaring `move` without `copy` follows Z's
+single-owner rules: an owned binding, argument, return, or containing Z struct
+is consumed at the Z level and emitted with native C++ move construction.
+Borrowing with `in` does not consume it. The moved-from C++ object's destructor
+still runs normally, while Z rejects later source use.
 
 Public constructors plus static and instance methods on contracted C++ values are
 imported from the header without wrapper declarations. Construction and static
@@ -340,8 +344,12 @@ const answer = copied.value.value(); // C++ const receiver
 Calls lower to ordinary C++ construction, static calls, or member calls. Native
 overloads use the same exact selection and `Z0803` diagnostics as imported free
 functions. Copy/move constructors are ownership mechanics rather than ordinary
-constructor overloads. Move-only values, ref-qualified methods, conversions,
-and general templates remain later tiers.
+constructor overloads. The first move-only tier is synchronous and supports
+locals, owned parameters and returns, and whole Z value structs. Dynamic arrays,
+enum payloads, ARC class fields, owned closure environments, and async frames
+reject move-only native storage until their non-trivial C++ construction paths
+land. Ref-qualified methods, conversions, and general templates remain later
+tiers.
 
 Native namespaces may also be selected and aliased with ordinary import syntax:
 

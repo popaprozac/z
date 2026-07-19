@@ -68,7 +68,7 @@ requiring lifetime syntax throughout ordinary application code.
 | Async | Stackless tasks, FIFO executor, spawn/join scopes, cancellation, delay |
 | C | Header imports, functions, records, enums, constants, pointers with `.zd` contracts, callbacks, target-aware availability |
 | Objective-C | ARC objects, nullability, selectors, blocks, persistent observers, AppKit |
-| C++ | Hierarchical functions/types, overload selection, records, `.zd`-contracted copyable RAII values, constructors, static and instance methods |
+| C++ | Hierarchical functions/types, overload selection, records, `.zd`-contracted copyable and move-only RAII values, constructors, static and instance methods |
 | Swift | Generated Objective-C compatibility headers and first generated C++ value probe |
 | Editor | VS Code/Cursor highlighting, diagnostics, hover, completion, and definitions |
 

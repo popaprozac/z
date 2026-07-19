@@ -13,7 +13,7 @@ example.z:9:10: error[Z0201]: use of moved value "first"
   |
 8 |   const second = first;
   |                  ^^^^^ ownership was transferred here
-  note: cleanup-bearing values have a single owner and cannot be used after ownership transfers
+  note: ownership-bearing values have a single owner and cannot be used after ownership transfers
   help: borrow the value with an `in` parameter when ownership transfer is unnecessary, or stop using it after the transfer
 ```
 

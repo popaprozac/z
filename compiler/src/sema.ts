@@ -631,6 +631,13 @@ function analyzeStructDeclaration(
     }
     members.add(field.name);
     validateType(field.type, structs, enums, foreignNamedTypes, fileName, false);
+    if (declaration.kind === "class" && hasMoveOnlyForeignType(field.type.name, structs, enums, foreignNamedTypes)) {
+      throw new DiagnosticError(fileName, field.type.location, "ARC class fields cannot store move-only native values in the first C++ ownership tier", {
+        code: "Z0240",
+        notes: ["ARC class storage is currently allocated as zeroed memory, which does not run a C++ value constructor"],
+        helps: ["store the native value in a Z struct and move that struct synchronously, or use an owned native pointer contract"],
+      });
+    }
     if (containsViewType(field.type.name)) {
       throw new DiagnosticError(fileName, field.type.location, "view values cannot be stored in fields", { code: "Z0206" });
     }
@@ -762,6 +769,13 @@ function analyzeEnumDeclaration(
     names.add(variant.name);
     if (variant.payload) {
       validateType(variant.payload, structs, enums, foreignNamedTypes, fileName, false);
+      if (hasMoveOnlyForeignType(variant.payload.name, structs, enums, foreignNamedTypes)) {
+        throw new DiagnosticError(fileName, variant.payload.location, "enum payloads cannot store move-only native values in the first C++ ownership tier", {
+          code: "Z0240",
+          notes: ["generated enum union storage does not yet construct and destroy non-trivial C++ payloads"],
+          helps: ["store the native value in a synchronously moved Z struct while native enum storage lowering is implemented"],
+        });
+      }
       if (containsViewType(variant.payload.name)) {
         throw new DiagnosticError(fileName, variant.payload.location, "view values cannot be stored in enum payloads", { code: "Z0206" });
       }
@@ -786,6 +800,13 @@ function validateFunctionSignature(
   fileName: string,
 ): void {
   validateType(declaration.returnType, structs, enums, foreignNamedTypes, fileName, true);
+  if (declaration.async && hasMoveOnlyForeignType(declaration.returnType.name, structs, enums, foreignNamedTypes)) {
+    throw new DiagnosticError(fileName, declaration.returnType.location, "async functions cannot return move-only native values in the first C++ ownership tier", {
+      code: "Z0704",
+      notes: ["async result storage does not yet construct non-trivial C++ values"],
+      helps: ["move the native value through synchronous functions until native async-frame storage is implemented"],
+    });
+  }
   if (containsViewType(declaration.returnType.name) && !parseViewType(declaration.returnType.name)) {
     throw new DiagnosticError(fileName, declaration.returnType.location, "view values cannot be nested inside returned storage", { code: "Z0206" });
   }
@@ -805,8 +826,22 @@ function validateFunctionSignature(
     }
     validateUserName(parameter.name, parameter.location, fileName);
     validateType(parameter.type, structs, enums, foreignNamedTypes, fileName, false);
+    if (declaration.async && hasMoveOnlyForeignType(parameter.type.name, structs, enums, foreignNamedTypes)) {
+      throw new DiagnosticError(fileName, parameter.type.location, `async parameter ${JSON.stringify(parameter.name)} cannot store a move-only native value in the first C++ ownership tier`, {
+        code: "Z0704",
+        notes: ["async frame storage does not yet construct non-trivial C++ values"],
+        helps: ["perform the native ownership transfer in a synchronous helper"],
+      });
+    }
     if (containsViewType(parameter.type.name)) {
       throw new DiagnosticError(fileName, parameter.type.location, "view is a receiver-tied return capability, not a parameter type", { code: "Z0206" });
+    }
+    if (parameter.mode === "out" && hasMoveOnlyForeignType(parameter.type.name, structs, enums, foreignNamedTypes)) {
+      throw new DiagnosticError(fileName, parameter.location, `out parameter ${JSON.stringify(parameter.name)} cannot use move-only native storage in the first C++ ownership tier`, {
+        code: "Z0240",
+        notes: ["out begins as uninitialized storage, but a non-trivial C++ value must be constructed before it can be assigned"],
+        helps: ["return the owned native value, or accept initialized `inout` storage"],
+      });
     }
     const slice = parseSliceType(parameter.type.name);
     if (declaration.async && (parameter.mode !== "value" || slice)) {
@@ -1244,6 +1279,13 @@ function analyzeStatement(
       if (!statement.initializer) {
         const declaredType = statement.type!;
         validateType(declaredType, structs, enums, state.foreignNamedTypes, fileName, false);
+        if (hasMoveOnlyForeignType(declaredType.name, structs, enums, state.foreignNamedTypes)) {
+          throw new DiagnosticError(fileName, declaredType.location, "move-only native values must be initialized when their storage is declared", {
+            code: "Z0240",
+            notes: ["uninitialized Z locals do not run a non-trivial C++ constructor"],
+            helps: ["initialize the binding from a native constructor, owned return, or moved value"],
+          });
+        }
         if (containsViewType(declaredType.name)) {
           throw new DiagnosticError(fileName, declaredType.location, "view values cannot be declared as uninitialized storage", { code: "Z0206" });
         }
@@ -1331,9 +1373,16 @@ function analyzeStatement(
         state.viewBindingOwners.set(statement.nameLocation.offset, origin.owner);
         return;
       }
+      if (state.activeFunction?.async && hasMoveOnlyForeignType(variableType, structs, enums, state.foreignNamedTypes)) {
+        throw new DiagnosticError(fileName, statement.location, "async locals cannot store move-only native values in the first C++ ownership tier", {
+          code: "Z0704",
+          notes: ["suspended task frames currently use storage that does not construct non-trivial C++ values"],
+          helps: ["keep the native ownership operation in a synchronous helper until native async-frame storage is implemented"],
+        });
+      }
       if (statement.initializer.kind === "closure") {
         const closure = state.closures.get(statement.initializer.location.offset)!;
-        const cleanupCapture = closure.captures.find((capture) => hasCleanupType(capture.type, structs, enums, state.foreignTypes));
+        const cleanupCapture = closure.captures.find((capture) => hasOwnershipType(capture.type, structs, enums, state));
         if (cleanupCapture && !closure.owned && statement.initializer.captureMode === "move") {
           throw new DiagnosticError(
             fileName,
@@ -1411,7 +1460,17 @@ function analyzeStatement(
       actual = contextualCStringLiteral(expected, statement.expression, state) ?? actual;
       actual = contextualObjCStringToZ(expected, actual, statement.expression, state) ?? actual;
       requireAssignable(expected, actual, statement.expression, fileName, state.foreignNamedTypes, state.numericLiteralTypes);
-      if (hasCleanupType(expected, structs, enums, state.foreignTypes)) {
+      if (
+        hasCleanupType(expected, structs, enums, state.foreignTypes)
+        && hasMoveOnlyForeignType(expected, structs, enums, state.foreignNamedTypes)
+      ) {
+        throw new DiagnosticError(fileName, statement.target.location, "replacement assignment for a value combining Z cleanup and move-only native storage is not executable yet", {
+          code: "Z0240",
+          notes: ["the current cleanup-aware replacement path requires default-constructing temporary storage"],
+          helps: ["initialize a new binding and move the complete value once instead of replacing it"],
+        });
+      }
+      if (hasOwnershipType(expected, structs, enums, state)) {
         consumeOwnedValue(statement.expression, expected, locals, structs, enums, fileName, state);
         if (statement.target.kind === "identifier") {
           // A whole binding may move into the replacement expression and become
@@ -1532,8 +1591,8 @@ function analyzeStatement(
           throw new DiagnosticError(fileName, statement.expression.location, `integer literal ${statement.expression.value} does not fit default i32`);
         }
         const type = inferDirectValue(statement.expression, owner, locals, globals, structs, enums, fileName, state);
-        if (hasCleanupType(type, structs, enums, state.foreignTypes)) {
-          throw new DiagnosticError(fileName, statement.expression.location, "a cleanup-bearing value must be bound or transferred; it cannot be discarded");
+        if (hasOwnershipType(type, structs, enums, state)) {
+          throw new DiagnosticError(fileName, statement.expression.location, "an ownership-bearing value must be bound or transferred; it cannot be discarded");
         }
       }
       return;
@@ -1555,7 +1614,7 @@ function analyzeStatement(
         helps: ["bind the enum value before borrowing it, or remove `in` to consume the value"],
         });
       }
-      if (!borrowed && hasCleanupType(subjectType, structs, enums, state.foreignTypes)) {
+      if (!borrowed && hasOwnershipType(subjectType, structs, enums, state)) {
         consumeOwnedValue(statement.expression, subjectType, locals, structs, enums, fileName, state);
       }
       const covered = new Set<string>();
@@ -1594,25 +1653,25 @@ function analyzeStatement(
           armLocals.set(borrowedRoot.name, `${borrowedPrefix}${underlyingType(borrowedRootType)}`);
         }
         if (variant.payload && arm.binding && arm.bindingLocation) {
-          const payloadBorrowed = borrowed && hasCleanupType(variant.payload.name, structs, enums, state.foreignTypes);
+          const payloadBorrowed = borrowed && hasOwnershipType(variant.payload.name, structs, enums, state);
           armLocals.set(arm.binding, payloadBorrowed ? `${borrowedPrefix}${variant.payload.name}` : variant.payload.name);
           state.bindingTypes.set(arm.bindingLocation.offset, variant.payload.name);
         }
         const payloadDeclaration = variant.payload ? structs.get(variant.payload.name) : null;
         for (const fieldBinding of arm.objectBindings ?? []) {
           const field = payloadDeclaration!.fields.find((candidate) => candidate.name === fieldBinding.fieldName)!;
-          const fieldBorrowed = hasCleanupType(field.type.name, structs, enums, state.foreignTypes);
+          const fieldBorrowed = hasOwnershipType(field.type.name, structs, enums, state);
           armLocals.set(fieldBinding.bindingName, fieldBorrowed ? `${borrowedPrefix}${field.type.name}` : field.type.name);
           state.bindingTypes.set(fieldBinding.bindingLocation.offset, field.type.name);
         }
         const patternNames = [arm.binding, ...(arm.objectBindings ?? []).map((field) => field.bindingName)].filter((name): name is string => Boolean(name));
         const previousBorrows = new Map(patternNames.map((name) => [name, state.borrowOrigins.get(name)]));
-        if (borrowed && arm.binding && variant.payload && hasCleanupType(variant.payload.name, structs, enums, state.foreignTypes)) {
+        if (borrowed && arm.binding && variant.payload && hasOwnershipType(variant.payload.name, structs, enums, state)) {
           state.borrowOrigins.set(arm.binding, { location: statement.location, kind: "match" });
         }
         for (const fieldBinding of arm.objectBindings ?? []) {
           const field = payloadDeclaration!.fields.find((candidate) => candidate.name === fieldBinding.fieldName)!;
-          if (hasCleanupType(field.type.name, structs, enums, state.foreignTypes)) {
+          if (hasOwnershipType(field.type.name, structs, enums, state)) {
             state.borrowOrigins.set(fieldBinding.bindingName, { location: statement.location, kind: "match" });
           }
         }
@@ -1825,7 +1884,14 @@ function inferClosureExpression(
     if (parseSliceType(type)) {
       throw new DiagnosticError(fileName, capture.location, "capturing Slice values requires an explicit lifetime contract");
     }
-    const cleanupBearing = hasCleanupType(type, structs, enums, state.foreignTypes);
+    if (expression.captureMode === "move" && hasMoveOnlyForeignType(type, structs, enums, state.foreignNamedTypes)) {
+      throw new DiagnosticError(fileName, capture.location, `owned closure environments cannot store move-only native ${type} values yet`, {
+        code: "Z0240",
+        notes: ["owned closure environments currently use storage that does not construct non-trivial C++ values"],
+        helps: ["borrow the value in a non-escaping closure, or move it through a synchronous function"],
+      });
+    }
+    const cleanupBearing = hasOwnershipType(type, structs, enums, state);
     const mode: ClosureCaptureInfo["mode"] = capture.mutated
       ? "inout"
       : (expression.captureMode === "move" && !cleanupBearing) || type === "cstring" ? "value" : "in";
@@ -1959,7 +2025,7 @@ function finalizeClosureFunctionValue(
   state.closures.set(expression.location.offset, closure);
   state.expressionTypes.set(expression.location.offset, expectedType);
   for (const capture of closure.owned ? closure.captures : []) {
-    if (!hasCleanupType(capture.type, structs, enums, state.foreignTypes)) continue;
+    if (!hasOwnershipType(capture.type, structs, enums, state)) continue;
     consumeOwnedValue(
       { kind: "identifier", name: capture.name, location: capture.location },
       capture.type,
@@ -2223,7 +2289,7 @@ function inferMatchExpression(
       helps: ["bind the enum value before borrowing it, or remove `in` to consume the value"],
     });
   }
-  if (!borrowed && hasCleanupType(subjectType, structs, enums, state.foreignTypes)) {
+  if (!borrowed && hasOwnershipType(subjectType, structs, enums, state)) {
     consumeOwnedValue(expression.expression, subjectType, locals, structs, enums, fileName, state);
   }
 
@@ -2262,25 +2328,25 @@ function inferMatchExpression(
       armLocals.set(borrowedRoot.name, `${borrowedPrefix}${underlyingType(borrowedRootType)}`);
     }
     if (variant.payload && arm.binding && arm.bindingLocation) {
-      const payloadBorrowed = borrowed && hasCleanupType(variant.payload.name, structs, enums, state.foreignTypes);
+      const payloadBorrowed = borrowed && hasOwnershipType(variant.payload.name, structs, enums, state);
       armLocals.set(arm.binding, payloadBorrowed ? `${borrowedPrefix}${variant.payload.name}` : variant.payload.name);
       state.bindingTypes.set(arm.bindingLocation.offset, variant.payload.name);
     }
     const payloadDeclaration = variant.payload ? structs.get(variant.payload.name) : null;
     for (const fieldBinding of arm.objectBindings ?? []) {
       const field = payloadDeclaration!.fields.find((candidate) => candidate.name === fieldBinding.fieldName)!;
-      const fieldBorrowed = hasCleanupType(field.type.name, structs, enums, state.foreignTypes);
+      const fieldBorrowed = hasOwnershipType(field.type.name, structs, enums, state);
       armLocals.set(fieldBinding.bindingName, fieldBorrowed ? `${borrowedPrefix}${field.type.name}` : field.type.name);
       state.bindingTypes.set(fieldBinding.bindingLocation.offset, field.type.name);
     }
     const patternNames = [arm.binding, ...(arm.objectBindings ?? []).map((field) => field.bindingName)].filter((name): name is string => Boolean(name));
     const previousBorrows = new Map(patternNames.map((name) => [name, state.borrowOrigins.get(name)]));
-    if (borrowed && arm.binding && variant.payload && hasCleanupType(variant.payload.name, structs, enums, state.foreignTypes)) {
+    if (borrowed && arm.binding && variant.payload && hasOwnershipType(variant.payload.name, structs, enums, state)) {
       state.borrowOrigins.set(arm.binding, { location: expression.location, kind: "match" });
     }
     for (const fieldBinding of arm.objectBindings ?? []) {
       const field = payloadDeclaration!.fields.find((candidate) => candidate.name === fieldBinding.fieldName)!;
-      if (hasCleanupType(field.type.name, structs, enums, state.foreignTypes)) {
+      if (hasOwnershipType(field.type.name, structs, enums, state)) {
         state.borrowOrigins.set(fieldBinding.bindingName, { location: expression.location, kind: "match" });
       }
     }
@@ -2411,7 +2477,7 @@ function requireConsoleFormattable(
   visiting = new Set<string>(),
 ): void {
   const actual = String(underlyingType(type));
-  if (hasCleanupType(actual, structs, enums, state.foreignTypes)
+  if (hasOwnershipType(actual, structs, enums, state)
     && !isNamedStorageExpression(expression)
     && expression.kind !== "string") {
     throw new DiagnosticError(fileName, expression.location, "console formatting of a cleanup-bearing temporary requires stored ownership", {
@@ -2889,7 +2955,7 @@ function inferExpressionInner(
       if (!array && !slice && !dynamic) {
         throw new DiagnosticError(fileName, expression.object.location, `indexing requires an array or Slice, found ${ownerType}`);
       }
-      if (hasCleanupType(ownerType, structs, enums, state.foreignTypes) && !isNamedStorageExpression(expression.object)) {
+      if (hasOwnershipType(ownerType, structs, enums, state) && !isNamedStorageExpression(expression.object)) {
         throw new DiagnosticError(fileName, expression.object.location, "a cleanup-bearing array temporary must be bound before indexing");
       }
       const indexType = inferExpression(expression.index, locals, globals, structs, enums, fileName, state);
@@ -3069,7 +3135,7 @@ function inferExpressionInner(
       const slice = parseSliceType(receiverValueType);
       const dynamic = parseDynamicArrayType(receiverValueType);
       if (array || slice || dynamic) {
-        if (hasCleanupType(receiverType, structs, enums, state.foreignTypes) && !isNamedStorageExpression(expression.object)) {
+        if (hasOwnershipType(receiverType, structs, enums, state) && !isNamedStorageExpression(expression.object)) {
           throw new DiagnosticError(fileName, expression.object.location, "a cleanup-bearing array temporary must be bound before reading its length");
         }
         if (expression.property !== "length" && !(dynamic && expression.property === "capacity")) {
@@ -3095,7 +3161,7 @@ function inferExpressionInner(
         state.foreignExpressionTypes.set(expression.location.offset, String(propertyType));
         return propertyType;
       }
-      if (hasCleanupType(receiverType, structs, enums, state.foreignTypes) && !isNamedStorageExpression(expression.object)) {
+      if (hasOwnershipType(receiverType, structs, enums, state) && !isNamedStorageExpression(expression.object)) {
         throw new DiagnosticError(fileName, expression.object.location, "a cleanup-bearing temporary must be bound before borrowing one of its members");
       }
       const declaration = structs.get(receiverValueType);
@@ -3569,7 +3635,7 @@ function inferExpressionInner(
           if (field.visibility === "private" && state.activeReceiver !== declaration.name) {
             throw new DiagnosticError(fileName, expression.callee.location, `field ${JSON.stringify(field.name)} is private to class ${JSON.stringify(declaration.name)}`);
           }
-          if (hasCleanupType(receiverType, structs, enums, state.foreignTypes) && !isNamedStorageExpression(expression.callee.object)) {
+          if (hasOwnershipType(receiverType, structs, enums, state) && !isNamedStorageExpression(expression.callee.object)) {
             throw new DiagnosticError(fileName, expression.callee.object.location, "a cleanup-bearing temporary must be bound before calling one of its function fields");
           }
           rejectLabeledArguments(expression.argumentLabels, expression.location, fileName);
@@ -3606,7 +3672,7 @@ function inferExpressionInner(
         rejectLabeledArguments(expression.argumentLabels, expression.location, fileName);
         if (
           method.receiverMode !== "move"
-          && hasCleanupType(receiverType, structs, enums, state.foreignTypes)
+          && hasOwnershipType(receiverType, structs, enums, state)
           && !isNamedStorageExpression(expression.callee.object)
         ) {
           throw new DiagnosticError(fileName, expression.callee.object.location, "a cleanup-bearing temporary must be bound before borrowing it for a method call");
@@ -3999,7 +4065,7 @@ function checkArguments(
       const actual = inferExpression(argument, locals, globals, structs, enums, fileName, state);
       const borrowedActual = parseViewType(String(actual))?.target ?? actual;
       if (
-        hasCleanupType(borrowedActual, structs, enums, state.foreignTypes)
+        hasOwnershipType(borrowedActual, structs, enums, state)
         && !isNamedStorageExpression(argument)
         && argument.kind !== "template"
       ) {
@@ -4125,7 +4191,7 @@ function consumeOwnedValue(
   fileName: string,
   state: AnalysisState,
 ): void {
-  if (!hasCleanupType(type, structs, enums, state.foreignTypes)) return;
+  if (!hasOwnershipType(type, structs, enums, state)) return;
   if (state.objcStringsToZ.has(expression.location.offset)) return;
   const actual = String(underlyingType(type));
   if (parseWeakType(actual)) {
@@ -4149,7 +4215,7 @@ function consumeOwnedValue(
     return;
   }
   if (expression.kind === "member" || expression.kind === "index") {
-    throw new DiagnosticError(fileName, expression.location, "cannot move a cleanup-bearing field or element out of its owner", {
+    throw new DiagnosticError(fileName, expression.location, "cannot move an ownership-bearing field or element out of its owner", {
       code: "Z0204",
       notes: [
         "the containing aggregate still owns this value and remains responsible for its deterministic cleanup",
@@ -4256,7 +4322,7 @@ function movedValueError(
         message: maybe ? "ownership is transferred on at least one path here" : "ownership was transferred here",
         length: expression.name.length,
       }] : [],
-      notes: ["cleanup-bearing values have a single owner and cannot be used after ownership transfers"],
+      notes: ["ownership-bearing values have a single owner and cannot be used after ownership transfers"],
       helps: [
         maybe
           ? "make ownership transfer consistent across every branch, or keep the value borrowed"
@@ -4274,7 +4340,7 @@ function rejectForeignOwnedMove(
   fileName: string,
   state: AnalysisState,
 ): void {
-  if (!hasCleanupType(type, structs, enums, state.foreignTypes)) return;
+  if (!hasOwnershipType(type, structs, enums, state)) return;
   throw new DiagnosticError(
     fileName,
     expression.location,
@@ -4658,7 +4724,7 @@ function analyzeForLoop(
     const bodyLocals = new Map(header);
     const rootType = bodyLocals.get(root.name);
     if (rootType) bodyLocals.set(root.name, `${borrowedPrefix}${underlyingType(rootType)}`);
-    const elementBinding = hasCleanupType(collection.elementType, structs, enums, state.foreignTypes)
+    const elementBinding = hasOwnershipType(collection.elementType, structs, enums, state)
       ? `${borrowedPrefix}${collection.elementType}`
       : collection.elementType;
     bodyLocals.set(statement.binding, elementBinding);
@@ -4667,7 +4733,7 @@ function analyzeForLoop(
     const previousIterationBorrow = state.iterationBorrowOrigins.get(root.name);
     const previousElementBorrow = state.borrowOrigins.get(statement.binding);
     state.iterationBorrowOrigins.set(root.name, statement.location);
-    if (hasCleanupType(collection.elementType, structs, enums, state.foreignTypes)) {
+    if (hasOwnershipType(collection.elementType, structs, enums, state)) {
       state.borrowOrigins.set(statement.binding, { location: statement.location, kind: "iteration" });
     }
     state.loopStack.push(frame);
@@ -4736,6 +4802,45 @@ function hasCleanupType(
     ));
   visiting.delete(actual);
   return result;
+}
+
+function hasOwnershipType(
+  type: ValueType,
+  structs: Map<string, StructDeclaration>,
+  enums: Map<string, EnumDeclaration>,
+  state: AnalysisState,
+): boolean {
+  return hasCleanupType(type, structs, enums, state.foreignTypes)
+    || hasMoveOnlyForeignType(type, structs, enums, state.foreignNamedTypes);
+}
+
+function hasMoveOnlyForeignType(
+  type: ValueType,
+  structs: Map<string, StructDeclaration>,
+  enums: Map<string, EnumDeclaration>,
+  foreignNamedTypes: ReadonlyMap<string, ForeignNamedType>,
+  visiting = new Set<string>(),
+): boolean {
+  const actual = String(underlyingType(type));
+  if (actual === "unknown" || actual === "never" || visiting.has(actual)) return false;
+  const foreign = foreignNamedTypes.get(actual);
+  if (foreign?.kind === "value") return foreign.lifecycle.move && !foreign.lifecycle.copy;
+  const array = parseFixedArrayType(actual);
+  if (array) return hasMoveOnlyForeignType(array.elementType, structs, enums, foreignNamedTypes, visiting);
+  const dynamic = parseDynamicArrayType(actual);
+  if (dynamic) return hasMoveOnlyForeignType(dynamic.elementType, structs, enums, foreignNamedTypes, visiting);
+  const declaration = structs.get(actual);
+  const enumDeclaration = enums.get(actual);
+  if (!declaration && !enumDeclaration) return false;
+  if (declaration?.kind === "class") return false;
+  visiting.add(actual);
+  const result = declaration
+    ? declaration.fields.some((field) => hasMoveOnlyForeignType(field.type.name, structs, enums, foreignNamedTypes, visiting))
+    : enumDeclaration!.variants.some((variant) => (
+      variant.payload && hasMoveOnlyForeignType(variant.payload.name, structs, enums, foreignNamedTypes, visiting)
+    ));
+  visiting.delete(actual);
+  return Boolean(result);
 }
 
 function isForeignMember(
@@ -5713,6 +5818,13 @@ function validateType(
   const dynamic = parseDynamicArrayType(type.name);
   if (dynamic) {
     validateType({ name: dynamic.elementType, location: type.location }, structs, enums, foreignNamedTypes, fileName, false);
+    if (hasMoveOnlyForeignType(dynamic.elementType, structs, enums, foreignNamedTypes)) {
+      throw new DiagnosticError(fileName, type.location, "Array cannot store move-only native values in the first C++ ownership tier", {
+        code: "Z0240",
+        notes: ["dynamic Array growth currently relocates elements as raw storage"],
+        helps: ["use direct synchronous bindings or fixed owner structs until native container relocation is implemented"],
+      });
+    }
     return;
   }
   const array = parseFixedArrayType(type.name);

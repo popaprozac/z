@@ -673,15 +673,15 @@ function validateForeignValueLifecycle(
   requireCapability("copy", contract.copy, contract.copyLocation);
   requireCapability("move", contract.move, contract.moveLocation);
   requireCapability("deinit", contract.deinit, contract.deinitLocation);
-  if (!contract.copy) {
+  if (!contract.copy && !contract.move) {
     throw new DiagnosticError(
       fileName,
-      contract.moveLocation ?? contract.location,
-      `move-only foreign value type ${JSON.stringify(contract.name)} is not executable in the first lifecycle tier`,
+      contract.location,
+      `foreign value type ${JSON.stringify(contract.name)} is neither copyable nor movable`,
       {
         code: "Z0801",
-        notes: ["FIIR records native move capability, but Z lowering does not yet model moved-from foreign storage"],
-        helps: ["use a copyable native value contract until dedicated foreign move lowering lands"],
+        notes: ["an owning Z binding needs at least one Clang-proven transfer operation"],
+        helps: ["expose an owned pointer contract, or make the native value copyable or movable"],
       },
     );
   }
