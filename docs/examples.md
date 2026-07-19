@@ -74,6 +74,7 @@ Read [`async-model.md`](async-model.md) alongside these examples:
 | Cancellation | [`async-cancellation.z`](../examples/async/async-cancellation.z) |
 | Scheduler-aware timers | [`async-delay.z`](../examples/async/async-delay.z) |
 | Owned values across suspension | [`async-ownership.z`](../examples/async/async-ownership.z), [`async-owned-enums.z`](../examples/async/async-owned-enums.z) |
+| Move-only native values across suspension | [`async-native-ownership.z`](../examples/async/async-native-ownership.z) |
 | Async methods | [`async-methods.z`](../examples/async/async-methods.z) |
 
 ```sh

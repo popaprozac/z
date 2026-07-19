@@ -2009,6 +2009,27 @@ function memberCompletions(
   }
   if (!context && prefix.length > 0) {
     const completionStart = offset - prefix.length;
+    const methodProbes = new Set<string>();
+    for (const declaration of importContext.semanticInfo.foreignNamedTypes.values()) {
+      if (declaration.kind !== "value") continue;
+      for (const method of declaration.methods) {
+        if (
+          method.name.startsWith(prefix)
+          && method.overloads.some((overload) => overload.parameters.length === 0)
+        ) methodProbes.add(method.name);
+      }
+    }
+    for (const candidate of [...methodProbes].sort((left, right) => left.length - right.length || left.localeCompare(right))) {
+      const probeSource = source.slice(0, completionStart) + `${candidate}()` + source.slice(tailOffset);
+      context = safeAnalysis(probeSource, fileName);
+      if (context) {
+        resolvedOffset = receiverOffset;
+        break;
+      }
+    }
+  }
+  if (!context && prefix.length > 0) {
+    const completionStart = offset - prefix.length;
     const propertyProbes = new Set<string>();
     for (const declaration of importContext.semanticInfo.foreignInterfaces.values()) {
       for (const property of declaration.properties) {

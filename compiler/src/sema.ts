@@ -1438,11 +1438,16 @@ function analyzeStatement(
         state.viewBindingOwners.set(statement.nameLocation.offset, origin.owner);
         return;
       }
-      if (state.activeFunction?.async && hasMoveOnlyForeignType(variableType, structs, enums, state.foreignNamedTypes)) {
+      const directForeignValue = state.foreignNamedTypes.get(String(underlyingType(variableType)));
+      if (
+        state.activeFunction?.async
+        && hasMoveOnlyForeignType(variableType, structs, enums, state.foreignNamedTypes)
+        && directForeignValue?.kind !== "value"
+      ) {
         throw new DiagnosticError(fileName, statement.location, "async locals cannot store move-only native values in the first C++ ownership tier", {
           code: "Z0704",
-          notes: ["suspended task frames currently use storage that does not construct non-trivial C++ values"],
-          helps: ["keep the native ownership operation in a synchronous helper until native async-frame storage is implemented"],
+          notes: ["direct move-only native locals work across suspension; aggregates containing them need recursive frame construction"],
+          helps: ["keep the native value in a direct async local until aggregate native frame storage is implemented"],
         });
       }
       if (statement.initializer.kind === "closure") {

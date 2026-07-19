@@ -1,0 +1,16 @@
+import console from "std/console";
+import { delay } from "std/time";
+import native from "../../tests/fixtures/move-only.hpp";
+
+async function inspectAfterDelay(): i32 {
+  const resource = native.zcpp.UniqueValue(42);
+  await delay(1);
+  return resource.value();
+}
+
+async function main(): i32 {
+  const answer = await inspectAfterDelay();
+  const live = native.zcpp.unique_live();
+  console.log(`answer=${answer}, live=${live}`);
+  return answer - 42 + live;
+}

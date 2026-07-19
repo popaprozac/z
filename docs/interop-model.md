@@ -93,11 +93,15 @@ calls, and aggregate construction. Native lexical destruction handles both the
 destination and the valid moved-from source storage; no wrapper allocation or
 Z destructor dispatch is added.
 
-The first move-only tier is deliberately synchronous. Direct locals, owned
-parameters and returns, and whole Z value structs are executable. Dynamic
-arrays, enum payloads, ARC class fields, owned closure environments, and async
-frames reject move-only native storage until those generated storage paths can
-construct and relocate non-trivial C++ objects correctly.
+The first move-only tier covers direct synchronous locals, owned parameters and
+returns, whole Z value structs, dynamic arrays, and named enum payloads. A
+direct move-only native local may also survive an async suspension: its task
+frame uses aligned raw storage, placement construction, a semantic live flag,
+and deterministic `destroy_at` cleanup. Async parameters, returns, hidden
+results, and aggregates containing native values remain separate construction
+paths. ARC class fields and owned closure environments likewise remain deferred
+until those generated storage paths can construct and relocate non-trivial C++
+objects correctly.
 
 C++ named-value references map onto the existing Z capability model:
 

@@ -798,7 +798,11 @@ function generateRuntime(
   fileName: string,
 ): string {
   const usesDelay = plans.some((plan) => [...plan.awaits.values()].some((site) => site.intrinsic === "delay"));
+  const usesNativeFrameStorage = plans.some((plan) => (
+    [...plan.locals.values()].some((type) => isDirectForeignFrameValue(type, plan.types))
+  ));
   const lines = [
+    ...(usesNativeFrameStorage ? ["#include <memory>", "#include <new>", ""] : []),
     "/* Z async Phase 1: FIFO-scheduled ownership-aware task frames. */",
     "typedef struct Z_AsyncTask Z_AsyncTask;",
     "typedef struct Z_AsyncExecutor Z_AsyncExecutor;",
@@ -1017,7 +1021,12 @@ function generateFrame(
     lines.push(`  ${cFrameType(plan.declaration.errorType.name, plan.types)} error;`);
   }
   for (const [name, type] of plan.locals) {
-    lines.push(`  ${cFrameType(type, plan.types)} ${frameField(name)};`);
+    const foreign = directForeignFrameValue(type, plan.types);
+    if (foreign) {
+      lines.push(`  alignas(${foreign.cName}) unsigned char ${frameField(name)}[sizeof(${foreign.cName})];`);
+    } else {
+      lines.push(`  ${cFrameType(type, plan.types)} ${frameField(name)};`);
+    }
     if (hasFrameCleanup(type, plan.types)) lines.push(`  bool ${frameLiveField(name)};`);
   }
   for (const site of plan.suspensions.values()) {
@@ -1063,7 +1072,7 @@ function generateDestroy(
     if (!hasFrameCleanup(type, plan.types)) continue;
     lines.push(
       `  if (frame->${frameLiveField(name)}) {`,
-      `    ${frameCleanup(`frame->${frameField(name)}`, type, plan.types)}`,
+      `    ${frameCleanup(frameStoredValue(name, type, plan.types), type, plan.types)}`,
       `    frame->${frameLiveField(name)} = false;`,
       "  }",
     );
@@ -1297,8 +1306,13 @@ function generatePoll(
         state += 1;
       } else {
         const type = plan.locals.get(statement.name)!;
+        const value = emitFrameExpression(initializer, plan, fileName);
+        const foreign = directForeignFrameValue(type, plan.types);
+        const initialize = foreign
+          ? `new (frame->${frameField(statement.name)}) ${foreign.cName}(${value});`
+          : `frame->${frameField(statement.name)} = ${value};`;
         cases.push(caseBlock(state, [
-          `frame->${frameField(statement.name)} = ${emitFrameExpression(initializer, plan, fileName)};`,
+          initialize,
           ...(hasFrameCleanup(type, plan.types)
             ? [`frame->${frameLiveField(statement.name)} = true;`]
             : []),
@@ -1869,11 +1883,12 @@ function emitFrameExpression(
         unsupported(fileName, expression.location, "the first async lowering slice cannot reference this value");
       }
       {
-        const value = `frame->${frameField(expression.name)}`;
-        if (plan.types.semanticInfo.movedExpressions.has(expression.location.offset)) {
-          return `(frame->${frameLiveField(expression.name)} = false, ${value})`;
-        }
         const type = plan.locals.get(expression.name)!;
+        const value = frameStoredValue(expression.name, type, plan.types);
+        if (plan.types.semanticInfo.movedExpressions.has(expression.location.offset)) {
+          const moved = isDirectForeignFrameValue(type, plan.types) ? `std::move(${value})` : value;
+          return `(frame->${frameLiveField(expression.name)} = false, ${moved})`;
+        }
         if (
           plan.types.semanticInfo.managedCopies.has(expression.location.offset)
           && plan.types.structs.get(type)?.kind === "class"
@@ -1964,6 +1979,16 @@ function emitFrameExpression(
           return `(${resultCName(enumeration.name)}){ .tag = ${resultTag(enumeration.name, variant.name)}${payload} }`;
         }
       }
+      const cxxMethod = plan.types.semanticInfo.foreignCxxMethodCalls.get(expression.location.offset);
+      if (cxxMethod && expression.callee.kind === "member") {
+        const receiver = emitFrameExpression(expression.callee.object, plan, fileName);
+        const arguments_ = emitSyncCallArguments(expression, plan, fileName);
+        return `${receiver}.${cxxMethod.name}(${arguments_.join(", ")})`;
+      }
+      const foreignFunction = plan.types.semanticInfo.foreignFunctionNames.get(expression.callee.location.offset);
+      if (foreignFunction) {
+        return `${foreignFunction}(${emitSyncCallArguments(expression, plan, fileName).join(", ")})`;
+      }
       if (
         expression.callee.kind === "identifier"
         && plan.types.structs.get(expression.callee.name)?.kind === "struct"
@@ -2037,6 +2062,8 @@ function emitSyncCallArguments(
   return expression.arguments.map((argument, index) => {
     const value = emitFrameExpression(argument, plan, fileName);
     if (standardSignature?.parameters[index]?.abi === "value") return value;
+    if (plan.types.semanticInfo.foreignCxxArgumentAccesses.has(argument.location.offset)) return value;
+    if (plan.types.semanticInfo.foreignArgumentAccesses.get(argument.location.offset) === "in") return `&(${value})`;
     const access = plan.types.semanticInfo.nativeArgumentAccesses.get(argument.location.offset);
     if (!access) return value;
     const type = frameExpressionType(argument, plan);
@@ -2093,12 +2120,15 @@ function cFrameType(type: string, types: AsyncTypeContext): string {
   const aggregate = types.structs.get(type);
   if (aggregate) return aggregate.kind === "class" ? `Z_${type} *` : `Z_${type}`;
   if (types.enums.has(type)) return resultCName(type);
+  const foreign = types.semanticInfo.foreignNamedTypes.get(type);
+  if (foreign) return foreign.cName;
   throw new Error(`missing async aggregate ABI type ${JSON.stringify(type)}`);
 }
 
 function isSupportedFrameType(type: string, types: AsyncTypeContext, visiting = new Set<string>()): boolean {
   if (parseTaskType(type)) return true;
   if (scalarTypes.has(type)) return true;
+  if (isDirectForeignFrameValue(type, types)) return true;
   if (visiting.has(type)) return true;
   const aggregate = types.structs.get(type);
   if (aggregate) {
@@ -2122,6 +2152,7 @@ function isSupportedFrameType(type: string, types: AsyncTypeContext, visiting = 
 
 function hasFrameCleanup(type: string, types: AsyncTypeContext, visiting = new Set<string>()): boolean {
   if (visiting.has(type)) return false;
+  if (directForeignFrameValue(type, types)?.lifecycle.deinit) return true;
   const aggregate = types.structs.get(type);
   if (aggregate?.kind === "class") return true;
   const enumeration = types.enums.get(type);
@@ -2138,6 +2169,7 @@ function hasFrameCleanup(type: string, types: AsyncTypeContext, visiting = new S
 }
 
 function frameCleanup(value: string, type: string, types: AsyncTypeContext): string {
+  if (directForeignFrameValue(type, types)?.lifecycle.deinit) return `std::destroy_at(&(${value}));`;
   const aggregate = types.structs.get(type);
   if (aggregate?.kind === "class") return `Z_${type}_release(${value});`;
   if (aggregate?.kind === "struct") return `Z_${type}_deinit(&(${value}));`;
@@ -2153,6 +2185,23 @@ function frameCleanup(value: string, type: string, types: AsyncTypeContext): str
     return `switch ((${value}).tag) {\n${indent(cases.join("\n"), 2)}\n  default:\n    break;\n}`;
   }
   throw new Error(`missing async cleanup lowering for ${JSON.stringify(type)}`);
+}
+
+function directForeignFrameValue(type: string, types: AsyncTypeContext) {
+  const foreign = types.semanticInfo.foreignNamedTypes.get(type);
+  return foreign?.kind === "value" && foreign.lifecycle.move && !foreign.lifecycle.copy
+    ? foreign
+    : null;
+}
+
+function isDirectForeignFrameValue(type: string, types: AsyncTypeContext): boolean {
+  return directForeignFrameValue(type, types) !== null;
+}
+
+function frameStoredValue(name: string, type: string, types: AsyncTypeContext): string {
+  const field = `frame->${frameField(name)}`;
+  const foreign = directForeignFrameValue(type, types);
+  return foreign ? `(*std::launder(reinterpret_cast<${foreign.cName} *>(${field})))` : field;
 }
 
 function frameExpressionType(

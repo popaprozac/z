@@ -72,7 +72,7 @@ an inferred receiver-tied view.
 | C callbacks | Partial | Call-only and caller-thread escaping callbacks use `.zd` with named context and exact release contracts; cross-thread callbacks remain unsupported |
 | Native availability | Implemented host slice | Explicit `z.json` platform/minimum target, introduced/obsoleted errors, deprecation warnings, native source locations, and matching Clang/Swift deployment flags; cross-compilation and runtime guards remain |
 | Objective-C | Partial | ARC classes/fields, methods, properties/global object constants, labels, nullability, niche-backed `Option.fromNullable`, owned `String`/`NSString` copies, escaping blocks and persistent observer tokens |
-| C++ | Partial | Hierarchical/selectively aliased namespaces, typed overloads, records, and `.zd`-contracted copyable or move-only RAII values; move-only values work in synchronous locals, calls, returns, Z structs, dynamic arrays, and named enums; named references and receiver qualifiers map to existing Z capabilities with direct native lowering; reference returns, compiler `Option`/`Result` payloads, ARC/closure/async storage, capability-changing overloads, and templates remain |
+| C++ | Partial | Hierarchical/selectively aliased namespaces, typed overloads, records, and `.zd`-contracted copyable or move-only RAII values; move-only values work in synchronous locals/calls/returns, Z structs, dynamic arrays, named enums, and direct async locals across suspension; named references and receiver qualifiers map to existing Z capabilities with direct native lowering; reference returns, compiler `Option`/`Result` payloads, ARC/closure storage, nested native async storage, capability-changing overloads, and templates remain |
 | Swift via Objective-C | Implemented slice | Generated compatibility header, classes/properties/methods, automatic local dylib build/link |
 | Swift value via C++ | Implemented probe | Native static construction, const/mutable instance methods, struct return/copy/aggregate storage/round-trip/destruction, and exact owned `String` returns without handwritten shim |
 | Broader Swift surface | Planned vertical slices | Length-aware `String` inputs, property sugar, generics, noncopyable values, protocols, errors, async, packages |
@@ -100,11 +100,11 @@ until the boundary is length-aware in both directions.
 | Area | Status | Current boundary |
 | --- | --- | --- |
 | Async syntax and typing | Implemented | Functions/methods, `await`, `spawn`, task scopes, typed errors |
-| Stackless task frames | Partial | Scalars, aggregates, owned structs/enums/classes across suspension |
+| Stackless task frames | Partial | Scalars, aggregates, owned structs/enums/classes, and direct move-only C++ locals across suspension |
 | Executor | Implemented bootstrap | Deterministic single-thread FIFO ready queue |
 | Structured scopes | Implemented slice | Lexical child joins, sibling/descendant cancellation on propagation |
 | Timers | Implemented slice | Scheduler-aware monotonic `delay`; blocking `sleep` remains synchronous |
-| Sync work in async frames | Partial | Z calls/methods, console, checked arithmetic, concise matches |
+| Sync work in async frames | Partial | Z and direct C++ calls/methods, console, checked arithmetic, concise matches |
 | Embedded awaits | Partial | Left-to-right cleanup-free values and awaited conditions |
 | Lazy/suspending expressions | Planned | `&&`, `||`, ternaries, value `if`, suspending match arms, owned hidden results |
 | Channels, actors, executors | Planned direction | API and sendability remain intentionally unsettled |
@@ -155,6 +155,9 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
 - [`examples/interop/cpp/cpp-references.z`](../examples/interop/cpp/cpp-references.z): C++ named-value
   references and receiver qualifiers mapped onto existing Z `in`, `inout`, and
   owned-transfer semantics with direct lvalue/`std::move` lowering.
+- [`examples/async/async-native-ownership.z`](../examples/async/async-native-ownership.z): a move-only
+  C++ value constructed directly in aligned task-frame storage, borrowed after
+  suspension, and deterministically destroyed before its caller resumes.
 - `bun test`: compiler, runtime, diagnostics, interop, async, and editor
   regression suite.
 
@@ -168,8 +171,9 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    arrays use raw native storage, move construction during growth, and reverse
    destruction. Named enums manage the active tagged-union payload across moves
    and replacement. Both compose with Z-managed cleanup. Compiler `Option` and
-   `Result` payloads, ARC fields, closure environments, and async frames remain
-   later storage tiers.
+   `Result` payloads, ARC fields, and closure environments remain later storage
+   tiers. Direct move-only C++ async locals now work across suspension; nested
+   aggregate, parameter, return, and hidden-result frame storage remain.
 3. **Larger application probe — implemented.** The multi-module
    `document-workspace` combines a move-only native lease, dynamic arrays,
    named enum transfer, cleanup-bearing errors, `try`/`attempt`, mutable methods,

@@ -6888,6 +6888,100 @@ test("moves owned structs and retains ARC classes across async task frames", () 
   assert.equal(failed.stdout, "released failed session 9\n");
 });
 
+test("constructs and destroys move-only C++ values across async suspension", () => {
+  const example = resolve(projectRoot, "examples/async/async-native-ownership.z");
+  const source = readFileSync(example, "utf8");
+  const generated = compileToNative(source, example).source;
+  assert.match(generated, /#include <memory>/);
+  assert.match(generated, /#include <new>/);
+  assert.match(generated, /alignas\(zcpp::UniqueValue\) unsigned char value_resource\[sizeof\(zcpp::UniqueValue\)\]/);
+  assert.match(generated, /new \(frame->value_resource\) zcpp::UniqueValue\(zcpp::UniqueValue\(42\)\)/);
+  assert.match(generated, /std::launder\(reinterpret_cast<zcpp::UniqueValue \*>\(frame->value_resource\)\)/);
+  assert.match(generated, /std::destroy_at\(&\(\(\*std::launder\(reinterpret_cast<zcpp::UniqueValue \*>\(frame->value_resource\)\)\)\)\)/);
+
+  const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, "answer=42, live=0\n");
+
+  const resourceOffset = source.indexOf("resource =") + 2;
+  assert.match(hover(source, example, resourceOffset)?.contents.value ?? "", /resource: native\.zcpp\.UniqueValue/);
+  const methodSource = source.replace("resource.value()", "resource.va");
+  const methodOffset = methodSource.indexOf("resource.va") + "resource.va".length;
+  assert.match(
+    completions(methodSource, example, methodOffset).find((item) => item.label === "value")?.detail ?? "",
+    /value\(\): i32/,
+  );
+
+  const directory = mkdtempSync("/tmp/z-async-native-cancel-");
+  const cancellation = resolve(directory, "main.z");
+  const header = resolve(projectRoot, "tests/fixtures/move-only.hpp");
+  writeFileSync(cancellation, `
+    import { delay } from "std/time";
+    import native from ${JSON.stringify(header)};
+
+    async function failOwned(): i32 throws i32 {
+      const resource = native.zcpp.UniqueValue(7);
+      await delay(1);
+      throw resource.value();
+    }
+
+    async function linger(): void {
+      const resource = native.zcpp.UniqueValue(9);
+      await delay(1000);
+      return;
+    }
+
+    async function coordinate(): i32 throws i32 {
+      const failure = spawn failOwned();
+      spawn linger();
+      return try await failure;
+    }
+
+    async function main(): i32 {
+      const observed = attempt await coordinate();
+      return native.zcpp.unique_live();
+    }
+  `);
+  const cancelled = spawnSync(process.execPath, [cli, "run", cancellation], { encoding: "utf8" });
+  assert.equal(cancelled.status, 0, cancelled.stderr);
+
+  const consuming = resolve(directory, "consume.z");
+  writeFileSync(consuming, `
+    import { delay } from "std/time";
+    import native from ${JSON.stringify(header)};
+
+    async function finishAfterDelay(): i32 {
+      const resource = native.zcpp.UniqueValue(40);
+      await delay(1);
+      return resource.finish(2);
+    }
+
+    async function main(): i32 {
+      const answer = await finishAfterDelay();
+      return answer - 42 + native.zcpp.unique_live();
+    }
+  `);
+  const consumingGenerated = compileToNative(readFileSync(consuming, "utf8"), consuming).source;
+  assert.match(consumingGenerated, /live_resource = false, std::move\(\(\*std::launder\(reinterpret_cast<zcpp::UniqueValue/);
+  const consumed = spawnSync(process.execPath, [cli, "run", consuming], { encoding: "utf8" });
+  assert.equal(consumed.status, 0, consumed.stderr);
+
+  const aggregateBoundary = `
+    import { delay } from "std/time";
+    import native from ${JSON.stringify(header)};
+    struct Owner { resource: native.zcpp.UniqueValue; }
+    async function use(): i32 {
+      const owner = Owner({ resource: native.zcpp.UniqueValue(42) });
+      await delay(1);
+      return owner.resource.value();
+    }
+  `;
+  const boundaryDiagnostic = diagnostics(aggregateBoundary, resolve(directory, "aggregate.z"))[0];
+  assert.equal(boundaryDiagnostic.code, "Z0704");
+  assert.match(boundaryDiagnostic.message, /async locals cannot store move-only native values/);
+  assert.match(boundaryDiagnostic.message, /direct move-only native locals work across suspension/);
+});
+
 test("destroys active Option and Result payloads in async task frames", () => {
   const example = resolve(projectRoot, "examples/async/async-owned-enums.z");
   const source = readFileSync(example, "utf8");

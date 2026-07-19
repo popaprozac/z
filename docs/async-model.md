@@ -32,11 +32,11 @@ console.log("after");
 ```
 
 Top-level Z functions, static and instance methods, parameter capabilities, the
-blocking `sleep`, and typed `console` formatting execute in source order inside
-the current native task-frame tier. These synchronous calls block that executor
-thread until they return. Direct foreign-call lowering inside async frames
-remains follow-up work and will obey the same rule unless an API adapter exposes
-an explicitly suspending operation.
+blocking `sleep`, typed `console` formatting, and direct supported C++ calls
+execute in source order inside the current native task-frame tier. These
+synchronous calls block that executor thread until they return. A foreign API
+becomes suspending only through an explicit async adapter; importing it never
+silently changes its scheduling behavior.
 
 An async call is valid only beneath `await` or `spawn`. Calling an async
 function never silently starts detached work:
@@ -123,11 +123,16 @@ synchronous or foreign call. A failure retained with `attempt await` is handled
 as a `Result` value and therefore does not cancel sibling work. Cancelling a
 task suspended on `delay` removes its pending timer before task-frame cleanup.
 
-The first async ownership tier permits owned values, ARC class references, and
-owned closures in task frames. It rejects `in`, `inout`, `out`, `Slice<T>`, and
-borrowed struct receivers in async signatures, and rejects any other live
-borrow at an `await`. Scoped async borrowing can be added later from real
-zero-copy APIs without exposing general lifetime syntax.
+The first async ownership tier permits owned values, ARC class references,
+owned closures, and direct move-only native locals in task frames. Native
+locals use aligned raw storage so a non-default-constructible C++ value begins
+its lifetime through placement construction and ends exactly once through its
+live flag. This path is exercised across normal completion, consuming transfer,
+failure, and cancellation. Async parameters/returns and aggregates containing
+move-only native storage remain deferred. Z also rejects `in`, `inout`, `out`,
+`Slice<T>`, borrowed struct receivers, and any other live borrow at an `await`.
+Scoped async borrowing can be added later from real zero-copy APIs without
+exposing general lifetime syntax.
 
 Classes and structs may declare async methods. A class receiver is retained by
 the task frame. A struct async instance method must initially declare `move

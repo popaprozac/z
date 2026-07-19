@@ -172,7 +172,9 @@ interpolated messages.
 - cross-thread ownership, atomic ARC, and sendability;
 - cyclic application graphs under ORC;
 - storing move-only native values in compiler `Option`/`Result` payloads, ARC
-  fields, owned closure environments, and async frames;
+  fields, owned closure environments, or nested async aggregates/parameters/
+  returns; direct native async locals now survive suspension, transfer,
+  failure, and cancellation;
 - Windows C++ UI ownership and callback shapes.
 
 Each belongs in a vertical application probe before its design is treated as
