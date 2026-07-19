@@ -133,10 +133,12 @@ native ABI. A Z null check is an ordinary pointer comparison and narrows the
 reference statically; the first reference specialization uses `T | null` in
 source and does not allocate a tagged `Option` wrapper. The language model treats
 this as niche-backed optionality. `Option.fromNullable` exposes that same value
-through `some`/`none` matching; `Option<ObjC reference>` remains one pointer,
-with `nil` as `none`, and requires neither a wrapper allocation nor a separate
-tag. General `Option<T>` keeps its tag-plus-payload representation when no safe
-niche is known.
+through `some`/`none` matching. `Option<ObjC reference>` and
+`Option<declared C handle>` remain one pointer, use `nil` or `NULL` as `none`,
+and require neither a wrapper allocation nor a separate tag. A consuming match
+transfers a declared handle's cleanup responsibility to the `some` binding; a
+borrowed match leaves it with the Option. General `Option<T>` keeps its
+tag-plus-payload representation when no safe niche is known.
 
 The bootstrap `z run` path currently asks Clang for a debuggable native build
 without an optimization flag. Its runtime measurements therefore validate

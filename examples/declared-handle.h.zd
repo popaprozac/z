@@ -4,4 +4,5 @@ declare module "declared-handle.h" {
   }
   export function z_declared_read(in handle: _): _;
   export function z_declared_close(move handle: _): _;
+  export function z_declared_close_count(): _;
 }

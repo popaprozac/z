@@ -14,7 +14,7 @@ import {
   parseSliceType,
 } from "./array-types.ts";
 import type { ClosureInfo, ForeignCallArgumentPlan, IntegerOperation, SemanticInfo } from "./sema.ts";
-import type { ForeignBlockType } from "./foreign.ts";
+import { parsePointerTypeName, type ForeignBlockType } from "./foreign.ts";
 import {
   isStandardModuleSpecifier,
   standardFunctionSignature,
@@ -831,6 +831,12 @@ function generateOwnedEnvironmentCleanup(
   }
   const enumDeclaration = enums.get(type);
   if (enumDeclaration) {
+    const niche = nicheOptionPayload(enumDeclaration, semanticInfo.foreignNamedTypes);
+    const foreign = niche ? semanticInfo.foreignTypes.get(niche) : null;
+    if (foreign?.ownership === "owned") {
+      return `if (${value} != NULL) ${foreign.release}(${value});`;
+    }
+    if (niche) return "";
     const cases = enumDeclaration.variants.flatMap((variant) => {
       if (!variant.payload || !hasCleanupType(variant.payload.name, structs, enums, semanticInfo.foreignTypes)) return [];
       const payloadCleanup = generateOwnedEnvironmentCleanup(
@@ -1356,8 +1362,14 @@ function nicheOptionPayload(
   foreignNamedTypes: SemanticInfo["foreignNamedTypes"],
 ): string | null {
   const option = parseOptionType(declaration.name);
-  if (!option || foreignNamedTypes.get(option.target)?.kind !== "object") return null;
-  return option.target;
+  if (!option) return null;
+  if (foreignNamedTypes.get(option.target)?.kind === "object") return option.target;
+  const pointer = parsePointerTypeName(option.target);
+  return pointer && !pointer.nullable ? option.target : null;
+}
+
+function nicheOptionNull(payloadType: string): "nil" | "NULL" {
+  return parsePointerTypeName(payloadType) ? "NULL" : "nil";
 }
 
 function generateFunction(
@@ -1861,8 +1873,9 @@ function renderConsoleValue(
     const displayName = context.semanticInfo.typeDisplayNames.get(enumDeclaration.name) ?? enumDeclaration.name;
     const niche = nicheOptionPayload(enumDeclaration, context.semanticInfo.foreignNamedTypes);
     if (niche) {
+      const absent = nicheOptionNull(niche);
       return [
-        `if (${value} == nil) {`,
+        `if (${value} == ${absent}) {`,
         `  fputs(${JSON.stringify(`${displayName}.none`)}, ${stream});`,
         `} else {`,
         `  fputs(${JSON.stringify(`${displayName}.some(`)}, ${stream});`,
@@ -1989,10 +2002,11 @@ function renderStringValue(
     const displayName = context.semanticInfo.typeDisplayNames.get(enumDeclaration.name) ?? enumDeclaration.name;
     const niche = nicheOptionPayload(enumDeclaration, context.semanticInfo.foreignNamedTypes);
     if (niche) {
+      const absent = nicheOptionNull(niche);
       const none = `${displayName}.none`;
       const some = `${displayName}.some(`;
       return [
-        `if (${value} == nil) {`,
+        `if (${value} == ${absent}) {`,
         `  z_string_append_bytes(&${target}, ${JSON.stringify(none)}, sizeof(${JSON.stringify(none)}) - 1);`,
         `} else {`,
         `  z_string_append_bytes(&${target}, ${JSON.stringify(some)}, sizeof(${JSON.stringify(some)}) - 1);`,
@@ -2674,6 +2688,13 @@ function generateValueCleanup(
   }
   const enumDeclaration = context.enums.get(type);
   if (enumDeclaration) {
+    const niche = nicheOptionPayload(enumDeclaration, context.semanticInfo.foreignNamedTypes);
+    const foreign = niche ? context.semanticInfo.foreignTypes.get(niche) : null;
+    if (foreign?.ownership === "owned") {
+      const conditions = [liveFlag, `${value} != NULL`].filter(Boolean);
+      return `if (${conditions.join(" && ")}) ${foreign.release}(${value});`;
+    }
+    if (niche) return "";
     const cases = enumDeclaration.variants.flatMap((variant) => {
       if (!variant.payload || !hasCleanupType(
         variant.payload.name,
@@ -2976,6 +2997,13 @@ function generateNicheOptionMatch(
 ): string {
   const type = declaration.name;
   const temporary = `_z_match_${context.matchCounter.value++}`;
+  const borrowed = context.semanticInfo.borrowedMatches.has(statement.location.offset);
+  const cleanupBearing = hasCleanupType(
+    payloadType,
+    context.structs,
+    context.enums,
+    context.semanticInfo.foreignTypes,
+  );
   const localDeclaration = generateLocalDeclaration(
     type,
     temporary,
@@ -2991,14 +3019,33 @@ function generateNicheOptionMatch(
   const none = statement.arms.find((arm) => arm.variantName === "none")!;
   const renderArm = (arm: typeof some, present: boolean): string => {
     const localTypes = new Map(context.localTypes);
+    const parameterModes = new Map(context.parameterModes);
     if (present && arm.binding) localTypes.set(arm.binding, payloadType);
-    const armContext = { ...context, localTypes, cleanupScopes: [...context.cleanupScopes, []] };
-    const binding = present && arm.binding
-      ? `${generateLocalDeclaration(payloadType, arm.binding, false, context.structs, context.enums, context.semanticInfo.foreignNamedTypes)} = ${temporary};\n(void)${cBindingName(arm.binding)};\n`
+    const payloadBorrowed = borrowed && cleanupBearing;
+    if (present && arm.binding && payloadBorrowed) parameterModes.set(arm.binding, "in");
+    const armContext = {
+      ...context,
+      localTypes,
+      parameterModes,
+      liveFlags: new Map(context.liveFlags),
+      cleanupScopes: [...context.cleanupScopes, []],
+    };
+    let binding = present && arm.binding
+      ? `${generateMatchBinding(payloadType, arm.binding, temporary, payloadBorrowed, context)}\n(void)${cBindingName(arm.binding)};`
       : "";
-    return `{\n${indent(binding + generateStatement(arm.body, armContext), 2)}\n}`;
+    if (present && arm.binding && !borrowed && cleanupBearing) {
+      const liveFlag = ensureLiveFlag(arm.binding, armContext);
+      armContext.cleanupScopes.at(-1)!.push({ name: arm.binding, type: payloadType, liveFlag });
+      binding += `\nbool ${liveFlag} = true;`;
+    }
+    const body = generateStatement(arm.body, armContext);
+    recordVariableType(arm.body, armContext);
+    const cleanup = statementTerminates(arm.body)
+      ? ""
+      : generateCleanup([armContext.cleanupScopes.at(-1)!], armContext);
+    return `{\n${indent([binding, body, cleanup].filter(Boolean).join("\n"), 2)}\n}`;
   };
-  return `${storage}\nif (${temporary} != nil) ${renderArm(some, true)} else ${renderArm(none, false)}`;
+  return `${storage}\nif (${temporary} != ${nicheOptionNull(payloadType)}) ${renderArm(some, true)} else ${renderArm(none, false)}`;
 }
 
 function generateNicheOptionMatchExpression(
@@ -3011,6 +3058,13 @@ function generateNicheOptionMatchExpression(
 ): string {
   const type = declaration.name;
   const temporary = `_z_match_${context.matchCounter.value++}`;
+  const borrowed = context.semanticInfo.borrowedMatches.has(expression.location.offset);
+  const cleanupBearing = hasCleanupType(
+    payloadType,
+    context.structs,
+    context.enums,
+    context.semanticInfo.foreignTypes,
+  );
   const needsLowering = requiresStatementValue(expression.expression, context);
   const localDeclaration = generateLocalDeclaration(
     type,
@@ -3027,14 +3081,32 @@ function generateNicheOptionMatchExpression(
   const none = expression.arms.find((arm) => arm.variantName === "none")!;
   const renderArm = (arm: typeof some, present: boolean): string => {
     const localTypes = new Map(context.localTypes);
+    const parameterModes = new Map(context.parameterModes);
     if (present && arm.binding) localTypes.set(arm.binding, payloadType);
-    const armContext = { ...context, localTypes, cleanupScopes: [...context.cleanupScopes, []] };
-    const binding = present && arm.binding
-      ? `${generateLocalDeclaration(payloadType, arm.binding, false, context.structs, context.enums, context.semanticInfo.foreignNamedTypes)} = ${temporary};\n(void)${cBindingName(arm.binding)};\n`
+    const payloadBorrowed = borrowed && cleanupBearing;
+    if (present && arm.binding && payloadBorrowed) parameterModes.set(arm.binding, "in");
+    const armContext = {
+      ...context,
+      localTypes,
+      parameterModes,
+      liveFlags: new Map(context.liveFlags),
+      cleanupScopes: [...context.cleanupScopes, []],
+    };
+    let binding = present && arm.binding
+      ? `${generateMatchBinding(payloadType, arm.binding, temporary, payloadBorrowed, context)}\n(void)${cBindingName(arm.binding)};`
       : "";
-    return `{\n${indent(binding + generateValueArm(arm.body, armContext, consumeValue, consumeTerminates), 2)}\n}`;
+    if (present && arm.binding && !borrowed && cleanupBearing) {
+      const liveFlag = ensureLiveFlag(arm.binding, armContext);
+      armContext.cleanupScopes.at(-1)!.push({ name: arm.binding, type: payloadType, liveFlag });
+      binding += `\nbool ${liveFlag} = true;`;
+    }
+    const body = generateValueArm(arm.body, armContext, consumeValue, consumeTerminates);
+    const cleanup = consumeTerminates || valueArmTerminates(arm.body)
+      ? ""
+      : generateCleanup([armContext.cleanupScopes.at(-1)!], armContext);
+    return `{\n${indent([binding, body, cleanup].filter(Boolean).join("\n"), 2)}\n}`;
   };
-  return `${storage}\nif (${temporary} != nil) ${renderArm(some, true)} else ${renderArm(none, false)}`;
+  return `${storage}\nif (${temporary} != ${nicheOptionNull(payloadType)}) ${renderArm(some, true)} else ${renderArm(none, false)}`;
 }
 
 function generateMatchBinding(
@@ -3363,7 +3435,8 @@ function generateExpressionInner(expression: Expression, context: GenerationCont
         const declaration = context.enums.get(expression.object.name);
         const variant = declaration?.variants.find((candidate) => candidate.name === expression.property);
         if (declaration && variant) {
-          if (nicheOptionPayload(declaration, context.semanticInfo.foreignNamedTypes)) return "nil";
+          const niche = nicheOptionPayload(declaration, context.semanticInfo.foreignNamedTypes);
+          if (niche) return nicheOptionNull(niche);
           return `(${enumName(declaration.name)}){ .tag = ${variantTag(declaration.name, variant.name)} }`;
         }
       }
@@ -3452,8 +3525,9 @@ function generateExpressionInner(expression: Expression, context: GenerationCont
           const declaration = context.enums.get(expression.callee.object.name);
           const variant = declaration?.variants.find((candidate) => candidate.name === expression.callee.property);
           if (declaration && variant) {
-            if (nicheOptionPayload(declaration, context.semanticInfo.foreignNamedTypes)) {
-              return variant.payload ? generateExpression(expression.arguments[0], context) : "nil";
+            const niche = nicheOptionPayload(declaration, context.semanticInfo.foreignNamedTypes);
+            if (niche) {
+              return variant.payload ? generateExpression(expression.arguments[0], context) : nicheOptionNull(niche);
             }
             const payload = variant.payload ? `, .data.${variant.name} = ${generateExpression(expression.arguments[0], context)}` : "";
             return `(${enumName(declaration.name)}){ .tag = ${variantTag(declaration.name, variant.name)}${payload} }`;

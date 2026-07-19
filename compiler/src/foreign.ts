@@ -1072,6 +1072,20 @@ export function pointerTypeName(
   return `__z_ffi:${ownership}:${nullable ? "nullable" : "nonnull"}:${identity}`;
 }
 
+export function parsePointerTypeName(name: string): {
+  readonly identity: string;
+  readonly ownership: ForeignPointerType["ownership"];
+  readonly nullable: boolean;
+} | null {
+  const match = /^__z_ffi:(owned|borrowed|consuming):(nullable|nonnull):(.*)$/.exec(name);
+  if (!match) return null;
+  return {
+    ownership: match[1] as ForeignPointerType["ownership"],
+    nullable: match[2] === "nullable",
+    identity: match[3],
+  };
+}
+
 function discoverFramework(header: string): string | null {
   if (process.platform !== "darwin") return null;
   const match = /^([A-Za-z_]\w*)\//.exec(header);

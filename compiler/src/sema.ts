@@ -29,6 +29,7 @@ import {
 } from "./function-types.ts";
 import {
   pointerTypeName,
+  parsePointerTypeName,
   type ForeignCallbackType,
   type ForeignBlockType,
   type ForeignConstant,
@@ -3240,12 +3241,22 @@ function inferExpressionInner(
               const argument = expression.arguments[0];
               const actual = inferExpression(argument, locals, globals, structs, enums, fileName, state);
               const object = foreignObject(actual, state);
+              const pointer = foreignPointer(actual, state);
+              const optionPointer = parsePointerTypeName(option.target);
               const contextualNull = actual === "null";
-              if (!contextualNull && (!object?.nullable || publicObjCTypeName(object.typeName) !== option.target)) {
+              const compatibleObject = object?.nullable && publicObjCTypeName(object.typeName) === option.target;
+              const compatiblePointer = pointer?.nullable
+                && optionPointer
+                && !optionPointer.nullable
+                && pointer.identity === optionPointer.identity
+                && pointer.ownership === optionPointer.ownership;
+              if (!contextualNull && !compatibleObject && !compatiblePointer) {
+                const expectedPointer = state.foreignTypes.get(option.target);
+                const expected = expectedPointer ? `${expectedPointer.cName} | null` : `${option.target} | null`;
                 throw new DiagnosticError(
                   fileName,
                   argument.location,
-                  `Option.fromNullable requires ${option.target} | null, found ${describeValueType(actual, state)}`,
+                  `Option.fromNullable requires ${expected}, found ${describeValueType(actual, state)}`,
                 );
               }
               state.optionFromNullable.add(expression.location.offset);
@@ -5397,6 +5408,7 @@ function validateType(
     }
     return;
   }
+  if (parsePointerTypeName(type.name)) return;
   const slice = parseSliceType(type.name);
   if (slice) {
     validateType({ name: slice.elementType, location: type.location }, structs, enums, foreignNamedTypes, fileName, false);

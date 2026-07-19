@@ -16,7 +16,14 @@ import {
   sliceTypeName,
 } from "./array-types.ts";
 import { DiagnosticError } from "./diagnostics.ts";
-import { type ForeignFunction, type ForeignModule, type ForeignObjCInterface, type ForeignType } from "./foreign.ts";
+import {
+  parsePointerTypeName,
+  pointerTypeName,
+  type ForeignFunction,
+  type ForeignModule,
+  type ForeignObjCInterface,
+  type ForeignType,
+} from "./foreign.ts";
 import { genericTypeName, parseGenericType } from "./generic-types.ts";
 import { functionTypeName, parseFunctionType } from "./function-types.ts";
 import { isNullableObjCTypeName, publicObjCTypeName } from "./objc-types.ts";
@@ -616,15 +623,18 @@ export function inferGenericCalls(
               if (args.length !== 1) {
                 throw new DiagnosticError(fileName, expression.location, `Option.fromNullable expects 1 argument, received ${args.length}`);
               }
+              const pointer = args[0].type ? parsePointerTypeName(args[0].type) : null;
               const inferredTarget = args[0].type && isNullableObjCTypeName(args[0].type)
                 ? publicObjCTypeName(args[0].type)
-                : null;
+                : pointer?.nullable
+                  ? pointerTypeName(pointer.identity, pointer.ownership, false)
+                  : null;
               const target = qualifier?.arguments[0] ?? inferredTarget;
               if (!target) {
                 throw new DiagnosticError(
                   fileName,
                   args[0].expression.location,
-                  "Option.fromNullable requires a nullable imported Objective-C reference",
+                  "Option.fromNullable requires a nullable imported reference or C handle",
                 );
               }
               const optionType = genericTypeName("Option", [target]);

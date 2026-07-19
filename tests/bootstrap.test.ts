@@ -639,10 +639,31 @@ test("discovers owned-handle contracts from adjacent Z declaration files", () =>
   assert.match(declarationCheck.stdout, /foreign-handles\.h\.zd: ok/);
 
   const example = resolve(projectRoot, "examples/declared-handle.z");
+  const exampleSource = readFileSync(example, "utf8");
   const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stdout, "declared handle=42\n");
-  assert.match(compileToC(readFileSync(example, "utf8"), example), /z_declared_close\(handle\);/);
+  const exampleC = compileToC(exampleSource, example);
+  assert.match(exampleC, /typedef ZDeclaredHandle \*Z_Option_/);
+  assert.match(exampleC, /if \(_z_match_\d+ != NULL\)/);
+  assert.match(exampleC, /z_declared_close\(value\);/);
+  assert.doesNotMatch(exampleC, /struct Z_Option/);
+
+  const optionBinding = exampleSource.indexOf("handle = Option") + 2;
+  assert.match(hover(exampleSource, example, optionBinding)?.contents.value ?? "", /handle: Option<ZDeclaredHandle \*>/);
+  const payloadBinding = exampleSource.indexOf("value)", exampleSource.indexOf("some(")) + 2;
+  assert.match(hover(exampleSource, example, payloadBinding)?.contents.value ?? "", /value: ZDeclaredHandle \*/);
+
+  const narrowedSource = exampleSource.replace(
+    "const handle = Option.fromNullable(native.z_declared_open(value));",
+    `const raw = native.z_declared_open(value);
+  if (raw == null) return -1;
+  const handle = Option.fromNullable(raw);`,
+  );
+  assert.throws(
+    () => compileToC(narrowedSource, example),
+    /Option\.fromNullable requires ZDeclaredHandle \* \| null, found owned ZDeclaredHandle \*/,
+  );
 });
 
 test("diagnoses malformed and mismatched Z declaration contracts", () => {

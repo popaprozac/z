@@ -48,6 +48,11 @@ export function analyzeSource(source: string, fileName: string, options: Analysi
   const includeDirectories = [...new Set([...projectBuild.includeDirectories, ...linked.includeDirectories])];
   const foreignModules = resolveForeignModules(linked.program.imports, fileName, includeDirectories);
   const typeDisplayNames = new Map(linked.typeDisplayNames);
+  for (const module of foreignModules.values()) {
+    for (const type of module.types.values()) {
+      typeDisplayNames.set(type.typeName, `${type.cName}${type.nullable ? " | null" : ""}`);
+    }
+  }
   const inferredProgram = inferGenericCalls(linked.program, fileName, foreignModules);
   const program = materializeResultTypes(materializeWeakTypes(materializeGenerics(inferredProgram, fileName, typeDisplayNames)));
   for (const declaration of program.enums) {
