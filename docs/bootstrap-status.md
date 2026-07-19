@@ -69,6 +69,7 @@ an inferred receiver-tied view.
 | C records and enums | Implemented | Complete supported layouts, nested records, constants |
 | C pointers | Partial | Safe opaque handles and record borrows use adjacent `.zd` contracts; nullable declared handles lift into niche-backed `Option`; internal toolchain notes remain |
 | C callbacks | Partial | Call-only and caller-thread escaping callbacks use `.zd` with named context and exact release contracts; cross-thread callbacks remain unsupported |
+| Native availability | Implemented host slice | Explicit `z.json` platform/minimum target, introduced/obsoleted errors, deprecation warnings, native source locations, and matching Clang/Swift deployment flags; cross-compilation and runtime guards remain |
 | Objective-C | Partial | ARC classes/fields, methods, properties/global object constants, labels, nullability, niche-backed `Option.fromNullable`, owned `String`/`NSString` copies, escaping blocks and persistent observer tokens |
 | C++ | Partial | Hierarchical and selectively aliased namespaces, typed overloads, records, and `.zd`-contracted copyable RAII values inside Z aggregates; public const/mutable instance methods call directly with receiver checks; move-only values, constructors, static methods, and templates remain |
 | Swift via Objective-C | Implemented slice | Generated compatibility header, classes/properties/methods, automatic local dylib build/link |
@@ -77,7 +78,8 @@ an inferred receiver-tied view.
 
 Current interop gaps that block a richer desktop application include
 broader Objective-C block shapes, target/action adapters, protocol conformance,
-cross-thread callbacks, deployment-target-aware availability, and API notes at SDK scale. General
+cross-thread callbacks, runtime availability guards, cross-compilation, and API
+notes at SDK scale. General
 `T | null`/`Option<T>` representation unification remains language
 foundation work; Objective-C reference options now have the first one-pointer
 niche-backed specialization and explicit conversion bridge.
@@ -134,8 +136,8 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    documents (this structure is now in place).
 2. Extend the backend-neutral Foreign Interface IR now that raw declarations,
    API-note sources, normalized contracts, native definitions, availability,
-   value-lifecycle facts, and first C++ value methods are separate;
-   deployment-target semantics follow.
+   deployment-target checks, value-lifecycle facts, and first C++ value methods
+   are separate; next pressure should come from richer native declaration shapes.
 3. Extend the desktop probe through one real native event callback into owned Z
    state (one-shot and persistent notification paths are now validated).
 4. Expand receiver-tied views only from real pressure: the value-struct tier is

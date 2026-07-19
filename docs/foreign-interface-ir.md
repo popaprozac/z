@@ -111,8 +111,9 @@ facts are coherent:
    signatures, and native source metadata; non-const calls require addressable
    mutable storage;
 9. explicit native unavailability is rejected at the Z use site and points back
-   to the native declaration. Introduced/deprecated/obsoleted versions remain
-   data until a deployment-target model exists.
+   to the native declaration. An explicit project deployment target also makes
+   introduced/obsoleted versions errors and applicable deprecations warnings;
+   without one, FIIR retains the versions without guessing a target.
 
 ## Self-hosting shape
 
@@ -147,9 +148,9 @@ separately from the in-memory normalized FIIR.
 
 ## Next slices
 
-1. connect introduced/deprecated/obsoleted versions to explicit deployment
-   targets once `std/target` semantics are implemented;
-2. represent namespace hierarchy, overload sets, constructors, methods, and
+1. extend the host deployment-target slice with cross-compilation and explicit
+   runtime availability guards when their semantics are designed;
+2. represent constructors, static methods, ref-qualified methods, and richer
    properties without flattening names;
 3. extend the implemented copy/move/deinit value capabilities from copyable
    aggregate storage to move-only values and native methods;

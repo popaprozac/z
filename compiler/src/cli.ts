@@ -5,6 +5,7 @@ import { basename, dirname, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { check, compileToNative, type NativeArtifact } from "./compiler.ts";
 import { DiagnosticError, formatDiagnostic } from "./diagnostics.ts";
+import { deploymentTargetFlags } from "./project.ts";
 
 const [command, inputArgument] = process.argv.slice(2);
 
@@ -16,10 +17,11 @@ if (!command || !inputArgument || !["check", "emit", "run"].includes(command)) {
   try {
     const source = readFileSync(inputPath, "utf8");
     if (command === "check") {
-      check(source, inputPath);
+      for (const warning of check(source, inputPath)) console.error(formatDiagnostic(warning, source));
       console.log(`${inputPath}: ok`);
     } else {
       const artifact = compileToNative(source, inputPath);
+      for (const warning of artifact.warnings) console.error(formatDiagnostic(warning, source));
       if (command === "emit") {
         process.stdout.write(artifact.source);
       } else {
@@ -51,11 +53,14 @@ function runNative(inputPath: string, artifact: NativeArtifact): void {
   const executablePath = join(cacheDirectory, stem);
   writeFileSync(sourcePath, artifact.source);
 
-  const compilation = spawnSync(nativeCompiler(artifact.language), [
+  const compiler = nativeCompiler(artifact.language);
+  const compilerArguments = [
     ...nativeLanguageFlags(artifact.language),
+    ...deploymentTargetFlags(artifact.deploymentTarget),
     "-Wall",
     "-Wextra",
     "-Werror",
+    ...(artifact.deploymentTarget ? ["-Wno-deprecated-declarations"] : []),
     "-I", dirname(inputPath),
     ...artifact.includeDirectories.flatMap((directory) => ["-I", directory]),
     sourcePath,
@@ -63,7 +68,10 @@ function runNative(inputPath: string, artifact: NativeArtifact): void {
     ...artifact.frameworks.flatMap((framework) => ["-framework", framework]),
     "-o",
     executablePath,
-  ], { encoding: "utf8" });
+  ];
+  const compilation = process.platform === "darwin"
+    ? spawnSync("xcrun", [compiler, ...compilerArguments], { encoding: "utf8" })
+    : spawnSync(compiler, compilerArguments, { encoding: "utf8" });
   if (compilation.status !== 0) {
     throw new Error(compilation.stderr || "Clang failed");
   }

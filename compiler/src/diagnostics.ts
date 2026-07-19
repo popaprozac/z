@@ -7,6 +7,7 @@ export type DiagnosticLabel = {
 };
 
 export type DiagnosticDetails = {
+  readonly severity?: "error" | "warning";
   readonly code?: `Z${number}`;
   readonly length?: number;
   readonly labels?: readonly DiagnosticLabel[];
@@ -23,10 +24,12 @@ export class DiagnosticError extends Error {
   readonly labels: readonly DiagnosticLabel[];
   readonly notes: readonly string[];
   readonly helps: readonly string[];
+  readonly severity: "error" | "warning";
 
   constructor(fileName: string, location: SourceLocation, message: string, details: DiagnosticDetails = {}) {
     const resolvedFileName = location.fileName ?? fileName;
-    super(`${resolvedFileName}:${location.line}:${location.column}: error: ${message}`);
+    const severity = details.severity ?? "error";
+    super(`${resolvedFileName}:${location.line}:${location.column}: ${severity}: ${message}`);
     this.name = "DiagnosticError";
     this.fileName = resolvedFileName;
     this.location = location;
@@ -36,16 +39,18 @@ export class DiagnosticError extends Error {
     this.labels = details.labels ?? [];
     this.notes = details.notes ?? [];
     this.helps = details.helps ?? [];
+    this.severity = severity;
   }
 }
 
 export function formatDiagnostic(error: DiagnosticError, source?: string): string {
   const code = error.code ? `[${error.code}]` : "";
-  const lines = [`${error.fileName}:${error.location.line}:${error.location.column}: error${code}: ${error.summary}`];
+  const lines = [`${error.fileName}:${error.location.line}:${error.location.column}: ${error.severity}${code}: ${error.summary}`];
   if (source) lines.push(...formatSourceLabel(source, error.location, error.length, error.summary));
   for (const label of error.labels) {
-    lines.push(`  ::: ${error.fileName}:${label.location.line}:${label.location.column}`);
-    if (source) lines.push(...formatSourceLabel(source, label.location, label.length ?? 1, label.message));
+    lines.push(`  ::: ${label.location.fileName ?? error.fileName}:${label.location.line}:${label.location.column}`);
+    const localSource = !label.location.fileName || label.location.fileName === error.fileName ? source : undefined;
+    if (localSource) lines.push(...formatSourceLabel(localSource, label.location, label.length ?? 1, label.message));
     else lines.push(`  = ${label.message}`);
   }
   for (const note of error.notes) lines.push(`  note: ${note}`);

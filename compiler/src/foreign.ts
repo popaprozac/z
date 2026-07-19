@@ -11,6 +11,7 @@ import {
   splitCParameters,
 } from "./foreign-type-spelling.ts";
 import { isStandardModuleSpecifier } from "./standard-library.ts";
+import { deploymentTargetFlags, type DeploymentTarget } from "./project.ts";
 import type {
   ForeignCallbackType,
   ForeignAvailability,
@@ -87,6 +88,7 @@ export function resolveForeignModules(
   declarations: readonly ImportDeclaration[],
   fileName: string,
   projectIncludeDirectories: readonly string[] = [],
+  deploymentTarget: DeploymentTarget | null = null,
 ): ReadonlyMap<string, ForeignModule> {
   const modules = new Map<string, ForeignModule>();
   const sourceDirectory = resolve(dirname(fileName));
@@ -107,10 +109,11 @@ export function resolveForeignModules(
     const cPlusPlus = isCPlusPlusHeader(declaration.header);
     const language = objectiveC ? cPlusPlus ? "objective-c++" : "objective-c" : cPlusPlus ? "c++" : "c";
     const notesFreshness = apiNotesFreshness(declaration, headerDirectory);
-    const cacheKey = `${declarationIncludeDirectories.join("\0")}\0${declaration.header}\0${headerFreshness}\0${notesFreshness}\0${declaration.moduleName}\0${framework ?? language}`;
+    const targetKey = deploymentTarget ? `${deploymentTarget.platform}:${deploymentTarget.minimumVersion}` : "host-default";
+    const cacheKey = `${declarationIncludeDirectories.join("\0")}\0${declaration.header}\0${headerFreshness}\0${notesFreshness}\0${declaration.moduleName}\0${framework ?? language}\0${targetKey}`;
     let header = headerCache.get(cacheKey);
     if (!header) {
-      header = readHeader(declaration, fileName, declarationIncludeDirectories, headerDirectory, framework, objectiveC, cPlusPlus);
+      header = readHeader(declaration, fileName, declarationIncludeDirectories, headerDirectory, framework, objectiveC, cPlusPlus, deploymentTarget);
       headerCache.set(cacheKey, header);
     }
     modules.set(declaration.moduleName, { declaration, ...header });
@@ -126,6 +129,7 @@ function readHeader(
   framework: string | null,
   objectiveC: boolean,
   cPlusPlus: boolean,
+  deploymentTarget: DeploymentTarget | null,
 ): HeaderInfo {
   const clangLanguage = objectiveC ? cPlusPlus ? "objective-c++" : "objective-c" : cPlusPlus ? "c++" : "c";
   const swiftCxxNamespace = cPlusPlus ? swiftCompatibilityNamespace(declaration.header) : null;
@@ -133,6 +137,7 @@ function readHeader(
     "-x", clangLanguage,
     ...(cPlusPlus ? ["-std=c++20"] : []),
     ...(objectiveC ? ["-fobjc-arc"] : []),
+    ...deploymentTargetFlags(deploymentTarget),
     ...includeDirectories.flatMap((directory) => ["-I", directory]),
     "-include", declaration.header,
     "-Xclang", "-ast-dump=json",

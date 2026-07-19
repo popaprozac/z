@@ -5,14 +5,22 @@ import { DiagnosticError } from "./diagnostics.ts";
 
 export type ProjectBuild = {
   readonly manifestPath: string | null;
+  readonly deploymentTarget: DeploymentTarget | null;
   readonly includeDirectories: readonly string[];
   readonly nativeLibraries: readonly string[];
   readonly frameworks: readonly string[];
 };
 
+export type DeploymentTarget = {
+  readonly platform: string;
+  readonly minimumVersion: string;
+};
+
 type ProjectManifest = {
   readonly target?: {
     readonly entry?: string;
+    readonly platform?: string;
+    readonly minimumVersion?: string;
     readonly swift?: {
       readonly module?: string;
       readonly sources?: readonly string[];
@@ -24,6 +32,7 @@ type ProjectManifest = {
 
 const emptyBuild: ProjectBuild = {
   manifestPath: null,
+  deploymentTarget: null,
   includeDirectories: [],
   nativeLibraries: [],
   frameworks: [],
@@ -43,7 +52,6 @@ export function prepareProject(fileName: string): ProjectBuild {
   }
 
   const swift = manifest.target?.swift;
-  if (!swift) return { ...emptyBuild, manifestPath };
   if (manifest.target?.entry !== undefined) {
     if (typeof manifest.target.entry !== "string" || !manifest.target.entry.endsWith(".z")) {
       throw projectDiagnostic(fileName, "z.json target.entry must be a Z source path");
@@ -51,6 +59,8 @@ export function prepareProject(fileName: string): ProjectBuild {
     const entry = resolve(directory, manifest.target.entry);
     if (!existsSync(entry)) throw projectDiagnostic(fileName, `Z entry ${JSON.stringify(entry)} does not exist`);
   }
+  const deploymentTarget = parseDeploymentTarget(manifest.target, fileName);
+  if (!swift) return { ...emptyBuild, manifestPath, deploymentTarget };
   const moduleName = swift.module;
   if (!moduleName || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(moduleName)) {
     throw projectDiagnostic(fileName, "z.json target.swift.module must be a valid module name");
@@ -86,6 +96,7 @@ export function prepareProject(fileName: string): ProjectBuild {
     mkdirSync(buildDirectory, { recursive: true });
     const result = spawnSync("xcrun", [
       "swiftc",
+      ...(deploymentTarget ? ["-target", deploymentTargetTriple(deploymentTarget)] : []),
       "-emit-library",
       "-emit-module",
       "-module-name", moduleName,
@@ -107,12 +118,80 @@ export function prepareProject(fileName: string): ProjectBuild {
 
   const build: ProjectBuild = {
     manifestPath,
+    deploymentTarget,
     includeDirectories: [buildDirectory],
     nativeLibraries: [library],
     frameworks: [...(swift.frameworks ?? [])],
   };
   buildCache.set(manifestPath, { freshness, build });
   return build;
+}
+
+function parseDeploymentTarget(target: ProjectManifest["target"], fileName: string): DeploymentTarget | null {
+  const platform = target?.platform;
+  const minimumVersion = target?.minimumVersion;
+  if (platform === undefined && minimumVersion === undefined) return null;
+  if (typeof platform !== "string" || !/^[A-Za-z][A-Za-z0-9_-]*$/.test(platform)) {
+    throw projectDiagnostic(fileName, "z.json target.platform must be a platform name when target.minimumVersion is set");
+  }
+  if (typeof minimumVersion !== "string" || !/^[0-9]+(?:\.[0-9]+){0,3}$/.test(minimumVersion)) {
+    throw projectDiagnostic(fileName, "z.json target.minimumVersion must be a numeric version such as \"13.0\"");
+  }
+  const normalized = normalizeTargetPlatform(platform);
+  const host = hostTargetPlatform();
+  if (normalized !== host) {
+    throw projectDiagnostic(fileName, `cross-compilation is not implemented; target.platform is ${JSON.stringify(normalized)}, but this compiler host is ${JSON.stringify(host)}`);
+  }
+  return { platform: normalized, minimumVersion: normalizeTargetVersion(minimumVersion) };
+}
+
+export function normalizeTargetPlatform(platform: string): string {
+  const normalized = platform.toLowerCase().replace(/[_-]/g, "");
+  if (normalized === "macos" || normalized === "macosx" || normalized === "darwin") return "macos";
+  if (normalized === "win32" || normalized === "windows") return "windows";
+  return platform.toLowerCase();
+}
+
+export function hostTargetPlatform(): string {
+  if (process.platform === "darwin") return "macos";
+  if (process.platform === "win32") return "windows";
+  return process.platform;
+}
+
+export function normalizeTargetVersion(version: string): string {
+  return version.split(".").map((part) => String(Number(part))).join(".");
+}
+
+export function compareTargetVersions(left: string, right: string): number {
+  const leftParts = left.split(".").map(Number);
+  const rightParts = right.split(".").map(Number);
+  const length = Math.max(leftParts.length, rightParts.length);
+  for (let index = 0; index < length; index += 1) {
+    const difference = (leftParts[index] ?? 0) - (rightParts[index] ?? 0);
+    if (difference !== 0) return difference < 0 ? -1 : 1;
+  }
+  return 0;
+}
+
+export function deploymentTargetFlags(target: DeploymentTarget | null): string[] {
+  if (!target) return [];
+  if (target.platform === "macos") return [`-mmacosx-version-min=${target.minimumVersion}`];
+  return [];
+}
+
+export function deploymentTargetTriple(target: DeploymentTarget): string {
+  if (target.platform === "macos") {
+    const architecture = process.arch === "x64" ? "x86_64" : process.arch;
+    return `${architecture}-apple-macosx${target.minimumVersion}`;
+  }
+  throw new Error(`deployment target triple is not implemented for ${target.platform}`);
+}
+
+export function displayTargetPlatform(platform: string): string {
+  if (platform === "macos") return "macOS";
+  if (platform === "ios") return "iOS";
+  if (platform === "windows") return "Windows";
+  return platform;
 }
 
 function findManifest(fileName: string): string | null {

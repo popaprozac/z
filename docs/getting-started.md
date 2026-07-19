@@ -108,6 +108,29 @@ pointer ownership and callback lifetime/context/release/threading contracts use
 adjacent `<header>.zd` Z declaration files. See
 [the interop model](interop-model.md).
 
+For platform projects, `z.json` can declare one explicit host deployment target:
+
+```json
+{
+  "target": {
+    "entry": "main.z",
+    "platform": "macos",
+    "minimumVersion": "13.0"
+  }
+}
+```
+
+The compiler applies that minimum version consistently while importing headers,
+checking native availability, compiling generated source, and building a local
+Swift target. APIs introduced after the minimum or obsoleted by it fail at the Z
+use site; applicable deprecations are warnings. Omitting both fields leaves
+versioned availability unchecked rather than guessing a target. Stage 0 accepts
+only the host platform and does not cross-compile. Run the macOS probe with:
+
+```sh
+bun run z run examples/deployment-target/main.z
+```
+
 ## Editor setup
 
 Install the repository's development extension:

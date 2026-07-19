@@ -965,6 +965,68 @@ test("surfaces native availability in hover and rejects universally unavailable 
   assert.match(diagnostic.relatedInformation?.[0]?.location.uri ?? "", /tests\/fixtures\/z-availability\.h$/);
 });
 
+test("checks native availability against an explicit deployment target", () => {
+  if (process.platform !== "darwin") return;
+  const directory = mkdtempSync("/tmp/z-deployment-target-");
+  const header = resolve(directory, "z-availability.h");
+  const sourceFile = resolve(directory, "main.z");
+  const manifest = resolve(directory, "z.json");
+  writeFileSync(header, readFileSync(resolve(projectRoot, "tests/fixtures/z-availability.h"), "utf8"));
+  const sourceFor = (name: string) => `
+    import native from "z-availability.h";
+    function main(): i32 { return native.${name}(1); }
+  `;
+  const configure = (minimumVersion: string) => writeFileSync(manifest, JSON.stringify({
+    target: { platform: "macos", minimumVersion },
+  }));
+
+  configure("12.0");
+  writeFileSync(sourceFile, sourceFor("z_future"));
+  const introduced = diagnostics(readFileSync(sourceFile, "utf8"), sourceFile)[0];
+  assert.equal(introduced.code, "Z0802");
+  assert.equal(introduced.severity, 1);
+  assert.match(introduced.message, /requires macOS 15\.0, but the deployment target is macOS 12\.0/);
+  assert.match(introduced.message, /raise target\.minimumVersion to "15\.0"/);
+  assert.match(introduced.relatedInformation?.[0]?.location.uri ?? "", /z-availability\.h$/);
+
+  configure("13.0");
+  const deprecatedSource = sourceFor("z_legacy");
+  writeFileSync(sourceFile, deprecatedSource);
+  const deprecation = diagnostics(deprecatedSource, sourceFile)[0];
+  assert.equal(deprecation.code, "Z0804");
+  assert.equal(deprecation.severity, 2);
+  assert.match(deprecation.message, /deprecated in macOS 13\.0/);
+  assert.match(deprecation.message, /use z_current/);
+  const artifact = compileToNative(deprecatedSource, sourceFile);
+  assert.deepEqual(artifact.deploymentTarget, { platform: "macos", minimumVersion: "13.0" });
+  assert.equal(artifact.warnings[0]?.code, "Z0804");
+
+  const obsoleteSource = sourceFor("z_obsolete");
+  writeFileSync(sourceFile, obsoleteSource);
+  const obsolete = diagnostics(obsoleteSource, sourceFile)[0];
+  assert.equal(obsolete.code, "Z0802");
+  assert.match(obsolete.message, /was obsoleted in macOS 13\.0; the deployment target is 13\.0/);
+
+  configure("15.0");
+  const currentSource = sourceFor("z_current");
+  writeFileSync(sourceFile, currentSource);
+  assert.deepEqual(diagnostics(currentSource, sourceFile), []);
+
+  writeFileSync(manifest, JSON.stringify({ target: { minimumVersion: "13.0" } }));
+  assert.match(diagnostics(currentSource, sourceFile)[0]?.message ?? "", /target\.platform must be a platform name/);
+  writeFileSync(manifest, JSON.stringify({ target: { platform: "macos", minimumVersion: "latest" } }));
+  assert.match(diagnostics(currentSource, sourceFile)[0]?.message ?? "", /target\.minimumVersion must be a numeric version/);
+});
+
+test("threads deployment targets and warnings through CLI native execution", () => {
+  if (process.platform !== "darwin") return;
+  const example = resolve(projectRoot, "examples/deployment-target/main.z");
+  const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stderr, /warning\[Z0804\]: foreign declaration "z_legacy" is deprecated in macOS 13\.0/);
+  assert.match(result.stderr, /native-api\.h:8:19/);
+});
+
 test("rejects malformed or unmatched Z declarations before FIIR reaches sema", () => {
   const directory = mkdtempSync("/tmp/z-fiir-notes-");
   const header = resolve(directory, "contract.h");

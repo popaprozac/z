@@ -252,6 +252,16 @@ nullability, lifetime, callback retention, threading, and async behavior.
 Those facts normalize through the
 [`Foreign Interface IR`](foreign-interface-ir.md) before semantic checking.
 
+A project may explicitly configure `target.platform` and
+`target.minimumVersion` together in `z.json`. The target is compile-time project
+configuration, not a nullable runtime global. Native declarations introduced
+after that minimum version or obsoleted by it are unavailable; applicable
+deprecations produce warnings. The same minimum version reaches header import,
+generated native compilation, and local Swift compilation. If no target is
+configured, Z does not invent one for version comparisons. Stage 0 accepts only
+the host platform; cross-compilation and runtime availability guards remain
+future work.
+
 C imports may be direct and zero-wrapper. Imported non-null Objective-C classes
 are nominal types such as `AppKit.NSWindow`; references use ARC and can be stored
 in Z aggregates or named in signatures. Inferred nullable Objective-C

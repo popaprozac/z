@@ -41,7 +41,7 @@ export type Position = { readonly line: number; readonly character: number };
 export type Range = { readonly start: Position; readonly end: Position };
 export type ServiceDiagnostic = {
   readonly range: Range;
-  readonly severity: 1;
+  readonly severity: 1 | 2;
   readonly source: "z";
   readonly code?: string;
   readonly message: string;
@@ -100,54 +100,61 @@ const declarationKeywordTokens = [
 export function diagnostics(source: string, fileName: string): ServiceDiagnostic[] {
   try {
     if (fileName.endsWith(".zd")) parseForeignDeclarationContracts(source, fileName);
-    else analyzeSource(source, fileName, { requireMain: false });
+    else return analyzeSource(source, fileName, { requireMain: false }).semanticInfo.warnings
+      .map((warning) => serviceDiagnostic(warning, fileName));
     return [];
   } catch (error) {
-    const diagnostic = error instanceof DiagnosticError ? error : null;
-    const crossFile = diagnostic ? resolve(diagnostic.fileName) !== resolve(fileName) : false;
-    const location = diagnostic && !crossFile
-      ? diagnostic.location
-      : { offset: 0, line: 1, column: 1 };
-    const start = { line: location.line - 1, character: location.column - 1 };
-    const length = diagnostic?.length ?? 1;
-    const relatedInformation = diagnostic?.labels.map((label) => {
-      const labelStart = { line: label.location.line - 1, character: label.location.column - 1 };
-      return {
-        location: {
-          uri: diagnosticUri(label.location.fileName ?? diagnostic.fileName),
-          range: {
-            start: labelStart,
-            end: { line: labelStart.line, character: labelStart.character + (label.length ?? 1) },
-          },
-        },
-        message: label.message,
-      };
-    }) ?? [];
-    if (diagnostic && crossFile) {
-      const origin = { line: diagnostic.location.line - 1, character: diagnostic.location.column - 1 };
-      relatedInformation.unshift({
-        location: {
-          uri: diagnosticUri(diagnostic.fileName),
-          range: {
-            start: origin,
-            end: { line: origin.line, character: origin.character + diagnostic.length },
-          },
-        },
-        message: "error originates in an imported Z module or declaration contract",
-      });
-    }
-    return [{
-      range: { start, end: { line: start.line, character: start.character + length } },
-      severity: 1,
-      source: "z",
-      code: diagnostic?.code ?? undefined,
-      message: diagnostic
-        ? [crossFile ? `${diagnostic.fileName}: ${diagnostic.summary}` : diagnostic.summary, ...diagnostic.notes.map((note) => `note: ${note}`), ...diagnostic.helps.map((help) => `help: ${help}`)].join("\n")
-        : error instanceof Error ? error.message : String(error),
-      relatedInformation: relatedInformation?.length ? relatedInformation : undefined,
-      data: diagnostic?.helps.length ? { helps: diagnostic.helps } : undefined,
-    }];
+    return [error instanceof DiagnosticError
+      ? serviceDiagnostic(error, fileName)
+      : {
+        range: { start: { line: 0, character: 0 }, end: { line: 0, character: 1 } },
+        severity: 1,
+        source: "z",
+        message: error instanceof Error ? error.message : String(error),
+      }];
   }
+}
+
+function serviceDiagnostic(diagnostic: DiagnosticError, fileName: string): ServiceDiagnostic {
+  const crossFile = resolve(diagnostic.fileName) !== resolve(fileName);
+  const location = crossFile ? { offset: 0, line: 1, column: 1 } : diagnostic.location;
+  const start = { line: location.line - 1, character: location.column - 1 };
+  const relatedInformation = diagnostic.labels.map((label) => {
+    const labelStart = { line: label.location.line - 1, character: label.location.column - 1 };
+    return {
+      location: {
+        uri: diagnosticUri(label.location.fileName ?? diagnostic.fileName),
+        range: {
+          start: labelStart,
+          end: { line: labelStart.line, character: labelStart.character + (label.length ?? 1) },
+        },
+      },
+      message: label.message,
+    };
+  });
+  if (crossFile) {
+    const origin = { line: diagnostic.location.line - 1, character: diagnostic.location.column - 1 };
+    relatedInformation.unshift({
+      location: {
+        uri: diagnosticUri(diagnostic.fileName),
+        range: { start: origin, end: { line: origin.line, character: origin.character + diagnostic.length } },
+      },
+      message: `${diagnostic.severity} originates in an imported Z module or declaration contract`,
+    });
+  }
+  return {
+    range: { start, end: { line: start.line, character: start.character + diagnostic.length } },
+    severity: diagnostic.severity === "warning" ? 2 : 1,
+    source: "z",
+    code: diagnostic.code ?? undefined,
+    message: [
+      crossFile ? `${diagnostic.fileName}: ${diagnostic.summary}` : diagnostic.summary,
+      ...diagnostic.notes.map((note) => `note: ${note}`),
+      ...diagnostic.helps.map((help) => `help: ${help}`),
+    ].join("\n"),
+    relatedInformation: relatedInformation.length ? relatedInformation : undefined,
+    data: diagnostic.helps.length ? { helps: diagnostic.helps } : undefined,
+  };
 }
 
 export function completions(source: string, fileName: string, offset: number): CompletionItem[] {

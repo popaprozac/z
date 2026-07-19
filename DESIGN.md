@@ -817,8 +817,12 @@ contract normalizer is the only path to the FIIR consumed by sema, codegen, and
 editor services. Native declaration locations and availability facts cross that
 boundary as backend-neutral metadata: editor definitions can open project, SDK,
 and generated headers, while explicit unavailability is diagnosed at the Z use
-site. Version comparisons remain deferred until Z has an explicit deployment
-target model.
+site. The first deployment-target slice is explicit project configuration:
+`target.platform` and `target.minimumVersion` in `z.json` drive FIIR availability
+checks and the matching native/Swift compiler flags. Introduced and obsoleted
+APIs fail at the Z use site, deprecations warn, and an omitted target remains
+unknown rather than inheriting an accidental host default. Cross-compilation and
+runtime availability guards remain open design work.
 
 Core language behavior and standard-library contracts remain target-neutral.
 Compile-time target metadata will live behind an explicit `std/target` module

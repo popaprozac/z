@@ -12,4 +12,10 @@ int z_unavailable(int value)
 int z_never(int value)
   __attribute__((unavailable("not supported anywhere")));
 
+int z_future(int value)
+  __attribute__((availability(macos, introduced=15.0, message="requires the new runtime")));
+
+int z_obsolete(int value)
+  __attribute__((availability(macos, obsoleted=13.0, message="use z_current")));
+
 #endif

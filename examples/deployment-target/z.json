@@ -1,0 +1,7 @@
+{
+  "target": {
+    "entry": "main.z",
+    "platform": "macos",
+    "minimumVersion": "13.0"
+  }
+}

@@ -34,9 +34,13 @@ than gaining a guessed Z signature.
 Native declaration locations and availability survive the same normalization
 boundary. Go-to-definition opens project headers, SDK interfaces, and generated
 Swift compatibility headers. Explicitly unavailable declarations fail at the Z
-use site with `Z0802` and a related native location. Introduced, deprecated, and
-obsoleted versions are preserved for hover and future target checks; the
-bootstrap does not compare them against an invented deployment target.
+use site with `Z0802` and a related native location. When `z.json` explicitly
+supplies `target.platform` and `target.minimumVersion`, introduced and obsoleted
+versions also produce `Z0802`, while applicable deprecations produce the
+nonfatal `Z0804` warning. The same minimum reaches Clang header import, generated
+native compilation, and local Swift compilation. With no explicit target, the
+bootstrap preserves version metadata but does not invent a deployment target.
+Runtime availability guards are not yet synthesized.
 
 C++ namespace paths also survive normalization. A uniquely named function can
 use its short module alias, while the native hierarchy is available explicitly:

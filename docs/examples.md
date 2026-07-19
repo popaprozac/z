@@ -42,6 +42,7 @@ bun run z run examples/result.z
 | C pointers | [`foreign-pointers.z`](../examples/foreign-pointers.z), [`foreign-handle.z`](../examples/foreign-handle.z) | Borrowed and owned `.zd` contracts |
 | Z declaration contract | [`declared-handle.z`](../examples/declared-handle.z), [`declared-handle.h.zd`](../examples/declared-handle.h.zd) | Adjacent `.zd` capabilities, niche-backed `Option.fromNullable`, borrowed/consuming match, and `deinit` release |
 | C callbacks | [`callbacks.z`](../examples/callbacks.z), [`callbacks.h.zd`](../examples/callbacks.h.zd) | `.zd` call-only borrowing plus escaping ownership, named context/release pairing, and caller-thread guarantees |
+| Deployment target | [`deployment-target`](../examples/deployment-target) | Explicit macOS minimum version, Clang/Swift target propagation, and Z-native deprecation warnings |
 | C++ | [`cpp-interop.z`](../examples/cpp-interop.z), [`cpp-selective-interop.z`](../examples/cpp-selective-interop.z) | Qualified and selective namespace imports, aliases, overloads, and records |
 | C++ lifecycle value | [`foreign-values.z`](../examples/foreign-values.z), [`foreign-values.hpp.zd`](../tests/fixtures/foreign-values.hpp.zd) | `.zd` copy/deinit contract, native aggregate copies, direct const/mutable methods, overloads, and deterministic RAII destruction |
 | AppKit window | [`nswindow.z`](../examples/nswindow.z) | Direct Objective-C ARC calls |

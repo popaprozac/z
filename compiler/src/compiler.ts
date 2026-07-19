@@ -14,6 +14,7 @@ import { linkSourceModules, type SourceModuleInfo } from "./modules.ts";
 import { materializeWeakTypes } from "./weak-types.ts";
 import { generateAsyncC } from "./async-codegen-c.ts";
 import { parseForeignDeclarationContracts } from "./foreign-declarations.ts";
+import type { DiagnosticError } from "./diagnostics.ts";
 
 export type NativeLanguage = "c" | "objective-c" | "c++" | "objective-c++";
 
@@ -23,6 +24,8 @@ export type NativeArtifact = {
   readonly frameworks: readonly string[];
   readonly includeDirectories: readonly string[];
   readonly nativeLibraries: readonly string[];
+  readonly deploymentTarget: ProjectBuild["deploymentTarget"];
+  readonly warnings: readonly DiagnosticError[];
 };
 
 export type AnalyzedSource = {
@@ -46,7 +49,7 @@ export function analyzeSource(source: string, fileName: string, options: Analysi
   const linked = linkSourceModules(sourceProgram, fileName);
   const projectBuild = prepareProject(fileName);
   const includeDirectories = [...new Set([...projectBuild.includeDirectories, ...linked.includeDirectories])];
-  const foreignModules = resolveForeignModules(linked.program.imports, fileName, includeDirectories);
+  const foreignModules = resolveForeignModules(linked.program.imports, fileName, includeDirectories, projectBuild.deploymentTarget);
   const typeDisplayNames = new Map(linked.typeDisplayNames);
   for (const module of foreignModules.values()) {
     for (const type of module.types.values()) {
@@ -66,7 +69,7 @@ export function analyzeSource(source: string, fileName: string, options: Analysi
       `Result<${typeDisplayNames.get(success) ?? success}, ${typeDisplayNames.get(failure) ?? failure}>`,
     );
   }
-  const semanticInfo = analyze(program, fileName, foreignModules, typeDisplayNames, options.requireMain ?? true);
+  const semanticInfo = analyze(program, fileName, foreignModules, typeDisplayNames, options.requireMain ?? true, projectBuild.deploymentTarget);
   return {
     sourceProgram,
     program,
@@ -100,10 +103,13 @@ export function compileToNative(source: string, fileName: string): NativeArtifac
     frameworks: [...new Set([...semanticInfo.frameworks, ...projectBuild.frameworks])],
     includeDirectories: [...new Set([...projectBuild.includeDirectories, ...moduleIncludeDirectories])],
     nativeLibraries: projectBuild.nativeLibraries,
+    deploymentTarget: projectBuild.deploymentTarget,
+    warnings: semanticInfo.warnings,
   };
 }
 
-export function check(source: string, fileName: string): void {
+export function check(source: string, fileName: string): readonly DiagnosticError[] {
   if (fileName.endsWith(".zd")) parseForeignDeclarationContracts(source, fileName);
-  else analyzeSource(source, fileName, { requireMain: false });
+  else return analyzeSource(source, fileName, { requireMain: false }).semanticInfo.warnings;
+  return [];
 }

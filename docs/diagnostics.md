@@ -66,8 +66,9 @@ Currently structured codes include:
 | `Z0703` | `spawn` or `async scope` is outside its required structured context |
 | `Z0704` | borrowed storage could remain live in a task or across suspension |
 | `Z0801` | malformed, unmatched, or conflicting foreign API contract metadata |
-| `Z0802` | native declaration is explicitly unavailable for the current bootstrap target |
+| `Z0802` | native declaration is unavailable for the explicit project deployment target |
 | `Z0803` | no unique viable native overload exists for a foreign call |
+| `Z0804` | native declaration is deprecated for the explicit project deployment target |
 
 CLI diagnostics render source context. Language-server diagnostics expose the
 same code and message, secondary locations through related information, and

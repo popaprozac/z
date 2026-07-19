@@ -9,7 +9,13 @@ import type {
   TraitDeclaration,
   TypeReference,
 } from "./ast.ts";
-import { DiagnosticError } from "./diagnostics.ts";
+import { DiagnosticError, type DiagnosticLabel } from "./diagnostics.ts";
+import {
+  compareTargetVersions,
+  displayTargetPlatform,
+  normalizeTargetPlatform,
+  type DeploymentTarget,
+} from "./project.ts";
 import { resultTypeName } from "./results.ts";
 import { parseTaskType, taskTypeName } from "./async-types.ts";
 import {
@@ -119,6 +125,8 @@ export type ForeignCallArgumentPlan =
   | { readonly kind: "release"; readonly source: number; readonly callback: ForeignCallbackType; readonly functionType: string };
 
 export type SemanticInfo = {
+  readonly warnings: readonly DiagnosticError[];
+  readonly deploymentTarget: DeploymentTarget | null;
   readonly viewReturnExpressions: ReadonlySet<number>;
   readonly viewBindingOwners: ReadonlyMap<number, string>;
   readonly movedExpressions: ReadonlySet<number>;
@@ -165,6 +173,9 @@ export type SemanticInfo = {
 };
 
 type AnalysisState = {
+  readonly warnings: DiagnosticError[];
+  readonly warningKeys: Set<string>;
+  readonly deploymentTarget: DeploymentTarget | null;
   readonly viewReturnExpressions: Set<number>;
   readonly viewBindingOwners: Map<number, string>;
   readonly viewCallOrigins: Map<number, { readonly owner: string; readonly location: SourceLocation }>;
@@ -254,6 +265,7 @@ export function analyze(
   foreignModules: ReadonlyMap<string, ForeignModule>,
   typeDisplayNames: ReadonlyMap<string, string> = new Map(),
   requireMain = true,
+  deploymentTarget: DeploymentTarget | null = null,
 ): SemanticInfo {
   const foreignTypes = new Map<string, ForeignPointerType>();
   const foreignNamedTypes = new Map<string, ForeignNamedType>();
@@ -305,6 +317,9 @@ export function analyze(
     if (module.cPlusPlus) cPlusPlus = true;
   }
   const state: AnalysisState = {
+    warnings: [],
+    warningKeys: new Set(),
+    deploymentTarget,
     viewReturnExpressions: new Set(),
     viewBindingOwners: new Map(),
     viewCallOrigins: new Map(),
@@ -3004,14 +3019,14 @@ function inferExpressionInner(
     case "member": {
       const foreignConstant = getForeignConstant(expression, globals);
       if (foreignConstant) {
-        rejectUnavailableForeign(foreignConstant.metadata, foreignConstant.name, expression.location, fileName);
+        checkForeignAvailability(foreignConstant.metadata, foreignConstant.name, expression.location, fileName, state);
         state.foreignConstantNames.set(expression.location.offset, foreignConstant.cName);
         state.foreignExpressionTypes.set(expression.location.offset, foreignConstant.typeName);
         return foreignConstant.typeName;
       }
       const objcClass = getObjCClass(expression, globals);
       if (objcClass) {
-        rejectUnavailableForeign(objcClass.metadata, objcClass.className, expression.location, fileName);
+        checkForeignAvailability(objcClass.metadata, objcClass.className, expression.location, fileName, state);
         state.objcClassNames.set(expression.location.offset, objcClass.className);
         return `${objcClassPrefix}${objcClass.typeName}`;
       }
@@ -3071,7 +3086,7 @@ function inferExpressionInner(
         }
         const propertyType = foreignValueType(property.type);
         if (propertyType === "unknown") throw new DiagnosticError(fileName, expression.location, `Objective-C property ${JSON.stringify(property.name)} uses an unsupported type`);
-        rejectUnavailableForeign(property.metadata, property.name, expression.location, fileName);
+        checkForeignAvailability(property.metadata, property.name, expression.location, fileName, state);
         state.objcProperties.set(expression.location.offset, {
           getter: property.getter,
           setter: property.setter,
@@ -3399,7 +3414,7 @@ function inferExpressionInner(
             fileName,
             expression.callee.location,
           );
-          rejectUnavailableForeign(method.metadata, method.selector, expression.callee.location, fileName);
+          checkForeignAvailability(method.metadata, method.selector, expression.callee.location, fileName, state);
           checkObjCArguments(method, expression.arguments, locals, globals, structs, enums, fileName, state);
           state.objcCalls.set(expression.location.offset, { selector: method.selector });
           let result = foreignValueType(method.returnType);
@@ -4740,45 +4755,105 @@ function rejectNullableObjCReceiver(
   });
 }
 
-function rejectUnavailableForeign(
+function checkForeignAvailability(
   metadata: ForeignDeclarationMetadata,
   name: string,
   location: SourceLocation,
   fileName: string,
+  state: AnalysisState,
 ): void {
   const unavailable = metadata.availability.find((item) => (
-    item.unavailable && (!item.platform || foreignPlatformMatchesHost(item.platform))
+    item.unavailable && foreignPlatformApplies(item.platform, state.deploymentTarget)
   ));
-  if (!unavailable) return;
-  const platform = unavailable.platform ? ` on ${displayForeignPlatform(unavailable.platform)}` : "";
-  throw new DiagnosticError(fileName, location, `foreign declaration ${JSON.stringify(name)} is unavailable${platform}`, {
+  if (unavailable) {
+    const platform = unavailable.platform ? ` on ${displayTargetPlatform(normalizeTargetPlatform(unavailable.platform))}` : "";
+    throw nativeAvailabilityError(fileName, location, metadata, name, `foreign declaration ${JSON.stringify(name)} is unavailable${platform}`, unavailable.message);
+  }
+  const target = state.deploymentTarget;
+  if (!target) return;
+  const availability = metadata.availability.filter((item) => foreignPlatformApplies(item.platform, target));
+  const introduced = availability.find((item) => item.introduced)?.introduced ?? null;
+  if (introduced && compareTargetVersions(target.minimumVersion, introduced) < 0) {
+    throw nativeAvailabilityError(
+      fileName,
+      location,
+      metadata,
+      name,
+      `foreign declaration ${JSON.stringify(name)} requires ${displayTargetPlatform(target.platform)} ${introduced}, but the deployment target is ${displayTargetPlatform(target.platform)} ${target.minimumVersion}`,
+      availability.find((item) => item.introduced === introduced)?.message ?? null,
+      [`raise target.minimumVersion to ${JSON.stringify(introduced)} or choose an API available on ${target.minimumVersion}`],
+    );
+  }
+  const obsoleted = availability.find((item) => item.obsoleted)?.obsoleted ?? null;
+  if (obsoleted && compareTargetVersions(target.minimumVersion, obsoleted) >= 0) {
+    throw nativeAvailabilityError(
+      fileName,
+      location,
+      metadata,
+      name,
+      `foreign declaration ${JSON.stringify(name)} was obsoleted in ${displayTargetPlatform(target.platform)} ${obsoleted}; the deployment target is ${target.minimumVersion}`,
+      availability.find((item) => item.obsoleted === obsoleted)?.message ?? null,
+      ["use the native replacement API for this deployment target"],
+    );
+  }
+  const deprecated = availability.find((item) => (
+    item.deprecated
+    && (!item.deprecatedVersion || compareTargetVersions(target.minimumVersion, item.deprecatedVersion) >= 0)
+  ));
+  if (!deprecated) return;
+  const warningKey = `${location.fileName ?? fileName}:${location.offset}:${name}:deprecated`;
+  if (state.warningKeys.has(warningKey)) return;
+  state.warningKeys.add(warningKey);
+  const version = deprecated.deprecatedVersion ? ` in ${displayTargetPlatform(target.platform)} ${deprecated.deprecatedVersion}` : "";
+  state.warnings.push(new DiagnosticError(
+    fileName,
+    location,
+    `foreign declaration ${JSON.stringify(name)} is deprecated${version}`,
+    {
+      severity: "warning",
+      code: "Z0804",
+      length: name.split(":")[0].length,
+      labels: nativeAvailabilityLabels(metadata, "native declaration is deprecated here"),
+      notes: deprecated.message ? [deprecated.message] : [],
+    },
+  ));
+}
+
+function nativeAvailabilityError(
+  fileName: string,
+  location: SourceLocation,
+  metadata: ForeignDeclarationMetadata,
+  name: string,
+  summary: string,
+  note: string | null,
+  helps: readonly string[] = [],
+): DiagnosticError {
+  return new DiagnosticError(fileName, location, summary, {
     code: "Z0802",
     length: name.split(":")[0].length,
-    labels: metadata.source ? [{
-      location: {
-        offset: 0,
-        line: metadata.source.line,
-        column: metadata.source.column,
-        fileName: metadata.source.fileName,
-      },
-      message: "native declaration is unavailable here",
-      length: metadata.source.length,
-    }] : [],
-    notes: unavailable.message ? [unavailable.message] : [],
+    labels: nativeAvailabilityLabels(metadata, "native availability is declared here"),
+    notes: note ? [note] : [],
+    helps,
   });
 }
 
-function foreignPlatformMatchesHost(platform: string): boolean {
-  const normalized = platform.toLowerCase();
-  if (process.platform === "darwin") return normalized === "macos" || normalized === "macosx";
-  if (process.platform === "win32") return normalized === "windows" || normalized === "win32";
-  return normalized === process.platform;
+function nativeAvailabilityLabels(metadata: ForeignDeclarationMetadata, message: string): DiagnosticLabel[] {
+  return metadata.source ? [{
+    location: {
+      offset: 0,
+      line: metadata.source.line,
+      column: metadata.source.column,
+      fileName: metadata.source.fileName,
+    },
+    message,
+    length: metadata.source.length,
+  }] : [];
 }
 
-function displayForeignPlatform(platform: string): string {
-  if (platform === "macos" || platform === "macosx") return "macOS";
-  if (platform === "ios") return "iOS";
-  return platform;
+function foreignPlatformApplies(platform: string | null, target: DeploymentTarget | null): boolean {
+  if (!platform) return true;
+  if (target) return normalizeTargetPlatform(platform) === target.platform;
+  return normalizeTargetPlatform(platform) === normalizeTargetPlatform(process.platform);
 }
 
 function findObjCMethod(
@@ -5029,7 +5104,7 @@ function checkForeignFunctionCall(
 ): ValueType {
   if (target.overloads.length === 1) {
     const selected = target.overloads[0];
-    rejectUnavailableForeign(selected.metadata, target.qualifiedName, location, fileName);
+    checkForeignAvailability(selected.metadata, target.qualifiedName, location, fileName, state);
     state.foreignFunctionNames.set(calleeOffset, selected.cName);
     state.foreignFunctionDefinitions.set(calleeOffset, selected.metadata);
     onSelected?.(selected);
@@ -5073,7 +5148,7 @@ function checkForeignFunctionCall(
     );
   }
   const selected = best[0].overload;
-  rejectUnavailableForeign(selected.metadata, target.qualifiedName, location, fileName);
+  checkForeignAvailability(selected.metadata, target.qualifiedName, location, fileName, state);
   state.foreignFunctionNames.set(calleeOffset, selected.cName);
   state.foreignFunctionDefinitions.set(calleeOffset, selected.metadata);
   onSelected?.(selected);
