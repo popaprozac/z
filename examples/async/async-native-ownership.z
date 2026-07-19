@@ -1,20 +1,20 @@
 import console from "std/console";
 import { delay } from "std/time";
-import native from "../../tests/fixtures/move-only.hpp";
+import { zcpp } from "../../tests/fixtures/move-only.hpp";
 
 struct OpenError {
   code: i32;
 }
 
-async function openAfterDelay(fail: bool): native.zcpp.UniqueValue throws OpenError {
-  const resource = native.zcpp.UniqueValue(42);
+async function openAfterDelay(fail: bool): zcpp.UniqueValue throws OpenError {
+  const resource = zcpp.UniqueValue(42);
   await delay(1);
   const initialValue = resource.value();
   if (fail) throw OpenError({ code: initialValue - 35 });
   return resource;
 }
 
-async function relayAfterDelay(): native.zcpp.UniqueValue throws OpenError {
+async function relayAfterDelay(): zcpp.UniqueValue throws OpenError {
   return try await openAfterDelay(false);
 }
 
@@ -32,7 +32,7 @@ async function main(): i32 {
     success(resource) => resource.finish(0);
     failure(error) => error.code;
   };
-  const live = native.zcpp.unique_live();
+  const live = zcpp.unique_live();
   console.log(`answer=${answer}, failure=${failureCode}, live=${live}`);
   return answer - 42 + failurePreview - 7 + failureCode - 7 + live;
 }
