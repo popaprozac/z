@@ -1995,7 +1995,7 @@ test("compares scoped document borrows with independently owned snapshots", () =
 
   const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
-  assert.equal(result.stdout, "scoped 2: Interop Notes\nview 2: Interop Notes\nsnapshot 2: Interop Notes\n");
+  assert.equal(result.stdout, "scoped 2: Interop Notes\nview 2: Interop Notes\noptional view 2: Interop Notes\nsnapshot 2: Interop Notes\n");
 
   const liveMutation = source.replace(
     "console.log(`view ${projected.id}: ${projected.title}`);",
@@ -2094,6 +2094,82 @@ test("keeps receiver-tied views read-only, local, and value-struct-owned", () =>
   const projectionDiagnostic = diagnostics(wrongProjection, "view-wrong-projection.z")[0];
   assert.equal(projectionDiagnostic.code, "Z0206");
   assert.match(projectionDiagnostic.message, /derived directly from this/);
+});
+
+test("returns zero-overhead optional receiver-tied views through Option and match", () => {
+  const source = `
+    struct Item { id: i32; value: i32; }
+    struct Store {
+      items: Array<Item>;
+      function append(inout this, item: Item): void { this.items.push(item); }
+      function find(id: i32): Option<view Item> {
+        let index: usize = 0;
+        while (index < this.items.length) {
+          if (this.items[index].id == id) return Option.some(this.items[index]);
+          index = index + 1;
+        }
+        return Option.none;
+      }
+    }
+    function main(): i32 {
+      let store = Store({ items: Array<Item>() });
+      store.append(Item({ id: 1, value: 20 }));
+      store.append(Item({ id: 2, value: 22 }));
+      const found = store.find(2);
+      const observed = match (in found) {
+        some(item) => item.value;
+        none => -1;
+      };
+      store.append(Item({ id: 3, value: 24 }));
+      return observed - 22;
+    }
+  `;
+  assert.deepEqual(diagnostics(source, "optional-view.z"), []);
+  const generated = compileToC(source, "optional-view.z");
+  assert.match(generated, /typedef const Z_Item \*Z_Option___z_view_3a_Item;/);
+  assert.match(generated, /Z_Option___z_view_3a_Item Z_Store_find\(const Z_Store \*self, int32_t id\)/);
+  assert.match(generated, /return &\(\(\(self->items\)\.data\[/);
+  assert.match(generated, /return NULL;/);
+  assert.doesNotMatch(generated, /struct Z___z_Option___z_view/);
+
+  const compilation = spawnSync("clang", ["-x", "c", "-Wall", "-Wextra", "-Werror", "-fsyntax-only", "-"], {
+    input: generated,
+    encoding: "utf8",
+  });
+  assert.equal(compilation.status, 0, compilation.stderr);
+
+  const liveMutation = source.replace(
+    "some(item) => item.value;",
+    "some(item) => { store.append(Item({ id: 3, value: 24 })); select item.value; }",
+  );
+  const mutationDiagnostic = diagnostics(liveMutation, "optional-view-live-mutation.z")[0];
+  assert.equal(mutationDiagnostic.code, "Z0205");
+  assert.match(mutationDiagnostic.message, /cannot mutate .*store.* while view .*item.* is live/);
+
+  const mutationAfterUse = source.replace(
+    "some(item) => item.value;",
+    "some(item) => { const value = item.value; store.append(Item({ id: 3, value: 24 })); select value; }",
+  );
+  assert.deepEqual(diagnostics(mutationAfterUse, "optional-view-last-use.z"), []);
+
+  const consumingMatch = source.replace("match (in found)", "match (found)");
+  const matchDiagnostic = diagnostics(consumingMatch, "optional-view-consuming-match.z")[0];
+  assert.equal(matchDiagnostic.code, "Z0206");
+  assert.match(matchDiagnostic.message, /match \(in value\)/);
+
+  const storedView = `
+    struct Item { value: i32; }
+    struct Invalid { found: Option<view Item>; }
+    function main(): i32 { return 0; }
+  `;
+  const storageDiagnostic = diagnostics(storedView, "optional-view-storage.z")[0];
+  assert.equal(storageDiagnostic.code, "Z0206");
+  assert.match(storageDiagnostic.message, /cannot be stored in fields/);
+
+  const bindingOffset = source.indexOf("found =") + 1;
+  assert.match(hover(source, "optional-view.z", bindingOffset)?.contents.value ?? "", /found: Option<view Item>.*view of store/);
+  const payloadOffset = source.indexOf("some(item)") + "some(".length + 1;
+  assert.match(hover(source, "optional-view.z", payloadOffset)?.contents.value ?? "", /item: view Item/);
 });
 
 test("retains owned Z closure environments across Objective-C blocks", () => {

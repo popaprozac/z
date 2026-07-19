@@ -26,6 +26,7 @@ bun run z run examples/language/control-flow/result.z
 | Area | Examples |
 | --- | --- |
 | Borrow capabilities | [`borrowed-parameters.z`](../examples/language/ownership/borrowed-parameters.z), [`native-out.z`](../examples/interop/c/native-out.z) |
+| Receiver-tied views | [`optional-views.z`](../examples/language/ownership/optional-views.z), [`ownership-views.z`](../examples/interop/objc/desktop-ownership/ownership-views.z) |
 | Deterministic cleanup | [`deinit.z`](../examples/language/ownership/deinit.z), [`replacement.z`](../examples/language/ownership/replacement.z), [`consuming-methods.z`](../examples/language/ownership/consuming-methods.z) |
 | ARC and weak references | [`classes.z`](../examples/language/basics/classes.z), [`weak-references.z`](../examples/language/ownership/weak-references.z) |
 | Closures | [`closures.z`](../examples/language/basics/closures.z), [`owned-closures.z`](../examples/language/ownership/owned-closures.z), [`function-values.z`](../examples/language/basics/function-values.z) |
@@ -87,7 +88,7 @@ an AppKit shell. Its findings are recorded in
 [`ownership-pressure.md`](ownership-pressure.md); it exists to pressure-test the
 ownership model rather than present a finished framework API.
 
-[`ownership-views.z`](../examples/interop/objc/desktop-ownership/ownership-views.z) compares three lookup
-contracts without a GUI: a zero-copy scoped callback, a receiver-tied
-`view Document` with straight-line access, and an owned snapshot that remains
-valid after collection mutation.
+[`ownership-views.z`](../examples/interop/objc/desktop-ownership/ownership-views.z) compares four lookup
+contracts without a GUI: a zero-copy scoped callback, an indexed receiver-tied
+`view Document`, a niche-backed `Option<view Document>` lookup, and an owned
+snapshot that remains valid after collection mutation.

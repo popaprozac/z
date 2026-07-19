@@ -102,6 +102,34 @@ forwarded, captured, returned again, or held across `await`. Its owner cannot
 mutate or move before the view's last use. ARC class owners are excluded because
 another alias could invalidate growable projected storage.
 
+A lookup that may not find a value returns `Option<view T>` without copying the
+payload:
+
+```z
+function find(id: i32): Option<view Document> {
+  let index: usize = 0;
+  while (index < this.documents.length) {
+    if (this.documents[index].id == id) {
+      return Option.some(this.documents[index]);
+    }
+    index = index + 1;
+  }
+  return Option.none;
+}
+
+const found = store.find(42);
+match (in found) {
+  some(document) => console.log(document.title);
+  none => console.log("not found");
+}
+```
+
+The initial optional tier requires a direct `const` binding and
+`match (in binding)`. The `some` binding inherits the receiver provenance and
+is read-only; the `none` arm carries no borrow. Native lowering uses a single
+`const T*`: a projected address for `some` and `NULL` for `none`. The owner may
+mutate again after the optional view's last use.
+
 A borrowed callback can expose a scoped view without returning it:
 
 ```z

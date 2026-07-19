@@ -435,6 +435,18 @@ export function inferGenericCalls(
         return { expression: { ...expression, fields }, type: null };
       }
       case "member": {
+        const contextualOption = expectedType ? parseGenericType(expectedType) : null;
+        if (
+          expression.object.kind === "identifier"
+          && expression.object.name === "Option"
+          && expression.property === "none"
+          && contextualOption?.base === "Option"
+        ) {
+          return {
+            expression: { ...expression, object: { ...expression.object, name: expectedType! } },
+            type: expectedType,
+          };
+        }
         const object = rewriteExpression(expression.object, environment);
         const importedFunction = foreignMember(expression);
         const importedReturn = importedFunction ? foreignReturnType(importedFunction) : null;
@@ -617,6 +629,7 @@ export function inferGenericCalls(
         const callee = rewriteExpression(expression.callee, environment);
         if (callee.expression.kind === "member" && callee.expression.object.kind === "identifier") {
           const qualifier = parseGenericType(callee.expression.object.name);
+          const contextualOption = expectedType ? parseGenericType(expectedType) : null;
           const optionBase = qualifier?.base ?? callee.expression.object.name;
           if (optionBase === "Option") {
             if (callee.expression.property === "fromNullable") {
@@ -656,7 +669,9 @@ export function inferGenericCalls(
             if (args.length !== 1) {
               throw new DiagnosticError(fileName, expression.location, `Option.some expects 1 argument, received ${args.length}`);
             }
-            const target = qualifier?.arguments[0] ?? args[0].type;
+            const target = qualifier?.arguments[0]
+              ?? (contextualOption?.base === "Option" ? contextualOption.arguments[0] : null)
+              ?? args[0].type;
             if (!target) {
               throw new DiagnosticError(fileName, args[0].expression.location, "cannot infer Option payload type from this value");
             }

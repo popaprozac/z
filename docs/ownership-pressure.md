@@ -50,6 +50,7 @@ exercises candidates 1 through 3 against the same lookup:
 | `withDocument(id, callback)` | callback receives `in Document` | `const Document *`, stack closure environment, indirect call; no title copy | zero-copy, but all use is nested inside the callback |
 | `documentSnapshot(id)` | returns owned `Option<Document>` | option tag plus a new `String` allocation and exact byte copy | straight-line and remains valid across workspace mutation |
 | `documentAt(index): view Document` | inferred receiver-tied borrow | `const Document *`, bounds check, no document or string copy | straight-line until the view's last use; owner mutation is then permitted |
+| `document(id): Option<view Document>` | optional receiver-tied borrow, inspected with `match (in result)` | one `const Document *`; `NULL` is `none`, no tag or string copy | natural fallible lookup; `some` inherits owner provenance and `none` carries no borrow |
 
 The scoped form reads naturally for enumeration and one operation. It becomes
 awkward when several later statements need the selected document. The snapshot
@@ -59,9 +60,11 @@ copy would be accidental overhead for immediate read-only use.
 This evidence produced a narrow receiver-tied read-only view rather than general
 lifetime parameters. Its provenance is one borrowed value-struct receiver; it
 is non-storable, non-forwardable, and non-capturable, and receiver mutation is
-rejected until the view's last use. ARC class owners remain excluded because an
-alias could mutate the same storage. Callers needing aliasing or survival across
-reallocation must use an owned snapshot or a future stable reference model.
+rejected until the view's last use. `Option<view T>` carries the same provenance
+through a constrained local enum shape without admitting general borrowed enum
+storage. ARC class owners remain excluded because an alias could mutate the same
+storage. Callers needing aliasing or survival across reallocation must use an
+owned snapshot or a future stable reference model.
 
 ## Pressure 2: imported Objective-C references in owned Z state
 
@@ -135,7 +138,7 @@ and observes zero live native values after scope exit.
 ## Not tested yet
 
 - a borrow that must survive suspension;
-- a receiver-tied view returned from a lookup method;
+- parameter-provenanced, retained, or class-owned views;
 - cross-thread ownership, atomic ARC, and sendability;
 - cyclic application graphs under ORC;
 - storing move-only native values in dynamic arrays, enum payloads, ARC fields,

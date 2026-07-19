@@ -478,8 +478,11 @@ export function hover(source: string, fileName: string, offset: number): Hover |
   const matchBinding = collectMatchArmInfos(context).find((item) => item.bindingOffset === word.start);
   if (matchBinding?.binding && matchBinding.payloadType) {
     const capability = matchBinding.borrowed ? "in " : "";
+    const bindingType = directWordType ?? matchBinding.payloadType;
+    const owner = context.semanticInfo.viewBindingOwners.get(word.start);
+    const provenance = owner ? `  // view of ${owner}` : "";
     return markdownHover(
-      `${capability}${matchBinding.binding}: ${displayType(matchBinding.payloadType, context.typeDisplayNames)}`,
+      `${capability}${matchBinding.binding}: ${displayType(String(bindingType), context.typeDisplayNames)}${provenance}`,
       source,
       word.start,
       word.end,

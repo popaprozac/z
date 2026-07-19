@@ -32,7 +32,7 @@ import {
   weakResultTypeName,
 } from "./weak-types.ts";
 import { parseOptionType } from "./option-types.ts";
-import { parseViewType } from "./view-types.ts";
+import { parseOptionalViewType, parseViewType } from "./view-types.ts";
 
 type GenerationContext = {
   readonly structs: Map<string, StructDeclaration>;
@@ -1389,13 +1389,14 @@ function nicheOptionPayload(
 ): string | null {
   const option = parseOptionType(declaration.name);
   if (!option) return null;
+  if (parseOptionalViewType(declaration.name)) return option.target;
   if (foreignNamedTypes.get(option.target)?.kind === "object") return option.target;
   const pointer = parsePointerTypeName(option.target);
   return pointer && !pointer.nullable ? option.target : null;
 }
 
 function nicheOptionNull(payloadType: string): "nil" | "NULL" {
-  return parsePointerTypeName(payloadType) ? "NULL" : "nil";
+  return parseViewType(payloadType) || parsePointerTypeName(payloadType) ? "NULL" : "nil";
 }
 
 function generateFunction(
@@ -3462,7 +3463,7 @@ function generateExpressionInner(expression: Expression, context: GenerationCont
       if (declaration && nicheOptionPayload(declaration, context.semanticInfo.foreignNamedTypes)) {
         return generateExpression(expression.payload, context);
       }
-      return `(${enumName(expression.enumName)}){ .tag = ${variantTag(expression.enumName, expression.variantName)}, .data.${expression.variantName} = ${generateExpression(expression.payload, context)} }`;
+      return `(${enumName(expression.enumName)}){ .tag = ${variantTag(expression.enumName, expression.variantName)}, .data.${expression.variantName} = ${generateViewPayload(expression.payload, context)} }`;
     }
     case "attempt":
       return generateExpression(expression.expression, context);
@@ -3599,9 +3600,9 @@ function generateExpressionInner(expression: Expression, context: GenerationCont
           if (declaration && variant) {
             const niche = nicheOptionPayload(declaration, context.semanticInfo.foreignNamedTypes);
             if (niche) {
-              return variant.payload ? generateExpression(expression.arguments[0], context) : nicheOptionNull(niche);
+              return variant.payload ? generateViewPayload(expression.arguments[0], context) : nicheOptionNull(niche);
             }
-            const payload = variant.payload ? `, .data.${variant.name} = ${generateExpression(expression.arguments[0], context)}` : "";
+            const payload = variant.payload ? `, .data.${variant.name} = ${generateViewPayload(expression.arguments[0], context)}` : "";
             return `(${enumName(declaration.name)}){ .tag = ${variantTag(declaration.name, variant.name)}${payload} }`;
           }
         }
@@ -3663,6 +3664,11 @@ function generateExpressionInner(expression: Expression, context: GenerationCont
       return `${generateExpression(expression.callee, context)}(${expression.arguments.map((argument) => generateCallArgument(argument, context)).join(", ")})`;
     }
   }
+}
+
+function generateViewPayload(expression: Expression, context: GenerationContext): string {
+  const value = generateExpression(expression, context);
+  return context.semanticInfo.viewReturnExpressions.has(expression.location.offset) ? `&(${value})` : value;
 }
 
 function generateFunctionValueCall(value: string, arguments_: readonly string[]): string {

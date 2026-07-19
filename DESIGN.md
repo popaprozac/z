@@ -953,11 +953,15 @@ is a good fit for enumeration, but its inversion of control is not treated as a
 universal replacement for future retained or receiver-tied views.
 
 The follow-up lookup probe compares `withDocument(id, callback)`,
-`documentAt(index): view Document`, and an owned `documentSnapshot(id)`.
-Generated C confirms both borrowed shapes use `const Document *` without a
-string copy, while the snapshot allocates and copies the selected title. The
-implemented `view` tier has one provenance source: a synchronous borrowed
-value-struct receiver returning one of its direct fields or indexed elements.
+`documentAt(index): view Document`, `document(id): Option<view Document>`, and
+an owned `documentSnapshot(id)`. Generated C confirms every borrowed shape uses
+`const Document *` without a string copy, while the snapshot allocates and
+copies the selected title. Optional views niche-lower to that same pointer:
+`NULL` is `none`, and `some(document)` inherits the receiver provenance during
+`match (in result)`. This is a constrained borrowed container, not permission
+for general view-bearing enum storage. The implemented `view` tier has one
+provenance source: a synchronous borrowed value-struct receiver returning one
+of its direct fields or indexed elements.
 Last use ends the borrow; the view cannot be stored, forwarded, captured,
 returned again, or held across receiver mutation or suspension. ARC class
 owners are excluded because aliases could invalidate projected growable

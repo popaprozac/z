@@ -39,8 +39,8 @@ Status meanings:
 | Fixed arrays | Implemented | Checked indexing and reverse element cleanup |
 | `Array<T>` | Implemented | Growable owned storage and move-aware elements |
 | `Slice<T>` | Partial | Parameter-only, non-escaping lexical views |
-| Receiver-tied `view T` | Implemented narrow tier | Direct field/index projections from synchronous value-struct methods; inferred const local, read-only, non-storable, non-forwardable, no class owners |
-| General returned/stored borrows | Planned | Parameter provenance, optional views, class alias safety, and retained views remain open |
+| Receiver-tied `view T` | Implemented narrow tier | Direct field/index projections and niche-backed `Option<view T>` lookups from synchronous value-struct methods; inferred const local, read-only, non-storable, non-forwardable, no class owners |
+| General returned/stored borrows | Planned | Parameter provenance, class alias safety, retained views, and regions remain open |
 | ORC cycle collection | Planned | `Weak<T>` works now; arbitrary strong cycles are not collected |
 
 The ongoing empirical record is
@@ -141,20 +141,21 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
 - `bun test`: compiler, runtime, diagnostics, interop, async, and editor
   regression suite.
 
-## Near-term validation order
+## Agreed foundation sequence
 
-1. Split and maintain tutorial, semantics, rationale, and bootstrap status
-   documents (this structure is now in place).
-2. Extend the backend-neutral Foreign Interface IR now that raw declarations,
-   API-note sources, normalized contracts, native definitions, availability,
-   deployment-target checks, value-lifecycle facts, and C++ constructors/static/
-   instance methods, named-value references, receiver qualifiers, and move-only
-   native value facts are separate; next pressure should come from richer native
-   declaration shapes and storage contexts.
-3. Extend the desktop probe through one real native event callback into owned Z
-   state (one-shot and persistent notification paths are now validated).
-4. Expand receiver-tied views only from real pressure: the value-struct tier is
-   implemented; optional results, parameter provenance, stable/class-owned
-   storage, and regions remain evidence-driven experiments.
-5. Keep actors, channels, multithreaded executors, and atomic ARC provisional
-   until sendability and cross-thread frame probes provide evidence.
+1. **Optional receiver-tied views — implemented.** Validate
+   `Option<view T>` lookup results, match-arm provenance, last-use diagnostics,
+   editor information, and one-pointer native lowering in application-shaped
+   code.
+2. **Move-only storage contexts.** Add evidence-driven support for move-only
+   native values in dynamic arrays and enum payloads before expanding to ARC
+   fields, closure environments, or async frames.
+3. **Larger application probe.** Write non-trivial Z code that combines the
+   ownership shapes, collections, errors, modules, native calls, and cleanup so
+   restrictions are evaluated from real use rather than isolated syntax.
+4. **Self-hosting prerequisites.** Establish target-neutral `std/fs`,
+   `std/process`, and program-argument APIs, then use them to begin moving viable
+   compiler components into Z.
+5. **Threaded concurrency evidence.** Probe sendability, cross-thread task
+   frames, and atomic ARC before committing actors, channels, or a
+   multithreaded executor as settled language design.
