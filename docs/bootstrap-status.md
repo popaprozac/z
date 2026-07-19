@@ -113,29 +113,29 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
 
 ## Validation probes
 
-- [`examples/nswindow.z`](../examples/nswindow.z): direct AppKit window.
-- [`examples/objc-nullability.z`](../examples/objc-nullability.z): explicit
+- [`examples/interop/objc/nswindow.z`](../examples/interop/objc/nswindow.z): direct AppKit window.
+- [`examples/interop/objc/objc-nullability.z`](../examples/interop/objc/objc-nullability.z): explicit
   `T | null` AppKit guard narrowing alongside `Option.fromNullable` and
   `some`/`none` matching.
-- [`examples/desktop-ownership`](../examples/desktop-ownership): ARC application
+- [`examples/interop/objc/desktop-ownership`](../examples/interop/objc/desktop-ownership): ARC application
   model plus move-only owned documents and AppKit shell.
-- [`examples/ownership-views.z`](../examples/ownership-views.z): zero-copy scoped
+- [`examples/interop/objc/desktop-ownership/ownership-views.z`](../examples/interop/objc/desktop-ownership/ownership-views.z): zero-copy scoped
   lookup compared with an independently owned document snapshot.
-- [`examples/appkit-events.z`](../examples/appkit-events.z): persistent native
+- [`examples/interop/objc/appkit-events.z`](../examples/interop/objc/appkit-events.z): persistent native
   notification callbacks, weak Z capture, imported notification constants, and
   explicit observer-token removal.
-- [`examples/swift-interop`](../examples/swift-interop): Swift class through its
+- [`examples/interop/swift/swift-interop`](../examples/interop/swift/swift-interop): Swift class through its
   generated Objective-C compatibility header.
-- [`examples/swift-value-interop`](../examples/swift-value-interop): Swift-native
+- [`examples/interop/swift/swift-value-interop`](../examples/interop/swift/swift-value-interop): Swift-native
   owned value constructed and called directly, then stored in a Z aggregate,
   through its generated C++ compatibility header.
-- [`examples/foreign-values.z`](../examples/foreign-values.z): `.zd`-contracted
+- [`examples/interop/cpp/foreign-values.z`](../examples/interop/cpp/foreign-values.z): `.zd`-contracted
   copyable C++ RAII value copied through an owning Z aggregate with zero live
   native values after scope exit.
-- [`examples/cpp-move-only.z`](../examples/cpp-move-only.z): `.zd`-contracted
+- [`examples/interop/cpp/cpp-move-only.z`](../examples/interop/cpp/cpp-move-only.z): `.zd`-contracted
   non-copyable C++ RAII value borrowed, moved through an owned function and a Z
   value struct, then deterministically released with zero live native values.
-- [`examples/cpp-references.z`](../examples/cpp-references.z): C++ named-value
+- [`examples/interop/cpp/cpp-references.z`](../examples/interop/cpp/cpp-references.z): C++ named-value
   references and receiver qualifiers mapped onto existing Z `in`, `inout`, and
   owned-transfer semantics with direct lvalue/`std::move` lowering.
 - `bun test`: compiler, runtime, diagnostics, interop, async, and editor

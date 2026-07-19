@@ -6,7 +6,7 @@ questions from bootstrap implementation gaps.
 
 ## Desktop probe 1: owned model plus AppKit shell
 
-Source: [`examples/desktop-ownership`](../examples/desktop-ownership)
+Source: [`examples/interop/objc/desktop-ownership`](../examples/interop/objc/desktop-ownership)
 
 What works:
 
@@ -42,7 +42,7 @@ Do not choose among them from syntax alone. Add the smallest spike when a real
 program needs to retain or return a view, then compare call sites, diagnostics,
 code generation, and optimizer results.
 
-The deterministic [`ownership-views.z`](../examples/ownership-views.z) probe now
+The deterministic [`ownership-views.z`](../examples/interop/objc/desktop-ownership/ownership-views.z) probe now
 exercises candidates 1 through 3 against the same lookup:
 
 | Shape | Source contract | Generated cost | Usability boundary |

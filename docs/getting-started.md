@@ -90,7 +90,7 @@ function main(): i32 {
 Run the repository version with:
 
 ```sh
-bun run z run examples/modules/main.z
+bun run z run examples/language/modules/main.z
 ```
 
 ## Native modules
@@ -128,7 +128,7 @@ versioned availability unchecked rather than guessing a target. Stage 0 accepts
 only the host platform and does not cross-compile. Run the macOS probe with:
 
 ```sh
-bun run z run examples/deployment-target/main.z
+bun run z run examples/interop/c/deployment-target/main.z
 ```
 
 ## Editor setup

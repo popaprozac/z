@@ -5,7 +5,7 @@ dylib and generated Objective-C compatibility header, compiles the Z source
 through the Objective-C ARC backend, links both products, and runs the result:
 
 ```sh
-bun run z run examples/swift-interop/main.z
+bun run z run examples/interop/swift/swift-interop/main.z
 ```
 
 The Z source imports `ZSwiftExample-Swift.h` directly and uses the Swift class,

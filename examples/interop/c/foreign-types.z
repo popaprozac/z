@@ -1,4 +1,4 @@
-import geometry from "../tests/fixtures/geometry.h";
+import geometry from "../../../tests/fixtures/geometry.h";
 import stdio from "stdio.h";
 
 function move(point: geometry.ZPoint, amount: geometry.ZCount): geometry.ZPoint {

@@ -1,5 +1,5 @@
 import console from "std/console";
-import native from "../tests/fixtures/move-only.hpp";
+import native from "../../../tests/fixtures/move-only.hpp";
 
 function exercise(): i32 {
   let functionValue = native.zcpp.UniqueValue(20);

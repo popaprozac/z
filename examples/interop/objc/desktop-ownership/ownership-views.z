@@ -1,5 +1,5 @@
 import console from "std/console";
-import { Document, DocumentStore } from "./desktop-ownership/model.z";
+import { Document, DocumentStore } from "./model.z";
 
 function main(): i32 {
   let documents = DocumentStore({ documents: Array<Document>() });

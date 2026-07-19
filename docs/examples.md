@@ -8,50 +8,50 @@ compile-only probes and `emit` to inspect generated native code.
 
 | Area | Example | What it demonstrates |
 | --- | --- | --- |
-| First native program | [`first.z`](../examples/first.z) | Functions, inference, direct C import |
-| Console and strings | [`console.z`](../examples/console.z) | Explicit standard import, interpolation, typed formatting |
-| Modules | [`modules/main.z`](../examples/modules/main.z) | Exports, namespace imports, selective aliases |
-| Construction | [`construction.z`](../examples/construction.z) | Struct object construction and class-only `new` |
-| Results | [`result.z`](../examples/result.z) | `return`, `throw`, `attempt`, and exhaustive matching |
-| Options | [`option.z`](../examples/option.z) | `Option.some`, `Option.none`, and payload matching |
+| First native program | [`first.z`](../examples/language/basics/first.z) | Functions, inference, direct C import |
+| Console and strings | [`console.z`](../examples/language/basics/console.z) | Explicit standard import, interpolation, typed formatting |
+| Modules | [`modules/main.z`](../examples/language/modules/main.z) | Exports, namespace imports, selective aliases |
+| Construction | [`construction.z`](../examples/language/basics/construction.z) | Struct object construction and class-only `new` |
+| Results | [`result.z`](../examples/language/control-flow/result.z) | `return`, `throw`, `attempt`, and exhaustive matching |
+| Options | [`option.z`](../examples/language/types/option.z) | `Option.some`, `Option.none`, and payload matching |
 
 ```sh
-bun run z run examples/first.z
-bun run z run examples/construction.z
-bun run z run examples/result.z
+bun run z run examples/language/basics/first.z
+bun run z run examples/language/basics/construction.z
+bun run z run examples/language/control-flow/result.z
 ```
 
 ## Ownership and values
 
 | Area | Examples |
 | --- | --- |
-| Borrow capabilities | [`borrowed-parameters.z`](../examples/borrowed-parameters.z), [`native-out.z`](../examples/native-out.z) |
-| Deterministic cleanup | [`deinit.z`](../examples/deinit.z), [`replacement.z`](../examples/replacement.z), [`consuming-methods.z`](../examples/consuming-methods.z) |
-| ARC and weak references | [`classes.z`](../examples/classes.z), [`weak-references.z`](../examples/weak-references.z) |
-| Closures | [`closures.z`](../examples/closures.z), [`owned-closures.z`](../examples/owned-closures.z), [`function-values.z`](../examples/function-values.z) |
-| Collections | [`arrays.z`](../examples/arrays.z), [`slices.z`](../examples/slices.z), [`dynamic-arrays.z`](../examples/dynamic-arrays.z) |
-| Generics and traits | [`generics.z`](../examples/generics.z), [`generic-constraints.z`](../examples/generic-constraints.z) |
-| Enums and matching | [`enum-patterns.z`](../examples/enum-patterns.z), [`match-expression.z`](../examples/match-expression.z), [`owned-enums.z`](../examples/owned-enums.z) |
+| Borrow capabilities | [`borrowed-parameters.z`](../examples/language/ownership/borrowed-parameters.z), [`native-out.z`](../examples/interop/c/native-out.z) |
+| Deterministic cleanup | [`deinit.z`](../examples/language/ownership/deinit.z), [`replacement.z`](../examples/language/ownership/replacement.z), [`consuming-methods.z`](../examples/language/ownership/consuming-methods.z) |
+| ARC and weak references | [`classes.z`](../examples/language/basics/classes.z), [`weak-references.z`](../examples/language/ownership/weak-references.z) |
+| Closures | [`closures.z`](../examples/language/basics/closures.z), [`owned-closures.z`](../examples/language/ownership/owned-closures.z), [`function-values.z`](../examples/language/basics/function-values.z) |
+| Collections | [`arrays.z`](../examples/language/collections/arrays.z), [`slices.z`](../examples/language/collections/slices.z), [`dynamic-arrays.z`](../examples/language/collections/dynamic-arrays.z) |
+| Generics and traits | [`generics.z`](../examples/language/types/generics.z), [`generic-constraints.z`](../examples/language/types/generic-constraints.z) |
+| Enums and matching | [`enum-patterns.z`](../examples/language/control-flow/enum-patterns.z), [`match-expression.z`](../examples/language/control-flow/match-expression.z), [`owned-enums.z`](../examples/language/ownership/owned-enums.z) |
 
 ## Native interop
 
 | Boundary | Example | Notes |
 | --- | --- | --- |
-| Selective C import | [`selective-import.z`](../examples/selective-import.z) | Header declarations with local aliases |
-| C records and enums | [`foreign-types.z`](../examples/foreign-types.z) | Native layouts and constants |
-| C pointers | [`foreign-pointers.z`](../examples/foreign-pointers.z), [`foreign-handle.z`](../examples/foreign-handle.z) | Borrowed and owned `.zd` contracts |
-| Z declaration contract | [`declared-handle.z`](../examples/declared-handle.z), [`declared-handle.h.zd`](../examples/declared-handle.h.zd) | Adjacent `.zd` capabilities, niche-backed `Option.fromNullable`, borrowed/consuming match, and `deinit` release |
-| C callbacks | [`callbacks.z`](../examples/callbacks.z), [`callbacks.h.zd`](../examples/callbacks.h.zd) | `.zd` call-only borrowing plus escaping ownership, named context/release pairing, and caller-thread guarantees |
-| Deployment target | [`deployment-target`](../examples/deployment-target) | Explicit macOS minimum version, Clang/Swift target propagation, and Z-native deprecation warnings |
-| C++ | [`cpp-interop.z`](../examples/cpp-interop.z), [`cpp-selective-interop.z`](../examples/cpp-selective-interop.z) | Qualified and selective namespace imports, aliases, overloads, and records |
-| C++ lifecycle value | [`foreign-values.z`](../examples/foreign-values.z), [`cpp-callables.z`](../examples/cpp-callables.z), [`foreign-values.hpp.zd`](../tests/fixtures/foreign-values.hpp.zd) | `.zd` copy/deinit contract, native aggregate copies, constructors, static/const/mutable methods, overloads, and deterministic RAII destruction |
-| C++ move-only value | [`cpp-move-only.z`](../examples/cpp-move-only.z), [`move-only.hpp.zd`](../tests/fixtures/move-only.hpp.zd) | `.zd` move/deinit contract, `in` borrow, owned calls/returns, whole-struct moves, use-after-move diagnostics, and deterministic native destruction |
-| C++ references | [`cpp-references.z`](../examples/cpp-references.z) | `const T&`, `T&`, move-only `T&&`, and receiver-qualified methods mapped onto existing Z capabilities with no wrapper overhead |
-| AppKit window | [`nswindow.z`](../examples/nswindow.z) | Direct Objective-C ARC calls |
-| Objective-C nullability | [`objc-nullability.z`](../examples/objc-nullability.z) | `T | null`, narrowing, and `Option.fromNullable` |
-| Persistent AppKit events | [`appkit-events.z`](../examples/appkit-events.z) | Native blocks, weak capture, observer tokens |
-| Swift class | [`swift-interop`](../examples/swift-interop) | Generated Objective-C compatibility header |
-| Swift value | [`swift-value-interop`](../examples/swift-value-interop) | Generated C++ methods, owned aggregate storage, and exact explicit `String` return copies |
+| Selective C import | [`selective-import.z`](../examples/interop/c/selective-import.z) | Header declarations with local aliases |
+| C records and enums | [`foreign-types.z`](../examples/interop/c/foreign-types.z) | Native layouts and constants |
+| C pointers | [`foreign-pointers.z`](../examples/interop/c/foreign-pointers.z), [`foreign-handle.z`](../examples/interop/c/foreign-handle.z) | Borrowed and owned `.zd` contracts |
+| Z declaration contract | [`declared-handle.z`](../examples/interop/c/declared-handle.z), [`declared-handle.h.zd`](../examples/interop/c/declared-handle.h.zd) | Adjacent `.zd` capabilities, niche-backed `Option.fromNullable`, borrowed/consuming match, and `deinit` release |
+| C callbacks | [`callbacks.z`](../examples/interop/c/callbacks.z), [`callbacks.h.zd`](../examples/interop/c/callbacks.h.zd) | `.zd` call-only borrowing plus escaping ownership, named context/release pairing, and caller-thread guarantees |
+| Deployment target | [`deployment-target`](../examples/interop/c/deployment-target) | Explicit macOS minimum version, Clang/Swift target propagation, and Z-native deprecation warnings |
+| C++ | [`cpp-interop.z`](../examples/interop/cpp/cpp-interop.z), [`cpp-selective-interop.z`](../examples/interop/cpp/cpp-selective-interop.z) | Qualified and selective namespace imports, aliases, overloads, and records |
+| C++ lifecycle value | [`foreign-values.z`](../examples/interop/cpp/foreign-values.z), [`cpp-callables.z`](../examples/interop/cpp/cpp-callables.z), [`foreign-values.hpp.zd`](../tests/fixtures/foreign-values.hpp.zd) | `.zd` copy/deinit contract, native aggregate copies, constructors, static/const/mutable methods, overloads, and deterministic RAII destruction |
+| C++ move-only value | [`cpp-move-only.z`](../examples/interop/cpp/cpp-move-only.z), [`move-only.hpp.zd`](../tests/fixtures/move-only.hpp.zd) | `.zd` move/deinit contract, `in` borrow, owned calls/returns, whole-struct moves, use-after-move diagnostics, and deterministic native destruction |
+| C++ references | [`cpp-references.z`](../examples/interop/cpp/cpp-references.z) | `const T&`, `T&`, move-only `T&&`, and receiver-qualified methods mapped onto existing Z capabilities with no wrapper overhead |
+| AppKit window | [`nswindow.z`](../examples/interop/objc/nswindow.z) | Direct Objective-C ARC calls |
+| Objective-C nullability | [`objc-nullability.z`](../examples/interop/objc/objc-nullability.z) | `T | null`, narrowing, and `Option.fromNullable` |
+| Persistent AppKit events | [`appkit-events.z`](../examples/interop/objc/appkit-events.z) | Native blocks, weak capture, observer tokens |
+| Swift class | [`swift-interop`](../examples/interop/swift/swift-interop) | Generated Objective-C compatibility header |
+| Swift value | [`swift-value-interop`](../examples/interop/swift/swift-value-interop) | Generated C++ methods, owned aggregate storage, and exact explicit `String` return copies |
 
 Apple examples require macOS and Xcode Command Line Tools. `appkit-events.z`
 opens a native window and exits when that window closes.
@@ -62,32 +62,32 @@ Read [`async-model.md`](async-model.md) alongside these examples:
 
 | Shape | Example |
 | --- | --- |
-| Sequential await | [`async-sequential.z`](../examples/async-sequential.z) |
-| Typed errors | [`async-errors.z`](../examples/async-errors.z) |
-| Hot spawn and explicit join | [`async-spawn.z`](../examples/async-spawn.z) |
-| Lexical task scopes | [`async-scopes.z`](../examples/async-scopes.z) |
-| Cancellation | [`async-cancellation.z`](../examples/async-cancellation.z) |
-| Scheduler-aware timers | [`async-delay.z`](../examples/async-delay.z) |
-| Owned values across suspension | [`async-ownership.z`](../examples/async-ownership.z), [`async-owned-enums.z`](../examples/async-owned-enums.z) |
-| Async methods | [`async-methods.z`](../examples/async-methods.z) |
+| Sequential await | [`async-sequential.z`](../examples/async/async-sequential.z) |
+| Typed errors | [`async-errors.z`](../examples/async/async-errors.z) |
+| Hot spawn and explicit join | [`async-spawn.z`](../examples/async/async-spawn.z) |
+| Lexical task scopes | [`async-scopes.z`](../examples/async/async-scopes.z) |
+| Cancellation | [`async-cancellation.z`](../examples/async/async-cancellation.z) |
+| Scheduler-aware timers | [`async-delay.z`](../examples/async/async-delay.z) |
+| Owned values across suspension | [`async-ownership.z`](../examples/async/async-ownership.z), [`async-owned-enums.z`](../examples/async/async-owned-enums.z) |
+| Async methods | [`async-methods.z`](../examples/async/async-methods.z) |
 
 ```sh
-bun run z run examples/async-sequential.z
-bun run z run examples/async-spawn.z
-bun run z run examples/async-scopes.z
-bun run z run examples/async-cancellation.z
-bun run z run examples/async-delay.z
+bun run z run examples/async/async-sequential.z
+bun run z run examples/async/async-spawn.z
+bun run z run examples/async/async-scopes.z
+bun run z run examples/async/async-cancellation.z
+bun run z run examples/async/async-delay.z
 ```
 
 ## Application-shaped probes
 
-[`desktop-ownership`](../examples/desktop-ownership) combines an ARC-managed Z
+[`desktop-ownership`](../examples/interop/objc/desktop-ownership) combines an ARC-managed Z
 application model, move-only documents and strings, borrowed enumeration, and
 an AppKit shell. Its findings are recorded in
 [`ownership-pressure.md`](ownership-pressure.md); it exists to pressure-test the
 ownership model rather than present a finished framework API.
 
-[`ownership-views.z`](../examples/ownership-views.z) compares three lookup
+[`ownership-views.z`](../examples/interop/objc/desktop-ownership/ownership-views.z) compares three lookup
 contracts without a GUI: a zero-copy scoped callback, a receiver-tied
 `view Document` with straight-line access, and an owned snapshot that remains
 valid after collection mutation.

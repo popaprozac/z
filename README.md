@@ -22,7 +22,7 @@ function main(): i32 {
 ```
 
 ```sh
-bun run z run examples/first.z
+bun run z run examples/language/basics/first.z
 ```
 
 The stage-0 compiler is written in TypeScript, runs on Bun, and emits readable
@@ -96,7 +96,7 @@ weakly captures ARC-managed Z state, receives repeated callbacks, and explicitly
 removes the returned observer tokens:
 
 ```sh
-bun run z run examples/appkit-events.z
+bun run z run examples/interop/objc/appkit-events.z
 ```
 
 See [the interop model](docs/interop-model.md) for the cost model and
@@ -110,9 +110,9 @@ Line Tools provide Clang, Apple frameworks, and Swift for the interop probes.
 
 ```sh
 bun test
-bun run z check examples/first.z
-bun run z emit examples/first.z
-bun run z run examples/first.z
+bun run z check examples/language/basics/first.z
+bun run z emit examples/language/basics/first.z
+bun run z run examples/language/basics/first.z
 ```
 
 Install the development editor extension for VS Code and Cursor:
@@ -155,7 +155,7 @@ new implementation slices should update status and a runnable example.
 compiler/src/     stage-0 compiler and language server
 runtime/          native runtime support
 editors/vscode/   VS Code/Cursor extension
-examples/         runnable language and interop probes
+examples/         categorized language, async, and interop probes
 tests/fixtures/   deterministic native integration fixtures
 docs/             focused reference, model, and status documents
 ```
@@ -163,3 +163,5 @@ docs/             focused reference, model, and status documents
 The integration suite is the executable truth for the bootstrap. Before a
 change lands, run `bun test` and keep generated native code readable enough to
 inspect with `bun run z emit <file.z>`.
+
+Browse the categorized runnable index in [`examples/README.md`](examples/README.md).

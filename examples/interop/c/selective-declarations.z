@@ -5,7 +5,7 @@ import {
   ZCount as Count,
   z_translate as translate,
   z_score as score
-} from "../tests/fixtures/geometry.h";
+} from "../../../tests/fixtures/geometry.h";
 import { printf } from "stdio.h";
 
 function direction(): Direction {

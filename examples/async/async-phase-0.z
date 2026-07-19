@@ -1,5 +1,5 @@
 // This example exercises executable Phase 1 async task frames.
-// Run `bun run z run examples/async-phase-0.z`.
+// Run `bun run z run examples/async/async-phase-0.z`.
 
 import console from "std/console";
 

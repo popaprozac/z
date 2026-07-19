@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { resolve } from "node:path";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { test } from "bun:test";
 import { analyzeSource, check, compileToC, compileToNative } from "../compiler/src/compiler.ts";
 import { DiagnosticError, formatDiagnostic } from "../compiler/src/diagnostics.ts";
@@ -35,7 +35,7 @@ test("emits functions and direct imported C calls", () => {
 });
 
 test("selectively imports C functions with optional local aliases", () => {
-  const example = resolve(projectRoot, "examples/selective-import.z");
+  const example = resolve(projectRoot, "examples/interop/c/selective-import.z");
   const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stdout, "selective C imports\nanswer=42\n");
@@ -79,7 +79,7 @@ test("keeps unselected C functions out of scope", () => {
 });
 
 test("loads explicit Z exports through selective and namespace module imports", () => {
-  const example = resolve(projectRoot, "examples/modules/main.z");
+  const example = resolve(projectRoot, "examples/language/modules/main.z");
   const source = readFileSync(example, "utf8");
   const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
@@ -185,7 +185,7 @@ test("preserves generic inference and local shadowing across Z modules", () => {
 });
 
 test("provides completion, hover, definitions, and semantic tokens across Z modules", () => {
-  const example = resolve(projectRoot, "examples/modules/main.z");
+  const example = resolve(projectRoot, "examples/language/modules/main.z");
   const source = readFileSync(example, "utf8");
   const uri = `file://${example}`;
 
@@ -266,7 +266,7 @@ test("suggests Z tokens while source and declaration syntax is incomplete", () =
 });
 
 test("analyzes export-only files as modules while executable commands still require main", () => {
-  const moduleFile = resolve(projectRoot, "examples/modules/geometry.z");
+  const moduleFile = resolve(projectRoot, "examples/language/modules/geometry.z");
   const source = readFileSync(moduleFile, "utf8");
   assert.doesNotThrow(() => check(source, moduleFile));
   assert.deepEqual(diagnostics(source, moduleFile), []);
@@ -308,7 +308,7 @@ test("resolves native headers relative to the Z module that imports them", () =>
 });
 
 test("selectively imports C types and constants with the same aliases used by functions", () => {
-  const example = resolve(projectRoot, "examples/selective-declarations.z");
+  const example = resolve(projectRoot, "examples/interop/c/selective-declarations.z");
   const source = readFileSync(example, "utf8");
   const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
@@ -661,7 +661,7 @@ test("reports unsupported C signatures at the Z call site", () => {
 });
 
 test("narrows, borrows, consumes, and cleans up owned C handles", () => {
-  const example = resolve(projectRoot, "examples/foreign-handle.z");
+  const example = resolve(projectRoot, "examples/interop/c/foreign-handle.z");
   const exampleSource = readFileSync(example, "utf8");
   const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
@@ -739,7 +739,7 @@ test("discovers owned-handle contracts from adjacent Z declaration files", () =>
     3,
   );
 
-  const example = resolve(projectRoot, "examples/declared-handle.z");
+  const example = resolve(projectRoot, "examples/interop/c/declared-handle.z");
   const exampleSource = readFileSync(example, "utf8");
   const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
@@ -916,7 +916,7 @@ test("normalizes producer declarations without exposing Clang nodes to FIIR cons
 });
 
 test("preserves native declaration locations for FIIR and editor definitions", () => {
-  const example = resolve(projectRoot, "examples/foreign-types.z");
+  const example = resolve(projectRoot, "examples/interop/c/foreign-types.z");
   const source = readFileSync(example, "utf8");
   const context = analyzeSource(source, example);
   const geometry = context.foreignModules.get("geometry")!;
@@ -935,9 +935,9 @@ test("preserves native declaration locations for FIIR and editor definitions", (
 });
 
 test("surfaces native availability in hover and rejects universally unavailable APIs", () => {
-  const fileName = resolve(projectRoot, "examples/availability-metadata-test.z");
+  const fileName = resolve(projectRoot, "examples/interop/c/availability-metadata-test.z");
   const source = `
-    import native from "../tests/fixtures/z-availability.h";
+    import native from "../../../tests/fixtures/z-availability.h";
     function main(): i32 { return native.z_legacy(1); }
   `;
   const context = analyzeSource(source, fileName);
@@ -1020,7 +1020,7 @@ test("checks native availability against an explicit deployment target", () => {
 
 test("threads deployment targets and warnings through CLI native execution", () => {
   if (process.platform !== "darwin") return;
-  const example = resolve(projectRoot, "examples/deployment-target/main.z");
+  const example = resolve(projectRoot, "examples/interop/c/deployment-target/main.z");
   const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stderr, /warning\[Z0804\]: foreign declaration "z_legacy" is deprecated in macOS 13\.0/);
@@ -1065,7 +1065,7 @@ test("rejects malformed or unmatched Z declarations before FIIR reaches sema", (
 });
 
 test("imports C typedefs, records, enums, constants, and qualified signatures", () => {
-  const example = resolve(projectRoot, "examples/foreign-types.z");
+  const example = resolve(projectRoot, "examples/interop/c/foreign-types.z");
   const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stdout, "point=13,20 width=640 flags=7 id=42\n");
@@ -1165,7 +1165,7 @@ test("contextually types signed literals at their destination width", () => {
 });
 
 test("checks integer arithmetic and provides explicit wrapping and saturation", () => {
-  const example = resolve(projectRoot, "examples/integer-safety.z");
+  const example = resolve(projectRoot, "examples/language/basics/integer-safety.z");
   const source = readFileSync(example, "utf8");
   const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
@@ -1222,7 +1222,7 @@ test("checks integer arithmetic and provides explicit wrapping and saturation", 
 });
 
 test("runs floating-point values and typed bitwise option masks", () => {
-  const example = resolve(projectRoot, "examples/apple-groundwork.z");
+  const example = resolve(projectRoot, "examples/interop/c/apple-groundwork.z");
   const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stdout, "");
@@ -1242,7 +1242,7 @@ test("runs floating-point values and typed bitwise option masks", () => {
 });
 
 test("preserves C++ namespaces and resolves overload sets", () => {
-  const example = resolve(projectRoot, "examples/cpp-interop.z");
+  const example = resolve(projectRoot, "examples/interop/cpp/cpp-interop.z");
   const source = readFileSync(example, "utf8");
   const artifact = compileToNative(source, example);
   assert.equal(artifact.language, "c++");
@@ -1281,7 +1281,7 @@ test("preserves C++ namespaces and resolves overload sets", () => {
   const pointOffset = source.indexOf("cpp.zcpp.Point") + "cpp.zcpp.".length + 1;
   assert.match(hover(source, example, pointOffset)?.contents.value ?? "", /Point: zcpp::Point/);
   const pointDefinition = definition(source, `file://${example}`, pointOffset);
-  assert.match(pointDefinition?.uri ?? "", /examples\/cpp_math\.hpp$/);
+  assert.match(pointDefinition?.uri ?? "", /examples\/interop\/cpp\/cpp_math\.hpp$/);
   assert.equal(pointDefinition?.range.start.line, 4);
   const semantic = decodeSemanticTokens(semanticTokens(source, example).data);
   const pointPosition = positionForOffset(source, source.indexOf("cpp.zcpp.Point") + "cpp.zcpp.".length);
@@ -1295,7 +1295,7 @@ test("preserves C++ namespaces and resolves overload sets", () => {
   assert.match(overloadHover, /scale\(value: f64, factor: f64\): f64/);
   const floatingScaleOffset = source.indexOf("cpp.zcpp.scale(2.5") + "cpp.zcpp.".length + 1;
   const floatingScaleDefinition = definition(source, `file://${example}`, floatingScaleOffset);
-  assert.match(floatingScaleDefinition?.uri ?? "", /examples\/cpp_math\.hpp$/);
+  assert.match(floatingScaleDefinition?.uri ?? "", /examples\/interop\/cpp\/cpp_math\.hpp$/);
   assert.equal(floatingScaleDefinition?.range.start.line, 21);
   const genericOverload = source
     .replace("function main(): i32 {", "function identity<T>(value: T): T { return value; }\n\nfunction main(): i32 {")
@@ -1307,7 +1307,7 @@ test("preserves C++ namespaces and resolves overload sets", () => {
 });
 
 test("selectively imports and aliases C++ namespaces", () => {
-  const example = resolve(projectRoot, "examples/cpp-selective-interop.z");
+  const example = resolve(projectRoot, "examples/interop/cpp/cpp-selective-interop.z");
   const source = readFileSync(example, "utf8");
   const artifact = compileToNative(source, example);
   assert.equal(artifact.language, "c++");
@@ -1324,7 +1324,7 @@ test("selectively imports and aliases C++ namespaces", () => {
   assert.match(hover(source, example, namespaceOffset)?.contents.value ?? "", /native namespace zcpp imported as math/);
   const pointOffset = source.indexOf("math.Point") + "math.".length + 1;
   assert.match(hover(source, example, pointOffset)?.contents.value ?? "", /Point: zcpp::Point/);
-  assert.match(definition(source, `file://${example}`, pointOffset)?.uri ?? "", /examples\/cpp_math\.hpp$/);
+  assert.match(definition(source, `file://${example}`, pointOffset)?.uri ?? "", /examples\/interop\/cpp\/cpp_math\.hpp$/);
 
   const completionSource = source.replace("math.translate", "math.tr");
   const completionOffset = completionSource.indexOf("math.tr") + "math.tr".length;
@@ -1348,7 +1348,7 @@ test("selectively imports and aliases C++ namespaces", () => {
 });
 
 test("declares, copies, aggregates, and destroys foreign C++ values", () => {
-  const example = resolve(projectRoot, "examples/foreign-values.z");
+  const example = resolve(projectRoot, "examples/interop/cpp/foreign-values.z");
   const source = readFileSync(example, "utf8");
   const artifact = compileToNative(source, example);
   assert.equal(artifact.language, "c++");
@@ -1498,7 +1498,7 @@ test("declares, copies, aggregates, and destroys foreign C++ values", () => {
 });
 
 test("moves non-copyable C++ values through owned Z bindings and value structs", () => {
-  const example = resolve(projectRoot, "examples/cpp-move-only.z");
+  const example = resolve(projectRoot, "examples/interop/cpp/cpp-move-only.z");
   const source = readFileSync(example, "utf8");
   const generated = compileToNative(source, example).source;
   assert.match(generated, /#include <utility>/);
@@ -1513,7 +1513,7 @@ test("moves non-copyable C++ values through owned Z bindings and value structs",
   assert.match(result.stdout, /^answer=42, moves=[1-9][0-9]*, live=0\n$/);
 
   const movedUse = `
-    import native from "../tests/fixtures/move-only.hpp";
+    import native from "../../../tests/fixtures/move-only.hpp";
     function main(): i32 {
       const first = native.zcpp.UniqueValue(42);
       const second = first;
@@ -1525,7 +1525,7 @@ test("moves non-copyable C++ values through owned Z bindings and value structs",
   assert.match(movedDiagnostic.message, /use of moved value "first"/);
 
   const classStorage = `
-    import native from "../tests/fixtures/move-only.hpp";
+    import native from "../../../tests/fixtures/move-only.hpp";
     class Session {
       value: native.zcpp.UniqueValue;
     }
@@ -1536,7 +1536,7 @@ test("moves non-copyable C++ values through owned Z bindings and value structs",
   assert.match(classDiagnostic.message, /ARC class fields cannot store move-only native values/);
 
   const uninitializedStorage = `
-    import native from "../tests/fixtures/move-only.hpp";
+    import native from "../../../tests/fixtures/move-only.hpp";
     function main(): i32 {
       let value: native.zcpp.UniqueValue;
       return 0;
@@ -1556,7 +1556,7 @@ test("moves non-copyable C++ values through owned Z bindings and value structs",
 });
 
 test("maps C++ references and receiver qualifiers onto existing Z capabilities", () => {
-  const example = resolve(projectRoot, "examples/cpp-references.z");
+  const example = resolve(projectRoot, "examples/interop/cpp/cpp-references.z");
   const source = readFileSync(example, "utf8");
   const analysis = analyzeSource(source, example);
   const module = analysis.foreignModules.get("native")!;
@@ -1597,7 +1597,7 @@ test("maps C++ references and receiver qualifiers onto existing Z capabilities",
   const finishHover = hover(source, example, source.lastIndexOf("finish(") + 2)?.contents.value ?? "";
   assert.match(finishHover, /finish\(move this, offset: i32\): i32.*C\+\+ consuming receiver/s);
   const completionSource = `
-    import native from "../tests/fixtures/move-only.hpp";
+    import native from "../../../tests/fixtures/move-only.hpp";
     function main(): i32 {
       let value = native.zcpp.UniqueValue(1);
       value.;
@@ -1650,7 +1650,7 @@ test("maps C++ references and receiver qualifiers onto existing Z capabilities",
 });
 
 test("imports C++ constructors and static methods as direct type-level calls", () => {
-  const example = resolve(projectRoot, "examples/cpp-callables.z");
+  const example = resolve(projectRoot, "examples/interop/cpp/cpp-callables.z");
   const source = readFileSync(example, "utf8");
   const generated = compileToNative(source, example).source;
   assert.match(generated, /const zcpp::ManagedValue direct = zcpp::ManagedValue\(20\);/);
@@ -1676,7 +1676,7 @@ test("imports C++ constructors and static methods as direct type-level calls", (
   assert.equal(items.some((item) => item.label === "value"), false);
 
   const selective = source
-    .replace('import native from "../tests/fixtures/foreign-values.hpp";', 'import { ManagedValue as Value } from "../tests/fixtures/foreign-values.hpp";')
+    .replace('import native from "../../../tests/fixtures/foreign-values.hpp";', 'import { ManagedValue as Value } from "../../../tests/fixtures/foreign-values.hpp";')
     .replaceAll("native.zcpp.ManagedValue", "Value");
   const selectiveGenerated = compileToNative(selective, example).source;
   assert.match(selectiveGenerated, /zcpp::ManagedValue::from\(22\)/);
@@ -1706,7 +1706,7 @@ test("imports C++ constructors and static methods as direct type-level calls", (
 
 test("imports AppKit classes and emits an ARC Objective-C NSWindow program", () => {
   if (process.platform !== "darwin") return;
-  const example = resolve(projectRoot, "examples/nswindow.z");
+  const example = resolve(projectRoot, "examples/interop/objc/nswindow.z");
   const source = readFileSync(example, "utf8");
   const artifact = compileToNative(source, example);
 
@@ -1875,7 +1875,7 @@ test("narrows nullable Objective-C references before member access", () => {
 
 test("lifts nullable Objective-C references into Option values", () => {
   if (process.platform !== "darwin") return;
-  const example = resolve(projectRoot, "examples/objc-nullability.z");
+  const example = resolve(projectRoot, "examples/interop/objc/objc-nullability.z");
   const source = readFileSync(example, "utf8");
   const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
@@ -1950,7 +1950,7 @@ test("lifts nullable Objective-C references into Option values", () => {
 
 test("compiles a desktop ownership slice and preserves its current pressure walls", () => {
   if (process.platform !== "darwin") return;
-  const example = resolve(projectRoot, "examples/desktop-ownership/main.z");
+  const example = resolve(projectRoot, "examples/interop/objc/desktop-ownership/main.z");
   const source = readFileSync(example, "utf8");
   const artifact = compileToNative(source, example);
   assert.equal(artifact.language, "objective-c");
@@ -1979,7 +1979,7 @@ test("compiles a desktop ownership slice and preserves its current pressure wall
 });
 
 test("compares scoped document borrows with independently owned snapshots", () => {
-  const example = resolve(projectRoot, "examples/ownership-views.z");
+  const example = resolve(projectRoot, "examples/interop/objc/desktop-ownership/ownership-views.z");
   const source = readFileSync(example, "utf8");
   const generated = compileToC(source, example);
   assert.match(
@@ -2149,7 +2149,7 @@ test("registers persistent Objective-C event callbacks with explicit token clean
     true,
   );
 
-  const appKitExample = resolve(projectRoot, "examples/appkit-events.z");
+  const appKitExample = resolve(projectRoot, "examples/interop/objc/appkit-events.z");
   const appKitSource = readFileSync(appKitExample, "utf8");
   const appKitArtifact = compileToNative(appKitSource, appKitExample);
   assert.match(appKitArtifact.source, /_z_argument_[0-9]+ = NSWindowDidBecomeKeyNotification;/);
@@ -2282,7 +2282,7 @@ test("imports and executes Swift through its generated Objective-C compatibility
 
 test("builds a declared Swift target for ordinary CLI and editor workflows", () => {
   if (process.platform !== "darwin") return;
-  const example = resolve(projectRoot, "examples/swift-interop/main.z");
+  const example = resolve(projectRoot, "examples/interop/swift/swift-interop/main.z");
   const source = readFileSync(example, "utf8");
   const artifact = compileToNative(source, example);
   assert.equal(artifact.language, "objective-c");
@@ -2294,11 +2294,15 @@ test("builds a declared Swift target for ordinary CLI and editor workflows", () 
   assert.deepEqual(diagnostics(source, example), []);
 
   const generatedHeader = resolve(artifact.includeDirectories[0], "ZSwiftExample-Swift.h");
-  const headerMtime = statSync(generatedHeader).mtimeMs;
+  const generatedLibrary = artifact.nativeLibraries[0];
+  const libraryMtime = statSync(generatedLibrary).mtimeMs;
+  utimesSync(generatedHeader, new Date(0), new Date(0));
+  compileToNative(source, example);
+  assert.equal(statSync(generatedLibrary).mtimeMs, libraryMtime);
   const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stdout, "swift=42, value=42\n");
-  assert.equal(statSync(generatedHeader).mtimeMs, headerMtime);
+  assert.equal(statSync(generatedHeader).mtimeMs, 0);
   const addOffset = source.indexOf("add(1)") + 1;
   assert.match(hover(source, example, addOffset)?.contents.value ?? "", /add\(amount: i32\): i32/);
 
@@ -2316,7 +2320,7 @@ test("builds a declared Swift target for ordinary CLI and editor workflows", () 
 
 test("imports and owns a Swift value through its generated C++ compatibility header", () => {
   if (process.platform !== "darwin") return;
-  const example = resolve(projectRoot, "examples/swift-value-interop/main.z");
+  const example = resolve(projectRoot, "examples/interop/swift/swift-value-interop/main.z");
   const source = readFileSync(example, "utf8");
   const artifact = compileToNative(source, example);
   assert.equal(artifact.language, "c++");
@@ -2405,7 +2409,7 @@ test("keeps labeled arguments reserved for Objective-C selectors", () => {
 
 test("provides compiler-backed AppKit completion, labels, hover, diagnostics, and definitions", () => {
   if (process.platform !== "darwin") return;
-  const example = resolve(projectRoot, "examples/nswindow.z");
+  const example = resolve(projectRoot, "examples/interop/objc/nswindow.z");
   const source = readFileSync(example, "utf8");
 
   const memberSource = source.replace("window.center();", "window.");
@@ -2602,7 +2606,7 @@ test("checks imported C record fields and enum arguments in Z", () => {
 });
 
 test("borrows and explicitly mutates imported C records through safe pointer modes", () => {
-  const example = resolve(projectRoot, "examples/foreign-pointers.z");
+  const example = resolve(projectRoot, "examples/interop/c/foreign-pointers.z");
   const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stdout, "before=10 after=11 point=5,6\n");
@@ -2802,7 +2806,7 @@ test("infers primitive local types for C emission", () => {
 });
 
 test("compiles boolean expressions and path-complete if statements", () => {
-  const example = resolve(projectRoot, "examples/control-flow.z");
+  const example = resolve(projectRoot, "examples/language/control-flow/control-flow.z");
   const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stdout, "disabled=0\nordinary=1\nspecial=2\n");
@@ -2835,7 +2839,7 @@ test("supports single-statement if, else-if, else, and void guards", () => {
 });
 
 test("compiles ternaries and value-producing if expressions with select", () => {
-  const example = resolve(projectRoot, "examples/conditional-expressions.z");
+  const example = resolve(projectRoot, "examples/language/control-flow/conditional-expressions.z");
   const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stdout, "exact=yes\nselected=42\nten=ten\nlarge=large\nsmall=small\n");
@@ -2887,7 +2891,7 @@ test("requires an else branch and explicit select in statement-bodied if express
 });
 
 test("runs non-escaping arrow closures with inferred borrow, mutation, and move captures", () => {
-  const example = resolve(projectRoot, "examples/closures.z");
+  const example = resolve(projectRoot, "examples/language/basics/closures.z");
   const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stdout, "add=42\ntotal=20,42\nsnapshot=15 seed=100\ntarget=42\n");
@@ -3066,7 +3070,7 @@ test("requires an explicit function type for cleanup-bearing move captures", () 
 });
 
 test("returns, copies, shares, and deterministically destroys owned closure environments", () => {
-  const example = resolve(projectRoot, "examples/owned-closures.z");
+  const example = resolve(projectRoot, "examples/language/ownership/owned-closures.z");
   const source = readFileSync(example, "utf8");
   const generated = compileToC(source, example);
   assert.match(generated, /typedef struct Z_ClosureEnv_[0-9]+/);
@@ -3246,7 +3250,7 @@ test("guides closure borrows and explicit mutable call-site capabilities", () =>
 });
 
 test("runs deterministic deinit across normal, return, throw, and try exits", () => {
-  const example = resolve(projectRoot, "examples/deinit.z");
+  const example = resolve(projectRoot, "examples/language/ownership/deinit.z");
   const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
   assert.equal(
@@ -3405,7 +3409,7 @@ test("rejects statements after every branch exits", () => {
 });
 
 test("runs while loops with cleanup-aware break and continue", () => {
-  const example = resolve(projectRoot, "examples/loops.z");
+  const example = resolve(projectRoot, "examples/language/control-flow/loops.z");
   const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stdout, "drop=1\ndrop=2\ndrop=3\ndrop=4\ntotal=8\n");
@@ -3417,7 +3421,7 @@ test("runs while loops with cleanup-aware break and continue", () => {
 });
 
 test("iterates fixed arrays, Array values, Slices, and borrowed owned elements", () => {
-  const example = resolve(projectRoot, "examples/iteration.z");
+  const example = resolve(projectRoot, "examples/language/control-flow/iteration.z");
   const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stdout, "sum=22 slice=18\nvisit=8\nvisit=9\ndrop=9\ndrop=8\n");
@@ -3506,7 +3510,7 @@ test("exposes for-of bindings to hover, completion, and semantic tokens", () => 
 });
 
 test("formats typed values through the imported console namespace and interpolation", () => {
-  const example = resolve(projectRoot, "examples/console.z");
+  const example = resolve(projectRoot, "examples/language/basics/console.z");
   const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
   assert.match(
@@ -3649,7 +3653,7 @@ test("sleeps the current thread through the portable std/time module", () => {
 });
 
 test("stores, returns, moves, and formats owned String values", () => {
-  const example = resolve(projectRoot, "examples/strings.z");
+  const example = resolve(projectRoot, "examples/language/basics/strings.z");
   const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
   assert.equal(
@@ -3741,11 +3745,11 @@ test("stores, returns, moves, and formats owned String values", () => {
       return 0;
     }
   `;
-  const cppFile = resolve(projectRoot, "examples/string-cpp-probe.z");
+  const cppFile = resolve(projectRoot, "examples/interop/cpp/string-cpp-probe.z");
   const cppArtifact = compileToNative(cppSource, cppFile);
   assert.equal(cppArtifact.language, "c++");
   const cppCompilation = spawnSync("clang++", [
-    "-std=c++20", "-Wall", "-Wextra", "-Werror", "-I", resolve(projectRoot, "examples"),
+    "-std=c++20", "-Wall", "-Wextra", "-Werror", "-I", resolve(projectRoot, "examples/interop/cpp"),
     "-x", "c++", "-fsyntax-only", "-",
   ], { input: cppArtifact.source, encoding: "utf8" });
   assert.equal(cppCompilation.status, 0, cppCompilation.stderr);
@@ -3924,7 +3928,7 @@ test("keeps loop-local bindings visible to editor services", () => {
 });
 
 test("runs fixed arrays with checked indexing and reverse element cleanup", () => {
-  const example = resolve(projectRoot, "examples/arrays.z");
+  const example = resolve(projectRoot, "examples/language/collections/arrays.z");
   const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stdout, "length=4 sum=112\nmiddle=2\ndrop=3\ndrop=2\ndrop=1\n");
@@ -4029,7 +4033,7 @@ test("exposes fixed array length and readable types to editor services", () => {
 });
 
 test("borrows fixed arrays as read-only and mutable Slice parameters", () => {
-  const example = resolve(projectRoot, "examples/slices.z");
+  const example = resolve(projectRoot, "examples/language/collections/slices.z");
   const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stdout, "before=10 after=28\n");
@@ -4130,7 +4134,7 @@ test("exposes Slice length and generic spelling to editor services", () => {
 });
 
 test("monomorphizes generic structs and functions", () => {
-  const example = resolve(projectRoot, "examples/generics.z");
+  const example = resolve(projectRoot, "examples/language/types/generics.z");
   const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stdout, "generic=42\n");
@@ -4323,7 +4327,7 @@ test("infers generic arguments from imported C results", () => {
 });
 
 test("checks nominal trait constraints on inferred and explicit generic instances", () => {
-  const example = resolve(projectRoot, "examples/generic-constraints.z");
+  const example = resolve(projectRoot, "examples/language/types/generic-constraints.z");
   const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stdout, "measured=42\n");
@@ -4468,7 +4472,7 @@ test("shows source generic fields and concrete generic binding types on hover", 
 });
 
 test("grows owned Array values with checked indexing and generic inout mutation", () => {
-  const example = resolve(projectRoot, "examples/dynamic-arrays.z");
+  const example = resolve(projectRoot, "examples/language/collections/dynamic-arrays.z");
   const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stdout, "length=3 capacity=4 middle=42\n");
@@ -4533,7 +4537,7 @@ test("parses adjacent generic closers for nested Array types", () => {
 });
 
 test("moves Array storage and destroys initialized owned elements in reverse order", () => {
-  const example = resolve(projectRoot, "examples/dynamic-array-cleanup.z");
+  const example = resolve(projectRoot, "examples/language/collections/dynamic-array-cleanup.z");
   const source = readFileSync(example, "utf8");
   const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
@@ -4647,7 +4651,7 @@ test("emits struct layouts, literals, fields, and borrowed methods", () => {
 });
 
 test("constructs structs from object values and classes through class-only new", () => {
-  const example = resolve(projectRoot, "examples/construction.z");
+  const example = resolve(projectRoot, "examples/language/basics/construction.z");
   const source = readFileSync(example, "utf8");
   const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
@@ -4676,7 +4680,7 @@ test("constructs structs from object values and classes through class-only new",
 });
 
 test("initializes private class state through safe user constructors", () => {
-  const example = resolve(projectRoot, "examples/constructors.z");
+  const example = resolve(projectRoot, "examples/language/basics/constructors.z");
   const source = readFileSync(example, "utf8");
   const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
@@ -4763,7 +4767,7 @@ test("initializes private class state through safe user constructors", () => {
 });
 
 test("runs visible type-scoped static methods on structs, classes, and generic instances", () => {
-  const example = resolve(projectRoot, "examples/static-methods.z");
+  const example = resolve(projectRoot, "examples/language/basics/static-methods.z");
   const source = readFileSync(example, "utf8");
   const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
@@ -4967,14 +4971,14 @@ test("requires exhaustive enum matches", () => {
 });
 
 test("compiles payload enums and exhaustive matches", () => {
-  const example = resolve(projectRoot, "examples/match.z");
+  const example = resolve(projectRoot, "examples/language/control-flow/match.z");
   const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stdout, "matched=42\n");
 });
 
 test("composes enums through value aggregates and emits dependency-ordered C layouts", () => {
-  const example = resolve(projectRoot, "examples/aggregate-enums.z");
+  const example = resolve(projectRoot, "examples/language/types/aggregate-enums.z");
   const source = readFileSync(example, "utf8");
   const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
@@ -5000,7 +5004,7 @@ test("composes enums through value aggregates and emits dependency-ordered C lay
 });
 
 test("moves, matches, nests, and destroys cleanup-bearing enum payloads", () => {
-  const example = resolve(projectRoot, "examples/owned-enums.z");
+  const example = resolve(projectRoot, "examples/language/ownership/owned-enums.z");
   const source = readFileSync(example, "utf8");
   const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
@@ -5075,14 +5079,14 @@ test("moves, matches, nests, and destroys cleanup-bearing enum payloads", () => 
 });
 
 test("compiles expression matches with concise and selecting block arms", () => {
-  const example = resolve(projectRoot, "examples/match-expression.z");
+  const example = resolve(projectRoot, "examples/language/control-flow/match-expression.z");
   const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stdout, "code=41\ndirect=41\nselected=42\n");
 });
 
 test("constructs contextual enum payloads and destructures their named fields", () => {
-  const example = resolve(projectRoot, "examples/enum-patterns.z");
+  const example = resolve(projectRoot, "examples/language/control-flow/enum-patterns.z");
   const source = readFileSync(example, "utf8");
   const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
@@ -5102,7 +5106,7 @@ test("constructs contextual enum payloads and destructures their named fields", 
 });
 
 test("materializes inferred and explicitly empty Option values with owned payloads", () => {
-  const example = resolve(projectRoot, "examples/option.z");
+  const example = resolve(projectRoot, "examples/language/types/option.z");
   const source = readFileSync(example, "utf8");
   const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
@@ -5245,7 +5249,7 @@ test("rejects throw outside a throwing function", () => {
 });
 
 test("compiles typed Result success and failure paths", () => {
-  const example = resolve(projectRoot, "examples/result.z");
+  const example = resolve(projectRoot, "examples/language/control-flow/result.z");
   const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stdout, "found=42\nerror=7\n");
@@ -5281,21 +5285,21 @@ test("requires compatible propagated error types", () => {
 });
 
 test("propagates typed failures through try", () => {
-  const example = resolve(projectRoot, "examples/try.z");
+  const example = resolve(projectRoot, "examples/language/control-flow/try.z");
   const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stdout, "id=42\nforwarded=9\nerror=7\n");
 });
 
 test("compiles and runs structs as native values", () => {
-  const example = resolve(projectRoot, "examples/structs.z");
+  const example = resolve(projectRoot, "examples/language/basics/structs.z");
   const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stdout, "original=42 translated=45\n");
 });
 
 test("assigns mutable locals and nested value fields", () => {
-  const example = resolve(projectRoot, "examples/mutation.z");
+  const example = resolve(projectRoot, "examples/language/basics/mutation.z");
   const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stdout, "count=2 point=40,2 frame=40,2/640\n");
@@ -5308,7 +5312,7 @@ test("assigns mutable locals and nested value fields", () => {
 });
 
 test("runs explicit mutable receivers while immutable methods remain borrowable", () => {
-  const example = resolve(projectRoot, "examples/mutable-methods.z");
+  const example = resolve(projectRoot, "examples/language/basics/mutable-methods.z");
   const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stdout, "counter=3 snapshot=3 nested=15 temporary=7\n");
@@ -5408,7 +5412,7 @@ test("keeps receiver capabilities in method signatures", () => {
 });
 
 test("moves consuming receivers and cleans them up exactly once", () => {
-  const example = resolve(projectRoot, "examples/consuming-methods.z");
+  const example = resolve(projectRoot, "examples/language/ownership/consuming-methods.z");
   const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stdout, "drop=42\nresult=42 copy=7,7\n");
@@ -5470,7 +5474,7 @@ test("moves consuming receivers and cleans them up exactly once", () => {
 });
 
 test("borrows native parameters immutably and mutably", () => {
-  const example = resolve(projectRoot, "examples/borrowed-parameters.z");
+  const example = resolve(projectRoot, "examples/language/ownership/borrowed-parameters.z");
   const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stdout, "counter=16 literal=7 resource=42\ndrop=42\n");
@@ -5548,7 +5552,7 @@ test("enforces native parameter capabilities at declaration and call sites", () 
 });
 
 test("initializes native out parameters with flow-sensitive checking", () => {
-  const example = resolve(projectRoot, "examples/native-out.z");
+  const example = resolve(projectRoot, "examples/interop/c/native-out.z");
   const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
   assert.equal(
@@ -5744,7 +5748,7 @@ test("type-checks assignments and replaces cleanup-bearing values safely", () =>
     /expected i32, found bool/,
   );
 
-  const example = resolve(projectRoot, "examples/replacement.z");
+  const example = resolve(projectRoot, "examples/language/ownership/replacement.z");
   const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stdout, "make=2\ndrop=1\nlive=5\ndrop=10\nholder=20\ndrop=20\ndrop=5\n");
@@ -5757,7 +5761,7 @@ test("type-checks assignments and replaces cleanup-bearing values safely", () =>
 });
 
 test("runs ARC classes with shared identity and one final deinit", () => {
-  const example = resolve(projectRoot, "examples/classes.z");
+  const example = resolve(projectRoot, "examples/language/basics/classes.z");
   const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stdout, "first=42 second=42 third=42\ndrop=42\n");
@@ -5885,7 +5889,7 @@ test("exposes Z classes and traits to editor services", () => {
 });
 
 test("compiles and runs the first native program", () => {
-  const example = resolve(projectRoot, "examples/first.z");
+  const example = resolve(projectRoot, "examples/language/basics/first.z");
   const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stdout, "Z says 42\n");
@@ -5925,7 +5929,7 @@ function dirnameFromImportMeta(): string {
 }
 
 test("zeroes weak class references and breaks owned closure cycles", () => {
-  const example = resolve(projectRoot, "examples/weak-references.z");
+  const example = resolve(projectRoot, "examples/language/ownership/weak-references.z");
   const source = readFileSync(example, "utf8");
   const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
@@ -6064,7 +6068,7 @@ test("editor grammar tracks keywords without reserving Result variants", () => {
 });
 
 test("runs async match expressions with checked arithmetic and editor details", () => {
-  const example = resolve(projectRoot, "examples/async-phase-0.z");
+  const example = resolve(projectRoot, "examples/async/async-phase-0.z");
   const source = readFileSync(example, "utf8");
   check(source, example);
 
@@ -6259,7 +6263,7 @@ test("keeps async match ownership and suspending-arm boundaries explicit", () =>
 });
 
 test("runs scalar async functions as stackless Phase 1 task frames", () => {
-  const example = resolve(projectRoot, "examples/async-sequential.z");
+  const example = resolve(projectRoot, "examples/async/async-sequential.z");
   const source = readFileSync(example, "utf8");
   const generated = compileToC(source, example);
   assert.match(generated, /struct Z_AsyncFrame_fetchValue/);
@@ -6272,7 +6276,7 @@ test("runs scalar async functions as stackless Phase 1 task frames", () => {
 });
 
 test("runs typed scalar async errors through try and attempt await", () => {
-  const example = resolve(projectRoot, "examples/async-errors.z");
+  const example = resolve(projectRoot, "examples/async/async-errors.z");
   const source = readFileSync(example, "utf8");
   const generated = compileToC(source, example);
   assert.match(generated, /bool failed;/);
@@ -6298,7 +6302,7 @@ test("runs typed scalar async errors through try and attempt await", () => {
 });
 
 test("carries plain struct values and errors through async task frames", () => {
-  const example = resolve(projectRoot, "examples/async-aggregates.z");
+  const example = resolve(projectRoot, "examples/async/async-aggregates.z");
   const source = readFileSync(example, "utf8");
   const generated = compileToC(source, example);
   assert.match(generated, /Z_User result;/);
@@ -6314,7 +6318,7 @@ test("carries plain struct values and errors through async task frames", () => {
 });
 
 test("moves owned structs and retains ARC classes across async task frames", () => {
-  const example = resolve(projectRoot, "examples/async-ownership.z");
+  const example = resolve(projectRoot, "examples/async/async-ownership.z");
   const source = readFileSync(example, "utf8");
   const generated = compileToC(source, example);
   assert.match(generated, /bool live_result;/);
@@ -6349,7 +6353,7 @@ test("moves owned structs and retains ARC classes across async task frames", () 
 });
 
 test("destroys active Option and Result payloads in async task frames", () => {
-  const example = resolve(projectRoot, "examples/async-owned-enums.z");
+  const example = resolve(projectRoot, "examples/async/async-owned-enums.z");
   const source = readFileSync(example, "utf8");
   const generated = compileToC(source, example);
   assert.match(generated, /Z_Option_Session result;/);
@@ -6476,7 +6480,7 @@ test("checks retained class receivers and consuming struct receivers in async me
 });
 
 test("runs retained class, consuming struct, and static async methods", () => {
-  const example = resolve(projectRoot, "examples/async-methods.z");
+  const example = resolve(projectRoot, "examples/async/async-methods.z");
   const source = readFileSync(example, "utf8");
   const generated = compileToC(source, example);
   assert.match(generated, /struct Z_AsyncFrame_Client_load/);
@@ -6499,7 +6503,7 @@ test("runs retained class, consuming struct, and static async methods", () => {
 });
 
 test("schedules hot spawned functions and methods on the FIFO executor", () => {
-  const example = resolve(projectRoot, "examples/async-spawn.z");
+  const example = resolve(projectRoot, "examples/async/async-spawn.z");
   const source = readFileSync(example, "utf8");
   const generated = compileToC(source, example);
   assert.match(generated, /struct Z_AsyncExecutor/);
@@ -6554,7 +6558,7 @@ test("schedules hot spawned functions and methods on the FIFO executor", () => {
 });
 
 test("joins nested async scopes at their lexical boundaries", () => {
-  const example = resolve(projectRoot, "examples/async-scopes.z");
+  const example = resolve(projectRoot, "examples/async/async-scopes.z");
   const source = readFileSync(example, "utf8");
   const generated = compileToC(source, example);
   assert.match(generated, /z_async_wait\(&frame->task, &frame->child_\d+->task\)/);
@@ -6601,7 +6605,7 @@ test("joins nested async scopes at their lexical boundaries", () => {
 });
 
 test("cancels live siblings and descendants when an async failure propagates", () => {
-  const example = resolve(projectRoot, "examples/async-cancellation.z");
+  const example = resolve(projectRoot, "examples/async/async-cancellation.z");
   const source = readFileSync(example, "utf8");
   const generated = compileToC(source, example);
   assert.match(generated, /bool cancellation_requested;/);
@@ -6640,7 +6644,7 @@ test("cancels live siblings and descendants when an async failure propagates", (
 });
 
 test("suspends async tasks on scheduler-aware std/time delay", () => {
-  const example = resolve(projectRoot, "examples/async-delay.z");
+  const example = resolve(projectRoot, "examples/async/async-delay.z");
   const source = readFileSync(example, "utf8");
   const generated = compileToC(source, example);
   assert.match(generated, /clock_gettime\(CLOCK_MONOTONIC, &now\)/);

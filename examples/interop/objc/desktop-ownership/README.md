@@ -3,7 +3,7 @@
 This example combines a small owned application model with real AppKit objects:
 
 ```sh
-bun run z run examples/desktop-ownership/main.z
+bun run z run examples/interop/objc/desktop-ownership/main.z
 ```
 
 The `Workspace` is an ARC-managed Z class. Its `Array<Document>` owns move-only

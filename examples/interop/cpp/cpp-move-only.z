@@ -1,5 +1,5 @@
 import console from "std/console";
-import native from "../tests/fixtures/move-only.hpp";
+import native from "../../../tests/fixtures/move-only.hpp";
 
 struct NativeOwner {
   value: native.zcpp.UniqueValue;

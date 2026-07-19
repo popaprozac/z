@@ -1,5 +1,5 @@
 import console from "std/console";
-import native from "../tests/fixtures/foreign-values.hpp";
+import native from "../../../tests/fixtures/foreign-values.hpp";
 
 struct NativeOwner {
   value: native.zcpp.ManagedValue;

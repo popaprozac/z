@@ -1,7 +1,7 @@
 import {
   ZCoordinate as Coordinate,
   z_area as area
-} from "../tests/fixtures/geometry.h";
+} from "../../../tests/fixtures/geometry.h";
 
 function twice(value: f32): f32 {
   return value * 2.0;

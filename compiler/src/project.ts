@@ -92,7 +92,7 @@ export function prepareProject(fileName: string): ProjectBuild {
   const cached = buildCache.get(manifestPath);
   const outputsFresh = existsSync(header)
     && existsSync(library)
-    && Math.min(statSync(header).mtimeMs, statSync(library).mtimeMs) >= freshness;
+    && statSync(library).mtimeMs >= freshness;
   if (cached?.freshness === freshness && outputsFresh) return cached.build;
   if (!outputsFresh) {
     mkdirSync(buildDirectory, { recursive: true });

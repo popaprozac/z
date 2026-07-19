@@ -3,7 +3,7 @@
 This probe imports a generated Swift C++ compatibility header directly from Z:
 
 ```sh
-bun run z run examples/swift-value-interop/main.z
+bun run z run examples/interop/swift/swift-value-interop/main.z
 ```
 
 `OwnedCounter` is a Swift-native struct containing a reference to a Swift class.
