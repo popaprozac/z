@@ -253,6 +253,12 @@ test("suggests Z tokens while source and declaration syntax is incomplete", () =
 
   const inferredItems = completions("_", "vendor.h.zd", 1);
   assert.equal(inferredItems.find((item) => item.label === "_")?.detail, "infer type from the native declaration");
+
+  const callbackContract = `declare module "vendor.h" {\n  export function apply(value: _, context: _, in operation: _): _ {\n    cal`;
+  const callbackItems = completions(callbackContract, "vendor.h.zd", callbackContract.length);
+  assert.equal(callbackItems.find((item) => item.label === "callback")?.detail, "Z declaration keyword");
+  const contextItems = completions("cont", "vendor.h.zd", 4);
+  assert.equal(contextItems.find((item) => item.label === "context")?.kind, 14);
 });
 
 test("analyzes export-only files as modules while executable commands still require main", () => {
@@ -438,6 +444,30 @@ test("passes typed Z functions to call-only C callbacks with optional context ad
     completions(declarationCompletionSource, declarationFile, declarationCompletionOffset)
       .find((item) => item.label === "callback")?.insertText,
     "callback: _",
+  );
+  const callbackRelation = declarationSource.indexOf("callback callback") + "callback ".length + 2;
+  assert.match(
+    hover(declarationSource, declarationFile, callbackRelation)?.contents.value ?? "",
+    /call-scoped callback using native context context/,
+  );
+  const contextRelation = declarationSource.indexOf("context context") + "context ".length + 2;
+  assert.match(
+    hover(declarationSource, declarationFile, contextRelation)?.contents.value ?? "",
+    /context: void \*.*native context for callback callback/,
+  );
+  const callbackRelationSource = declarationSource.replace("callback callback {", "callback call {");
+  const callbackRelationOffset = callbackRelationSource.indexOf("callback call") + "callback call".length;
+  assert.equal(
+    completions(callbackRelationSource, declarationFile, callbackRelationOffset)
+      .find((item) => item.label === "callback")?.kind,
+    6,
+  );
+  const contextRelationSource = declarationSource.replace("context context;", "context cont;");
+  const contextRelationOffset = contextRelationSource.indexOf("context cont") + "context cont".length;
+  assert.equal(
+    completions(contextRelationSource, declarationFile, contextRelationOffset)
+      .find((item) => item.label === "context")?.kind,
+    6,
   );
 
   const wrongShape = source.replace(
@@ -740,7 +770,7 @@ test("diagnoses malformed and mismatched Z declaration contracts", () => {
   `;
   const executableDiagnostic = diagnostics(executableContract, "/tmp/contract.h.zd")[0];
   assert.equal(executableDiagnostic.code, "Z0801");
-  assert.match(executableDiagnostic.message, /expected "deinit" in foreign result contract/);
+  assert.match(executableDiagnostic.message, /expected "deinit" or "callback" in foreign function contract/);
 
   const mismatchDirectory = mkdtempSync("/tmp/z-zd-module-");
   const mismatchHeader = resolve(mismatchDirectory, "contract.h");
@@ -768,6 +798,29 @@ test("diagnoses malformed and mismatched Z declaration contracts", () => {
   const missingParameter = diagnostics(imported.replace("known", "use"), parameterSource)[0];
   assert.equal(missingParameter.code, "Z0801");
   assert.match(missingParameter.message, /does not match native parameter "handle"/);
+
+  const callbackDirectory = mkdtempSync("/tmp/z-zd-callback-");
+  const callbackHeader = resolve(callbackDirectory, "contract.h");
+  const callbackSource = resolve(callbackDirectory, "main.z");
+  writeFileSync(callbackHeader, `
+    typedef int (*Operation)(int value, void *context);
+    static inline int apply(int value, void *context, Operation operation) {
+      return operation(value, context);
+    }
+  `);
+  writeFileSync(`${callbackHeader}.zd`, `
+    declare module "contract.h" {
+      export function apply(value: _, context: _, in operation: _): _ {
+        callback operation {
+          context missing;
+        }
+      }
+    }
+  `);
+  const callbackImport = `import contract from "contract.h"; function identity(value: i32): i32 { return value; } function main(): i32 { return contract.apply(42, identity); }`;
+  const missingContext = diagnostics(callbackImport, callbackSource)[0];
+  assert.equal(missingContext.code, "Z0801");
+  assert.match(missingContext.message, /unknown context parameter "missing"/);
 });
 
 test("merges API-note sources without allowing safety contracts to conflict", () => {
@@ -5431,6 +5484,8 @@ test("editor grammar tracks keywords without reserving Result variants", () => {
   assert.equal(foreignDeclarationPatterns[1].captures[2].name, "variable.parameter.z");
   assert.equal(foreignDeclarationPatterns[2].captures[2].name, "entity.name.function.destructor.z");
   assert.equal(foreignDeclarationPatterns[3].captures[1].name, "storage.type.inferred.z");
+  assert.equal(foreignDeclarationPatterns[4].captures[1].name, "keyword.control.declaration.callback.z");
+  assert.equal(foreignDeclarationPatterns[4].captures[3].name, "keyword.control.declaration.callback.z");
   assert.match(selectiveImportPatterns, /\\bas\\b/);
   assert.match(keywordPattern, /while/);
   assert.match(keywordPattern, /for\|of/);

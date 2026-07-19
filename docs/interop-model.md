@@ -173,36 +173,34 @@ Z can therefore pass a named function or explicitly typed non-capturing closure
 directly with no allocation or wrapper. A callback without this contract remains
 unsupported.
 
-Capturing closures currently use a stage-0 paired context contract:
+When the native API pairs a callback with a `void *` context parameter, the
+function contract names that relationship:
 
-```json
-{
-  "functions": {
-    "applyWithContext": {
-      "parameters": {
-        "2": {
-          "callback": {
-            "lifetime": "call",
-            "context": {
-              "parameter": 1,
-              "callbackParameter": 1
-            }
-          }
-        }
-      }
+```z
+declare module "callbacks.h" {
+  export function applyWithContext(
+    value: _,
+    context: _,
+    in operation: _
+  ): _ {
+    callback operation {
+      context context;
     }
   }
 }
 ```
 
-All indexes are zero-based. `parameter` identifies the C function's hidden
-`void *` parameter; `callbackParameter` identifies that context argument inside
-the callback signature. The generated trampoline casts the native context back
-to the borrowed Z function value and invokes its `call` entry with the owned
-environment. Since the lifetime is call-only, the caller keeps the ARC owner
-alive and no native retain/release protocol is invented.
+The first name after `callback` is the native callback parameter; the name after
+`context` is its paired native context parameter. Z infers the inner callback
+position when the function-pointer signature contains exactly one `void *`.
+Zero or multiple candidates are rejected rather than guessed. The generated
+trampoline casts the native context back to the borrowed Z function value and
+invokes its `call` entry with the owned environment. Since the lifetime is
+call-only, the caller keeps the ARC owner alive and no native retain/release
+protocol is invented.
 
-The first escaping tier requires the C API to accept a destroy callback:
+The first escaping tier still uses stage-0 metadata and requires the C API to
+accept a destroy callback:
 
 ```json
 {

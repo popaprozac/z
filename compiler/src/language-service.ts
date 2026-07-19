@@ -92,6 +92,7 @@ const primitiveTypeTokens = [
 
 const declarationKeywordTokens = [
   "declare", "module", "export", "function", "in", "inout", "out", "move", "deinit",
+  "callback", "context",
 ] as const;
 
 export function diagnostics(source: string, fileName: string): ServiceDiagnostic[] {
@@ -888,6 +889,8 @@ function foreignDeclarationCompletions(source: string, fileName: string, offset:
   if (!prefix) return [];
   const module = foreignDeclarationNativeModule(source, fileName);
   const contextual: CompletionItem[] = [];
+  const ownerName = [...before.matchAll(/\bexport\s+function\s+([A-Za-z_][A-Za-z0-9_.]*)\s*\(/g)].at(-1)?.[1];
+  const owner = ownerName ? module?.functions.get(ownerName) : null;
 
   const functionPrefix = /\bexport\s+function\s+([A-Za-z_][A-Za-z0-9_.]*)?$/.exec(before)?.[1];
   if (module && functionPrefix !== undefined) {
@@ -905,8 +908,6 @@ function foreignDeclarationCompletions(source: string, fileName: string, offset:
 
   const deinitPrefix = /\bdeinit\s+([A-Za-z_][A-Za-z0-9_.]*)?$/.exec(before)?.[1];
   if (module && deinitPrefix !== undefined) {
-    const ownerName = [...before.matchAll(/\bexport\s+function\s+([A-Za-z_][A-Za-z0-9_.]*)\s*\(/g)].at(-1)?.[1];
-    const owner = ownerName ? module.functions.get(ownerName) : null;
     const returnTypes = new Set(owner?.overloads.map((overload) => foreignTypeName(overload.returnType).replace(/ \| null$/, "")) ?? []);
     const candidates = [...module.functions].filter(([, declaration]) => declaration.overloads.some((overload) => (
       overload.parameters.length === 1
@@ -918,6 +919,48 @@ function foreignDeclarationCompletions(source: string, fileName: string, offset:
         label: name,
         kind: completionKinds.function,
         detail: `${foreignFunctionDetail(declaration)}\ncleanup candidate for ${ownerName ?? "foreign result"}`,
+        sortText: `0-${name}`,
+      });
+    }
+  }
+
+  const callbackContractPrefix = /\bcallback\s+([A-Za-z_][A-Za-z0-9_]*)?$/.exec(before)?.[1];
+  if (owner && callbackContractPrefix !== undefined) {
+    const candidates = new Map<string, string>();
+    for (const overload of owner.overloads) {
+      for (const parameter of overload.parameters) {
+        if (parameter.name && parameter.type.kind === "callback") {
+          candidates.set(parameter.name, foreignTypeName(parameter.type));
+        }
+      }
+    }
+    for (const [name, type] of candidates) {
+      if (!name.toLowerCase().startsWith(callbackContractPrefix.toLowerCase())) continue;
+      contextual.push({
+        label: name,
+        kind: completionKinds.variable,
+        detail: `native callback parameter ${name}: ${type}`,
+        sortText: `0-${name}`,
+      });
+    }
+  }
+
+  const contextContractPrefix = /\bcallback\s+([A-Za-z_][A-Za-z0-9_]*)\s*\{\s*context\s+([A-Za-z_][A-Za-z0-9_]*)?$/.exec(before);
+  if (owner && contextContractPrefix?.[2] !== undefined) {
+    const candidates = new Map<string, string>();
+    for (const overload of owner.overloads) {
+      for (const parameter of overload.parameters) {
+        if (parameter.name && parameter.type.kind === "callbackContext") {
+          candidates.set(parameter.name, foreignTypeName(parameter.type));
+        }
+      }
+    }
+    for (const [name, type] of candidates) {
+      if (!name.toLowerCase().startsWith(contextContractPrefix[2].toLowerCase())) continue;
+      contextual.push({
+        label: name,
+        kind: completionKinds.variable,
+        detail: `native callback context parameter ${name}: ${type}`,
         sortText: `0-${name}`,
       });
     }
@@ -1006,6 +1049,38 @@ function foreignDeclarationHover(source: string, fileName: string, offset: numbe
       const release = module.functions.get(contract.release);
       if (release) {
         return markdownHover(`${foreignFunctionDetail(release)}\n// deinitializer for ${contract.name} result`, source, word.start, word.end);
+      }
+    }
+    for (const callback of contract.callbacks) {
+      const callbackIndex = contract.parameters.findIndex((parameter) => parameter.name === callback.parameter);
+      const contextIndex = contract.parameters.findIndex((parameter) => parameter.name === callback.context);
+      if (callback.parameterLocation.offset === word.start) {
+        const types = new Set(
+          declaration?.overloads
+            .map((overload) => overload.parameters[callbackIndex])
+            .filter(Boolean)
+            .map((native) => foreignTypeName(native.type)) ?? [],
+        );
+        return markdownHover(
+          `in ${callback.parameter}: ${[...types].join(" | ") || "_"}  // call-scoped callback using native context ${callback.context}`,
+          source,
+          word.start,
+          word.end,
+        );
+      }
+      if (callback.contextLocation.offset === word.start) {
+        const types = new Set(
+          declaration?.overloads
+            .map((overload) => overload.parameters[contextIndex])
+            .filter(Boolean)
+            .map((native) => foreignTypeName(native.type)) ?? [],
+        );
+        return markdownHover(
+          `${callback.context}: ${[...types].join(" | ") || "_"}  // native context for callback ${callback.parameter}`,
+          source,
+          word.start,
+          word.end,
+        );
       }
     }
   }

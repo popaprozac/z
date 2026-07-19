@@ -2,6 +2,7 @@ import type { SourceLocation } from "./ast.ts";
 import { DiagnosticError } from "./diagnostics.ts";
 import type { ApiNotes, PointerNote } from "./foreign-api-notes.ts";
 import type { ForeignFunctionDeclaration } from "./foreign-ir.ts";
+import { callbackParameterSpellings, normalizeCallbackContextType } from "./foreign-type-spelling.ts";
 import { lex, type Token } from "./lexer.ts";
 
 export type ContractParameter = {
@@ -21,6 +22,15 @@ export type ForeignFunctionContract = {
   readonly nameLocation: SourceLocation;
   readonly returnLocation: SourceLocation;
   readonly releaseLocation: SourceLocation | null;
+  readonly callbacks: readonly ForeignCallbackContract[];
+};
+
+export type ForeignCallbackContract = {
+  readonly parameter: string;
+  readonly context: string;
+  readonly location: SourceLocation;
+  readonly parameterLocation: SourceLocation;
+  readonly contextLocation: SourceLocation;
 };
 
 export type ForeignDeclarationContracts = {
@@ -106,12 +116,37 @@ export function parseForeignDeclarationContracts(source: string, fileName: strin
     const returnNullable = returnType.nullable;
     let release: string | null = null;
     let releaseLocation: SourceLocation | null = null;
+    const callbacks: ForeignCallbackContract[] = [];
     if (at("{")) {
       take();
       while (!at("}")) {
         const contract = peek();
+        if (at("callback")) {
+          take();
+          const callback = expectIdentifier("a native callback parameter name");
+          if (callbacks.some((entry) => entry.parameter === callback.text)) {
+            fail(callback, `foreign function ${JSON.stringify(name)} cannot declare callback ${JSON.stringify(callback.text)} more than once`);
+          }
+          expectText("{");
+          const contextKeyword = peek();
+          if (!at("context")) {
+            fail(contextKeyword, `expected "context" in foreign callback contract, found ${JSON.stringify(contextKeyword.text)}`);
+          }
+          take();
+          const context = expectIdentifier("a native callback context parameter name");
+          expectText(";");
+          expectText("}");
+          callbacks.push({
+            parameter: callback.text,
+            context: context.text,
+            location: contract.location,
+            parameterLocation: callback.location,
+            contextLocation: context.location,
+          });
+          continue;
+        }
         if (!at("deinit")) {
-          fail(contract, `expected "deinit" in foreign result contract, found ${JSON.stringify(contract.text)}`);
+          fail(contract, `expected "deinit" or "callback" in foreign function contract, found ${JSON.stringify(contract.text)}`);
         }
         if (release) fail(contract, `foreign function ${JSON.stringify(name)} cannot declare more than one deinit contract`);
         take();
@@ -133,6 +168,7 @@ export function parseForeignDeclarationContracts(source: string, fileName: strin
       nameLocation: parsedName.location,
       returnLocation: returnType.location,
       releaseLocation,
+      callbacks,
     });
   }
   expectText("}");
@@ -187,6 +223,53 @@ export function foreignDeclarationApiNotes(
       const parameter = contract.parameters[parameterIndex];
       parameters[String(parameterIndex)] = parameterNote(parameter);
     }
+    for (const callback of contract.callbacks) {
+      const callbackIndex = contract.parameters.findIndex((parameter) => parameter.name === callback.parameter);
+      if (callbackIndex < 0) {
+        throw new DiagnosticError(
+          fileName,
+          callback.parameterLocation,
+          `callback contract names unknown parameter ${JSON.stringify(callback.parameter)} on ${JSON.stringify(contract.name)}`,
+          { code: "Z0801" },
+        );
+      }
+      const contextIndex = contract.parameters.findIndex((parameter) => parameter.name === callback.context);
+      if (contextIndex < 0) {
+        throw new DiagnosticError(
+          fileName,
+          callback.contextLocation,
+          `callback contract names unknown context parameter ${JSON.stringify(callback.context)} on ${JSON.stringify(contract.name)}`,
+          { code: "Z0801" },
+        );
+      }
+      if (callbackIndex === contextIndex) {
+        throw new DiagnosticError(fileName, callback.location, "a callback cannot use itself as its native context parameter", { code: "Z0801" });
+      }
+      const parameter = contract.parameters[callbackIndex];
+      if (parameter.mode !== "in") {
+        throw new DiagnosticError(
+          fileName,
+          callback.parameterLocation,
+          `call-scoped callback ${JSON.stringify(callback.parameter)} must use the \`in\` capability`,
+          { code: "Z0801" },
+        );
+      }
+      const callbackParameter = inferCallbackContextPosition(
+        declaration,
+        callbackIndex,
+        callback,
+        fileName,
+      );
+      const note = parameters[String(callbackIndex)] ?? {};
+      parameters[String(callbackIndex)] = {
+        ...note,
+        callback: {
+          ...note.callback,
+          lifetime: "call",
+          context: { parameter: contextIndex, callbackParameter },
+        },
+      };
+    }
     functions[contract.name] = {
       return: {
         nullable: contract.returnNullable,
@@ -196,6 +279,45 @@ export function foreignDeclarationApiNotes(
     };
   }
   return Object.keys(functions).length ? { functions } : {};
+}
+
+function inferCallbackContextPosition(
+  declaration: ForeignFunctionDeclaration,
+  callbackIndex: number,
+  contract: ForeignCallbackContract,
+  fileName: string,
+): number {
+  const positions = new Set<number>();
+  for (const overload of declaration.overloads) {
+    const type = overload.parameters[callbackIndex]?.type;
+    const spellings = type
+      ? callbackParameterSpellings(type.canonicalNativeName ?? type.nativeName)
+      : null;
+    const candidates = spellings
+      ?.map((spelling, index) => normalizeCallbackContextType(spelling) === "void *" ? index : -1)
+      .filter((index) => index >= 0) ?? [];
+    if (candidates.length !== 1) {
+      throw new DiagnosticError(
+        fileName,
+        contract.location,
+        `callback ${JSON.stringify(contract.parameter)} on ${JSON.stringify(declaration.name)} must have exactly one native void * context parameter; found ${candidates.length}`,
+        {
+          code: "Z0801",
+          helps: ["use a context-free callback contract or wait for explicit inner callback parameter selection"],
+        },
+      );
+    }
+    positions.add(candidates[0]);
+  }
+  if (positions.size !== 1) {
+    throw new DiagnosticError(
+      fileName,
+      contract.location,
+      `callback ${JSON.stringify(contract.parameter)} uses a different native context position across overloads`,
+      { code: "Z0801" },
+    );
+  }
+  return [...positions][0];
 }
 
 function parameterNote(parameter: ContractParameter): PointerNote {

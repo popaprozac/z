@@ -9,19 +9,6 @@
         }
       }
     },
-    "z_apply_context_i32": {
-      "parameters": {
-        "2": {
-          "callback": {
-            "lifetime": "call",
-            "context": {
-              "parameter": 1,
-              "callbackParameter": 1
-            }
-          }
-        }
-      }
-    },
     "z_register_context_callback": {
       "parameters": {
         "0": {

@@ -1,18 +1,5 @@
 {
   "functions": {
-    "applyWithContext": {
-      "parameters": {
-        "2": {
-          "callback": {
-            "lifetime": "call",
-            "context": {
-              "parameter": 1,
-              "callbackParameter": 1
-            }
-          }
-        }
-      }
-    },
     "retainOperation": {
       "parameters": {
         "0": {

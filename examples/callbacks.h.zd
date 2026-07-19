@@ -1,3 +1,8 @@
 declare module "callbacks.h" {
   export function apply(left: _, right: _, in operation: _): _;
+  export function applyWithContext(value: _, context: _, in operation: _): _ {
+    callback operation {
+      context context;
+    }
+  }
 }

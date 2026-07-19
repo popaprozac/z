@@ -5,6 +5,10 @@ import type { ImportDeclaration } from "./ast.ts";
 import { DiagnosticError } from "./diagnostics.ts";
 import { apiNotesFreshness, readApiNotes, type PointerNote } from "./foreign-api-notes.ts";
 import { normalizeForeignContracts } from "./foreign-contracts.ts";
+import {
+  normalizeCallbackContextType,
+  splitCParameters,
+} from "./foreign-type-spelling.ts";
 import { isStandardModuleSpecifier } from "./standard-library.ts";
 import type {
   ForeignCallbackType,
@@ -950,32 +954,6 @@ function mapCallbackReleaseType(cName: string, callbackParameter: number, contex
     || normalizeCallbackContextType(parameters[contextParameter]) !== "void *"
   ) return { kind: "unsupported", cName };
   return { kind: "callbackRelease", cName, callbackParameter };
-}
-
-function normalizeCallbackContextType(cName: string): string {
-  return cName
-    .replace(/\b(restrict|_Nonnull|_Nullable|_Null_unspecified)\b/g, "")
-    .replace(/\s*\*\s*/g, " *")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
-function splitCParameters(parameters: string): string[] {
-  const trimmed = parameters.trim();
-  if (!trimmed || trimmed === "void") return [];
-  const result: string[] = [];
-  let start = 0;
-  let depth = 0;
-  for (let index = 0; index < trimmed.length; index += 1) {
-    if (trimmed[index] === "(") depth += 1;
-    else if (trimmed[index] === ")") depth -= 1;
-    else if (trimmed[index] === "," && depth === 0) {
-      result.push(trimmed.slice(start, index).trim());
-      start = index + 1;
-    }
-  }
-  result.push(trimmed.slice(start).trim());
-  return result;
 }
 
 function mapBuiltinType(cName: string): ForeignScalarTypeName | "void" | null {

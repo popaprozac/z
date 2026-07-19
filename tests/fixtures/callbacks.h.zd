@@ -1,3 +1,8 @@
 declare module "callbacks.h" {
   export function z_apply_i32(left: _, right: _, in callback: _): _;
+  export function z_apply_context_i32(value: _, context: _, in callback: _): _ {
+    callback callback {
+      context context;
+    }
+  }
 }
