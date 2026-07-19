@@ -1,14 +1,5 @@
 {
   "functions": {
-    "z_apply_i32": {
-      "parameters": {
-        "2": {
-          "callback": {
-            "lifetime": "call"
-          }
-        }
-      }
-    },
     "z_apply_twice_i32": {
       "parameters": {
         "1": {

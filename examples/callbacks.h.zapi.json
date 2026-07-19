@@ -1,14 +1,5 @@
 {
   "functions": {
-    "apply": {
-      "parameters": {
-        "2": {
-          "callback": {
-            "lifetime": "call"
-          }
-        }
-      }
-    },
     "applyWithContext": {
       "parameters": {
         "2": {

@@ -200,7 +200,12 @@ export function foreignDeclarationApiNotes(
 
 function parameterNote(parameter: ContractParameter): PointerNote {
   if (parameter.mode === "in") {
-    return { ownership: "borrowed", access: "in", nullable: parameter.nullable };
+    return {
+      ownership: "borrowed",
+      access: "in",
+      nullable: parameter.nullable,
+      callback: { lifetime: "call" },
+    };
   }
   if (parameter.mode === "move") {
     return { ownership: "consuming", nullable: parameter.nullable };

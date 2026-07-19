@@ -1,0 +1,3 @@
+declare module "callbacks.h" {
+  export function z_apply_i32(left: _, right: _, in callback: _): _;
+}

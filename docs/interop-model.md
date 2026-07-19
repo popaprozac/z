@@ -152,31 +152,28 @@ behavior, not Z's eventual optimized performance ceiling. Release profiles,
 retain/release optimization, escape analysis, and generated-code benchmarking
 remain compiler work.
 
-The first callback tier requires a call-only lifetime:
+The first callback tier uses `in` to state that the native function borrows a
+callback only for the duration of the call:
 
-```json
-{
-  "functions": {
-    "z_apply_i32": {
-      "parameters": {
-        "2": {
-          "callback": {
-            "lifetime": "call"
-          }
-        }
-      }
-    }
-  }
+```z
+declare module "callbacks.h" {
+  export function z_apply_i32(
+    left: _,
+    right: _,
+    in callback: _
+  ): _;
 }
 ```
 
-Clang supplies the function pointer's exact parameter and result ABI. The API
-note supplies the fact the header omits: C does not retain the callback after
-the call returns. Z can therefore pass a named function or explicitly typed
-non-capturing closure directly with no allocation or wrapper. A callback
-without this contract remains unsupported.
+Clang supplies the function pointer's exact parameter and result ABI. The
+contract supplies the fact the header omits: C does not retain the callback
+after the call returns. The meaning is type-directed: `in` on a native pointer
+is a read-only borrow, while `in` on a native callback is a call-scoped borrow.
+Z can therefore pass a named function or explicitly typed non-capturing closure
+directly with no allocation or wrapper. A callback without this contract remains
+unsupported.
 
-Capturing closures use a paired context contract:
+Capturing closures currently use a stage-0 paired context contract:
 
 ```json
 {

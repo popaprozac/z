@@ -415,6 +415,31 @@ test("passes typed Z functions to call-only C callbacks with optional context ad
     /callback: \(argument1: i32, argument2: i32\) => i32/,
   );
 
+  const declarationFile = resolve(projectRoot, "tests/fixtures/callbacks.h.zd");
+  const declarationSource = readFileSync(declarationFile, "utf8");
+  const declarationFunction = declarationSource.indexOf("z_apply_i32") + 2;
+  assert.match(
+    hover(declarationSource, declarationFile, declarationFunction)?.contents.value ?? "",
+    /z_apply_i32\(left: i32, right: i32, callback: \(argument1: i32, argument2: i32\) => i32\): i32/,
+  );
+  const declarationCallback = declarationSource.indexOf("callback: _") + 2;
+  assert.match(
+    hover(declarationSource, declarationFile, declarationCallback)?.contents.value ?? "",
+    /in callback: \(argument1: i32, argument2: i32\) => i32/,
+  );
+  const declarationCallbackType = declarationSource.indexOf("callback: _") + "callback: ".length;
+  assert.match(
+    hover(declarationSource, declarationFile, declarationCallbackType)?.contents.value ?? "",
+    /_: \(argument1: i32, argument2: i32\) => i32/,
+  );
+  const declarationCompletionSource = declarationSource.replace("in callback: _", "in cal");
+  const declarationCompletionOffset = declarationCompletionSource.indexOf("in cal") + "in cal".length;
+  assert.equal(
+    completions(declarationCompletionSource, declarationFile, declarationCompletionOffset)
+      .find((item) => item.label === "callback")?.insertText,
+    "callback: _",
+  );
+
   const wrongShape = source.replace(
     "function multiply(left: i32, right: i32): i32 {\n  return left * right;\n}",
     "function multiply(left: i32): i32 {\n  return left;\n}",
