@@ -73,8 +73,8 @@ an inferred receiver-tied view.
 | Objective-C | Partial | ARC classes/fields, methods, properties/global object constants, labels, nullability, niche-backed `Option.fromNullable`, owned `String`/`NSString` copies, escaping blocks and persistent observer tokens |
 | C++ | Partial | Hierarchical/selectively aliased namespaces, typed overloads, records, and `.zd`-contracted copyable or move-only RAII values; named `const T&`/`T&`/move-only `T&&` parameters and `const &`/`&`/move-only `&&` methods map to `in`/`inout`/owned capabilities and direct native lowering; reference returns, copyable rvalue references, capability-changing argument/receiver overload sets, richer storage, and templates remain |
 | Swift via Objective-C | Implemented slice | Generated compatibility header, classes/properties/methods, automatic local dylib build/link |
-| Swift value via C++ | Implemented probe | Native struct return/copy/aggregate storage/round-trip/destruction without handwritten shim |
-| Swift methods/strings/generics | Planned vertical slices | Generated C++ methods, `swift::String`, protocols, errors, async, packages |
+| Swift value via C++ | Implemented probe | Native static construction, const/mutable instance methods, struct return/copy/aggregate storage/round-trip/destruction without handwritten shim |
+| Broader Swift surface | Planned vertical slices | Property sugar, `swift::String`, generics, noncopyable values, protocols, errors, async, packages |
 
 Current interop gaps that block a richer desktop application include
 broader Objective-C block shapes, target/action adapters, protocol conformance,
@@ -87,7 +87,9 @@ niche-backed specialization and explicit conversion bridge.
 The Swift owned-value probe is intentionally honest about the toolchain: current
 generated wrappers copy and deterministically destroy Swift values, but delete
 C++ move assignment. Z therefore treats this as copyable foreign RAII, not as
-native Swift move support.
+native Swift move support. Generated static and instance scalar methods are now
+called directly; this does not yet imply Swift property, string, generic,
+protocol, error, async, or package support.
 
 ## Async and concurrency
 
@@ -122,8 +124,8 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
 - [`examples/swift-interop`](../examples/swift-interop): Swift class through its
   generated Objective-C compatibility header.
 - [`examples/swift-value-interop`](../examples/swift-value-interop): Swift-native
-  owned value stored in a Z aggregate through its generated C++ compatibility
-  header.
+  owned value constructed and called directly, then stored in a Z aggregate,
+  through its generated C++ compatibility header.
 - [`examples/foreign-values.z`](../examples/foreign-values.z): `.zd`-contracted
   copyable C++ RAII value copied through an owning Z aggregate with zero live
   native values after scope exit.

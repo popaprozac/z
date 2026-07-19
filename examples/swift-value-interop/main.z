@@ -6,16 +6,16 @@ struct CounterOwner {
 }
 
 function main(): i32 {
-  const first = Swift.makeOwnedCounter(40);
+  const first = Swift.OwnedCounter.init(40);
   const copied = first;
   const owner = CounterOwner({ counter: copied });
   const ownerCopy = owner;
-  const roundTripped = Swift.roundTrip(ownerCopy.counter);
-  const changed = Swift.offsetOwnedCounter(roundTripped, 2);
+  let changed = Swift.roundTrip(ownerCopy.counter);
+  changed.setValue(42);
 
-  const firstValue = Swift.readOwnedCounter(first);
-  const copiedValue = Swift.readOwnedCounter(owner.counter);
-  const changedValue = Swift.readOwnedCounter(changed);
+  const firstValue = first.getValue();
+  const copiedValue = owner.counter.getValue();
+  const changedValue = changed.getValue();
   console.log(`first=${firstValue}, copied=${copiedValue}, changed=${changedValue}`);
   return changedValue - 42;
 }

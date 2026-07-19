@@ -993,17 +993,20 @@ both the Swift build and imported Clang metadata.
 
 A Swift manifest may select `interop: "cxx"`. In that mode `swiftc` emits its
 generated C++ compatibility header as `Module-Swift.hpp`, Z selects C++20, and
-ordinary namespace functions can carry Swift-native copyable structs across the
-boundary. The ownership probe uses a Swift struct containing a Swift class
-reference: Z receives it, copies it, stores and copies it inside a Z struct,
-round-trips it through Swift, and releases the shared reference exactly once
-after all generated C++ wrappers leave scope. This validates a thin native-value
-ownership path without a handwritten shim or a home-grown Swift ABI. The
-current Swift toolchain deletes C++ move assignment for these wrappers, so FIIR
-records `copy + deinit` and Z does not describe this as Swift move support.
-Generated instance methods and properties, `swift::String`,
-generics, noncopyable values, protocols, errors, async, and package import remain
-open vertical slices.
+Swift-native copyable structs cross the boundary as ordinary native values. The
+ownership probe uses a Swift struct containing a Swift class reference: Z
+constructs it through its generated static `init`, calls const and mutable
+instance methods, copies it, stores and copies it inside a Z struct, round-trips
+it through Swift, and releases the shared reference exactly once after all
+generated C++ wrappers leave scope. These calls reuse the existing C++ surface:
+const methods borrow their receiver, mutating methods require addressable `let`
+storage, and calls lower directly to generated C++ members. This validates a
+thin native-value ownership and behavior path without a handwritten shim or a
+home-grown Swift ABI. The current Swift toolchain deletes C++ move assignment
+for these wrappers, so FIIR records `copy + deinit` and Z does not describe this
+as Swift move support. Swift property sugar, `swift::String`, generics,
+noncopyable values, protocols, errors, async, and package import remain open
+vertical slices.
 
 Clang supplies ABI identity and signatures but cannot generally say whether a C
 pointer is nullable, borrowed, transferred, retained, or consumed. Z therefore

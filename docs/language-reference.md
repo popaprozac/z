@@ -350,6 +350,14 @@ enum payloads, ARC class fields, owned closure environments, and async frames
 reject move-only native storage until their non-trivial C++ construction paths
 land.
 
+Swift-generated C++ compatibility values use this same surface. For example,
+the current owned-value probe supports `Swift.OwnedCounter.init(40)`,
+`counter.getValue()`, and `counter.setValue(42)`. A generated const method is an
+`in` receiver borrow; a generated mutating method requires addressable `let`
+storage and is presented as `inout this` in editor help. This is direct generated
+C++ member interop, not Swift property syntax: property sugar, Swift strings,
+generics, protocols, errors, async, and packages remain separate slices.
+
 Named C++ value references reuse Z's existing parameter capabilities. No C++
 reference punctuation enters Z source:
 

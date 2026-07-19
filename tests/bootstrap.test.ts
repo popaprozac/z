@@ -2322,27 +2322,45 @@ test("imports and owns a Swift value through its generated C++ compatibility hea
   assert.equal(artifact.language, "c++");
   assert.match(artifact.source, /#include <ZSwiftOwned-Swift\.hpp>/);
   assert.match(artifact.source, /struct Z_CounterOwner \{\s*ZSwiftOwned::OwnedCounter counter;/);
-  assert.match(artifact.source, /const ZSwiftOwned::OwnedCounter first = ZSwiftOwned::makeOwnedCounter\(40\)/);
+  assert.match(artifact.source, /const ZSwiftOwned::OwnedCounter first = ZSwiftOwned::OwnedCounter::init\(40\)/);
   assert.match(artifact.source, /const ZSwiftOwned::OwnedCounter copied = first/);
   assert.match(artifact.source, /const Z_CounterOwner owner = .*\.counter = copied/);
   assert.match(artifact.source, /const Z_CounterOwner ownerCopy = owner/);
   assert.match(artifact.source, /ZSwiftOwned::roundTrip\(\(ownerCopy\)\.counter\)/);
+  assert.match(artifact.source, /changed\.setValue\(42\)/);
+  assert.match(artifact.source, /first\.getValue\(\)/);
+  assert.match(artifact.source, /\(owner\)\.counter\.getValue\(\)/);
+  assert.match(artifact.source, /changed\.getValue\(\)/);
   assert.deepEqual(diagnostics(source, example), []);
   const context = analyzeSource(source, example);
   const counter = context.foreignModules.get("Swift")?.namedTypes.get("OwnedCounter");
   assert.equal(counter?.kind, "value");
   if (counter?.kind === "value") {
     assert.deepEqual(counter.lifecycle, { copy: true, move: false, deinit: true });
+    assert.equal(counter.staticMethods.find((method) => method.name === "init")?.overloads.length, 1);
+    assert.equal(counter.methods.find((method) => method.name === "getValue")?.overloads[0]?.receiverAccess, "in");
+    assert.equal(counter.methods.find((method) => method.name === "setValue")?.overloads[0]?.receiverAccess, "inout");
   }
   const firstOffset = source.indexOf("first =") + 1;
   assert.match(hover(source, example, firstOffset)?.contents.value ?? "", /first: Swift\.OwnedCounter/);
-  const makeOffset = source.indexOf("makeOwnedCounter") + 1;
-  assert.match(hover(source, example, makeOffset)?.contents.value ?? "", /makeOwnedCounter\(value: i32\): Swift\.OwnedCounter/);
+  const initOffset = source.indexOf("init(40)") + 1;
+  assert.match(hover(source, example, initOffset)?.contents.value ?? "", /init\(value: i32\): Swift\.OwnedCounter.*C\+\+ static/s);
+  const getOffset = source.indexOf("getValue()") + 1;
+  assert.match(hover(source, example, getOffset)?.contents.value ?? "", /getValue\(\): i32.*C\+\+ const borrow/s);
+  const setOffset = source.indexOf("setValue(42)") + 1;
+  assert.match(hover(source, example, setOffset)?.contents.value ?? "", /setValue\(inout this, value: i32\): void.*C\+\+ mutable borrow/s);
+
+  const completionSource = source.replace("  changed.setValue(42);", "  changed.;\n  changed.setValue(42);");
+  const completionOffset = completionSource.indexOf("changed.;") + "changed.".length;
+  const methodItems = completions(completionSource, example, completionOffset);
+  assert.match(methodItems.find((item) => item.label === "getValue")?.detail ?? "", /C\+\+ const borrow/);
+  assert.match(methodItems.find((item) => item.label === "setValue")?.detail ?? "", /inout this.*C\+\+ mutable borrow/);
 
   const generatedHeader = resolve(artifact.includeDirectories[0], "ZSwiftOwned-Swift.hpp");
   assert.equal(existsSync(generatedHeader), true);
-  const makeDefinition = definition(source, `file://${example}`, makeOffset);
-  assert.match(makeDefinition?.uri ?? "", /ZSwiftOwned-Swift\.hpp$/);
+  for (const offset of [initOffset, getOffset, setOffset]) {
+    assert.match(definition(source, `file://${example}`, offset)?.uri ?? "", /ZSwiftOwned-Swift\.hpp$/);
+  }
   const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stdout, "created 40\nfirst=40, copied=40, changed=42\nreleased 40\n");

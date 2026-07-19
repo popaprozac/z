@@ -129,6 +129,13 @@ remain ownership operations rather than an overloaded source-level constructor
 surface. Reference returns, copyable rvalue references, conversions, and
 templates are not yet part of this slice.
 
+Swift-generated C++ value interfaces feed the same FIIR path. Z currently calls
+generated static factories and const or mutable scalar instance methods directly;
+the receiver rules and cost model are identical to the C++ rows above. This
+proves behavior on a Swift-owned value, but does not yet infer Swift property
+syntax or cover `swift::String`, generics, protocols, errors, async, or package
+products.
+
 ## Cost model
 
 Z's target is **no interop tax beyond the semantics requested at the
