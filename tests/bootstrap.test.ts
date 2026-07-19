@@ -1302,6 +1302,20 @@ test("declares, copies, aggregates, and destroys foreign C++ values", () => {
   }
   const typeOffset = source.indexOf("ManagedValue") + 2;
   assert.match(hover(source, example, typeOffset)?.contents.value ?? "", /native value: copy, deinit; unavailable: move/);
+  const publicFieldOffset = source.indexOf("copied.value") + "copied.".length + 1;
+  assert.equal(
+    hover(source, example, publicFieldOffset)?.contents.value,
+    "```z\nvalue: native.zcpp.ManagedValue\n```",
+  );
+  const publicFieldCompletionSource = source.replace(
+    "  return native.zcpp.read_managed(copied.value) + 2;",
+    "  copied.;\n  return native.zcpp.read_managed(copied.value) + 2;",
+  );
+  const publicFieldCompletionOffset = publicFieldCompletionSource.indexOf("copied.;") + "copied.".length;
+  assert.equal(
+    completions(publicFieldCompletionSource, example, publicFieldCompletionOffset).find((item) => item.label === "value")?.detail,
+    "native.zcpp.ManagedValue",
+  );
 
   const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
@@ -5624,6 +5638,7 @@ test("editor grammar tracks keywords without reserving Result variants", () => {
   const matchScopes = grammar.repository.matchPatterns.patterns
     .map((pattern: { name: string }) => pattern.name)
     .join(" ");
+  const qualifiedTypeAnnotation = grammar.repository.typeAnnotations.patterns[0];
   const exportPattern = grammar.repository.keywords.patterns
     .find((pattern: { match: string }) => pattern.match.includes("export"));
   assert.equal(exportPattern?.name, "keyword.control.export.z");
@@ -5673,6 +5688,9 @@ test("editor grammar tracks keywords without reserving Result variants", () => {
   assert.match(operatorScopes, /keyword\.operator\.arrow\.z/);
   assert.match(matchPattern, /=>/);
   assert.match(matchScopes, /constant\.language\.enum-member\.z/);
+  assert.equal(qualifiedTypeAnnotation.captures[1].name, "variable.other.property.z");
+  assert.equal(qualifiedTypeAnnotation.captures[5].name, "entity.name.namespace.z");
+  assert.equal(qualifiedTypeAnnotation.captures[6].name, "entity.name.type.z");
   assert.match(typePattern, /Slice/);
   assert.match(typePattern, /Array/);
   assert.match(typePattern, /Option/);

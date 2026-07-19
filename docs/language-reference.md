@@ -55,7 +55,8 @@ const session = new Session({ id: 42 });
 const same = session;
 ```
 
-Fields are public unless marked `private`. A user constructor may establish
+Field visibility is separate from storage and ownership: struct and class fields
+are public unless marked `private`. A user class constructor may establish
 invariants and may throw. `trait` is a nominal behavior contract; a struct or
 class opts in with `implements`. Traits do not imply inheritance or storage.
 

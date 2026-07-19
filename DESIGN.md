@@ -226,14 +226,15 @@ fieldwise initialization through `new Type({ ... })`. A declared constructor
 changes the call shape to `new Type(arguments...)` and is the only construction
 path for that class.
 
-Fields default to `public`; `private` fields are visible only within the
-declaring class and require an explicit constructor. Constructor analysis tracks
-definite initialization across successful branches, rejects reads of
-uninitialized fields and escape of incomplete `this`, and returns the completed
-instance implicitly. Throwing constructors use `Result<Class, Error>` through
-ordinary `try` and `attempt`. Lowering maintains per-field liveness so failure
-destroys only initialized cleanup-bearing fields before reclaiming incomplete
-class storage.
+Field visibility is independent of value or reference semantics: struct and
+class fields default to `public`, and `private` fields are visible only within
+their declaring aggregate. A class with private state requires an explicit
+constructor. Constructor analysis tracks definite initialization across
+successful branches, rejects reads of uninitialized fields and escape of
+incomplete `this`, and returns the completed instance implicitly. Throwing
+constructors use `Result<Class, Error>` through ordinary `try` and `attempt`.
+Lowering maintains per-field liveness so failure destroys only initialized
+cleanup-bearing fields before reclaiming incomplete class storage.
 
 `static function` is the type-scoped factory and utility surface on structs and
 classes. It is invoked as `Type.method()`, performs no implicit allocation, and

@@ -438,7 +438,7 @@ export function hover(source: string, fileName: string, offset: number): Hover |
     .flatMap((declaration) => declaration.fields)
     .find((field) => field.location.offset === word.start && field.name === word.text);
   if (declaredField) {
-    return markdownHover(`${declaredField.visibility} ${declaredField.name}: ${displayType(declaredField.type.name, context.typeDisplayNames)}`, source, word.start, word.end);
+    return markdownHover(fieldDetail(declaredField, context.typeDisplayNames), source, word.start, word.end);
   }
   const declaredMethod = context.sourceProgram.structs
     .flatMap((declaration) => declaration.methods)
@@ -583,7 +583,7 @@ export function hover(source: string, fileName: string, offset: number): Hover |
     }
     if (resolved?.kind === "struct") {
       const field = resolved.declaration.fields.find((item) => item.name === word.text);
-      if (field) return markdownHover(`${field.visibility} ${field.name}: ${displayType(field.type.name, context.typeDisplayNames)}`, source, word.start, word.end);
+      if (field) return markdownHover(fieldDetail(field, context.typeDisplayNames), source, word.start, word.end);
       const method = resolved.declaration.methods.find((item) => item.name === word.text);
       if (method) return markdownHover(methodDetail(method, context.typeDisplayNames), source, word.start, word.end);
     }
@@ -1970,7 +1970,9 @@ function structCompletions(
       .map((field) => ({
         label: field.name,
         kind: completionKinds.field,
-        detail: `${field.visibility} ${displayType(field.type.name, typeDisplayNames)}`,
+        detail: field.visibility === "private"
+          ? `private ${displayType(field.type.name, typeDisplayNames)}`
+          : displayType(field.type.name, typeDisplayNames),
       })),
     ...declaration.methods
       .filter((method) => !method.static && ((method.visibility ?? "public") === "public" || includePrivate))
@@ -1981,6 +1983,11 @@ function structCompletions(
       insertText: `${method.name}()`,
     })),
   ];
+}
+
+function fieldDetail(field: StructDeclaration["fields"][number], typeDisplayNames: ReadonlyMap<string, string>): string {
+  const visibility = field.visibility === "private" ? "private " : "";
+  return `${visibility}${field.name}: ${displayType(field.type.name, typeDisplayNames)}`;
 }
 
 function staticCompletions(
