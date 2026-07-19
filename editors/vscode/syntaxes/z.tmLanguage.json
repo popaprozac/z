@@ -49,13 +49,18 @@
           "1": { "name": "storage.type.inferred.z" }
         }
       }, {
-        "name": "meta.declaration.callback-context.foreign.z",
-        "match": "\\b(callback)\\s+([A-Za-z_][A-Za-z0-9_]*)\\s*\\{\\s*(context)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+        "name": "meta.declaration.callback.foreign.z",
+        "match": "\\b(callback)\\s+([A-Za-z_][A-Za-z0-9_]*)(?=\\s*\\{)",
         "captures": {
           "1": { "name": "keyword.control.declaration.callback.z" },
-          "2": { "name": "variable.parameter.callback.z" },
-          "3": { "name": "keyword.control.declaration.callback.z" },
-          "4": { "name": "variable.parameter.context.z" }
+          "2": { "name": "entity.name.function.callback.z" }
+        }
+      }, {
+        "name": "meta.declaration.callback-context.foreign.z",
+        "match": "\\b(context)\\s+([A-Za-z_][A-Za-z0-9_]*)(?=\\s*;)",
+        "captures": {
+          "1": { "name": "keyword.control.declaration.callback.z" },
+          "2": { "name": "variable.parameter.context.z" }
         }
       }, {
         "name": "meta.declaration.callback-thread.foreign.z",

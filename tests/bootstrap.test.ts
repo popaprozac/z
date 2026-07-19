@@ -5524,9 +5524,10 @@ test("editor grammar tracks keywords without reserving Result variants", () => {
   assert.equal(foreignDeclarationPatterns[2].captures[2].name, "entity.name.function.destructor.z");
   assert.equal(foreignDeclarationPatterns[3].captures[1].name, "storage.type.inferred.z");
   assert.equal(foreignDeclarationPatterns[4].captures[1].name, "keyword.control.declaration.callback.z");
-  assert.equal(foreignDeclarationPatterns[4].captures[3].name, "keyword.control.declaration.callback.z");
   assert.equal(foreignDeclarationPatterns[5].captures[1].name, "keyword.control.declaration.callback.z");
-  assert.equal(foreignDeclarationPatterns[5].captures[2].name, "constant.language.callback-thread.z");
+  assert.equal(foreignDeclarationPatterns[5].captures[2].name, "variable.parameter.context.z");
+  assert.equal(foreignDeclarationPatterns[6].captures[1].name, "keyword.control.declaration.callback.z");
+  assert.equal(foreignDeclarationPatterns[6].captures[2].name, "constant.language.callback-thread.z");
   assert.match(selectiveImportPatterns, /\\bas\\b/);
   assert.match(keywordPattern, /while/);
   assert.match(keywordPattern, /for\|of/);
