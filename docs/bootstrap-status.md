@@ -57,7 +57,7 @@ an inferred receiver-tied view.
 | CLI | Implemented | `z check`, `z emit`, and `z run` through Bun; native run I/O streams live |
 | Native backends | Partial | Readable C, C++20, Objective-C ARC, and Objective-C++ source generation |
 | Foreign Interface IR | Implemented foundation | Raw declarations, API-note merge, normalized contracts, source locations, and availability metadata are separate; richer native hierarchies remain |
-| Language server | Partial | Diagnostics, semantic highlighting, completion, hover, and Z/native definitions |
+| Language server | Partial | Diagnostics, semantic highlighting, contextual selective-import/object-pattern completion, hover, and Z/native definitions |
 | Native definitions | Implemented slice | Namespace/selective C symbols, Objective-C members, and generated Swift compatibility declarations jump to their native headers |
 | Self-hosting | Planned | Stage 0 remains TypeScript/Bun; file/process APIs and sufficient Z surface come first |
 

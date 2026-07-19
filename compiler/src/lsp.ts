@@ -198,5 +198,5 @@ function fileName(uri: string): string {
 }
 
 function completionTriggerCharacters(): string[] {
-  return [".", ",", "_", ..."abcdefghijklmnopqrstuvwxyz", ..."ABCDEFGHIJKLMNOPQRSTUVWXYZ"];
+  return [".", ",", "{", "_", ..."abcdefghijklmnopqrstuvwxyz", ..."ABCDEFGHIJKLMNOPQRSTUVWXYZ"];
 }

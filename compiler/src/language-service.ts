@@ -160,9 +160,13 @@ function serviceDiagnostic(diagnostic: DiagnosticError, fileName: string): Servi
 
 export function completions(source: string, fileName: string, offset: number): CompletionItem[] {
   if (fileName.endsWith(".zd")) return foreignDeclarationCompletions(source, fileName, offset);
+  const selectiveImport = selectiveImportCompletions(source, fileName, offset);
+  if (selectiveImport) return selectiveImport;
   const before = source.slice(0, offset);
   const member = before.match(/([A-Za-z_][A-Za-z0-9_]*(?:<[^<>]+>)?(?:\.[A-Za-z_][A-Za-z0-9_]*)*)\.([A-Za-z_][A-Za-z0-9_]*)?$/);
   if (member) return memberCompletions(source, fileName, offset, member[1], member[2] ?? "");
+  const objectFields = objectFieldCompletions(source, fileName, offset);
+  if (objectFields) return objectFields;
   const labels = labelCompletions(source, fileName, offset);
   return labels.length > 0 ? labels : symbolCompletions(source, fileName, offset);
 }
@@ -768,6 +772,320 @@ export function offsetAt(source: string, position: Position): number {
     offset = next + 1;
   }
   return Math.min(offset + position.character, source.length);
+}
+
+function selectiveImportCompletions(
+  source: string,
+  fileName: string,
+  offset: number,
+): CompletionItem[] | null {
+  const pattern = /\bimport\s*\{([\s\S]*?)\}\s*from\s*("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*')\s*;/g;
+  for (const match of source.matchAll(pattern)) {
+    const statementStart = match.index;
+    const contentStart = statementStart + match[0].indexOf("{") + 1;
+    const contentEnd = contentStart + match[1].length;
+    if (offset < contentStart || offset > contentEnd) continue;
+    const contentBefore = source.slice(contentStart, offset);
+    if (/\bas\s+[A-Za-z_][A-Za-z0-9_]*$/.test(contentBefore)) return [];
+    const prefix = contentBefore.match(/([A-Za-z_][A-Za-z0-9_]*)$/)?.[1] ?? "";
+    const existing = new Set(
+      match[1]
+        .split(",")
+        .map((part) => /^\s*([A-Za-z_][A-Za-z0-9_]*)/.exec(part)?.[1])
+        .filter((name): name is string => Boolean(name)),
+    );
+    if (prefix) existing.delete(prefix);
+    const specifier = match[2].slice(1, -1);
+    const candidates = selectiveImportCandidates(specifier, fileName);
+    return filterCompletions(candidates.filter((item) => !existing.has(item.label)), prefix, 2500);
+  }
+  return null;
+}
+
+function selectiveImportCandidates(specifier: string, fileName: string): CompletionItem[] {
+  if (specifier === "std") {
+    return [{ label: "console", kind: completionKinds.module, detail: "standard console" }];
+  }
+  if (specifier === "std/time") {
+    return (["sleep", "delay"] as const).map((name) => ({
+      label: name,
+      kind: completionKinds.function,
+      detail: standardFunctionDetail(name, name),
+    }));
+  }
+  if (specifier === "std/console") return [];
+  const alias = "__z_completion_module";
+  let context: AnalyzedSource;
+  try {
+    context = analyzeSource(
+      `import ${alias} from ${JSON.stringify(specifier)}; function main(): i32 { return 0; }`,
+      fileName,
+      { requireMain: false },
+    );
+  } catch {
+    return [];
+  }
+  const declaration = context.sourceProgram.imports[0];
+  if (isLocalSourceModuleSpecifier(specifier)) {
+    const module = declaration ? localSourceModule(context, declaration) : null;
+    if (!module) return [];
+    return [...module.exports.keys()].map((name) => ({
+      label: name,
+      kind: sourceExportCompletionKind(module, name),
+      detail: sourceExportDetail(module, name, context.typeDisplayNames),
+    }));
+  }
+  const module = context.foreignModules.get(alias);
+  return module ? moduleCompletions(module, "", [], true) : [];
+}
+
+type ObjectFieldShape = {
+  readonly name: string;
+  readonly type: string;
+  readonly visibility: "public" | "private";
+};
+
+function objectFieldCompletions(
+  source: string,
+  fileName: string,
+  offset: number,
+): CompletionItem[] | null {
+  const before = source.slice(0, offset);
+  const object = before.match(/(?:\bnew\s+)?([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*(?:<[^{}()]+>)?)\s*\(\s*\{([^{}]*)$/);
+  if (!object) return null;
+  const prefix = object[2].match(/([A-Za-z_][A-Za-z0-9_]*)$/)?.[1] ?? "";
+  const used = new Set(
+    [...object[2].matchAll(/(?:^|,)\s*([A-Za-z_][A-Za-z0-9_]*)\s*(?=:|,|$)/g)]
+      .map((match) => match[1]),
+  );
+  if (prefix) used.delete(prefix);
+  const analysis = safeAnalysis(source, fileName) ?? importAnalysis(source, fileName);
+  let payloadType = object[1];
+  let patternBinding = false;
+  let fields = objectFieldsForType(source, analysis, payloadType);
+  if (!fields && payloadType.includes(".")) {
+    const separator = payloadType.lastIndexOf(".");
+    const enumName = payloadType.slice(0, separator);
+    const variantName = payloadType.slice(separator + 1);
+    const variantPayload = enumPayloadType(source, analysis, enumName, variantName);
+    if (variantPayload) {
+      payloadType = variantPayload;
+      fields = objectFieldsForType(source, analysis, payloadType);
+    }
+  }
+  if (!fields) {
+    const subject = matchSubjectBefore(source, before.length - object[0].length);
+    const subjectType = subject ? declaredBindingType(source, subject, offset) : null;
+    let variantPayload = subjectType
+      ? enumPayloadType(source, analysis, subjectType, object[1])
+      : null;
+    if (!variantPayload && subjectType) {
+      const option = /^Option<(.+)>$/.exec(subjectType);
+      if (option && object[1] === "some") variantPayload = option[1];
+    }
+    if (!variantPayload) variantPayload = uniqueEnumVariantPayload(source, object[1]);
+    if (variantPayload) {
+      payloadType = variantPayload;
+      fields = objectFieldsForType(source, analysis, payloadType);
+      patternBinding = true;
+    }
+  }
+  if (!fields) return null;
+  const items = fields
+    .filter((field) => !used.has(field.name))
+    .map((field) => ({
+      label: field.name,
+      kind: completionKinds.field,
+      detail: `${field.name}: ${field.type}`,
+      insertText: patternBinding ? field.name : `${field.name}: `,
+      sortText: `0-${field.name}`,
+    }));
+  return filterCompletions(items, prefix, 1000);
+}
+
+function objectFieldsForType(
+  source: string,
+  context: AnalyzedSource | null,
+  typeName: string,
+): ObjectFieldShape[] | null {
+  if (context) {
+    const aggregate = sourceAggregateForType(context, typeName);
+    if (aggregate) {
+      return aggregate.declaration.fields.map((field) => ({
+        name: field.name,
+        type: displaySubstitutedType(field.type.name, aggregate.substitutions, context.typeDisplayNames),
+        visibility: field.visibility,
+      }));
+    }
+    const foreign = resolveForeignNamedTypeForText(context, typeName);
+    if (foreign?.kind === "record") {
+      return foreign.fields.map((field) => ({ name: field.name, type: field.typeName, visibility: "public" }));
+    }
+  }
+  return localAggregateFields(source, typeName);
+}
+
+function resolveForeignNamedTypeForText(
+  context: Pick<AnalyzedSource, "foreignModules" | "sourceProgram" | "semanticInfo">,
+  text: string,
+): ForeignNamedType | null {
+  const direct = context.semanticInfo.foreignNamedTypes.get(text);
+  if (direct) return direct;
+  const [moduleName, ...path] = text.split(".");
+  const namespaceBinding = foreignNamespaceBindings(context).get(moduleName);
+  const module = context.foreignModules.get(moduleName) ?? namespaceBinding?.module;
+  if (!module || path.length === 0) return null;
+  return resolveModuleNamedType(
+    module,
+    [...(namespaceBinding?.namespacePath ?? []), ...path.slice(0, -1)],
+    path.at(-1)!,
+  ) ?? null;
+}
+
+function localAggregateFields(source: string, typeName: string): ObjectFieldShape[] | null {
+  const generic = parseGenericType(typeName) ?? parseSourceGenericType(typeName);
+  const base = generic?.base ?? typeName;
+  let tokens;
+  try {
+    tokens = lex(source, "completion.z");
+  } catch {
+    return null;
+  }
+  for (let index = 0; index < tokens.length - 2; index += 1) {
+    if ((tokens[index].kind !== "struct" && tokens[index].kind !== "class")
+      || tokens[index + 1]?.text !== base) continue;
+    const parameters: string[] = [];
+    let brace = index + 2;
+    if (tokens[brace]?.kind === "less") {
+      brace += 1;
+      while (tokens[brace] && tokens[brace].kind !== "greater") {
+        if (tokens[brace].kind === "identifier") parameters.push(tokens[brace].text);
+        brace += 1;
+      }
+      brace += 1;
+    }
+    while (tokens[brace] && tokens[brace].kind !== "leftBrace") brace += 1;
+    if (!tokens[brace]) return null;
+    const substitutions = new Map(
+      parameters.map((parameter, parameterIndex) => [parameter, generic?.arguments[parameterIndex] ?? parameter]),
+    );
+    const fields: ObjectFieldShape[] = [];
+    let depth = 1;
+    for (let cursor = brace + 1; cursor < tokens.length && depth > 0; cursor += 1) {
+      if (tokens[cursor].kind === "leftBrace") {
+        depth += 1;
+        continue;
+      }
+      if (tokens[cursor].kind === "rightBrace") {
+        depth -= 1;
+        continue;
+      }
+      if (depth !== 1) continue;
+      const visibility = tokens[cursor].kind === "private" ? "private" : "public";
+      const nameIndex = tokens[cursor].kind === "private" || tokens[cursor].kind === "public"
+        ? cursor + 1
+        : cursor;
+      if (tokens[nameIndex]?.kind !== "identifier" || tokens[nameIndex + 1]?.kind !== "colon") continue;
+      let end = nameIndex + 2;
+      while (tokens[end] && tokens[end].kind !== "semicolon") end += 1;
+      if (!tokens[end]) continue;
+      const startOffset = tokens[nameIndex + 1].location.offset + 1;
+      let fieldType = source.slice(startOffset, tokens[end].location.offset).trim();
+      for (const [parameter, argument] of substitutions) {
+        fieldType = fieldType.replace(new RegExp(`\\b${parameter}\\b`, "g"), argument);
+      }
+      fields.push({ name: tokens[nameIndex].text, type: fieldType, visibility });
+      cursor = end;
+    }
+    return fields;
+  }
+  return null;
+}
+
+function enumPayloadType(
+  source: string,
+  context: AnalyzedSource | null,
+  enumName: string,
+  variantName: string,
+): string | null {
+  const generic = parseGenericType(enumName) ?? parseSourceGenericType(enumName);
+  const base = generic?.base ?? enumName;
+  const declaration = context?.sourceProgram.enums.find((item) => item.name === base)
+    ?? context?.program.enums.find((item) => item.name === enumName);
+  const payload = declaration?.variants.find((variant) => variant.name === variantName)?.payload?.name;
+  if (payload) return payload;
+  return localEnumPayloads(source)
+    .find((item) => item.enumName === base && item.variantName === variantName)?.payloadType ?? null;
+}
+
+function uniqueEnumVariantPayload(source: string, variantName: string): string | null {
+  const payloads = new Set(
+    localEnumPayloads(source)
+      .filter((item) => item.variantName === variantName && item.payloadType)
+      .map((item) => item.payloadType!),
+  );
+  return payloads.size === 1 ? [...payloads][0] : null;
+}
+
+function localEnumPayloads(source: string): Array<{
+  readonly enumName: string;
+  readonly variantName: string;
+  readonly payloadType: string | null;
+}> {
+  let tokens;
+  try {
+    tokens = lex(source, "completion.z");
+  } catch {
+    return [];
+  }
+  const payloads: Array<{ enumName: string; variantName: string; payloadType: string | null }> = [];
+  for (let index = 0; index < tokens.length - 2; index += 1) {
+    if (tokens[index].kind !== "enum" || tokens[index + 1]?.kind !== "identifier") continue;
+    const enumName = tokens[index + 1].text;
+    let brace = index + 2;
+    while (tokens[brace] && tokens[brace].kind !== "leftBrace") brace += 1;
+    let depth = 1;
+    for (let cursor = brace + 1; cursor < tokens.length && depth > 0; cursor += 1) {
+      if (tokens[cursor].kind === "leftBrace") {
+        depth += 1;
+        continue;
+      }
+      if (tokens[cursor].kind === "rightBrace") {
+        depth -= 1;
+        continue;
+      }
+      if (depth !== 1 || tokens[cursor].kind !== "identifier") continue;
+      const variant = tokens[cursor];
+      let end = cursor + 1;
+      let nested = 0;
+      while (tokens[end]) {
+        if (["less", "leftBracket", "leftParen"].includes(tokens[end].kind)) nested += 1;
+        if (["greater", "rightBracket", "rightParen"].includes(tokens[end].kind)) nested -= 1;
+        if (nested === 0 && (tokens[end].kind === "comma" || tokens[end].kind === "rightBrace")) break;
+        end += 1;
+      }
+      const startOffset = variant.location.offset + variant.text.length;
+      const payloadType = source.slice(startOffset, tokens[end]?.location.offset ?? startOffset).trim() || null;
+      payloads.push({ enumName, variantName: variant.text, payloadType });
+      cursor = end - 1;
+    }
+  }
+  return payloads;
+}
+
+function matchSubjectBefore(source: string, beforeObjectOffset: number): string | null {
+  const before = source.slice(0, beforeObjectOffset);
+  return [...before.matchAll(/\bmatch\s*\(\s*(?:in\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*\)\s*\{/g)].at(-1)?.[1] ?? null;
+}
+
+function declaredBindingType(source: string, name: string, offset: number): string | null {
+  const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const before = source.slice(0, offset);
+  const annotations = [...before.matchAll(new RegExp(`\\b${escaped}\\s*:\\s*([A-Za-z_][A-Za-z0-9_.]*(?:<[^;=(){}]+>)?)`, "g"))];
+  const annotated = annotations.at(-1)?.[1]?.trim();
+  if (annotated) return annotated;
+  const initializers = [...before.matchAll(new RegExp(`\\b(?:const|let)\\s+${escaped}\\s*=\\s*([A-Za-z_][A-Za-z0-9_.]*(?:<[^;=(){}]+>)?)\\.`, "g"))];
+  return initializers.at(-1)?.[1]?.trim() ?? null;
 }
 
 function symbolCompletions(source: string, fileName: string, offset: number): CompletionItem[] {
@@ -1928,6 +2246,7 @@ function moduleCompletions(
   module: ForeignModule,
   prefix: string,
   namespacePath: readonly string[] = [],
+  unfiltered = false,
 ): CompletionItem[] {
   const items: CompletionItem[] = [];
   if (namespacePath.length === 0) {
@@ -1979,7 +2298,7 @@ function moduleCompletions(
   }
   const unique = uniqueCompletions(items);
   if (prefix) return filterCompletions(unique, prefix, 1500);
-  if (module.cPlusPlus) return unique.slice(0, 2500);
+  if (unfiltered || module.cPlusPlus) return unique.slice(0, 2500);
   return unique.filter((item) => (
     item.kind === completionKinds.class
     || ((item.kind === completionKinds.struct || item.kind === completionKinds.enum) && /^(?:NS|CG)/.test(item.label))

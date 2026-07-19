@@ -265,6 +265,73 @@ test("suggests Z tokens while source and declaration syntax is incomplete", () =
   assert.equal(callerItems.find((item) => item.label === "caller")?.detail, "Z declaration keyword");
 });
 
+test("suggests selective imports and typed object fields", () => {
+  const moduleFile = resolve(projectRoot, "examples/language/modules/main.z");
+  const localImport = `import { tr } from "./geometry.z"; function main(): i32 { return 0; }`;
+  const localImportOffset = localImport.indexOf("tr }") + 2;
+  const translate = completions(localImport, moduleFile, localImportOffset)
+    .find((item) => item.label === "translate");
+  assert.equal(translate?.kind, 3);
+  assert.match(translate?.detail ?? "", /translate\(point: Point, dx: i32, dy: i32\): Point/);
+
+  const standardImport = `import { d } from "std/time"; function main(): i32 { return 0; }`;
+  const standardImportOffset = standardImport.indexOf("d }") + 1;
+  assert.match(
+    completions(standardImport, moduleFile, standardImportOffset).find((item) => item.label === "delay")?.detail ?? "",
+    /async delay\(milliseconds: u64\): void/,
+  );
+
+  const nativeFile = resolve(projectRoot, "examples/interop/cpp/cpp-move-only-array.z");
+  const nativeImport = `import { zc } from "../../../tests/fixtures/move-only.hpp"; function main(): i32 { return 0; }`;
+  const nativeImportOffset = nativeImport.indexOf("zc }") + 2;
+  assert.equal(
+    completions(nativeImport, nativeFile, nativeImportOffset).find((item) => item.label === "zcpp")?.kind,
+    9,
+  );
+
+  const importedObject = `
+    import geometry from "./geometry.z";
+    function main(): i32 {
+      const point = geometry.Point({ x: 20, y });
+      return point.x;
+    }
+  `;
+  const importedFieldOffset = importedObject.indexOf("y }") + 1;
+  const importedField = completions(importedObject, moduleFile, importedFieldOffset)
+    .find((item) => item.label === "y");
+  assert.equal(importedField?.detail, "y: i32");
+  assert.equal(importedField?.insertText, "y: ");
+
+  const objectPatterns = `
+    struct User {
+      id: i32;
+      name: String;
+    }
+    enum SessionState {
+      ready User,
+      empty,
+    }
+    function inspect(in state: SessionState): i32 {
+      const created = SessionState.ready({ id: 1, na });
+      return match (in state) {
+        ready({ id, na }) => id;
+        empty => 0;
+      };
+    }
+  `;
+  const constructorOffset = objectPatterns.indexOf("na });") + 2;
+  const constructorField = completions(objectPatterns, "object-patterns.z", constructorOffset)
+    .find((item) => item.label === "name");
+  assert.equal(constructorField?.detail, "name: String");
+  assert.equal(constructorField?.insertText, "name: ");
+  const patternOffset = objectPatterns.lastIndexOf("na })") + 2;
+  const patternItems = completions(objectPatterns, "object-patterns.z", patternOffset);
+  assert.equal(patternItems.some((item) => item.label === "id"), false);
+  const patternField = patternItems.find((item) => item.label === "name");
+  assert.equal(patternField?.detail, "name: String");
+  assert.equal(patternField?.insertText, "name");
+});
+
 test("analyzes export-only files as modules while executable commands still require main", () => {
   const moduleFile = resolve(projectRoot, "examples/language/modules/geometry.z");
   const source = readFileSync(moduleFile, "utf8");
@@ -1589,7 +1656,7 @@ test("stores move-only C++ values in Array and named enum payloads", () => {
   const borrowedPayloadOffset = enumSource.indexOf("ready(value)") + "ready(".length + 1;
   assert.match(
     hover(enumSource, enumExample, borrowedPayloadOffset)?.contents.value ?? "",
-    /value: native\.zcpp\.UniqueValue/,
+    /value: zcpp\.UniqueValue/,
   );
   const enumResult = spawnSync(process.execPath, [cli, "run", enumExample], { encoding: "utf8" });
   assert.equal(enumResult.status, 0, enumResult.stderr);
@@ -2657,7 +2724,7 @@ test("speaks the LSP initialize and shutdown protocol over stdio", () => {
   assert.match(result.stdout, /"name":"z-language-server"/);
   assert.match(result.stdout, /"completionProvider"/);
   assert.match(result.stdout, /"semanticTokensProvider"/);
-  assert.match(result.stdout, /"triggerCharacters":\["\.",",","_","a","b"/);
+  assert.match(result.stdout, /"triggerCharacters":\["\.",",","\{","_","a","b"/);
 });
 
 test("checks floating-point widths and integer-only bitwise operators", () => {

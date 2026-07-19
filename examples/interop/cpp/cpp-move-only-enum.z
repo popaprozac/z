@@ -1,14 +1,14 @@
 import console from "std/console";
-import native from "../../../tests/fixtures/move-only.hpp";
+import { zcpp } from "../../../tests/fixtures/move-only.hpp";
 
 enum NativeState {
-  ready native.zcpp.UniqueValue,
+  ready zcpp.UniqueValue,
   empty,
 }
 
 struct LabeledValue {
   label: String;
-  value: native.zcpp.UniqueValue;
+  value: zcpp.UniqueValue;
 }
 
 enum LabeledState {
@@ -38,26 +38,26 @@ function consumeLabeled(state: LabeledState): i32 {
 }
 
 function exercise(): i32 {
-  const state = NativeState.ready(native.zcpp.UniqueValue(42));
+  const state = NativeState.ready(zcpp.UniqueValue(42));
   const observed = inspect(state);
-  let replaced = NativeState.ready(native.zcpp.UniqueValue(1));
-  replaced = NativeState.ready(native.zcpp.UniqueValue(2));
+  let replaced = NativeState.ready(zcpp.UniqueValue(1));
+  replaced = NativeState.ready(zcpp.UniqueValue(2));
   const replacement = consume(replaced);
   let labeled = LabeledState.ready(LabeledValue({
     label: "replaced",
-    value: native.zcpp.UniqueValue(5),
+    value: zcpp.UniqueValue(5),
   }));
   labeled = LabeledState.ready(LabeledValue({
     label: "owned",
-    value: native.zcpp.UniqueValue(7),
+    value: zcpp.UniqueValue(7),
   }));
   return consume(state) + observed + replacement + consumeLabeled(labeled) - 51;
 }
 
 function main(): i32 {
   const answer = exercise();
-  const moves = native.zcpp.unique_moves();
-  const live = native.zcpp.unique_live();
+  const moves = zcpp.unique_moves();
+  const live = zcpp.unique_live();
   console.log(`enum answer=${answer}, moves=${moves}, live=${live}`);
   return live;
 }

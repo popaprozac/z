@@ -142,7 +142,12 @@ Install the repository's development extension:
 Reload VS Code or Cursor, then open a `.z` source or `.zd` declaration file.
 The extension provides TextMate highlighting immediately and starts the
 compiler-backed language server. Z source receives diagnostics, semantic
-highlighting, hover, completion, and definitions. `.zd` files receive
+highlighting, hover, completion, and definitions. Completion is contextual:
+selective imports suggest exported Z, standard-library, or native symbols;
+typed object construction suggests remaining fields as `field: value`; and
+enum payload destructuring suggests remaining field bindings. Ordinary
+declaration destructuring such as `const { x } = value` is not yet Z syntax and
+is therefore not suggested. `.zd` files receive
 declaration-aware highlighting and diagnostics, plus header-backed completion
 for native functions, parameter names, and `deinit` targets. Hovering a native
 declaration, parameter, inferred `_` type, or `deinit` target shows the resolved
