@@ -282,6 +282,26 @@ text API; it is not implemented by treating UTF-8 bytes or JavaScript UTF-16
 code units as characters. `byteLength` is constant-time; the eventual
 grapheme-aware `length` may require a text scan.
 
+Repeated text construction uses the explicit `std/text` value type rather than
+repeatedly allocating intermediate `String` values:
+
+```z
+import { TextBuffer } from "std/text";
+
+let output = TextBuffer();
+output.append("answer=");
+output.appendBytes(source, start, end);
+output.appendAscii(10);
+const text = output.finish();
+```
+
+`TextBuffer` is move-only mutable construction storage. It must be bound with
+`let` before appending, cannot be logged as if it were completed text, and
+`finish()` consumes it into an immutable owned `String`. `appendBytes` uses a
+checked half-open byte range and requires both offsets to be UTF-8 boundaries;
+`appendAscii` accepts only the ASCII range. The explicit import keeps this
+specialized construction API out of the language prelude.
+
 ## Files, processes, and program arguments
 
 System facilities are explicit standard-module imports. File operations and

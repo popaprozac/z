@@ -3997,14 +3997,134 @@ test("reads files, exposes program arguments, and runs child processes through s
   assert.equal(invalidUtf8.status, 0, invalidUtf8.stderr);
 });
 
-test("scans real Z source through checked UTF-8 String byte operations", () => {
+test("tokenizes real Z source with checked UTF-8 operations and TextBuffer", () => {
   const application = resolve(projectRoot, "examples/applications/source-inspector/main.z");
-  const scanner = resolve(projectRoot, "examples/applications/source-inspector/scanner.z");
-  const result = spawnSync(process.execPath, [cli, "run", application, "--", scanner], { encoding: "utf8" });
+  const lexer = resolve(projectRoot, "examples/applications/source-inspector/lexer.z");
+  const result = spawnSync(process.execPath, [cli, "run", application, "--", lexer], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
-  assert.match(result.stdout, /scanner\.z: \d+ lines, \d+ UTF-8 bytes/);
-  assert.match(result.stdout, /\d+ identifiers, \d+ numbers, \d+ comments/);
-  assert.match(result.stdout, /first identifier: export/);
+  assert.match(result.stdout, /lexer\.z: \d+ lines, \d+ UTF-8 bytes/);
+  assert.match(result.stdout, /\d+ tokens: \d+ identifiers, \d+ numbers/);
+  assert.match(result.stdout, /\d+ strings, \d+ comments/);
+  assert.match(result.stdout, /first identifier: import/);
+});
+
+test("builds owned UTF-8 String values through explicit std/text TextBuffer", () => {
+  const directory = mkdtempSync("/tmp/z-text-buffer-");
+  const fileName = resolve(directory, "main.z");
+  const source = `
+    import console from "std/console";
+    import { TextBuffer } from "std/text";
+
+    function main(): i32 {
+      let output = TextBuffer();
+      output.append("alpha");
+      output.appendAscii(10);
+      output.appendBytes("éZ", 0, 2);
+      output.append(\`=\${40 + 2}\`);
+      const text = output.finish();
+      console.log(text);
+      return 0;
+    }
+  `;
+  writeFileSync(fileName, source);
+  const result = spawnSync(process.execPath, [cli, "run", fileName], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, "alpha\né=42\n");
+
+  const generated = compileToC(source, fileName);
+  assert.match(generated, /Z_String output = z_string_new\(\);/);
+  assert.match(generated, /z_text_buffer_append\(&\(output\)/);
+  assert.match(generated, /z_text_buffer_append_ascii\(&\(output\), 10/);
+  assert.match(generated, /z_text_buffer_append_bytes\(&\(output\)/);
+  assert.match(generated, /Z_String text = \(_z_live_output_\d+ = false, output\);/);
+
+  const aliased = source
+    .replace("{ TextBuffer }", "{ TextBuffer as Buffer }")
+    .replace("TextBuffer()", "Buffer()");
+  assert.doesNotThrow(() => compileToC(aliased, "aliased-text-buffer.z"));
+
+  const missingImport = `function main(): i32 { let text = TextBuffer(); return 0; }`;
+  assert.match(diagnostics(missingImport, "missing-text-import.z")[0].message, /unknown function "TextBuffer"/);
+
+  const immutable = `
+    import { TextBuffer } from "std/text";
+    function main(): i32 { const text = TextBuffer(); text.append("no"); return 0; }
+  `;
+  const immutableDiagnostic = diagnostics(immutable, "immutable-text-buffer.z")[0];
+  assert.match(immutableDiagnostic.message, /requires addressable let storage/);
+  let immutableCompilerDiagnostic: unknown;
+  try {
+    compileToC(immutable, "immutable-text-buffer.z");
+  } catch (error) {
+    immutableCompilerDiagnostic = error;
+  }
+  assert.ok(immutableCompilerDiagnostic instanceof DiagnosticError);
+  assert.match(immutableCompilerDiagnostic.helps.join(" "), /bind the TextBuffer with `let`/);
+
+  const consumed = `
+    import { TextBuffer } from "std/text";
+    function main(): i32 {
+      let text = TextBuffer();
+      const finished = text.finish();
+      text.append("too late");
+      return finished.byteLength;
+    }
+  `;
+  assert.match(diagnostics(consumed, "consumed-text-buffer.z")[0].message, /moved value "text"/);
+
+  const printable = `
+    import console from "std/console";
+    import { TextBuffer } from "std/text";
+    function main(): i32 { let text = TextBuffer(); console.log(text); return 0; }
+  `;
+  const printableDiagnostic = diagnostics(printable, "printable-text-buffer.z")[0];
+  assert.match(printableDiagnostic.message, /mutable construction storage, not printable text/);
+  let printableCompilerDiagnostic: unknown;
+  try {
+    compileToC(printable, "printable-text-buffer.z");
+  } catch (error) {
+    printableCompilerDiagnostic = error;
+  }
+  assert.ok(printableCompilerDiagnostic instanceof DiagnosticError);
+  assert.match(printableCompilerDiagnostic.helps.join(" "), /finish\(\)/);
+
+  const invalidBoundaryFile = resolve(directory, "invalid-boundary.z");
+  writeFileSync(invalidBoundaryFile, `
+    import { TextBuffer } from "std/text";
+    function main(): i32 { let text = TextBuffer(); text.appendBytes("é", 1, 2); return 0; }
+  `);
+  const invalidBoundary = spawnSync(process.execPath, [cli, "run", invalidBoundaryFile], { encoding: "utf8" });
+  assert.notEqual(invalidBoundary.status, 0);
+
+  const invalidAsciiFile = resolve(directory, "invalid-ascii.z");
+  writeFileSync(invalidAsciiFile, `
+    import { TextBuffer } from "std/text";
+    function main(): i32 { let text = TextBuffer(); text.appendAscii(128); return 0; }
+  `);
+  const invalidAscii = spawnSync(process.execPath, [cli, "run", invalidAsciiFile], { encoding: "utf8" });
+  assert.notEqual(invalidAscii.status, 0);
+
+  const importSource = `import { TextB } from "std/text"; function main(): i32 { return 0; }`;
+  const importOffset = importSource.indexOf("TextB") + "TextB".length;
+  assert.equal(completions(importSource, fileName, importOffset).find((item) => item.label === "TextBuffer")?.kind, 22);
+  const symbolSource = source.replace("let output = TextBuffer();", "let output = TextB;");
+  const symbolOffset = symbolSource.indexOf("TextB;") + "TextB".length;
+  assert.equal(completions(symbolSource, fileName, symbolOffset).find((item) => item.label === "TextBuffer")?.kind, 22);
+  const memberSource = source.replace("output.append(\"alpha\")", "output.app");
+  const memberOffset = memberSource.indexOf("output.app") + "output.app".length;
+  const memberItems = completions(memberSource, fileName, memberOffset);
+  const appendCompletion = memberItems.find((item) => item.label === "append");
+  assert.ok(appendCompletion, JSON.stringify(memberItems));
+  assert.match(appendCompletion?.detail ?? "", /append\(in text: String\): void/);
+  const finishOffset = source.indexOf("finish") + 2;
+  assert.match(hover(source, fileName, finishOffset)?.contents.value ?? "", /consumes the TextBuffer/);
+  const tokens = decodeSemanticTokens(semanticTokens(source, fileName).data);
+  const importedType = positionForOffset(source, source.indexOf("TextBuffer"));
+  assert.ok(tokens.some((token) => (
+    token.line === importedType.line
+    && token.character === importedType.character
+    && token.type === semanticTokenTypes.indexOf("type")
+  )));
 });
 
 test("stores, returns, moves, and formats owned String values", () => {

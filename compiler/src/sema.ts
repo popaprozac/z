@@ -172,6 +172,7 @@ export type SemanticInfo = {
   readonly standardFunctionReferences: ReadonlyMap<number, StandardFunctionName>;
   readonly standardFunctionBindings: ReadonlyMap<string, StandardFunctionName>;
   readonly standardModuleBindings: ReadonlyMap<string, StandardModuleName>;
+  readonly standardTypeBindings: ReadonlyMap<string, "TextBuffer">;
   readonly typeDisplayNames: ReadonlyMap<string, string>;
   readonly objectiveC: boolean;
   readonly cPlusPlus: boolean;
@@ -226,6 +227,7 @@ type AnalysisState = {
   readonly standardFunctionReferences: Map<number, StandardFunctionName>;
   readonly standardFunctionBindings: Map<string, StandardFunctionName>;
   readonly standardModuleBindings: Map<string, StandardModuleName>;
+  readonly standardTypeBindings: Map<string, "TextBuffer">;
   readonly typeDisplayNames: ReadonlyMap<string, string>;
   readonly objectiveC: boolean;
   readonly cPlusPlus: boolean;
@@ -254,13 +256,14 @@ type SymbolValue =
   | { readonly kind: "console" }
   | { readonly kind: "standardModule"; readonly module: StandardModuleName }
   | { readonly kind: "standardFunction"; readonly name: StandardFunctionName; readonly declaration: FunctionDeclaration }
+  | { readonly kind: "standardType"; readonly type: "TextBuffer" }
   | { readonly kind: "struct"; readonly declaration: StructDeclaration }
   | { readonly kind: "trait"; readonly declaration: TraitDeclaration }
   | { readonly kind: "enum"; readonly declaration: EnumDeclaration };
 
 const integerTypes = new Set(["i8", "u8", "i16", "u16", "i32", "u32", "i64", "u64", "isize", "usize"]);
 const floatTypes = new Set(["f32", "f64"]);
-const primitiveTypes = new Set([...integerTypes, ...floatTypes, "void", "bool", "cstring", "String"]);
+const primitiveTypes = new Set([...integerTypes, ...floatTypes, "void", "bool", "cstring", "String", "TextBuffer"]);
 const movedPrefix = "__z_moved:";
 const maybeMovedPrefix = "__z_maybe_moved:";
 const uninitializedPrefix = "__z_uninitialized:";
@@ -375,6 +378,7 @@ export function analyze(
     standardFunctionReferences: new Map(),
     standardFunctionBindings: new Map(),
     standardModuleBindings: new Map(),
+    standardTypeBindings: new Map(),
     typeDisplayNames,
     objectiveC,
     cPlusPlus,
@@ -453,6 +457,26 @@ export function analyze(
         }
         continue;
       }
+      if (declaration.header === "std/text") {
+        if (!declaration.bindings) {
+          throw new DiagnosticError(fileName, declaration.location, "std/text requires a selective import", {
+            code: "Z0501",
+            helps: ["use `import { TextBuffer } from \"std/text\";`"],
+          });
+        }
+        for (const binding of declaration.bindings) {
+          if (binding.importedName !== "TextBuffer") {
+            throw new DiagnosticError(fileName, binding.location, `std/text has no export ${JSON.stringify(binding.importedName)}`, {
+              code: "Z0501",
+              helps: ["the bootstrap std/text module currently exports `TextBuffer`"],
+            });
+          }
+          validateUserName(binding.localName, binding.location, fileName);
+          declareGlobal(globals, binding.localName, { kind: "standardType", type: "TextBuffer" }, binding.location, fileName);
+          state.standardTypeBindings.set(binding.localName, "TextBuffer");
+        }
+        continue;
+      }
       if (declaration.header === "std/fs" || declaration.header === "std/process") {
         const module: StandardModuleName = declaration.header === "std/fs" ? "fs" : "process";
         if (declaration.bindings) {
@@ -468,7 +492,7 @@ export function analyze(
       }
       throw new DiagnosticError(fileName, declaration.location, `unknown standard module ${JSON.stringify(declaration.header)}`, {
         code: "Z0501",
-        helps: ["the bootstrap standard library currently provides `std`, `std/console`, `std/time`, `std/fs`, and `std/process`"],
+        helps: ["the bootstrap standard library currently provides `std`, `std/console`, `std/time`, `std/text`, `std/fs`, and `std/process`"],
       });
     }
     const module = foreignModules.get(declaration.moduleName);
@@ -2593,6 +2617,12 @@ function requireConsoleFormattable(
   visiting = new Set<string>(),
 ): void {
   const actual = String(underlyingType(type));
+  if (actual === "TextBuffer") {
+    throw new DiagnosticError(fileName, expression.location, "TextBuffer is mutable construction storage, not printable text", {
+      code: "Z0402",
+      helps: ["call finish() and log the resulting String"],
+    });
+  }
   if (hasOwnershipType(actual, structs, enums, state)
     && !isNamedStorageExpression(expression)
     && expression.kind !== "string") {
@@ -3255,6 +3285,14 @@ function inferExpressionInner(
         });
       }
       const receiverValueType = receiverView?.target ?? String(receiverType);
+      if (receiverValueType === "TextBuffer") {
+        if (!isNamedStorageExpression(expression.object)) {
+          throw new DiagnosticError(fileName, expression.object.location, "a TextBuffer temporary must be bound before reading one of its properties");
+        }
+        if (expression.property === "byteLength") return "usize";
+        if (expression.property === "isEmpty") return "bool";
+        throw new DiagnosticError(fileName, expression.location, `TextBuffer has no property ${JSON.stringify(expression.property)}`);
+      }
       if (receiverValueType === "String") {
         if (hasOwnershipType(receiverType, structs, enums, state) && !isNamedStorageExpression(expression.object)) {
           throw new DiagnosticError(fileName, expression.object.location, "a String temporary must be bound before reading one of its properties");
@@ -3329,6 +3367,14 @@ function inferExpressionInner(
     }
     case "call": {
       if (expression.callee.kind === "identifier") {
+        const standardType = globals.get(expression.callee.name);
+        if (standardType?.kind === "standardType" && standardType.type === "TextBuffer") {
+          rejectLabeledArguments(expression.argumentLabels, expression.location, fileName);
+          if (expression.arguments.length !== 0) {
+            throw new DiagnosticError(fileName, expression.location, `TextBuffer() expects no arguments, received ${expression.arguments.length}`);
+          }
+          return "TextBuffer";
+        }
         const aggregate = structs.get(expression.callee.name);
         if (aggregate) {
           rejectLabeledArguments(expression.argumentLabels, expression.location, fileName);
@@ -3656,6 +3702,58 @@ function inferExpressionInner(
         const receiverType = inferExpression(expression.callee.object, locals, globals, structs, enums, fileName, state);
         const receiverView = parseViewType(String(receiverType));
         const receiverValueType = receiverView?.target ?? String(receiverType);
+        if (receiverValueType === "TextBuffer") {
+          rejectLabeledArguments(expression.argumentLabels, expression.location, fileName);
+          const signatures: Readonly<Record<string, { readonly parameters: readonly string[]; readonly result: string }>> = {
+            append: { parameters: ["String"], result: "void" },
+            appendBytes: { parameters: ["String", "usize", "usize"], result: "void" },
+            appendAscii: { parameters: ["u8"], result: "void" },
+            finish: { parameters: [], result: "String" },
+          };
+          const signature = signatures[expression.callee.property];
+          if (!signature) {
+            throw new DiagnosticError(fileName, expression.callee.location, `TextBuffer has no method ${JSON.stringify(expression.callee.property)}`);
+          }
+          const root = storageRoot(expression.callee.object);
+          const stored = root ? locals.get(root.name) : null;
+          if (!root || !stored) {
+            throw new DiagnosticError(fileName, expression.callee.object.location, "TextBuffer methods require named storage");
+          }
+          const mutates = expression.callee.property !== "finish";
+          if (mutates && !isMutableBinding(stored)) {
+            throw new DiagnosticError(fileName, expression.callee.object.location, `TextBuffer.${expression.callee.property} requires addressable let storage`, {
+              helps: ["bind the TextBuffer with `let` before appending text"],
+            });
+          }
+          if (expression.arguments.length !== signature.parameters.length) {
+            throw new DiagnosticError(
+              fileName,
+              expression.location,
+              `${JSON.stringify(expression.callee.property)} expects ${signature.parameters.length} argument(s), received ${expression.arguments.length}`,
+            );
+          }
+          for (let index = 0; index < signature.parameters.length; index += 1) {
+            const argument = expression.arguments[index];
+            const actual = inferExpression(argument, locals, globals, structs, enums, fileName, state);
+            requireAssignable(
+              signature.parameters[index],
+              actual,
+              argument,
+              fileName,
+              state.foreignNamedTypes,
+              state.numericLiteralTypes,
+            );
+            if (signature.parameters[index] === "String") {
+              state.nativeArgumentAccesses.set(argument.location.offset, "in");
+            }
+          }
+          if (mutates) {
+            rejectOwnerMutationWhileViewed(root.name, expression.callee.object.location, fileName, state);
+          } else {
+            consumeOwnedValue(expression.callee.object, receiverType, locals, structs, enums, fileName, state);
+          }
+          return signature.result;
+        }
         if (receiverValueType === "String") {
           rejectLabeledArguments(expression.argumentLabels, expression.location, fileName);
           const signatures: Readonly<Record<string, { readonly parameters: readonly string[]; readonly result: string }>> = {
@@ -5020,7 +5118,7 @@ function hasCleanupType(
 ): boolean {
   const actual = underlyingType(type);
   if (actual === "unknown" || actual === "never" || visiting.has(actual)) return false;
-  if (actual === "String") return true;
+  if (actual === "String" || actual === "TextBuffer") return true;
   if (parseWeakType(actual)) return true;
   if (parseFunctionType(String(actual))) return true;
   if (foreignTypes.get(actual)?.ownership === "owned") return true;

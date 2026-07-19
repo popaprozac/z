@@ -5,9 +5,10 @@ import { scanSource } from "./scanner.z";
 
 function inspectFile(in path: String): i32 throws String {
   const source = try fs.readText(path);
-  const summary = scanSource(source);
+  const summary = try scanSource(source);
   console.log(`${path}: ${summary.lineCount} lines, ${summary.byteCount} UTF-8 bytes`);
-  console.log(`${summary.identifierCount} identifiers, ${summary.numberCount} numbers, ${summary.commentCount} comments`);
+  console.log(`${summary.tokenCount} tokens: ${summary.identifierCount} identifiers, ${summary.numberCount} numbers`);
+  console.log(`${summary.stringCount} strings, ${summary.commentCount} comments`);
   console.log(`first identifier: ${summary.firstIdentifier}`);
   return 0;
 }

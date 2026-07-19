@@ -91,6 +91,7 @@ const primitiveTypeNames: Record<string, string> = {
   bool: "bool",
   cstring: "const char *",
   String: "Z_String",
+  TextBuffer: "Z_String",
 };
 
 export function generateC(program: Program, sourceName: string, semanticInfo: SemanticInfo): string {
@@ -901,7 +902,7 @@ function generateOwnedEnvironmentCleanup(
   semanticInfo: SemanticInfo,
   counter: { value: number },
 ): string {
-  if (type === "String") return `if ((${value}).capacity > 0) free((void *)(${value}).data);`;
+  if (type === "String" || type === "TextBuffer") return `if ((${value}).capacity > 0) free((void *)(${value}).data);`;
   if (parseWeakType(type)) return `z_weak_release(${value});`;
   const functionType = parseFunctionType(type);
   if (functionType) return `${functionTypeReleaseName(functionType)}(${value});`;
@@ -985,6 +986,7 @@ function programUsesIndex(program: Program): boolean {
 }
 
 function programUsesString(program: Program, semanticInfo: SemanticInfo): boolean {
+  if (semanticInfo.standardTypeBindings.size > 0) return true;
   let found = false;
   const visit = (value: unknown, directConsoleTemplate = false): void => {
     if (found || !value || typeof value !== "object") return;
@@ -993,7 +995,7 @@ function programUsesString(program: Program, semanticInfo: SemanticInfo): boolea
       return;
     }
     const node = value as Partial<Expression> & { readonly name?: string };
-    if (node.kind === "string" || (node.kind === "template" && !directConsoleTemplate) || node.name === "String") {
+    if (node.kind === "string" || (node.kind === "template" && !directConsoleTemplate) || node.name === "String" || node.name === "TextBuffer") {
       found = true;
       return;
     }
@@ -1138,6 +1140,23 @@ static Z_UNUSED_FUNCTION inline Z_String z_string_copy_bytes(Z_String value, uin
   const char *bytes = value.data != NULL ? value.data + start : "";
   z_string_append_bytes(&result, bytes, end - start);
   return result;
+}
+
+static Z_UNUSED_FUNCTION inline void z_text_buffer_append(Z_String *self, Z_String value) {
+  z_string_append_bytes(self, value.data != NULL ? value.data : "", value.length);
+}
+
+static Z_UNUSED_FUNCTION inline void z_text_buffer_append_bytes(Z_String *self, Z_String value, uintptr_t start, uintptr_t end) {
+  if (start > end || end > value.length) abort();
+  if (!z_string_is_utf8_boundary(value, start) || !z_string_is_utf8_boundary(value, end)) abort();
+  const char *bytes = value.data != NULL ? value.data + start : "";
+  z_string_append_bytes(self, bytes, end - start);
+}
+
+static Z_UNUSED_FUNCTION inline void z_text_buffer_append_ascii(Z_String *self, uint8_t byte) {
+  if (byte > 0x7Fu) abort();
+  const char value = (char)byte;
+  z_string_append_bytes(self, &value, 1);
 }
 
 static Z_UNUSED_FUNCTION inline void z_string_append_signed(Z_String *self, long long value) {
@@ -2524,6 +2543,14 @@ function callArgumentNeedsLowering(expression: Expression, context: GenerationCo
   if (context.semanticInfo.foreignCallbackTargets.has(expression.location.offset)) return false;
   if (expression.kind === "closure") return true;
   if (requiresStatementValue(expression, context)) return true;
+  const access = context.semanticInfo.nativeArgumentAccesses.get(expression.location.offset);
+  const type = temporaryValueType(expression, context);
+  if (
+    access === "in"
+    && expression.kind !== "string"
+    && !isStableStorageExpression(expression)
+    && hasCleanupType(type, context.structs, context.enums, context.semanticInfo.foreignTypes)
+  ) return true;
   return context.semanticInfo.cstringConversions.has(expression.location.offset)
     && expression.kind !== "string"
     && !isStableStorageExpression(expression);
@@ -2974,7 +3001,7 @@ function generateValueCleanup(
     const release = `z_weak_release(${value});`;
     return liveFlag ? `if (${liveFlag}) ${release}` : release;
   }
-  if (type === "String") {
+  if (type === "String" || type === "TextBuffer") {
     const capacity = `(${value}).capacity > 0`;
     const condition = liveFlag ? `${liveFlag} && ${capacity}` : capacity;
     return `if (${condition}) free((void *)(${value}).data);`;
@@ -3804,6 +3831,11 @@ function generateExpressionInner(expression: Expression, context: GenerationCont
       const array = parseFixedArrayType(ownerValueType);
       const slice = parseSliceType(ownerValueType);
       const dynamic = parseDynamicArrayType(ownerValueType);
+      if (ownerValueType === "TextBuffer") {
+        const owner = generateExpression(expression.object, context);
+        if (expression.property === "byteLength") return `(${owner}).length`;
+        if (expression.property === "isEmpty") return `((${owner}).length == 0)`;
+      }
       if (ownerValueType === "String") {
         const owner = generateExpression(expression.object, context);
         if (expression.property === "byteLength") return `(${owner}).length`;
@@ -3865,6 +3897,7 @@ function generateExpressionInner(expression: Expression, context: GenerationCont
         return `${signature.cName}(${arguments_.join(", ")})`;
       }
       if (expression.callee.kind === "identifier") {
+        if (context.semanticInfo.standardTypeBindings.get(expression.callee.name) === "TextBuffer") return "z_string_new()";
         if (context.structs.get(expression.callee.name)?.kind === "struct") {
           return generateExpression(expression.arguments[0], context);
         }
@@ -3944,6 +3977,19 @@ function generateExpressionInner(expression: Expression, context: GenerationCont
         const receiverType = inferExpressionType(expression.callee.object, context);
         const receiverView = parseViewType(receiverType);
         const receiverValueType = receiverView?.target ?? receiverType;
+        if (receiverValueType === "TextBuffer") {
+          const receiver = generateExpression(expression.callee.object, context);
+          if (expression.callee.property === "append") {
+            return `z_text_buffer_append(&(${receiver}), ${generateExpression(expression.arguments[0], context)})`;
+          }
+          if (expression.callee.property === "appendBytes") {
+            return `z_text_buffer_append_bytes(&(${receiver}), ${generateExpression(expression.arguments[0], context)}, ${generateExpression(expression.arguments[1], context)}, ${generateExpression(expression.arguments[2], context)})`;
+          }
+          if (expression.callee.property === "appendAscii") {
+            return `z_text_buffer_append_ascii(&(${receiver}), ${generateExpression(expression.arguments[0], context)})`;
+          }
+          if (expression.callee.property === "finish") return receiver;
+        }
         if (receiverValueType === "String") {
           const receiver = generateExpression(expression.callee.object, context);
           if (expression.callee.property === "byteAt") {
@@ -4512,6 +4558,7 @@ function inferExpressionType(expression: Expression, context: GenerationContext)
   const analyzedType = context.semanticInfo.expressionTypes.get(expression.location.offset);
   if (analyzedType && (
     analyzedType === "String"
+    || analyzedType === "TextBuffer"
     || analyzedType === "bool"
     || analyzedType === "u8"
     || analyzedType === "usize"
@@ -4845,7 +4892,7 @@ function hasCleanupType(
   visiting = new Set<string>(),
 ): boolean {
   if (visiting.has(type)) return false;
-  if (type === "String") return true;
+  if (type === "String" || type === "TextBuffer") return true;
   if (parseWeakType(type)) return true;
   if (parseFunctionType(type)) return true;
   if (foreignTypes.get(type)?.ownership === "owned") return true;

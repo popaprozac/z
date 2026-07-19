@@ -58,7 +58,8 @@ support or producing language-server diagnostics from hypothetical imports.
   child-process execution. Its [`README.md`](applications/source-stager/README.md)
   explains the self-hosting boundary.
 - [`source-inspector`](applications/source-inspector): a multi-module source tool
-  that scans real Z code with checked UTF-8 byte offsets and owned token copies.
+  that tokenizes real Z code with checked UTF-8 byte offsets, owned token copies,
+  typed lexer errors, and `TextBuffer` escape decoding.
 
 ## Async
 

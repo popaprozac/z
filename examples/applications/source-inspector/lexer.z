@@ -1,0 +1,167 @@
+import { TextBuffer } from "std/text";
+
+export enum TokenKind {
+  identifier,
+  number,
+  string,
+  symbol,
+  comment,
+  end,
+}
+
+export struct Token {
+  kind: TokenKind;
+  text: String;
+  offset: usize;
+  line: usize;
+  column: usize;
+}
+
+export struct LexerError {
+  message: String;
+  offset: usize;
+  line: usize;
+  column: usize;
+}
+
+function isIdentifierStart(byte: u8): bool {
+  return (byte >= 65 && byte <= 90)
+    || (byte >= 97 && byte <= 122)
+    || byte == 95;
+}
+
+function isIdentifierContinue(byte: u8): bool {
+  return isIdentifierStart(byte) || (byte >= 48 && byte <= 57);
+}
+
+function isDigit(byte: u8): bool {
+  return byte >= 48 && byte <= 57;
+}
+
+function isWhitespace(byte: u8): bool {
+  return byte == 9 || byte == 10 || byte == 13 || byte == 32;
+}
+
+function pushToken(
+  inout tokens: Array<Token>,
+  kind: TokenKind,
+  text: String,
+  offset: usize,
+  line: usize,
+  column: usize
+): void {
+  tokens.push(Token({ kind, text, offset, line, column }));
+}
+
+export function tokenize(in source: String): Array<Token> throws LexerError {
+  let tokens = Array<Token>();
+  let offset: usize = 0;
+  let line: usize = 1;
+  let column: usize = 1;
+
+  while (offset < source.byteLength) {
+    const byte = source.byteAt(offset);
+
+    if (isWhitespace(byte)) {
+      if (byte == 10) {
+        line = line + 1;
+        column = 1;
+      } else {
+        column = column + 1;
+      }
+      offset = offset + 1;
+      continue;
+    }
+
+    const tokenOffset = offset;
+    const tokenLine = line;
+    const tokenColumn = column;
+
+    if (byte == 47 && offset + 1 < source.byteLength && source.byteAt(offset + 1) == 47) {
+      offset = offset + 2;
+      column = column + 2;
+      while (offset < source.byteLength && source.byteAt(offset) != 10) {
+        offset = offset + 1;
+        column = column + 1;
+      }
+      pushToken(inout tokens, TokenKind.comment, source.copyBytes(tokenOffset, offset), tokenOffset, tokenLine, tokenColumn);
+      continue;
+    }
+
+    if (isIdentifierStart(byte)) {
+      offset = offset + 1;
+      column = column + 1;
+      while (offset < source.byteLength && isIdentifierContinue(source.byteAt(offset))) {
+        offset = offset + 1;
+        column = column + 1;
+      }
+      pushToken(inout tokens, TokenKind.identifier, source.copyBytes(tokenOffset, offset), tokenOffset, tokenLine, tokenColumn);
+      continue;
+    }
+
+    if (isDigit(byte)) {
+      offset = offset + 1;
+      column = column + 1;
+      while (offset < source.byteLength && isDigit(source.byteAt(offset))) {
+        offset = offset + 1;
+        column = column + 1;
+      }
+      pushToken(inout tokens, TokenKind.number, source.copyBytes(tokenOffset, offset), tokenOffset, tokenLine, tokenColumn);
+      continue;
+    }
+
+    if (byte == 34 || byte == 39) {
+      const quote = byte;
+      let decoded = TextBuffer();
+      offset = offset + 1;
+      column = column + 1;
+      let chunkStart = offset;
+
+      while (offset < source.byteLength && source.byteAt(offset) != quote) {
+        const quotedByte = source.byteAt(offset);
+        if (quotedByte == 10) {
+          throw LexerError({ message: "unterminated string literal", offset: tokenOffset, line: tokenLine, column: tokenColumn });
+        }
+        if (quotedByte != 92) {
+          offset = offset + 1;
+          column = column + 1;
+          continue;
+        }
+
+        decoded.appendBytes(source, chunkStart, offset);
+        offset = offset + 1;
+        column = column + 1;
+        if (offset >= source.byteLength) {
+          throw LexerError({ message: "unterminated string escape", offset: tokenOffset, line: tokenLine, column: tokenColumn });
+        }
+        const escaped = source.byteAt(offset);
+        if (escaped == 110) decoded.appendAscii(10);
+        else if (escaped == 114) decoded.appendAscii(13);
+        else if (escaped == 116) decoded.appendAscii(9);
+        else if (escaped == 92 || escaped == 34 || escaped == 39) decoded.appendAscii(escaped);
+        else {
+          throw LexerError({ message: "unknown string escape", offset, line, column });
+        }
+        offset = offset + 1;
+        column = column + 1;
+        chunkStart = offset;
+      }
+
+      if (offset >= source.byteLength) {
+        throw LexerError({ message: "unterminated string literal", offset: tokenOffset, line: tokenLine, column: tokenColumn });
+      }
+      decoded.appendBytes(source, chunkStart, offset);
+      offset = offset + 1;
+      column = column + 1;
+      pushToken(inout tokens, TokenKind.string, decoded.finish(), tokenOffset, tokenLine, tokenColumn);
+      continue;
+    }
+
+    offset = offset + 1;
+    column = column + 1;
+    pushToken(inout tokens, TokenKind.symbol, source.copyBytes(tokenOffset, offset), tokenOffset, tokenLine, tokenColumn);
+  }
+
+  pushToken(inout tokens, TokenKind.end, "", offset, line, column);
+  return tokens;
+}

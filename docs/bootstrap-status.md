@@ -25,7 +25,7 @@ Status meanings:
 | Enums and `Option`/`Result` | Implemented | Payloads, nesting, exhaustive statement/expression matches |
 | Errors | Implemented | Typed `throws`, `throw`, `try`, and `attempt`, including synchronous cleanup-bearing error values |
 | Closures | Implemented | Borrowed and owned ARC environments; weak captures |
-| Strings and console | Implemented | Owned UTF-8 strings, templates, typed formatting, checked `byteAt`/`copyBytes`, `byteLength`, and `isEmpty`; grapheme-aware `length` remains planned |
+| Strings and console | Implemented | Owned UTF-8 strings, templates, typed formatting, checked `byteAt`/`copyBytes`, `byteLength`, `isEmpty`, and explicit move-only `std/text` `TextBuffer`; grapheme-aware `length` remains planned |
 | Integer safety | Implemented | Checked arithmetic plus explicit wrapping/saturating operations |
 | Generators | Planned | `yield` is reserved; no generator lowering |
 | `comptime` | Planned experiment | No compile-time execution model committed |
@@ -120,9 +120,9 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
 - [`examples/applications/source-stager`](../examples/applications/source-stager): reads a requested Z
   source file, writes a staged copy, observes native argv, and launches Clang
   directly through the first self-hosting standard APIs.
-- [`examples/applications/source-inspector`](../examples/applications/source-inspector): scans real Z
-  source through checked UTF-8 byte operations, source modules, file IO, loops,
-  and owned token-sized copies.
+- [`examples/applications/source-inspector`](../examples/applications/source-inspector): tokenizes real Z
+  source with owned tokens, checked UTF-8 byte operations, typed lexer errors,
+  and `std/text` `TextBuffer` escape decoding.
 - [`examples/interop/objc/nswindow.z`](../examples/interop/objc/nswindow.z): direct AppKit window.
 - [`examples/interop/objc/objc-nullability.z`](../examples/interop/objc/objc-nullability.z): explicit
   `T | null` AppKit guard narrowing alongside `Option.fromNullable` and
@@ -176,12 +176,13 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    and `Option<view T>`, then verifies zero live native resources. It exposed and
    closed module-linked enum classification, view-method dispatch, and
    statement-valued `throw` lowering gaps.
-4. **Self-hosting prerequisites — first substrate plus source-scanning slice implemented.**
+4. **Self-hosting prerequisites — first substrate plus source-tokenizing slice implemented.**
    Target-neutral `std/fs`, `std/process`, and owned program-argument APIs run on
    macOS and have Windows/POSIX native branches. Checked String byte operations
-   now support a multi-module Z source inspector with UTF-8 boundary-preserving
-   token copies. A production lexer port still needs a builder/escape-decoding
-   surface and compiler data structures.
+   and `std/text` `TextBuffer` now support a multi-module Z source inspector with
+   UTF-8 boundary-preserving token copies, escape decoding, source locations,
+   and typed lexer errors. A production lexer still needs complete token grammar,
+   Unicode identifiers, template interpolation, and compiler data structures.
 5. **Threaded concurrency evidence.** Probe sendability, cross-thread task
    frames, and atomic ARC before committing actors, channels, or a
    multithreaded executor as settled language design.

@@ -23,6 +23,7 @@ import type {
   ForeignNamedType,
 } from "./foreign.ts";
 import { lex } from "./lexer.ts";
+import { parse } from "./parser.ts";
 import { displayArrayType, parseDynamicArrayType, parseFixedArrayType, parseSliceType } from "./array-types.ts";
 import { parseGenericType } from "./generic-types.ts";
 import { pathToFileURL } from "node:url";
@@ -322,6 +323,10 @@ export function semanticTokens(source: string, fileName: string): { readonly dat
       classifications.set(token.location.offset, { type: semanticTokenTypes.indexOf("function"), modifiers: 4 });
       continue;
     }
+    if (context.semanticInfo.standardTypeBindings.has(token.text)) {
+      classifications.set(token.location.offset, { type: semanticTokenTypes.indexOf("type"), modifiers: 4 });
+      continue;
+    }
     if (localNamespaces.has(token.text)) {
       classifications.set(token.location.offset, { type: semanticTokenTypes.indexOf("namespace"), modifiers: 4 });
       continue;
@@ -551,6 +556,9 @@ export function hover(source: string, fileName: string, offset: number): Hover |
   if (standardFunction) {
     return markdownHover(standardFunctionDetail(word.text, standardFunction), source, word.start, word.end);
   }
+  if (context.semanticInfo.standardTypeBindings.get(word.text) === "TextBuffer") {
+    return markdownHover("standard value type TextBuffer  // move-only UTF-8 construction storage", source, word.start, word.end);
+  }
 
   const chainedSelector = objectiveCSelectorAt(context, word.start);
   if (chainedSelector) {
@@ -665,6 +673,22 @@ export function hover(source: string, fileName: string, offset: number): Hover |
       }
       if (word.text === "copyBytes") {
         return markdownHover("copyBytes(start: usize, end: usize): String  // checked owned copy", source, word.start, word.end);
+      }
+    }
+    if (resolved?.kind === "textBuffer") {
+      if (word.text === "byteLength") return markdownHover("byteLength: usize", source, word.start, word.end);
+      if (word.text === "isEmpty") return markdownHover("isEmpty: bool", source, word.start, word.end);
+      if (word.text === "append") {
+        return markdownHover("append(in text: String): void", source, word.start, word.end);
+      }
+      if (word.text === "appendBytes") {
+        return markdownHover("appendBytes(in text: String, start: usize, end: usize): void", source, word.start, word.end);
+      }
+      if (word.text === "appendAscii") {
+        return markdownHover("appendAscii(byte: u8): void", source, word.start, word.end);
+      }
+      if (word.text === "finish") {
+        return markdownHover("finish(): String  // consumes the TextBuffer", source, word.start, word.end);
       }
     }
   }
@@ -850,6 +874,13 @@ function selectiveImportCandidates(specifier: string, fileName: string): Complet
       kind: completionKinds.function,
       detail: standardFunctionDetail(name, name),
     }));
+  }
+  if (specifier === "std/text") {
+    return [{
+      label: "TextBuffer",
+      kind: completionKinds.struct,
+      detail: "move-only UTF-8 text construction buffer",
+    }];
   }
   if (specifier === "std/console") return [];
   const alias = "__z_completion_module";
@@ -1134,6 +1165,26 @@ function symbolCompletions(source: string, fileName: string, offset: number): Co
     kind: completionKinds.enum,
     detail: "compiler-provided enum Option<T>",
   }];
+  try {
+    const parsed = parse(lex(source, fileName), fileName);
+    for (const declaration of parsed.imports) {
+      if (declaration.header !== "std/text") continue;
+      for (const binding of declaration.bindings ?? []) {
+        if (binding.importedName !== "TextBuffer") continue;
+        builtIns.push({
+          label: binding.localName,
+          kind: completionKinds.struct,
+          detail: binding.localName === "TextBuffer"
+            ? "TextBuffer()  // move-only UTF-8 construction storage"
+            : `TextBuffer()  // imported as ${binding.localName}`,
+          sortText: `0-${binding.localName}`,
+        });
+      }
+    }
+  } catch {
+    // The semantic recovery paths below still provide language-token fallback
+    // while a surrounding declaration is syntactically incomplete.
+  }
   const tokenItems = languageTokenCompletions(fileName);
   const start = offset - prefix.length;
   const tailOffset = source[offset] === ";" ? offset + 1 : offset;
@@ -1238,6 +1289,14 @@ function symbolCompletions(source: string, fileName: string, offset: number): Co
       label: name,
       kind: completionKinds.function,
       detail: standardFunctionDetail(name, standardFunction),
+      sortText: `0-${name}`,
+    });
+  }
+  for (const [name, standardType] of context.semanticInfo.standardTypeBindings) {
+    items.push({
+      label: name,
+      kind: completionKinds.struct,
+      detail: `${standardType}()  // move-only UTF-8 construction storage`,
       sortText: `0-${name}`,
     });
   }
@@ -1911,6 +1970,7 @@ function memberCompletions(
   const tailOffset = completionTailOffset(source, offset);
   const sanitized = source.slice(0, dotOffset) + source.slice(tailOffset);
   const lengthSanitized = source.slice(0, dotOffset) + ".length" + source.slice(tailOffset);
+  const byteLengthSanitized = source.slice(0, dotOffset) + ".byteLength" + source.slice(tailOffset);
   const upgradeSanitized = source.slice(0, dotOffset) + ".upgrade()" + source.slice(tailOffset);
   const statementTailOffset = source[tailOffset] === ";" ? tailOffset + 1 : tailOffset;
   const statementStart = Math.max(
@@ -1932,11 +1992,14 @@ function memberCompletions(
   }
   const statementSanitized = source.slice(0, dotOffset) + ";" + source.slice(statementTailOffset);
   const lengthStatementSanitized = source.slice(0, dotOffset) + ".length;" + source.slice(statementTailOffset);
+  const byteLengthStatementSanitized = source.slice(0, dotOffset) + ".byteLength;" + source.slice(statementTailOffset);
   let context = safeAnalysis(sanitized, fileName)
     ?? safeAnalysis(statementSanitized, fileName)
     ?? safeAnalysis(lengthSanitized, fileName)
+    ?? safeAnalysis(byteLengthSanitized, fileName)
     ?? safeAnalysis(upgradeSanitized, fileName)
-    ?? safeAnalysis(lengthStatementSanitized, fileName);
+    ?? safeAnalysis(lengthStatementSanitized, fileName)
+    ?? safeAnalysis(byteLengthStatementSanitized, fileName);
   let resolvedOffset = receiverOffset;
   if (!context) {
     const probePrefix = `${source.slice(0, statementStart)}const completionProbe = `;
@@ -2008,6 +2071,21 @@ function memberCompletions(
         detail: "copyBytes(start: usize, end: usize): String  // checked owned copy",
         insertText: "copyBytes()",
       },
+    ], prefix, 1000);
+  }
+  if (resolved?.kind === "textBuffer") {
+    return filterCompletions([
+      { label: "byteLength", kind: completionKinds.property, detail: "usize" },
+      { label: "isEmpty", kind: completionKinds.property, detail: "bool" },
+      { label: "append", kind: completionKinds.method, detail: "append(in text: String): void", insertText: "append()" },
+      {
+        label: "appendBytes",
+        kind: completionKinds.method,
+        detail: "appendBytes(in text: String, start: usize, end: usize): void",
+        insertText: "appendBytes()",
+      },
+      { label: "appendAscii", kind: completionKinds.method, detail: "appendAscii(byte: u8): void", insertText: "appendAscii()" },
+      { label: "finish", kind: completionKinds.method, detail: "finish(): String  // consumes the TextBuffer", insertText: "finish()" },
     ], prefix, 1000);
   }
   if (resolved?.kind === "integer") {
@@ -2263,6 +2341,7 @@ type ResolvedReceiver =
   | { readonly kind: "integer"; readonly type: string }
   | { readonly kind: "array"; readonly type: string }
   | { readonly kind: "string" }
+  | { readonly kind: "textBuffer" }
   | { readonly kind: "weak"; readonly target: string };
 
 function resolveReceiver(context: AnalyzedSource, text: string, offset: number): ResolvedReceiver | null {
@@ -2280,6 +2359,7 @@ function resolveReceiver(context: AnalyzedSource, text: string, offset: number):
   if (!type) return null;
   const view = parseViewType(type);
   const receiverType = view?.target ?? type;
+  if (receiverType === "TextBuffer") return { kind: "textBuffer" };
   if (receiverType === "String") return { kind: "string" };
   if (parseFixedArrayType(receiverType) || parseSliceType(receiverType) || parseDynamicArrayType(receiverType)) return { kind: "array", type: receiverType };
   const weak = parseWeakType(receiverType);

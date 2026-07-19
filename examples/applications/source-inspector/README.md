@@ -1,24 +1,26 @@
 # Source inspector
 
 This application is a small, readable pressure test for the APIs a future
-self-hosted Z lexer will need. It reads an actual Z source file, walks its UTF-8
-storage with checked byte offsets, ignores quoted text and line comments, and
-reports simple lexical statistics.
+self-hosted Z frontend will need. It reads an actual Z source file and runs a
+real tokenizer over its UTF-8 storage, producing owned tokens with byte offsets,
+line and column locations, decoded string literals, and typed lexer errors.
 
-Run it against its own scanner:
+Run it against its own lexer:
 
 ```sh
 bun run z run examples/applications/source-inspector/main.z -- \
-  examples/applications/source-inspector/scanner.z
+  examples/applications/source-inspector/lexer.z
 ```
 
-The example deliberately uses `byteLength` and `byteAt` because compiler source
+The lexer deliberately uses `byteLength` and `byteAt` because compiler source
 locations are byte offsets. `copyBytes(start, end)` creates an owned token-sized
-`String` and checks that both ends fall on UTF-8 boundaries. The future
-`String.length` API is reserved for user-perceived Unicode characters rather
-than inheriting JavaScript's UTF-16 behavior.
+`String` and checks that both ends fall on UTF-8 boundaries. Escape decoding
+uses the move-only `TextBuffer` from `std/text`: unchanged source chunks append
+without allocating substrings, while `finish()` transfers the completed bytes
+into an owned `String` token.
 
-This is not yet the production Z lexer. In particular, it treats quoted regions
-as opaque instead of recursively scanning template interpolation. Its purpose is
-to exercise the ownership, file I/O, checked byte access, and source-module
-shapes that a direct lexer port will build on.
+This is not yet the production Z lexer. It intentionally recognizes only the
+subset needed to pressure-test identifiers, numbers, comments, quoted strings,
+escapes, symbols, locations, ownership, and error propagation. Template
+interpolation, complete numeric grammar, Unicode identifiers, and parser-facing
+token detail remain future frontend work.

@@ -1,99 +1,74 @@
+import {
+  TokenKind,
+  tokenize,
+} from "./lexer.z";
+
 export struct SourceSummary {
   byteCount: usize;
   lineCount: usize;
+  tokenCount: usize;
   identifierCount: usize;
   numberCount: usize;
+  stringCount: usize;
   commentCount: usize;
   firstIdentifier: String;
 }
 
-function isIdentifierStart(byte: u8): bool {
-  return (byte >= 65 && byte <= 90)
-    || (byte >= 97 && byte <= 122)
-    || byte == 95;
-}
+export function scanSource(in source: String): SourceSummary throws String {
+  const tokenResult = attempt tokenize(source);
+  const tokens = match (tokenResult) {
+    success(tokens) => tokens;
+    failure(error) => throw `lexer error at ${error.line}:${error.column}: ${error.message}`;
+  };
 
-function isIdentifierContinue(byte: u8): bool {
-  return isIdentifierStart(byte) || (byte >= 48 && byte <= 57);
-}
-
-function isDigit(byte: u8): bool {
-  return byte >= 48 && byte <= 57;
-}
-
-export function scanSource(in source: String): SourceSummary {
-  let offset: usize = 0;
   let lineCount: usize = 0;
   if (!source.isEmpty) lineCount = 1;
+  let byteOffset: usize = 0;
+  while (byteOffset < source.byteLength) {
+    if (source.byteAt(byteOffset) == 10) lineCount = lineCount + 1;
+    byteOffset = byteOffset + 1;
+  }
+
+  let tokenCount: usize = 0;
   let identifierCount: usize = 0;
   let numberCount: usize = 0;
+  let stringCount: usize = 0;
   let commentCount: usize = 0;
   let firstIdentifier = "";
 
-  while (offset < source.byteLength) {
-    const byte = source.byteAt(offset);
-
-    if (byte == 10) {
-      lineCount = lineCount + 1;
-      offset = offset + 1;
-      continue;
-    }
-
-    if (byte == 47 && offset + 1 < source.byteLength && source.byteAt(offset + 1) == 47) {
-      commentCount = commentCount + 1;
-      offset = offset + 2;
-      while (offset < source.byteLength && source.byteAt(offset) != 10) {
-        offset = offset + 1;
-      }
-      continue;
-    }
-
-    if (byte == 34 || byte == 39 || byte == 96) {
-      const quote = byte;
-      offset = offset + 1;
-      while (offset < source.byteLength && source.byteAt(offset) != quote) {
-        const quotedByte = source.byteAt(offset);
-        if (quotedByte == 10) lineCount = lineCount + 1;
-        if (quotedByte == 92 && offset + 1 < source.byteLength) {
-          offset = offset + 2;
-        } else {
-          offset = offset + 1;
+  for (const token of tokens) {
+    match (token.kind) {
+      identifier => {
+        identifierCount = identifierCount + 1;
+        tokenCount = tokenCount + 1;
+        if (firstIdentifier.isEmpty) {
+          firstIdentifier = token.text.copyBytes(0, token.text.byteLength);
         }
       }
-      if (offset < source.byteLength) offset = offset + 1;
-      continue;
-    }
-
-    if (isIdentifierStart(byte)) {
-      const start = offset;
-      offset = offset + 1;
-      while (offset < source.byteLength && isIdentifierContinue(source.byteAt(offset))) {
-        offset = offset + 1;
+      number => {
+        numberCount = numberCount + 1;
+        tokenCount = tokenCount + 1;
       }
-      identifierCount = identifierCount + 1;
-      if (firstIdentifier.isEmpty) {
-        firstIdentifier = source.copyBytes(start, offset);
+      string => {
+        stringCount = stringCount + 1;
+        tokenCount = tokenCount + 1;
       }
-      continue;
-    }
-
-    if (isDigit(byte)) {
-      numberCount = numberCount + 1;
-      offset = offset + 1;
-      while (offset < source.byteLength && isDigit(source.byteAt(offset))) {
-        offset = offset + 1;
+      comment => {
+        commentCount = commentCount + 1;
+        tokenCount = tokenCount + 1;
       }
-      continue;
+      symbol => tokenCount = tokenCount + 1;
+      end => continue;
     }
-
-    offset = offset + 1;
   }
 
   return SourceSummary({
     byteCount: source.byteLength,
     lineCount,
+    tokenCount,
     identifierCount,
     numberCount,
+    stringCount,
     commentCount,
     firstIdentifier,
   });

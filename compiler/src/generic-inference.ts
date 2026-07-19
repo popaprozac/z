@@ -50,6 +50,13 @@ export function inferGenericCalls(
   const objectFieldTypes = new Map<number, ReadonlyMap<string, string | null>>();
   const selectiveFunctions = new Map<string, string>();
   const selectiveValues = new Map<string, string>();
+  const standardTypeConstructors = new Map(
+    program.imports
+      .filter((declaration) => declaration.header === "std/text" && declaration.bindings)
+      .flatMap((declaration) => declaration.bindings!
+        .filter((binding) => binding.importedName === "TextBuffer")
+        .map((binding) => [binding.localName, "TextBuffer"] as const)),
+  );
   const selectiveNamespaces = new Map<string, { readonly module: ForeignModule; readonly namespacePath: readonly string[] }>();
   const foreignInterfaces = new Map<string, ForeignObjCInterface>();
   const resolveForeignFunction = (module: ForeignModule, path: readonly string[]): ForeignFunction | null => {
@@ -341,7 +348,13 @@ export function inferGenericCalls(
       case "null":
         return { expression, type: "null" };
       case "identifier":
-        return { expression, type: environment.get(expression.name) ?? selectiveValues.get(expression.name) ?? null };
+        return {
+          expression,
+          type: environment.get(expression.name)
+            ?? selectiveValues.get(expression.name)
+            ?? standardTypeConstructors.get(expression.name)
+            ?? null,
+        };
       case "argumentReference":
         return { expression, type: environment.get(expression.name) ?? null };
       case "unary": {
@@ -478,6 +491,14 @@ export function inferGenericCalls(
         }
         if (dynamicArray && expression.property === "push") {
           return { expression: { ...expression, object: object.expression }, type: "void" };
+        }
+        if (object.type === "TextBuffer") {
+          const type = expression.property === "byteLength" ? "usize"
+            : expression.property === "isEmpty" ? "bool"
+            : expression.property === "finish" ? "String"
+            : ["append", "appendBytes", "appendAscii"].includes(expression.property) ? "void"
+            : null;
+          return { expression: { ...expression, object: object.expression }, type };
         }
         if (expression.object.kind === "identifier") {
           const module = foreignModules.get(expression.object.name);
@@ -696,6 +717,13 @@ export function inferGenericCalls(
           returnType = imported ? foreignCallReturnType(imported, args) : returnType;
         }
         if (rewrittenCallee.kind === "identifier") {
+          const standardType = standardTypeConstructors.get(rewrittenCallee.name);
+          if (standardType === "TextBuffer") {
+            return {
+              expression: { ...expression, callee: rewrittenCallee, arguments: args.map((item) => item.expression) },
+              type: "TextBuffer",
+            };
+          }
           const aggregateConstructor = aggregate(rewrittenCallee.name);
           if (aggregateConstructor) {
             const explicitAggregate = parseGenericType(rewrittenCallee.name);

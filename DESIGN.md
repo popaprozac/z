@@ -703,6 +703,20 @@ inheriting JavaScript's UTF-16 code-unit behavior. It may be linear-time. Stage
 0 validates native C-string copies and text files before they enter owned Z
 `String` storage; a future `Bytes`, `OsString`, and path layer will represent
 data that is not necessarily UTF-8.
+
+Incremental UTF-8 construction is provided by the explicitly imported
+`TextBuffer` value type from `std/text`. The name is deliberately
+domain-specific: Z does not establish a pervasive Java-style `Builder`
+convention, and the type is mutable value storage rather than a heap class
+created with `new`. `append(String)` borrows complete text,
+`appendBytes(String, start, end)` borrows a checked UTF-8-boundary range without
+allocating a substring, and `appendAscii(u8)` admits only ASCII. `finish()`
+consumes the buffer into its owned immutable `String`, so no final byte copy is
+required. Chained mutation and Unicode-scalar append remain deferred until Z
+has the corresponding mutable-view and character-model designs. Stage 0 lowers
+this type intrinsically; the portable implementation should eventually move
+into Z's standard library over a thin allocation substrate.
+
 Formatting traits, format specifiers, release-build debug behavior, and
 structured logging remain later design work.
 
