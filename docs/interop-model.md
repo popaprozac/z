@@ -128,6 +128,12 @@ parameter order, and parameter names must match Clang's raw interface, and
 ABI types and callback lifetime/context relationships remain later
 declaration-file slices.
 
+The language server reads the same header while editing a `.zd` file. It can
+complete native function and parameter names, filter `deinit` candidates by the
+returned native type, and show the Clang-resolved signature behind each `_` on
+hover. These are authored contracts with native context rather than a second,
+manually synchronized copy of the header surface.
+
 Imported nullable references use the same one-pointer representation as their
 native ABI. A Z null check is an ordinary pointer comparison and narrows the
 reference statically; the first reference specialization uses `T | null` in

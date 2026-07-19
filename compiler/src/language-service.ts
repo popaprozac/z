@@ -30,7 +30,10 @@ import { displayFunctionType, functionTypeName, parseFunctionType } from "./func
 import { displayTaskType, parseTaskType } from "./async-types.ts";
 import { parseWeakType } from "./weak-types.ts";
 import { parseViewType } from "./view-types.ts";
-import { parseForeignDeclarationContracts } from "./foreign-declarations.ts";
+import {
+  parseForeignDeclarationContracts,
+  type ForeignDeclarationContracts,
+} from "./foreign-declarations.ts";
 
 export type Position = { readonly line: number; readonly character: number };
 export type Range = { readonly start: Position; readonly end: Position };
@@ -145,6 +148,7 @@ export function diagnostics(source: string, fileName: string): ServiceDiagnostic
 }
 
 export function completions(source: string, fileName: string, offset: number): CompletionItem[] {
+  if (fileName.endsWith(".zd")) return foreignDeclarationCompletions(source, fileName, offset);
   const before = source.slice(0, offset);
   const member = before.match(/([A-Za-z_][A-Za-z0-9_]*(?:<[^<>]+>)?(?:\.[A-Za-z_][A-Za-z0-9_]*)*)\.([A-Za-z_][A-Za-z0-9_]*)?$/);
   if (member) return memberCompletions(source, fileName, offset, member[1], member[2] ?? "");
@@ -416,6 +420,7 @@ export function semanticTokens(source: string, fileName: string): { readonly dat
 }
 
 export function hover(source: string, fileName: string, offset: number): Hover | null {
+  if (fileName.endsWith(".zd")) return foreignDeclarationHover(source, fileName, offset);
   const word = wordAt(source, offset);
   if (!word) return null;
   const context = safeAnalysis(source, fileName);
@@ -875,6 +880,140 @@ function languageTokenCompletions(fileName: string): CompletionItem[] {
     );
   }
   return items;
+}
+
+function foreignDeclarationCompletions(source: string, fileName: string, offset: number): CompletionItem[] {
+  const before = source.slice(0, offset);
+  const prefix = before.match(/([A-Za-z_][A-Za-z0-9_]*)$/)?.[1] ?? "";
+  if (!prefix) return [];
+  const module = foreignDeclarationNativeModule(source, fileName);
+  const contextual: CompletionItem[] = [];
+
+  const functionPrefix = /\bexport\s+function\s+([A-Za-z_][A-Za-z0-9_.]*)?$/.exec(before)?.[1];
+  if (module && functionPrefix !== undefined) {
+    const declared = new Set([...source.matchAll(/\bexport\s+function\s+([A-Za-z_][A-Za-z0-9_.]*)\s*\(/g)].map((match) => match[1]));
+    for (const [name, declaration] of module.functions) {
+      if (declared.has(name) || !name.toLowerCase().startsWith(functionPrefix.toLowerCase())) continue;
+      contextual.push({
+        label: name,
+        kind: completionKinds.function,
+        detail: foreignFunctionDetail(declaration),
+        sortText: `0-${name}`,
+      });
+    }
+  }
+
+  const deinitPrefix = /\bdeinit\s+([A-Za-z_][A-Za-z0-9_.]*)?$/.exec(before)?.[1];
+  if (module && deinitPrefix !== undefined) {
+    const ownerName = [...before.matchAll(/\bexport\s+function\s+([A-Za-z_][A-Za-z0-9_.]*)\s*\(/g)].at(-1)?.[1];
+    const owner = ownerName ? module.functions.get(ownerName) : null;
+    const returnTypes = new Set(owner?.overloads.map((overload) => foreignTypeName(overload.returnType).replace(/ \| null$/, "")) ?? []);
+    const candidates = [...module.functions].filter(([, declaration]) => declaration.overloads.some((overload) => (
+      overload.parameters.length === 1
+      && (returnTypes.size === 0 || returnTypes.has(foreignTypeName(overload.parameters[0].type).replace(/ \| null$/, "")))
+    )));
+    for (const [name, declaration] of candidates) {
+      if (!name.toLowerCase().startsWith(deinitPrefix.toLowerCase())) continue;
+      contextual.push({
+        label: name,
+        kind: completionKinds.function,
+        detail: `${foreignFunctionDetail(declaration)}\ncleanup candidate for ${ownerName ?? "foreign result"}`,
+        sortText: `0-${name}`,
+      });
+    }
+  }
+
+  const parameterContext = /\bexport\s+function\s+([A-Za-z_][A-Za-z0-9_.]*)\s*\(([^)]*)$/.exec(before);
+  if (module && parameterContext) {
+    const declaration = module.functions.get(parameterContext[1]);
+    const parameterIndex = topLevelCommaCount(parameterContext[2]);
+    const names = new Map<string, string>();
+    for (const overload of declaration?.overloads ?? []) {
+      const parameter = overload.parameters[parameterIndex];
+      if (parameter?.name) names.set(parameter.name, foreignTypeName(parameter.type));
+    }
+    for (const [name, type] of names) {
+      contextual.push({
+        label: name,
+        kind: completionKinds.variable,
+        detail: `native parameter ${name}: ${type}`,
+        insertText: `${name}: _`,
+        sortText: `1-${name}`,
+      });
+    }
+  }
+
+  const contextualLabels = new Set(contextual.map((item) => item.label));
+  const tokens = languageTokenCompletions(fileName).filter((item) => !contextualLabels.has(item.label));
+  return filterCompletions(uniqueCompletions([...contextual, ...tokens]), prefix, 500);
+}
+
+function foreignDeclarationNativeModule(source: string, fileName: string): ForeignModule | null {
+  const moduleSpecifier = /\bdeclare\s+module\s+(?:"((?:\\.|[^"])*)"|'((?:\\.|[^'])*)')/.exec(source)?.slice(1).find(Boolean);
+  if (!moduleSpecifier) return null;
+  const suffix = `${moduleSpecifier}.zd`;
+  const importer = fileName.endsWith(suffix)
+    ? `${fileName.slice(0, -suffix.length)}__zd_editor.z`
+    : resolve(dirname(fileName), "__zd_editor.z");
+  try {
+    const context = analyzeSource(
+      `import declarationNative from ${JSON.stringify(moduleSpecifier)}; function main(): i32 { return 0; }`,
+      importer,
+      { requireMain: false },
+    );
+    return context.foreignModules.get("declarationNative") ?? null;
+  } catch {
+    return null;
+  }
+}
+
+function foreignDeclarationHover(source: string, fileName: string, offset: number): Hover | null {
+  const word = wordAt(source, offset);
+  if (!word) return null;
+  let contracts: ForeignDeclarationContracts;
+  try {
+    contracts = parseForeignDeclarationContracts(source, fileName);
+  } catch {
+    return null;
+  }
+  const module = foreignDeclarationNativeModule(source, fileName);
+  if (!module) return null;
+
+  for (const contract of contracts.functions) {
+    const declaration = module.functions.get(contract.name);
+    if (containsDeclarationName(contract.nameLocation.offset, contract.name, word.start) && declaration) {
+      return markdownHover(foreignFunctionDetail(declaration), source, word.start, word.end);
+    }
+    const parameterIndex = contract.parameters.findIndex((parameter) => parameter.location.offset === word.start);
+    if (parameterIndex >= 0) {
+      const parameter = contract.parameters[parameterIndex];
+      const types = new Set(declaration?.overloads.map((overload) => overload.parameters[parameterIndex]).filter(Boolean).map((native) => foreignTypeName(native.type)) ?? []);
+      const capability = parameter.mode === "value" ? "" : `${parameter.mode} `;
+      return markdownHover(`${capability}${parameter.name}: ${[...types].join(" | ") || "_"}  // inferred from native parameter`, source, word.start, word.end);
+    }
+    const parameterTypeIndex = contract.parameters.findIndex((parameter) => parameter.typeLocation.offset === word.start);
+    if (parameterTypeIndex >= 0) {
+      const types = new Set(declaration?.overloads.map((overload) => overload.parameters[parameterTypeIndex]).filter(Boolean).map((native) => foreignTypeName(native.type)) ?? []);
+      return markdownHover(`_: ${[...types].join(" | ") || "unknown"}  // inferred native parameter type`, source, word.start, word.end);
+    }
+    if (contract.returnLocation.offset === word.start) {
+      const types = new Set(declaration?.overloads.map((overload) => foreignTypeName(overload.returnType)) ?? []);
+      const lifecycle = contract.release ? `; deinit ${contract.release}` : "";
+      return markdownHover(`_: ${[...types].join(" | ") || "unknown"}${lifecycle}  // inferred native return type`, source, word.start, word.end);
+    }
+    if (contract.release && contract.releaseLocation
+      && containsDeclarationName(contract.releaseLocation.offset, contract.release, word.start)) {
+      const release = module.functions.get(contract.release);
+      if (release) {
+        return markdownHover(`${foreignFunctionDetail(release)}\n// deinitializer for ${contract.name} result`, source, word.start, word.end);
+      }
+    }
+  }
+  return null;
+}
+
+function containsDeclarationName(start: number, name: string, offset: number): boolean {
+  return offset >= start && offset < start + name.length;
 }
 
 function standardFunctionDetail(localName: string, name: "sleep" | "delay"): string {

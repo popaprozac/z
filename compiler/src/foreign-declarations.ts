@@ -4,19 +4,23 @@ import type { ApiNotes, PointerNote } from "./foreign-api-notes.ts";
 import type { ForeignFunctionDeclaration } from "./foreign-ir.ts";
 import { lex, type Token } from "./lexer.ts";
 
-type ContractParameter = {
+export type ContractParameter = {
   readonly name: string;
   readonly mode: "value" | "in" | "inout" | "out" | "move";
   readonly nullable: boolean;
   readonly location: SourceLocation;
+  readonly typeLocation: SourceLocation;
 };
 
-type ForeignFunctionContract = {
+export type ForeignFunctionContract = {
   readonly name: string;
   readonly parameters: readonly ContractParameter[];
   readonly returnNullable: boolean;
   readonly release: string | null;
   readonly location: SourceLocation;
+  readonly nameLocation: SourceLocation;
+  readonly returnLocation: SourceLocation;
+  readonly releaseLocation: SourceLocation | null;
 };
 
 export type ForeignDeclarationContracts = {
@@ -46,29 +50,30 @@ export function parseForeignDeclarationContracts(source: string, fileName: strin
     if (token.kind !== "identifier") fail(token, `expected ${description} in Z declaration file, found ${JSON.stringify(token.text)}`);
     return take();
   };
-  const parseQualifiedName = (): string => {
-    let name = expectIdentifier("a native declaration name").text;
+  const parseQualifiedName = (): { readonly name: string; readonly location: SourceLocation } => {
+    const first = expectIdentifier("a native declaration name");
+    let name = first.text;
     while (at(".")) {
       take();
       name += `.${expectIdentifier("a native declaration name after `.`").text}`;
     }
-    return name;
+    return { name, location: first.location };
   };
-  const parseInferredType = (): boolean => {
+  const parseInferredType = (): { readonly nullable: boolean; readonly location: SourceLocation } => {
     const placeholder = expectIdentifier("`_` as the header-derived type");
     if (placeholder.text !== "_") fail(placeholder, "the first Z declaration slice requires `_` for a header-derived type");
-    if (!at("|")) return false;
+    if (!at("|")) return { nullable: false, location: placeholder.location };
     take();
     expectText("null");
-    return true;
+    return { nullable: true, location: placeholder.location };
   };
   const parseParameter = (): ContractParameter => {
     let mode: ContractParameter["mode"] = "value";
     if (["in", "inout", "out", "move"].includes(peek().text)) mode = take().text as ContractParameter["mode"];
     const name = expectIdentifier("a native parameter name");
     expectText(":");
-    const nullable = parseInferredType();
-    return { name: name.text, mode, nullable, location: name.location };
+    const type = parseInferredType();
+    return { name: name.text, mode, nullable: type.nullable, location: name.location, typeLocation: type.location };
   };
 
   expectText("declare");
@@ -82,7 +87,8 @@ export function parseForeignDeclarationContracts(source: string, fileName: strin
   while (!at("}")) {
     expectText("export");
     const start = expectText("function");
-    const name = parseQualifiedName();
+    const parsedName = parseQualifiedName();
+    const name = parsedName.name;
     if (names.has(name)) fail(start, `duplicate declaration contract for foreign function ${JSON.stringify(name)}`);
     names.add(name);
     expectText("(");
@@ -96,8 +102,10 @@ export function parseForeignDeclarationContracts(source: string, fileName: strin
     }
     expectText(")");
     expectText(":");
-    const returnNullable = parseInferredType();
+    const returnType = parseInferredType();
+    const returnNullable = returnType.nullable;
     let release: string | null = null;
+    let releaseLocation: SourceLocation | null = null;
     if (at("{")) {
       take();
       while (!at("}")) {
@@ -107,14 +115,25 @@ export function parseForeignDeclarationContracts(source: string, fileName: strin
         }
         if (release) fail(contract, `foreign function ${JSON.stringify(name)} cannot declare more than one deinit contract`);
         take();
-        release = parseQualifiedName();
+        const parsedRelease = parseQualifiedName();
+        release = parsedRelease.name;
+        releaseLocation = parsedRelease.location;
         expectText(";");
       }
       expectText("}");
     } else {
       expectText(";");
     }
-    functions.push({ name, parameters, returnNullable, release, location: start.location });
+    functions.push({
+      name,
+      parameters,
+      returnNullable,
+      release,
+      location: start.location,
+      nameLocation: parsedName.location,
+      returnLocation: returnType.location,
+      releaseLocation,
+    });
   }
   expectText("}");
   if (peek().kind !== "eof") fail(peek(), `expected the end of the declaration file, found ${JSON.stringify(peek().text)}`);

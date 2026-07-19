@@ -638,6 +638,36 @@ test("discovers owned-handle contracts from adjacent Z declaration files", () =>
   assert.equal(declarationCheck.status, 0, declarationCheck.stderr);
   assert.match(declarationCheck.stdout, /foreign-handles\.h\.zd: ok/);
 
+  const declarationSource = readFileSync(declarationFile, "utf8");
+  const functionOffset = declarationSource.indexOf("z_test_open") + 2;
+  assert.match(hover(declarationSource, declarationFile, functionOffset)?.contents.value ?? "", /z_test_open\(\): ZTestHandle \* \| null/);
+  const returnTypeOffset = declarationSource.indexOf("_ | null");
+  assert.match(hover(declarationSource, declarationFile, returnTypeOffset)?.contents.value ?? "", /_: ZTestHandle \* \| null; deinit z_test_close/);
+  const closeOffset = declarationSource.indexOf("z_test_close", declarationSource.indexOf("deinit")) + 2;
+  assert.match(hover(declarationSource, declarationFile, closeOffset)?.contents.value ?? "", /deinitializer for z_test_open result/);
+  const handleParameterOffset = declarationSource.indexOf("handle: _") + 2;
+  assert.match(hover(declarationSource, declarationFile, handleParameterOffset)?.contents.value ?? "", /move handle: ZTestHandle \*/);
+  const handleTypeOffset = declarationSource.indexOf("handle: _") + "handle: ".length;
+  assert.match(hover(declarationSource, declarationFile, handleTypeOffset)?.contents.value ?? "", /_: ZTestHandle \*/);
+
+  const functionCompletionSource = declarationSource.replace("z_test_open", "z_test_op");
+  const functionCompletionOffset = functionCompletionSource.indexOf("z_test_op") + "z_test_op".length;
+  assert.equal(
+    completions(functionCompletionSource, declarationFile, functionCompletionOffset).find((item) => item.label === "z_test_open")?.kind,
+    3,
+  );
+  const parameterCompletionSource = declarationSource.replace("z_test_use(in handle: _)", "z_test_use(in han)");
+  const parameterCompletionOffset = parameterCompletionSource.indexOf("han)") + 3;
+  const parameterCompletion = completions(parameterCompletionSource, declarationFile, parameterCompletionOffset)
+    .find((item) => item.label === "handle");
+  assert.equal(parameterCompletion?.insertText, "handle: _");
+  const deinitCompletionSource = declarationSource.replace("deinit z_test_close", "deinit z_test_cl");
+  const deinitCompletionOffset = deinitCompletionSource.indexOf("z_test_cl") + "z_test_cl".length;
+  assert.equal(
+    completions(deinitCompletionSource, declarationFile, deinitCompletionOffset).find((item) => item.label === "z_test_close")?.kind,
+    3,
+  );
+
   const example = resolve(projectRoot, "examples/declared-handle.z");
   const exampleSource = readFileSync(example, "utf8");
   const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
