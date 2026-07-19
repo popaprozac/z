@@ -1004,9 +1004,14 @@ storage, and calls lower directly to generated C++ members. This validates a
 thin native-value ownership and behavior path without a handwritten shim or a
 home-grown Swift ABI. The current Swift toolchain deletes C++ move assignment
 for these wrappers, so FIIR records `copy + deinit` and Z does not describe this
-as Swift move support. Swift property sugar, `swift::String`, generics,
-noncopyable values, protocols, errors, async, and package import remain open
-vertical slices.
+as Swift move support. A `swift::String` return may initialize an explicitly
+typed Z `String`; lowering converts through Swift's generated C++ overlay and
+makes an exact owned UTF-8 copy. The explicit destination makes the copy cost
+visible and the length-aware conversion preserves embedded NUL bytes. Swift
+`String` parameters remain unsupported because the current generated overlay's
+C++ input constructor uses a null-terminated path; Z will not silently truncate
+an owned string. Swift property sugar, generics, noncopyable values, protocols,
+errors, async, and package import remain open vertical slices.
 
 Clang supplies ABI identity and signatures but cannot generally say whether a C
 pointer is nullable, borrowed, transferred, retained, or consumed. Z therefore

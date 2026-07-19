@@ -73,8 +73,8 @@ an inferred receiver-tied view.
 | Objective-C | Partial | ARC classes/fields, methods, properties/global object constants, labels, nullability, niche-backed `Option.fromNullable`, owned `String`/`NSString` copies, escaping blocks and persistent observer tokens |
 | C++ | Partial | Hierarchical/selectively aliased namespaces, typed overloads, records, and `.zd`-contracted copyable or move-only RAII values; named `const T&`/`T&`/move-only `T&&` parameters and `const &`/`&`/move-only `&&` methods map to `in`/`inout`/owned capabilities and direct native lowering; reference returns, copyable rvalue references, capability-changing argument/receiver overload sets, richer storage, and templates remain |
 | Swift via Objective-C | Implemented slice | Generated compatibility header, classes/properties/methods, automatic local dylib build/link |
-| Swift value via C++ | Implemented probe | Native static construction, const/mutable instance methods, struct return/copy/aggregate storage/round-trip/destruction without handwritten shim |
-| Broader Swift surface | Planned vertical slices | Property sugar, `swift::String`, generics, noncopyable values, protocols, errors, async, packages |
+| Swift value via C++ | Implemented probe | Native static construction, const/mutable instance methods, struct return/copy/aggregate storage/round-trip/destruction, and exact owned `String` returns without handwritten shim |
+| Broader Swift surface | Planned vertical slices | Length-aware `String` inputs, property sugar, generics, noncopyable values, protocols, errors, async, packages |
 
 Current interop gaps that block a richer desktop application include
 broader Objective-C block shapes, target/action adapters, protocol conformance,
@@ -88,8 +88,11 @@ The Swift owned-value probe is intentionally honest about the toolchain: current
 generated wrappers copy and deterministically destroy Swift values, but delete
 C++ move assignment. Z therefore treats this as copyable foreign RAII, not as
 native Swift move support. Generated static and instance scalar methods are now
-called directly; this does not yet imply Swift property, string, generic,
-protocol, error, async, or package support.
+called directly; this does not yet imply Swift property, string-input, generic,
+protocol, error, async, or package support. `swift::String` returns have one
+explicit conversion: an annotated Z `String` destination receives a fresh owned
+UTF-8 copy, including embedded NUL bytes. Swift `String` inputs remain rejected
+until the boundary is length-aware in both directions.
 
 ## Async and concurrency
 

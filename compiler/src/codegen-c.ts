@@ -131,6 +131,10 @@ export function generateC(program: Program, sourceName: string, semanticInfo: Se
     lines.push("#include <utility>");
     includedHeaders.add("utility");
   }
+  if (semanticInfo.swiftStringsToZ.size > 0) {
+    lines.push("#include <string>");
+    includedHeaders.add("string");
+  }
   if (usesTiming) {
     lines.push(
       "#if defined(_WIN32)",
@@ -175,6 +179,7 @@ export function generateC(program: Program, sourceName: string, semanticInfo: Se
   lines.push("");
 
   if (usesString) lines.push(generateStringRuntime(), "");
+  if (semanticInfo.swiftStringsToZ.size > 0) lines.push(generateSwiftStringRuntime(), "");
   if (semanticInfo.objcStringsToNative.size > 0 || semanticInfo.objcStringsToZ.size > 0) {
     lines.push(generateObjCStringRuntime(), "");
   }
@@ -1029,6 +1034,15 @@ static Z_UNUSED_FUNCTION Z_String z_string_from_nsstring(NSString *value) {
   if (bytes == NULL && length != 0) abort();
   Z_String result = z_string_new();
   z_string_append_bytes(&result, bytes != NULL ? bytes : "", (uintptr_t)length);
+  return result;
+}`;
+}
+
+function generateSwiftStringRuntime(): string {
+  return `static Z_UNUSED_FUNCTION Z_String z_string_from_swift(const swift::String& value) {
+  const std::string bytes = static_cast<std::string>(value);
+  Z_String result = z_string_new();
+  z_string_append_bytes(&result, bytes.data(), (uintptr_t)bytes.size());
   return result;
 }`;
 }
@@ -2194,6 +2208,7 @@ function generateDirectValue(
 function generateBridgedStringValue(expression: Expression, value: string, context: GenerationContext): string {
   if (context.semanticInfo.objcStringsToNative.has(expression.location.offset)) return `z_nsstring_from_string(${value})`;
   if (context.semanticInfo.objcStringsToZ.has(expression.location.offset)) return `z_string_from_nsstring(${value})`;
+  if (context.semanticInfo.swiftStringsToZ.has(expression.location.offset)) return `z_string_from_swift(${value})`;
   return value;
 }
 
@@ -3250,6 +3265,9 @@ function generateExpression(expression: Expression, context: GenerationContext):
   }
   if (context.semanticInfo.objcStringsToZ.has(expression.location.offset)) {
     return `z_string_from_nsstring(${value})`;
+  }
+  if (context.semanticInfo.swiftStringsToZ.has(expression.location.offset)) {
+    return `z_string_from_swift(${value})`;
   }
   return value;
 }

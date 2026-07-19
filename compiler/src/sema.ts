@@ -156,6 +156,7 @@ export type SemanticInfo = {
   readonly objcStringLiterals: ReadonlySet<number>;
   readonly objcStringsToNative: ReadonlySet<number>;
   readonly objcStringsToZ: ReadonlySet<number>;
+  readonly swiftStringsToZ: ReadonlySet<number>;
   readonly cstringConversions: ReadonlySet<number>;
   readonly optionFromNullable: ReadonlySet<number>;
   readonly expressionTypes: ReadonlyMap<number, string>;
@@ -208,6 +209,7 @@ type AnalysisState = {
   readonly objcStringLiterals: Set<number>;
   readonly objcStringsToNative: Set<number>;
   readonly objcStringsToZ: Set<number>;
+  readonly swiftStringsToZ: Set<number>;
   readonly cstringConversions: Set<number>;
   readonly optionFromNullable: Set<number>;
   readonly expressionTypes: Map<number, string>;
@@ -260,6 +262,7 @@ const maybeUninitializedPrefix = "__z_maybe_uninitialized:";
 const mutablePrefix = "__z_mutable:";
 const borrowedPrefix = "__z_borrowed:";
 const callTargetPrefix = "__z_calltarget:";
+const swiftStringTypeName = "__z_swift:String";
 
 export function analyze(
   program: Program,
@@ -353,6 +356,7 @@ export function analyze(
     objcStringLiterals: new Set(),
     objcStringsToNative: new Set(),
     objcStringsToZ: new Set(),
+    swiftStringsToZ: new Set(),
     cstringConversions: new Set(),
     optionFromNullable: new Set(),
     expressionTypes: new Map(),
@@ -1339,6 +1343,7 @@ function analyzeStatement(
         } else {
           initializerType = contextualCStringLiteral(variableType, statement.initializer, state)
             ?? contextualObjCStringToZ(variableType, initializerType, statement.initializer, state)
+            ?? contextualSwiftStringToZ(variableType, initializerType, statement.initializer, state)
             ?? initializerType;
           requireAssignable(variableType, initializerType, statement.initializer, fileName, state.foreignNamedTypes, state.numericLiteralTypes);
         }
@@ -1347,6 +1352,16 @@ function analyzeStatement(
           fileName,
           statement.initializer.location,
           "cannot infer the result of an imported function until its header is typed; add a type annotation",
+        );
+      } else if (initializerType === swiftStringTypeName) {
+        throw new DiagnosticError(
+          fileName,
+          statement.initializer.location,
+          "a native Swift String return must initialize an explicit Z String",
+          {
+            notes: ["the conversion makes a fresh owned UTF-8 copy"],
+            helps: [`write \`const ${statement.name}: String = ...\``],
+          },
         );
       } else if (initializerType === "never") {
         throw new DiagnosticError(fileName, statement.initializer.location, "cannot bind a value from an expression that never produces one");
@@ -1462,6 +1477,7 @@ function analyzeStatement(
       let actual = inferDirectValue(statement.expression, owner, locals, globals, structs, enums, fileName, state);
       actual = contextualCStringLiteral(expected, statement.expression, state) ?? actual;
       actual = contextualObjCStringToZ(expected, actual, statement.expression, state) ?? actual;
+      actual = contextualSwiftStringToZ(expected, actual, statement.expression, state) ?? actual;
       requireAssignable(expected, actual, statement.expression, fileName, state.foreignNamedTypes, state.numericLiteralTypes);
       if (
         hasCleanupType(expected, structs, enums, state.foreignTypes)
@@ -1526,6 +1542,7 @@ function analyzeStatement(
       let actual = inferDirectValue(statement.expression, owner, locals, globals, structs, enums, fileName, state);
       actual = contextualCStringLiteral(expected, statement.expression, state) ?? actual;
       actual = contextualObjCStringToZ(expected, actual, statement.expression, state) ?? actual;
+      actual = contextualSwiftStringToZ(expected, actual, statement.expression, state) ?? actual;
       requireAssignable(expected, actual, statement.expression, fileName, state.foreignNamedTypes, state.numericLiteralTypes);
       consumeOwnedValue(statement.expression, expected, locals, structs, enums, fileName, state);
       requireOutParametersInitialized(owner, locals, statement.location, fileName);
@@ -5152,6 +5169,7 @@ function findObjCProperty(
 
 function foreignValueType(type: ForeignType): ValueType {
   if (type.kind === "z") return type.name;
+  if (type.kind === "swiftString") return swiftStringTypeName;
   if (type.kind === "named") return type.type.typeName;
   if (type.kind === "reference") return type.type.kind === "scalar" ? type.type.underlying : type.type.typeName;
   if (type.kind === "pointer" || type.kind === "object") return type.typeName;
@@ -5261,6 +5279,17 @@ function contextualObjCStringToZ(
   ));
   if (!actualObject || actualObject.nullable || !stringType || !isObjCSubclass(actualObject, stringType, state)) return null;
   state.objcStringsToZ.add(expression.location.offset);
+  return "String";
+}
+
+function contextualSwiftStringToZ(
+  expected: ValueType,
+  actual: ValueType,
+  expression: Expression,
+  state: AnalysisState,
+): ValueType | null {
+  if (underlyingType(expected) !== "String" || actual !== swiftStringTypeName) return null;
+  state.swiftStringsToZ.add(expression.location.offset);
   return "String";
 }
 
@@ -5813,6 +5842,8 @@ function checkForeignCall(
   }
   const result = target.returnType.kind === "z"
     ? target.returnType.name
+    : target.returnType.kind === "swiftString"
+      ? swiftStringTypeName
     : target.returnType.kind === "named"
       ? target.returnType.type.typeName
     : target.returnType.kind === "pointer"

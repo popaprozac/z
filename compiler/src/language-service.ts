@@ -2509,6 +2509,7 @@ function formatTypeParameters(
 
 function foreignTypeName(type: ForeignType): string {
   if (type.kind === "z") return type.name;
+  if (type.kind === "swiftString") return "String";
   if (type.kind === "named") return type.type.typeName;
   if (type.kind === "reference") return type.type.kind === "scalar" ? type.type.underlying : type.type.typeName;
   if (type.kind === "object") return `${type.className ?? "id"}${type.nullable ? " | null" : ""}`;

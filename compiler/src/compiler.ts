@@ -24,6 +24,7 @@ export type NativeArtifact = {
   readonly frameworks: readonly string[];
   readonly includeDirectories: readonly string[];
   readonly nativeLibraries: readonly string[];
+  readonly nativeLinkerArguments: readonly string[];
   readonly deploymentTarget: ProjectBuild["deploymentTarget"];
   readonly warnings: readonly DiagnosticError[];
 };
@@ -103,6 +104,7 @@ export function compileToNative(source: string, fileName: string): NativeArtifac
     frameworks: [...new Set([...semanticInfo.frameworks, ...projectBuild.frameworks])],
     includeDirectories: [...new Set([...projectBuild.includeDirectories, ...moduleIncludeDirectories])],
     nativeLibraries: projectBuild.nativeLibraries,
+    nativeLinkerArguments: projectBuild.nativeLinkerArguments,
     deploymentTarget: projectBuild.deploymentTarget,
     warnings: semanticInfo.warnings,
   };

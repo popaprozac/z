@@ -355,8 +355,21 @@ the current owned-value probe supports `Swift.OwnedCounter.init(40)`,
 `counter.getValue()`, and `counter.setValue(42)`. A generated const method is an
 `in` receiver borrow; a generated mutating method requires addressable `let`
 storage and is presented as `inout this` in editor help. This is direct generated
-C++ member interop, not Swift property syntax: property sugar, Swift strings,
-generics, protocols, errors, async, and packages remain separate slices.
+C++ member interop, not Swift property syntax: property sugar, generics,
+protocols, errors, async, and packages remain separate slices.
+
+A generated `swift::String` return converts when its destination is explicitly
+Z `String`:
+
+```z
+const description: String = Swift.describeOwnedCounter(counter);
+```
+
+This creates a fresh owned UTF-8 copy and preserves the native byte length,
+including embedded NUL bytes. Omitting `: String` is diagnosed so that the copy
+is visible in source. Swift `String` parameters are not yet accepted: Apple’s
+current C++ overlay constructs them through a null-terminated input path, which
+cannot represent every Z `String` safely.
 
 Named C++ value references reuse Z's existing parameter capabilities. No C++
 reference punctuation enters Z source:

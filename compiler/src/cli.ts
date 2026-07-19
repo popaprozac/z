@@ -65,6 +65,7 @@ function runNative(inputPath: string, artifact: NativeArtifact): void {
     ...artifact.includeDirectories.flatMap((directory) => ["-I", directory]),
     sourcePath,
     ...artifact.nativeLibraries,
+    ...artifact.nativeLinkerArguments,
     ...artifact.frameworks.flatMap((framework) => ["-framework", framework]),
     "-o",
     executablePath,

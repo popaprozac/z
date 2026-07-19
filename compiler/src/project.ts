@@ -8,6 +8,7 @@ export type ProjectBuild = {
   readonly deploymentTarget: DeploymentTarget | null;
   readonly includeDirectories: readonly string[];
   readonly nativeLibraries: readonly string[];
+  readonly nativeLinkerArguments: readonly string[];
   readonly frameworks: readonly string[];
 };
 
@@ -35,6 +36,7 @@ const emptyBuild: ProjectBuild = {
   deploymentTarget: null,
   includeDirectories: [],
   nativeLibraries: [],
+  nativeLinkerArguments: [],
   frameworks: [],
 };
 const buildCache = new Map<string, { readonly freshness: number; readonly build: ProjectBuild }>();
@@ -121,10 +123,26 @@ export function prepareProject(fileName: string): ProjectBuild {
     deploymentTarget,
     includeDirectories: [buildDirectory],
     nativeLibraries: [library],
+    nativeLinkerArguments: cxxInterop ? swiftRuntimeLinkerArguments(fileName) : [],
     frameworks: [...(swift.frameworks ?? [])],
   };
   buildCache.set(manifestPath, { freshness, build });
   return build;
+}
+
+function swiftRuntimeLinkerArguments(fileName: string): string[] {
+  const result = spawnSync("xcrun", ["--sdk", "macosx", "--show-sdk-path"], { encoding: "utf8" });
+  if (result.error) {
+    throw projectDiagnostic(fileName, `could not locate the macOS SDK for Swift C++ interop: ${result.error.message}`);
+  }
+  if (result.status !== 0) {
+    throw projectDiagnostic(fileName, `could not locate the macOS SDK for Swift C++ interop: ${result.stderr.trim() || "xcrun failed"}`);
+  }
+  const runtimeLibraryDirectory = resolve(result.stdout.trim(), "usr/lib/swift");
+  if (!existsSync(runtimeLibraryDirectory)) {
+    throw projectDiagnostic(fileName, `Swift runtime link directory ${JSON.stringify(runtimeLibraryDirectory)} does not exist`);
+  }
+  return ["-L", runtimeLibraryDirectory, "-lswiftCore"];
 }
 
 function parseDeploymentTarget(target: ProjectManifest["target"], fileName: string): DeploymentTarget | null {

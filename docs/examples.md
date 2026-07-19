@@ -51,7 +51,7 @@ bun run z run examples/result.z
 | Objective-C nullability | [`objc-nullability.z`](../examples/objc-nullability.z) | `T | null`, narrowing, and `Option.fromNullable` |
 | Persistent AppKit events | [`appkit-events.z`](../examples/appkit-events.z) | Native blocks, weak capture, observer tokens |
 | Swift class | [`swift-interop`](../examples/swift-interop) | Generated Objective-C compatibility header |
-| Swift value | [`swift-value-interop`](../examples/swift-value-interop) | Generated C++ static/instance methods plus an owned value stored inside a Z aggregate |
+| Swift value | [`swift-value-interop`](../examples/swift-value-interop) | Generated C++ methods, owned aggregate storage, and exact explicit `String` return copies |
 
 Apple examples require macOS and Xcode Command Line Tools. `appkit-events.z`
 opens a native window and exits when that window closes.

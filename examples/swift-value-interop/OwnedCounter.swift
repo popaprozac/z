@@ -38,3 +38,15 @@ public func offsetOwnedCounter(_ counter: OwnedCounter, _ amount: Int32) -> Owne
 public func roundTrip(_ counter: OwnedCounter) -> OwnedCounter {
   counter
 }
+
+public func describeOwnedCounter(_ counter: OwnedCounter) -> String {
+  "Swift value=\(counter.value)"
+}
+
+public func embeddedNullString() -> String {
+  "a\0b"
+}
+
+public func countUtf8(_ value: String) -> Int32 {
+  Int32(value.utf8.count)
+}

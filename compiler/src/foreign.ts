@@ -1071,6 +1071,11 @@ function mapForeignType(
   if (normalized === "const char *") {
     return { kind: "z", name: "cstring", cName };
   }
+  if (normalized === "swift::String") {
+    return position === "return"
+      ? { kind: "swiftString", cName: "swift::String" }
+      : { kind: "unsupported", cName };
+  }
   const reference = /^(const\s+)?(.+?)\s*(&&|&)$/.exec(normalized);
   if (reference) {
     if (position !== "parameter") return { kind: "unsupported", cName };

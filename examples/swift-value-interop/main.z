@@ -16,6 +16,10 @@ function main(): i32 {
   const firstValue = first.getValue();
   const copiedValue = owner.counter.getValue();
   const changedValue = changed.getValue();
+  const description: String = Swift.describeOwnedCounter(changed);
+  const embedded: String = Swift.embeddedNullString();
   console.log(`first=${firstValue}, copied=${copiedValue}, changed=${changedValue}`);
+  console.log(description);
+  console.log(`embedded=${embedded}`);
   return changedValue - 42;
 }

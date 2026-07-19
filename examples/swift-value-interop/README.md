@@ -19,10 +19,17 @@ Expected output:
 ```text
 created 40
 first=40, copied=40, changed=42
+Swift value=42
+embedded=a\0b
 released 40
 ```
 
+The `\0` above denotes an actual embedded NUL byte in the process output, not
+two printed escape characters.
+
 This is intentionally a narrow ownership probe. Generated Swift C++ wrappers are
 currently copyable but delete C++ move assignment. Z imports their generated
-static and instance methods; Swift property sugar, generic types, and
-`swift::String` remain later slices.
+static and instance methods. A returned `swift::String` initializes an explicitly
+typed Z `String` by making an exact owned UTF-8 copy; inputs remain unsupported
+because Swift's current C++ overlay does not offer the same length-aware path in
+that direction. Swift property sugar and generic types remain later slices.

@@ -2331,6 +2331,12 @@ test("imports and owns a Swift value through its generated C++ compatibility hea
   assert.match(artifact.source, /first\.getValue\(\)/);
   assert.match(artifact.source, /\(owner\)\.counter\.getValue\(\)/);
   assert.match(artifact.source, /changed\.getValue\(\)/);
+  assert.match(artifact.source, /static .*Z_String z_string_from_swift\(const swift::String& value\)/);
+  assert.match(artifact.source, /const std::string bytes = static_cast<std::string>\(value\)/);
+  assert.match(artifact.source, /bytes\.data\(\), \(uintptr_t\)bytes\.size\(\)/);
+  assert.match(artifact.source, /z_string_from_swift\(ZSwiftOwned::describeOwnedCounter\(changed\)\)/);
+  assert.match(artifact.source, /z_string_from_swift\(ZSwiftOwned::embeddedNullString\(\)\)/);
+  assert.deepEqual(artifact.nativeLinkerArguments.slice(-1), ["-lswiftCore"]);
   assert.deepEqual(diagnostics(source, example), []);
   const context = analyzeSource(source, example);
   const counter = context.foreignModules.get("Swift")?.namedTypes.get("OwnedCounter");
@@ -2341,6 +2347,14 @@ test("imports and owns a Swift value through its generated C++ compatibility hea
     assert.equal(counter.methods.find((method) => method.name === "getValue")?.overloads[0]?.receiverAccess, "in");
     assert.equal(counter.methods.find((method) => method.name === "setValue")?.overloads[0]?.receiverAccess, "inout");
   }
+  assert.equal(
+    context.foreignModules.get("Swift")?.functions.get("describeOwnedCounter")?.overloads[0]?.returnType.kind,
+    "swiftString",
+  );
+  assert.equal(
+    context.foreignModules.get("Swift")?.functions.get("countUtf8")?.overloads[0]?.parameters[0]?.type.kind,
+    "unsupported",
+  );
   const firstOffset = source.indexOf("first =") + 1;
   assert.match(hover(source, example, firstOffset)?.contents.value ?? "", /first: Swift\.OwnedCounter/);
   const initOffset = source.indexOf("init(40)") + 1;
@@ -2349,6 +2363,10 @@ test("imports and owns a Swift value through its generated C++ compatibility hea
   assert.match(hover(source, example, getOffset)?.contents.value ?? "", /getValue\(\): i32.*C\+\+ const borrow/s);
   const setOffset = source.indexOf("setValue(42)") + 1;
   assert.match(hover(source, example, setOffset)?.contents.value ?? "", /setValue\(inout this, value: i32\): void.*C\+\+ mutable borrow/s);
+  const describeOffset = source.indexOf("describeOwnedCounter") + 1;
+  assert.match(hover(source, example, describeOffset)?.contents.value ?? "", /describeOwnedCounter\(in counter: Swift\.OwnedCounter\): String.*swift::String/s);
+  const descriptionOffset = source.indexOf("description: String") + 1;
+  assert.match(hover(source, example, descriptionOffset)?.contents.value ?? "", /description: String/);
 
   const completionSource = source.replace("  changed.setValue(42);", "  changed.;\n  changed.setValue(42);");
   const completionOffset = completionSource.indexOf("changed.;") + "changed.".length;
@@ -2358,12 +2376,20 @@ test("imports and owns a Swift value through its generated C++ compatibility hea
 
   const generatedHeader = resolve(artifact.includeDirectories[0], "ZSwiftOwned-Swift.hpp");
   assert.equal(existsSync(generatedHeader), true);
-  for (const offset of [initOffset, getOffset, setOffset]) {
+  for (const offset of [initOffset, getOffset, setOffset, describeOffset]) {
     assert.match(definition(source, `file://${example}`, offset)?.uri ?? "", /ZSwiftOwned-Swift\.hpp$/);
   }
+  const inferredString = source.replace("const description: String", "const description");
+  const inferredDiagnostic = diagnostics(inferredString, example).find((item) => item.message.includes("native Swift String"));
+  assert.match(inferredDiagnostic?.message ?? "", /must initialize an explicit Z String/);
+  const unsupportedInput = source.replace(
+    "  return changedValue - 42;",
+    "  return Swift.countUtf8(description) - 20;",
+  );
+  assert.match(diagnostics(unsupportedInput, example)[0]?.message ?? "", /unsupported type "const swift::String &"/);
   const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
-  assert.equal(result.stdout, "created 40\nfirst=40, copied=40, changed=42\nreleased 40\n");
+  assert.equal(result.stdout, "created 40\nfirst=40, copied=40, changed=42\nSwift value=42\nembedded=a\0b\nreleased 40\n");
 });
 
 test("keeps labeled arguments reserved for Objective-C selectors", () => {

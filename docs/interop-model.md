@@ -133,8 +133,11 @@ Swift-generated C++ value interfaces feed the same FIIR path. Z currently calls
 generated static factories and const or mutable scalar instance methods directly;
 the receiver rules and cost model are identical to the C++ rows above. This
 proves behavior on a Swift-owned value, but does not yet infer Swift property
-syntax or cover `swift::String`, generics, protocols, errors, async, or package
-products.
+syntax or cover generics, protocols, errors, async, or package products. A
+generated `swift::String` return can initialize an explicit Z `String`, producing
+a fresh length-aware UTF-8 copy. Swift `String` parameters remain unsupported
+until the generated boundary can accept an explicit byte length rather than a
+null-terminated input.
 
 ## Cost model
 
@@ -150,6 +153,7 @@ boundary**, not a claim that every bridge operation is free:
 | Non-capturing call-only callback | Function pointer or small adapter indirection; no environment allocation |
 | Escaping capturing closure / Objective-C block | Owned closure environment plus a native lifetime adapter, retains/releases, and indirect invocation |
 | `String` / `NSString` ownership bridge | Deliberate allocation and byte copy so neither runtime borrows unstable storage |
+| Swift `String` return to explicit Z `String` | Swift overlay traversal plus one owned allocation and exact byte copy; embedded NUL preserved |
 | Logging an `NSString` | Reads its UTF-8 bytes for the duration of the console call; no Z `String` allocation |
 | Z ARC class reference | Retain/release traffic; the bootstrap runtime is non-atomic and not yet optimized |
 
