@@ -882,10 +882,16 @@ methods retain overload, availability, and source metadata in FIIR. Native value
 construction uses `Type(args)`; `new` remains the signal for ARC-managed Z class
 identity. Const instance methods borrow their receiver, non-const methods require
 mutable addressable storage, and every supported call lowers directly to its
-native C++ form. The first move-only tier covers synchronous locals, owned
-parameters and returns, and whole Z value structs. Dynamic arrays, enum payloads,
-ARC fields, owned closure environments, and async frames require dedicated
-non-trivial C++ storage construction before they can admit these values.
+native C++ form. Move-only values are supported in synchronous locals, owned
+parameters and returns, whole Z value structs, growable `Array<T>` buffers, and
+named Z enum payloads. Native arrays allocate raw aligned storage, move-construct
+elements during growth, destroy the old objects, and destroy initialized
+elements in reverse order. Named enums use an explicit tagged-union lifetime
+wrapper with deleted copying, native move construction/assignment, and active
+payload destruction. These paths also compose with Z-managed fields: Z cleanup
+runs before the enclosing C++ object's destructor. Compiler-provided
+`Option<T>`/`Result<T, E>`, ARC fields, owned closure environments, and async
+frames remain separate non-trivial storage tiers.
 Named-value `const T&`, `T&`, and move-only `T&&` parameters reuse Z's `in`,
 `inout`, and owned-value capabilities. Receiver-qualified `const &`, `&`, and
 move-only `&&` methods likewise map to borrowed, mutable, and consuming

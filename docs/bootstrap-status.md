@@ -71,7 +71,7 @@ an inferred receiver-tied view.
 | C callbacks | Partial | Call-only and caller-thread escaping callbacks use `.zd` with named context and exact release contracts; cross-thread callbacks remain unsupported |
 | Native availability | Implemented host slice | Explicit `z.json` platform/minimum target, introduced/obsoleted errors, deprecation warnings, native source locations, and matching Clang/Swift deployment flags; cross-compilation and runtime guards remain |
 | Objective-C | Partial | ARC classes/fields, methods, properties/global object constants, labels, nullability, niche-backed `Option.fromNullable`, owned `String`/`NSString` copies, escaping blocks and persistent observer tokens |
-| C++ | Partial | Hierarchical/selectively aliased namespaces, typed overloads, records, and `.zd`-contracted copyable or move-only RAII values; named `const T&`/`T&`/move-only `T&&` parameters and `const &`/`&`/move-only `&&` methods map to `in`/`inout`/owned capabilities and direct native lowering; reference returns, copyable rvalue references, capability-changing argument/receiver overload sets, richer storage, and templates remain |
+| C++ | Partial | Hierarchical/selectively aliased namespaces, typed overloads, records, and `.zd`-contracted copyable or move-only RAII values; move-only values work in synchronous locals, calls, returns, Z structs, dynamic arrays, and named enums; named references and receiver qualifiers map to existing Z capabilities with direct native lowering; reference returns, compiler `Option`/`Result` payloads, ARC/closure/async storage, capability-changing overloads, and templates remain |
 | Swift via Objective-C | Implemented slice | Generated compatibility header, classes/properties/methods, automatic local dylib build/link |
 | Swift value via C++ | Implemented probe | Native static construction, const/mutable instance methods, struct return/copy/aggregate storage/round-trip/destruction, and exact owned `String` returns without handwritten shim |
 | Broader Swift surface | Planned vertical slices | Length-aware `String` inputs, property sugar, generics, noncopyable values, protocols, errors, async, packages |
@@ -135,6 +135,13 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
 - [`examples/interop/cpp/cpp-move-only.z`](../examples/interop/cpp/cpp-move-only.z): `.zd`-contracted
   non-copyable C++ RAII value borrowed, moved through an owned function and a Z
   value struct, then deterministically released with zero live native values.
+- [`examples/interop/cpp/cpp-move-only-array.z`](../examples/interop/cpp/cpp-move-only-array.z): move-only
+  native values stored in a growable array, relocated through native move
+  construction, and destroyed in reverse order, including a mixed `String`
+  aggregate.
+- [`examples/interop/cpp/cpp-move-only-enum.z`](../examples/interop/cpp/cpp-move-only-enum.z): named
+  enum payloads borrowed or consumed through `match`, replaced safely, and
+  deterministically destroyed.
 - [`examples/interop/cpp/cpp-references.z`](../examples/interop/cpp/cpp-references.z): C++ named-value
   references and receiver qualifiers mapped onto existing Z `in`, `inout`, and
   owned-transfer semantics with direct lvalue/`std::move` lowering.
@@ -147,9 +154,12 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    `Option<view T>` lookup results, match-arm provenance, last-use diagnostics,
    editor information, and one-pointer native lowering in application-shaped
    code.
-2. **Move-only storage contexts.** Add evidence-driven support for move-only
-   native values in dynamic arrays and enum payloads before expanding to ARC
-   fields, closure environments, or async frames.
+2. **Move-only storage contexts — synchronous slice implemented.** Dynamic
+   arrays use raw native storage, move construction during growth, and reverse
+   destruction. Named enums manage the active tagged-union payload across moves
+   and replacement. Both compose with Z-managed cleanup. Compiler `Option` and
+   `Result` payloads, ARC fields, closure environments, and async frames remain
+   later storage tiers.
 3. **Larger application probe.** Write non-trivial Z code that combines the
    ownership shapes, collections, errors, modules, native calls, and cleanup so
    restrictions are evaluated from real use rather than isolated syntax.

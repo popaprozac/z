@@ -1555,6 +1555,86 @@ test("moves non-copyable C++ values through owned Z bindings and value structs",
   );
 });
 
+test("stores move-only C++ values in Array and named enum payloads", () => {
+  const arrayExample = resolve(projectRoot, "examples/interop/cpp/cpp-move-only-array.z");
+  const arraySource = readFileSync(arrayExample, "utf8");
+  const arrayGenerated = compileToNative(arraySource, arrayExample).source;
+  assert.match(arrayGenerated, /#include <memory>/);
+  assert.match(arrayGenerated, /#include <new>/);
+  assert.match(arrayGenerated, /std::construct_at\(&storage\[index\], std::move\(self->data\[index\]\)\)/);
+  assert.match(arrayGenerated, /std::destroy_at\(&self->data\[index - 1\]\)/);
+  assert.match(arrayGenerated, /::operator delete\(self->data\)/);
+  assert.match(arrayGenerated, /Z_LabeledValue_deinit\([^\n]+\);\n\s*std::destroy_at/);
+  assert.doesNotMatch(arrayGenerated, /realloc\(self->data/);
+  const arrayHoverOffset = arraySource.indexOf("values = makeValues") + 2;
+  assert.match(
+    hover(arraySource, arrayExample, arrayHoverOffset)?.contents.value ?? "",
+    /values: Array<zcpp\.UniqueValue>/,
+  );
+  const arrayResult = spawnSync(process.execPath, [cli, "run", arrayExample], { encoding: "utf8" });
+  assert.equal(arrayResult.status, 0, arrayResult.stderr);
+  assert.match(arrayResult.stdout, /^array answer=42, moves=[1-9][0-9]*, live=0\n$/);
+
+  const enumExample = resolve(projectRoot, "examples/interop/cpp/cpp-move-only-enum.z");
+  const enumSource = readFileSync(enumExample, "utf8");
+  const enumGenerated = compileToNative(enumSource, enumExample).source;
+  assert.match(enumGenerated, /Z_NativeState\(Z_NativeState &&other\)/);
+  assert.match(enumGenerated, /operator=\(Z_NativeState &&other\)/);
+  assert.match(enumGenerated, /std::construct_at\(&result\.data\.ready, std::move\(value\)\)/);
+  assert.match(enumGenerated, /std::destroy_at\(&data\.ready\)/);
+  assert.match(enumGenerated, /const Z_NativeState \*_z_match_/);
+  assert.match(enumGenerated, /zcpp::UniqueValue const \*value = &\(_z_match_[0-9]+->data\.ready\)/);
+  assert.match(enumGenerated, /zcpp::UniqueValue value = std::move\(_z_match_[0-9]+\.data\.ready\)/);
+  assert.match(enumGenerated, /Z_LabeledValue_deinit\(&\(\(labeled\)\.data\.ready\)\);[\s\S]*labeled = std::move\(_z_replacement_[0-9]+\);/);
+  const borrowedPayloadOffset = enumSource.indexOf("ready(value)") + "ready(".length + 1;
+  assert.match(
+    hover(enumSource, enumExample, borrowedPayloadOffset)?.contents.value ?? "",
+    /value: native\.zcpp\.UniqueValue/,
+  );
+  const enumResult = spawnSync(process.execPath, [cli, "run", enumExample], { encoding: "utf8" });
+  assert.equal(enumResult.status, 0, enumResult.stderr);
+  assert.match(enumResult.stdout, /^enum answer=42, moves=[1-9][0-9]*, live=0\n$/);
+
+  const movedElement = `
+    import native from "../../../tests/fixtures/move-only.hpp";
+    function main(): i32 {
+      let values = Array<native.zcpp.UniqueValue>();
+      values.push(native.zcpp.UniqueValue(42));
+      const extracted = values[0];
+      return extracted.value();
+    }
+  `;
+  const elementDiagnostic = diagnostics(movedElement, arrayExample)[0];
+  assert.match(elementDiagnostic.message, /cannot move an ownership-bearing field or element out of its owner/);
+
+  const compilerOption = `
+    import native from "../../../tests/fixtures/move-only.hpp";
+    function main(): i32 {
+      const option: Option<native.zcpp.UniqueValue> = Option.some(native.zcpp.UniqueValue(42));
+      return 0;
+    }
+  `;
+  const optionDiagnostic = diagnostics(compilerOption, enumExample)[0];
+  assert.equal(optionDiagnostic.code, "Z0240");
+  assert.match(optionDiagnostic.message, /enum payloads cannot store move-only native values/);
+
+  const mixedStructReplacement = `
+    import native from "../../../tests/fixtures/move-only.hpp";
+    struct LabeledValue {
+      label: String;
+      value: native.zcpp.UniqueValue;
+    }
+    function main(): i32 {
+      let value = LabeledValue({ label: "first", value: native.zcpp.UniqueValue(1) });
+      value = LabeledValue({ label: "second", value: native.zcpp.UniqueValue(2) });
+      return 0;
+    }
+  `;
+  const replacementDiagnostic = diagnostics(mixedStructReplacement, arrayExample)[0];
+  assert.equal(replacementDiagnostic.code, "Z0240");
+  assert.match(replacementDiagnostic.message, /replacement assignment for a value combining Z cleanup and move-only native storage/);
+});
+
 test("maps C++ references and receiver qualifiers onto existing Z capabilities", () => {
   const example = resolve(projectRoot, "examples/interop/cpp/cpp-references.z");
   const source = readFileSync(example, "utf8");

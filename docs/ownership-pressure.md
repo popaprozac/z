@@ -141,8 +141,8 @@ and observes zero live native values after scope exit.
 - parameter-provenanced, retained, or class-owned views;
 - cross-thread ownership, atomic ARC, and sendability;
 - cyclic application graphs under ORC;
-- storing move-only native values in dynamic arrays, enum payloads, ARC fields,
-  owned closure environments, and async frames;
+- storing move-only native values in compiler `Option`/`Result` payloads, ARC
+  fields, owned closure environments, and async frames;
 - Windows C++ UI ownership and callback shapes.
 
 Each belongs in a vertical application probe before its design is treated as

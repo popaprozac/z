@@ -776,11 +776,14 @@ function analyzeEnumDeclaration(
     names.add(variant.name);
     if (variant.payload) {
       validateType(variant.payload, structs, enums, foreignNamedTypes, fileName, false);
-      if (hasMoveOnlyForeignType(variant.payload.name, structs, enums, foreignNamedTypes)) {
+      if (
+        declaration.name.startsWith("__z_")
+        && hasMoveOnlyForeignType(variant.payload.name, structs, enums, foreignNamedTypes)
+      ) {
         throw new DiagnosticError(fileName, variant.payload.location, "enum payloads cannot store move-only native values in the first C++ ownership tier", {
           code: "Z0240",
-          notes: ["generated enum union storage does not yet construct and destroy non-trivial C++ payloads"],
-          helps: ["store the native value in a synchronously moved Z struct while native enum storage lowering is implemented"],
+          notes: ["compiler-provided Option and Result storage has separate construction paths that are not part of the first move-only enum slice"],
+          helps: ["use a named Z enum for the move-only payload, or keep Option/Result payloads copyable for now"],
         });
       }
       const optionalViewPayload = Boolean(parseOptionType(declaration.name) && parseViewType(variant.payload.name));
@@ -1485,6 +1488,7 @@ function analyzeStatement(
       if (
         hasCleanupType(expected, structs, enums, state.foreignTypes)
         && hasMoveOnlyForeignType(expected, structs, enums, state.foreignNamedTypes)
+        && !enums.has(expected)
       ) {
         throw new DiagnosticError(fileName, statement.target.location, "replacement assignment for a value combining Z cleanup and move-only native storage is not executable yet", {
           code: "Z0240",
@@ -6010,13 +6014,6 @@ function validateType(
   const dynamic = parseDynamicArrayType(type.name);
   if (dynamic) {
     validateType({ name: dynamic.elementType, location: type.location }, structs, enums, foreignNamedTypes, fileName, false);
-    if (hasMoveOnlyForeignType(dynamic.elementType, structs, enums, foreignNamedTypes)) {
-      throw new DiagnosticError(fileName, type.location, "Array cannot store move-only native values in the first C++ ownership tier", {
-        code: "Z0240",
-        notes: ["dynamic Array growth currently relocates elements as raw storage"],
-        helps: ["use direct synchronous bindings or fixed owner structs until native container relocation is implemented"],
-      });
-    }
     return;
   }
   const array = parseFixedArrayType(type.name);

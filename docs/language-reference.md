@@ -214,6 +214,12 @@ initialization order. Mutation that may reallocate requires exclusive mutable
 storage. A slice borrow cannot outlive its backing storage or cross a mutation
 that invalidates it.
 
+`Array<T>` supports move-only native C++ values. `push(value)` transfers the
+element into the buffer. Growth allocates native storage, move-constructs each
+live element into the new allocation, destroys the old elements, and releases
+the old allocation. An indexed element is borrowed rather than extractable;
+moving the whole array transfers its buffer without relocating its elements.
+
 ## Generics and traits
 
 Generics use TypeScript-shaped angle brackets and are monomorphized for native
@@ -372,11 +378,17 @@ const answer = copied.value.value(); // C++ const receiver
 Calls lower to ordinary C++ construction, static calls, or member calls. Native
 overloads use the same exact selection and `Z0803` diagnostics as imported free
 functions. Copy/move constructors are ownership mechanics rather than ordinary
-constructor overloads. The first move-only tier is synchronous and supports
-locals, owned parameters and returns, and whole Z value structs. Dynamic arrays,
-enum payloads, ARC class fields, owned closure environments, and async frames
-reject move-only native storage until their non-trivial C++ construction paths
-land.
+constructor overloads. The synchronous move-only tier supports locals, owned
+parameters and returns, whole Z value structs, growable `Array<T>` buffers, and
+named Z enum payloads. Array growth uses native move construction and reverse
+destruction. Named enums borrow their payload under `match (in value)` and move
+it into the arm under consuming `match (value)`; their active native payload is
+destroyed automatically. These storage shapes also compose with ordinary
+Z-managed fields such as `String`.
+
+Compiler-provided `Option<T>` and `Result<T, E>`, ARC class fields, owned closure
+environments, and async frames still reject move-only native storage until their
+distinct non-trivial construction paths land.
 
 Swift-generated C++ compatibility values use this same surface. For example,
 the current owned-value probe supports `Swift.OwnedCounter.init(40)`,

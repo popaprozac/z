@@ -68,7 +68,7 @@ support or producing language-server diagnostics from hypothetical imports.
 
 - [`cpp-interop.z`](interop/cpp/cpp-interop.z) and [`cpp-selective-interop.z`](interop/cpp/cpp-selective-interop.z)
 - [`foreign-values.z`](interop/cpp/foreign-values.z) and [`cpp-callables.z`](interop/cpp/cpp-callables.z)
-- [`cpp-move-only.z`](interop/cpp/cpp-move-only.z) and [`cpp-references.z`](interop/cpp/cpp-references.z)
+- [`cpp-move-only.z`](interop/cpp/cpp-move-only.z), [`cpp-move-only-array.z`](interop/cpp/cpp-move-only-array.z), [`cpp-move-only-enum.z`](interop/cpp/cpp-move-only-enum.z), and [`cpp-references.z`](interop/cpp/cpp-references.z)
 
 ### Objective-C and Swift
 
