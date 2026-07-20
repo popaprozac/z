@@ -246,7 +246,7 @@ type AnalysisState = {
     cancellationCalls: number;
   }[];
   asyncScopeDepth: number;
-  asyncConditionalDepth: number;
+  asyncLoopDepth: number;
   activeFunction: FunctionDeclaration | null;
   activeReceiver: string | null;
 };
@@ -263,6 +263,11 @@ type AccessLoan = {
 };
 
 type AccessLoanSet = Map<string, readonly AccessLoan[]>;
+
+type AccessLoanState = {
+  readonly activeLoans: AccessLoanSet;
+  readonly taskBorrowSpawns: Map<string, number>;
+};
 
 type LoopAnalysisFrame = {
   readonly breaks: Map<string, ValueType>[];
@@ -415,7 +420,7 @@ export function analyze(
     asyncTaskBorrowSpawns: new Map(),
     asyncCallContexts: [],
     asyncScopeDepth: 0,
-    asyncConditionalDepth: 0,
+    asyncLoopDepth: 0,
     activeFunction: null,
     activeReceiver: null,
   };
@@ -1050,7 +1055,7 @@ function analyzeFunction(
   state.asyncSpawnBorrowRoots.clear();
   state.asyncTaskBorrowSpawns.clear();
   state.asyncScopeDepth = 0;
-  state.asyncConditionalDepth = 0;
+  state.asyncLoopDepth = 0;
   state.viewCallOrigins.clear();
   state.viewOrigins.clear();
   const locals = new Map<string, ValueType>();
@@ -1730,29 +1735,24 @@ function analyzeStatement(
       if (conditionType !== "bool") {
         requireAssignable("bool", conditionType, statement.condition, fileName, state.foreignNamedTypes, state.numericLiteralTypes);
       }
-      state.asyncConditionalDepth += 1;
-      try {
-        analyzeIfBranches(statement, owner, locals, globals, structs, enums, fileName, state);
-      } finally {
-        state.asyncConditionalDepth -= 1;
-      }
+      analyzeIfBranches(statement, owner, locals, globals, structs, enums, fileName, state);
       return;
     }
     case "while": {
-      state.asyncConditionalDepth += 1;
+      state.asyncLoopDepth += 1;
       try {
         analyzeWhileLoop(statement, owner, locals, globals, structs, enums, fileName, state);
       } finally {
-        state.asyncConditionalDepth -= 1;
+        state.asyncLoopDepth -= 1;
       }
       return;
     }
     case "for": {
-      state.asyncConditionalDepth += 1;
+      state.asyncLoopDepth += 1;
       try {
         analyzeForLoop(statement, owner, locals, globals, structs, enums, fileName, state);
       } finally {
-        state.asyncConditionalDepth -= 1;
+        state.asyncLoopDepth -= 1;
       }
       return;
     }
@@ -4863,6 +4863,67 @@ function registerAccessLoan(loans: AccessLoanSet, loan: AccessLoan): AccessLoan 
   return null;
 }
 
+function snapshotAccessLoanState(state: AnalysisState): AccessLoanState {
+  return {
+    activeLoans: new Map(state.activeLoans),
+    taskBorrowSpawns: new Map(state.asyncTaskBorrowSpawns),
+  };
+}
+
+function restoreAccessLoanState(state: AnalysisState, snapshot: AccessLoanState): void {
+  state.activeLoans.clear();
+  for (const [root, loans] of snapshot.activeLoans) state.activeLoans.set(root, loans);
+
+  state.asyncSpawnBorrowRoots.clear();
+  for (const [root, loans] of snapshot.activeLoans) {
+    for (const loan of loans) {
+      if (loan.lifetime.kind !== "task") continue;
+      const roots = state.asyncSpawnBorrowRoots.get(loan.lifetime.spawnOffset) ?? [];
+      if (!roots.includes(root)) {
+        state.asyncSpawnBorrowRoots.set(loan.lifetime.spawnOffset, [...roots, root]);
+      }
+    }
+  }
+
+  const activeSpawns = new Set(state.asyncSpawnBorrowRoots.keys());
+  state.asyncTaskBorrowSpawns.clear();
+  for (const [task, spawnOffset] of snapshot.taskBorrowSpawns) {
+    if (activeSpawns.has(spawnOffset)) state.asyncTaskBorrowSpawns.set(task, spawnOffset);
+  }
+}
+
+function mergeAccessLoanStates(state: AnalysisState, paths: readonly AccessLoanState[]): void {
+  const activeLoans: AccessLoanSet = new Map();
+  const seen = new Set<string>();
+  for (const path of paths) {
+    for (const [root, loans] of path.activeLoans) {
+      for (const loan of loans) {
+        const lifetime = loan.lifetime.kind === "task"
+          ? `task:${loan.lifetime.spawnOffset}`
+          : "call";
+        const key = `${root}:${loan.capability}:${lifetime}:${loan.location.offset}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        activeLoans.set(root, [...(activeLoans.get(root) ?? []), loan]);
+      }
+    }
+  }
+
+  const activeSpawns = new Set<number>();
+  for (const loans of activeLoans.values()) {
+    for (const loan of loans) {
+      if (loan.lifetime.kind === "task") activeSpawns.add(loan.lifetime.spawnOffset);
+    }
+  }
+  const taskBorrowSpawns = new Map<string, number>();
+  for (const path of paths) {
+    for (const [task, spawnOffset] of path.taskBorrowSpawns) {
+      if (activeSpawns.has(spawnOffset)) taskBorrowSpawns.set(task, spawnOffset);
+    }
+  }
+  restoreAccessLoanState(state, { activeLoans, taskBorrowSpawns });
+}
+
 function recordAsyncSpawnBorrow(
   root: string,
   location: SourceLocation,
@@ -4896,7 +4957,7 @@ function recordAsyncSpawnBorrow(
 }
 
 function releaseAsyncTaskBorrows(task: string, state: AnalysisState): void {
-  if (state.asyncConditionalDepth > 0) return;
+  if (state.asyncLoopDepth > 0) return;
   const spawnOffset = state.asyncTaskBorrowSpawns.get(task);
   if (spawnOffset === undefined) return;
   for (const root of state.asyncSpawnBorrowRoots.get(spawnOffset) ?? []) {
@@ -5239,18 +5300,31 @@ function analyzeIfBranches(
 ): void {
   const original = new Map(locals);
   const continuing: Map<string, ValueType>[] = [];
+  const incomingLoans = snapshotAccessLoanState(state);
+  const continuingLoans: AccessLoanState[] = [];
+
   const thenLocals = narrowedConditionLocals(original, statement.condition, true, state);
   analyzeStatement(statement.thenBranch, owner, thenLocals, globals, structs, enums, fileName, state);
-  if (!statementStopsFlow(statement.thenBranch)) continuing.push(thenLocals);
+  if (!statementStopsFlow(statement.thenBranch)) {
+    continuing.push(thenLocals);
+    continuingLoans.push(snapshotAccessLoanState(state));
+  }
 
+  restoreAccessLoanState(state, incomingLoans);
   if (statement.elseBranch) {
     const elseLocals = narrowedConditionLocals(original, statement.condition, false, state);
     analyzeStatement(statement.elseBranch, owner, elseLocals, globals, structs, enums, fileName, state);
-    if (!statementStopsFlow(statement.elseBranch)) continuing.push(elseLocals);
+    if (!statementStopsFlow(statement.elseBranch)) {
+      continuing.push(elseLocals);
+      continuingLoans.push(snapshotAccessLoanState(state));
+    }
   } else {
     continuing.push(narrowedConditionLocals(original, statement.condition, false, state));
+    continuingLoans.push(snapshotAccessLoanState(state));
   }
   mergeOwnershipStates(locals, continuing, state);
+  if (continuingLoans.length > 0) mergeAccessLoanStates(state, continuingLoans);
+  else restoreAccessLoanState(state, incomingLoans);
 }
 
 function analyzeWhileLoop(

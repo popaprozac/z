@@ -185,9 +185,24 @@ async scope {
 }
 ```
 
-The bootstrap recognizes this early release on straight-line joins. A join under
-conditional control conservatively keeps the borrow live until scope exit while
-path-sensitive task/borrow merging remains future work.
+The bootstrap also merges task loans through `if` control flow. Each branch
+starts with the same incoming loans, and the owner becomes available after the
+merge only when every branch that can continue has consumed the task through a
+join or cancellation:
+
+```z
+if (keepResult) {
+  await task;
+} else {
+  await task.cancel();
+}
+publish(document);
+```
+
+A branch that returns or throws does not constrain the unreachable merge. If
+even one continuing branch leaves the task live, the owner remains borrowed.
+Loops remain conservative: a join inside a loop does not release the loan for
+code outside that loop until loop-aware fixed-point merging is implemented.
 
 Mutation is not rolled back if the task later throws or is cancelled. A
 non-throwing direct await may also pass `out` storage:

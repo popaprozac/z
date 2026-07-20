@@ -182,6 +182,12 @@ releases rather than defining another aliasing policy. Spawned `out`, suspended
 Slice borrowing, regions, and cross-thread loans must extend this same checker
 rather than adding parallel rules.
 
+Task loans merge by control-flow reachability. Each `if` branch begins from the
+same incoming loan set. A loan is absent after the merge only when every branch
+that reaches it has joined or cancelled the corresponding task; terminating
+branches do not constrain an unreachable merge. Loop-carried task loans remain
+conservative until the ownership fixed-point and loan fixed-point are unified.
+
 Replacing cleanup-bearing storage evaluates the new value into owned temporary
 storage before destroying the old value and installing the replacement. If
 evaluation propagates an error, the old value remains governed by ordinary

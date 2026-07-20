@@ -103,7 +103,7 @@ until the boundary is length-aware in both directions.
 | Async syntax and typing | Implemented | Functions/methods, `await`, `spawn`, task scopes, typed errors |
 | Stackless task frames | Partial | Scalars, aggregates, owned structs/enums/classes, direct move-only C++ locals and parameters, whole Z value aggregates containing them, cleanup-free direct-awaited output, and fallible native result transfer through `try`/`attempt`/match across suspension |
 | Executor | Implemented bootstrap | Deterministic single-thread FIFO ready queue |
-| Structured scopes | Implemented slice | Lexical child joins, sibling/descendant cancellation, shared immutable and exclusive mutable child borrows, plus straight-line early release on consuming join; conditional joins remain conservative to scope exit |
+| Structured scopes | Implemented slice | Lexical child joins, sibling/descendant cancellation, shared immutable and exclusive mutable child borrows, plus path-sensitive early release across straight-line code and `if` branches; loops remain conservative to scope exit |
 | Caller cancellation | Implemented slice | Consuming `await task.cancel()` requests cancellation, joins descendants and cleanup, and discards an unclaimed completed outcome |
 | Timers | Implemented slice | Scheduler-aware monotonic `delay`; blocking `sleep` remains synchronous |
 | Sync work in async frames | Partial | Z and direct C++ calls/methods, console, checked arithmetic, concise matches |

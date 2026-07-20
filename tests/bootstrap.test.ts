@@ -7650,6 +7650,58 @@ test("mutably borrows caller storage through scoped spawn and releases it on joi
   assert.equal(conditionalDiagnostic.code, "Z0704");
   assert.match(conditionalDiagnostic.message, /cannot read "counter" while a spawned task mutably borrows it/);
 
+  const joinedOnEveryPath = `
+    struct Counter { value: i32; }
+    async function add(inout counter: Counter): void { counter.value = counter.value + 1; }
+    async function main(): i32 {
+      let counter = Counter({ value: 41 });
+      const joinNormally = true;
+      async scope {
+        const task = spawn add(inout counter);
+        if (joinNormally) {
+          await task;
+        } else {
+          await task.cancel();
+        }
+        counter.value = counter.value + 1;
+      }
+      return counter.value - 43;
+    }
+  `;
+  check(joinedOnEveryPath, "async-scoped-inout-all-paths-join.z");
+  const conditionalDirectory = mkdtempSync("/tmp/z-async-scoped-inout-conditional-");
+  const conditionalProgram = resolve(conditionalDirectory, "main.z");
+  writeFileSync(conditionalProgram, joinedOnEveryPath);
+  const conditionalResult = spawnSync(process.execPath, [cli, "run", conditionalProgram], { encoding: "utf8" });
+  assert.equal(conditionalResult.status, 0, conditionalResult.stderr);
+
+  const exitingPath = `
+    struct Counter { value: i32; }
+    async function add(inout counter: Counter): void { counter.value = counter.value + 1; }
+    async function updateOrExit(exitEarly: bool, inout counter: Counter): i32 {
+      async scope {
+        const task = spawn add(inout counter);
+        if (exitEarly) {
+          return 0;
+        } else {
+          await task;
+        }
+        counter.value = counter.value + 1;
+      }
+      return counter.value;
+    }
+    async function main(): i32 {
+      let counter = Counter({ value: 41 });
+      const observed = await updateOrExit(false, inout counter);
+      return observed - 43;
+    }
+  `;
+  check(exitingPath, "async-scoped-inout-exiting-path.z");
+  const exitingProgram = resolve(conditionalDirectory, "exiting.z");
+  writeFileSync(exitingProgram, exitingPath);
+  const exitingResult = spawnSync(process.execPath, [cli, "run", exitingProgram], { encoding: "utf8" });
+  assert.equal(exitingResult.status, 0, exitingResult.stderr);
+
   const sharedAfterOneJoin = `
     struct Resource { value: i32; }
     async function inspect(in resource: Resource): i32 { return resource.value; }

@@ -271,15 +271,31 @@ function planFunction(
         const thenLabel = nextLabel.value++;
         const elseLabel = nextLabel.value++;
         const endLabel = nextLabel.value++;
+        const incomingJoins = new Set(joinedSpawns);
         operations.push({ kind: "branch", condition: statement.condition, thenLabel, elseLabel });
         operations.push({ kind: "label", label: thenLabel });
         planStatements(statement.thenBranch.statements, scope, controlDepth + 1);
+        const thenJoins = new Set(joinedSpawns);
         operations.push({ kind: "jump", label: endLabel });
         operations.push({ kind: "label", label: elseLabel });
+        joinedSpawns.clear();
+        for (const index of incomingJoins) joinedSpawns.add(index);
         if (statement.elseBranch?.kind === "block") {
           planStatements(statement.elseBranch.statements, scope, controlDepth + 1);
         } else if (statement.elseBranch?.kind === "if") {
           planStatements([statement.elseBranch], scope, controlDepth + 1);
+        }
+        const elseJoins = new Set(joinedSpawns);
+        const continuingJoins: ReadonlySet<number>[] = [];
+        if (!asyncStatementStopsFlow(statement.thenBranch)) continuingJoins.push(thenJoins);
+        if (!statement.elseBranch || !asyncStatementStopsFlow(statement.elseBranch)) continuingJoins.push(elseJoins);
+        joinedSpawns.clear();
+        if (continuingJoins.length > 0) {
+          for (const index of continuingJoins[0]) {
+            if (continuingJoins.every((path) => path.has(index))) joinedSpawns.add(index);
+          }
+        } else {
+          for (const index of incomingJoins) joinedSpawns.add(index);
         }
         operations.push({ kind: "label", label: endLabel });
         continue;
@@ -834,6 +850,27 @@ function statementContainsAwait(statement: Statement): boolean {
     case "break":
     case "continue": return false;
   }
+}
+
+function asyncStatementStopsFlow(statement: Statement | undefined): boolean {
+  if (!statement) return false;
+  if (
+    statement.kind === "return"
+    || statement.kind === "throw"
+    || statement.kind === "break"
+    || statement.kind === "continue"
+  ) {
+    return true;
+  }
+  if (statement.kind === "asyncScope") return asyncStatementStopsFlow(statement.body);
+  if (statement.kind === "block") return asyncStatementStopsFlow(statement.statements.at(-1));
+  if (statement.kind === "if") {
+    return Boolean(statement.elseBranch)
+      && asyncStatementStopsFlow(statement.thenBranch)
+      && asyncStatementStopsFlow(statement.elseBranch);
+  }
+  return statement.kind === "match" && statement.arms.length > 0
+    && statement.arms.every((arm) => asyncStatementStopsFlow(arm.body));
 }
 
 function validateAsyncMain(declaration: FunctionDeclaration, fileName: string): void {
