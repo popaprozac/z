@@ -146,6 +146,7 @@ Each document has one job:
 | [Foreign Interface IR](docs/foreign-interface-ir.md) | Backend-neutral foreign declaration model |
 | [Diagnostics](docs/diagnostics.md) | Diagnostic structure and authoring conventions |
 | [Ownership pressure log](docs/ownership-pressure.md) | Evidence from application-shaped ownership probes |
+| [Design checkpoint — 2026-07-19](docs/design-checkpoint-2026-07-19.md) | Dated thesis, performance target, risks, and validation sequence |
 
 Temporary compiler limitations belong in bootstrap status, not the language
 contract. New language decisions should update the reference and design charter;
