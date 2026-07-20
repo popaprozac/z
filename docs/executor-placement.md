@@ -1,8 +1,10 @@
 # Executor Placement Design Note
 
-Status: scalar and recursively plain placement blocks execute through structured
-task frames; native-worker handoff and Darwin CFRunLoop wakeups are implemented.
-Owned/borrowed capture contracts and platform UI-loop adapters remain planned.
+Status: ownership-aware placement blocks execute through structured task frames;
+plain values, String copies, Z ARC classes, and Objective-C identity from an
+owning async task are supported. Native-worker handoff and Darwin CFRunLoop
+wakeups are implemented. Mutable/borrowed/native-affine capture contracts and
+platform UI-loop adapters remain planned.
 
 Date: 2026-07-20
 
@@ -242,6 +244,34 @@ The exact capture spelling for a placed block remains open. Possible source
 shapes should be evaluated against existing move closures and real application
 examples before adding syntax.
 
+The current executable tier applies these concrete rules:
+
+- recursively plain captures copy into the placed task frame;
+- `String` captures receive independent owned UTF-8 storage;
+- Z class captures retain ARC identity and release it with the placed frame;
+- Objective-C captures from the owning async task are held as ARC strong fields;
+- a native worker may capture a deeply readonly/shareable Z class, but may not
+  carry an Objective-C identity through itself merely to place it back on main;
+- captured mutation, borrows/views/slices, and native resource owners remain
+  rejected until their contracts can be proven.
+
+The application-shaped path keeps UI identity in its main async task, lets a
+worker return owned Z data, and then captures both in a main placement:
+
+```z
+const app = currentApplication();
+const work = thread.spawn((): String => buildStatus());
+const status = await work;
+
+await on thread.main {
+  publishStatus(app, status);
+}
+```
+
+Because this final placement is a statement-form block, it needs no semicolon.
+A binding such as `const title = await on thread.main { select ...; };` remains
+a value expression and ends with one.
+
 ## Relationship to existing execution primitives
 
 | Syntax | Meaning |
@@ -412,9 +442,10 @@ later without making executor blocks a special case.
    queue without equating OS-thread exit with task completion.
 5. **Done on Darwin:** wake and drain the main executor through a
    `CFRunLoopSource`, including while an AppKit-compatible run loop is active.
-6. Integrate owned, ARC, native-affine, borrowed, cancellation, and cleanup
-   capture contracts. The current runtime tier copies recursively plain captures
-   and rejects mutation through a capture.
+6. **Partial:** integrate owned, ARC, native-affine, borrowed, cancellation, and
+   cleanup capture contracts. String, Z ARC, and owning-task Objective-C captures
+   are implemented; mutation, borrows, native ownership, and affinity metadata
+   remain.
 7. Carry main-affinity facts through FIIR and `.zd` declarations.
 8. **Done for current syntax:** highlighting, completion, hover, definitions,
    and placement diagnostics.

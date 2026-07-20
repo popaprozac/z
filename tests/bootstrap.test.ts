@@ -7264,6 +7264,47 @@ test("places structured work onto main from a native worker without blocking mai
   }
 });
 
+test("retains Z ARC identities captured by main-executor placement", () => {
+  const directory = mkdtempSync("/tmp/z-main-class-capture-");
+  const fileName = resolve(directory, "main.z");
+  const source = `
+    import { thread } from "std/thread";
+    class Session { id: i32; }
+    async function main(): i32 {
+      const session = new Session({ id: 42 });
+      const observed = await on thread.main: i32 {
+        select session.id;
+      };
+      return observed - 42;
+    }
+  `;
+  writeFileSync(fileName, source);
+
+  const artifact = compileToNative(source, fileName);
+  assert.match(artifact.source, /z_async_start___z_executor_main_\d+\([^\n]+Z_Session_retain\(frame->value_session\)\)/);
+  assert.match(artifact.source, /Z_Session_release\(frame->value_session\)/);
+
+  const result = spawnSync(process.execPath, [cli, "run", fileName], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+});
+
+test("publishes owned worker results through retained Objective-C identity on main", () => {
+  if (process.platform !== "darwin") return;
+  const example = resolve(projectRoot, "examples/async/appkit-main-result.z");
+  const source = readFileSync(example, "utf8");
+  const artifact = compileToNative(source, example);
+
+  assert.ok(artifact.frameworks.includes("AppKit"));
+  assert.ok(artifact.frameworks.includes("CoreFoundation"));
+  assert.match(artifact.source, /NSApplication \* value_app;/);
+  assert.match(artifact.source, /frame->value_app = nil;/);
+  assert.match(artifact.source, /z_string_copy_bytes\(frame->value_status, 0, \(frame->value_status\)\.length\)/);
+
+  const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, "background work completed\n");
+}, 10_000);
+
 test("runs async match expressions with checked arithmetic and editor details", () => {
   const example = resolve(projectRoot, "examples/async/async-phase-0.z");
   const source = readFileSync(example, "utf8");

@@ -41,7 +41,12 @@ type SpawnSite = {
 
 type PlacementTarget = {
   readonly target: AsyncTarget;
-  readonly captures: readonly { readonly name: string; readonly type: string; readonly location: SourceLocation }[];
+  readonly captures: readonly {
+    readonly name: string;
+    readonly type: string;
+    readonly kind: "plain" | "string" | "class" | "objc";
+    readonly location: SourceLocation;
+  }[];
 };
 
 type NestedAwaitSite = {
@@ -185,10 +190,11 @@ export function generateAsyncC(
   const registerPlacement = (
     expression: Extract<Expression, { kind: "executorPlacement" }>,
     locals: ReadonlyMap<string, string>,
+    fromNativeThread: boolean,
   ): PlacementTarget => {
     const existing = placementTargets.get(expression.location.offset);
     if (existing) return existing;
-    const created = createPlacementTarget(expression, locals, types, fileName);
+    const created = createPlacementTarget(expression, locals, types, fileName, fromNativeThread);
     placementTargets.set(expression.location.offset, created);
     targets.push(created.target);
     functions.set(created.target.declaration.name, created.target);
@@ -245,6 +251,7 @@ function planFunction(
   registerPlacement: (
     expression: Extract<Expression, { kind: "executorPlacement" }>,
     locals: ReadonlyMap<string, string>,
+    fromNativeThread: boolean,
   ) => PlacementTarget,
 ): AsyncFunctionPlan {
   const { declaration, owner } = target;
@@ -304,6 +311,7 @@ function planFunction(
       joinedSpawns,
       nextChild,
       registerPlacement,
+      nativeThread,
     );
     awaits.set(expression.location.offset, site);
     if (!site.intrinsic) children.set(site.index, site.target);
@@ -453,6 +461,7 @@ function planFunction(
                 statement.name,
                 locals,
                 registerPlacement,
+                nativeThread,
               );
           spawns.set(statement.initializer.location.offset, site);
           spawnBindings.set(statement.name, site);
@@ -549,6 +558,7 @@ function planFunction(
                 null,
                 locals,
                 registerPlacement,
+                nativeThread,
               );
           spawns.set(statement.expression.location.offset, site);
           children.set(site.index, site.target);
@@ -634,10 +644,12 @@ function awaitSite(
   registerPlacement: (
     expression: Extract<Expression, { kind: "executorPlacement" }>,
     locals: ReadonlyMap<string, string>,
+    fromNativeThread: boolean,
   ) => PlacementTarget,
+  fromNativeThread: boolean,
 ): AwaitSite {
   if (expression.kind === "executorPlacement") {
-    const placement = registerPlacement(expression, locals);
+    const placement = registerPlacement(expression, locals, fromNativeThread);
     return {
       index: nextChild.value++,
       mode,
@@ -759,6 +771,7 @@ function createPlacementTarget(
   locals: ReadonlyMap<string, string>,
   types: AsyncTypeContext,
   fileName: string,
+  fromNativeThread: boolean,
 ): PlacementTarget {
   const captures = collectPlacementCaptures(expression.body, locals);
   const mutated = captures.find((capture) => capture.mutated);
@@ -770,16 +783,19 @@ function createPlacementTarget(
       "return a selected value from the placement block and apply mutation after awaiting it",
     );
   }
+  const captureKinds = new Map<string, PlacementTarget["captures"][number]["kind"]>();
   for (const capture of captures) {
     const type = locals.get(capture.name)!;
-    if (!isPlacementCopyType(type, types)) {
+    const kind = placementCaptureKind(type, types, fromNativeThread);
+    if (!kind) {
       unsupported(
         fileName,
         capture.location,
         `executor placement capture ${JSON.stringify(capture.name)} of type ${JSON.stringify(type)} is not transferable yet`,
-        "capture a recursively plain value; owned, borrowed, ARC, and native affinity transfers follow in the capture-contract tier",
+        "capture a plain value, String, Z class, or Objective-C identity; native resources, mutable borrows, and affinity transfer require explicit contracts",
       );
     }
+    captureKinds.set(capture.name, kind);
   }
   if (placementContainsFunctionReturn(expression.body)) {
     unsupported(
@@ -830,6 +846,7 @@ function createPlacementTarget(
     captures: captures.map((capture) => ({
       name: capture.name,
       type: locals.get(capture.name)!,
+      kind: captureKinds.get(capture.name)!,
       location: capture.location,
     })),
   };
@@ -885,6 +902,25 @@ function isPlacementCopyType(
     return result;
   }
   return false;
+}
+
+function placementCaptureKind(
+  type: string,
+  types: AsyncTypeContext,
+  fromNativeThread: boolean,
+): PlacementTarget["captures"][number]["kind"] | null {
+  if (type === "String") return "string";
+  const aggregate = types.structs.get(type);
+  if (aggregate?.kind === "class") {
+    return !fromNativeThread || types.semanticInfo.shareableClasses.has(type) ? "class" : null;
+  }
+  if (
+    types.semanticInfo.foreignObjectTypes.has(type)
+    || types.semanticInfo.foreignNamedTypes.get(type)?.kind === "object"
+  ) {
+    return fromNativeThread ? null : "objc";
+  }
+  return isPlacementCopyType(type, types) ? "plain" : null;
 }
 
 function collectPlacementCaptures(
@@ -1061,9 +1097,11 @@ function placementSpawnSite(
   registerPlacement: (
     expression: Extract<Expression, { kind: "executorPlacement" }>,
     locals: ReadonlyMap<string, string>,
+    fromNativeThread: boolean,
   ) => PlacementTarget,
+  fromNativeThread: boolean,
 ): SpawnSite {
-  const placement = registerPlacement(expression, locals);
+  const placement = registerPlacement(expression, locals, fromNativeThread);
   return {
     index,
     scope,
@@ -2146,7 +2184,7 @@ function generateStartSignature(plan: AsyncFunctionPlan): string {
 function generateStart(plan: AsyncFunctionPlan): string {
   const lines = [
     `${generateStartSignature(plan)} {`,
-    `  ${plan.frameName} *frame = (${plan.frameName} *)malloc(sizeof(${plan.frameName}));`,
+    `  ${plan.frameName} *frame = (${plan.frameName} *)calloc(1, sizeof(${plan.frameName}));`,
     "  if (frame == NULL) abort();",
     `  frame->task.poll = ${plan.pollName};`,
     "  frame->task.completed = false;",
@@ -2225,7 +2263,10 @@ function frameInputs(plan: AsyncFunctionPlan): readonly {
 }
 
 function emitAwaitArguments(
-  site: Pick<AwaitSite, "receiver" | "target" | "call"> & { readonly nativeThread?: boolean },
+  site: Pick<AwaitSite, "receiver" | "target" | "call"> & {
+    readonly nativeThread?: boolean;
+    readonly placement?: AwaitSite["placement"] | SpawnSite["placement"];
+  },
   parent: AsyncFunctionPlan,
   fileName: string,
 ): string[] {
@@ -2238,8 +2279,16 @@ function emitAwaitArguments(
     arguments_.push(receiver);
   }
   arguments_.push(...site.call.arguments.map((argument, index) => {
-    const value = emitFrameExpression(argument, parent, fileName);
     const parameter = site.target.declaration.parameters[index];
+    let value = emitFrameExpression(argument, parent, fileName);
+    if (site.placement && argument.kind === "identifier" && parameter?.mode === "value") {
+      const type = parent.locals.get(argument.name);
+      if (type === "String") {
+        value = `z_string_copy_bytes(${value}, 0, (${value}).length)`;
+      } else if (type && parent.types.structs.get(type)?.kind === "class") {
+        value = `Z_${type}_retain(${value})`;
+      }
+    }
     if (parameter && parseSliceType(parameter.type.name)) {
       return emitFrameSliceConversion(argument, value, parent, fileName) ?? value;
     }
@@ -3702,6 +3751,10 @@ function isSupportedFrameType(type: string, types: AsyncTypeContext, visiting = 
   if (parseSliceType(type)) return true;
   if (isDirectForeignFrameValue(type, types)) return true;
   if (types.semanticInfo.foreignTypes.has(type)) return true;
+  if (
+    types.semanticInfo.foreignObjectTypes.has(type)
+    || types.semanticInfo.foreignNamedTypes.get(type)?.kind === "object"
+  ) return true;
   if (visiting.has(type)) return true;
   const aggregate = types.structs.get(type);
   if (aggregate) {
@@ -3726,6 +3779,10 @@ function isSupportedFrameType(type: string, types: AsyncTypeContext, visiting = 
 function hasFrameCleanup(type: string, types: AsyncTypeContext, visiting = new Set<string>()): boolean {
   if (visiting.has(type)) return false;
   if (type === "String" || type === "TextBuffer") return true;
+  if (
+    types.semanticInfo.foreignObjectTypes.has(type)
+    || types.semanticInfo.foreignNamedTypes.get(type)?.kind === "object"
+  ) return true;
   if (requiresNativeFramePlacement(type, types)) return true;
   if (directForeignFrameValue(type, types)?.lifecycle.deinit) return true;
   const foreignPointer = types.semanticInfo.foreignTypes.get(type);
@@ -3757,6 +3814,10 @@ function frameCleanup(value: string, type: string, types: AsyncTypeContext): str
   if (type === "String" || type === "TextBuffer") {
     return `if ((${value}).capacity > 0) free((void *)(${value}).data);`;
   }
+  if (
+    types.semanticInfo.foreignObjectTypes.has(type)
+    || types.semanticInfo.foreignNamedTypes.get(type)?.kind === "object"
+  ) return `${value} = nil;`;
   const foreignPointer = types.semanticInfo.foreignTypes.get(type);
   if (foreignPointer?.ownership === "owned" && foreignPointer.release) {
     return foreignPointer.nullable
@@ -3810,6 +3871,10 @@ function frameManagedCleanup(value: string, type: string, types: AsyncTypeContex
   if (type === "String" || type === "TextBuffer") {
     return `if ((${value}).capacity > 0) free((void *)(${value}).data);`;
   }
+  if (
+    types.semanticInfo.foreignObjectTypes.has(type)
+    || types.semanticInfo.foreignNamedTypes.get(type)?.kind === "object"
+  ) return `${value} = nil;`;
   const fixedArray = parseFixedArrayType(type);
   if (fixedArray) {
     const cleanup = frameManagedCleanup(
@@ -3841,6 +3906,10 @@ function frameManagedCleanup(value: string, type: string, types: AsyncTypeContex
 function hasManagedFrameCleanup(type: string, types: AsyncTypeContext, visiting = new Set<string>()): boolean {
   if (visiting.has(type) || isDirectForeignFrameValue(type, types)) return false;
   if (type === "String" || type === "TextBuffer") return true;
+  if (
+    types.semanticInfo.foreignObjectTypes.has(type)
+    || types.semanticInfo.foreignNamedTypes.get(type)?.kind === "object"
+  ) return true;
   const fixedArray = parseFixedArrayType(type);
   if (fixedArray) return hasManagedFrameCleanup(fixedArray.elementType, types, visiting);
   const aggregate = types.structs.get(type);

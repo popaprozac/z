@@ -367,12 +367,14 @@ Phase 0 implements parsing, static typing, ownership restrictions, diagnostics,
 hover, completion, and highlighting for `async`, `await`, `try await`,
 `attempt await`, `async scope`, `spawn`, inferred task handles, and the
 `on thread.main`, `await on thread.main`, and `spawn on thread.main` placement
-forms. `z check` accepts these programs. The first executable placement tier
-lowers `void`, scalar, and recursively plain selected values/captures into
-structured task frames. Native workers publish main children without blocking
-the main executor, and Darwin wakes an installed `CFRunLoopSource`. Owned,
-borrowed, ARC/native-affine captures and Windows/Linux UI-loop adapters remain;
-see [`executor-placement.md`](executor-placement.md).
+forms. `z check` accepts these programs. The executable placement tier lowers
+blocks into structured task frames and supports recursively plain captures,
+owned String copies, retained Z ARC classes, and Objective-C identities retained
+by ARC when captured from the owning async task. Native workers publish main
+children without blocking the main executor, and Darwin wakes an installed
+`CFRunLoopSource`. Mutable and borrowed captures, explicit native/foreign
+affinity contracts, and Windows/Linux UI-loop adapters remain; see
+[`executor-placement.md`](executor-placement.md).
 
 Phase 1 executes owned async functions and methods on a deterministic
 single-thread FIFO executor. Each call allocates a typed task frame and each

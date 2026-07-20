@@ -115,7 +115,7 @@ functions unavailable to C++; Z does not bypass that limit through private ABI.
 | Sync work in async frames | Partial | Z and supported direct native calls/methods, console, checked arithmetic, concise matches |
 | Embedded awaits | Partial | Left-to-right cleanup-free values and awaited conditions |
 | Lazy/suspending expressions | Planned | `&&`, `||`, ternaries, value `if`, suspending match arms, owned hidden results |
-| Executor placement | Implemented narrow runtime tier | `thread.main` is typed; synchronous proof, hop-and-wait, and structured children execute with plain copied captures; native workers publish without blocking main; Darwin installs and wakes a CFRunLoop source. Owned/borrowed/ARC/native-affine captures, foreign affinity, Windows message-loop integration, and Linux toolkit adapters remain |
+| Executor placement | Implemented ownership-aware runtime tier | `thread.main` is typed; synchronous proof, hop-and-wait, and structured children execute with plain copied values, owned String copies, retained Z ARC classes, and ARC-retained Objective-C identity from the owning async task. Native workers publish without blocking main; Darwin installs and wakes a CFRunLoop source. Mutable/borrowed/native-affine captures, foreign affinity declarations, Windows message-loop integration, and Linux toolkit adapters remain |
 | Channels and actors | Planned direction | API, isolation, and sendability remain intentionally unsettled |
 | CPU parallelism | Partial evidence | One explicit native thread can execute Copy-value or uniquely owned Array/String/TextBuffer work in parallel without blocking unrelated FIFO tasks or timers; pools, general sendability, mutable shared-state isolation, and multithreaded executors remain planned |
 

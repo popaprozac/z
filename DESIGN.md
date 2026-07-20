@@ -912,15 +912,19 @@ await on thread.main { /* hop and wait */ }
 spawn on thread.main { /* structured dispatch */ }
 ```
 
-The first runtime tier executes `void`, scalar, and recursively plain placement
-blocks/captures through structured task frames. A synchronous `thread.spawn`
+The runtime executes placement blocks through structured task frames. Captures
+may be recursively plain values, owned `String` copies, retained Z ARC classes,
+or Objective-C identities retained by ARC when they originate in the owning
+async task. A synchronous `thread.spawn`
 closure can create a structured child with `spawn on thread.main` without
 becoming async itself. OS-thread exit and Z-task completion are distinct, so an
 async main task awaiting that worker suspends rather than blocking main. Darwin
 publishes cross-thread children through a protected inbound queue and wakes a
 `CFRunLoopSource`; Windows message-loop and Linux toolkit/event-loop adapters
-remain platform-runtime work behind the same `thread.main` capability. Owned,
-borrowed, ARC, and native-affine capture contracts remain the next safety tier.
+remain platform-runtime work behind the same `thread.main` capability. Mutable
+captures, borrows, native owners, and explicit foreign-affinity declarations
+remain later capture-contract tiers. Objective-C identity is intentionally not
+transported through a native worker merely to place it back on main.
 Directly async native-thread closures remain a future thread-affine continuation
 tier rather than a rejected feature. Detailed semantics and lowering order live
 in [`docs/executor-placement.md`](docs/executor-placement.md).

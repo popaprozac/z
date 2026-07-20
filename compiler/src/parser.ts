@@ -693,6 +693,10 @@ export function parse(tokens: Token[], fileName: string): Program {
       expect("semicolon", "`;`");
       return { kind: "assignment", target: expression, expression: value, location: expression.location };
     }
+    if (expression.kind === "executorPlacement") {
+      match("semicolon");
+      return { kind: "expressionStatement", expression, location: expression.location };
+    }
     expect("semicolon", "`;`");
     return { kind: "expressionStatement", expression, location: expression.location };
   };

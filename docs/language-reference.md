@@ -520,9 +520,12 @@ const child = spawn on thread.main { select refreshUI(); };
 
 The first form is a zero-scheduling static proof, the second hops and waits, and
 the third creates a hot structured child on main. The first executable tier
-supports `void`, scalar, and recursively plain selected values and copied
-captures. A native worker can create a placed main child without blocking main;
-Darwin wakes the executor through a CFRunLoop source. Other ownership shapes and
+supports plain copied captures, owned String copies, retained Z ARC classes, and
+Objective-C identities retained by ARC from the owning async task. A native
+worker can create a placed main child without blocking main; Darwin wakes the
+executor through a CFRunLoop source. A placement used as a statement is a block
+statement and does not require a trailing semicolon; bindings and other value
+expressions still do. Other ownership shapes and
 platform UI-loop adapters remain bounded work. See
 [`executor-placement.md`](executor-placement.md).
 The returned task remains scope-bound and is joined explicitly by `await` or

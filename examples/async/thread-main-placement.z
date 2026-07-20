@@ -7,7 +7,7 @@ async function main(): i32 {
 
     spawn on thread.main {
       console.log(`main placement received ${answer}`);
-    };
+    }
   });
 
   console.log("main task awaits worker without blocking the main executor");
