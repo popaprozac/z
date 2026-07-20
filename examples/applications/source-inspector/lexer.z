@@ -24,21 +24,21 @@ export struct LexerError {
   column: usize;
 }
 
-function isIdentifierStart(byte: u8): bool {
+function isIdentifierStart(byte: u8): boolean {
   return (byte >= 65 && byte <= 90)
     || (byte >= 97 && byte <= 122)
     || byte == 95;
 }
 
-function isIdentifierContinue(byte: u8): bool {
+function isIdentifierContinue(byte: u8): boolean {
   return isIdentifierStart(byte) || (byte >= 48 && byte <= 57);
 }
 
-function isDigit(byte: u8): bool {
+function isDigit(byte: u8): boolean {
   return byte >= 48 && byte <= 57;
 }
 
-function isWhitespace(byte: u8): bool {
+function isWhitespace(byte: u8): boolean {
   return byte == 9 || byte == 10 || byte == 13 || byte == 32;
 }
 

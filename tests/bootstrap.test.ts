@@ -1720,7 +1720,7 @@ test("stores move-only C++ values in Array and named enum payloads", () => {
   const compilerOption = `
     import native from ${JSON.stringify(resolve(projectRoot, "tests/fixtures/move-only.hpp"))};
 
-    function open(fail: bool): native.zcpp.UniqueValue throws i32 {
+    function open(fail: boolean): native.zcpp.UniqueValue throws i32 {
       if (fail) throw 7;
       return native.zcpp.UniqueValue(42);
     }
@@ -3352,7 +3352,7 @@ test("does not treat mutable C strings as safe cstrings", () => {
     }
   `;
   assert.match(
-    compileToC(supportedSource, resolve(projectRoot, "foreign-bool.z")),
+    compileToC(supportedSource, resolve(projectRoot, "foreign-boolean.z")),
     /return z_test_bool\(true\);/,
   );
 
@@ -3429,9 +3429,21 @@ test("infers primitive local types for C emission", () => {
 
 test("compiles boolean expressions and path-complete if statements", () => {
   const example = resolve(projectRoot, "examples/language/control-flow/control-flow.z");
+  const source = readFileSync(example, "utf8");
   const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stdout, "disabled=0\nordinary=1\nspecial=2\n");
+
+  const enabled = source.indexOf("enabled: boolean") + 1;
+  assert.match(hover(source, example, enabled)?.contents.value ?? "", /enabled: boolean/);
+
+  const incomplete = "function ready(value: boole";
+  const typeItems = completions(incomplete, "boolean-completion.z", incomplete.length);
+  assert.equal(typeItems.some((item) => item.label === "boolean"), true);
+  assert.equal(typeItems.some((item) => item.label === "bool"), false);
+
+  const removedSpelling = `function ready(value: bool): boolean { return value; } function main(): i32 { return 0; }`;
+  assert.throws(() => compileToC(removedSpelling, "removed-bool.z"), /unknown type "bool"/);
 });
 
 test("supports single-statement if, else-if, else, and void guards", () => {
@@ -3441,10 +3453,10 @@ test("supports single-statement if, else-if, else, and void guards", () => {
       else if (value < 0) return -1;
       else return 0;
     }
-    function stopEarly(stop: bool): void {
+    function stopEarly(stop: boolean): void {
       if (stop) return;
     }
-    function nested(first: bool, second: bool): i32 {
+    function nested(first: boolean, second: boolean): i32 {
       if (first) if (second) return 1; else return 2;
       return 3;
     }
@@ -3744,7 +3756,7 @@ test("stores and calls explicitly typed non-capturing function values", () => {
       return operation(left, right);
     }
 
-    function choose(addition: bool): (left: i32, right: i32) => i32 {
+    function choose(addition: boolean): (left: i32, right: i32) => i32 {
       if (addition) { return add; }
       return subtract;
     }
@@ -3906,7 +3918,7 @@ test("rejects values that may have moved on another branch", () => {
       deinit {}
     }
     function consume(resource: Resource): i32 { return resource.id; }
-    function choose(flag: bool): i32 {
+    function choose(flag: boolean): i32 {
       const resource = Resource({ id: 1 });
       if (flag) {
         consume(resource);
@@ -3986,7 +3998,7 @@ test("requires boolean if conditions", () => {
   `;
   assert.throws(
     () => compileToC(source, "if-condition.z"),
-    /if-condition\.z:3:11: error: expected bool, found i32/,
+    /if-condition\.z:3:11: error: expected boolean, found i32/,
   );
 
   const pointerTruthiness = `
@@ -3999,13 +4011,13 @@ test("requires boolean if conditions", () => {
   `;
   assert.throws(
     () => compileToC(pointerTruthiness, "pointer-truthiness.z"),
-    /expected bool/,
+    /expected boolean/,
   );
 });
 
 test("requires every reachable if path to return", () => {
   const source = `
-    function choose(flag: bool): i32 {
+    function choose(flag: boolean): i32 {
       if (flag) { return 1; }
     }
     function main(): i32 { return choose(true); }
@@ -4018,7 +4030,7 @@ test("requires every reachable if path to return", () => {
 
 test("rejects statements after every branch exits", () => {
   const source = `
-    function choose(flag: bool): i32 {
+    function choose(flag: boolean): i32 {
       if (flag) { return 1; } else { return 2; }
       return 3;
     }
@@ -4759,7 +4771,7 @@ test("requires boolean while conditions", () => {
       return 0;
     }
   `;
-  assert.throws(() => compileToC(source, "while-condition.z"), /expected bool, found i32/);
+  assert.throws(() => compileToC(source, "while-condition.z"), /expected boolean, found i32/);
 });
 
 test("reaches a fixed ownership state across loop iterations", () => {
@@ -5064,14 +5076,14 @@ test("creates distinct generic instances and preserves ownership semantics", () 
     function identity<T>(value: T): T { return value; }
     function main(): i32 {
       const number = identity<i32>(42);
-      const flag = identity<bool>(true);
+      const flag = identity<boolean>(true);
       if (flag) { return number; }
       return 0;
     }
   `;
   const generated = compileToC(distinct, "generic-distinct.z");
   assert.match(generated, /__z_mono_identity_i32/);
-  assert.match(generated, /__z_mono_identity_bool/);
+  assert.match(generated, /__z_mono_identity_boolean/);
 
   const moved = `
     struct Resource { id: i32; deinit {} }
@@ -5114,7 +5126,7 @@ test("infers generic calls while preserving explicit instantiation", () => {
     function choose<T>(left: T, right: T): T { return left; }
     function main(): i32 { return choose(1, true); }
   `;
-  assert.throws(() => compileToC(conflicting, "generic-conflict.z"), /conflicting inferred types for T.*i32 and bool/);
+  assert.throws(() => compileToC(conflicting, "generic-conflict.z"), /conflicting inferred types for T.*i32 and boolean/);
 
   const duplicate = `
     struct Invalid<T, T> { value: T; }
@@ -5188,7 +5200,7 @@ test("infers generic aggregate construction, class construction, and static fact
     struct Pair<T> { first: T; second: T; }
     function main(): i32 { const pair = Pair({ first: 1, second: true }); return 0; }
   `;
-  assert.throws(() => compileToC(conflict, "aggregate-inference-conflict.z"), /conflicting inferred types for T.*i32 and bool/);
+  assert.throws(() => compileToC(conflict, "aggregate-inference-conflict.z"), /conflicting inferred types for T.*i32 and boolean/);
 
   const ambiguous = `
     struct Marker<T> { tag: i32; static function create(): Marker<T> { return Marker<T>({ tag: 0 }); } }
@@ -5196,7 +5208,7 @@ test("infers generic aggregate construction, class construction, and static fact
   `;
   assert.throws(() => compileToC(ambiguous, "static-inference-ambiguous.z"), /cannot infer type parameter "T" for "Marker\.create"/);
 
-  const wrongStaticArity = source.replace("Container.wrap<i32>(42)", "Container.wrap<i32, bool>(42)");
+  const wrongStaticArity = source.replace("Container.wrap<i32>(42)", "Container.wrap<i32, boolean>(42)");
   assert.throws(() => compileToC(wrongStaticArity, "static-inference-arity.z"), /expects 1 type argument\(s\), received 2/);
 
   const oldStaticShape = source.replace("Container.wrap<i32>(42)", "Container<i32>.wrap(42)");
@@ -5419,7 +5431,7 @@ test("specializes generic Array mutation helpers for every element type", () => 
     function append<T>(inout values: Array<T>, value: T): void { values.push(value); }
     function main(): i32 {
       let numbers = Array<i32>();
-      let flags = Array<bool>();
+      let flags = Array<boolean>();
       append(inout numbers, 42);
       append(inout flags, true);
       if (flags[0]) { return numbers[0]; }
@@ -5428,7 +5440,7 @@ test("specializes generic Array mutation helpers for every element type", () => 
   `;
   const generated = compileToC(source, "dynamic-array-specializations.z");
   assert.match(generated, /DynamicArray_.*i32.*_push/);
-  assert.match(generated, /DynamicArray_.*bool.*_push/);
+  assert.match(generated, /DynamicArray_.*boolean.*_push/);
   const compilation = spawnSync("clang", ["-x", "c", "-Wall", "-Wextra", "-Werror", "-fsyntax-only", "-"], {
     input: generated,
     encoding: "utf8",
@@ -5496,7 +5508,7 @@ test("checks Array mutation, element types, and partial moves", () => {
       return 0;
     }
   `;
-  assert.throws(() => compileToC(wrongElement, "dynamic-array-element.z"), /expected i32, found bool/);
+  assert.throws(() => compileToC(wrongElement, "dynamic-array-element.z"), /expected i32, found boolean/);
 
   const partialMove = `
     struct Item { id: i32; deinit {} }
@@ -5540,7 +5552,7 @@ test("checks logical operand types", () => {
   `;
   assert.throws(
     () => compileToC(source, "logical-types.z"),
-    /operator "&&" requires bool operands/,
+    /operator "&&" requires boolean operands/,
   );
 });
 
@@ -5641,7 +5653,7 @@ test("initializes private class state through safe user constructors", () => {
   const branchInitialized = `
     class Choice {
       private value: i32;
-      constructor(value: i32, positive: bool) {
+      constructor(value: i32, positive: boolean) {
         if (positive) { this.value = value; }
         else { this.value = -value; }
       }
@@ -6507,7 +6519,7 @@ test("initializes native out parameters with flow-sensitive checking", () => {
   );
 
   const missingOutput = `
-    function initialize(flag: bool, out value: i32): void {
+    function initialize(flag: boolean, out value: i32): void {
       if (flag) { value = 1; }
     }
     function main(): i32 { return 0; }
@@ -6660,7 +6672,7 @@ test("type-checks assignments and replaces cleanup-bearing values safely", () =>
   `;
   assert.throws(
     () => compileToC(wrongType, "assignment-type.z"),
-    /expected i32, found bool/,
+    /expected i32, found boolean/,
   );
 
   const example = resolve(projectRoot, "examples/language/ownership/replacement.z");
@@ -6954,6 +6966,11 @@ test("editor grammar tracks keywords without reserving Result variants", () => {
   assert.match(keywordPattern, /continue/);
   assert.match(grammar.repository.declarations.patterns.map((pattern: { match: string }) => pattern.match).join(" "), /trait\|class/);
   assert.match(constantPattern, /true\|false/);
+  assert.match(typePattern, /boolean/);
+  assert.match(typePattern, /Result/);
+  assert.match(typePattern, /Task/);
+  assert.match(typePattern, /Weak/);
+  assert.doesNotMatch("bool", new RegExp(typePattern));
   assert.match(constantPattern, /null/);
   assert.match(constantPattern, /this/);
   assert.match(operatorPattern, /&&/);
@@ -7048,7 +7065,7 @@ test("normalizes embedded awaits left-to-right and resumes awaited branches", ()
       return id;
     }
     async function combineAsync(left: i32, right: i32): i32 { return left + right; }
-    async function positive(value: i32): bool { return value > 0; }
+    async function positive(value: i32): boolean { return value > 0; }
     async function main(): i32 {
       const answer = combine(await value(20), await value(22));
       const nested = await combineAsync(await value(1), await value(2));
@@ -7080,7 +7097,7 @@ test("normalizes embedded awaits left-to-right and resumes awaited branches", ()
 
 test("diagnoses embedded awaits whose lazy branch lowering has not landed", () => {
   const shortCircuit = `
-    async function flag(): bool { return true; }
+    async function flag(): boolean { return true; }
     async function main(): i32 {
       if (false && await flag()) { return 1; }
       return 0;
@@ -7430,7 +7447,7 @@ test("constructs and destroys move-only C++ values across async suspension", () 
     import { delay } from "std/time";
     import native from ${JSON.stringify(header)};
 
-    async function open(fail: bool): native.zcpp.UniqueValue throws i32 {
+    async function open(fail: boolean): native.zcpp.UniqueValue throws i32 {
       await delay(1);
       if (fail) throw 7;
       return native.zcpp.UniqueValue(42);
@@ -8017,7 +8034,7 @@ test("mutably borrows caller storage through scoped spawn and releases it on joi
   const exitingPath = `
     struct Counter { value: i32; }
     async function add(inout counter: Counter): void { counter.value = counter.value + 1; }
-    async function updateOrExit(exitEarly: bool, inout counter: Counter): i32 {
+    async function updateOrExit(exitEarly: boolean, inout counter: Counter): i32 {
       async scope {
         const task = spawn add(inout counter);
         if (exitEarly) {

@@ -13,7 +13,7 @@ function divide(value: i32, divisor: i32, out quotient: i32, out remainder: i32)
   remainder = value - quotient * divisor;
 }
 
-function choose(flag: bool, out value: i32): void {
+function choose(flag: boolean, out value: i32): void {
   if (flag) {
     value = 10;
   } else {

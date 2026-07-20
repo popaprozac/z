@@ -1,6 +1,6 @@
 import stdio from "stdio.h";
 
-function classify(value: i32, enabled: bool): i32 {
+function classify(value: i32, enabled: boolean): i32 {
   if (!enabled) {
     return 0;
   } else if (value > 10 && value != 42) {

@@ -108,7 +108,7 @@ function ownNamedReturn(): i32 {
   return resource.id;
 }
 
-function conditionalMove(moveIt: bool): i32 {
+function conditionalMove(moveIt: boolean): i32 {
   const resource = Resource({ id: 18 });
   if (moveIt) {
     consume(resource);
@@ -116,7 +116,7 @@ function conditionalMove(moveIt: bool): i32 {
   return 0;
 }
 
-function moveOnExitingPath(moveIt: bool): i32 {
+function moveOnExitingPath(moveIt: boolean): i32 {
   const resource = Resource({ id: 19 });
   if (moveIt) {
     return consume(resource);

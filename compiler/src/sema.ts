@@ -304,7 +304,7 @@ type SymbolValue =
 
 const integerTypes = new Set(["i8", "u8", "i16", "u16", "i32", "u32", "i64", "u64", "isize", "usize"]);
 const floatTypes = new Set(["f32", "f64"]);
-const primitiveTypes = new Set([...integerTypes, ...floatTypes, "void", "bool", "cstring", "String", "TextBuffer", "Arena"]);
+const primitiveTypes = new Set([...integerTypes, ...floatTypes, "void", "boolean", "cstring", "String", "TextBuffer", "Arena"]);
 const movedPrefix = "__z_moved:";
 const maybeMovedPrefix = "__z_maybe_moved:";
 const uninitializedPrefix = "__z_uninitialized:";
@@ -1819,8 +1819,8 @@ function analyzeStatement(
     }
     case "if": {
       const conditionType = inferExpression(statement.condition, locals, globals, structs, enums, fileName, state);
-      if (conditionType !== "bool") {
-        requireAssignable("bool", conditionType, statement.condition, fileName, state.foreignNamedTypes, state.numericLiteralTypes);
+      if (conditionType !== "boolean") {
+        requireAssignable("boolean", conditionType, statement.condition, fileName, state.foreignNamedTypes, state.numericLiteralTypes);
       }
       analyzeIfBranches(statement, owner, locals, globals, structs, enums, fileName, state);
       return;
@@ -2556,8 +2556,8 @@ function inferIfExpression(
   state: AnalysisState,
 ): ValueType {
   const conditionType = inferExpression(expression.condition, locals, globals, structs, enums, fileName, state);
-  if (conditionType !== "bool") {
-    requireAssignable("bool", conditionType, expression.condition, fileName, state.foreignNamedTypes, state.numericLiteralTypes);
+  if (conditionType !== "boolean") {
+    requireAssignable("boolean", conditionType, expression.condition, fileName, state.foreignNamedTypes, state.numericLiteralTypes);
   }
 
   const original = new Map(locals);
@@ -3045,7 +3045,7 @@ function inferExpressionInner(
       }
       return "String";
     case "boolean":
-      return "bool";
+      return "boolean";
     case "null":
       return "null";
     case "argumentReference":
@@ -3057,7 +3057,7 @@ function inferExpressionInner(
     case "unary": {
       const operand = inferExpression(expression.operand, locals, globals, structs, enums, fileName, state);
       const canonicalOperand = canonicalType(operand, state.foreignNamedTypes);
-      if (expression.operator === "!" && canonicalOperand === "bool") return "bool";
+      if (expression.operator === "!" && canonicalOperand === "boolean") return "boolean";
       if (["+", "-"].includes(expression.operator) && isNumericType(canonicalOperand)) {
         state.foreignExpressionTypes.set(expression.location.offset, canonicalOperand);
         if (expression.operator === "-" && isIntegerType(canonicalOperand)) {
@@ -3070,7 +3070,7 @@ function inferExpressionInner(
         state.foreignExpressionTypes.set(expression.location.offset, canonicalOperand);
         return canonicalOperand;
       }
-      const requirement = expression.operator === "!" ? "a bool operand" : expression.operator === "~" ? "an integer operand" : "a numeric operand";
+      const requirement = expression.operator === "!" ? "a boolean operand" : expression.operator === "~" ? "an integer operand" : "a numeric operand";
       throw new DiagnosticError(fileName, expression.location, `operator ${JSON.stringify(expression.operator)} requires ${requirement}`);
     }
     case "identifier": {
@@ -3228,7 +3228,7 @@ function inferExpressionInner(
         if (canonicalLeft !== canonicalRight || !isNumericType(canonicalLeft)) {
           throw new DiagnosticError(fileName, expression.location, `operator ${JSON.stringify(expression.operator)} requires matching numeric operands`);
         }
-        return "bool";
+        return "boolean";
       }
       if (["==", "!="].includes(expression.operator)) {
         const leftNullableReference = nullableForeignReference(left, state);
@@ -3237,26 +3237,26 @@ function inferExpressionInner(
           (canonicalLeft === "null" && rightNullableReference)
           || (canonicalRight === "null" && leftNullableReference)
         ) {
-          return "bool";
+          return "boolean";
         }
         const comparableNamed = left === right && state.foreignNamedTypes.get(String(left))?.kind === "enum";
-        if (canonicalLeft !== canonicalRight || (!isNumericType(canonicalLeft) && canonicalLeft !== "bool" && !comparableNamed)) {
-          throw new DiagnosticError(fileName, expression.location, `operator ${JSON.stringify(expression.operator)} requires matching numeric, bool, or enum operands`);
+        if (canonicalLeft !== canonicalRight || (!isNumericType(canonicalLeft) && canonicalLeft !== "boolean" && !comparableNamed)) {
+          throw new DiagnosticError(fileName, expression.location, `operator ${JSON.stringify(expression.operator)} requires matching numeric, boolean, or enum operands`);
         }
-        return "bool";
+        return "boolean";
       }
       if (["&&", "||"].includes(expression.operator)) {
-        if (canonicalType(left, state.foreignNamedTypes) !== "bool" || canonicalType(right, state.foreignNamedTypes) !== "bool") {
-          throw new DiagnosticError(fileName, expression.location, `operator ${JSON.stringify(expression.operator)} requires bool operands`);
+        if (canonicalType(left, state.foreignNamedTypes) !== "boolean" || canonicalType(right, state.foreignNamedTypes) !== "boolean") {
+          throw new DiagnosticError(fileName, expression.location, `operator ${JSON.stringify(expression.operator)} requires boolean operands`);
         }
-        return "bool";
+        return "boolean";
       }
       throw new DiagnosticError(fileName, expression.location, `unsupported binary operator ${JSON.stringify(expression.operator)}`);
     }
     case "conditional": {
       const conditionType = inferExpression(expression.condition, locals, globals, structs, enums, fileName, state);
-      if (conditionType !== "bool") {
-        requireAssignable("bool", conditionType, expression.condition, fileName, state.foreignNamedTypes, state.numericLiteralTypes);
+      if (conditionType !== "boolean") {
+        requireAssignable("boolean", conditionType, expression.condition, fileName, state.foreignNamedTypes, state.numericLiteralTypes);
       }
       const original = new Map(locals);
       const thenLocals = narrowedConditionLocals(original, expression.condition, true, state);
@@ -3583,7 +3583,7 @@ function inferExpressionInner(
           throw new DiagnosticError(fileName, expression.object.location, "a TextBuffer temporary must be bound before reading one of its properties");
         }
         if (expression.property === "byteLength") return "usize";
-        if (expression.property === "isEmpty") return "bool";
+        if (expression.property === "isEmpty") return "boolean";
         throw new DiagnosticError(fileName, expression.location, `TextBuffer has no property ${JSON.stringify(expression.property)}`);
       }
       if (receiverValueType === "String") {
@@ -3591,7 +3591,7 @@ function inferExpressionInner(
           throw new DiagnosticError(fileName, expression.object.location, "a String temporary must be bound before reading one of its properties");
         }
         if (expression.property === "byteLength") return "usize";
-        if (expression.property === "isEmpty") return "bool";
+        if (expression.property === "isEmpty") return "boolean";
         throw new DiagnosticError(fileName, expression.location, `String has no property ${JSON.stringify(expression.property)}`);
       }
       const array = parseFixedArrayType(receiverValueType);
@@ -5768,9 +5768,9 @@ function analyzeWhileLoop(
       fileName,
       state,
     );
-    if (conditionType !== "bool") {
+    if (conditionType !== "boolean") {
       requireAssignable(
-        "bool",
+        "boolean",
         conditionType,
         statement.condition,
         fileName,
@@ -6019,7 +6019,7 @@ function shareableTypeIssue(
   path = String(underlyingType(type)),
 ): ShareabilityIssue | null {
   const actual = String(underlyingType(type));
-  if (actual === "void" || actual === "bool" || integerTypes.has(actual) || floatTypes.has(actual) || actual === "String") {
+  if (actual === "void" || actual === "boolean" || integerTypes.has(actual) || floatTypes.has(actual) || actual === "String") {
     return null;
   }
   if (actual === "TextBuffer" || parseDynamicArrayType(actual)) {
@@ -6109,7 +6109,7 @@ function initialThreadTransferKind(
   visiting: Set<string> = new Set(),
 ): ThreadTransferKind | null {
   const actual = String(underlyingType(type));
-  if (actual === "void" || actual === "bool" || integerTypes.has(actual) || floatTypes.has(actual)) return "copy";
+  if (actual === "void" || actual === "boolean" || integerTypes.has(actual) || floatTypes.has(actual)) return "copy";
   if (actual === "String" || actual === "TextBuffer") return "move";
   if (parseViewType(actual) || parseSliceType(actual) || parseTaskType(actual)) return null;
   const fixed = parseFixedArrayType(actual);
@@ -7104,7 +7104,7 @@ function checkForeignCall(
       state.cstringConversions.add(argument.location.offset);
       actual = "cstring";
     }
-    if (!parameter && !isNumericType(canonicalType(actual, state.foreignNamedTypes)) && actual !== "bool" && actual !== "cstring") {
+    if (!parameter && !isNumericType(canonicalType(actual, state.foreignNamedTypes)) && actual !== "boolean" && actual !== "cstring") {
       throw new DiagnosticError(fileName, argument.location, `unsupported variadic argument type ${describeValueType(actual, state)} for C function ${JSON.stringify(target.name)}`);
     }
     if (!parameter && argument.kind === "number" && isIntegerLiteral(argument.value) && !integerLiteralFits(argument.value, "i32")) {

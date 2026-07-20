@@ -96,8 +96,8 @@ const sourceKeywordTokens = [
 ] as const;
 
 const primitiveTypeTokens = [
-  "void", "bool", "String", "cstring", "Slice", "Array", "i8", "i16", "i32", "i64",
-  "u8", "u16", "u32", "u64", "f32", "f64", "usize", "isize",
+  "void", "boolean", "String", "cstring", "Slice", "Array", "Option", "Result", "Task", "Weak",
+  "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "f32", "f64", "usize", "isize",
 ] as const;
 
 const declarationKeywordTokens = [
@@ -691,7 +691,7 @@ export function hover(source: string, fileName: string, offset: number): Hover |
       if (word.text === "byteLength") {
         return markdownHover("byteLength: usize  // UTF-8 storage bytes", source, word.start, word.end);
       }
-      if (word.text === "isEmpty") return markdownHover("isEmpty: bool", source, word.start, word.end);
+      if (word.text === "isEmpty") return markdownHover("isEmpty: boolean", source, word.start, word.end);
       if (word.text === "byteAt") {
         return markdownHover("byteAt(index: usize): u8  // checked UTF-8 byte access", source, word.start, word.end);
       }
@@ -701,7 +701,7 @@ export function hover(source: string, fileName: string, offset: number): Hover |
     }
     if (resolved?.kind === "textBuffer") {
       if (word.text === "byteLength") return markdownHover("byteLength: usize", source, word.start, word.end);
-      if (word.text === "isEmpty") return markdownHover("isEmpty: bool", source, word.start, word.end);
+      if (word.text === "isEmpty") return markdownHover("isEmpty: boolean", source, word.start, word.end);
       if (word.text === "append") {
         return markdownHover("append(in text: String): void", source, word.start, word.end);
       }
@@ -2194,7 +2194,7 @@ function memberCompletions(
   if (resolved?.kind === "string") {
     return filterCompletions([
       { label: "byteLength", kind: completionKinds.property, detail: "usize  // UTF-8 storage bytes" },
-      { label: "isEmpty", kind: completionKinds.property, detail: "bool" },
+      { label: "isEmpty", kind: completionKinds.property, detail: "boolean" },
       {
         label: "byteAt",
         kind: completionKinds.method,
@@ -2212,7 +2212,7 @@ function memberCompletions(
   if (resolved?.kind === "textBuffer") {
     return filterCompletions([
       { label: "byteLength", kind: completionKinds.property, detail: "usize" },
-      { label: "isEmpty", kind: completionKinds.property, detail: "bool" },
+      { label: "isEmpty", kind: completionKinds.property, detail: "boolean" },
       { label: "append", kind: completionKinds.method, detail: "append(in text: String): void", insertText: "append()" },
       {
         label: "appendBytes",

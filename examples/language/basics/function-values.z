@@ -8,7 +8,7 @@ function subtract(left: i32, right: i32): i32 {
   return left - right;
 }
 
-function choose(subtraction: bool): (left: i32, right: i32) => i32 {
+function choose(subtraction: boolean): (left: i32, right: i32) => i32 {
   if (subtraction) {
     return subtract;
   }

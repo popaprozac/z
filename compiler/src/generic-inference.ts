@@ -345,7 +345,7 @@ export function inferGenericCalls(
         return { expression: { ...expression, parts }, type: "String" };
       }
       case "boolean":
-        return { expression, type: "bool" };
+        return { expression, type: "boolean" };
       case "null":
         return { expression, type: "null" };
       case "identifier":
@@ -360,7 +360,7 @@ export function inferGenericCalls(
         return { expression, type: environment.get(expression.name) ?? null };
       case "unary": {
         const operand = rewriteExpression(expression.operand, environment);
-        return { expression: { ...expression, operand: operand.expression }, type: expression.operator === "!" ? "bool" : operand.type };
+        return { expression: { ...expression, operand: operand.expression }, type: expression.operator === "!" ? "boolean" : operand.type };
       }
       case "binary": {
         const left = rewriteExpression(expression.left, environment);
@@ -368,7 +368,7 @@ export function inferGenericCalls(
         const comparison = ["==", "!=", "<", "<=", ">", ">=", "&&", "||"].includes(expression.operator);
         return {
           expression: { ...expression, left: left.expression, right: right.expression },
-          type: comparison ? "bool" : left.type ?? right.type,
+          type: comparison ? "boolean" : left.type ?? right.type,
         };
       }
       case "conditional": {
@@ -495,7 +495,7 @@ export function inferGenericCalls(
         }
         if (object.type === "TextBuffer") {
           const type = expression.property === "byteLength" ? "usize"
-            : expression.property === "isEmpty" ? "bool"
+            : expression.property === "isEmpty" ? "boolean"
             : expression.property === "finish" ? "String"
             : ["append", "appendBytes", "appendAscii"].includes(expression.property) ? "void"
             : null;

@@ -15,7 +15,7 @@ async function warmValue(id: i32): void {
   console.log(`warmed ${id}`);
 }
 
-async function isExpected(value: i32): bool {
+async function isExpected(value: i32): boolean {
   return value == 42;
 }
 

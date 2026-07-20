@@ -14,7 +14,7 @@ export struct DocumentStore {
     return this.documents.length;
   }
 
-  function withDocument(id: i32, in visit: (in document: Document) => void): bool {
+  function withDocument(id: i32, in visit: (in document: Document) => void): boolean {
     for (const document of this.documents) {
       if (document.id == id) {
         visit(document);
@@ -72,7 +72,7 @@ export class Workspace {
     }
   }
 
-  function withDocument(id: i32, in visit: (in document: Document) => void): bool {
+  function withDocument(id: i32, in visit: (in document: Document) => void): boolean {
     for (const document of this.documents) {
       if (document.id == id) {
         visit(document);

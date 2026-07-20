@@ -23,7 +23,7 @@ struct DocumentLease {
   }
 }
 
-async function loadDocument(id: i32, fail: bool): DocumentLease throws LoadError {
+async function loadDocument(id: i32, fail: boolean): DocumentLease throws LoadError {
   const document = DocumentLease({
     id,
     resource: zcpp.UniqueValue(id),

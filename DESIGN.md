@@ -406,7 +406,7 @@ do not have inheritance.
 
 ## Control flow
 
-Conditions are statically typed `bool` expressions. `if`/`else` and `while`
+Conditions are statically typed `boolean` expressions. `if`/`else` and `while`
 retain TypeScript-like spelling, while `break` and `continue` target the nearest
 enclosing loop. A control transfer first cleans every local scope it exits, so
 deterministic destruction is preserved on normal iteration, `break`,

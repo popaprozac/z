@@ -47,7 +47,7 @@ text value.
 | Family | Z spelling | Meaning and current rule |
 | --- | --- | --- |
 | No value | `void` | Function produces no value; not ordinary storable data |
-| Boolean | `bool` | Exactly `true` or `false`; conditions do not use truthiness |
+| Boolean | `boolean` | Exactly `true` or `false`; conditions do not use truthiness |
 | Signed integers | `i8`, `i16`, `i32`, `i64` | Fixed-width two's-complement values; integer literals prefer `i32` |
 | Unsigned integers | `u8`, `u16`, `u32`, `u64` | Fixed-width unsigned values; `u8` is the byte-oriented scalar |
 | Pointer-sized integers | `isize`, `usize` | Signed/unsigned target pointer width; sizes and indexes normally use `usize` |
@@ -256,7 +256,7 @@ value-producing `if` expressions. Statement blocks never return an implicit
 last expression; value-producing blocks use `select` explicitly.
 
 Statement `if`/`else` branches may contain one unbraced statement. `else` binds
-to the nearest unmatched `if`. Conditions are always `bool`; nullable pointers
+to the nearest unmatched `if`. Conditions are always `boolean`; nullable pointers
 and references require an explicit comparison with `null` rather than
 truthiness.
 

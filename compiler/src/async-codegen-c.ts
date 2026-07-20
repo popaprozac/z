@@ -109,7 +109,7 @@ const scalarTypes = new Map<string, string>([
   ["usize", "uintptr_t"],
   ["f32", "float"],
   ["f64", "double"],
-  ["bool", "bool"],
+  ["boolean", "bool"],
   ["void", "void"],
   ["cstring", "const char *"],
 ]);
@@ -2565,7 +2565,7 @@ function renderAsyncConsoleValue(
   if (type === "f32" || type === "f64") {
     return [`fprintf(${stream}, "%g", (double)(${value}));`];
   }
-  if (type === "bool") return [`fputs((${value}) ? "true" : "false", ${stream});`];
+  if (type === "boolean") return [`fputs((${value}) ? "true" : "false", ${stream});`];
   if (type === "cstring") return [`fputs((${value}) != NULL ? (${value}) : "null", ${stream});`];
   if (type === "String") {
     return [`if ((${value}).length > 0) fwrite((${value}).data, 1, (${value}).length, ${stream});`];
@@ -3414,7 +3414,7 @@ function frameExpressionType(
   if (analyzed) return analyzed;
   if (expression.kind === "identifier") return plan.locals.get(expression.name) ?? "i32";
   if (expression.kind === "new" || expression.kind === "structExpression") return expression.typeName;
-  if (expression.kind === "boolean" || expression.kind === "binary" || expression.kind === "unary") return "bool";
+  if (expression.kind === "boolean" || expression.kind === "binary" || expression.kind === "unary") return "boolean";
   if (expression.kind === "number") {
     return plan.types.semanticInfo.numericLiteralTypes.get(expression.location.offset) ?? "i32";
   }

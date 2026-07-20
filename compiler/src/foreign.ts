@@ -1312,7 +1312,7 @@ function mapBuiltinType(cName: string): ForeignScalarTypeName | "void" | null {
   }
   if (normalized === "long long" || normalized === "long long int" || normalized === "signed long long" || normalized === "signed long long int") return "i64";
   if (normalized === "unsigned long long" || normalized === "unsigned long long int") return "u64";
-  if (normalized === "_Bool" || normalized === "bool") return "bool";
+  if (normalized === "_Bool" || normalized === "bool") return "boolean";
   return null;
 }
 
@@ -1335,7 +1335,7 @@ function mapTypedefType(name: string, cName: string): ForeignScalarTypeName | "v
   };
   const underlying = mapBuiltinType(cName);
   const intended = exact[name];
-  if (!intended || !underlying || underlying === "void" || underlying === "bool") return underlying;
+  if (!intended || !underlying || underlying === "void" || underlying === "boolean") return underlying;
   const widths = targetIntegerWidths();
   const widthOf = (type: ForeignScalarTypeName): number => {
     if (type === "isize" || type === "usize") return widths.pointer * 8;

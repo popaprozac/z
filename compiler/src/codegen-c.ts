@@ -88,7 +88,7 @@ const primitiveTypeNames: Record<string, string> = {
   f32: "float",
   f64: "double",
   void: "void",
-  bool: "bool",
+  boolean: "bool",
   cstring: "const char *",
   String: "Z_String",
   TextBuffer: "Z_String",
@@ -2169,7 +2169,7 @@ function renderConsoleValue(
   if (type === "f32" || type === "f64") {
     return [`fprintf(${stream}, "%g", (double)(${value}));`];
   }
-  if (type === "bool") return [`fputs((${value}) ? "true" : "false", ${stream});`];
+  if (type === "boolean") return [`fputs((${value}) ? "true" : "false", ${stream});`];
   if (type === "cstring") return [`fputs((${value}) != NULL ? (${value}) : "null", ${stream});`];
   if (type === "String") return [`if ((${value}).length > 0) fwrite((${value}).data, 1, (${value}).length, ${stream});`];
   if (type === "null") return [`fputs("null", ${stream});`];
@@ -2303,7 +2303,7 @@ function renderStringValue(
   if (type === "f32" || type === "f64") {
     return [`z_string_append_float(&${target}, (double)(${value}));`];
   }
-  if (type === "bool") {
+  if (type === "boolean") {
     return [`z_string_append_bytes(&${target}, (${value}) ? "true" : "false", (${value}) ? 4 : 5);`];
   }
   if (type === "cstring") return [`z_string_append_cstring(&${target}, ${value});`];
@@ -4826,7 +4826,7 @@ function inferExpressionType(expression: Expression, context: GenerationContext)
     analyzedType === "String"
     || analyzedType === "TextBuffer"
     || analyzedType === "Arena"
-    || analyzedType === "bool"
+    || analyzedType === "boolean"
     || analyzedType === "u8"
     || analyzedType === "usize"
     || parseFunctionType(analyzedType)
@@ -4852,11 +4852,11 @@ function inferExpressionType(expression: Expression, context: GenerationContext)
       return "String";
     case "boolean":
     case "null":
-      return expression.kind === "null" ? "null" : "bool";
+      return expression.kind === "null" ? "null" : "boolean";
     case "unary":
-      return "bool";
+      return "boolean";
     case "binary":
-      return ["+", "-", "*", "/", "%", "&", "|", "^", "<<", ">>"].includes(expression.operator) ? "i32" : "bool";
+      return ["+", "-", "*", "/", "%", "&", "|", "^", "<<", ">>"].includes(expression.operator) ? "i32" : "boolean";
     case "conditional":
       return inferExpressionType(expression.thenExpression, context);
     case "new":

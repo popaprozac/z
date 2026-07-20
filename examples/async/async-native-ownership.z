@@ -6,7 +6,7 @@ struct OpenError {
   code: i32;
 }
 
-async function openAfterDelay(fail: bool): zcpp.UniqueValue throws OpenError {
+async function openAfterDelay(fail: boolean): zcpp.UniqueValue throws OpenError {
   const resource = zcpp.UniqueValue(42);
   await delay(1);
   const initialValue = resource.value();

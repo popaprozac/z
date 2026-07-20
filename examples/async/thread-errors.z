@@ -6,7 +6,7 @@ struct WorkError {
   message: String;
 }
 
-function calculate(value: i32, fail: bool): i32 throws WorkError {
+function calculate(value: i32, fail: boolean): i32 throws WorkError {
   if (fail) {
     throw WorkError({ code: 7, message: "calculation failed" });
   }

@@ -59,7 +59,7 @@ const standardFunctions: Record<StandardFunctionName, StandardFunctionSignature>
   "fs.exists": {
     cName: "z_fs_exists",
     parameters: [{ name: "path", mode: "in", type: "String", abi: "value" }],
-    returnType: "bool",
+    returnType: "boolean",
   },
   "process.args": {
     cName: "z_process_args",
