@@ -225,9 +225,11 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    source-located top-level declaration skeleton for imports, functions, structs,
    classes, traits, and enums. `z self-host-parse` checks exact declaration kind,
    name, export/async state, order, and location parity against stage 0 across an
-   adversarial fixture plus the lexer and parser sources themselves. It borrows
-   while traversing balanced bodies and copies only retained names. Members,
-   signatures, statements, expressions, Unicode identifiers, block comments,
+   adversarial fixture plus the lexer and parser sources themselves. Complete
+   top-level function signatures retain generics and constraints, receiver and
+   parameter capabilities, nested canonical types, return types, and `throws`.
+   Traversal borrows tokens and copies only AST-retained text. Aggregate members,
+   enum variants, statements, expressions, Unicode identifiers, block comments,
    and direct in-process driver integration remain.
 5. **Threaded concurrency evidence — Copy, unique-owner, native-owner, readonly ARC, and owned-error slices implemented.**
    `thread.spawn` now proves one real cross-thread task frame with explicit

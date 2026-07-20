@@ -15,6 +15,21 @@ export type Stage1Declaration = {
   };
 };
 
+export type Stage1FunctionSignature = {
+  readonly text: string;
+  readonly location: {
+    readonly offset: number;
+    readonly line: number;
+    readonly column: number;
+    readonly fileName: string;
+  };
+};
+
+export type Stage1Program = {
+  readonly declarations: readonly Stage1Declaration[];
+  readonly functionSignatures: readonly Stage1FunctionSignature[];
+};
+
 // Stage 1 currently crosses a subprocess boundary. Keep that bootstrap protocol
 // isolated here so the parser-facing Token shape does not learn about transport.
 export function decodeStage1TokenStream(output: string, fileName: string): readonly Token[] {
@@ -37,8 +52,31 @@ export function decodeStage1TokenStream(output: string, fileName: string): reado
 }
 
 export function decodeStage1DeclarationStream(output: string, fileName: string): readonly Stage1Declaration[] {
-  return output.split("\n").filter((line) => line.length > 0).map((line) => {
+  return decodeStage1ProgramStream(output, fileName).declarations;
+}
+
+export function decodeStage1ProgramStream(output: string, fileName: string): Stage1Program {
+  const declarations: Stage1Declaration[] = [];
+  const functionSignatures: Stage1FunctionSignature[] = [];
+  for (const line of output.split("\n").filter((candidate) => candidate.length > 0)) {
     const fields = line.split("\t");
+    if (fields[0] === "signature") {
+      if (fields.length !== 5) throw new Error(`malformed stage-1 function signature line: ${line}`);
+      const [, offsetText, lineText, columnText, hexadecimalText] = fields;
+      if (!/^(?:[0-9a-f]{2})*$/.test(hexadecimalText)) {
+        throw new Error(`malformed stage-1 function signature text: ${hexadecimalText}`);
+      }
+      functionSignatures.push({
+        text: Buffer.from(hexadecimalText, "hex").toString("utf8"),
+        location: {
+          offset: parseProtocolHexInteger(offsetText, "function signature offset"),
+          line: parseProtocolHexInteger(lineText, "function signature line"),
+          column: parseProtocolHexInteger(columnText, "function signature column"),
+          fileName,
+        },
+      });
+      continue;
+    }
     if (fields.length !== 7) throw new Error(`malformed stage-1 declaration line: ${line}`);
     const [kind, exportedText, asynchronousText, offsetText, lineText, columnText, hexadecimalName] = fields;
     if (!isStage1DeclarationKind(kind)) throw new Error(`malformed stage-1 declaration kind: ${kind}`);
@@ -51,7 +89,7 @@ export function decodeStage1DeclarationStream(output: string, fileName: string):
     if (!/^(?:[0-9a-f]{2})*$/.test(hexadecimalName)) {
       throw new Error(`malformed stage-1 declaration name: ${hexadecimalName}`);
     }
-    return {
+    declarations.push({
       kind,
       name: Buffer.from(hexadecimalName, "hex").toString("utf8"),
       exported: exportedText === "1",
@@ -62,8 +100,9 @@ export function decodeStage1DeclarationStream(output: string, fileName: string):
         column: parseProtocolHexInteger(columnText, "declaration column"),
         fileName,
       },
-    };
-  });
+    });
+  }
+  return { declarations, functionSignatures };
 }
 
 function isStage1DeclarationKind(value: string): value is Stage1DeclarationKind {

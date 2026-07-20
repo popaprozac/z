@@ -3686,14 +3686,15 @@ function valueArmTerminates(statement: Statement): boolean {
   return false;
 }
 
-function statementTerminates(statement: Statement): boolean {
+function statementTerminates(statement: Statement | undefined): boolean {
+  if (!statement) return false;
   if (
     statement.kind === "return"
     || statement.kind === "throw"
     || statement.kind === "break"
     || statement.kind === "continue"
   ) return true;
-  if (statement.kind === "block") return statementTerminates(statement.statements.at(-1)!);
+  if (statement.kind === "block") return statementTerminates(statement.statements.at(-1));
   if (statement.kind === "if") {
     return Boolean(statement.elseBranch)
       && statementTerminates(statement.thenBranch)

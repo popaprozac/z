@@ -1,4 +1,5 @@
 import { Token, TokenKind } from "./lexer.z";
+import { TextBuffer } from "std/text";
 
 export enum DeclarationKind {
   importDeclaration,
@@ -19,8 +20,59 @@ export struct Declaration {
   column: usize;
 }
 
+export enum ParameterMode {
+  value,
+  input,
+  inputOutput,
+  output,
+}
+
+export enum ReceiverMode {
+  none,
+  inputOutput,
+  move,
+}
+
+export struct TypeReference {
+  name: String;
+  offset: usize;
+  line: usize;
+  column: usize;
+}
+
+export struct TypeParameter {
+  name: String;
+  constraints: Array<TypeReference>;
+  offset: usize;
+  line: usize;
+  column: usize;
+}
+
+export struct Parameter {
+  name: String;
+  mode: ParameterMode;
+  type: TypeReference;
+  offset: usize;
+  line: usize;
+  column: usize;
+}
+
+export struct FunctionDeclaration {
+  name: String;
+  asynchronous: boolean;
+  typeParameters: Array<TypeParameter>;
+  receiverMode: ReceiverMode;
+  parameters: Array<Parameter>;
+  returnType: TypeReference;
+  errorType: Option<TypeReference>;
+  offset: usize;
+  line: usize;
+  column: usize;
+}
+
 export struct Program {
   declarations: Array<Declaration>;
+  functions: Array<FunctionDeclaration>;
 }
 
 export struct ParserError {
@@ -59,6 +111,228 @@ function expect(
   if (token.kind != kind) throw fail(token, `expected ${description}, found ${token.text}`);
   current = current + 1;
   return token;
+}
+
+function expectKind(
+  in tokens: Array<Token>,
+  inout current: usize,
+  kind: TokenKind,
+  in description: String
+): void throws ParserError {
+  if (tokens[current].kind != kind) throw fail(tokens[current], `expected ${description}, found ${tokens[current].text}`);
+  current = current + 1;
+}
+
+function takeIf(in tokens: Array<Token>, inout current: usize, kind: TokenKind): boolean {
+  if (tokens[current].kind != kind) return false;
+  current = current + 1;
+  return true;
+}
+
+function expectTypeGreater(
+  in tokens: Array<Token>,
+  inout current: usize,
+  inout pendingGreater: usize
+): void throws ParserError {
+  if (pendingGreater > 0) {
+    pendingGreater = pendingGreater - 1;
+    return;
+  }
+  if (tokens[current].kind == TokenKind.greater) {
+    current = current + 1;
+    return;
+  }
+  if (tokens[current].kind == TokenKind.shiftRight) {
+    current = current + 1;
+    pendingGreater = pendingGreater + 1;
+    return;
+  }
+  throw fail(tokens[current], "expected `>` to close a type argument list");
+}
+
+function parameterMode(in tokens: Array<Token>, inout current: usize): ParameterMode {
+  if (takeIf(tokens, inout current, TokenKind.inKeyword)) return ParameterMode.input;
+  if (takeIf(tokens, inout current, TokenKind.inoutKeyword)) return ParameterMode.inputOutput;
+  if (takeIf(tokens, inout current, TokenKind.outKeyword)) return ParameterMode.output;
+  return ParameterMode.value;
+}
+
+function parameterModeName(mode: ParameterMode): String {
+  return match (mode) {
+    value => "";
+    input => "in ";
+    inputOutput => "inout ";
+    output => "out ";
+  };
+}
+
+function isPositiveInteger(in text: String): boolean {
+  let current: usize = 0;
+  let positive = false;
+  while (current < text.byteLength) {
+    const byte = text.byteAt(current);
+    if (byte < 48 || byte > 57) return false;
+    if (byte != 48) positive = true;
+    current = current + 1;
+  }
+  return positive;
+}
+
+function normalizePositiveInteger(in text: String): String {
+  let start: usize = 0;
+  while (start + 1 < text.byteLength && text.byteAt(start) == 48) {
+    start = start + 1;
+  }
+  return text.copyBytes(start, text.byteLength);
+}
+
+function parseType(
+  in tokens: Array<Token>,
+  inout current: usize,
+  inout pendingGreater: usize
+): TypeReference throws ParserError {
+  if (tokens[current].kind == TokenKind.leftParen) {
+    const start = try expect(tokens, inout current, TokenKind.leftParen, "a function type");
+    let output = TextBuffer();
+    output.append("(");
+    let first = true;
+    while (tokens[current].kind != TokenKind.rightParen) {
+      if (!first) {
+        try expectKind(tokens, inout current, TokenKind.comma, "`,` between function-type parameters");
+        output.append(", ");
+      }
+      first = false;
+      const mode = parameterMode(tokens, inout current);
+      const name = try expect(tokens, inout current, TokenKind.identifier, "a function-type parameter name");
+      try expectKind(tokens, inout current, TokenKind.colon, "`:` after a function-type parameter name");
+      const type = try parseType(tokens, inout current, inout pendingGreater);
+      output.append(parameterModeName(mode));
+      output.append(name.text);
+      output.append(": ");
+      output.append(type.name);
+    }
+    try expectKind(tokens, inout current, TokenKind.rightParen, "`)` after function-type parameters");
+    try expectKind(tokens, inout current, TokenKind.fatArrow, "`=>` in a function type");
+    const returnType = try parseType(tokens, inout current, inout pendingGreater);
+    output.append(") => ");
+    output.append(returnType.name);
+    return TypeReference({
+      name: output.finish(),
+      offset: start.offset,
+      line: start.line,
+      column: start.column,
+    });
+  }
+
+  const start = try expect(tokens, inout current, TokenKind.identifier, "a type name");
+  if (start.text == "view") {
+    const target = try parseType(tokens, inout current, inout pendingGreater);
+    return TypeReference({
+      name: `view ${target.name}`,
+      offset: start.offset,
+      line: start.line,
+      column: start.column,
+    });
+  }
+
+  let name = start.text.copyBytes(0, start.text.byteLength);
+  while (takeIf(tokens, inout current, TokenKind.dot)) {
+    const member = try expect(tokens, inout current, TokenKind.identifier, "an imported type name");
+    name = `${name}.${member.text}`;
+  }
+
+  if (takeIf(tokens, inout current, TokenKind.less)) {
+    let output = TextBuffer();
+    output.append(name);
+    output.append("<");
+    let first = true;
+    while (true) {
+      if (!first) output.append(", ");
+      first = false;
+      const argument = try parseType(tokens, inout current, inout pendingGreater);
+      output.append(argument.name);
+      if (pendingGreater > 0) break;
+      if (!takeIf(tokens, inout current, TokenKind.comma)) break;
+    }
+    try expectTypeGreater(tokens, inout current, inout pendingGreater);
+    output.append(">");
+    name = output.finish();
+  }
+
+  while (takeIf(tokens, inout current, TokenKind.leftBracket)) {
+    const length = try expect(tokens, inout current, TokenKind.number, "a fixed array length");
+    if (!isPositiveInteger(length.text)) throw fail(length, "a fixed array length must be a positive integer");
+    try expectKind(tokens, inout current, TokenKind.rightBracket, "`]` after a fixed array length");
+    const normalizedLength = normalizePositiveInteger(length.text);
+    name = `${name}[${normalizedLength}]`;
+  }
+
+  if (takeIf(tokens, inout current, TokenKind.bitOr)) {
+    try expectKind(tokens, inout current, TokenKind.nullKeyword, "`null` after `|` in an optional type");
+    name = `${name} | null`;
+  }
+
+  return TypeReference({
+    name,
+    offset: start.offset,
+    line: start.line,
+    column: start.column,
+  });
+}
+
+function parseTypeParameters(
+  in tokens: Array<Token>,
+  inout current: usize,
+  inout pendingGreater: usize
+): Array<TypeParameter> throws ParserError {
+  let parameters = Array<TypeParameter>();
+  if (!takeIf(tokens, inout current, TokenKind.less)) return parameters;
+  while (true) {
+    const name = try expect(tokens, inout current, TokenKind.identifier, "a type parameter name");
+    let constraints = Array<TypeReference>();
+    if (takeIf(tokens, inout current, TokenKind.colon)) {
+      while (true) {
+        const constraint = try parseType(tokens, inout current, inout pendingGreater);
+        constraints.push(constraint);
+        if (!takeIf(tokens, inout current, TokenKind.bitAnd)) break;
+      }
+    }
+    parameters.push(TypeParameter({
+      name: name.text.copyBytes(0, name.text.byteLength),
+      constraints,
+      offset: name.offset,
+      line: name.line,
+      column: name.column,
+    }));
+    if (!takeIf(tokens, inout current, TokenKind.comma)) break;
+  }
+  try expectTypeGreater(tokens, inout current, inout pendingGreater);
+  return parameters;
+}
+
+function parseParameters(
+  in tokens: Array<Token>,
+  inout current: usize,
+  inout pendingGreater: usize
+): Array<Parameter> throws ParserError {
+  let parameters = Array<Parameter>();
+  if (tokens[current].kind == TokenKind.rightParen) return parameters;
+  while (true) {
+    const mode = parameterMode(tokens, inout current);
+    const name = try expect(tokens, inout current, TokenKind.identifier, "a parameter name");
+    try expectKind(tokens, inout current, TokenKind.colon, "`:` after a parameter name");
+    const type = try parseType(tokens, inout current, inout pendingGreater);
+    parameters.push(Parameter({
+      name: name.text.copyBytes(0, name.text.byteLength),
+      mode,
+      type,
+      offset: name.offset,
+      line: name.line,
+      column: name.column,
+    }));
+    if (!takeIf(tokens, inout current, TokenKind.comma)) break;
+  }
+  return parameters;
 }
 
 function skipDelimited(
@@ -119,6 +393,55 @@ function parseImport(
   });
 }
 
+function parseFunctionDeclaration(
+  in tokens: Array<Token>,
+  inout current: usize,
+  asynchronous: boolean
+): FunctionDeclaration throws ParserError {
+  let pendingGreater: usize = 0;
+  const start = try expect(tokens, inout current, TokenKind.functionKeyword, "a function declaration");
+  const name = try expect(tokens, inout current, TokenKind.identifier, "a function name");
+  const typeParameters = try parseTypeParameters(tokens, inout current, inout pendingGreater);
+  try expectKind(tokens, inout current, TokenKind.leftParen, "`(` after a function name");
+
+  let receiverMode = ReceiverMode.none;
+  if (current + 1 < tokens.length && tokens[current + 1].kind == TokenKind.identifier && tokens[current + 1].text == "this") {
+    if (tokens[current].kind == TokenKind.inoutKeyword) {
+      receiverMode = ReceiverMode.inputOutput;
+      current = current + 2;
+    } else if (tokens[current].kind == TokenKind.identifier && tokens[current].text == "move") {
+      receiverMode = ReceiverMode.move;
+      current = current + 2;
+    }
+    if (receiverMode != ReceiverMode.none && tokens[current].kind != TokenKind.rightParen) {
+      try expectKind(tokens, inout current, TokenKind.comma, "`,` after a receiver capability");
+    }
+  }
+
+  const parameters = try parseParameters(tokens, inout current, inout pendingGreater);
+  try expectKind(tokens, inout current, TokenKind.rightParen, "`)` after function parameters");
+  try expectKind(tokens, inout current, TokenKind.colon, "`:` before a function return type");
+  const returnType = try parseType(tokens, inout current, inout pendingGreater);
+  let errorType = Option<TypeReference>.none;
+  if (takeIf(tokens, inout current, TokenKind.throwsKeyword)) {
+    const error = try parseType(tokens, inout current, inout pendingGreater);
+    errorType = Option.some(error);
+  }
+  try seekBody(tokens, inout current, `the body of ${name.text}`);
+  return FunctionDeclaration({
+    name: name.text.copyBytes(0, name.text.byteLength),
+    asynchronous,
+    typeParameters,
+    receiverMode,
+    parameters,
+    returnType,
+    errorType,
+    offset: start.offset,
+    line: start.line,
+    column: start.column,
+  });
+}
+
 function parseNamedDeclaration(
   in tokens: Array<Token>,
   inout current: usize,
@@ -144,6 +467,7 @@ function parseNamedDeclaration(
 
 export function parseProgram(in tokens: Array<Token>): Program throws ParserError {
   let declarations = Array<Declaration>();
+  let functions = Array<FunctionDeclaration>();
   let current: usize = 0;
   while (tokens[current].kind != TokenKind.eof) {
     let exported = false;
@@ -165,16 +489,18 @@ export function parseProgram(in tokens: Array<Token>): Program throws ParserErro
       const declaration = try parseImport(tokens, inout current, false);
       declarations.push(declaration);
     } else if (kind == TokenKind.functionKeyword) {
-      const declaration = try parseNamedDeclaration(
-        tokens,
-        inout current,
-        TokenKind.functionKeyword,
-        DeclarationKind.functionDeclaration,
+      const functionDeclaration = try parseFunctionDeclaration(tokens, inout current, asynchronous);
+      const declaration = Declaration({
+        kind: DeclarationKind.functionDeclaration,
+        name: functionDeclaration.name.copyBytes(0, functionDeclaration.name.byteLength),
         exported,
         asynchronous,
-        "a function declaration"
-      );
+        offset: functionDeclaration.offset,
+        line: functionDeclaration.line,
+        column: functionDeclaration.column,
+      });
       declarations.push(declaration);
+      functions.push(functionDeclaration);
     } else if (kind == TokenKind.structKeyword) {
       if (asynchronous) throw fail(tokens[current], "a struct declaration cannot be async");
       const declaration = try parseNamedDeclaration(
@@ -227,7 +553,60 @@ export function parseProgram(in tokens: Array<Token>): Program throws ParserErro
       throw fail(tokens[current], "expected an import, function, struct, class, trait, or enum declaration");
     }
   }
-  return Program({ declarations });
+  return Program({ declarations, functions });
+}
+
+export function functionSignatureText(in declaration: FunctionDeclaration): String {
+  let output = TextBuffer();
+  if (declaration.asynchronous) output.append("async ");
+  output.append("function ");
+  output.append(declaration.name);
+  if (declaration.typeParameters.length > 0) {
+    output.append("<");
+    let firstTypeParameter = true;
+    for (const typeParameter of declaration.typeParameters) {
+      if (!firstTypeParameter) output.append(", ");
+      firstTypeParameter = false;
+      output.append(typeParameter.name);
+      if (typeParameter.constraints.length > 0) {
+        output.append(": ");
+        let firstConstraint = true;
+        for (const constraint of typeParameter.constraints) {
+          if (!firstConstraint) output.append(" & ");
+          firstConstraint = false;
+          output.append(constraint.name);
+        }
+      }
+    }
+    output.append(">");
+  }
+  output.append("(");
+  let firstParameter = true;
+  if (declaration.receiverMode == ReceiverMode.inputOutput) {
+    output.append("inout this");
+    firstParameter = false;
+  } else if (declaration.receiverMode == ReceiverMode.move) {
+    output.append("move this");
+    firstParameter = false;
+  }
+  for (const parameter of declaration.parameters) {
+    if (!firstParameter) output.append(", ");
+    firstParameter = false;
+    output.append(parameterModeName(parameter.mode));
+    output.append(parameter.name);
+    output.append(": ");
+    output.append(parameter.type.name);
+  }
+  output.append("): ");
+  output.append(declaration.returnType.name);
+  match (in declaration.errorType) {
+    some(error) => {
+      output.append(" throws ");
+      output.append(error.name);
+    }
+    none => {}
+  }
+  return output.finish();
 }
 
 export function declarationKindName(kind: DeclarationKind): String {

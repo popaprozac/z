@@ -8,7 +8,11 @@ import { DiagnosticError, formatDiagnostic } from "../compiler/src/diagnostics.t
 import { ApiNoteConflictError, mergeApiNotes } from "../compiler/src/foreign-api-notes.ts";
 import { normalizeForeignContracts } from "../compiler/src/foreign-contracts.ts";
 import type { ForeignFunctionDeclaration } from "../compiler/src/foreign-ir.ts";
-import { decodeStage1DeclarationStream, decodeStage1TokenStream } from "../compiler/src/self-hosting.ts";
+import {
+  decodeStage1DeclarationStream,
+  decodeStage1ProgramStream,
+  decodeStage1TokenStream,
+} from "../compiler/src/self-hosting.ts";
 import {
   completions,
   definition,
@@ -4520,13 +4524,13 @@ test("tokenizes real Z source with checked UTF-8 operations and TextBuffer", () 
   );
 }, 10_000);
 
-test("parses top-level declaration skeletons in native Z", () => {
+test("parses top-level declarations and function signatures in native Z", () => {
   const fixture = resolve(projectRoot, "tests/fixtures/self-host-parser-input.z");
   const lexer = resolve(projectRoot, "examples/applications/source-inspector/lexer.z");
   const parser = resolve(projectRoot, "examples/applications/source-inspector/parser.z");
   const result = spawnSync(process.execPath, [cli, "self-host-parse", fixture, lexer, parser], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
-  assert.match(result.stdout, /self-host-parser-input\.z: stage-1 parser matches 8 declarations/);
+  assert.match(result.stdout, /self-host-parser-input\.z: stage-1 parser matches 12 declarations and 4 function signatures/);
   assert.match(result.stdout, /lexer\.z: stage-1 parser matches 15 declarations/);
   assert.match(result.stdout, /parser\.z: stage-1 parser matches \d+ declarations/);
 
@@ -4540,6 +4544,10 @@ test("parses top-level declaration skeletons in native Z", () => {
   assert.throws(
     () => decodeStage1DeclarationStream("function\tmaybe\t0\t0000000000000000\t0000000000000001\t0000000000000001\t6d61696e\n", fixture),
     /malformed stage-1 declaration export state/,
+  );
+  assert.throws(
+    () => decodeStage1ProgramStream("signature\t0000000000000000\t0000000000000001\t0000000000000001\tnot-hex\n", fixture),
+    /malformed stage-1 function signature text/,
   );
 }, 10_000);
 
@@ -6110,6 +6118,21 @@ test("compiles payload enums and exhaustive matches", () => {
   const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stdout, "matched=42\n");
+
+  const emptyArms = `
+    enum State { ready, empty, }
+    function observe(state: State): void {
+      match (state) {
+        ready => {}
+        empty => {}
+      }
+    }
+    function main(): i32 {
+      observe(State.ready);
+      return 0;
+    }
+  `;
+  assert.doesNotThrow(() => compileToC(emptyArms, "empty-match-arms.z"));
 });
 
 test("composes enums through value aggregates and emits dependency-ordered C layouts", () => {

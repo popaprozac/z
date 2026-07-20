@@ -5,6 +5,14 @@ export trait Measured {
   function measure(): i32;
 }
 
+export trait Named {
+  function name(): String;
+}
+
+struct LoadError {
+  code: i32;
+}
+
 export struct Reading implements Measured {
   value: i32;
 
@@ -28,6 +36,21 @@ export enum LoadState {
 
 export async function load(id: i32): Reading {
   return Reading({ value: id });
+}
+
+function inspect<T: Measured & Named>(
+  in values: Array<Option<T>>,
+  inout index: usize,
+  out observed: boolean,
+  visit: (in value: T) => T,
+  history: T[4],
+  window: AppKit.NSWindow | null
+): view T throws LoadError {
+  return values[index];
+}
+
+function consume(move this): i32 {
+  return 0;
 }
 
 function main(): i32 {

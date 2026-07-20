@@ -47,20 +47,24 @@ its complete token sequence and source locations with the bootstrap lexer.
 
 [`parser.z`](parser.z) is the first parser foundation. It consumes those owned
 tokens with a linear cursor and builds a declaration skeleton containing source
-locations, declaration kinds, names, and export/async state. Balanced declaration
-bodies are traversed through borrowed token access; only names retained in the
-tree become owned snapshots. Run exact stage-0 parity across one or more source
-files with:
+locations, declaration kinds, names, and export/async state. Top-level function
+nodes additionally retain generic parameters and multi-trait constraints,
+receiver and parameter capabilities, nested type references, return types, and
+typed `throws`. Balanced declaration bodies are traversed through borrowed token
+access; only text retained in the tree becomes an owned snapshot. Run exact
+stage-0 parity across one or more source files with:
 
 ```sh
 bun run z self-host-parse examples/applications/source-inspector/lexer.z \
   examples/applications/source-inspector/parser.z
 ```
 
-This parser slice recognizes imports, functions, structs, classes, traits, and
-enums, but intentionally does not construct members, signatures, statements, or
-expressions yet. Unicode identifiers, block comments, direct in-process compiler
-integration, and the complete syntax tree remain future slices. Build time and
-subprocess startup still dominate these bootstrap commands, so native-vs-stage-0
-parser performance should be compared only after the frontend has an in-process
-driver boundary.
+The parity command checks canonical function signatures as well as declaration
+metadata. Its adversarial corpus covers nested generics, function types, fixed
+arrays, `view`, nullability, `async`, `throws`, and every parameter/receiver
+capability. Aggregate members, enum variants, statements, and expressions are
+not constructed yet. Unicode identifiers, block comments, direct in-process
+compiler integration, and the complete syntax tree remain future slices. Build
+time and subprocess startup still dominate these bootstrap commands, so
+native-vs-stage-0 parser performance should be compared only after the frontend
+has an in-process driver boundary.

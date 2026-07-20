@@ -5,7 +5,7 @@ import fs from "std/fs";
 import process from "std/process";
 import { TextBuffer } from "std/text";
 import { tokenize } from "./lexer.z";
-import { declarationKindName, parseProgram } from "./parser.z";
+import { declarationKindName, functionSignatureText, parseProgram } from "./parser.z";
 
 function hexDigit(value: u8): u8 {
   return value < 10 ? value + 48 : value + 87;
@@ -79,6 +79,19 @@ function streamProgram(in path: String): i32 throws String {
     appendHexUsize(inout output, declaration.column);
     output.appendAscii(9);
     appendHexText(inout output, declaration.name);
+    output.appendAscii(10);
+  }
+  for (const functionDeclaration of program.functions) {
+    const signature = functionSignatureText(functionDeclaration);
+    output.append("signature");
+    output.appendAscii(9);
+    appendHexUsize(inout output, functionDeclaration.offset);
+    output.appendAscii(9);
+    appendHexUsize(inout output, functionDeclaration.line);
+    output.appendAscii(9);
+    appendHexUsize(inout output, functionDeclaration.column);
+    output.appendAscii(9);
+    appendHexText(inout output, signature);
     output.appendAscii(10);
   }
   const stream = output.finish();
