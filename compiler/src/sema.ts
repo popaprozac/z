@@ -3240,8 +3240,12 @@ function inferExpressionInner(
           return "boolean";
         }
         const comparableNamed = left === right && state.foreignNamedTypes.get(String(left))?.kind === "enum";
-        if (canonicalLeft !== canonicalRight || (!isNumericType(canonicalLeft) && canonicalLeft !== "boolean" && !comparableNamed)) {
-          throw new DiagnosticError(fileName, expression.location, `operator ${JSON.stringify(expression.operator)} requires matching numeric, boolean, or enum operands`);
+        const zEnum = left === right ? enums.get(String(left)) : null;
+        const comparableZEnum = zEnum !== null && zEnum !== undefined
+          && zEnum.variants.every((variant) => variant.payload === null);
+        const comparableString = canonicalLeft === "String" && canonicalRight === "String";
+        if (canonicalLeft !== canonicalRight || (!isNumericType(canonicalLeft) && canonicalLeft !== "boolean" && !comparableNamed && !comparableZEnum && !comparableString)) {
+          throw new DiagnosticError(fileName, expression.location, `operator ${JSON.stringify(expression.operator)} requires matching numeric, boolean, String, payload-free enum, or native enum operands`);
         }
         return "boolean";
       }

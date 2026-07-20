@@ -2707,6 +2707,23 @@ function emitFrameExpression(
         if (integerOperation) {
           return `${asyncIntegerOperationName(integerOperation.kind, integerOperation.type)}(${emitFrameExpression(expression.left, plan, fileName)}, ${emitFrameExpression(expression.right, plan, fileName)})`;
         }
+        if (
+          (expression.operator === "==" || expression.operator === "!=")
+          && frameExpressionType(expression.left, plan) === "String"
+          && frameExpressionType(expression.right, plan) === "String"
+        ) {
+          const comparison = `z_string_equal(${emitFrameExpression(expression.left, plan, fileName)}, ${emitFrameExpression(expression.right, plan, fileName)})`;
+          return expression.operator === "==" ? comparison : `(!${comparison})`;
+        }
+        const leftType = frameExpressionType(expression.left, plan);
+        const comparableEnum = plan.types.enums.get(leftType);
+        if (
+          (expression.operator === "==" || expression.operator === "!=")
+          && comparableEnum
+          && comparableEnum.variants.every((variant) => variant.payload === null)
+        ) {
+          return `((${emitFrameExpression(expression.left, plan, fileName)}).tag ${expression.operator} (${emitFrameExpression(expression.right, plan, fileName)}).tag)`;
+        }
         if (!safeBinaryOperators.has(expression.operator)) {
           unsupported(fileName, expression.location, "this arithmetic expression is not executable in an async frame yet");
         }

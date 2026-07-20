@@ -37,29 +37,17 @@ export function scanSource(in source: String): SourceSummary throws String {
   let firstIdentifier = "";
 
   for (const token of tokens) {
-    match (token.kind) {
-      identifier => {
-        identifierCount = identifierCount + 1;
-        tokenCount = tokenCount + 1;
-        if (firstIdentifier.isEmpty) {
-          firstIdentifier = token.text.copyBytes(0, token.text.byteLength);
-        }
+    if (token.kind == TokenKind.end) continue;
+    tokenCount = tokenCount + 1;
+    if (token.kind == TokenKind.identifier) {
+      identifierCount = identifierCount + 1;
+      if (firstIdentifier.isEmpty) {
+        firstIdentifier = token.text.copyBytes(0, token.text.byteLength);
       }
-      number => {
-        numberCount = numberCount + 1;
-        tokenCount = tokenCount + 1;
-      }
-      string => {
-        stringCount = stringCount + 1;
-        tokenCount = tokenCount + 1;
-      }
-      comment => {
-        commentCount = commentCount + 1;
-        tokenCount = tokenCount + 1;
-      }
-      symbol => tokenCount = tokenCount + 1;
-      end => continue;
     }
+    if (token.kind == TokenKind.number) numberCount = numberCount + 1;
+    if (token.kind == TokenKind.string) stringCount = stringCount + 1;
+    if (token.kind == TokenKind.comment) commentCount = commentCount + 1;
   }
 
   return SourceSummary({

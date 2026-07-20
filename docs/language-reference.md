@@ -245,6 +245,10 @@ const id = match (option) {
 };
 ```
 
+Payload-free Z enums support `==` and `!=` by nominal tag. Payload-bearing
+enums require `match`; Z does not implicitly synthesize equality for their
+contents.
+
 An expression arm may be concise or use a block with `select value`. `return`
 and `throw` always target the enclosing function. `yield` is reserved for
 generators rather than overloaded for match blocks.
@@ -385,6 +389,11 @@ byte operations. `String.length` is reserved for a Unicode grapheme-counting
 text API; it is not implemented by treating UTF-8 bytes or JavaScript UTF-16
 code units as characters. `byteLength` is constant-time; the eventual
 grapheme-aware `length` may require a text scan.
+
+`String == String` and `String != String` compare exact UTF-8 byte sequences.
+Equality performs no locale folding, Unicode normalization, or JavaScript-style
+coercion. Comparing text from different normalization domains therefore remains
+an explicit text-processing operation.
 
 Repeated text construction uses the explicit `std/text` value type rather than
 repeatedly allocating intermediate `String` values:

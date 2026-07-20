@@ -60,7 +60,8 @@ support or producing language-server diagnostics from hypothetical imports.
   explains the self-hosting boundary.
 - [`source-inspector`](applications/source-inspector): a multi-module source tool
   that tokenizes real Z code with checked UTF-8 byte offsets, owned token copies,
-  typed lexer errors, and `TextBuffer` escape decoding.
+  exact keyword/operator kinds, decimal/exponent numbers, typed lexer errors,
+  and `TextBuffer` escape decoding.
 
 ## Async
 

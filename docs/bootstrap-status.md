@@ -22,10 +22,10 @@ Status meanings:
 | Structs and methods | Implemented | Value layout, mutation, static methods, deterministic cleanup |
 | ARC classes | Implemented | Identity, sharing, constructors, private fields, weak references |
 | Traits | Partial | Nominal static conformance and generic constraints; no trait values/dynamic dispatch |
-| Enums and `Option`/`Result` | Implemented | Payloads, nesting, exhaustive statement/expression matches |
+| Enums and `Option`/`Result` | Implemented | Payloads, nesting, exhaustive statement/expression matches, and tag equality for payload-free Z enums |
 | Errors | Implemented | Typed `throws`, `throw`, `try`, and `attempt`, including synchronous cleanup-bearing error values |
 | Closures | Implemented | Borrowed and owned ARC environments; weak captures |
-| Strings and console | Implemented | Owned UTF-8 strings, templates, typed formatting, checked `byteAt`/`copyBytes`, `byteLength`, `isEmpty`, and explicit move-only `std/text` `TextBuffer`; grapheme-aware `length` remains planned |
+| Strings and console | Implemented | Owned UTF-8 strings, exact byte equality, templates, typed formatting, checked `byteAt`/`copyBytes`, `byteLength`, `isEmpty`, and explicit move-only `std/text` `TextBuffer`; grapheme-aware `length` remains planned |
 | Integer safety | Implemented | Checked arithmetic plus explicit wrapping/saturating operations |
 | Generators | Planned | `yield` is reserved; no generator lowering |
 | `comptime` | Planned experiment | No compile-time execution model committed |
@@ -213,8 +213,9 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    macOS and have Windows/POSIX native branches. Checked String byte operations
    and `std/text` `TextBuffer` now support a multi-module Z source inspector with
    UTF-8 boundary-preserving token copies, escape decoding, source locations,
-   and typed lexer errors. A production lexer still needs complete token grammar,
-   Unicode identifiers, template interpolation, and compiler data structures.
+   typed lexer errors, exact current keyword/operator kinds, decimal/exponent
+   numbers, and unknown-byte rejection. A production lexer still needs template
+   interpolation modes, Unicode identifiers, block comments, and parser data structures.
 5. **Threaded concurrency evidence — Copy, unique-owner, native-owner, readonly ARC, and owned-error slices implemented.**
    `thread.spawn` now proves one real cross-thread task frame with explicit
    move capture, hot start, structured join, private Copy snapshots, and moved

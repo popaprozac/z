@@ -4437,12 +4437,15 @@ test("reads files, exposes program arguments, and runs child processes through s
 test("tokenizes real Z source with checked UTF-8 operations and TextBuffer", () => {
   const application = resolve(projectRoot, "examples/applications/source-inspector/main.z");
   const lexer = resolve(projectRoot, "examples/applications/source-inspector/lexer.z");
+  const smoke = resolve(projectRoot, "examples/applications/source-inspector/lexer-smoke.z");
+  const smokeResult = spawnSync(process.execPath, [cli, "run", smoke], { encoding: "utf8" });
+  assert.equal(smokeResult.status, 0, smokeResult.stderr);
   const result = spawnSync(process.execPath, [cli, "run", application, "--", lexer], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /lexer\.z: \d+ lines, \d+ UTF-8 bytes/);
   assert.match(result.stdout, /\d+ tokens: \d+ identifiers, \d+ numbers/);
   assert.match(result.stdout, /\d+ strings, \d+ comments/);
-  assert.match(result.stdout, /first identifier: import/);
+  assert.match(result.stdout, /first identifier: TextBuffer/);
 });
 
 test("builds owned UTF-8 String values through explicit std/text TextBuffer", () => {
@@ -4747,6 +4750,70 @@ test("stores, returns, moves, and formats owned String values", () => {
   const methodDiagnostic = diagnostics(unknownMethod, "console-method.z");
   assert.equal(methodDiagnostic[0].code, "Z0401");
   assert.match(methodDiagnostic[0].message, /use console\.log, console\.write, console\.error, or console\.debug/);
+});
+
+test("compares owned String values by their UTF-8 bytes", () => {
+  const directory = mkdtempSync("/tmp/z-string-equality-");
+  const fileName = resolve(directory, "main.z");
+  const source = `
+    function main(): i32 {
+      const source: cstring = "same";
+      const copied = String.from(source);
+      const built = \`sa\${"me"}\`;
+      if (copied != built) return 1;
+      if (copied == "different") return 2;
+      if ("" != "") return 3;
+      return 0;
+    }
+  `;
+  writeFileSync(fileName, source);
+  const result = spawnSync(process.execPath, [cli, "run", fileName], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  const generated = compileToC(source, fileName);
+  assert.match(generated, /static .*bool z_string_equal\(Z_String left, Z_String right\)/);
+  assert.match(generated, /!z_string_equal\(copied, built\)/);
+
+  const asyncFile = resolve(directory, "async.z");
+  const asyncSource = `
+    async function equal(): boolean {
+      const left = "same";
+      const right = "same";
+      return left == right;
+    }
+    async function main(): i32 {
+      const same = await equal();
+      return same ? 0 : 1;
+    }
+  `;
+  writeFileSync(asyncFile, asyncSource);
+  const asyncResult = spawnSync(process.execPath, [cli, "run", asyncFile], { encoding: "utf8" });
+  assert.equal(asyncResult.status, 0, asyncResult.stderr);
+});
+
+test("compares payload-free Z enums by tag", () => {
+  const source = `
+    enum Direction { north, south, }
+    enum Payload { value i32, }
+    function main(): i32 {
+      const direction = Direction.north;
+      return direction == Direction.north && direction != Direction.south ? 0 : 1;
+    }
+  `;
+  const directory = mkdtempSync("/tmp/z-enum-equality-");
+  const fileName = resolve(directory, "main.z");
+  writeFileSync(fileName, source);
+  const result = spawnSync(process.execPath, [cli, "run", fileName], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(compileToC(source, fileName), /direction\)\.tag == .*\.tag/);
+
+  const payloadComparison = source.replace(
+    "return direction == Direction.north && direction != Direction.south ? 0 : 1;",
+    "return Payload.value(1) == Payload.value(1) ? 0 : 1;",
+  );
+  assert.match(
+    diagnostics(payloadComparison, "payload-enum-equality.z")[0]?.message ?? "",
+    /payload-free enum/,
+  );
 });
 
 test("exposes console methods and interpolated expressions to editor services", () => {

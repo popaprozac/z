@@ -19,8 +19,19 @@ uses the move-only `TextBuffer` from `std/text`: unchanged source chunks append
 without allocating substrings, while `finish()` transfers the completed bytes
 into an owned `String` token.
 
-This is not yet the production Z lexer. It intentionally recognizes only the
-subset needed to pressure-test identifiers, numbers, comments, quoted strings,
-escapes, symbols, locations, ownership, and error propagation. Template
-interpolation, complete numeric grammar, Unicode identifiers, and parser-facing
-token detail remain future frontend work.
+The lexer now emits exact parser-facing kinds for Z's current reserved keywords,
+punctuation, and operators. `move` and `view` deliberately remain identifiers
+because the stage-0 parser treats them as contextual keywords. Decimal and
+exponent forms are single number tokens, malformed exponents are typed lexer
+errors, and unknown bytes are rejected rather than accepted as generic symbols.
+
+Run its focused grammar checks with:
+
+```sh
+bun run z run examples/applications/source-inspector/lexer-smoke.z
+```
+
+This is still an incremental frontend rather than the production Z lexer.
+Template delimiters are currently preserved as explicit backtick/dollar tokens;
+interpolation modes, Unicode identifiers, block comments, and a Z parser remain
+future slices.

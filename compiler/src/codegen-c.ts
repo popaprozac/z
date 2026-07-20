@@ -1053,6 +1053,12 @@ static Z_UNUSED_FUNCTION inline Z_String z_string_new(void) {
   return value;
 }
 
+static Z_UNUSED_FUNCTION inline bool z_string_equal(Z_String left, Z_String right) {
+  if (left.length != right.length) return false;
+  if (left.length == 0) return true;
+  return memcmp(left.data, right.data, left.length) == 0;
+}
+
 static Z_UNUSED_FUNCTION inline void z_string_reserve(Z_String *self, uintptr_t additional) {
   if (additional > SIZE_MAX - self->length - 1) abort();
   uintptr_t required = self->length + additional + 1;
@@ -3801,6 +3807,23 @@ function generateExpressionInner(expression: Expression, context: GenerationCont
       const integerOperation = context.semanticInfo.integerOperations.get(expression.location.offset);
       if (integerOperation) {
         return `${integerOperationName(integerOperation)}(${generateExpression(expression.left, context)}, ${generateExpression(expression.right, context)})`;
+      }
+      if (
+        (expression.operator === "==" || expression.operator === "!=")
+        && inferExpressionType(expression.left, context) === "String"
+        && inferExpressionType(expression.right, context) === "String"
+      ) {
+        const comparison = `z_string_equal(${generateExpression(expression.left, context)}, ${generateExpression(expression.right, context)})`;
+        return expression.operator === "==" ? comparison : `(!${comparison})`;
+      }
+      const leftType = inferExpressionType(expression.left, context);
+      const comparableEnum = context.enums.get(leftType);
+      if (
+        (expression.operator === "==" || expression.operator === "!=")
+        && comparableEnum
+        && comparableEnum.variants.every((variant) => variant.payload === null)
+      ) {
+        return `((${generateExpression(expression.left, context)}).tag ${expression.operator} (${generateExpression(expression.right, context)}).tag)`;
       }
       return `(${generateExpression(expression.left, context)} ${expression.operator} ${generateExpression(expression.right, context)})`;
     }

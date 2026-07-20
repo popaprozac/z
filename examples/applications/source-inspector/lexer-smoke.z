@@ -1,0 +1,43 @@
+import { LexerError, Token, TokenKind, tokenize } from "./lexer.z";
+
+function hasKind(in tokens: Array<Token>, index: usize, kind: TokenKind): boolean {
+  return tokens[index].kind == kind;
+}
+
+function verifyLexer(): i32 throws LexerError {
+  const source = "export async function add(in left: i32, in right: i32): i32 { return left >= 1 && right != 0 ? left + right : 0; } // ok";
+  const tokens = try tokenize(source);
+  if (tokens.length != 36) return 1;
+  if (!hasKind(tokens, 0, TokenKind.exportKeyword)) return 2;
+  if (!hasKind(tokens, 1, TokenKind.asyncKeyword)) return 3;
+  if (!hasKind(tokens, 2, TokenKind.functionKeyword)) return 4;
+  if (!hasKind(tokens, 3, TokenKind.identifier)) return 5;
+  if (!hasKind(tokens, 4, TokenKind.leftParen)) return 6;
+  if (!hasKind(tokens, 20, TokenKind.greaterEqual)) return 7;
+  if (!hasKind(tokens, 22, TokenKind.andAnd)) return 8;
+  if (!hasKind(tokens, 24, TokenKind.bangEqual)) return 9;
+  if (!hasKind(tokens, 34, TokenKind.comment)) return 10;
+  if (!hasKind(tokens, 35, TokenKind.end)) return 11;
+  if (tokens[20].line != 1 || tokens[20].column != 75) return 12;
+
+  const numberTokens = try tokenize("42.5e-2");
+  if (numberTokens.length != 2) return 13;
+  if (!hasKind(numberTokens, 0, TokenKind.number)) return 14;
+  if (numberTokens[0].text != "42.5e-2") return 15;
+  return 0;
+}
+
+function main(): i32 {
+  const verified = attempt verifyLexer();
+  const status = match (verified) {
+    success(status) => status;
+    failure(error) => 20;
+  };
+  if (status != 0) return status;
+
+  const invalid = attempt tokenize("@");
+  return match (invalid) {
+    success(tokens) => 21;
+    failure(error) => error.line == 1 && error.column == 1 ? 0 : 22;
+  };
+}
