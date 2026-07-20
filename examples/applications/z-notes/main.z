@@ -1,0 +1,53 @@
+import console from "std/console";
+import AppKit from "AppKit/AppKit.h";
+import { Note, NoteStore } from "./model.z";
+import { sqliteVersion } from "./persistence.z";
+
+function seed(store: NoteStore): void {
+  store.add(Note({
+    id: 1,
+    title: "Welcome to Z Notes",
+    body: "A native desktop application written primarily in Z.",
+  }));
+  store.add(Note({
+    id: 2,
+    title: "Interop",
+    body: "AppKit and sqlite3 arrive through their real native headers.",
+  }));
+  store.selectNote(0);
+}
+
+function main(): i32 {
+  const store = new NoteStore({
+    notes: Array<Note>(),
+    selection: Option<usize>.none,
+  });
+  seed(store);
+
+  console.log(`sqlite=${sqliteVersion()}, notes=${store.noteCount()}`);
+  store.withSelected((in note) => {
+    console.log(`selected note ${note.id}: ${note.title}`);
+  });
+
+  const app = AppKit.NSApplication.sharedApplication;
+  app.setActivationPolicy(AppKit.NSApplicationActivationPolicyRegular);
+
+  const frame = AppKit.NSMakeRect(0.0, 0.0, 820.0, 560.0);
+  const style = AppKit.NSWindowStyleMaskTitled
+    | AppKit.NSWindowStyleMaskClosable
+    | AppKit.NSWindowStyleMaskMiniaturizable
+    | AppKit.NSWindowStyleMaskResizable;
+  const window = AppKit.NSWindow.alloc().initWithContentRect(
+    frame,
+    styleMask: style,
+    backing: AppKit.NSBackingStoreBuffered,
+    defer: false
+  );
+  window.title = `Z Notes — ${store.noteCount()} notes`;
+  window.center();
+  window.makeKeyAndOrderFront(null);
+
+  app.activate();
+  app.run();
+  return 0;
+}

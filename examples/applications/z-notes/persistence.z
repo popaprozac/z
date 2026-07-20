@@ -1,0 +1,8 @@
+import sqlite from "sqlite3.h";
+
+// This first vertical slice proves direct header import and explicit native
+// library linkage. Opening an owned sqlite3 handle is the next FIIR seam:
+// sqlite3_open produces ownership through sqlite3 **.
+export function sqliteVersion(): cstring {
+  return sqlite.sqlite3_libversion();
+}

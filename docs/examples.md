@@ -14,6 +14,7 @@ compile-only probes and `emit` to inspect generated native code.
 | Construction | [`construction.z`](../examples/language/basics/construction.z) | Struct object construction and class-only `new` |
 | Results | [`result.z`](../examples/language/control-flow/result.z) | `return`, `throw`, `attempt`, and exhaustive matching |
 | Options | [`option.z`](../examples/language/types/option.z) | `Option.some`, `Option.none`, and payload matching |
+| Native application skeleton | [`z-notes`](../examples/applications/z-notes) | AppKit, ARC application state, nullable selection, direct SQLite header import, and explicit native library linkage |
 | Application walkthrough | [`document-workspace`](../examples/applications/document-workspace) | A native document model combining modules, errors, arrays, named enums, optional views, mutation, and deterministic cleanup |
 | Self-hosting groundwork | [`source-stager`](../examples/applications/source-stager) | File IO, owned argv, typed OS failures, and direct no-shell child launch |
 | Source tokenizing | [`source-inspector`](../examples/applications/source-inspector) | Checked UTF-8 byte offsets, typed lexer errors, owned tokens, and `TextBuffer` escape decoding |
@@ -98,6 +99,13 @@ bun run z run examples/async/async-delay.z
 ```
 
 ## Application-shaped probes
+
+[`z-notes`](../examples/applications/z-notes) is the native desktop composition
+probe. Its first skeleton opens an AppKit window, owns notes in an ARC-managed Z
+model, represents selection with `Option<usize>`, imports `sqlite3.h` directly,
+and selects the SQLite system library in `z.json`. The adjacent README records
+the next deliberately visible boundary: safely classifying the `sqlite3 **`
+output handle without a handwritten wrapper.
 
 [`document-workspace`](../examples/applications/document-workspace) is the
 recommended non-GUI application walkthrough. It uses domain-oriented names to

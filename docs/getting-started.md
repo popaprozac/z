@@ -108,14 +108,18 @@ pointer ownership and callback lifetime/context/release/threading contracts use
 adjacent `<header>.zd` Z declaration files. See
 [the interop model](interop-model.md).
 
-For platform projects, `z.json` can declare one explicit host deployment target:
+For native projects, `z.json` can declare one explicit host deployment target
+and the system libraries the final binary must link:
 
 ```json
 {
   "target": {
     "entry": "main.z",
     "platform": "macos",
-    "minimumVersion": "13.0"
+    "minimumVersion": "13.0",
+    "link": {
+      "libraries": ["sqlite3"]
+    }
   }
 }
 ```
@@ -125,7 +129,13 @@ checking native availability, compiling generated source, and building a local
 Swift target. APIs introduced after the minimum or obsoleted by it fail at the Z
 use site; applicable deprecations are warnings. Omitting both fields leaves
 versioned availability unchecked rather than guessing a target. Stage 0 accepts
-only the host platform and does not cross-compile. Run the macOS probe with:
+only the host platform and does not cross-compile.
+
+`target.link.libraries` contains portable library names rather than raw linker
+flags: `"sqlite3"` becomes `-lsqlite3` for the current native toolchain. Names
+are validated and deduplicated. Importing a header describes the API; selecting
+a library describes where its implementation comes from, so the two concerns
+remain explicit and independent. Run the macOS probe with:
 
 ```sh
 bun run z run examples/interop/c/deployment-target/main.z

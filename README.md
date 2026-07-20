@@ -104,6 +104,17 @@ See [the interop model](docs/interop-model.md) for the cost model and
 [the Foreign Interface IR](docs/foreign-interface-ir.md) for how native facts
 are normalized.
 
+The first native application composition probe is Z Notes:
+
+```sh
+bun run z run examples/applications/z-notes/main.z
+bun run z run examples/applications/z-notes/smoke.z
+```
+
+It combines AppKit, an ARC-managed Z notes model, optional selection, direct
+`sqlite3.h` import, and explicit `target.link.libraries` configuration. The
+smoke entry exercises the model and SQLite linkage without opening a GUI.
+
 ## Try the compiler
 
 Z currently requires Bun and a working Clang toolchain. On macOS, Xcode Command

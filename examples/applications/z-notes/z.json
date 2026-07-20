@@ -1,0 +1,10 @@
+{
+  "target": {
+    "entry": "main.z",
+    "platform": "macos",
+    "minimumVersion": "13.0",
+    "link": {
+      "libraries": ["sqlite3"]
+    }
+  }
+}

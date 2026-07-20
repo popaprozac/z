@@ -1135,6 +1135,31 @@ test("threads deployment targets and warnings through CLI native execution", () 
   assert.match(result.stderr, /native-api\.h:8:19/);
 });
 
+test("adds explicit target native libraries without exposing raw linker flags", () => {
+  const directory = mkdtempSync("/tmp/z-native-link-");
+  const sourceFile = resolve(directory, "main.z");
+  const manifest = resolve(directory, "z.json");
+  const source = "function main(): i32 { return 0; }";
+  writeFileSync(sourceFile, source);
+  writeFileSync(manifest, JSON.stringify({
+    target: {
+      entry: "main.z",
+      link: { libraries: ["sqlite3", "sqlite3"] },
+    },
+  }));
+
+  const artifact = compileToNative(source, sourceFile);
+  assert.deepEqual(artifact.nativeLinkerArguments, ["-lsqlite3"]);
+
+  writeFileSync(manifest, JSON.stringify({
+    target: { entry: "main.z", link: { libraries: ["-Wl,unsafe"] } },
+  }));
+  assert.match(
+    diagnostics(source, sourceFile)[0]?.message ?? "",
+    /target\.link\.libraries must contain native library names/,
+  );
+});
+
 test("rejects malformed or unmatched Z declarations before FIIR reaches sema", () => {
   const directory = mkdtempSync("/tmp/z-fiir-notes-");
   const header = resolve(directory, "contract.h");
@@ -2201,6 +2226,27 @@ test("compiles a desktop ownership slice and preserves its current pressure wall
 
   const windowFieldOffset = source.indexOf("window: AppKit.NSWindow") + "window: AppKit.".length + 1;
   assert.match(hover(source, example, windowFieldOffset)?.contents.value ?? "", /class NSWindow/);
+});
+
+test("builds the Z Notes AppKit and sqlite3 application skeleton", () => {
+  if (process.platform !== "darwin") return;
+  const application = resolve(projectRoot, "examples/applications/z-notes/main.z");
+  const source = readFileSync(application, "utf8");
+  const artifact = compileToNative(source, application);
+  assert.equal(artifact.language, "objective-c");
+  assert.deepEqual(artifact.frameworks, ["AppKit"]);
+  assert.ok(artifact.nativeLinkerArguments.includes("-lsqlite3"));
+  assert.match(artifact.source, /sqlite3_libversion\(\)/);
+  assert.match(artifact.source, /\[\[NSWindow alloc\] initWithContentRect/);
+  assert.match(artifact.source, /Z_Option_usize_some/);
+
+  const smoke = resolve(projectRoot, "examples/applications/z-notes/smoke.z");
+  const result = spawnSync(process.execPath, [cli, "run", smoke], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /^z-notes sqlite=[0-9.]+, notes=1\n$/);
+
+  const selectionUse = source.indexOf("selectNote(0)") + 1;
+  assert.match(hover(source, application, selectionUse)?.contents.value ?? "", /selectNote\(index: usize\): boolean/);
 });
 
 test("runs an application-shaped document workspace across ownership and interop features", () => {

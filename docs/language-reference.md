@@ -515,6 +515,23 @@ configured, Z does not invent one for version comparisons. Stage 0 accepts only
 the host platform; cross-compilation and runtime availability guards remain
 future work.
 
+Native library selection is explicit project configuration:
+
+```json
+{
+  "target": {
+    "link": {
+      "libraries": ["sqlite3"]
+    }
+  }
+}
+```
+
+Each validated, deduplicated library name is translated to the host toolchain's
+native library argument. Raw linker flags are intentionally not part of this
+contract. A header import supplies declarations while `target.link.libraries`
+supplies link-time implementations.
+
 C imports may be direct and zero-wrapper. Imported non-null Objective-C classes
 are nominal types such as `AppKit.NSWindow`; references use ARC and can be stored
 in Z aggregates or named in signatures. Inferred nullable Objective-C

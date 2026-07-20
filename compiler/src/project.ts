@@ -22,6 +22,9 @@ type ProjectManifest = {
     readonly entry?: string;
     readonly platform?: string;
     readonly minimumVersion?: string;
+    readonly link?: {
+      readonly libraries?: readonly string[];
+    };
     readonly swift?: {
       readonly module?: string;
       readonly sources?: readonly string[];
@@ -62,7 +65,14 @@ export function prepareProject(fileName: string): ProjectBuild {
     if (!existsSync(entry)) throw projectDiagnostic(fileName, `Z entry ${JSON.stringify(entry)} does not exist`);
   }
   const deploymentTarget = parseDeploymentTarget(manifest.target, fileName);
-  if (!swift) return { ...emptyBuild, manifestPath, deploymentTarget };
+  const linkedLibraries = parseLinkedLibraries(manifest.target?.link?.libraries, fileName);
+  const baseBuild: ProjectBuild = {
+    ...emptyBuild,
+    manifestPath,
+    deploymentTarget,
+    nativeLinkerArguments: linkedLibraries.map((library) => `-l${library}`),
+  };
+  if (!swift) return baseBuild;
   const moduleName = swift.module;
   if (!moduleName || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(moduleName)) {
     throw projectDiagnostic(fileName, "z.json target.swift.module must be a valid module name");
@@ -123,11 +133,28 @@ export function prepareProject(fileName: string): ProjectBuild {
     deploymentTarget,
     includeDirectories: [buildDirectory],
     nativeLibraries: [library],
-    nativeLinkerArguments: cxxInterop ? swiftRuntimeLinkerArguments(fileName) : [],
+    nativeLinkerArguments: [
+      ...baseBuild.nativeLinkerArguments,
+      ...(cxxInterop ? swiftRuntimeLinkerArguments(fileName) : []),
+    ],
     frameworks: [...(swift.frameworks ?? [])],
   };
   buildCache.set(manifestPath, { freshness, build });
   return build;
+}
+
+function parseLinkedLibraries(libraries: readonly string[] | undefined, fileName: string): string[] {
+  if (libraries === undefined) return [];
+  if (
+    !Array.isArray(libraries)
+    || libraries.some((library) => (
+      typeof library !== "string"
+      || !/^[A-Za-z0-9][A-Za-z0-9_.+-]*$/.test(library)
+    ))
+  ) {
+    throw projectDiagnostic(fileName, "z.json target.link.libraries must contain native library names such as \"sqlite3\"");
+  }
+  return [...new Set(libraries)];
 }
 
 function swiftRuntimeLinkerArguments(fileName: string): string[] {

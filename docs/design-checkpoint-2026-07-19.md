@@ -139,9 +139,11 @@ names, task/result/option shapes, and suppression of generated implementation
 names. This is a consistency gate, not an invitation to redesign stable names
 without evidence.
 
-Then build a small native **Z Notes** AppKit application. Its first skeleton
-should contain an `NSApplication`, `NSWindow`, a Z-owned notes model, nullable
-selection, and SQLite persistence imported from `sqlite3.h`. Grow it only along
+The first native **Z Notes** AppKit skeleton now contains an `NSApplication`,
+`NSWindow`, a Z-owned notes model, optional selection, direct `sqlite3.h`
+import, and explicit native-library linkage. Its first exposed FIIR boundary is
+an owned nullable SQLite handle produced through `sqlite3 **`; that seam remains
+visible rather than being concealed by a handwritten wrapper. Grow the app only along
 pressure seams: Objective-C protocol conformance, delegates/data sources,
 target/action, escaping block lifetime, background search through
 `thread.spawn`, `Task<T, E>` loading and saving, cancellation, UI-thread
