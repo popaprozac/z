@@ -7055,14 +7055,6 @@ test("constructs and destroys move-only C++ values across async suspension", () 
   assert.equal(parameterMoveDiagnostic.code, "Z0201");
   assert.match(parameterMoveDiagnostic.message, /use of moved value "resource"/);
 
-  const deferredSliceParameter = `
-    struct Resource { value: i32; }
-    async function inspect(resources: Slice<Resource>): i32 { return 0; }
-  `;
-  const borrowedParameterDiagnostic = diagnostics(deferredSliceParameter, resolve(directory, "borrowed-parameter.z"))[0];
-  assert.equal(borrowedParameterDiagnostic.code, "Z0704");
-  assert.match(borrowedParameterDiagnostic.message, /cannot borrow storage in the first async tier/);
-
   const parameterCancellation = resolve(directory, "parameter-cancellation.z");
   writeFileSync(parameterCancellation, `
     import { delay } from "std/time";
@@ -7754,6 +7746,79 @@ test("mutably borrows caller storage through scoped spawn and releases it on joi
   `);
   const cancelled = spawnSync(process.execPath, [cli, "run", cancellation], { encoding: "utf8" });
   assert.equal(cancelled.status, 0, cancelled.stderr);
+});
+
+test("borrows fixed-array storage as Slice across async suspension", () => {
+  const example = resolve(projectRoot, "examples/async/async-slices.z");
+  const source = readFileSync(example, "utf8");
+  const generated = compileToNative(source, example).source;
+  assert.match(generated, /Z_Slice_\S+ value_readings;/);
+  assert.match(
+    generated,
+    /z_async_start_totalAfterDelay\(Z_AsyncExecutor \*executor, Z_Slice_\S+ value_readings\)/,
+  );
+  assert.match(
+    generated,
+    /z_async_start_calibrateAfterDelay\(Z_AsyncExecutor \*executor, Z_Slice_\S+ value_readings, int32_t value_adjustment\)/,
+  );
+  assert.match(generated, /\.data = \(frame->value_readings\)\.data, \.length = 3/);
+  assert.match(generated, /z_async_bounds_index/);
+
+  const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, "calibration started\noriginal=40, calibrated=46\n");
+
+  const outsideScope = `
+    async function inspect(values: Slice<i32>): i32 { return values[0]; }
+    async function main(): i32 {
+      const values = [42];
+      const task = spawn inspect(values);
+      return await task;
+    }
+  `;
+  const scopeDiagnostic = diagnostics(outsideScope, "async-slice-scope.z")[0];
+  assert.equal(scopeDiagnostic.code, "Z0704");
+  assert.match(scopeDiagnostic.message, /spawned Slice borrow of "values" requires an explicit async scope/);
+
+  const mutateBeforeJoin = `
+    async function inspect(values: Slice<i32>): i32 { return values[0]; }
+    async function main(): i32 {
+      let values = [41];
+      async scope {
+        const task = spawn inspect(values);
+        values[0] = 42;
+        await task;
+      }
+      return 0;
+    }
+  `;
+  const mutationDiagnostic = diagnostics(mutateBeforeJoin, "async-slice-mutate-before-join.z")[0];
+  assert.equal(mutationDiagnostic.code, "Z0704");
+  assert.match(mutationDiagnostic.message, /cannot mutate "values" while a spawned task borrows it/);
+
+  const mutateAfterJoin = mutateBeforeJoin.replace(
+    "values[0] = 42;\n        await task;",
+    "await task;\n        values[0] = 42;",
+  );
+  check(mutateAfterJoin, "async-slice-mutate-after-join.z");
+
+  const overlapping = `
+    async function inspect(values: Slice<i32>): i32 { return values[0]; }
+    async function update(inout values: Slice<i32>): void { values[0] = 42; }
+    async function main(): i32 {
+      let values = [41];
+      async scope {
+        const reader = spawn inspect(values);
+        const writer = spawn update(inout values);
+        await reader;
+        await writer;
+      }
+      return 0;
+    }
+  `;
+  const overlapDiagnostic = diagnostics(overlapping, "async-slice-overlap.z")[0];
+  assert.equal(overlapDiagnostic.code, "Z0704");
+  assert.match(overlapDiagnostic.message, /cannot borrow "values" as inout while an active in loan exists/);
 });
 
 test("initializes cleanup-free caller storage through a direct-awaited async out parameter", () => {

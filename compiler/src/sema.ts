@@ -923,13 +923,6 @@ function validateFunctionSignature(
       });
     }
     const slice = parseSliceType(parameter.type.name);
-    if (declaration.async && Boolean(slice)) {
-      throw new DiagnosticError(fileName, parameter.location, `async parameter ${JSON.stringify(parameter.name)} cannot borrow storage in the first async tier`, {
-        code: "Z0704",
-        notes: ["Slice borrows require additional suspension-safe lifetime analysis"],
-        helps: ["pass an owned value, an `in`, `inout`, or cleanup-free `out` value, or an ARC class reference into the async function"],
-      });
-    }
     if (
       declaration.async
       && parameter.mode === "out"
@@ -2866,7 +2859,10 @@ function firstLiveBorrow(
     activeFunction?.async
       ? activeFunction.parameters
         .filter((parameter) => (
-          parameter.mode === "in" || parameter.mode === "inout" || parameter.mode === "out"
+          parameter.mode === "in"
+          || parameter.mode === "inout"
+          || parameter.mode === "out"
+          || Boolean(parseSliceType(parameter.type.name))
         ))
         .map((parameter) => parameter.name)
       : [],
@@ -3290,7 +3286,7 @@ function inferExpressionInner(
       if (borrowed) {
         throw new DiagnosticError(fileName, expression.location, `cannot await while borrowed storage ${JSON.stringify(borrowed)} is live`, {
           code: "Z0704",
-          notes: ["only explicit async `in`, direct-awaited `inout`, and direct-awaited `out` parameters currently carry borrows across suspension"],
+          notes: ["async `in`, direct-awaited `inout`/`out`, and Slice parameters can carry proven borrows across suspension"],
           helps: ["finish this lexical borrow before awaiting, or pass storage through an appropriate async parameter capability"],
         });
       }
@@ -4654,6 +4650,24 @@ function checkArguments(
         state.sliceConversions.set(argument.location.offset, { sourceType: String(actual), targetType: parameter.type.name });
       } else {
         requireAssignable(parameter.type.name, actual, argument, fileName, state.foreignNamedTypes, state.numericLiteralTypes);
+      }
+      const asyncContext = state.asyncCallContexts.at(-1);
+      if (target.async && asyncContext?.mode === "spawn") {
+        const borrowedRoot = storageRoot(argument)?.name ?? null;
+        if (state.asyncScopeDepth === 0) {
+          throw new DiagnosticError(fileName, argument.location, `spawned Slice borrow of ${JSON.stringify(borrowedRoot ?? "value")} requires an explicit async scope`, {
+            code: "Z0704",
+            notes: ["the scope join keeps the Slice backing storage alive and stable until the child finishes"],
+            helps: ["place the spawn inside `async scope { ... }`, or use direct `await`"],
+          });
+        }
+        if (!borrowedRoot) {
+          throw new DiagnosticError(fileName, argument.location, "a spawned async Slice borrow requires named storage", {
+            code: "Z0704",
+            helps: ["bind the backing collection before borrowing it into the spawned task"],
+          });
+        }
+        recordAsyncSpawnBorrow(borrowedRoot, argument.location, "in", asyncContext.spawnOffset!, fileName, state);
       }
       continue;
     }

@@ -445,6 +445,14 @@ read-only slices may share one array in a call, while any overlap involving an
 `inout` slice is rejected. The slice descriptor owns neither its buffer nor its
 elements and performs no cleanup.
 
+An async Slice parameter copies that two-word descriptor into the task frame
+while keeping a loan on the backing collection. Direct await bounds the loan to
+the join. Spawn requires `async scope`; immutable Slice tasks may share the
+backing array, while an `inout Slice<T>` task has exclusive access until join,
+cancellation, or scope exit. The first executable backing-storage tier is a
+cleanup-free fixed array in an async frame. Growable arrays and cleanup-bearing
+fixed-array elements require their own async-frame cleanup lowering.
+
 `Array<T>()` explicitly creates a growable owned buffer; array literals remain
 fixed inline arrays. `Array<T>` carries its allocation, initialized length, and
 capacity as one move-only value. `push` requires addressable `let` storage,
@@ -872,9 +880,10 @@ an error or cancellation remain visible—`inout` is not transactional. A non-th
 direct-awaited `out` parameter may similarly initialize cleanup-free caller
 storage; every successful path must assign it before returning. Ownership-bearing
 output waits for completion-time live-storage handoff lowering. Spawned `out`,
-Slice, ARC-reference rebinding, borrowed struct receivers, and other live borrows
-remain rejected across suspension. Cross-thread executors must prove sendability
-before any pointer-backed borrow can leave its originating thread.
+ARC-reference rebinding, borrowed struct receivers, growable-array-backed Slice,
+and other live borrows remain rejected across suspension. Cross-thread executors
+must prove sendability before any pointer-backed borrow can leave its originating
+thread.
 Owned values, ARC class references, owned closures, direct move-only native
 values, and whole Z value structs or enums containing them may be stored in task
 frames. Native

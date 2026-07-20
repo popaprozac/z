@@ -214,10 +214,32 @@ await readSensorAfter(20, out reading);
 
 The callee may suspend, but must initialize the output on every successful path
 before the caller resumes. This first tier is cleanup-free; ownership-bearing
-output needs a completion-time live-storage handoff. Spawned `out`, `Slice<T>`,
-ARC-reference rebinding, borrowed struct receivers, and other unrelated live
-borrows remain rejected. Cross-thread executors will additionally require
-sendability before these pointer-backed borrows can leave one thread.
+output needs a completion-time live-storage handoff.
+
+`Slice<T>` uses the same loan model without copying its elements. The task frame
+copies only the pointer/length descriptor. Direct await permits read-only or
+`inout` access; spawn requires an explicit scope and holds a shared or exclusive
+loan on the backing collection until join:
+
+```z
+async function calibrate(inout readings: Slice<i32>): void {
+  await delay(1);
+  readings[0] = readings[0] + 1;
+}
+
+let readings = [40, 41];
+async scope {
+  const task = spawn calibrate(inout readings);
+  await task;
+}
+```
+
+The executable backing-storage tier is currently cleanup-free fixed arrays.
+Growable arrays and cleanup-bearing fixed arrays need additional task-frame
+cleanup. Spawned `out`, ARC-reference rebinding, borrowed struct receivers, and
+other unrelated live borrows remain rejected. Cross-thread executors will
+additionally require sendability before these pointer-backed borrows can leave
+one thread.
 
 Classes and structs may declare async methods. A class receiver is retained by
 the task frame. A struct async instance method must initially declare `move

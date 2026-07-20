@@ -36,10 +36,10 @@ Status meanings:
 | --- | --- | --- |
 | Moves and deterministic `deinit` | Implemented | Flow-sensitive cleanup across return, throw, loops, and matches |
 | `in` / `inout` / `out` | Implemented | Explicit declaration and mutable call-site capabilities |
-| Unified loan checker | Implemented foundation | Call- and task-lifetime access share one root/capability/lifetime representation and conflict matrix; task indexes only drive join/cancel release, while views, suspended Slice, regions, and cross-thread loans remain to integrate |
+| Unified loan checker | Implemented foundation | Call- and task-lifetime access share one root/capability/lifetime representation and conflict matrix; task indexes only drive join/cancel release, while views, regions, and cross-thread loans remain to integrate |
 | Fixed arrays | Implemented | Checked indexing and reverse element cleanup |
 | `Array<T>` | Implemented | Growable owned storage and move-aware elements |
-| `Slice<T>` | Partial | Parameter-only, non-escaping lexical views |
+| `Slice<T>` | Partial | Non-escaping parameters plus direct-awaited and scope-bounded spawned borrowing from cleanup-free fixed arrays; growable and cleanup-bearing async backing storage remain |
 | Receiver-tied `view T` | Implemented narrow tier | Direct field/index projections and niche-backed `Option<view T>` lookups from synchronous value-struct methods; inferred const local, read-only, non-storable, non-forwardable, no class owners |
 | General returned/stored borrows | Planned | Parameter provenance, class alias safety, retained views, and regions remain open |
 | ORC cycle collection | Planned | `Weak<T>` works now; arbitrary strong cycles are not collected |
@@ -101,9 +101,9 @@ until the boundary is length-aware in both directions.
 | Area | Status | Current boundary |
 | --- | --- | --- |
 | Async syntax and typing | Implemented | Functions/methods, `await`, `spawn`, task scopes, typed errors |
-| Stackless task frames | Partial | Scalars, aggregates, owned structs/enums/classes, direct move-only C++ locals and parameters, whole Z value aggregates containing them, cleanup-free direct-awaited output, and fallible native result transfer through `try`/`attempt`/match across suspension |
+| Stackless task frames | Partial | Scalars, cleanup-free fixed arrays, copied Slice descriptors, owned structs/enums/classes, direct move-only C++ locals and parameters, whole Z value aggregates containing them, cleanup-free direct-awaited output, and fallible native result transfer through `try`/`attempt`/match across suspension |
 | Executor | Implemented bootstrap | Deterministic single-thread FIFO ready queue |
-| Structured scopes | Implemented slice | Lexical child joins, sibling/descendant cancellation, shared immutable and exclusive mutable child borrows, plus path-sensitive early release across straight-line code and `if` branches; loops remain conservative to scope exit |
+| Structured scopes | Implemented slice | Lexical child joins, sibling/descendant cancellation, shared immutable and exclusive mutable child borrows (including fixed-array-backed Slice), plus path-sensitive early release across straight-line code and `if` branches; loops remain conservative to scope exit |
 | Caller cancellation | Implemented slice | Consuming `await task.cancel()` requests cancellation, joins descendants and cleanup, and discards an unclaimed completed outcome |
 | Timers | Implemented slice | Scheduler-aware monotonic `delay`; blocking `sleep` remains synchronous |
 | Sync work in async frames | Partial | Z and direct C++ calls/methods, console, checked arithmetic, concise matches |

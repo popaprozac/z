@@ -73,6 +73,7 @@ support or producing language-server diagnostics from hypothetical imports.
 - [`async-borrowing.z`](async/async-borrowing.z): direct-await and explicit-scope spawned immutable borrows without moving the owner
 - [`async-inout.z`](async/async-inout.z): direct-awaited mutation of a Z struct and move-only C++ owner across suspension
 - [`async-scoped-inout.z`](async/async-scoped-inout.z): scope-bounded spawned mutation with early release after explicit join
+- [`async-slices.z`](async/async-slices.z): direct and scope-bounded Slice borrowing over fixed-array storage
 - [`async-out.z`](async/async-out.z): direct-awaited initialization of caller storage across suspension
 - [`async-methods.z`](async/async-methods.z)
 

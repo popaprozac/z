@@ -10,6 +10,7 @@ import type {
 } from "./ast.ts";
 import { DiagnosticError } from "./diagnostics.ts";
 import { parseTaskType } from "./async-types.ts";
+import { parseDynamicArrayType, parseFixedArrayType, parseSliceType } from "./array-types.ts";
 import { resultTypeName } from "./results.ts";
 import { standardFunctionSignature } from "./standard-library.ts";
 import type { IntegerOperation, SemanticInfo } from "./sema.ts";
@@ -181,6 +182,7 @@ function planFunction(
     locals.set("this", owner.name);
   }
   for (const parameter of declaration.parameters) {
+    const slice = parseSliceType(parameter.type.name);
     if (
       parameter.mode !== "value"
       && parameter.mode !== "in"
@@ -189,10 +191,10 @@ function planFunction(
     ) {
       unsupported(fileName, parameter.location, "borrowed async parameters are not executable yet");
     }
-    if (parameter.mode === "in" || parameter.mode === "inout" || parameter.mode === "out") {
+    if (!slice && (parameter.mode === "in" || parameter.mode === "inout" || parameter.mode === "out")) {
       borrowedLocals.add(parameter.name);
     }
-    if (parameter.mode === "inout" || parameter.mode === "out") mutableBorrowedLocals.add(parameter.name);
+    if (!slice && (parameter.mode === "inout" || parameter.mode === "out")) mutableBorrowedLocals.add(parameter.name);
     requireFrameType(parameter.type.name, parameter.type.location, fileName, "async parameter", types);
     locals.set(parameter.name, parameter.type.name);
   }
@@ -911,6 +913,11 @@ function generateRuntime(
       "",
     ] : []),
     "/* Z async Phase 1: FIFO-scheduled ownership-aware task frames. */",
+    "static __attribute__((unused)) inline uintptr_t z_async_bounds_index(uintptr_t index, uintptr_t length) {",
+    "  if (index >= length) abort();",
+    "  return index;",
+    "}",
+    "",
     "typedef struct Z_AsyncTask Z_AsyncTask;",
     "typedef struct Z_AsyncExecutor Z_AsyncExecutor;",
     "struct Z_AsyncTask {",
@@ -1286,7 +1293,9 @@ function frameInputs(plan: AsyncFunctionPlan): readonly {
     ...plan.declaration.parameters.map((parameter) => ({
       name: parameter.name,
       type: parameter.type.name,
-      mode: parameter.mode === "in"
+      mode: parseSliceType(parameter.type.name)
+        ? "value" as const
+        : parameter.mode === "in"
         ? "in" as const
         : parameter.mode === "inout"
           ? "inout" as const
@@ -1311,12 +1320,32 @@ function emitAwaitArguments(
   arguments_.push(...site.call.arguments.map((argument, index) => {
     const value = emitFrameExpression(argument, parent, fileName);
     const parameter = site.target.declaration.parameters[index];
+    if (parameter && parseSliceType(parameter.type.name)) {
+      return emitFrameSliceConversion(argument, value, parent, fileName) ?? value;
+    }
     if (parameter?.mode !== "in" && parameter?.mode !== "inout" && parameter?.mode !== "out") return value;
     return parameter.mode === "in" && parent.types.structs.get(parameter.type.name)?.kind === "class"
       ? value
       : `&(${value})`;
   }));
   return arguments_;
+}
+
+function emitFrameSliceConversion(
+  argument: Expression,
+  value: string,
+  plan: Pick<AsyncFunctionPlan, "locals" | "types">,
+  fileName: string,
+): string | null {
+  const conversion = plan.types.semanticInfo.sliceConversions.get(argument.location.offset);
+  if (!conversion) return null;
+  const fixed = parseFixedArrayType(conversion.sourceType);
+  const dynamic = parseDynamicArrayType(conversion.sourceType);
+  if (!fixed && !dynamic) {
+    unsupported(fileName, argument.location, "async Slice conversion requires fixed or growable array storage");
+  }
+  const length = fixed ? String(fixed.length) : `((${value}).length)`;
+  return `(${cFrameType(conversion.targetType, plan.types)}){ .data = (${value}).data, .length = ${length} }`;
 }
 
 function generatePoll(
@@ -2193,6 +2222,31 @@ function emitFrameExpression(
       }
     case "conditional":
       return `(${emitFrameExpression(expression.condition, plan, fileName)} ? ${emitFrameExpression(expression.thenExpression, plan, fileName)} : ${emitFrameExpression(expression.elseExpression, plan, fileName)})`;
+    case "arrayExpression": {
+      const type = plan.types.semanticInfo.expressionTypes.get(expression.location.offset);
+      if (!type || !parseFixedArrayType(type)) {
+        unsupported(fileName, expression.location, "async array construction requires a fixed array type");
+      }
+      const elements = expression.elements.map((element) => emitFrameExpression(element, plan, fileName));
+      return `(${cFrameType(type, plan.types)}){ .data = { ${elements.join(", ")} } }`;
+    }
+    case "index": {
+      const ownerType = frameExpressionType(expression.object, plan);
+      const array = parseFixedArrayType(ownerType);
+      const slice = parseSliceType(ownerType);
+      const dynamic = parseDynamicArrayType(ownerType);
+      if (!array && !slice && !dynamic) {
+        unsupported(fileName, expression.location, `indexing async value ${JSON.stringify(ownerType)} is not supported`);
+      }
+      const owner = emitFrameExpression(expression.object, plan, fileName);
+      const length = array ? String(array.length) : `((${owner}).length)`;
+      const value = `((${owner}).data[z_async_bounds_index((uintptr_t)(${emitFrameExpression(expression.index, plan, fileName)}), ${length})])`;
+      const elementType = (array ?? slice ?? dynamic)!.elementType;
+      return plan.types.semanticInfo.managedCopies.has(expression.location.offset)
+        && plan.types.structs.get(elementType)?.kind === "class"
+        ? `Z_${elementType}_retain(${value})`
+        : value;
+    }
     case "member": {
       if (expression.object.kind === "identifier") {
         const enumeration = plan.types.enums.get(expression.object.name);
@@ -2332,6 +2386,10 @@ function emitSyncCallArguments(
 ): string[] {
   return expression.arguments.map((argument, index) => {
     const value = emitFrameExpression(argument, plan, fileName);
+    const slice = emitFrameSliceConversion(argument, value, plan, fileName);
+    if (slice) return slice;
+    const parameter = synchronousZCallParameter(expression, index, plan);
+    if (parameter && parseSliceType(parameter.type.name)) return value;
     if (standardSignature?.parameters[index]?.abi === "value") return value;
     if (plan.types.semanticInfo.foreignCxxArgumentAccesses.has(argument.location.offset)) return value;
     if (plan.types.semanticInfo.foreignArgumentAccesses.get(argument.location.offset) === "in") return `&(${value})`;
@@ -2341,6 +2399,28 @@ function emitSyncCallArguments(
     if (access === "in" && plan.types.structs.get(type)?.kind === "class") return value;
     return `&(${value})`;
   });
+}
+
+function synchronousZCallParameter(
+  expression: CallExpression,
+  index: number,
+  plan: Pick<AsyncFunctionPlan, "locals" | "types">,
+): FunctionDeclaration["parameters"][number] | undefined {
+  if (expression.callee.kind === "identifier") {
+    return plan.types.functions.get(expression.callee.name)?.parameters[index];
+  }
+  if (expression.callee.kind !== "member") return undefined;
+  if (expression.callee.object.kind === "identifier") {
+    const staticOwner = plan.types.structs.get(expression.callee.object.name);
+    const staticMethod = staticOwner?.methods.find((candidate) => (
+      candidate.static && !candidate.async && candidate.name === expression.callee.property
+    ));
+    if (staticMethod) return staticMethod.parameters[index];
+  }
+  const receiverType = frameExpressionType(expression.callee.object, plan);
+  return plan.types.structs.get(receiverType)?.methods.find((candidate) => (
+    !candidate.static && !candidate.async && candidate.name === expression.callee.property
+  ))?.parameters[index];
 }
 
 function requireScalar(type: string, location: SourceLocation, fileName: string, role: string): void {
@@ -2388,12 +2468,20 @@ function cScalar(type: string): string {
 function cFrameType(type: string, types: AsyncTypeContext): string {
   if (parseTaskType(type)) return "Z_AsyncTask *";
   if (scalarTypes.has(type)) return cScalar(type);
+  if (parseFixedArrayType(type)) return `Z_Array_${asyncNativeSymbolPart(type)}`;
+  if (parseSliceType(type)) return `Z_Slice_${asyncNativeSymbolPart(type)}`;
   const aggregate = types.structs.get(type);
   if (aggregate) return aggregate.kind === "class" ? `Z_${type} *` : `Z_${type}`;
   if (types.enums.has(type)) return resultCName(type);
   const foreign = types.semanticInfo.foreignNamedTypes.get(type);
   if (foreign) return foreign.cName;
   throw new Error(`missing async aggregate ABI type ${JSON.stringify(type)}`);
+}
+
+function asyncNativeSymbolPart(name: string): string {
+  return [...name].map((character) => (
+    /[A-Za-z0-9_]/.test(character) ? character : `_${character.codePointAt(0)!.toString(16)}_`
+  )).join("");
 }
 
 function borrowedFrameType(type: string, types: AsyncTypeContext, mutable = false): string {
@@ -2409,6 +2497,12 @@ function borrowedFrameValue(name: string, type: string, types: AsyncTypeContext)
 function isSupportedFrameType(type: string, types: AsyncTypeContext, visiting = new Set<string>()): boolean {
   if (parseTaskType(type)) return true;
   if (scalarTypes.has(type)) return true;
+  const fixedArray = parseFixedArrayType(type);
+  if (fixedArray) {
+    return isSupportedFrameType(fixedArray.elementType, types, visiting)
+      && !hasFrameCleanup(fixedArray.elementType, types);
+  }
+  if (parseSliceType(type)) return true;
   if (isDirectForeignFrameValue(type, types)) return true;
   if (visiting.has(type)) return true;
   const aggregate = types.structs.get(type);

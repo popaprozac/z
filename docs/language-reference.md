@@ -480,8 +480,10 @@ behavior. Value/native `inout` parameters may suspend when called through direct
 `await`; the caller's mutable storage remains stable and inaccessible until the
 join. An explicit async scope also permits one spawned `inout` child to hold
 exclusive access. Consuming that task through await or cancellation releases the
-borrow early; otherwise scope exit releases it. Slice borrows and ARC-reference
-rebinding are not implemented. Non-throwing
+borrow early; otherwise scope exit releases it. Async `Slice<T>` parameters copy
+only their pointer/length descriptor and borrow cleanup-free fixed-array backing
+storage under the same direct-await or scoped-spawn rules. Growable-array-backed
+Slices and ARC-reference rebinding are not implemented. Non-throwing
 direct-awaited `out` parameters may initialize cleanup-free caller storage and
 must do so on every successful path; spawned and ownership-bearing output remain
 deferred. Mutations made before failure or cancellation are not rolled back.
