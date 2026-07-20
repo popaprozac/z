@@ -3,13 +3,21 @@ import { thread } from "std/thread";
 
 struct WorkError {
   code: i32;
+  message: String;
 }
 
 function calculate(value: i32, fail: bool): i32 throws WorkError {
   if (fail) {
-    throw WorkError({ code: 7 });
+    throw WorkError({ code: 7, message: "calculation failed" });
   }
   return value;
+}
+
+async function propagateFailure(): i32 throws WorkError {
+  const task = thread.spawn((): i32 throws WorkError => {
+    return try calculate(0, true);
+  });
+  return try await task;
 }
 
 async function main(): i32 throws WorkError {
@@ -18,7 +26,7 @@ async function main(): i32 throws WorkError {
     return try calculate(40, shouldFail);
   });
   const observed = attempt await failedTask;
-  const recovered = match (observed) {
+  const recovered = match (in observed) {
     success(value) => value;
     failure(error) => error.code;
   };
@@ -27,6 +35,11 @@ async function main(): i32 throws WorkError {
     return try calculate(35, false);
   });
   const value = try await successfulTask;
-  console.log(`worker failure=${recovered}, success=${value}`);
-  return recovered + value - 42;
+  const propagated = attempt await propagateFailure();
+  const propagatedCode = match (in propagated) {
+    success(value) => value;
+    failure(error) => error.code;
+  };
+  console.log(`worker failure=${recovered}, propagated=${propagatedCode}, success=${value}`);
+  return recovered + propagatedCode + value - 49;
 }

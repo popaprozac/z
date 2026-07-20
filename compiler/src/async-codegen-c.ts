@@ -982,6 +982,7 @@ function generateRuntime(
   const usesThreads = plans.some((plan) => [...plan.spawns.values()].some((site) => site.nativeThread));
   const usesNativeFrameStorage = plans.some((plan) => (
     requiresNativeFramePlacement(plan.declaration.returnType.name, plan.types)
+    || Boolean(plan.declaration.errorType && requiresNativeFramePlacement(plan.declaration.errorType.name, plan.types))
     || [...plan.locals].some(([name, type]) => (
       !plan.borrowedLocals.has(name) && requiresNativeFramePlacement(type, plan.types)
     ))
@@ -1289,8 +1290,16 @@ function generateFrame(
     }
   }
   if (plan.declaration.errorType) {
+    const type = cFrameType(plan.declaration.errorType.name, plan.types);
     lines.push("  bool failed;");
-    lines.push(`  ${cFrameType(plan.declaration.errorType.name, plan.types)} error;`);
+    if (requiresNativeFramePlacement(plan.declaration.errorType.name, plan.types)) {
+      lines.push(`  alignas(${type}) unsigned char error[sizeof(${type})];`);
+    } else {
+      lines.push(`  ${type} error;`);
+    }
+    if (hasFrameCleanup(plan.declaration.errorType.name, plan.types)) {
+      lines.push("  bool live_error;");
+    }
   }
   for (const [name, type] of plan.locals) {
     const cType = cFrameType(type, plan.types);
@@ -1350,6 +1359,14 @@ function generateDestroy(
       "  }",
     );
   }
+  if (plan.declaration.errorType && hasFrameCleanup(plan.declaration.errorType.name, plan.types)) {
+    lines.push(
+      "  if (frame->live_error) {",
+      `    ${frameCleanup(frameErrorValue("frame", plan.declaration.errorType.name, plan.types), plan.declaration.errorType.name, plan.types)}`,
+      "    frame->live_error = false;",
+      "  }",
+    );
+  }
   for (const [name, type] of [...plan.locals].reverse()) {
     if (plan.borrowedLocals.has(name) || !hasFrameCleanup(type, plan.types)) continue;
     lines.push(
@@ -1405,7 +1422,10 @@ function generateStart(plan: AsyncFunctionPlan): string {
   lines.push("  frame->task.next = NULL;");
   lines.push("  frame->task.timer_next = NULL;");
   lines.push("  frame->task.executor = executor;");
-  if (plan.declaration.errorType) lines.push("  frame->failed = false;");
+  if (plan.declaration.errorType) {
+    lines.push("  frame->failed = false;");
+    if (hasFrameCleanup(plan.declaration.errorType.name, plan.types)) lines.push("  frame->live_error = false;");
+  }
   if (
     plan.declaration.returnType.name !== "void"
     && hasFrameCleanup(plan.declaration.returnType.name, plan.types)
@@ -1778,8 +1798,14 @@ function generatePoll(
       continue;
     }
     if (statement.kind === "throw") {
+      const errorType = plan.declaration.errorType!.name;
+      const value = emitFrameExpression(statement.expression, plan, fileName);
+      const initialize = requiresNativeFramePlacement(errorType, plan.types)
+        ? `new (frame->error) ${cFrameType(errorType, plan.types)}(${value});`
+        : `frame->error = ${value};`;
       cases.push(caseBlock(state, [
-        `frame->error = ${emitFrameExpression(statement.expression, plan, fileName)};`,
+        initialize,
+        ...(hasFrameCleanup(errorType, plan.types) ? ["frame->live_error = true;"] : []),
         "frame->failed = true;",
         "frame->cancel_children = true;",
         `frame->state = ${finalizeStateMarker};`,
@@ -1975,9 +2001,21 @@ function awaitCompletion(
     `if (!z_async_wait(&frame->task, &${child}->task)) return;`,
   ];
   if (site.mode === "try") {
+    const errorType = site.target.declaration.errorType!.name;
+    const childError = frameErrorValue(child, errorType, parent.types);
+    const transferredError = frameTransferredValue(
+      childError,
+      `${child}->live_error`,
+      errorType,
+      parent.types,
+    );
+    const initializeError = requiresNativeFramePlacement(errorType, parent.types)
+      ? `new (frame->error) ${cFrameType(errorType, parent.types)}(${transferredError});`
+      : `frame->error = ${transferredError};`;
     lines.push(
       `if (${child}->failed) {`,
-      `  frame->error = ${child}->error;`,
+      `  ${initializeError}`,
+      ...(hasFrameCleanup(errorType, parent.types) ? ["  frame->live_error = true;"] : []),
       `  z_async_destroy_${targetPart(site.target)}(${child});`,
       `  free(${child});`,
       `  frame->child_${site.index} = NULL;`,
@@ -1989,9 +2027,10 @@ function awaitCompletion(
       "}",
     );
   } else if (site.mode === "attempt" && destination) {
+    const errorType = site.target.declaration.errorType!.name;
     const result = resultTypeName(
       site.target.declaration.returnType.name,
-      site.target.declaration.errorType!.name,
+      errorType,
     );
     const cResult = resultCName(result);
     const placed = requiresNativeFramePlacement(result, parent.types);
@@ -2004,7 +2043,14 @@ function awaitCompletion(
       return `${destination} = (${cResult}){ .tag = ${resultTag(result, variant)}${initialized} };`;
     };
     lines.push(`if (${child}->failed) {`);
-    lines.push(`  ${construct("failure", `${child}->error`)}`, "} else {");
+    const childError = frameErrorValue(child, errorType, parent.types);
+    const transferredError = frameTransferredValue(
+      childError,
+      `${child}->live_error`,
+      errorType,
+      parent.types,
+    );
+    lines.push(`  ${construct("failure", transferredError)}`, "} else {");
     const transferredResult = requiresNativeFramePlacement(site.target.declaration.returnType.name, parent.types)
       ? frameTakeExpression(childResult, `${child}->live_result`)
       : childResult;
@@ -2673,7 +2719,10 @@ function emitThreadTryReturn(
   const lines = [
     `${cFrameType(resultType, plan.types)} ${temporary} = ${emitFrameExpression(call, plan, fileName)};`,
     `if (${temporary}.tag == ${resultTag(resultType, "failure")}) {`,
-    `  frame->error = ${temporary}.data.failure;`,
+    requiresNativeFramePlacement(errorType, plan.types)
+      ? `  new (frame->error) ${cFrameType(errorType, plan.types)}(std::move(${temporary}.data.failure));`
+      : `  frame->error = ${temporary}.data.failure;`,
+    ...(hasFrameCleanup(errorType, plan.types) ? ["  frame->live_error = true;"] : []),
     "  frame->failed = true;",
     "  frame->cancel_children = true;",
     `  frame->state = ${finalizeStateMarker};`,
@@ -3033,6 +3082,26 @@ function frameResultValue(frame: string, type: string, types: AsyncTypeContext):
   return requiresNativeFramePlacement(type, types)
     ? `(*std::launder(reinterpret_cast<${cType} *>(${field})))`
     : field;
+}
+
+function frameErrorValue(frame: string, type: string, types: AsyncTypeContext): string {
+  const field = `${frame}->error`;
+  const cType = cFrameType(type, types);
+  return requiresNativeFramePlacement(type, types)
+    ? `(*std::launder(reinterpret_cast<${cType} *>(${field})))`
+    : field;
+}
+
+function frameTransferredValue(
+  value: string,
+  liveFlag: string,
+  type: string,
+  types: AsyncTypeContext,
+): string {
+  if (!hasFrameCleanup(type, types)) return value;
+  return requiresNativeFramePlacement(type, types)
+    ? frameTakeExpression(value, liveFlag)
+    : `(${liveFlag} = false, ${value})`;
 }
 
 function frameSuspensionValue(site: NestedAwaitSite, types: AsyncTypeContext): string {

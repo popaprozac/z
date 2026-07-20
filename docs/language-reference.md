@@ -453,9 +453,10 @@ borrows, views, native references, `Arena`, custom `deinit`, and cross-thread
 The returned task remains scope-bound and is joined explicitly by `await` or
 implicitly at scope exit.
 Throwing worker closures return `Task<T, E>`; `try await` propagates `E` and
-`attempt await` produces `Result<T, E>`. The first tier requires a cleanup-free
-scalar or value error payload. Owned worker errors await explicit live-state
-tracking in async error slots.
+`attempt await` produces `Result<T, E>`. Error slots have the same explicit
+liveness as result slots, so transferable String/Array ownership, containing
+aggregates, readonly ARC identity, and contracted native owners are moved or
+shared according to the ordinary thread classifier and destroyed exactly once.
 
 ## Native interop
 

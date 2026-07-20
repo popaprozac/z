@@ -8858,8 +8858,12 @@ test("preserves typed errors from thread.spawn as Task<T, E>", () => {
   const artifact = compileToNative(source, example);
   assert.match(artifact.source, /struct Z_AsyncFrame___z_thread_job_/);
   assert.match(artifact.source, /bool failed;\n\s+Z_WorkError error;/);
+  assert.match(artifact.source, /bool live_error;/);
   assert.match(artifact.source, /Z_Result_i32_WorkError _z_thread_try_\d+ = calculate\(/);
   assert.match(artifact.source, /frame->error = _z_thread_try_\d+\.data\.failure/);
+  assert.match(artifact.source, /frame->live_error = true/);
+  assert.match(artifact.source, /child_\d+->live_error = false/);
+  assert.match(artifact.source, /if \(frame->live_error\)/);
   assert.match(artifact.source, /frame->failed = true/);
   assert.match(artifact.source, /z_async_start_native_thread/);
 
@@ -8873,14 +8877,14 @@ test("preserves typed errors from thread.spawn as Task<T, E>", () => {
 
   const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
-  assert.equal(result.stdout, "worker failure=7, success=35\n");
+  assert.equal(result.stdout, "worker failure=7, propagated=7, success=35\n");
 
   const unhandled = source.replace("attempt await failedTask", "await failedTask");
   const unhandledDiagnostic = diagnostics(unhandled, example)[0];
   assert.equal(unhandledDiagnostic.code, "Z0701");
   assert.match(unhandledDiagnostic.message, /awaiting a throwing task requires `attempt` or `try`/);
 
-  const ownedError = `
+  const unshareableError = `
     import { thread } from "std/thread";
     class OwnedError { code: i32; }
     async function main(): i32 throws OwnedError {
@@ -8890,9 +8894,30 @@ test("preserves typed errors from thread.spawn as Task<T, E>", () => {
       return try await task;
     }
   `;
-  const ownedErrorDiagnostic = diagnostics(ownedError, "thread-owned-error.z")[0];
-  assert.equal(ownedErrorDiagnostic.code, "Z0704");
-  assert.match(ownedErrorDiagnostic.message, /error type "OwnedError" cannot cross/);
+  const unshareableErrorDiagnostic = diagnostics(unshareableError, "thread-owned-error.z")[0];
+  assert.equal(unshareableErrorDiagnostic.code, "Z0704");
+  assert.match(unshareableErrorDiagnostic.message, /error type "OwnedError" cannot cross/);
+  assert.match(unshareableErrorDiagnostic.message, /mutable field "code"/);
+
+  const arcError = `
+    import { thread } from "std/thread";
+    class OwnedError { readonly code: i32; }
+    async function observe(): i32 {
+      const task = thread.spawn((): i32 throws OwnedError => {
+        throw new OwnedError({ code: 7 });
+      });
+      const observed = attempt await task;
+      return match (in observed) {
+        success(value) => value;
+        failure(error) => error.code - 7;
+      };
+    }
+    async function main(): i32 { return await observe(); }
+  `;
+  const arcErrorFile = resolve(mkdtempSync("/tmp/z-thread-arc-error-"), "main.z");
+  writeFileSync(arcErrorFile, arcError);
+  const arcErrorResult = spawnSync(process.execPath, [cli, "run", arcErrorFile], { encoding: "utf8" });
+  assert.equal(arcErrorResult.status, 0, arcErrorResult.stderr);
 
   const localClosure = `
     struct WorkError { code: i32; }
@@ -8926,9 +8951,12 @@ test("preserves typed errors from thread.spawn as Task<T, E>", () => {
   const nativeFailureExample = resolve(projectRoot, "examples/async/thread-native-errors.z");
   const nativeFailureSource = readFileSync(nativeFailureExample, "utf8");
   const nativeFailureGenerated = compileToNative(nativeFailureSource, nativeFailureExample).source;
-  const nativeFailureWorker = nativeFailureGenerated.slice(
-    nativeFailureGenerated.lastIndexOf("static void z_async_poll___z_thread_job_"),
-  );
+  assert.match(nativeFailureGenerated, /alignas\(Z_WorkerError\) unsigned char error\[sizeof\(Z_WorkerError\)\]/);
+  assert.match(nativeFailureGenerated, /bool live_error;/);
+  assert.match(nativeFailureGenerated, /z_async_take\(&\(\(\*std::launder\(reinterpret_cast<Z_WorkerError \*>\([^\n]+->error\)\)\)\), &\([^\n]+->live_error\)\)/);
+  const nativeFailureWorker = [...nativeFailureGenerated.matchAll(
+    /static void z_async_poll___z_thread_job_\d+\(Z_AsyncTask \*task\) \{[\s\S]*?\n\}/g,
+  )].map((match) => match[0]).find((candidate) => candidate.includes("std::destroy_at")) ?? "";
   assert.match(nativeFailureWorker, /frame->failed = true/);
   assert.ok(nativeFailureWorker.indexOf("std::destroy_at") >= 0);
   assert.ok(nativeFailureWorker.indexOf("std::destroy_at") < nativeFailureWorker.indexOf("frame->task.completed = true"));

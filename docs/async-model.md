@@ -154,10 +154,13 @@ const value = try await calculation;
 ```
 
 That closure produces `Task<i32, CalculationError>`; `attempt await` would
-instead expose `Result<i32, CalculationError>`. The first executable tier
-permits cleanup-free scalar and value errors to cross the thread boundary.
-Owned error payloads remain rejected until worker and parent error slots have
-explicit move/destruction liveness. No untyped thread-exception channel is used.
+instead expose `Result<i32, CalculationError>`. Worker and parent error slots
+track liveness explicitly. The ordinary thread-transfer classifier therefore
+also applies to `E`: plain errors copy, unique String/Array/TextBuffer ownership
+and containing aggregates move, deeply readonly classes use atomic ARC, and
+contracted native owners move through placement storage. Observation,
+propagation, cancellation, and discarded outcomes each destroy the payload
+exactly once. No untyped thread-exception channel is used.
 
 The first executable transfer rule is deliberately narrow. Integers, floats,
 booleans, fixed arrays, and recursively cleanup-free Z structs/enums copy.

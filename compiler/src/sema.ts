@@ -3918,12 +3918,22 @@ function inferExpressionInner(
               const errorType = closure.declaration.errorType?.name ?? null;
               if (errorType) {
                 const transfer = initialThreadTransferKind(errorType, structs, enums, state);
-                if (!transfer || transfer !== "copy" || hasOwnershipType(errorType, structs, enums, state)) {
+                if (!transfer) {
+                  const errorClass = structs.get(String(underlyingType(errorType)));
+                  const shareability = errorClass?.kind === "class"
+                    ? shareableTypeIssue(errorClass.name, structs, enums, state)
+                    : null;
+                  const foreignIssue = foreignThreadTransferIssue(errorType, state);
+                  const issue = shareability ?? foreignIssue;
                   throw new DiagnosticError(fileName, operation.errorType!.location, `thread.spawn error type ${JSON.stringify(errorType)} cannot cross a native thread boundary yet`, {
                     code: "Z0704",
-                    notes: ["the first fallible thread tier transfers cleanup-free scalar and value error payloads"],
-                    helps: ["use a cleanup-free error enum or struct, then attach owned diagnostic data after joining"],
+                    notes: [issue?.reason ?? "worker errors must be transferable values, unique owners, or deeply readonly ARC identity"],
+                    helps: [issue?.help ?? "use a transferable owned error value, or translate it to a thread-safe error before throwing"],
                   });
+                }
+                const errorClass = structs.get(String(underlyingType(errorType)));
+                if (transfer === "copy" && errorClass?.kind === "class") {
+                  state.threadSharedClassUses.set(errorClass.name, operation.errorType!.location);
                 }
               }
               for (const { capture, kind } of captureTransfers) {

@@ -111,7 +111,8 @@ planned experiment rather than a rejected direction.
 3. **Begun:** `thread.spawn` now proves explicit move capture, private Copy
    snapshots, moved Array/String/TextBuffer owners/results, explicitly
    contracted C/C++ owner transfer, deeply readonly atomic-ARC class sharing,
-   and structured join on one native thread. Extend
+   live-state-aware owned `Task<T, E>` errors, and structured join on one native
+   thread. Extend
    that evidence with broader cleanup-bearing sendability, weak-reference and
    destruction-affinity protocols, mutable shared-state isolation, nonblocking
    executor integration, and a cross-thread callback before fixing pools or a

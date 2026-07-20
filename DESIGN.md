@@ -905,10 +905,11 @@ data races.
 
 The error contract is the same as local `spawn`: a synchronous worker closure
 declared `(): T throws E` produces `Task<T, E>`, `try await` propagates `E`, and
-`attempt await` materializes it. The first executable tier transfers
-cleanup-free scalar and value error payloads. Owned error payloads remain
-rejected until async error slots track move/destruction liveness explicitly;
-there is no separate untyped thread-exception channel.
+`attempt await` materializes it. Error slots carry explicit liveness just like
+result slots, so transferable String/Array ownership, containing aggregates,
+deeply readonly ARC identity, and explicitly contracted native owners can move
+from worker to parent and are destroyed exactly once when observed, propagated,
+cancelled, or discarded. There is no separate untyped thread-exception channel.
 
 An async function continues to declare its domain contract as `T throws E`.
 `spawn` preserves that contract as `Task<T, E>`, `try await` propagates `E`, and
