@@ -180,7 +180,7 @@
     "matchPatterns": {
       "patterns": [{
         "name": "constant.language.enum-member.z",
-        "match": "\\b[A-Za-z_][A-Za-z0-9_]*(?=\\s*(?:\\([^)]*\\))?\\s*=>)"
+        "match": "\\b(?!move\\b)[A-Za-z_][A-Za-z0-9_]*(?=\\s*(?:\\([^)]*\\))?\\s*=>)"
       }]
     },
     "keywords": {

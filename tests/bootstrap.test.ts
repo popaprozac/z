@@ -6841,6 +6841,8 @@ test("editor grammar tracks keywords without reserving Result variants", () => {
   assert.equal(foreignDeclarationPatterns[8].captures[1].name, "keyword.control.declaration.callback.z");
   assert.equal(foreignDeclarationPatterns[8].captures[2].name, "constant.language.callback-thread.z");
   assert.match(selectiveImportPatterns, /\\bas\\b/);
+  assert.doesNotMatch("move () =>", new RegExp(matchPattern));
+  assert.match("some(value) =>", new RegExp(matchPattern));
   assert.match(keywordPattern, /while/);
   assert.match(keywordPattern, /for\|of/);
   assert.match(keywordPattern, /break/);
