@@ -7611,7 +7611,36 @@ test("mutably borrows caller storage through scoped spawn and releases it on joi
   );
   const overlapDiagnostic = diagnostics(overlapping, "async-scoped-inout-overlap.z")[0];
   assert.equal(overlapDiagnostic.code, "Z0704");
-  assert.match(overlapDiagnostic.message, /cannot mutate "counter" while a spawned task borrows it/);
+  assert.match(overlapDiagnostic.message, /cannot borrow "counter" as inout while an active inout loan exists/);
+  assert.match(overlapDiagnostic.message, /call- and task-lifetime access use the same exclusivity rules/);
+
+  const callOverlap = `
+    struct Counter { value: i32; }
+    function combine(in observed: Counter, inout updated: Counter): void {}
+    function main(): i32 {
+      let counter = Counter({ value: 42 });
+      combine(counter, inout counter);
+      return 0;
+    }
+  `;
+  const callOverlapDiagnostic = diagnostics(callOverlap, "call-loan-overlap.z")[0];
+  assert.match(callOverlapDiagnostic.message, /overlapping in and inout uses of "counter"/);
+
+  const taskOverlap = `
+    struct Counter { value: i32; }
+    async function observe(in counter: Counter): void { return; }
+    async function update(inout counter: Counter): void { return; }
+    async function main(): i32 {
+      let counter = Counter({ value: 42 });
+      async scope {
+        spawn observe(counter);
+        spawn update(inout counter);
+      }
+      return 0;
+    }
+  `;
+  const taskOverlapDiagnostic = diagnostics(taskOverlap, "task-loan-overlap.z")[0];
+  assert.match(taskOverlapDiagnostic.message, /cannot borrow "counter" as inout while an active in loan exists/);
 
   const conditionalJoin = beforeJoin.replace(
     "const observed = counter.value;\n        await task;",

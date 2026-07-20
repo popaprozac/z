@@ -175,11 +175,12 @@ These rules are one loan system, not separate synchronous and asynchronous
 ownership models. Each active access is identified by its root storage,
 capability (`in`, `inout`, `out`, or `move`), lifetime (call, task, or lexical
 scope), and release event (return, join/cancel, or scope exit). The stage-0
-compiler currently represents call-lifetime conflicts and task-lifetime borrows
-with separate internal trackers. That is deliberate bootstrap debt, not a
-language distinction. They must converge on one exclusivity checker before
-spawned `out`, suspended Slice borrowing, regions, or cross-thread loans expand
-the state space.
+compiler uses one access-loan representation and capability compatibility
+checker for call-lifetime overlaps and task-lifetime borrows. Task-to-loan maps
+are lifecycle indexes only: they identify which loans a join or cancellation
+releases rather than defining another aliasing policy. Spawned `out`, suspended
+Slice borrowing, regions, and cross-thread loans must extend this same checker
+rather than adding parallel rules.
 
 Replacing cleanup-bearing storage evaluates the new value into owned temporary
 storage before destroying the old value and installing the replacement. If

@@ -36,7 +36,7 @@ Status meanings:
 | --- | --- | --- |
 | Moves and deterministic `deinit` | Implemented | Flow-sensitive cleanup across return, throw, loops, and matches |
 | `in` / `inout` / `out` | Implemented | Explicit declaration and mutable call-site capabilities |
-| Unified loan checker | Planned consolidation | Call-lifetime overlap and task/scope-lifetime borrow tracking enforce the same capability rules through separate stage-0 paths; unify them before spawned output, suspended Slice, region, or cross-thread loans |
+| Unified loan checker | Implemented foundation | Call- and task-lifetime access share one root/capability/lifetime representation and conflict matrix; task indexes only drive join/cancel release, while views, suspended Slice, regions, and cross-thread loans remain to integrate |
 | Fixed arrays | Implemented | Checked indexing and reverse element cleanup |
 | `Array<T>` | Implemented | Growable owned storage and move-aware elements |
 | `Slice<T>` | Partial | Parameter-only, non-escaping lexical views |

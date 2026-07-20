@@ -236,11 +236,7 @@ type AnalysisState = {
   readonly moveOrigins: Map<string, SourceLocation>;
   readonly borrowOrigins: Map<string, { readonly location: SourceLocation; readonly kind: "closure" | "iteration" | "match" }>;
   readonly iterationBorrowOrigins: Map<string, SourceLocation>;
-  readonly asyncBorrowOrigins: Map<string, readonly {
-    readonly spawnOffset: number;
-    readonly location: SourceLocation;
-    readonly mode: "in" | "inout";
-  }[]>;
+  readonly activeLoans: AccessLoanSet;
   readonly asyncSpawnBorrowRoots: Map<number, readonly string[]>;
   readonly asyncTaskBorrowSpawns: Map<string, number>;
   readonly asyncCallContexts: {
@@ -254,6 +250,19 @@ type AnalysisState = {
   activeFunction: FunctionDeclaration | null;
   activeReceiver: string | null;
 };
+
+type AccessCapability = "value" | "in" | "inout" | "out" | "move";
+
+type AccessLoan = {
+  readonly root: string;
+  readonly capability: AccessCapability;
+  readonly lifetime:
+    | { readonly kind: "call" }
+    | { readonly kind: "task"; readonly spawnOffset: number };
+  readonly location: SourceLocation;
+};
+
+type AccessLoanSet = Map<string, readonly AccessLoan[]>;
 
 type LoopAnalysisFrame = {
   readonly breaks: Map<string, ValueType>[];
@@ -401,7 +410,7 @@ export function analyze(
     moveOrigins: new Map(),
     borrowOrigins: new Map(),
     iterationBorrowOrigins: new Map(),
-    asyncBorrowOrigins: new Map(),
+    activeLoans: new Map(),
     asyncSpawnBorrowRoots: new Map(),
     asyncTaskBorrowSpawns: new Map(),
     asyncCallContexts: [],
@@ -1037,7 +1046,7 @@ function analyzeFunction(
   state.moveOrigins.clear();
   state.borrowOrigins.clear();
   state.iterationBorrowOrigins.clear();
-  state.asyncBorrowOrigins.clear();
+  state.activeLoans.clear();
   state.asyncSpawnBorrowRoots.clear();
   state.asyncTaskBorrowSpawns.clear();
   state.asyncScopeDepth = 0;
@@ -1692,7 +1701,7 @@ function analyzeStatement(
         });
       }
       const scopeLocals = new Map(locals);
-      const outerBorrows = new Map(state.asyncBorrowOrigins);
+      const outerLoans = new Map(state.activeLoans);
       const outerSpawnBorrowRoots = new Map(state.asyncSpawnBorrowRoots);
       const outerTaskBorrowSpawns = new Map(state.asyncTaskBorrowSpawns);
       state.asyncScopeDepth += 1;
@@ -1700,8 +1709,8 @@ function analyzeStatement(
         analyzeStatements(statement.body.statements, owner, scopeLocals, globals, structs, enums, fileName, state);
       } finally {
         state.asyncScopeDepth -= 1;
-        state.asyncBorrowOrigins.clear();
-        for (const [name, origin] of outerBorrows) state.asyncBorrowOrigins.set(name, origin);
+        state.activeLoans.clear();
+        for (const [name, loans] of outerLoans) state.activeLoans.set(name, loans);
         state.asyncSpawnBorrowRoots.clear();
         for (const [offset, roots] of outerSpawnBorrowRoots) state.asyncSpawnBorrowRoots.set(offset, roots);
         state.asyncTaskBorrowSpawns.clear();
@@ -2925,8 +2934,8 @@ function inferExpressionInner(
     case "identifier": {
       const local = locals.get(expression.name);
       if (local) {
-        const asyncBorrow = state.asyncBorrowOrigins.get(expression.name)
-          ?.find((borrow) => borrow.mode === "inout");
+        const asyncBorrow = state.activeLoans.get(expression.name)
+          ?.find((loan) => loan.lifetime.kind === "task" && loan.capability === "inout");
         if (asyncBorrow) {
           throw new DiagnosticError(fileName, expression.location, `cannot read ${JSON.stringify(expression.name)} while a spawned task mutably borrows it`, {
             code: "Z0704",
@@ -4394,8 +4403,15 @@ function checkArguments(
       `${JSON.stringify(target.name)} expects ${target.parameters.length} argument(s), received ${args.length}`,
     );
   }
-  const activeUses = new Map<string, "value" | "in" | "inout" | "out" | "move">();
-  if (receiverUse) activeUses.set(receiverUse.name, receiverUse.mode);
+  const callLoans: AccessLoanSet = new Map();
+  if (receiverUse) {
+    registerAccessLoan(callLoans, {
+      root: receiverUse.name,
+      capability: receiverUse.mode,
+      lifetime: { kind: "call" },
+      location,
+    });
+  }
   for (let index = 0; index < target.parameters.length; index += 1) {
     const parameter = target.parameters[index];
     const useMode = parseSliceType(parameter.type.name) && parameter.mode === "value" ? "in" : parameter.mode;
@@ -4404,15 +4420,19 @@ function checkArguments(
       ? argument.name
       : storageRoot(argument)?.name ?? null;
     if (!root) continue;
-    const previous = activeUses.get(root);
-    if (previous && !((previous === "in" && useMode === "in") || (previous === "value" && useMode === "value"))) {
+    const conflict = registerAccessLoan(callLoans, {
+      root,
+      capability: useMode,
+      lifetime: { kind: "call" },
+      location: argument.location,
+    });
+    if (conflict) {
       throw new DiagnosticError(
         fileName,
         argument.location,
-        `overlapping ${previous} and ${useMode} uses of ${JSON.stringify(root)} in one call are not allowed`,
+        `overlapping ${conflict.capability} and ${useMode} uses of ${JSON.stringify(root)} in one call are not allowed`,
       );
     }
-    activeUses.set(root, useMode);
   }
   for (let index = 0; index < target.parameters.length; index += 1) {
     const parameter = target.parameters[index];
@@ -4487,7 +4507,11 @@ function checkArguments(
         );
       }
       const stored = locals.get(argument.name);
-      rejectOwnerMutationWhileViewed(argument.name, argument.location, fileName, state);
+      const asyncContext = state.asyncCallContexts.at(-1);
+      const spawnedAsyncBorrow = Boolean(target.async && asyncContext?.mode === "spawn");
+      if (!spawnedAsyncBorrow) {
+        rejectOwnerMutationWhileViewed(argument.name, argument.location, fileName, state);
+      }
       if (!stored) throw new DiagnosticError(fileName, argument.location, `unknown name ${JSON.stringify(argument.name)}`);
       if (initializationState(stored) === "uninitialized") {
         throw new DiagnosticError(fileName, argument.location, `inout argument ${JSON.stringify(argument.name)} must be initialized before the call`);
@@ -4527,7 +4551,6 @@ function checkArguments(
       state.nativeArgumentAccesses.set(argument.location.offset, "inout");
       state.expressionTypes.set(argument.location.offset, String(storedType));
       state.expressionTypes.set(argument.nameLocation.offset, String(storedType));
-      const asyncContext = state.asyncCallContexts.at(-1);
       if (target.async && asyncContext?.mode === "spawn") {
         if (state.asyncScopeDepth === 0) {
           throw new DiagnosticError(fileName, argument.location, `spawned mutable borrow of ${JSON.stringify(argument.name)} requires an explicit async scope`, {
@@ -4536,7 +4559,7 @@ function checkArguments(
             helps: ["place the spawn inside `async scope { ... }`, use direct `await`, or transfer ownership into the spawned task"],
           });
         }
-        recordAsyncSpawnBorrow(argument.name, argument.location, "inout", asyncContext.spawnOffset!, state);
+        recordAsyncSpawnBorrow(argument.name, argument.location, "inout", asyncContext.spawnOffset!, fileName, state);
       }
       continue;
     }
@@ -4614,7 +4637,7 @@ function checkArguments(
             helps: ["bind the value before borrowing it into the spawned task"],
           });
         }
-        recordAsyncSpawnBorrow(borrowedRoot, argument.location, "in", asyncContext.spawnOffset!, state);
+        recordAsyncSpawnBorrow(borrowedRoot, argument.location, "in", asyncContext.spawnOffset!, fileName, state);
       }
       continue;
     }
@@ -4826,16 +4849,47 @@ function consumeOwnedValue(
   state.moveOrigins.set(expression.name, expression.location);
 }
 
+function accessCapabilitiesConflict(left: AccessCapability, right: AccessCapability): boolean {
+  return !((left === "in" && right === "in") || (left === "value" && right === "value"));
+}
+
+function registerAccessLoan(loans: AccessLoanSet, loan: AccessLoan): AccessLoan | null {
+  const active = loans.get(loan.root) ?? [];
+  const conflict = active.find((candidate) => (
+    accessCapabilitiesConflict(candidate.capability, loan.capability)
+  ));
+  if (conflict) return conflict;
+  loans.set(loan.root, [...active, loan]);
+  return null;
+}
+
 function recordAsyncSpawnBorrow(
   root: string,
   location: SourceLocation,
   mode: "in" | "inout",
   spawnOffset: number,
+  fileName: string,
   state: AnalysisState,
 ): void {
-  const uses = state.asyncBorrowOrigins.get(root) ?? [];
-  if (!uses.some((borrow) => borrow.spawnOffset === spawnOffset)) {
-    state.asyncBorrowOrigins.set(root, [...uses, { spawnOffset, location, mode }]);
+  const active = state.activeLoans.get(root) ?? [];
+  const duplicate = active.some((loan) => (
+    loan.lifetime.kind === "task" && loan.lifetime.spawnOffset === spawnOffset
+  ));
+  if (!duplicate) {
+    const conflict = registerAccessLoan(state.activeLoans, {
+      root,
+      capability: mode,
+      lifetime: { kind: "task", spawnOffset },
+      location,
+    });
+    if (conflict) {
+      throw new DiagnosticError(fileName, location, `cannot borrow ${JSON.stringify(root)} as ${mode} while an active ${conflict.capability} loan exists`, {
+        code: "Z0704",
+        labels: [{ location: conflict.location, message: `active ${conflict.capability} loan begins here`, length: root.length }],
+        notes: ["call- and task-lifetime access use the same exclusivity rules"],
+        helps: ["join the active task before starting an overlapping borrow"],
+      });
+    }
   }
   const roots = state.asyncSpawnBorrowRoots.get(spawnOffset) ?? [];
   if (!roots.includes(root)) state.asyncSpawnBorrowRoots.set(spawnOffset, [...roots, root]);
@@ -4846,10 +4900,11 @@ function releaseAsyncTaskBorrows(task: string, state: AnalysisState): void {
   const spawnOffset = state.asyncTaskBorrowSpawns.get(task);
   if (spawnOffset === undefined) return;
   for (const root of state.asyncSpawnBorrowRoots.get(spawnOffset) ?? []) {
-    const remaining = (state.asyncBorrowOrigins.get(root) ?? [])
-      .filter((borrow) => borrow.spawnOffset !== spawnOffset);
-    if (remaining.length > 0) state.asyncBorrowOrigins.set(root, remaining);
-    else state.asyncBorrowOrigins.delete(root);
+    const remaining = (state.activeLoans.get(root) ?? []).filter((loan) => (
+      loan.lifetime.kind !== "task" || loan.lifetime.spawnOffset !== spawnOffset
+    ));
+    if (remaining.length > 0) state.activeLoans.set(root, remaining);
+    else state.activeLoans.delete(root);
   }
   state.asyncSpawnBorrowRoots.delete(spawnOffset);
   state.asyncTaskBorrowSpawns.delete(task);
@@ -4862,16 +4917,16 @@ function rejectOwnerMutationWhileViewed(
   state: AnalysisState,
   action = "mutate",
 ): void {
-  const asyncBorrow = state.asyncBorrowOrigins.get(owner)?.[0];
+  const asyncBorrow = state.activeLoans.get(owner)?.find((loan) => loan.lifetime.kind === "task");
   if (asyncBorrow) {
     throw new DiagnosticError(fileName, location, `cannot ${action} ${JSON.stringify(owner)} while a spawned task borrows it`, {
       code: "Z0704",
       labels: [{
         location: asyncBorrow.location,
-        message: `spawned ${asyncBorrow.mode === "inout" ? "mutable" : "immutable"} borrow begins here`,
+        message: `spawned ${asyncBorrow.capability === "inout" ? "mutable" : "immutable"} borrow begins here`,
         length: owner.length,
       }],
-      notes: [`the ${asyncBorrow.mode === "inout" ? "exclusive borrow" : "borrow"} remains live until the enclosing async scope joins its child tasks`],
+      notes: [`the ${asyncBorrow.capability === "inout" ? "exclusive borrow" : "borrow"} remains live until the enclosing async scope joins its child tasks`],
       helps: ["finish the async scope before mutating or moving the borrowed value"],
     });
   }
