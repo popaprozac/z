@@ -1,0 +1,11 @@
+// The stage-1 lexer must treat this comment as trivia.
+export async function render(in value: i32): String {
+  const escaped = "line\nvalue";
+  const state = `ready ${value >= 1 ? { id: value }.id : 0}; literal \${value}`;
+  const multiline = `begin ${value // interpolation trivia
+    + 1} end`;
+  await on thread.main {
+    console.log(`${escaped}: ${state} / ${multiline}`);
+  }
+  return state;
+}

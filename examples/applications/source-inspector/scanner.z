@@ -10,7 +10,6 @@ export struct SourceSummary {
   identifierCount: usize;
   numberCount: usize;
   stringCount: usize;
-  commentCount: usize;
   firstIdentifier: String;
 }
 
@@ -33,11 +32,10 @@ export function scanSource(in source: String): SourceSummary throws String {
   let identifierCount: usize = 0;
   let numberCount: usize = 0;
   let stringCount: usize = 0;
-  let commentCount: usize = 0;
   let firstIdentifier = "";
 
   for (const token of tokens) {
-    if (token.kind == TokenKind.end) continue;
+    if (token.kind == TokenKind.eof) continue;
     tokenCount = tokenCount + 1;
     if (token.kind == TokenKind.identifier) {
       identifierCount = identifierCount + 1;
@@ -47,7 +45,6 @@ export function scanSource(in source: String): SourceSummary throws String {
     }
     if (token.kind == TokenKind.number) numberCount = numberCount + 1;
     if (token.kind == TokenKind.string) stringCount = stringCount + 1;
-    if (token.kind == TokenKind.comment) commentCount = commentCount + 1;
   }
 
   return SourceSummary({
@@ -57,7 +54,6 @@ export function scanSource(in source: String): SourceSummary throws String {
     identifierCount,
     numberCount,
     stringCount,
-    commentCount,
     firstIdentifier,
   });
 }

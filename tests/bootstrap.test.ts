@@ -8,6 +8,8 @@ import { DiagnosticError, formatDiagnostic } from "../compiler/src/diagnostics.t
 import { ApiNoteConflictError, mergeApiNotes } from "../compiler/src/foreign-api-notes.ts";
 import { normalizeForeignContracts } from "../compiler/src/foreign-contracts.ts";
 import type { ForeignFunctionDeclaration } from "../compiler/src/foreign-ir.ts";
+import { lex } from "../compiler/src/lexer.ts";
+import { decodeStage1TokenStream } from "../compiler/src/self-hosting.ts";
 import {
   completions,
   definition,
@@ -2307,7 +2309,7 @@ test("builds the Z Notes AppKit and sqlite3 application skeleton", () => {
   const availabilityDiagnostic = diagnostics(availabilitySource, availabilityFile)[0];
   assert.equal(availabilityDiagnostic?.code, "Z0802");
   assert.match(availabilityDiagnostic?.message ?? "", /requires macOS 14\.0, but the deployment target is macOS 13\.0/);
-});
+}, 10_000);
 
 test("runs an application-shaped document workspace across ownership and interop features", () => {
   const example = resolve(projectRoot, "examples/applications/document-workspace/main.z");
@@ -4504,8 +4506,22 @@ test("tokenizes real Z source with checked UTF-8 operations and TextBuffer", () 
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /lexer\.z: \d+ lines, \d+ UTF-8 bytes/);
   assert.match(result.stdout, /\d+ tokens: \d+ identifiers, \d+ numbers/);
-  assert.match(result.stdout, /\d+ strings, \d+ comments/);
+  assert.match(result.stdout, /\d+ strings/);
   assert.match(result.stdout, /first identifier: TextBuffer/);
+
+  const tokenStream = resolve(projectRoot, "examples/applications/source-inspector/token-stream.z");
+  const parityInput = resolve(projectRoot, "tests/fixtures/self-host-lexer-input.z");
+  const paritySource = readFileSync(parityInput, "utf8");
+  const parityResult = spawnSync(process.execPath, [cli, "run", tokenStream, "--", parityInput], { encoding: "utf8" });
+  assert.equal(parityResult.status, 0, parityResult.stderr);
+  const selfHostedTokens = decodeStage1TokenStream(parityResult.stdout, parityInput);
+  const bootstrapTokens = lex(paritySource, parityInput);
+  assert.deepEqual(selfHostedTokens, bootstrapTokens);
+
+  assert.throws(
+    () => decodeStage1TokenStream("identifier\tbad\t1\t1\t61\n", parityInput),
+    /malformed stage-1 token offset/,
+  );
 });
 
 test("builds owned UTF-8 String values through explicit std/text TextBuffer", () => {

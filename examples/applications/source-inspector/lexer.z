@@ -4,7 +4,11 @@ export enum TokenKind {
   identifier,
   number,
   string,
-  comment,
+  templateStart,
+  templateText,
+  templateExpressionStart,
+  templateExpressionEnd,
+  templateEnd,
   importKeyword,
   exportKeyword,
   fromKeyword,
@@ -13,6 +17,7 @@ export enum TokenKind {
   asyncKeyword,
   awaitKeyword,
   spawnKeyword,
+  onKeyword,
   scopeKeyword,
   structKeyword,
   classKeyword,
@@ -61,8 +66,6 @@ export enum TokenKind {
   comma,
   semicolon,
   dot,
-  backtick,
-  dollar,
   equal,
   equalEqual,
   bang,
@@ -85,7 +88,7 @@ export enum TokenKind {
   star,
   slash,
   percent,
-  end,
+  eof,
 }
 
 export struct Token {
@@ -118,7 +121,7 @@ function isDigit(byte: u8): boolean {
 }
 
 function isWhitespace(byte: u8): boolean {
-  return byte == 9 || byte == 10 || byte == 13 || byte == 32;
+  return byte == 9 || byte == 10 || byte == 11 || byte == 12 || byte == 13 || byte == 32;
 }
 
 function keywordKind(in text: String): Option<TokenKind> {
@@ -130,6 +133,7 @@ function keywordKind(in text: String): Option<TokenKind> {
   if (text == "async") return Option.some(TokenKind.asyncKeyword);
   if (text == "await") return Option.some(TokenKind.awaitKeyword);
   if (text == "spawn") return Option.some(TokenKind.spawnKeyword);
+  if (text == "on") return Option.some(TokenKind.onKeyword);
   if (text == "scope") return Option.some(TokenKind.scopeKeyword);
   if (text == "struct") return Option.some(TokenKind.structKeyword);
   if (text == "class") return Option.some(TokenKind.classKeyword);
@@ -195,8 +199,6 @@ function singleSymbolKind(byte: u8): Option<TokenKind> {
   if (byte == 44) return Option.some(TokenKind.comma);
   if (byte == 59) return Option.some(TokenKind.semicolon);
   if (byte == 46) return Option.some(TokenKind.dot);
-  if (byte == 96) return Option.some(TokenKind.backtick);
-  if (byte == 36) return Option.some(TokenKind.dollar);
   if (byte == 61) return Option.some(TokenKind.equal);
   if (byte == 33) return Option.some(TokenKind.bang);
   if (byte == 60) return Option.some(TokenKind.less);
@@ -224,11 +226,17 @@ function pushToken(
   tokens.push(Token({ kind, text, offset, line, column }));
 }
 
-export function tokenize(in source: String): Array<Token> throws LexerError {
-  let tokens = Array<Token>();
+function tokenizeInto(
+  inout tokens: Array<Token>,
+  in source: String,
+  baseOffset: usize,
+  baseLine: usize,
+  baseColumn: usize,
+  emitEof: boolean
+): void throws LexerError {
   let offset: usize = 0;
-  let line: usize = 1;
-  let column: usize = 1;
+  let line = baseLine;
+  let column = baseColumn;
 
   while (offset < source.byteLength) {
     const byte = source.byteAt(offset);
@@ -255,7 +263,158 @@ export function tokenize(in source: String): Array<Token> throws LexerError {
         offset = offset + 1;
         column = column + 1;
       }
-      pushToken(inout tokens, TokenKind.comment, source.copyBytes(tokenOffset, offset), tokenOffset, tokenLine, tokenColumn);
+      continue;
+    }
+
+    if (byte == 96) {
+      pushToken(inout tokens, TokenKind.templateStart, "`", baseOffset + tokenOffset, tokenLine, tokenColumn);
+      offset = offset + 1;
+      column = column + 1;
+      let textOffset = offset;
+      let textLine = line;
+      let textColumn = column;
+      let chunkStart = offset;
+      let decoded = TextBuffer();
+
+      while (offset < source.byteLength && source.byteAt(offset) != 96) {
+        const templateByte = source.byteAt(offset);
+        if (templateByte == 92) {
+          const escapeOffset = offset;
+          const escapeLine = line;
+          const escapeColumn = column;
+          decoded.appendBytes(source, chunkStart, offset);
+          offset = offset + 1;
+          column = column + 1;
+          if (offset >= source.byteLength) {
+            throw LexerError({ message: "unterminated template escape", offset: baseOffset + escapeOffset, line: escapeLine, column: escapeColumn });
+          }
+          const escaped = source.byteAt(offset);
+          if (escaped == 110) decoded.appendAscii(10);
+          else if (escaped == 114) decoded.appendAscii(13);
+          else if (escaped == 116) decoded.appendAscii(9);
+          else if (escaped == 92 || escaped == 96 || escaped == 36) decoded.appendAscii(escaped);
+          else {
+            throw LexerError({ message: "unknown template escape", offset: baseOffset + escapeOffset, line: escapeLine, column: escapeColumn });
+          }
+          offset = offset + 1;
+          column = column + 1;
+          chunkStart = offset;
+          continue;
+        }
+
+        if (templateByte == 36 && offset + 1 < source.byteLength && source.byteAt(offset + 1) == 123) {
+          decoded.appendBytes(source, chunkStart, offset);
+          const text = decoded.finish();
+          if (!text.isEmpty) {
+            pushToken(inout tokens, TokenKind.templateText, text, baseOffset + textOffset, textLine, textColumn);
+          }
+          pushToken(inout tokens, TokenKind.templateExpressionStart, "${", baseOffset + offset, line, column);
+          offset = offset + 2;
+          column = column + 2;
+          const expressionOffset = offset;
+          const expressionLine = line;
+          const expressionColumn = column;
+          let depth: usize = 0;
+          let quote: u8 = 0;
+
+          while (offset < source.byteLength) {
+            const expressionByte = source.byteAt(offset);
+            if (quote != 0) {
+              if (expressionByte == 92) {
+                offset = offset + 1;
+                column = column + 1;
+                if (offset < source.byteLength) {
+                  if (source.byteAt(offset) == 10) {
+                    line = line + 1;
+                    column = 1;
+                  } else {
+                    column = column + 1;
+                  }
+                  offset = offset + 1;
+                }
+                continue;
+              }
+              if (expressionByte == quote) quote = 0;
+              if (expressionByte == 10) {
+                line = line + 1;
+                column = 1;
+              } else {
+                column = column + 1;
+              }
+              offset = offset + 1;
+              continue;
+            }
+            if (expressionByte == 34 || expressionByte == 39 || expressionByte == 96) {
+              quote = expressionByte;
+              offset = offset + 1;
+              column = column + 1;
+              continue;
+            }
+            if (expressionByte == 47 && offset + 1 < source.byteLength && source.byteAt(offset + 1) == 47) {
+              while (offset < source.byteLength && source.byteAt(offset) != 10) {
+                offset = offset + 1;
+                column = column + 1;
+              }
+              continue;
+            }
+            if (expressionByte == 123) {
+              depth = depth + 1;
+              offset = offset + 1;
+              column = column + 1;
+              continue;
+            }
+            if (expressionByte == 125) {
+              if (depth == 0) break;
+              depth = depth - 1;
+              offset = offset + 1;
+              column = column + 1;
+              continue;
+            }
+            if (expressionByte == 10) {
+              line = line + 1;
+              column = 1;
+            } else {
+              column = column + 1;
+            }
+            offset = offset + 1;
+          }
+
+          if (offset >= source.byteLength) {
+            throw LexerError({ message: "unterminated template interpolation", offset: baseOffset + tokenOffset, line: tokenLine, column: tokenColumn });
+          }
+          const expressionSource = source.copyBytes(expressionOffset, offset);
+          try tokenizeInto(inout tokens, expressionSource, baseOffset + expressionOffset, expressionLine, expressionColumn, false);
+          pushToken(inout tokens, TokenKind.templateExpressionEnd, "}", baseOffset + offset, line, column);
+          offset = offset + 1;
+          column = column + 1;
+          textOffset = offset;
+          textLine = line;
+          textColumn = column;
+          chunkStart = offset;
+          decoded = TextBuffer();
+          continue;
+        }
+
+        if (templateByte == 10) {
+          line = line + 1;
+          column = 1;
+        } else {
+          column = column + 1;
+        }
+        offset = offset + 1;
+      }
+
+      if (offset >= source.byteLength) {
+        throw LexerError({ message: "unterminated template literal", offset: baseOffset + tokenOffset, line: tokenLine, column: tokenColumn });
+      }
+      decoded.appendBytes(source, chunkStart, offset);
+      const text = decoded.finish();
+      if (!text.isEmpty) {
+        pushToken(inout tokens, TokenKind.templateText, text, baseOffset + textOffset, textLine, textColumn);
+      }
+      pushToken(inout tokens, TokenKind.templateEnd, "`", baseOffset + offset, line, column);
+      offset = offset + 1;
+      column = column + 1;
       continue;
     }
 
@@ -269,8 +428,8 @@ export function tokenize(in source: String): Array<Token> throws LexerError {
       const text = source.copyBytes(tokenOffset, offset);
       const keyword = keywordKind(text);
       match (keyword) {
-        some(kind) => pushToken(inout tokens, kind, text, tokenOffset, tokenLine, tokenColumn);
-        none => pushToken(inout tokens, TokenKind.identifier, text, tokenOffset, tokenLine, tokenColumn);
+        some(kind) => pushToken(inout tokens, kind, text, baseOffset + tokenOffset, tokenLine, tokenColumn);
+        none => pushToken(inout tokens, TokenKind.identifier, text, baseOffset + tokenOffset, tokenLine, tokenColumn);
       }
       continue;
     }
@@ -298,14 +457,14 @@ export function tokenize(in source: String): Array<Token> throws LexerError {
           column = column + 1;
         }
         if (offset >= source.byteLength || !isDigit(source.byteAt(offset))) {
-          throw LexerError({ message: "a numeric exponent requires at least one digit", offset: tokenOffset, line: tokenLine, column: tokenColumn });
+          throw LexerError({ message: "a numeric exponent requires at least one digit", offset: baseOffset + tokenOffset, line: tokenLine, column: tokenColumn });
         }
         while (offset < source.byteLength && isDigit(source.byteAt(offset))) {
           offset = offset + 1;
           column = column + 1;
         }
       }
-      pushToken(inout tokens, TokenKind.number, source.copyBytes(tokenOffset, offset), tokenOffset, tokenLine, tokenColumn);
+      pushToken(inout tokens, TokenKind.number, source.copyBytes(tokenOffset, offset), baseOffset + tokenOffset, tokenLine, tokenColumn);
       continue;
     }
 
@@ -319,7 +478,7 @@ export function tokenize(in source: String): Array<Token> throws LexerError {
       while (offset < source.byteLength && source.byteAt(offset) != quote) {
         const quotedByte = source.byteAt(offset);
         if (quotedByte == 10) {
-          throw LexerError({ message: "unterminated string literal", offset: tokenOffset, line: tokenLine, column: tokenColumn });
+          throw LexerError({ message: "unterminated string literal", offset: baseOffset + tokenOffset, line: tokenLine, column: tokenColumn });
         }
         if (quotedByte != 92) {
           offset = offset + 1;
@@ -328,10 +487,13 @@ export function tokenize(in source: String): Array<Token> throws LexerError {
         }
 
         decoded.appendBytes(source, chunkStart, offset);
+        const escapeOffset = offset;
+        const escapeLine = line;
+        const escapeColumn = column;
         offset = offset + 1;
         column = column + 1;
         if (offset >= source.byteLength) {
-          throw LexerError({ message: "unterminated string escape", offset: tokenOffset, line: tokenLine, column: tokenColumn });
+          throw LexerError({ message: "unterminated string escape", offset: baseOffset + tokenOffset, line: tokenLine, column: tokenColumn });
         }
         const escaped = source.byteAt(offset);
         if (escaped == 110) decoded.appendAscii(10);
@@ -339,7 +501,7 @@ export function tokenize(in source: String): Array<Token> throws LexerError {
         else if (escaped == 116) decoded.appendAscii(9);
         else if (escaped == 92 || escaped == 34 || escaped == 39) decoded.appendAscii(escaped);
         else {
-          throw LexerError({ message: "unknown string escape", offset, line, column });
+          throw LexerError({ message: "unknown string escape", offset: baseOffset + escapeOffset, line: escapeLine, column: escapeColumn });
         }
         offset = offset + 1;
         column = column + 1;
@@ -347,12 +509,12 @@ export function tokenize(in source: String): Array<Token> throws LexerError {
       }
 
       if (offset >= source.byteLength) {
-        throw LexerError({ message: "unterminated string literal", offset: tokenOffset, line: tokenLine, column: tokenColumn });
+        throw LexerError({ message: "unterminated string literal", offset: baseOffset + tokenOffset, line: tokenLine, column: tokenColumn });
       }
       decoded.appendBytes(source, chunkStart, offset);
       offset = offset + 1;
       column = column + 1;
-      pushToken(inout tokens, TokenKind.string, decoded.finish(), tokenOffset, tokenLine, tokenColumn);
+      pushToken(inout tokens, TokenKind.string, decoded.finish(), baseOffset + tokenOffset, tokenLine, tokenColumn);
       continue;
     }
 
@@ -363,7 +525,7 @@ export function tokenize(in source: String): Array<Token> throws LexerError {
       some(kind) => {
         offset = offset + 2;
         column = column + 2;
-        pushToken(inout tokens, kind, source.copyBytes(tokenOffset, offset), tokenOffset, tokenLine, tokenColumn);
+        pushToken(inout tokens, kind, source.copyBytes(tokenOffset, offset), baseOffset + tokenOffset, tokenLine, tokenColumn);
       }
       none => {
         const single = singleSymbolKind(byte);
@@ -371,11 +533,11 @@ export function tokenize(in source: String): Array<Token> throws LexerError {
           some(kind) => {
             offset = offset + 1;
             column = column + 1;
-            pushToken(inout tokens, kind, source.copyBytes(tokenOffset, offset), tokenOffset, tokenLine, tokenColumn);
+            pushToken(inout tokens, kind, source.copyBytes(tokenOffset, offset), baseOffset + tokenOffset, tokenLine, tokenColumn);
           }
           none => throw LexerError({
             message: `unexpected source byte ${byte}`,
-            offset: tokenOffset,
+            offset: baseOffset + tokenOffset,
             line: tokenLine,
             column: tokenColumn,
           });
@@ -384,6 +546,106 @@ export function tokenize(in source: String): Array<Token> throws LexerError {
     }
   }
 
-  pushToken(inout tokens, TokenKind.end, "", offset, line, column);
+  if (emitEof) {
+    pushToken(inout tokens, TokenKind.eof, "", baseOffset + offset, line, column);
+  }
+}
+
+export function tokenize(in source: String): Array<Token> throws LexerError {
+  let tokens = Array<Token>();
+  try tokenizeInto(inout tokens, source, 0, 1, 1, true);
   return tokens;
+}
+
+export function tokenKindName(kind: TokenKind): String {
+  return match (kind) {
+    identifier => "identifier";
+    number => "number";
+    string => "string";
+    templateStart => "templateStart";
+    templateText => "templateText";
+    templateExpressionStart => "templateExpressionStart";
+    templateExpressionEnd => "templateExpressionEnd";
+    templateEnd => "templateEnd";
+    importKeyword => "import";
+    exportKeyword => "export";
+    fromKeyword => "from";
+    asKeyword => "as";
+    functionKeyword => "function";
+    asyncKeyword => "async";
+    awaitKeyword => "await";
+    spawnKeyword => "spawn";
+    onKeyword => "on";
+    scopeKeyword => "scope";
+    structKeyword => "struct";
+    classKeyword => "class";
+    traitKeyword => "trait";
+    implementsKeyword => "implements";
+    enumKeyword => "enum";
+    deinitKeyword => "deinit";
+    matchKeyword => "match";
+    ifKeyword => "if";
+    elseKeyword => "else";
+    whileKeyword => "while";
+    forKeyword => "for";
+    ofKeyword => "of";
+    breakKeyword => "break";
+    continueKeyword => "continue";
+    trueKeyword => "true";
+    falseKeyword => "false";
+    nullKeyword => "null";
+    newKeyword => "new";
+    constructorKeyword => "constructor";
+    publicKeyword => "public";
+    privateKeyword => "private";
+    readonlyKeyword => "readonly";
+    staticKeyword => "static";
+    constKeyword => "const";
+    letKeyword => "let";
+    returnKeyword => "return";
+    throwsKeyword => "throws";
+    throwKeyword => "throw";
+    selectKeyword => "select";
+    yieldKeyword => "yield";
+    attemptKeyword => "attempt";
+    tryKeyword => "try";
+    weakKeyword => "weak";
+    inKeyword => "in";
+    outKeyword => "out";
+    inoutKeyword => "inout";
+    leftParen => "leftParen";
+    rightParen => "rightParen";
+    leftBrace => "leftBrace";
+    rightBrace => "rightBrace";
+    leftBracket => "leftBracket";
+    rightBracket => "rightBracket";
+    colon => "colon";
+    question => "question";
+    comma => "comma";
+    semicolon => "semicolon";
+    dot => "dot";
+    equal => "equal";
+    equalEqual => "equalEqual";
+    bang => "bang";
+    bangEqual => "bangEqual";
+    less => "less";
+    lessEqual => "lessEqual";
+    greater => "greater";
+    greaterEqual => "greaterEqual";
+    andAnd => "andAnd";
+    orOr => "orOr";
+    bitAnd => "bitAnd";
+    bitOr => "bitOr";
+    bitXor => "bitXor";
+    shiftLeft => "shiftLeft";
+    shiftRight => "shiftRight";
+    tilde => "tilde";
+    fatArrow => "fatArrow";
+    plus => "plus";
+    minus => "minus";
+    star => "star";
+    slash => "slash";
+    percent => "percent";
+    eof => "eof";
+  };
 }

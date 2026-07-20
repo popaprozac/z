@@ -7,7 +7,7 @@ function hasKind(in tokens: Array<Token>, index: usize, kind: TokenKind): boolea
 function verifyLexer(): i32 throws LexerError {
   const source = "export async function add(in left: i32, in right: i32): i32 { return left >= 1 && right != 0 ? left + right : 0; } // ok";
   const tokens = try tokenize(source);
-  if (tokens.length != 36) return 1;
+  if (tokens.length != 35) return 1;
   if (!hasKind(tokens, 0, TokenKind.exportKeyword)) return 2;
   if (!hasKind(tokens, 1, TokenKind.asyncKeyword)) return 3;
   if (!hasKind(tokens, 2, TokenKind.functionKeyword)) return 4;
@@ -16,14 +16,21 @@ function verifyLexer(): i32 throws LexerError {
   if (!hasKind(tokens, 20, TokenKind.greaterEqual)) return 7;
   if (!hasKind(tokens, 22, TokenKind.andAnd)) return 8;
   if (!hasKind(tokens, 24, TokenKind.bangEqual)) return 9;
-  if (!hasKind(tokens, 34, TokenKind.comment)) return 10;
-  if (!hasKind(tokens, 35, TokenKind.end)) return 11;
-  if (tokens[20].line != 1 || tokens[20].column != 75) return 12;
+  if (!hasKind(tokens, 34, TokenKind.eof)) return 10;
+  if (tokens[20].line != 1 || tokens[20].column != 75) return 11;
 
   const numberTokens = try tokenize("42.5e-2");
-  if (numberTokens.length != 2) return 13;
-  if (!hasKind(numberTokens, 0, TokenKind.number)) return 14;
-  if (numberTokens[0].text != "42.5e-2") return 15;
+  if (numberTokens.length != 2) return 12;
+  if (!hasKind(numberTokens, 0, TokenKind.number)) return 13;
+  if (numberTokens[0].text != "42.5e-2") return 14;
+
+  const templateTokens = try tokenize("`ready ${value + 1}` on thread.main");
+  if (!hasKind(templateTokens, 0, TokenKind.templateStart)) return 15;
+  if (!hasKind(templateTokens, 1, TokenKind.templateText)) return 16;
+  if (!hasKind(templateTokens, 2, TokenKind.templateExpressionStart)) return 17;
+  if (!hasKind(templateTokens, 6, TokenKind.templateExpressionEnd)) return 18;
+  if (!hasKind(templateTokens, 7, TokenKind.templateEnd)) return 19;
+  if (!hasKind(templateTokens, 8, TokenKind.onKeyword)) return 20;
   return 0;
 }
 

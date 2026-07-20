@@ -20,9 +20,10 @@ without allocating substrings, while `finish()` transfers the completed bytes
 into an owned `String` token.
 
 The lexer now emits exact parser-facing kinds for Z's current reserved keywords,
-punctuation, and operators. `move` and `view` deliberately remain identifiers
-because the stage-0 parser treats them as contextual keywords. Decimal and
-exponent forms are single number tokens, malformed exponents are typed lexer
+punctuation, operators, and template interpolation boundaries. `move` and `view`
+deliberately remain identifiers because the stage-0 parser treats them as
+contextual keywords. Comments are trivia, matching the stage-0 lexer. Decimal
+and exponent forms are single number tokens, malformed exponents are typed lexer
 errors, and unknown bytes are rejected rather than accepted as generic symbols.
 
 Run its focused grammar checks with:
@@ -31,7 +32,9 @@ Run its focused grammar checks with:
 bun run z run examples/applications/source-inspector/lexer-smoke.z
 ```
 
-This is still an incremental frontend rather than the production Z lexer.
-Template delimiters are currently preserved as explicit backtick/dollar tokens;
-interpolation modes, Unicode identifiers, block comments, and a Z parser remain
-future slices.
+[`token-stream.z`](token-stream.z) is the first stage-1 bridge. It emits a stable
+tab-separated token stream with hexadecimal token text. The TypeScript driver
+compiles this program with stage 0, runs it natively, and compares its complete
+token sequence and source locations with the bootstrap lexer. This is still an
+incremental frontend: Unicode identifiers, block comments, direct in-process
+compiler integration, and a Z parser remain future slices.

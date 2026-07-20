@@ -134,7 +134,8 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
   directly through the first self-hosting standard APIs.
 - [`examples/applications/source-inspector`](../examples/applications/source-inspector): tokenizes real Z
   source with owned tokens, checked UTF-8 byte operations, typed lexer errors,
-  and `std/text` `TextBuffer` escape decoding.
+  `std/text` `TextBuffer` escape decoding, nested template-interpolation modes,
+  and a native token-stream parity bridge to the stage-0 lexer.
 - [`examples/interop/objc/nswindow.z`](../examples/interop/objc/nswindow.z): direct AppKit window.
 - [`examples/interop/objc/objc-nullability.z`](../examples/interop/objc/objc-nullability.z): explicit
   `T | null` AppKit guard narrowing alongside `Option.fromNullable` and
@@ -209,14 +210,18 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    and `Option<view T>`, then verifies zero live native resources. It exposed and
    closed module-linked enum classification, view-method dispatch, and
    statement-valued `throw` lowering gaps.
-4. **Self-hosting prerequisites — first substrate plus source-tokenizing slice implemented.**
+4. **Self-hosting prerequisites — first stage-1 frontend component implemented.**
    Target-neutral `std/fs`, `std/process`, and owned program-argument APIs run on
    macOS and have Windows/POSIX native branches. Checked String byte operations
    and `std/text` `TextBuffer` now support a multi-module Z source inspector with
    UTF-8 boundary-preserving token copies, escape decoding, source locations,
    typed lexer errors, exact current keyword/operator kinds, decimal/exponent
-   numbers, and unknown-byte rejection. A production lexer still needs template
-   interpolation modes, Unicode identifiers, block comments, and parser data structures.
+   numbers, template interpolation modes, trivia-compatible comments, and
+   unknown-byte rejection. Stage 0 compiles a native token-stream bridge and
+   compares its kinds, decoded text, offsets, lines, and columns with the
+   TypeScript lexer; the Z lexer also tokenizes its own complete source. Unicode
+   identifiers, block comments, buffered/in-process driver integration, and
+   parser data structures remain.
 5. **Threaded concurrency evidence — Copy, unique-owner, native-owner, readonly ARC, and owned-error slices implemented.**
    `thread.spawn` now proves one real cross-thread task frame with explicit
    move capture, hot start, structured join, private Copy snapshots, and moved

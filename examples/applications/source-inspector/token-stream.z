@@ -1,0 +1,58 @@
+// Machine-readable bridge used by the stage-0 TypeScript driver to compare the
+// Z lexer with the bootstrap lexer. Token text is hexadecimal so tabs, newlines,
+// embedded nulls, and decoded string/template contents remain unambiguous.
+
+import console from "std/console";
+import fs from "std/fs";
+import process from "std/process";
+import { TextBuffer } from "std/text";
+import { tokenKindName, tokenize } from "./lexer.z";
+
+function hexDigit(value: u8): u8 {
+  return value < 10 ? value + 48 : value + 87;
+}
+
+function encodeHex(in text: String): String {
+  let output = TextBuffer();
+  let offset: usize = 0;
+  while (offset < text.byteLength) {
+    const byte = text.byteAt(offset);
+    output.appendAscii(hexDigit(byte >> 4));
+    output.appendAscii(hexDigit(byte & 15));
+    offset = offset + 1;
+  }
+  return output.finish();
+}
+
+function streamTokens(in path: String): i32 throws String {
+  const source = try fs.readText(path);
+  const outcome = attempt tokenize(source);
+  const tokens = match (outcome) {
+    success(tokens) => tokens;
+    failure(error) => throw `lexer error at ${error.line}:${error.column}: ${error.message}`;
+  };
+
+  for (const token of tokens) {
+    const kind = tokenKindName(token.kind);
+    const text = encodeHex(token.text);
+    console.log(`${kind}\t${token.offset}\t${token.line}\t${token.column}\t${text}`);
+  }
+  return 0;
+}
+
+function main(): i32 {
+  const arguments = process.args();
+  if (arguments.length == 0) {
+    console.error("usage: token-stream <input.z>");
+    return 2;
+  }
+
+  const outcome = attempt streamTokens(arguments[0]);
+  return match (outcome) {
+    success(exitCode) => exitCode;
+    failure(message) => {
+      console.error(message);
+      select 1;
+    }
+  };
+}
