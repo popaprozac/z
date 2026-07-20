@@ -2268,9 +2268,13 @@ test("keeps receiver-tied views read-only, local, and value-struct-owned", () =>
       return inspect(item);
     }
   `;
-  const forwardDiagnostic = diagnostics(forwarded, "view-forward.z")[0];
+  assert.equal(diagnostics(forwarded, "view-forward.z").length, 0);
+  assert.match(compileToC(forwarded, "view-forward.z"), /return inspect\(item\);/);
+
+  const ownedForward = forwarded.replace("function inspect(in item: Item)", "function inspect(item: Item)");
+  const forwardDiagnostic = diagnostics(ownedForward, "view-owned-forward.z")[0];
   assert.equal(forwardDiagnostic.code, "Z0206");
-  assert.match(forwardDiagnostic.message, /cannot be forwarded/);
+  assert.match(forwardDiagnostic.message, /only enter a synchronous in parameter/);
 
   const classOwner = `
     struct Item { value: i32; }
@@ -2298,6 +2302,209 @@ test("keeps receiver-tied views read-only, local, and value-struct-owned", () =>
   const projectionDiagnostic = diagnostics(wrongProjection, "view-wrong-projection.z")[0];
   assert.equal(projectionDiagnostic.code, "Z0206");
   assert.match(projectionDiagnostic.message, /derived directly from this/);
+});
+
+test("allocates stable owner-tied views in Arena and cleans them newest-first", () => {
+  const example = resolve(projectRoot, "examples/language/ownership/arena.z");
+  const source = readFileSync(example, "utf8");
+  const generated = compileToC(source, example);
+  assert.match(generated, /typedef struct Z_Arena/);
+  assert.match(generated, /z_arena_create_ParsedRecord/);
+  assert.match(generated, /z_arena_register_cleanup\(arena, stored, z_arena_create_ParsedRecord_cleanup\)/);
+  assert.match(generated, /z_arena_reset\(&\(scratch\)\)/);
+
+  const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(
+    result.stdout,
+    [
+      "record 20 came from line 1",
+      "record 22 came from line 8",
+      "released record 22",
+      "released record 20",
+      "record 42 came from line 12",
+      "released record 42",
+      "",
+    ].join("\n"),
+  );
+
+  const liveReset = source.replace(
+    "scratch.reset();",
+    "scratch.reset();\n  const invalid = describe(body);",
+  );
+  const resetDiagnostic = diagnostics(liveReset, "arena-live-reset.z")[0];
+  assert.equal(resetDiagnostic.code, "Z0205");
+  assert.match(resetDiagnostic.message, /cannot reset .*scratch.* while view .*body.* is live/);
+
+  const immutable = source.replace(
+    "let scratch = Arena({ initialCapacity: 65536 });",
+    "const scratch = Arena({ initialCapacity: 65536 });",
+  );
+  const immutableDiagnostic = diagnostics(immutable, "arena-const.z")[0];
+  assert.equal(immutableDiagnostic.code, "Z0205");
+  assert.match(immutableDiagnostic.message, /requires addressable let storage/);
+
+  const createOffset = source.indexOf("create(ParsedRecord") + 1;
+  assert.match(hover(source, example, createOffset)?.contents.value ?? "", /create<T>\(value: T\): view T/);
+  const memberOffset = source.indexOf("scratch.create") + "scratch.".length;
+  assert.ok(completions(source, example, memberOffset).some((item) => item.label === "create"));
+  assert.ok(completions(source, example, memberOffset).some((item) => item.label === "reset"));
+
+  const importSource = source.replace("{ Arena }", "{ Ar }");
+  const importOffset = importSource.indexOf("{ Ar }") + 4;
+  assert.ok(completions(importSource, example, importOffset).some((item) => item.label === "Arena"));
+  const arenaOffset = source.indexOf("Arena({") + 1;
+  assert.match(hover(source, example, arenaOffset)?.contents.value ?? "", /move-only .*region storage/);
+  assert.match(generated, /z_arena_new\(\(uintptr_t\)\(65536ULL\)\)/);
+
+  const optionCompletionSource = source.replace("initialCapacity", "init");
+  const optionCompletionOffset = optionCompletionSource.indexOf("init:") + "init".length;
+  assert.ok(
+    completions(optionCompletionSource, example, optionCompletionOffset)
+      .some((item) => item.label === "initialCapacity"),
+  );
+
+  const invalidOptions = source.replace("initialCapacity: 65536", "capacity: 65536");
+  assert.match(diagnostics(invalidOptions, "arena-options.z")[0].message, /require exactly initialCapacity/);
+
+  const liveMove = `
+    import { Arena } from "std/memory";
+    struct Item { value: i32; }
+    function discard(arena: Arena): void { return; }
+    function main(): i32 {
+      let arena = Arena();
+      const item = arena.create(Item({ value: 42 }));
+      discard(arena);
+      return item.value;
+    }
+  `;
+  const moveDiagnostic = diagnostics(liveMove, "arena-live-move.z")[0];
+  assert.equal(moveDiagnostic.code, "Z0205");
+  assert.match(moveDiagnostic.message, /cannot move .*arena.* while view .*item.* is live/);
+
+  const directClass = `
+    import { Arena } from "std/memory";
+    class Session { id: i32; }
+    function main(): i32 {
+      let arena = Arena();
+      const session = arena.create(new Session({ id: 42 }));
+      return 0;
+    }
+  `;
+  assert.match(
+    diagnostics(directClass, "arena-class-root.z")[0].message,
+    /does not directly root reference-identity objects/,
+  );
+
+  const asyncArena = `
+    import { Arena } from "std/memory";
+    struct Item { value: i32; }
+    async function main(): i32 {
+      let arena = Arena();
+      const item = arena.create(Item({ value: 42 }));
+      return item.value;
+    }
+  `;
+  const asyncDiagnostic = diagnostics(asyncArena, "arena-async.z")[0];
+  assert.equal(asyncDiagnostic.code, "Z0704");
+  assert.match(asyncDiagnostic.message, /cannot cross suspension/);
+
+  const trivial = `
+    import { Arena } from "std/memory";
+    struct Point { x: i32; y: i32; }
+    function total(in point: Point): i32 { return point.x + point.y; }
+    function main(): i32 {
+      let arena = Arena();
+      const point = arena.create(Point({ x: 20, y: 22 }));
+      return total(point) - 42;
+    }
+  `;
+  const trivialGenerated = compileToC(trivial, "arena-trivial.z");
+  assert.doesNotMatch(trivialGenerated, /z_arena_create_Point_cleanup/);
+  assert.doesNotMatch(trivialGenerated, /z_arena_register_cleanup\(arena, stored/);
+  const trivialDirectory = mkdtempSync("/tmp/z-arena-trivial-");
+  const trivialFile = resolve(trivialDirectory, "main.z");
+  writeFileSync(trivialFile, trivial);
+  const trivialResult = spawnSync(process.execPath, [cli, "run", trivialFile], { encoding: "utf8" });
+  assert.equal(trivialResult.status, 0, trivialResult.stderr);
+
+  const builtinViews = `
+    import { Arena } from "std/memory";
+    function main(): i32 {
+      let arena = Arena();
+      const word = arena.create("hello");
+      const values = arena.create([20, 22]);
+      let dynamic = Array<i32>();
+      dynamic.push(40);
+      dynamic.push(2);
+      const stored = arena.create(dynamic);
+      if (word.byteLength != 5) return 1;
+      if (word.byteAt(1) != 101) return 2;
+      if (stored.length != 2) return 3;
+      return values[0] + values[1] + stored[0] + stored[1] - 84;
+    }
+  `;
+  const builtinDirectory = mkdtempSync("/tmp/z-arena-builtins-");
+  const builtinFile = resolve(builtinDirectory, "main.z");
+  writeFileSync(builtinFile, builtinViews);
+  const builtinResult = spawnSync(process.execPath, [cli, "run", builtinFile], { encoding: "utf8" });
+  assert.equal(builtinResult.status, 0, builtinResult.stderr);
+
+  const arcDirectory = mkdtempSync("/tmp/z-arena-arc-");
+  const arcFile = resolve(arcDirectory, "main.z");
+  writeFileSync(arcFile, `
+    import console from "std/console";
+    import { Arena } from "std/memory";
+    class Session {
+      id: i32;
+      deinit { console.log(\`released session \${this.id}\`); }
+    }
+    struct SessionSlot { session: Session; }
+    function main(): i32 {
+      let arena = Arena();
+      const slot = arena.create(SessionSlot({ session: new Session({ id: 7 }) }));
+      console.log(\`session \${slot.session.id}\`);
+      arena.reset();
+      return 0;
+    }
+  `);
+  const arcResult = spawnSync(process.execPath, [cli, "run", arcFile], { encoding: "utf8" });
+  assert.equal(arcResult.status, 0, arcResult.stderr);
+  assert.equal(arcResult.stdout, "session 7\nreleased session 7\n");
+
+  const nativeExample = resolve(projectRoot, "examples/interop/cpp/cpp-arena.z");
+  const nativeSource = readFileSync(nativeExample, "utf8");
+  const nativeGenerated = compileToC(nativeSource, nativeExample);
+  assert.match(nativeGenerated, /std::construct_at\(stored, std::move\(value\)\)/);
+  assert.match(nativeGenerated, /std::destroy_at\(stored\)/);
+  const nativeResult = spawnSync(process.execPath, [cli, "run", nativeExample], { encoding: "utf8" });
+  assert.equal(nativeResult.status, 0, nativeResult.stderr);
+  assert.equal(nativeResult.stdout, "arena answer=42, live before=2, live after=0\n");
+
+  const copyDirectory = mkdtempSync("/tmp/z-arena-copy-raii-");
+  const copyFile = resolve(copyDirectory, "main.z");
+  const copyHeader = resolve(projectRoot, "tests/fixtures/foreign-values.hpp");
+  writeFileSync(copyFile, `
+    import console from "std/console";
+    import { Arena } from "std/memory";
+    import native from ${JSON.stringify(copyHeader)};
+    function main(): i32 {
+      let arena = Arena();
+      const value = arena.create(native.zcpp.make_managed(42));
+      const answer = value.value();
+      const liveBeforeReset = native.zcpp.managed_live();
+      arena.reset();
+      const liveAfterReset = native.zcpp.managed_live();
+      console.log(\`copy arena answer=\${answer}, live before=\${liveBeforeReset}, live after=\${liveAfterReset}\`);
+      return answer - 42 + liveBeforeReset - 1 + liveAfterReset;
+    }
+  `);
+  const copyGenerated = compileToC(readFileSync(copyFile, "utf8"), copyFile);
+  assert.match(copyGenerated, /std::construct_at\(stored, value\)/);
+  assert.match(copyGenerated, /std::destroy_at\(stored\)/);
+  const copyResult = spawnSync(process.execPath, [cli, "run", copyFile], { encoding: "utf8" });
+  assert.equal(copyResult.status, 0, copyResult.stderr);
+  assert.equal(copyResult.stdout, "copy arena answer=42, live before=1, live after=0\n");
 });
 
 test("returns zero-overhead optional receiver-tied views through Option and match", () => {

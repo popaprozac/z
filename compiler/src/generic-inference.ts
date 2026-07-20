@@ -28,6 +28,7 @@ import { genericTypeName, parseGenericType } from "./generic-types.ts";
 import { functionTypeName, parseFunctionType } from "./function-types.ts";
 import { isNullableObjCTypeName, publicObjCTypeName } from "./objc-types.ts";
 import { parseWeakType, weakResultTypeName, weakTypeName } from "./weak-types.ts";
+import { parseViewType, viewTypeName } from "./view-types.ts";
 
 type Environment = Map<string, string>;
 type RewrittenExpression = { readonly expression: Expression; readonly type: string | null };
@@ -52,10 +53,10 @@ export function inferGenericCalls(
   const selectiveValues = new Map<string, string>();
   const standardTypeConstructors = new Map(
     program.imports
-      .filter((declaration) => declaration.header === "std/text" && declaration.bindings)
+      .filter((declaration) => (declaration.header === "std/text" || declaration.header === "std/memory") && declaration.bindings)
       .flatMap((declaration) => declaration.bindings!
-        .filter((binding) => binding.importedName === "TextBuffer")
-        .map((binding) => [binding.localName, "TextBuffer"] as const)),
+        .filter((binding) => binding.importedName === "TextBuffer" || binding.importedName === "Arena")
+        .map((binding) => [binding.localName, binding.importedName] as const)),
   );
   const selectiveNamespaces = new Map<string, { readonly module: ForeignModule; readonly namespacePath: readonly string[] }>();
   const foreignInterfaces = new Map<string, ForeignObjCInterface>();
@@ -540,8 +541,9 @@ export function inferGenericCalls(
       case "index": {
         const object = rewriteExpression(expression.object, environment);
         const index = rewriteExpression(expression.index, environment);
-        const indexed = object.type
-          ? parseFixedArrayType(object.type) ?? parseSliceType(object.type) ?? parseDynamicArrayType(object.type)
+        const objectType = object.type ? parseViewType(object.type)?.target ?? object.type : null;
+        const indexed = objectType
+          ? parseFixedArrayType(objectType) ?? parseSliceType(objectType) ?? parseDynamicArrayType(objectType)
           : null;
         return { expression: { ...expression, object: object.expression, index: index.expression }, type: indexed?.elementType ?? null };
       }
@@ -648,6 +650,24 @@ export function inferGenericCalls(
           }
         }
         const callee = rewriteExpression(expression.callee, environment);
+        if (callee.expression.kind === "member") {
+          const arenaReceiver = rewriteExpression(callee.expression.object, environment);
+          if (arenaReceiver.type === "Arena") {
+            const type = callee.expression.property === "create" && args[0]?.type
+              ? viewTypeName(args[0].type)
+              : callee.expression.property === "reset"
+                ? "void"
+                : null;
+            return {
+              expression: {
+                ...expression,
+                callee: { ...callee.expression, object: arenaReceiver.expression },
+                arguments: args.map((item) => item.expression),
+              },
+              type,
+            };
+          }
+        }
         if (callee.expression.kind === "member" && callee.expression.object.kind === "identifier") {
           const qualifier = parseGenericType(callee.expression.object.name);
           const contextualOption = expectedType ? parseGenericType(expectedType) : null;
@@ -718,10 +738,10 @@ export function inferGenericCalls(
         }
         if (rewrittenCallee.kind === "identifier") {
           const standardType = standardTypeConstructors.get(rewrittenCallee.name);
-          if (standardType === "TextBuffer") {
+          if (standardType === "TextBuffer" || standardType === "Arena") {
             return {
               expression: { ...expression, callee: rewrittenCallee, arguments: args.map((item) => item.expression) },
-              type: "TextBuffer",
+              type: standardType,
             };
           }
           const aggregateConstructor = aggregate(rewrittenCallee.name);

@@ -62,8 +62,8 @@ requiring lifetime syntax throughout ordinary application code.
 | Area | Implemented stage-0 slice |
 | --- | --- |
 | Values | Structs, classes, traits, generics, arrays, slices, owned strings |
-| Standard library | Explicit console/time/text plus initial `std/fs`, `std/process`, owned program arguments, and move-only `TextBuffer` construction |
-| Ownership | Lexical borrows, moves, deterministic cleanup, ARC, `Weak<T>` |
+| Standard library | Explicit console/time/text/memory plus initial `std/fs`, `std/process`, owned program arguments, move-only `TextBuffer`, and `Arena` region storage |
+| Ownership | Lexical borrows, moves, deterministic cleanup, ARC, `Weak<T>`, receiver-tied views, and synchronous arena regions |
 | Errors | Typed `throws`, `try` propagation, `attempt`, `Result<T, E>` |
 | Control flow | Checked arithmetic, loops, ternaries, value `if`, exhaustive `match` |
 | Async | Stackless tasks, FIFO executor, spawn/join scopes, cancellation, delay |

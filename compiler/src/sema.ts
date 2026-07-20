@@ -71,7 +71,7 @@ import {
   publicObjCTypeName,
 } from "./objc-types.ts";
 import { parseOptionType } from "./option-types.ts";
-import { parseOptionalViewType, parseReceiverViewReturnType, parseViewType } from "./view-types.ts";
+import { parseOptionalViewType, parseReceiverViewReturnType, parseViewType, viewTypeName } from "./view-types.ts";
 
 export type ObjCCallInfo = {
   readonly selector: string;
@@ -142,6 +142,8 @@ export type SemanticInfo = {
   readonly numericLiteralTypes: ReadonlyMap<number, string>;
   readonly integerOperations: ReadonlyMap<number, IntegerOperation>;
   readonly dynamicArrayPushTypes: ReadonlySet<string>;
+  readonly arenaCreateCalls: ReadonlyMap<number, string>;
+  readonly arenaResetCalls: ReadonlySet<number>;
   readonly foreignArgumentAccesses: ReadonlyMap<number, "in" | "out" | "inout">;
   readonly foreignCxxArgumentAccesses: ReadonlyMap<number, "in" | "inout" | "move">;
   readonly foreignCallbackTargets: ReadonlyMap<number, string>;
@@ -173,7 +175,7 @@ export type SemanticInfo = {
   readonly standardFunctionReferences: ReadonlyMap<number, StandardFunctionName>;
   readonly standardFunctionBindings: ReadonlyMap<string, StandardFunctionName>;
   readonly standardModuleBindings: ReadonlyMap<string, StandardModuleName>;
-  readonly standardTypeBindings: ReadonlyMap<string, "TextBuffer">;
+  readonly standardTypeBindings: ReadonlyMap<string, "TextBuffer" | "Arena">;
   readonly typeDisplayNames: ReadonlyMap<string, string>;
   readonly objectiveC: boolean;
   readonly cPlusPlus: boolean;
@@ -198,6 +200,8 @@ type AnalysisState = {
   readonly numericLiteralTypes: Map<number, string>;
   readonly integerOperations: Map<number, IntegerOperation>;
   readonly dynamicArrayPushTypes: Set<string>;
+  readonly arenaCreateCalls: Map<number, string>;
+  readonly arenaResetCalls: Set<number>;
   readonly foreignArgumentAccesses: Map<number, "in" | "out" | "inout">;
   readonly foreignCxxArgumentAccesses: Map<number, "in" | "inout" | "move">;
   readonly foreignCallbackTargets: Map<number, string>;
@@ -229,7 +233,7 @@ type AnalysisState = {
   readonly standardFunctionReferences: Map<number, StandardFunctionName>;
   readonly standardFunctionBindings: Map<string, StandardFunctionName>;
   readonly standardModuleBindings: Map<string, StandardModuleName>;
-  readonly standardTypeBindings: Map<string, "TextBuffer">;
+  readonly standardTypeBindings: Map<string, "TextBuffer" | "Arena">;
   readonly typeDisplayNames: ReadonlyMap<string, string>;
   readonly objectiveC: boolean;
   readonly cPlusPlus: boolean;
@@ -286,14 +290,14 @@ type SymbolValue =
   | { readonly kind: "console" }
   | { readonly kind: "standardModule"; readonly module: StandardModuleName }
   | { readonly kind: "standardFunction"; readonly name: StandardFunctionName; readonly declaration: FunctionDeclaration }
-  | { readonly kind: "standardType"; readonly type: "TextBuffer" }
+  | { readonly kind: "standardType"; readonly type: "TextBuffer" | "Arena" }
   | { readonly kind: "struct"; readonly declaration: StructDeclaration }
   | { readonly kind: "trait"; readonly declaration: TraitDeclaration }
   | { readonly kind: "enum"; readonly declaration: EnumDeclaration };
 
 const integerTypes = new Set(["i8", "u8", "i16", "u16", "i32", "u32", "i64", "u64", "isize", "usize"]);
 const floatTypes = new Set(["f32", "f64"]);
-const primitiveTypes = new Set([...integerTypes, ...floatTypes, "void", "bool", "cstring", "String", "TextBuffer"]);
+const primitiveTypes = new Set([...integerTypes, ...floatTypes, "void", "bool", "cstring", "String", "TextBuffer", "Arena"]);
 const movedPrefix = "__z_moved:";
 const maybeMovedPrefix = "__z_maybe_moved:";
 const uninitializedPrefix = "__z_uninitialized:";
@@ -378,6 +382,8 @@ export function analyze(
     numericLiteralTypes: new Map(),
     integerOperations: new Map(),
     dynamicArrayPushTypes: new Set(),
+    arenaCreateCalls: new Map(),
+    arenaResetCalls: new Set(),
     foreignArgumentAccesses: new Map(),
     foreignCxxArgumentAccesses: new Map(),
     foreignCallbackTargets: new Map(),
@@ -510,6 +516,26 @@ export function analyze(
           validateUserName(binding.localName, binding.location, fileName);
           declareGlobal(globals, binding.localName, { kind: "standardType", type: "TextBuffer" }, binding.location, fileName);
           state.standardTypeBindings.set(binding.localName, "TextBuffer");
+        }
+        continue;
+      }
+      if (declaration.header === "std/memory") {
+        if (!declaration.bindings) {
+          throw new DiagnosticError(fileName, declaration.location, "std/memory requires a selective import", {
+            code: "Z0501",
+            helps: ["use `import { Arena } from \"std/memory\";`"],
+          });
+        }
+        for (const binding of declaration.bindings) {
+          if (binding.importedName !== "Arena") {
+            throw new DiagnosticError(fileName, binding.location, `std/memory has no export ${JSON.stringify(binding.importedName)}`, {
+              code: "Z0501",
+              helps: ["the bootstrap std/memory module currently exports `Arena`"],
+            });
+          }
+          validateUserName(binding.localName, binding.location, fileName);
+          declareGlobal(globals, binding.localName, { kind: "standardType", type: "Arena" }, binding.location, fileName);
+          state.standardTypeBindings.set(binding.localName, "Arena");
         }
         continue;
       }
@@ -719,6 +745,13 @@ function analyzeStructDeclaration(
     }
     members.add(field.name);
     validateType(field.type, structs, enums, foreignNamedTypes, fileName, false);
+    if (declaration.kind === "class" && field.type.name === "Arena") {
+      throw new DiagnosticError(fileName, field.type.location, "ARC class fields cannot own an Arena in the first region tier", {
+        code: "Z0206",
+        notes: ["class aliases would make exclusive reset and view invalidation ambiguous"],
+        helps: ["store the Arena in a value struct or a local let binding"],
+      });
+    }
     if (declaration.kind === "class" && hasMoveOnlyForeignType(field.type.name, structs, enums, foreignNamedTypes)) {
       throw new DiagnosticError(fileName, field.type.location, "ARC class fields cannot store move-only native values in the first C++ ownership tier", {
         code: "Z0240",
@@ -3226,9 +3259,10 @@ function inferExpressionInner(
       return dynamicArrayTypeName(expression.elementType);
     case "index": {
       const ownerType = inferExpression(expression.object, locals, globals, structs, enums, fileName, state);
-      const array = parseFixedArrayType(String(ownerType));
-      const slice = parseSliceType(String(ownerType));
-      const dynamic = parseDynamicArrayType(String(ownerType));
+      const ownerValueType = parseViewType(String(ownerType))?.target ?? String(ownerType);
+      const array = parseFixedArrayType(ownerValueType);
+      const slice = parseSliceType(ownerValueType);
+      const dynamic = parseDynamicArrayType(ownerValueType);
       if (!array && !slice && !dynamic) {
         throw new DiagnosticError(fileName, expression.object.location, `indexing requires an array or Slice, found ${ownerType}`);
       }
@@ -3429,6 +3463,9 @@ function inferExpressionInner(
         });
       }
       const receiverValueType = receiverView?.target ?? String(receiverType);
+      if (receiverValueType === "Arena") {
+        throw new DiagnosticError(fileName, expression.location, `Arena has no property ${JSON.stringify(expression.property)}; call create or reset instead`);
+      }
       if (receiverValueType === "TextBuffer") {
         if (!isNamedStorageExpression(expression.object)) {
           throw new DiagnosticError(fileName, expression.object.location, "a TextBuffer temporary must be bound before reading one of its properties");
@@ -3512,12 +3549,31 @@ function inferExpressionInner(
     case "call": {
       if (expression.callee.kind === "identifier") {
         const standardType = globals.get(expression.callee.name);
-        if (standardType?.kind === "standardType" && standardType.type === "TextBuffer") {
+        if (standardType?.kind === "standardType") {
           rejectLabeledArguments(expression.argumentLabels, expression.location, fileName);
-          if (expression.arguments.length !== 0) {
-            throw new DiagnosticError(fileName, expression.location, `TextBuffer() expects no arguments, received ${expression.arguments.length}`);
+          if (standardType.type === "TextBuffer") {
+            if (expression.arguments.length !== 0) {
+              throw new DiagnosticError(fileName, expression.location, `TextBuffer() expects no arguments, received ${expression.arguments.length}`);
+            }
+            return standardType.type;
           }
-          return "TextBuffer";
+          if (expression.arguments.length === 0) return standardType.type;
+          if (expression.arguments.length !== 1 || expression.arguments[0].kind !== "objectExpression") {
+            throw new DiagnosticError(fileName, expression.location, "Arena() expects no arguments or one options object", {
+              helps: ["use `Arena()` or `Arena({ initialCapacity: 65536 })`"],
+            });
+          }
+          const options = expression.arguments[0];
+          if (options.fields.length !== 1 || options.fields[0].name !== "initialCapacity") {
+            const field = options.fields[0];
+            throw new DiagnosticError(fileName, field?.location ?? options.location, "Arena options require exactly initialCapacity", {
+              helps: ["use `Arena({ initialCapacity: 65536 })`"],
+            });
+          }
+          const capacity = options.fields[0].expression;
+          const actual = inferExpression(capacity, locals, globals, structs, enums, fileName, state);
+          requireAssignable("usize", actual, capacity, fileName, state.foreignNamedTypes, state.numericLiteralTypes);
+          return standardType.type;
         }
         const aggregate = structs.get(expression.callee.name);
         if (aggregate) {
@@ -3878,6 +3934,66 @@ function inferExpressionInner(
           consumeOwnedValue(expression.callee.object, receiverType, locals, structs, enums, fileName, state, true);
           releaseAsyncTaskBorrows(expression.callee.object.name, state);
           return "void";
+        }
+        if (receiverValueType === "Arena") {
+          rejectLabeledArguments(expression.argumentLabels, expression.location, fileName);
+          if (state.activeFunction?.async) {
+            throw new DiagnosticError(fileName, expression.location, "Arena access cannot cross suspension in the first region tier", {
+              code: "Z0704",
+              notes: ["arena views are synchronous and single-threaded while region provenance is established"],
+              helps: ["perform arena allocation in a synchronous helper called before or after the awaited work"],
+            });
+          }
+          const root = storageRoot(expression.callee.object);
+          const stored = root ? locals.get(root.name) : null;
+          if (!root || !stored) {
+            throw new DiagnosticError(fileName, expression.callee.object.location, "Arena methods require named storage");
+          }
+          if (!isMutableBinding(stored)) {
+            throw new DiagnosticError(fileName, expression.callee.object.location, `Arena.${expression.callee.property} requires addressable let storage`, {
+              code: "Z0205",
+              notes: ["create advances arena storage and reset invalidates its allocation region"],
+              helps: ["bind the Arena with `let`"],
+            });
+          }
+          if (expression.callee.property === "reset") {
+            if (expression.arguments.length !== 0) {
+              throw new DiagnosticError(fileName, expression.location, `"reset" expects 0 arguments, received ${expression.arguments.length}`);
+            }
+            rejectOwnerMutationWhileViewed(root.name, expression.callee.object.location, fileName, state, "reset");
+            state.arenaResetCalls.add(expression.location.offset);
+            return "void";
+          }
+          if (expression.callee.property !== "create") {
+            throw new DiagnosticError(fileName, expression.callee.location, `Arena has no method ${JSON.stringify(expression.callee.property)}`);
+          }
+          if (expression.arguments.length !== 1) {
+            throw new DiagnosticError(fileName, expression.location, `"create" expects 1 argument, received ${expression.arguments.length}`);
+          }
+          const argument = expression.arguments[0];
+          const actual = String(inferExpression(argument, locals, globals, structs, enums, fileName, state));
+          if (parseViewType(actual) || parseSliceType(actual)) {
+            throw new DiagnosticError(fileName, argument.location, "Arena.create requires an owned value, not borrowed storage", {
+              code: "Z0206",
+              helps: ["create an owned value before transferring it into the arena"],
+            });
+          }
+          if (actual === "void" || actual === "never" || actual === "Arena" || parseTaskType(actual)) {
+            throw new DiagnosticError(fileName, argument.location, `Arena.create cannot store ${JSON.stringify(actual)}`);
+          }
+          if (structs.get(actual)?.kind === "class" || state.foreignNamedTypes.get(actual)?.kind === "object") {
+            throw new DiagnosticError(fileName, argument.location, "Arena.create does not directly root reference-identity objects in the first tier", {
+              code: "Z0206",
+              notes: ["arena-owned structs may still contain ARC or Objective-C references and release them at reset"],
+              helps: ["store the reference in a Z struct, or keep the class under ARC ownership"],
+            });
+          }
+          if (hasOwnershipType(actual, structs, enums, state)) {
+            consumeOwnedValue(argument, actual, locals, structs, enums, fileName, state);
+          }
+          state.arenaCreateCalls.set(expression.location.offset, actual);
+          state.viewCallOrigins.set(expression.location.offset, { owner: root.name, location: expression.callee.object.location });
+          return viewTypeName(actual);
         }
         if (receiverValueType === "TextBuffer") {
           rejectLabeledArguments(expression.argumentLabels, expression.location, fileName);
@@ -4440,10 +4556,13 @@ function checkArguments(
     const parameter = target.parameters[index];
     const argument = args[index];
     if (argument.kind === "identifier" && containsViewType(String(underlyingType(locals.get(argument.name) ?? "unknown")))) {
-      throw new DiagnosticError(fileName, argument.location, `view-bearing value ${JSON.stringify(argument.name)} cannot be forwarded to another function`, {
-        code: "Z0206",
-        helps: ["read the needed fields in this scope, or create an explicitly owned snapshot"],
-      });
+      if (parameter.mode !== "in" || target.async) {
+        throw new DiagnosticError(fileName, argument.location, `view-bearing value ${JSON.stringify(argument.name)} can only enter a synchronous in parameter`, {
+          code: "Z0206",
+          notes: ["the call cannot store the view or suspend beyond the owner's proven region"],
+          helps: ["accept the projected value with `in`, or create an explicitly owned snapshot"],
+        });
+      }
     }
     if (parameter.mode === "out") {
       if (argument.kind !== "argumentReference" || argument.access !== "out") {
@@ -5517,7 +5636,7 @@ function hasCleanupType(
 ): boolean {
   const actual = underlyingType(type);
   if (actual === "unknown" || actual === "never" || visiting.has(actual)) return false;
-  if (actual === "String" || actual === "TextBuffer") return true;
+  if (actual === "String" || actual === "TextBuffer" || actual === "Arena") return true;
   if (parseWeakType(actual)) return true;
   if (parseFunctionType(String(actual))) return true;
   if (foreignTypes.get(actual)?.ownership === "owned") return true;

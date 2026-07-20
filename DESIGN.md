@@ -227,24 +227,37 @@ when the last strong reference is released, followed by storage reclamation.
 The bootstrap counter is single-threaded; atomicity and actor/executor rules
 must be designed with concurrency rather than accidentally frozen now.
 
-## Future allocation families
+## Allocation families
 
 Borrow analysis and allocation policy remain separate. Stack/value storage,
 deterministic native RAII, ARC/ORC identity, arena regions, and unique manual
 allocations can all use the same ownership vocabulary without making one
 allocator the language model.
 
-An arena is the owner of its region. Values created in it are receiver-tied
-views: they cannot outlive the arena, and `arena.reset()` is an owner mutation
-that is rejected while any view remains live. The safest first probe is a
-lexically scoped arena:
+An arena is the owner of its region. The implemented first tier uses the same
+receiver provenance as value-struct views without adding syntax:
 
 ```z
-Arena.scoped((inout arena) => {
-  const document = arena.create(Document({ title: "Draft" }));
-  inspect(document);
-}); // every arena view is unavailable here
+import { Arena } from "std/memory";
+
+let arena = Arena({ initialCapacity: 65536 });
+const document = arena.create(Document({ title: "Draft" }));
+inspect(document);
+arena.reset(); // legal after document's last use
 ```
+
+`create` preserves existing allocation addresses, so several read-only views
+may coexist while the arena grows. `reset`, moving the arena, and scope
+destruction invalidate the region and are rejected while a view has a later
+use. Cleanup runs newest-first before pages are released. Cleanup-free values
+avoid per-allocation destructor records; Z `deinit`, ARC-containing structs,
+owned native handles, and C++ RAII values are tracked. Arena views may enter a
+synchronous `in T` parameter but cannot yet be stored, returned, captured,
+mutably borrowed, or held across suspension. The tier is single-threaded and
+allocation failure traps.
+The optional `initialCapacity` field sizes the first page; it is not a hard
+limit and does not change growable-arena exhaustion semantics. Fixed-buffer
+arenas remain a separate future ownership shape.
 
 Unique manual allocation can remain safe while ownership is tracked:
 
@@ -255,11 +268,10 @@ Memory.free(move block); // consumes the owner
 ```
 
 Arbitrary raw pointers, untracked aliases, pointer arithmetic, and freeing
-foreign storage require an explicit `unsafe` boundary. Before arena syntax or
-`std/memory` settles, an application-shaped probe must decide whether tracked
-values run `deinit`, whether `reset()` destroys values or only releases bytes,
-how arena views compose with ARC and native RAII fields, whether arenas are
-sendable, and where allocator parameters belong on collections and APIs.
+foreign storage require an explicit `unsafe` boundary. Later arena work must
+decide how mutable/stored projections carry provenance, whether pages are
+reused, whether arenas can be sendable, and where allocator parameters belong
+on collections and APIs.
 
 Native aggregate construction intentionally distinguishes values from identity:
 
@@ -1100,8 +1112,9 @@ copies the selected title. Optional views niche-lower to that same pointer:
 for general view-bearing enum storage. The implemented `view` tier has one
 provenance source: a synchronous borrowed value-struct receiver returning one
 of its direct fields or indexed elements.
-Last use ends the borrow; the view cannot be stored, forwarded, captured,
-returned again, or held across receiver mutation or suspension. ARC class
+Last use ends the borrow; the view cannot be stored, captured, returned again,
+or held across receiver mutation or suspension. It can enter a synchronous
+`in T` call, which does not extend provenance beyond that call. ARC class
 owners are excluded because aliases could invalidate projected growable
 storage. This does not introduce general lifetime parameters or views that
 survive backing-array reallocation.

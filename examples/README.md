@@ -40,6 +40,7 @@ inspect the generated C-family source. The broader guided index lives in
 - [`borrowed-parameters.z`](language/ownership/borrowed-parameters.z) and [`consuming-methods.z`](language/ownership/consuming-methods.z)
 - [`deinit.z`](language/ownership/deinit.z) and [`replacement.z`](language/ownership/replacement.z)
 - [`optional-views.z`](language/ownership/optional-views.z): zero-copy fallible lookup with `Option<view T>`
+- [`arena.z`](language/ownership/arena.z): stable region allocation, synchronous `in` views, reset, and reverse cleanup
 - [`owned-closures.z`](language/ownership/owned-closures.z), [`owned-enums.z`](language/ownership/owned-enums.z), and [`weak-references.z`](language/ownership/weak-references.z)
 
 [`language/design/future.md`](language/design/future.md) contains a non-runnable
@@ -92,7 +93,7 @@ support or producing language-server diagnostics from hypothetical imports.
 
 - [`cpp-interop.z`](interop/cpp/cpp-interop.z) and [`cpp-selective-interop.z`](interop/cpp/cpp-selective-interop.z)
 - [`foreign-values.z`](interop/cpp/foreign-values.z) and [`cpp-callables.z`](interop/cpp/cpp-callables.z)
-- [`cpp-move-only.z`](interop/cpp/cpp-move-only.z), [`cpp-move-only-array.z`](interop/cpp/cpp-move-only-array.z), [`cpp-move-only-enum.z`](interop/cpp/cpp-move-only-enum.z), and [`cpp-references.z`](interop/cpp/cpp-references.z)
+- [`cpp-move-only.z`](interop/cpp/cpp-move-only.z), [`cpp-move-only-array.z`](interop/cpp/cpp-move-only-array.z), [`cpp-move-only-enum.z`](interop/cpp/cpp-move-only-enum.z), [`cpp-arena.z`](interop/cpp/cpp-arena.z), and [`cpp-references.z`](interop/cpp/cpp-references.z)
 
 ### Objective-C and Swift
 

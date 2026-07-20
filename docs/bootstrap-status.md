@@ -40,7 +40,8 @@ Status meanings:
 | Fixed arrays | Implemented | Checked indexing and reverse element cleanup |
 | `Array<T>` | Implemented | Growable owned storage and move-aware elements |
 | `Slice<T>` | Partial | Non-escaping parameters plus direct-awaited and scope-bounded spawned borrowing from fixed and growable owners, including cleanup-bearing Z and move-only C++ elements; returned/stored and cross-thread Slices remain |
-| Receiver-tied `view T` | Implemented narrow tier | Direct field/index projections and niche-backed `Option<view T>` lookups from synchronous value-struct methods; inferred const local, read-only, non-storable, non-forwardable, no class owners |
+| Receiver-tied `view T` | Implemented narrow tier | Direct field/index projections and niche-backed `Option<view T>` lookups from synchronous value-struct methods; inferred const local, read-only, non-storable, synchronous `in T` forwarding only, no class owners |
+| `std/memory` `Arena` | Implemented narrow tier | Stable region allocation, inferred owner-tied views, reverse `deinit`/ARC/native RAII cleanup, reset exclusion while views are live; synchronous and single-threaded |
 | General returned/stored borrows | Planned | Parameter provenance, class alias safety, retained views, and regions remain open |
 | ORC cycle collection | Planned | `Weak<T>` works now; arbitrary strong cycles are not collected |
 
@@ -154,6 +155,8 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
 - [`examples/interop/cpp/cpp-move-only-enum.z`](../examples/interop/cpp/cpp-move-only-enum.z): named
   enum payloads borrowed or consumed through `match`, replaced safely, and
   deterministically destroyed.
+- [`examples/interop/cpp/cpp-arena.z`](../examples/interop/cpp/cpp-arena.z): move-only C++
+  values transferred into stable arena storage and destructed by reset.
 - [`examples/interop/cpp/cpp-references.z`](../examples/interop/cpp/cpp-references.z): C++ named-value
   references and receiver qualifiers mapped onto existing Z `in`, `inout`, and
   owned-transfer semantics with direct lvalue/`std::move` lowering.

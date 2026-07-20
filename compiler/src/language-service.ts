@@ -559,6 +559,9 @@ export function hover(source: string, fileName: string, offset: number): Hover |
   if (context.semanticInfo.standardTypeBindings.get(word.text) === "TextBuffer") {
     return markdownHover("standard value type TextBuffer  // move-only UTF-8 construction storage", source, word.start, word.end);
   }
+  if (context.semanticInfo.standardTypeBindings.get(word.text) === "Arena") {
+    return markdownHover("Arena(options?: { initialCapacity: usize }): Arena  // move-only growable region storage", source, word.start, word.end);
+  }
 
   const chainedSelector = objectiveCSelectorAt(context, word.start);
   if (chainedSelector) {
@@ -697,6 +700,14 @@ export function hover(source: string, fileName: string, offset: number): Hover |
       }
       if (word.text === "finish") {
         return markdownHover("finish(): String  // consumes the TextBuffer", source, word.start, word.end);
+      }
+    }
+    if (resolved?.kind === "arena") {
+      if (word.text === "create") {
+        return markdownHover("create<T>(value: T): view T  // transfers a value into stable region storage", source, word.start, word.end);
+      }
+      if (word.text === "reset") {
+        return markdownHover("reset(): void  // destroys allocations newest-first; requires no live views", source, word.start, word.end);
       }
     }
   }
@@ -890,6 +901,13 @@ function selectiveImportCandidates(specifier: string, fileName: string): Complet
       detail: "move-only UTF-8 text construction buffer",
     }];
   }
+  if (specifier === "std/memory") {
+    return [{
+      label: "Arena",
+      kind: completionKinds.struct,
+      detail: "Arena(options?: { initialCapacity: usize })  // growable region storage",
+    }];
+  }
   if (specifier === "std/console") return [];
   const alias = "__z_completion_module";
   let context: AnalyzedSource;
@@ -939,7 +957,9 @@ function objectFieldCompletions(
   const analysis = safeAnalysis(source, fileName) ?? importAnalysis(source, fileName);
   let payloadType = object[1];
   let patternBinding = false;
-  let fields = objectFieldsForType(source, analysis, payloadType);
+  let fields: ObjectFieldShape[] | null = analysis?.semanticInfo.standardTypeBindings.get(payloadType) === "Arena"
+    ? [{ name: "initialCapacity", type: "usize", visibility: "public" }]
+    : objectFieldsForType(source, analysis, payloadType);
   if (!fields && payloadType.includes(".")) {
     const separator = payloadType.lastIndexOf(".");
     const enumName = payloadType.slice(0, separator);
@@ -1176,15 +1196,18 @@ function symbolCompletions(source: string, fileName: string, offset: number): Co
   try {
     const parsed = parse(lex(source, fileName), fileName);
     for (const declaration of parsed.imports) {
-      if (declaration.header !== "std/text") continue;
+      if (declaration.header !== "std/text" && declaration.header !== "std/memory") continue;
       for (const binding of declaration.bindings ?? []) {
-        if (binding.importedName !== "TextBuffer") continue;
+        if (binding.importedName !== "TextBuffer" && binding.importedName !== "Arena") continue;
+        const detail = binding.importedName === "TextBuffer"
+          ? "move-only UTF-8 construction storage"
+          : "move-only growable region storage";
         builtIns.push({
           label: binding.localName,
           kind: completionKinds.struct,
-          detail: binding.localName === "TextBuffer"
-            ? "TextBuffer()  // move-only UTF-8 construction storage"
-            : `TextBuffer()  // imported as ${binding.localName}`,
+          detail: binding.localName === binding.importedName
+            ? `${binding.importedName}()  // ${detail}`
+            : `${binding.importedName}()  // imported as ${binding.localName}`,
           sortText: `0-${binding.localName}`,
         });
       }
@@ -1304,7 +1327,9 @@ function symbolCompletions(source: string, fileName: string, offset: number): Co
     items.push({
       label: name,
       kind: completionKinds.struct,
-      detail: `${standardType}()  // move-only UTF-8 construction storage`,
+      detail: standardType === "TextBuffer"
+        ? `${standardType}()  // move-only UTF-8 construction storage`
+        : `${standardType}(options?: { initialCapacity: usize })  // move-only growable region storage`,
       sortText: `0-${name}`,
     });
   }
@@ -1974,6 +1999,24 @@ function memberCompletions(
   }
 
   const receiverOffset = offset - receiverText.length - prefix.length - 1;
+  const fullContext = safeAnalysis(source, fileName);
+  const directReceiver = fullContext ? resolveReceiver(fullContext, receiverText, receiverOffset) : null;
+  if (directReceiver?.kind === "arena") {
+    return filterCompletions([
+      {
+        label: "create",
+        kind: completionKinds.method,
+        detail: "create<T>(value: T): view T  // transfers into stable region storage",
+        insertText: "create()",
+      },
+      {
+        label: "reset",
+        kind: completionKinds.method,
+        detail: "reset(): void  // requires no live views",
+        insertText: "reset()",
+      },
+    ], prefix, 1000);
+  }
   const dotOffset = receiverOffset + receiverText.length;
   const tailOffset = completionTailOffset(source, offset);
   const sanitized = source.slice(0, dotOffset) + source.slice(tailOffset);
@@ -2115,6 +2158,22 @@ function memberCompletions(
       },
       { label: "appendAscii", kind: completionKinds.method, detail: "appendAscii(byte: u8): void", insertText: "appendAscii()" },
       { label: "finish", kind: completionKinds.method, detail: "finish(): String  // consumes the TextBuffer", insertText: "finish()" },
+    ], prefix, 1000);
+  }
+  if (resolved?.kind === "arena") {
+    return filterCompletions([
+      {
+        label: "create",
+        kind: completionKinds.method,
+        detail: "create<T>(value: T): view T  // transfers into stable region storage",
+        insertText: "create()",
+      },
+      {
+        label: "reset",
+        kind: completionKinds.method,
+        detail: "reset(): void  // requires no live views",
+        insertText: "reset()",
+      },
     ], prefix, 1000);
   }
   if (resolved?.kind === "integer") {
@@ -2379,6 +2438,7 @@ type ResolvedReceiver =
   | { readonly kind: "array"; readonly type: string }
   | { readonly kind: "string" }
   | { readonly kind: "textBuffer" }
+  | { readonly kind: "arena" }
   | { readonly kind: "weak"; readonly target: string }
   | { readonly kind: "task"; readonly successType: string; readonly errorType: string | null };
 
@@ -2398,6 +2458,7 @@ function resolveReceiver(context: AnalyzedSource, text: string, offset: number):
   const view = parseViewType(type);
   const receiverType = view?.target ?? type;
   if (receiverType === "TextBuffer") return { kind: "textBuffer" };
+  if (receiverType === "Arena") return { kind: "arena" };
   if (receiverType === "String") return { kind: "string" };
   if (parseFixedArrayType(receiverType) || parseSliceType(receiverType) || parseDynamicArrayType(receiverType)) return { kind: "array", type: receiverType };
   const weak = parseWeakType(receiverType);

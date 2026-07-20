@@ -92,6 +92,7 @@ const primitiveTypeNames: Record<string, string> = {
   cstring: "const char *",
   String: "Z_String",
   TextBuffer: "Z_String",
+  Arena: "Z_Arena",
 };
 
 export function generateC(program: Program, sourceName: string, semanticInfo: SemanticInfo): string {
@@ -103,6 +104,8 @@ export function generateC(program: Program, sourceName: string, semanticInfo: Se
   const sliceTypes = collectSliceTypes(program, semanticInfo);
   const dynamicArrayTypes = collectDynamicArrayTypes(program, semanticInfo);
   const dynamicArrayPushTypes = collectDynamicArrayPushTypes(program, semanticInfo);
+  const arenaCreateTypes = [...new Set(semanticInfo.arenaCreateCalls.values())];
+  const usesArena = [...semanticInfo.standardTypeBindings.values()].includes("Arena");
   const functionTypes = collectFunctionTypes(program, semanticInfo);
   const foreignCallbackAdapters = collectForeignCallbackAdapters(semanticInfo);
   const foreignEscapeHelpers = collectForeignEscapeHelpers(foreignCallbackAdapters);
@@ -119,6 +122,8 @@ export function generateC(program: Program, sourceName: string, semanticInfo: Se
     return requiresNativeMove(dynamic.elementType, structs, enums, semanticInfo.foreignNamedTypes);
   }) || program.enums.some((declaration) => (
     requiresNativeMove(declaration.name, structs, enums, semanticInfo.foreignNamedTypes)
+  )) || arenaCreateTypes.some((type) => (
+    requiresNativeLifetime(type, structs, enums, semanticInfo.foreignNamedTypes)
   ));
   const includedHeaders = new Set(["stdbool.h", "stddef.h", "stdint.h", "stdlib.h"]);
   const lines = [
@@ -233,6 +238,7 @@ export function generateC(program: Program, sourceName: string, semanticInfo: Se
     lines.push(generateObjCStringRuntime(), "");
   }
   if (usesSleep) lines.push(generateSleepRuntime(), "");
+  if (usesArena) lines.push(generateArenaRuntime(), "");
 
   for (const declaration of program.structs) {
     lines.push(`typedef struct ${structName(declaration.name)} ${structName(declaration.name)};`);
@@ -315,6 +321,9 @@ export function generateC(program: Program, sourceName: string, semanticInfo: Se
   for (const declaration of program.functions) {
     lines.push(`${generateFunctionSignature(declaration, structs, enums, null, semanticInfo.foreignNamedTypes)};`);
   }
+  for (const type of arenaCreateTypes) {
+    lines.push(`${generateArenaCreateSignature(type, structs, enums, semanticInfo.foreignNamedTypes)};`);
+  }
   for (const closure of closures) {
     lines.push(`${generateFunctionSignature(closure.declaration, structs, enums, null, semanticInfo.foreignNamedTypes)};`);
     if (closure.owned) {
@@ -327,6 +336,10 @@ export function generateC(program: Program, sourceName: string, semanticInfo: Se
   }
   if (program.structs.some((declaration) => declaration.methods.length > 0) || program.functions.length > 0) {
     lines.push("");
+  }
+
+  for (const type of arenaCreateTypes) {
+    lines.push(generateArenaCreate(type, structs, enums, semanticInfo), "");
   }
 
   for (const declaration of program.structs) {
@@ -903,6 +916,7 @@ function generateOwnedEnvironmentCleanup(
   counter: { value: number },
 ): string {
   if (type === "String" || type === "TextBuffer") return `if ((${value}).capacity > 0) free((void *)(${value}).data);`;
+  if (type === "Arena") return `z_arena_reset(&(${value}));`;
   if (parseWeakType(type)) return `z_weak_release(${value});`;
   const functionType = parseFunctionType(type);
   if (functionType) return `${functionTypeReleaseName(functionType)}(${value});`;
@@ -986,7 +1000,7 @@ function programUsesIndex(program: Program): boolean {
 }
 
 function programUsesString(program: Program, semanticInfo: SemanticInfo): boolean {
-  if (semanticInfo.standardTypeBindings.size > 0) return true;
+  if ([...semanticInfo.standardTypeBindings.values()].includes("TextBuffer")) return true;
   let found = false;
   const visit = (value: unknown, directConsoleTemplate = false): void => {
     if (found || !value || typeof value !== "object") return;
@@ -3014,6 +3028,10 @@ function generateValueCleanup(
     const condition = liveFlag ? `${liveFlag} && ${capacity}` : capacity;
     return `if (${condition}) free((void *)(${value}).data);`;
   }
+  if (type === "Arena") {
+    const reset = `z_arena_reset(&(${value}));`;
+    return liveFlag ? `if (${liveFlag}) ${reset}` : reset;
+  }
   if (context.semanticInfo.foreignNamedTypes.get(type)?.kind === "object") {
     const release = `${value} = nil;`;
     return liveFlag ? `if (${liveFlag}) ${release}` : release;
@@ -3792,8 +3810,9 @@ function generateExpressionInner(expression: Expression, context: GenerationCont
       const slice = parseSliceType(ownerValueType);
       const dynamic = parseDynamicArrayType(ownerValueType);
       const owner = generateExpression(expression.object, context);
-      const length = array ? String(array.length) : `(${owner}).length`;
-      const value = `((${owner}).data[z_bounds_index((uintptr_t)(${generateExpression(expression.index, context)}), ${length})])`;
+      const storage = ownerView ? `(*(${owner}))` : `(${owner})`;
+      const length = array ? String(array.length) : `${storage}.length`;
+      const value = `(${storage}.data[z_bounds_index((uintptr_t)(${generateExpression(expression.index, context)}), ${length})])`;
       return maybeRetainClass(expression, value, context);
     }
     case "structExpression": {
@@ -3863,20 +3882,24 @@ function generateExpressionInner(expression: Expression, context: GenerationCont
       const dynamic = parseDynamicArrayType(ownerValueType);
       if (ownerValueType === "TextBuffer") {
         const owner = generateExpression(expression.object, context);
-        if (expression.property === "byteLength") return `(${owner}).length`;
-        if (expression.property === "isEmpty") return `((${owner}).length == 0)`;
+        const value = ownerView ? `(*(${owner}))` : `(${owner})`;
+        if (expression.property === "byteLength") return `${value}.length`;
+        if (expression.property === "isEmpty") return `(${value}.length == 0)`;
       }
       if (ownerValueType === "String") {
         const owner = generateExpression(expression.object, context);
-        if (expression.property === "byteLength") return `(${owner}).length`;
-        if (expression.property === "isEmpty") return `((${owner}).length == 0)`;
+        const value = ownerView ? `(*(${owner}))` : `(${owner})`;
+        if (expression.property === "byteLength") return `${value}.length`;
+        if (expression.property === "isEmpty") return `(${value}.length == 0)`;
       }
       if (array || slice || dynamic) {
+        const owner = generateExpression(expression.object, context);
+        const value = ownerView ? `(*(${owner}))` : `(${owner})`;
         if (dynamic) {
-          return `(${generateExpression(expression.object, context)}).${expression.property}`;
+          return `${value}.${expression.property}`;
         }
-        if (slice) return `(${generateExpression(expression.object, context)}).length`;
-        return `((void)(${generateExpression(expression.object, context)}), (uintptr_t)${array.length})`;
+        if (slice) return `${value}.length`;
+        return `((void)(${owner}), (uintptr_t)${array.length})`;
       }
       const objcClassName = context.semanticInfo.objcClassNames.get(expression.location.offset);
       if (objcClassName) return objcClassName;
@@ -3927,7 +3950,14 @@ function generateExpressionInner(expression: Expression, context: GenerationCont
         return `${signature.cName}(${arguments_.join(", ")})`;
       }
       if (expression.callee.kind === "identifier") {
-        if (context.semanticInfo.standardTypeBindings.get(expression.callee.name) === "TextBuffer") return "z_string_new()";
+        const standardType = context.semanticInfo.standardTypeBindings.get(expression.callee.name);
+        if (standardType === "TextBuffer") return "z_string_new()";
+        if (standardType === "Arena") {
+          const capacity = expression.arguments[0]?.kind === "objectExpression"
+            ? expression.arguments[0].fields[0]?.expression
+            : null;
+          return `z_arena_new(${capacity ? `(uintptr_t)(${generateExpression(capacity, context)})` : "0"})`;
+        }
         if (context.structs.get(expression.callee.name)?.kind === "struct") {
           return generateExpression(expression.arguments[0], context);
         }
@@ -3960,7 +3990,10 @@ function generateExpressionInner(expression: Expression, context: GenerationCont
       }
       const cxxMethod = context.semanticInfo.foreignCxxMethodCalls.get(expression.location.offset);
       if (cxxMethod && expression.callee.kind === "member") {
-        const receiver = generateExpression(expression.callee.object, context);
+        const generatedReceiver = generateExpression(expression.callee.object, context);
+        const receiver = parseViewType(inferExpressionType(expression.callee.object, context))
+          ? `(*${generatedReceiver})`
+          : generatedReceiver;
         const plan = context.semanticInfo.foreignCallArgumentPlans.get(expression.location.offset);
         const args = plan
           ? plan.map((argument) => generateForeignCallArgument(argument, expression.arguments, context))
@@ -4007,6 +4040,17 @@ function generateExpressionInner(expression: Expression, context: GenerationCont
         const receiverType = inferExpressionType(expression.callee.object, context);
         const receiverView = parseViewType(receiverType);
         const receiverValueType = receiverView?.target ?? receiverType;
+        if (receiverValueType === "Arena") {
+          const receiver = generateExpression(expression.callee.object, context);
+          if (context.semanticInfo.arenaResetCalls.has(expression.location.offset)) {
+            return `z_arena_reset(&(${receiver}))`;
+          }
+          const storedType = context.semanticInfo.arenaCreateCalls.get(expression.location.offset);
+          if (storedType) {
+            const argument = generateExpression(expression.arguments[0], context);
+            return `${arenaCreateName(storedType)}(&(${receiver}), ${argument})`;
+          }
+        }
         if (receiverValueType === "TextBuffer") {
           const receiver = generateExpression(expression.callee.object, context);
           if (expression.callee.property === "append") {
@@ -4022,11 +4066,12 @@ function generateExpressionInner(expression: Expression, context: GenerationCont
         }
         if (receiverValueType === "String") {
           const receiver = generateExpression(expression.callee.object, context);
+          const value = receiverView ? `(*(${receiver}))` : receiver;
           if (expression.callee.property === "byteAt") {
-            return `z_string_byte_at(${receiver}, ${generateExpression(expression.arguments[0], context)})`;
+            return `z_string_byte_at(${value}, ${generateExpression(expression.arguments[0], context)})`;
           }
           if (expression.callee.property === "copyBytes") {
-            return `z_string_copy_bytes(${receiver}, ${generateExpression(expression.arguments[0], context)}, ${generateExpression(expression.arguments[1], context)})`;
+            return `z_string_copy_bytes(${value}, ${generateExpression(expression.arguments[0], context)}, ${generateExpression(expression.arguments[1], context)})`;
           }
         }
         if (parseDynamicArrayType(receiverValueType)) {
@@ -4036,9 +4081,14 @@ function generateExpressionInner(expression: Expression, context: GenerationCont
         }
         const weak = parseWeakType(receiverValueType);
         if (weak) {
-          return `${weakUpgradeName(weak.target)}(${generateExpression(expression.callee.object, context)})`;
+          const receiver = generateExpression(expression.callee.object, context);
+          const value = receiverView ? `(*(${receiver}))` : receiver;
+          return `${weakUpgradeName(weak.target)}(${value})`;
         }
-        const declaration = context.structs.get(receiverValueType)!;
+        const declaration = context.structs.get(receiverValueType);
+        if (!declaration) {
+          throw new Error(`missing receiver lowering for ${receiverValueType}.${expression.callee.property} at ${expression.location.offset}`);
+        }
         const field = declaration.fields.find((candidate) => candidate.name === expression.callee.property);
         if (field && parseFunctionType(field.type.name)) {
           return generateFunctionValueCall(
@@ -4182,6 +4232,7 @@ function generateCallArgument(expression: Expression, context: GenerationContext
   const value = generateExpression(expression, context);
   if (context.semanticInfo.objcBlockArguments.has(expression.location.offset)) return value;
   const nativeIn = context.semanticInfo.nativeArgumentAccesses.get(expression.location.offset) === "in";
+  if (nativeIn && parseViewType(inferExpressionType(expression, context))) return value;
   const classIn = nativeIn && context.structs.get(inferExpressionType(expression, context))?.kind === "class";
   return context.semanticInfo.foreignArgumentAccesses.get(expression.location.offset) === "in"
     || (nativeIn && !classIn)
@@ -4210,6 +4261,154 @@ function generateSleepRuntime(): string {
     milliseconds -= chunk;
   }
 #endif
+}`;
+}
+
+function generateArenaRuntime(): string {
+  return `typedef void (*Z_ArenaCleanupFunction)(void *value);
+
+typedef struct Z_ArenaPage {
+  struct Z_ArenaPage *next;
+  unsigned char *data;
+  uintptr_t used;
+  uintptr_t capacity;
+} Z_ArenaPage;
+
+typedef struct Z_ArenaCleanup {
+  struct Z_ArenaCleanup *next;
+  void *value;
+  Z_ArenaCleanupFunction function;
+} Z_ArenaCleanup;
+
+typedef struct Z_Arena {
+  Z_ArenaPage *pages;
+  Z_ArenaCleanup *cleanups;
+  uintptr_t initial_capacity;
+} Z_Arena;
+
+#if defined(__cplusplus)
+#define Z_ALIGNOF(type) alignof(type)
+#else
+#define Z_ALIGNOF(type) _Alignof(type)
+#endif
+
+static inline __attribute__((unused)) Z_Arena z_arena_new(uintptr_t initial_capacity) {
+  Z_Arena value = { NULL, NULL, initial_capacity };
+  return value;
+}
+
+static void *z_arena_allocate(Z_Arena *arena, uintptr_t size, uintptr_t alignment) {
+  if (size == 0) size = 1;
+  if (alignment == 0 || (alignment & (alignment - 1)) != 0) abort();
+  Z_ArenaPage *page = arena->pages;
+  if (page != NULL) {
+    const uintptr_t current = (uintptr_t)(page->data + page->used);
+    if (current <= UINTPTR_MAX - (alignment - 1)) {
+      const uintptr_t aligned = (current + alignment - 1) & ~(alignment - 1);
+      const uintptr_t padding = aligned - current;
+      if (padding <= page->capacity - page->used && size <= page->capacity - page->used - padding) {
+        page->used += padding + size;
+        return (void *)aligned;
+      }
+    }
+  }
+
+  uintptr_t capacity = page == NULL && arena->initial_capacity > 0
+    ? arena->initial_capacity
+    : 4096;
+  if (size > UINTPTR_MAX - alignment) abort();
+  const uintptr_t required = size + alignment;
+  if (capacity < required) capacity = required;
+  if (capacity > UINTPTR_MAX - sizeof(Z_ArenaPage)) abort();
+  Z_ArenaPage *created = (Z_ArenaPage *)malloc(sizeof(Z_ArenaPage) + capacity);
+  if (created == NULL) abort();
+  created->next = page;
+  created->data = (unsigned char *)(created + 1);
+  created->used = 0;
+  created->capacity = capacity;
+  arena->pages = created;
+  return z_arena_allocate(arena, size, alignment);
+}
+
+static inline __attribute__((unused)) void z_arena_register_cleanup(
+  Z_Arena *arena,
+  void *value,
+  Z_ArenaCleanupFunction function
+) {
+  Z_ArenaCleanup *cleanup = (Z_ArenaCleanup *)z_arena_allocate(
+    arena,
+    sizeof(Z_ArenaCleanup),
+    Z_ALIGNOF(Z_ArenaCleanup)
+  );
+  cleanup->next = arena->cleanups;
+  cleanup->value = value;
+  cleanup->function = function;
+  arena->cleanups = cleanup;
+}
+
+static void z_arena_reset(Z_Arena *arena) {
+  Z_ArenaCleanup *cleanup = arena->cleanups;
+  while (cleanup != NULL) {
+    Z_ArenaCleanup *next = cleanup->next;
+    cleanup->function(cleanup->value);
+    cleanup = next;
+  }
+  Z_ArenaPage *page = arena->pages;
+  while (page != NULL) {
+    Z_ArenaPage *next = page->next;
+    free(page);
+    page = next;
+  }
+  arena->cleanups = NULL;
+  arena->pages = NULL;
+}`;
+}
+
+function arenaCreateName(type: string): string {
+  return `z_arena_create_${nativeSymbolPart(type)}`;
+}
+
+function generateArenaCreateSignature(
+  type: string,
+  structs: Map<string, StructDeclaration>,
+  enums: Map<string, EnumDeclaration>,
+  foreignNamedTypes: SemanticInfo["foreignNamedTypes"],
+): string {
+  const mapped = mapType(type, structs, enums, foreignNamedTypes);
+  return `static const ${mapped} *${arenaCreateName(type)}(Z_Arena *arena, ${mapped} value)`;
+}
+
+function generateArenaCreate(
+  type: string,
+  structs: Map<string, StructDeclaration>,
+  enums: Map<string, EnumDeclaration>,
+  semanticInfo: SemanticInfo,
+): string {
+  const mapped = mapType(type, structs, enums, semanticInfo.foreignNamedTypes);
+  const native = requiresNativeLifetime(type, structs, enums, semanticInfo.foreignNamedTypes);
+  const nativeMove = requiresNativeMove(type, structs, enums, semanticInfo.foreignNamedTypes);
+  const managed = hasCleanupType(type, structs, enums, semanticInfo.foreignTypes);
+  const cleanupName = `${arenaCreateName(type)}_cleanup`;
+  const managedCleanup = managed
+    ? generateOwnedEnvironmentCleanup("(*stored)", type, structs, enums, semanticInfo, { value: 0 })
+    : "";
+  const cleanup = managed || native
+    ? `static void ${cleanupName}(void *raw) {
+  ${mapped} *stored = (${mapped} *)raw;
+${managedCleanup ? `${indent(managedCleanup, 2)}\n` : ""}${native ? "  std::destroy_at(stored);\n" : ""}}
+
+`
+    : "";
+  const construct = native
+    ? `std::construct_at(stored, ${nativeMove ? "std::move(value)" : "value"});`
+    : `*stored = value;`;
+  const register = managed || native
+    ? `\n  z_arena_register_cleanup(arena, stored, ${cleanupName});`
+    : "";
+  return `${cleanup}${generateArenaCreateSignature(type, structs, enums, semanticInfo.foreignNamedTypes)} {
+  ${mapped} *stored = (${mapped} *)z_arena_allocate(arena, sizeof(${mapped}), Z_ALIGNOF(${mapped}));
+  ${construct}${register}
+  return stored;
 }`;
 }
 
@@ -4600,6 +4799,7 @@ function inferExpressionType(expression: Expression, context: GenerationContext)
   if (analyzedType && (
     analyzedType === "String"
     || analyzedType === "TextBuffer"
+    || analyzedType === "Arena"
     || analyzedType === "bool"
     || analyzedType === "u8"
     || analyzedType === "usize"
@@ -4837,6 +5037,33 @@ function requiresNativeMove(
   return Boolean(result);
 }
 
+function requiresNativeLifetime(
+  name: string,
+  structs: Map<string, StructDeclaration>,
+  enums: Map<string, EnumDeclaration>,
+  foreignNamedTypes: SemanticInfo["foreignNamedTypes"],
+  visiting = new Set<string>(),
+): boolean {
+  if (visiting.has(name)) return false;
+  if (foreignNamedTypes.get(name)?.kind === "value") return true;
+  const array = parseFixedArrayType(name);
+  if (array) return requiresNativeLifetime(array.elementType, structs, enums, foreignNamedTypes, visiting);
+  const dynamic = parseDynamicArrayType(name);
+  if (dynamic) return requiresNativeLifetime(dynamic.elementType, structs, enums, foreignNamedTypes, visiting);
+  const declaration = structs.get(name);
+  const enumDeclaration = enums.get(name);
+  if (!declaration && !enumDeclaration) return false;
+  if (declaration?.kind === "class") return false;
+  visiting.add(name);
+  const result = declaration
+    ? declaration.fields.some((field) => requiresNativeLifetime(field.type.name, structs, enums, foreignNamedTypes, visiting))
+    : enumDeclaration!.variants.some((variant) => (
+      variant.payload && requiresNativeLifetime(variant.payload.name, structs, enums, foreignNamedTypes, visiting)
+    ));
+  visiting.delete(name);
+  return Boolean(result);
+}
+
 function generateObjCMessage(receiver: string, selector: string, args: string[]): string {
   if (args.length === 0) return `[${receiver} ${selector}]`;
   const parts = selector.split(":");
@@ -4933,7 +5160,7 @@ function hasCleanupType(
   visiting = new Set<string>(),
 ): boolean {
   if (visiting.has(type)) return false;
-  if (type === "String" || type === "TextBuffer") return true;
+  if (type === "String" || type === "TextBuffer" || type === "Arena") return true;
   if (parseWeakType(type)) return true;
   if (parseFunctionType(type)) return true;
   if (foreignTypes.get(type)?.ownership === "owned") return true;

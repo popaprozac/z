@@ -59,12 +59,20 @@ copy would be accidental overhead for immediate read-only use.
 
 This evidence produced a narrow receiver-tied read-only view rather than general
 lifetime parameters. Its provenance is one borrowed value-struct receiver; it
-is non-storable, non-forwardable, and non-capturable, and receiver mutation is
+is non-storable and non-capturable, may enter only a synchronous `in T` call,
+and receiver mutation is
 rejected until the view's last use. `Option<view T>` carries the same provenance
 through a constrained local enum shape without admitting general borrowed enum
 storage. ARC class owners remain excluded because an alias could mutate the same
 storage. Callers needing aliasing or survival across reallocation must use an
 owned snapshot or a future stable reference model.
+
+The follow-up [`arena.z`](../examples/language/ownership/arena.z) probe gives a
+region owner stable allocation addresses. Multiple direct views coexist across
+later allocation; `reset` and destruction are excluded until their last uses.
+Generated code omits cleanup records for trivial values and registers reverse
+cleanup only for `deinit`, ARC, owned native, or C++ RAII storage. This validates
+a useful region shape without yet admitting stored projections or async views.
 
 ## Pressure 2: imported Objective-C references in owned Z state
 

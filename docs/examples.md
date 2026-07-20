@@ -29,7 +29,7 @@ bun run z run examples/language/control-flow/result.z
 | Area | Examples |
 | --- | --- |
 | Borrow capabilities | [`borrowed-parameters.z`](../examples/language/ownership/borrowed-parameters.z), [`native-out.z`](../examples/interop/c/native-out.z) |
-| Receiver-tied views | [`optional-views.z`](../examples/language/ownership/optional-views.z), [`ownership-views.z`](../examples/interop/objc/desktop-ownership/ownership-views.z) |
+| Receiver-tied views and regions | [`optional-views.z`](../examples/language/ownership/optional-views.z), [`arena.z`](../examples/language/ownership/arena.z), [`ownership-views.z`](../examples/interop/objc/desktop-ownership/ownership-views.z) |
 | Deterministic cleanup | [`deinit.z`](../examples/language/ownership/deinit.z), [`replacement.z`](../examples/language/ownership/replacement.z), [`consuming-methods.z`](../examples/language/ownership/consuming-methods.z) |
 | ARC and weak references | [`classes.z`](../examples/language/basics/classes.z), [`weak-references.z`](../examples/language/ownership/weak-references.z) |
 | Closures | [`closures.z`](../examples/language/basics/closures.z), [`owned-closures.z`](../examples/language/ownership/owned-closures.z), [`function-values.z`](../examples/language/basics/function-values.z) |
@@ -51,6 +51,7 @@ bun run z run examples/language/control-flow/result.z
 | C++ lifecycle value | [`foreign-values.z`](../examples/interop/cpp/foreign-values.z), [`cpp-callables.z`](../examples/interop/cpp/cpp-callables.z), [`foreign-values.hpp.zd`](../tests/fixtures/foreign-values.hpp.zd) | `.zd` copy/deinit contract, native aggregate copies, constructors, static/const/mutable methods, overloads, and deterministic RAII destruction |
 | C++ move-only value | [`cpp-move-only.z`](../examples/interop/cpp/cpp-move-only.z), [`move-only.hpp.zd`](../tests/fixtures/move-only.hpp.zd) | `.zd` move/deinit contract, `in` borrow, owned calls/returns, whole-struct moves, use-after-move diagnostics, and deterministic native destruction |
 | C++ move-only storage | [`cpp-move-only-array.z`](../examples/interop/cpp/cpp-move-only-array.z), [`cpp-move-only-enum.z`](../examples/interop/cpp/cpp-move-only-enum.z) | Native move construction during dynamic-array growth, reverse destruction, named enum payload borrowing/consumption/replacement, and mixed Z/native cleanup |
+| C++ arena storage | [`cpp-arena.z`](../examples/interop/cpp/cpp-arena.z) | Stable region views over move-only C++ values and destructor-driven reset to zero live resources |
 | C++ references | [`cpp-references.z`](../examples/interop/cpp/cpp-references.z) | `const T&`, `T&`, move-only `T&&`, and receiver-qualified methods mapped onto existing Z capabilities with no wrapper overhead |
 | AppKit window | [`nswindow.z`](../examples/interop/objc/nswindow.z) | Direct Objective-C ARC calls |
 | Objective-C nullability | [`objc-nullability.z`](../examples/interop/objc/objc-nullability.z) | `T | null`, narrowing, and `Option.fromNullable` |

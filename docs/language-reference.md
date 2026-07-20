@@ -98,7 +98,9 @@ store.open(next); // valid after document's last use
 The first tier is deliberately receiver-tied and zero-overhead: only a
 synchronous, non-throwing borrowed method on a value struct may return a direct
 field or indexed projection. The view cannot be annotated as storage, copied,
-forwarded, captured, returned again, or held across `await`. Its owner cannot
+captured, returned again, or held across `await`. It may be forwarded only to a
+synchronous `in T` parameter; owned, mutable, escaping, and async forwarding
+remain rejected. Its owner cannot
 mutate or move before the view's last use. ARC class owners are excluded because
 another alias could invalidate growable projected storage.
 
@@ -226,6 +228,44 @@ element into the buffer. Growth allocates native storage, move-constructs each
 live element into the new allocation, destroys the old elements, and releases
 the old allocation. An indexed element is borrowed rather than extractable;
 moving the whole array transfers its buffer without relocating its elements.
+
+## Arena regions
+
+`std/memory` provides the first explicit region allocator without a new keyword
+or source-level lifetime parameter:
+
+```z
+import { Arena } from "std/memory";
+
+let scratch = Arena({ initialCapacity: 65536 });
+const header = scratch.create(Document({ id: 20 }));
+const body = scratch.create(Document({ id: 22 }));
+const answer = inspect(header) + inspect(body);
+scratch.reset();
+```
+
+`Arena` is a move-only value owner and therefore uses `let`: both `create` and
+`reset` mutate its descriptor. `create(value)` follows ordinary ownership
+rules—copyable values may copy while cleanup-bearing and move-only values
+transfer—and returns an inferred read-only `view T`. Addresses remain stable,
+so later `create` calls are permitted while earlier views are live. A view can
+be read directly or passed to a synchronous `in T` parameter.
+
+`reset()` destroys tracked values in reverse creation order, releases all arena
+pages, and leaves the arena reusable. Scope exit performs the same cleanup.
+Cleanup-free values carry no per-value destructor record; Z `deinit`, ARC
+fields, owned native handles, and C++ RAII fields are tracked when present.
+Reset, move, and scope destruction are rejected while a view has a later use.
+The options object is optional. `initialCapacity` reserves the first page size
+and remains a performance hint: the arena is still growable and uses the same
+safety and cleanup rules after it adds more pages.
+
+The first region tier is synchronous and single-threaded. Arena views cannot be
+stored, returned, captured, passed as owned or mutable values, or held across
+`await`. Direct class/reference-identity roots are excluded, although an
+arena-owned value struct may contain ARC fields. Allocation failure currently
+traps. Derived projections, mutable views, stored provenance, async regions,
+thread transfer, page reuse, and allocator parameters remain later tiers.
 
 ## Generics and traits
 
