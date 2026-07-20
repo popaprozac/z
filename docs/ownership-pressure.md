@@ -24,9 +24,9 @@ What works:
 
 A borrowed method can return a copied scalar such as `i32`, but it cannot return
 an owned `String` field from a borrowed document without transferring that field
-out of borrowed storage. `Slice<T>` similarly cannot be returned, stored, or
-captured today. This is the deliberate non-escaping wall that replaces explicit
-source lifetimes in the current model.
+out of borrowed storage. `Slice<T>` similarly cannot be returned or stored
+today. This is the deliberate non-escaping wall that replaces explicit source
+lifetimes in the current model.
 
 Keep these candidate spikes available when a real caller needs a view:
 
@@ -59,8 +59,9 @@ copy would be accidental overhead for immediate read-only use.
 
 This evidence produced a narrow receiver-tied read-only view rather than general
 lifetime parameters. Its provenance is one borrowed value-struct receiver; it
-is non-storable and non-capturable, may enter only a synchronous `in T` call,
-and receiver mutation is
+is non-storable, may enter a synchronous `in T` call, and may be read through an
+inline closure whose synchronous `in` destination proves nonescape. Stored,
+owned, and escaping captures remain rejected, and receiver mutation is
 rejected until the view's last use. `Option<view T>` carries the same provenance
 through a constrained local enum shape without admitting general borrowed enum
 storage. ARC class owners remain excluded because an alias could mutate the same
@@ -73,6 +74,10 @@ later allocation; `reset` and destruction are excluded until their last uses.
 Generated code omits cleanup records for trivial values and registers reverse
 cleanup only for `deinit`, ARC, owned native, or C++ RAII storage. This validates
 a useful region shape without yet admitting stored projections or async views.
+Receiver and Arena views now register the same shared `in` loan used by the
+call/task exclusivity checker. An inline nonescaping closure may copy the view
+pointer into its stack environment; the loan ends after that call, so later
+owner mutation or Arena reset is legal.
 
 ## Pressure 2: imported Objective-C references in owned Z state
 

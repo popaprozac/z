@@ -105,7 +105,10 @@ parameter or call-scoped foreign callback cannot retain the closure, so captures
 borrow through an allocation-free stack environment. Owned/value and escaping
 parameters require `move` and use the ordinary ARC function-value environment;
 escaping callbacks transfer a retained value through the imported API's
-compiler-validated release hook. Noncapturing closures need no environment.
+compiler-validated release hook. A receiver- or region-tied `view` may be read
+through the former nonescaping inline closure; its pointer is copied into the
+stack environment and the owner loan ends after the call. It remains illegal in
+a stored, owned, or escaping closure. Noncapturing closures need no environment.
 
 Assignment is a statement, not an expression. Its target must be a mutable
 binding or a field path rooted in one, and its value must have the target's
@@ -252,9 +255,10 @@ destruction invalidate the region and are rejected while a view has a later
 use. Cleanup runs newest-first before pages are released. Cleanup-free values
 avoid per-allocation destructor records; Z `deinit`, ARC-containing structs,
 owned native handles, and C++ RAII values are tracked. Arena views may enter a
-synchronous `in T` parameter but cannot yet be stored, returned, captured,
-mutably borrowed, or held across suspension. The tier is single-threaded and
-allocation failure traps.
+synchronous `in T` parameter or a proven nonescaping inline closure but cannot
+yet be stored, returned, captured by stored or escaping closures, mutably
+borrowed, or held across suspension. The tier is single-threaded and allocation
+failure traps.
 The optional `initialCapacity` field sizes the first page; it is not a hard
 limit and does not change growable-arena exhaustion semantics. Fixed-buffer
 arenas remain a separate future ownership shape.
@@ -1112,9 +1116,11 @@ copies the selected title. Optional views niche-lower to that same pointer:
 for general view-bearing enum storage. The implemented `view` tier has one
 provenance source: a synchronous borrowed value-struct receiver returning one
 of its direct fields or indexed elements.
-Last use ends the borrow; the view cannot be stored, captured, returned again,
-or held across receiver mutation or suspension. It can enter a synchronous
-`in T` call, which does not extend provenance beyond that call. ARC class
+Last use ends the borrow; the view cannot be stored, returned again, or held
+across receiver mutation or suspension. It can enter a synchronous `in T` call
+or be read by an inline closure whose `in` destination proves it cannot escape;
+neither form extends provenance beyond that call. Stored, owned, and escaping
+captures remain rejected. ARC class
 owners are excluded because aliases could invalidate projected growable
 storage. This does not introduce general lifetime parameters or views that
 survive backing-array reallocation.

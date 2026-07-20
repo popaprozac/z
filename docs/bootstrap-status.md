@@ -36,12 +36,12 @@ Status meanings:
 | --- | --- | --- |
 | Moves and deterministic `deinit` | Implemented | Flow-sensitive cleanup across return, throw, loops, and matches |
 | `in` / `inout` / `out` | Implemented | Explicit declaration and mutable call-site capabilities |
-| Unified loan checker | Implemented foundation | Call- and task-lifetime access share one root/capability/lifetime representation and conflict matrix; task indexes only drive join/cancel release, while views, regions, and cross-thread loans remain to integrate |
+| Unified loan checker | Implemented foundation | Call-, task-, receiver-view-, and Arena-region lifetimes share one root/capability/lifetime representation and conflict matrix; cross-thread loans remain to integrate |
 | Fixed arrays | Implemented | Checked indexing and reverse element cleanup |
 | `Array<T>` | Implemented | Growable owned storage and move-aware elements |
 | `Slice<T>` | Partial | Non-escaping parameters plus direct-awaited and scope-bounded spawned borrowing from fixed and growable owners, including cleanup-bearing Z and move-only C++ elements; returned/stored and cross-thread Slices remain |
-| Receiver-tied `view T` | Implemented narrow tier | Direct field/index projections and niche-backed `Option<view T>` lookups from synchronous value-struct methods; inferred const local, read-only, non-storable, synchronous `in T` forwarding only, no class owners |
-| `std/memory` `Arena` | Implemented narrow tier | Stable region allocation, inferred owner-tied views, reverse `deinit`/ARC/native RAII cleanup, reset exclusion while views are live; synchronous and single-threaded |
+| Receiver-tied `view T` | Implemented narrow tier | Direct field/index projections and niche-backed `Option<view T>` lookups from synchronous value-struct methods; inferred const local, read-only, non-storable, synchronous `in T` forwarding and proven nonescaping inline capture, no class owners |
+| `std/memory` `Arena` | Implemented narrow tier | Stable region allocation, inferred owner-tied views, reverse `deinit`/ARC/native RAII cleanup, shared-loan reset exclusion and proven nonescaping inline capture; synchronous and single-threaded |
 | General returned/stored borrows | Planned | Parameter provenance, class alias safety, retained views, and regions remain open |
 | ORC cycle collection | Planned | `Weak<T>` works now; arbitrary strong cycles are not collected |
 

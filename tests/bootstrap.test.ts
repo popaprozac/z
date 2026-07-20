@@ -2257,7 +2257,38 @@ test("keeps receiver-tied views read-only, local, and value-struct-owned", () =>
   `;
   const captureDiagnostic = diagnostics(capture, "view-capture.z")[0];
   assert.equal(captureDiagnostic.code, "Z0206");
-  assert.match(captureDiagnostic.message, /cannot be captured/);
+  assert.match(captureDiagnostic.message, /proven nonescaping closure/);
+
+  const inlineCapture = `${base}
+    function inspect(in operation: () => i32): i32 { return operation(); }
+    function main(): i32 {
+      let store = Store({ items: Array<Item>() });
+      store.append(Item({ value: 1 }));
+      const item = store.at(0);
+      const observed = inspect(() => item.value);
+      store.append(Item({ value: 2 }));
+      return observed - 1;
+    }
+  `;
+  assert.equal(diagnostics(inlineCapture, "view-inline-capture.z").length, 0);
+  const inlineDirectory = mkdtempSync("/tmp/z-view-inline-capture-");
+  const inlineFile = resolve(inlineDirectory, "main.z");
+  writeFileSync(inlineFile, inlineCapture);
+  const inlineResult = spawnSync(process.execPath, [cli, "run", inlineFile], { encoding: "utf8" });
+  assert.equal(inlineResult.status, 0, inlineResult.stderr);
+  const capturedViewOffset = inlineCapture.indexOf("item.value") + 1;
+  assert.match(
+    hover(inlineCapture, "view-inline-capture.z", capturedViewOffset)?.contents.value ?? "",
+    /item: view Item/,
+  );
+
+  const escapingCapture = inlineCapture.replace(
+    "function inspect(in operation: () => i32)",
+    "function inspect(operation: () => i32)",
+  );
+  const escapingCaptureDiagnostic = diagnostics(escapingCapture, "view-escaping-capture.z")[0];
+  assert.equal(escapingCaptureDiagnostic.code, "Z0212");
+  assert.match(escapingCaptureDiagnostic.message, /borrowed capturing closure cannot become a function value/);
 
   const forwarded = `${base}
     function inspect(in item: Item): i32 { return item.value; }
@@ -2412,11 +2443,13 @@ test("allocates stable owner-tied views in Arena and cleans them newest-first", 
   const trivial = `
     import { Arena } from "std/memory";
     struct Point { x: i32; y: i32; }
-    function total(in point: Point): i32 { return point.x + point.y; }
+    function inspect(in operation: () => i32): i32 { return operation(); }
     function main(): i32 {
       let arena = Arena();
       const point = arena.create(Point({ x: 20, y: 22 }));
-      return total(point) - 42;
+      const observed = inspect(() => point.x + point.y);
+      arena.reset();
+      return observed - 42;
     }
   `;
   const trivialGenerated = compileToC(trivial, "arena-trivial.z");

@@ -98,9 +98,11 @@ store.open(next); // valid after document's last use
 The first tier is deliberately receiver-tied and zero-overhead: only a
 synchronous, non-throwing borrowed method on a value struct may return a direct
 field or indexed projection. The view cannot be annotated as storage, copied,
-captured, returned again, or held across `await`. It may be forwarded only to a
-synchronous `in T` parameter; owned, mutable, escaping, and async forwarding
-remain rejected. Its owner cannot
+stored, returned again, or held across `await`. It may be forwarded to a
+synchronous `in T` parameter or read through an inline closure passed to a
+synchronous `in` function parameter. The latter closure is compiler-proven
+nonescaping and copies only the view pointer into its stack environment; owned,
+stored, mutable, escaping, and async forwarding remain rejected. Its owner cannot
 mutate or move before the view's last use. ARC class owners are excluded because
 another alias could invalidate growable projected storage.
 
@@ -261,8 +263,10 @@ and remains a performance hint: the arena is still growable and uses the same
 safety and cleanup rules after it adds more pages.
 
 The first region tier is synchronous and single-threaded. Arena views cannot be
-stored, returned, captured, passed as owned or mutable values, or held across
-`await`. Direct class/reference-identity roots are excluded, although an
+stored, returned, captured by stored or escaping closures, passed as owned or
+mutable values, or held across `await`. A synchronous inline closure accepted
+through an `in` function parameter may read the view and ends its loan when the
+call returns. Direct class/reference-identity roots are excluded, although an
 arena-owned value struct may contain ARC fields. Allocation failure currently
 traps. Derived projections, mutable views, stored provenance, async regions,
 thread transfer, page reuse, and allocator parameters remain later tiers.
@@ -287,6 +291,15 @@ borrow by default. `move` creates an owned capture when a closure must escape:
 
 ```z
 const deferred: () => i32 = move () => resource.value;
+```
+
+A read-only `view` may be captured only where the destination proves that the
+closure cannot escape:
+
+```z
+const item = store.at(0);
+const observed = inspect(() => item.value); // inspect takes `in operation`
+store.append(next);                         // valid after inspect returns
 ```
 
 Owned closure environments use ARC. Noncapturing closures can lower directly to

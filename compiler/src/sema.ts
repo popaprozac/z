@@ -264,6 +264,7 @@ type AccessLoan = {
   readonly capability: AccessCapability;
   readonly lifetime:
     | { readonly kind: "call" }
+    | { readonly kind: "view"; readonly binding: string }
     | { readonly kind: "task"; readonly spawnOffset: number };
   readonly location: SourceLocation;
 };
@@ -1333,7 +1334,7 @@ function analyzeStatements(
     for (const name of state.viewOrigins.keys()) {
       if (inheritedViews.has(name)) continue;
       if (!statements.slice(index).some((candidate) => syntaxReferencesName(candidate, name))) {
-        state.viewOrigins.delete(name);
+        unbindViewOrigin(name, state);
       }
     }
     if (stops) {
@@ -1350,7 +1351,7 @@ function analyzeStatements(
     stops = statementStopsFlow(statement);
   }
   for (const name of state.viewOrigins.keys()) {
-    if (!inheritedViews.has(name)) state.viewOrigins.delete(name);
+    if (!inheritedViews.has(name)) unbindViewOrigin(name, state);
   }
   return returns;
 }
@@ -1520,7 +1521,7 @@ function analyzeStatement(
         }
         locals.set(statement.name, String(variableType));
         state.bindingTypes.set(statement.nameLocation.offset, String(variableType));
-        state.viewOrigins.set(statement.name, origin);
+        bindViewOrigin(statement.name, origin, fileName, state);
         state.viewBindingOwners.set(statement.nameLocation.offset, origin.owner);
         return;
       }
@@ -1877,9 +1878,9 @@ function analyzeStatement(
         const patternNames = [arm.binding, ...(arm.objectBindings ?? []).map((field) => field.bindingName)].filter((name): name is string => Boolean(name));
         const previousBorrows = new Map(patternNames.map((name) => [name, state.borrowOrigins.get(name)]));
         const previousPatternViews = new Map(patternNames.map((name) => [name, state.viewOrigins.get(name)]));
-        if (optionalViewOrigin && candidateRoot) state.viewOrigins.delete(candidateRoot.name);
+        if (optionalViewOrigin && candidateRoot) unbindViewOrigin(candidateRoot.name, state);
         if (optionalViewOrigin && arm.binding && variant.payload && parseViewType(variant.payload.name)) {
-          state.viewOrigins.set(arm.binding, optionalViewOrigin);
+          bindViewOrigin(arm.binding, optionalViewOrigin, fileName, state);
           if (arm.bindingLocation) state.viewBindingOwners.set(arm.bindingLocation.offset, optionalViewOrigin.owner);
         }
         if (borrowed && arm.binding && variant.payload && hasOwnershipType(variant.payload.name, structs, enums, state)) {
@@ -1910,10 +1911,10 @@ function analyzeStatement(
             if (previousBorrow) state.borrowOrigins.set(name, previousBorrow);
             else state.borrowOrigins.delete(name);
             const previousView = previousPatternViews.get(name);
-            if (previousView) state.viewOrigins.set(name, previousView);
-            else state.viewOrigins.delete(name);
+            if (previousView) bindViewOrigin(name, previousView, fileName, state);
+            else unbindViewOrigin(name, state);
           }
-          if (optionalViewOrigin && candidateRoot) state.viewOrigins.set(candidateRoot.name, optionalViewOrigin);
+          if (optionalViewOrigin && candidateRoot) bindViewOrigin(candidateRoot.name, optionalViewOrigin, fileName, state);
         }
         if (!statementStopsFlow(arm.body)) {
           if (borrowedRoot && borrowedRootType) armLocals.set(borrowedRoot.name, borrowedRootType);
@@ -2107,11 +2108,28 @@ function inferClosureExpression(
     }
     const type = String(underlyingType(stored));
     if (containsViewType(type)) {
-      throw new DiagnosticError(fileName, capture.location, `view-bearing value ${JSON.stringify(capture.name)} cannot be captured by a closure`, {
-        code: "Z0206",
-        notes: ["the closure could outlive the owner storage projected by the view"],
-        helps: ["use the view directly in its lexical scope or capture an explicitly owned snapshot"],
+      if (!transientBorrow || expression.captureMode !== "borrow") {
+        throw new DiagnosticError(fileName, capture.location, `view-bearing value ${JSON.stringify(capture.name)} can only be captured by a proven nonescaping closure`, {
+          code: "Z0206",
+          notes: ["an escaping or stored closure could outlive the owner storage projected by the view"],
+          helps: ["pass an inline closure to a synchronous `in` function parameter, or capture an explicitly owned snapshot"],
+        });
+      }
+      if (!state.viewOrigins.has(capture.name)) {
+        throw new DiagnosticError(fileName, capture.location, `view capture ${JSON.stringify(capture.name)} has no proven owner`, {
+          code: "Z0206",
+          helps: ["bind the view directly from its owner before using it in the inline closure"],
+        });
+      }
+      captures.push({
+        name: capture.name,
+        type,
+        mode: "value",
+        moved: false,
+        location: capture.location,
       });
+      closureLocals.set(capture.name, `${borrowedPrefix}${type}`);
+      continue;
     }
     if (type.startsWith("__z_closure_")) {
       throw new DiagnosticError(fileName, capture.location, "capturing another closure requires escaping closure environments");
@@ -2585,9 +2603,9 @@ function inferMatchExpression(
     const patternNames = [arm.binding, ...(arm.objectBindings ?? []).map((field) => field.bindingName)].filter((name): name is string => Boolean(name));
     const previousBorrows = new Map(patternNames.map((name) => [name, state.borrowOrigins.get(name)]));
     const previousPatternViews = new Map(patternNames.map((name) => [name, state.viewOrigins.get(name)]));
-    if (optionalViewOrigin && candidateRoot) state.viewOrigins.delete(candidateRoot.name);
+    if (optionalViewOrigin && candidateRoot) unbindViewOrigin(candidateRoot.name, state);
     if (optionalViewOrigin && arm.binding && variant.payload && parseViewType(variant.payload.name)) {
-      state.viewOrigins.set(arm.binding, optionalViewOrigin);
+      bindViewOrigin(arm.binding, optionalViewOrigin, fileName, state);
       if (arm.bindingLocation) state.viewBindingOwners.set(arm.bindingLocation.offset, optionalViewOrigin.owner);
     }
     if (borrowed && arm.binding && variant.payload && hasOwnershipType(variant.payload.name, structs, enums, state)) {
@@ -2613,10 +2631,10 @@ function inferMatchExpression(
         if (previousBorrow) state.borrowOrigins.set(name, previousBorrow);
         else state.borrowOrigins.delete(name);
         const previousView = previousPatternViews.get(name);
-        if (previousView) state.viewOrigins.set(name, previousView);
-        else state.viewOrigins.delete(name);
+        if (previousView) bindViewOrigin(name, previousView, fileName, state);
+        else unbindViewOrigin(name, state);
       }
-      if (optionalViewOrigin && candidateRoot) state.viewOrigins.set(candidateRoot.name, optionalViewOrigin);
+      if (optionalViewOrigin && candidateRoot) bindViewOrigin(candidateRoot.name, optionalViewOrigin, fileName, state);
     }
     if (armType !== "never") {
       if (borrowedRoot && borrowedRootType) armLocals.set(borrowedRoot.name, borrowedRootType);
@@ -2677,7 +2695,7 @@ function inferValueArm(
       throw new DiagnosticError(fileName, statement.statements.at(-1)!.location, "unreachable statement after guaranteed function exit");
     }
     for (const name of transientViews) {
-      if (!syntaxReferencesName(finalStatement, name)) state.viewOrigins.delete(name);
+      if (!syntaxReferencesName(finalStatement, name)) unbindViewOrigin(name, state);
     }
     const type = inferValueArm(finalStatement, owner, blockLocals, globals, structs, enums, fileName, state, transientViews);
     propagateOuterOwnership(locals, blockLocals);
@@ -5002,6 +5020,41 @@ function registerAccessLoan(loans: AccessLoanSet, loan: AccessLoan): AccessLoan 
   return null;
 }
 
+function bindViewOrigin(
+  binding: string,
+  origin: { readonly owner: string; readonly location: SourceLocation },
+  fileName: string,
+  state: AnalysisState,
+): void {
+  unbindViewOrigin(binding, state);
+  const conflict = registerAccessLoan(state.activeLoans, {
+    root: origin.owner,
+    capability: "in",
+    lifetime: { kind: "view", binding },
+    location: origin.location,
+  });
+  if (conflict) {
+    throw new DiagnosticError(fileName, origin.location, `cannot create view ${JSON.stringify(binding)} while ${JSON.stringify(origin.owner)} has an active ${conflict.capability} loan`, {
+      code: conflict.lifetime.kind === "task" ? "Z0704" : "Z0205",
+      labels: [{ location: conflict.location, message: `active ${conflict.capability} loan begins here`, length: origin.owner.length }],
+      notes: ["views and call- or task-lifetime access use the same exclusivity rules"],
+      helps: ["finish the conflicting access before creating the view"],
+    });
+  }
+  state.viewOrigins.set(binding, origin);
+}
+
+function unbindViewOrigin(binding: string, state: AnalysisState): void {
+  const origin = state.viewOrigins.get(binding);
+  if (!origin) return;
+  const remaining = (state.activeLoans.get(origin.owner) ?? []).filter((loan) => (
+    loan.lifetime.kind !== "view" || loan.lifetime.binding !== binding
+  ));
+  if (remaining.length > 0) state.activeLoans.set(origin.owner, remaining);
+  else state.activeLoans.delete(origin.owner);
+  state.viewOrigins.delete(binding);
+}
+
 function snapshotAccessLoanState(state: AnalysisState): AccessLoanState {
   return {
     activeLoans: new Map(state.activeLoans),
@@ -5039,7 +5092,9 @@ function mergeAccessLoanStates(state: AnalysisState, paths: readonly AccessLoanS
       for (const loan of loans) {
         const lifetime = loan.lifetime.kind === "task"
           ? `task:${loan.lifetime.spawnOffset}`
-          : "call";
+          : loan.lifetime.kind === "view"
+            ? `view:${loan.lifetime.binding}`
+            : "call";
         const key = `${root}:${loan.capability}:${lifetime}:${loan.location.offset}`;
         if (seen.has(key)) continue;
         seen.add(key);
@@ -5130,12 +5185,12 @@ function rejectOwnerMutationWhileViewed(
       helps: ["finish the async scope before mutating or moving the borrowed value"],
     });
   }
-  const active = [...state.viewOrigins.entries()].find(([, origin]) => origin.owner === owner);
-  if (!active) return;
-  const [viewName, origin] = active;
+  const active = state.activeLoans.get(owner)?.find((loan) => loan.lifetime.kind === "view");
+  if (!active || active.lifetime.kind !== "view") return;
+  const viewName = active.lifetime.binding;
   throw new DiagnosticError(fileName, location, `cannot ${action} ${JSON.stringify(owner)} while view ${JSON.stringify(viewName)} is live`, {
     code: "Z0205",
-    labels: [{ location: origin.location, message: `view ${JSON.stringify(viewName)} begins here`, length: owner.length }],
+    labels: [{ location: active.location, message: `view ${JSON.stringify(viewName)} begins here`, length: owner.length }],
     notes: ["a receiver-tied view reads directly from its owner's storage"],
     helps: [`finish using ${JSON.stringify(viewName)} before mutating or moving ${JSON.stringify(owner)}`],
   });

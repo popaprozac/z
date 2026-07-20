@@ -24,6 +24,10 @@ struct Directory {
   }
 }
 
+function inspect(in operation: () => i32): i32 {
+  return operation();
+}
+
 function main(): i32 {
   let directory = Directory({ entries: Array<Entry>() });
   directory.add(Entry({ id: 1, name: "Z" }));
@@ -33,7 +37,8 @@ function main(): i32 {
   const observed = match (in found) {
     some(entry) => {
       console.log(`found ${entry.id}: ${entry.name}`);
-      select entry.id;
+      // The inline closure may read the view because inspect cannot retain it.
+      select inspect(() => entry.id);
     }
     none => -1;
   };

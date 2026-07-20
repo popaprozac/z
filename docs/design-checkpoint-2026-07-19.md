@@ -58,8 +58,8 @@ cancellation cleanup. Generated C-family source remains inspectable evidence.
   Swift C++ compatibility values cross the boundary without inventing a second
   object model.
 - The ownership model handles non-trivial application-shaped probes without
-  source lifetime parameters, and the unified loan checker now covers both
-  call-scoped and task-scoped access.
+  source lifetime parameters, and the unified loan checker now covers call,
+  task, receiver-view, and Arena-region lifetimes.
 - Stackless async tasks, structured scopes, hot spawn, cancellation, scheduler
   delay, native ownership, and fixed-array-backed slices have executable
   lowering on the deterministic FIFO executor.
