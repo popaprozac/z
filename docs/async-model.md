@@ -148,7 +148,9 @@ The intended fallible form preserves the ordinary typed-error channel:
 
 ```z
 const calculation = thread.spawn(move (): i32 throws CalculationError => {
-  return try calculate(input);
+  const value = try calculate(input);
+  if (value < 0) return 0;
+  return value;
 });
 const value = try await calculation;
 ```
@@ -161,6 +163,11 @@ and containing aggregates move, deeply readonly classes use atomic ARC, and
 contracted native owners move through placement storage. Observation,
 propagation, cancellation, and discarded outcomes each destroy the payload
 exactly once. No untyped thread-exception channel is used.
+
+Inside the synchronous worker, `try` may directly initialize a binding or be
+returned, while `attempt` may materialize a local `Result<T, E>` for matching.
+Binding first keeps propagation and cleanup visible while nested `try`
+expressions remain intentionally unsupported.
 
 The first executable transfer rule is deliberately narrow. Integers, floats,
 booleans, fixed arrays, and recursively cleanup-free Z structs/enums copy.

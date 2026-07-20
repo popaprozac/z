@@ -8938,6 +8938,51 @@ test("preserves typed errors from thread.spawn as Task<T, E>", () => {
   const localClosureResult = spawnSync(process.execPath, [cli, "run", localClosureFile], { encoding: "utf8" });
   assert.equal(localClosureResult.status, 0, localClosureResult.stderr);
 
+  const nativeTryDirectory = mkdtempSync("/tmp/z-thread-native-try-");
+  writeFileSync(
+    resolve(nativeTryDirectory, "move-only.hpp"),
+    readFileSync(resolve(projectRoot, "tests/fixtures/move-only.hpp"), "utf8"),
+  );
+  writeFileSync(
+    resolve(nativeTryDirectory, "move-only.hpp.zd"),
+    readFileSync(resolve(projectRoot, "tests/fixtures/move-only.hpp.zd"), "utf8"),
+  );
+  const nativeTryFile = resolve(nativeTryDirectory, "main.z");
+  writeFileSync(nativeTryFile, `
+    import { thread } from "std/thread";
+    import native from "move-only.hpp";
+    struct WorkError { code: i32; }
+    function makeValue(value: i32): native.zcpp.UniqueValue throws WorkError {
+      return native.zcpp.UniqueValue(value);
+    }
+    async function main(): i32 throws WorkError {
+      const task = thread.spawn((): native.zcpp.UniqueValue throws WorkError => {
+        const value = try makeValue(42);
+        return value;
+      });
+      const value = try await task;
+      return value.value() - 42;
+    }
+  `);
+  const nativeTryGenerated = compileToNative(readFileSync(nativeTryFile, "utf8"), nativeTryFile).source;
+  assert.match(nativeTryGenerated, /new \(frame->value_value\) zcpp::UniqueValue\(std::move\(_z_thread_try_\d+\.data\.success\)\)/);
+  const nativeTryResult = spawnSync(process.execPath, [cli, "run", nativeTryFile], { encoding: "utf8" });
+  assert.equal(nativeTryResult.status, 0, nativeTryResult.stderr);
+
+  const embeddedTry = `
+    import { thread } from "std/thread";
+    struct WorkError { code: i32; }
+    function calculate(): i32 throws WorkError { return 41; }
+    async function main(): i32 throws WorkError {
+      const task = thread.spawn((): i32 throws WorkError => {
+        return (try calculate()) + 1;
+      });
+      return try await task;
+    }
+  `;
+  const embeddedTryDiagnostic = diagnostics(embeddedTry, "thread-embedded-try.z")[0];
+  assert.match(embeddedTryDiagnostic.message, /try must be the direct value of a binding/);
+
   const missingReturnType = `
     import { thread } from "std/thread";
     struct WorkError { code: i32; }

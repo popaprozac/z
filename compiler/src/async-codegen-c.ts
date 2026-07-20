@@ -417,6 +417,9 @@ function planFunction(
         if (operation) {
           recordNestedAwaits(operation.expression.expression, operation.source);
           recordAwait(operation.mode, operation.expression);
+        } else if (nativeThread && statement.initializer.kind === "try") {
+          validateThreadTryCall(statement.initializer.expression, fileName, types);
+          validateFrameExpression(statement.initializer.expression, locals, fileName, types, suspensions);
         } else if (statement.initializer.kind === "matchExpression") {
           recordNestedAwaits(statement.initializer);
           validateAsyncMatchExpression(statement.initializer, locals, fileName, types, suspensions);
@@ -1682,6 +1685,16 @@ function generatePoll(
           ),
         );
         state += 1;
+      } else if (plan.nativeThread && initializer.kind === "try") {
+        cases.push(caseBlock(state, emitThreadTryBinding(
+          initializer.expression,
+          plan,
+          fileName,
+          state,
+          statement.name,
+          state + 1,
+        )));
+        state += 1;
       } else if (initializer.kind === "matchExpression") {
         const type = plan.locals.get(statement.name)!;
         cases.push(caseBlock(state, emitAsyncMatchExpression(
@@ -2437,6 +2450,15 @@ function emitFrameExpression(
         }
         return value;
       }
+    case "attempt":
+      return emitFrameExpression(expression.expression, plan, fileName);
+    case "try":
+      unsupported(
+        fileName,
+        expression.location,
+        "an embedded synchronous `try` expression is not executable in an async frame yet",
+        "bind it first with `const value = try operation();`, then use value in the surrounding expression",
+      );
     case "argumentReference":
       return emitFrameExpression(
         { kind: "identifier", name: expression.name, location: expression.location },
@@ -2701,27 +2723,44 @@ function emitThreadTryReturn(
   fileName: string,
   state: number,
 ): string[] {
+  return emitThreadTryOperation(expression, plan, fileName, state, null, finalizeStateMarker);
+}
+
+function emitThreadTryBinding(
+  expression: Expression,
+  plan: AsyncFunctionPlan,
+  fileName: string,
+  state: number,
+  binding: string,
+  nextState: number,
+): string[] {
+  return emitThreadTryOperation(expression, plan, fileName, state, binding, String(nextState));
+}
+
+function emitThreadTryOperation(
+  expression: Expression,
+  plan: AsyncFunctionPlan,
+  fileName: string,
+  state: number,
+  binding: string | null,
+  successState: string,
+): string[] {
   validateThreadTryCall(expression, fileName, plan.types);
   const call = expression as CallExpression;
   const declaration = plan.types.functions.get((call.callee as Extract<Expression, { kind: "identifier" }>).name)!;
   const successType = declaration.returnType.name;
   const errorType = declaration.errorType!.name;
-  if (requiresNativeFramePlacement(successType, plan.types)) {
-    unsupported(
-      fileName,
-      expression.location,
-      "thread worker `try` cannot transfer this native success value yet",
-      "return a cleanup-free value, Array, String, TextBuffer, or supported Z aggregate in this tier",
-    );
-  }
   const resultType = resultTypeName(successType, errorType);
   const temporary = `_z_thread_try_${state}`;
+  const errorPayload = requiresNativeFramePlacement(errorType, plan.types)
+    ? `std::move(${temporary}.data.failure)`
+    : `${temporary}.data.failure`;
   const lines = [
     `${cFrameType(resultType, plan.types)} ${temporary} = ${emitFrameExpression(call, plan, fileName)};`,
     `if (${temporary}.tag == ${resultTag(resultType, "failure")}) {`,
     requiresNativeFramePlacement(errorType, plan.types)
-      ? `  new (frame->error) ${cFrameType(errorType, plan.types)}(std::move(${temporary}.data.failure));`
-      : `  frame->error = ${temporary}.data.failure;`,
+      ? `  new (frame->error) ${cFrameType(errorType, plan.types)}(${errorPayload});`
+      : `  frame->error = ${errorPayload};`,
     ...(hasFrameCleanup(errorType, plan.types) ? ["  frame->live_error = true;"] : []),
     "  frame->failed = true;",
     "  frame->cancel_children = true;",
@@ -2730,12 +2769,20 @@ function emitThreadTryReturn(
     "}",
   ];
   if (successType !== "void") {
-    lines.push(`frame->result = ${temporary}.data.success;`);
-    if (hasFrameCleanup(successType, plan.types)) lines.push("frame->live_result = true;");
+    const destination = binding ? `frame->${frameField(binding)}` : "frame->result";
+    const successPayload = requiresNativeFramePlacement(successType, plan.types)
+      ? `std::move(${temporary}.data.success)`
+      : `${temporary}.data.success`;
+    lines.push(requiresNativeFramePlacement(successType, plan.types)
+      ? `new (${destination}) ${cFrameType(successType, plan.types)}(${successPayload});`
+      : `${destination} = ${successPayload};`);
+    if (hasFrameCleanup(successType, plan.types)) {
+      lines.push(binding ? `frame->${frameLiveField(binding)} = true;` : "frame->live_result = true;");
+    }
   }
   lines.push(
     "frame->failed = false;",
-    `frame->state = ${finalizeStateMarker};`,
+    `frame->state = ${successState};`,
     "continue;",
   );
   return lines;

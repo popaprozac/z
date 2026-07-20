@@ -23,7 +23,8 @@ async function propagateFailure(): i32 throws WorkError {
 async function main(): i32 throws WorkError {
   const shouldFail = true;
   const failedTask = thread.spawn(move (): i32 throws WorkError => {
-    return try calculate(40, shouldFail);
+    const value = try calculate(40, shouldFail);
+    return value;
   });
   const observed = attempt await failedTask;
   const recovered = match (in observed) {
@@ -32,7 +33,11 @@ async function main(): i32 throws WorkError {
   };
 
   const successfulTask = thread.spawn((): i32 throws WorkError => {
-    return try calculate(35, false);
+    const observed = attempt calculate(35, false);
+    return match (in observed) {
+      success(value) => value;
+      failure(error) => -error.code;
+    };
   });
   const value = try await successfulTask;
   const propagated = attempt await propagateFailure();

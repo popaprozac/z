@@ -435,7 +435,8 @@ doOtherWork();
 const answer = await calculation;
 
 const fallible = thread.spawn(move (): i32 throws CalculationError => {
-  return try calculateOrThrow(input);
+  const value = try calculateOrThrow(input);
+  return value;
 });
 const result = attempt await fallible;
 ```
@@ -457,6 +458,8 @@ Throwing worker closures return `Task<T, E>`; `try await` propagates `E` and
 liveness as result slots, so transferable String/Array ownership, containing
 aggregates, readonly ARC identity, and contracted native owners are moved or
 shared according to the ordinary thread classifier and destroyed exactly once.
+Synchronous worker bodies may use `const value = try operation();`, direct
+`return try operation();`, or `attempt operation()` followed by `match`.
 
 ## Native interop
 

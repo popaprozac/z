@@ -910,6 +910,8 @@ result slots, so transferable String/Array ownership, containing aggregates,
 deeply readonly ARC identity, and explicitly contracted native owners can move
 from worker to parent and are destroyed exactly once when observed, propagated,
 cancelled, or discarded. There is no separate untyped thread-exception channel.
+Worker bodies support direct and binding-valued synchronous `try` plus local
+`attempt`; nested `try` remains excluded by the language-wide direct-value rule.
 
 An async function continues to declare its domain contract as `T throws E`.
 `spawn` preserves that contract as `Task<T, E>`, `try await` propagates `E`, and
