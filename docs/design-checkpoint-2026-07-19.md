@@ -111,12 +111,11 @@ planned experiment rather than a rejected direction.
 3. **Begun:** `thread.spawn` now proves explicit move capture, private Copy
    snapshots, moved Array/String/TextBuffer owners/results, explicitly
    contracted C/C++ owner transfer, deeply readonly atomic-ARC class sharing,
-   live-state-aware owned `Task<T, E>` errors, and structured join on one native
-   thread. Extend
-   that evidence with broader cleanup-bearing sendability, weak-reference and
-   destruction-affinity protocols, mutable shared-state isolation, nonblocking
-   executor integration, and a cross-thread callback before fixing pools or a
-   multithreaded executor design.
+   live-state-aware owned `Task<T, E>` errors, and race-free nonblocking joins on
+   one native thread. Extend that evidence through application-driven
+   cross-thread callbacks, UI-thread delivery, weak-reference and
+   destruction-affinity protocols, and mutable shared-state isolation before
+   fixing pools or a multithreaded executor design.
 4. **Probed:** Swift 6.2 does not expose noncopyable values or Swift async APIs
    through its generated C++ interface. Z records that gate and now imports a
    nearby Swift-only surface—associated-value enum case factories—directly.
@@ -130,6 +129,30 @@ planned experiment rather than a rejected direction.
    concrete Z-facing interface to Clang and Swift metadata.
 7. Design and test a deliberately small `comptime` experiment only after the
    ownership, interop, and execution foundations above provide real use cases.
+
+## Immediate application sequence
+
+Before the next application probe, audit the public type vocabulary and editor
+presentation as one hygiene pass: primitive casing and widths, platform-sized
+integers, owned versus borrowed text, nullable native references, collection
+names, task/result/option shapes, and suppression of generated implementation
+names. This is a consistency gate, not an invitation to redesign stable names
+without evidence.
+
+Then build a small native **Z Notes** AppKit application. Its first skeleton
+should contain an `NSApplication`, `NSWindow`, a Z-owned notes model, nullable
+selection, and SQLite persistence imported from `sqlite3.h`. Grow it only along
+pressure seams: Objective-C protocol conformance, delegates/data sources,
+target/action, escaping block lifetime, background search through
+`thread.spawn`, `Task<T, E>` loading and saving, cancellation, UI-thread
+delivery, and optionally a Swift-only helper. The application is an executable
+composition test, not a parallel framework project.
+
+Once that skeleton exposes its first concrete language boundaries, begin the
+incremental self-hosting frontend track: Z lexer under the TypeScript driver,
+then parser, module resolver/diagnostics, semantic analysis, C emission, and
+finally the CLI driver. Clang and Swift metadata ingestion remain external
+toolchain services behind a Z-shaped interface rather than self-hosting goals.
 
 The sequence is evidence-driven. If a non-trivial Z program, arena spike,
 cross-thread boundary, hard Swift value, or like-for-like benchmark contradicts

@@ -107,7 +107,7 @@ functions unavailable to C++; Z does not bypass that limit through private ABI.
 | Async syntax and typing | Implemented | Functions/methods, `await`, `spawn`, task scopes, typed errors |
 | Stackless task frames | Partial | Scalars, owned String/TextBuffer, cleanup-bearing fixed arrays, growable arrays, copied Slice descriptors, owned structs/enums/classes, direct move-only C++ locals and parameters, collection elements containing them, cleanup-free direct-awaited output, and fallible native result transfer through `try`/`attempt`/match across suspension |
 | Executor | Implemented bootstrap | Deterministic single-thread FIFO ready queue |
-| Explicit native threads | Implemented narrow tier | `thread.spawn` starts one OS thread for a synchronous one-shot closure; `move` is required when capturing; plain values copy, unique Array/String/TextBuffer owners and explicitly contracted C/C++ native owners move, and deeply readonly classes share through atomic ARC; `(): T throws E` produces `Task<T, E>` with live-state-aware owned errors plus bound/direct `try` and local `attempt`; await and implicit scope exit join; native `share` remains deferred |
+| Explicit native threads | Implemented narrow tier | `thread.spawn` starts one OS thread for a synchronous one-shot closure; `move` is required when capturing; plain values copy, unique Array/String/TextBuffer owners and explicitly contracted C/C++ native owners move, and deeply readonly classes share through atomic ARC; `(): T throws E` produces `Task<T, E>` with live-state-aware owned errors plus bound/direct `try` and local `attempt`; await, cancellation, and implicit scope exit suspend through a race-free executor completion queue before joining; native `share` remains deferred |
 | Structured scopes | Implemented slice | Lexical child joins, sibling/descendant cancellation, shared immutable and exclusive mutable child borrows (including fixed- and growable-collection-backed Slice), plus path-sensitive early release across straight-line code and `if` branches; loops remain conservative to scope exit |
 | Caller cancellation | Implemented slice | Consuming `await task.cancel()` requests cancellation, joins descendants and cleanup, and discards an unclaimed completed outcome |
 | Timers | Implemented slice | Scheduler-aware monotonic `delay`; blocking `sleep` remains synchronous |
@@ -115,7 +115,7 @@ functions unavailable to C++; Z does not bypass that limit through private ABI.
 | Embedded awaits | Partial | Left-to-right cleanup-free values and awaited conditions |
 | Lazy/suspending expressions | Planned | `&&`, `||`, ternaries, value `if`, suspending match arms, owned hidden results |
 | Channels, actors, executors | Planned direction | API and sendability remain intentionally unsettled |
-| CPU parallelism | Partial evidence | One explicit native thread can execute Copy-value or uniquely owned Array/String/TextBuffer work in parallel; pools, general sendability, atomic ARC, nonblocking joins, and multithreaded executors remain planned |
+| CPU parallelism | Partial evidence | One explicit native thread can execute Copy-value or uniquely owned Array/String/TextBuffer work in parallel without blocking unrelated FIFO tasks or timers; pools, general sendability, mutable shared-state isolation, and multithreaded executors remain planned |
 
 See [`async-model.md`](async-model.md) for the intended model and phase details.
 
@@ -215,10 +215,9 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    `thread.spawn` now proves one real cross-thread task frame with explicit
    move capture, hot start, structured join, private Copy snapshots, and moved
    Array/String/TextBuffer owners/results, explicitly contracted C/C++ owners,
-   plus atomic-ARC deeply readonly class identity and live-state-aware owned
-   error transfer through `Task<T, E>`. Next probe broader
-   cleanup-bearing sendability, weak-reference and
-   destruction-affinity protocols, mutable shared-state isolation,
-   nonblocking executor integration, and a cross-thread callback before
-   committing actors, channels, pools, or a multithreaded executor as settled
-   language design.
+   plus atomic-ARC deeply readonly class identity, live-state-aware owned error
+   transfer through `Task<T, E>`, and nonblocking executor completion. The next
+   concurrency probes should be driven by the desktop application: cross-thread
+   callbacks, UI-thread delivery, weak-reference and destruction-affinity
+   protocols, and mutable shared-state isolation. Do not commit actors,
+   channels, pools, or a multithreaded executor as settled language design yet.

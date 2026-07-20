@@ -37,6 +37,42 @@ Local types are inferred from initializers when unambiguous. Public function
 parameters and returns, fields, uninitialized storage, empty collections, and
 foreign boundaries remain explicit contracts.
 
+## Type vocabulary
+
+Z uses lowercase names for primitive machine values and PascalCase names for
+owned, nominal, or language/library abstractions. `cstring` is the deliberate
+exception: it is a primitive borrowed foreign string view rather than a Z-owned
+text value.
+
+| Family | Z spelling | Meaning and current rule |
+| --- | --- | --- |
+| No value | `void` | Function produces no value; not ordinary storable data |
+| Boolean | `bool` | Exactly `true` or `false`; conditions do not use truthiness |
+| Signed integers | `i8`, `i16`, `i32`, `i64` | Fixed-width two's-complement values; integer literals prefer `i32` |
+| Unsigned integers | `u8`, `u16`, `u32`, `u64` | Fixed-width unsigned values; `u8` is the byte-oriented scalar |
+| Pointer-sized integers | `isize`, `usize` | Signed/unsigned target pointer width; sizes and indexes normally use `usize` |
+| Floating point | `f32`, `f64` | IEEE-width floating values; floating literals prefer `f64` |
+| Owned text | `String` | Immutable owned UTF-8 bytes with explicit byte operations |
+| Borrowed C text | `cstring` | Non-owning NUL-terminated native string view; not an owned `String` alias |
+| Fixed collection | `T[N]` | Inline fixed-size owned array |
+| Growable collection | `Array<T>` | Move-owned growable contiguous buffer |
+| Borrowed collection | `Slice<T>` | Non-escaping pointer/length view over contiguous storage |
+| Optional value | `Option<T>` | Built-in `some`/`none` tagged value, niche-backed where representation permits |
+| Typed outcome | `Result<T, E>` | Built-in `success`/`failure` tagged value produced by `attempt` |
+| Async handle | `Task<T>` or `Task<T, E>` | Owned structured task handle; the second form carries a typed error channel |
+| Weak identity | `Weak<T>` | Non-owning reference to an ARC-managed class, recovered through `upgrade()` |
+| Text construction | `TextBuffer` | Move-only mutable UTF-8 builder imported from `std/text` |
+| Region owner | `Arena` | Move-only region allocator imported from `std/memory` |
+| Function value | `(in value: T) => U throws E` | Closure/callback signature; parameter capabilities are part of the type |
+| Read-only projection | `view T` | Inferred non-storable borrow tied to owner storage, not a general reference type |
+| Native types | Imported nominal names and `T | null` | ABI-exact C, Objective-C, C++, or Swift-generated types; nullability is limited to nullable native references/handles |
+| User types | `struct`, `class`, `enum`, `trait` names | Nominal PascalCase declarations; structs/enums are values and classes have ARC identity |
+
+There is currently no `char`, arbitrary-width integer, tuple, general structural
+object type, `any`, or user-written nullable value union. Use `u8` for a byte,
+`String` for owned UTF-8 text, `Option<T>` for optional Z values, and `T | null`
+only where a native nullable representation enters the type system.
+
 ## Structs, classes, and traits
 
 `struct` declares a value type. It may contain fields, instance methods, static

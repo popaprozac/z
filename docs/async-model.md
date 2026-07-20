@@ -192,12 +192,20 @@ Atomic ARC protects reference lifetime only; mutable shared class state will
 require actors, synchronization, or another explicit isolation contract.
 
 The worker may call ordinary synchronous Z or supported native functions. It
-cannot suspend or `await`. In this first runtime, joining the worker blocks the
-single FIFO executor's OS thread until the native thread finishes. Cancellation
-cannot forcibly interrupt synchronous native work: cancelling such a task joins
-the thread and discards its outcome. Future `pool.spawn` and multithreaded
-executors remain separate designs; `thread.spawn` will continue to mean one
-explicit native thread rather than silently becoming pooled work.
+cannot suspend or `await`. Awaiting or cancelling a running worker suspends only
+the awaiting task: the FIFO executor remains free to poll unrelated tasks and
+timers. Worker completion crosses into the executor through a synchronized
+completion queue, which resumes the waiter on the executor thread before the
+finished OS thread is joined. Registration and completion use the same lock so
+a completion cannot be lost between checking the task and installing its
+waiter.
+
+Cancellation cannot forcibly interrupt synchronous native work. It records an
+atomic cooperative request; the worker finishes its current synchronous call,
+publishes completion, and its unclaimed outcome is discarded after the awaiting
+task resumes. Future `pool.spawn` and multithreaded executors remain separate
+designs; `thread.spawn` will continue to mean one explicit native thread rather
+than silently becoming pooled work.
 
 This keeps the existing Z error model intact: `try await` unwraps success and
 propagates `E`, while `attempt await` materializes `Result<T, E>` for matching or

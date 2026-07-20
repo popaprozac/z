@@ -8759,8 +8759,17 @@ test("runs cleanup-free owned work on an explicit native thread", () => {
   assert.equal(result.status, 0, result.stderr);
   assert.equal(
     result.stdout,
-    "main task continued after thread.spawn\nthread answer=42\n",
+    "main task continued after thread.spawn\nFIFO executor progressed while native worker ran\nthread answer=42\n",
   );
+  assert.match(artifact.source, /pthread_cond_timedwait/);
+  assert.match(artifact.source, /SleepConditionVariableCS/);
+  assert.match(artifact.source, /z_async_report_native_completion/);
+  assert.match(artifact.source, /z_async_drain_native_completions/);
+  const nativeCancel = artifact.source.match(
+    /static __attribute__\(\(unused\)\) void z_async_cancel\(Z_AsyncTask \*task\) \{[\s\S]*?\n\}/,
+  )?.[0] ?? "";
+  assert.match(nativeCancel, /__atomic_store_n\(&task->cancellation_requested/);
+  assert.doesNotMatch(nativeCancel, /z_async_join_native_thread/);
 
   const directory = mkdtempSync("/tmp/z-thread-implicit-join-");
   const implicitJoin = resolve(directory, "main.z");
@@ -9004,7 +9013,7 @@ test("preserves typed errors from thread.spawn as Task<T, E>", () => {
   )].map((match) => match[0]).find((candidate) => candidate.includes("std::destroy_at")) ?? "";
   assert.match(nativeFailureWorker, /frame->failed = true/);
   assert.ok(nativeFailureWorker.indexOf("std::destroy_at") >= 0);
-  assert.ok(nativeFailureWorker.indexOf("std::destroy_at") < nativeFailureWorker.indexOf("frame->task.completed = true"));
+  assert.ok(nativeFailureWorker.indexOf("std::destroy_at") < nativeFailureWorker.indexOf("z_async_complete_task"));
 
   const nativeFailureResult = spawnSync(process.execPath, [cli, "run", nativeFailureExample], { encoding: "utf8" });
   assert.equal(nativeFailureResult.status, 0, nativeFailureResult.stderr);
@@ -9106,7 +9115,7 @@ test("moves explicitly contracted native owners across thread boundaries", () =>
   assert.match(generated, /\.value\(\)/);
   const nativeWorkerPoll = generated.slice(generated.lastIndexOf("static void z_async_poll___z_thread_job_"));
   assert.ok(nativeWorkerPoll.indexOf("std::destroy_at") >= 0);
-  assert.ok(nativeWorkerPoll.indexOf("std::destroy_at") < nativeWorkerPoll.indexOf("frame->task.completed = true"));
+  assert.ok(nativeWorkerPoll.indexOf("std::destroy_at") < nativeWorkerPoll.indexOf("z_async_complete_task"));
 
   const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
@@ -9135,7 +9144,7 @@ test("moves explicitly contracted native owners across thread boundaries", () =>
   assert.match(cHandleGenerated, /z_test_close\(frame->value_handle\)/);
   const handleWorkerPoll = cHandleGenerated.slice(cHandleGenerated.lastIndexOf("static void z_async_poll___z_thread_job_"));
   assert.ok(handleWorkerPoll.indexOf("z_test_close(frame->value_handle)") >= 0);
-  assert.ok(handleWorkerPoll.indexOf("z_test_close(frame->value_handle)") < handleWorkerPoll.indexOf("frame->task.completed = true"));
+  assert.ok(handleWorkerPoll.indexOf("z_test_close(frame->value_handle)") < handleWorkerPoll.indexOf("z_async_complete_task"));
 
   const uncontractedDirectory = mkdtempSync("/tmp/z-thread-native-uncontracted-");
   const uncontractedHeader = resolve(uncontractedDirectory, "native.hpp");
