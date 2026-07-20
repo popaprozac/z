@@ -139,6 +139,7 @@ export function generateAsyncC(
   for (const [callOffset, closureOffset] of semanticInfo.threadSpawnCalls) {
     const closure = semanticInfo.closures.get(closureOffset)!;
     const directVoidReturn = closure.declaration.returnType.name === "void"
+      && closure.declaration.errorType === null
       && closure.declaration.body.length === 1
       && closure.declaration.body[0].kind === "return"
       && closure.declaration.body[0].expression;
@@ -201,6 +202,7 @@ function planFunction(
   types: AsyncTypeContext,
 ): AsyncFunctionPlan {
   const { declaration, owner } = target;
+  const nativeThread = [...threadTargets.values()].includes(target);
   requireFrameType(declaration.returnType.name, declaration.returnType.location, fileName, "async return", types);
   if (declaration.errorType) {
     requireFrameType(declaration.errorType.name, declaration.errorType.location, fileName, "async error", types);
@@ -439,6 +441,9 @@ function planFunction(
         } else if (statement.expression?.kind === "matchExpression") {
           recordNestedAwaits(statement.expression);
           validateAsyncMatchExpression(statement.expression, locals, fileName, types, suspensions);
+        } else if (nativeThread && statement.expression?.kind === "try") {
+          validateThreadTryCall(statement.expression.expression, fileName, types);
+          validateFrameExpression(statement.expression.expression, locals, fileName, types, suspensions);
         } else if (statement.expression) {
           recordNestedAwaits(statement.expression);
           validateFrameExpression(statement.expression, locals, fileName, types, suspensions);
@@ -514,7 +519,7 @@ function planFunction(
   return {
     declaration,
     owner,
-    nativeThread: [...threadTargets.values()].includes(target),
+    nativeThread,
     frameName: `Z_AsyncFrame_${part}`,
     pollName: `z_async_poll_${part}`,
     startName: `z_async_start_${part}`,
@@ -1749,6 +1754,8 @@ function generatePoll(
           true,
           state + 1,
         )));
+      } else if (plan.nativeThread && statement.expression?.kind === "try") {
+        cases.push(caseBlock(state, emitThreadTryReturn(statement.expression.expression, plan, fileName, state)));
       } else {
         const completion: string[] = [];
         if (statement.expression) {
@@ -2590,7 +2597,7 @@ function emitFrameExpression(
       }
       if (expression.callee.kind === "identifier") {
         const declaration = plan.types.functions.get(expression.callee.name);
-        if (declaration && !declaration.async && !declaration.errorType) {
+        if (declaration && !declaration.async) {
           return `${declaration.name}(${emitSyncCallArguments(expression, plan, fileName).join(", ")})`;
         }
       }
@@ -2621,6 +2628,68 @@ function emitFrameExpression(
         `expression ${JSON.stringify(expression.kind)} is not executable in the first Phase 1 async slice`,
       );
   }
+}
+
+function validateThreadTryCall(
+  expression: Expression,
+  fileName: string,
+  types: AsyncTypeContext,
+): void {
+  if (
+    expression.kind !== "call"
+    || expression.callee.kind !== "identifier"
+    || !types.functions.get(expression.callee.name)?.errorType
+  ) {
+    unsupported(
+      fileName,
+      expression.location,
+      "thread worker `try` currently requires a direct synchronous throwing function call",
+      "call a named `function operation(...): T throws E` directly beneath `try`",
+    );
+  }
+}
+
+function emitThreadTryReturn(
+  expression: Expression,
+  plan: AsyncFunctionPlan,
+  fileName: string,
+  state: number,
+): string[] {
+  validateThreadTryCall(expression, fileName, plan.types);
+  const call = expression as CallExpression;
+  const declaration = plan.types.functions.get((call.callee as Extract<Expression, { kind: "identifier" }>).name)!;
+  const successType = declaration.returnType.name;
+  const errorType = declaration.errorType!.name;
+  if (requiresNativeFramePlacement(successType, plan.types)) {
+    unsupported(
+      fileName,
+      expression.location,
+      "thread worker `try` cannot transfer this native success value yet",
+      "return a cleanup-free value, Array, String, TextBuffer, or supported Z aggregate in this tier",
+    );
+  }
+  const resultType = resultTypeName(successType, errorType);
+  const temporary = `_z_thread_try_${state}`;
+  const lines = [
+    `${cFrameType(resultType, plan.types)} ${temporary} = ${emitFrameExpression(call, plan, fileName)};`,
+    `if (${temporary}.tag == ${resultTag(resultType, "failure")}) {`,
+    `  frame->error = ${temporary}.data.failure;`,
+    "  frame->failed = true;",
+    "  frame->cancel_children = true;",
+    `  frame->state = ${finalizeStateMarker};`,
+    "  continue;",
+    "}",
+  ];
+  if (successType !== "void") {
+    lines.push(`frame->result = ${temporary}.data.success;`);
+    if (hasFrameCleanup(successType, plan.types)) lines.push("frame->live_result = true;");
+  }
+  lines.push(
+    "frame->failed = false;",
+    `frame->state = ${finalizeStateMarker};`,
+    "continue;",
+  );
+  return lines;
 }
 
 function emitSyncCallArguments(

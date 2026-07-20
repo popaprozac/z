@@ -903,11 +903,12 @@ remain validation work. Atomic reference counts protect lifetime, not mutable
 class fields; isolation or an explicit concurrency contract must address those
 data races.
 
-The intended error contract is the same as local `spawn`: a synchronous worker
-closure declared `(): T throws E` produces `Task<T, E>`, `try await` propagates
-`E`, and `attempt await` materializes it. Stage 0 does not yet parse `throws E`
-on a closure signature, so executable `thread.spawn` is currently limited to
-the `Task<T>` case. This is a lowering gap, not a separate thread-error model.
+The error contract is the same as local `spawn`: a synchronous worker closure
+declared `(): T throws E` produces `Task<T, E>`, `try await` propagates `E`, and
+`attempt await` materializes it. The first executable tier transfers
+cleanup-free scalar and value error payloads. Owned error payloads remain
+rejected until async error slots track move/destruction liveness explicitly;
+there is no separate untyped thread-exception channel.
 
 An async function continues to declare its domain contract as `T throws E`.
 `spawn` preserves that contract as `Task<T, E>`, `try await` propagates `E`, and
@@ -1254,8 +1255,12 @@ as `Swift.LoadState.ready(42)` without a Swift helper or handwritten shim.
 The installed Swift 6.2 toolchain marks noncopyable (`~Copyable`) values and
 Swift `async` functions unavailable in its generated C++ interface. A compiler
 fixture records both constraints. Z therefore does not claim direct support for
-those surfaces or reach through Swift's private ABI; property sugar, generics,
-protocols, errors, async, and package import remain open vertical slices.
+those surfaces. Public generated interfaces and generated Swift bridge targets
+remain preferred. Direct Swift ABI lowering is reserved for a future explicit
+escalation if application pressure demands full compatibility, with resilient
+layouts, value witnesses, async calls, actors, and runtime-version coupling
+treated as first-class costs. Property sugar, generics, protocols, errors,
+async, and package import remain open vertical slices.
 
 Clang supplies ABI identity and signatures but cannot generally say whether a C
 pointer is nullable, borrowed, transferred, retained, or consumed. Z therefore

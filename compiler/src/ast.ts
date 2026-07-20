@@ -368,6 +368,7 @@ export type ClosureExpression = {
   readonly captureMode: "borrow" | "move";
   readonly parameters: ClosureParameter[];
   readonly returnType: TypeReference | null;
+  readonly errorType: TypeReference | null;
   readonly body: Expression | BlockStatement;
   readonly location: SourceLocation;
 };

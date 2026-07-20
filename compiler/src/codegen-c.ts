@@ -3213,6 +3213,10 @@ function throwingCallResultType(expression: Expression, context: GenerationConte
     return resultTypeName(expression.typeName, constructor.errorType.name);
   }
   if (expression.kind === "call" && expression.callee.kind === "identifier") {
+    const closure = closureForType(context.localTypes.get(expression.callee.name), context.semanticInfo);
+    if (closure?.declaration.errorType) {
+      return resultTypeName(closure.declaration.returnType.name, closure.declaration.errorType.name);
+    }
     const target = context.functions.get(expression.callee.name)!;
     return resultTypeName(target.returnType.name, target.errorType!.name);
   }
@@ -4910,7 +4914,9 @@ function inferExpressionType(expression: Expression, context: GenerationContext)
       if (expression.callee.kind === "identifier") {
         if (context.structs.get(expression.callee.name)?.kind === "struct") return expression.callee.name;
         const closure = closureForType(context.localTypes.get(expression.callee.name), context.semanticInfo);
-        if (closure) return closure.declaration.returnType.name;
+        if (closure) return closure.declaration.errorType
+          ? resultTypeName(closure.declaration.returnType.name, closure.declaration.errorType.name)
+          : closure.declaration.returnType.name;
         return context.functions.get(expression.callee.name)?.returnType.name ?? "i32";
       }
       if (expression.callee.kind === "member"

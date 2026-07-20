@@ -599,7 +599,12 @@ export function hover(source: string, fileName: string, offset: number): Hover |
     }
     const standardOwner = context.semanticInfo.standardModuleBindings.get(memberPrefix[1]);
     if (standardOwner === "thread" && word.text === "spawn") {
-      return markdownHover("spawn<T>(operation: () => T): Task<T>  // starts one native thread; move captures copy snapshots or unique owners", source, word.start, word.end);
+      return markdownHover(
+        "spawn<T>(operation: () => T): Task<T>\nspawn<T, E>(operation: () => T throws E): Task<T, E>  // starts one native thread; move captures copy snapshots or unique owners",
+        source,
+        word.start,
+        word.end,
+      );
     }
     const standardName = standardOwner ? standardModuleFunction(standardOwner, word.text) : null;
     if (standardName) {
@@ -2020,7 +2025,7 @@ function memberCompletions(
         label: member,
         kind: completionKinds.method,
         detail: standardModule === "thread" && member === "spawn"
-          ? "spawn<T>(operation: () => T): Task<T>  // starts one native thread; move captures copy snapshots or unique owners"
+          ? "spawn<T, E?>(operation: () => T throws E?): Task<T, E?>  // starts one native thread"
           : standardFunctionDetail(member, name!),
         insertText: `${member}()`,
       };
@@ -3217,7 +3222,10 @@ function displayServiceType(type: string, context: AnalyzedSource): string {
     const capability = parameter.mode === "value" ? "" : `${parameter.mode} `;
     return `${capability}${parameter.name}: ${displayType(parameter.type.name, displayNames)}`;
   });
-  return `(${parameters.join(", ")}) => ${displayType(closure.declaration.returnType.name, displayNames)}`;
+  const throws = closure.declaration.errorType
+    ? ` throws ${displayType(closure.declaration.errorType.name, displayNames)}`
+    : "";
+  return `(${parameters.join(", ")}) => ${displayType(closure.declaration.returnType.name, displayNames)}${throws}`;
 }
 
 function visibleSelectiveImportType(type: string, context: AnalyzedSource): string {

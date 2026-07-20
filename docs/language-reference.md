@@ -433,6 +433,11 @@ import { thread } from "std/thread";
 const calculation = thread.spawn(move () => calculate(input));
 doOtherWork();
 const answer = await calculation;
+
+const fallible = thread.spawn(move (): i32 throws CalculationError => {
+  return try calculateOrThrow(input);
+});
+const result = attempt await fallible;
 ```
 
 This is distinct from keyword `spawn`: `spawn operation()` schedules an async
@@ -447,6 +452,10 @@ borrows, views, native references, `Arena`, custom `deinit`, and cross-thread
 `Weak<T>` remain rejected. Results follow the same rules.
 The returned task remains scope-bound and is joined explicitly by `await` or
 implicitly at scope exit.
+Throwing worker closures return `Task<T, E>`; `try await` propagates `E` and
+`attempt await` produces `Result<T, E>`. The first tier requires a cleanup-free
+scalar or value error payload. Owned worker errors await explicit live-state
+tracking in async error slots.
 
 ## Native interop
 

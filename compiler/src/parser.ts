@@ -238,6 +238,11 @@ export function parse(tokens: Token[], fileName: string): Program {
         const parameters = parseClosureParameters();
         expect("rightParen", "`)`");
         const returnType = match("colon") ? parseType() : null;
+        const errorType = match("throws") ? parseType() : null;
+        if (errorType && !returnType) {
+          recognizedClosure = true;
+          throw new DiagnosticError(fileName, errorType.location, "a throwing closure requires an explicit return type");
+        }
         expect("fatArrow", "`=>`");
         recognizedClosure = true;
         const body = at("leftBrace")
@@ -248,6 +253,7 @@ export function parse(tokens: Token[], fileName: string): Program {
           captureMode: closureCaptureMode ?? "borrow",
           parameters,
           returnType,
+          errorType,
           body,
           location: closureLocation,
         };

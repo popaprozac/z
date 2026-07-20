@@ -120,7 +120,9 @@ planned experiment rather than a rejected direction.
    through its generated C++ interface. Z records that gate and now imports a
    nearby Swift-only surface—associated-value enum case factories—directly.
    Re-probe the hard surfaces as Swift evolves; meanwhile advance protocols,
-   errors, packages, and metadata through public interfaces only.
+   errors, packages, and metadata through public interfaces and generated Swift
+   bridge targets. Keep direct Swift ABI lowering as an explicit high-cost
+   escalation path if real application pressure makes full compatibility urgent.
 5. Scale the platform surface with API notes, Objective-C protocols,
    target/action adapters, runtime availability, and richer block shapes.
 6. Continue the portable standard-library and self-hosting path, including a

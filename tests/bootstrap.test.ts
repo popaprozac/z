@@ -2677,7 +2677,7 @@ test("retains owned Z closure environments across Objective-C blocks", () => {
     diagnostics(borrowed, example)[0].message,
     /borrowed capturing closure cannot become a function value/,
   );
-});
+}, 10_000);
 
 test("registers persistent Objective-C event callbacks with explicit token cleanup", () => {
   if (process.platform !== "darwin") return;
@@ -8850,6 +8850,91 @@ test("runs cleanup-free owned work on an explicit native thread", () => {
     assert.match(error.message, /requires an enclosing async function/);
     return true;
   });
+});
+
+test("preserves typed errors from thread.spawn as Task<T, E>", () => {
+  const example = resolve(projectRoot, "examples/async/thread-errors.z");
+  const source = readFileSync(example, "utf8");
+  const artifact = compileToNative(source, example);
+  assert.match(artifact.source, /struct Z_AsyncFrame___z_thread_job_/);
+  assert.match(artifact.source, /bool failed;\n\s+Z_WorkError error;/);
+  assert.match(artifact.source, /Z_Result_i32_WorkError _z_thread_try_\d+ = calculate\(/);
+  assert.match(artifact.source, /frame->error = _z_thread_try_\d+\.data\.failure/);
+  assert.match(artifact.source, /frame->failed = true/);
+  assert.match(artifact.source, /z_async_start_native_thread/);
+
+  const failedTaskOffset = source.indexOf("failedTask =") + 1;
+  assert.match(hover(source, example, failedTaskOffset)?.contents.value ?? "", /failedTask: Task<i32, WorkError>/);
+  const spawnOffset = source.indexOf("thread.spawn") + "thread.".length + 1;
+  assert.match(
+    hover(source, example, spawnOffset)?.contents.value ?? "",
+    /spawn<T, E>\(operation: \(\) => T throws E\): Task<T, E>/,
+  );
+
+  const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, "worker failure=7, success=35\n");
+
+  const unhandled = source.replace("attempt await failedTask", "await failedTask");
+  const unhandledDiagnostic = diagnostics(unhandled, example)[0];
+  assert.equal(unhandledDiagnostic.code, "Z0701");
+  assert.match(unhandledDiagnostic.message, /awaiting a throwing task requires `attempt` or `try`/);
+
+  const ownedError = `
+    import { thread } from "std/thread";
+    class OwnedError { code: i32; }
+    async function main(): i32 throws OwnedError {
+      const task = thread.spawn((): i32 throws OwnedError => {
+        throw new OwnedError({ code: 7 });
+      });
+      return try await task;
+    }
+  `;
+  const ownedErrorDiagnostic = diagnostics(ownedError, "thread-owned-error.z")[0];
+  assert.equal(ownedErrorDiagnostic.code, "Z0704");
+  assert.match(ownedErrorDiagnostic.message, /error type "OwnedError" cannot cross/);
+
+  const localClosure = `
+    struct WorkError { code: i32; }
+    function main(): i32 {
+      const operation = (): i32 throws WorkError => {
+        throw WorkError({ code: 42 });
+      };
+      const observed = attempt operation();
+      return match (observed) {
+        success(value) => value;
+        failure(error) => error.code - 42;
+      };
+    }
+  `;
+  const directory = mkdtempSync("/tmp/z-thread-error-");
+  const localClosureFile = resolve(directory, "local.z");
+  writeFileSync(localClosureFile, localClosure);
+  const localClosureResult = spawnSync(process.execPath, [cli, "run", localClosureFile], { encoding: "utf8" });
+  assert.equal(localClosureResult.status, 0, localClosureResult.stderr);
+
+  const missingReturnType = `
+    import { thread } from "std/thread";
+    struct WorkError { code: i32; }
+    async function main(): i32 {
+      const task = thread.spawn(() throws WorkError => { throw WorkError({ code: 1 }); });
+      return 0;
+    }
+  `;
+  assert.throws(() => check(missingReturnType, "thread-error-return.z"), /throwing closure requires an explicit return type/);
+
+  const nativeFailureExample = resolve(projectRoot, "examples/async/thread-native-errors.z");
+  const nativeFailureSource = readFileSync(nativeFailureExample, "utf8");
+  const nativeFailureGenerated = compileToNative(nativeFailureSource, nativeFailureExample).source;
+  const nativeFailureWorker = nativeFailureGenerated.slice(
+    nativeFailureGenerated.lastIndexOf("static void z_async_poll___z_thread_job_"),
+  );
+  assert.match(nativeFailureWorker, /frame->failed = true/);
+  assert.ok(nativeFailureWorker.indexOf("std::destroy_at") >= 0);
+  assert.ok(nativeFailureWorker.indexOf("std::destroy_at") < nativeFailureWorker.indexOf("frame->task.completed = true"));
+
+  const nativeFailureResult = spawnSync(process.execPath, [cli, "run", nativeFailureExample], { encoding: "utf8" });
+  assert.equal(nativeFailureResult.status, 0, nativeFailureResult.stderr);
 });
 
 test("copies plain thread captures and moves uniquely owned Array storage", () => {

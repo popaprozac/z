@@ -2076,6 +2076,13 @@ function inferClosureExpression(
   transientBorrow = false,
   oneShotOwnedCaptures = false,
 ): ValueType {
+  if (expression.errorType && expectedFunction) {
+    throw new DiagnosticError(fileName, expression.errorType.location, "throwing closure values are not implemented yet", {
+      code: "Z0216",
+      notes: ["the first throwing-closure tier is executable through thread.spawn, which owns and joins a one-shot closure"],
+      helps: ["pass this closure directly to thread.spawn, or use a named throwing function outside a callback boundary"],
+    });
+  }
   if (expectedFunction && expression.parameters.length !== expectedFunction.parameters.length) {
     throw new DiagnosticError(
       fileName,
@@ -2241,6 +2248,7 @@ function inferClosureExpression(
   }
   const provisionalReturn = contextualReturn ?? { name: "void", location: expression.location };
   if (expression.returnType) validateType(expression.returnType, structs, enums, state.foreignNamedTypes, fileName, true);
+  if (expression.errorType) validateType(expression.errorType, structs, enums, state.foreignNamedTypes, fileName, false);
   const syntheticBase: FunctionDeclaration = {
     kind: "function",
     name: `__z_closure_call_${expression.location.offset}`,
@@ -2255,7 +2263,7 @@ function inferClosureExpression(
       ...resolvedParameters,
     ],
     returnType: provisionalReturn,
-    errorType: null,
+    errorType: expression.errorType,
     body: [],
     location: expression.location,
   };
@@ -2311,6 +2319,13 @@ function finalizeClosureFunctionValue(
   allowBorrowedCaptures = false,
 ): ClosureInfo {
   let closure = state.closures.get(expression.location.offset)!;
+  if (closure.declaration.errorType) {
+    throw new DiagnosticError(fileName, closure.declaration.errorType.location, "throwing closure values are not implemented yet", {
+      code: "Z0216",
+      notes: ["thread.spawn supports a one-shot throwing closure without storing it as a general function value"],
+      helps: ["pass the closure directly to thread.spawn"],
+    });
+  }
   if (closure.captures.length > 0 && expression.captureMode !== "move" && !allowBorrowedCaptures) {
     throw new DiagnosticError(
       fileName,
@@ -3446,7 +3461,10 @@ function inferExpressionInner(
         }
         if (task.errorType) {
           if (!allowThrowingCall) {
-            throw new DiagnosticError(fileName, expression.location, "awaiting a throwing task requires `attempt` or `try`");
+            throw new DiagnosticError(fileName, expression.location, "awaiting a throwing task requires `attempt` or `try`", {
+              code: "Z0701",
+              helps: ["write `try await task` to propagate the error, or `attempt await task` to inspect Result<T, E>"],
+            });
           }
           return resultTypeName(task.successType, task.errorType);
         }
@@ -3897,6 +3915,17 @@ function inferExpressionInner(
                   helps: ["return a transferable value or supported unique owner"],
                 });
               }
+              const errorType = closure.declaration.errorType?.name ?? null;
+              if (errorType) {
+                const transfer = initialThreadTransferKind(errorType, structs, enums, state);
+                if (!transfer || transfer !== "copy" || hasOwnershipType(errorType, structs, enums, state)) {
+                  throw new DiagnosticError(fileName, operation.errorType!.location, `thread.spawn error type ${JSON.stringify(errorType)} cannot cross a native thread boundary yet`, {
+                    code: "Z0704",
+                    notes: ["the first fallible thread tier transfers cleanup-free scalar and value error payloads"],
+                    helps: ["use a cleanup-free error enum or struct, then attach owned diagnostic data after joining"],
+                  });
+                }
+              }
               for (const { capture, kind } of captureTransfers) {
                 const capturedClass = structs.get(String(underlyingType(capture.type)));
                 if (kind === "copy" && capturedClass?.kind === "class") {
@@ -3915,7 +3944,7 @@ function inferExpressionInner(
                 );
               }
               state.threadSpawnCalls.set(expression.location.offset, operation.location.offset);
-              const taskType = taskTypeName(returnType, null);
+              const taskType = taskTypeName(returnType, errorType);
               return taskType;
             }
             const name = standardModuleFunction(owner.module, expression.callee.property);
@@ -4612,6 +4641,10 @@ function inferExpressionInner(
           expression.location,
           state,
         );
+        if (closure!.declaration.errorType) {
+          if (!allowThrowingCall) throw new DiagnosticError(fileName, expression.location, "throwing call requires `attempt` or `try`");
+          return resultTypeName(closure!.declaration.returnType.name, closure!.declaration.errorType.name);
+        }
         return closure!.declaration.returnType.name;
       }
       const target = globals.get(expression.callee.name);

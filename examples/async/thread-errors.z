@@ -1,0 +1,32 @@
+import console from "std/console";
+import { thread } from "std/thread";
+
+struct WorkError {
+  code: i32;
+}
+
+function calculate(value: i32, fail: bool): i32 throws WorkError {
+  if (fail) {
+    throw WorkError({ code: 7 });
+  }
+  return value;
+}
+
+async function main(): i32 throws WorkError {
+  const shouldFail = true;
+  const failedTask = thread.spawn(move (): i32 throws WorkError => {
+    return try calculate(40, shouldFail);
+  });
+  const observed = attempt await failedTask;
+  const recovered = match (observed) {
+    success(value) => value;
+    failure(error) => error.code;
+  };
+
+  const successfulTask = thread.spawn((): i32 throws WorkError => {
+    return try calculate(35, false);
+  });
+  const value = try await successfulTask;
+  console.log(`worker failure=${recovered}, success=${value}`);
+  return recovered + value - 42;
+}

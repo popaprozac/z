@@ -135,7 +135,8 @@ async function answer(input: Calculation): i32 {
 
 `thread.spawn` is hot: it starts exactly one native thread at the call. Its
 argument is a synchronous zero-parameter closure, not an async function, and
-the returned `Task<T>` remains owned by the surrounding structured task scope.
+the returned `Task<T>` or `Task<T, E>` remains owned by the surrounding
+structured task scope.
 `await` joins it; leaving the scope with an unconsumed handle also joins it
 before destroying the child frame. A capturing closure must use `move` so the
 boundary visibly owns each input. Recursively cleanup-free values are Copy
@@ -147,16 +148,16 @@ The intended fallible form preserves the ordinary typed-error channel:
 
 ```z
 const calculation = thread.spawn(move (): i32 throws CalculationError => {
-  return calculate(input);
+  return try calculate(input);
 });
 const value = try await calculation;
 ```
 
 That closure produces `Task<i32, CalculationError>`; `attempt await` would
-instead expose `Result<i32, CalculationError>`. Stage 0 cannot yet parse a
-`throws` clause on closure signatures, so the executable native-thread tier is
-currently restricted to non-throwing `Task<T>`. No untyped thread-exception
-channel will be added as a shortcut.
+instead expose `Result<i32, CalculationError>`. The first executable tier
+permits cleanup-free scalar and value errors to cross the thread boundary.
+Owned error payloads remain rejected until worker and parent error slots have
+explicit move/destruction liveness. No untyped thread-exception channel is used.
 
 The first executable transfer rule is deliberately narrow. Integers, floats,
 booleans, fixed arrays, and recursively cleanup-free Z structs/enums copy.

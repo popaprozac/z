@@ -199,8 +199,12 @@ map Swift `Sendable`, consuming/noncopyable ownership, and actor isolation into
 the same transfer/share/destruction facts rather than treating generated C++
 movability as proof. Swift 6.2's generated C++ interface currently marks both
 noncopyable values and Swift `async` functions unavailable; a regression fixture
-records that toolchain gate. Z will not depend on private Swift ABI to pretend
-that either surface has crossed end to end.
+records that toolchain gate. Public generated interfaces and compiler-generated
+Swift bridge targets remain the default paths. Direct Swift ABI lowering is a
+reserved escalation path if real application pressure makes full compatibility
+urgent; taking it would require an explicit stability and maintenance decision
+around resilient layouts, value witnesses, async calls, actors, and runtime
+versions rather than quietly treating private ABI as ordinary FIIR.
 
 ## Cost model
 

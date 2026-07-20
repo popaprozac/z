@@ -1,0 +1,25 @@
+import { thread } from "std/thread";
+import native from "../../tests/fixtures/move-only.hpp";
+
+struct WorkerError {
+  code: i32;
+}
+
+async function main(): i32 {
+  const measurement = native.zcpp.UniqueValue(42);
+  const calculation = thread.spawn(move (): i32 throws WorkerError => {
+    if (measurement.value() == 42) {
+      throw WorkerError({ code: 7 });
+    }
+    return 0;
+  });
+
+  const observed = attempt await calculation;
+  const errorCode = match (observed) {
+    success(value) => value;
+    failure(error) => error.code;
+  };
+
+  // The failed worker destroys its moved native owner before the join completes.
+  return errorCode - 7 + native.zcpp.unique_live();
+}
