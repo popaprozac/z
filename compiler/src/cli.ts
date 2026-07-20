@@ -1,8 +1,9 @@
 #!/usr/bin/env bun
 
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import type { FunctionDeclaration, Program } from "./ast.ts";
 import { parseDynamicArrayType, parseFixedArrayType, parseSliceType } from "./array-types.ts";
 import { check, compileToNative, type NativeArtifact } from "./compiler.ts";
@@ -14,7 +15,7 @@ import { isNullableObjCTypeName, publicObjCTypeName } from "./objc-types.ts";
 import { parse } from "./parser.ts";
 import { deploymentTargetFlags } from "./project.ts";
 import {
-  decodeStage1ProgramStream,
+  decodeStage1ProgramBatchStream,
   decodeStage1TokenStream,
   type Stage1Declaration,
   type Stage1FunctionSignature,
@@ -34,7 +35,11 @@ if (!command || !inputArgument || !["check", "emit", "run", "self-host-lex", "se
     if (command === "self-host-lex") {
       verifyStage1Lexer([inputPath, ...trailingArguments.map((argument) => resolve(argument))]);
     } else if (command === "self-host-parse") {
-      verifyStage1Parser([inputPath, ...trailingArguments.map((argument) => resolve(argument))]);
+      const timings = trailingArguments.includes("--timings");
+      verifyStage1Parser(
+        [inputPath, ...trailingArguments.filter((argument) => argument !== "--timings").map((argument) => resolve(argument))],
+        timings,
+      );
     } else if (command === "check") {
       const source = readFileSync(inputPath, "utf8");
       for (const warning of check(source, inputPath)) console.error(formatDiagnostic(warning, source));
@@ -57,21 +62,26 @@ if (!command || !inputArgument || !["check", "emit", "run", "self-host-lex", "se
   }
 }
 
-function verifyStage1Parser(inputPaths: readonly string[]): void {
+function verifyStage1Parser(inputPaths: readonly string[], timings: boolean): void {
   const projectRoot = resolve(dirname(new URL(import.meta.url).pathname), "../..");
   const bridgePath = join(projectRoot, "examples/applications/source-inspector/parser-stream.z");
-  const bridgeSource = readFileSync(bridgePath, "utf8");
-  const artifact = compileToNative(bridgeSource, bridgePath);
-  for (const warning of artifact.warnings) console.error(formatDiagnostic(warning, bridgeSource));
-  const executablePath = buildNative(bridgePath, artifact);
+  const boundary = prepareStage1Bridge(projectRoot, bridgePath);
+  const executionStarted = performance.now();
+  const execution = spawnSync(boundary.executablePath, inputPaths, { encoding: "utf8" });
+  const executionMilliseconds = performance.now() - executionStarted;
+  if (execution.error) throw execution.error;
+  if (execution.status !== 0) throw new Error(execution.stderr || "the stage-1 parser failed");
+  const decodeStarted = performance.now();
+  const stage1Programs = decodeStage1ProgramBatchStream(execution.stdout);
+  const decodeMilliseconds = performance.now() - decodeStarted;
+  let stage0Milliseconds = 0;
   for (const inputPath of inputPaths) {
     const source = readFileSync(inputPath, "utf8");
-    const execution = spawnSync(executablePath, [inputPath], { encoding: "utf8" });
-    if (execution.error) throw execution.error;
-    if (execution.status !== 0) throw new Error(execution.stderr || "the stage-1 parser failed");
-
-    const stage1Program = decodeStage1ProgramStream(execution.stdout, inputPath);
+    const stage1Program = stage1Programs.get(inputPath);
+    if (!stage1Program) throw new Error(`the stage-1 parser did not emit a program for ${inputPath}`);
+    const stage0Started = performance.now();
     const stage0Program = parse(lex(source, inputPath), inputPath);
+    stage0Milliseconds += performance.now() - stage0Started;
     const stage1 = stage1Program.declarations;
     const stage0 = stage0Declarations(stage0Program, inputPath);
     const count = Math.max(stage0.length, stage1.length);
@@ -102,6 +112,14 @@ function verifyStage1Parser(inputPaths: readonly string[]): void {
       );
     }
     console.log(`${inputPath}: stage-1 parser matches ${stage1.length} declarations, ${stage1Program.functionSignatures.length} function signatures, and ${stage1Program.typeShapes.length} type shapes`);
+  }
+  if (timings) {
+    const cacheState = boundary.cacheHit ? "cache hit" : "cache miss; stage-0 compile + native build included";
+    console.log(`stage-1 parser timing (${inputPaths.length} ${inputPaths.length === 1 ? "file" : "files"}, ${cacheState})`);
+    console.log(`  boundary preparation: ${formatMilliseconds(boundary.prepareMilliseconds)}`);
+    console.log(`  native batch (process startup + file I/O + lex + parse + encode): ${formatMilliseconds(executionMilliseconds)}`);
+    console.log(`  protocol decode: ${formatMilliseconds(decodeMilliseconds)}`);
+    console.log(`  stage-0 parity parse (file I/O excluded): ${formatMilliseconds(stage0Milliseconds)}`);
   }
 }
 
@@ -323,13 +341,13 @@ function runNative(inputPath: string, artifact: NativeArtifact, programArguments
   if (execution.status !== 0) process.exitCode = execution.status ?? 1;
 }
 
-function buildNative(inputPath: string, artifact: NativeArtifact): string {
+function buildNative(inputPath: string, artifact: NativeArtifact, outputStem?: string): string {
   const projectRoot = resolve(dirname(new URL(import.meta.url).pathname), "../..");
   const cacheDirectory = join(projectRoot, ".z-cache");
   mkdirSync(cacheDirectory, { recursive: true });
-  const stem = basename(inputPath).replace(/\.z$/, "");
+  const stem = outputStem ?? basename(inputPath).replace(/\.z$/, "");
   const sourcePath = join(cacheDirectory, `${stem}.${nativeExtension(artifact.language)}`);
-  const executablePath = join(cacheDirectory, stem);
+  const executablePath = join(cacheDirectory, `${stem}${process.platform === "win32" ? ".exe" : ""}`);
   writeFileSync(sourcePath, artifact.source);
 
   const compiler = nativeCompiler(artifact.language);
@@ -356,6 +374,65 @@ function buildNative(inputPath: string, artifact: NativeArtifact): string {
     throw new Error(compilation.stderr || "Clang failed");
   }
   return executablePath;
+}
+
+type PreparedStage1Bridge = {
+  readonly executablePath: string;
+  readonly cacheHit: boolean;
+  readonly prepareMilliseconds: number;
+};
+
+function prepareStage1Bridge(projectRoot: string, bridgePath: string): PreparedStage1Bridge {
+  const started = performance.now();
+  const fingerprint = stage1BridgeFingerprint(projectRoot);
+  const outputStem = `stage1-${basename(bridgePath, ".z")}-${fingerprint.slice(0, 20)}`;
+  const executablePath = join(
+    projectRoot,
+    ".z-cache",
+    `${outputStem}${process.platform === "win32" ? ".exe" : ""}`,
+  );
+  if (existsSync(executablePath)) {
+    return { executablePath, cacheHit: true, prepareMilliseconds: performance.now() - started };
+  }
+
+  const bridgeSource = readFileSync(bridgePath, "utf8");
+  const artifact = compileToNative(bridgeSource, bridgePath);
+  for (const warning of artifact.warnings) console.error(formatDiagnostic(warning, bridgeSource));
+  const builtPath = buildNative(bridgePath, artifact, outputStem);
+  return { executablePath: builtPath, cacheHit: false, prepareMilliseconds: performance.now() - started };
+}
+
+function stage1BridgeFingerprint(projectRoot: string): string {
+  const hash = createHash("sha256");
+  hash.update(`z-stage1-bridge-v1\0${process.platform}\0${process.arch}\0${Bun.version}\0`);
+  const roots = [
+    join(projectRoot, "compiler/src"),
+    join(projectRoot, "examples/applications/source-inspector"),
+  ];
+  const files = roots.flatMap((root) => collectBootstrapFiles(root)).sort();
+  const packagePath = join(projectRoot, "package.json");
+  if (existsSync(packagePath)) files.push(packagePath);
+  for (const file of files) {
+    hash.update(file.slice(projectRoot.length));
+    hash.update("\0");
+    hash.update(readFileSync(file));
+    hash.update("\0");
+  }
+  return hash.digest("hex");
+}
+
+function collectBootstrapFiles(root: string): string[] {
+  const files: string[] = [];
+  for (const entry of readdirSync(root, { withFileTypes: true })) {
+    const path = join(root, entry.name);
+    if (entry.isDirectory()) files.push(...collectBootstrapFiles(path));
+    else if (entry.isFile() && (path.endsWith(".ts") || path.endsWith(".z"))) files.push(path);
+  }
+  return files;
+}
+
+function formatMilliseconds(value: number): string {
+  return `${value.toFixed(2)} ms`;
 }
 
 function verifyStage1Lexer(inputPaths: readonly string[]): void {
@@ -420,5 +497,5 @@ function nativeLanguageFlags(language: NativeArtifact["language"]): string[] {
 function usage(): void {
   console.error("usage: z <check|emit|run> <file.z> [-- program arguments]");
   console.error("       z self-host-lex <file.z> [more.z ...]");
-  console.error("       z self-host-parse <file.z> [more.z ...]");
+  console.error("       z self-host-parse <file.z> [more.z ...] [--timings]");
 }

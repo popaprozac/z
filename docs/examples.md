@@ -123,6 +123,15 @@ self-hosting-groundwork tool. It reads a source path from `process.args()`,
 copies that source through `std/fs`, invokes Clang directly through
 `process.run`, and handles the typed failure path without exceptions or a shell.
 
+[`source-inspector`](../examples/applications/source-inspector) is the temporary
+proving ground for the stage-1 Z lexer and parser. `z self-host-parse` caches its
+native bridge by compiler/frontend content and sends every requested source file
+through one framed native invocation. Add `--timings` to see bridge preparation,
+native batch work, protocol decoding, and stage-0 parity parsing separately.
+Once complete bodies and the compiler-facing boundary are stable, the reusable
+frontend will move into the compiler tree and this directory will remain as a
+small educational consumer.
+
 [`desktop-ownership`](../examples/interop/objc/desktop-ownership) combines an ARC-managed Z
 application model, move-only documents and strings, borrowed enumeration, and
 an AppKit shell. Its findings are recorded in

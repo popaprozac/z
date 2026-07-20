@@ -92,6 +92,10 @@ function streamProgram(in path: String): i32 throws String {
   };
 
   let output = TextBuffer();
+  output.append("file");
+  output.appendAscii(9);
+  appendHexText(inout output, path);
+  output.appendAscii(10);
   for (const declaration of program.declarations) {
     output.append(declarationKindName(declaration.kind));
     output.appendAscii(9);
@@ -151,16 +155,20 @@ function streamProgram(in path: String): i32 throws String {
 function main(): i32 {
   const arguments = process.args();
   if (arguments.length == 0) {
-    console.error("usage: parser-stream <input.z>");
+    console.error("usage: parser-stream <input.z> [more.z ...]");
     return 2;
   }
 
-  const outcome = attempt streamProgram(arguments[0]);
-  return match (outcome) {
-    success(exitCode) => exitCode;
-    failure(message) => {
-      console.error(message);
-      select 1;
-    }
-  };
+  for (const path of arguments) {
+    const outcome = attempt streamProgram(path);
+    const exitCode = match (outcome) {
+      success(code) => code;
+      failure(message) => {
+        console.error(message);
+        select 1;
+      }
+    };
+    if (exitCode != 0) return exitCode;
+  }
+  return 0;
 }

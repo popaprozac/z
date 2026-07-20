@@ -44,6 +44,8 @@ export type Stage1Program = {
   readonly typeShapes: readonly Stage1TypeShape[];
 };
 
+export type Stage1ProgramBatch = ReadonlyMap<string, Stage1Program>;
+
 // Stage 1 currently crosses a subprocess boundary. Keep that bootstrap protocol
 // isolated here so the parser-facing Token shape does not learn about transport.
 export function decodeStage1TokenStream(output: string, fileName: string): readonly Token[] {
@@ -138,6 +140,36 @@ export function decodeStage1ProgramStream(output: string, fileName: string): Sta
   }
   typeShapes.sort((left, right) => left.location.offset - right.location.offset);
   return { declarations, functionSignatures, typeShapes };
+}
+
+export function decodeStage1ProgramBatchStream(output: string): Stage1ProgramBatch {
+  const programs = new Map<string, Stage1Program>();
+  let fileName: string | null = null;
+  let records: string[] = [];
+
+  const finishProgram = (): void => {
+    if (fileName === null) return;
+    programs.set(fileName, decodeStage1ProgramStream(records.join("\n"), fileName));
+  };
+
+  for (const line of output.split("\n").filter((candidate) => candidate.length > 0)) {
+    const fields = line.split("\t");
+    if (fields[0] !== "file") {
+      if (fileName === null) throw new Error("stage-1 program record appeared before its file header");
+      records.push(line);
+      continue;
+    }
+    if (fields.length !== 2 || !/^(?:[0-9a-f]{2})*$/.test(fields[1])) {
+      throw new Error(`malformed stage-1 file header: ${line}`);
+    }
+    finishProgram();
+    fileName = Buffer.from(fields[1], "hex").toString("utf8");
+    if (programs.has(fileName)) throw new Error(`duplicate stage-1 program for ${fileName}`);
+    records = [];
+  }
+  finishProgram();
+  if (fileName === null) throw new Error("stage-1 program stream did not contain a file header");
+  return programs;
 }
 
 function isStage1TypeShapeKind(value: string): value is Stage1TypeShapeKind {

@@ -1423,11 +1423,20 @@ ported independently rather than translated as one monolith.
    static/async methods, and `deinit` all have canonical stage-0 parity while
    bodies remain borrowed balanced-token traversals. The temporary buffered
    native protocols are exposed through `z self-host-lex` and
-   `z self-host-parse`; statements, expressions, direct in-process driver
-   integration, and a broader parity corpus precede replacing bootstrap frontend
-   phases in ordinary commands.
-   Performance comparisons begin at that in-process seam rather than conflating
-   frontend work with native compilation and subprocess startup.
+   `z self-host-parse`. The parser bridge is content-addressed across compiler
+   and frontend sources and parses a complete corpus in one native process;
+   `--timings` separates bridge preparation, native startup/I/O/frontend work,
+   protocol decoding, and the stage-0 parity parse. Statements, expressions, a
+   direct in-process driver ABI, and a broader parity corpus precede replacing
+   bootstrap frontend phases in ordinary commands. Performance claims wait for
+   that in-process seam and equivalent frontend coverage rather than conflating
+   partial parsing, native compilation, and subprocess startup.
+
+   The implementation currently lives under `examples/applications/source-inspector`
+   so it remains an inspectable pressure test while its AST changes quickly.
+   Once complete statement/expression parsing and the compiler-facing boundary
+   are proven together, the frontend graduates into the compiler source tree;
+   the example will become a small consumer of that production module.
 3. **Stage 2:** Compile the Z compiler with stage 0, then use that result to
    compile itself.
 4. **Bootstrap verification:** Compare generated native source and compiler test
