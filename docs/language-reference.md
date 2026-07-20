@@ -471,16 +471,17 @@ fallible task results also support move-only native storage through `try await`
 and `attempt await`. Unqualified owned async parameters move native values or
 whole native-owning Z aggregates into the child frame at `await`/`spawn`; the
 source is unavailable immediately after task creation. ARC class fields, owned
-closure environments, ownership-bearing async output, and spawned
-mutable/output async borrows remain later construction paths. Immutable `in`
-value/native parameters may suspend: direct
+closure environments, ownership-bearing async output, and spawned output remain
+later construction paths. Immutable `in` value/native parameters may suspend: direct
 await bounds the borrow to its join, while spawn requires an explicit `async
-scope` and keeps the owner immutable and unmovable through scope exit. ARC class
-parameters omit `in` and use their ordinary retained-reference behavior.
-Value/native `inout`
-parameters may suspend when called through direct `await`; the caller's mutable
-storage remains stable and inaccessible until the join. Spawned mutable borrows,
-Slice borrows, and ARC-reference rebinding are not implemented. Non-throwing
+scope` and keeps the owner immutable and unmovable until each borrowing task is
+joined. ARC class parameters omit `in` and use their ordinary retained-reference
+behavior. Value/native `inout` parameters may suspend when called through direct
+`await`; the caller's mutable storage remains stable and inaccessible until the
+join. An explicit async scope also permits one spawned `inout` child to hold
+exclusive access. Consuming that task through await or cancellation releases the
+borrow early; otherwise scope exit releases it. Slice borrows and ARC-reference
+rebinding are not implemented. Non-throwing
 direct-awaited `out` parameters may initialize cleanup-free caller storage and
 must do so on every successful path; spawned and ownership-bearing output remain
 deferred. Mutations made before failure or cancellation are not rolled back.

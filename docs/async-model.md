@@ -154,9 +154,9 @@ value aggregates containing them, move into child-frame parameter storage when
 when the child body has not been polled. Immutable `in` value/native parameters
 borrow caller-frame storage across suspension. Direct await is intrinsically
 bounded by its join. Spawned borrowing requires an explicit `async scope`, and
-the owner cannot move or mutate until that scope joins its children; multiple
-immutable children may share it. The bootstrap conservatively keeps the borrow
-live until scope exit even after an explicit early join. ARC classes continue to
+the owner cannot move or mutate until every borrowing child joins; multiple
+immutable children may share it. Consuming a task through `await task` or `await
+task.cancel()` releases that child's borrow immediately. ARC classes continue to
 use owned parameters and task-frame retains. A direct-awaited `inout` call may
 borrow mutable value/native storage from the caller frame. The caller is
 suspended through the join, so the callee has exclusive access and may itself
@@ -172,8 +172,25 @@ let document = Document({ revision: 41 });
 await refreshAfter(inout document);
 ```
 
-Mutation is not rolled back if the task later throws or is cancelled. Spawned
-`inout` remains rejected. A non-throwing direct await may also pass `out` storage:
+Spawned mutation uses the same pointer path inside an explicit scope. The owner
+is inaccessible while the child holds its exclusive borrow, then becomes
+available after an explicit consuming join or at scope exit:
+
+```z
+async scope {
+  const task = spawn refreshAfter(inout document);
+  doIndependentWork();
+  await task;
+  publish(document);
+}
+```
+
+The bootstrap recognizes this early release on straight-line joins. A join under
+conditional control conservatively keeps the borrow live until scope exit while
+path-sensitive task/borrow merging remains future work.
+
+Mutation is not rolled back if the task later throws or is cancelled. A
+non-throwing direct await may also pass `out` storage:
 
 ```z
 let reading: SensorReading;

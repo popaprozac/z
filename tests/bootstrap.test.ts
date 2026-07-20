@@ -7419,6 +7419,29 @@ test("borrows immutable values across direct await and scoped spawn", () => {
   `);
   const cancelled = spawnSync(process.execPath, [cli, "run", cancellation], { encoding: "utf8" });
   assert.equal(cancelled.status, 0, cancelled.stderr);
+
+  const native = resolve(directory, "native.z");
+  writeFileSync(native, `
+    import { delay } from "std/time";
+    import { zcpp } from ${JSON.stringify(resolve(projectRoot, "tests/fixtures/move-only.hpp"))};
+
+    async function adjustLater(inout resource: zcpp.UniqueValue): void {
+      await delay(1);
+      resource.add(2);
+    }
+
+    async function main(): i32 {
+      let resource = zcpp.UniqueValue(40);
+      async scope {
+        const task = spawn adjustLater(inout resource);
+        await task;
+      }
+      const result = resource.finish(0);
+      return result - 42 + zcpp.unique_live();
+    }
+  `);
+  const nativeResult = spawnSync(process.execPath, [cli, "run", native], { encoding: "utf8" });
+  assert.equal(nativeResult.status, 0, nativeResult.stderr);
 });
 
 test("mutates caller storage through a direct-awaited async inout parameter", () => {
@@ -7452,15 +7475,13 @@ test("mutates caller storage through a direct-awaited async inout parameter", ()
     async function add(inout counter: Counter): void { return; }
     async function main(): i32 {
       let counter = Counter({ value: 41 });
-      async scope {
-        spawn add(inout counter);
-      }
-      return counter.value;
+      spawn add(inout counter);
+      return 0;
     }
   `;
   const spawnedDiagnostic = diagnostics(spawned, "async-spawn-inout.z")[0];
   assert.equal(spawnedDiagnostic.code, "Z0704");
-  assert.match(spawnedDiagnostic.message, /spawned mutable borrow of "counter" is not supported yet/);
+  assert.match(spawnedDiagnostic.message, /requires an explicit async scope/);
 
   const immutable = `
     struct Counter { value: i32; }
@@ -7545,6 +7566,113 @@ test("mutates caller storage through a direct-awaited async inout parameter", ()
   `);
   const failed = spawnSync(process.execPath, [cli, "run", failure], { encoding: "utf8" });
   assert.equal(failed.status, 0, failed.stderr);
+});
+
+test("mutably borrows caller storage through scoped spawn and releases it on join", () => {
+  const example = resolve(projectRoot, "examples/async/async-scoped-inout.z");
+  const source = readFileSync(example, "utf8");
+  const generated = compileToNative(source, example).source;
+  assert.match(generated, /Z_ImportProgress \* value_progress;/);
+  assert.match(
+    generated,
+    /z_async_start_importBatchAfter\(Z_AsyncExecutor \*executor, Z_ImportProgress \* value_progress, int32_t value_count\)/,
+  );
+  assert.match(
+    generated,
+    /z_async_start_importBatchAfter\(frame->task\.executor, &\(frame->value_progress\), 1\)/,
+  );
+  assert.match(generated, /if \(!z_async_wait\(&frame->task, &frame->child_0->task\)\) return;/);
+  assert.match(generated, /Z_ImportProgress_advance\(&\(frame->value_progress\), 1\)/);
+
+  const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, "import batch started\nimported=42\n");
+
+  const beforeJoin = `
+    struct Counter { value: i32; }
+    async function add(inout counter: Counter): void { counter.value = counter.value + 1; }
+    async function main(): i32 {
+      let counter = Counter({ value: 41 });
+      async scope {
+        const task = spawn add(inout counter);
+        const observed = counter.value;
+        await task;
+      }
+      return 0;
+    }
+  `;
+  const readDiagnostic = diagnostics(beforeJoin, "async-scoped-inout-read.z")[0];
+  assert.equal(readDiagnostic.code, "Z0704");
+  assert.match(readDiagnostic.message, /cannot read "counter" while a spawned task mutably borrows it/);
+
+  const overlapping = beforeJoin.replace(
+    "const observed = counter.value;",
+    "const second = spawn add(inout counter);",
+  );
+  const overlapDiagnostic = diagnostics(overlapping, "async-scoped-inout-overlap.z")[0];
+  assert.equal(overlapDiagnostic.code, "Z0704");
+  assert.match(overlapDiagnostic.message, /cannot mutate "counter" while a spawned task borrows it/);
+
+  const conditionalJoin = beforeJoin.replace(
+    "const observed = counter.value;\n        await task;",
+    "if (false) { await task; }\n        const observed = counter.value;",
+  );
+  const conditionalDiagnostic = diagnostics(conditionalJoin, "async-scoped-inout-conditional-join.z")[0];
+  assert.equal(conditionalDiagnostic.code, "Z0704");
+  assert.match(conditionalDiagnostic.message, /cannot read "counter" while a spawned task mutably borrows it/);
+
+  const sharedAfterOneJoin = `
+    struct Resource { value: i32; }
+    async function inspect(in resource: Resource): i32 { return resource.value; }
+    async function main(): i32 {
+      let resource = Resource({ value: 42 });
+      async scope {
+        const first = spawn inspect(resource);
+        const second = spawn inspect(resource);
+        await first;
+        resource.value = 43;
+        await second;
+      }
+      return 0;
+    }
+  `;
+  const sharedDiagnostic = diagnostics(sharedAfterOneJoin, "async-shared-partial-join.z")[0];
+  assert.equal(sharedDiagnostic.code, "Z0704");
+  assert.match(sharedDiagnostic.message, /cannot mutate "resource" while a spawned task borrows it/);
+  const sharedAfterBothJoin = sharedAfterOneJoin.replace(
+    "resource.value = 43;\n        await second;",
+    "await second;\n        resource.value = 43;",
+  );
+  check(sharedAfterBothJoin, "async-shared-complete-join.z");
+
+  const directory = mkdtempSync("/tmp/z-async-scoped-inout-cancel-");
+  const cancellation = resolve(directory, "main.z");
+  writeFileSync(cancellation, `
+    import { delay } from "std/time";
+
+    struct Counter {
+      value: i32;
+      function add(inout this, amount: i32): void { this.value = this.value + amount; }
+    }
+
+    async function addLater(inout counter: Counter): void {
+      await delay(1000);
+      counter.add(1);
+    }
+
+    async function main(): i32 {
+      let counter = Counter({ value: 40 });
+      async scope {
+        const task = spawn addLater(inout counter);
+        await delay(1);
+        await task.cancel();
+        counter.add(2);
+      }
+      return counter.value - 42;
+    }
+  `);
+  const cancelled = spawnSync(process.execPath, [cli, "run", cancellation], { encoding: "utf8" });
+  assert.equal(cancelled.status, 0, cancelled.stderr);
 });
 
 test("initializes cleanup-free caller storage through a direct-awaited async out parameter", () => {

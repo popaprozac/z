@@ -110,13 +110,15 @@ parameters use the same aligned storage: task creation move-constructs each
 child-frame slot, and cancellation destroys it even before the child body is
 polled. Immutable `in` native values and native-owning Z aggregates borrow stable
 caller-frame storage through direct await. Spawned borrows require an explicit
-async scope and prevent owner mutation or movement until its join; no wrapper,
-retain, or copy is added. Direct-awaited `inout` native values similarly use a
-mutable pointer into the suspended caller frame; no native copy or move occurs,
-and the child does not destroy the owner. Cleanup-free `out` values can use the
-same direct-await storage path; ownership-bearing output still needs explicit
-live-storage handoff lowering. Spawned mutable and output borrows remain separate
-paths. ARC class fields and owned closure environments likewise remain deferred.
+async scope and prevent owner mutation or movement until every borrowing child
+joins; no wrapper, retain, or copy is added. Direct-awaited and scope-bounded
+spawned `inout` native values similarly use a mutable pointer into the suspended
+caller frame; no native copy or move occurs, and the child does not destroy the
+owner. An explicit consuming join releases the borrow before scope exit.
+Cleanup-free `out` values can use the same direct-await storage path;
+ownership-bearing and spawned output still need explicit live-storage handoff
+lowering. ARC class fields and owned closure environments likewise remain
+deferred.
 
 C++ named-value references map onto the existing Z capability model:
 

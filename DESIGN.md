@@ -171,6 +171,16 @@ initialized along every successful return path. Uninitialized typed `let`
 bindings use the same flow-sensitive analysis. Multiple `in` uses may share one
 root in a call; uses involving writable access or ownership must not overlap it.
 
+These rules are one loan system, not separate synchronous and asynchronous
+ownership models. Each active access is identified by its root storage,
+capability (`in`, `inout`, `out`, or `move`), lifetime (call, task, or lexical
+scope), and release event (return, join/cancel, or scope exit). The stage-0
+compiler currently represents call-lifetime conflicts and task-lifetime borrows
+with separate internal trackers. That is deliberate bootstrap debt, not a
+language distinction. They must converge on one exclusivity checker before
+spawned `out`, suspended Slice borrowing, regions, or cross-thread loans expand
+the state space.
+
 Replacing cleanup-bearing storage evaluates the new value into owned temporary
 storage before destroying the old value and installing the replacement. If
 evaluation propagates an error, the old value remains governed by ordinary
@@ -842,21 +852,22 @@ contract; cancellation is never smuggled into `throws E`.
 The first ownership tier supports immutable `in` value/native parameters across
 suspension. A direct await stores a pointer into its stable suspended caller
 frame. A spawned immutable borrow requires an explicit `async scope`; its owner
-cannot move or mutate until scope exit joins every borrowing child. Multiple
-immutable child borrows may share the same owner. The initial analysis keeps the
-borrow live for the whole scope even after an early explicit join. Borrowed ARC
-class parameters intentionally use the ordinary owned parameter form instead,
-which retains identity while preserving caller access. A direct-awaited `inout`
-parameter stores a mutable pointer into the same stable caller frame; the caller
-cannot resume until the callee finishes. Mutations completed before an error or
-cancellation remain visible—`inout` is not transactional. A non-throwing,
+cannot move or mutate until every borrowing child joins. Multiple immutable
+child borrows may share the same owner. A consuming `await task` or `await
+task.cancel()` releases that child's borrow early; otherwise the scope's implicit
+join releases it. Borrowed ARC class parameters intentionally use the ordinary
+owned parameter form instead, which retains identity while preserving caller
+access. A direct-awaited `inout` parameter stores a mutable pointer into the same
+stable caller frame; the caller cannot resume until the callee finishes. A
+spawned `inout` borrow requires an explicit async scope and grants one child
+exclusive access until its explicit or implicit join. Mutations completed before
+an error or cancellation remain visible—`inout` is not transactional. A non-throwing,
 direct-awaited `out` parameter may similarly initialize cleanup-free caller
 storage; every successful path must assign it before returning. Ownership-bearing
-output waits for completion-time live-storage handoff lowering. Spawned `inout`
-and `out`, Slice, ARC-reference rebinding, borrowed struct receivers, and other
-live borrows remain rejected across suspension. Cross-thread executors must
-prove sendability before any pointer-backed borrow can leave its originating
-thread.
+output waits for completion-time live-storage handoff lowering. Spawned `out`,
+Slice, ARC-reference rebinding, borrowed struct receivers, and other live borrows
+remain rejected across suspension. Cross-thread executors must prove sendability
+before any pointer-backed borrow can leave its originating thread.
 Owned values, ARC class references, owned closures, direct move-only native
 values, and whole Z value structs or enums containing them may be stored in task
 frames. Native
@@ -993,9 +1004,9 @@ ARC fields and owned closure environments remain separate storage tiers. Direct
 move-only native locals and whole Z value aggregates containing them use aligned
 placement storage inside async locals, owned parameter slots, and task results;
 fallible results compose with `try await`, `attempt await`, hidden expression
-slots, and match. Immutable scoped async parameters, direct-awaited mutable
-parameters, and cleanup-free direct-awaited output parameters borrow without a
-wrapper, retain, or copy; spawned mutable/output async parameters and
+slots, and match. Immutable scoped async parameters, direct-awaited or
+scope-bounded spawned mutable parameters, and cleanup-free direct-awaited output
+parameters borrow without a wrapper, retain, or copy; spawned output and
 ownership-bearing output remain deferred.
 Named-value `const T&`, `T&`, and move-only `T&&` parameters reuse Z's `in`,
 `inout`, and owned-value capabilities. Receiver-qualified `const &`, `&`, and
