@@ -1004,6 +1004,10 @@ function programUsesIndex(program: Program): boolean {
 
 function programUsesString(program: Program, semanticInfo: SemanticInfo): boolean {
   if ([...semanticInfo.standardTypeBindings.values()].includes("TextBuffer")) return true;
+  if (
+    [...semanticInfo.expressionTypes.values(), ...semanticInfo.bindingTypes.values()]
+      .some((type) => type === "String" || type === "TextBuffer")
+  ) return true;
   let found = false;
   const visit = (value: unknown, directConsoleTemplate = false): void => {
     if (found || !value || typeof value !== "object") return;

@@ -8831,3 +8831,49 @@ test("copies plain thread captures and moves uniquely owned Array storage", () =
     return true;
   });
 });
+
+test("moves owned String and TextBuffer storage through native thread frames", () => {
+  const example = resolve(projectRoot, "examples/async/thread-text.z");
+  const source = readFileSync(example, "utf8");
+  const generated = compileToC(source, example);
+  assert.match(generated, /Z_String value_source;/);
+  assert.match(generated, /Z_String value_output;/);
+  assert.match(generated, /if \(\(frame->value_source\)\.capacity > 0\) free/);
+  assert.match(generated, /z_text_buffer_append_ascii/);
+  assert.match(generated, /frame->live_output = false/);
+  assert.match(generated, /fwrite\(/);
+
+  const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, "source bytes=6\nworker=42\n");
+
+  const movedString = `
+    import { thread } from "std/thread";
+    function make(): String { return \`owned=42\`; }
+    async function main(): i32 {
+      const text = make();
+      const task = thread.spawn(move () => text.byteLength);
+      const invalid = text.byteLength;
+      return await task;
+    }
+  `;
+  const movedDiagnostic = diagnostics(movedString, "thread-string-move.z")[0];
+  assert.equal(movedDiagnostic.code, "Z0201");
+  assert.match(movedDiagnostic.message, /use of moved value "text"/);
+
+  const arrayOfStrings = `
+    import { thread } from "std/thread";
+    function make(): String { return \`owned=42\`; }
+    async function main(): i32 {
+      let values = Array<String>();
+      values.push(make());
+      const task = thread.spawn(move () => values[0].isEmpty ? 1 : 0);
+      return await task;
+    }
+  `;
+  const directory = mkdtempSync("/tmp/z-thread-text-");
+  const arrayFile = resolve(directory, "array.z");
+  writeFileSync(arrayFile, arrayOfStrings);
+  const arrayResult = spawnSync(process.execPath, [cli, "run", arrayFile], { encoding: "utf8" });
+  assert.equal(arrayResult.status, 0, arrayResult.stderr);
+});

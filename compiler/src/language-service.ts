@@ -594,7 +594,7 @@ export function hover(source: string, fileName: string, offset: number): Hover |
     }
     const standardOwner = context.semanticInfo.standardModuleBindings.get(memberPrefix[1]);
     if (standardOwner === "thread" && word.text === "spawn") {
-      return markdownHover("spawn<T>(operation: () => T): Task<T>  // starts one native thread; move captures copy snapshots or unique Array owners", source, word.start, word.end);
+      return markdownHover("spawn<T>(operation: () => T): Task<T>  // starts one native thread; move captures copy snapshots or unique owners", source, word.start, word.end);
     }
     const standardName = standardOwner ? standardModuleFunction(standardOwner, word.text) : null;
     if (standardName) {
@@ -1973,7 +1973,7 @@ function memberCompletions(
         label: member,
         kind: completionKinds.method,
         detail: standardModule === "thread" && member === "spawn"
-          ? "spawn<T>(operation: () => T): Task<T>  // starts one native thread; move captures copy snapshots or unique Array owners"
+          ? "spawn<T>(operation: () => T): Task<T>  // starts one native thread; move captures copy snapshots or unique owners"
           : standardFunctionDetail(member, name!),
         insertText: `${member}()`,
       };

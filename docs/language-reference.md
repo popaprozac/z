@@ -426,8 +426,10 @@ one OS thread. The initial transfer classifier copies recursively cleanup-free
 values and moves uniquely owned `Array` storage or supported aggregates that
 contain it. A capturing closure must spell `move`. Copy captures remain valid in
 the parent because the thread owns a separate snapshot; moved unique owners do
-not. Borrows, views, ARC identity, native references, `String`/`TextBuffer`, and
-custom `deinit` cannot cross this boundary yet. Results follow the same rules.
+not. `Array`, owned `String`, mutable `TextBuffer`, and supported aggregates
+containing them use this consuming path and may return ownership through
+`await`. Borrows, views, ARC identity, native references, `Arena`, and custom
+`deinit` cannot cross this boundary yet. Results follow the same rules.
 The returned task remains scope-bound and is joined explicitly by `await` or
 implicitly at scope exit.
 

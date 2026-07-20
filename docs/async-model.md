@@ -147,8 +147,11 @@ The first executable transfer rule is deliberately narrow. Integers, floats,
 booleans, fixed arrays, and recursively cleanup-free Z structs/enums copy.
 `Array<T>` and recursively supported Z aggregates containing it move when `T`
 is itself transferable; owned Array-backed results move back to the awaiting
-task. Borrowed `in`, `inout`, and `out` bindings, `view`, `Slice`, `String`,
-`TextBuffer`, `Arena`, ARC classes, weak references, native handles, C++ RAII
+task. Owned `String` and mutable `TextBuffer` storage follow the same consuming
+path. Because the thread closure is one-shot, it may inspect an owned String,
+mutate a captured `let` TextBuffer, consume it with `finish()`, and return the
+resulting String through `await`. Borrowed `in`, `inout`, and `out` bindings,
+`view`, `Slice`, `Arena`, ARC classes, weak references, native handles, C++ RAII
 values, and custom `deinit` remain rejected. This establishes a real
 cross-thread task-frame and unique-owner boundary before Z commits atomic ARC or
 general sendability semantics. Atomic ARC will address reference-count races,

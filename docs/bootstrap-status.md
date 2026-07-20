@@ -102,9 +102,9 @@ until the boundary is length-aware in both directions.
 | Area | Status | Current boundary |
 | --- | --- | --- |
 | Async syntax and typing | Implemented | Functions/methods, `await`, `spawn`, task scopes, typed errors |
-| Stackless task frames | Partial | Scalars, cleanup-bearing fixed arrays, growable arrays, copied Slice descriptors, owned structs/enums/classes, direct move-only C++ locals and parameters, collection elements containing them, cleanup-free direct-awaited output, and fallible native result transfer through `try`/`attempt`/match across suspension |
+| Stackless task frames | Partial | Scalars, owned String/TextBuffer, cleanup-bearing fixed arrays, growable arrays, copied Slice descriptors, owned structs/enums/classes, direct move-only C++ locals and parameters, collection elements containing them, cleanup-free direct-awaited output, and fallible native result transfer through `try`/`attempt`/match across suspension |
 | Executor | Implemented bootstrap | Deterministic single-thread FIFO ready queue |
-| Explicit native threads | Implemented narrow tier | `thread.spawn` starts one OS thread for a synchronous closure; `move` is required when capturing; plain values copy while unique Array-backed owners move; await and implicit scope exit join |
+| Explicit native threads | Implemented narrow tier | `thread.spawn` starts one OS thread for a synchronous one-shot closure; `move` is required when capturing; plain values copy while unique Array/String/TextBuffer owners move; await and implicit scope exit join |
 | Structured scopes | Implemented slice | Lexical child joins, sibling/descendant cancellation, shared immutable and exclusive mutable child borrows (including fixed- and growable-collection-backed Slice), plus path-sensitive early release across straight-line code and `if` branches; loops remain conservative to scope exit |
 | Caller cancellation | Implemented slice | Consuming `await task.cancel()` requests cancellation, joins descendants and cleanup, and discards an unclaimed completed outcome |
 | Timers | Implemented slice | Scheduler-aware monotonic `delay`; blocking `sleep` remains synchronous |
@@ -112,7 +112,7 @@ until the boundary is length-aware in both directions.
 | Embedded awaits | Partial | Left-to-right cleanup-free values and awaited conditions |
 | Lazy/suspending expressions | Planned | `&&`, `||`, ternaries, value `if`, suspending match arms, owned hidden results |
 | Channels, actors, executors | Planned direction | API and sendability remain intentionally unsettled |
-| CPU parallelism | Partial evidence | One explicit native thread can execute Copy-value or uniquely owned Array-backed work in parallel; pools, general sendability, atomic ARC, nonblocking joins, and multithreaded executors remain planned |
+| CPU parallelism | Partial evidence | One explicit native thread can execute Copy-value or uniquely owned Array/String/TextBuffer work in parallel; pools, general sendability, atomic ARC, nonblocking joins, and multithreaded executors remain planned |
 
 See [`async-model.md`](async-model.md) for the intended model and phase details.
 
@@ -205,11 +205,11 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    UTF-8 boundary-preserving token copies, escape decoding, source locations,
    and typed lexer errors. A production lexer still needs complete token grammar,
    Unicode identifiers, template interpolation, and compiler data structures.
-5. **Threaded concurrency evidence — Copy and unique-Array slices implemented.**
+5. **Threaded concurrency evidence — Copy and initial unique-owner slices implemented.**
    `thread.spawn` now proves one real cross-thread task frame with explicit
    move capture, hot start, structured join, private Copy snapshots, and moved
-   Array-backed owners/results. Next probe `String`/`TextBuffer` task-frame
-   storage, broader cleanup-bearing sendability, atomic ARC plus shared-state
-   isolation, nonblocking executor integration, and a cross-thread callback
-   before committing actors, channels, pools, or a multithreaded executor as
-   settled language design.
+   Array/String/TextBuffer owners/results. Next probe broader cleanup-bearing
+   sendability and destruction affinity, atomic ARC plus shared-state isolation,
+   nonblocking executor integration, and a cross-thread callback before
+   committing actors, channels, pools, or a multithreaded executor as settled
+   language design.

@@ -74,7 +74,8 @@ cancellation cleanup. Generated C-family source remains inspectable evidence.
 - The hardest Swift surfaces remain: noncopyable values, protocols, typed errors,
   async APIs, packages, and SDK-scale metadata.
 - The implemented `thread.spawn` slice proves a real cross-thread frame,
-  structured join, private Copy snapshots, and unique Array-owner transfer.
+  structured join, private Copy snapshots, and unique Array/String/TextBuffer
+  owner transfer.
   Reference-owning tasks and cross-thread callbacks may still force changes to
   sendability, ARC atomicity, shared-state isolation, cancellation, and executor
   assumptions.
@@ -106,9 +107,9 @@ planned experiment rather than a rejected direction.
 2. Run an arena/region spike and study projection models such as Hylo's before
    widening `view` or introducing user-visible lifetime identities.
 3. **Begun:** `thread.spawn` now proves explicit move capture, private Copy
-   snapshots, moved Array-backed owners/results, and structured join on one
-   native thread. Extend that evidence with `String`/`TextBuffer` frame storage,
-   broader cleanup-bearing sendability, atomic ARC plus shared-state isolation,
+   snapshots, moved Array/String/TextBuffer owners/results, and structured join
+   on one native thread. Extend that evidence with broader cleanup-bearing
+   sendability and destruction affinity, atomic ARC plus shared-state isolation,
    nonblocking executor integration, and a cross-thread callback before fixing
    pools or a multithreaded executor design.
 4. Pull forward one hard Swift slice: preferably a noncopyable Swift value or a

@@ -881,8 +881,11 @@ still requires `move`: for a Copy value this describes how the closure acquires
 its private snapshot without invalidating the source; for a unique owner it
 consumes the source binding. Results follow the same transfer classification.
 The operation creates a hot, scope-bound `Task<T>` and joins at `await` or scope
-exit. Borrows, views, ARC identity, native references, `String`/`TextBuffer`,
-and custom `deinit` remain rejected at the boundary. Its first join
+exit. Owned `String` and mutable `TextBuffer` storage use the same unique-owner
+transfer and cleanup path as `Array`; the one-shot thread closure may consume or
+mutate those captures before returning an owned result. Borrows, views, ARC
+identity, native references, `Arena`, and custom `deinit` remain rejected at the
+boundary. Its first join
 implementation blocks the FIFO executor thread; nonblocking executor
 integration, general sendability, atomic ARC, pools, and cross-thread callbacks
 remain validation work. Atomic reference counts alone will not make mutable

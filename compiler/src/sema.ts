@@ -2042,6 +2042,7 @@ function inferClosureExpression(
   state: AnalysisState,
   expectedFunction: FunctionType | null = null,
   transientBorrow = false,
+  oneShotOwnedCaptures = false,
 ): ValueType {
   if (expectedFunction && expression.parameters.length !== expectedFunction.parameters.length) {
     throw new DiagnosticError(
@@ -2168,9 +2169,12 @@ function inferClosureExpression(
       });
     }
     const cleanupBearing = hasOwnershipType(type, structs, enums, state);
-    const mode: ClosureCaptureInfo["mode"] = capture.mutated
-      ? "inout"
-      : (expression.captureMode === "move" && !cleanupBearing) || type === "cstring" ? "value" : "in";
+    const moveCaptureOwnsValue = expression.captureMode === "move" && (oneShotOwnedCaptures || !cleanupBearing);
+    const mode: ClosureCaptureInfo["mode"] = oneShotOwnedCaptures && expression.captureMode === "move"
+      ? "value"
+      : capture.mutated
+        ? "inout"
+        : moveCaptureOwnsValue || type === "cstring" ? "value" : "in";
     captures.push({
       name: capture.name,
       type,
@@ -2178,8 +2182,11 @@ function inferClosureExpression(
       moved: expression.captureMode === "move",
       location: capture.location,
     });
-    const captureBorrow = expression.captureMode === "borrow" || cleanupBearing ? borrowedPrefix : "";
-    closureLocals.set(capture.name, `${captureBorrow}${capture.mutated ? mutablePrefix : ""}${type}`);
+    const captureBorrow = expression.captureMode === "borrow" || (cleanupBearing && !oneShotOwnedCaptures)
+      ? borrowedPrefix
+      : "";
+    const captureMutable = capture.mutated || (oneShotOwnedCaptures && isMutableBinding(stored));
+    closureLocals.set(capture.name, `${captureBorrow}${captureMutable ? mutablePrefix : ""}${type}`);
     if (expression.captureMode === "borrow" && cleanupBearing && !transientBorrow) {
       locals.set(capture.name, `${borrowedPrefix}${isMutableBinding(stored) ? mutablePrefix : ""}${type}`);
       state.borrowOrigins.set(capture.name, { location: capture.location, kind: "closure" });
@@ -3795,7 +3802,7 @@ function inferExpressionInner(
                 });
               }
               const operation = expression.arguments[0];
-              inferClosureExpression(operation, locals, globals, structs, enums, fileName, state);
+              inferClosureExpression(operation, locals, globals, structs, enums, fileName, state, null, false, true);
               const closure = state.closures.get(operation.location.offset)!;
               if (closure.parameterCount !== 0) {
                 throw new DiagnosticError(fileName, operation.location, "thread.spawn closure cannot declare parameters in the first thread tier", {
@@ -3824,7 +3831,7 @@ function inferExpressionInner(
                 if (!transfer) {
                   throw new DiagnosticError(fileName, capture.location, `capture ${JSON.stringify(capture.name)} of type ${JSON.stringify(capture.type)} cannot cross a native thread boundary yet`, {
                     code: "Z0704",
-                    notes: ["the current tier copies plain values and moves uniquely owned Array-backed storage; views, borrows, ARC identity, native references, and custom cleanup remain local"],
+                    notes: ["the current tier copies plain values and moves supported Array, String, TextBuffer, and containing aggregate owners; views, borrows, ARC identity, native references, and custom cleanup remain local"],
                     helps: ["capture a transferable owned value, or keep this work on the inherited executor with `spawn`"],
                   });
                 }
@@ -3834,13 +3841,13 @@ function inferExpressionInner(
               if (!initialThreadTransferKind(returnType, structs, enums, state)) {
                 throw new DiagnosticError(fileName, operation.location, `thread.spawn result type ${JSON.stringify(returnType)} cannot cross a native thread boundary yet`, {
                   code: "Z0704",
-                  helps: ["return a transferable value or uniquely owned Array-backed aggregate"],
+                  helps: ["return a transferable value or supported unique owner"],
                 });
               }
               for (const { capture, kind } of captureTransfers) {
                 if (kind !== "move") continue;
                 consumeOwnedValue(
-                  { kind: "identifier", name: capture.name, location: capture.location },
+                  { kind: "identifier", name: capture.name, location: expression.location },
                   capture.type,
                   locals,
                   structs,
@@ -5835,6 +5842,7 @@ function initialThreadTransferKind(
 ): ThreadTransferKind | null {
   const actual = String(underlyingType(type));
   if (actual === "void" || actual === "bool" || integerTypes.has(actual) || floatTypes.has(actual)) return "copy";
+  if (actual === "String" || actual === "TextBuffer") return "move";
   if (parseViewType(actual) || parseSliceType(actual) || parseTaskType(actual)) return null;
   const fixed = parseFixedArrayType(actual);
   if (fixed) return initialThreadTransferKind(fixed.elementType, structs, enums, state, visiting);

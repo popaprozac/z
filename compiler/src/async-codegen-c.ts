@@ -1453,7 +1453,7 @@ function frameInputs(plan: AsyncFunctionPlan): readonly {
 }
 
 function emitAwaitArguments(
-  site: Pick<AwaitSite, "receiver" | "target" | "call">,
+  site: Pick<AwaitSite, "receiver" | "target" | "call"> & { readonly nativeThread?: boolean },
   parent: AsyncFunctionPlan,
   fileName: string,
 ): string[] {
@@ -1470,6 +1470,15 @@ function emitAwaitArguments(
     const parameter = site.target.declaration.parameters[index];
     if (parameter && parseSliceType(parameter.type.name)) {
       return emitFrameSliceConversion(argument, value, parent, fileName) ?? value;
+    }
+    if (site.nativeThread && argument.kind === "identifier" && parameter?.mode === "value") {
+      const type = parent.locals.get(argument.name);
+      if (type && hasFrameCleanup(type, parent.types)) {
+        const liveFlag = `frame->${frameLiveField(argument.name)}`;
+        return requiresNativeFramePlacement(type, parent.types)
+          ? frameTakeExpression(value, liveFlag)
+          : `(${liveFlag} = false, ${value})`;
+      }
     }
     if (parameter?.mode !== "in" && parameter?.mode !== "inout" && parameter?.mode !== "out") return value;
     return parameter.mode === "in" && parent.types.structs.get(parameter.type.name)?.kind === "class"
@@ -2248,6 +2257,9 @@ function renderAsyncConsoleValue(
   }
   if (type === "bool") return [`fputs((${value}) ? "true" : "false", ${stream});`];
   if (type === "cstring") return [`fputs((${value}) != NULL ? (${value}) : "null", ${stream});`];
+  if (type === "String") {
+    return [`if ((${value}).length > 0) fwrite((${value}).data, 1, (${value}).length, ${stream});`];
+  }
 
   const declaration = plan.types.structs.get(type);
   if (declaration?.kind === "class") {
@@ -2305,8 +2317,12 @@ function emitFrameExpression(
       return expression.value;
     case "boolean":
       return expression.value ? "true" : "false";
-    case "string":
-      return JSON.stringify(expression.value);
+    case "string": {
+      const type = plan.types.semanticInfo.expressionTypes.get(expression.location.offset);
+      return type === "String"
+        ? `(Z_String){ .data = ${JSON.stringify(expression.value)}, .length = sizeof(${JSON.stringify(expression.value)}) - 1, .capacity = 0 }`
+        : JSON.stringify(expression.value);
+    }
     case "identifier":
       if (plan.bindings?.has(expression.name)) {
         const value = plan.bindings.get(expression.name)!;
@@ -2415,6 +2431,11 @@ function emitFrameExpression(
         }
       }
       const ownerType = frameExpressionType(expression.object, plan);
+      if (ownerType === "String" || ownerType === "TextBuffer") {
+        const owner = emitFrameExpression(expression.object, plan, fileName);
+        if (expression.property === "byteLength") return `((${owner}).length)`;
+        if (expression.property === "isEmpty") return `((${owner}).length == 0)`;
+      }
       const access = plan.types.structs.get(ownerType)?.kind === "class" ? "->" : ".";
       const value = `((${emitFrameExpression(expression.object, plan, fileName)})${access}${expression.property})`;
       const type = frameExpressionType(expression, plan);
@@ -2444,7 +2465,16 @@ function emitFrameExpression(
         }
         return `${signature.cName}(${emitSyncCallArguments(expression, plan, fileName, signature).join(", ")})`;
       }
+      if (
+        expression.callee.kind === "identifier"
+        && plan.types.semanticInfo.standardTypeBindings.get(expression.callee.name) === "TextBuffer"
+      ) {
+        return "z_string_new()";
+      }
       if (expression.callee.kind === "member" && expression.callee.object.kind === "identifier") {
+        if (expression.callee.object.name === "String" && expression.callee.property === "from") {
+          return `z_string_from_cstring(${emitFrameExpression(expression.arguments[0], plan, fileName)})`;
+        }
         const owner = plan.types.structs.get(expression.callee.object.name);
         const staticMethod = owner?.methods.find((candidate) => (
           candidate.static && !candidate.async && candidate.name === expression.callee.property
@@ -2489,6 +2519,28 @@ function emitFrameExpression(
       }
       if (expression.callee.kind === "member") {
         const receiverType = frameExpressionType(expression.callee.object, plan);
+        if (receiverType === "String") {
+          const receiver = emitFrameExpression(expression.callee.object, plan, fileName);
+          if (expression.callee.property === "byteAt") {
+            return `z_string_byte_at(${receiver}, ${emitFrameExpression(expression.arguments[0], plan, fileName)})`;
+          }
+          if (expression.callee.property === "copyBytes") {
+            return `z_string_copy_bytes(${receiver}, ${emitFrameExpression(expression.arguments[0], plan, fileName)}, ${emitFrameExpression(expression.arguments[1], plan, fileName)})`;
+          }
+        }
+        if (receiverType === "TextBuffer") {
+          const receiver = emitFrameExpression(expression.callee.object, plan, fileName);
+          if (expression.callee.property === "append") {
+            return `z_text_buffer_append(&(${receiver}), ${emitFrameExpression(expression.arguments[0], plan, fileName)})`;
+          }
+          if (expression.callee.property === "appendBytes") {
+            return `z_text_buffer_append_bytes(&(${receiver}), ${emitFrameExpression(expression.arguments[0], plan, fileName)}, ${emitFrameExpression(expression.arguments[1], plan, fileName)}, ${emitFrameExpression(expression.arguments[2], plan, fileName)})`;
+          }
+          if (expression.callee.property === "appendAscii") {
+            return `z_text_buffer_append_ascii(&(${receiver}), ${emitFrameExpression(expression.arguments[0], plan, fileName)})`;
+          }
+          if (expression.callee.property === "finish") return receiver;
+        }
         if (parseDynamicArrayType(receiverType) && expression.callee.property === "push") {
           const receiver = emitFrameExpression(expression.callee.object, plan, fileName);
           const argument = emitFrameExpression(expression.arguments[0], plan, fileName);
@@ -2632,6 +2684,7 @@ function cScalar(type: string): string {
 function cFrameType(type: string, types: AsyncTypeContext): string {
   if (parseTaskType(type)) return "Z_AsyncTask *";
   if (scalarTypes.has(type)) return cScalar(type);
+  if (type === "String" || type === "TextBuffer") return "Z_String";
   if (parseFixedArrayType(type)) return `Z_Array_${asyncNativeSymbolPart(type)}`;
   if (parseSliceType(type)) return `Z_Slice_${asyncNativeSymbolPart(type)}`;
   if (parseDynamicArrayType(type)) return `Z_DynamicArray_${asyncNativeSymbolPart(type)}`;
@@ -2662,6 +2715,7 @@ function borrowedFrameValue(name: string, type: string, types: AsyncTypeContext)
 function isSupportedFrameType(type: string, types: AsyncTypeContext, visiting = new Set<string>()): boolean {
   if (parseTaskType(type)) return true;
   if (scalarTypes.has(type)) return true;
+  if (type === "String" || type === "TextBuffer") return true;
   const fixedArray = parseFixedArrayType(type);
   if (fixedArray) {
     return isSupportedFrameType(fixedArray.elementType, types, visiting);
@@ -2693,6 +2747,7 @@ function isSupportedFrameType(type: string, types: AsyncTypeContext, visiting = 
 
 function hasFrameCleanup(type: string, types: AsyncTypeContext, visiting = new Set<string>()): boolean {
   if (visiting.has(type)) return false;
+  if (type === "String" || type === "TextBuffer") return true;
   if (requiresNativeFramePlacement(type, types)) return true;
   if (directForeignFrameValue(type, types)?.lifecycle.deinit) return true;
   if (parseDynamicArrayType(type)) return true;
@@ -2718,6 +2773,9 @@ function frameCleanup(value: string, type: string, types: AsyncTypeContext): str
     const managed = frameManagedCleanup(value, type, types);
     const native = `std::destroy_at(&(${value}));`;
     return managed ? `${managed}\n${native}` : native;
+  }
+  if (type === "String" || type === "TextBuffer") {
+    return `if ((${value}).capacity > 0) free((void *)(${value}).data);`;
   }
   const dynamicArray = parseDynamicArrayType(type);
   if (dynamicArray) {
@@ -2763,6 +2821,9 @@ function frameCleanup(value: string, type: string, types: AsyncTypeContext): str
 
 function frameManagedCleanup(value: string, type: string, types: AsyncTypeContext): string {
   if (isDirectForeignFrameValue(type, types)) return "";
+  if (type === "String" || type === "TextBuffer") {
+    return `if ((${value}).capacity > 0) free((void *)(${value}).data);`;
+  }
   const fixedArray = parseFixedArrayType(type);
   if (fixedArray) {
     const cleanup = frameManagedCleanup(
@@ -2793,6 +2854,7 @@ function frameManagedCleanup(value: string, type: string, types: AsyncTypeContex
 
 function hasManagedFrameCleanup(type: string, types: AsyncTypeContext, visiting = new Set<string>()): boolean {
   if (visiting.has(type) || isDirectForeignFrameValue(type, types)) return false;
+  if (type === "String" || type === "TextBuffer") return true;
   const fixedArray = parseFixedArrayType(type);
   if (fixedArray) return hasManagedFrameCleanup(fixedArray.elementType, types, visiting);
   const aggregate = types.structs.get(type);
