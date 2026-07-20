@@ -72,7 +72,7 @@ an inferred receiver-tied view.
 | C callbacks | Partial | Call-only and caller-thread escaping callbacks use `.zd` with named context and exact release contracts; cross-thread callbacks remain unsupported |
 | Native availability | Implemented host slice | Explicit `z.json` platform/minimum target, introduced/obsoleted errors, deprecation warnings, native source locations, and matching Clang/Swift deployment flags; cross-compilation and runtime guards remain |
 | Objective-C | Partial | ARC classes/fields, methods, properties/global object constants, labels, nullability, niche-backed `Option.fromNullable`, owned `String`/`NSString` copies, escaping blocks and persistent observer tokens |
-| C++ | Partial | Hierarchical/selectively aliased namespaces, typed overloads, records, and `.zd`-contracted copyable or move-only RAII values; move-only values work in synchronous locals/calls/returns, Z structs, dynamic arrays, named enums, compiler `Option`/`Result`, direct async locals, owned async parameters, scoped immutable async borrows, whole Z async value aggregates, and fallible async results through `try`/`attempt`/match; named references and receiver qualifiers map to existing Z capabilities with direct native lowering; reference returns, mutable/output async borrows, ARC/closure storage, capability-changing overloads, and templates remain |
+| C++ | Partial | Hierarchical/selectively aliased namespaces, typed overloads, records, and `.zd`-contracted copyable or move-only RAII values; move-only values work in synchronous locals/calls/returns, Z structs, dynamic arrays, named enums, compiler `Option`/`Result`, direct async locals, owned async parameters, scoped immutable async borrows, direct-awaited mutable async borrows, whole Z async value aggregates, and fallible async results through `try`/`attempt`/match; named references and receiver qualifiers map to existing Z capabilities with direct native lowering; reference returns, spawned mutable/output async borrows, ARC/closure storage, capability-changing overloads, and templates remain |
 | Swift via Objective-C | Implemented slice | Generated compatibility header, classes/properties/methods, automatic local dylib build/link |
 | Swift value via C++ | Implemented probe | Native static construction, const/mutable instance methods, struct return/copy/aggregate storage/round-trip/destruction, and exact owned `String` returns without handwritten shim |
 | Broader Swift surface | Planned vertical slices | Length-aware `String` inputs, property sugar, generics, noncopyable values, protocols, errors, async, packages |
@@ -177,8 +177,9 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    fallible returns work across suspension, `return await`, `try await`,
    `attempt await`, hidden result slots, match, and cancellation. Owned async
    parameters transfer into child frames at task creation. Immutable `in`
-   parameters work through direct await and explicit-scope spawn; mutable/output
-   async borrows, ARC fields, and closure environments remain.
+   parameters work through direct await and explicit-scope spawn. Mutable
+   `inout` parameters work through direct await; spawned mutable/output async
+   borrows, ARC fields, and closure environments remain.
 3. **Larger application probe — implemented.** The multi-module
    `document-workspace` combines a move-only native lease, dynamic arrays,
    named enum transfer, cleanup-bearing errors, `try`/`attempt`, mutable methods,

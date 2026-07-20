@@ -476,5 +476,6 @@ export type ArgumentReferenceExpression = {
   readonly kind: "argumentReference";
   readonly access: "out" | "inout";
   readonly name: string;
+  readonly nameLocation: SourceLocation;
   readonly location: SourceLocation;
 };

@@ -3065,13 +3065,34 @@ function displayType(type: string, typeDisplayNames: ReadonlyMap<string, string>
 function displayServiceType(type: string, context: AnalyzedSource): string {
   const pointer = context.semanticInfo.foreignTypes.get(type);
   if (pointer) return `${pointer.cName}${pointer.nullable ? " | null" : ""}`;
+  const displayNames = new Map(context.typeDisplayNames);
+  for (const name of context.semanticInfo.foreignNamedTypes.keys()) {
+    const visible = visibleSelectiveImportType(name, context);
+    if (visible !== name) displayNames.set(name, visible);
+  }
   const closure = [...context.semanticInfo.closures.values()].find((item) => item.type === type);
-  if (!closure) return displayType(type, context.typeDisplayNames);
+  if (!closure) return displayType(type, displayNames);
   const parameters = closure.declaration.parameters.slice(closure.captures.length).map((parameter) => {
     const capability = parameter.mode === "value" ? "" : `${parameter.mode} `;
-    return `${capability}${parameter.name}: ${displayType(parameter.type.name, context.typeDisplayNames)}`;
+    return `${capability}${parameter.name}: ${displayType(parameter.type.name, displayNames)}`;
   });
-  return `(${parameters.join(", ")}) => ${displayType(closure.declaration.returnType.name, context.typeDisplayNames)}`;
+  return `(${parameters.join(", ")}) => ${displayType(closure.declaration.returnType.name, displayNames)}`;
+}
+
+function visibleSelectiveImportType(type: string, context: AnalyzedSource): string {
+  for (const declaration of context.sourceProgram.imports) {
+    if (!declaration.bindings) continue;
+    const prefix = `${declaration.moduleName}.`;
+    if (!type.startsWith(prefix)) continue;
+    const importedType = type.slice(prefix.length);
+    for (const binding of declaration.bindings) {
+      if (importedType === binding.importedName) return binding.localName;
+      if (importedType.startsWith(`${binding.importedName}.`)) {
+        return `${binding.localName}${importedType.slice(binding.importedName.length)}`;
+      }
+    }
+  }
+  return type;
 }
 
 function displaySubstitutedType(

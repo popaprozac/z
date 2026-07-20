@@ -471,11 +471,16 @@ fallible task results also support move-only native storage through `try await`
 and `attempt await`. Unqualified owned async parameters move native values or
 whole native-owning Z aggregates into the child frame at `await`/`spawn`; the
 source is unavailable immediately after task creation. ARC class fields, owned
-closure environments, and mutable/output async borrows remain later construction
-paths. Immutable `in` value/native parameters may suspend: direct await bounds
-the borrow to its join, while spawn requires an explicit `async scope` and keeps
-the owner immutable and unmovable through scope exit. ARC class parameters omit
-`in` and use their ordinary retained-reference behavior.
+closure environments, and spawned mutable/output async borrows remain later
+construction paths. Immutable `in` value/native parameters may suspend: direct
+await bounds the borrow to its join, while spawn requires an explicit `async
+scope` and keeps the owner immutable and unmovable through scope exit. ARC class
+parameters omit `in` and use their ordinary retained-reference behavior.
+Value/native `inout`
+parameters may suspend when called through direct `await`; the caller's mutable
+storage remains stable and inaccessible until the join. Spawned mutable borrows,
+output borrows, Slice borrows, and ARC-reference rebinding are not implemented.
+Mutations made before failure or cancellation are not rolled back.
 
 Swift-generated C++ compatibility values use this same surface. For example,
 the current owned-value probe supports `Swift.OwnedCounter.init(40)`,

@@ -7055,11 +7055,11 @@ test("constructs and destroys move-only C++ values across async suspension", () 
   assert.equal(parameterMoveDiagnostic.code, "Z0201");
   assert.match(parameterMoveDiagnostic.message, /use of moved value "resource"/);
 
-  const mutableBorrowedParameter = `
-    import native from ${JSON.stringify(header)};
-    async function inspect(inout resource: native.zcpp.UniqueValue): i32 { return resource.value(); }
+  const outputBorrowedParameter = `
+    struct Resource { value: i32; }
+    async function inspect(out resource: Resource): i32 { return 0; }
   `;
-  const borrowedParameterDiagnostic = diagnostics(mutableBorrowedParameter, resolve(directory, "borrowed-parameter.z"))[0];
+  const borrowedParameterDiagnostic = diagnostics(outputBorrowedParameter, resolve(directory, "borrowed-parameter.z"))[0];
   assert.equal(borrowedParameterDiagnostic.code, "Z0704");
   assert.match(borrowedParameterDiagnostic.message, /cannot borrow storage in the first async tier/);
 
@@ -7419,6 +7419,132 @@ test("borrows immutable values across direct await and scoped spawn", () => {
   `);
   const cancelled = spawnSync(process.execPath, [cli, "run", cancellation], { encoding: "utf8" });
   assert.equal(cancelled.status, 0, cancelled.stderr);
+});
+
+test("mutates caller storage through a direct-awaited async inout parameter", () => {
+  const example = resolve(projectRoot, "examples/async/async-inout.z");
+  const source = readFileSync(example, "utf8");
+  const generated = compileToNative(source, example).source;
+  assert.match(generated, /Z_Counter \* value_counter;/);
+  assert.match(generated, /zcpp::UniqueValue \* value_resource;/);
+  assert.match(
+    generated,
+    /z_async_start_addAfter\(Z_AsyncExecutor \*executor, Z_Counter \* value_counter, int32_t value_amount\)/,
+  );
+  assert.match(generated, /z_async_start_addAfter\(frame->task\.executor, &\(frame->value_counter\), 2\)/);
+  assert.match(generated, /Z_Counter_add\(&\(\(\*frame->value_counter\)\), frame->value_amount\)/);
+  assert.match(generated, /\(\*frame->value_resource\)\.add\(frame->value_amount\)/);
+  assert.doesNotMatch(generated, /live_counter/);
+  assert.doesNotMatch(generated, /live_resource/);
+
+  const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, "counter=42, native=42, finished=42, live=0\n");
+
+  const callBindingOffset = source.indexOf("nativeResource, 2") + 2;
+  assert.match(
+    hover(source, example, callBindingOffset)?.contents.value ?? "",
+    /nativeResource: zcpp\.UniqueValue/,
+  );
+
+  const spawned = `
+    struct Counter { value: i32; }
+    async function add(inout counter: Counter): void { return; }
+    async function main(): i32 {
+      let counter = Counter({ value: 41 });
+      async scope {
+        spawn add(inout counter);
+      }
+      return counter.value;
+    }
+  `;
+  const spawnedDiagnostic = diagnostics(spawned, "async-spawn-inout.z")[0];
+  assert.equal(spawnedDiagnostic.code, "Z0704");
+  assert.match(spawnedDiagnostic.message, /spawned mutable borrow of "counter" is not supported yet/);
+
+  const immutable = `
+    struct Counter { value: i32; }
+    async function add(inout counter: Counter): void { return; }
+    async function main(): i32 {
+      const counter = Counter({ value: 41 });
+      await add(inout counter);
+      return counter.value;
+    }
+  `;
+  const immutableDiagnostic = diagnostics(immutable, "async-const-inout.z")[0];
+  assert.equal(immutableDiagnostic.code, "Z0301");
+  assert.match(immutableDiagnostic.message, /requires a mutable let binding/);
+
+  const arcRebinding = `
+    class Session { id: i32; }
+    async function replace(inout session: Session): void { return; }
+  `;
+  const arcDiagnostic = diagnostics(arcRebinding, "async-class-inout.z")[0];
+  assert.equal(arcDiagnostic.code, "Z0704");
+  assert.match(arcDiagnostic.message, /cannot rebind caller storage yet/);
+
+  const directory = mkdtempSync("/tmp/z-async-inout-cancel-");
+  const cancellation = resolve(directory, "main.z");
+  writeFileSync(cancellation, `
+    import { delay } from "std/time";
+    import { zcpp } from ${JSON.stringify(resolve(projectRoot, "tests/fixtures/move-only.hpp"))};
+
+    async function adjustEventually(inout resource: zcpp.UniqueValue): void {
+      await delay(1000);
+      resource.add(1);
+    }
+
+    async function holdBorrow(): i32 {
+      let resource = zcpp.UniqueValue(41);
+      await adjustEventually(inout resource);
+      return resource.finish(0);
+    }
+
+    async function failSoon(): i32 throws i32 {
+      await delay(1);
+      throw 7;
+    }
+
+    async function coordinate(): i32 throws i32 {
+      spawn holdBorrow();
+      return try await failSoon();
+    }
+
+    async function main(): i32 {
+      const observed = attempt await coordinate();
+      return zcpp.unique_live();
+    }
+  `);
+  const cancelled = spawnSync(process.execPath, [cli, "run", cancellation], { encoding: "utf8" });
+  assert.equal(cancelled.status, 0, cancelled.stderr);
+
+  const failure = resolve(directory, "failure.z");
+  writeFileSync(failure, `
+    import { delay } from "std/time";
+
+    struct Counter {
+      value: i32;
+      function add(inout this, amount: i32): void { this.value = this.value + amount; }
+    }
+
+    async function mutateThenFail(inout counter: Counter): void throws i32 {
+      counter.add(1);
+      await delay(1);
+      throw 7;
+    }
+
+    async function main(): i32 {
+      let counter = Counter({ value: 41 });
+      const observed = attempt await mutateThenFail(inout counter);
+      const error = match (observed) {
+        success => 0;
+        failure(error) => error;
+      };
+      return counter.value - 42 + error - 7;
+    }
+  `);
+  const failed = spawnSync(process.execPath, [cli, "run", failure], { encoding: "utf8" });
+  assert.equal(failed.status, 0, failed.stderr);
 });
 
 test("checks retained class receivers and consuming struct receivers in async methods", () => {

@@ -319,6 +319,7 @@ export function parse(tokens: Token[], fileName: string): Program {
         kind: "argumentReference",
         access: token.kind as "out" | "inout",
         name: name.text,
+        nameLocation: name.location,
         location: token.location,
       };
     }

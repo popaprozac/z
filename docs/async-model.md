@@ -147,10 +147,26 @@ bounded by its join. Spawned borrowing requires an explicit `async scope`, and
 the owner cannot move or mutate until that scope joins its children; multiple
 immutable children may share it. The bootstrap conservatively keeps the borrow
 live until scope exit even after an explicit early join. ARC classes continue to
-use owned parameters and task-frame retains. Z still rejects `inout`, `out`,
-`Slice<T>`, borrowed struct receivers, and other unrelated live borrows at an
-`await`. Cross-thread executors will additionally require sendability before
-these pointer-backed borrows can leave one thread.
+use owned parameters and task-frame retains. A direct-awaited `inout` call may
+borrow mutable value/native storage from the caller frame. The caller is
+suspended through the join, so the callee has exclusive access and may itself
+suspend without copying the owner:
+
+```z
+async function refreshAfter(inout document: Document): void {
+  await delay(10);
+  document.refresh();
+}
+
+let document = Document({ revision: 41 });
+await refreshAfter(inout document);
+```
+
+Mutation is not rolled back if the task later throws or is cancelled. Spawned
+`inout`, `out`, `Slice<T>`, ARC-reference rebinding, borrowed struct receivers,
+and other unrelated live borrows remain rejected. Cross-thread executors will
+additionally require sendability before these pointer-backed borrows can leave
+one thread.
 
 Classes and structs may declare async methods. A class receiver is retained by
 the task frame. A struct async instance method must initially declare `move
@@ -190,6 +206,8 @@ await`, `attempt await`, payloadless `void` success, and root failure exit.
 Move-only native Results use aligned placement storage and their generated
 tagged-union destructor instead of plain aggregate assignment. `z
 emit` produces readable C for this subset and `z run` executes it.
+Immutable parameters and direct-awaited mutable parameters use pointers into a
+stable suspended caller frame and are never destroyed by the child frame.
 Unsupported but valid async shapes report `Z0700` with a specific boundary
 diagnostic.
 

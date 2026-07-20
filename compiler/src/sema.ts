@@ -893,12 +893,12 @@ function validateFunctionSignature(
     const slice = parseSliceType(parameter.type.name);
     if (
       declaration.async
-      && (parameter.mode === "inout" || parameter.mode === "out" || Boolean(slice))
+      && (parameter.mode === "out" || Boolean(slice))
     ) {
       throw new DiagnosticError(fileName, parameter.location, `async parameter ${JSON.stringify(parameter.name)} cannot borrow storage in the first async tier`, {
         code: "Z0704",
-        notes: ["mutable, output, and Slice borrows require additional suspension-safe alias and initialization analysis"],
-        helps: ["pass an owned value, an immutable `in` value, or an ARC class reference into the async function"],
+        notes: ["output and Slice borrows require additional suspension-safe initialization and lifetime analysis"],
+        helps: ["pass an owned value, an `in` or `inout` value, or an ARC class reference into the async function"],
       });
     }
     if (declaration.async && parameter.mode === "in" && structs.get(parameter.type.name)?.kind === "class") {
@@ -906,6 +906,13 @@ function validateFunctionSignature(
         code: "Z0704",
         notes: ["owned ARC parameters retain identity in the task frame while preserving caller access"],
         helps: [`remove \`in\` from ${JSON.stringify(parameter.name)}`],
+      });
+    }
+    if (declaration.async && parameter.mode === "inout" && structs.get(parameter.type.name)?.kind === "class") {
+      throw new DiagnosticError(fileName, parameter.location, `async class parameter ${JSON.stringify(parameter.name)} cannot rebind caller storage yet`, {
+        code: "Z0704",
+        notes: ["an ordinary owned class parameter retains the reference and can still mutate the referenced object's fields"],
+        helps: [`remove \`inout\` unless the function must replace ${JSON.stringify(parameter.name)} in its caller`],
       });
     }
     if (slice && parameter.mode === "in") {
@@ -2786,7 +2793,9 @@ function firstLiveBorrow(
 ): string | null {
   const asyncParameters = new Set(
     activeFunction?.async
-      ? activeFunction.parameters.filter((parameter) => parameter.mode === "in").map((parameter) => parameter.name)
+      ? activeFunction.parameters
+        .filter((parameter) => parameter.mode === "in" || parameter.mode === "inout")
+        .map((parameter) => parameter.name)
       : [],
   );
   for (const [name, type] of locals) {
@@ -3197,8 +3206,8 @@ function inferExpressionInner(
       if (borrowed) {
         throw new DiagnosticError(fileName, expression.location, `cannot await while borrowed storage ${JSON.stringify(borrowed)} is live`, {
           code: "Z0704",
-          notes: ["only an explicit immutable async parameter currently carries a borrow across suspension"],
-          helps: ["finish this lexical borrow before awaiting, or pass storage through an async `in` parameter"],
+          notes: ["only explicit async `in` and direct-awaited `inout` parameters currently carry borrows across suspension"],
+          helps: ["finish this lexical borrow before awaiting, or pass storage through an appropriate async parameter capability"],
         });
       }
       const context = { mode: "await" as const, calls: 0 };
@@ -4326,6 +4335,8 @@ function checkArguments(
       locals.set(argument.name, initializedAvailableBinding(stored));
       state.moveOrigins.delete(argument.name);
       state.nativeArgumentAccesses.set(argument.location.offset, "out");
+      state.expressionTypes.set(argument.location.offset, String(underlyingType(stored)));
+      state.expressionTypes.set(argument.nameLocation.offset, String(underlyingType(stored)));
       continue;
     }
     if (parameter.mode === "inout") {
@@ -4382,6 +4393,16 @@ function checkArguments(
         );
       }
       state.nativeArgumentAccesses.set(argument.location.offset, "inout");
+      state.expressionTypes.set(argument.location.offset, String(storedType));
+      state.expressionTypes.set(argument.nameLocation.offset, String(storedType));
+      const asyncContext = state.asyncCallContexts.at(-1);
+      if (target.async && asyncContext?.mode === "spawn") {
+        throw new DiagnosticError(fileName, argument.location, `spawned mutable borrow of ${JSON.stringify(argument.name)} is not supported yet`, {
+          code: "Z0704",
+          notes: ["direct await suspends the caller until mutation finishes; spawned mutation needs exclusive-borrow tracking for the entire child scope"],
+          helps: [`use \`await ${target.name}(inout ${argument.name})\`, or transfer ownership into the spawned task`],
+        });
+      }
       continue;
     }
     if (argument.kind === "argumentReference") {
@@ -5948,6 +5969,8 @@ function checkForeignCall(
         );
         rejectOwnerMutationWhileViewed(argument.name, argument.location, fileName, state);
         state.foreignCxxArgumentAccesses.set(argument.location.offset, "inout");
+        state.expressionTypes.set(argument.location.offset, String(underlyingType(stored)));
+        state.expressionTypes.set(argument.nameLocation.offset, String(underlyingType(stored)));
         continue;
       }
       if (parameter?.type.kind !== "recordPointer") {
@@ -5992,6 +6015,8 @@ function checkForeignCall(
         state.numericLiteralTypes,
       );
       state.foreignArgumentAccesses.set(argument.location.offset, argument.access);
+      state.expressionTypes.set(argument.location.offset, String(underlyingType(stored)));
+      state.expressionTypes.set(argument.nameLocation.offset, String(underlyingType(stored)));
       if (argument.access === "out") {
         locals.set(argument.name, initializedAvailableBinding(stored));
         state.moveOrigins.delete(argument.name);

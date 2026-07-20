@@ -71,6 +71,7 @@ support or producing language-server diagnostics from hypothetical imports.
 - [`async-native-aggregate.z`](async/async-native-aggregate.z): a native-owning Z value struct across suspension, fallible relay, consuming match, and deterministic aggregate/native cleanup
 - [`async-native-parameters.z`](async/async-native-parameters.z): direct C++ and native-owning Z values transferred into hot spawned task frames
 - [`async-borrowing.z`](async/async-borrowing.z): direct-await and explicit-scope spawned immutable borrows without moving the owner
+- [`async-inout.z`](async/async-inout.z): direct-awaited mutation of a Z struct and move-only C++ owner across suspension
 - [`async-methods.z`](async/async-methods.z)
 
 ## Native interop

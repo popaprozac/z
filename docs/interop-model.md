@@ -111,8 +111,11 @@ child-frame slot, and cancellation destroys it even before the child body is
 polled. Immutable `in` native values and native-owning Z aggregates borrow stable
 caller-frame storage through direct await. Spawned borrows require an explicit
 async scope and prevent owner mutation or movement until its join; no wrapper,
-retain, or copy is added. Mutable/output async borrows remain a separate path.
-ARC class fields and owned closure environments likewise remain deferred.
+retain, or copy is added. Direct-awaited `inout` native values similarly use a
+mutable pointer into the suspended caller frame; no native copy or move occurs,
+and the child does not destroy the owner. Spawned mutable borrows and output
+borrows remain separate paths. ARC class fields and owned closure environments
+likewise remain deferred.
 
 C++ named-value references map onto the existing Z capability model:
 
