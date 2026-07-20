@@ -874,13 +874,20 @@ const result = await task;
 ```
 
 `thread.spawn` means exactly one OS thread; a future `pool.spawn` remains a
-separate operation. The implemented first slice accepts a synchronous closure
-with cleanup-free owned value captures and result. It creates a hot,
-scope-bound `Task<T>` and joins at `await` or scope exit. Borrows, views, ARC
-identity, native references, and cleanup-bearing values are rejected at the
-boundary. Its first join implementation blocks the FIFO executor thread;
-nonblocking executor integration, general sendability, atomic ARC, pools, and
-cross-thread callbacks remain validation work.
+separate operation. The implemented transfer classifier copies recursively
+cleanup-free values into the synchronous closure and moves uniquely owned
+`Array` storage, including recursively supported value aggregates. Capturing
+still requires `move`: for a Copy value this describes how the closure acquires
+its private snapshot without invalidating the source; for a unique owner it
+consumes the source binding. Results follow the same transfer classification.
+The operation creates a hot, scope-bound `Task<T>` and joins at `await` or scope
+exit. Borrows, views, ARC identity, native references, `String`/`TextBuffer`,
+and custom `deinit` remain rejected at the boundary. Its first join
+implementation blocks the FIFO executor thread; nonblocking executor
+integration, general sendability, atomic ARC, pools, and cross-thread callbacks
+remain validation work. Atomic reference counts alone will not make mutable
+class identity safely shareable; isolation or an explicit concurrency contract
+must address data races too.
 
 An async function continues to declare its domain contract as `T throws E`.
 `spawn` preserves that contract as `Task<T, E>`, `try await` propagates `E`, and

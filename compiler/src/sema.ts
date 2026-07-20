@@ -3810,6 +3810,7 @@ function inferExpressionInner(
                   helps: ["write `move () => ...`"],
                 });
               }
+              const captureTransfers: { readonly capture: ClosureCaptureInfo; readonly kind: ThreadTransferKind }[] = [];
               for (const capture of closure.captures) {
                 const outerBinding = locals.get(capture.name);
                 if (outerBinding && isBorrowedBinding(outerBinding)) {
@@ -3819,19 +3820,34 @@ function inferExpressionInner(
                     helps: ["make an owned value snapshot before thread.spawn, then capture that snapshot with move"],
                   });
                 }
-                if (isInitialThreadTransferType(capture.type, structs, enums, state)) continue;
-                throw new DiagnosticError(fileName, capture.location, `capture ${JSON.stringify(capture.name)} of type ${JSON.stringify(capture.type)} cannot cross a native thread boundary yet`, {
-                  code: "Z0704",
-                  notes: ["the first tier transfers cleanup-free value data only; views, borrows, ARC identity, native references, and cleanup-bearing storage remain local"],
-                  helps: ["capture a cleanup-free owned snapshot, or keep this work on the inherited executor with `spawn`"],
-                });
+                const transfer = initialThreadTransferKind(capture.type, structs, enums, state);
+                if (!transfer) {
+                  throw new DiagnosticError(fileName, capture.location, `capture ${JSON.stringify(capture.name)} of type ${JSON.stringify(capture.type)} cannot cross a native thread boundary yet`, {
+                    code: "Z0704",
+                    notes: ["the current tier copies plain values and moves uniquely owned Array-backed storage; views, borrows, ARC identity, native references, and custom cleanup remain local"],
+                    helps: ["capture a transferable owned value, or keep this work on the inherited executor with `spawn`"],
+                  });
+                }
+                captureTransfers.push({ capture, kind: transfer });
               }
               const returnType = closure.declaration.returnType.name;
-              if (!isInitialThreadTransferType(returnType, structs, enums, state)) {
+              if (!initialThreadTransferKind(returnType, structs, enums, state)) {
                 throw new DiagnosticError(fileName, operation.location, `thread.spawn result type ${JSON.stringify(returnType)} cannot cross a native thread boundary yet`, {
                   code: "Z0704",
-                  helps: ["return a cleanup-free value struct or scalar in the first thread tier"],
+                  helps: ["return a transferable value or uniquely owned Array-backed aggregate"],
                 });
+              }
+              for (const { capture, kind } of captureTransfers) {
+                if (kind !== "move") continue;
+                consumeOwnedValue(
+                  { kind: "identifier", name: capture.name, location: capture.location },
+                  capture.type,
+                  locals,
+                  structs,
+                  enums,
+                  fileName,
+                  state,
+                );
               }
               state.threadSpawnCalls.set(expression.location.offset, operation.location.offset);
               const taskType = taskTypeName(returnType, null);
@@ -5808,40 +5824,48 @@ function hasOwnershipType(
     || hasMoveOnlyForeignType(type, structs, enums, state.foreignNamedTypes);
 }
 
-function isInitialThreadTransferType(
+type ThreadTransferKind = "copy" | "move";
+
+function initialThreadTransferKind(
   type: ValueType,
   structs: ReadonlyMap<string, StructDeclaration>,
   enums: ReadonlyMap<string, EnumDeclaration>,
   state: AnalysisState,
   visiting: Set<string> = new Set(),
-): boolean {
+): ThreadTransferKind | null {
   const actual = String(underlyingType(type));
-  if (actual === "void" || actual === "bool" || integerTypes.has(actual) || floatTypes.has(actual)) return true;
-  if (parseViewType(actual) || parseSliceType(actual) || parseDynamicArrayType(actual) || parseTaskType(actual)) return false;
+  if (actual === "void" || actual === "bool" || integerTypes.has(actual) || floatTypes.has(actual)) return "copy";
+  if (parseViewType(actual) || parseSliceType(actual) || parseTaskType(actual)) return null;
   const fixed = parseFixedArrayType(actual);
-  if (fixed) return isInitialThreadTransferType(fixed.elementType, structs, enums, state, visiting);
-  if (state.foreignNamedTypes.has(actual) || state.foreignTypes.has(actual) || state.foreignObjectTypes.has(actual)) return false;
-  if (visiting.has(actual)) return false;
+  if (fixed) return initialThreadTransferKind(fixed.elementType, structs, enums, state, visiting);
+  const dynamic = parseDynamicArrayType(actual);
+  if (dynamic) {
+    return initialThreadTransferKind(dynamic.elementType, structs, enums, state, visiting) ? "move" : null;
+  }
+  if (state.foreignNamedTypes.has(actual) || state.foreignTypes.has(actual) || state.foreignObjectTypes.has(actual)) return null;
+  if (visiting.has(actual)) return null;
   const aggregate = structs.get(actual);
   if (aggregate) {
-    if (aggregate.kind !== "struct" || aggregate.deinitializer) return false;
+    if (aggregate.kind !== "struct" || aggregate.deinitializer) return null;
     visiting.add(actual);
-    const transferable = aggregate.fields.every((field) => (
-      isInitialThreadTransferType(field.type.name, structs, enums, state, visiting)
+    const fields = aggregate.fields.map((field) => (
+      initialThreadTransferKind(field.type.name, structs, enums, state, visiting)
     ));
     visiting.delete(actual);
-    return transferable;
+    if (fields.some((field) => field === null)) return null;
+    return fields.some((field) => field === "move") ? "move" : "copy";
   }
   const enumeration = enums.get(actual);
   if (enumeration) {
     visiting.add(actual);
-    const transferable = enumeration.variants.every((variant) => (
-      !variant.payload || isInitialThreadTransferType(variant.payload.name, structs, enums, state, visiting)
+    const variants = enumeration.variants.map((variant) => (
+      variant.payload ? initialThreadTransferKind(variant.payload.name, structs, enums, state, visiting) : "copy"
     ));
     visiting.delete(actual);
-    return transferable;
+    if (variants.some((variant) => variant === null)) return null;
+    return variants.some((variant) => variant === "move") ? "move" : "copy";
   }
-  return false;
+  return null;
 }
 
 function hasMoveOnlyForeignType(

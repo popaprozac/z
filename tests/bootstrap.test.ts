@@ -8744,3 +8744,90 @@ test("runs cleanup-free owned work on an explicit native thread", () => {
     return true;
   });
 });
+
+test("copies plain thread captures and moves uniquely owned Array storage", () => {
+  const example = resolve(projectRoot, "examples/async/thread-transfer.z");
+  const source = readFileSync(example, "utf8");
+  const generated = compileToC(source, example);
+  assert.match(generated, /int32_t value_parentCounter/);
+  assert.doesNotMatch(generated, /int32_t \*value_parentCounter/);
+  assert.match(generated, /Z_DynamicArray_\S+ value_readings/);
+  assert.match(generated, /frame->live_readings = false/);
+
+  const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(
+    result.stdout,
+    "parent copy remains=20\nthread copy=42, moved owner=42\n",
+  );
+
+  const useAfterMove = `
+    import { thread } from "std/thread";
+    async function main(): i32 {
+      let readings = Array<i32>();
+      readings.push(42);
+      const task = thread.spawn(move () => readings.length);
+      const invalid = readings.length;
+      return await task;
+    }
+  `;
+  assert.throws(() => check(useAfterMove, "thread-array-move.z"), (error: unknown) => {
+    assert.ok(error instanceof DiagnosticError);
+    assert.equal(error.code, "Z0201");
+    assert.match(error.message, /use of moved value "readings"/);
+    return true;
+  });
+  const editorMoveDiagnostic = diagnostics(useAfterMove, "thread-array-move.z")[0];
+  assert.equal(editorMoveDiagnostic.code, "Z0201");
+  assert.match(editorMoveDiagnostic.message, /use of moved value "readings"/);
+
+  const returnedOwner = `
+    import { thread } from "std/thread";
+    async function main(): i32 {
+      const task = thread.spawn(() => Array<i32>());
+      let values = await task;
+      values.push(42);
+      return values[0] - 42;
+    }
+  `;
+  const directory = mkdtempSync("/tmp/z-thread-owned-result-");
+  const returnedOwnerFile = resolve(directory, "main.z");
+  writeFileSync(returnedOwnerFile, returnedOwner);
+  const returnedOwnerResult = spawnSync(process.execPath, [cli, "run", returnedOwnerFile], { encoding: "utf8" });
+  assert.equal(returnedOwnerResult.status, 0, returnedOwnerResult.stderr);
+
+  const aggregateOwner = `
+    import { thread } from "std/thread";
+    struct Batch { readings: Array<i32>; }
+    async function main(): i32 {
+      let readings = Array<i32>();
+      readings.push(42);
+      const batch = Batch({ readings });
+      const task = thread.spawn(move () => batch.readings[0]);
+      return await task - 42;
+    }
+  `;
+  const aggregateOwnerFile = resolve(directory, "aggregate.z");
+  writeFileSync(aggregateOwnerFile, aggregateOwner);
+  const aggregateOwnerResult = spawnSync(process.execPath, [cli, "run", aggregateOwnerFile], { encoding: "utf8" });
+  assert.equal(aggregateOwnerResult.status, 0, aggregateOwnerResult.stderr);
+
+  const customCleanup = `
+    import { thread } from "std/thread";
+    struct ThreadAffine {
+      id: i32;
+      deinit {}
+    }
+    async function main(): i32 {
+      const resource = ThreadAffine({ id: 42 });
+      const task = thread.spawn(move () => resource.id);
+      return await task;
+    }
+  `;
+  assert.throws(() => check(customCleanup, "thread-custom-cleanup.z"), (error: unknown) => {
+    assert.ok(error instanceof DiagnosticError);
+    assert.equal(error.code, "Z0704");
+    assert.match(error.message, /type "ThreadAffine" cannot cross/);
+    return true;
+  });
+});

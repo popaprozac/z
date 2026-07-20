@@ -138,16 +138,22 @@ argument is a synchronous zero-parameter closure, not an async function, and
 the returned `Task<T>` remains owned by the surrounding structured task scope.
 `await` joins it; leaving the scope with an unconsumed handle also joins it
 before destroying the child frame. A capturing closure must use `move` so the
-boundary visibly owns a snapshot of each input. Cleanup-free Copy values remain
-usable in the parent because the thread receives its own value snapshot.
+boundary visibly owns each input. Recursively cleanup-free values are Copy
+values: the thread receives a private snapshot and the source remains usable.
+Mutating such a capture changes only the thread's snapshot. A uniquely owned
+value instead transfers its owner and the source binding becomes unavailable.
 
 The first executable transfer rule is deliberately narrow. Integers, floats,
-booleans, fixed arrays, and recursively cleanup-free Z structs/enums may cross
-and may be returned. Borrowed `in`, `inout`, and `out` bindings, `view`, `Slice`,
-`Array`, `String`, `Arena`, ARC classes, weak references, native handles, C++
-RAII values, and other cleanup-bearing storage are rejected. This establishes
-a real cross-thread task-frame boundary before Z commits atomic ARC or general
-sendability semantics.
+booleans, fixed arrays, and recursively cleanup-free Z structs/enums copy.
+`Array<T>` and recursively supported Z aggregates containing it move when `T`
+is itself transferable; owned Array-backed results move back to the awaiting
+task. Borrowed `in`, `inout`, and `out` bindings, `view`, `Slice`, `String`,
+`TextBuffer`, `Arena`, ARC classes, weak references, native handles, C++ RAII
+values, and custom `deinit` remain rejected. This establishes a real
+cross-thread task-frame and unique-owner boundary before Z commits atomic ARC or
+general sendability semantics. Atomic ARC will address reference-count races,
+but mutable shared class state also requires isolation or an explicit safe
+concurrency contract.
 
 The worker may call ordinary synchronous Z or supported native functions. It
 cannot suspend or `await`. In this first runtime, joining the worker blocks the

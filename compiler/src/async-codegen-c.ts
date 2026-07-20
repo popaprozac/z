@@ -141,12 +141,16 @@ export function generateAsyncC(
       && closure.declaration.body.length === 1
       && closure.declaration.body[0].kind === "return"
       && closure.declaration.body[0].expression;
+    const captureCount = closure.captures.length;
     threadTargets.set(callOffset, {
       owner: null,
       declaration: {
         ...closure.declaration,
         name: `__z_thread_job_${callOffset}`,
         async: true,
+        parameters: closure.declaration.parameters.map((parameter, index) => (
+          index < captureCount ? { ...parameter, mode: "value" } : parameter
+        )),
         body: directVoidReturn
           ? [{
               kind: "expressionStatement",

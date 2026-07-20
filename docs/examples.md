@@ -75,7 +75,7 @@ Read [`async-model.md`](async-model.md) alongside these examples:
 | Cancellation | [`async-cancellation.z`](../examples/async/async-cancellation.z) |
 | Caller-driven cancellation | [`async-caller-cancellation.z`](../examples/async/async-caller-cancellation.z) — consuming request-and-join, descendant cleanup, and deterministic native resource release |
 | Scheduler-aware timers | [`async-delay.z`](../examples/async/async-delay.z) |
-| Explicit native-thread work | [`thread-spawn.z`](../examples/async/thread-spawn.z) — one hot OS thread, move capture of cleanup-free value data, parent progress, and explicit join |
+| Explicit native-thread work | [`thread-spawn.z`](../examples/async/thread-spawn.z) — one hot OS thread, Copy-value capture, parent progress, and explicit join; [`thread-transfer.z`](../examples/async/thread-transfer.z) — thread-local mutation of a Copy snapshot versus unique Array-owner transfer |
 | Owned values across suspension | [`async-ownership.z`](../examples/async/async-ownership.z), [`async-owned-enums.z`](../examples/async/async-owned-enums.z) |
 | Move-only native values across suspension | [`async-native-ownership.z`](../examples/async/async-native-ownership.z) — local ownership plus fallible return/await relay, `try`, `attempt`, direct match, and deterministic Result cleanup |
 | Native-owning Z aggregates across suspension | [`async-native-aggregate.z`](../examples/async/async-native-aggregate.z) — whole-owner relay, success/failure, consuming match, cancellation cleanup, and zero leaked native values |
