@@ -864,6 +864,24 @@ Spawned children are scheduled immediately. Awaiting a task joins already-hot
 work: it returns an available outcome or suspends the current task without
 blocking the executor thread.
 
+Keyword `spawn` always inherits the current executor. Explicit native CPU work
+uses a standard-library boundary rather than overloading the keyword:
+
+```z
+import { thread } from "std/thread";
+const task = thread.spawn(move () => calculate(input));
+const result = await task;
+```
+
+`thread.spawn` means exactly one OS thread; a future `pool.spawn` remains a
+separate operation. The implemented first slice accepts a synchronous closure
+with cleanup-free owned value captures and result. It creates a hot,
+scope-bound `Task<T>` and joins at `await` or scope exit. Borrows, views, ARC
+identity, native references, and cleanup-bearing values are rejected at the
+boundary. Its first join implementation blocks the FIFO executor thread;
+nonblocking executor integration, general sendability, atomic ARC, pools, and
+cross-thread callbacks remain validation work.
+
 An async function continues to declare its domain contract as `T throws E`.
 `spawn` preserves that contract as `Task<T, E>`, `try await` propagates `E`, and
 `attempt await` materializes `Result<T, E>`. Suspension composes with the

@@ -49,8 +49,8 @@ Z is exploring a specific combination:
 - `return` for success, `throw` for typed failure, and `Result<T, E>` through
   `attempt`;
 - exhaustive expression-oriented pattern matching;
-- structured async tasks with hot `spawn`, lexical joins, cancellation, and
-  scheduler-aware delay;
+- structured async tasks with hot `spawn`, lexical joins, cancellation,
+  scheduler-aware delay, and an initial explicit native-thread launcher;
 - header-first C and Objective-C imports, plus staged C++ and Swift interop.
 
 The wager is not that familiar syntax makes systems semantics disappear. It is
@@ -66,7 +66,7 @@ requiring lifetime syntax throughout ordinary application code.
 | Ownership | Lexical borrows, moves, deterministic cleanup, ARC, `Weak<T>`, receiver-tied views, and synchronous arena regions |
 | Errors | Typed `throws`, `try` propagation, `attempt`, `Result<T, E>` |
 | Control flow | Checked arithmetic, loops, ternaries, value `if`, exhaustive `match` |
-| Async | Stackless tasks, FIFO executor, spawn/join scopes, cancellation, delay |
+| Async | Stackless tasks, FIFO executor, spawn/join scopes, cancellation, delay, and cleanup-free `thread.spawn` work on one native thread |
 | C | Header imports, functions, records, enums, constants, pointers with `.zd` contracts, callbacks, target-aware availability |
 | Objective-C | ARC objects, nullability, selectors, blocks, persistent observers, AppKit |
 | C++ | Hierarchical functions/types, overload selection, records, `.zd`-contracted copyable and move-only RAII values, constructors, methods, named-value references, and receiver qualifiers |

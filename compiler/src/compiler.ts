@@ -104,7 +104,10 @@ export function compileToNative(source: string, fileName: string): NativeArtifac
     frameworks: [...new Set([...semanticInfo.frameworks, ...projectBuild.frameworks])],
     includeDirectories: [...new Set([...projectBuild.includeDirectories, ...moduleIncludeDirectories])],
     nativeLibraries: projectBuild.nativeLibraries,
-    nativeLinkerArguments: projectBuild.nativeLinkerArguments,
+    nativeLinkerArguments: [...new Set([
+      ...(semanticInfo.threadSpawnCalls.size > 0 && process.platform !== "win32" ? ["-pthread"] : []),
+      ...projectBuild.nativeLinkerArguments,
+    ])],
     deploymentTarget: projectBuild.deploymentTarget,
     warnings: semanticInfo.warnings,
   };

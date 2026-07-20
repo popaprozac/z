@@ -593,6 +593,9 @@ export function hover(source: string, fileName: string, offset: number): Hover |
       if (detail) return markdownHover(detail, source, word.start, word.end);
     }
     const standardOwner = context.semanticInfo.standardModuleBindings.get(memberPrefix[1]);
+    if (standardOwner === "thread" && word.text === "spawn") {
+      return markdownHover("spawn<T>(operation: () => T): Task<T>  // starts one native thread", source, word.start, word.end);
+    }
     const standardName = standardOwner ? standardModuleFunction(standardOwner, word.text) : null;
     if (standardName) {
       return markdownHover(standardFunctionDetail(word.text, standardName), source, word.start, word.end);
@@ -906,6 +909,13 @@ function selectiveImportCandidates(specifier: string, fileName: string): Complet
       label: "Arena",
       kind: completionKinds.struct,
       detail: "Arena(options?: { initialCapacity: usize })  // growable region storage",
+    }];
+  }
+  if (specifier === "std/thread") {
+    return [{
+      label: "thread",
+      kind: completionKinds.module,
+      detail: "native thread task launcher",
     }];
   }
   if (specifier === "std/console") return [];
@@ -1958,11 +1968,13 @@ function memberCompletions(
   const standardModule = importContext.semanticInfo.standardModuleBindings.get(receiverText);
   if (standardModule) {
     return filterCompletions(standardModuleMemberNames(standardModule).map((member) => {
-      const name = standardModuleFunction(standardModule, member)!;
+      const name = standardModuleFunction(standardModule, member);
       return {
         label: member,
         kind: completionKinds.method,
-        detail: standardFunctionDetail(member, name),
+        detail: standardModule === "thread" && member === "spawn"
+          ? "spawn<T>(operation: () => T): Task<T>  // starts one native thread"
+          : standardFunctionDetail(member, name!),
         insertText: `${member}()`,
       };
     }), prefix, 100);

@@ -108,6 +108,55 @@ not expose a Promise or Future wrapper in their signatures.
 `await operation()`; concurrent work binds the spawned task and joins it after
 the parent has had an opportunity to continue.
 
+## Explicit native threads
+
+Keyword `spawn` always inherits the current async executor. It never silently
+changes an operation into CPU-parallel work. Starting a native OS thread is a
+separate standard-library operation:
+
+```z
+import { thread } from "std/thread";
+
+struct Calculation {
+  value: i32;
+  multiplier: i32;
+}
+
+function calculate(input: Calculation): i32 {
+  return input.value * input.multiplier;
+}
+
+async function answer(input: Calculation): i32 {
+  const calculation = thread.spawn(move () => calculate(input));
+  doOtherWork();
+  return await calculation;
+}
+```
+
+`thread.spawn` is hot: it starts exactly one native thread at the call. Its
+argument is a synchronous zero-parameter closure, not an async function, and
+the returned `Task<T>` remains owned by the surrounding structured task scope.
+`await` joins it; leaving the scope with an unconsumed handle also joins it
+before destroying the child frame. A capturing closure must use `move` so the
+boundary visibly owns a snapshot of each input. Cleanup-free Copy values remain
+usable in the parent because the thread receives its own value snapshot.
+
+The first executable transfer rule is deliberately narrow. Integers, floats,
+booleans, fixed arrays, and recursively cleanup-free Z structs/enums may cross
+and may be returned. Borrowed `in`, `inout`, and `out` bindings, `view`, `Slice`,
+`Array`, `String`, `Arena`, ARC classes, weak references, native handles, C++
+RAII values, and other cleanup-bearing storage are rejected. This establishes
+a real cross-thread task-frame boundary before Z commits atomic ARC or general
+sendability semantics.
+
+The worker may call ordinary synchronous Z or supported native functions. It
+cannot suspend or `await`. In this first runtime, joining the worker blocks the
+single FIFO executor's OS thread until the native thread finishes. Cancellation
+cannot forcibly interrupt synchronous native work: cancelling such a task joins
+the thread and discards its outcome. Future `pool.spawn` and multithreaded
+executors remain separate designs; `thread.spawn` will continue to mean one
+explicit native thread rather than silently becoming pooled work.
+
 This keeps the existing Z error model intact: `try await` unwraps success and
 propagates `E`, while `attempt await` materializes `Result<T, E>` for matching or
 storage. Writing `Result<T, E>` as the async function's return type would force

@@ -8636,3 +8636,111 @@ test("runs synchronous calls and typed console output inside async frames", () =
   );
   assert.equal(result.stderr, "debug false\n");
 });
+
+test("runs cleanup-free owned work on an explicit native thread", () => {
+  const example = resolve(projectRoot, "examples/async/thread-spawn.z");
+  const source = readFileSync(example, "utf8");
+  const artifact = compileToNative(source, example);
+  assert.match(artifact.source, /pthread_create|CreateThread/);
+  assert.match(artifact.source, /z_async_start_native_thread/);
+  assert.match(artifact.source, /z_async_join_native_thread/);
+  assert.match(artifact.source, /z_async_start___z_thread_job_/);
+  assert.doesNotMatch(artifact.source, /static int32_t __z_closure_call_/);
+  if (process.platform !== "win32") assert.ok(artifact.nativeLinkerArguments.includes("-pthread"));
+
+  const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(
+    result.stdout,
+    "main task continued after thread.spawn\nthread answer=42\n",
+  );
+
+  const directory = mkdtempSync("/tmp/z-thread-implicit-join-");
+  const implicitJoin = resolve(directory, "main.z");
+  writeFileSync(implicitJoin, `
+    import console from "std/console";
+    import { thread } from "std/thread";
+    function finish(): void { console.log("native child joined"); }
+    async function main(): i32 {
+      const task = thread.spawn(() => finish());
+      return 0;
+    }
+  `);
+  const implicitResult = spawnSync(process.execPath, [cli, "run", implicitJoin], { encoding: "utf8" });
+  assert.equal(implicitResult.status, 0, implicitResult.stderr);
+  assert.equal(implicitResult.stdout, "native child joined\n");
+
+  const spawnUse = source.indexOf("thread.spawn") + "thread.".length + 1;
+  assert.match(
+    hover(source, example, spawnUse)?.contents.value ?? "",
+    /spawn<T>\(operation: \(\) => T\): Task<T>/,
+  );
+  const completionSource = source.replace("thread.spawn", "thread.sp");
+  const completionOffset = completionSource.indexOf("thread.sp") + "thread.sp".length;
+  assert.match(
+    completions(completionSource, example, completionOffset).find((item) => item.label === "spawn")?.detail ?? "",
+    /starts one native thread/,
+  );
+  const importSource = `import { th } from "std/thread";`;
+  const importOffset = importSource.indexOf("th") + 2;
+  assert.equal(completions(importSource, example, importOffset).some((item) => item.label === "thread"), true);
+
+  const missingMove = `
+    import { thread } from "std/thread";
+    async function main(): i32 {
+      const input = 41;
+      const task = thread.spawn(() => input + 1);
+      return await task;
+    }
+  `;
+  assert.throws(() => check(missingMove, "thread-missing-move.z"), (error: unknown) => {
+    assert.ok(error instanceof DiagnosticError);
+    assert.equal(error.code, "Z0704");
+    assert.match(error.message, /requires `move`/);
+    return true;
+  });
+
+  const borrowedCapture = `
+    import { thread } from "std/thread";
+    async function calculate(in input: i32): i32 {
+      const task = thread.spawn(move () => input + 1);
+      return await task;
+    }
+  `;
+  assert.throws(() => check(borrowedCapture, "thread-borrow.z"), (error: unknown) => {
+    assert.ok(error instanceof DiagnosticError);
+    assert.equal(error.code, "Z0704");
+    assert.match(error.message, /borrowed capture "input" cannot cross/);
+    return true;
+  });
+
+  const referenceCapture = `
+    import { thread } from "std/thread";
+    class Session { id: i32; }
+    async function main(): i32 {
+      const session = new Session({ id: 42 });
+      const task = thread.spawn(move () => session.id);
+      return await task;
+    }
+  `;
+  assert.throws(() => check(referenceCapture, "thread-reference.z"), (error: unknown) => {
+    assert.ok(error instanceof DiagnosticError);
+    assert.equal(error.code, "Z0704");
+    assert.match(error.message, /type "Session" cannot cross/);
+    return true;
+  });
+
+  const synchronous = `
+    import { thread } from "std/thread";
+    function main(): i32 {
+      const task = thread.spawn(() => 42);
+      return 0;
+    }
+  `;
+  assert.throws(() => check(synchronous, "thread-synchronous.z"), (error: unknown) => {
+    assert.ok(error instanceof DiagnosticError);
+    assert.equal(error.code, "Z0703");
+    assert.match(error.message, /requires an enclosing async function/);
+    return true;
+  });
+});

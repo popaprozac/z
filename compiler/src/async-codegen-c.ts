@@ -29,11 +29,12 @@ type AwaitSite = {
 type SpawnSite = {
   readonly index: number;
   readonly scope: number;
-  readonly expression: Extract<Expression, { kind: "spawn" }>;
+  readonly expression: Expression;
   readonly call: CallExpression;
   readonly target: AsyncTarget;
   readonly receiver: Expression | null;
   readonly binding: string | null;
+  readonly nativeThread: boolean;
 };
 
 type NestedAwaitSite = {
@@ -123,7 +124,7 @@ export function generateAsyncC(
   fileName: string,
   semanticInfo: SemanticInfo,
 ): AsyncCGeneration {
-  const targets: AsyncTarget[] = [
+  const sourceTargets: AsyncTarget[] = [
     ...program.functions.filter((declaration) => declaration.async).map((declaration) => ({
       declaration,
       owner: null,
@@ -133,6 +134,30 @@ export function generateAsyncC(
       owner,
     }))),
   ];
+  const threadTargets = new Map<number, AsyncTarget>();
+  for (const [callOffset, closureOffset] of semanticInfo.threadSpawnCalls) {
+    const closure = semanticInfo.closures.get(closureOffset)!;
+    const directVoidReturn = closure.declaration.returnType.name === "void"
+      && closure.declaration.body.length === 1
+      && closure.declaration.body[0].kind === "return"
+      && closure.declaration.body[0].expression;
+    threadTargets.set(callOffset, {
+      owner: null,
+      declaration: {
+        ...closure.declaration,
+        name: `__z_thread_job_${callOffset}`,
+        async: true,
+        body: directVoidReturn
+          ? [{
+              kind: "expressionStatement",
+              expression: directVoidReturn,
+              location: directVoidReturn.location,
+            }]
+          : closure.declaration.body,
+      },
+    });
+  }
+  const targets: AsyncTarget[] = [...sourceTargets, ...threadTargets.values()];
   const functions = new Map(
     targets.filter((target) => !target.owner).map((target) => [target.declaration.name, target]),
   );
@@ -142,7 +167,7 @@ export function generateAsyncC(
     functions: new Map(program.functions.map((declaration) => [declaration.name, declaration])),
     semanticInfo,
   };
-  const plans = targets.map((target) => planFunction(target, functions, fileName, semanticInfo, types));
+  const plans = targets.map((target) => planFunction(target, functions, threadTargets, fileName, semanticInfo, types));
   const planByKey = new Map(plans.map((plan) => [targetKey(plan), plan]));
   const main = planByKey.get("main");
   if (main) validateAsyncMain(main.declaration, fileName);
@@ -165,6 +190,7 @@ export function generateAsyncC(
 function planFunction(
   target: AsyncTarget,
   functions: ReadonlyMap<string, AsyncTarget>,
+  threadTargets: ReadonlyMap<number, AsyncTarget>,
   fileName: string,
   semanticInfo: SemanticInfo,
   types: AsyncTypeContext,
@@ -304,7 +330,9 @@ function planFunction(
       }
       operations.push({ kind: "statement", statement });
       if (statement.kind === "variable") {
-        if (scope !== 0 && statement.initializer?.kind !== "spawn") {
+        const threadSpawn = statement.initializer?.kind === "call"
+          && semanticInfo.threadSpawnCalls.has(statement.initializer.location.offset);
+        if (scope !== 0 && statement.initializer?.kind !== "spawn" && !threadSpawn) {
           unsupported(
             fileName,
             statement.location,
@@ -357,6 +385,21 @@ function planFunction(
             fileName,
             locals,
             types,
+          );
+          spawns.set(statement.initializer.location.offset, site);
+          spawnBindings.set(statement.name, site);
+          children.set(site.index, site.target);
+          continue;
+        }
+        if (threadSpawn && statement.initializer.kind === "call") {
+          const site = threadSpawnSite(
+            nextChild.value++,
+            scope,
+            statement.initializer,
+            statement.name,
+            threadTargets,
+            semanticInfo,
+            fileName,
           );
           spawns.set(statement.initializer.location.offset, site);
           spawnBindings.set(statement.name, site);
@@ -624,6 +667,39 @@ function spawnSite(
     target: resolved.target,
     receiver: resolved.receiver,
     binding,
+    nativeThread: false,
+  };
+}
+
+function threadSpawnSite(
+  index: number,
+  scope: number,
+  call: CallExpression,
+  binding: string,
+  threadTargets: ReadonlyMap<number, AsyncTarget>,
+  semanticInfo: SemanticInfo,
+  fileName: string,
+): SpawnSite {
+  const target = threadTargets.get(call.location.offset);
+  const closureOffset = semanticInfo.threadSpawnCalls.get(call.location.offset);
+  const closure = closureOffset === undefined ? null : semanticInfo.closures.get(closureOffset);
+  if (!target || !closure) {
+    unsupported(fileName, call.location, "thread.spawn lowering lost its analyzed closure target");
+  }
+  const arguments_ = closure.captures.map((capture) => ({
+    kind: "identifier" as const,
+    name: capture.name,
+    location: capture.location,
+  }));
+  return {
+    index,
+    scope,
+    expression: call,
+    call: { ...call, arguments: arguments_ },
+    target,
+    receiver: null,
+    binding,
+    nativeThread: true,
   };
 }
 
@@ -892,6 +968,7 @@ function generateRuntime(
   fileName: string,
 ): string {
   const usesDelay = plans.some((plan) => [...plan.awaits.values()].some((site) => site.intrinsic === "delay"));
+  const usesThreads = plans.some((plan) => [...plan.spawns.values()].some((site) => site.nativeThread));
   const usesNativeFrameStorage = plans.some((plan) => (
     requiresNativeFramePlacement(plan.declaration.returnType.name, plan.types)
     || [...plan.locals].some(([name, type]) => (
@@ -900,6 +977,16 @@ function generateRuntime(
     || [...plan.suspensions.values()].some((site) => requiresNativeFramePlacement(site.type, plan.types))
   ));
   const lines = [
+    ...(usesThreads ? [
+      "#if defined(_WIN32)",
+      "#include <windows.h>",
+      "typedef HANDLE Z_NativeThreadHandle;",
+      "#else",
+      "#include <pthread.h>",
+      "typedef pthread_t Z_NativeThreadHandle;",
+      "#endif",
+      "",
+    ] : []),
     ...(usesNativeFrameStorage ? ["#include <memory>", "#include <new>", ""] : []),
     ...(usesNativeFrameStorage ? [
       "template <typename T>",
@@ -928,11 +1015,14 @@ function generateRuntime(
     "  bool cancellation_requested;",
     "  bool cancelled;",
     "  bool timer_scheduled;",
+    "  bool native_thread;",
+    "  bool thread_joined;",
     "  uint64_t wake_at_ms;",
     "  Z_AsyncTask *waiter;",
     "  Z_AsyncTask *next;",
     "  Z_AsyncTask *timer_next;",
     "  Z_AsyncExecutor *executor;",
+    ...(usesThreads ? ["  Z_NativeThreadHandle native_handle;"] : []),
     "};",
     "",
     "struct Z_AsyncExecutor {",
@@ -941,6 +1031,44 @@ function generateRuntime(
     "  Z_AsyncTask *timers;",
     "};",
     "",
+    ...(usesThreads ? [
+      "#if defined(_WIN32)",
+      "static DWORD WINAPI z_async_native_thread_entry(LPVOID context) {",
+      "  Z_AsyncTask *task = (Z_AsyncTask *)context;",
+      "  task->poll(task);",
+      "  return 0;",
+      "}",
+      "#else",
+      "static void *z_async_native_thread_entry(void *context) {",
+      "  Z_AsyncTask *task = (Z_AsyncTask *)context;",
+      "  task->poll(task);",
+      "  return NULL;",
+      "}",
+      "#endif",
+      "",
+      "static void z_async_start_native_thread(Z_AsyncTask *task) {",
+      "  task->native_thread = true;",
+      "  task->thread_joined = false;",
+      "#if defined(_WIN32)",
+      "  task->native_handle = CreateThread(NULL, 0, z_async_native_thread_entry, task, 0, NULL);",
+      "  if (task->native_handle == NULL) abort();",
+      "#else",
+      "  if (pthread_create(&task->native_handle, NULL, z_async_native_thread_entry, task) != 0) abort();",
+      "#endif",
+      "}",
+      "",
+      "static void z_async_join_native_thread(Z_AsyncTask *task) {",
+      "  if (!task->native_thread || task->thread_joined) return;",
+      "#if defined(_WIN32)",
+      "  if (WaitForSingleObject(task->native_handle, INFINITE) != WAIT_OBJECT_0) abort();",
+      "  if (!CloseHandle(task->native_handle)) abort();",
+      "#else",
+      "  if (pthread_join(task->native_handle, NULL) != 0) abort();",
+      "#endif",
+      "  task->thread_joined = true;",
+      "}",
+      "",
+    ] : []),
     "static __attribute__((unused)) void z_async_enqueue(Z_AsyncExecutor *executor, Z_AsyncTask *task) {",
     "  if (task->completed || task->queued || task->suspended) return;",
     "  task->queued = true;",
@@ -1028,6 +1156,14 @@ function generateRuntime(
     "",
     ] : []),
     "static __attribute__((unused)) void z_async_cancel(Z_AsyncTask *task) {",
+    ...(usesThreads ? [
+      "  if (task->native_thread) {",
+      "    z_async_join_native_thread(task);",
+      "    task->cancellation_requested = true;",
+      "    task->cancelled = true;",
+      "    return;",
+      "  }",
+    ] : []),
     "  if (task->completed) return;",
     "  task->cancellation_requested = true;",
     ...(usesDelay ? ["  z_async_remove_timer(task);"] : []),
@@ -1036,6 +1172,12 @@ function generateRuntime(
     "}",
     "",
     "static __attribute__((unused)) bool z_async_wait(Z_AsyncTask *parent, Z_AsyncTask *child) {",
+    ...(usesThreads ? [
+      "  if (child->native_thread) {",
+      "    z_async_join_native_thread(child);",
+      "    return child->completed;",
+      "  }",
+    ] : []),
     "  if (child->completed) return true;",
     "  if (child->waiter != NULL && child->waiter != parent) abort();",
     "  child->waiter = parent;",
@@ -1240,6 +1382,8 @@ function generateStart(plan: AsyncFunctionPlan): string {
     "  frame->task.cancellation_requested = false;",
     "  frame->task.cancelled = false;",
     "  frame->task.timer_scheduled = false;",
+    "  frame->task.native_thread = false;",
+    "  frame->task.thread_joined = false;",
     "  frame->task.wake_at_ms = 0;",
     "  frame->state = 0;",
     "  frame->cancel_children = false;",
@@ -1446,14 +1590,19 @@ function generatePoll(
         state += 1;
         continue;
       }
-      if (initializer.kind === "spawn") {
-        const site = plan.spawns.get(initializer.location.offset)!;
+      const spawnedSite = initializer.kind === "spawn" || initializer.kind === "call"
+        ? plan.spawns.get(initializer.location.offset)
+        : null;
+      if (spawnedSite) {
+        const site = spawnedSite;
         const target = planByKey.get(targetKey(site.target))!;
         const arguments_ = emitAwaitArguments(site, plan, fileName);
         cases.push(caseBlock(state, [
           `frame->child_${site.index} = ${target.startName}(${["frame->task.executor", ...arguments_].join(", ")});`,
           `frame->${frameField(statement.name)} = &frame->child_${site.index}->task;`,
-          `z_async_enqueue(frame->task.executor, &frame->child_${site.index}->task);`,
+          site.nativeThread
+            ? `z_async_start_native_thread(&frame->child_${site.index}->task);`
+            : `z_async_enqueue(frame->task.executor, &frame->child_${site.index}->task);`,
           `frame->state = ${state + 1};`,
           "continue;",
         ]));
@@ -1624,7 +1773,9 @@ function generatePoll(
         const arguments_ = emitAwaitArguments(site, plan, fileName);
         cases.push(caseBlock(state, [
           `frame->child_${site.index} = ${target.startName}(${["frame->task.executor", ...arguments_].join(", ")});`,
-          `z_async_enqueue(frame->task.executor, &frame->child_${site.index}->task);`,
+          site.nativeThread
+            ? `z_async_start_native_thread(&frame->child_${site.index}->task);`
+            : `z_async_enqueue(frame->task.executor, &frame->child_${site.index}->task);`,
           `frame->state = ${state + 1};`,
           "continue;",
         ]));

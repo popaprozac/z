@@ -99,7 +99,10 @@ export function generateC(program: Program, sourceName: string, semanticInfo: Se
   const structs = new Map(program.structs.map((declaration) => [declaration.name, declaration]));
   const enums = new Map(program.enums.map((declaration) => [declaration.name, declaration]));
   const functions = new Map(program.functions.map((declaration) => [declaration.name, declaration]));
-  const closures = [...semanticInfo.closures.values()];
+  const threadClosureOffsets = new Set(semanticInfo.threadSpawnCalls.values());
+  const closures = [...semanticInfo.closures.entries()]
+    .filter(([offset]) => !threadClosureOffsets.has(offset))
+    .map(([, closure]) => closure);
   const arrayTypes = collectFixedArrayTypes(program, semanticInfo);
   const sliceTypes = collectSliceTypes(program, semanticInfo);
   const dynamicArrayTypes = collectDynamicArrayTypes(program, semanticInfo);

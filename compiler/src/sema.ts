@@ -144,6 +144,7 @@ export type SemanticInfo = {
   readonly dynamicArrayPushTypes: ReadonlySet<string>;
   readonly arenaCreateCalls: ReadonlyMap<number, string>;
   readonly arenaResetCalls: ReadonlySet<number>;
+  readonly threadSpawnCalls: ReadonlyMap<number, number>;
   readonly foreignArgumentAccesses: ReadonlyMap<number, "in" | "out" | "inout">;
   readonly foreignCxxArgumentAccesses: ReadonlyMap<number, "in" | "inout" | "move">;
   readonly foreignCallbackTargets: ReadonlyMap<number, string>;
@@ -202,6 +203,7 @@ type AnalysisState = {
   readonly dynamicArrayPushTypes: Set<string>;
   readonly arenaCreateCalls: Map<number, string>;
   readonly arenaResetCalls: Set<number>;
+  readonly threadSpawnCalls: Map<number, number>;
   readonly foreignArgumentAccesses: Map<number, "in" | "out" | "inout">;
   readonly foreignCxxArgumentAccesses: Map<number, "in" | "inout" | "move">;
   readonly foreignCallbackTargets: Map<number, string>;
@@ -385,6 +387,7 @@ export function analyze(
     dynamicArrayPushTypes: new Set(),
     arenaCreateCalls: new Map(),
     arenaResetCalls: new Set(),
+    threadSpawnCalls: new Map(),
     foreignArgumentAccesses: new Map(),
     foreignCxxArgumentAccesses: new Map(),
     foreignCallbackTargets: new Map(),
@@ -540,6 +543,26 @@ export function analyze(
         }
         continue;
       }
+      if (declaration.header === "std/thread") {
+        if (!declaration.bindings) {
+          throw new DiagnosticError(fileName, declaration.location, "std/thread requires a selective import", {
+            code: "Z0501",
+            helps: ["use `import { thread } from \"std/thread\";`"],
+          });
+        }
+        for (const binding of declaration.bindings) {
+          if (binding.importedName !== "thread") {
+            throw new DiagnosticError(fileName, binding.location, `std/thread has no export ${JSON.stringify(binding.importedName)}`, {
+              code: "Z0501",
+              helps: ["the first std/thread tier exports `thread`; pools remain a later explicit type"],
+            });
+          }
+          validateUserName(binding.localName, binding.location, fileName);
+          declareGlobal(globals, binding.localName, { kind: "standardModule", module: "thread" }, binding.location, fileName);
+          state.standardModuleBindings.set(binding.localName, "thread");
+        }
+        continue;
+      }
       if (declaration.header === "std/fs" || declaration.header === "std/process") {
         const module: StandardModuleName = declaration.header === "std/fs" ? "fs" : "process";
         if (declaration.bindings) {
@@ -555,7 +578,7 @@ export function analyze(
       }
       throw new DiagnosticError(fileName, declaration.location, `unknown standard module ${JSON.stringify(declaration.header)}`, {
         code: "Z0501",
-        helps: ["the bootstrap standard library currently provides `std`, `std/console`, `std/time`, `std/text`, `std/fs`, and `std/process`"],
+        helps: ["the bootstrap standard library currently provides `std`, `std/console`, `std/time`, `std/text`, `std/memory`, `std/thread`, `std/fs`, and `std/process`"],
       });
     }
     const module = foreignModules.get(declaration.moduleName);
@@ -3752,6 +3775,68 @@ function inferExpressionInner(
           const localModuleName = expression.callee.object.name;
           const owner = globals.get(localModuleName);
           if (owner?.kind === "standardModule") {
+            if (owner.module === "thread") {
+              if (expression.callee.property !== "spawn") {
+                throw new DiagnosticError(fileName, expression.callee.location, `thread has no method ${JSON.stringify(expression.callee.property)}`, {
+                  helps: [`use ${localModuleName}.spawn(move () => operation())`],
+                });
+              }
+              rejectLabeledArguments(expression.argumentLabels, expression.location, fileName);
+              if (!state.activeFunction?.async) {
+                throw new DiagnosticError(fileName, expression.location, "thread.spawn requires an enclosing async function", {
+                  code: "Z0703",
+                  helps: ["call thread.spawn from an async function so its Task can be awaited"],
+                });
+              }
+              if (expression.arguments.length !== 1 || expression.arguments[0].kind !== "closure") {
+                throw new DiagnosticError(fileName, expression.location, "thread.spawn expects one synchronous closure", {
+                  code: "Z0703",
+                  helps: [`use \`${localModuleName}.spawn(move () => operation())\``],
+                });
+              }
+              const operation = expression.arguments[0];
+              inferClosureExpression(operation, locals, globals, structs, enums, fileName, state);
+              const closure = state.closures.get(operation.location.offset)!;
+              if (closure.parameterCount !== 0) {
+                throw new DiagnosticError(fileName, operation.location, "thread.spawn closure cannot declare parameters in the first thread tier", {
+                  code: "Z0704",
+                  helps: ["capture transferable inputs with `move` instead"],
+                });
+              }
+              if (closure.captures.length > 0 && operation.captureMode !== "move") {
+                throw new DiagnosticError(fileName, operation.location, "thread.spawn requires `move` for a capturing closure", {
+                  code: "Z0704",
+                  notes: ["cross-thread work owns a snapshot of every captured value"],
+                  helps: ["write `move () => ...`"],
+                });
+              }
+              for (const capture of closure.captures) {
+                const outerBinding = locals.get(capture.name);
+                if (outerBinding && isBorrowedBinding(outerBinding)) {
+                  throw new DiagnosticError(fileName, capture.location, `borrowed capture ${JSON.stringify(capture.name)} cannot cross a native thread boundary`, {
+                    code: "Z0704",
+                    notes: ["thread.spawn must own its inputs; an in, inout, out, view, or other borrowed binding remains tied to the calling task"],
+                    helps: ["make an owned value snapshot before thread.spawn, then capture that snapshot with move"],
+                  });
+                }
+                if (isInitialThreadTransferType(capture.type, structs, enums, state)) continue;
+                throw new DiagnosticError(fileName, capture.location, `capture ${JSON.stringify(capture.name)} of type ${JSON.stringify(capture.type)} cannot cross a native thread boundary yet`, {
+                  code: "Z0704",
+                  notes: ["the first tier transfers cleanup-free value data only; views, borrows, ARC identity, native references, and cleanup-bearing storage remain local"],
+                  helps: ["capture a cleanup-free owned snapshot, or keep this work on the inherited executor with `spawn`"],
+                });
+              }
+              const returnType = closure.declaration.returnType.name;
+              if (!isInitialThreadTransferType(returnType, structs, enums, state)) {
+                throw new DiagnosticError(fileName, operation.location, `thread.spawn result type ${JSON.stringify(returnType)} cannot cross a native thread boundary yet`, {
+                  code: "Z0704",
+                  helps: ["return a cleanup-free value struct or scalar in the first thread tier"],
+                });
+              }
+              state.threadSpawnCalls.set(expression.location.offset, operation.location.offset);
+              const taskType = taskTypeName(returnType, null);
+              return taskType;
+            }
             const name = standardModuleFunction(owner.module, expression.callee.property);
             if (!name) {
               throw new DiagnosticError(
@@ -5721,6 +5806,42 @@ function hasOwnershipType(
 ): boolean {
   return hasCleanupType(type, structs, enums, state.foreignTypes)
     || hasMoveOnlyForeignType(type, structs, enums, state.foreignNamedTypes);
+}
+
+function isInitialThreadTransferType(
+  type: ValueType,
+  structs: ReadonlyMap<string, StructDeclaration>,
+  enums: ReadonlyMap<string, EnumDeclaration>,
+  state: AnalysisState,
+  visiting: Set<string> = new Set(),
+): boolean {
+  const actual = String(underlyingType(type));
+  if (actual === "void" || actual === "bool" || integerTypes.has(actual) || floatTypes.has(actual)) return true;
+  if (parseViewType(actual) || parseSliceType(actual) || parseDynamicArrayType(actual) || parseTaskType(actual)) return false;
+  const fixed = parseFixedArrayType(actual);
+  if (fixed) return isInitialThreadTransferType(fixed.elementType, structs, enums, state, visiting);
+  if (state.foreignNamedTypes.has(actual) || state.foreignTypes.has(actual) || state.foreignObjectTypes.has(actual)) return false;
+  if (visiting.has(actual)) return false;
+  const aggregate = structs.get(actual);
+  if (aggregate) {
+    if (aggregate.kind !== "struct" || aggregate.deinitializer) return false;
+    visiting.add(actual);
+    const transferable = aggregate.fields.every((field) => (
+      isInitialThreadTransferType(field.type.name, structs, enums, state, visiting)
+    ));
+    visiting.delete(actual);
+    return transferable;
+  }
+  const enumeration = enums.get(actual);
+  if (enumeration) {
+    visiting.add(actual);
+    const transferable = enumeration.variants.every((variant) => (
+      !variant.payload || isInitialThreadTransferType(variant.payload.name, structs, enums, state, visiting)
+    ));
+    visiting.delete(actual);
+    return transferable;
+  }
+  return false;
 }
 
 function hasMoveOnlyForeignType(

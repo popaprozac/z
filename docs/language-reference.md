@@ -409,6 +409,25 @@ Leaving a scope joins its children. Failure propagation cancels live siblings
 before the failing task completes. Domain errors remain `T throws E`;
 cancellation is a structural task outcome, not an invented member of `E`.
 
+CPU work that must leave the inherited executor uses the explicitly imported
+native-thread launcher:
+
+```z
+import { thread } from "std/thread";
+
+const calculation = thread.spawn(move () => calculate(input));
+doOtherWork();
+const answer = await calculation;
+```
+
+This is distinct from keyword `spawn`: `spawn operation()` schedules an async
+child on the current executor, while `thread.spawn(operation)` starts exactly
+one OS thread. The initial thread tier accepts synchronous closures whose
+captured inputs and result are cleanup-free owned value data. A capturing
+closure must spell `move`; borrows, views, ARC identity, native references, and
+cleanup-bearing values cannot cross this boundary yet. The returned task remains
+scope-bound and is joined explicitly by `await` or implicitly at scope exit.
+
 ## Native interop
 
 Native declarations come from toolchain-owned headers and module interfaces.
