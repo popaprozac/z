@@ -903,6 +903,22 @@ remain validation work. Atomic reference counts protect lifetime, not mutable
 class fields; isolation or an explicit concurrency contract must address those
 data races.
 
+Explicit placement composes the same `spawn` boundary with typed targets from
+the thread namespace:
+
+```z
+on thread.main { /* synchronous proof */ }
+await on thread.main { /* hop and wait */ }
+spawn on thread.main { /* structured dispatch */ }
+```
+
+The syntax/type-checking tier is implemented; runtime placement remains under
+development. A synchronous `thread.spawn` closure may eventually create a
+structured child with `spawn on thread.main` without becoming async itself.
+Directly async native-thread closures remain a future thread-affine continuation
+tier rather than a rejected feature. Detailed semantics and lowering order live
+in [`docs/executor-placement.md`](docs/executor-placement.md).
+
 The error contract is the same as local `spawn`: a synchronous worker closure
 declared `(): T throws E` produces `Task<T, E>`, `try await` propagates `E`, and
 `attempt await` materializes it. Error slots carry explicit liveness just like

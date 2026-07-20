@@ -558,6 +558,14 @@ export function inferGenericCalls(
         const inner = rewriteExpression(expression.expression, environment);
         return { expression: { ...expression, expression: inner.expression }, type: inner.type };
       }
+      case "executorPlacement": {
+        const executor = rewriteExpression(expression.executor, environment);
+        const body = rewriteStatement(expression.body, new Map(environment)) as typeof expression.body;
+        return {
+          expression: { ...expression, executor: executor.expression, body },
+          type: expression.mode === "spawn" ? null : expression.returnType?.name ?? null,
+        };
+      }
       case "matchExpression": {
         const matched = rewriteExpression(expression.expression, environment);
         const arms = expression.arms.map((arm) => rewriteArm(arm, environment, matched.type));

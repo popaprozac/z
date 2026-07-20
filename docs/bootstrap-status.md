@@ -105,7 +105,7 @@ functions unavailable to C++; Z does not bypass that limit through private ABI.
 
 | Area | Status | Current boundary |
 | --- | --- | --- |
-| Async syntax and typing | Implemented | Functions/methods, `await`, `spawn`, task scopes, typed errors |
+| Async syntax and typing | Implemented | Functions/methods, `await`, `spawn`, task scopes, typed errors, and Phase 0 `on thread.main` / `await on thread.main` / `spawn on thread.main` placement blocks |
 | Stackless task frames | Partial | Scalars, owned String/TextBuffer, cleanup-bearing fixed arrays, growable arrays, copied Slice descriptors, owned structs/enums/classes, direct move-only C++ locals and parameters, collection elements containing them, cleanup-free direct-awaited output, and fallible native result transfer through `try`/`attempt`/match across suspension |
 | Executor | Implemented bootstrap | Deterministic single-thread FIFO ready queue |
 | Explicit native threads | Implemented narrow tier | `thread.spawn` starts one OS thread for a synchronous one-shot closure; `move` is required when capturing; plain values copy, unique Array/String/TextBuffer owners and explicitly contracted C/C++ native owners move, and deeply readonly classes share through atomic ARC; `(): T throws E` produces `Task<T, E>` with live-state-aware owned errors plus bound/direct `try` and local `attempt`; await, cancellation, and implicit scope exit suspend through a race-free executor completion queue before joining; native `share` remains deferred |
@@ -115,7 +115,8 @@ functions unavailable to C++; Z does not bypass that limit through private ABI.
 | Sync work in async frames | Partial | Z and supported direct native calls/methods, console, checked arithmetic, concise matches |
 | Embedded awaits | Partial | Left-to-right cleanup-free values and awaited conditions |
 | Lazy/suspending expressions | Planned | `&&`, `||`, ternaries, value `if`, suspending match arms, owned hidden results |
-| Channels, actors, executors | Planned direction | API and sendability remain intentionally unsettled |
+| Executor placement | Implemented Phase 0 | `thread.main` is a typed standard execution target; synchronous proof, hop-and-wait, and structured placed-child forms parse, type-check, diagnose affinity, and receive editor support; Darwin scheduling, frame lowering, capture transfer, and foreign affinity remain |
+| Channels and actors | Planned direction | API, isolation, and sendability remain intentionally unsettled |
 | CPU parallelism | Partial evidence | One explicit native thread can execute Copy-value or uniquely owned Array/String/TextBuffer work in parallel without blocking unrelated FIFO tasks or timers; pools, general sendability, mutable shared-state isolation, and multithreaded executors remain planned |
 
 See [`async-model.md`](async-model.md) for the intended model and phase details.

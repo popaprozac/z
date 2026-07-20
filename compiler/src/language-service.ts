@@ -90,7 +90,7 @@ const sourceKeywordTokens = [
   "as", "async", "attempt", "await", "break", "class", "const", "constructor",
   "continue", "declare", "deinit", "else", "enum", "export", "for", "from",
   "function", "if", "implements", "import", "in", "inout", "let", "match", "module",
-  "move", "mut", "new", "of", "out", "private", "public", "return", "scope", "select",
+  "move", "mut", "new", "of", "on", "out", "private", "public", "return", "scope", "select",
   "readonly", "spawn", "static", "struct", "throw", "throws", "trait", "try", "unsafe", "view",
   "weak", "while", "yield",
 ] as const;
@@ -356,7 +356,11 @@ export function semanticTokens(source: string, fileName: string): { readonly dat
       previous?.kind === "dot"
       && context.semanticInfo.standardModuleBindings.has(tokens[index - 2]?.text ?? "")
     ) {
-      classifications.set(token.location.offset, { type: semanticTokenTypes.indexOf("method"), modifiers: 4 });
+      const owner = context.semanticInfo.standardModuleBindings.get(tokens[index - 2]?.text ?? "");
+      classifications.set(token.location.offset, {
+        type: semanticTokenTypes.indexOf(owner === "thread" && token.text === "main" ? "property" : "method"),
+        modifiers: owner === "thread" && token.text === "main" ? 6 : 4,
+      });
       continue;
     }
     if (modules.has(token.text) || nativeNamespaceBindings.has(token.text)) {
@@ -605,6 +609,9 @@ export function hover(source: string, fileName: string, offset: number): Hover |
         word.start,
         word.end,
       );
+    }
+    if (standardOwner === "thread" && word.text === "main") {
+      return markdownHover("thread.main: Executor  // main-thread execution target", source, word.start, word.end);
     }
     const standardName = standardOwner ? standardModuleFunction(standardOwner, word.text) : null;
     if (standardName) {
@@ -2048,6 +2055,13 @@ function memberCompletions(
   if (standardModule) {
     return filterCompletions(standardModuleMemberNames(standardModule).map((member) => {
       const name = standardModuleFunction(standardModule, member);
+      if (standardModule === "thread" && member === "main") {
+        return {
+          label: member,
+          kind: completionKinds.property,
+          detail: "main-thread execution target",
+        };
+      }
       return {
         label: member,
         kind: completionKinds.method,

@@ -283,6 +283,7 @@ export type Expression =
   | TryExpression
   | AwaitExpression
   | SpawnExpression
+  | ExecutorPlacementExpression
   | MatchExpression
   | IfExpression
   | ArgumentReferenceExpression;
@@ -456,6 +457,17 @@ export type SpawnExpression = {
   readonly kind: "spawn";
   readonly expression: Expression;
   readonly location: SourceLocation;
+};
+
+export type ExecutorPlacementExpression = {
+  readonly kind: "executorPlacement";
+  readonly mode: "sync" | "await" | "spawn";
+  readonly executor: Expression;
+  readonly returnType: TypeReference | null;
+  readonly errorType: TypeReference | null;
+  readonly body: BlockStatement;
+  readonly location: SourceLocation;
+  readonly onLocation: SourceLocation;
 };
 
 export type MatchExpression = {

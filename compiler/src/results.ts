@@ -159,6 +159,13 @@ function collectClosureResults(
       case "spawn":
         visitExpression(expression.expression);
         break;
+      case "executorPlacement":
+        if (expression.errorType && expression.returnType) {
+          addResult(expression.returnType, expression.errorType, expression.location);
+        }
+        visitExpression(expression.executor);
+        visitStatements(expression.body.statements);
+        break;
       case "binary":
         visitExpression(expression.left);
         visitExpression(expression.right);

@@ -3926,6 +3926,16 @@ function generateExpressionInner(expression: Expression, context: GenerationCont
       return generateExpression(expression.expression, context);
     case "try":
       throw new Error("try must be lowered from its containing statement");
+    case "executorPlacement":
+      throw new DiagnosticError(
+        expression.location.fileName ?? "<source>",
+        expression.location,
+        "executor-placement blocks are type-checked but not executable in the first placement slice",
+        {
+          code: "Z0713",
+          helps: ["use `z check` while main-executor scheduling and frame lowering are added"],
+        },
+      );
     case "matchExpression":
       throw new Error("match must be lowered from its containing statement");
     case "ifExpression":
@@ -4923,6 +4933,8 @@ function inferExpressionType(expression: Expression, context: GenerationContext)
     }
     case "try":
       return trySuccessType(expression, context);
+    case "executorPlacement":
+      return context.semanticInfo.expressionTypes.get(expression.location.offset)!;
     case "matchExpression":
       return matchExpressionType(expression, context);
     case "ifExpression":

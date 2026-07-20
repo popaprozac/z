@@ -859,6 +859,13 @@ function collectNestedAwaitOperations(
       case "spawn":
         walk(candidate.expression);
         return;
+      case "executorPlacement":
+        unsupported(
+          fileName,
+          candidate.location,
+          "executor-placement blocks are type-checked but not executable in the first placement slice",
+          "use `z check` while main-executor scheduling and frame lowering are added",
+        );
       case "matchExpression":
         walk(candidate.expression);
         for (const arm of candidate.arms) {
@@ -898,6 +905,11 @@ function containsAwait(expression: Expression): boolean {
       case "attempt":
       case "try":
       case "spawn": visit(candidate.expression); return;
+      case "executorPlacement":
+        if (candidate.mode === "await") found = true;
+        visit(candidate.executor);
+        if (statementContainsAwait(candidate.body)) found = true;
+        return;
       case "call": visit(candidate.callee); for (const value of candidate.arguments) visit(value); return;
       case "member": visit(candidate.object); return;
       case "index": visit(candidate.object); visit(candidate.index); return;

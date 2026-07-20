@@ -6,6 +6,7 @@ import type {
   ImportDeclaration,
   Parameter,
   Program,
+  SourceLocation,
   Statement,
   StructDeclaration,
   TraitDeclaration,
@@ -201,6 +202,21 @@ export function parse(tokens: Token[], fileName: string): Program {
 
   let parseStatement: () => Statement;
 
+  const parseExecutorPlacement = (
+    mode: "sync" | "await" | "spawn",
+    location: SourceLocation,
+    onLocation: SourceLocation,
+  ): Expression => {
+    const executor = parsePostfix();
+    const returnType = match("colon") ? parseType() : null;
+    const errorType = match("throws") ? parseType() : null;
+    if (errorType && !returnType) {
+      throw new DiagnosticError(fileName, errorType.location, "a throwing executor block requires an explicit success type");
+    }
+    const body = parseRequiredBlock("an executor-placement body");
+    return { kind: "executorPlacement", mode, executor, returnType, errorType, body, location, onLocation };
+  };
+
   const parseTypeParameters = (): { names: string[]; constraints: NonNullable<FunctionDeclaration["typeParameterConstraints"]> } => {
     if (!match("less")) return { names: [], constraints: [] };
     const names = [];
@@ -352,12 +368,18 @@ export function parse(tokens: Token[], fileName: string): Program {
       expect("rightParen", "`)` after the match subject");
       return { kind: "matchExpression", mode, expression, arms: parseMatchArms(), location: token.location };
     }
+    if (match("on")) {
+      const token = previous();
+      return parseExecutorPlacement("sync", token.location, token.location);
+    }
     if (match("await")) {
       const token = previous();
+      if (match("on")) return parseExecutorPlacement("await", token.location, previous().location);
       return { kind: "await", expression: parsePostfix(), location: token.location };
     }
     if (match("spawn")) {
       const token = previous();
+      if (match("on")) return parseExecutorPlacement("spawn", token.location, previous().location);
       return { kind: "spawn", expression: parsePostfix(), location: token.location };
     }
     if (match("attempt")) {

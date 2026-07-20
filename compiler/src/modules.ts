@@ -605,6 +605,17 @@ function transformExpression(
     case "spawn":
     case "weak":
       return { ...expression, expression: transformExpression(expression.expression, scope, locals, typeParameters) };
+    case "executorPlacement":
+      return {
+        ...expression,
+        executor: transformExpression(expression.executor, scope, locals, typeParameters),
+        returnType: expression.returnType ? renameTypeReference(expression.returnType, scope, typeParameters) : null,
+        errorType: expression.errorType ? renameTypeReference(expression.errorType, scope, typeParameters) : null,
+        body: {
+          ...expression.body,
+          statements: transformStatements(expression.body.statements, scope, new Set(locals), typeParameters),
+        },
+      };
     case "matchExpression":
       return {
         ...expression,

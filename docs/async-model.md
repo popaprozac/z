@@ -365,8 +365,11 @@ engines, and deterministic tests.
 
 Phase 0 implements parsing, static typing, ownership restrictions, diagnostics,
 hover, completion, and highlighting for `async`, `await`, `try await`,
-`attempt await`, `async scope`, `spawn`, and inferred task handles. `z check`
-accepts these programs.
+`attempt await`, `async scope`, `spawn`, inferred task handles, and the
+`on thread.main`, `await on thread.main`, and `spawn on thread.main` placement
+forms. `z check` accepts these programs. Placement blocks intentionally report
+`Z0700` from executable commands until main-thread scheduling, capture transfer,
+and frame lowering land; see [`executor-placement.md`](executor-placement.md).
 
 Phase 1 executes owned async functions and methods on a deterministic
 single-thread FIFO executor. Each call allocates a typed task frame and each

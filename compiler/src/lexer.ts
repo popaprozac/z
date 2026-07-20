@@ -18,6 +18,7 @@ export type TokenKind =
   | "async"
   | "await"
   | "spawn"
+  | "on"
   | "scope"
   | "struct"
   | "class"
@@ -105,6 +106,7 @@ const keywords = new Map<string, TokenKind>([
   ["async", "async"],
   ["await", "await"],
   ["spawn", "spawn"],
+  ["on", "on"],
   ["scope", "scope"],
   ["struct", "struct"],
   ["class", "class"],

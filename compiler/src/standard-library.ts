@@ -106,7 +106,7 @@ export function standardModuleFunctions(module: StandardModuleName): readonly St
 }
 
 export function standardModuleMemberNames(module: StandardModuleName): readonly string[] {
-  if (module === "thread") return ["spawn"];
+  if (module === "thread") return ["spawn", "main"];
   return Object.keys(standardModuleMembers[module]);
 }
 

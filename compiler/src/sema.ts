@@ -258,6 +258,8 @@ type AnalysisState = {
     calls: number;
     cancellationCalls: number;
   }[];
+  readonly placementErrorTypes: (TypeReference | null)[];
+  executorContext: "main" | null;
   asyncScopeDepth: number;
   asyncLoopDepth: number;
   activeFunction: FunctionDeclaration | null;
@@ -441,6 +443,8 @@ export function analyze(
     asyncSpawnBorrowRoots: new Map(),
     asyncTaskBorrowSpawns: new Map(),
     asyncCallContexts: [],
+    placementErrorTypes: [],
+    executorContext: null,
     asyncScopeDepth: 0,
     asyncLoopDepth: 0,
     activeFunction: null,
@@ -1124,8 +1128,11 @@ function analyzeFunction(
 ): void {
   const previousReceiver = state.activeReceiver;
   const previousFunction = state.activeFunction;
+  const previousExecutorContext = state.executorContext;
   state.activeReceiver = receiver?.name ?? null;
   state.activeFunction = declaration;
+  state.executorContext = !receiver && declaration.name === "main" ? "main" : null;
+  state.placementErrorTypes.length = 0;
   state.moveOrigins.clear();
   state.borrowOrigins.clear();
   state.iterationBorrowOrigins.clear();
@@ -1170,6 +1177,7 @@ function analyzeFunction(
   }
   state.activeReceiver = previousReceiver;
   state.activeFunction = previousFunction;
+  state.executorContext = previousExecutorContext;
 }
 
 function constructorFunction(declaration: StructDeclaration): FunctionDeclaration {
@@ -1278,6 +1286,10 @@ function analyzeConstructorInitialization(
       case "await":
       case "spawn":
         checkExpression(expression.expression, initialized);
+        return;
+      case "executorPlacement":
+        checkExpression(expression.executor, initialized);
+        analyzeConstructorStatements(expression.body.statements, new Set(initialized));
         return;
       case "matchExpression":
         checkExpression(expression.expression, initialized);
@@ -1777,13 +1789,19 @@ function analyzeStatement(
       return;
     }
     case "throw": {
-      if (!owner.errorType) {
-        throw new DiagnosticError(fileName, statement.location, `function ${JSON.stringify(owner.name)} does not declare an error type`);
+      const errorType = state.placementErrorTypes.length > 0
+        ? state.placementErrorTypes.at(-1)
+        : owner.errorType;
+      if (!errorType) {
+        const subject = state.placementErrorTypes.length > 0
+          ? "executor block"
+          : `function ${JSON.stringify(owner.name)}`;
+        throw new DiagnosticError(fileName, statement.location, `${subject} does not declare an error type`);
       }
       let actual = inferExpression(statement.expression, locals, globals, structs, enums, fileName, state);
-      actual = contextualCStringLiteral(owner.errorType.name, statement.expression, state) ?? actual;
-      requireAssignable(owner.errorType.name, actual, statement.expression, fileName, state.foreignNamedTypes, state.numericLiteralTypes);
-      consumeOwnedValue(statement.expression, owner.errorType.name, locals, structs, enums, fileName, state);
+      actual = contextualCStringLiteral(errorType.name, statement.expression, state) ?? actual;
+      requireAssignable(errorType.name, actual, statement.expression, fileName, state.foreignNamedTypes, state.numericLiteralTypes);
+      consumeOwnedValue(statement.expression, errorType.name, locals, structs, enums, fileName, state);
       return;
     }
     case "break": {
@@ -2472,6 +2490,10 @@ function collectClosureCaptures(
       case "spawn":
         walkExpression(expression.expression, localNames);
         return;
+      case "executorPlacement":
+        walkExpression(expression.executor, localNames);
+        walkStatement(expression.body, new Set(localNames));
+        return;
       case "matchExpression":
         walkExpression(expression.expression, localNames);
         for (const arm of expression.arms) {
@@ -2806,6 +2828,97 @@ function inferValueArm(
     );
   }
   throw new DiagnosticError(fileName, statement.location, "a value-producing block must produce a value with an expression or `select`");
+}
+
+function inferExecutorPlacement(
+  expression: Extract<Expression, { kind: "executorPlacement" }>,
+  locals: Map<string, ValueType>,
+  globals: Map<string, SymbolValue>,
+  structs: Map<string, StructDeclaration>,
+  enums: Map<string, EnumDeclaration>,
+  fileName: string,
+  state: AnalysisState,
+  allowThrowingCall: boolean,
+): ValueType {
+  const executor = inferExpression(expression.executor, locals, globals, structs, enums, fileName, state);
+  if (executor !== "__z_executor:main") {
+    throw new DiagnosticError(fileName, expression.executor.location, `on requires an executor capability, found ${describeValueType(executor, state)}`, {
+      code: "Z0710",
+      helps: ["import { thread } from \"std/thread\" and use `on thread.main { ... }`"],
+    });
+  }
+  if (expression.mode === "sync" && state.executorContext !== "main") {
+    throw new DiagnosticError(fileName, expression.location, "synchronous `on thread.main` requires proven main-executor context", {
+      code: "Z0711",
+      notes: ["this form is a static placement proof and never schedules at runtime"],
+      helps: [state.activeFunction?.async
+        ? "use `await on thread.main { ... }` to hop and wait"
+        : "enter through a main-isolated function or make this operation async before hopping"],
+    });
+  }
+  if (expression.mode !== "sync" && !state.activeFunction?.async) {
+    throw new DiagnosticError(fileName, expression.location, `${expression.mode} on thread.main requires an enclosing async function`, {
+      code: "Z0711",
+      helps: [`add \`async\` before \`function ${state.activeFunction?.name ?? "..."}\``],
+    });
+  }
+  if (expression.returnType) validateType(expression.returnType, structs, enums, state.foreignNamedTypes, fileName, true);
+  if (expression.errorType) validateType(expression.errorType, structs, enums, state.foreignNamedTypes, fileName, false);
+
+  const blockLocals = new Map(locals);
+  const previousExecutor = state.executorContext;
+  state.executorContext = "main";
+  state.placementErrorTypes.push(expression.errorType);
+  let successType: ValueType = "void";
+  try {
+    const final = expression.body.statements.at(-1);
+    if (final?.kind === "select") {
+      const returns = analyzeStatements(
+        expression.body.statements.slice(0, -1),
+        state.activeFunction!,
+        blockLocals,
+        globals,
+        structs,
+        enums,
+        fileName,
+        state,
+      );
+      if (returns) {
+        throw new DiagnosticError(fileName, final.location, "unreachable select after guaranteed function exit");
+      }
+      successType = inferDirectValue(final.expression, state.activeFunction!, blockLocals, globals, structs, enums, fileName, state);
+      consumeOwnedValue(final.expression, successType, blockLocals, structs, enums, fileName, state);
+    } else {
+      analyzeStatements(expression.body.statements, state.activeFunction!, blockLocals, globals, structs, enums, fileName, state);
+    }
+  } finally {
+    state.placementErrorTypes.pop();
+    state.executorContext = previousExecutor;
+  }
+
+  if (expression.returnType) {
+    requireAssignable(
+      expression.returnType.name,
+      successType,
+      expression,
+      fileName,
+      state.foreignNamedTypes,
+      state.numericLiteralTypes,
+    );
+    successType = expression.returnType.name;
+  }
+  if (expression.mode !== "spawn") propagateOuterOwnership(locals, blockLocals);
+  if (expression.mode === "spawn") {
+    return taskTypeName(String(successType), expression.errorType?.name ?? null);
+  }
+  if (!expression.errorType) return successType;
+  if (!allowThrowingCall) {
+    throw new DiagnosticError(fileName, expression.location, "throwing executor block requires `attempt` or `try`", {
+      code: "Z0712",
+      helps: ["write `try await on ...` to propagate the error, or `attempt await on ...` to inspect Result<T, E>"],
+    });
+  }
+  return resultTypeName(String(successType), expression.errorType.name);
 }
 
 function inferTrySuccess(
@@ -3435,6 +3548,17 @@ function inferExpressionInner(
       consumeOwnedValue(expression.payload, variant.payload.name, locals, structs, enums, fileName, state);
       return declaration.name;
     }
+    case "executorPlacement":
+      return inferExecutorPlacement(
+        expression,
+        locals,
+        globals,
+        structs,
+        enums,
+        fileName,
+        state,
+        allowThrowingCall,
+      );
     case "await": {
       if (!state.activeFunction?.async) {
         throw new DiagnosticError(fileName, expression.location, "await requires an enclosing async function", {
@@ -3546,6 +3670,12 @@ function inferExpressionInner(
     case "ifExpression":
       throw new DiagnosticError(fileName, expression.location, "if must be the direct value of a binding, return, or expression statement");
     case "member": {
+      if (expression.object.kind === "identifier" && !locals.has(expression.object.name)) {
+        const standard = globals.get(expression.object.name);
+        if (standard?.kind === "standardModule" && standard.module === "thread" && expression.property === "main") {
+          return "__z_executor:main";
+        }
+      }
       const foreignConstant = getForeignConstant(expression, globals);
       if (foreignConstant) {
         checkForeignAvailability(foreignConstant.metadata, foreignConstant.name, expression.location, fileName, state);

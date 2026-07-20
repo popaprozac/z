@@ -508,6 +508,20 @@ captures remain valid in the parent; moved unique owners do not. `Array`, owned
 consuming path and may return ownership through `await`. Mutable classes,
 borrows, views, native references, `Arena`, custom `deinit`, and cross-thread
 `Weak<T>` remain rejected. Results follow the same rules.
+
+The thread namespace also supplies typed placement targets. The first target is
+`thread.main`:
+
+```z
+const title = on thread.main { select window.title; };
+const updated = await on thread.main { select refreshUI(); };
+const child = spawn on thread.main { select refreshUI(); };
+```
+
+The first form is a zero-scheduling static proof, the second hops and waits, and
+the third creates a hot structured child on main. These forms currently parse,
+type-check, diagnose affinity, and receive editor support; executable placement
+lowering is the next tier. See [`executor-placement.md`](executor-placement.md).
 The returned task remains scope-bound and is joined explicitly by `await` or
 implicitly at scope exit.
 Throwing worker closures return `Task<T, E>`; `try await` propagates `E` and

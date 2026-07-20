@@ -7100,6 +7100,7 @@ test("editor grammar tracks keywords without reserving Result variants", () => {
   assert.equal(exportPattern?.name, "keyword.control.export.z");
   assert.match(keywordPattern, /throw/);
   assert.match(keywordPattern, /attempt/);
+  assert.match(keywordPattern, /on/);
   assert.match(keywordPattern, /yield/);
   assert.match(keywordPattern, /select/);
   assert.match(keywordPattern, /move/);
@@ -7175,6 +7176,51 @@ test("editor grammar tracks keywords without reserving Result variants", () => {
   assert.match(extension, /8: vscode\.CompletionItemKind\.Interface/);
   assert.match(extension, /createFileSystemWatcher/);
   assert.match(extension, /restartLanguageServer/);
+});
+
+test("type-checks main-thread executor placement and exposes thread.main to editors", () => {
+  const example = resolve(projectRoot, "examples/async/executor-placement.z");
+  const source = readFileSync(example, "utf8");
+  check(source, example);
+  assert.deepEqual(diagnostics(source, example), []);
+
+  const mainTarget = source.indexOf("thread.main") + "thread.".length + 1;
+  assert.match(hover(source, example, mainTarget)?.contents.value ?? "", /thread\.main: Executor/);
+
+  const immediate = source.indexOf("immediate =") + 1;
+  assert.match(hover(source, example, immediate)?.contents.value ?? "", /immediate: i32/);
+  const placedTask = source.indexOf("placedTask =") + 1;
+  assert.match(hover(source, example, placedTask)?.contents.value ?? "", /placedTask: Task<i32>/);
+
+  const incomplete = source.replace("thread.main: i32", "thread.ma: i32");
+  const completionOffset = incomplete.indexOf("thread.ma") + "thread.ma".length;
+  const mainCompletion = completions(incomplete, example, completionOffset).find((item) => item.label === "main");
+  assert.equal(mainCompletion?.kind, 10);
+  assert.match(mainCompletion?.detail ?? "", /main-thread execution target/);
+
+  const tokens = decodeSemanticTokens(semanticTokens(source, example).data);
+  const targetPosition = positionForOffset(source, source.indexOf("main", source.indexOf("thread.main")));
+  assert.ok(tokens.some((token) => (
+    token.line === targetPosition.line
+    && token.character === targetPosition.character
+    && token.type === semanticTokenTypes.indexOf("property")
+  )));
+
+  const unproven = `
+    import { thread } from "std/thread";
+    function inspect(): i32 {
+      return on thread.main: i32 { select 1; };
+    }
+    function main(): i32 { return inspect(); }
+  `;
+  const proofDiagnostic = diagnostics(unproven, "executor-proof.z")[0];
+  assert.equal(proofDiagnostic.code, "Z0711");
+  assert.match(proofDiagnostic.message, /requires proven main-executor context/);
+
+  assert.throws(
+    () => compileToC(source, example),
+    /executor-placement blocks are type-checked but not executable/,
+  );
 });
 
 test("runs async match expressions with checked arithmetic and editor details", () => {
