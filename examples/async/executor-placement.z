@@ -1,6 +1,5 @@
-// Executor placement Phase 0 validates syntax, block values, and main affinity.
-// Run `bun run z check examples/async/executor-placement.z`; executable Darwin
-// main-executor lowering follows in the next placement tier.
+// Executor placement runs blocks synchronously, awaited, or as structured tasks
+// on the main executor.
 
 import { thread } from "std/thread";
 
@@ -18,5 +17,5 @@ async function main(): i32 {
   };
   const placed = await placedTask;
 
-  return immediate + hopped + placed;
+  return immediate + hopped + placed - 42;
 }

@@ -912,9 +912,15 @@ await on thread.main { /* hop and wait */ }
 spawn on thread.main { /* structured dispatch */ }
 ```
 
-The syntax/type-checking tier is implemented; runtime placement remains under
-development. A synchronous `thread.spawn` closure may eventually create a
-structured child with `spawn on thread.main` without becoming async itself.
+The first runtime tier executes `void`, scalar, and recursively plain placement
+blocks/captures through structured task frames. A synchronous `thread.spawn`
+closure can create a structured child with `spawn on thread.main` without
+becoming async itself. OS-thread exit and Z-task completion are distinct, so an
+async main task awaiting that worker suspends rather than blocking main. Darwin
+publishes cross-thread children through a protected inbound queue and wakes a
+`CFRunLoopSource`; Windows message-loop and Linux toolkit/event-loop adapters
+remain platform-runtime work behind the same `thread.main` capability. Owned,
+borrowed, ARC, and native-affine capture contracts remain the next safety tier.
 Directly async native-thread closures remain a future thread-affine continuation
 tier rather than a rejected feature. Detailed semantics and lowering order live
 in [`docs/executor-placement.md`](docs/executor-placement.md).
@@ -1045,6 +1051,10 @@ rather than magical platform globals. It will describe the selected OS,
 architecture, ABI, pointer width, endianness, and toolchain environment so the
 same frontend can support native and cross compilation. The exact enum and
 compile-time-branch spelling remains deliberately open until that module lands.
+Executor adapters are one concrete consumer: Darwin selects CFRunLoop
+integration, Windows will select a message-loop adapter, and Linux applications
+may select a toolkit/event-loop binding. Target selection must happen at compile
+time without exposing C preprocessor text to ordinary Z source.
 Platform APIs continue to require explicit native imports; portable `std` APIs
 may provide common contracts over them without erasing platform differences.
 

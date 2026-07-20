@@ -519,9 +519,12 @@ const child = spawn on thread.main { select refreshUI(); };
 ```
 
 The first form is a zero-scheduling static proof, the second hops and waits, and
-the third creates a hot structured child on main. These forms currently parse,
-type-check, diagnose affinity, and receive editor support; executable placement
-lowering is the next tier. See [`executor-placement.md`](executor-placement.md).
+the third creates a hot structured child on main. The first executable tier
+supports `void`, scalar, and recursively plain selected values and copied
+captures. A native worker can create a placed main child without blocking main;
+Darwin wakes the executor through a CFRunLoop source. Other ownership shapes and
+platform UI-loop adapters remain bounded work. See
+[`executor-placement.md`](executor-placement.md).
 The returned task remains scope-bound and is joined explicitly by `await` or
 implicitly at scope exit.
 Throwing worker closures return `Task<T, E>`; `try await` propagates `E` and

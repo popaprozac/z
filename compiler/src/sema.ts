@@ -260,6 +260,7 @@ type AnalysisState = {
   }[];
   readonly placementErrorTypes: (TypeReference | null)[];
   executorContext: "main" | null;
+  nativeThreadBodyDepth: number;
   asyncScopeDepth: number;
   asyncLoopDepth: number;
   activeFunction: FunctionDeclaration | null;
@@ -445,6 +446,7 @@ export function analyze(
     asyncCallContexts: [],
     placementErrorTypes: [],
     executorContext: null,
+    nativeThreadBodyDepth: 0,
     asyncScopeDepth: 0,
     asyncLoopDepth: 0,
     activeFunction: null,
@@ -2108,6 +2110,7 @@ function inferClosureExpression(
   expectedFunction: FunctionType | null = null,
   transientBorrow = false,
   oneShotOwnedCaptures = false,
+  nativeThreadBody = false,
 ): ValueType {
   if (expression.errorType && expectedFunction) {
     throw new DiagnosticError(fileName, expression.errorType.location, "throwing closure values are not implemented yet", {
@@ -2305,6 +2308,7 @@ function inferClosureExpression(
   let body: Statement[];
   const previousFunction = state.activeFunction;
   state.activeFunction = syntheticBase;
+  if (nativeThreadBody) state.nativeThreadBodyDepth += 1;
   try {
     if (expression.body.kind === "block") {
       body = expression.body.statements;
@@ -2324,6 +2328,7 @@ function inferClosureExpression(
       body = [{ kind: "return", expression: expression.body, location: expression.body.location }];
     }
   } finally {
+    if (nativeThreadBody) state.nativeThreadBodyDepth -= 1;
     state.activeFunction = previousFunction;
   }
 
@@ -2856,7 +2861,8 @@ function inferExecutorPlacement(
         : "enter through a main-isolated function or make this operation async before hopping"],
     });
   }
-  if (expression.mode !== "sync" && !state.activeFunction?.async) {
+  const synchronousNativePlacement = expression.mode === "spawn" && state.nativeThreadBodyDepth > 0;
+  if (expression.mode !== "sync" && !state.activeFunction?.async && !synchronousNativePlacement) {
     throw new DiagnosticError(fileName, expression.location, `${expression.mode} on thread.main requires an enclosing async function`, {
       code: "Z0711",
       helps: [`add \`async\` before \`function ${state.activeFunction?.name ?? "..."}\``],
@@ -4015,7 +4021,7 @@ function inferExpressionInner(
                 });
               }
               const operation = expression.arguments[0];
-              inferClosureExpression(operation, locals, globals, structs, enums, fileName, state, null, false, true);
+              inferClosureExpression(operation, locals, globals, structs, enums, fileName, state, null, false, true, true);
               const closure = state.closures.get(operation.location.offset)!;
               if (closure.parameterCount !== 0) {
                 throw new DiagnosticError(fileName, operation.location, "thread.spawn closure cannot declare parameters in the first thread tier", {

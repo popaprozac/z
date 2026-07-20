@@ -1,7 +1,8 @@
 # Executor Placement Design Note
 
-Status: Phase 0 syntax, typing, diagnostics, and editor services implemented;
-main-executor runtime placement and frame lowering remain planned.
+Status: scalar and recursively plain placement blocks execute through structured
+task frames; native-worker handoff and Darwin CFRunLoop wakeups are implemented.
+Owned/borrowed capture contracts and platform UI-loop adapters remain planned.
 
 Date: 2026-07-20
 
@@ -44,8 +45,9 @@ const ui = spawn on thread.main { /* ... */ };
 const work = spawn on thread.pool { /* future shared compute target */ };
 ```
 
-The exact standard-library module layout remains open. The language design
-depends only on the expression after `on` having an executor-capability type.
+`thread.main` is the committed first spelling. Future targets such as pools or
+application executors remain library capabilities; the language grammar depends
+only on the expression after `on` having an executor-capability type.
 
 ## Three execution forms
 
@@ -344,9 +346,22 @@ foreign declarations rather than introduced opportunistically.
 - Leaving a structured scope joins placed children just like inherited-executor
   children.
 
-The Darwin main executor should integrate with the AppKit/CFRunLoop or dispatch
-main queue without blocking the UI loop. Windows and other platforms can map the
-same language model onto their UI/event-loop mechanisms.
+The Darwin adapter registers a `CFRunLoopSource` in common modes. A native
+worker publishes placed frames through a mutex-protected inbound queue, signals
+the source, and wakes the main run loop. The source drains ready Z tasks on the
+actual main thread, including while AppKit owns the surrounding run loop.
+
+The portable command-line executor and native-worker handoff also run on
+Windows and POSIX hosts. Windows UI integration still needs a message-loop
+adapter; Linux has no single system UI loop, so a GUI toolkit or application
+will bind an executor capability. These are runtime adapters behind the same
+`thread.main` semantics, not source-language forks.
+
+Platform-specific imports will eventually be selected with a small compile-time
+target facility exposed through `std/target`. The precise `comptime`/branch
+syntax remains intentionally open, but platform branches must be eliminated
+before semantic checking of unavailable imports and before native emission;
+ordinary Z code should not inherit C preprocessor behavior.
 
 ## Alternatives deliberately rejected
 
@@ -387,22 +402,29 @@ Z keeps `return` for the enclosing function/task and `select` for local
 value-producing blocks. Last-expression inference can be reconsidered globally
 later without making executor blocks a special case.
 
-## Proposed validation sequence
+## Validation sequence
 
-1. Parse and type-check the three forms without executable lowering.
-2. Introduce a typed executor capability and a Darwin main-executor runtime.
-3. Execute `on thread.main` proof and `await on thread.main` for `void` and scalar values.
-4. Add `select`, inferred/explicit `T throws E`, `try`, and `attempt` lowering.
-5. Lower `spawn on thread.main` through existing structured `Task<T, E>` frames.
-6. Integrate capture transfer, loans, cancellation, and cleanup.
+1. **Done:** parse and type-check the three forms.
+2. **Done:** introduce the typed `thread.main` capability.
+3. **Done:** execute synchronous, awaited, and spawned placement through task
+   frames for `void`, scalar, and recursively plain values.
+4. **Done:** publish placed children from `thread.spawn` through a thread-safe
+   queue without equating OS-thread exit with task completion.
+5. **Done on Darwin:** wake and drain the main executor through a
+   `CFRunLoopSource`, including while an AppKit-compatible run loop is active.
+6. Integrate owned, ARC, native-affine, borrowed, cancellation, and cleanup
+   capture contracts. The current runtime tier copies recursively plain captures
+   and rejects mutation through a capture.
 7. Carry main-affinity facts through FIIR and `.zd` declarations.
-8. Add syntax highlighting, completion, hover, definitions, and diagnostics.
+8. **Done for current syntax:** highlighting, completion, hover, definitions,
+   and placement diagnostics.
 9. Pressure-test the model in an application-shaped AppKit example, including
    target/action, callbacks, background work, and UI-thread resumption.
+10. Add Windows message-loop and selected Linux GUI/event-loop adapters, driven
+    by compile-time target selection rather than source preprocessing.
 
 ## Open questions
 
-- What is the final standard-library spelling for executor capabilities?
 - How are executor values created, retained, and compared for current-context
   proof?
 - What explicit capture syntax is required when a placed task moves ownership?

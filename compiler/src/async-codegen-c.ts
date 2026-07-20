@@ -19,11 +19,12 @@ type AwaitSite = {
   readonly index: number;
   readonly mode: "await" | "try" | "attempt";
   readonly intrinsic: "delay" | "cancel" | null;
-  readonly expression: Extract<Expression, { kind: "await" }>;
+  readonly expression: Expression;
   readonly call: CallExpression;
   readonly target: AsyncTarget;
   readonly receiver: Expression | null;
   readonly spawn: SpawnSite | null;
+  readonly placement: "sync" | "await" | null;
 };
 
 type SpawnSite = {
@@ -35,6 +36,12 @@ type SpawnSite = {
   readonly receiver: Expression | null;
   readonly binding: string | null;
   readonly nativeThread: boolean;
+  readonly placement: "main" | null;
+};
+
+type PlacementTarget = {
+  readonly target: AsyncTarget;
+  readonly captures: readonly { readonly name: string; readonly type: string; readonly location: SourceLocation }[];
 };
 
 type NestedAwaitSite = {
@@ -94,6 +101,7 @@ type FrameExpressionContext = {
 export type AsyncCGeneration = {
   readonly synchronousProgram: Program;
   readonly source: string;
+  readonly frameworks: readonly string[];
 };
 
 const scalarTypes = new Map<string, string>([
@@ -173,7 +181,31 @@ export function generateAsyncC(
     functions: new Map(program.functions.map((declaration) => [declaration.name, declaration])),
     semanticInfo,
   };
-  const plans = targets.map((target) => planFunction(target, functions, threadTargets, fileName, semanticInfo, types));
+  const placementTargets = new Map<number, PlacementTarget>();
+  const registerPlacement = (
+    expression: Extract<Expression, { kind: "executorPlacement" }>,
+    locals: ReadonlyMap<string, string>,
+  ): PlacementTarget => {
+    const existing = placementTargets.get(expression.location.offset);
+    if (existing) return existing;
+    const created = createPlacementTarget(expression, locals, types, fileName);
+    placementTargets.set(expression.location.offset, created);
+    targets.push(created.target);
+    functions.set(created.target.declaration.name, created.target);
+    return created;
+  };
+  const plans: AsyncFunctionPlan[] = [];
+  for (let index = 0; index < targets.length; index += 1) {
+    plans.push(planFunction(
+      targets[index],
+      functions,
+      threadTargets,
+      fileName,
+      semanticInfo,
+      types,
+      registerPlacement,
+    ));
+  }
   const planByKey = new Map(plans.map((plan) => [targetKey(plan), plan]));
   const main = planByKey.get("main");
   if (main) validateAsyncMain(main.declaration, fileName);
@@ -187,9 +219,19 @@ export function generateAsyncC(
     })),
   };
 
+  const usesMainPlacement = plans.some((plan) => (
+    [...plan.awaits.values()].some((site) => site.placement !== null)
+    || [...plan.spawns.values()].some((site) => site.placement !== null)
+  ));
+  const usesNativeThreads = plans.some((plan) => (
+    [...plan.spawns.values()].some((site) => site.nativeThread)
+  ));
   return {
     synchronousProgram,
     source: generateRuntime(plans, planByKey, main, fileName),
+    frameworks: usesMainPlacement && usesNativeThreads && process.platform === "darwin"
+      ? ["CoreFoundation"]
+      : [],
   };
 }
 
@@ -200,6 +242,10 @@ function planFunction(
   fileName: string,
   semanticInfo: SemanticInfo,
   types: AsyncTypeContext,
+  registerPlacement: (
+    expression: Extract<Expression, { kind: "executorPlacement" }>,
+    locals: ReadonlyMap<string, string>,
+  ) => PlacementTarget,
 ): AsyncFunctionPlan {
   const { declaration, owner } = target;
   const nativeThread = [...threadTargets.values()].includes(target);
@@ -245,7 +291,7 @@ function planFunction(
   const operations: AsyncOperation[] = [];
   const recordAwait = (
     mode: AwaitSite["mode"],
-    expression: Extract<Expression, { kind: "await" }>,
+    expression: Extract<Expression, { kind: "await" | "executorPlacement" }>,
   ): AwaitSite => {
     const site = awaitSite(
       mode,
@@ -257,6 +303,7 @@ function planFunction(
       spawnBindings,
       joinedSpawns,
       nextChild,
+      registerPlacement,
     );
     awaits.set(expression.location.offset, site);
     if (!site.intrinsic) children.set(site.index, site.target);
@@ -381,18 +428,32 @@ function planFunction(
         }
         locals.set(statement.name, type);
         if (!statement.initializer) continue;
-        if (statement.initializer.kind === "spawn") {
-          recordNestedAwaits(statement.initializer.expression, statement.initializer);
-          const site = spawnSite(
-            nextChild.value++,
-            scope,
-            statement.initializer,
-            statement.name,
-            functions,
-            fileName,
-            locals,
-            types,
-          );
+        if (
+          statement.initializer.kind === "spawn"
+          || (statement.initializer.kind === "executorPlacement" && statement.initializer.mode === "spawn")
+        ) {
+          if (statement.initializer.kind === "spawn") {
+            recordNestedAwaits(statement.initializer.expression, statement.initializer);
+          }
+          const site = statement.initializer.kind === "spawn"
+            ? spawnSite(
+                nextChild.value++,
+                scope,
+                statement.initializer,
+                statement.name,
+                functions,
+                fileName,
+                locals,
+                types,
+              )
+            : placementSpawnSite(
+                nextChild.value++,
+                scope,
+                statement.initializer,
+                statement.name,
+                locals,
+                registerPlacement,
+              );
           spawns.set(statement.initializer.location.offset, site);
           spawnBindings.set(statement.name, site);
           children.set(site.index, site.target);
@@ -415,7 +476,9 @@ function planFunction(
         }
         const operation = awaitOperation(statement.initializer);
         if (operation) {
-          recordNestedAwaits(operation.expression.expression, operation.source);
+          if (operation.expression.kind === "await") {
+            recordNestedAwaits(operation.expression.expression, operation.source);
+          }
           recordAwait(operation.mode, operation.expression);
         } else if (nativeThread && statement.initializer.kind === "try") {
           validateThreadTryCall(statement.initializer.expression, fileName, types);
@@ -439,7 +502,9 @@ function planFunction(
       if (statement.kind === "return") {
         const operation = statement.expression ? awaitOperation(statement.expression) : null;
         if (operation) {
-          recordNestedAwaits(operation.expression.expression, operation.source);
+          if (operation.expression.kind === "await") {
+            recordNestedAwaits(operation.expression.expression, operation.source);
+          }
           recordAwait(operation.mode, operation.expression);
         } else if (statement.expression?.kind === "matchExpression") {
           recordNestedAwaits(statement.expression);
@@ -459,18 +524,32 @@ function planFunction(
         continue;
       }
       if (statement.kind === "expressionStatement") {
-        if (statement.expression.kind === "spawn") {
-          recordNestedAwaits(statement.expression.expression, statement.expression);
-          const site = spawnSite(
-            nextChild.value++,
-            scope,
-            statement.expression,
-            null,
-            functions,
-            fileName,
-            locals,
-            types,
-          );
+        if (
+          statement.expression.kind === "spawn"
+          || (statement.expression.kind === "executorPlacement" && statement.expression.mode === "spawn")
+        ) {
+          if (statement.expression.kind === "spawn") {
+            recordNestedAwaits(statement.expression.expression, statement.expression);
+          }
+          const site = statement.expression.kind === "spawn"
+            ? spawnSite(
+                nextChild.value++,
+                scope,
+                statement.expression,
+                null,
+                functions,
+                fileName,
+                locals,
+                types,
+              )
+            : placementSpawnSite(
+                nextChild.value++,
+                scope,
+                statement.expression,
+                null,
+                locals,
+                registerPlacement,
+              );
           spawns.set(statement.expression.location.offset, site);
           children.set(site.index, site.target);
           continue;
@@ -485,7 +564,9 @@ function planFunction(
         }
         const operation = awaitOperation(statement.expression);
         if (operation) {
-          recordNestedAwaits(operation.expression.expression, operation.source);
+          if (operation.expression.kind === "await") {
+            recordNestedAwaits(operation.expression.expression, operation.source);
+          }
           recordAwait(operation.mode, operation.expression);
           continue;
         }
@@ -542,7 +623,7 @@ function planFunction(
 
 function awaitSite(
   mode: AwaitSite["mode"],
-  expression: Extract<Expression, { kind: "await" }>,
+  expression: Extract<Expression, { kind: "await" | "executorPlacement" }>,
   functions: ReadonlyMap<string, AsyncTarget>,
   fileName: string,
   locals: ReadonlyMap<string, string>,
@@ -550,7 +631,25 @@ function awaitSite(
   spawnBindings: ReadonlyMap<string, SpawnSite>,
   joinedSpawns: Set<number>,
   nextChild: { value: number },
+  registerPlacement: (
+    expression: Extract<Expression, { kind: "executorPlacement" }>,
+    locals: ReadonlyMap<string, string>,
+  ) => PlacementTarget,
 ): AwaitSite {
+  if (expression.kind === "executorPlacement") {
+    const placement = registerPlacement(expression, locals);
+    return {
+      index: nextChild.value++,
+      mode,
+      intrinsic: null,
+      expression,
+      call: placementCall(expression, placement),
+      target: placement.target,
+      receiver: null,
+      spawn: null,
+      placement: expression.mode,
+    };
+  }
   if (expression.expression.kind === "identifier" && parseTaskType(locals.get(expression.expression.name) ?? "")) {
     const spawn = spawnBindings.get(expression.expression.name);
     if (!spawn) {
@@ -569,6 +668,7 @@ function awaitSite(
       target: spawn.target,
       receiver: null,
       spawn,
+      placement: null,
     };
   }
   if (expression.expression.kind !== "call") {
@@ -602,6 +702,7 @@ function awaitSite(
       target: spawn.target,
       receiver: null,
       spawn,
+      placement: null,
     };
   }
   if (types.semanticInfo.standardFunctionReferences.get(call.callee.location.offset) === "delay") {
@@ -614,6 +715,7 @@ function awaitSite(
       target: intrinsicDelayTarget(call.location),
       receiver: null,
       spawn: null,
+      placement: null,
     };
   }
   const resolved = resolveAsyncCall(call, functions, fileName, locals, types);
@@ -626,6 +728,7 @@ function awaitSite(
     target: resolved.target,
     receiver: resolved.receiver,
     spawn: null,
+    placement: null,
   };
 }
 
@@ -649,6 +752,269 @@ function intrinsicDelayTarget(location: SourceLocation): AsyncTarget {
       location,
     },
   };
+}
+
+function createPlacementTarget(
+  expression: Extract<Expression, { kind: "executorPlacement" }>,
+  locals: ReadonlyMap<string, string>,
+  types: AsyncTypeContext,
+  fileName: string,
+): PlacementTarget {
+  const captures = collectPlacementCaptures(expression.body, locals);
+  const mutated = captures.find((capture) => capture.mutated);
+  if (mutated) {
+    unsupported(
+      fileName,
+      mutated.location,
+      `executor placement cannot mutate captured binding ${JSON.stringify(mutated.name)} in the first runtime tier`,
+      "return a selected value from the placement block and apply mutation after awaiting it",
+    );
+  }
+  for (const capture of captures) {
+    const type = locals.get(capture.name)!;
+    if (!isPlacementCopyType(type, types)) {
+      unsupported(
+        fileName,
+        capture.location,
+        `executor placement capture ${JSON.stringify(capture.name)} of type ${JSON.stringify(type)} is not transferable yet`,
+        "capture a recursively plain value; owned, borrowed, ARC, and native affinity transfers follow in the capture-contract tier",
+      );
+    }
+  }
+  if (placementContainsFunctionReturn(expression.body)) {
+    unsupported(
+      fileName,
+      expression.location,
+      "return from an executor-placement block is not executable yet",
+      "use `select` to produce the block value; enclosing-function return lowering follows after placed-frame unwinding",
+    );
+  }
+  if (expression.mode === "sync" && placementContainsAsyncWork(expression.body)) {
+    unsupported(
+      fileName,
+      expression.location,
+      "synchronous `on thread.main` cannot suspend or spawn",
+      "use `await on thread.main` or `spawn on thread.main` for asynchronous work",
+    );
+  }
+  const final = expression.body.statements.at(-1);
+  const selected = final?.kind === "select" ? final : null;
+  const successType = expression.returnType?.name
+    ?? (selected ? types.semanticInfo.expressionTypes.get(selected.expression.location.offset) : null)
+    ?? "void";
+  requireFrameType(successType, expression.returnType?.location ?? expression.location, fileName, "executor placement result", types);
+  const body = selected
+    ? [
+        ...expression.body.statements.slice(0, -1),
+        { kind: "return" as const, expression: selected.expression, location: selected.location },
+      ]
+    : [...expression.body.statements];
+  const declaration: FunctionDeclaration = {
+    kind: "function",
+    name: `__z_executor_main_${expression.location.offset}`,
+    async: true,
+    receiverMode: null,
+    parameters: captures.map((capture) => ({
+      name: capture.name,
+      mode: "value" as const,
+      type: { name: locals.get(capture.name)!, location: capture.location },
+      location: capture.location,
+    })),
+    returnType: { name: successType, location: expression.returnType?.location ?? expression.location },
+    errorType: expression.errorType,
+    body,
+    location: expression.location,
+  };
+  return {
+    target: { declaration, owner: null },
+    captures: captures.map((capture) => ({
+      name: capture.name,
+      type: locals.get(capture.name)!,
+      location: capture.location,
+    })),
+  };
+}
+
+function placementCall(
+  expression: Extract<Expression, { kind: "executorPlacement" }>,
+  placement: PlacementTarget,
+): CallExpression {
+  return {
+    kind: "call",
+    callee: {
+      kind: "identifier",
+      name: placement.target.declaration.name,
+      location: expression.onLocation,
+    },
+    arguments: placement.captures.map((capture) => ({
+      kind: "identifier",
+      name: capture.name,
+      location: capture.location,
+    })),
+    argumentLabels: placement.captures.map(() => null),
+    location: expression.location,
+  };
+}
+
+function isPlacementCopyType(
+  type: string,
+  types: AsyncTypeContext,
+  visiting = new Set<string>(),
+): boolean {
+  if (type === "void" || type === "cstring" || type === "String" || type === "TextBuffer") return false;
+  if (scalarTypes.has(type)) return true;
+  const fixed = parseFixedArrayType(type);
+  if (fixed) return isPlacementCopyType(fixed.elementType, types, visiting);
+  if (parseSliceType(type) || parseDynamicArrayType(type)) return false;
+  if (visiting.has(type)) return true;
+  const aggregate = types.structs.get(type);
+  if (aggregate) {
+    if (aggregate.kind === "class" || aggregate.deinitializer) return false;
+    visiting.add(type);
+    const result = aggregate.fields.every((field) => isPlacementCopyType(field.type.name, types, visiting));
+    visiting.delete(type);
+    return result;
+  }
+  const enumeration = types.enums.get(type);
+  if (enumeration) {
+    visiting.add(type);
+    const result = enumeration.variants.every((variant) => (
+      !variant.payload || isPlacementCopyType(variant.payload.name, types, visiting)
+    ));
+    visiting.delete(type);
+    return result;
+  }
+  return false;
+}
+
+function collectPlacementCaptures(
+  body: Extract<Statement, { kind: "block" }>,
+  outerLocals: ReadonlyMap<string, string>,
+): readonly { readonly name: string; readonly location: SourceLocation; mutated: boolean }[] {
+  const captures = new Map<string, { readonly name: string; readonly location: SourceLocation; mutated: boolean }>();
+  const record = (name: string, location: SourceLocation, localNames: ReadonlySet<string>, mutated = false): void => {
+    if (!outerLocals.has(name) || localNames.has(name)) return;
+    const existing = captures.get(name);
+    if (existing) existing.mutated ||= mutated;
+    else captures.set(name, { name, location, mutated });
+  };
+  const expression = (value: Expression, localNames: ReadonlySet<string>, mutated = false): void => {
+    switch (value.kind) {
+      case "number": case "string": case "boolean": case "null": case "dynamicArrayExpression": return;
+      case "identifier": record(value.name, value.location, localNames, mutated); return;
+      case "argumentReference": record(value.name, value.location, localNames, true); return;
+      case "template": for (const part of value.parts) if (part.kind === "value") expression(part.expression, localNames); return;
+      case "unary": expression(value.operand, localNames); return;
+      case "binary": expression(value.left, localNames); expression(value.right, localNames); return;
+      case "conditional": expression(value.condition, localNames); expression(value.thenExpression, localNames); expression(value.elseExpression, localNames); return;
+      case "new": for (const argument of value.arguments) expression(argument, localNames); return;
+      case "weak": case "attempt": case "try": case "await": case "spawn": expression(value.expression, localNames); return;
+      case "closure": return;
+      case "call": expression(value.callee, localNames); for (const argument of value.arguments) expression(argument, localNames); return;
+      case "member": expression(value.object, localNames, mutated); return;
+      case "index": expression(value.object, localNames, mutated); expression(value.index, localNames); return;
+      case "arrayExpression": for (const element of value.elements) expression(element, localNames); return;
+      case "structExpression": case "objectExpression": for (const field of value.fields) expression(field.expression, localNames); return;
+      case "variantExpression": expression(value.payload, localNames); return;
+      case "executorPlacement": statement(value.body, new Set(localNames)); return;
+      case "matchExpression":
+        expression(value.expression, localNames);
+        for (const arm of value.arms) {
+          const names = new Set(localNames);
+          if (arm.binding) names.add(arm.binding);
+          for (const field of arm.objectBindings ?? []) names.add(field.bindingName);
+          statement(arm.body, names);
+        }
+        return;
+      case "ifExpression":
+        expression(value.condition, localNames);
+        statement(value.thenBranch, new Set(localNames));
+        if (value.elseBranch.kind === "ifExpression") expression(value.elseBranch, new Set(localNames));
+        else statement(value.elseBranch, new Set(localNames));
+        return;
+    }
+  };
+  const statements = (values: readonly Statement[], localNames: Set<string>): void => {
+    for (const value of values) {
+      if (value.kind === "variable") {
+        if (value.initializer) expression(value.initializer, localNames);
+        localNames.add(value.name);
+      } else statement(value, localNames);
+    }
+  };
+  const statement = (value: Statement, localNames: Set<string>): void => {
+    switch (value.kind) {
+      case "variable": if (value.initializer) expression(value.initializer, localNames); localNames.add(value.name); return;
+      case "assignment": expression(value.target, localNames, true); expression(value.expression, localNames); return;
+      case "return": if (value.expression) expression(value.expression, localNames); return;
+      case "throw": case "select": case "expressionStatement": expression(value.expression, localNames); return;
+      case "block": statements(value.statements, new Set(localNames)); return;
+      case "if": expression(value.condition, localNames); statement(value.thenBranch, new Set(localNames)); if (value.elseBranch) statement(value.elseBranch, new Set(localNames)); return;
+      case "while": expression(value.condition, localNames); statement(value.body, new Set(localNames)); return;
+      case "for": { expression(value.iterable, localNames); const names = new Set(localNames); names.add(value.binding); statement(value.body, names); return; }
+      case "match":
+        expression(value.expression, localNames);
+        for (const arm of value.arms) {
+          const names = new Set(localNames);
+          if (arm.binding) names.add(arm.binding);
+          for (const field of arm.objectBindings ?? []) names.add(field.bindingName);
+          statement(arm.body, names);
+        }
+        return;
+      case "asyncScope": statement(value.body, new Set(localNames)); return;
+      case "break": case "continue": return;
+    }
+  };
+  statements(body.statements, new Set());
+  return [...captures.values()];
+}
+
+function placementContainsFunctionReturn(statement: Statement): boolean {
+  switch (statement.kind) {
+    case "return": return true;
+    case "block": return statement.statements.some(placementContainsFunctionReturn);
+    case "if": return placementContainsFunctionReturn(statement.thenBranch)
+      || Boolean(statement.elseBranch && placementContainsFunctionReturn(statement.elseBranch));
+    case "while": case "for": case "asyncScope": return placementContainsFunctionReturn(statement.body);
+    case "match": return statement.arms.some((arm) => placementContainsFunctionReturn(arm.body));
+    default: return false;
+  }
+}
+
+function placementContainsAsyncWork(statement: Statement): boolean {
+  if (statementContainsAwait(statement)) return true;
+  const expressionHasSpawn = (value: Expression): boolean => {
+    if (value.kind === "spawn" || (value.kind === "executorPlacement" && value.mode !== "sync")) return true;
+    switch (value.kind) {
+      case "weak": case "attempt": case "try": case "await": return expressionHasSpawn(value.expression);
+      case "unary": return expressionHasSpawn(value.operand);
+      case "binary": return expressionHasSpawn(value.left) || expressionHasSpawn(value.right);
+      case "conditional": return expressionHasSpawn(value.condition) || expressionHasSpawn(value.thenExpression) || expressionHasSpawn(value.elseExpression);
+      case "call": return expressionHasSpawn(value.callee) || value.arguments.some(expressionHasSpawn);
+      case "member": return expressionHasSpawn(value.object);
+      case "index": return expressionHasSpawn(value.object) || expressionHasSpawn(value.index);
+      case "new": return value.arguments.some(expressionHasSpawn);
+      case "template": return value.parts.some((part) => part.kind === "value" && expressionHasSpawn(part.expression));
+      case "arrayExpression": return value.elements.some(expressionHasSpawn);
+      case "structExpression": case "objectExpression": return value.fields.some((field) => expressionHasSpawn(field.expression));
+      case "variantExpression": return expressionHasSpawn(value.payload);
+      default: return false;
+    }
+  };
+  switch (statement.kind) {
+    case "variable": return Boolean(statement.initializer && expressionHasSpawn(statement.initializer));
+    case "assignment": return expressionHasSpawn(statement.target) || expressionHasSpawn(statement.expression);
+    case "return": return Boolean(statement.expression && expressionHasSpawn(statement.expression));
+    case "throw": case "select": case "expressionStatement": return expressionHasSpawn(statement.expression);
+    case "block": return statement.statements.some(placementContainsAsyncWork);
+    case "if": return expressionHasSpawn(statement.condition) || placementContainsAsyncWork(statement.thenBranch)
+      || Boolean(statement.elseBranch && placementContainsAsyncWork(statement.elseBranch));
+    case "while": return expressionHasSpawn(statement.condition) || placementContainsAsyncWork(statement.body);
+    case "for": return expressionHasSpawn(statement.iterable) || placementContainsAsyncWork(statement.body);
+    case "match": return expressionHasSpawn(statement.expression) || statement.arms.some((arm) => placementContainsAsyncWork(arm.body));
+    case "asyncScope": return placementContainsAsyncWork(statement.body);
+    case "break": case "continue": return false;
+  }
 }
 
 function spawnSite(
@@ -682,6 +1048,32 @@ function spawnSite(
     receiver: resolved.receiver,
     binding,
     nativeThread: false,
+    placement: null,
+  };
+}
+
+function placementSpawnSite(
+  index: number,
+  scope: number,
+  expression: Extract<Expression, { kind: "executorPlacement" }>,
+  binding: string | null,
+  locals: ReadonlyMap<string, string>,
+  registerPlacement: (
+    expression: Extract<Expression, { kind: "executorPlacement" }>,
+    locals: ReadonlyMap<string, string>,
+  ) => PlacementTarget,
+): SpawnSite {
+  const placement = registerPlacement(expression, locals);
+  return {
+    index,
+    scope,
+    expression,
+    call: placementCall(expression, placement),
+    target: placement.target,
+    receiver: null,
+    binding,
+    nativeThread: false,
+    placement: "main",
   };
 }
 
@@ -714,6 +1106,7 @@ function threadSpawnSite(
     receiver: null,
     binding,
     nativeThread: true,
+    placement: null,
   };
 }
 
@@ -753,11 +1146,21 @@ function resolveAsyncCall(
 
 function awaitOperation(expression: Expression): {
   readonly mode: AwaitSite["mode"];
-  readonly expression: Extract<Expression, { kind: "await" }>;
+  readonly expression: Extract<Expression, { kind: "await" | "executorPlacement" }>;
   readonly source: Expression;
 } | null {
   if (expression.kind === "await") return { mode: "await", expression, source: expression };
+  if (expression.kind === "executorPlacement" && expression.mode !== "spawn") {
+    return { mode: "await", expression, source: expression };
+  }
   if ((expression.kind === "try" || expression.kind === "attempt") && expression.expression.kind === "await") {
+    return { mode: expression.kind, expression: expression.expression, source: expression };
+  }
+  if (
+    (expression.kind === "try" || expression.kind === "attempt")
+    && expression.expression.kind === "executorPlacement"
+    && expression.expression.mode !== "spawn"
+  ) {
     return { mode: expression.kind, expression: expression.expression, source: expression };
   }
   return null;
@@ -782,7 +1185,7 @@ function collectNestedAwaitOperations(
   const walk = (candidate: Expression): void => {
     const operation = awaitOperation(candidate);
     if (operation) {
-      walk(operation.expression.expression);
+      if (operation.expression.kind === "await") walk(operation.expression.expression);
       operations.push(operation);
       return;
     }
@@ -863,8 +1266,8 @@ function collectNestedAwaitOperations(
         unsupported(
           fileName,
           candidate.location,
-          "executor-placement blocks are type-checked but not executable in the first placement slice",
-          "use `z check` while main-executor scheduling and frame lowering are added",
+          "nested executor placement is not executable in an async expression yet",
+          "bind the placed value first, then use that binding in the surrounding expression",
         );
       case "matchExpression":
         walk(candidate.expression);
@@ -995,6 +1398,11 @@ function generateRuntime(
 ): string {
   const usesDelay = plans.some((plan) => [...plan.awaits.values()].some((site) => site.intrinsic === "delay"));
   const usesThreads = plans.some((plan) => [...plan.spawns.values()].some((site) => site.nativeThread));
+  const usesMainPlacement = plans.some((plan) => (
+    [...plan.awaits.values()].some((site) => site.placement !== null)
+    || [...plan.spawns.values()].some((site) => site.placement !== null)
+  ));
+  const usesDarwinMainLoop = usesThreads && usesMainPlacement;
   const usesNativeFrameStorage = plans.some((plan) => (
     requiresNativeFramePlacement(plan.declaration.returnType.name, plan.types)
     || Boolean(plan.declaration.errorType && requiresNativeFramePlacement(plan.declaration.errorType.name, plan.types))
@@ -1013,6 +1421,12 @@ function generateRuntime(
       "#include <pthread.h>",
       "#include <time.h>",
       "typedef pthread_t Z_NativeThreadHandle;",
+      "#endif",
+      "",
+    ] : []),
+    ...(usesDarwinMainLoop ? [
+      "#if defined(__APPLE__)",
+      "#include <CoreFoundation/CoreFoundation.h>",
       "#endif",
       "",
     ] : []),
@@ -1046,6 +1460,8 @@ function generateRuntime(
     "  bool timer_scheduled;",
     "  bool native_thread;",
     "  bool thread_joined;",
+    "  bool native_body_completed;",
+    "  bool native_thread_finished;",
     "  uint64_t wake_at_ms;",
     "  Z_AsyncTask *waiter;",
     "  Z_AsyncTask *next;",
@@ -1054,7 +1470,9 @@ function generateRuntime(
     ...(usesThreads ? [
       "  Z_NativeThreadHandle native_handle;",
       "  bool completion_queued;",
+      "  bool thread_queued;",
       "  Z_AsyncTask *completion_next;",
+      "  Z_AsyncTask *thread_next;",
     ] : []),
     "};",
     "",
@@ -1064,6 +1482,8 @@ function generateRuntime(
     "  Z_AsyncTask *timers;",
     ...(usesThreads ? [
       "  Z_AsyncTask *thread_completions;",
+      "  Z_AsyncTask *thread_enqueued_head;",
+      "  Z_AsyncTask *thread_enqueued_tail;",
       "  size_t active_native_threads;",
       "#if defined(_WIN32)",
       "  CRITICAL_SECTION thread_mutex;",
@@ -1072,6 +1492,12 @@ function generateRuntime(
       "  pthread_mutex_t thread_mutex;",
       "  pthread_cond_t thread_condition;",
       "#endif",
+      ...(usesDarwinMainLoop ? [
+        "#if defined(__APPLE__)",
+        "  CFRunLoopRef main_run_loop;",
+        "  CFRunLoopSourceRef main_source;",
+        "#endif",
+      ] : []),
     ] : []),
     "};",
     "",
@@ -1091,12 +1517,22 @@ function generateRuntime(
     "",
     "static __attribute__((unused)) void z_async_complete_task(Z_AsyncTask *task) {",
     ...(usesThreads ? [
-      "  if (task->native_thread) return;",
+      "  if (task->native_thread) {",
+      "    task->native_body_completed = true;",
+      "    if (task->native_thread_finished) __atomic_store_n(&task->completed, true, __ATOMIC_RELEASE);",
+      "    return;",
+      "  }",
     ] : []),
     "  task->completed = true;",
     "}",
     "",
     ...(usesThreads ? [
+      ...(usesDarwinMainLoop ? [
+        "#if defined(__APPLE__)",
+        "static void z_async_main_source_perform(void *context);",
+        "#endif",
+        "",
+      ] : []),
       "static void z_async_thread_lock(Z_AsyncExecutor *executor) {",
       "#if defined(_WIN32)",
       "  EnterCriticalSection(&executor->thread_mutex);",
@@ -1118,6 +1554,8 @@ function generateRuntime(
       "  executor->tail = NULL;",
       "  executor->timers = NULL;",
       "  executor->thread_completions = NULL;",
+      "  executor->thread_enqueued_head = NULL;",
+      "  executor->thread_enqueued_tail = NULL;",
       "  executor->active_native_threads = 0;",
       "#if defined(_WIN32)",
       "  InitializeCriticalSection(&executor->thread_mutex);",
@@ -1126,11 +1564,30 @@ function generateRuntime(
       "  if (pthread_mutex_init(&executor->thread_mutex, NULL) != 0) abort();",
       "  if (pthread_cond_init(&executor->thread_condition, NULL) != 0) abort();",
       "#endif",
+      ...(usesDarwinMainLoop ? [
+        "#if defined(__APPLE__)",
+        "  executor->main_run_loop = CFRunLoopGetMain();",
+        "  CFRetain(executor->main_run_loop);",
+        "  CFRunLoopSourceContext source_context = { 0 };",
+        "  source_context.info = executor;",
+        "  source_context.perform = z_async_main_source_perform;",
+        "  executor->main_source = CFRunLoopSourceCreate(NULL, 0, &source_context);",
+        "  if (executor->main_source == NULL) abort();",
+        "  CFRunLoopAddSource(executor->main_run_loop, executor->main_source, kCFRunLoopCommonModes);",
+        "#endif",
+      ] : []),
       "}",
       "",
       "static void z_async_executor_destroy(Z_AsyncExecutor *executor) {",
-      "  if (executor->thread_completions != NULL) abort();",
+      "  if (executor->thread_completions != NULL || executor->thread_enqueued_head != NULL) abort();",
       "  if (executor->active_native_threads != 0) abort();",
+      ...(usesDarwinMainLoop ? [
+        "#if defined(__APPLE__)",
+        "  CFRunLoopRemoveSource(executor->main_run_loop, executor->main_source, kCFRunLoopCommonModes);",
+        "  CFRelease(executor->main_source);",
+        "  CFRelease(executor->main_run_loop);",
+        "#endif",
+      ] : []),
       "#if defined(_WIN32)",
       "  DeleteCriticalSection(&executor->thread_mutex);",
       "#else",
@@ -1144,8 +1601,11 @@ function generateRuntime(
       "  z_async_thread_lock(executor);",
       "  if (executor->active_native_threads == 0) abort();",
       "  executor->active_native_threads -= 1;",
-      "  task->cancelled = __atomic_load_n(&task->cancellation_requested, __ATOMIC_ACQUIRE);",
-      "  __atomic_store_n(&task->completed, true, __ATOMIC_RELEASE);",
+      "  task->native_thread_finished = true;",
+      "  if (task->native_body_completed) {",
+      "    task->cancelled = __atomic_load_n(&task->cancellation_requested, __ATOMIC_ACQUIRE);",
+      "    __atomic_store_n(&task->completed, true, __ATOMIC_RELEASE);",
+      "  }",
       "  task->completion_queued = true;",
       "  task->completion_next = executor->thread_completions;",
       "  executor->thread_completions = task;",
@@ -1177,7 +1637,9 @@ function generateRuntime(
       "  task->native_thread = true;",
       "  task->thread_joined = false;",
       "  task->completion_queued = false;",
+      "  task->thread_queued = false;",
       "  task->completion_next = NULL;",
+      "  task->thread_next = NULL;",
       "  z_async_thread_lock(task->executor);",
       "  task->executor->active_native_threads += 1;",
       "  z_async_thread_unlock(task->executor);",
@@ -1211,19 +1673,51 @@ function generateRuntime(
     "}",
     "",
     ...(usesThreads ? [
+      "static __attribute__((unused)) void z_async_enqueue_from_thread(Z_AsyncExecutor *executor, Z_AsyncTask *task) {",
+      "  z_async_thread_lock(executor);",
+      "  if (z_async_is_completed(task) || task->queued || task->suspended) abort();",
+      "  task->thread_queued = true;",
+      "  task->thread_next = NULL;",
+      "  if (executor->thread_enqueued_tail != NULL) executor->thread_enqueued_tail->thread_next = task;",
+      "  else executor->thread_enqueued_head = task;",
+      "  executor->thread_enqueued_tail = task;",
+      ...(usesDarwinMainLoop ? [
+        "#if defined(__APPLE__)",
+        "  CFRunLoopSourceSignal(executor->main_source);",
+        "  CFRunLoopWakeUp(executor->main_run_loop);",
+        "#endif",
+      ] : []),
+      "#if defined(_WIN32)",
+      "  WakeConditionVariable(&executor->thread_condition);",
+      "#else",
+      "  if (pthread_cond_signal(&executor->thread_condition) != 0) abort();",
+      "#endif",
+      "  z_async_thread_unlock(executor);",
+      "}",
+      "",
       "static void z_async_drain_native_completions(Z_AsyncExecutor *executor) {",
       "  z_async_thread_lock(executor);",
       "  Z_AsyncTask *completed = executor->thread_completions;",
       "  executor->thread_completions = NULL;",
+      "  Z_AsyncTask *enqueued = executor->thread_enqueued_head;",
+      "  executor->thread_enqueued_head = NULL;",
+      "  executor->thread_enqueued_tail = NULL;",
       "  for (Z_AsyncTask *task = completed; task != NULL; task = task->completion_next) {",
       "    task->completion_queued = false;",
       "  }",
       "  z_async_thread_unlock(executor);",
+      "  while (enqueued != NULL) {",
+      "    Z_AsyncTask *task = enqueued;",
+      "    enqueued = task->thread_next;",
+      "    task->thread_queued = false;",
+      "    task->thread_next = NULL;",
+      "    z_async_enqueue(executor, task);",
+      "  }",
       "  while (completed != NULL) {",
       "    Z_AsyncTask *task = completed;",
       "    completed = task->completion_next;",
       "    task->completion_next = NULL;",
-      "    if (task->waiter != NULL) {",
+      "    if (z_async_is_completed(task) && task->waiter != NULL) {",
       "      Z_AsyncTask *waiter = task->waiter;",
       "      task->waiter = NULL;",
       "      waiter->suspended = false;",
@@ -1231,6 +1725,38 @@ function generateRuntime(
       "    }",
       "  }",
       "}",
+      "",
+    ] : []),
+    "static bool z_async_run_one(Z_AsyncExecutor *executor) {",
+    "  Z_AsyncTask *task = executor->head;",
+    "  if (task == NULL) return false;",
+    "  executor->head = task->next;",
+    "  if (executor->head == NULL) executor->tail = NULL;",
+    "  task->queued = false;",
+    "  task->next = NULL;",
+    "  if (!z_async_is_completed(task)) task->poll(task);",
+    "  if (z_async_is_completed(task)) {",
+    "    if (task->waiter != NULL) {",
+    "      Z_AsyncTask *waiter = task->waiter;",
+    "      task->waiter = NULL;",
+    "      waiter->suspended = false;",
+    "      z_async_enqueue(executor, waiter);",
+    "    }",
+    "  } else if (!task->suspended) {",
+    "    z_async_enqueue(executor, task);",
+    "  }",
+    "  return true;",
+    "}",
+    "",
+    ...(usesDarwinMainLoop ? [
+      "#if defined(__APPLE__)",
+      "static void z_async_main_source_perform(void *context) {",
+      "  if (!pthread_main_np()) abort();",
+      "  Z_AsyncExecutor *executor = (Z_AsyncExecutor *)context;",
+      "  z_async_drain_native_completions(executor);",
+      "  while (z_async_run_one(executor)) {}",
+      "}",
+      "#endif",
       "",
     ] : []),
     ...(usesDelay ? [
@@ -1314,12 +1840,13 @@ function generateRuntime(
       "static bool z_async_wait_for_work(Z_AsyncExecutor *executor) {",
       "  z_async_thread_lock(executor);",
       "  if (executor->thread_completions == NULL",
+      "      && executor->thread_enqueued_head == NULL",
       "      && executor->active_native_threads == 0",
       "      && executor->timers == NULL) {",
       "    z_async_thread_unlock(executor);",
       "    return false;",
       "  }",
-      "  if (executor->thread_completions == NULL) {",
+      "  if (executor->thread_completions == NULL && executor->thread_enqueued_head == NULL) {",
       "#if defined(_WIN32)",
       "    DWORD timeout = INFINITE;",
       ...(usesDelay ? [
@@ -1433,23 +1960,7 @@ function generateRuntime(
     ] : usesDelay ? [
       "    if (executor->head == NULL) z_async_wait_for_timer(executor);",
     ] : []),
-    "    Z_AsyncTask *task = executor->head;",
-    "    if (task == NULL) abort();",
-    "    executor->head = task->next;",
-    "    if (executor->head == NULL) executor->tail = NULL;",
-    "    task->queued = false;",
-    "    task->next = NULL;",
-    "    if (!z_async_is_completed(task)) task->poll(task);",
-    "    if (z_async_is_completed(task)) {",
-    "      if (task->waiter != NULL) {",
-    "        Z_AsyncTask *waiter = task->waiter;",
-    "        task->waiter = NULL;",
-    "        waiter->suspended = false;",
-    "        z_async_enqueue(executor, waiter);",
-    "      }",
-    "    } else if (!task->suspended) {",
-    "      z_async_enqueue(executor, task);",
-    "    }",
+    "    if (!z_async_run_one(executor)) abort();",
     "  }",
     "}",
     "",
@@ -1644,6 +2155,8 @@ function generateStart(plan: AsyncFunctionPlan): string {
     "  frame->task.timer_scheduled = false;",
     "  frame->task.native_thread = false;",
     "  frame->task.thread_joined = false;",
+    "  frame->task.native_body_completed = false;",
+    "  frame->task.native_thread_finished = false;",
     "  frame->task.wake_at_ms = 0;",
     "  frame->state = 0;",
     "  frame->cancel_children = false;",
@@ -1764,6 +2277,23 @@ function emitFrameSliceConversion(
   return `(${cFrameType(conversion.targetType, plan.types)}){ .data = (${value}).data, .length = ${length} }`;
 }
 
+function schedulePlacedChild(
+  site: Pick<AwaitSite, "placement"> | Pick<SpawnSite, "placement">,
+  parent: Pick<AsyncFunctionPlan, "nativeThread">,
+  child: string,
+): string[] {
+  if ("placement" in site && site.placement === "sync") {
+    return [
+      `${child}->task.poll(&${child}->task);`,
+      `if (!z_async_is_completed(&${child}->task)) abort();`,
+    ];
+  }
+  if ("placement" in site && site.placement && parent.nativeThread) {
+    return [`z_async_enqueue_from_thread(frame->task.executor, &${child}->task);`];
+  }
+  return [`z_async_enqueue(frame->task.executor, &${child}->task);`];
+}
+
 function generatePoll(
   plan: AsyncFunctionPlan,
   planByKey: ReadonlyMap<string, AsyncFunctionPlan>,
@@ -1783,7 +2313,7 @@ function generatePoll(
         const arguments_ = emitAwaitArguments(site, plan, fileName);
         cases.push(caseBlock(state, [
           `frame->child_${site.index} = ${target.startName}(${["frame->task.executor", ...arguments_].join(", ")});`,
-          `z_async_enqueue(frame->task.executor, &frame->child_${site.index}->task);`,
+          ...schedulePlacedChild(site, plan, `frame->child_${site.index}`),
           `frame->state = ${state + 1};`,
           "continue;",
         ]));
@@ -1862,7 +2392,9 @@ function generatePoll(
         state += 1;
         continue;
       }
-      const spawnedSite = initializer.kind === "spawn" || initializer.kind === "call"
+      const spawnedSite = initializer.kind === "spawn"
+          || initializer.kind === "call"
+          || (initializer.kind === "executorPlacement" && initializer.mode === "spawn")
         ? plan.spawns.get(initializer.location.offset)
         : null;
       if (spawnedSite) {
@@ -1874,7 +2406,7 @@ function generatePoll(
           `frame->${frameField(statement.name)} = &frame->child_${site.index}->task;`,
           site.nativeThread
             ? `z_async_start_native_thread(&frame->child_${site.index}->task);`
-            : `z_async_enqueue(frame->task.executor, &frame->child_${site.index}->task);`,
+            : schedulePlacedChild(site, plan, `frame->child_${site.index}`).join("\n"),
           `frame->state = ${state + 1};`,
           "continue;",
         ]));
@@ -1893,7 +2425,7 @@ function generatePoll(
           cases.push(
             caseBlock(state, [
               `frame->child_${site.index} = ${target.startName}(${["frame->task.executor", ...arguments_].join(", ")});`,
-              `z_async_enqueue(frame->task.executor, &frame->child_${site.index}->task);`,
+              ...schedulePlacedChild(site, plan, `frame->child_${site.index}`),
               `frame->state = ${state + 1};`,
               "continue;",
             ]),
@@ -1992,7 +2524,7 @@ function generatePoll(
           const arguments_ = emitAwaitArguments(site, plan, fileName);
           cases.push(caseBlock(state, [
             `frame->child_${site.index} = ${target.startName}(${["frame->task.executor", ...arguments_].join(", ")});`,
-            `z_async_enqueue(frame->task.executor, &frame->child_${site.index}->task);`,
+            ...schedulePlacedChild(site, plan, `frame->child_${site.index}`),
             `frame->state = ${state + 1};`,
             "continue;",
           ]));
@@ -2057,7 +2589,10 @@ function generatePoll(
       continue;
     }
     if (statement.kind === "expressionStatement") {
-      if (statement.expression.kind === "spawn") {
+      if (
+        statement.expression.kind === "spawn"
+        || (statement.expression.kind === "executorPlacement" && statement.expression.mode === "spawn")
+      ) {
         const site = plan.spawns.get(statement.expression.location.offset)!;
         const target = planByKey.get(targetKey(site.target))!;
         const arguments_ = emitAwaitArguments(site, plan, fileName);
@@ -2065,7 +2600,7 @@ function generatePoll(
           `frame->child_${site.index} = ${target.startName}(${["frame->task.executor", ...arguments_].join(", ")});`,
           site.nativeThread
             ? `z_async_start_native_thread(&frame->child_${site.index}->task);`
-            : `z_async_enqueue(frame->task.executor, &frame->child_${site.index}->task);`,
+            : schedulePlacedChild(site, plan, `frame->child_${site.index}`).join("\n"),
           `frame->state = ${state + 1};`,
           "continue;",
         ]));
@@ -2105,7 +2640,7 @@ function generatePoll(
         const arguments_ = emitAwaitArguments(site, plan, fileName);
         cases.push(caseBlock(state, [
           `frame->child_${site.index} = ${target.startName}(${["frame->task.executor", ...arguments_].join(", ")});`,
-          `z_async_enqueue(frame->task.executor, &frame->child_${site.index}->task);`,
+          ...schedulePlacedChild(site, plan, `frame->child_${site.index}`),
           `frame->state = ${state + 1};`,
           "continue;",
         ]));

@@ -7217,10 +7217,51 @@ test("type-checks main-thread executor placement and exposes thread.main to edit
   assert.equal(proofDiagnostic.code, "Z0711");
   assert.match(proofDiagnostic.message, /requires proven main-executor context/);
 
-  assert.throws(
-    () => compileToC(source, example),
-    /executor-placement blocks are type-checked but not executable/,
+  const generated = compileToC(source, example);
+  assert.match(generated, /z_async_start___z_executor_main_/);
+  assert.match(generated, /z_async_run_one/);
+
+  const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+
+  const directory = mkdtempSync("/tmp/z-sync-main-placement-");
+  const syncMain = resolve(directory, "main.z");
+  writeFileSync(syncMain, `
+    import { thread } from "std/thread";
+    function main(): i32 {
+      const answer = on thread.main: i32 { select 42; };
+      return answer - 42;
+    }
+  `);
+  const syncResult = spawnSync(process.execPath, [cli, "run", syncMain], { encoding: "utf8" });
+  assert.equal(syncResult.status, 0, syncResult.stderr);
+});
+
+test("places structured work onto main from a native worker without blocking main", () => {
+  const example = resolve(projectRoot, "examples/async/thread-main-placement.z");
+  const source = readFileSync(example, "utf8");
+  const artifact = compileToNative(source, example);
+  assert.match(artifact.source, /z_async_enqueue_from_thread/);
+  assert.match(artifact.source, /native_body_completed/);
+  assert.match(artifact.source, /native_thread_finished/);
+  assert.match(artifact.source, /CFRunLoopSourceSignal/);
+  if (process.platform === "darwin") assert.ok(artifact.frameworks.includes("CoreFoundation"));
+
+  const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(
+    result.stdout,
+    "main task awaits worker without blocking the main executor\n"
+      + "main placement received 42\n"
+      + "worker and its structured main child completed\n",
   );
+
+  if (process.platform === "darwin") {
+    const runLoopExample = resolve(projectRoot, "examples/async/darwin-main-run-loop.z");
+    const runLoopResult = spawnSync(process.execPath, [cli, "run", runLoopExample], { encoding: "utf8" });
+    assert.equal(runLoopResult.status, 0, runLoopResult.stderr);
+    assert.equal(runLoopResult.stdout, "placed child is running on the Darwin main run loop\n");
+  }
 });
 
 test("runs async match expressions with checked arithmetic and editor details", () => {

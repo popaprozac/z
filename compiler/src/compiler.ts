@@ -101,7 +101,11 @@ export function compileToNative(source: string, fileName: string): NativeArtifac
     language: semanticInfo.objectiveC
       ? semanticInfo.cPlusPlus ? "objective-c++" : "objective-c"
       : semanticInfo.cPlusPlus ? "c++" : "c",
-    frameworks: [...new Set([...semanticInfo.frameworks, ...projectBuild.frameworks])],
+    frameworks: [...new Set([
+      ...semanticInfo.frameworks,
+      ...projectBuild.frameworks,
+      ...(generated?.frameworks ?? []),
+    ])],
     includeDirectories: [...new Set([...projectBuild.includeDirectories, ...moduleIncludeDirectories])],
     nativeLibraries: projectBuild.nativeLibraries,
     nativeLinkerArguments: [...new Set([

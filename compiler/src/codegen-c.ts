@@ -135,7 +135,7 @@ export function generateC(program: Program, sourceName: string, semanticInfo: Se
   ];
   if (usesTiming) {
     lines.push(
-      "#if !defined(_WIN32) && !defined(_POSIX_C_SOURCE)",
+      "#if !defined(_WIN32) && !defined(__APPLE__) && !defined(_POSIX_C_SOURCE)",
       "#define _POSIX_C_SOURCE 200809L",
       "#endif",
     );
@@ -2102,6 +2102,16 @@ bool ${liveFlag} = true;`;
     case "for":
       return generateFor(statement, context);
     case "expressionStatement":
+      if (statement.expression.kind === "executorPlacement") {
+        if (statement.expression.mode !== "sync") {
+          throw new Error("asynchronous executor placement must be lowered through task frames");
+        }
+        const final = statement.expression.body.statements.at(-1);
+        if (final?.kind === "select") {
+          return generateValueArm(statement.expression.body, context, (value) => `(void)${value};`, false);
+        }
+        return generateBlock(statement.expression.body.statements, context);
+      }
       if (statement.expression.kind === "call" && context.semanticInfo.consoleCalls.has(statement.expression.location.offset)) {
         return generateConsoleCall(statement.expression, context);
       }
@@ -2560,6 +2570,12 @@ function generateDirectValue(
     return generateIfExpression(expression, context, (value, valueContext) => (
       consumeValue(generateBridgedStringValue(expression, value, valueContext), valueContext)
     ), consumeTerminates);
+  }
+  if (expression.kind === "executorPlacement") {
+    if (expression.mode !== "sync") {
+      throw new Error("asynchronous executor placement must be lowered through task frames");
+    }
+    return generateValueArm(expression.body, context, consumeValue, consumeTerminates);
   }
   return consumeValue(generateExpression(expression, context), context);
 }
@@ -3930,10 +3946,10 @@ function generateExpressionInner(expression: Expression, context: GenerationCont
       throw new DiagnosticError(
         expression.location.fileName ?? "<source>",
         expression.location,
-        "executor-placement blocks are type-checked but not executable in the first placement slice",
+        "executor placement must be lowered from a direct value-producing position",
         {
           code: "Z0713",
-          helps: ["use `z check` while main-executor scheduling and frame lowering are added"],
+          helps: ["bind the `on thread.main { ... }` result before composing it into a larger expression"],
         },
       );
     case "matchExpression":
