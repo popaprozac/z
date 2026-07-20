@@ -6,7 +6,12 @@ declare module "foreign-handles.h" {
       deinit;
     }
   }
+  export function z_test_create(out handle: _ | null {
+    deinit z_test_created_close;
+  }): _;
   export function z_test_close(move handle: _): _;
   export function z_test_use(in handle: _): _;
   export function z_test_optional(in handle: _ | null): _;
+  export function z_test_created_close(move handle: _): _;
+  export function z_test_created_use(in handle: _): _;
 }

@@ -34,6 +34,7 @@ export type ForeignType =
   | ForeignBlockType
   | ForeignObjectType
   | ForeignRecordPointerType
+  | ForeignOutPointerType
   | ForeignPointerType
   | { readonly kind: "unsupported"; readonly cName: string };
 
@@ -179,6 +180,12 @@ export type ForeignPointerType = {
   readonly nullable: boolean;
   readonly release: string | null;
   readonly thread: ForeignThreadContract;
+};
+
+export type ForeignOutPointerType = {
+  readonly kind: "pointerOut";
+  readonly cName: string;
+  readonly pointer: ForeignPointerType;
 };
 
 export type ForeignRecordPointerType = {

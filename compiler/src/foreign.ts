@@ -990,11 +990,44 @@ function foreignDeclarationMetadata(node: ClangNode | undefined): ForeignDeclara
   if (!node) return { source: null, availability: [] };
   const fallbackFile = clangNodeSourceFiles.get(node) ?? null;
   const source = foreignSourceLocation(node.loc ?? node.range?.begin, node.name?.length ?? 1, fallbackFile);
-  const availability = (node.inner ?? [])
+  const attributeAvailability = (node.inner ?? [])
     .filter((child) => child.kind === "AvailabilityAttr" || child.kind === "DeprecatedAttr" || child.kind === "UnavailableAttr")
     .map((attribute) => foreignAvailability(attribute, source?.fileName ?? null))
     .filter((item): item is ForeignAvailability => Boolean(item));
+  const availability = attributeAvailability.length > 0
+    ? attributeAvailability
+    : sourceDeclarationAvailability(node, source);
   return { source, availability };
+}
+
+function sourceDeclarationAvailability(
+  node: ClangNode,
+  source: ForeignSourceLocation | null,
+): readonly ForeignAvailability[] {
+  if (!source || !existsSync(source.fileName)) return [];
+  const text = foreignSourceText(source.fileName);
+  const concrete = node.loc?.expansionLoc ?? node.loc?.spellingLoc ?? node.loc;
+  const offset = concrete?.offset;
+  if (offset === undefined) return [];
+  const lineStart = text.lastIndexOf("\n", offset - 1) + 1;
+  const declarationEnd = text.indexOf(";", offset);
+  if (declarationEnd === -1 || declarationEnd - lineStart > 4096) return [];
+  const declaration = text.slice(lineStart, declarationEnd + 1);
+  const result: ForeignAvailability[] = [];
+  for (const match of declaration.matchAll(/\bAPI_AVAILABLE\s*\(([\s\S]*)\)\s*;/g)) {
+    for (const platform of match[1].matchAll(/\b([A-Za-z_][A-Za-z0-9_]*)\s*\(\s*([0-9]+(?:\.[0-9]+)*)\s*\)/g)) {
+      result.push({
+        platform: platform[1].toLowerCase(),
+        introduced: platform[2],
+        deprecated: false,
+        deprecatedVersion: null,
+        obsoleted: null,
+        unavailable: false,
+        message: null,
+      });
+    }
+  }
+  return result;
 }
 
 function foreignSourceLocation(
@@ -1081,12 +1114,18 @@ function attributeText(attribute: ClangNode, fallbackFile: string | null): strin
   if (!rawFile || begin?.offset === undefined || end?.offset === undefined) return null;
   const fileName = resolve(rawFile);
   if (!existsSync(fileName)) return null;
+  const source = foreignSourceText(fileName);
+  return source.slice(begin.offset, end.offset + (end.tokLen ?? 1));
+}
+
+function foreignSourceText(fileName: string): string {
   const stat = statSync(fileName);
   const freshness = `${stat.mtimeMs}:${stat.size}`;
   const cached = foreignSourceCache.get(fileName);
-  const source = cached?.freshness === freshness ? cached.source : readFileSync(fileName, "utf8");
-  if (cached?.freshness !== freshness) foreignSourceCache.set(fileName, { freshness, source });
-  return source.slice(begin.offset, end.offset + (end.tokLen ?? 1));
+  if (cached?.freshness === freshness) return cached.source;
+  const source = readFileSync(fileName, "utf8");
+  foreignSourceCache.set(fileName, { freshness, source });
+  return source;
 }
 
 function visit(node: ClangNode, callback: (node: ClangNode) => void): void {
@@ -1179,10 +1218,38 @@ function mapForeignType(
     return { kind: "named", type: named, cName };
   }
   const stars = normalized.match(/\*/g)?.length ?? 0;
+  if (
+    stars === 2
+    && position === "parameter"
+    && note?.access === "out"
+    && note.ownership === "owned"
+    && note.release
+  ) {
+    const producedCName = normalized.replace(/\s*\*\s*$/, "").trim();
+    const nullable = note.nullable ?? nullabilityFromClang(cName);
+    if (nullable === null) return { kind: "unsupported", cName };
+    const pointer: ForeignPointerType = {
+      kind: "pointer",
+      typeName: pointerTypeName(producedCName, "owned", nullable),
+      cName: producedCName,
+      identity: producedCName,
+      ownership: "owned",
+      nullable,
+      release: note.release,
+      thread: {
+        transfer: note.thread?.transfer ?? false,
+        share: note.thread?.share ?? false,
+        deinit: note.thread?.deinit ?? false,
+      },
+    };
+    types.set(pointer.typeName, pointer);
+    types.set(pointerTypeName(producedCName, "owned", !nullable), { ...pointer, typeName: pointerTypeName(producedCName, "owned", !nullable), nullable: !nullable });
+    return { kind: "pointerOut", cName: normalized, pointer };
+  }
   if (stars === 1 && normalized.endsWith(" *")) {
     const pointeeSpelling = normalized.slice(0, -2).trim();
     const pointee = namedTypes.get(stripValueQualifiers(pointeeSpelling));
-    if (pointee?.kind === "record") {
+    if (pointee?.kind === "record" && note?.access) {
       const access = note?.access;
       const nullable = note?.nullable ?? nullabilityFromClang(cName);
       const constPointee = pointeeSpelling.split(/\s+/).includes("const");

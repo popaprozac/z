@@ -141,9 +141,9 @@ without evidence.
 
 The first native **Z Notes** AppKit skeleton now contains an `NSApplication`,
 `NSWindow`, a Z-owned notes model, optional selection, direct `sqlite3.h`
-import, and explicit native-library linkage. Its first exposed FIIR boundary is
-an owned nullable SQLite handle produced through `sqlite3 **`; that seam remains
-visible rather than being concealed by a handwritten wrapper. Grow the app only along
+import, and explicit native-library linkage. Its adjacent `.zd` contract now
+classifies the owned nullable SQLite handle produced through `sqlite3 **` and
+closes it deterministically without a handwritten wrapper. Grow the app only along
 pressure seams: Objective-C protocol conformance, delegates/data sources,
 target/action, escaping block lifetime, background search through
 `thread.spawn`, `Task<T, E>` loading and saving, cancellation, UI-thread

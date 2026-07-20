@@ -770,6 +770,27 @@ test("discovers owned-handle contracts from adjacent Z declaration files", () =>
   assert.match(generated, /ZTestHandle \* const handle = z_test_open\(\);/);
   assert.match(generated, /if \(_z_live_handle_0 && handle != NULL\) z_test_close\(handle\);/);
 
+  const outputSource = `
+    import handles from "tests/fixtures/foreign-handles.h";
+    function main(): i32 {
+      let handle;
+      const status = handles.z_test_create(out handle);
+      if (status != 0) return 1;
+      if (handle == null) return 1;
+      return handles.z_test_created_use(handle);
+    }
+  `;
+  const outputGenerated = compileToC(outputSource, resolve(projectRoot, "foreign-output-handle.z"));
+  assert.match(outputGenerated, /ZCreatedHandle \*handle = NULL;/);
+  assert.match(outputGenerated, /z_test_create\(&\(handle\)\)/);
+  assert.match(outputGenerated, /if \(_z_live_handle_\d+ && handle != NULL\) z_test_created_close\(handle\);/);
+  const outputBindingOffset = outputSource.indexOf("handle;") + 2;
+  assert.match(hover(outputSource, resolve(projectRoot, "foreign-output-handle.z"), outputBindingOffset)?.contents.value ?? "", /handle: ZCreatedHandle \* \| null/);
+  assert.match(
+    diagnostics("function main(): i32 { let unresolved; return 0; }", "unresolved-out.z")[0]?.message ?? "",
+    /cannot infer type of uninitialized let "unresolved"/,
+  );
+
   const declarationFile = resolve(projectRoot, "tests/fixtures/foreign-handles.h.zd");
   assert.deepEqual(diagnostics(readFileSync(declarationFile, "utf8"), declarationFile), []);
   const declarationCheck = spawnSync(process.execPath, [cli, "check", declarationFile], { encoding: "utf8" });
@@ -783,9 +804,10 @@ test("discovers owned-handle contracts from adjacent Z declaration files", () =>
   assert.match(hover(declarationSource, declarationFile, returnTypeOffset)?.contents.value ?? "", /_: ZTestHandle \* \| null; deinit z_test_close/);
   const closeOffset = declarationSource.indexOf("z_test_close", declarationSource.indexOf("deinit")) + 2;
   assert.match(hover(declarationSource, declarationFile, closeOffset)?.contents.value ?? "", /deinitializer for z_test_open result/);
-  const handleParameterOffset = declarationSource.indexOf("handle: _") + 2;
+  const closeDeclarationOffset = declarationSource.indexOf("z_test_close(move handle");
+  const handleParameterOffset = declarationSource.indexOf("handle: _", closeDeclarationOffset) + 2;
   assert.match(hover(declarationSource, declarationFile, handleParameterOffset)?.contents.value ?? "", /move handle: ZTestHandle \*/);
-  const handleTypeOffset = declarationSource.indexOf("handle: _") + "handle: ".length;
+  const handleTypeOffset = declarationSource.indexOf("handle: _", closeDeclarationOffset) + "handle: ".length;
   assert.match(hover(declarationSource, declarationFile, handleTypeOffset)?.contents.value ?? "", /_: ZTestHandle \*/);
 
   const functionCompletionSource = declarationSource.replace("z_test_open", "z_test_op");
@@ -2237,16 +2259,54 @@ test("builds the Z Notes AppKit and sqlite3 application skeleton", () => {
   assert.deepEqual(artifact.frameworks, ["AppKit"]);
   assert.ok(artifact.nativeLinkerArguments.includes("-lsqlite3"));
   assert.match(artifact.source, /sqlite3_libversion\(\)/);
+  assert.match(artifact.source, /sqlite3_open\(":memory:", &\(database\)\)/);
+  assert.match(artifact.source, /if \(_z_live_database_\d+ && database != NULL\) sqlite3_close\(database\)/);
   assert.match(artifact.source, /\[\[NSWindow alloc\] initWithContentRect/);
   assert.match(artifact.source, /Z_Option_usize_some/);
 
   const smoke = resolve(projectRoot, "examples/applications/z-notes/smoke.z");
   const result = spawnSync(process.execPath, [cli, "run", smoke], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
-  assert.match(result.stdout, /^z-notes sqlite=[0-9.]+, notes=1\n$/);
+  assert.match(result.stdout, /^z-notes sqlite=[0-9.]+, notes=1, database=true\n$/);
 
   const selectionUse = source.indexOf("selectNote(0)") + 1;
   assert.match(hover(source, application, selectionUse)?.contents.value ?? "", /selectNote\(index: usize\): boolean/);
+
+  const persistence = resolve(projectRoot, "examples/applications/z-notes/persistence.z");
+  const persistenceSource = readFileSync(persistence, "utf8");
+  const databaseOffset = persistenceSource.indexOf("database;") + 2;
+  assert.match(hover(persistenceSource, persistence, databaseOffset)?.contents.value ?? "", /database: sqlite3 \* \| null/);
+
+  const declarationFile = resolve(projectRoot, "examples/applications/z-notes/sqlite3.h.zd");
+  const declarationSource = readFileSync(declarationFile, "utf8");
+  assert.deepEqual(diagnostics(declarationSource, declarationFile), []);
+  const partial = declarationSource.replace("deinit sqlite3_close", "deinit sqli");
+  const partialOffset = partial.indexOf("deinit sqli") + "deinit sqli".length;
+  assert.equal(
+    completions(partial, declarationFile, partialOffset).find((item) => item.label === "sqlite3_close")?.kind,
+    3,
+  );
+  const closeOffset = declarationSource.indexOf("sqlite3_close", declarationSource.indexOf("deinit")) + 2;
+  assert.match(hover(declarationSource, declarationFile, closeOffset)?.contents.value ?? "", /deinitializer for out ppDb/);
+  assert.match(definition(declarationSource, `file://${declarationFile}`, closeOffset)?.uri ?? "", /sqlite3\.h$/);
+
+  const availabilityDirectory = mkdtempSync("/tmp/z-appkit-availability-");
+  const availabilityFile = resolve(availabilityDirectory, "main.z");
+  const availabilitySource = `
+    import AppKit from "AppKit/AppKit.h";
+    function main(): i32 {
+      const app = AppKit.NSApplication.sharedApplication;
+      app.activate();
+      return 0;
+    }
+  `;
+  writeFileSync(availabilityFile, availabilitySource);
+  writeFileSync(resolve(availabilityDirectory, "z.json"), JSON.stringify({
+    target: { platform: "macos", minimumVersion: "13.0" },
+  }));
+  const availabilityDiagnostic = diagnostics(availabilitySource, availabilityFile)[0];
+  assert.equal(availabilityDiagnostic?.code, "Z0802");
+  assert.match(availabilityDiagnostic?.message ?? "", /requires macOS 14\.0, but the deployment target is macOS 13\.0/);
 });
 
 test("runs an application-shaped document workspace across ownership and interop features", () => {
@@ -6696,7 +6756,7 @@ test("initializes native out parameters with flow-sensitive checking", () => {
 
   assert.throws(
     () => compileToC("function main(): i32 { let value; return 0; }", "untyped-uninitialized.z"),
-    /an uninitialized let declaration requires a type annotation/,
+    /cannot infer type of uninitialized let "value"/,
   );
   assert.throws(
     () => compileToC("function main(): i32 { const value: i32; return 0; }", "uninitialized-const.z"),

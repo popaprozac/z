@@ -1,7 +1,7 @@
 import console from "std/console";
 import AppKit from "AppKit/AppKit.h";
 import { Note, NoteStore } from "./model.z";
-import { sqliteVersion } from "./persistence.z";
+import { canOpenMemoryDatabase, sqliteVersion } from "./persistence.z";
 
 function seed(store: NoteStore): void {
   store.add(Note({
@@ -24,7 +24,7 @@ function main(): i32 {
   });
   seed(store);
 
-  console.log(`sqlite=${sqliteVersion()}, notes=${store.noteCount()}`);
+  console.log(`sqlite=${sqliteVersion()}, database=${canOpenMemoryDatabase()}, notes=${store.noteCount()}`);
   store.withSelected((in note) => {
     console.log(`selected note ${note.id}: ${note.title}`);
   });

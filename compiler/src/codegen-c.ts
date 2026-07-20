@@ -1921,7 +1921,11 @@ function generateFunctionSignature(
 function generateStatement(statement: Statement, context: GenerationContext): string {
   switch (statement.kind) {
     case "variable": {
-      const zType = statement.type?.name ?? directValueType(statement.initializer!, context);
+      const zType = statement.type?.name
+        ?? (statement.initializer
+          ? directValueType(statement.initializer, context)
+          : context.semanticInfo.bindingTypes.get(statement.nameLocation.offset));
+      if (!zType) throw new Error(`missing inferred type for uninitialized binding ${JSON.stringify(statement.name)}`);
       if (statement.initializer?.kind === "closure") {
         const closure = context.semanticInfo.closures.get(statement.initializer.location.offset)!;
         if (statement.type && parseFunctionType(statement.type.name)) {
@@ -1977,7 +1981,8 @@ bool ${liveFlag} = true;`;
       if (!statement.initializer) {
         if (!hasCleanupType(zType, context.structs, context.enums, context.semanticInfo.foreignTypes)) return `${declaration};`;
         const liveFlag = ensureLiveFlag(statement.name, context);
-        return `${declaration};\nbool ${liveFlag} = false;`;
+        const initialization = context.semanticInfo.foreignTypes.has(zType) ? " = NULL" : "";
+        return `${declaration}${initialization};\nbool ${liveFlag} = false;`;
       }
       let initialized: string;
       if (
@@ -2867,7 +2872,8 @@ function hasNativeOutArguments(
   context: GenerationContext,
 ): boolean {
   return expression.arguments.some(
-    (argument) => context.semanticInfo.nativeArgumentAccesses.get(argument.location.offset) === "out",
+    (argument) => context.semanticInfo.nativeArgumentAccesses.get(argument.location.offset) === "out"
+      || context.semanticInfo.foreignArgumentAccesses.get(argument.location.offset) === "out",
   );
 }
 
@@ -2879,7 +2885,9 @@ function generateNativeOutCall(
   const before: string[] = [];
   const after: string[] = [];
   for (const argument of expression.arguments) {
-    if (context.semanticInfo.nativeArgumentAccesses.get(argument.location.offset) !== "out") continue;
+    const access = context.semanticInfo.nativeArgumentAccesses.get(argument.location.offset)
+      ?? context.semanticInfo.foreignArgumentAccesses.get(argument.location.offset);
+    if (access !== "out") continue;
     if (argument.kind !== "argumentReference") throw new Error("native out argument must name storage");
     const type = context.localTypes.get(argument.name)!;
     if (!hasCleanupType(type, context.structs, context.enums, context.semanticInfo.foreignTypes)) continue;
@@ -2946,7 +2954,11 @@ function indent(text: string, spaces: number): string {
 
 function recordVariableType(statement: Statement, context: GenerationContext): void {
   if (statement.kind !== "variable") return;
-  const type = statement.type?.name ?? directValueType(statement.initializer!, context);
+  const type = statement.type?.name
+    ?? (statement.initializer
+      ? directValueType(statement.initializer, context)
+      : context.semanticInfo.bindingTypes.get(statement.nameLocation.offset));
+  if (!type) throw new Error(`missing inferred type for uninitialized binding ${JSON.stringify(statement.name)}`);
   context.localTypes.set(statement.name, type);
   if (hasCleanupType(type, context.structs, context.enums, context.semanticInfo.foreignTypes)) {
     context.cleanupScopes.at(-1)!.push({ name: statement.name, type, liveFlag: ensureLiveFlag(statement.name, context) });

@@ -634,9 +634,6 @@ export function parse(tokens: Token[], fileName: string): Program {
         if (!mutable) {
           throw new DiagnosticError(fileName, declarationToken.location, "const declarations require an initializer");
         }
-        if (!type) {
-          throw new DiagnosticError(fileName, declarationToken.location, "an uninitialized let declaration requires a type annotation");
-        }
         return { kind: "variable", mutable, name, nameLocation: nameToken.location, type, initializer: null, location: declarationToken.location };
       }
       expect("equal", "`=`");

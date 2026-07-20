@@ -127,6 +127,18 @@ callee may use the argument:
 Function declarations and function types include the same capabilities. This
 keeps callbacks and ordinary functions substitutable.
 
+An untyped uninitialized binding is accepted only when its first initializing
+use is a typed native `out` call:
+
+```z
+let database;
+const status = sqlite.sqlite3_open(":memory:", out database);
+```
+
+The imported `T **` contract determines the binding's `T *` type. If no such
+call initializes the binding, Z asks for an explicit type annotation instead of
+leaving an implicit undefined value.
+
 Borrow lifetimes are inferred and lexical. Safe code does not expose general
 lifetime parameters. Ordinary borrows cannot be retained or stored. A narrow
 `view T` method result may project read-only value-struct storage into an

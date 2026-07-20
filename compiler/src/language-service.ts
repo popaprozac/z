@@ -741,6 +741,12 @@ export function definition(source: string, uri: string, offset: number): Locatio
   const word = wordAt(source, offset);
   if (!word) return null;
   const fileName = uriToFileName(uri);
+  if (fileName.endsWith(".zd")) {
+    const module = foreignDeclarationNativeModule(source, fileName);
+    const declaration = module?.functions.get(word.text);
+    const native = declaration ? foreignMetadataLocation(declaration.overloads[0]?.metadata) : null;
+    if (native) return native;
+  }
   const context = safeAnalysis(source, fileName);
   if (context) {
     const memberNamespace = source.slice(0, word.start).match(/([A-Za-z_][A-Za-z0-9_]*)\.$/)?.[1];
@@ -1465,9 +1471,19 @@ function foreignDeclarationCompletions(source: string, fileName: string, offset:
   const deinitPrefix = /\bdeinit\s+([A-Za-z_][A-Za-z0-9_.]*)?$/.exec(before)?.[1];
   if (module && deinitPrefix !== undefined) {
     const returnTypes = new Set(owner?.overloads.map((overload) => foreignTypeName(overload.returnType).replace(/ \| null$/, "")) ?? []);
+    const outputContext = /\bout\s+([A-Za-z_][A-Za-z0-9_]*)\s*:\s*_(?:\s*\|\s*null)?\s*\{[^{}]*\bdeinit\s+[A-Za-z_][A-Za-z0-9_.]*$/.exec(before);
+    const outputTypes = new Set(
+      outputContext && owner
+        ? owner.overloads.flatMap((overload) => overload.parameters
+          .filter((parameter) => parameter.name === outputContext[1])
+          .map((parameter) => normalizeOutputPointerSpelling(parameter.type.cName)))
+        : [],
+    );
     const candidates = [...module.functions].filter(([, declaration]) => declaration.overloads.some((overload) => (
       overload.parameters.length === 1
-      && (returnTypes.size === 0 || returnTypes.has(foreignTypeName(overload.parameters[0].type).replace(/ \| null$/, "")))
+      && (outputTypes.size > 0
+        ? outputTypes.has(normalizeNativeSpelling(overload.parameters[0].type.cName))
+        : returnTypes.size === 0 || returnTypes.has(foreignTypeName(overload.parameters[0].type).replace(/ \| null$/, "")))
     )));
     for (const [name, declaration] of candidates) {
       if (!name.toLowerCase().startsWith(deinitPrefix.toLowerCase())) continue;
@@ -1642,6 +1658,17 @@ function foreignDeclarationHover(source: string, fileName: string, offset: numbe
     if (parameterTypeIndex >= 0) {
       const types = new Set(declaration?.overloads.map((overload) => overload.parameters[parameterTypeIndex]).filter(Boolean).map((native) => foreignTypeName(native.type)) ?? []);
       return markdownHover(`_: ${[...types].join(" | ") || "unknown"}  // inferred native parameter type`, source, word.start, word.end);
+    }
+    const outputRelease = contract.parameters.find((parameter) => (
+      parameter.release
+      && parameter.releaseLocation
+      && containsDeclarationName(parameter.releaseLocation.offset, parameter.release, word.start)
+    ));
+    if (outputRelease?.release) {
+      const release = module.functions.get(outputRelease.release);
+      if (release) {
+        return markdownHover(`${foreignFunctionDetail(release)}\n// deinitializer for out ${outputRelease.name}`, source, word.start, word.end);
+      }
     }
     if (contract.returnLocation.offset === word.start) {
       const types = new Set(declaration?.overloads.map((overload) => foreignTypeName(overload.returnType)) ?? []);
@@ -3168,6 +3195,7 @@ function foreignTypeName(type: ForeignType): string {
   if (type.kind === "reference") return type.type.kind === "scalar" ? type.type.underlying : type.type.typeName;
   if (type.kind === "object") return `${type.className ?? "id"}${type.nullable ? " | null" : ""}`;
   if (type.kind === "pointer") return `${type.cName}${type.nullable ? " | null" : ""}`;
+  if (type.kind === "pointerOut") return `${type.pointer.cName}${type.pointer.nullable ? " | null" : ""}`;
   if (type.kind === "callback" || type.kind === "block") {
     const parameters = type.parameters.map((parameter, index) => `argument${index + 1}: ${foreignTypeName(parameter)}`);
     return `(${parameters.join(", ")}) => ${foreignTypeName(type.returnType)}`;
@@ -3177,9 +3205,18 @@ function foreignTypeName(type: ForeignType): string {
 
 function foreignParameterDetail(parameter: { readonly name: string | null; readonly type: ForeignType }, index: number): string {
   const name = parameter.name ?? `argument${index + 1}`;
+  if (parameter.type.kind === "pointerOut") return `out ${name}: ${foreignTypeName(parameter.type)}`;
   if (parameter.type.kind !== "reference") return `${name}: ${foreignTypeName(parameter.type)}`;
   const capability = parameter.type.access === "move" ? "" : `${parameter.type.access} `;
   return `${capability}${name}: ${foreignTypeName(parameter.type)}`;
+}
+
+function normalizeNativeSpelling(value: string): string {
+  return value.replace(/\s+/g, " ").replace(/\s*\*\s*/g, " *").trim();
+}
+
+function normalizeOutputPointerSpelling(value: string): string {
+  return normalizeNativeSpelling(value).replace(/\s*\*$/, "").trim();
 }
 
 function displayType(type: string, typeDisplayNames: ReadonlyMap<string, string> = new Map()): string {

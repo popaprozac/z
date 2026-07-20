@@ -259,6 +259,11 @@ declare module "vendor.h" {
   export function vendor_close(move handle: _): _;
   export function vendor_use(in handle: _): _;
   export function vendor_optional(in handle: _ | null): _;
+  export function vendor_create(
+    out handle: _ | null {
+      deinit vendor_close;
+    }
+  ): _;
 }
 ```
 
@@ -275,11 +280,29 @@ built-in toolchain facts. Explicit ABI types remain a later declaration-file
 slice; callback lifetime, context, release, and caller-thread contracts are
 supported now.
 
+An `out` parameter contract may carry its own block when a native `T **`
+function initializes an owned handle. `deinit vendor_close` then describes the
+produced `T *`, not the pointer-to-pointer ABI parameter. At a call site,
+`let handle;` is permitted only for this kind of typed `out` initialization:
+
+```z
+let handle;
+const status = vendor.vendor_create(out handle);
+if (status != 0 || handle == null) return 1;
+vendor.vendor_use(handle);
+// vendor_close(handle) is emitted on exit.
+```
+
+The enclosing `declare module "vendor.h"` already establishes the native
+authoring scope. No import is needed inside the `.zd` file to complete, hover,
+or navigate `vendor_close`; imports are reserved for a future need to reuse Z
+declaration abstractions across contract files.
+
 The language server reads the same header while editing a `.zd` file. It can
-complete native function and parameter names, filter `deinit` candidates by the
-returned native type, and show the Clang-resolved signature behind each `_` on
-hover. These are authored contracts with native context rather than a second,
-manually synchronized copy of the header surface.
+complete native function and parameter names, filter result and out-parameter
+`deinit` candidates by the produced native type, and show the Clang-resolved
+signature behind each `_` on hover. These are authored contracts with native
+context rather than a second, manually synchronized copy of the header surface.
 
 Imported nullable references use the same one-pointer representation as their
 native ABI. A Z null check is an ordinary pointer comparison and narrows the

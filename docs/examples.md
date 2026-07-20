@@ -103,9 +103,10 @@ bun run z run examples/async/async-delay.z
 [`z-notes`](../examples/applications/z-notes) is the native desktop composition
 probe. Its first skeleton opens an AppKit window, owns notes in an ARC-managed Z
 model, represents selection with `Option<usize>`, imports `sqlite3.h` directly,
-and selects the SQLite system library in `z.json`. The adjacent README records
-the next deliberately visible boundary: safely classifying the `sqlite3 **`
-output handle without a handwritten wrapper.
+selects the SQLite system library in `z.json`, and uses an adjacent `.zd`
+contract to classify the owned nullable `sqlite3 **` output without a
+handwritten wrapper. Its smoke entry opens and deterministically closes an
+in-memory database.
 
 [`document-workspace`](../examples/applications/document-workspace) is the
 recommended non-GUI application walkthrough. It uses domain-oriented names to

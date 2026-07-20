@@ -1,6 +1,6 @@
 import console from "std/console";
 import { Note, NoteStore } from "./model.z";
-import { sqliteVersion } from "./persistence.z";
+import { canOpenMemoryDatabase, sqliteVersion } from "./persistence.z";
 
 function main(): i32 {
   const store = new NoteStore({
@@ -9,6 +9,7 @@ function main(): i32 {
   });
   store.add(Note({ id: 1, title: "Smoke Test", body: "Z Notes model" }));
   store.selectNote(0);
-  console.log(`z-notes sqlite=${sqliteVersion()}, notes=${store.noteCount()}`);
-  return store.noteCount() == 1 ? 0 : 1;
+  const databaseReady = canOpenMemoryDatabase();
+  console.log(`z-notes sqlite=${sqliteVersion()}, notes=${store.noteCount()}, database=${databaseReady}`);
+  return store.noteCount() == 1 && databaseReady ? 0 : 1;
 }

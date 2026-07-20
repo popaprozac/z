@@ -240,6 +240,7 @@ type AnalysisState = {
   readonly standardFunctionBindings: Map<string, StandardFunctionName>;
   readonly standardModuleBindings: Map<string, StandardModuleName>;
   readonly standardTypeBindings: Map<string, "TextBuffer" | "Arena">;
+  readonly inferredOutBindingLocations: Map<string, SourceLocation>;
   readonly typeDisplayNames: ReadonlyMap<string, string>;
   readonly objectiveC: boolean;
   readonly cPlusPlus: boolean;
@@ -427,6 +428,7 @@ export function analyze(
     standardFunctionBindings: new Map(),
     standardModuleBindings: new Map(),
     standardTypeBindings: new Map(),
+    inferredOutBindingLocations: new Map(),
     typeDisplayNames,
     objectiveC,
     cPlusPlus,
@@ -1134,6 +1136,7 @@ function analyzeFunction(
   state.asyncLoopDepth = 0;
   state.viewCallOrigins.clear();
   state.viewOrigins.clear();
+  state.inferredOutBindingLocations.clear();
   const locals = new Map<string, ValueType>();
   if (receiver && !declaration.static) {
     const ownedAsyncClassReceiver = Boolean(declaration.async && receiver.kind === "class");
@@ -1154,6 +1157,13 @@ function analyzeFunction(
   }
 
   const returns = analyzeStatements(declaration.body, declaration, locals, globals, structs, enums, fileName, state);
+  const unresolvedOutBinding = state.inferredOutBindingLocations.entries().next().value as [string, SourceLocation] | undefined;
+  if (unresolvedOutBinding) {
+    throw new DiagnosticError(fileName, unresolvedOutBinding[1], `cannot infer type of uninitialized let ${JSON.stringify(unresolvedOutBinding[0])}`, {
+      notes: ["an untyped uninitialized let is reserved for initialization by a typed out argument"],
+      helps: ["pass it as `out <name>` to a classified function or add an explicit type annotation"],
+    });
+  }
   if (!returns) requireOutParametersInitialized(declaration, locals, declaration.location, fileName);
   if (declaration.returnType.name !== "void" && !returns) {
     throw new DiagnosticError(fileName, declaration.location, `function ${JSON.stringify(declaration.name)} must end with a return value`);
@@ -1463,7 +1473,12 @@ function analyzeStatement(
         throw new DiagnosticError(fileName, statement.location, `duplicate local ${JSON.stringify(statement.name)}`);
       }
       if (!statement.initializer) {
-        const declaredType = statement.type!;
+        if (!statement.type) {
+          locals.set(statement.name, `${uninitializedPrefix}${mutablePrefix}unknown`);
+          state.inferredOutBindingLocations.set(statement.name, statement.nameLocation);
+          return;
+        }
+        const declaredType = statement.type;
         validateType(declaredType, structs, enums, state.foreignNamedTypes, fileName, false);
         if (hasMoveOnlyForeignType(declaredType.name, structs, enums, state.foreignNamedTypes)) {
           throw new DiagnosticError(fileName, declaredType.location, "move-only native values must be initialized when their storage is declared", {
@@ -6485,6 +6500,7 @@ function foreignValueType(type: ForeignType): ValueType {
   if (type.kind === "named") return type.type.typeName;
   if (type.kind === "reference") return type.type.kind === "scalar" ? type.type.underlying : type.type.typeName;
   if (type.kind === "pointer" || type.kind === "object") return type.typeName;
+  if (type.kind === "pointerOut") return type.pointer.typeName;
   if (type.kind === "callback" || type.kind === "block") {
     const parameters = type.parameters.map((parameter, index) => ({
       name: `argument${index + 1}`,
@@ -6875,6 +6891,44 @@ function checkForeignCall(
     const argument = args[index];
     const parameter = visibleParameters[index]?.parameter;
     if (argument.kind === "argumentReference") {
+      if (parameter?.type.kind === "pointerOut") {
+        if (argument.access !== "out") {
+          throw new DiagnosticError(
+            fileName,
+            argument.location,
+            `C function ${JSON.stringify(target.name)} expects out ${argument.name}, found ${argument.access} ${argument.name}`,
+          );
+        }
+        let stored = locals.get(argument.name);
+        if (!stored) throw new DiagnosticError(fileName, argument.location, `unknown name ${JSON.stringify(argument.name)}`);
+        if (underlyingType(stored) === "unknown") {
+          const declarationLocation = state.inferredOutBindingLocations.get(argument.name);
+          if (!declarationLocation) {
+            throw new DiagnosticError(fileName, argument.location, `cannot infer storage type for out argument ${JSON.stringify(argument.name)}`);
+          }
+          stored = `${uninitializedPrefix}${mutablePrefix}${parameter.type.pointer.typeName}`;
+          locals.set(argument.name, stored);
+          state.bindingTypes.set(declarationLocation.offset, parameter.type.pointer.typeName);
+          state.inferredOutBindingLocations.delete(argument.name);
+        }
+        if (!isMutableBinding(stored)) {
+          throw new DiagnosticError(fileName, argument.location, `out argument ${JSON.stringify(argument.name)} requires a mutable let binding`);
+        }
+        requireAssignable(
+          parameter.type.pointer.typeName,
+          underlyingType(stored),
+          argument,
+          fileName,
+          state.foreignNamedTypes,
+          state.numericLiteralTypes,
+        );
+        state.foreignArgumentAccesses.set(argument.location.offset, "out");
+        state.expressionTypes.set(argument.location.offset, parameter.type.pointer.typeName);
+        state.expressionTypes.set(argument.nameLocation.offset, parameter.type.pointer.typeName);
+        locals.set(argument.name, initializedAvailableBinding(stored));
+        state.moveOrigins.delete(argument.name);
+        continue;
+      }
       if (parameter?.type.kind === "reference") {
         if (parameter.type.access !== "inout" || argument.access !== "inout") {
           throw new DiagnosticError(
@@ -6957,6 +7011,13 @@ function checkForeignCall(
         state.moveOrigins.delete(argument.name);
       }
       continue;
+    }
+    if (parameter?.type.kind === "pointerOut") {
+      throw new DiagnosticError(
+        fileName,
+        argument.location,
+        `C function ${JSON.stringify(target.name)} requires out <mutable binding> for parameter ${index + 1}`,
+      );
     }
     if (parameter?.type.kind === "recordPointer") {
       if (parameter.type.access !== "in") {

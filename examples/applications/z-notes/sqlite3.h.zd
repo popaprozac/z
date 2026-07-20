@@ -1,0 +1,10 @@
+declare module "sqlite3.h" {
+  export function sqlite3_open(
+    in filename: _,
+    out ppDb: _ | null {
+      deinit sqlite3_close;
+    }
+  ): _;
+
+  export function sqlite3_close(move database: _): _;
+}

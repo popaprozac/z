@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import type { SourceLocation } from "./ast.ts";
 import { DiagnosticError } from "./diagnostics.ts";
@@ -13,6 +14,8 @@ export type ContractParameter = {
   readonly nullable: boolean;
   readonly location: SourceLocation;
   readonly typeLocation: SourceLocation;
+  readonly release: string | null;
+  readonly releaseLocation: SourceLocation | null;
 };
 
 export type ForeignFunctionContract = {
@@ -113,7 +116,36 @@ export function parseForeignDeclarationContracts(source: string, fileName: strin
     const name = expectIdentifier("a native parameter name");
     expectText(":");
     const type = parseInferredType();
-    return { name: name.text, mode, nullable: type.nullable, location: name.location, typeLocation: type.location };
+    let release: string | null = null;
+    let releaseLocation: SourceLocation | null = null;
+    if (at("{")) {
+      take();
+      while (!at("}")) {
+        const contract = peek();
+        if (!at("deinit")) {
+          fail(contract, `expected "deinit" in foreign output parameter contract, found ${JSON.stringify(contract.text)}`);
+        }
+        if (release) fail(contract, `foreign parameter ${JSON.stringify(name.text)} cannot declare more than one deinit contract`);
+        take();
+        const parsedRelease = parseQualifiedName();
+        release = parsedRelease.name;
+        releaseLocation = parsedRelease.location;
+        expectText(";");
+      }
+      expectText("}");
+    }
+    if (release && mode !== "out") {
+      fail(name, "parameter-local deinit is only valid on an out parameter that produces ownership");
+    }
+    return {
+      name: name.text,
+      mode,
+      nullable: type.nullable,
+      location: name.location,
+      typeLocation: type.location,
+      release,
+      releaseLocation,
+    };
   };
   const emptyThreadContract = (): {
     readonly thread: ForeignThreadContract;
@@ -357,7 +389,8 @@ export function foreignDeclarationApiNotes(
 ): ApiNotes {
   const declaredHeader = resolve(dirname(fileName), contracts.moduleSpecifier);
   const importedHeader = resolve(includeDirectory, expectedModuleSpecifier);
-  if (declaredHeader !== importedHeader) {
+  const exactSpecifier = contracts.moduleSpecifier === expectedModuleSpecifier;
+  if (declaredHeader !== importedHeader && (!exactSpecifier || existsSync(declaredHeader))) {
     throw new DiagnosticError(
       fileName,
       { offset: 0, line: 1, column: 1, fileName },
@@ -384,7 +417,7 @@ export function foreignDeclarationApiNotes(
       for (let parameterIndex = 0; parameterIndex < contract.parameters.length; parameterIndex += 1) {
         const parameter = contract.parameters[parameterIndex];
         const native = overload.parameters[parameterIndex];
-        if (native.name !== parameter.name) {
+        if (native.name !== null && native.name !== parameter.name) {
           throw new DiagnosticError(
             fileName,
             parameter.location,
@@ -565,7 +598,11 @@ function parameterNote(parameter: ContractParameter): PointerNote {
     return { ownership: "consuming", nullable: parameter.nullable };
   }
   if (parameter.mode === "inout" || parameter.mode === "out") {
-    return { access: parameter.mode, nullable: parameter.nullable };
+    return {
+      access: parameter.mode,
+      nullable: parameter.nullable,
+      ...(parameter.release ? { ownership: "owned" as const, release: parameter.release } : {}),
+    };
   }
   return { nullable: parameter.nullable };
 }
