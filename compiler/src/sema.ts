@@ -2863,9 +2863,25 @@ function inferExecutorPlacement(
   }
   const synchronousNativePlacement = expression.mode === "spawn" && state.nativeThreadBodyDepth > 0;
   if (expression.mode !== "sync" && !state.activeFunction?.async && !synchronousNativePlacement) {
-    throw new DiagnosticError(fileName, expression.location, `${expression.mode} on thread.main requires an enclosing async function`, {
+    if (expression.mode === "spawn") {
+      throw new DiagnosticError(
+        fileName,
+        expression.location,
+        "spawn on thread.main requires an enclosing async function or the direct thread.spawn closure",
+        {
+          code: "Z0711",
+          notes: ["an ordinary synchronous helper does not inherit its caller's task scope or executor context"],
+          helps: [
+            "inside thread.spawn, call synchronous helpers first and keep `spawn on thread.main { ... }` directly in that closure",
+            "otherwise make this helper async and call it from an async-capable context; async thread.spawn closures are not implemented yet",
+          ],
+        },
+      );
+    }
+    throw new DiagnosticError(fileName, expression.location, "await on thread.main requires an enclosing async function", {
       code: "Z0711",
-      helps: [`add \`async\` before \`function ${state.activeFunction?.name ?? "..."}\``],
+      notes: ["a synchronous helper cannot suspend or inherit async capability from one of its callers"],
+      helps: ["make this helper async and await it from an async-capable caller"],
     });
   }
   if (expression.returnType) validateType(expression.returnType, structs, enums, state.foreignNamedTypes, fileName, true);

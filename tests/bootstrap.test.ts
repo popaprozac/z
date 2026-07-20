@@ -7217,6 +7217,27 @@ test("type-checks main-thread executor placement and exposes thread.main to edit
   assert.equal(proofDiagnostic.code, "Z0711");
   assert.match(proofDiagnostic.message, /requires proven main-executor context/);
 
+  const synchronousHelper = `
+    import { thread } from "std/thread";
+    function publishStatus(): void {
+      spawn on thread.main {}
+    }
+    async function main(): i32 {
+      const worker = thread.spawn((): void => publishStatus());
+      await worker;
+      return 0;
+    }
+  `;
+  assert.throws(() => check(synchronousHelper, "executor-helper.z"), (error: unknown) => {
+    assert.ok(error instanceof DiagnosticError);
+    assert.equal(error.code, "Z0711");
+    assert.match(error.summary, /enclosing async function or the direct thread\.spawn closure/);
+    assert.match(error.notes.join(" "), /does not inherit its caller's task scope/);
+    assert.match(error.helps.join(" "), /keep `spawn on thread\.main \{ \.\.\. \}` directly in that closure/);
+    assert.match(error.helps.join(" "), /async thread\.spawn closures are not implemented yet/);
+    return true;
+  });
+
   const generated = compileToC(source, example);
   assert.match(generated, /z_async_start___z_executor_main_/);
   assert.match(generated, /z_async_run_one/);
