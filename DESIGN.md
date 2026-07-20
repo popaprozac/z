@@ -1416,8 +1416,9 @@ ported independently rather than translated as one monolith.
    platform substrate. The first component is now concrete: a Z lexer emits the
    same parser-facing token kinds, decoded text, and source locations as stage 0
    across an adversarial parity corpus and tokenizes its own complete source.
-   The temporary bridge is a native line protocol; buffered or in-process driver
-   integration precedes replacing the bootstrap lexer in ordinary commands.
+   The temporary bridge is a buffered native line protocol exposed through
+   `z self-host-lex`; direct in-process driver integration and a broader parity
+   corpus precede replacing the bootstrap lexer in ordinary commands.
 3. **Stage 2:** Compile the Z compiler with stage 0, then use that result to
    compile itself.
 4. **Bootstrap verification:** Compare generated native source and compiler test

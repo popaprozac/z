@@ -10,9 +10,9 @@ export function decodeStage1TokenStream(output: string, fileName: string): reado
     if (!/^(?:[0-9a-f]{2})*$/.test(hexadecimalText)) {
       throw new Error(`malformed stage-1 token text: ${hexadecimalText}`);
     }
-    const offset = parseProtocolInteger(offsetText, "offset");
-    const sourceLine = parseProtocolInteger(lineText, "line");
-    const column = parseProtocolInteger(columnText, "column");
+    const offset = parseProtocolHexInteger(offsetText, "offset");
+    const sourceLine = parseProtocolHexInteger(lineText, "line");
+    const column = parseProtocolHexInteger(columnText, "column");
     return {
       kind: kind as TokenKind,
       text: Buffer.from(hexadecimalText, "hex").toString("utf8"),
@@ -21,11 +21,11 @@ export function decodeStage1TokenStream(output: string, fileName: string): reado
   });
 }
 
-function parseProtocolInteger(text: string, field: string): number {
-  if (!/^(?:0|[1-9][0-9]*)$/.test(text)) {
+function parseProtocolHexInteger(text: string, field: string): number {
+  if (!/^[0-9a-f]{16}$/.test(text)) {
     throw new Error(`malformed stage-1 token ${field}: ${text}`);
   }
-  const value = Number(text);
+  const value = Number.parseInt(text, 16);
   if (!Number.isSafeInteger(value)) throw new Error(`stage-1 token ${field} exceeds the stage-0 integer range`);
   return value;
 }

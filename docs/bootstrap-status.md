@@ -219,9 +219,10 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    numbers, template interpolation modes, trivia-compatible comments, and
    unknown-byte rejection. Stage 0 compiles a native token-stream bridge and
    compares its kinds, decoded text, offsets, lines, and columns with the
-   TypeScript lexer; the Z lexer also tokenizes its own complete source. Unicode
-   identifiers, block comments, buffered/in-process driver integration, and
-   parser data structures remain.
+   TypeScript lexer through `z self-host-lex`; the Z lexer also tokenizes its own
+   complete source. The bridge buffers its full protocol into one native write.
+   Unicode identifiers, block comments, direct in-process driver integration,
+   and parser data structures remain.
 5. **Threaded concurrency evidence — Copy, unique-owner, native-owner, readonly ARC, and owned-error slices implemented.**
    `thread.spawn` now proves one real cross-thread task frame with explicit
    move capture, hot start, structured join, private Copy snapshots, and moved

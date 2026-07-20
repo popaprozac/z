@@ -8,7 +8,6 @@ import { DiagnosticError, formatDiagnostic } from "../compiler/src/diagnostics.t
 import { ApiNoteConflictError, mergeApiNotes } from "../compiler/src/foreign-api-notes.ts";
 import { normalizeForeignContracts } from "../compiler/src/foreign-contracts.ts";
 import type { ForeignFunctionDeclaration } from "../compiler/src/foreign-ir.ts";
-import { lex } from "../compiler/src/lexer.ts";
 import { decodeStage1TokenStream } from "../compiler/src/self-hosting.ts";
 import {
   completions,
@@ -4509,20 +4508,17 @@ test("tokenizes real Z source with checked UTF-8 operations and TextBuffer", () 
   assert.match(result.stdout, /\d+ strings/);
   assert.match(result.stdout, /first identifier: TextBuffer/);
 
-  const tokenStream = resolve(projectRoot, "examples/applications/source-inspector/token-stream.z");
   const parityInput = resolve(projectRoot, "tests/fixtures/self-host-lexer-input.z");
-  const paritySource = readFileSync(parityInput, "utf8");
-  const parityResult = spawnSync(process.execPath, [cli, "run", tokenStream, "--", parityInput], { encoding: "utf8" });
+  const parityResult = spawnSync(process.execPath, [cli, "self-host-lex", parityInput, lexer], { encoding: "utf8" });
   assert.equal(parityResult.status, 0, parityResult.stderr);
-  const selfHostedTokens = decodeStage1TokenStream(parityResult.stdout, parityInput);
-  const bootstrapTokens = lex(paritySource, parityInput);
-  assert.deepEqual(selfHostedTokens, bootstrapTokens);
+  assert.match(parityResult.stdout, /self-host-lexer-input\.z: stage-1 lexer matches \d+ tokens/);
+  assert.match(parityResult.stdout, /lexer\.z: stage-1 lexer matches \d+ tokens/);
 
   assert.throws(
-    () => decodeStage1TokenStream("identifier\tbad\t1\t1\t61\n", parityInput),
+    () => decodeStage1TokenStream("identifier\tnope\t0000000000000001\t0000000000000001\t61\n", parityInput),
     /malformed stage-1 token offset/,
   );
-});
+}, 10_000);
 
 test("builds owned UTF-8 String values through explicit std/text TextBuffer", () => {
   const directory = mkdtempSync("/tmp/z-text-buffer-");

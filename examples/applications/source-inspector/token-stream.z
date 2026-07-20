@@ -12,8 +12,35 @@ function hexDigit(value: u8): u8 {
   return value < 10 ? value + 48 : value + 87;
 }
 
-function encodeHex(in text: String): String {
-  let output = TextBuffer();
+function appendHexDigit(inout output: TextBuffer, value: usize): void {
+  if (value == 0) output.appendAscii(48);
+  else if (value == 1) output.appendAscii(49);
+  else if (value == 2) output.appendAscii(50);
+  else if (value == 3) output.appendAscii(51);
+  else if (value == 4) output.appendAscii(52);
+  else if (value == 5) output.appendAscii(53);
+  else if (value == 6) output.appendAscii(54);
+  else if (value == 7) output.appendAscii(55);
+  else if (value == 8) output.appendAscii(56);
+  else if (value == 9) output.appendAscii(57);
+  else if (value == 10) output.appendAscii(97);
+  else if (value == 11) output.appendAscii(98);
+  else if (value == 12) output.appendAscii(99);
+  else if (value == 13) output.appendAscii(100);
+  else if (value == 14) output.appendAscii(101);
+  else output.appendAscii(102);
+}
+
+function appendHexUsize(inout output: TextBuffer, value: usize): void {
+  let shift: usize = 60;
+  while (true) {
+    appendHexDigit(inout output, (value >> shift) & 15);
+    if (shift == 0) break;
+    shift = shift - 4;
+  }
+}
+
+function appendHexText(inout output: TextBuffer, in text: String): void {
   let offset: usize = 0;
   while (offset < text.byteLength) {
     const byte = text.byteAt(offset);
@@ -21,7 +48,6 @@ function encodeHex(in text: String): String {
     output.appendAscii(hexDigit(byte & 15));
     offset = offset + 1;
   }
-  return output.finish();
 }
 
 function streamTokens(in path: String): i32 throws String {
@@ -32,11 +58,22 @@ function streamTokens(in path: String): i32 throws String {
     failure(error) => throw `lexer error at ${error.line}:${error.column}: ${error.message}`;
   };
 
+  let output = TextBuffer();
   for (const token of tokens) {
     const kind = tokenKindName(token.kind);
-    const text = encodeHex(token.text);
-    console.log(`${kind}\t${token.offset}\t${token.line}\t${token.column}\t${text}`);
+    output.append(kind);
+    output.appendAscii(9);
+    appendHexUsize(inout output, token.offset);
+    output.appendAscii(9);
+    appendHexUsize(inout output, token.line);
+    output.appendAscii(9);
+    appendHexUsize(inout output, token.column);
+    output.appendAscii(9);
+    appendHexText(inout output, token.text);
+    output.appendAscii(10);
   }
+  const stream = output.finish();
+  console.write(stream);
   return 0;
 }
 

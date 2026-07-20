@@ -33,8 +33,16 @@ bun run z run examples/applications/source-inspector/lexer-smoke.z
 ```
 
 [`token-stream.z`](token-stream.z) is the first stage-1 bridge. It emits a stable
-tab-separated token stream with hexadecimal token text. The TypeScript driver
-compiles this program with stage 0, runs it natively, and compares its complete
-token sequence and source locations with the bootstrap lexer. This is still an
-incremental frontend: Unicode identifiers, block comments, direct in-process
-compiler integration, and a Z parser remain future slices.
+tab-separated token stream with fixed-width hexadecimal locations and
+hexadecimal token text. It buffers the complete stream and performs one native
+write rather than flushing once per token. The TypeScript driver exposes the
+parity path directly:
+
+```sh
+bun run z self-host-lex examples/applications/source-inspector/lexer.z
+```
+
+That command compiles the bridge with stage 0, runs it natively, and compares
+its complete token sequence and source locations with the bootstrap lexer. This
+is still an incremental frontend: Unicode identifiers, block comments, direct
+in-process compiler integration, and a Z parser remain future slices.
