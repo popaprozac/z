@@ -76,8 +76,8 @@ an inferred receiver-tied view.
 | Objective-C | Partial | ARC classes/fields, methods, properties/global object constants, labels, nullability, niche-backed `Option.fromNullable`, owned `String`/`NSString` copies, escaping blocks and persistent observer tokens |
 | C++ | Partial | Hierarchical/selectively aliased namespaces, typed overloads, records, and `.zd`-contracted copyable or move-only RAII values; move-only values work in synchronous locals/calls/returns, Z structs, dynamic arrays, named enums, compiler `Option`/`Result`, direct async locals, owned async parameters, scoped immutable async borrows, direct-awaited and scope-bounded spawned mutable async borrows, whole Z async value aggregates, fallible async results, and explicit native-thread transfer when `.zd` separately guarantees transfer and receiving-thread destruction; named references and receiver qualifiers map to existing Z capabilities with direct native lowering; reference returns, spawned output async borrows, ARC/closure storage, native sharing, capability-changing overloads, and templates remain |
 | Swift via Objective-C | Implemented slice | Generated compatibility header, classes/properties/methods, automatic local dylib build/link |
-| Swift value via C++ | Implemented probe | Native static construction, const/mutable instance methods, struct return/copy/aggregate storage/round-trip/destruction, and exact owned `String` returns without handwritten shim |
-| Broader Swift surface | Planned vertical slices | Length-aware `String` inputs, property sugar, generics, noncopyable values, protocols, errors, async, packages |
+| Swift value via C++ | Implemented probes | Native static construction, associated-value enum case factories, const/mutable instance methods, struct return/copy/aggregate storage/round-trip/destruction, and exact owned `String` returns without handwritten shim |
+| Broader Swift surface | Planned vertical slices | Length-aware `String` inputs, property sugar, generics, protocols, errors, async, packages; Swift 6.2 currently withholds noncopyable values and async functions from its generated C++ interface |
 
 Current interop gaps that block a richer desktop application include
 broader Objective-C block shapes, target/action adapters, protocol conformance,
@@ -90,12 +90,15 @@ niche-backed specialization and explicit conversion bridge.
 The Swift owned-value probe is intentionally honest about the toolchain: current
 generated wrappers copy and deterministically destroy Swift values, but delete
 C++ move assignment. Z therefore treats this as copyable foreign RAII, not as
-native Swift move support. Generated static and instance scalar methods are now
-called directly; this does not yet imply Swift property, string-input, generic,
-protocol, error, async, or package support. `swift::String` returns have one
+native Swift move support. Generated static and instance scalar methods and
+generated associated-value enum case factories are now called directly; this
+does not yet imply Swift property, string-input, generic, protocol, error,
+async, or package support. `swift::String` returns have one
 explicit conversion: an annotated Z `String` destination receives a fresh owned
 UTF-8 copy, including embedded NUL bytes. Swift `String` inputs remain rejected
-until the boundary is length-aware in both directions.
+until the boundary is length-aware in both directions. A toolchain-boundary
+fixture verifies that Swift 6.2 marks `~Copyable` values and Swift `async`
+functions unavailable to C++; Z does not bypass that limit through private ABI.
 
 ## Async and concurrency
 
@@ -104,7 +107,7 @@ until the boundary is length-aware in both directions.
 | Async syntax and typing | Implemented | Functions/methods, `await`, `spawn`, task scopes, typed errors |
 | Stackless task frames | Partial | Scalars, owned String/TextBuffer, cleanup-bearing fixed arrays, growable arrays, copied Slice descriptors, owned structs/enums/classes, direct move-only C++ locals and parameters, collection elements containing them, cleanup-free direct-awaited output, and fallible native result transfer through `try`/`attempt`/match across suspension |
 | Executor | Implemented bootstrap | Deterministic single-thread FIFO ready queue |
-| Explicit native threads | Implemented narrow tier | `thread.spawn` starts one OS thread for a synchronous one-shot closure; `move` is required when capturing; plain values copy, unique Array/String/TextBuffer owners and explicitly contracted C/C++ native owners move, and deeply readonly classes share through atomic ARC; await and implicit scope exit join; native `share` is reserved but not executable |
+| Explicit native threads | Implemented narrow tier | `thread.spawn` starts one OS thread for a synchronous one-shot closure; `move` is required when capturing; plain values copy, unique Array/String/TextBuffer owners and explicitly contracted C/C++ native owners move, and deeply readonly classes share through atomic ARC; await and implicit scope exit join; closure `throws E`/`Task<T, E>` and native `share` remain intended but not executable |
 | Structured scopes | Implemented slice | Lexical child joins, sibling/descendant cancellation, shared immutable and exclusive mutable child borrows (including fixed- and growable-collection-backed Slice), plus path-sensitive early release across straight-line code and `if` branches; loops remain conservative to scope exit |
 | Caller cancellation | Implemented slice | Consuming `await task.cancel()` requests cancellation, joins descendants and cleanup, and discards an unclaimed completed outcome |
 | Timers | Implemented slice | Scheduler-aware monotonic `delay`; blocking `sleep` remains synchronous |
@@ -143,6 +146,9 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
 - [`examples/interop/swift/swift-value-interop`](../examples/interop/swift/swift-value-interop): Swift-native
   owned value constructed and called directly, then stored in a Z aggregate,
   through its generated C++ compatibility header.
+- [`examples/interop/swift/swift-enum-interop`](../examples/interop/swift/swift-enum-interop): Swift-native
+  associated-value enum cases constructed directly through generated callable
+  case factories, then copied and called as owned values.
 - [`examples/interop/cpp/foreign-values.z`](../examples/interop/cpp/foreign-values.z): `.zd`-contracted
   copyable C++ RAII value copied through an owning Z aggregate with zero live
   native values after scope exit.

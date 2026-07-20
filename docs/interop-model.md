@@ -187,12 +187,20 @@ a fresh length-aware UTF-8 copy. Swift `String` parameters remain unsupported
 until the generated boundary can accept an explicit byte length rather than a
 null-terminated input.
 
+Swift associated-value enums use the same owned-value path. Their generated C++
+case objects are imported as namespaced factories, so
+`Swift.LoadState.ready(42)` constructs the Swift value directly and ordinary Z
+copy/cleanup rules govern the generated wrapper. The importer recognizes this
+shape only in Swift-generated compatibility headers; it does not reinterpret
+arbitrary C++ callable objects as static methods.
+
 The FIIR thread contract is producer-neutral. A future direct Swift importer can
 map Swift `Sendable`, consuming/noncopyable ownership, and actor isolation into
 the same transfer/share/destruction facts rather than treating generated C++
-movability as proof. The next hard Swift validation remains a noncopyable value
-or Swift async API crossing end to end; the current copyable wrapper probe does
-not claim that result.
+movability as proof. Swift 6.2's generated C++ interface currently marks both
+noncopyable values and Swift `async` functions unavailable; a regression fixture
+records that toolchain gate. Z will not depend on private Swift ABI to pretend
+that either surface has crossed end to end.
 
 ## Cost model
 

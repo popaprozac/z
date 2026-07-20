@@ -903,6 +903,12 @@ remain validation work. Atomic reference counts protect lifetime, not mutable
 class fields; isolation or an explicit concurrency contract must address those
 data races.
 
+The intended error contract is the same as local `spawn`: a synchronous worker
+closure declared `(): T throws E` produces `Task<T, E>`, `try await` propagates
+`E`, and `attempt await` materializes it. Stage 0 does not yet parse `throws E`
+on a closure signature, so executable `thread.spawn` is currently limited to
+the `Task<T>` case. This is a lowering gap, not a separate thread-error model.
+
 An async function continues to declare its domain contract as `T throws E`.
 `spawn` preserves that contract as `Task<T, E>`, `try await` propagates `E`, and
 `attempt await` materializes `Result<T, E>`. Suspension composes with the
@@ -1241,8 +1247,15 @@ makes an exact owned UTF-8 copy. The explicit destination makes the copy cost
 visible and the length-aware conversion preserves embedded NUL bytes. Swift
 `String` parameters remain unsupported because the current generated overlay's
 C++ input constructor uses a null-terminated path; Z will not silently truncate
-an owned string. Swift property sugar, generics, noncopyable values, protocols,
-errors, async, and package import remain open vertical slices.
+an owned string. Generated callable case objects for Swift enums also import as
+namespaced factories, so an associated-value case can be constructed directly
+as `Swift.LoadState.ready(42)` without a Swift helper or handwritten shim.
+
+The installed Swift 6.2 toolchain marks noncopyable (`~Copyable`) values and
+Swift `async` functions unavailable in its generated C++ interface. A compiler
+fixture records both constraints. Z therefore does not claim direct support for
+those surfaces or reach through Swift's private ABI; property sugar, generics,
+protocols, errors, async, and package import remain open vertical slices.
 
 Clang supplies ABI identity and signatures but cannot generally say whether a C
 pointer is nullable, borrowed, transferred, retained, or consumed. Z therefore

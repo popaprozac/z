@@ -72,7 +72,9 @@ cancellation cleanup. Generated C-family source remains inspectable evidence.
 - Non-escaping views may become an ergonomic wall in larger programs. Arena and
   region work must test that honestly before Z grows a broad lifetime language.
 - The hardest Swift surfaces remain: noncopyable values, protocols, typed errors,
-  async APIs, packages, and SDK-scale metadata.
+  async APIs, packages, and SDK-scale metadata. The installed Swift 6.2
+  generated C++ interface explicitly withholds noncopyable values and async
+  functions; that is now a tested toolchain gate rather than an unexamined item.
 - The implemented `thread.spawn` slice proves a real cross-thread frame,
   structured join, private Copy snapshots, unique Array/String/TextBuffer owner
   transfer, and compiler-proven deeply readonly identity through atomic ARC.
@@ -114,9 +116,11 @@ planned experiment rather than a rejected direction.
    destruction-affinity protocols, mutable shared-state isolation, nonblocking
    executor integration, and a cross-thread callback before fixing pools or a
    multithreaded executor design.
-4. Pull forward one hard Swift slice: preferably a noncopyable Swift value or a
-   Swift async API, using toolchain-generated interfaces rather than a private
-   Swift ABI implementation.
+4. **Probed:** Swift 6.2 does not expose noncopyable values or Swift async APIs
+   through its generated C++ interface. Z records that gate and now imports a
+   nearby Swift-only surface—associated-value enum case factories—directly.
+   Re-probe the hard surfaces as Swift evolves; meanwhile advance protocols,
+   errors, packages, and metadata through public interfaces only.
 5. Scale the platform surface with API notes, Objective-C protocols,
    target/action adapters, runtime availability, and richer block shapes.
 6. Continue the portable standard-library and self-hosting path, including a

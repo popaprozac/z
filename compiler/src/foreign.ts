@@ -475,7 +475,12 @@ function collectNamedTypes(
   for (const seed of seeds.values()) {
     const named = namedTypes.get(seed.qualifiedName);
     if (seed.kind !== "value" || named?.kind !== "value" || !seed.declaration) continue;
-    const callables = collectCxxValueCallables(seed.declaration, seed.cName, byCName);
+    const callables = collectCxxValueCallables(
+      seed.declaration,
+      seed.cName,
+      byCName,
+      swiftCxxNamespace !== null,
+    );
     const updated: ForeignNamedType = { ...named, ...callables };
     namedTypes.set(seed.qualifiedName, updated);
     for (const [key, value] of byCName) {
@@ -528,6 +533,7 @@ function collectCxxValueCallables(
   declaration: ClangNode,
   ownerCName: string,
   namedTypes: ReadonlyMap<string, ForeignNamedType>,
+  swiftGenerated: boolean,
 ): {
   readonly constructors: readonly ForeignFunctionOverload[];
   readonly staticMethods: readonly ForeignCxxStaticMethod[];
@@ -538,6 +544,13 @@ function collectCxxValueCallables(
   const constructors: ForeignFunctionOverload[] = [];
   const staticMethods = new Map<string, ForeignFunctionOverload[]>();
   const methods = new Map<string, ForeignCxxMethodOverload[]>();
+  const nestedRecords = new Map(
+    (declaration.inner ?? [])
+      .filter((member): member is ClangNode & { readonly name: string } => (
+        member.kind === "CXXRecordDecl" && !member.isImplicit && Boolean(member.name)
+      ))
+      .map((member) => [member.name, member]),
+  );
   let access = declaration.tagUsed === "class" ? "private" : "public";
   for (const member of declaration.inner ?? []) {
     if (member.kind === "AccessSpecDecl") {
@@ -545,6 +558,54 @@ function collectCxxValueCallables(
       continue;
     }
     if (access !== "public" || member.isImplicit || member.explicitlyDeleted || !member.name || !member.type?.qualType) continue;
+    if (swiftGenerated && member.kind === "VarDecl" && member.storageClass === "static") {
+      const implementationName = /(?:^|::)(_impl_[A-Za-z0-9_]+)$/.exec(
+        normalizeCType(member.type.desugaredQualType ?? member.type.qualType)
+          .replace(/^const\s+/, "")
+          .replace(/^(?:class|struct)\s+/, ""),
+      )?.[1];
+      const implementation = implementationName ? nestedRecords.get(implementationName) : undefined;
+      const callOperator = implementation
+        ? publicCxxMember(implementation, (candidate) => candidate.kind === "CXXMethodDecl" && candidate.name === "operator()")
+        : undefined;
+      if (callOperator?.type?.qualType) {
+        const parameterNodes = (callOperator.inner ?? [])
+          .filter((child) => child.kind === "ParmVarDecl" && child.type?.qualType);
+        const returnType = mapForeignType(
+          qualifyNativeTypeSpelling(returnTypeOf(callOperator.type.qualType), namespaces, namedTypes),
+          undefined,
+          "return",
+          new Map(),
+          namedTypes,
+        );
+        const parameters = parameterNodes.map((parameter) => {
+          const spelling = qualifyNativeTypeSpelling(parameter.type!.qualType!, namespaces, namedTypes);
+          const canonical = parameter.type!.desugaredQualType
+            ? qualifyNativeTypeSpelling(parameter.type!.desugaredQualType, namespaces, namedTypes)
+            : undefined;
+          return {
+            name: parameter.name ?? null,
+            type: mapForeignType(spelling, undefined, "parameter", new Map(), namedTypes, canonical),
+          };
+        });
+        if (returnType.kind !== "unsupported" && !parameters.some((parameter) => parameter.type.kind === "unsupported")) {
+          const overload: ForeignFunctionOverload = {
+            name: member.name,
+            cName: `${ownerCName}::${member.name}`,
+            returnType,
+            parameters,
+            variadic: false,
+            cSignature: callOperator.type.qualType,
+            metadata: foreignDeclarationMetadata(member),
+          };
+          const existing = staticMethods.get(member.name) ?? [];
+          if (!existing.some((candidate) => candidate.cSignature === overload.cSignature)) {
+            staticMethods.set(member.name, [...existing, overload]);
+          }
+        }
+      }
+      continue;
+    }
     const constructor = member.kind === "CXXConstructorDecl";
     const method = member.kind === "CXXMethodDecl" && !member.name.startsWith("operator");
     if (!constructor && !method) continue;
@@ -608,6 +669,21 @@ function collectCxxValueCallables(
     staticMethods: [...staticMethods].map(([name, overloads]) => ({ name, overloads })),
     methods: [...methods].map(([name, overloads]) => ({ name, overloads })),
   };
+}
+
+function publicCxxMember(
+  declaration: ClangNode,
+  predicate: (member: ClangNode) => boolean,
+): ClangNode | undefined {
+  let access = declaration.tagUsed === "class" ? "private" : "public";
+  for (const member of declaration.inner ?? []) {
+    if (member.kind === "AccessSpecDecl") {
+      access = member.access ?? access;
+      continue;
+    }
+    if (access === "public" && !member.isImplicit && !member.explicitlyDeleted && predicate(member)) return member;
+  }
+  return undefined;
 }
 
 function isCopyOrMoveConstructor(parameters: readonly ClangNode[], ownerCName: string): boolean {

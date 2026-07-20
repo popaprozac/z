@@ -1,0 +1,10 @@
+{
+  "target": {
+    "entry": "main.z",
+    "swift": {
+      "module": "ZSwiftState",
+      "sources": ["LoadState.swift"],
+      "interop": "cxx"
+    }
+  }
+}

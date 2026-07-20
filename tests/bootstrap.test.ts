@@ -2957,6 +2957,67 @@ test("imports and owns a Swift value through its generated C++ compatibility hea
   assert.equal(result.stdout, "created 40\nfirst=40, copied=40, changed=42\nSwift value=42\nembedded=a\0b\nreleased 40\n");
 });
 
+test("constructs Swift associated-value enum cases through generated C++ factories", () => {
+  if (process.platform !== "darwin") return;
+  const example = resolve(projectRoot, "examples/interop/swift/swift-enum-interop/main.z");
+  const source = readFileSync(example, "utf8");
+  const artifact = compileToNative(source, example);
+  assert.equal(artifact.language, "c++");
+  assert.match(artifact.source, /#include <ZSwiftState-Swift\.hpp>/);
+  assert.match(artifact.source, /const ZSwiftState::LoadState ready = ZSwiftState::LoadState::ready\(42\)/);
+  assert.match(artifact.source, /const ZSwiftState::LoadState idle = ZSwiftState::LoadState::idle\(\)/);
+  assert.match(artifact.source, /const ZSwiftState::LoadState copied = ready/);
+  assert.match(artifact.source, /ready\.value\(\)/);
+  assert.deepEqual(diagnostics(source, example), []);
+
+  const context = analyzeSource(source, example);
+  const loadState = context.foreignModules.get("Swift")?.namedTypes.get("LoadState");
+  assert.equal(loadState?.kind, "value");
+  if (loadState?.kind === "value") {
+    assert.deepEqual(loadState.lifecycle, { copy: true, move: false, deinit: true });
+    assert.equal(loadState.staticMethods.find((method) => method.name === "ready")?.overloads.length, 1);
+    assert.equal(loadState.staticMethods.find((method) => method.name === "idle")?.overloads.length, 1);
+    assert.equal(loadState.methods.find((method) => method.name === "value")?.overloads[0]?.receiverAccess, "in");
+  }
+
+  const readyOffset = source.indexOf("ready(42)") + 1;
+  assert.match(
+    hover(source, example, readyOffset)?.contents.value ?? "",
+    /ready\(val: i32\): Swift\.LoadState.*C\+\+ static/s,
+  );
+  const completionSource = source.replace("Swift.LoadState.ready(42)", "Swift.LoadState.re");
+  const completionOffset = completionSource.indexOf("Swift.LoadState.re") + "Swift.LoadState.re".length;
+  assert.equal(completions(completionSource, example, completionOffset).find((item) => item.label === "ready")?.kind, 2);
+  assert.match(definition(source, `file://${example}`, readyOffset)?.uri ?? "", /ZSwiftState-Swift\.hpp$/);
+
+  const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, "ready=42, idle=-1, copy=42\n");
+});
+
+test("records hard Swift surfaces currently withheld by the generated C++ interface", () => {
+  if (process.platform !== "darwin") return;
+  const directory = mkdtempSync("/tmp/z-swift-boundary-");
+  const source = resolve(projectRoot, "tests/fixtures/swift-toolchain-boundaries.swift");
+  const header = resolve(directory, "ZSwiftBoundaries-Swift.hpp");
+  const library = resolve(directory, "libZSwiftBoundaries.dylib");
+  const swiftCompile = spawnSync("xcrun", [
+    "swiftc",
+    "-emit-library",
+    "-emit-module",
+    "-module-name", "ZSwiftBoundaries",
+    "-cxx-interoperability-mode=default",
+    "-emit-objc-header-path", header,
+    source,
+    "-o", library,
+  ], { encoding: "utf8" });
+  assert.equal(swiftCompile.status, 0, swiftCompile.stderr);
+  const generated = readFileSync(header, "utf8");
+  assert.match(generated, /noncopyable struct 'UniqueCounter' can not yet be represented in C\+\+/);
+  assert.match(generated, /Unavailable in C\+\+: Swift global function 'makeUniqueCounter\(_:\)'/);
+  assert.match(generated, /Unavailable in C\+\+: Swift global function 'doubleLater\(_:\)'/);
+});
+
 test("keeps labeled arguments reserved for Objective-C selectors", () => {
   const source = `
     function identity(value: i32): i32 { return value; }

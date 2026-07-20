@@ -143,6 +143,21 @@ values: the thread receives a private snapshot and the source remains usable.
 Mutating such a capture changes only the thread's snapshot. A uniquely owned
 value instead transfers its owner and the source binding becomes unavailable.
 
+The intended fallible form preserves the ordinary typed-error channel:
+
+```z
+const calculation = thread.spawn(move (): i32 throws CalculationError => {
+  return calculate(input);
+});
+const value = try await calculation;
+```
+
+That closure produces `Task<i32, CalculationError>`; `attempt await` would
+instead expose `Result<i32, CalculationError>`. Stage 0 cannot yet parse a
+`throws` clause on closure signatures, so the executable native-thread tier is
+currently restricted to non-throwing `Task<T>`. No untyped thread-exception
+channel will be added as a shortcut.
+
 The first executable transfer rule is deliberately narrow. Integers, floats,
 booleans, fixed arrays, and recursively cleanup-free Z structs/enums copy.
 `Array<T>` and recursively supported Z aggregates containing it move when `T`

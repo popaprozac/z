@@ -58,6 +58,7 @@ bun run z run examples/language/control-flow/result.z
 | Persistent AppKit events | [`appkit-events.z`](../examples/interop/objc/appkit-events.z) | Native blocks, weak capture, observer tokens |
 | Swift class | [`swift-interop`](../examples/interop/swift/swift-interop) | Generated Objective-C compatibility header |
 | Swift value | [`swift-value-interop`](../examples/interop/swift/swift-value-interop) | Generated C++ methods, owned aggregate storage, and exact explicit `String` return copies |
+| Swift enum | [`swift-enum-interop`](../examples/interop/swift/swift-enum-interop) | Direct generated associated-value case factories, owned copies, methods, and cleanup |
 
 Apple examples require macOS and Xcode Command Line Tools. `appkit-events.z`
 opens a native window and exits when that window closes.

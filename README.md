@@ -70,7 +70,7 @@ requiring lifetime syntax throughout ordinary application code.
 | C | Header imports, functions, records, enums, constants, pointers with `.zd` contracts, callbacks, target-aware availability |
 | Objective-C | ARC objects, nullability, selectors, blocks, persistent observers, AppKit |
 | C++ | Hierarchical functions/types, overload selection, records, `.zd`-contracted copyable and move-only RAII values, constructors, methods, named-value references, and receiver qualifiers |
-| Swift | Generated Objective-C compatibility headers plus generated C++ values, methods, copying, cleanup, and exact owned `String` returns |
+| Swift | Generated Objective-C compatibility headers plus generated C++ values, associated-value enum cases, methods, copying, cleanup, and exact owned `String` returns |
 | Editor | VS Code/Cursor highlighting, diagnostics, hover, completion, and definitions |
 
 This table is intentionally summarized. The precise implemented boundary and
