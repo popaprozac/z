@@ -77,6 +77,7 @@ Read [`async-model.md`](async-model.md) alongside these examples:
 | Move-only native values across suspension | [`async-native-ownership.z`](../examples/async/async-native-ownership.z) — local ownership plus fallible return/await relay, `try`, `attempt`, direct match, and deterministic Result cleanup |
 | Native-owning Z aggregates across suspension | [`async-native-aggregate.z`](../examples/async/async-native-aggregate.z) — whole-owner relay, success/failure, consuming match, cancellation cleanup, and zero leaked native values |
 | Owned native async parameters | [`async-native-parameters.z`](../examples/async/async-native-parameters.z) — immediate argument transfer into hot spawned tasks for direct C++ owners and native-owning Z structs |
+| Scoped immutable async borrowing | [`async-borrowing.z`](../examples/async/async-borrowing.z) — direct-await C++ borrow, two scope-bounded child borrows of one Z aggregate, post-join consumption, and zero leaked native values |
 | Async methods | [`async-methods.z`](../examples/async/async-methods.z) |
 
 ```sh

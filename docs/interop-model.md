@@ -108,8 +108,11 @@ await`; `attempt await` constructs a non-trivial Result in named or hidden frame
 storage and match either borrows or consumes its active payload. Owned async
 parameters use the same aligned storage: task creation move-constructs each
 child-frame slot, and cancellation destroys it even before the child body is
-polled. Borrowed async parameters remain a separate scoped-lifetime path. ARC
-class fields and owned closure environments likewise remain deferred.
+polled. Immutable `in` native values and native-owning Z aggregates borrow stable
+caller-frame storage through direct await. Spawned borrows require an explicit
+async scope and prevent owner mutation or movement until its join; no wrapper,
+retain, or copy is added. Mutable/output async borrows remain a separate path.
+ARC class fields and owned closure environments likewise remain deferred.
 
 C++ named-value references map onto the existing Z capability model:
 

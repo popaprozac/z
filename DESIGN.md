@@ -797,12 +797,24 @@ existing error model rather than adding a second Result-shaped return layer.
 Cancellation is a structural third task outcome rather than an error silently
 added to every `throws E` contract. It propagates down the task tree and
 unwinds frames through ordinary synchronous cleanup. `deinit` cannot suspend;
-fallible or suspending shutdown remains an explicit async operation.
+fallible or suspending shutdown remains an explicit async operation. The
+bootstrap runtime has an internal cancellation request, but Z does not yet
+expose caller-driven task cancellation. A future task API must define how a
+caller requests cancellation and joins cleanup without pretending cancellation
+is either `E` or a successful `T` before syntax such as `task.cancel()` settles.
 
-The first ownership tier rejects borrowed async parameters and borrowed struct
-receivers, and rejects suspension while any other borrow is live. Owned values,
-ARC class references, owned closures, direct move-only native values, and whole
-Z value structs or enums containing them may be stored in task frames. Native
+The first ownership tier supports immutable `in` value/native parameters across
+suspension. A direct await stores a pointer into its stable suspended caller
+frame. A spawned immutable borrow requires an explicit `async scope`; its owner
+cannot move or mutate until scope exit joins every borrowing child. Multiple
+immutable child borrows may share the same owner. The initial analysis keeps the
+borrow live for the whole scope even after an early explicit join. Borrowed ARC
+class parameters intentionally use the ordinary owned parameter form instead,
+which retains identity while preserving caller access. `inout`, `out`, Slice,
+borrowed struct receivers, and other live borrows remain rejected across
+suspension. Owned values, ARC class references, owned closures, direct move-only
+native values, and whole Z value structs or enums containing them may be stored
+in task frames. Native
 storage is aligned, placement-constructed, and destroyed exactly once according
 to its semantic live flag. A typed take operation move-constructs the destination
 and ends the moved-from object's C++ lifetime before its raw frame storage is
@@ -815,9 +827,9 @@ native tasks preserve that storage through `try await`, while
 named local or hidden expression slot; borrowed and consuming matches retain or
 transfer the active payload accordingly. Cancellation destroys a completed
 result if it was never claimed and destroys owned parameters even when a child
-is cancelled before its body is polled. Borrowed async parameters remain a later
-scoped-borrowing path. This conservative boundary can grow without exposing
-general lifetime syntax.
+is cancelled before its body is polled. Cancellation of a scoped borrowing child
+joins it before owner cleanup. Mutable scoped borrowing can grow from this
+foundation without exposing general lifetime syntax.
 
 An explicit async scope requires an async parent because scope exit implicitly
 joins its children and may suspend. Async function exit does the same for root
@@ -936,7 +948,8 @@ ARC fields and owned closure environments remain separate storage tiers. Direct
 move-only native locals and whole Z value aggregates containing them use aligned
 placement storage inside async locals, owned parameter slots, and task results;
 fallible results compose with `try await`, `attempt await`, hidden expression
-slots, and match. Borrowed async parameters remain deferred.
+slots, and match. Immutable scoped async parameters borrow without a wrapper,
+retain, or copy; mutable/output async parameters remain deferred.
 Named-value `const T&`, `T&`, and move-only `T&&` parameters reuse Z's `in`,
 `inout`, and owned-value capabilities. Receiver-qualified `const &`, `&`, and
 move-only `&&` methods likewise map to borrowed, mutable, and consuming

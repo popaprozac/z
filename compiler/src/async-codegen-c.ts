@@ -63,6 +63,7 @@ type AsyncFunctionPlan = {
   readonly destroyName: string;
   readonly operations: readonly AsyncOperation[];
   readonly locals: ReadonlyMap<string, string>;
+  readonly borrowedLocals: ReadonlySet<string>;
   readonly awaits: ReadonlyMap<number, AwaitSite>;
   readonly nestedAwaits: ReadonlyMap<number, readonly NestedAwaitSite[]>;
   readonly suspensions: ReadonlyMap<number, NestedAwaitSite>;
@@ -80,6 +81,7 @@ type AsyncTypeContext = {
 
 type FrameExpressionContext = {
   readonly locals: ReadonlyMap<string, string>;
+  readonly borrowedLocals?: ReadonlySet<string>;
   readonly types: AsyncTypeContext;
   readonly bindings?: ReadonlyMap<string, string>;
   readonly suspensions?: ReadonlyMap<number, NestedAwaitSite>;
@@ -171,14 +173,16 @@ function planFunction(
     requireFrameType(declaration.errorType.name, declaration.errorType.location, fileName, "async error", types);
   }
   const locals = new Map<string, string>();
+  const borrowedLocals = new Set<string>();
   if (owner && !declaration.static) {
     requireFrameType(owner.name, declaration.location, fileName, "async receiver", types);
     locals.set("this", owner.name);
   }
   for (const parameter of declaration.parameters) {
-    if (parameter.mode !== "value") {
+    if (parameter.mode !== "value" && parameter.mode !== "in") {
       unsupported(fileName, parameter.location, "borrowed async parameters are not executable yet");
     }
+    if (parameter.mode === "in") borrowedLocals.add(parameter.name);
     requireFrameType(parameter.type.name, parameter.type.location, fileName, "async parameter", types);
     locals.set(parameter.name, parameter.type.name);
   }
@@ -427,6 +431,7 @@ function planFunction(
     destroyName: `z_async_destroy_${part}`,
     operations,
     locals,
+    borrowedLocals,
     awaits,
     nestedAwaits,
     suspensions,
@@ -800,7 +805,9 @@ function generateRuntime(
   const usesDelay = plans.some((plan) => [...plan.awaits.values()].some((site) => site.intrinsic === "delay"));
   const usesNativeFrameStorage = plans.some((plan) => (
     requiresNativeFramePlacement(plan.declaration.returnType.name, plan.types)
-    || [...plan.locals.values()].some((type) => requiresNativeFramePlacement(type, plan.types))
+    || [...plan.locals].some(([name, type]) => (
+      !plan.borrowedLocals.has(name) && requiresNativeFramePlacement(type, plan.types)
+    ))
     || [...plan.suspensions.values()].some((site) => requiresNativeFramePlacement(site.type, plan.types))
   ));
   const lines = [
@@ -1040,12 +1047,16 @@ function generateFrame(
   }
   for (const [name, type] of plan.locals) {
     const cType = cFrameType(type, plan.types);
-    if (requiresNativeFramePlacement(type, plan.types)) {
+    if (plan.borrowedLocals.has(name)) {
+      lines.push(`  ${borrowedFrameType(type, plan.types)} ${frameField(name)};`);
+    } else if (requiresNativeFramePlacement(type, plan.types)) {
       lines.push(`  alignas(${cType}) unsigned char ${frameField(name)}[sizeof(${cType})];`);
     } else {
       lines.push(`  ${cFrameType(type, plan.types)} ${frameField(name)};`);
     }
-    if (hasFrameCleanup(type, plan.types)) lines.push(`  bool ${frameLiveField(name)};`);
+    if (!plan.borrowedLocals.has(name) && hasFrameCleanup(type, plan.types)) {
+      lines.push(`  bool ${frameLiveField(name)};`);
+    }
   }
   for (const site of plan.suspensions.values()) {
     const cType = cFrameType(site.type, plan.types);
@@ -1093,7 +1104,7 @@ function generateDestroy(
     );
   }
   for (const [name, type] of [...plan.locals].reverse()) {
-    if (!hasFrameCleanup(type, plan.types)) continue;
+    if (plan.borrowedLocals.has(name) || !hasFrameCleanup(type, plan.types)) continue;
     lines.push(
       `  if (frame->${frameLiveField(name)}) {`,
       `    ${frameCleanup(frameStoredValue(name, type, plan.types), type, plan.types)}`,
@@ -1116,6 +1127,9 @@ function generateDestroy(
 
 function generateStartSignature(plan: AsyncFunctionPlan): string {
   const parameters = ["Z_AsyncExecutor *executor", ...frameInputs(plan).map((input) => {
+    if (input.mode === "in") {
+      return `${borrowedFrameType(input.type, plan.types)} ${frameField(input.name)}`;
+    }
     const separator = requiresNativeFramePlacement(input.type, plan.types) ? " &&" : " ";
     return `${cFrameType(input.type, plan.types)}${separator}${frameField(input.name)}`;
   })];
@@ -1147,9 +1161,11 @@ function generateStart(plan: AsyncFunctionPlan): string {
     plan.declaration.returnType.name !== "void"
     && hasFrameCleanup(plan.declaration.returnType.name, plan.types)
   ) lines.push("  frame->live_result = false;");
-  const parameters = new Set(frameInputs(plan).map((input) => input.name));
+  const parameters = new Set(
+    frameInputs(plan).filter((input) => input.mode === "value").map((input) => input.name),
+  );
   for (const [name, type] of plan.locals) {
-    if (hasFrameCleanup(type, plan.types)) {
+    if (!plan.borrowedLocals.has(name) && hasFrameCleanup(type, plan.types)) {
       lines.push(`  frame->${frameLiveField(name)} = ${parameters.has(name) ? "true" : "false"};`);
     }
   }
@@ -1158,7 +1174,9 @@ function generateStart(plan: AsyncFunctionPlan): string {
   }
   for (const input of frameInputs(plan)) {
     const name = frameField(input.name);
-    if (requiresNativeFramePlacement(input.type, plan.types)) {
+    if (input.mode === "in") {
+      lines.push(`  frame->${name} = ${name};`);
+    } else if (requiresNativeFramePlacement(input.type, plan.types)) {
       lines.push(`  new (frame->${name}) ${cFrameType(input.type, plan.types)}(std::move(${name}));`);
     } else {
       lines.push(`  frame->${name} = ${name};`);
@@ -1169,14 +1187,19 @@ function generateStart(plan: AsyncFunctionPlan): string {
   return lines.join("\n");
 }
 
-function frameInputs(plan: AsyncFunctionPlan): readonly { readonly name: string; readonly type: string }[] {
+function frameInputs(plan: AsyncFunctionPlan): readonly {
+  readonly name: string;
+  readonly type: string;
+  readonly mode: "value" | "in";
+}[] {
   return [
     ...(plan.owner && !plan.declaration.static
-      ? [{ name: "this", type: plan.owner.name }]
+      ? [{ name: "this", type: plan.owner.name, mode: "value" as const }]
       : []),
     ...plan.declaration.parameters.map((parameter) => ({
       name: parameter.name,
       type: parameter.type.name,
+      mode: parameter.mode === "in" ? "in" as const : "value" as const,
     })),
   ];
 }
@@ -1194,9 +1217,12 @@ function emitAwaitArguments(
     }
     arguments_.push(receiver);
   }
-  arguments_.push(...site.call.arguments.map((argument) => (
-    emitFrameExpression(argument, parent, fileName)
-  )));
+  arguments_.push(...site.call.arguments.map((argument, index) => {
+    const value = emitFrameExpression(argument, parent, fileName);
+    const parameter = site.target.declaration.parameters[index];
+    if (parameter?.mode !== "in") return value;
+    return parent.types.structs.get(parameter.type.name)?.kind === "class" ? value : `&(${value})`;
+  }));
   return arguments_;
 }
 
@@ -1972,7 +1998,9 @@ function emitFrameExpression(
       }
       {
         const type = plan.locals.get(expression.name)!;
-        const value = frameStoredValue(expression.name, type, plan.types);
+        const value = plan.borrowedLocals?.has(expression.name)
+          ? borrowedFrameValue(expression.name, type, plan.types)
+          : frameStoredValue(expression.name, type, plan.types);
         if (plan.types.semanticInfo.movedExpressions.has(expression.location.offset)) {
           if (requiresNativeFramePlacement(type, plan.types)) {
             return frameTakeExpression(value, `frame->${frameLiveField(expression.name)}`);
@@ -2220,6 +2248,16 @@ function cFrameType(type: string, types: AsyncTypeContext): string {
   const foreign = types.semanticInfo.foreignNamedTypes.get(type);
   if (foreign) return foreign.cName;
   throw new Error(`missing async aggregate ABI type ${JSON.stringify(type)}`);
+}
+
+function borrowedFrameType(type: string, types: AsyncTypeContext): string {
+  const cType = cFrameType(type, types);
+  return types.structs.get(type)?.kind === "class" ? cType : `const ${cType} *`;
+}
+
+function borrowedFrameValue(name: string, type: string, types: AsyncTypeContext): string {
+  const field = `frame->${frameField(name)}`;
+  return types.structs.get(type)?.kind === "class" ? field : `(*${field})`;
 }
 
 function isSupportedFrameType(type: string, types: AsyncTypeContext, visiting = new Set<string>()): boolean {

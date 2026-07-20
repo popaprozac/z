@@ -236,7 +236,9 @@ type AnalysisState = {
   readonly moveOrigins: Map<string, SourceLocation>;
   readonly borrowOrigins: Map<string, { readonly location: SourceLocation; readonly kind: "closure" | "iteration" | "match" }>;
   readonly iterationBorrowOrigins: Map<string, SourceLocation>;
+  readonly asyncBorrowOrigins: Map<string, SourceLocation>;
   readonly asyncCallContexts: { readonly mode: "await" | "spawn"; calls: number }[];
+  asyncScopeDepth: number;
   activeFunction: FunctionDeclaration | null;
   activeReceiver: string | null;
 };
@@ -387,7 +389,9 @@ export function analyze(
     moveOrigins: new Map(),
     borrowOrigins: new Map(),
     iterationBorrowOrigins: new Map(),
+    asyncBorrowOrigins: new Map(),
     asyncCallContexts: [],
+    asyncScopeDepth: 0,
     activeFunction: null,
     activeReceiver: null,
   };
@@ -887,11 +891,21 @@ function validateFunctionSignature(
       });
     }
     const slice = parseSliceType(parameter.type.name);
-    if (declaration.async && (parameter.mode !== "value" || slice)) {
+    if (
+      declaration.async
+      && (parameter.mode === "inout" || parameter.mode === "out" || Boolean(slice))
+    ) {
       throw new DiagnosticError(fileName, parameter.location, `async parameter ${JSON.stringify(parameter.name)} cannot borrow storage in the first async tier`, {
         code: "Z0704",
-        notes: ["in, inout, out, and Slice parameters could otherwise remain live across a suspension point"],
-        helps: ["pass an owned value or ARC class reference into the async function"],
+        notes: ["mutable, output, and Slice borrows require additional suspension-safe alias and initialization analysis"],
+        helps: ["pass an owned value, an immutable `in` value, or an ARC class reference into the async function"],
+      });
+    }
+    if (declaration.async && parameter.mode === "in" && structs.get(parameter.type.name)?.kind === "class") {
+      throw new DiagnosticError(fileName, parameter.location, `async class parameter ${JSON.stringify(parameter.name)} should use the ordinary owned parameter form`, {
+        code: "Z0704",
+        notes: ["owned ARC parameters retain identity in the task frame while preserving caller access"],
+        helps: [`remove \`in\` from ${JSON.stringify(parameter.name)}`],
       });
     }
     if (slice && parameter.mode === "in") {
@@ -990,6 +1004,8 @@ function analyzeFunction(
   state.moveOrigins.clear();
   state.borrowOrigins.clear();
   state.iterationBorrowOrigins.clear();
+  state.asyncBorrowOrigins.clear();
+  state.asyncScopeDepth = 0;
   state.viewCallOrigins.clear();
   state.viewOrigins.clear();
   const locals = new Map<string, ValueType>();
@@ -1634,7 +1650,15 @@ function analyzeStatement(
         });
       }
       const scopeLocals = new Map(locals);
-      analyzeStatements(statement.body.statements, owner, scopeLocals, globals, structs, enums, fileName, state);
+      const outerBorrows = new Map(state.asyncBorrowOrigins);
+      state.asyncScopeDepth += 1;
+      try {
+        analyzeStatements(statement.body.statements, owner, scopeLocals, globals, structs, enums, fileName, state);
+      } finally {
+        state.asyncScopeDepth -= 1;
+        state.asyncBorrowOrigins.clear();
+        for (const [name, origin] of outerBorrows) state.asyncBorrowOrigins.set(name, origin);
+      }
       propagateOuterOwnership(locals, scopeLocals);
       return;
     }
@@ -2755,11 +2779,21 @@ function registerAsyncCall(
   context.calls += 1;
 }
 
-function firstLiveBorrow(locals: ReadonlyMap<string, ValueType>): string | null {
+function firstLiveBorrow(
+  locals: ReadonlyMap<string, ValueType>,
+  activeFunction: FunctionDeclaration | null,
+  borrowOrigins: ReadonlyMap<string, { readonly location: SourceLocation; readonly kind: "closure" | "iteration" | "match" }>,
+): string | null {
+  const asyncParameters = new Set(
+    activeFunction?.async
+      ? activeFunction.parameters.filter((parameter) => parameter.mode === "in").map((parameter) => parameter.name)
+      : [],
+  );
   for (const [name, type] of locals) {
     if (isBorrowedBinding(type)
       && initializationState(type) === "initialized"
-      && ownershipState(type) === "available") return name;
+      && ownershipState(type) === "available"
+      && (!asyncParameters.has(name) || borrowOrigins.has(name))) return name;
   }
   return null;
 }
@@ -3159,12 +3193,12 @@ function inferExpressionInner(
           helps: ["use `await operation()` for sequential work, or bind `spawn operation()` and await the Task later"],
         });
       }
-      const borrowed = firstLiveBorrow(locals);
+      const borrowed = firstLiveBorrow(locals, state.activeFunction, state.borrowOrigins);
       if (borrowed) {
         throw new DiagnosticError(fileName, expression.location, `cannot await while borrowed storage ${JSON.stringify(borrowed)} is live`, {
           code: "Z0704",
-          notes: ["the first async tier does not keep borrowed storage across suspension points"],
-          helps: ["finish the borrow before awaiting, or move an owned value or ARC class reference into the async operation"],
+          notes: ["only an explicit immutable async parameter currently carries a borrow across suspension"],
+          helps: ["finish this lexical borrow before awaiting, or pass storage through an async `in` parameter"],
         });
       }
       const context = { mode: "await" as const, calls: 0 };
@@ -4408,6 +4442,24 @@ function checkArguments(
       }
       requireAssignable(parameter.type.name, borrowedActual, argument, fileName, state.foreignNamedTypes, state.numericLiteralTypes);
       state.nativeArgumentAccesses.set(argument.location.offset, "in");
+      const asyncContext = state.asyncCallContexts.at(-1);
+      if (target.async && asyncContext?.mode === "spawn") {
+        const borrowedRoot = storageRoot(argument)?.name ?? null;
+        if (state.asyncScopeDepth === 0) {
+          throw new DiagnosticError(fileName, argument.location, `spawned borrow of ${JSON.stringify(borrowedRoot ?? "value")} requires an explicit async scope`, {
+            code: "Z0704",
+            notes: ["the scope join bounds the child task before borrowed caller storage can be destroyed"],
+            helps: ["place the spawn and its uses inside `async scope { ... }`, or pass ownership instead"],
+          });
+        }
+        if (!borrowedRoot) {
+          throw new DiagnosticError(fileName, argument.location, "a spawned async borrow requires named storage", {
+            code: "Z0704",
+            helps: ["bind the value before borrowing it into the spawned task"],
+          });
+        }
+        state.asyncBorrowOrigins.set(borrowedRoot, argument.location);
+      }
       continue;
     }
     let actual = inferExpression(argument, locals, globals, structs, enums, fileName, state);
@@ -4625,6 +4677,15 @@ function rejectOwnerMutationWhileViewed(
   state: AnalysisState,
   action = "mutate",
 ): void {
+  const asyncBorrow = state.asyncBorrowOrigins.get(owner);
+  if (asyncBorrow) {
+    throw new DiagnosticError(fileName, location, `cannot ${action} ${JSON.stringify(owner)} while a spawned task borrows it`, {
+      code: "Z0704",
+      labels: [{ location: asyncBorrow, message: "spawned immutable borrow begins here", length: owner.length }],
+      notes: ["the borrow remains live until the enclosing async scope joins its child tasks"],
+      helps: ["finish the async scope before mutating or moving the borrowed value"],
+    });
+  }
   const active = [...state.viewOrigins.entries()].find(([, origin]) => origin.owner === owner);
   if (!active) return;
   const [viewName, origin] = active;

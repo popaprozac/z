@@ -122,6 +122,10 @@ Cancellation is cooperative at poll boundaries: it cannot interrupt a blocking
 synchronous or foreign call. A failure retained with `attempt await` is handled
 as a `Result` value and therefore does not cancel sibling work. Cancelling a
 task suspended on `delay` removes its pending timer before task-frame cleanup.
+The runtime uses cancellation requests internally for structured propagation;
+there is no public caller-driven task-cancellation operation yet. Its eventual
+request-and-join behavior must preserve cancellation as a third structural
+outcome rather than smuggling it into `throws E` or manufacturing a `T`.
 
 The first async ownership tier permits owned values, ARC class references,
 owned closures, direct move-only native values, and whole Z value structs or
@@ -137,10 +141,16 @@ completion, consuming transfer, failure, cancellation, and destruction of
 completed-but-unclaimed storage. Owned native arguments, including whole Z
 value aggregates containing them, move into child-frame parameter storage when
 `await` or `spawn` creates the task. Cancellation cleans those parameters even
-when the child body has not been polled. Z still rejects `in`,
-`inout`, `out`, `Slice<T>`, borrowed struct receivers, and any other live borrow
-at an `await`. Scoped async borrowing can be added later from real zero-copy
-APIs without exposing general lifetime syntax.
+when the child body has not been polled. Immutable `in` value/native parameters
+borrow caller-frame storage across suspension. Direct await is intrinsically
+bounded by its join. Spawned borrowing requires an explicit `async scope`, and
+the owner cannot move or mutate until that scope joins its children; multiple
+immutable children may share it. The bootstrap conservatively keeps the borrow
+live until scope exit even after an explicit early join. ARC classes continue to
+use owned parameters and task-frame retains. Z still rejects `inout`, `out`,
+`Slice<T>`, borrowed struct receivers, and other unrelated live borrows at an
+`await`. Cross-thread executors will additionally require sendability before
+these pointer-backed borrows can leave one thread.
 
 Classes and structs may declare async methods. A class receiver is retained by
 the task frame. A struct async instance method must initially declare `move

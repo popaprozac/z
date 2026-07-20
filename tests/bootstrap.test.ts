@@ -7055,11 +7055,11 @@ test("constructs and destroys move-only C++ values across async suspension", () 
   assert.equal(parameterMoveDiagnostic.code, "Z0201");
   assert.match(parameterMoveDiagnostic.message, /use of moved value "resource"/);
 
-  const borrowedParameter = `
+  const mutableBorrowedParameter = `
     import native from ${JSON.stringify(header)};
-    async function inspect(in resource: native.zcpp.UniqueValue): i32 { return resource.value(); }
+    async function inspect(inout resource: native.zcpp.UniqueValue): i32 { return resource.value(); }
   `;
-  const borrowedParameterDiagnostic = diagnostics(borrowedParameter, resolve(directory, "borrowed-parameter.z"))[0];
+  const borrowedParameterDiagnostic = diagnostics(mutableBorrowedParameter, resolve(directory, "borrowed-parameter.z"))[0];
   assert.equal(borrowedParameterDiagnostic.code, "Z0704");
   assert.match(borrowedParameterDiagnostic.message, /cannot borrow storage in the first async tier/);
 
@@ -7288,12 +7288,7 @@ test("allows root-scoped spawn and diagnoses unacknowledged async calls and asyn
   });
 
   const borrowed = `async function inspect(in value: i32): i32 { return value; }`;
-  assert.throws(() => check(borrowed, "async-borrow.z"), (error: unknown) => {
-    assert.ok(error instanceof DiagnosticError);
-    assert.equal(error.code, "Z0704");
-    assert.match(error.message, /cannot borrow storage/);
-    return true;
-  });
+  check(borrowed, "async-borrow.z");
 
   const synchronousAwait = `function value(): i32 { return 42; } async function use(): i32 { return await value(); }`;
   assert.throws(() => check(synchronousAwait, "async-sync-await.z"), (error: unknown) => {
@@ -7310,6 +7305,120 @@ test("allows root-scoped spawn and diagnoses unacknowledged async calls and asyn
     assert.match(error.message, /async scope requires an enclosing async function/);
     return true;
   });
+});
+
+test("borrows immutable values across direct await and scoped spawn", () => {
+  const example = resolve(projectRoot, "examples/async/async-borrowing.z");
+  const header = resolve(projectRoot, "tests/fixtures/move-only.hpp");
+  const source = readFileSync(example, "utf8");
+  const generated = compileToNative(source, example).source;
+  assert.match(generated, /const Z_DocumentLease \* value_document;/);
+  assert.match(
+    generated,
+    /z_async_start_inspectDocument\(Z_AsyncExecutor \*executor, const Z_DocumentLease \* value_document\)/,
+  );
+  assert.match(
+    generated,
+    /z_async_start_inspectNative\(Z_AsyncExecutor \*executor, const zcpp::UniqueValue \* value_resource\)/,
+  );
+  assert.match(generated, /frame->value_document = value_document;/);
+  assert.match(
+    generated,
+    /z_async_destroy_inspectDocument\(Z_AsyncFrame_inspectDocument \*frame\) \{\n  if \(frame == NULL\) return;\n\}/,
+  );
+
+  const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(
+    result.stdout,
+    "observed document 42\nobserved document 42\nnative=41, direct=42, closed=42, live=0\n",
+  );
+
+  const parameterOffset = source.indexOf("document: DocumentLease") + 2;
+  assert.match(
+    hover(source, example, parameterOffset)?.contents.value ?? "",
+    /document: DocumentLease/,
+  );
+
+  const outsideScope = `
+    struct Resource { id: i32; }
+    async function inspect(in resource: Resource): i32 { return resource.id; }
+    async function main(): i32 {
+      const resource = Resource({ id: 42 });
+      const task = spawn inspect(resource);
+      return await task;
+    }
+  `;
+  const outsideScopeDiagnostic = diagnostics(outsideScope, "async-borrow-outside-scope.z")[0];
+  assert.equal(outsideScopeDiagnostic.code, "Z0704");
+  assert.match(outsideScopeDiagnostic.message, /requires an explicit async scope/);
+
+  const mutation = `
+    struct Resource { id: i32; }
+    async function inspect(in resource: Resource): i32 { return resource.id; }
+    async function main(): i32 {
+      let resource = Resource({ id: 42 });
+      async scope {
+        spawn inspect(resource);
+        resource.id = 43;
+      }
+      return resource.id;
+    }
+  `;
+  const mutationDiagnostic = diagnostics(mutation, "async-borrow-mutation.z")[0];
+  assert.equal(mutationDiagnostic.code, "Z0704");
+  assert.match(mutationDiagnostic.message, /cannot mutate "resource" while a spawned task borrows it/);
+
+  const moved = `
+    import native from ${JSON.stringify(header)};
+    async function inspect(in resource: native.zcpp.UniqueValue): i32 { return resource.value(); }
+    async function main(): i32 {
+      const resource = native.zcpp.UniqueValue(42);
+      async scope {
+        spawn inspect(resource);
+        return resource.finish(0);
+      }
+      return 0;
+    }
+  `;
+  const moveDiagnostic = diagnostics(moved, "async-borrow-move.z")[0];
+  assert.equal(moveDiagnostic.code, "Z0704");
+  assert.match(moveDiagnostic.message, /cannot move "resource" while a spawned task borrows it/);
+
+  const ownedClass = `
+    class Session { id: i32; }
+    async function inspect(in session: Session): i32 { return session.id; }
+  `;
+  const classDiagnostic = diagnostics(ownedClass, "async-borrow-class.z")[0];
+  assert.equal(classDiagnostic.code, "Z0704");
+  assert.match(classDiagnostic.message, /should use the ordinary owned parameter form/);
+
+  const directory = mkdtempSync("/tmp/z-async-borrow-cancel-");
+  const cancellation = resolve(directory, "main.z");
+  writeFileSync(cancellation, `
+    import { delay } from "std/time";
+    import native from ${JSON.stringify(header)};
+
+    async function observe(in resource: native.zcpp.UniqueValue): void {
+      await delay(1000);
+      return;
+    }
+
+    async function failWithBorrow(): i32 throws i32 {
+      const resource = native.zcpp.UniqueValue(9);
+      async scope {
+        spawn observe(resource);
+        throw 7;
+      }
+    }
+
+    async function main(): i32 {
+      const observed = attempt await failWithBorrow();
+      return native.zcpp.unique_live();
+    }
+  `);
+  const cancelled = spawnSync(process.execPath, [cli, "run", cancellation], { encoding: "utf8" });
+  assert.equal(cancelled.status, 0, cancelled.stderr);
 });
 
 test("checks retained class receivers and consuming struct receivers in async methods", () => {
