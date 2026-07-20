@@ -55,14 +55,14 @@ an inferred receiver-tied view.
 
 | Area | Status | Current boundary |
 | --- | --- | --- |
-| Z source modules | Implemented | Explicit exports, namespace/selective imports, aliases, cycle diagnostics |
+| Z source modules | Partial | Explicit exports, namespace/selective imports, aliases, cycle diagnostics; exported signatures containing selectively imported standard named types still need cross-module normalization |
 | CLI | Implemented | `z check`, `z emit`, and `z run` through Bun; native run I/O streams live and arguments after `--` are forwarded |
 | System standard APIs | Implemented foundation | Default `std/fs` and `std/process` modules; owned reads/arguments, borrowed writes/process argv, direct no-shell child launch, typed OS failures |
 | Native backends | Partial | Readable C, C++20, Objective-C ARC, and Objective-C++ source generation |
 | Foreign Interface IR | Implemented foundation | Raw declarations, API-note merge, normalized contracts, source locations, and availability metadata are separate; richer native hierarchies remain |
 | Language server | Partial | Diagnostics, semantic highlighting, contextual selective-import/object-pattern completion, hover, and Z/native definitions |
 | Native definitions | Implemented slice | Namespace/selective C symbols, Objective-C members, and generated Swift compatibility declarations jump to their native headers |
-| Self-hosting | Partial groundwork | Stage 0 remains TypeScript/Bun; file/process/argv contracts now run through a generated native substrate, while portable stdlib and compiler phases have not yet moved to Z |
+| Self-hosting | Partial groundwork | Stage 0 remains TypeScript/Bun; native Z lexer and declaration-parser slices have exact parity commands, while complete syntax trees and later compiler phases remain in stage 0 |
 
 ## Foreign interfaces
 
@@ -135,7 +135,7 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
 - [`examples/applications/source-inspector`](../examples/applications/source-inspector): tokenizes real Z
   source with owned tokens, checked UTF-8 byte operations, typed lexer errors,
   `std/text` `TextBuffer` escape decoding, nested template-interpolation modes,
-  and a native token-stream parity bridge to the stage-0 lexer.
+  and native lexer/declaration-parser parity bridges to stage 0.
 - [`examples/interop/objc/nswindow.z`](../examples/interop/objc/nswindow.z): direct AppKit window.
 - [`examples/interop/objc/objc-nullability.z`](../examples/interop/objc/objc-nullability.z): explicit
   `T | null` AppKit guard narrowing alongside `Option.fromNullable` and
@@ -210,7 +210,7 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    and `Option<view T>`, then verifies zero live native resources. It exposed and
    closed module-linked enum classification, view-method dispatch, and
    statement-valued `throw` lowering gaps.
-4. **Self-hosting prerequisites — first stage-1 frontend component implemented.**
+4. **Self-hosting prerequisites — lexer and declaration-parser foundations implemented.**
    Target-neutral `std/fs`, `std/process`, and owned program-argument APIs run on
    macOS and have Windows/POSIX native branches. Checked String byte operations
    and `std/text` `TextBuffer` now support a multi-module Z source inspector with
@@ -221,8 +221,14 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    compares its kinds, decoded text, offsets, lines, and columns with the
    TypeScript lexer through `z self-host-lex`; the Z lexer also tokenizes its own
    complete source. The bridge buffers its full protocol into one native write.
-   Unicode identifiers, block comments, direct in-process driver integration,
-   and parser data structures remain.
+   A linear Z parser now consumes the native token array and retains an owned,
+   source-located top-level declaration skeleton for imports, functions, structs,
+   classes, traits, and enums. `z self-host-parse` checks exact declaration kind,
+   name, export/async state, order, and location parity against stage 0 across an
+   adversarial fixture plus the lexer and parser sources themselves. It borrows
+   while traversing balanced bodies and copies only retained names. Members,
+   signatures, statements, expressions, Unicode identifiers, block comments,
+   and direct in-process driver integration remain.
 5. **Threaded concurrency evidence — Copy, unique-owner, native-owner, readonly ARC, and owned-error slices implemented.**
    `thread.spawn` now proves one real cross-thread task frame with explicit
    move capture, hot start, structured join, private Copy snapshots, and moved

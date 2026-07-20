@@ -1413,12 +1413,17 @@ ported independently rather than translated as one monolith.
    contracts now implemented, move portable standard-library behavior and a
    small frontend component into the supported Z subset of structs, tagged
    enums, matching, generics, and collections. Keep OS/ABI calls behind a thin
-   platform substrate. The first component is now concrete: a Z lexer emits the
-   same parser-facing token kinds, decoded text, and source locations as stage 0
-   across an adversarial parity corpus and tokenizes its own complete source.
-   The temporary bridge is a buffered native line protocol exposed through
-   `z self-host-lex`; direct in-process driver integration and a broader parity
-   corpus precede replacing the bootstrap lexer in ordinary commands.
+   platform substrate. The first components are now concrete: a Z lexer emits
+   the same parser-facing token kinds, decoded text, and source locations as
+   stage 0 across an adversarial parity corpus and tokenizes its own complete
+   source. A linear declaration parser retains source-located top-level kinds,
+   names, and export/async state while borrowing tokens during balanced-body
+   traversal. The temporary buffered native protocols are exposed through
+   `z self-host-lex` and `z self-host-parse`; members, signatures, statements,
+   expressions, direct in-process driver integration, and a broader parity
+   corpus precede replacing bootstrap frontend phases in ordinary commands.
+   Performance comparisons begin at that in-process seam rather than conflating
+   frontend work with native compilation and subprocess startup.
 3. **Stage 2:** Compile the Z compiler with stage 0, then use that result to
    compile itself.
 4. **Bootstrap verification:** Compare generated native source and compiler test

@@ -1,0 +1,242 @@
+import { Token, TokenKind } from "./lexer.z";
+
+export enum DeclarationKind {
+  importDeclaration,
+  functionDeclaration,
+  structDeclaration,
+  classDeclaration,
+  traitDeclaration,
+  enumDeclaration,
+}
+
+export struct Declaration {
+  kind: DeclarationKind;
+  name: String;
+  exported: boolean;
+  asynchronous: boolean;
+  offset: usize;
+  line: usize;
+  column: usize;
+}
+
+export struct Program {
+  declarations: Array<Declaration>;
+}
+
+export struct ParserError {
+  message: String;
+  offset: usize;
+  line: usize;
+  column: usize;
+}
+
+function snapshot(in token: Token): Token {
+  return Token({
+    kind: token.kind,
+    text: token.text.copyBytes(0, token.text.byteLength),
+    offset: token.offset,
+    line: token.line,
+    column: token.column,
+  });
+}
+
+function fail(in token: Token, in message: String): ParserError {
+  return ParserError({
+    message: message.copyBytes(0, message.byteLength),
+    offset: token.offset,
+    line: token.line,
+    column: token.column,
+  });
+}
+
+function expect(
+  in tokens: Array<Token>,
+  inout current: usize,
+  kind: TokenKind,
+  in description: String
+): Token throws ParserError {
+  const token = snapshot(tokens[current]);
+  if (token.kind != kind) throw fail(token, `expected ${description}, found ${token.text}`);
+  current = current + 1;
+  return token;
+}
+
+function skipDelimited(
+  in tokens: Array<Token>,
+  inout current: usize,
+  opening: TokenKind,
+  closing: TokenKind,
+  in description: String
+): void throws ParserError {
+  const startIndex = current;
+  if (tokens[current].kind != opening) throw fail(tokens[current], `expected ${description}`);
+  current = current + 1;
+  let depth: usize = 1;
+  while (depth > 0) {
+    if (tokens[current].kind == TokenKind.eof) throw fail(tokens[startIndex], `unterminated ${description}`);
+    if (tokens[current].kind == opening) depth = depth + 1;
+    if (tokens[current].kind == closing) depth = depth - 1;
+    current = current + 1;
+  }
+}
+
+function seekBody(in tokens: Array<Token>, inout current: usize, in description: String): void throws ParserError {
+  while (tokens[current].kind != TokenKind.leftBrace) {
+    if (tokens[current].kind == TokenKind.eof) throw fail(tokens[current], `expected ${description}`);
+    current = current + 1;
+  }
+  try skipDelimited(tokens, inout current, TokenKind.leftBrace, TokenKind.rightBrace, description);
+}
+
+function parseImport(
+  in tokens: Array<Token>,
+  inout current: usize,
+  exported: boolean
+): Declaration throws ParserError {
+  const start = try expect(tokens, inout current, TokenKind.importKeyword, "an import declaration");
+  let header = "";
+  let foundFrom = false;
+  while (tokens[current].kind != TokenKind.semicolon) {
+    if (tokens[current].kind == TokenKind.eof) throw fail(start, "unterminated import declaration");
+    if (foundFrom && tokens[current].kind == TokenKind.string) {
+      header = tokens[current].text.copyBytes(0, tokens[current].text.byteLength);
+      foundFrom = false;
+    } else if (tokens[current].kind == TokenKind.fromKeyword) {
+      foundFrom = true;
+    }
+    current = current + 1;
+  }
+  if (header.isEmpty) throw fail(start, "an import declaration requires a module path after `from`");
+  current = current + 1;
+  return Declaration({
+    kind: DeclarationKind.importDeclaration,
+    name: header,
+    exported,
+    asynchronous: false,
+    offset: start.offset,
+    line: start.line,
+    column: start.column,
+  });
+}
+
+function parseNamedDeclaration(
+  in tokens: Array<Token>,
+  inout current: usize,
+  keyword: TokenKind,
+  kind: DeclarationKind,
+  exported: boolean,
+  asynchronous: boolean,
+  in description: String
+): Declaration throws ParserError {
+  const start = try expect(tokens, inout current, keyword, description);
+  const name = try expect(tokens, inout current, TokenKind.identifier, `a name after ${start.text}`);
+  try seekBody(tokens, inout current, `the body of ${name.text}`);
+  return Declaration({
+    kind,
+    name: name.text.copyBytes(0, name.text.byteLength),
+    exported,
+    asynchronous,
+    offset: start.offset,
+    line: start.line,
+    column: start.column,
+  });
+}
+
+export function parseProgram(in tokens: Array<Token>): Program throws ParserError {
+  let declarations = Array<Declaration>();
+  let current: usize = 0;
+  while (tokens[current].kind != TokenKind.eof) {
+    let exported = false;
+    if (tokens[current].kind == TokenKind.exportKeyword) {
+      exported = true;
+      current = current + 1;
+    }
+
+    let asynchronous = false;
+    if (tokens[current].kind == TokenKind.asyncKeyword) {
+      asynchronous = true;
+      current = current + 1;
+    }
+
+    const kind = tokens[current].kind;
+    if (kind == TokenKind.importKeyword) {
+      if (exported) throw fail(tokens[current], "imports cannot be exported");
+      if (asynchronous) throw fail(tokens[current], "imports cannot be async");
+      const declaration = try parseImport(tokens, inout current, false);
+      declarations.push(declaration);
+    } else if (kind == TokenKind.functionKeyword) {
+      const declaration = try parseNamedDeclaration(
+        tokens,
+        inout current,
+        TokenKind.functionKeyword,
+        DeclarationKind.functionDeclaration,
+        exported,
+        asynchronous,
+        "a function declaration"
+      );
+      declarations.push(declaration);
+    } else if (kind == TokenKind.structKeyword) {
+      if (asynchronous) throw fail(tokens[current], "a struct declaration cannot be async");
+      const declaration = try parseNamedDeclaration(
+        tokens,
+        inout current,
+        TokenKind.structKeyword,
+        DeclarationKind.structDeclaration,
+        exported,
+        false,
+        "a struct declaration"
+      );
+      declarations.push(declaration);
+    } else if (kind == TokenKind.classKeyword) {
+      if (asynchronous) throw fail(tokens[current], "a class declaration cannot be async");
+      const declaration = try parseNamedDeclaration(
+        tokens,
+        inout current,
+        TokenKind.classKeyword,
+        DeclarationKind.classDeclaration,
+        exported,
+        false,
+        "a class declaration"
+      );
+      declarations.push(declaration);
+    } else if (kind == TokenKind.traitKeyword) {
+      if (asynchronous) throw fail(tokens[current], "a trait declaration cannot be async");
+      const declaration = try parseNamedDeclaration(
+        tokens,
+        inout current,
+        TokenKind.traitKeyword,
+        DeclarationKind.traitDeclaration,
+        exported,
+        false,
+        "a trait declaration"
+      );
+      declarations.push(declaration);
+    } else if (kind == TokenKind.enumKeyword) {
+      if (asynchronous) throw fail(tokens[current], "an enum declaration cannot be async");
+      const declaration = try parseNamedDeclaration(
+        tokens,
+        inout current,
+        TokenKind.enumKeyword,
+        DeclarationKind.enumDeclaration,
+        exported,
+        false,
+        "an enum declaration"
+      );
+      declarations.push(declaration);
+    } else {
+      throw fail(tokens[current], "expected an import, function, struct, class, trait, or enum declaration");
+    }
+  }
+  return Program({ declarations });
+}
+
+export function declarationKindName(kind: DeclarationKind): String {
+  return match (kind) {
+    importDeclaration => "import";
+    functionDeclaration => "function";
+    structDeclaration => "struct";
+    classDeclaration => "class";
+    traitDeclaration => "trait";
+    enumDeclaration => "enum";
+  };
+}

@@ -43,6 +43,24 @@ bun run z self-host-lex examples/applications/source-inspector/lexer.z
 ```
 
 That command compiles the bridge with stage 0, runs it natively, and compares
-its complete token sequence and source locations with the bootstrap lexer. This
-is still an incremental frontend: Unicode identifiers, block comments, direct
-in-process compiler integration, and a Z parser remain future slices.
+its complete token sequence and source locations with the bootstrap lexer.
+
+[`parser.z`](parser.z) is the first parser foundation. It consumes those owned
+tokens with a linear cursor and builds a declaration skeleton containing source
+locations, declaration kinds, names, and export/async state. Balanced declaration
+bodies are traversed through borrowed token access; only names retained in the
+tree become owned snapshots. Run exact stage-0 parity across one or more source
+files with:
+
+```sh
+bun run z self-host-parse examples/applications/source-inspector/lexer.z \
+  examples/applications/source-inspector/parser.z
+```
+
+This parser slice recognizes imports, functions, structs, classes, traits, and
+enums, but intentionally does not construct members, signatures, statements, or
+expressions yet. Unicode identifiers, block comments, direct in-process compiler
+integration, and the complete syntax tree remain future slices. Build time and
+subprocess startup still dominate these bootstrap commands, so native-vs-stage-0
+parser performance should be compared only after the frontend has an in-process
+driver boundary.

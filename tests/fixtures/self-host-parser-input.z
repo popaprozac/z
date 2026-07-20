@@ -1,0 +1,36 @@
+import fs from "std/fs";
+import { TextBuffer as Buffer } from "std/text";
+
+export trait Measured {
+  function measure(): i32;
+}
+
+export struct Reading implements Measured {
+  value: i32;
+
+  function measure(): i32 {
+    return this.value;
+  }
+}
+
+export class Store {
+  readings: Array<Reading>;
+
+  function append(inout this, reading: Reading): void {
+    this.readings.push(reading);
+  }
+}
+
+export enum LoadState {
+  ready Reading,
+  empty,
+}
+
+export async function load(id: i32): Reading {
+  return Reading({ value: id });
+}
+
+function main(): i32 {
+  const reading = Reading({ value: 42 });
+  return reading.measure();
+}
