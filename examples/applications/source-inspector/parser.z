@@ -33,6 +33,11 @@ export enum ReceiverMode {
   move,
 }
 
+export enum Visibility {
+  publicVisibility,
+  privateVisibility,
+}
+
 export struct TypeReference {
   name: String;
   offset: usize;
@@ -60,6 +65,8 @@ export struct Parameter {
 export struct FunctionDeclaration {
   name: String;
   asynchronous: boolean;
+  staticMethod: boolean;
+  visibility: Visibility;
   typeParameters: Array<TypeParameter>;
   receiverMode: ReceiverMode;
   parameters: Array<Parameter>;
@@ -70,9 +77,74 @@ export struct FunctionDeclaration {
   column: usize;
 }
 
+export struct FieldDeclaration {
+  name: String;
+  type: TypeReference;
+  visibility: Visibility;
+  readonlyField: boolean;
+  offset: usize;
+  line: usize;
+  column: usize;
+}
+
+export struct ConstructorDeclaration {
+  parameters: Array<Parameter>;
+  errorType: Option<TypeReference>;
+  offset: usize;
+  line: usize;
+  column: usize;
+}
+
+export struct DeinitDeclaration {
+  offset: usize;
+  line: usize;
+  column: usize;
+}
+
+export struct AggregateDeclaration {
+  kind: DeclarationKind;
+  name: String;
+  typeParameters: Array<TypeParameter>;
+  implementedTraits: Array<TypeReference>;
+  fields: Array<FieldDeclaration>;
+  constructorDeclaration: Option<ConstructorDeclaration>;
+  methods: Array<FunctionDeclaration>;
+  deinitializer: Option<DeinitDeclaration>;
+  offset: usize;
+  line: usize;
+  column: usize;
+}
+
+export struct TraitDeclaration {
+  name: String;
+  methods: Array<FunctionDeclaration>;
+  offset: usize;
+  line: usize;
+  column: usize;
+}
+
+export struct EnumVariant {
+  name: String;
+  payload: Option<TypeReference>;
+  offset: usize;
+  line: usize;
+  column: usize;
+}
+
+export struct EnumDeclaration {
+  name: String;
+  variants: Array<EnumVariant>;
+  offset: usize;
+  line: usize;
+  column: usize;
+}
+
 export struct Program {
   declarations: Array<Declaration>;
   functions: Array<FunctionDeclaration>;
+  aggregates: Array<AggregateDeclaration>;
+  traits: Array<TraitDeclaration>;
+  enums: Array<EnumDeclaration>;
 }
 
 export struct ParserError {
@@ -396,7 +468,10 @@ function parseImport(
 function parseFunctionDeclaration(
   in tokens: Array<Token>,
   inout current: usize,
-  asynchronous: boolean
+  asynchronous: boolean,
+  isStatic: boolean,
+  visibility: Visibility,
+  signatureOnly: boolean
 ): FunctionDeclaration throws ParserError {
   let pendingGreater: usize = 0;
   const start = try expect(tokens, inout current, TokenKind.functionKeyword, "a function declaration");
@@ -427,10 +502,16 @@ function parseFunctionDeclaration(
     const error = try parseType(tokens, inout current, inout pendingGreater);
     errorType = Option.some(error);
   }
-  try seekBody(tokens, inout current, `the body of ${name.text}`);
+  if (signatureOnly) {
+    try expectKind(tokens, inout current, TokenKind.semicolon, "`;` after a function signature");
+  } else {
+    try seekBody(tokens, inout current, `the body of ${name.text}`);
+  }
   return FunctionDeclaration({
     name: name.text.copyBytes(0, name.text.byteLength),
     asynchronous,
+    staticMethod: isStatic,
+    visibility,
     typeParameters,
     receiverMode,
     parameters,
@@ -442,23 +523,182 @@ function parseFunctionDeclaration(
   });
 }
 
-function parseNamedDeclaration(
+function parseConstructor(
+  in tokens: Array<Token>,
+  inout current: usize,
+  in ownerName: String
+): ConstructorDeclaration throws ParserError {
+  let pendingGreater: usize = 0;
+  const start = try expect(tokens, inout current, TokenKind.constructorKeyword, "a constructor declaration");
+  try expectKind(tokens, inout current, TokenKind.leftParen, "`(` after `constructor`");
+  const parameters = try parseParameters(tokens, inout current, inout pendingGreater);
+  try expectKind(tokens, inout current, TokenKind.rightParen, "`)` after constructor parameters");
+  let errorType = Option<TypeReference>.none;
+  if (takeIf(tokens, inout current, TokenKind.throwsKeyword)) {
+    const error = try parseType(tokens, inout current, inout pendingGreater);
+    errorType = Option.some(error);
+  }
+  try seekBody(tokens, inout current, `the constructor body of ${ownerName}`);
+  return ConstructorDeclaration({
+    parameters,
+    errorType,
+    offset: start.offset,
+    line: start.line,
+    column: start.column,
+  });
+}
+
+function parseAggregateDeclaration(
   in tokens: Array<Token>,
   inout current: usize,
   keyword: TokenKind,
   kind: DeclarationKind,
-  exported: boolean,
-  asynchronous: boolean,
   in description: String
-): Declaration throws ParserError {
+): AggregateDeclaration throws ParserError {
+  let pendingGreater: usize = 0;
   const start = try expect(tokens, inout current, keyword, description);
   const name = try expect(tokens, inout current, TokenKind.identifier, `a name after ${start.text}`);
-  try seekBody(tokens, inout current, `the body of ${name.text}`);
-  return Declaration({
+  const typeParameters = try parseTypeParameters(tokens, inout current, inout pendingGreater);
+  let implementedTraits = Array<TypeReference>();
+  if (takeIf(tokens, inout current, TokenKind.implementsKeyword)) {
+    while (true) {
+      const implemented = try parseType(tokens, inout current, inout pendingGreater);
+      implementedTraits.push(implemented);
+      if (!takeIf(tokens, inout current, TokenKind.comma)) break;
+    }
+  }
+  try expectKind(tokens, inout current, TokenKind.leftBrace, `the body of ${name.text}`);
+
+  let fields = Array<FieldDeclaration>();
+  let methods = Array<FunctionDeclaration>();
+  let initializer = Option<ConstructorDeclaration>.none;
+  let deinitializer = Option<DeinitDeclaration>.none;
+  let hasConstructor = false;
+  let hasDeinitializer = false;
+  while (tokens[current].kind != TokenKind.rightBrace && tokens[current].kind != TokenKind.eof) {
+    if (tokens[current].kind == TokenKind.constructorKeyword) {
+      if (hasConstructor) throw fail(tokens[current], `${name.text} cannot declare more than one constructor`);
+      const parsed = try parseConstructor(tokens, inout current, name.text);
+      initializer = Option.some(parsed);
+      hasConstructor = true;
+      continue;
+    }
+    if (tokens[current].kind == TokenKind.deinitKeyword) {
+      if (hasDeinitializer) throw fail(tokens[current], `${name.text} cannot declare more than one deinit block`);
+      const cleanupToken = try expect(tokens, inout current, TokenKind.deinitKeyword, "a deinit declaration");
+      try skipDelimited(tokens, inout current, TokenKind.leftBrace, TokenKind.rightBrace, `the deinit body of ${name.text}`);
+      deinitializer = Option.some(DeinitDeclaration({
+        offset: cleanupToken.offset,
+        line: cleanupToken.line,
+        column: cleanupToken.column,
+      }));
+      hasDeinitializer = true;
+      continue;
+    }
+
+    let visibility = Visibility.publicVisibility;
+    if (takeIf(tokens, inout current, TokenKind.publicKeyword)) visibility = Visibility.publicVisibility;
+    else if (takeIf(tokens, inout current, TokenKind.privateKeyword)) visibility = Visibility.privateVisibility;
+    const isReadonly = takeIf(tokens, inout current, TokenKind.readonlyKeyword);
+    const isStatic = takeIf(tokens, inout current, TokenKind.staticKeyword);
+    const asynchronous = takeIf(tokens, inout current, TokenKind.asyncKeyword);
+    if (tokens[current].kind == TokenKind.functionKeyword) {
+      if (isReadonly) throw fail(tokens[current], "`readonly` applies to stored fields, not methods");
+      const method = try parseFunctionDeclaration(tokens, inout current, asynchronous, isStatic, visibility, false);
+      methods.push(method);
+      continue;
+    }
+    if (asynchronous) throw fail(tokens[current], "`async` must precede a function declaration");
+    if (isStatic) throw fail(tokens[current], "static fields are not implemented");
+    const field = try expect(tokens, inout current, TokenKind.identifier, "a field or method declaration");
+    try expectKind(tokens, inout current, TokenKind.colon, "`:` after a field name");
+    const type = try parseType(tokens, inout current, inout pendingGreater);
+    try expectKind(tokens, inout current, TokenKind.semicolon, "`;` after a field declaration");
+    fields.push(FieldDeclaration({
+      name: field.text.copyBytes(0, field.text.byteLength),
+      type,
+      visibility,
+      readonlyField: isReadonly,
+      offset: field.offset,
+      line: field.line,
+      column: field.column,
+    }));
+  }
+  try expectKind(tokens, inout current, TokenKind.rightBrace, "`}` after an aggregate declaration");
+  return AggregateDeclaration({
     kind,
     name: name.text.copyBytes(0, name.text.byteLength),
-    exported,
-    asynchronous,
+    typeParameters,
+    implementedTraits,
+    fields,
+    constructorDeclaration: initializer,
+    methods,
+    deinitializer,
+    offset: start.offset,
+    line: start.line,
+    column: start.column,
+  });
+}
+
+function parseTraitDeclaration(
+  in tokens: Array<Token>,
+  inout current: usize
+): TraitDeclaration throws ParserError {
+  const start = try expect(tokens, inout current, TokenKind.traitKeyword, "a trait declaration");
+  const name = try expect(tokens, inout current, TokenKind.identifier, "a trait name");
+  try expectKind(tokens, inout current, TokenKind.leftBrace, `the body of ${name.text}`);
+  let methods = Array<FunctionDeclaration>();
+  while (tokens[current].kind != TokenKind.rightBrace && tokens[current].kind != TokenKind.eof) {
+    const asynchronous = takeIf(tokens, inout current, TokenKind.asyncKeyword);
+    const method = try parseFunctionDeclaration(
+      tokens,
+      inout current,
+      asynchronous,
+      false,
+      Visibility.publicVisibility,
+      true
+    );
+    methods.push(method);
+  }
+  try expectKind(tokens, inout current, TokenKind.rightBrace, "`}` after a trait declaration");
+  return TraitDeclaration({
+    name: name.text.copyBytes(0, name.text.byteLength),
+    methods,
+    offset: start.offset,
+    line: start.line,
+    column: start.column,
+  });
+}
+
+function parseEnumDeclaration(
+  in tokens: Array<Token>,
+  inout current: usize
+): EnumDeclaration throws ParserError {
+  let pendingGreater: usize = 0;
+  const start = try expect(tokens, inout current, TokenKind.enumKeyword, "an enum declaration");
+  const name = try expect(tokens, inout current, TokenKind.identifier, "an enum name");
+  try expectKind(tokens, inout current, TokenKind.leftBrace, `the body of ${name.text}`);
+  let variants = Array<EnumVariant>();
+  while (tokens[current].kind != TokenKind.rightBrace && tokens[current].kind != TokenKind.eof) {
+    const variant = try expect(tokens, inout current, TokenKind.identifier, "an enum variant name");
+    let payload = Option<TypeReference>.none;
+    if (tokens[current].kind == TokenKind.identifier) {
+      const parsed = try parseType(tokens, inout current, inout pendingGreater);
+      payload = Option.some(parsed);
+    }
+    variants.push(EnumVariant({
+      name: variant.text.copyBytes(0, variant.text.byteLength),
+      payload,
+      offset: variant.offset,
+      line: variant.line,
+      column: variant.column,
+    }));
+    if (!takeIf(tokens, inout current, TokenKind.comma)) break;
+  }
+  try expectKind(tokens, inout current, TokenKind.rightBrace, "`}` after an enum declaration");
+  return EnumDeclaration({
+    name: name.text.copyBytes(0, name.text.byteLength),
+    variants,
     offset: start.offset,
     line: start.line,
     column: start.column,
@@ -468,6 +708,9 @@ function parseNamedDeclaration(
 export function parseProgram(in tokens: Array<Token>): Program throws ParserError {
   let declarations = Array<Declaration>();
   let functions = Array<FunctionDeclaration>();
+  let aggregates = Array<AggregateDeclaration>();
+  let traits = Array<TraitDeclaration>();
+  let enums = Array<EnumDeclaration>();
   let current: usize = 0;
   while (tokens[current].kind != TokenKind.eof) {
     let exported = false;
@@ -489,7 +732,14 @@ export function parseProgram(in tokens: Array<Token>): Program throws ParserErro
       const declaration = try parseImport(tokens, inout current, false);
       declarations.push(declaration);
     } else if (kind == TokenKind.functionKeyword) {
-      const functionDeclaration = try parseFunctionDeclaration(tokens, inout current, asynchronous);
+      const functionDeclaration = try parseFunctionDeclaration(
+        tokens,
+        inout current,
+        asynchronous,
+        false,
+        Visibility.publicVisibility,
+        false
+      );
       const declaration = Declaration({
         kind: DeclarationKind.functionDeclaration,
         name: functionDeclaration.name.copyBytes(0, functionDeclaration.name.byteLength),
@@ -503,57 +753,77 @@ export function parseProgram(in tokens: Array<Token>): Program throws ParserErro
       functions.push(functionDeclaration);
     } else if (kind == TokenKind.structKeyword) {
       if (asynchronous) throw fail(tokens[current], "a struct declaration cannot be async");
-      const declaration = try parseNamedDeclaration(
+      const aggregate = try parseAggregateDeclaration(
         tokens,
         inout current,
         TokenKind.structKeyword,
         DeclarationKind.structDeclaration,
-        exported,
-        false,
         "a struct declaration"
       );
+      const declaration = Declaration({
+        kind: DeclarationKind.structDeclaration,
+        name: aggregate.name.copyBytes(0, aggregate.name.byteLength),
+        exported,
+        asynchronous: false,
+        offset: aggregate.offset,
+        line: aggregate.line,
+        column: aggregate.column,
+      });
       declarations.push(declaration);
+      aggregates.push(aggregate);
     } else if (kind == TokenKind.classKeyword) {
       if (asynchronous) throw fail(tokens[current], "a class declaration cannot be async");
-      const declaration = try parseNamedDeclaration(
+      const aggregate = try parseAggregateDeclaration(
         tokens,
         inout current,
         TokenKind.classKeyword,
         DeclarationKind.classDeclaration,
-        exported,
-        false,
         "a class declaration"
       );
+      const declaration = Declaration({
+        kind: DeclarationKind.classDeclaration,
+        name: aggregate.name.copyBytes(0, aggregate.name.byteLength),
+        exported,
+        asynchronous: false,
+        offset: aggregate.offset,
+        line: aggregate.line,
+        column: aggregate.column,
+      });
       declarations.push(declaration);
+      aggregates.push(aggregate);
     } else if (kind == TokenKind.traitKeyword) {
       if (asynchronous) throw fail(tokens[current], "a trait declaration cannot be async");
-      const declaration = try parseNamedDeclaration(
-        tokens,
-        inout current,
-        TokenKind.traitKeyword,
-        DeclarationKind.traitDeclaration,
+      const traitDeclaration = try parseTraitDeclaration(tokens, inout current);
+      const declaration = Declaration({
+        kind: DeclarationKind.traitDeclaration,
+        name: traitDeclaration.name.copyBytes(0, traitDeclaration.name.byteLength),
         exported,
-        false,
-        "a trait declaration"
-      );
+        asynchronous: false,
+        offset: traitDeclaration.offset,
+        line: traitDeclaration.line,
+        column: traitDeclaration.column,
+      });
       declarations.push(declaration);
+      traits.push(traitDeclaration);
     } else if (kind == TokenKind.enumKeyword) {
       if (asynchronous) throw fail(tokens[current], "an enum declaration cannot be async");
-      const declaration = try parseNamedDeclaration(
-        tokens,
-        inout current,
-        TokenKind.enumKeyword,
-        DeclarationKind.enumDeclaration,
+      const enumDeclaration = try parseEnumDeclaration(tokens, inout current);
+      const declaration = Declaration({
+        kind: DeclarationKind.enumDeclaration,
+        name: enumDeclaration.name.copyBytes(0, enumDeclaration.name.byteLength),
         exported,
-        false,
-        "an enum declaration"
-      );
+        asynchronous: false,
+        offset: enumDeclaration.offset,
+        line: enumDeclaration.line,
+        column: enumDeclaration.column,
+      });
       declarations.push(declaration);
+      enums.push(enumDeclaration);
     } else {
       throw fail(tokens[current], "expected an import, function, struct, class, trait, or enum declaration");
     }
   }
-  return Program({ declarations, functions });
+  return Program({ declarations, functions, aggregates, traits, enums });
 }
 
 export function functionSignatureText(in declaration: FunctionDeclaration): String {
@@ -606,6 +876,137 @@ export function functionSignatureText(in declaration: FunctionDeclaration): Stri
     }
     none => {}
   }
+  return output.finish();
+}
+
+function visibilityName(visibility: Visibility): String {
+  return match (visibility) {
+    publicVisibility => "public ";
+    privateVisibility => "private ";
+  };
+}
+
+export function aggregateShapeText(in declaration: AggregateDeclaration): String {
+  let output = TextBuffer();
+  if (declaration.kind == DeclarationKind.structDeclaration) output.append("struct ");
+  else output.append("class ");
+  output.append(declaration.name);
+  if (declaration.typeParameters.length > 0) {
+    output.append("<");
+    let firstTypeParameter = true;
+    for (const typeParameter of declaration.typeParameters) {
+      if (!firstTypeParameter) output.append(", ");
+      firstTypeParameter = false;
+      output.append(typeParameter.name);
+      if (typeParameter.constraints.length > 0) {
+        output.append(": ");
+        let firstConstraint = true;
+        for (const constraint of typeParameter.constraints) {
+          if (!firstConstraint) output.append(" & ");
+          firstConstraint = false;
+          output.append(constraint.name);
+        }
+      }
+    }
+    output.append(">");
+  }
+  if (declaration.implementedTraits.length > 0) {
+    output.append(" implements ");
+    let firstImplemented = true;
+    for (const implemented of declaration.implementedTraits) {
+      if (!firstImplemented) output.append(", ");
+      firstImplemented = false;
+      output.append(implemented.name);
+    }
+  }
+  output.append(" {");
+  for (const field of declaration.fields) {
+    output.append(" ");
+    output.append(visibilityName(field.visibility));
+    if (field.readonlyField) output.append("readonly ");
+    output.append(field.name);
+    output.append(": ");
+    output.append(field.type.name);
+    output.append(";");
+  }
+  match (in declaration.constructorDeclaration) {
+    some(initializer) => {
+      output.append(" constructor(");
+      let firstParameter = true;
+      for (const parameter of initializer.parameters) {
+        if (!firstParameter) output.append(", ");
+        firstParameter = false;
+        output.append(parameterModeName(parameter.mode));
+        output.append(parameter.name);
+        output.append(": ");
+        output.append(parameter.type.name);
+      }
+      output.append(")");
+      match (in initializer.errorType) {
+        some(error) => {
+          output.append(" throws ");
+          output.append(error.name);
+        }
+        none => {}
+      }
+      output.append(";");
+    }
+    none => {}
+  }
+  for (const method of declaration.methods) {
+    output.append(" ");
+    output.append(visibilityName(method.visibility));
+    if (method.staticMethod) output.append("static ");
+    const signature = functionSignatureText(method);
+    output.append(signature);
+    output.append(";");
+  }
+  match (in declaration.deinitializer) {
+    some(deinitializer) => {
+      output.append(" deinit@");
+      const offset = `${deinitializer.offset}`;
+      output.append(offset);
+      output.append(";");
+    }
+    none => {}
+  }
+  output.append(" }");
+  return output.finish();
+}
+
+export function traitShapeText(in declaration: TraitDeclaration): String {
+  let output = TextBuffer();
+  output.append("trait ");
+  output.append(declaration.name);
+  output.append(" {");
+  for (const method of declaration.methods) {
+    output.append(" ");
+    const signature = functionSignatureText(method);
+    output.append(signature);
+    output.append(";");
+  }
+  output.append(" }");
+  return output.finish();
+}
+
+export function enumShapeText(in declaration: EnumDeclaration): String {
+  let output = TextBuffer();
+  output.append("enum ");
+  output.append(declaration.name);
+  output.append(" {");
+  for (const variant of declaration.variants) {
+    output.append(" ");
+    output.append(variant.name);
+    match (in variant.payload) {
+      some(payload) => {
+        output.append(" ");
+        output.append(payload.name);
+      }
+      none => {}
+    }
+    output.append(";");
+  }
+  output.append(" }");
   return output.finish();
 }
 

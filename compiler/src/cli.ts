@@ -18,6 +18,7 @@ import {
   decodeStage1TokenStream,
   type Stage1Declaration,
   type Stage1FunctionSignature,
+  type Stage1TypeShape,
 } from "./self-hosting.ts";
 import { parseViewType } from "./view-types.ts";
 
@@ -90,7 +91,17 @@ function verifyStage1Parser(inputPaths: readonly string[]): void {
         `stage-1 parser mismatch at function signature ${index}: stage 0 produced ${describeFunctionSignature(stage0Signature)}, stage 1 produced ${describeFunctionSignature(stage1Signature)}`,
       );
     }
-    console.log(`${inputPath}: stage-1 parser matches ${stage1.length} declarations and ${stage1Program.functionSignatures.length} function signatures`);
+    const stage0Shapes = stage0TypeShapes(stage0Program, inputPath);
+    const shapeCount = Math.max(stage0Shapes.length, stage1Program.typeShapes.length);
+    for (let index = 0; index < shapeCount; index += 1) {
+      const stage0Shape = stage0Shapes[index];
+      const stage1Shape = stage1Program.typeShapes[index];
+      if (sameTypeShape(stage0Shape, stage1Shape)) continue;
+      throw new Error(
+        `stage-1 parser mismatch at type shape ${index}: stage 0 produced ${describeTypeShape(stage0Shape)}, stage 1 produced ${describeTypeShape(stage1Shape)}`,
+      );
+    }
+    console.log(`${inputPath}: stage-1 parser matches ${stage1.length} declarations, ${stage1Program.functionSignatures.length} function signatures, and ${stage1Program.typeShapes.length} type shapes`);
   }
 }
 
@@ -136,14 +147,14 @@ function stage0Declarations(program: Program, fileName: string): readonly Stage1
 }
 
 function stage0FunctionSignature(declaration: FunctionDeclaration, fileName: string): Stage1FunctionSignature {
-  const generic = declaration.typeParameters?.length
-    ? `<${declaration.typeParameters.map((parameter) => {
-      const constraint = declaration.typeParameterConstraints?.find((candidate) => candidate.parameter === parameter);
-      return constraint?.traits.length
-        ? `${parameter}: ${constraint.traits.map((trait) => canonicalTypeName(trait.name)).join(" & ")}`
-        : parameter;
-    }).join(", ")}>`
-    : "";
+  return {
+    text: canonicalFunctionText(declaration),
+    location: { ...declaration.location, fileName },
+  };
+}
+
+function canonicalFunctionText(declaration: FunctionDeclaration): string {
+  const generic = canonicalTypeParameters(declaration.typeParameters, declaration.typeParameterConstraints);
   const parameters = declaration.parameters.map((parameter) => {
     const capability = parameter.mode === "value" ? "" : `${parameter.mode} `;
     return `${capability}${parameter.name}: ${canonicalTypeName(parameter.type.name)}`;
@@ -151,10 +162,79 @@ function stage0FunctionSignature(declaration: FunctionDeclaration, fileName: str
   if (declaration.receiverMode) parameters.unshift(`${declaration.receiverMode} this`);
   const error = declaration.errorType ? ` throws ${canonicalTypeName(declaration.errorType.name)}` : "";
   const asynchronous = declaration.async ? "async " : "";
-  return {
-    text: `${asynchronous}function ${declaration.name}${generic}(${parameters.join(", ")}): ${canonicalTypeName(declaration.returnType.name)}${error}`,
-    location: { ...declaration.location, fileName },
-  };
+  return `${asynchronous}function ${declaration.name}${generic}(${parameters.join(", ")}): ${canonicalTypeName(declaration.returnType.name)}${error}`;
+}
+
+function canonicalTypeParameters(
+  parameters: readonly string[] | undefined,
+  constraints: FunctionDeclaration["typeParameterConstraints"],
+): string {
+  if (!parameters?.length) return "";
+  return `<${parameters.map((parameter) => {
+    const constraint = constraints?.find((candidate) => candidate.parameter === parameter);
+    return constraint?.traits.length
+      ? `${parameter}: ${constraint.traits.map((trait) => canonicalTypeName(trait.name)).join(" & ")}`
+      : parameter;
+  }).join(", ")}>`;
+}
+
+function stage0TypeShapes(program: Program, fileName: string): readonly Stage1TypeShape[] {
+  return [
+    ...program.structs.map((declaration): Stage1TypeShape => {
+      const implemented = declaration.implements.length
+        ? ` implements ${declaration.implements.map((trait) => canonicalTypeName(trait.name)).join(", ")}`
+        : "";
+      const members = [
+        ...declaration.fields.map((field) => {
+          const visibility = `${field.visibility} `;
+          const readonly = field.readonly ? "readonly " : "";
+          return `${visibility}${readonly}${field.name}: ${canonicalTypeName(field.type.name)};`;
+        }),
+        ...(declaration.constructor ? [
+          `constructor(${canonicalParameters(declaration.constructor.parameters)})${
+            declaration.constructor.errorType ? ` throws ${canonicalTypeName(declaration.constructor.errorType.name)}` : ""
+          };`,
+        ] : []),
+        ...declaration.methods.map((method) => {
+          const visibility = `${method.visibility ?? "public"} `;
+          const staticMethod = method.static ? "static " : "";
+          return `${visibility}${staticMethod}${canonicalFunctionText(method)};`;
+        }),
+        ...(declaration.deinitializer ? [`deinit@${declaration.deinitializer.location.offset};`] : []),
+      ];
+      return {
+        kind: declaration.kind,
+        text: `${declaration.kind} ${declaration.name}${canonicalTypeParameters(
+          declaration.typeParameters,
+          declaration.typeParameterConstraints,
+        )}${implemented} {${members.length ? ` ${members.join(" ")}` : ""} }`,
+        location: { ...declaration.location, fileName },
+      };
+    }),
+    ...program.traits.map((declaration): Stage1TypeShape => ({
+      kind: "trait",
+      text: `trait ${declaration.name} {${declaration.methods.length
+        ? ` ${declaration.methods.map((method) => `${canonicalFunctionText(method)};`).join(" ")}`
+        : ""} }`,
+      location: { ...declaration.location, fileName },
+    })),
+    ...program.enums.map((declaration): Stage1TypeShape => ({
+      kind: "enum",
+      text: `enum ${declaration.name} {${declaration.variants.length
+        ? ` ${declaration.variants.map((variant) => (
+          `${variant.name}${variant.payload ? ` ${canonicalTypeName(variant.payload.name)}` : ""};`
+        )).join(" ")}`
+        : ""} }`,
+      location: { ...declaration.location, fileName },
+    })),
+  ].sort((left, right) => left.location.offset - right.location.offset);
+}
+
+function canonicalParameters(parameters: FunctionDeclaration["parameters"]): string {
+  return parameters.map((parameter) => {
+    const capability = parameter.mode === "value" ? "" : `${parameter.mode} `;
+    return `${capability}${parameter.name}: ${canonicalTypeName(parameter.type.name)}`;
+  }).join(", ");
 }
 
 function canonicalTypeName(name: string): string {
@@ -192,6 +272,21 @@ function sameFunctionSignature(left: Stage1FunctionSignature | undefined, right:
 function describeFunctionSignature(signature: Stage1FunctionSignature | undefined): string {
   if (!signature) return "no function signature";
   return `${JSON.stringify(signature.text)} at ${signature.location.line}:${signature.location.column}`;
+}
+
+function sameTypeShape(left: Stage1TypeShape | undefined, right: Stage1TypeShape | undefined): boolean {
+  return left !== undefined
+    && right !== undefined
+    && left.kind === right.kind
+    && left.text === right.text
+    && left.location.offset === right.location.offset
+    && left.location.line === right.location.line
+    && left.location.column === right.location.column;
+}
+
+function describeTypeShape(shape: Stage1TypeShape | undefined): string {
+  if (!shape) return "no type shape";
+  return `${shape.kind} ${JSON.stringify(shape.text)} at ${shape.location.line}:${shape.location.column}`;
 }
 
 function sameDeclaration(left: Stage1Declaration | undefined, right: Stage1Declaration | undefined): boolean {

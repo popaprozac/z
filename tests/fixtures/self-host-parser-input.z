@@ -21,12 +21,28 @@ export struct Reading implements Measured {
   }
 }
 
-export class Store {
-  readings: Array<Reading>;
+export class Store<T: Measured & Named> implements Measured, Named {
+  readings: Array<T>;
+  private readonly label: String;
 
-  function append(inout this, reading: Reading): void {
+  constructor(in readings: Array<T>, label: String) throws LoadError {
+    this.readings = readings;
+    this.label = label;
+  }
+
+  public static function create(): Store<T> {
+    return new Store<T>({ readings: Array<T>(), label: "" });
+  }
+
+  function append(inout this, reading: T): void {
     this.readings.push(reading);
   }
+
+  private async function refresh(inout this, in replacement: T): void throws LoadError {
+    this.readings.push(replacement);
+  }
+
+  deinit {}
 }
 
 export enum LoadState {

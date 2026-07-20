@@ -25,9 +25,23 @@ export type Stage1FunctionSignature = {
   };
 };
 
+export type Stage1TypeShapeKind = "struct" | "class" | "trait" | "enum";
+
+export type Stage1TypeShape = {
+  readonly kind: Stage1TypeShapeKind;
+  readonly text: string;
+  readonly location: {
+    readonly offset: number;
+    readonly line: number;
+    readonly column: number;
+    readonly fileName: string;
+  };
+};
+
 export type Stage1Program = {
   readonly declarations: readonly Stage1Declaration[];
   readonly functionSignatures: readonly Stage1FunctionSignature[];
+  readonly typeShapes: readonly Stage1TypeShape[];
 };
 
 // Stage 1 currently crosses a subprocess boundary. Keep that bootstrap protocol
@@ -58,6 +72,7 @@ export function decodeStage1DeclarationStream(output: string, fileName: string):
 export function decodeStage1ProgramStream(output: string, fileName: string): Stage1Program {
   const declarations: Stage1Declaration[] = [];
   const functionSignatures: Stage1FunctionSignature[] = [];
+  const typeShapes: Stage1TypeShape[] = [];
   for (const line of output.split("\n").filter((candidate) => candidate.length > 0)) {
     const fields = line.split("\t");
     if (fields[0] === "signature") {
@@ -72,6 +87,25 @@ export function decodeStage1ProgramStream(output: string, fileName: string): Sta
           offset: parseProtocolHexInteger(offsetText, "function signature offset"),
           line: parseProtocolHexInteger(lineText, "function signature line"),
           column: parseProtocolHexInteger(columnText, "function signature column"),
+          fileName,
+        },
+      });
+      continue;
+    }
+    if (fields[0] === "shape") {
+      if (fields.length !== 6) throw new Error(`malformed stage-1 type shape line: ${line}`);
+      const [, kind, offsetText, lineText, columnText, hexadecimalText] = fields;
+      if (!isStage1TypeShapeKind(kind)) throw new Error(`malformed stage-1 type shape kind: ${kind}`);
+      if (!/^(?:[0-9a-f]{2})*$/.test(hexadecimalText)) {
+        throw new Error(`malformed stage-1 type shape text: ${hexadecimalText}`);
+      }
+      typeShapes.push({
+        kind,
+        text: Buffer.from(hexadecimalText, "hex").toString("utf8"),
+        location: {
+          offset: parseProtocolHexInteger(offsetText, "type shape offset"),
+          line: parseProtocolHexInteger(lineText, "type shape line"),
+          column: parseProtocolHexInteger(columnText, "type shape column"),
           fileName,
         },
       });
@@ -102,7 +136,12 @@ export function decodeStage1ProgramStream(output: string, fileName: string): Sta
       },
     });
   }
-  return { declarations, functionSignatures };
+  typeShapes.sort((left, right) => left.location.offset - right.location.offset);
+  return { declarations, functionSignatures, typeShapes };
+}
+
+function isStage1TypeShapeKind(value: string): value is Stage1TypeShapeKind {
+  return value === "struct" || value === "class" || value === "trait" || value === "enum";
 }
 
 function isStage1DeclarationKind(value: string): value is Stage1DeclarationKind {

@@ -17,7 +17,7 @@ compile-only probes and `emit` to inspect generated native code.
 | Native application skeleton | [`z-notes`](../examples/applications/z-notes) | AppKit, ARC application state, nullable selection, direct SQLite header import, and explicit native library linkage |
 | Application walkthrough | [`document-workspace`](../examples/applications/document-workspace) | A native document model combining modules, errors, arrays, named enums, optional views, mutation, and deterministic cleanup |
 | Self-hosting groundwork | [`source-stager`](../examples/applications/source-stager) | File IO, owned argv, typed OS failures, and direct no-shell child launch |
-| Stage-1 Z frontend | [`source-inspector`](../examples/applications/source-inspector) | Checked UTF-8 tokens, self-tokenization, complete function signatures, and exact stage-0 lexer/parser parity |
+| Stage-1 Z frontend | [`source-inspector`](../examples/applications/source-inspector) | Checked UTF-8 tokens, complete declaration/type shapes, self-parsing, and exact stage-0 parity |
 
 ```sh
 bun run z run examples/language/basics/first.z

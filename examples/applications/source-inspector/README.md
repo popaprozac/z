@@ -50,21 +50,24 @@ tokens with a linear cursor and builds a declaration skeleton containing source
 locations, declaration kinds, names, and export/async state. Top-level function
 nodes additionally retain generic parameters and multi-trait constraints,
 receiver and parameter capabilities, nested type references, return types, and
-typed `throws`. Balanced declaration bodies are traversed through borrowed token
-access; only text retained in the tree becomes an owned snapshot. Run exact
-stage-0 parity across one or more source files with:
+typed `throws`. Struct and class nodes retain generic constraints, implemented
+traits, field visibility and mutability, constructors, static/async/receiver
+methods, and `deinit`; trait signatures and enum payload variants are also
+structural nodes. Function and lifecycle bodies are still traversed as balanced
+borrowed tokens, and only text retained in the tree becomes an owned snapshot.
+Run exact stage-0 parity across one or more source files with:
 
 ```sh
 bun run z self-host-parse examples/applications/source-inspector/lexer.z \
   examples/applications/source-inspector/parser.z
 ```
 
-The parity command checks canonical function signatures as well as declaration
-metadata. Its adversarial corpus covers nested generics, function types, fixed
-arrays, `view`, nullability, `async`, `throws`, and every parameter/receiver
-capability. Aggregate members, enum variants, statements, and expressions are
-not constructed yet. Unicode identifiers, block comments, direct in-process
-compiler integration, and the complete syntax tree remain future slices. Build
-time and subprocess startup still dominate these bootstrap commands, so
-native-vs-stage-0 parser performance should be compared only after the frontend
-has an in-process driver boundary.
+The parity command checks canonical function signatures and complete type shapes
+as well as declaration metadata. Its adversarial corpus covers nested generics,
+function types, fixed arrays, `view`, nullability, capabilities, aggregate
+modifiers, constructors, methods, lifecycle cleanup, traits, and enum payloads.
+Statements and expressions are not constructed yet. Unicode identifiers, block
+comments, direct in-process compiler integration, and the complete syntax tree
+remain future slices. Build time and subprocess startup still dominate these
+bootstrap commands, so native-vs-stage-0 parser performance should be compared
+only after the frontend has an in-process driver boundary.

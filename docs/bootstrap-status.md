@@ -228,9 +228,13 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    adversarial fixture plus the lexer and parser sources themselves. Complete
    top-level function signatures retain generics and constraints, receiver and
    parameter capabilities, nested canonical types, return types, and `throws`.
-   Traversal borrows tokens and copies only AST-retained text. Aggregate members,
-   enum variants, statements, expressions, Unicode identifiers, block comments,
-   and direct in-process driver integration remain.
+   Structs/classes now retain generic constraints, implemented traits, visible
+   and readonly fields, throwing constructors, static/async/receiver methods,
+   and `deinit`; trait methods and enum payload variants are structural too.
+   Canonical type-shape parity covers the complete declaration layer. Traversal
+   borrows tokens and copies only AST-retained text. Statements, expressions,
+   Unicode identifiers, block comments, and direct in-process driver integration
+   remain.
 5. **Threaded concurrency evidence — Copy, unique-owner, native-owner, readonly ARC, and owned-error slices implemented.**
    `thread.spawn` now proves one real cross-thread task frame with explicit
    move capture, hot start, structured join, private Copy snapshots, and moved

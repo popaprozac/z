@@ -1417,13 +1417,15 @@ ported independently rather than translated as one monolith.
    the same parser-facing token kinds, decoded text, and source locations as
    stage 0 across an adversarial parity corpus and tokenizes its own complete
    source. A linear declaration parser retains source-located top-level kinds,
-   names, export/async state, and complete function signatures—including generic
-   constraints, capabilities, nested types, returns, and typed errors—while
-   borrowing tokens during balanced-body traversal. The temporary buffered
+   names, export/async state, complete function signatures, aggregate fields and
+   lifecycle members, trait methods, and enum payload variants. Generic
+   constraints, capabilities, nested types, returns, typed errors, constructors,
+   static/async methods, and `deinit` all have canonical stage-0 parity while
+   bodies remain borrowed balanced-token traversals. The temporary buffered
    native protocols are exposed through `z self-host-lex` and
-   `z self-host-parse`; aggregate members, enum variants, statements,
-   expressions, direct in-process driver integration, and a broader parity
-   corpus precede replacing bootstrap frontend phases in ordinary commands.
+   `z self-host-parse`; statements, expressions, direct in-process driver
+   integration, and a broader parity corpus precede replacing bootstrap frontend
+   phases in ordinary commands.
    Performance comparisons begin at that in-process seam rather than conflating
    frontend work with native compilation and subprocess startup.
 3. **Stage 2:** Compile the Z compiler with stage 0, then use that result to

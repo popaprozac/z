@@ -5,7 +5,14 @@ import fs from "std/fs";
 import process from "std/process";
 import { TextBuffer } from "std/text";
 import { tokenize } from "./lexer.z";
-import { declarationKindName, functionSignatureText, parseProgram } from "./parser.z";
+import {
+  aggregateShapeText,
+  declarationKindName,
+  enumShapeText,
+  functionSignatureText,
+  parseProgram,
+  traitShapeText,
+} from "./parser.z";
 
 function hexDigit(value: u8): u8 {
   return value < 10 ? value + 48 : value + 87;
@@ -47,6 +54,28 @@ function appendHexText(inout output: TextBuffer, in text: String): void {
     output.appendAscii(hexDigit(byte & 15));
     offset = offset + 1;
   }
+}
+
+function appendShape(
+  inout output: TextBuffer,
+  in kind: String,
+  offset: usize,
+  line: usize,
+  column: usize,
+  in shape: String
+): void {
+  output.append("shape");
+  output.appendAscii(9);
+  output.append(kind);
+  output.appendAscii(9);
+  appendHexUsize(inout output, offset);
+  output.appendAscii(9);
+  appendHexUsize(inout output, line);
+  output.appendAscii(9);
+  appendHexUsize(inout output, column);
+  output.appendAscii(9);
+  appendHexText(inout output, shape);
+  output.appendAscii(10);
 }
 
 function streamProgram(in path: String): i32 throws String {
@@ -93,6 +122,26 @@ function streamProgram(in path: String): i32 throws String {
     output.appendAscii(9);
     appendHexText(inout output, signature);
     output.appendAscii(10);
+  }
+  for (const aggregate of program.aggregates) {
+    const shape = aggregateShapeText(aggregate);
+    const kind = declarationKindName(aggregate.kind);
+    appendShape(
+      inout output,
+      kind,
+      aggregate.offset,
+      aggregate.line,
+      aggregate.column,
+      shape
+    );
+  }
+  for (const traitDeclaration of program.traits) {
+    const shape = traitShapeText(traitDeclaration);
+    appendShape(inout output, "trait", traitDeclaration.offset, traitDeclaration.line, traitDeclaration.column, shape);
+  }
+  for (const enumDeclaration of program.enums) {
+    const shape = enumShapeText(enumDeclaration);
+    appendShape(inout output, "enum", enumDeclaration.offset, enumDeclaration.line, enumDeclaration.column, shape);
   }
   const stream = output.finish();
   console.write(stream);

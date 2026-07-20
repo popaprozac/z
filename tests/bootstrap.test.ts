@@ -4524,15 +4524,15 @@ test("tokenizes real Z source with checked UTF-8 operations and TextBuffer", () 
   );
 }, 10_000);
 
-test("parses top-level declarations and function signatures in native Z", () => {
+test("parses declarations, function signatures, and type shapes in native Z", () => {
   const fixture = resolve(projectRoot, "tests/fixtures/self-host-parser-input.z");
   const lexer = resolve(projectRoot, "examples/applications/source-inspector/lexer.z");
   const parser = resolve(projectRoot, "examples/applications/source-inspector/parser.z");
   const result = spawnSync(process.execPath, [cli, "self-host-parse", fixture, lexer, parser], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
-  assert.match(result.stdout, /self-host-parser-input\.z: stage-1 parser matches 12 declarations and 4 function signatures/);
-  assert.match(result.stdout, /lexer\.z: stage-1 parser matches 15 declarations/);
-  assert.match(result.stdout, /parser\.z: stage-1 parser matches \d+ declarations/);
+  assert.match(result.stdout, /self-host-parser-input\.z: stage-1 parser matches 12 declarations, 4 function signatures, and 6 type shapes/);
+  assert.match(result.stdout, /lexer\.z: stage-1 parser matches 15 declarations, 11 function signatures, and 3 type shapes/);
+  assert.match(result.stdout, /parser\.z: stage-1 parser matches \d+ declarations, \d+ function signatures, and \d+ type shapes/);
 
   const directory = mkdtempSync("/tmp/z-self-host-parser-");
   const invalidPath = resolve(directory, "invalid.z");
@@ -4548,6 +4548,10 @@ test("parses top-level declarations and function signatures in native Z", () => 
   assert.throws(
     () => decodeStage1ProgramStream("signature\t0000000000000000\t0000000000000001\t0000000000000001\tnot-hex\n", fixture),
     /malformed stage-1 function signature text/,
+  );
+  assert.throws(
+    () => decodeStage1ProgramStream("shape\tfunction\t0000000000000000\t0000000000000001\t0000000000000001\t6d61696e\n", fixture),
+    /malformed stage-1 type shape kind/,
   );
 }, 10_000);
 
