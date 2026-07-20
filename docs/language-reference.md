@@ -60,6 +60,21 @@ are public unless marked `private`. A user class constructor may establish
 invariants and may throw. `trait` is a nominal behavior contract; a struct or
 class opts in with `implements`. Traits do not imply inheritance or storage.
 
+A field marked `readonly` is initialized during construction and cannot be
+assigned or mutated afterward:
+
+```z
+class Configuration {
+  readonly name: String;
+  readonly retries: i32;
+}
+```
+
+When every reachable field is similarly immutable and safe to destroy on any
+thread, Z infers the class as shareable and uses atomic ARC for its references.
+Mutable collections, mutable receiver methods, custom `deinit`, and native
+identity without a threading contract prevent that inference.
+
 ## Ownership capabilities
 
 Capabilities are written before the binding because they describe how the
@@ -423,13 +438,13 @@ const answer = await calculation;
 This is distinct from keyword `spawn`: `spawn operation()` schedules an async
 child on the current executor, while `thread.spawn(operation)` starts exactly
 one OS thread. The initial transfer classifier copies recursively cleanup-free
-values and moves uniquely owned `Array` storage or supported aggregates that
-contain it. A capturing closure must spell `move`. Copy captures remain valid in
-the parent because the thread owns a separate snapshot; moved unique owners do
-not. `Array`, owned `String`, mutable `TextBuffer`, and supported aggregates
-containing them use this consuming path and may return ownership through
-`await`. Borrows, views, ARC identity, native references, `Arena`, and custom
-`deinit` cannot cross this boundary yet. Results follow the same rules.
+values, moves unique owners, and retains deeply readonly ARC class identity
+atomically. A capturing closure must spell `move`. Copy and shareable ARC
+captures remain valid in the parent; moved unique owners do not. `Array`, owned
+`String`, mutable `TextBuffer`, and supported aggregates containing them use the
+consuming path and may return ownership through `await`. Mutable classes,
+borrows, views, native references, `Arena`, custom `deinit`, and cross-thread
+`Weak<T>` remain rejected. Results follow the same rules.
 The returned task remains scope-bound and is joined explicitly by `await` or
 implicitly at scope exit.
 

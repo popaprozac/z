@@ -74,11 +74,11 @@ cancellation cleanup. Generated C-family source remains inspectable evidence.
 - The hardest Swift surfaces remain: noncopyable values, protocols, typed errors,
   async APIs, packages, and SDK-scale metadata.
 - The implemented `thread.spawn` slice proves a real cross-thread frame,
-  structured join, private Copy snapshots, and unique Array/String/TextBuffer
-  owner transfer.
-  Reference-owning tasks and cross-thread callbacks may still force changes to
-  sendability, ARC atomicity, shared-state isolation, cancellation, and executor
-  assumptions.
+  structured join, private Copy snapshots, unique Array/String/TextBuffer owner
+  transfer, and compiler-proven deeply readonly identity through atomic ARC.
+  Mutable shared identity, concurrent weak upgrade, native sendability, and
+  cross-thread callbacks may still force changes to isolation, cancellation,
+  destruction-affinity, and executor assumptions.
 - Interop breadth is not interop maturity. Swift and Nim remain far ahead in
   production coverage even where Z's intended source experience is compelling.
 - The self-hosting boundary around Clang/Swift metadata and async lowering still
@@ -107,11 +107,12 @@ planned experiment rather than a rejected direction.
 2. Run an arena/region spike and study projection models such as Hylo's before
    widening `view` or introducing user-visible lifetime identities.
 3. **Begun:** `thread.spawn` now proves explicit move capture, private Copy
-   snapshots, moved Array/String/TextBuffer owners/results, and structured join
-   on one native thread. Extend that evidence with broader cleanup-bearing
-   sendability and destruction affinity, atomic ARC plus shared-state isolation,
-   nonblocking executor integration, and a cross-thread callback before fixing
-   pools or a multithreaded executor design.
+   snapshots, moved Array/String/TextBuffer owners/results, deeply readonly
+   atomic-ARC class sharing, and structured join on one native thread. Extend
+   that evidence with broader cleanup-bearing sendability, weak-reference and
+   destruction-affinity protocols, mutable shared-state isolation, nonblocking
+   executor integration, and a cross-thread callback before fixing pools or a
+   multithreaded executor design.
 4. Pull forward one hard Swift slice: preferably a noncopyable Swift value or a
    Swift async API, using toolchain-generated interfaces rather than a private
    Swift ABI implementation.

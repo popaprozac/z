@@ -776,9 +776,13 @@ export function parse(tokens: Token[], fileName: string): Program {
       }
       const visibilityToken = match("public") ? "public" : match("private") ? "private" : null;
       const visibility = visibilityToken ?? "public";
+      const readonly = Boolean(match("readonly"));
       const isStatic = match("static");
       const isAsync = match("async");
       if (at("function")) {
+        if (readonly) {
+          throw new DiagnosticError(fileName, previous().location, "`readonly` applies to stored fields, not methods");
+        }
         methods.push({ ...parseFunction(false, isAsync), static: isStatic, visibility });
         continue;
       }
@@ -790,7 +794,7 @@ export function parse(tokens: Token[], fileName: string): Program {
       }
       const field = expect("identifier", "a field or method declaration");
       expect("colon", "`:`");
-      fields.push({ name: field.text, type: parseType(), visibility, location: field.location });
+      fields.push({ name: field.text, type: parseType(), visibility, readonly, location: field.location });
       expect("semicolon", "`;`");
     }
     expect("rightBrace", "`}`");

@@ -63,10 +63,10 @@ requiring lifetime syntax throughout ordinary application code.
 | --- | --- |
 | Values | Structs, classes, traits, generics, arrays, slices, owned strings |
 | Standard library | Explicit console/time/text/memory plus initial `std/fs`, `std/process`, owned program arguments, move-only `TextBuffer`, and `Arena` region storage |
-| Ownership | Lexical borrows, moves, deterministic cleanup, ARC, `Weak<T>`, receiver-tied views, and synchronous arena regions |
+| Ownership | Lexical borrows, moves, deterministic cleanup, ARC, `Weak<T>`, `readonly` fields, inferred shareable classes, receiver-tied views, and synchronous arena regions |
 | Errors | Typed `throws`, `try` propagation, `attempt`, `Result<T, E>` |
 | Control flow | Checked arithmetic, loops, ternaries, value `if`, exhaustive `match` |
-| Async | Stackless tasks, FIFO executor, spawn/join scopes, cancellation, delay, and `thread.spawn` Copy snapshots or unique Array/String/TextBuffer owner moves on one native thread |
+| Async | Stackless tasks, FIFO executor, spawn/join scopes, cancellation, delay, and `thread.spawn` Copy snapshots, unique-owner moves, or atomic-ARC deeply readonly class references on one native thread |
 | C | Header imports, functions, records, enums, constants, pointers with `.zd` contracts, callbacks, target-aware availability |
 | Objective-C | ARC objects, nullability, selectors, blocks, persistent observers, AppKit |
 | C++ | Hierarchical functions/types, overload selection, records, `.zd`-contracted copyable and move-only RAII values, constructors, methods, named-value references, and receiver qualifiers |

@@ -303,6 +303,15 @@ constructors use `Result<Class, Error>` through ordinary `try` and `attempt`.
 Lowering maintains per-field liveness so failure destroys only initialized
 cleanup-bearing fields before reclaiming incomplete class storage.
 
+`readonly` fields may be initialized by synthesized construction or assigned
+once by an explicit constructor, but cannot be replaced or mutated afterward.
+The compiler infers a class as cross-thread shareable only when its complete
+reachable graph is readonly, has no mutable receiver methods, contains no
+mutable collection storage or uncontracted native identity, and has no custom
+`deinit`. Shareable classes use atomic strong ARC operations; ordinary mutable
+classes keep lower-cost local ARC. This is structural compiler evidence rather
+than a user-asserted `Send` or `Sync` marker.
+
 `static function` is the type-scoped factory and utility surface on structs and
 classes. It is invoked as `Type.method()`, performs no implicit allocation, and
 has no `this` receiver. Methods default to `public`; `private` static and
@@ -883,14 +892,16 @@ consumes the source binding. Results follow the same transfer classification.
 The operation creates a hot, scope-bound `Task<T>` and joins at `await` or scope
 exit. Owned `String` and mutable `TextBuffer` storage use the same unique-owner
 transfer and cleanup path as `Array`; the one-shot thread closure may consume or
-mutate those captures before returning an owned result. Borrows, views, ARC
-identity, native references, `Arena`, and custom `deinit` remain rejected at the
-boundary. Its first join
+mutate those captures before returning an owned result. Deeply readonly Z class
+identity crosses by an atomic ARC retain, so the parent keeps its own reference.
+Mutable classes, borrows, views, native references, `Arena`, and custom `deinit`
+remain rejected. Cross-thread `Weak<T>` remains deferred until weak upgrade has
+a shared side-table protocol. Its first join
 implementation blocks the FIFO executor thread; nonblocking executor
-integration, general sendability, atomic ARC, pools, and cross-thread callbacks
-remain validation work. Atomic reference counts alone will not make mutable
-class identity safely shareable; isolation or an explicit concurrency contract
-must address data races too.
+integration, general native sendability, pools, and cross-thread callbacks
+remain validation work. Atomic reference counts protect lifetime, not mutable
+class fields; isolation or an explicit concurrency contract must address those
+data races.
 
 An async function continues to declare its domain contract as `T throws E`.
 `spawn` preserves that contract as `Task<T, E>`, `try await` propagates `E`, and

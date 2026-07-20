@@ -6818,6 +6818,7 @@ test("editor grammar tracks keywords without reserving Result variants", () => {
   assert.match(keywordPattern, /move/);
   assert.match(keywordPattern, /view/);
   assert.match(keywordPattern, /weak/);
+  assert.match(keywordPattern, /readonly/);
   assert.match(keywordPattern, /new/);
   assert.match(keywordPattern, /constructor/);
   assert.match(keywordPattern, /deinit/);
@@ -8832,6 +8833,93 @@ test("copies plain thread captures and moves uniquely owned Array storage", () =
     assert.match(error.message, /type "ThreadAffine" cannot cross/);
     return true;
   });
+});
+
+test("shares deeply readonly ARC classes through atomic thread captures", () => {
+  const example = resolve(projectRoot, "examples/async/thread-shared-class.z");
+  const source = readFileSync(example, "utf8");
+  const generated = compileToC(source, example);
+  assert.match(generated, /__atomic_add_fetch\(&value->_z_refcount, 1, __ATOMIC_RELAXED\)/);
+  assert.match(generated, /__atomic_sub_fetch\(&value->_z_refcount, 1, __ATOMIC_ACQ_REL\)/);
+  assert.match(generated, /Z_CalculationInput_retain\(frame->value_input\)/);
+
+  const labelOffset = source.indexOf("label: String") + 1;
+  assert.match(hover(source, example, labelOffset)?.contents.value ?? "", /readonly label: String/);
+  const labelPosition = positionForOffset(source, source.indexOf("label: String"));
+  const labelToken = decodeSemanticTokens(semanticTokens(source, example).data).find((token) => (
+    token.line === labelPosition.line && token.character === labelPosition.character
+  ));
+  assert.equal(labelToken?.modifiers, 3);
+
+  const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, "calculation parent input=20\nthread answer=42\n");
+
+  const readonlyMutation = `
+    class Configuration { readonly retries: i32; }
+    function main(): i32 {
+      const configuration = new Configuration({ retries: 3 });
+      configuration.retries = 4;
+      return 0;
+    }
+  `;
+  const readonlyDiagnostic = diagnostics(readonlyMutation, "readonly-field.z")[0];
+  assert.equal(readonlyDiagnostic.code, "Z0214");
+  assert.match(readonlyDiagnostic.message, /cannot assign to readonly field "retries"/);
+
+  const constructorInitialization = `
+    class Configuration {
+      private readonly retries: i32;
+      constructor(retries: i32) { this.retries = retries; }
+      function count(): i32 { return this.retries; }
+    }
+    function main(): i32 {
+      const configuration = new Configuration(3);
+      return configuration.count() - 3;
+    }
+  `;
+  assert.match(compileToC(constructorInitialization, "readonly-constructor.z"), /self->retries = retries/);
+
+  const mutableClass = `
+    import { thread } from "std/thread";
+    class Session { id: i32; }
+    async function main(): i32 {
+      const session = new Session({ id: 42 });
+      const task = thread.spawn(move () => session.id);
+      return await task;
+    }
+  `;
+  const mutableDiagnostic = diagnostics(mutableClass, "thread-mutable-class.z")[0];
+  assert.equal(mutableDiagnostic.code, "Z0704");
+  assert.match(mutableDiagnostic.message, /cannot cross a native thread boundary/);
+  assert.match(mutableDiagnostic.message, /mutable field "id"/);
+
+  const mutableStorage = `
+    import { thread } from "std/thread";
+    class Values { readonly items: Array<i32>; }
+    async function main(): i32 {
+      const values = new Values({ items: Array<i32>() });
+      const task = thread.spawn(move () => values.items.length);
+      return await task;
+    }
+  `;
+  const storageDiagnostic = diagnostics(mutableStorage, "thread-readonly-array.z")[0];
+  assert.equal(storageDiagnostic.code, "Z0704");
+  assert.match(storageDiagnostic.message, /mutable Array<i32> storage/);
+
+  const weakShared = `
+    import { thread } from "std/thread";
+    class Configuration { readonly retries: i32; }
+    async function main(): i32 {
+      const configuration = new Configuration({ retries: 3 });
+      const observer = weak configuration;
+      const task = thread.spawn(move () => configuration.retries);
+      return await task;
+    }
+  `;
+  const weakDiagnostic = diagnostics(weakShared, "thread-shared-weak.z")[0];
+  assert.equal(weakDiagnostic.code, "Z0704");
+  assert.match(weakDiagnostic.message, /cannot cross.*while Weak<Configuration> is used/);
 });
 
 test("moves owned String and TextBuffer storage through native thread frames", () => {

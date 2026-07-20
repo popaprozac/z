@@ -65,6 +65,7 @@ export type FieldDeclaration = {
   readonly name: string;
   readonly type: TypeReference;
   readonly visibility: "public" | "private";
+  readonly readonly: boolean;
   readonly location: SourceLocation;
 };
 

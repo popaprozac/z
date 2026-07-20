@@ -150,13 +150,16 @@ is itself transferable; owned Array-backed results move back to the awaiting
 task. Owned `String` and mutable `TextBuffer` storage follow the same consuming
 path. Because the thread closure is one-shot, it may inspect an owned String,
 mutate a captured `let` TextBuffer, consume it with `finish()`, and return the
-resulting String through `await`. Borrowed `in`, `inout`, and `out` bindings,
-`view`, `Slice`, `Arena`, ARC classes, weak references, native handles, C++ RAII
-values, and custom `deinit` remain rejected. This establishes a real
-cross-thread task-frame and unique-owner boundary before Z commits atomic ARC or
-general sendability semantics. Atomic ARC will address reference-count races,
-but mutable shared class state also requires isolation or an explicit safe
-concurrency contract.
+resulting String through `await`.
+
+A deeply readonly Z class may also cross by shared identity. The compiler
+recursively verifies its fields and methods, emits atomic strong ARC operations,
+and retains a worker reference; the parent reference remains usable. Mutable
+classes, borrowed `in`, `inout`, and `out` bindings, `view`, `Slice`, `Arena`,
+weak references, native handles, C++ RAII values, and custom `deinit` remain
+rejected. Concurrent weak upgrade awaits a shared side-table protocol. Atomic
+ARC protects reference lifetime only; mutable shared class state will require
+actors, synchronization, or another explicit isolation contract.
 
 The worker may call ordinary synchronous Z or supported native functions. It
 cannot suspend or `await`. In this first runtime, joining the worker blocks the

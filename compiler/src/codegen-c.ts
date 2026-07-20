@@ -1442,6 +1442,7 @@ function generateClassLifecycle(
 ): string {
   const cName = structName(declaration.name);
   const unused = declaration.name.startsWith("__z_module_") ? "__attribute__((unused)) " : "";
+  const shareable = semanticInfo.shareableClasses.has(declaration.name);
   const constructor = declaration.constructor
     ? generateUserClassConstructor(declaration, structs, enums, functions, semanticInfo)
     : `${generateClassConstructorSignature(declaration, structs, enums, semanticInfo.foreignNamedTypes)} {
@@ -1452,14 +1453,20 @@ function generateClassLifecycle(
 ${declaration.fields.map((field) => `  self->${field.name} = ${field.name};`).join("\n")}
   return self;
 }`;
-  return `static ${unused}${cName} *${retainName(declaration.name)}(${cName} *value) {
-  if (value != NULL) value->_z_refcount += 1;
-  return value;
-}
-
-static ${unused}void ${releaseName(declaration.name)}(${cName} *value) {
-  if (value == NULL) return;
-  value->_z_refcount -= 1;
+  const retain = shareable
+    ? "if (value != NULL) __atomic_add_fetch(&value->_z_refcount, 1, __ATOMIC_RELAXED);"
+    : "if (value != NULL) value->_z_refcount += 1;";
+  const release = shareable
+    ? `if (__atomic_sub_fetch(&value->_z_refcount, 1, __ATOMIC_ACQ_REL) != 0) return;
+  Z_WeakControl *weak = value->_z_weak;
+  if (weak != NULL) weak->value = NULL;
+  ${deinitName(declaration.name)}(value);
+  if (weak != NULL) {
+    weak->weak_count -= 1;
+    if (weak->weak_count == 0) free(weak);
+  }
+  free(value);`
+    : `value->_z_refcount -= 1;
   if (value->_z_refcount == 0) {
     Z_WeakControl *weak = value->_z_weak;
     if (weak != NULL) weak->value = NULL;
@@ -1469,7 +1476,15 @@ static ${unused}void ${releaseName(declaration.name)}(${cName} *value) {
       if (weak->weak_count == 0) free(weak);
     }
     free(value);
-  }
+  }`;
+  return `static ${unused}${cName} *${retainName(declaration.name)}(${cName} *value) {
+  ${retain}
+  return value;
+}
+
+static ${unused}void ${releaseName(declaration.name)}(${cName} *value) {
+  if (value == NULL) return;
+  ${release}
 }
 
 static ${unused}__attribute__((unused)) Z_Weak ${weakMakeName(declaration.name)}(const ${cName} *borrowed) {

@@ -145,6 +145,7 @@ export type SemanticInfo = {
   readonly arenaCreateCalls: ReadonlyMap<number, string>;
   readonly arenaResetCalls: ReadonlySet<number>;
   readonly threadSpawnCalls: ReadonlyMap<number, number>;
+  readonly shareableClasses: ReadonlySet<string>;
   readonly foreignArgumentAccesses: ReadonlyMap<number, "in" | "out" | "inout">;
   readonly foreignCxxArgumentAccesses: ReadonlyMap<number, "in" | "inout" | "move">;
   readonly foreignCallbackTargets: ReadonlyMap<number, string>;
@@ -204,6 +205,9 @@ type AnalysisState = {
   readonly arenaCreateCalls: Map<number, string>;
   readonly arenaResetCalls: Set<number>;
   readonly threadSpawnCalls: Map<number, number>;
+  readonly shareableClasses: Set<string>;
+  readonly threadSharedClassUses: Map<string, SourceLocation>;
+  readonly weakClassUses: Map<string, SourceLocation>;
   readonly foreignArgumentAccesses: Map<number, "in" | "out" | "inout">;
   readonly foreignCxxArgumentAccesses: Map<number, "in" | "inout" | "move">;
   readonly foreignCallbackTargets: Map<number, string>;
@@ -388,6 +392,9 @@ export function analyze(
     arenaCreateCalls: new Map(),
     arenaResetCalls: new Set(),
     threadSpawnCalls: new Map(),
+    shareableClasses: new Set(),
+    threadSharedClassUses: new Map(),
+    weakClassUses: new Map(),
     foreignArgumentAccesses: new Map(),
     foreignCxxArgumentAccesses: new Map(),
     foreignCallbackTargets: new Map(),
@@ -684,6 +691,12 @@ export function analyze(
 
   validateValueLayouts(program.structs, program.enums, structs, enums, fileName);
 
+  for (const declaration of program.structs) {
+    if (declaration.kind === "class" && !shareableTypeIssue(declaration.name, structs, enums, state)) {
+      state.shareableClasses.add(declaration.name);
+    }
+  }
+
   const main = globals.get("main");
   if ((!main || main.kind !== "function") && requireMain) {
     throw new DiagnosticError(fileName, { offset: 0, line: 1, column: 1 }, "program must declare `function main(): i32`");
@@ -738,6 +751,16 @@ export function analyze(
   }
   for (const declaration of program.functions) {
     analyzeFunction(declaration, globals, structs, enums, fileName, null, state);
+  }
+  for (const [type, location] of state.threadSharedClassUses) {
+    const weakUse = state.weakClassUses.get(type);
+    if (!weakUse) continue;
+    throw new DiagnosticError(fileName, location, `class ${JSON.stringify(type)} cannot cross a native thread boundary while Weak<${type}> is used`, {
+      code: "Z0704",
+      labels: [{ location: weakUse, message: "weak reference is created here", length: 4 }],
+      notes: ["the first atomic ARC tier covers strong references; concurrent weak upgrade needs a shared side-table protocol"],
+      helps: ["keep the class thread-local, remove the weak reference, or pass an owned immutable value snapshot"],
+    });
   }
   return state;
 }
@@ -1633,6 +1656,15 @@ function analyzeStatement(
       if (!stored) {
         inferExpression(statement.target, locals, globals, structs, enums, fileName, state);
         throw new DiagnosticError(fileName, statement.target.location, "assignment target must be local mutable storage");
+      }
+      const readonlyField = readonlyFieldOnPath(statement.target, structs, state);
+      const initializesReadonlyField = state.activeFunction?.name === "constructor"
+        && state.constructorFieldInitializations.has(statement.location.offset);
+      if (readonlyField && !initializesReadonlyField) {
+        throw new DiagnosticError(fileName, statement.target.location, `cannot assign to readonly field ${JSON.stringify(readonlyField.name)}`, {
+          code: "Z0214",
+          helps: ["initialize the field during construction, or remove `readonly` if shared mutation is intended"],
+        });
       }
       rejectOwnerMutationWhileViewed(root.name, statement.target.location, fileName, state);
       const rootDeclaration = structs.get(underlyingType(stored));
@@ -2912,6 +2944,19 @@ function inferExpression(
   return type;
 }
 
+function readonlyFieldOnPath(
+  expression: Expression,
+  structs: ReadonlyMap<string, StructDeclaration>,
+  state: AnalysisState,
+): StructDeclaration["fields"][number] | null {
+  if (expression.kind === "index") return readonlyFieldOnPath(expression.object, structs, state);
+  if (expression.kind !== "member") return null;
+  const ownerType = state.expressionTypes.get(expression.object.location.offset);
+  const declaration = ownerType ? structs.get(String(underlyingType(ownerType))) : null;
+  const field = declaration?.fields.find((candidate) => candidate.name === expression.property);
+  return field?.readonly ? field : readonlyFieldOnPath(expression.object, structs, state);
+}
+
 function registerAsyncCall(
   declaration: FunctionDeclaration,
   location: SourceLocation,
@@ -3248,6 +3293,7 @@ function inferExpressionInner(
           code: "Z0220",
         });
       }
+      state.weakClassUses.set(declaration.name, expression.location);
       return weakTypeName(declaration.name);
     }
     case "closure":
@@ -3829,10 +3875,15 @@ function inferExpressionInner(
                 }
                 const transfer = initialThreadTransferKind(capture.type, structs, enums, state);
                 if (!transfer) {
-                  throw new DiagnosticError(fileName, capture.location, `capture ${JSON.stringify(capture.name)} of type ${JSON.stringify(capture.type)} cannot cross a native thread boundary yet`, {
+                  const capturedClass = structs.get(String(underlyingType(capture.type)));
+                  const shareability = capturedClass?.kind === "class"
+                    ? shareableTypeIssue(capturedClass.name, structs, enums, state)
+                    : null;
+                  const detail = shareability ? `: ${shareability.reason}` : " yet";
+                  throw new DiagnosticError(fileName, capture.location, `capture ${JSON.stringify(capture.name)} of type ${JSON.stringify(capture.type)} cannot cross a native thread boundary${detail}`, {
                     code: "Z0704",
-                    notes: ["the current tier copies plain values and moves supported Array, String, TextBuffer, and containing aggregate owners; views, borrows, ARC identity, native references, and custom cleanup remain local"],
-                    helps: ["capture a transferable owned value, or keep this work on the inherited executor with `spawn`"],
+                    notes: [shareability?.reason ?? "the current tier copies plain values, shares deeply readonly ARC identity, and moves supported Array, String, TextBuffer, and containing aggregate owners"],
+                    helps: [shareability?.help ?? "capture a transferable owned value, or keep this work on the inherited executor with `spawn`"],
                   });
                 }
                 captureTransfers.push({ capture, kind: transfer });
@@ -3845,6 +3896,11 @@ function inferExpressionInner(
                 });
               }
               for (const { capture, kind } of captureTransfers) {
+                const capturedClass = structs.get(String(underlyingType(capture.type)));
+                if (kind === "copy" && capturedClass?.kind === "class") {
+                  state.managedCopies.add(capture.location.offset);
+                  state.threadSharedClassUses.set(capturedClass.name, capture.location);
+                }
                 if (kind !== "move") continue;
                 consumeOwnedValue(
                   { kind: "identifier", name: capture.name, location: expression.location },
@@ -4243,6 +4299,12 @@ function inferExpressionInner(
           if (expression.arguments.length !== 1) {
             throw new DiagnosticError(fileName, expression.location, `"push" expects 1 argument, received ${expression.arguments.length}`);
           }
+          const readonlyField = readonlyFieldOnPath(expression.callee.object, structs, state);
+          if (readonlyField) {
+            throw new DiagnosticError(fileName, expression.callee.object.location, `cannot mutate Array through readonly field ${JSON.stringify(readonlyField.name)}`, {
+              code: "Z0214",
+            });
+          }
           const root = storageRoot(expression.callee.object);
           if (root) rejectOwnerMutationWhileViewed(root.name, expression.callee.location, fileName, state);
           const stored = root ? locals.get(root.name) : null;
@@ -4428,6 +4490,12 @@ function inferExpressionInner(
           ? storageRoot(expression.callee.object)
           : null;
         if (method.receiverMode === "inout") {
+          const readonlyField = readonlyFieldOnPath(expression.callee.object, structs, state);
+          if (readonlyField) {
+            throw new DiagnosticError(fileName, expression.callee.object.location, `mutable method ${JSON.stringify(method.name)} cannot be called through readonly field ${JSON.stringify(readonlyField.name)}`, {
+              code: "Z0214",
+            });
+          }
           if (!mutableReceiverRoot) {
             throw new DiagnosticError(
               fileName,
@@ -5833,6 +5901,102 @@ function hasOwnershipType(
 
 type ThreadTransferKind = "copy" | "move";
 
+type ShareabilityIssue = {
+  readonly reason: string;
+  readonly help: string;
+};
+
+function shareableTypeIssue(
+  type: ValueType,
+  structs: ReadonlyMap<string, StructDeclaration>,
+  enums: ReadonlyMap<string, EnumDeclaration>,
+  state: AnalysisState,
+  visiting: Set<string> = new Set(),
+  path = String(underlyingType(type)),
+): ShareabilityIssue | null {
+  const actual = String(underlyingType(type));
+  if (actual === "void" || actual === "bool" || integerTypes.has(actual) || floatTypes.has(actual) || actual === "String") {
+    return null;
+  }
+  if (actual === "TextBuffer" || parseDynamicArrayType(actual)) {
+    return {
+      reason: `${path} contains mutable ${displayArrayType(actual)} storage`,
+      help: ["store an immutable owned snapshot such as String", "or keep this class on one thread"].join(", "),
+    };
+  }
+  if (actual === "Arena" || parseViewType(actual) || parseSliceType(actual) || parseTaskType(actual) || parseWeakType(actual)) {
+    return {
+      reason: `${path} contains thread-local type ${displayArrayType(actual)}`,
+      help: "replace the field with owned immutable state, or keep this class on one thread",
+    };
+  }
+  if (state.foreignNamedTypes.has(actual) || state.foreignTypes.has(actual) || state.foreignObjectTypes.has(actual)) {
+    return {
+      reason: `${path} contains native type ${actual} without a cross-thread contract`,
+      help: "pass an owned Z snapshot, or keep the native value on its required thread",
+    };
+  }
+  if (visiting.has(actual)) return null;
+  const fixed = parseFixedArrayType(actual);
+  if (fixed) {
+    return {
+      reason: `${path} contains mutable fixed-array storage`,
+      help: "store an immutable value aggregate, or keep this class on one thread",
+    };
+  }
+  const aggregate = structs.get(actual);
+  if (aggregate) {
+    if (aggregate.deinitializer) {
+      return {
+        reason: `${path} has a custom deinit whose thread affinity is unknown`,
+        help: "remove custom deinit from the shared graph, or keep this class on one thread",
+      };
+    }
+    const mutableMethod = aggregate.methods.find((method) => !method.static && method.receiverMode === "inout");
+    if (mutableMethod) {
+      return {
+        reason: `${path} exposes mutable method ${JSON.stringify(mutableMethod.name)}`,
+        help: "use readonly behavior for shared identity, or keep mutable identity on one thread",
+      };
+    }
+    visiting.add(actual);
+    for (const field of aggregate.fields) {
+      if (!field.readonly) {
+        visiting.delete(actual);
+        return {
+          reason: `${path} has mutable field ${JSON.stringify(field.name)}`,
+          help: `mark ${JSON.stringify(field.name)} readonly after confirming its reachable value is immutable`,
+        };
+      }
+      const issue = shareableTypeIssue(field.type.name, structs, enums, state, visiting, `${path}.${field.name}`);
+      if (issue) {
+        visiting.delete(actual);
+        return issue;
+      }
+    }
+    visiting.delete(actual);
+    return null;
+  }
+  const enumeration = enums.get(actual);
+  if (enumeration) {
+    visiting.add(actual);
+    for (const variant of enumeration.variants) {
+      if (!variant.payload) continue;
+      const issue = shareableTypeIssue(variant.payload.name, structs, enums, state, visiting, `${path}.${variant.name}`);
+      if (issue) {
+        visiting.delete(actual);
+        return issue;
+      }
+    }
+    visiting.delete(actual);
+    return null;
+  }
+  return {
+    reason: `${path} has unknown cross-thread representation ${actual}`,
+    help: "use a primitive, String, or deeply readonly Z aggregate",
+  };
+}
+
 function initialThreadTransferKind(
   type: ValueType,
   structs: ReadonlyMap<string, StructDeclaration>,
@@ -5854,7 +6018,8 @@ function initialThreadTransferKind(
   if (visiting.has(actual)) return null;
   const aggregate = structs.get(actual);
   if (aggregate) {
-    if (aggregate.kind !== "struct" || aggregate.deinitializer) return null;
+    if (aggregate.kind === "class") return state.shareableClasses.has(actual) ? "copy" : null;
+    if (aggregate.deinitializer) return null;
     visiting.add(actual);
     const fields = aggregate.fields.map((field) => (
       initialThreadTransferKind(field.type.name, structs, enums, state, visiting)

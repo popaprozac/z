@@ -91,7 +91,7 @@ const sourceKeywordTokens = [
   "continue", "declare", "deinit", "else", "enum", "export", "for", "from",
   "function", "if", "implements", "import", "in", "inout", "let", "match", "module",
   "move", "mut", "new", "of", "out", "private", "public", "return", "scope", "select",
-  "spawn", "static", "struct", "throw", "throws", "trait", "try", "unsafe", "view",
+  "readonly", "spawn", "static", "struct", "throw", "throws", "trait", "try", "unsafe", "view",
   "weak", "while", "yield",
 ] as const;
 
@@ -219,6 +219,11 @@ export function semanticTokens(source: string, fileName: string): { readonly dat
   const fieldDeclarations = new Set(
     context.sourceProgram.structs.flatMap((declaration) => declaration.fields.map((field) => field.location.offset)),
   );
+  const readonlyFieldDeclarations = new Set(
+    context.sourceProgram.structs.flatMap((declaration) => (
+      declaration.fields.filter((field) => field.readonly).map((field) => field.location.offset)
+    )),
+  );
   const methodDeclarations = new Set(
     context.sourceProgram.structs.flatMap((declaration) => declaration.methods.map((method) => method.location.offset)),
   );
@@ -279,7 +284,7 @@ export function semanticTokens(source: string, fileName: string): { readonly dat
     if (fieldDeclarations.has(token.location.offset)) {
       classifications.set(token.location.offset, {
         type: semanticTokenTypes.indexOf("property"),
-        modifiers: 1,
+        modifiers: 1 | (readonlyFieldDeclarations.has(token.location.offset) ? 2 : 0),
       });
       continue;
     }
@@ -2616,9 +2621,7 @@ function structCompletions(
       .map((field) => ({
         label: field.name,
         kind: completionKinds.field,
-        detail: field.visibility === "private"
-          ? `private ${displayType(field.type.name, typeDisplayNames)}`
-          : displayType(field.type.name, typeDisplayNames),
+        detail: `${field.visibility === "private" ? "private " : ""}${field.readonly ? "readonly " : ""}${displayType(field.type.name, typeDisplayNames)}`,
       })),
     ...declaration.methods
       .filter((method) => !method.static && ((method.visibility ?? "public") === "public" || includePrivate))
@@ -2633,7 +2636,8 @@ function structCompletions(
 
 function fieldDetail(field: StructDeclaration["fields"][number], typeDisplayNames: ReadonlyMap<string, string>): string {
   const visibility = field.visibility === "private" ? "private " : "";
-  return `${visibility}${field.name}: ${displayType(field.type.name, typeDisplayNames)}`;
+  const readonly = field.readonly ? "readonly " : "";
+  return `${visibility}${readonly}${field.name}: ${displayType(field.type.name, typeDisplayNames)}`;
 }
 
 function staticCompletions(
