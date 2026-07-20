@@ -122,10 +122,20 @@ Cancellation is cooperative at poll boundaries: it cannot interrupt a blocking
 synchronous or foreign call. A failure retained with `attempt await` is handled
 as a `Result` value and therefore does not cancel sibling work. Cancelling a
 task suspended on `delay` removes its pending timer before task-frame cleanup.
-The runtime uses cancellation requests internally for structured propagation;
-there is no public caller-driven task-cancellation operation yet. Its eventual
-request-and-join behavior must preserve cancellation as a third structural
-outcome rather than smuggling it into `throws E` or manufacturing a `T`.
+Caller-driven cancellation is an explicit consuming join:
+
+```z
+const task = spawn refresh();
+await task.cancel();
+// refresh and all descendant cleanup are finished here
+```
+
+`cancel()` returns `void`: it requests cancellation, joins the task, disposes an
+unclaimed success value or domain error, and then lets the caller continue. If
+the child completed before the request, the operation still joins and disposes
+the outcome. The handle is unavailable afterward. Cancellation therefore stays
+a structural outcome rather than being smuggled into `throws E` or used to
+manufacture a `T`.
 
 The first async ownership tier permits owned values, ARC class references,
 owned closures, direct move-only native values, and whole Z value structs or

@@ -17,7 +17,7 @@ import type { IntegerOperation, SemanticInfo } from "./sema.ts";
 type AwaitSite = {
   readonly index: number;
   readonly mode: "await" | "try" | "attempt";
-  readonly intrinsic: "delay" | null;
+  readonly intrinsic: "delay" | "cancel" | null;
   readonly expression: Extract<Expression, { kind: "await" }>;
   readonly call: CallExpression;
   readonly target: AsyncTarget;
@@ -484,6 +484,31 @@ function awaitSite(
     );
   }
   const call = expression.expression;
+  if (
+    call.callee.kind === "member"
+    && call.callee.property === "cancel"
+    && call.callee.object.kind === "identifier"
+    && parseTaskType(locals.get(call.callee.object.name) ?? "")
+  ) {
+    const spawn = spawnBindings.get(call.callee.object.name);
+    if (!spawn) {
+      unsupported(fileName, expression.location, "cancelling task parameters or aliases is not executable yet");
+    }
+    if (joinedSpawns.has(spawn.index)) {
+      unsupported(fileName, expression.location, "a spawned task handle can only be joined or cancelled once");
+    }
+    joinedSpawns.add(spawn.index);
+    return {
+      index: spawn.index,
+      mode,
+      intrinsic: "cancel",
+      expression,
+      call: spawn.call,
+      target: spawn.target,
+      receiver: null,
+      spawn,
+    };
+  }
   if (types.semanticInfo.standardFunctionReferences.get(call.callee.location.offset) === "delay") {
     return {
       index: nextChild.value++,
@@ -611,6 +636,7 @@ function awaitOperation(expression: Expression): {
 }
 
 function nestedAwaitResultType(site: AwaitSite): string {
+  if (site.intrinsic === "cancel") return "void";
   if (site.mode === "attempt") {
     return resultTypeName(
       site.target.declaration.returnType.name,
@@ -1337,8 +1363,8 @@ function generatePoll(
       const operation = awaitOperation(initializer);
       if (operation) {
         const site = plan.awaits.get(operation.expression.location.offset)!;
-        if (site.intrinsic === "delay") {
-          unsupported(fileName, statement.location, "the void delay operation cannot initialize a binding");
+        if (site.intrinsic === "delay" || site.intrinsic === "cancel") {
+          unsupported(fileName, statement.location, `the void ${site.intrinsic} operation cannot initialize a binding`);
         }
         if (!site.spawn) {
           const target = planByKey.get(targetKey(site.target))!;
@@ -1608,6 +1634,23 @@ function awaitCompletion(
   nextState: number,
 ): string[] {
   const child = `frame->child_${site.index}`;
+  if (site.intrinsic === "cancel") {
+    const lines = [
+      `z_async_cancel(&${child}->task);`,
+      `if (!z_async_wait(&frame->task, &${child}->task)) return;`,
+      `z_async_destroy_${targetPart(site.target)}(${child});`,
+      `free(${child});`,
+      `frame->child_${site.index} = NULL;`,
+      ...(site.spawn?.binding ? [`frame->${frameField(site.spawn.binding)} = NULL;`] : []),
+    ];
+    if (terminal) {
+      if (parent.declaration.errorType) lines.push("frame->failed = false;");
+      lines.push(`frame->state = ${finalizeStateMarker};`, "continue;");
+    } else {
+      lines.push(`frame->state = ${nextState};`, "continue;");
+    }
+    return lines;
+  }
   const resultType = site.target.declaration.returnType.name;
   const childResult = resultType === "void"
     ? ""

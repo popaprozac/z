@@ -649,6 +649,14 @@ export function hover(source: string, fileName: string, offset: number): Hover |
     if (resolved?.kind === "weak" && word.text === "upgrade") {
       return markdownHover(`upgrade(): ${displayType(resolved.target, context.typeDisplayNames)} throws WeakExpired`, source, word.start, word.end);
     }
+    if (resolved?.kind === "task" && word.text === "cancel") {
+      return markdownHover(
+        "async cancel(): void  // consumes the Task; requests cancellation and joins cleanup",
+        source,
+        word.start,
+        word.end,
+      );
+    }
     if (resolved?.kind === "integer") {
       const detail = integerMethodDetail(word.text, resolved.type);
       if (detail) return markdownHover(detail, source, word.start, word.end);
@@ -2120,6 +2128,14 @@ function memberCompletions(
       insertText: "upgrade()",
     }], prefix, 1000);
   }
+  if (resolved?.kind === "task") {
+    return filterCompletions([{
+      label: "cancel",
+      kind: completionKinds.method,
+      detail: "async cancel(): void  // consumes the Task; requests cancellation and joins cleanup",
+      insertText: "cancel()",
+    }], prefix, 1000);
+  }
   return [];
 }
 
@@ -2363,7 +2379,8 @@ type ResolvedReceiver =
   | { readonly kind: "array"; readonly type: string }
   | { readonly kind: "string" }
   | { readonly kind: "textBuffer" }
-  | { readonly kind: "weak"; readonly target: string };
+  | { readonly kind: "weak"; readonly target: string }
+  | { readonly kind: "task"; readonly successType: string; readonly errorType: string | null };
 
 function resolveReceiver(context: AnalyzedSource, text: string, offset: number): ResolvedReceiver | null {
   const nativeNamespace = resolveForeignModuleNamespace(context, text);
@@ -2385,6 +2402,8 @@ function resolveReceiver(context: AnalyzedSource, text: string, offset: number):
   if (parseFixedArrayType(receiverType) || parseSliceType(receiverType) || parseDynamicArrayType(receiverType)) return { kind: "array", type: receiverType };
   const weak = parseWeakType(receiverType);
   if (weak) return { kind: "weak", target: weak.target };
+  const task = parseTaskType(receiverType);
+  if (task) return { kind: "task", successType: task.successType, errorType: task.errorType };
   if (isIntegerSourceType(receiverType)) return { kind: "integer", type: receiverType };
   const interfaceName = receiverType.replace(/^__z_objc:(?:nullable|nonnull):/, "");
   const objc = context.semanticInfo.foreignInterfaces.get(interfaceName);

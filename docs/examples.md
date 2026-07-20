@@ -72,6 +72,7 @@ Read [`async-model.md`](async-model.md) alongside these examples:
 | Hot spawn and explicit join | [`async-spawn.z`](../examples/async/async-spawn.z) |
 | Lexical task scopes | [`async-scopes.z`](../examples/async/async-scopes.z) |
 | Cancellation | [`async-cancellation.z`](../examples/async/async-cancellation.z) |
+| Caller-driven cancellation | [`async-caller-cancellation.z`](../examples/async/async-caller-cancellation.z) — consuming request-and-join, descendant cleanup, and deterministic native resource release |
 | Scheduler-aware timers | [`async-delay.z`](../examples/async/async-delay.z) |
 | Owned values across suspension | [`async-ownership.z`](../examples/async/async-ownership.z), [`async-owned-enums.z`](../examples/async/async-owned-enums.z) |
 | Move-only native values across suspension | [`async-native-ownership.z`](../examples/async/async-native-ownership.z) — local ownership plus fallible return/await relay, `try`, `attempt`, direct match, and deterministic Result cleanup |

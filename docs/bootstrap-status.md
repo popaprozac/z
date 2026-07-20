@@ -103,7 +103,7 @@ until the boundary is length-aware in both directions.
 | Stackless task frames | Partial | Scalars, aggregates, owned structs/enums/classes, direct move-only C++ locals and parameters, whole Z value aggregates containing them, and fallible native result transfer through `try`/`attempt`/match across suspension |
 | Executor | Implemented bootstrap | Deterministic single-thread FIFO ready queue |
 | Structured scopes | Implemented slice | Lexical child joins, sibling/descendant cancellation on propagation, and scope-bounded immutable child borrows |
-| Caller cancellation | Planned API | Runtime request/cleanup machinery exists; public task request, join, and cancelled-outcome semantics remain unsettled |
+| Caller cancellation | Implemented slice | Consuming `await task.cancel()` requests cancellation, joins descendants and cleanup, and discards an unclaimed completed outcome |
 | Timers | Implemented slice | Scheduler-aware monotonic `delay`; blocking `sleep` remains synchronous |
 | Sync work in async frames | Partial | Z and direct C++ calls/methods, console, checked arithmetic, concise matches |
 | Embedded awaits | Partial | Left-to-right cleanup-free values and awaited conditions |

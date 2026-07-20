@@ -7738,6 +7738,102 @@ test("cancels live siblings and descendants when an async failure propagates", (
   );
 });
 
+test("requests and joins caller-driven task cancellation", () => {
+  const example = resolve(projectRoot, "examples/async/async-caller-cancellation.z");
+  const source = readFileSync(example, "utf8");
+  const generated = compileToNative(source, example).source;
+  assert.match(generated, /z_async_cancel\(&frame->child_\d+->task\);/);
+  assert.match(generated, /if \(!z_async_wait\(&frame->task, &frame->child_\d+->task\)\) return;/);
+  assert.match(generated, /z_async_destroy_download\(frame->child_\d+\);/);
+  assert.match(generated, /frame->value_task = NULL;/);
+
+  const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(
+    result.stdout,
+    [
+      "started download 42",
+      "cancelling download",
+      "released download 42",
+      "cancellation joined, live=0",
+      "",
+    ].join("\n"),
+  );
+
+  const directory = mkdtempSync("/tmp/z-async-caller-cancel-");
+  const completed = resolve(directory, "completed.z");
+  writeFileSync(completed, `
+    import { delay } from "std/time";
+    import { zcpp } from ${JSON.stringify(resolve(projectRoot, "tests/fixtures/move-only.hpp"))};
+
+    async function makeResource(): zcpp.UniqueValue {
+      return zcpp.UniqueValue(42);
+    }
+
+    async function main(): i32 {
+      const task = spawn makeResource();
+      await delay(1);
+      await task.cancel();
+      return zcpp.unique_live();
+    }
+  `);
+  const completedResult = spawnSync(process.execPath, [cli, "run", completed], { encoding: "utf8" });
+  assert.equal(completedResult.status, 0, completedResult.stderr);
+
+  const completedError = resolve(directory, "completed-error.z");
+  writeFileSync(completedError, `
+    import { delay } from "std/time";
+
+    async function fail(): i32 throws i32 {
+      throw 7;
+    }
+
+    async function main(): i32 {
+      const task = spawn fail();
+      await delay(1);
+      await task.cancel();
+      return 0;
+    }
+  `);
+  const completedErrorResult = spawnSync(
+    process.execPath,
+    [cli, "run", completedError],
+    { encoding: "utf8" },
+  );
+  assert.equal(completedErrorResult.status, 0, completedErrorResult.stderr);
+
+  const naked = `
+    async function work(): i32 { return 42; }
+    async function main(): i32 {
+      const task = spawn work();
+      task.cancel();
+      return 0;
+    }
+  `;
+  const nakedDiagnostic = diagnostics(naked, "async-naked-cancel.z")[0];
+  assert.equal(nakedDiagnostic.code, "Z0702");
+  assert.match(nakedDiagnostic.message, /Task\.cancel requires direct await/);
+
+  const spawned = naked.replace("task.cancel();", "spawn task.cancel();");
+  const spawnedDiagnostic = diagnostics(spawned, "async-spawn-cancel.z")[0];
+  assert.equal(spawnedDiagnostic.code, "Z0703");
+  assert.match(spawnedDiagnostic.message, /Task\.cancel cannot be spawned/);
+
+  const reused = naked.replace("task.cancel();", "await task.cancel(); await task;");
+  const reusedDiagnostic = diagnostics(reused, "async-reused-task.z")[0];
+  assert.equal(reusedDiagnostic.code, "Z0201");
+  assert.match(reusedDiagnostic.message, /use of moved value "task"/);
+
+  const incomplete = source.replace("task.cancel()", "task.ca");
+  const completionOffset = incomplete.indexOf("task.ca") + "task.ca".length;
+  const cancelCompletion = completions(incomplete, example, completionOffset)
+    .find((item) => item.label === "cancel");
+  assert.match(cancelCompletion?.detail ?? "", /consumes the Task/);
+
+  const cancelOffset = source.indexOf("cancel", source.indexOf("task.cancel")) + 1;
+  assert.match(hover(source, example, cancelOffset)?.contents.value ?? "", /async cancel\(\): void/);
+});
+
 test("suspends async tasks on scheduler-aware std/time delay", () => {
   const example = resolve(projectRoot, "examples/async/async-delay.z");
   const source = readFileSync(example, "utf8");

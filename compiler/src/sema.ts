@@ -237,7 +237,11 @@ type AnalysisState = {
   readonly borrowOrigins: Map<string, { readonly location: SourceLocation; readonly kind: "closure" | "iteration" | "match" }>;
   readonly iterationBorrowOrigins: Map<string, SourceLocation>;
   readonly asyncBorrowOrigins: Map<string, SourceLocation>;
-  readonly asyncCallContexts: { readonly mode: "await" | "spawn"; calls: number }[];
+  readonly asyncCallContexts: {
+    readonly mode: "await" | "spawn";
+    calls: number;
+    cancellationCalls: number;
+  }[];
   asyncScopeDepth: number;
   activeFunction: FunctionDeclaration | null;
   activeReceiver: string | null;
@@ -2786,6 +2790,12 @@ function registerAsyncCall(
   context.calls += 1;
 }
 
+function isTaskCancellationCall(expression: Expression): expression is Extract<Expression, { kind: "call" }> {
+  return expression.kind === "call"
+    && expression.callee.kind === "member"
+    && expression.callee.property === "cancel";
+}
+
 function firstLiveBorrow(
   locals: ReadonlyMap<string, ValueType>,
   activeFunction: FunctionDeclaration | null,
@@ -3210,7 +3220,7 @@ function inferExpressionInner(
           helps: ["finish this lexical borrow before awaiting, or pass storage through an appropriate async parameter capability"],
         });
       }
-      const context = { mode: "await" as const, calls: 0 };
+      const context = { mode: "await" as const, calls: 0, cancellationCalls: 0 };
       state.asyncCallContexts.push(context);
       let awaited: ValueType;
       try {
@@ -3218,8 +3228,18 @@ function inferExpressionInner(
       } finally {
         state.asyncCallContexts.pop();
       }
+      if (context.cancellationCalls > 0 && !isTaskCancellationCall(expression.expression)) {
+        throw new DiagnosticError(fileName, expression.expression.location, "Task.cancel must be the direct operation beneath await", {
+          code: "Z0701",
+          notes: ["cancel requests cancellation and joins cleanup as one structured operation"],
+          helps: ["write `await task.cancel()` as its own expression statement"],
+        });
+      }
       const task = parseTaskType(String(awaited));
       if (task) {
+        if (expression.expression.kind === "identifier") {
+          consumeOwnedValue(expression.expression, awaited, locals, structs, enums, fileName, state, true);
+        }
         if (task.errorType) {
           if (!allowThrowingCall) {
             throw new DiagnosticError(fileName, expression.location, "awaiting a throwing task requires `attempt` or `try`");
@@ -3246,7 +3266,7 @@ function inferExpressionInner(
       if (expression.expression.kind !== "call") {
         throw new DiagnosticError(fileName, expression.location, "spawn requires a direct async function or method call");
       }
-      const context = { mode: "spawn" as const, calls: 0 };
+      const context = { mode: "spawn" as const, calls: 0, cancellationCalls: 0 };
       state.asyncCallContexts.push(context);
       let spawned: ValueType;
       try {
@@ -3745,6 +3765,38 @@ function inferExpressionInner(
         const receiverType = inferExpression(expression.callee.object, locals, globals, structs, enums, fileName, state);
         const receiverView = parseViewType(String(receiverType));
         const receiverValueType = receiverView?.target ?? String(receiverType);
+        const task = parseTaskType(receiverValueType);
+        if (task) {
+          rejectLabeledArguments(expression.argumentLabels, expression.location, fileName);
+          if (expression.callee.property !== "cancel") {
+            throw new DiagnosticError(fileName, expression.callee.location, `Task has no method ${JSON.stringify(expression.callee.property)}`);
+          }
+          if (expression.arguments.length !== 0) {
+            throw new DiagnosticError(fileName, expression.location, `"cancel" expects 0 arguments, received ${expression.arguments.length}`);
+          }
+          const context = state.asyncCallContexts.at(-1);
+          if (!state.activeFunction?.async || !context) {
+            throw new DiagnosticError(fileName, expression.location, "Task.cancel requires direct await", {
+              code: "Z0702",
+              notes: ["cancellation is a request-and-join operation; it never starts or detaches implicitly"],
+              helps: ["write `await task.cancel()` inside an async function"],
+            });
+          }
+          if (context.mode === "spawn") {
+            throw new DiagnosticError(fileName, expression.location, "Task.cancel cannot be spawned", {
+              code: "Z0703",
+              notes: ["cancel already joins the task whose cancellation it requests"],
+              helps: ["write `await task.cancel()`"],
+            });
+          }
+          if (expression.callee.object.kind !== "identifier") {
+            throw new DiagnosticError(fileName, expression.callee.object.location, "Task.cancel requires a named task handle");
+          }
+          context.calls += 1;
+          context.cancellationCalls += 1;
+          consumeOwnedValue(expression.callee.object, receiverType, locals, structs, enums, fileName, state, true);
+          return "void";
+        }
         if (receiverValueType === "TextBuffer") {
           rejectLabeledArguments(expression.argumentLabels, expression.location, fileName);
           const signatures: Readonly<Record<string, { readonly parameters: readonly string[]; readonly result: string }>> = {

@@ -210,6 +210,40 @@ when the last strong reference is released, followed by storage reclamation.
 The bootstrap counter is single-threaded; atomicity and actor/executor rules
 must be designed with concurrency rather than accidentally frozen now.
 
+## Future allocation families
+
+Borrow analysis and allocation policy remain separate. Stack/value storage,
+deterministic native RAII, ARC/ORC identity, arena regions, and unique manual
+allocations can all use the same ownership vocabulary without making one
+allocator the language model.
+
+An arena is the owner of its region. Values created in it are receiver-tied
+views: they cannot outlive the arena, and `arena.reset()` is an owner mutation
+that is rejected while any view remains live. The safest first probe is a
+lexically scoped arena:
+
+```z
+Arena.scoped((inout arena) => {
+  const document = arena.create(Document({ title: "Draft" }));
+  inspect(document);
+}); // every arena view is unavailable here
+```
+
+Unique manual allocation can remain safe while ownership is tracked:
+
+```z
+let block = Memory.allocate(4096);
+use(inout block);
+Memory.free(move block); // consumes the owner
+```
+
+Arbitrary raw pointers, untracked aliases, pointer arithmetic, and freeing
+foreign storage require an explicit `unsafe` boundary. Before arena syntax or
+`std/memory` settles, an application-shaped probe must decide whether tracked
+values run `deinit`, whether `reset()` destroys values or only releases bytes,
+how arena views compose with ARC and native RAII fields, whether arenas are
+sendable, and where allocator parameters belong on collections and APIs.
+
 Native aggregate construction intentionally distinguishes values from identity:
 
 ```z
@@ -798,10 +832,12 @@ Cancellation is a structural third task outcome rather than an error silently
 added to every `throws E` contract. It propagates down the task tree and
 unwinds frames through ordinary synchronous cleanup. `deinit` cannot suspend;
 fallible or suspending shutdown remains an explicit async operation. The
-bootstrap runtime has an internal cancellation request, but Z does not yet
-expose caller-driven task cancellation. A future task API must define how a
-caller requests cancellation and joins cleanup without pretending cancellation
-is either `E` or a successful `T` before syntax such as `task.cancel()` settles.
+consuming async method `await task.cancel()` requests cancellation and joins the
+task's complete descendant cleanup before the caller resumes. It returns `void`,
+not `T`, `E`, or a manufactured cancellation error. If completion wins the race,
+the same operation joins and discards the unclaimed result or domain error. A
+plain `await task` continues to observe the task's declared success/error
+contract; cancellation is never smuggled into `throws E`.
 
 The first ownership tier supports immutable `in` value/native parameters across
 suspension. A direct await stores a pointer into its stable suspended caller
