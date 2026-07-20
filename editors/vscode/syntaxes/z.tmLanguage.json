@@ -43,6 +43,18 @@
           "1": { "name": "storage.modifier.capability.z" }
         }
       }, {
+        "name": "meta.declaration.thread-contract.foreign.z",
+        "match": "\\b(thread)(?=\\s*\\{)",
+        "captures": {
+          "1": { "name": "keyword.control.declaration.thread.z" }
+        }
+      }, {
+        "name": "meta.declaration.thread-capability.foreign.z",
+        "match": "\\b(transfer|share|deinit)\\b(?=\\s*;)",
+        "captures": {
+          "1": { "name": "storage.modifier.capability.thread.z" }
+        }
+      }, {
         "name": "meta.declaration.parameter.inferred.z",
         "match": "(?:(\\b(?:inout|in|out|move)\\b)\\s+)?([A-Za-z_][A-Za-z0-9_]*)(?=\\s*:\\s*_(?:\\s*\\|\\s*null)?\\s*[,\\)])",
         "captures": {

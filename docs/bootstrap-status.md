@@ -70,11 +70,11 @@ an inferred receiver-tied view.
 | --- | --- | --- |
 | C functions and scalars | Implemented | Clang AST signatures, selective imports, aliases, variadics |
 | C records and enums | Implemented | Complete supported layouts, nested records, constants |
-| C pointers | Partial | Safe opaque handles and record borrows use adjacent `.zd` contracts; nullable declared handles lift into niche-backed `Option`; internal toolchain notes remain |
+| C pointers | Partial | Safe opaque handles and record borrows use adjacent `.zd` contracts; nullable declared handles lift into niche-backed `Option`; owned handles with explicit transfer/destruction facts cross `thread.spawn`; internal toolchain notes remain |
 | C callbacks | Partial | Call-only and caller-thread escaping callbacks use `.zd` with named context and exact release contracts; cross-thread callbacks remain unsupported |
 | Native availability | Implemented host slice | Explicit `z.json` platform/minimum target, introduced/obsoleted errors, deprecation warnings, native source locations, and matching Clang/Swift deployment flags; cross-compilation and runtime guards remain |
 | Objective-C | Partial | ARC classes/fields, methods, properties/global object constants, labels, nullability, niche-backed `Option.fromNullable`, owned `String`/`NSString` copies, escaping blocks and persistent observer tokens |
-| C++ | Partial | Hierarchical/selectively aliased namespaces, typed overloads, records, and `.zd`-contracted copyable or move-only RAII values; move-only values work in synchronous locals/calls/returns, Z structs, dynamic arrays, named enums, compiler `Option`/`Result`, direct async locals, owned async parameters, scoped immutable async borrows, direct-awaited and scope-bounded spawned mutable async borrows, whole Z async value aggregates, and fallible async results through `try`/`attempt`/match; named references and receiver qualifiers map to existing Z capabilities with direct native lowering; reference returns, spawned output async borrows, ARC/closure storage, capability-changing overloads, and templates remain |
+| C++ | Partial | Hierarchical/selectively aliased namespaces, typed overloads, records, and `.zd`-contracted copyable or move-only RAII values; move-only values work in synchronous locals/calls/returns, Z structs, dynamic arrays, named enums, compiler `Option`/`Result`, direct async locals, owned async parameters, scoped immutable async borrows, direct-awaited and scope-bounded spawned mutable async borrows, whole Z async value aggregates, fallible async results, and explicit native-thread transfer when `.zd` separately guarantees transfer and receiving-thread destruction; named references and receiver qualifiers map to existing Z capabilities with direct native lowering; reference returns, spawned output async borrows, ARC/closure storage, native sharing, capability-changing overloads, and templates remain |
 | Swift via Objective-C | Implemented slice | Generated compatibility header, classes/properties/methods, automatic local dylib build/link |
 | Swift value via C++ | Implemented probe | Native static construction, const/mutable instance methods, struct return/copy/aggregate storage/round-trip/destruction, and exact owned `String` returns without handwritten shim |
 | Broader Swift surface | Planned vertical slices | Length-aware `String` inputs, property sugar, generics, noncopyable values, protocols, errors, async, packages |
@@ -104,11 +104,11 @@ until the boundary is length-aware in both directions.
 | Async syntax and typing | Implemented | Functions/methods, `await`, `spawn`, task scopes, typed errors |
 | Stackless task frames | Partial | Scalars, owned String/TextBuffer, cleanup-bearing fixed arrays, growable arrays, copied Slice descriptors, owned structs/enums/classes, direct move-only C++ locals and parameters, collection elements containing them, cleanup-free direct-awaited output, and fallible native result transfer through `try`/`attempt`/match across suspension |
 | Executor | Implemented bootstrap | Deterministic single-thread FIFO ready queue |
-| Explicit native threads | Implemented narrow tier | `thread.spawn` starts one OS thread for a synchronous one-shot closure; `move` is required when capturing; plain values copy, unique Array/String/TextBuffer owners move, and deeply readonly classes share through atomic ARC; await and implicit scope exit join |
+| Explicit native threads | Implemented narrow tier | `thread.spawn` starts one OS thread for a synchronous one-shot closure; `move` is required when capturing; plain values copy, unique Array/String/TextBuffer owners and explicitly contracted C/C++ native owners move, and deeply readonly classes share through atomic ARC; await and implicit scope exit join; native `share` is reserved but not executable |
 | Structured scopes | Implemented slice | Lexical child joins, sibling/descendant cancellation, shared immutable and exclusive mutable child borrows (including fixed- and growable-collection-backed Slice), plus path-sensitive early release across straight-line code and `if` branches; loops remain conservative to scope exit |
 | Caller cancellation | Implemented slice | Consuming `await task.cancel()` requests cancellation, joins descendants and cleanup, and discards an unclaimed completed outcome |
 | Timers | Implemented slice | Scheduler-aware monotonic `delay`; blocking `sleep` remains synchronous |
-| Sync work in async frames | Partial | Z and direct C++ calls/methods, console, checked arithmetic, concise matches |
+| Sync work in async frames | Partial | Z and supported direct native calls/methods, console, checked arithmetic, concise matches |
 | Embedded awaits | Partial | Left-to-right cleanup-free values and awaited conditions |
 | Lazy/suspending expressions | Planned | `&&`, `||`, ternaries, value `if`, suspending match arms, owned hidden results |
 | Channels, actors, executors | Planned direction | API and sendability remain intentionally unsettled |
@@ -205,11 +205,12 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    UTF-8 boundary-preserving token copies, escape decoding, source locations,
    and typed lexer errors. A production lexer still needs complete token grammar,
    Unicode identifiers, template interpolation, and compiler data structures.
-5. **Threaded concurrency evidence — Copy, unique-owner, and readonly ARC slices implemented.**
+5. **Threaded concurrency evidence — Copy, unique-owner, native-owner, and readonly ARC slices implemented.**
    `thread.spawn` now proves one real cross-thread task frame with explicit
    move capture, hot start, structured join, private Copy snapshots, and moved
-   Array/String/TextBuffer owners/results plus atomic-ARC deeply readonly class
-   identity. Next probe broader cleanup-bearing sendability, weak-reference and
+   Array/String/TextBuffer owners/results, explicitly contracted C/C++ owners,
+   plus atomic-ARC deeply readonly class identity. Next probe broader
+   cleanup-bearing sendability, weak-reference and
    destruction-affinity protocols, mutable shared-state isolation,
    nonblocking executor integration, and a cross-thread callback before
    committing actors, channels, pools, or a multithreaded executor as settled

@@ -66,7 +66,7 @@ requiring lifetime syntax throughout ordinary application code.
 | Ownership | Lexical borrows, moves, deterministic cleanup, ARC, `Weak<T>`, `readonly` fields, inferred shareable classes, receiver-tied views, and synchronous arena regions |
 | Errors | Typed `throws`, `try` propagation, `attempt`, `Result<T, E>` |
 | Control flow | Checked arithmetic, loops, ternaries, value `if`, exhaustive `match` |
-| Async | Stackless tasks, FIFO executor, spawn/join scopes, cancellation, delay, and `thread.spawn` Copy snapshots, unique-owner moves, or atomic-ARC deeply readonly class references on one native thread |
+| Async | Stackless tasks, FIFO executor, spawn/join scopes, cancellation, delay, and `thread.spawn` Copy snapshots, unique-owner moves (including explicitly contracted native owners), or atomic-ARC deeply readonly class references on one native thread |
 | C | Header imports, functions, records, enums, constants, pointers with `.zd` contracts, callbacks, target-aware availability |
 | Objective-C | ARC objects, nullability, selectors, blocks, persistent observers, AppKit |
 | C++ | Hierarchical functions/types, overload selection, records, `.zd`-contracted copyable and move-only RAII values, constructors, methods, named-value references, and receiver qualifiers |

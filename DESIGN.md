@@ -1057,6 +1057,28 @@ separately. Copyable RAII values use native copy construction and assignment.
 Move-only RAII values participate in Z's single-owner analysis and lower owned
 transfers to native C++ moves; moved-from storage remains valid for its ordinary
 C++ destructor. Both forms may be nested in synchronously moved Z value structs.
+Thread transfer is a separate, trusted native fact rather than an implication of
+`move`:
+
+```z
+export type desktop.UniqueValue {
+  move;
+  deinit;
+  thread {
+    transfer;
+    deinit;
+  }
+}
+```
+
+The inner `transfer` authorizes one unique owner to cross a native thread
+boundary, while inner `deinit` authorizes destruction on the receiving thread.
+Owned C handle results use the same nested block after their `deinit close;`
+contract. The first executable tier requires both capabilities and supports
+move-only C++ RAII values and owned C handles in `thread.spawn`. `share` is
+reserved in the declaration grammar but is not executable until FIIR can name a
+concrete native retained/shared representation. Ordinary C++ movability alone
+does not establish thread safety.
 Public C++ constructors plus static and instance
 methods retain overload, availability, and source metadata in FIIR. Native value
 construction uses `Type(args)`; `new` remains the signal for ARC-managed Z class

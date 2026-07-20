@@ -11,6 +11,11 @@ export type PointerNote = {
   readonly access?: "in" | "out" | "inout";
   readonly nullable?: boolean;
   readonly release?: string;
+  readonly thread?: {
+    readonly transfer?: boolean;
+    readonly share?: boolean;
+    readonly deinit?: boolean;
+  };
   readonly callback?: {
     readonly lifetime?: "call" | "escape";
     readonly thread?: "caller";
@@ -180,11 +185,24 @@ function parseApiNotes(value: unknown, source: string): ApiNotes {
 
 function validatePointerNote(value: unknown, source: string, path: string): void {
   const note = requireRecord(value, source, path);
-  requireKeys(note, ["ownership", "access", "nullable", "release", "callback"], source, path);
+  requireKeys(note, ["ownership", "access", "nullable", "release", "thread", "callback"], source, path);
   requireEnum(note.ownership, ["owned", "borrowed", "consuming"], source, `${path}.ownership`);
   requireEnum(note.access, ["in", "out", "inout"], source, `${path}.access`);
   requireOptionalType(note.nullable, "boolean", source, `${path}.nullable`);
   requireOptionalType(note.release, "string", source, `${path}.release`);
+  if (note.thread !== undefined) {
+    const thread = requireRecord(note.thread, source, `${path}.thread`);
+    requireKeys(thread, ["transfer", "share", "deinit"], source, `${path}.thread`);
+    requireOptionalType(thread.transfer, "boolean", source, `${path}.thread.transfer`);
+    requireOptionalType(thread.share, "boolean", source, `${path}.thread.share`);
+    requireOptionalType(thread.deinit, "boolean", source, `${path}.thread.deinit`);
+    if (thread.transfer === true && thread.share === true) {
+      throw new Error(`invalid API notes ${JSON.stringify(source)}: ${path}.thread cannot declare both transfer and share`);
+    }
+    if (thread.transfer !== true && thread.share !== true) {
+      throw new Error(`invalid API notes ${JSON.stringify(source)}: ${path}.thread requires transfer or share`);
+    }
+  }
   if (note.callback === undefined) return;
   const callback = requireRecord(note.callback, source, `${path}.callback`);
   requireKeys(callback, ["lifetime", "thread", "context", "release"], source, `${path}.callback`);

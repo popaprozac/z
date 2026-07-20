@@ -2,5 +2,9 @@ declare module "move-only.hpp" {
   export type zcpp.UniqueValue {
     move;
     deinit;
+    thread {
+      transfer;
+      deinit;
+    }
   }
 }

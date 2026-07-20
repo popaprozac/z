@@ -1,6 +1,10 @@
 declare module "foreign-handles.h" {
   export function z_test_open(): _ | null {
     deinit z_test_close;
+    thread {
+      transfer;
+      deinit;
+    }
   }
   export function z_test_close(move handle: _): _;
   export function z_test_use(in handle: _): _;

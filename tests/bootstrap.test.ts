@@ -805,6 +805,23 @@ test("discovers owned-handle contracts from adjacent Z declaration files", () =>
     completions(deinitCompletionSource, declarationFile, deinitCompletionOffset).find((item) => item.label === "z_test_close")?.kind,
     3,
   );
+  const threadOffset = declarationSource.indexOf("thread") + 2;
+  assert.match(
+    hover(declarationSource, declarationFile, threadOffset)?.contents.value ?? "",
+    /native thread contract for the z_test_open result/,
+  );
+  const transferOffset = declarationSource.indexOf("transfer") + 2;
+  assert.match(
+    hover(declarationSource, declarationFile, transferOffset)?.contents.value ?? "",
+    /ownership may move to another thread/,
+  );
+  const transferCompletionSource = declarationSource.replace("transfer;", "trans");
+  const transferCompletionOffset = transferCompletionSource.indexOf("trans") + "trans".length;
+  assert.equal(
+    completions(transferCompletionSource, declarationFile, transferCompletionOffset)
+      .find((item) => item.label === "transfer")?.insertText,
+    "transfer;",
+  );
 
   const example = resolve(projectRoot, "examples/interop/c/declared-handle.z");
   const exampleSource = readFileSync(example, "utf8");
@@ -853,7 +870,31 @@ test("diagnoses malformed and mismatched Z declaration contracts", () => {
   `;
   const executableDiagnostic = diagnostics(executableContract, "/tmp/contract.h.zd")[0];
   assert.equal(executableDiagnostic.code, "Z0801");
-  assert.match(executableDiagnostic.message, /expected "deinit" or "callback" in foreign function contract/);
+  assert.match(executableDiagnostic.message, /expected "deinit", "thread", or "callback" in foreign function contract/);
+
+  const threadWithoutOwner = `
+    declare module "contract.h" {
+      export function known(): _ {
+        thread { transfer; deinit; }
+      }
+    }
+  `;
+  const ownerDiagnostic = diagnostics(threadWithoutOwner, "/tmp/contract.h.zd")[0];
+  assert.equal(ownerDiagnostic.code, "Z0801");
+  assert.match(ownerDiagnostic.message, /requires an owned return with deinit/);
+
+  const conflictingThreadContract = `
+    declare module "contract.hpp" {
+      export type Value {
+        move;
+        deinit;
+        thread { transfer; share; deinit; }
+      }
+    }
+  `;
+  const conflictingDiagnostic = diagnostics(conflictingThreadContract, "/tmp/contract.hpp.zd")[0];
+  assert.equal(conflictingDiagnostic.code, "Z0801");
+  assert.match(conflictingDiagnostic.message, /cannot declare both transfer and share/);
 
   const mismatchDirectory = mkdtempSync("/tmp/z-zd-module-");
   const mismatchHeader = resolve(mismatchDirectory, "contract.h");
@@ -6833,14 +6874,16 @@ test("editor grammar tracks keywords without reserving Result variants", () => {
   assert.equal(foreignDeclarationPatterns[1].captures[1].name, "storage.type.declaration.z");
   assert.equal(foreignDeclarationPatterns[1].captures[2].name, "entity.name.type.z");
   assert.equal(foreignDeclarationPatterns[2].captures[1].name, "storage.modifier.capability.z");
-  assert.equal(foreignDeclarationPatterns[3].captures[2].name, "variable.parameter.z");
-  assert.equal(foreignDeclarationPatterns[4].captures[2].name, "entity.name.function.destructor.z");
-  assert.equal(foreignDeclarationPatterns[5].captures[1].name, "storage.type.inferred.z");
-  assert.equal(foreignDeclarationPatterns[6].captures[1].name, "keyword.control.declaration.callback.z");
-  assert.equal(foreignDeclarationPatterns[7].captures[1].name, "keyword.control.declaration.callback.z");
-  assert.equal(foreignDeclarationPatterns[7].captures[2].name, "variable.parameter.context.z");
+  assert.equal(foreignDeclarationPatterns[3].captures[1].name, "keyword.control.declaration.thread.z");
+  assert.equal(foreignDeclarationPatterns[4].captures[1].name, "storage.modifier.capability.thread.z");
+  assert.equal(foreignDeclarationPatterns[5].captures[2].name, "variable.parameter.z");
+  assert.equal(foreignDeclarationPatterns[6].captures[2].name, "entity.name.function.destructor.z");
+  assert.equal(foreignDeclarationPatterns[7].captures[1].name, "storage.type.inferred.z");
   assert.equal(foreignDeclarationPatterns[8].captures[1].name, "keyword.control.declaration.callback.z");
-  assert.equal(foreignDeclarationPatterns[8].captures[2].name, "constant.language.callback-thread.z");
+  assert.equal(foreignDeclarationPatterns[9].captures[1].name, "keyword.control.declaration.callback.z");
+  assert.equal(foreignDeclarationPatterns[9].captures[2].name, "variable.parameter.context.z");
+  assert.equal(foreignDeclarationPatterns[10].captures[1].name, "keyword.control.declaration.callback.z");
+  assert.equal(foreignDeclarationPatterns[10].captures[2].name, "constant.language.callback-thread.z");
   assert.match(selectiveImportPatterns, /\\bas\\b/);
   assert.doesNotMatch("move () =>", new RegExp(matchPattern));
   assert.match("some(value) =>", new RegExp(matchPattern));
@@ -8833,6 +8876,101 @@ test("copies plain thread captures and moves uniquely owned Array storage", () =
     assert.match(error.message, /type "ThreadAffine" cannot cross/);
     return true;
   });
+});
+
+test("moves explicitly contracted native owners across thread boundaries", () => {
+  const example = resolve(projectRoot, "examples/async/thread-native.z");
+  const source = readFileSync(example, "utf8");
+  const generated = compileToNative(source, example).source;
+  assert.match(generated, /alignas\(zcpp::UniqueValue\).*value_measurement/);
+  assert.match(generated, /z_async_take\([^\n]+value_measurement/);
+  assert.match(generated, /\.value\(\)/);
+  const nativeWorkerPoll = generated.slice(generated.lastIndexOf("static void z_async_poll___z_thread_job_"));
+  assert.ok(nativeWorkerPoll.indexOf("std::destroy_at") >= 0);
+  assert.ok(nativeWorkerPoll.indexOf("std::destroy_at") < nativeWorkerPoll.indexOf("frame->task.completed = true"));
+
+  const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, "native thread answer=42\n");
+
+  const useAfterMove = source.replace(
+    "// measurement is unavailable here: its unique native owner moved to the thread.",
+    "const invalid = measurement.value();",
+  );
+  const movedDiagnostic = diagnostics(useAfterMove, example)[0];
+  assert.equal(movedDiagnostic.code, "Z0201");
+  assert.match(movedDiagnostic.message, /use of moved value "measurement"/);
+
+  const cHandleSource = `
+    import { thread } from "std/thread";
+    import handles from "tests/fixtures/foreign-handles.h";
+    async function main(): i32 {
+      const handle = handles.z_test_open();
+      if (handle == null) return 1;
+      const task = thread.spawn(move () => handles.z_test_use(handle));
+      return await task;
+    }
+  `;
+  const cHandleGenerated = compileToC(cHandleSource, resolve(projectRoot, "thread-native-handle.z"));
+  assert.match(cHandleGenerated, /ZTestHandle \*\s+value_handle/);
+  assert.match(cHandleGenerated, /z_test_close\(frame->value_handle\)/);
+  const handleWorkerPoll = cHandleGenerated.slice(cHandleGenerated.lastIndexOf("static void z_async_poll___z_thread_job_"));
+  assert.ok(handleWorkerPoll.indexOf("z_test_close(frame->value_handle)") >= 0);
+  assert.ok(handleWorkerPoll.indexOf("z_test_close(frame->value_handle)") < handleWorkerPoll.indexOf("frame->task.completed = true"));
+
+  const uncontractedDirectory = mkdtempSync("/tmp/z-thread-native-uncontracted-");
+  const uncontractedHeader = resolve(uncontractedDirectory, "native.hpp");
+  const uncontractedFile = resolve(uncontractedDirectory, "main.z");
+  writeFileSync(uncontractedHeader, readFileSync(resolve(projectRoot, "tests/fixtures/move-only.hpp"), "utf8"));
+  writeFileSync(`${uncontractedHeader}.zd`, `
+    declare module "native.hpp" {
+      export type zcpp.UniqueValue { move; deinit; }
+    }
+  `);
+  const uncontractedSource = `
+    import { thread } from "std/thread";
+    import native from "native.hpp";
+    async function main(): i32 {
+      const value = native.zcpp.UniqueValue(42);
+      const task = thread.spawn(move () => value.value());
+      return await task;
+    }
+  `;
+  const transferDiagnostic = diagnostics(uncontractedSource, uncontractedFile)[0];
+  assert.equal(transferDiagnostic.code, "Z0704");
+  assert.match(transferDiagnostic.message, /has no thread transfer contract/);
+  assert.match(transferDiagnostic.message, /thread \{ transfer; deinit; \}/);
+
+  writeFileSync(`${uncontractedHeader}.zd`, `
+    declare module "native.hpp" {
+      export type zcpp.UniqueValue {
+        move;
+        deinit;
+        thread { transfer; }
+      }
+    }
+  `);
+  const destructionDiagnostic = diagnostics(uncontractedSource, uncontractedFile)[0];
+  assert.equal(destructionDiagnostic.code, "Z0704");
+  assert.match(destructionDiagnostic.message, /cannot be destroyed on the receiving thread/);
+
+  writeFileSync(`${uncontractedHeader}.zd`, `
+    declare module "native.hpp" {
+      export type zcpp.UniqueValue {
+        move;
+        deinit;
+        thread { share; deinit; }
+      }
+    }
+  `);
+  const sharingDiagnostic = diagnostics(uncontractedSource, uncontractedFile)[0];
+  assert.equal(sharingDiagnostic.code, "Z0704");
+  assert.match(sharingDiagnostic.message, /native thread sharing, which is reserved but not executable yet/);
+
+  const declarationFile = resolve(projectRoot, "tests/fixtures/move-only.hpp.zd");
+  const declarationSource = readFileSync(declarationFile, "utf8");
+  const typeOffset = declarationSource.indexOf("UniqueValue") + 2;
+  assert.match(hover(declarationSource, declarationFile, typeOffset)?.contents.value ?? "", /thread: transfer, deinit/);
 });
 
 test("shares deeply readonly ARC classes through atomic thread captures", () => {

@@ -78,6 +78,7 @@ support or producing language-server diagnostics from hypothetical imports.
 - [`async-collection-slices.z`](async/async-collection-slices.z): growable and cleanup-bearing Slice backing, post-cancel growth, and reverse owner cleanup
 - [`async-out.z`](async/async-out.z): direct-awaited initialization of caller storage across suspension
 - [`async-methods.z`](async/async-methods.z)
+- [`thread-native.z`](async/thread-native.z): trusted `.zd` thread transfer and receiving-thread destruction for a move-only C++ owner
 
 ## Native interop
 

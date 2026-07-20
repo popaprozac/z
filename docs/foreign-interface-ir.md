@@ -111,7 +111,11 @@ facts are coherent:
    public constructors and static/instance methods retain overload signatures
    and native source metadata. Instance methods additionally retain borrowed,
    mutable, or consuming receiver access;
-9. explicit native unavailability is rejected at the Z use site and points back
+9. native thread transfer, shared identity, and receiving-thread destruction
+   remain explicit facts independent of ordinary move/copy/deinit lifecycle;
+   the current executable tier requires transfer plus destruction for a unique
+   C/C++ owner, while native sharing remains reserved;
+10. explicit native unavailability is rejected at the Z use site and points back
    to the native declaration. An explicit project deployment target also makes
    introduced/obsoleted versions errors and applicable deprecations warnings;
    without one, FIIR retains the versions without guessing a target.

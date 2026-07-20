@@ -2193,7 +2193,7 @@ function inferClosureExpression(
     if (parseSliceType(type)) {
       throw new DiagnosticError(fileName, capture.location, "capturing Slice values requires an explicit lifetime contract");
     }
-    if (expression.captureMode === "move" && hasMoveOnlyForeignType(type, structs, enums, state.foreignNamedTypes)) {
+    if (expression.captureMode === "move" && !oneShotOwnedCaptures && hasMoveOnlyForeignType(type, structs, enums, state.foreignNamedTypes)) {
       throw new DiagnosticError(fileName, capture.location, `owned closure environments cannot store move-only native ${type} values yet`, {
         code: "Z0240",
         notes: ["owned closure environments currently use storage that does not construct non-trivial C++ values"],
@@ -3879,11 +3879,13 @@ function inferExpressionInner(
                   const shareability = capturedClass?.kind === "class"
                     ? shareableTypeIssue(capturedClass.name, structs, enums, state)
                     : null;
-                  const detail = shareability ? `: ${shareability.reason}` : " yet";
+                  const foreignIssue = foreignThreadTransferIssue(capture.type, state);
+                  const issue = shareability ?? foreignIssue;
+                  const detail = issue ? `: ${issue.reason}` : " yet";
                   throw new DiagnosticError(fileName, capture.location, `capture ${JSON.stringify(capture.name)} of type ${JSON.stringify(capture.type)} cannot cross a native thread boundary${detail}`, {
                     code: "Z0704",
-                    notes: [shareability?.reason ?? "the current tier copies plain values, shares deeply readonly ARC identity, and moves supported Array, String, TextBuffer, and containing aggregate owners"],
-                    helps: [shareability?.help ?? "capture a transferable owned value, or keep this work on the inherited executor with `spawn`"],
+                    notes: [issue?.reason ?? "the current tier copies plain values, shares deeply readonly ARC identity, and moves supported Array, String, TextBuffer, and containing aggregate owners"],
+                    helps: [issue?.help ?? "capture a transferable owned value, or keep this work on the inherited executor with `spawn`"],
                   });
                 }
                 captureTransfers.push({ capture, kind: transfer });
@@ -5906,6 +5908,65 @@ type ShareabilityIssue = {
   readonly help: string;
 };
 
+function foreignThreadTransferIssue(type: ValueType, state: AnalysisState): ShareabilityIssue | null {
+  const actual = String(underlyingType(type));
+  const named = state.foreignNamedTypes.get(actual);
+  if (named?.kind === "value") {
+    if (named.thread.share) {
+      return {
+        reason: `${named.cName} declares native thread sharing, which is reserved but not executable yet`,
+        help: "use a uniquely owned transfer contract today; shared native identity needs a retained/thread-safe representation",
+      };
+    }
+    if (named.lifecycle.copy || !named.lifecycle.move) {
+      return {
+        reason: `${named.cName} is not a uniquely movable native value in the first thread tier`,
+        help: "use a move-only native value, or wait for native copy/share capture lowering",
+      };
+    }
+    if (!named.thread.transfer) {
+      return {
+        reason: `${named.cName} has no thread transfer contract`,
+        help: `add \`thread { transfer; deinit; }\` to its trusted .zd type contract after verifying the native guarantee`,
+      };
+    }
+    if (!named.thread.deinit) {
+      return {
+        reason: `${named.cName} cannot be destroyed on the receiving thread`,
+        help: "add deinit to its thread contract only when native destruction is safe there",
+      };
+    }
+  }
+  const pointer = state.foreignTypes.get(actual);
+  if (pointer) {
+    if (pointer.thread.share) {
+      return {
+        reason: `${pointer.cName} declares native thread sharing, which is reserved but not executable yet`,
+        help: "use an owned transfer contract today; shared native handles need an explicit retain/release representation",
+      };
+    }
+    if (pointer.ownership !== "owned") {
+      return {
+        reason: `${pointer.cName} is a borrowed native pointer`,
+        help: "return or construct an owned handle before crossing the thread boundary",
+      };
+    }
+    if (!pointer.thread.transfer) {
+      return {
+        reason: `${pointer.cName} has no thread transfer contract`,
+        help: "add a trusted thread transfer contract to the owned producer result",
+      };
+    }
+    if (!pointer.thread.deinit) {
+      return {
+        reason: `${pointer.cName} release is not declared safe on the receiving thread`,
+        help: "add deinit to the result thread contract only when its release function is safe there",
+      };
+    }
+  }
+  return null;
+}
+
 function shareableTypeIssue(
   type: ValueType,
   structs: ReadonlyMap<string, StructDeclaration>,
@@ -6014,7 +6075,25 @@ function initialThreadTransferKind(
   if (dynamic) {
     return initialThreadTransferKind(dynamic.elementType, structs, enums, state, visiting) ? "move" : null;
   }
-  if (state.foreignNamedTypes.has(actual) || state.foreignTypes.has(actual) || state.foreignObjectTypes.has(actual)) return null;
+  const foreignNamed = state.foreignNamedTypes.get(actual);
+  if (foreignNamed) {
+    return foreignNamed.kind === "value"
+      && foreignNamed.lifecycle.move
+      && !foreignNamed.lifecycle.copy
+      && foreignNamed.thread.transfer
+      && foreignNamed.thread.deinit
+      ? "move"
+      : null;
+  }
+  const foreignPointer = state.foreignTypes.get(actual);
+  if (foreignPointer) {
+    return foreignPointer.ownership === "owned"
+      && foreignPointer.thread.transfer
+      && foreignPointer.thread.deinit
+      ? "move"
+      : null;
+  }
+  if (state.foreignObjectTypes.has(actual)) return null;
   if (visiting.has(actual)) return null;
   const aggregate = structs.get(actual);
   if (aggregate) {

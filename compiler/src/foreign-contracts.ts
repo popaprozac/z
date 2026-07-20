@@ -160,6 +160,9 @@ function validateNoteTargets(
     if (!declaration) {
       throw contractError(fileName, location, `API notes name unknown foreign function ${JSON.stringify(name)}`);
     }
+    if (note.return?.thread && (note.return.ownership !== "owned" || !note.return.release)) {
+      throw contractError(fileName, location, `result thread contract for ${JSON.stringify(name)} requires owned return and release facts`);
+    }
     for (const indexText of Object.keys(note.parameters ?? {})) {
       const index = Number(indexText);
       if (
@@ -167,6 +170,9 @@ function validateNoteTargets(
         || declaration.overloads.some((overload) => index >= overload.parameters.length)
       ) {
         throw contractError(fileName, location, `API notes for ${JSON.stringify(name)} name missing parameter ${JSON.stringify(indexText)}`);
+      }
+      if (note.parameters?.[indexText]?.thread) {
+        throw contractError(fileName, location, `native thread contracts currently apply only to owned producer results, not parameter ${JSON.stringify(indexText)} of ${JSON.stringify(name)}`);
       }
     }
   }

@@ -59,6 +59,7 @@ type AsyncTarget = {
 type AsyncFunctionPlan = {
   readonly declaration: FunctionDeclaration;
   readonly owner: StructDeclaration | null;
+  readonly nativeThread: boolean;
   readonly frameName: string;
   readonly pollName: string;
   readonly startName: string;
@@ -513,6 +514,7 @@ function planFunction(
   return {
     declaration,
     owner,
+    nativeThread: [...threadTargets.values()].includes(target),
     frameName: `Z_AsyncFrame_${part}`,
     pollName: `z_async_poll_${part}`,
     startName: `z_async_start_${part}`,
@@ -1865,7 +1867,32 @@ function generatePoll(
     ]));
     state += 1;
   }
+  const nativeThreadCleanup = plan.nativeThread
+    ? [
+        ...[...plan.locals].reverse().flatMap(([name, type]) => (
+          plan.borrowedLocals.has(name) || !hasFrameCleanup(type, plan.types)
+            ? []
+            : [
+                `if (frame->${frameLiveField(name)}) {`,
+                `  ${frameCleanup(frameStoredValue(name, type, plan.types), type, plan.types)}`,
+                `  frame->${frameLiveField(name)} = false;`,
+                "}",
+              ]
+        )),
+        ...[...plan.suspensions.values()].reverse().flatMap((site) => (
+          !hasFrameCleanup(site.type, plan.types)
+            ? []
+            : [
+                `if (frame->${site.field}_live) {`,
+                `  ${frameCleanup(frameSuspensionValue(site, plan.types), site.type, plan.types)}`,
+                `  frame->${site.field}_live = false;`,
+                "}",
+              ]
+        )),
+      ]
+    : [];
   cases.push(caseBlock(state, [
+    ...nativeThreadCleanup,
     "frame->task.cancelled = frame->task.cancellation_requested;",
     "frame->task.completed = true;",
     "return;",
@@ -2317,6 +2344,8 @@ function emitFrameExpression(
       return expression.value;
     case "boolean":
       return expression.value ? "true" : "false";
+    case "null":
+      return "NULL";
     case "string": {
       const type = plan.types.semanticInfo.expressionTypes.get(expression.location.offset);
       return type === "String"
@@ -2693,6 +2722,8 @@ function cFrameType(type: string, types: AsyncTypeContext): string {
   if (types.enums.has(type)) return resultCName(type);
   const foreign = types.semanticInfo.foreignNamedTypes.get(type);
   if (foreign) return foreign.cName;
+  const foreignPointer = types.semanticInfo.foreignTypes.get(type);
+  if (foreignPointer) return foreignPointer.cName;
   throw new Error(`missing async aggregate ABI type ${JSON.stringify(type)}`);
 }
 
@@ -2724,6 +2755,7 @@ function isSupportedFrameType(type: string, types: AsyncTypeContext, visiting = 
   if (dynamicArray) return isSupportedFrameType(dynamicArray.elementType, types, visiting);
   if (parseSliceType(type)) return true;
   if (isDirectForeignFrameValue(type, types)) return true;
+  if (types.semanticInfo.foreignTypes.has(type)) return true;
   if (visiting.has(type)) return true;
   const aggregate = types.structs.get(type);
   if (aggregate) {
@@ -2750,6 +2782,8 @@ function hasFrameCleanup(type: string, types: AsyncTypeContext, visiting = new S
   if (type === "String" || type === "TextBuffer") return true;
   if (requiresNativeFramePlacement(type, types)) return true;
   if (directForeignFrameValue(type, types)?.lifecycle.deinit) return true;
+  const foreignPointer = types.semanticInfo.foreignTypes.get(type);
+  if (foreignPointer?.ownership === "owned" && foreignPointer.release) return true;
   if (parseDynamicArrayType(type)) return true;
   const fixedArray = parseFixedArrayType(type);
   if (fixedArray) return hasFrameCleanup(fixedArray.elementType, types, visiting);
@@ -2776,6 +2810,12 @@ function frameCleanup(value: string, type: string, types: AsyncTypeContext): str
   }
   if (type === "String" || type === "TextBuffer") {
     return `if ((${value}).capacity > 0) free((void *)(${value}).data);`;
+  }
+  const foreignPointer = types.semanticInfo.foreignTypes.get(type);
+  if (foreignPointer?.ownership === "owned" && foreignPointer.release) {
+    return foreignPointer.nullable
+      ? `if (${value} != NULL) ${foreignPointer.release}(${value});`
+      : `${foreignPointer.release}(${value});`;
   }
   const dynamicArray = parseDynamicArrayType(type);
   if (dynamicArray) {

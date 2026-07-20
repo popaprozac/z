@@ -526,6 +526,23 @@ is consumed at the Z level and emitted with native C++ move construction.
 Borrowing with `in` does not consume it. The moved-from C++ object's destructor
 still runs normally, while Z rejects later source use.
 
+Lifecycle and thread safety are separate contracts. A native owner may cross an
+explicit thread only when its declaration adds:
+
+```z
+thread {
+  transfer;
+  deinit;
+}
+```
+
+`transfer` authorizes moving one unique owner to another thread; inner `deinit`
+authorizes destruction on that receiving thread. The first executable tier
+supports move-only C++ values and owned C handles. `share` is reserved for a
+future retained/shared native identity and is not executable yet. Because these
+facts are not encoded by ordinary C/C++ ABI types, declaring them is a trusted
+FFI assertion.
+
 Public constructors plus static and instance methods on contracted C++ values are
 imported from the header without wrapper declarations. Construction and static
 calls live on the native type:

@@ -3,6 +3,7 @@ import type { SourceLocation } from "./ast.ts";
 import { DiagnosticError } from "./diagnostics.ts";
 import type { ApiNotes, PointerNote } from "./foreign-api-notes.ts";
 import type { ForeignFunctionDeclaration } from "./foreign-ir.ts";
+import type { ForeignThreadContract } from "./foreign-ir.ts";
 import { callbackParameterSpellings, normalizeCallbackContextType } from "./foreign-type-spelling.ts";
 import { lex, type Token } from "./lexer.ts";
 
@@ -23,7 +24,16 @@ export type ForeignFunctionContract = {
   readonly nameLocation: SourceLocation;
   readonly returnLocation: SourceLocation;
   readonly releaseLocation: SourceLocation | null;
+  readonly thread: ForeignThreadContract;
+  readonly threadLocations: ForeignThreadContractLocations;
   readonly callbacks: readonly ForeignCallbackContract[];
+};
+
+export type ForeignThreadContractLocations = {
+  readonly location: SourceLocation | null;
+  readonly transfer: SourceLocation | null;
+  readonly share: SourceLocation | null;
+  readonly deinit: SourceLocation | null;
 };
 
 export type ForeignCallbackContract = {
@@ -54,6 +64,8 @@ export type ForeignValueContract = {
   readonly copyLocation: SourceLocation | null;
   readonly moveLocation: SourceLocation | null;
   readonly deinitLocation: SourceLocation | null;
+  readonly thread: ForeignThreadContract;
+  readonly threadLocations: ForeignThreadContractLocations;
 };
 
 export function parseForeignDeclarationContracts(source: string, fileName: string): ForeignDeclarationContracts {
@@ -103,6 +115,46 @@ export function parseForeignDeclarationContracts(source: string, fileName: strin
     const type = parseInferredType();
     return { name: name.text, mode, nullable: type.nullable, location: name.location, typeLocation: type.location };
   };
+  const emptyThreadContract = (): {
+    readonly thread: ForeignThreadContract;
+    readonly locations: ForeignThreadContractLocations;
+  } => ({
+    thread: { transfer: false, share: false, deinit: false },
+    locations: { location: null, transfer: null, share: null, deinit: null },
+  });
+  const parseThreadContract = (owner: string): {
+    readonly thread: ForeignThreadContract;
+    readonly locations: ForeignThreadContractLocations;
+  } => {
+    const start = expectText("thread");
+    expectText("{");
+    let transfer: SourceLocation | null = null;
+    let share: SourceLocation | null = null;
+    let deinit: SourceLocation | null = null;
+    while (!at("}")) {
+      const capability = take();
+      if (!["transfer", "share", "deinit"].includes(capability.text)) {
+        fail(capability, `expected "transfer", "share", or "deinit" in ${owner} thread contract, found ${JSON.stringify(capability.text)}`);
+      }
+      const duplicate = capability.text === "transfer" ? transfer : capability.text === "share" ? share : deinit;
+      if (duplicate) fail(capability, `${owner} thread contract cannot declare ${capability.text} more than once`);
+      if (capability.text === "transfer") transfer = capability.location;
+      else if (capability.text === "share") share = capability.location;
+      else deinit = capability.location;
+      expectText(";");
+    }
+    expectText("}");
+    if (transfer && share) {
+      throw new DiagnosticError(fileName, share, `${owner} thread contract cannot declare both transfer and share; share already implies transfer`, { code: "Z0801" });
+    }
+    if (!transfer && !share) {
+      fail(start, `${owner} thread contract requires transfer or share`);
+    }
+    return {
+      thread: { transfer: Boolean(transfer), share: Boolean(share), deinit: Boolean(deinit) },
+      locations: { location: start.location, transfer, share, deinit },
+    };
+  };
 
   expectText("declare");
   expectText("module");
@@ -126,7 +178,13 @@ export function parseForeignDeclarationContracts(source: string, fileName: strin
       let copyLocation: SourceLocation | null = null;
       let moveLocation: SourceLocation | null = null;
       let deinitLocation: SourceLocation | null = null;
+      let threadContract = emptyThreadContract();
       while (!at("}")) {
+        if (at("thread")) {
+          if (threadContract.locations.location) fail(peek(), `foreign type ${JSON.stringify(name)} cannot declare more than one thread contract`);
+          threadContract = parseThreadContract(`foreign type ${JSON.stringify(name)}`);
+          continue;
+        }
         const capability = take();
         if (!["copy", "move", "deinit"].includes(capability.text)) {
           fail(capability, `expected "copy", "move", or "deinit" in foreign type contract, found ${JSON.stringify(capability.text)}`);
@@ -160,6 +218,8 @@ export function parseForeignDeclarationContracts(source: string, fileName: strin
         copyLocation,
         moveLocation,
         deinitLocation,
+        thread: threadContract.thread,
+        threadLocations: threadContract.locations,
       });
       continue;
     }
@@ -183,11 +243,17 @@ export function parseForeignDeclarationContracts(source: string, fileName: strin
     const returnNullable = returnType.nullable;
     let release: string | null = null;
     let releaseLocation: SourceLocation | null = null;
+    let threadContract = emptyThreadContract();
     const callbacks: ForeignCallbackContract[] = [];
     if (at("{")) {
       take();
       while (!at("}")) {
         const contract = peek();
+        if (at("thread")) {
+          if (threadContract.locations.location) fail(contract, `foreign function ${JSON.stringify(name)} cannot declare more than one result thread contract`);
+          threadContract = parseThreadContract(`result of foreign function ${JSON.stringify(name)}`);
+          continue;
+        }
         if (at("callback")) {
           take();
           const callback = expectIdentifier("a native callback parameter name");
@@ -247,7 +313,7 @@ export function parseForeignDeclarationContracts(source: string, fileName: strin
           continue;
         }
         if (!at("deinit")) {
-          fail(contract, `expected "deinit" or "callback" in foreign function contract, found ${JSON.stringify(contract.text)}`);
+          fail(contract, `expected "deinit", "thread", or "callback" in foreign function contract, found ${JSON.stringify(contract.text)}`);
         }
         if (release) fail(contract, `foreign function ${JSON.stringify(name)} cannot declare more than one deinit contract`);
         take();
@@ -260,6 +326,9 @@ export function parseForeignDeclarationContracts(source: string, fileName: strin
     } else {
       expectText(";");
     }
+    if (threadContract.locations.location && !release) {
+      throw new DiagnosticError(fileName, threadContract.locations.location, `result thread contract on ${JSON.stringify(name)} requires an owned return with deinit`, { code: "Z0801" });
+    }
     functions.push({
       name,
       parameters,
@@ -269,6 +338,8 @@ export function parseForeignDeclarationContracts(source: string, fileName: strin
       nameLocation: parsedName.location,
       returnLocation: returnType.location,
       releaseLocation,
+      thread: threadContract.thread,
+      threadLocations: threadContract.locations,
       callbacks,
     });
   }
@@ -432,6 +503,9 @@ export function foreignDeclarationApiNotes(
       return: {
         nullable: contract.returnNullable,
         ...(contract.release ? { ownership: "owned" as const, release: contract.release } : {}),
+        ...(contract.thread.transfer || contract.thread.share || contract.thread.deinit
+          ? { thread: contract.thread }
+          : {}),
       },
       ...(Object.keys(parameters).length ? { parameters } : {}),
     };

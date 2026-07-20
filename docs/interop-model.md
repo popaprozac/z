@@ -93,6 +93,33 @@ calls, and aggregate construction. Native lexical destruction handles both the
 destination and the valid moved-from source storage; no wrapper allocation or
 Z destructor dispatch is added.
 
+Native ownership does not imply cross-thread safety. An adjacent declaration
+must state that separately:
+
+```z
+declare module "library.hpp" {
+  export type zcpp.UniqueValue {
+    move;
+    deinit;
+    thread {
+      transfer;
+      deinit;
+    }
+  }
+}
+```
+
+The outer `move` and `deinit` describe ordinary value lifetime. Inside
+`thread`, `transfer` says one unique owner may move to another thread and
+`deinit` says its destruction is safe there. The same block may follow the
+`deinit close;` result contract of an owned C handle producer. These are trusted
+native facts: Z verifies their shape and enforces them, but cannot prove a
+vendor library's thread guarantees from its ABI. The first executable tier
+requires both facts and supports move-only C++ RAII values plus owned C handles.
+`share` is reserved and parsed for a future retained/shared native identity; it
+is rejected at `thread.spawn` until a concrete retain/release representation is
+available.
+
 The move-only tier covers direct synchronous locals, owned parameters and
 returns, whole Z value structs, dynamic arrays, named enum payloads, and
 compiler-provided `Option<T>`/`Result<T, E>` payloads. A direct native value or
@@ -160,6 +187,13 @@ a fresh length-aware UTF-8 copy. Swift `String` parameters remain unsupported
 until the generated boundary can accept an explicit byte length rather than a
 null-terminated input.
 
+The FIIR thread contract is producer-neutral. A future direct Swift importer can
+map Swift `Sendable`, consuming/noncopyable ownership, and actor isolation into
+the same transfer/share/destruction facts rather than treating generated C++
+movability as proof. The next hard Swift validation remains a noncopyable value
+or Swift async API crossing end to end; the current copyable wrapper probe does
+not claim that result.
+
 ## Cost model
 
 Z's target is **no interop tax beyond the semantics requested at the
@@ -205,6 +239,10 @@ nullability, and `deinit` describe the missing safety facts:
 declare module "vendor.h" {
   export function vendor_open(path: _): _ | null {
     deinit vendor_close;
+    thread {
+      transfer;
+      deinit;
+    }
   }
   export function vendor_close(move handle: _): _;
   export function vendor_use(in handle: _): _;

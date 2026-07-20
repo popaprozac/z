@@ -308,6 +308,7 @@ function collectNamedTypes(
     readonly declaration: ClangNode;
     readonly opaque: boolean;
     readonly lifecycle: ForeignValueLifecycle;
+    readonly thread: ForeignValueContract["thread"];
   }[] = [];
   if (cPlusPlus) {
     visitWithNamespaces(root, (node, namespaces) => {
@@ -341,6 +342,7 @@ function collectNamedTypes(
         lifecycle: contract
           ? { copy: contract.copy, move: contract.move, deinit: contract.deinit }
           : detectedLifecycle,
+        thread: contract?.thread ?? { transfer: false, share: false, deinit: false },
       });
     });
   }
@@ -357,6 +359,7 @@ function collectNamedTypes(
     underlying?: ForeignScalarTypeName;
     flags?: boolean;
     lifecycle?: ForeignValueLifecycle;
+    thread?: ForeignValueContract["thread"];
   };
   const seeds = new Map<string, Seed>();
   for (const node of nodes) {
@@ -404,6 +407,7 @@ function collectNamedTypes(
       declaration: record.declaration,
       sourceDeclaration: record.declaration,
       lifecycle: record.lifecycle,
+      thread: record.thread,
     });
   }
 
@@ -447,6 +451,7 @@ function collectNamedTypes(
         typeName: seed.typeName,
         cName: seed.cName,
         lifecycle: seed.lifecycle!,
+        thread: seed.thread ?? { transfer: false, share: false, deinit: false },
         constructors: [],
         staticMethods: [],
         methods: [],
@@ -1126,6 +1131,11 @@ function mapForeignType(
       ownership,
       nullable,
       release: note?.release ?? null,
+      thread: {
+        transfer: note?.thread?.transfer ?? false,
+        share: note?.thread?.share ?? false,
+        deinit: note?.thread?.deinit ?? false,
+      },
     };
     types.set(pointer.typeName, pointer);
     const alternate: ForeignPointerType = {

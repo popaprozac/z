@@ -51,6 +51,7 @@ export type ForeignNamedType = (
     readonly typeName: string;
     readonly cName: string;
     readonly lifecycle: ForeignValueLifecycle;
+    readonly thread: ForeignThreadContract;
     readonly constructors: readonly ForeignFunctionOverload[];
     readonly staticMethods: readonly ForeignCxxStaticMethod[];
     readonly methods: readonly ForeignCxxMethod[];
@@ -86,6 +87,12 @@ export type ForeignNamedType = (
 export type ForeignValueLifecycle = {
   readonly copy: boolean;
   readonly move: boolean;
+  readonly deinit: boolean;
+};
+
+export type ForeignThreadContract = {
+  readonly transfer: boolean;
+  readonly share: boolean;
   readonly deinit: boolean;
 };
 
@@ -171,6 +178,7 @@ export type ForeignPointerType = {
   readonly ownership: "owned" | "borrowed" | "consuming";
   readonly nullable: boolean;
   readonly release: string | null;
+  readonly thread: ForeignThreadContract;
 };
 
 export type ForeignRecordPointerType = {

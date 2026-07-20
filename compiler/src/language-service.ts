@@ -102,7 +102,7 @@ const primitiveTypeTokens = [
 
 const declarationKeywordTokens = [
   "declare", "module", "export", "function", "type", "copy", "in", "inout", "out", "move", "deinit",
-  "callback", "context", "thread", "caller",
+  "callback", "context", "thread", "caller", "transfer", "share",
 ] as const;
 
 export function diagnostics(source: string, fileName: string): ServiceDiagnostic[] {
@@ -1421,6 +1421,28 @@ function foreignDeclarationCompletions(source: string, fileName: string, offset:
     }
   }
 
+  const threadContext = /\bthread\s*\{([^{}]*?)([A-Za-z_]*)$/.exec(before);
+  if (threadContext) {
+    const existing = new Set([...threadContext[1].matchAll(/\b(transfer|share|deinit)\s*;/g)].map((match) => match[1]));
+    for (const capability of ["transfer", "share", "deinit"] as const) {
+      if (existing.has(capability)
+        || (capability === "transfer" && existing.has("share"))
+        || (capability === "share" && existing.has("transfer"))
+        || !capability.startsWith(threadContext[2])) continue;
+      contextual.push({
+        label: capability,
+        kind: completionKinds.keyword,
+        detail: capability === "transfer"
+          ? "unique native ownership may move to another thread"
+          : capability === "share"
+            ? "reserved: native identity may be shared across threads"
+            : "native destruction is safe on the receiving thread",
+        insertText: `${capability};`,
+        sortText: `0-${capability}`,
+      });
+    }
+  }
+
   const functionPrefix = /\bexport\s+function\s+([A-Za-z_][A-Za-z0-9_.]*)?$/.exec(before)?.[1];
   if (module && functionPrefix !== undefined) {
     const declared = new Set([...source.matchAll(/\bexport\s+function\s+([A-Za-z_][A-Za-z0-9_.]*)\s*\(/g)].map((match) => match[1]));
@@ -1587,6 +1609,16 @@ function foreignDeclarationHover(source: string, fileName: string, offset: numbe
         return markdownHover(`${capability}: native lifecycle capability of ${declaration.cName}`, source, word.start, word.end);
       }
     }
+    for (const [capability, location, detail] of [
+      ["thread", contract.threadLocations.location, `native thread contract for ${declaration.cName}`],
+      ["transfer", contract.threadLocations.transfer, `unique ${declaration.cName} ownership may move to another thread`],
+      ["share", contract.threadLocations.share, `reserved native sharing contract for ${declaration.cName}`],
+      ["deinit", contract.threadLocations.deinit, `${declaration.cName} may be destroyed on the receiving thread`],
+    ] as const) {
+      if (location?.offset === word.start) {
+        return markdownHover(`${capability}: ${detail}`, source, word.start, word.end);
+      }
+    }
   }
 
   for (const contract of contracts.functions) {
@@ -1616,6 +1648,16 @@ function foreignDeclarationHover(source: string, fileName: string, offset: numbe
       const release = module.functions.get(contract.release);
       if (release) {
         return markdownHover(`${foreignFunctionDetail(release)}\n// deinitializer for ${contract.name} result`, source, word.start, word.end);
+      }
+    }
+    for (const [capability, location, detail] of [
+      ["thread", contract.threadLocations.location, `native thread contract for the ${contract.name} result`],
+      ["transfer", contract.threadLocations.transfer, `unique ${contract.name} result ownership may move to another thread`],
+      ["share", contract.threadLocations.share, `reserved native sharing contract for the ${contract.name} result`],
+      ["deinit", contract.threadLocations.deinit, `${contract.name} result may be destroyed on the receiving thread`],
+    ] as const) {
+      if (location?.offset === word.start) {
+        return markdownHover(`${capability}: ${detail}`, source, word.start, word.end);
       }
     }
     for (const callback of contract.callbacks) {
@@ -2873,6 +2915,9 @@ function foreignNamedTypeDetail(named: ForeignNamedType): string {
   const available = (["copy", "move", "deinit"] as const).filter((capability) => named.lifecycle[capability]);
   const unavailable = (["copy", "move", "deinit"] as const).filter((capability) => !named.lifecycle[capability]);
   const missing = unavailable.length ? `; unavailable: ${unavailable.join(", ")}` : "";
+  const threadCapabilities = (["transfer", "share", "deinit"] as const)
+    .filter((capability) => named.thread[capability]);
+  const thread = threadCapabilities.length ? `; thread: ${threadCapabilities.join(", ")}` : "";
   const constructors = named.constructors.map((overload) => {
     const parameters = overload.parameters.map((parameter, index) => (
       foreignParameterDetail(parameter, index)
@@ -2880,7 +2925,7 @@ function foreignNamedTypeDetail(named: ForeignNamedType): string {
     return `${named.exportName}(${parameters.join(", ")}): ${named.typeName}  // C++ constructor`;
   });
   const constructorDetail = constructors.length ? `\n${constructors.join("\n")}` : "";
-  return `${named.exportName}: ${named.cName}  // native value: ${available.join(", ")}${missing}${constructorDetail}`;
+  return `${named.exportName}: ${named.cName}  // native value: ${available.join(", ")}${missing}${thread}${constructorDetail}`;
 }
 
 function foreignFunctionDetail(declaration: ForeignFunction): string {

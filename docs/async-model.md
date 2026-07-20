@@ -156,10 +156,14 @@ A deeply readonly Z class may also cross by shared identity. The compiler
 recursively verifies its fields and methods, emits atomic strong ARC operations,
 and retains a worker reference; the parent reference remains usable. Mutable
 classes, borrowed `in`, `inout`, and `out` bindings, `view`, `Slice`, `Arena`,
-weak references, native handles, C++ RAII values, and custom `deinit` remain
-rejected. Concurrent weak upgrade awaits a shared side-table protocol. Atomic
-ARC protects reference lifetime only; mutable shared class state will require
-actors, synchronization, or another explicit isolation contract.
+weak references, and custom Z `deinit` remain rejected. A move-only C++ RAII
+value or owned C handle may transfer when its adjacent `.zd` contract explicitly
+declares `thread { transfer; deinit; }`; the source binding is consumed and the
+worker frame performs native destruction or release. Uncontracted native owners
+remain rejected because ordinary move/destruction capability does not establish
+thread safety. Concurrent weak upgrade awaits a shared side-table protocol.
+Atomic ARC protects reference lifetime only; mutable shared class state will
+require actors, synchronization, or another explicit isolation contract.
 
 The worker may call ordinary synchronous Z or supported native functions. It
 cannot suspend or `await`. In this first runtime, joining the worker blocks the
@@ -377,7 +381,7 @@ operation())` therefore needs no source-level temporary. Lazy suspension under
 short-circuit operators, ternaries, value-producing `if`, and match arms is
 diagnosed until branch-aware expression lowering can preserve selected-branch
 evaluation. The next Phase 1 layers add owned hidden-result and match-payload
-transfer, block and suspending arms, direct foreign calls, and brace-local value
-cleanup. Later phases
+transfer, block and suspending arms, broader foreign-call shapes, and brace-local
+value cleanup. Later phases
 add channels, sendability and atomic ARC, native executors, actors, and
 callback-to-async synthesis. Async-free programs never link the runtime.

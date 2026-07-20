@@ -107,8 +107,9 @@ planned experiment rather than a rejected direction.
 2. Run an arena/region spike and study projection models such as Hylo's before
    widening `view` or introducing user-visible lifetime identities.
 3. **Begun:** `thread.spawn` now proves explicit move capture, private Copy
-   snapshots, moved Array/String/TextBuffer owners/results, deeply readonly
-   atomic-ARC class sharing, and structured join on one native thread. Extend
+   snapshots, moved Array/String/TextBuffer owners/results, explicitly
+   contracted C/C++ owner transfer, deeply readonly atomic-ARC class sharing,
+   and structured join on one native thread. Extend
    that evidence with broader cleanup-bearing sendability, weak-reference and
    destruction-affinity protocols, mutable shared-state isolation, nonblocking
    executor integration, and a cross-thread callback before fixing pools or a
