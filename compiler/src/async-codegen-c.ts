@@ -181,11 +181,18 @@ function planFunction(
     locals.set("this", owner.name);
   }
   for (const parameter of declaration.parameters) {
-    if (parameter.mode !== "value" && parameter.mode !== "in" && parameter.mode !== "inout") {
+    if (
+      parameter.mode !== "value"
+      && parameter.mode !== "in"
+      && parameter.mode !== "inout"
+      && parameter.mode !== "out"
+    ) {
       unsupported(fileName, parameter.location, "borrowed async parameters are not executable yet");
     }
-    if (parameter.mode === "in" || parameter.mode === "inout") borrowedLocals.add(parameter.name);
-    if (parameter.mode === "inout") mutableBorrowedLocals.add(parameter.name);
+    if (parameter.mode === "in" || parameter.mode === "inout" || parameter.mode === "out") {
+      borrowedLocals.add(parameter.name);
+    }
+    if (parameter.mode === "inout" || parameter.mode === "out") mutableBorrowedLocals.add(parameter.name);
     requireFrameType(parameter.type.name, parameter.type.location, fileName, "async parameter", types);
     locals.set(parameter.name, parameter.type.name);
   }
@@ -279,10 +286,7 @@ function planFunction(
       }
       operations.push({ kind: "statement", statement });
       if (statement.kind === "variable") {
-        if (!statement.initializer) {
-          unsupported(fileName, statement.location, "uninitialized async frame locals are not executable yet");
-        }
-        if (scope !== 0 && statement.initializer.kind !== "spawn") {
+        if (scope !== 0 && statement.initializer?.kind !== "spawn") {
           unsupported(
             fileName,
             statement.location,
@@ -300,6 +304,14 @@ function planFunction(
         const type = statement.type?.name ?? semanticInfo.bindingTypes.get(statement.nameLocation.offset);
         if (!type) unsupported(fileName, statement.location, `could not determine async frame type for ${JSON.stringify(statement.name)}`);
         requireFrameType(type, statement.type?.location ?? statement.nameLocation, fileName, "async local", types);
+        if (!statement.initializer && hasFrameCleanup(type, types)) {
+          unsupported(
+            fileName,
+            statement.location,
+            "an uninitialized ownership-bearing async local needs live-storage transition lowering",
+            "initialize the binding immediately, or use a cleanup-free out destination in this tier",
+          );
+        }
         if (controlDepth > 0 && locals.has(statement.name)) {
           unsupported(
             fileName,
@@ -315,6 +327,7 @@ function planFunction(
           );
         }
         locals.set(statement.name, type);
+        if (!statement.initializer) continue;
         if (statement.initializer.kind === "spawn") {
           recordNestedAwaits(statement.initializer.expression, statement.initializer);
           const site = spawnSite(
@@ -343,6 +356,13 @@ function planFunction(
           recordNestedAwaits(statement.initializer);
           validateFrameExpression(statement.initializer, locals, fileName, types, suspensions);
         }
+        continue;
+      }
+      if (statement.kind === "assignment") {
+        recordNestedAwaits(statement.target);
+        recordNestedAwaits(statement.expression);
+        validateFrameExpression(statement.target, locals, fileName, types, suspensions);
+        validateFrameExpression(statement.expression, locals, fileName, types, suspensions);
         continue;
       }
       if (statement.kind === "return") {
@@ -1157,8 +1177,8 @@ function generateDestroy(
 
 function generateStartSignature(plan: AsyncFunctionPlan): string {
   const parameters = ["Z_AsyncExecutor *executor", ...frameInputs(plan).map((input) => {
-    if (input.mode === "in" || input.mode === "inout") {
-      return `${borrowedFrameType(input.type, plan.types, input.mode === "inout")} ${frameField(input.name)}`;
+    if (input.mode === "in" || input.mode === "inout" || input.mode === "out") {
+      return `${borrowedFrameType(input.type, plan.types, input.mode !== "in")} ${frameField(input.name)}`;
     }
     const separator = requiresNativeFramePlacement(input.type, plan.types) ? " &&" : " ";
     return `${cFrameType(input.type, plan.types)}${separator}${frameField(input.name)}`;
@@ -1204,7 +1224,7 @@ function generateStart(plan: AsyncFunctionPlan): string {
   }
   for (const input of frameInputs(plan)) {
     const name = frameField(input.name);
-    if (input.mode === "in" || input.mode === "inout") {
+    if (input.mode === "in" || input.mode === "inout" || input.mode === "out") {
       lines.push(`  frame->${name} = ${name};`);
     } else if (requiresNativeFramePlacement(input.type, plan.types)) {
       lines.push(`  new (frame->${name}) ${cFrameType(input.type, plan.types)}(std::move(${name}));`);
@@ -1220,7 +1240,7 @@ function generateStart(plan: AsyncFunctionPlan): string {
 function frameInputs(plan: AsyncFunctionPlan): readonly {
   readonly name: string;
   readonly type: string;
-  readonly mode: "value" | "in" | "inout";
+  readonly mode: "value" | "in" | "inout" | "out";
 }[] {
   return [
     ...(plan.owner && !plan.declaration.static
@@ -1231,7 +1251,9 @@ function frameInputs(plan: AsyncFunctionPlan): readonly {
       type: parameter.type.name,
       mode: parameter.mode === "in"
         ? "in" as const
-        : parameter.mode === "inout" ? "inout" as const : "value" as const,
+        : parameter.mode === "inout"
+          ? "inout" as const
+          : parameter.mode === "out" ? "out" as const : "value" as const,
     })),
   ];
 }
@@ -1252,7 +1274,7 @@ function emitAwaitArguments(
   arguments_.push(...site.call.arguments.map((argument, index) => {
     const value = emitFrameExpression(argument, parent, fileName);
     const parameter = site.target.declaration.parameters[index];
-    if (parameter?.mode !== "in" && parameter?.mode !== "inout") return value;
+    if (parameter?.mode !== "in" && parameter?.mode !== "inout" && parameter?.mode !== "out") return value;
     return parameter.mode === "in" && parent.types.structs.get(parameter.type.name)?.kind === "class"
       ? value
       : `&(${value})`;
@@ -1339,13 +1361,25 @@ function generatePoll(
       continue;
     }
     const statement = operation.statement;
-    if (statement.kind === "variable") emitNestedAwaits(statement.initializer!);
+    if (statement.kind === "variable" && statement.initializer) emitNestedAwaits(statement.initializer);
+    else if (statement.kind === "assignment") {
+      emitNestedAwaits(statement.target);
+      emitNestedAwaits(statement.expression);
+    }
     else if (statement.kind === "return" && statement.expression) emitNestedAwaits(statement.expression);
     else if (statement.kind === "throw" || statement.kind === "expressionStatement") {
       emitNestedAwaits(statement.expression);
     }
     if (statement.kind === "variable") {
-      const initializer = statement.initializer!;
+      const initializer = statement.initializer;
+      if (!initializer) {
+        cases.push(caseBlock(state, [
+          `frame->state = ${state + 1};`,
+          "continue;",
+        ]));
+        state += 1;
+        continue;
+      }
       if (initializer.kind === "spawn") {
         const site = plan.spawns.get(initializer.location.offset)!;
         const target = planByKey.get(targetKey(site.target))!;
@@ -1421,6 +1455,24 @@ function generatePoll(
         ]));
         state += 1;
       }
+      continue;
+    }
+    if (statement.kind === "assignment") {
+      const type = frameExpressionType(statement.target, plan);
+      if (hasFrameCleanup(type, plan.types)) {
+        unsupported(
+          fileName,
+          statement.location,
+          "ownership-bearing replacement assignment is not executable in async frames yet",
+          "initialize a new owned binding, or use direct-awaited inout mutation",
+        );
+      }
+      cases.push(caseBlock(state, [
+        `${emitFrameExpression(statement.target, plan, fileName)} = ${emitFrameExpression(statement.expression, plan, fileName)};`,
+        `frame->state = ${state + 1};`,
+        "continue;",
+      ]));
+      state += 1;
       continue;
     }
     if (statement.kind === "return") {

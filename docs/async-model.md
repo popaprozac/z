@@ -173,10 +173,19 @@ await refreshAfter(inout document);
 ```
 
 Mutation is not rolled back if the task later throws or is cancelled. Spawned
-`inout`, `out`, `Slice<T>`, ARC-reference rebinding, borrowed struct receivers,
-and other unrelated live borrows remain rejected. Cross-thread executors will
-additionally require sendability before these pointer-backed borrows can leave
-one thread.
+`inout` remains rejected. A non-throwing direct await may also pass `out` storage:
+
+```z
+let reading: SensorReading;
+await readSensorAfter(20, out reading);
+```
+
+The callee may suspend, but must initialize the output on every successful path
+before the caller resumes. This first tier is cleanup-free; ownership-bearing
+output needs a completion-time live-storage handoff. Spawned `out`, `Slice<T>`,
+ARC-reference rebinding, borrowed struct receivers, and other unrelated live
+borrows remain rejected. Cross-thread executors will additionally require
+sendability before these pointer-backed borrows can leave one thread.
 
 Classes and structs may declare async methods. A class receiver is retained by
 the task frame. A struct async instance method must initially declare `move
@@ -216,8 +225,9 @@ await`, `attempt await`, payloadless `void` success, and root failure exit.
 Move-only native Results use aligned placement storage and their generated
 tagged-union destructor instead of plain aggregate assignment. `z
 emit` produces readable C for this subset and `z run` executes it.
-Immutable parameters and direct-awaited mutable parameters use pointers into a
-stable suspended caller frame and are never destroyed by the child frame.
+Immutable parameters and direct-awaited mutable or cleanup-free output
+parameters use pointers into a stable suspended caller frame and are never
+destroyed by the child frame.
 Unsupported but valid async shapes report `Z0700` with a specific boundary
 diagnostic.
 

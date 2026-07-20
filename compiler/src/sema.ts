@@ -575,10 +575,10 @@ export function analyze(
   }
 
   for (const declaration of program.structs) {
-    analyzeStructDeclaration(declaration, structs, enums, foreignNamedTypes, fileName);
+    analyzeStructDeclaration(declaration, structs, enums, foreignNamedTypes, foreignTypes, fileName);
   }
   for (const declaration of program.traits) {
-    analyzeTraitDeclaration(declaration, structs, enums, foreignNamedTypes, fileName);
+    analyzeTraitDeclaration(declaration, structs, enums, foreignNamedTypes, foreignTypes, fileName);
   }
   for (const declaration of program.structs) {
     validateTraitConformance(declaration, traits, fileName);
@@ -595,7 +595,7 @@ export function analyze(
         `\`${declaration.receiverMode} this\` is only valid on a struct method (or class method)`,
       );
     }
-    validateFunctionSignature(declaration, structs, enums, foreignNamedTypes, fileName);
+    validateFunctionSignature(declaration, structs, enums, foreignNamedTypes, foreignTypes, fileName);
     if (parseReceiverViewReturnType(declaration.returnType.name)) {
       throw new DiagnosticError(fileName, declaration.returnType.location, "view returns require a borrowed instance method receiver", {
         code: "Z0206",
@@ -669,6 +669,7 @@ function analyzeStructDeclaration(
   structs: Map<string, StructDeclaration>,
   enums: Map<string, EnumDeclaration>,
   foreignNamedTypes: ReadonlyMap<string, ForeignNamedType>,
+  foreignTypes: ReadonlyMap<string, ForeignPointerType>,
   fileName: string,
 ): void {
   if (declaration.constructor && declaration.kind !== "class") {
@@ -720,7 +721,7 @@ function analyzeStructDeclaration(
         helps: ["use `move this`, make the operation synchronous, or move shared identity into a class"],
       });
     }
-    validateFunctionSignature(method, structs, enums, foreignNamedTypes, fileName);
+    validateFunctionSignature(method, structs, enums, foreignNamedTypes, foreignTypes, fileName);
     const view = parseReceiverViewReturnType(method.returnType.name);
     if (view) {
       if (declaration.kind !== "struct") {
@@ -742,7 +743,7 @@ function analyzeStructDeclaration(
     }
   }
   if (declaration.constructor) {
-    validateFunctionSignature(constructorFunction(declaration), structs, enums, foreignNamedTypes, fileName);
+    validateFunctionSignature(constructorFunction(declaration), structs, enums, foreignNamedTypes, foreignTypes, fileName);
   }
 }
 
@@ -751,6 +752,7 @@ function analyzeTraitDeclaration(
   structs: Map<string, StructDeclaration>,
   enums: Map<string, EnumDeclaration>,
   foreignNamedTypes: ReadonlyMap<string, ForeignNamedType>,
+  foreignTypes: ReadonlyMap<string, ForeignPointerType>,
   fileName: string,
 ): void {
   const methods = new Set<string>();
@@ -760,7 +762,7 @@ function analyzeTraitDeclaration(
       throw new DiagnosticError(fileName, method.location, `duplicate method ${JSON.stringify(method.name)} in trait ${JSON.stringify(declaration.name)}`);
     }
     methods.add(method.name);
-    validateFunctionSignature(method, structs, enums, foreignNamedTypes, fileName);
+    validateFunctionSignature(method, structs, enums, foreignNamedTypes, foreignTypes, fileName);
     if (containsViewType(method.returnType.name)) {
       throw new DiagnosticError(fileName, method.returnType.location, "trait requirements cannot expose receiver-tied views in the first view tier", { code: "Z0206" });
     }
@@ -850,6 +852,7 @@ function validateFunctionSignature(
   structs: Map<string, StructDeclaration>,
   enums: Map<string, EnumDeclaration>,
   foreignNamedTypes: ReadonlyMap<string, ForeignNamedType>,
+  foreignTypes: ReadonlyMap<string, ForeignPointerType>,
   fileName: string,
 ): void {
   validateType(declaration.returnType, structs, enums, foreignNamedTypes, fileName, true);
@@ -895,14 +898,22 @@ function validateFunctionSignature(
       });
     }
     const slice = parseSliceType(parameter.type.name);
-    if (
-      declaration.async
-      && (parameter.mode === "out" || Boolean(slice))
-    ) {
+    if (declaration.async && Boolean(slice)) {
       throw new DiagnosticError(fileName, parameter.location, `async parameter ${JSON.stringify(parameter.name)} cannot borrow storage in the first async tier`, {
         code: "Z0704",
-        notes: ["output and Slice borrows require additional suspension-safe initialization and lifetime analysis"],
-        helps: ["pass an owned value, an `in` or `inout` value, or an ARC class reference into the async function"],
+        notes: ["Slice borrows require additional suspension-safe lifetime analysis"],
+        helps: ["pass an owned value, an `in`, `inout`, or cleanup-free `out` value, or an ARC class reference into the async function"],
+      });
+    }
+    if (
+      declaration.async
+      && parameter.mode === "out"
+      && hasCleanupType(parameter.type.name, structs, enums, foreignTypes)
+    ) {
+      throw new DiagnosticError(fileName, parameter.location, `async out parameter ${JSON.stringify(parameter.name)} cannot initialize ownership-bearing storage yet`, {
+        code: "Z0704",
+        notes: ["the first async out tier supports cleanup-free values; owned output needs a completion-time live-storage handoff"],
+        helps: ["return the owned value, or use an initialized direct-awaited `inout` parameter"],
       });
     }
     if (declaration.async && parameter.mode === "in" && structs.get(parameter.type.name)?.kind === "class") {
@@ -2804,7 +2815,9 @@ function firstLiveBorrow(
   const asyncParameters = new Set(
     activeFunction?.async
       ? activeFunction.parameters
-        .filter((parameter) => parameter.mode === "in" || parameter.mode === "inout")
+        .filter((parameter) => (
+          parameter.mode === "in" || parameter.mode === "inout" || parameter.mode === "out"
+        ))
         .map((parameter) => parameter.name)
       : [],
   );
@@ -3216,7 +3229,7 @@ function inferExpressionInner(
       if (borrowed) {
         throw new DiagnosticError(fileName, expression.location, `cannot await while borrowed storage ${JSON.stringify(borrowed)} is live`, {
           code: "Z0704",
-          notes: ["only explicit async `in` and direct-awaited `inout` parameters currently carry borrows across suspension"],
+          notes: ["only explicit async `in`, direct-awaited `inout`, and direct-awaited `out` parameters currently carry borrows across suspension"],
           helps: ["finish this lexical borrow before awaiting, or pass storage through an appropriate async parameter capability"],
         });
       }
@@ -4389,6 +4402,14 @@ function checkArguments(
       state.nativeArgumentAccesses.set(argument.location.offset, "out");
       state.expressionTypes.set(argument.location.offset, String(underlyingType(stored)));
       state.expressionTypes.set(argument.nameLocation.offset, String(underlyingType(stored)));
+      const asyncContext = state.asyncCallContexts.at(-1);
+      if (target.async && asyncContext?.mode === "spawn") {
+        throw new DiagnosticError(fileName, argument.location, `spawned output borrow of ${JSON.stringify(argument.name)} is not supported`, {
+          code: "Z0704",
+          notes: ["direct await suspends the caller until initialization finishes; spawned output would leave caller storage concurrently observable"],
+          helps: [`use \`await ${target.name}(out ${argument.name})\`, or return an owned result from the spawned task`],
+        });
+      }
       continue;
     }
     if (parameter.mode === "inout") {

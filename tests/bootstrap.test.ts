@@ -7055,11 +7055,11 @@ test("constructs and destroys move-only C++ values across async suspension", () 
   assert.equal(parameterMoveDiagnostic.code, "Z0201");
   assert.match(parameterMoveDiagnostic.message, /use of moved value "resource"/);
 
-  const outputBorrowedParameter = `
+  const deferredSliceParameter = `
     struct Resource { value: i32; }
-    async function inspect(out resource: Resource): i32 { return 0; }
+    async function inspect(resources: Slice<Resource>): i32 { return 0; }
   `;
-  const borrowedParameterDiagnostic = diagnostics(outputBorrowedParameter, resolve(directory, "borrowed-parameter.z"))[0];
+  const borrowedParameterDiagnostic = diagnostics(deferredSliceParameter, resolve(directory, "borrowed-parameter.z"))[0];
   assert.equal(borrowedParameterDiagnostic.code, "Z0704");
   assert.match(borrowedParameterDiagnostic.message, /cannot borrow storage in the first async tier/);
 
@@ -7545,6 +7545,58 @@ test("mutates caller storage through a direct-awaited async inout parameter", ()
   `);
   const failed = spawnSync(process.execPath, [cli, "run", failure], { encoding: "utf8" });
   assert.equal(failed.status, 0, failed.stderr);
+});
+
+test("initializes cleanup-free caller storage through a direct-awaited async out parameter", () => {
+  const example = resolve(projectRoot, "examples/async/async-out.z");
+  const source = readFileSync(example, "utf8");
+  const generated = compileToNative(source, example).source;
+  assert.match(generated, /Z_SensorReading \* value_reading;/);
+  assert.match(
+    generated,
+    /z_async_start_readSensorAfter\(Z_AsyncExecutor \*executor, int32_t value_sensorId, Z_SensorReading \* value_reading\)/,
+  );
+  assert.match(generated, /\(\*frame->value_reading\) = \(Z_SensorReading\)/);
+  assert.match(
+    generated,
+    /z_async_start_readSensorAfter\(frame->task\.executor, 20, &\(frame->value_reading\)\)/,
+  );
+
+  const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, "sensor=20, celsius=22\n");
+
+  const spawned = `
+    async function fill(out value: i32): void { value = 42; }
+    async function main(): i32 {
+      let value: i32;
+      async scope { spawn fill(out value); }
+      return value;
+    }
+  `;
+  const spawnedDiagnostic = diagnostics(spawned, "async-spawn-out.z")[0];
+  assert.equal(spawnedDiagnostic.code, "Z0704");
+  assert.match(spawnedDiagnostic.message, /spawned output borrow of "value" is not supported/);
+
+  const incomplete = `
+    async function fill(out value: i32): void { return; }
+  `;
+  const incompleteDiagnostic = diagnostics(incomplete, "async-incomplete-out.z")[0];
+  assert.equal(incompleteDiagnostic.code, "Z0305");
+  assert.match(incompleteDiagnostic.message, /out parameter "value" is not initialized/);
+
+  const ownedOutput = `
+    struct Resource {
+      value: i32;
+      deinit {}
+    }
+    async function fill(out resource: Resource): void {
+      resource = Resource({ value: 42 });
+    }
+  `;
+  const ownedDiagnostic = diagnostics(ownedOutput, "async-owned-out.z")[0];
+  assert.equal(ownedDiagnostic.code, "Z0704");
+  assert.match(ownedDiagnostic.message, /cannot initialize ownership-bearing storage yet/);
 });
 
 test("checks retained class receivers and consuming struct receivers in async methods", () => {

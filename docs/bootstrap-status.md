@@ -100,7 +100,7 @@ until the boundary is length-aware in both directions.
 | Area | Status | Current boundary |
 | --- | --- | --- |
 | Async syntax and typing | Implemented | Functions/methods, `await`, `spawn`, task scopes, typed errors |
-| Stackless task frames | Partial | Scalars, aggregates, owned structs/enums/classes, direct move-only C++ locals and parameters, whole Z value aggregates containing them, and fallible native result transfer through `try`/`attempt`/match across suspension |
+| Stackless task frames | Partial | Scalars, aggregates, owned structs/enums/classes, direct move-only C++ locals and parameters, whole Z value aggregates containing them, cleanup-free direct-awaited output, and fallible native result transfer through `try`/`attempt`/match across suspension |
 | Executor | Implemented bootstrap | Deterministic single-thread FIFO ready queue |
 | Structured scopes | Implemented slice | Lexical child joins, sibling/descendant cancellation on propagation, and scope-bounded immutable child borrows |
 | Caller cancellation | Implemented slice | Consuming `await task.cancel()` requests cancellation, joins descendants and cleanup, and discards an unclaimed completed outcome |
@@ -178,8 +178,9 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    `attempt await`, hidden result slots, match, and cancellation. Owned async
    parameters transfer into child frames at task creation. Immutable `in`
    parameters work through direct await and explicit-scope spawn. Mutable
-   `inout` parameters work through direct await; spawned mutable/output async
-   borrows, ARC fields, and closure environments remain.
+   `inout` and cleanup-free `out` parameters work through direct await; spawned
+   mutable/output async borrows, ownership-bearing output, ARC fields, and
+   closure environments remain.
 3. **Larger application probe — implemented.** The multi-module
    `document-workspace` combines a move-only native lease, dynamic arrays,
    named enum transfer, cleanup-bearing errors, `try`/`attempt`, mutable methods,

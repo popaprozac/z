@@ -849,10 +849,14 @@ class parameters intentionally use the ordinary owned parameter form instead,
 which retains identity while preserving caller access. A direct-awaited `inout`
 parameter stores a mutable pointer into the same stable caller frame; the caller
 cannot resume until the callee finishes. Mutations completed before an error or
-cancellation remain visible—`inout` is not transactional. Spawned `inout`,
-`out`, Slice, ARC-reference rebinding, borrowed struct receivers, and other live
-borrows remain rejected across suspension. Cross-thread executors must prove
-sendability before any pointer-backed borrow can leave its originating thread.
+cancellation remain visible—`inout` is not transactional. A non-throwing,
+direct-awaited `out` parameter may similarly initialize cleanup-free caller
+storage; every successful path must assign it before returning. Ownership-bearing
+output waits for completion-time live-storage handoff lowering. Spawned `inout`
+and `out`, Slice, ARC-reference rebinding, borrowed struct receivers, and other
+live borrows remain rejected across suspension. Cross-thread executors must
+prove sendability before any pointer-backed borrow can leave its originating
+thread.
 Owned values, ARC class references, owned closures, direct move-only native
 values, and whole Z value structs or enums containing them may be stored in task
 frames. Native
@@ -989,9 +993,10 @@ ARC fields and owned closure environments remain separate storage tiers. Direct
 move-only native locals and whole Z value aggregates containing them use aligned
 placement storage inside async locals, owned parameter slots, and task results;
 fallible results compose with `try await`, `attempt await`, hidden expression
-slots, and match. Immutable scoped async parameters and direct-awaited mutable
-parameters borrow without a wrapper, retain, or copy; spawned mutable and output
-async parameters remain deferred.
+slots, and match. Immutable scoped async parameters, direct-awaited mutable
+parameters, and cleanup-free direct-awaited output parameters borrow without a
+wrapper, retain, or copy; spawned mutable/output async parameters and
+ownership-bearing output remain deferred.
 Named-value `const T&`, `T&`, and move-only `T&&` parameters reuse Z's `in`,
 `inout`, and owned-value capabilities. Receiver-qualified `const &`, `&`, and
 move-only `&&` methods likewise map to borrowed, mutable, and consuming

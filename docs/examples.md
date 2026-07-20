@@ -80,6 +80,7 @@ Read [`async-model.md`](async-model.md) alongside these examples:
 | Owned native async parameters | [`async-native-parameters.z`](../examples/async/async-native-parameters.z) — immediate argument transfer into hot spawned tasks for direct C++ owners and native-owning Z structs |
 | Scoped immutable async borrowing | [`async-borrowing.z`](../examples/async/async-borrowing.z) — direct-await C++ borrow, two scope-bounded child borrows of one Z aggregate, post-join consumption, and zero leaked native values |
 | Direct-awaited mutable borrowing | [`async-inout.z`](../examples/async/async-inout.z) — a Z struct and move-only C++ owner mutated after suspension without ownership transfer or leaked cleanup |
+| Direct-awaited output initialization | [`async-out.z`](../examples/async/async-out.z) — a suspended callee initializes cleanup-free caller storage before the caller resumes |
 | Async methods | [`async-methods.z`](../examples/async/async-methods.z) |
 
 ```sh
