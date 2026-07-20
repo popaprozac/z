@@ -10,7 +10,7 @@ import type {
 } from "./ast.ts";
 import { DiagnosticError } from "./diagnostics.ts";
 import { parseTaskType } from "./async-types.ts";
-import { parseDynamicArrayType, parseFixedArrayType, parseSliceType } from "./array-types.ts";
+import { dynamicArrayTypeName, parseDynamicArrayType, parseFixedArrayType, parseSliceType } from "./array-types.ts";
 import { resultTypeName } from "./results.ts";
 import { standardFunctionSignature } from "./standard-library.ts";
 import type { IntegerOperation, SemanticInfo } from "./sema.ts";
@@ -2230,6 +2230,10 @@ function emitFrameExpression(
       const elements = expression.elements.map((element) => emitFrameExpression(element, plan, fileName));
       return `(${cFrameType(type, plan.types)}){ .data = { ${elements.join(", ")} } }`;
     }
+    case "dynamicArrayExpression": {
+      const type = dynamicArrayTypeName(expression.elementType);
+      return `(${cFrameType(type, plan.types)}){ .data = NULL, .length = 0, .capacity = 0 }`;
+    }
     case "index": {
       const ownerType = frameExpressionType(expression.object, plan);
       const array = parseFixedArrayType(ownerType);
@@ -2330,6 +2334,11 @@ function emitFrameExpression(
       }
       if (expression.callee.kind === "member") {
         const receiverType = frameExpressionType(expression.callee.object, plan);
+        if (parseDynamicArrayType(receiverType) && expression.callee.property === "push") {
+          const receiver = emitFrameExpression(expression.callee.object, plan, fileName);
+          const argument = emitFrameExpression(expression.arguments[0], plan, fileName);
+          return `${dynamicArrayPushName(receiverType)}(&(${receiver}), ${argument})`;
+        }
         const owner = plan.types.structs.get(receiverType);
         const method = owner?.methods.find((candidate) => (
           !candidate.static && !candidate.async && candidate.name === expression.callee.property
@@ -2470,6 +2479,7 @@ function cFrameType(type: string, types: AsyncTypeContext): string {
   if (scalarTypes.has(type)) return cScalar(type);
   if (parseFixedArrayType(type)) return `Z_Array_${asyncNativeSymbolPart(type)}`;
   if (parseSliceType(type)) return `Z_Slice_${asyncNativeSymbolPart(type)}`;
+  if (parseDynamicArrayType(type)) return `Z_DynamicArray_${asyncNativeSymbolPart(type)}`;
   const aggregate = types.structs.get(type);
   if (aggregate) return aggregate.kind === "class" ? `Z_${type} *` : `Z_${type}`;
   if (types.enums.has(type)) return resultCName(type);
@@ -2499,9 +2509,10 @@ function isSupportedFrameType(type: string, types: AsyncTypeContext, visiting = 
   if (scalarTypes.has(type)) return true;
   const fixedArray = parseFixedArrayType(type);
   if (fixedArray) {
-    return isSupportedFrameType(fixedArray.elementType, types, visiting)
-      && !hasFrameCleanup(fixedArray.elementType, types);
+    return isSupportedFrameType(fixedArray.elementType, types, visiting);
   }
+  const dynamicArray = parseDynamicArrayType(type);
+  if (dynamicArray) return isSupportedFrameType(dynamicArray.elementType, types, visiting);
   if (parseSliceType(type)) return true;
   if (isDirectForeignFrameValue(type, types)) return true;
   if (visiting.has(type)) return true;
@@ -2529,6 +2540,9 @@ function hasFrameCleanup(type: string, types: AsyncTypeContext, visiting = new S
   if (visiting.has(type)) return false;
   if (requiresNativeFramePlacement(type, types)) return true;
   if (directForeignFrameValue(type, types)?.lifecycle.deinit) return true;
+  if (parseDynamicArrayType(type)) return true;
+  const fixedArray = parseFixedArrayType(type);
+  if (fixedArray) return hasFrameCleanup(fixedArray.elementType, types, visiting);
   const aggregate = types.structs.get(type);
   if (aggregate?.kind === "class") return true;
   const enumeration = types.enums.get(type);
@@ -2550,6 +2564,31 @@ function frameCleanup(value: string, type: string, types: AsyncTypeContext): str
     const native = `std::destroy_at(&(${value}));`;
     return managed ? `${managed}\n${native}` : native;
   }
+  const dynamicArray = parseDynamicArrayType(type);
+  if (dynamicArray) {
+    const lines: string[] = [];
+    if (hasFrameCleanup(dynamicArray.elementType, types)) {
+      const index = `_z_async_cleanup_${asyncNativeSymbolPart(type)}`;
+      const element = `(${value}).data[${index} - 1]`;
+      lines.push(
+        `for (uintptr_t ${index} = (${value}).length; ${index} > 0; ${index} -= 1) {\n`
+          + `${indent(frameCleanup(element, dynamicArray.elementType, types), 2)}\n}`,
+      );
+    }
+    lines.push(
+      requiresNativeFramePlacement(dynamicArray.elementType, types)
+        ? `::operator delete((${value}).data);`
+        : `free((${value}).data);`,
+    );
+    return lines.join("\n");
+  }
+  const fixedArray = parseFixedArrayType(type);
+  if (fixedArray) {
+    const index = `_z_async_cleanup_${asyncNativeSymbolPart(type)}`;
+    const element = `(${value}).data[${index} - 1]`;
+    return `for (uintptr_t ${index} = ${fixedArray.length}; ${index} > 0; ${index} -= 1) {\n`
+      + `${indent(frameCleanup(element, fixedArray.elementType, types), 2)}\n}`;
+  }
   const aggregate = types.structs.get(type);
   if (aggregate?.kind === "class") return `Z_${type}_release(${value});`;
   if (aggregate?.kind === "struct") return `Z_${type}_deinit(&(${value}));`;
@@ -2569,6 +2608,18 @@ function frameCleanup(value: string, type: string, types: AsyncTypeContext): str
 
 function frameManagedCleanup(value: string, type: string, types: AsyncTypeContext): string {
   if (isDirectForeignFrameValue(type, types)) return "";
+  const fixedArray = parseFixedArrayType(type);
+  if (fixedArray) {
+    const cleanup = frameManagedCleanup(
+      `(${value}).data[_z_async_managed_${asyncNativeSymbolPart(type)} - 1]`,
+      fixedArray.elementType,
+      types,
+    );
+    if (!cleanup) return "";
+    const index = `_z_async_managed_${asyncNativeSymbolPart(type)}`;
+    return `for (uintptr_t ${index} = ${fixedArray.length}; ${index} > 0; ${index} -= 1) {\n`
+      + `${indent(cleanup, 2)}\n}`;
+  }
   const aggregate = types.structs.get(type);
   if (aggregate?.kind === "class") return `Z_${type}_release(${value});`;
   if (aggregate?.kind === "struct") return hasManagedFrameCleanup(type, types) ? `Z_${type}_deinit(&(${value}));` : "";
@@ -2587,6 +2638,8 @@ function frameManagedCleanup(value: string, type: string, types: AsyncTypeContex
 
 function hasManagedFrameCleanup(type: string, types: AsyncTypeContext, visiting = new Set<string>()): boolean {
   if (visiting.has(type) || isDirectForeignFrameValue(type, types)) return false;
+  const fixedArray = parseFixedArrayType(type);
+  if (fixedArray) return hasManagedFrameCleanup(fixedArray.elementType, types, visiting);
   const aggregate = types.structs.get(type);
   if (aggregate?.kind === "class") return true;
   const enumeration = types.enums.get(type);
@@ -2620,6 +2673,8 @@ function requiresNativeFramePlacement(
 ): boolean {
   if (visiting.has(type)) return false;
   if (isDirectForeignFrameValue(type, types)) return true;
+  const fixedArray = parseFixedArrayType(type);
+  if (fixedArray) return requiresNativeFramePlacement(fixedArray.elementType, types, visiting);
   const aggregate = types.structs.get(type);
   const enumeration = types.enums.get(type);
   if (!aggregate && !enumeration) return false;
@@ -2632,6 +2687,10 @@ function requiresNativeFramePlacement(
       ));
   visiting.delete(type);
   return result;
+}
+
+function dynamicArrayPushName(type: string): string {
+  return `Z_DynamicArray_${asyncNativeSymbolPart(type)}_push`;
 }
 
 function frameStoredValue(name: string, type: string, types: AsyncTypeContext): string {

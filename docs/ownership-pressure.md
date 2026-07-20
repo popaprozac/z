@@ -167,7 +167,7 @@ interpolated messages.
 
 ## Not tested yet
 
-- spawned output, growable-array-backed Slice, and cross-thread borrows that survive suspension;
+- spawned output and cross-thread borrows that survive suspension;
 - parameter-provenanced, retained, or class-owned views;
 - cross-thread ownership, atomic ARC, and sendability;
 - cyclic application graphs under ORC;

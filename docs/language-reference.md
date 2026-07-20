@@ -481,9 +481,13 @@ behavior. Value/native `inout` parameters may suspend when called through direct
 join. An explicit async scope also permits one spawned `inout` child to hold
 exclusive access. Consuming that task through await or cancellation releases the
 borrow early; otherwise scope exit releases it. Async `Slice<T>` parameters copy
-only their pointer/length descriptor and borrow cleanup-free fixed-array backing
-storage under the same direct-await or scoped-spawn rules. Growable-array-backed
-Slices and ARC-reference rebinding are not implemented. Non-throwing
+only their pointer/length descriptor and borrow fixed-array or growable
+`Array<T>` backing storage under the same direct-await or scoped-spawn rules.
+The owner may contain Z cleanup-bearing or move-only C++ elements; task-frame
+cleanup destroys initialized elements in reverse order on success, failure, or
+cancellation. A live Slice loan prevents `Array.push` and other owner mutation
+that could invalidate its data pointer. ARC-reference rebinding is not
+implemented. Non-throwing
 direct-awaited `out` parameters may initialize cleanup-free caller storage and
 must do so on every successful path; spawned and ownership-bearing output remain
 deferred. Mutations made before failure or cancellation are not rolled back.

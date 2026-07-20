@@ -7821,6 +7821,123 @@ test("borrows fixed-array storage as Slice across async suspension", () => {
   assert.match(overlapDiagnostic.message, /cannot borrow "values" as inout while an active in loan exists/);
 });
 
+test("borrows growable and cleanup-bearing collection storage across async suspension", () => {
+  const example = resolve(projectRoot, "examples/async/async-collection-slices.z");
+  const source = readFileSync(example, "utf8");
+  const generated = compileToNative(source, example).source;
+
+  assert.match(generated, /Z_DynamicArray_\S+ value_readings;/);
+  assert.match(generated, /Z_DynamicArray_\S+ value_registered;/);
+  assert.match(generated, /Z_DynamicArray_\S+_push\(&\(frame->value_readings\), 10\)/);
+  assert.match(generated, /\.data = \(frame->value_registered\)\.data, \.length = \(\(frame->value_registered\)\.length\)/);
+  assert.match(generated, /for \(uintptr_t _z_async_cleanup_\S+ = \(frame->value_registered\)\.length;/);
+  assert.match(generated, /for \(uintptr_t _z_async_cleanup_\S+ = 2;/);
+
+  const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(
+    result.stdout,
+    "total=40, registered=7, fallback=11\n"
+      + "released sensor 13\n"
+      + "released sensor 11\n"
+      + "released sensor 10\n"
+      + "released sensor 9\n"
+      + "released sensor 7\n",
+  );
+
+  const liveGrow = `
+    async function inspect(values: Slice<i32>): i32 { return values[0]; }
+    async function main(): i32 {
+      let values = Array<i32>();
+      values.push(41);
+      async scope {
+        const task = spawn inspect(values);
+        values.push(42);
+        await task;
+      }
+      return 0;
+    }
+  `;
+  const growDiagnostic = diagnostics(liveGrow, "async-grow-live-slice.z")[0];
+  assert.equal(growDiagnostic.code, "Z0704");
+  assert.match(growDiagnostic.message, /cannot mutate "values" while a spawned task borrows it/);
+
+  const afterJoin = liveGrow.replace(
+    "values.push(42);\n        await task;",
+    "await task;\n        values.push(42);",
+  );
+  check(afterJoin, "async-grow-after-join.z");
+});
+
+test("destroys move-only native collection elements on async completion and cancellation", () => {
+  const directory = mkdtempSync("/tmp/z-async-native-collections-");
+  const sourceFile = resolve(directory, "main.z");
+  const header = resolve(projectRoot, "tests/fixtures/move-only.hpp");
+  writeFileSync(sourceFile, `
+    import native from ${JSON.stringify(header)};
+    import { delay } from "std/time";
+
+    async function inspect(values: Slice<native.zcpp.UniqueValue>): i32 {
+      await delay(1);
+      return values[0].value();
+    }
+
+    async function exerciseDynamic(): i32 {
+      let values = Array<native.zcpp.UniqueValue>();
+      values.push(native.zcpp.UniqueValue(40));
+      values.push(native.zcpp.UniqueValue(2));
+      return await inspect(values);
+    }
+
+    async function exerciseFixed(): i32 {
+      const values = [native.zcpp.UniqueValue(20), native.zcpp.UniqueValue(22)];
+      return await inspect(values);
+    }
+
+    async function holdDynamic(): void {
+      let values = Array<native.zcpp.UniqueValue>();
+      values.push(native.zcpp.UniqueValue(30));
+      values.push(native.zcpp.UniqueValue(31));
+      await delay(1000);
+    }
+
+    async function holdFixed(): void {
+      const values = [native.zcpp.UniqueValue(32), native.zcpp.UniqueValue(33)];
+      await delay(1000);
+    }
+
+    async function main(): i32 {
+      const dynamicValue = await exerciseDynamic();
+      const afterDynamic = native.zcpp.unique_live();
+      const fixedValue = await exerciseFixed();
+      const afterFixed = native.zcpp.unique_live();
+      async scope {
+        const dynamicTask = spawn holdDynamic();
+        await delay(1);
+        await dynamicTask.cancel();
+      }
+      const afterDynamicCancel = native.zcpp.unique_live();
+      async scope {
+        const fixedTask = spawn holdFixed();
+        await delay(1);
+        await fixedTask.cancel();
+      }
+      const afterFixedCancel = native.zcpp.unique_live();
+      return dynamicValue - 40 + afterDynamic + fixedValue - 20 + afterFixed
+        + afterDynamicCancel + afterFixedCancel;
+    }
+  `);
+
+  const source = readFileSync(sourceFile, "utf8");
+  const generated = compileToNative(source, sourceFile).source;
+  assert.match(generated, /::operator delete\(\(frame->value_values\)\.data\)/);
+  assert.match(generated, /std::destroy_at\(&\(\(frame->value_values\)\.data\[/);
+  assert.match(generated, /std::destroy_at\(&\(\(\*std::launder\(reinterpret_cast<Z_Array_/);
+
+  const result = spawnSync(process.execPath, [cli, "run", sourceFile], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+});
+
 test("initializes cleanup-free caller storage through a direct-awaited async out parameter", () => {
   const example = resolve(projectRoot, "examples/async/async-out.z");
   const source = readFileSync(example, "utf8");

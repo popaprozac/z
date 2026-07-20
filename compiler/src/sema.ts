@@ -141,6 +141,7 @@ export type SemanticInfo = {
   readonly foreignExpressionTypes: ReadonlyMap<number, string>;
   readonly numericLiteralTypes: ReadonlyMap<number, string>;
   readonly integerOperations: ReadonlyMap<number, IntegerOperation>;
+  readonly dynamicArrayPushTypes: ReadonlySet<string>;
   readonly foreignArgumentAccesses: ReadonlyMap<number, "in" | "out" | "inout">;
   readonly foreignCxxArgumentAccesses: ReadonlyMap<number, "in" | "inout" | "move">;
   readonly foreignCallbackTargets: ReadonlyMap<number, string>;
@@ -196,6 +197,7 @@ type AnalysisState = {
   readonly foreignExpressionTypes: Map<number, string>;
   readonly numericLiteralTypes: Map<number, string>;
   readonly integerOperations: Map<number, IntegerOperation>;
+  readonly dynamicArrayPushTypes: Set<string>;
   readonly foreignArgumentAccesses: Map<number, "in" | "out" | "inout">;
   readonly foreignCxxArgumentAccesses: Map<number, "in" | "inout" | "move">;
   readonly foreignCallbackTargets: Map<number, string>;
@@ -375,6 +377,7 @@ export function analyze(
     foreignExpressionTypes: new Map(),
     numericLiteralTypes: new Map(),
     integerOperations: new Map(),
+    dynamicArrayPushTypes: new Set(),
     foreignArgumentAccesses: new Map(),
     foreignCxxArgumentAccesses: new Map(),
     foreignCallbackTargets: new Map(),
@@ -1489,13 +1492,15 @@ function analyzeStatement(
         return;
       }
       const directForeignValue = state.foreignNamedTypes.get(String(underlyingType(variableType)));
-      const aggregateForeignValue = structs.get(String(underlyingType(variableType)))?.kind === "struct"
-        || enums.has(String(underlyingType(variableType)));
+      const supportedAsyncNativeContainer = structs.get(String(underlyingType(variableType)))?.kind === "struct"
+        || enums.has(String(underlyingType(variableType)))
+        || Boolean(parseFixedArrayType(String(underlyingType(variableType))))
+        || Boolean(parseDynamicArrayType(String(underlyingType(variableType))));
       if (
         state.activeFunction?.async
         && hasMoveOnlyForeignType(variableType, structs, enums, state.foreignNamedTypes)
         && directForeignValue?.kind !== "value"
-        && !aggregateForeignValue
+        && !supportedAsyncNativeContainer
         && !/^__z_(?:Option|Result)_/.test(String(underlyingType(variableType)))
       ) {
         throw new DiagnosticError(fileName, statement.location, "async locals cannot store move-only native values in the first C++ ownership tier", {
@@ -4020,6 +4025,7 @@ function inferExpressionInner(
           const actual = inferExpression(expression.arguments[0], locals, globals, structs, enums, fileName, state);
           requireAssignable(dynamic.elementType, actual, expression.arguments[0], fileName, state.foreignNamedTypes, state.numericLiteralTypes);
           consumeOwnedValue(expression.arguments[0], dynamic.elementType, locals, structs, enums, fileName, state);
+          state.dynamicArrayPushTypes.add(receiverValueType);
           return "void";
         }
         const weak = parseWeakType(receiverValueType);

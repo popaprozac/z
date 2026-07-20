@@ -1258,6 +1258,7 @@ function collectDynamicArrayPushTypes(program: Program, semanticInfo: SemanticIn
   for (const declaration of program.structs) {
     for (const method of declaration.methods) collectParameterReceivers(method);
   }
+  for (const type of semanticInfo.dynamicArrayPushTypes) collected.add(type);
   return [...collected];
 }
 

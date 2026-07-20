@@ -234,9 +234,13 @@ async scope {
 }
 ```
 
-The executable backing-storage tier is currently cleanup-free fixed arrays.
-Growable arrays and cleanup-bearing fixed arrays need additional task-frame
-cleanup. Spawned `out`, ARC-reference rebinding, borrowed struct receivers, and
+Executable backing storage includes fixed arrays and growable `Array<T>` owners,
+including Z cleanup-bearing and move-only C++ element types. The task frame owns
+the collection storage, destroys initialized elements in reverse order, and
+releases it on ordinary completion, failure, or cancellation. A growable owner
+cannot call `push` or otherwise reallocate while a child holds a Slice loan; an
+explicit join or consuming cancellation releases the loan and permits growth
+again. Spawned `out`, ARC-reference rebinding, borrowed struct receivers, and
 other unrelated live borrows remain rejected. Cross-thread executors will
 additionally require sendability before these pointer-backed borrows can leave
 one thread.
@@ -269,9 +273,12 @@ Phase 1 executes owned async functions and methods on a deterministic
 single-thread FIFO executor. Each call allocates a typed task frame and each
 `await` becomes an explicit poll state. Direct awaits suspend their parent;
 `spawn` enqueues hot children and a task handle joins the already-running frame.
-Scalars, enums with owned payloads, value structs, and ARC class references can
-be parameters, locals, and success values; error values are currently
-cleanup-free. Live flags make struct and enum moves explicit, ARC copies retain,
+Scalars, enums with owned payloads, value structs, ARC class references,
+growable arrays, and cleanup-bearing fixed arrays can live in task frames;
+error values are currently cleanup-free. Growable arrays keep their native
+pointer/length/capacity descriptor in the frame, and fixed arrays containing
+non-trivial C++ values use aligned placement storage. Live flags make struct,
+enum, and collection moves explicit, ARC copies retain,
 awaited results transfer between frames, and active `Option<T>`/`Result<T, E>`
 payloads are destroyed by tag. Frame destruction releases every value still
 owned on success or propagated error. Task frames also lower `throw`, `try

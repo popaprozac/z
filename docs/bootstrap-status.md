@@ -39,7 +39,7 @@ Status meanings:
 | Unified loan checker | Implemented foundation | Call- and task-lifetime access share one root/capability/lifetime representation and conflict matrix; task indexes only drive join/cancel release, while views, regions, and cross-thread loans remain to integrate |
 | Fixed arrays | Implemented | Checked indexing and reverse element cleanup |
 | `Array<T>` | Implemented | Growable owned storage and move-aware elements |
-| `Slice<T>` | Partial | Non-escaping parameters plus direct-awaited and scope-bounded spawned borrowing from cleanup-free fixed arrays; growable and cleanup-bearing async backing storage remain |
+| `Slice<T>` | Partial | Non-escaping parameters plus direct-awaited and scope-bounded spawned borrowing from fixed and growable owners, including cleanup-bearing Z and move-only C++ elements; returned/stored and cross-thread Slices remain |
 | Receiver-tied `view T` | Implemented narrow tier | Direct field/index projections and niche-backed `Option<view T>` lookups from synchronous value-struct methods; inferred const local, read-only, non-storable, non-forwardable, no class owners |
 | General returned/stored borrows | Planned | Parameter provenance, class alias safety, retained views, and regions remain open |
 | ORC cycle collection | Planned | `Weak<T>` works now; arbitrary strong cycles are not collected |
@@ -101,9 +101,9 @@ until the boundary is length-aware in both directions.
 | Area | Status | Current boundary |
 | --- | --- | --- |
 | Async syntax and typing | Implemented | Functions/methods, `await`, `spawn`, task scopes, typed errors |
-| Stackless task frames | Partial | Scalars, cleanup-free fixed arrays, copied Slice descriptors, owned structs/enums/classes, direct move-only C++ locals and parameters, whole Z value aggregates containing them, cleanup-free direct-awaited output, and fallible native result transfer through `try`/`attempt`/match across suspension |
+| Stackless task frames | Partial | Scalars, cleanup-bearing fixed arrays, growable arrays, copied Slice descriptors, owned structs/enums/classes, direct move-only C++ locals and parameters, collection elements containing them, cleanup-free direct-awaited output, and fallible native result transfer through `try`/`attempt`/match across suspension |
 | Executor | Implemented bootstrap | Deterministic single-thread FIFO ready queue |
-| Structured scopes | Implemented slice | Lexical child joins, sibling/descendant cancellation, shared immutable and exclusive mutable child borrows (including fixed-array-backed Slice), plus path-sensitive early release across straight-line code and `if` branches; loops remain conservative to scope exit |
+| Structured scopes | Implemented slice | Lexical child joins, sibling/descendant cancellation, shared immutable and exclusive mutable child borrows (including fixed- and growable-collection-backed Slice), plus path-sensitive early release across straight-line code and `if` branches; loops remain conservative to scope exit |
 | Caller cancellation | Implemented slice | Consuming `await task.cancel()` requests cancellation, joins descendants and cleanup, and discards an unclaimed completed outcome |
 | Timers | Implemented slice | Scheduler-aware monotonic `delay`; blocking `sleep` remains synchronous |
 | Sync work in async frames | Partial | Z and direct C++ calls/methods, console, checked arithmetic, concise matches |
@@ -160,6 +160,9 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
 - [`examples/async/async-native-ownership.z`](../examples/async/async-native-ownership.z): a move-only
   C++ value constructed directly in aligned task-frame storage, returned and
   relayed through task results, consumed by its caller, and cleaned exactly once.
+- [`examples/async/async-collection-slices.z`](../examples/async/async-collection-slices.z): growable
+  and cleanup-bearing collection owners borrowed as Slices across direct await,
+  scoped spawn, and cancellation, followed by safe growth and reverse cleanup.
 - `bun test`: compiler, runtime, diagnostics, interop, async, and editor
   regression suite.
 
@@ -180,7 +183,10 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    parameters transfer into child frames at task creation. Immutable `in`
    parameters work through direct await and explicit-scope spawn. Mutable
    `inout` parameters work through direct await and exclusive explicit-scope
-   spawn; cleanup-free `out` works through direct await. Spawned output,
+   spawn. Fixed and growable async collection owners, including move-only native
+   elements, now provide Slice backing with reverse cleanup on completion and
+   cancellation; a live spawned loan prevents reallocation until join. Cleanup-free
+   `out` works through direct await. Spawned output,
    ownership-bearing output, ARC fields, and closure environments remain.
 3. **Larger application probe — implemented.** The multi-module
    `document-workspace` combines a move-only native lease, dynamic arrays,
