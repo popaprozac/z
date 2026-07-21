@@ -51,6 +51,9 @@ export enum LoadState {
 }
 
 export async function load(id: i32): Reading {
+  async scope {
+    const observed = id;
+  }
   return Reading({ value: id });
 }
 

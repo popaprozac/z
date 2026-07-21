@@ -141,8 +141,9 @@ branches share one block representation. `while` retains its condition and body;
 `for...of` retains its immutable binding, iterable, and body, with nested
 `break`/`continue` nodes. Statement and value-producing `match` forms share one
 flat subject/arm tree; payload bindings, object destructuring, aliases, and arm
-bodies retain their locations and statement edges. Unsupported conditional
-value blocks and async scopes remain canonical opaque spans. `z self-host-parse`
+bodies retain their locations and statement edges. `async scope` retains its
+required block as the lexical structured-join edge. Unsupported conditional
+value blocks remain canonical opaque spans. `z self-host-parse`
 caches its native bridge by compiler/frontend content and sends every requested source file
 through one framed native invocation. Add `--timings` to see bridge preparation,
 native batch work, protocol decoding, and stage-0 parity parsing separately.

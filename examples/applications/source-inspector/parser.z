@@ -74,6 +74,7 @@ export enum StatementKind {
   whileStatement,
   forStatement,
   matchStatement,
+  asyncScopeStatement,
   breakStatement,
   continueStatement,
 }
@@ -1626,6 +1627,32 @@ function parseProjectedStatement(
     const statements = try parseProjectedBlock(tokens, inout current, "a statement block", inout nodes);
     return Option.some(pushProjectedBlock(inout nodes, statements, start));
   }
+  if (kind == TokenKind.asyncKeyword) {
+    const start = snapshot(tokens[current]);
+    current = current + 1;
+    try expectKind(tokens, inout current, TokenKind.scopeKeyword, "`scope` after `async`");
+    const bodyStart = snapshot(tokens[current]);
+    const bodyStatements = try parseProjectedBlock(tokens, inout current, "an `async scope` body", inout nodes);
+    let children = Array<usize>();
+    children.push(pushProjectedBlock(inout nodes, bodyStatements, bodyStart));
+    const index = nodes.length;
+    nodes.push(Statement({
+      kind: StatementKind.asyncScopeStatement,
+      mutableBinding: false,
+      name: "",
+      nameOffset: 0,
+      nameLine: 0,
+      nameColumn: 0,
+      typeAnnotation: Option<TypeReference>.none,
+      expression: Option<ExpressionSyntax>.none,
+      secondExpression: Option<ExpressionSyntax>.none,
+      children,
+      offset: start.offset,
+      line: start.line,
+      column: start.column,
+    }));
+    return Option.some(index);
+  }
   if (kind == TokenKind.ifKeyword) {
     const start = snapshot(tokens[current]);
     current = current + 1;
@@ -1871,10 +1898,6 @@ function parseProjectedStatement(
       column: start.column,
     }));
     return Option.some(index);
-  }
-  if (kind == TokenKind.asyncKeyword) {
-    try skipProjectedStatement(tokens, inout current, inout nodes);
-    return Option<usize>.none;
   }
   const start = snapshot(tokens[current]);
   const assignment = topLevelAssignmentIndex(tokens, current);
@@ -2447,6 +2470,7 @@ function renderStatementText(in arena: StatementArena, in statement: Statement):
   else if (statement.kind == StatementKind.whileStatement) output.append("while@");
   else if (statement.kind == StatementKind.forStatement) output.append("for@");
   else if (statement.kind == StatementKind.matchStatement) output.append("match@");
+  else if (statement.kind == StatementKind.asyncScopeStatement) output.append("asyncScope@");
   else if (statement.kind == StatementKind.breakStatement) output.append("break@");
   else if (statement.kind == StatementKind.continueStatement) output.append("continue@");
   else output.append("block@");
@@ -2522,6 +2546,7 @@ function renderStatementText(in arena: StatementArena, in statement: Statement):
   } else if (
     statement.kind == StatementKind.whileStatement
     || statement.kind == StatementKind.forStatement
+    || statement.kind == StatementKind.asyncScopeStatement
   ) {
     if (statement.children.length > 0) {
       output.append("body=");

@@ -326,6 +326,9 @@ function canonicalStatementText(statement: Statement, tokens: readonly Token[]):
       canonicalExpressionTree(expression, tokens) ?? "opaque"
     })`;
   }
+  if (statement.kind === "asyncScope") {
+    return `asyncScope@${location}(body=${canonicalStatementText(statement.body, tokens)})`;
+  }
   if (statement.kind === "expressionStatement") {
     if (statement.expression.kind === "executorPlacement") return "";
     const expressionLocation = lexicalExpressionLocation(statement.expression);

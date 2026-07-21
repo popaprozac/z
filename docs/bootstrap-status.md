@@ -274,8 +274,10 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    Statement and expression `match` forms share a flat match-expression tree.
    Subject and arm edges, `in` mode, payload bindings, object-field destructuring,
    aliases, source locations, and each arm's statement body are structural.
+   `async scope` statements retain their required block edge, preserving the
+   lexical child-lifetime and implicit-join boundary for later native analysis.
    Contextual keywords are accepted as member names after `.` just as they are
-   by stage 0. Conditional value blocks, async scopes, Unicode
+   by stage 0. Conditional value blocks, Unicode
    identifiers, block comments, and direct in-process driver integration remain. Stage 0
    currently reports UTF-16 source coordinates while the stage-1 lexer retains
    UTF-8 byte coordinates; exact location parity after non-ASCII source text is
