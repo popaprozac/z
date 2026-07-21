@@ -164,6 +164,9 @@ function appendTypeSignature(
       appendHexUsize(inout output, signature.fields.length);
       output.appendAscii(9);
       appendHexUsize(inout output, signature.variants.length);
+      output.appendAscii(9);
+      if (signature.customDeinit) output.appendAscii(49);
+      else output.appendAscii(48);
       for (const typeParameter of signature.typeParameters) {
         output.appendAscii(9);
         appendHexText(inout output, typeParameter);

@@ -1496,7 +1496,7 @@ ported independently rather than translated as one monolith.
    signatures across the graph boundary: async state, generic parameters,
    parameter capabilities and types, return type, and error type. Type symbols
    retain aggregate type parameters, field types/visibility/read-only state,
-   and enum variants/payloads. Native match typing follows local,
+   custom-deinitializer state, and enum variants/payloads. Native match typing follows local,
    selective-imported, and namespace-imported enums through that graph,
    including generic aggregate payload destructuring and exhaustiveness.
    Z-defined field reads and assignments use the same type metadata across those
@@ -1504,8 +1504,7 @@ ported independently rather than translated as one monolith.
    concrete enum fields also participate in equality typing.
    Aggregate method contracts also cross the graph: static/instance identity,
    visibility, receiver mode, async/error state, generics, parameters, and result.
-   Native calls use those contracts across local and imported types; authoritative
-   `inout`/`move` receiver enforcement remains coupled to native ownership state.
+   Native calls use those contracts across local and imported types.
    Native nominal equality is keyed by the defining module and symbol, not the
    source spelling. A local name, namespace-qualified name, selective alias, and
    type forwarded through an intermediate module therefore compare as one type;
@@ -1514,12 +1513,16 @@ ported independently rather than translated as one monolith.
    bindings now retain mutability independently of their type spelling, and
    direct assignment enforces the `const`/value/`in` versus
    `let`/`inout`/`out` distinction. That record now also carries definite
-   initialization state. Direct assignments and nested blocks update it, `if`
+   initialization and ownership state. Direct assignments and nested blocks update it, `if`
    branches merge it, loops conservatively include zero iterations, reads reject
    uninitialized/maybe-uninitialized values, and successful exits require every
-   `out` parameter to be initialized. Match-expression side effects, nested
-   mutation, reachability, and ownership remain later flow-state layers over the
-   same record. Native direct/imported function
+   `out` parameter to be initialized. Ownership is available, moved, or
+   maybe-moved; cleanup-bearing values passed to owned parameters transfer while
+   ARC classes, weak references, and function values copy their managed handle.
+   Branches and loops merge that state, assignment and successful `out` restore
+   it, and borrowed storage cannot be consumed. Match-expression side effects,
+   nested mutation, and richer reachability remain later flow-state layers over
+   the same record. Native direct/imported function
    and Z-method calls now consume their graph-carried parameter modes: `out` and
    `inout` require matching explicit markers and mutable bindings, `inout`
    requires initialized storage, invalid explicit markers on value/`in`
@@ -1531,8 +1534,7 @@ ported independently rather than translated as one monolith.
    `inout this` requires mutable addressable storage. An owned `const` class
    reference may still mutate its shared identity, while an immutable `in`
    class borrow may not; borrowed `this` also cannot invoke a `move this`
-   method. Readonly receiver paths and the actual moved-state transition remain
-   coupled to the native ownership layer.
+   method, and a successful consuming call marks named receiver storage moved.
    Feeding this graph into ordinary
    compiler commands and replacing the temporary protocol remain next. Native
    semantic analysis has also begun on that graph: source-ordered lexical lookup
@@ -1559,9 +1561,8 @@ ported independently rather than translated as one monolith.
    assignments, conditions, arguments, and returns are checked with native
    diagnostics. Local enums and the intrinsic `Option<T>`/`Result<T, E>` shapes
    now provide match payload bindings, local aggregate destructuring,
-   exhaustiveness, and known arm-result unification. Imported enum/aggregate
-   metadata, match ownership effects, and control-flow merging remain at stage
-   zero. Any other missing foreign/member/async expression model produces an
+   exhaustiveness, and known arm-result unification. Match ownership effects
+   remain at stage zero. Any other missing foreign/member/async expression model produces an
    unresolved internal type, not a guessed type or user-visible false positive.
 3. **Stage 2:** Compile the Z compiler with stage 0, then use that result to
    compile itself.

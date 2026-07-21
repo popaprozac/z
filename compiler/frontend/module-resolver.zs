@@ -64,12 +64,19 @@ enum NativeInitializationState {
   maybeUninitialized,
 }
 
+enum NativeOwnershipState {
+  available,
+  moved,
+  maybeMoved,
+}
+
 struct NativeValueBinding {
   name: String;
   typeName: String;
   mutableBinding: boolean;
   borrowedBinding: boolean;
   initialization: NativeInitializationState;
+  ownership: NativeOwnershipState;
   outputParameter: boolean;
 }
 
@@ -181,6 +188,7 @@ export struct ModuleTypeSignature {
   fields: Array<ModuleFieldSignature>;
   methods: Array<ModuleMethodSignature>;
   variants: Array<ModuleVariantSignature>;
+  customDeinit: boolean;
 }
 
 export struct ModuleFunctionSignature {
@@ -470,11 +478,17 @@ function moduleTypeSignature(
           signature: functionDeclarationSignature(method),
         }));
       }
+      let customDeinit = false;
+      match (in aggregate.deinitializer) {
+        some(deinitializer) => customDeinit = true;
+        none => {}
+      }
       return Option.some(ModuleTypeSignature({
         typeParameters,
         fields,
         methods,
         variants: Array<ModuleVariantSignature>(),
+        customDeinit,
       }));
     }
   }
@@ -498,6 +512,7 @@ function moduleTypeSignature(
         fields: Array<ModuleFieldSignature>(),
         methods: Array<ModuleMethodSignature>(),
         variants,
+        customDeinit: false,
       }));
     }
   }
@@ -1307,6 +1322,7 @@ function copyValueBindings(in bindings: Array<NativeValueBinding>): Array<Native
       mutableBinding: binding.mutableBinding,
       borrowedBinding: binding.borrowedBinding,
       initialization: binding.initialization,
+      ownership: binding.ownership,
       outputParameter: binding.outputParameter,
     }));
   }
@@ -1324,6 +1340,7 @@ function addValueBinding(
     mutableBinding: false,
     borrowedBinding: false,
     initialization: NativeInitializationState.initialized,
+    ownership: NativeOwnershipState.available,
     outputParameter: false,
   }));
 }
@@ -1339,6 +1356,7 @@ function addMutableValueBinding(
     mutableBinding: true,
     borrowedBinding: false,
     initialization: NativeInitializationState.initialized,
+    ownership: NativeOwnershipState.available,
     outputParameter: false,
   }));
 }
@@ -1355,6 +1373,7 @@ function addUninitializedMutableValueBinding(
     mutableBinding: true,
     borrowedBinding: outputParameter,
     initialization: NativeInitializationState.uninitialized,
+    ownership: NativeOwnershipState.available,
     outputParameter,
   }));
 }
@@ -1371,6 +1390,7 @@ function addBorrowedValueBinding(
     mutableBinding,
     borrowedBinding: true,
     initialization: NativeInitializationState.initialized,
+    ownership: NativeOwnershipState.available,
     outputParameter: false,
   }));
 }
@@ -1436,6 +1456,7 @@ function replaceBindingInitialization(
     mutableBinding: bindings[index].mutableBinding,
     borrowedBinding: bindings[index].borrowedBinding,
     initialization,
+    ownership: bindings[index].ownership,
     outputParameter: bindings[index].outputParameter,
   });
 }
@@ -1455,6 +1476,49 @@ function setValueBindingInitialization(
   }
 }
 
+function valueBindingOwnership(
+  in bindings: Array<NativeValueBinding>,
+  in name: String
+): NativeOwnershipState {
+  let index = bindings.length;
+  while (index > 0) {
+    index = index - 1;
+    if (bindings[index].name == name) return bindings[index].ownership;
+  }
+  return NativeOwnershipState.available;
+}
+
+function replaceBindingOwnership(
+  inout bindings: Array<NativeValueBinding>,
+  index: usize,
+  ownership: NativeOwnershipState
+): void {
+  bindings[index] = NativeValueBinding({
+    name: bindings[index].name.copyBytes(0, bindings[index].name.byteLength),
+    typeName: bindings[index].typeName.copyBytes(0, bindings[index].typeName.byteLength),
+    mutableBinding: bindings[index].mutableBinding,
+    borrowedBinding: bindings[index].borrowedBinding,
+    initialization: bindings[index].initialization,
+    ownership,
+    outputParameter: bindings[index].outputParameter,
+  });
+}
+
+function setValueBindingOwnership(
+  inout bindings: Array<NativeValueBinding>,
+  in name: String,
+  ownership: NativeOwnershipState
+): void {
+  let index = bindings.length;
+  while (index > 0) {
+    index = index - 1;
+    if (bindings[index].name == name) {
+      replaceBindingOwnership(inout bindings, index, ownership);
+      return;
+    }
+  }
+}
+
 function mergedInitialization(
   left: NativeInitializationState,
   right: NativeInitializationState
@@ -1463,18 +1527,27 @@ function mergedInitialization(
   return NativeInitializationState.maybeUninitialized;
 }
 
-function copyBindingInitializationStates(
+function mergedOwnership(
+  left: NativeOwnershipState,
+  right: NativeOwnershipState
+): NativeOwnershipState {
+  if (left == right) return left;
+  return NativeOwnershipState.maybeMoved;
+}
+
+function copyBindingFlowStates(
   inout target: Array<NativeValueBinding>,
   in source: Array<NativeValueBinding>
 ): void {
   let index: usize = 0;
   while (index < target.length && index < source.length) {
     replaceBindingInitialization(inout target, index, source[index].initialization);
+    replaceBindingOwnership(inout target, index, source[index].ownership);
     index = index + 1;
   }
 }
 
-function mergeBindingInitializationStates(
+function mergeBindingFlowStates(
   inout target: Array<NativeValueBinding>,
   in left: Array<NativeValueBinding>,
   in right: Array<NativeValueBinding>
@@ -1485,6 +1558,11 @@ function mergeBindingInitializationStates(
       inout target,
       index,
       mergedInitialization(left[index].initialization, right[index].initialization)
+    );
+    replaceBindingOwnership(
+      inout target,
+      index,
+      mergedOwnership(left[index].ownership, right[index].ownership)
     );
     index = index + 1;
   }
@@ -1498,10 +1576,23 @@ function requireInitializedBinding(
   in name: String
 ): void throws ModuleResolveError {
   const initialization = valueBindingInitialization(bindings, name);
-  if (initialization == NativeInitializationState.initialized) return;
-  const message = initialization == NativeInitializationState.uninitialized
-    ? `use of uninitialized value "${name}"`
-    : `value "${name}" may be uninitialized on another control-flow path`;
+  if (initialization != NativeInitializationState.initialized) {
+    const message = initialization == NativeInitializationState.uninitialized
+      ? `use of uninitialized value "${name}"`
+      : `value "${name}" may be uninitialized on another control-flow path`;
+    throw resolutionError(
+      ModuleResolveErrorKind.typeMismatch,
+      module.path,
+      message,
+      tree.nodes[index].line,
+      tree.nodes[index].column
+    );
+  }
+  const ownership = valueBindingOwnership(bindings, name);
+  if (ownership == NativeOwnershipState.available) return;
+  const message = ownership == NativeOwnershipState.moved
+    ? `use of moved value "${name}"`
+    : `value "${name}" may have moved on another control-flow path`;
   throw resolutionError(
     ModuleResolveErrorKind.typeMismatch,
     module.path,
@@ -2250,6 +2341,144 @@ function equivalentTypes(
   if (left == right) return true;
   return semanticTypeIdentity(modules, moduleIndex, left)
     == semanticTypeIdentity(modules, moduleIndex, right);
+}
+
+function typeHasCleanup(
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
+  in typeName: String,
+  in visiting: Array<String>
+): boolean {
+  const nullableTarget = nullableTargetType(typeName);
+  if (nullableTarget.byteLength > 0) {
+    return typeHasCleanup(modules, moduleIndex, nullableTarget, visiting);
+  }
+  if (stringStartsWith(typeName, "view ") || stringStartsWith(typeName, "Slice<")) {
+    return false;
+  }
+  if (
+    typeName == "String"
+    || typeName == "TextBuffer"
+    || typeName == "Arena"
+    || stringStartsWith(typeName, "__z_native_function:")
+  ) return true;
+  match (fixedArrayShape(typeName)) {
+    some(array) => return typeHasCleanup(
+      modules,
+      moduleIndex,
+      array.elementType,
+      visiting
+    );
+    none => {}
+  }
+  let arguments = Array<String>();
+  match (genericTypeShape(typeName)) {
+    some(generic) => {
+      if (generic.base == "Array" || generic.base == "Task" || generic.base == "Weak") {
+        return true;
+      }
+      if (generic.base == "Option" || generic.base == "Result") {
+        for (const argument of generic.arguments) {
+          if (typeHasCleanup(modules, moduleIndex, argument, visiting)) return true;
+        }
+        return false;
+      }
+      for (const argument of generic.arguments) {
+        arguments.push(argument.copyBytes(0, argument.byteLength));
+      }
+    }
+    none => {}
+  }
+  match (typeSymbolLocation(modules, moduleIndex, typeName)) {
+    some(location) => {
+      const kind = modules[location.moduleIndex].symbols[location.symbolIndex].kind;
+      if (kind == ModuleSymbolKind.classSymbol) return true;
+      const identity = semanticTypeIdentity(modules, moduleIndex, typeName);
+      if (containsString(visiting, identity)) return false;
+      let nextVisiting = copyBindings(visiting);
+      nextVisiting.push(identity);
+      match (in modules[location.moduleIndex].symbols[location.symbolIndex].typeSignature) {
+        some(signature) => {
+          if (signature.customDeinit) return true;
+          let substitutions = Array<NativeValueBinding>();
+          let typeIndex: usize = 0;
+          while (
+            typeIndex < signature.typeParameters.length
+            && typeIndex < arguments.length
+          ) {
+            addValueBinding(
+              inout substitutions,
+              signature.typeParameters[typeIndex],
+              arguments[typeIndex]
+            );
+            typeIndex = typeIndex + 1;
+          }
+          for (const field of signature.fields) {
+            const localType = rebaseTypeName(
+              modules,
+              location.moduleIndex,
+              moduleIndex,
+              field.typeName
+            );
+            const fieldType = substituteGenericType(localType, substitutions);
+            if (typeHasCleanup(
+              modules,
+              moduleIndex,
+              fieldType,
+              nextVisiting
+            )) return true;
+          }
+          for (const variant of signature.variants) {
+            if (variant.payloadType.byteLength == 0) continue;
+            const localType = rebaseTypeName(
+              modules,
+              location.moduleIndex,
+              moduleIndex,
+              variant.payloadType
+            );
+            const payloadType = substituteGenericType(localType, substitutions);
+            if (typeHasCleanup(
+              modules,
+              moduleIndex,
+              payloadType,
+              nextVisiting
+            )) return true;
+          }
+          return false;
+        }
+        none => {}
+      }
+    }
+    none => {}
+  }
+  return false;
+}
+
+function typeMovesOnOwnedUse(
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
+  in typeName: String
+): boolean {
+  let managedType = typeName.copyBytes(0, typeName.byteLength);
+  const nullableTarget = nullableTargetType(typeName);
+  if (nullableTarget.byteLength > 0) {
+    managedType = nullableTarget.copyBytes(0, nullableTarget.byteLength);
+  }
+  if (
+    stringStartsWith(managedType, "Weak<")
+    || stringStartsWith(managedType, "__z_native_function:")
+  ) return false;
+  match (typeSymbolLocation(modules, moduleIndex, managedType)) {
+    some(location) => {
+      if (
+        modules[location.moduleIndex].symbols[location.symbolIndex].kind
+        == ModuleSymbolKind.classSymbol
+      ) return false;
+    }
+    none => {}
+  }
+  let visiting = Array<String>();
+  return typeHasCleanup(modules, moduleIndex, typeName, visiting);
 }
 
 function matchShape(
@@ -3195,6 +3424,19 @@ function inferSignatureCallType(
             tree.nodes[bindingIndex].column
           );
         }
+        const ownership = valueBindingOwnership(bindings, bindingName);
+        if (ownership != NativeOwnershipState.available) {
+          const message = ownership == NativeOwnershipState.moved
+            ? `use of moved value "${bindingName}"`
+            : `value "${bindingName}" may have moved on another control-flow path`;
+          throw resolutionError(
+            ModuleResolveErrorKind.typeMismatch,
+            module.path,
+            message,
+            tree.nodes[bindingIndex].line,
+            tree.nodes[bindingIndex].column
+          );
+        }
       }
       argumentTypes.push(valueBindingType(bindings, bindingName));
     } else {
@@ -3217,6 +3459,37 @@ function inferSignatureCallType(
         nodeIndex,
         inout bindings
       );
+      if (
+        mode == "value"
+        && !stringStartsWith(signature.parameterTypes[argumentIndex], "Slice<")
+        && typeMovesOnOwnedUse(modules, moduleIndex, argumentType)
+      ) {
+        const root = expressionStorageRootName(tree, nodeIndex);
+        if (
+          tree.nodes[nodeIndex].kind == ExpressionKind.memberExpression
+          || tree.nodes[nodeIndex].kind == ExpressionKind.indexExpression
+        ) {
+          throw resolutionError(
+            ModuleResolveErrorKind.typeMismatch,
+            module.path,
+            "cannot move an ownership-bearing field or element out of its owner",
+            tree.nodes[nodeIndex].line,
+            tree.nodes[nodeIndex].column
+          );
+        }
+        if (root.byteLength > 0) {
+          if (valueBindingIsBorrowed(bindings, root)) {
+            throw resolutionError(
+              ModuleResolveErrorKind.typeMismatch,
+              module.path,
+              `cannot move borrowed parameter "${root}"`,
+              tree.nodes[nodeIndex].line,
+              tree.nodes[nodeIndex].column
+            );
+          }
+          setValueBindingOwnership(inout bindings, root, NativeOwnershipState.moved);
+        }
+      }
       argumentTypes.push(argumentType);
     }
     argumentIndex = argumentIndex + 1;
@@ -3292,6 +3565,11 @@ function inferSignatureCallType(
         inout bindings,
         bindingName,
         NativeInitializationState.initialized
+      );
+      setValueBindingOwnership(
+        inout bindings,
+        bindingName,
+        NativeOwnershipState.available
       );
     }
     parameterIndex = parameterIndex + 1;
@@ -3432,7 +3710,7 @@ function inferExpressionNodeType(
         children[1],
         inout rightBindings
       );
-      mergeBindingInitializationStates(inout bindings, beforeRight, rightBindings);
+      mergeBindingFlowStates(inout bindings, beforeRight, rightBindings);
       if (left.byteLength == 0 || right.byteLength == 0) return "";
       if (left == "boolean" && right == "boolean") return "boolean";
       throw invalidOperator(module, tree, index, `operator ${value} requires boolean operands`);
@@ -3493,7 +3771,7 @@ function inferExpressionNodeType(
       children[2],
       inout elseBindings
     );
-    mergeBindingInitializationStates(inout bindings, thenBindings, elseBindings);
+    mergeBindingFlowStates(inout bindings, thenBindings, elseBindings);
     if (thenType.byteLength == 0 || elseType.byteLength == 0) return "";
     if (equivalentTypes(modules, moduleIndex, thenType, elseType)) return thenType;
     throw resolutionError(
@@ -3750,7 +4028,7 @@ function inferExpressionNodeType(
               ownerIndex = ownerIndex + 1;
             }
             const callableSignature = methodCallableSignature(method);
-            return try inferSignatureCallType(
+            const callType = try inferSignatureCallType(
               module,
               modules,
               moduleIndex,
@@ -3765,6 +4043,14 @@ function inferExpressionNodeType(
               callableSignature,
               substitutions
             );
+            if (receiverAccess == "move" && receiverRoot.byteLength > 0) {
+              setValueBindingOwnership(
+                inout bindings,
+                receiverRoot,
+                NativeOwnershipState.moved
+              );
+            }
+            return callType;
           }
           none => {
             if (hasKnownAggregate(modules, moduleIndex, ownerType)) {
@@ -3992,6 +4278,11 @@ function inferStatement(
                 tree.nodes[tree.root].value,
                 NativeInitializationState.initialized
               );
+              setValueBindingOwnership(
+                inout bindings,
+                tree.nodes[tree.root].value,
+                NativeOwnershipState.available
+              );
             }
           }
           none => {}
@@ -4102,7 +4393,7 @@ function inferStatement(
         expectedReturn
       );
     }
-    mergeBindingInitializationStates(
+    mergeBindingFlowStates(
       inout bindings,
       thenBindings,
       elseBindings
@@ -4121,7 +4412,7 @@ function inferStatement(
       inout loopBindings,
       expectedReturn
     );
-    mergeBindingInitializationStates(
+    mergeBindingFlowStates(
       inout bindings,
       beforeLoop,
       loopBindings
@@ -4149,7 +4440,7 @@ function inferStatement(
       inout loopBindings,
       expectedReturn
     );
-    mergeBindingInitializationStates(
+    mergeBindingFlowStates(
       inout bindings,
       beforeLoop,
       loopBindings
@@ -4166,7 +4457,7 @@ function inferStatement(
     inout nestedBindings,
     expectedReturn
   );
-  copyBindingInitializationStates(inout bindings, nestedBindings);
+  copyBindingFlowStates(inout bindings, nestedBindings);
 }
 
 function inferStatementSequence(

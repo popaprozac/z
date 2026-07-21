@@ -27,8 +27,8 @@ semantic analysis and code generation; the frontend itself is native Z code.
   explicit type arguments or infer them from direct, nested-generic,
   fixed-array, `Slice`, nullable, and `view` parameter shapes, then substitute
   their parameter and return contracts. Type symbols retain aggregate type
-  parameters, field types/visibility/read-only state, and enum variants/payloads
-  across the graph. Local and imported enums plus compiler-provided `Option<T>`
+  parameters, field types/visibility/read-only state, custom-deinitializer state,
+  and enum variants/payloads across the graph. Local and imported enums plus compiler-provided `Option<T>`
   and `Result<T, E>` now drive native match subject, payload, generic aggregate
   destructuring, exhaustiveness, and arm-result checks. The tier also covers
   Z-defined field reads and assignments across local/selective/namespace type
@@ -60,9 +60,13 @@ semantic analysis and code generation; the frontend itself is native Z code.
   uses, including conflicts between a receiver and its arguments. Value-struct
   `inout this` requires mutable addressable storage; a class reference keeps
   identity mutation through an owned `const` binding while an immutable `in`
-  borrow cannot invoke the mutating method. Borrowed `this` cannot call a
-  consuming receiver. Marking the receiver moved remains part of native
-  ownership state.
+  borrow cannot invoke the mutating method. The binding record also carries
+  available, moved, or maybe-moved ownership state. Owned value arguments move
+  deterministic-cleanup structs, enums, arrays, and standard storage while ARC
+  classes, weak references, and closures copy their managed handle. Branches and
+  loops merge move state conservatively, borrowed bindings cannot be consumed,
+  assignment and successful `out` restore ownership, and `move this` invalidates
+  a named receiver. Reads after definite or conditional transfer originate in Z.
 - `module-resolver-protocol.zs` frames that host-loaded batch and returns the
   resolved graph through the same in-process native-library boundary.
 - `parser-protocol.zs` encodes the temporary parity protocol shared by native
@@ -91,11 +95,10 @@ timing report separates library preparation, host discovery, framing, native
 lex/parse/resolve/symbol/name/type work, protocol decode, and stage-zero parity
 work. Identifier and expression-level type lookup currently cover materialized
 expression trees. Unknown foreign/intrinsic-member/async shapes deliberately defer
-instead of guessing. Opaque expression spans, receiver-capability enforcement,
-contextual
+instead of guessing. Opaque expression spans, contextual
 collection and return-driven generic inference, generic constraints and methods,
-type-constructor arity, trait conformance, control-flow merging, and ownership
-remain stage-zero work.
+type-constructor arity, trait conformance, match/closure ownership effects, and
+complete recursive ownership lowering remain stage-zero work.
 The reported native interval therefore does more semantic work than the
 graph-and-symbol-only stage-zero comparison.
 Repeated corpus measurements and incrementally

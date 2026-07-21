@@ -5323,6 +5323,132 @@ test("resolves a canonical module graph directly from native Z ASTs", () => {
     /overlapping move and in uses of "resource" in one call are not allowed/,
   );
 
+  writeFileSync(
+    bindingState,
+    "struct Resource {\n"
+      + "  id: i32;\n"
+      + "  deinit {}\n"
+      + "}\n"
+      + "function consume(resource: Resource): void {}\n"
+      + "function invalid(): i32 {\n"
+      + "  const resource = Resource({ id: 1 });\n"
+      + "  consume(resource);\n"
+      + "  return resource.id;\n"
+      + "}\n",
+  );
+  const movedOwnedArgument = spawnSync(
+    process.execPath,
+    [cli, "self-host-resolve", bindingState],
+    { encoding: "utf8" },
+  );
+  assert.equal(movedOwnedArgument.status, 1);
+  assert.match(movedOwnedArgument.stderr, /use of moved value "resource"/);
+
+  writeFileSync(
+    bindingState,
+    "struct Resource {\n"
+      + "  id: i32;\n"
+      + "  deinit {}\n"
+      + "}\n"
+      + "function consume(resource: Resource): void {}\n"
+      + "function invalid(flag: boolean): i32 {\n"
+      + "  const resource = Resource({ id: 1 });\n"
+      + "  if (flag) { consume(resource); }\n"
+      + "  return resource.id;\n"
+      + "}\n",
+  );
+  const maybeMovedOwnedArgument = spawnSync(
+    process.execPath,
+    [cli, "self-host-resolve", bindingState],
+    { encoding: "utf8" },
+  );
+  assert.equal(maybeMovedOwnedArgument.status, 1);
+  assert.match(
+    maybeMovedOwnedArgument.stderr,
+    /value "resource" may have moved on another control-flow path/,
+  );
+
+  writeFileSync(
+    bindingState,
+    "struct Resource {\n"
+      + "  id: i32;\n"
+      + "  deinit {}\n"
+      + "}\n"
+      + "function consume(resource: Resource): void {}\n"
+      + "function invalid(in resource: Resource): void { consume(resource); }\n",
+  );
+  const borrowedOwnedArgument = spawnSync(
+    process.execPath,
+    [cli, "self-host-resolve", bindingState],
+    { encoding: "utf8" },
+  );
+  assert.equal(borrowedOwnedArgument.status, 1);
+  assert.match(borrowedOwnedArgument.stderr, /cannot move borrowed parameter "resource"/);
+
+  writeFileSync(
+    bindingState,
+    "struct Resource {\n"
+      + "  id: i32;\n"
+      + "  function finish(move this): void {}\n"
+      + "}\n"
+      + "function invalid(): i32 {\n"
+      + "  const resource = Resource({ id: 1 });\n"
+      + "  resource.finish();\n"
+      + "  return resource.id;\n"
+      + "}\n",
+  );
+  const movedReceiver = spawnSync(
+    process.execPath,
+    [cli, "self-host-resolve", bindingState],
+    { encoding: "utf8" },
+  );
+  assert.equal(movedReceiver.status, 1);
+  assert.match(movedReceiver.stderr, /use of moved value "resource"/);
+
+  writeFileSync(
+    bindingState,
+    "class Session {\n"
+      + "  id: i32;\n"
+      + "}\n"
+      + "function retain(session: Session): void {}\n"
+      + "function valid(session: Session): i32 {\n"
+      + "  retain(session);\n"
+      + "  return session.id;\n"
+      + "}\n",
+  );
+  const copiedClassArgument = spawnSync(
+    process.execPath,
+    [cli, "self-host-resolve", bindingState],
+    { encoding: "utf8" },
+  );
+  assert.equal(copiedClassArgument.status, 0, copiedClassArgument.stderr);
+
+  const ownershipModel = resolve(invalidDirectory, "ownership-model.zs");
+  const ownershipMain = resolve(invalidDirectory, "ownership-main.zs");
+  writeFileSync(
+    ownershipModel,
+    "export struct Resource {\n"
+      + "  id: i32;\n"
+      + "  deinit {}\n"
+      + "}\n"
+      + "export function consume(resource: Resource): void {}\n",
+  );
+  writeFileSync(
+    ownershipMain,
+    "import native from \"./ownership-model.zs\";\n"
+      + "function invalid(resource: native.Resource): i32 {\n"
+      + "  native.consume(resource);\n"
+      + "  return resource.id;\n"
+      + "}\n",
+  );
+  const importedOwnedArgument = spawnSync(
+    process.execPath,
+    [cli, "self-host-resolve", ownershipMain],
+    { encoding: "utf8" },
+  );
+  assert.equal(importedOwnedArgument.status, 1);
+  assert.match(importedOwnedArgument.stderr, /use of moved value "resource"/);
+
   const encoded = encodeStage1ModuleBatch([{ path: "/a.zs", source: "é" }]);
   assert.equal(encoded.byteLength, 32 + Buffer.byteLength("/a.zs") + Buffer.byteLength("é"));
   assert.throws(() => decodeStage1ModuleGraphStream("order\n"), /did not contain an entry/);
@@ -5363,7 +5489,7 @@ test("resolves a canonical module graph directly from native Z ASTs", () => {
       "entry\t0000000000000000\n"
       + "module\t2f612e7a73\n"
       + "symbol\t0000000000000000\tenum\t5374617465\t1\t-\t5374617465\t0000000000000000\t0000000000000001\t0000000000000001\n"
-      + "typeSignature\t0000000000000000\t0000000000000000\t0000000000000000\t0000000000000000\t0000000000000001\n"
+      + "typeSignature\t0000000000000000\t0000000000000000\t0000000000000000\t0000000000000000\t0000000000000001\t0\n"
       + "order\t0000000000000000\n",
     ),
     /malformed stage-1 type signature arity/,
@@ -5373,7 +5499,7 @@ test("resolves a canonical module graph directly from native Z ASTs", () => {
       "entry\t0000000000000000\n"
       + "module\t2f612e7a73\n"
       + "symbol\t0000000000000000\tstruct\t506f696e74\t1\t-\t506f696e74\t0000000000000000\t0000000000000001\t0000000000000001\n"
-      + "typeSignature\t0000000000000000\t0000000000000000\t0000000000000000\t0000000000000000\t0000000000000000\n"
+      + "typeSignature\t0000000000000000\t0000000000000000\t0000000000000000\t0000000000000000\t0000000000000000\t0\n"
       + "methodSignature\t0000000000000000\t0000000000000000\t72656164\t0\t7075626c6963\t626164\t0\t693332\t\t0000000000000000\t0000000000000000\n"
       + "order\t0000000000000000\n",
     ),

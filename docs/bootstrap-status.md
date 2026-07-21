@@ -62,7 +62,7 @@ an inferred receiver-tied view.
 | Foreign Interface IR | Implemented foundation | Raw declarations, API-note merge, normalized contracts, source locations, and availability metadata are separate; richer native hierarchies remain |
 | Language server | Partial | Diagnostics, semantic highlighting, contextual selective-import/object-pattern completion, hover, and Z/native definitions |
 | Native definitions | Implemented slice | Namespace/selective C symbols, Objective-C members, and generated Swift compatibility declarations jump to their native headers |
-| Self-hosting | Partial frontend | Stage 0 remains TypeScript/Bun; native Z owns the lexer, current full parser arenas, module graph, function/type/method signatures, lexical/type lookup, and initial primitive/generic/cross-module-match/field/method expression typing with parity commands; ownership, complete semantics, lowering, code generation, and the CLI driver remain in stage 0 |
+| Self-hosting | Partial frontend | Stage 0 remains TypeScript/Bun; native Z owns the lexer, current full parser arenas, module graph, function/type/method signatures, lexical/type lookup, initial primitive/generic/cross-module-match/field/method expression typing, and the first definite-initialization/ownership flow tier with parity commands; complete semantics, lowering, code generation, and the CLI driver remain in stage 0 |
 
 ## Foreign interfaces
 
@@ -280,8 +280,8 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    functions, structs, classes, traits, enums, namespace imports, selective
    bindings, aliases, exports, and local target modules. Function symbols also
    retain async state, generic parameters, parameter capabilities and types,
-   return type, and error type through the native graph protocol. Ownership
-   analysis remains stage-zero work. A first native lexical resolver
+   return type, and error type through the native graph protocol; aggregate type
+   signatures also carry custom-deinitializer state. A first native lexical resolver
    now walks every materialized function, constructor, method, and `deinit`
    expression tree in source order. It introduces parameter and local bindings,
    isolates nested blocks and loop bindings, adds closure parameters and
@@ -296,7 +296,7 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    nested types report the exact inner token location. Opaque expression spans,
    foreign namespace member verification, type-constructor generic arity, value
    member lookup, duplicate local diagnostics, type compatibility/conformance,
-   and ownership remain stage-zero work.
+   and complete ownership coverage remain stage-zero work.
    The first native expression-typing tier now carries declared parameter types
    into source-ordered scopes; infers scalar, template, fixed-array, identifier,
    and explicitly typed closure values; and propagates direct Z call results. It
@@ -323,8 +323,8 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    and extracted method values still defer. Z-defined instance and static calls
    now follow
    local/imported type metadata, enforce visibility and argument/result contracts,
-   and substitute aggregate and method generics. Receiver capability state is
-   retained but awaits the native ownership pass. Nominal identity now uses
+   and substitute aggregate and method generics. Receiver capability state
+   participates in the first native ownership pass. Nominal identity now uses
    defining module/symbol coordinates independently of whether source spells a
    type locally, through a namespace, or through a selective alias. Imported
    function/method signatures, fields, and enum payloads rebase into the caller's
@@ -347,14 +347,19 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    conflicts. Value-struct `inout this` requires mutable addressable storage;
    owned `const` class references retain identity mutation while immutable `in`
    class borrows reject it, and borrowed `this` cannot invoke `move this`.
-   Match-arm side effects, readonly-field receiver paths, marking consuming
-   receivers moved, richer reachability, and nested value mutation remain part
-   of the broader native ownership/flow pass.
+   Bindings now additionally carry available, moved, or maybe-moved state.
+   Cleanup-bearing values passed to owned parameters transfer ownership while
+   ARC classes, weak references, and function values copy; branches and loops
+   merge state conservatively, borrowed bindings cannot be consumed, assignment
+   and successful `out` restore storage, and `move this` invalidates a named
+   receiver. Match-arm side effects, readonly-field receiver paths, richer
+   reachability, and nested value mutation remain part of the broader native
+   ownership/flow pass.
    Complete
    contextual literal and return-driven inference, foreign/intrinsic method lookup,
-   generic constraints/methods, match
-   ownership/control-flow merging, remaining receiver-path capability
-   enforcement, and ownership state remain stage-zero work.
+   generic constraints/methods, match ownership/control-flow merging, remaining
+   receiver-path capability enforcement, and full recursive ownership contexts
+   remain stage-zero work.
    Template literals now
    retain ordered decoded-text leaves and ordinary embedded-expression roots,
    including nested templates, in the same flat arena. Expression-bodied
