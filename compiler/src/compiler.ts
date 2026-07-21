@@ -10,7 +10,7 @@ import type { Program } from "./ast.ts";
 import type { ForeignModule } from "./foreign.ts";
 import type { SemanticInfo } from "./sema.ts";
 import { prepareProject, type ProjectBuild } from "./project.ts";
-import { linkSourceModules, type SourceModuleInfo } from "./modules.ts";
+import { linkSourceModules, type SourceModuleBatch, type SourceModuleInfo } from "./modules.ts";
 import { materializeWeakTypes } from "./weak-types.ts";
 import { generateAsyncC } from "./async-codegen-c.ts";
 import { parseForeignDeclarationContracts } from "./foreign-declarations.ts";
@@ -37,6 +37,7 @@ export type AnalyzedSource = {
   readonly typeDisplayNames: ReadonlyMap<string, string>;
   readonly projectBuild: ProjectBuild;
   readonly sourceModules: ReadonlyMap<string, SourceModuleInfo>;
+  readonly sourceModuleBatch: SourceModuleBatch;
   readonly moduleIncludeDirectories: readonly string[];
 };
 
@@ -47,7 +48,7 @@ export type AnalysisOptions = {
 export function analyzeSource(source: string, fileName: string, options: AnalysisOptions = {}): AnalyzedSource {
   const tokens = lex(source, fileName);
   const sourceProgram = parse(tokens, fileName);
-  const linked = linkSourceModules(sourceProgram, fileName);
+  const linked = linkSourceModules(source, sourceProgram, fileName);
   const projectBuild = prepareProject(fileName);
   const includeDirectories = [...new Set([...projectBuild.includeDirectories, ...linked.includeDirectories])];
   const foreignModules = resolveForeignModules(linked.program.imports, fileName, includeDirectories, projectBuild.deploymentTarget);
@@ -79,6 +80,7 @@ export function analyzeSource(source: string, fileName: string, options: Analysi
     typeDisplayNames,
     projectBuild,
     sourceModules: linked.modules,
+    sourceModuleBatch: linked.sourceBatch,
     moduleIncludeDirectories: linked.includeDirectories,
   };
 }

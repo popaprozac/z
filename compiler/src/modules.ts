@@ -35,8 +35,21 @@ export type SourceModuleInfo = {
 export type ModuleLinkResult = {
   readonly program: Program;
   readonly modules: ReadonlyMap<string, SourceModuleInfo>;
+  readonly sourceBatch: SourceModuleBatch;
   readonly includeDirectories: readonly string[];
   readonly typeDisplayNames: ReadonlyMap<string, string>;
+};
+
+export type SourceModuleBatchModule = {
+  readonly fileName: string;
+  readonly source: string;
+  readonly program: Program;
+  readonly dependencies: ReadonlyMap<number, string>;
+};
+
+export type SourceModuleBatch = {
+  readonly entryFileName: string;
+  readonly modules: readonly SourceModuleBatchModule[];
 };
 
 type ModuleNode = {
@@ -58,17 +71,17 @@ export function isLocalSourceModuleSpecifier(specifier: string): boolean {
   return (specifier.startsWith("./") || specifier.startsWith("../")) && specifier.endsWith(".zs");
 }
 
-export function linkSourceModules(entryProgram: Program, entryFileName: string): ModuleLinkResult {
+export function loadSourceModuleBatch(entrySource: string, entryProgram: Program, entryFileName: string): SourceModuleBatch {
   const entryPath = resolve(entryFileName);
-  const nodes = new Map<string, ModuleNode>();
-  let nextId = 0;
+  const modules = new Map<string, SourceModuleBatchModule>();
 
   const load = (
     fileName: string,
+    suppliedSource: string | null,
     suppliedProgram: Program | null,
     stack: readonly string[],
     importDeclaration: ImportDeclaration | null,
-  ): ModuleNode => {
+  ): SourceModuleBatchModule => {
     const absolute = resolve(fileName);
     const canonical = existsSync(absolute) ? realpathSync(absolute) : absolute;
     const cycleIndex = stack.indexOf(canonical);
@@ -81,7 +94,7 @@ export function linkSourceModules(entryProgram: Program, entryFileName: string):
         { code: "Z0601", helps: ["move shared declarations into a module that does not import either side"] },
       );
     }
-    const cached = nodes.get(canonical);
+    const cached = modules.get(canonical);
     if (cached) return cached;
     if (!suppliedProgram && !existsSync(canonical)) {
       throw new DiagnosticError(
@@ -91,39 +104,71 @@ export function linkSourceModules(entryProgram: Program, entryFileName: string):
         { code: "Z0602", helps: ["use a relative path ending in `.zs`"] },
       );
     }
-    const program = suppliedProgram ?? parse(lex(readFileSync(canonical, "utf8"), canonical), canonical);
+    const source = suppliedSource ?? readFileSync(canonical, "utf8");
+    const program = suppliedProgram ?? parse(lex(source, canonical), canonical);
+    const dependencies = new Map<number, string>();
+    const module: SourceModuleBatchModule = {
+      fileName: canonical,
+      source,
+      program,
+      dependencies,
+    };
+    modules.set(canonical, module);
+    for (const declaration of program.imports) {
+      if (!isLocalSourceModuleSpecifier(declaration.header)) continue;
+      const dependencyPath = resolve(dirname(canonical), declaration.header);
+      const dependency = load(dependencyPath, null, null, [...stack, canonical], declaration);
+      dependencies.set(declaration.location.offset, dependency.fileName);
+    }
+    return module;
+  };
+
+  const entry = load(entryPath, entrySource, entryProgram, [], null);
+  return { entryFileName: entry.fileName, modules: [...modules.values()] };
+}
+
+export function linkSourceModules(entrySource: string, entryProgram: Program, entryFileName: string): ModuleLinkResult {
+  const sourceBatch = loadSourceModuleBatch(entrySource, entryProgram, entryFileName);
+  const modulesByPath = new Map(sourceBatch.modules.map((module) => [module.fileName, module] as const));
+  const nodes = new Map<string, ModuleNode>();
+  let nextId = 0;
+
+  const build = (fileName: string): ModuleNode => {
+    const cached = nodes.get(fileName);
+    if (cached) return cached;
+    const sourceModule = modulesByPath.get(fileName);
+    if (!sourceModule) throw new Error(`source module batch is missing ${fileName}`);
     const node: ModuleNode = {
       id: nextId++,
-      fileName: canonical,
-      program,
+      fileName,
+      program: sourceModule.program,
       dependencies: new Map(),
       ownNames: new Map(),
       exports: new Map(),
     };
-    nodes.set(canonical, node);
-    collectOwnNames(node, suppliedProgram !== null && stack.length === 0);
-    for (const declaration of program.imports) {
-      if (!isLocalSourceModuleSpecifier(declaration.header)) continue;
-      const dependencyPath = resolve(dirname(canonical), declaration.header);
-      const dependency = load(dependencyPath, null, [...stack, canonical], declaration);
-      node.dependencies.set(declaration.location.offset, dependency);
+    nodes.set(fileName, node);
+    collectOwnNames(node, fileName === sourceBatch.entryFileName);
+    for (const declaration of sourceModule.program.imports) {
+      const dependencyPath = sourceModule.dependencies.get(declaration.location.offset);
+      if (!dependencyPath) continue;
+      node.dependencies.set(declaration.location.offset, build(dependencyPath));
     }
-    for (const declaration of program.exports) {
+    for (const declaration of sourceModule.program.exports) {
       const linkedName = node.ownNames.get(declaration.name);
       if (!linkedName) {
-        throw new DiagnosticError(canonical, declaration.location, `cannot export unknown declaration ${JSON.stringify(declaration.name)}`, {
+        throw new DiagnosticError(fileName, declaration.location, `cannot export unknown declaration ${JSON.stringify(declaration.name)}`, {
           code: "Z0602",
         });
       }
       if (node.exports.has(declaration.name)) {
-        throw new DiagnosticError(canonical, declaration.location, `duplicate export ${JSON.stringify(declaration.name)}`, { code: "Z0603" });
+        throw new DiagnosticError(fileName, declaration.location, `duplicate export ${JSON.stringify(declaration.name)}`, { code: "Z0603" });
       }
       node.exports.set(declaration.name, { linkedName, location: declaration.location });
     }
     return node;
   };
 
-  const entry = load(entryPath, entryProgram, [], null);
+  const entry = build(sourceBatch.entryFileName);
   const ordered: ModuleNode[] = [];
   const visited = new Set<string>();
   const visit = (node: ModuleNode): void => {
@@ -169,6 +214,7 @@ export function linkSourceModules(entryProgram: Program, entryFileName: string):
   const offsetBases = moduleOffsetBases([...nodes.values()], entry);
   return {
     program: rebaseLinkedLocations(linkedProgram, offsetBases),
+    sourceBatch,
     modules: new Map(ordered.map((node) => [node.fileName, {
       fileName: node.fileName,
       program: node.program,

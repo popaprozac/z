@@ -1488,7 +1488,9 @@ ported independently rather than translated as one monolith.
    before the graph semantics are proven. The batch now crosses one in-process
    FFI call and returns a compact graph protocol; `z self-host-resolve` checks it
    against stage zero while reporting boundary, framing, native execution,
-   decode, and parity timings independently. Feeding this graph into ordinary
+   decode, and parity timings independently. A shared canonical batch loader now
+   supplies both the current linker and native boundary from one entry path.
+   Feeding this graph into ordinary
    compiler commands and replacing the temporary protocol remain next.
 3. **Stage 2:** Compile the Z compiler with stage 0, then use that result to
    compile itself.

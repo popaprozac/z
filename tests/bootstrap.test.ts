@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { resolve } from "node:path";
+import { basename, resolve } from "node:path";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { test } from "bun:test";
 import { analyzeSource, check, compileToC, compileToNative } from "../compiler/src/compiler.ts";
@@ -95,6 +95,15 @@ test("loads explicit Z exports through selective and namespace module imports", 
 
   const analysis = analyzeSource(source, example);
   assert.equal(analysis.sourceModules.size, 3);
+  assert.equal(analysis.sourceModuleBatch.entryFileName, example);
+  assert.deepEqual(
+    analysis.sourceModuleBatch.modules.map((module) => basename(module.fileName)),
+    ["main.zs", "geometry.zs", "math.zs"],
+  );
+  assert.deepEqual(
+    analysis.sourceModuleBatch.modules.map((module) => module.dependencies.size),
+    [2, 1, 0],
+  );
   assert.ok(analysis.program.functions.find((item) => item.name.endsWith("_add"))!.location.offset > source.length);
   const generated = compileToC(source, example);
   assert.match(generated, /__z_module_\d+_translate/);
@@ -4589,21 +4598,24 @@ test("resolves a canonical module graph directly from native Z ASTs", () => {
   assert.equal(result.stdout, "");
 
   const main = resolve(projectRoot, "examples/language/modules/main.zs");
-  const geometry = resolve(projectRoot, "examples/language/modules/geometry.zs");
-  const math = resolve(projectRoot, "examples/language/modules/math.zs");
   const integrated = spawnSync(
     process.execPath,
-    [cli, "self-host-resolve", main, geometry, math, "--timings"],
+    [cli, "self-host-resolve", main, "--timings"],
     { encoding: "utf8" },
   );
   assert.equal(integrated.status, 0, integrated.stderr);
   assert.match(integrated.stdout, /stage-1 resolver matches 3 modules and 3 local edges \(math\.zs -> geometry\.zs -> main\.zs\)/);
+  assert.match(integrated.stdout, /host discovery \(file I\/O \+ stage-0 import parse\): \d+\.\d{2} ms/);
   assert.match(integrated.stdout, /native in-process \(FFI \+ lex \+ parse \+ resolve \+ encode\): \d+\.\d{2} ms/);
   assert.match(integrated.stdout, /stage-0 parity \(lex \+ parse \+ graph\): \d+\.\d{2} ms/);
 
-  const incomplete = spawnSync(process.execPath, [cli, "self-host-resolve", main], { encoding: "utf8" });
-  assert.equal(incomplete.status, 1);
-  assert.match(incomplete.stderr, /could not find Z module \.\/geometry\.zs/);
+  const invalidDirectory = mkdtempSync("/tmp/z-self-host-resolver-");
+  const invalidMain = resolve(invalidDirectory, "main.zs");
+  writeFileSync(invalidMain, `import { hidden } from "./values.zs"; function main(): i32 { return hidden(); }`);
+  writeFileSync(resolve(invalidDirectory, "values.zs"), `function hidden(): i32 { return 42; }`);
+  const invalid = spawnSync(process.execPath, [cli, "self-host-resolve", invalidMain], { encoding: "utf8" });
+  assert.equal(invalid.status, 1);
+  assert.match(invalid.stderr, /module \.\/values\.zs has no export hidden/);
 
   const encoded = encodeStage1ModuleBatch([{ path: "/a.zs", source: "é" }]);
   assert.equal(encoded.byteLength, 32 + Buffer.byteLength("/a.zs") + Buffer.byteLength("é"));

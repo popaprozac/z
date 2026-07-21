@@ -12,7 +12,7 @@ import { DiagnosticError, formatDiagnostic } from "./diagnostics.ts";
 import { parseFunctionType } from "./function-types.ts";
 import { parseGenericType } from "./generic-types.ts";
 import { lex, type Token } from "./lexer.ts";
-import { isLocalSourceModuleSpecifier } from "./modules.ts";
+import { isLocalSourceModuleSpecifier, loadSourceModuleBatch } from "./modules.ts";
 import { isNullableObjCTypeName, publicObjCTypeName } from "./objc-types.ts";
 import { parse } from "./parser.ts";
 import { deploymentTargetFlags } from "./project.ts";
@@ -50,10 +50,9 @@ if (!command || !inputArgument || !["check", "emit", "run", "self-host-lex", "se
       );
     } else if (command === "self-host-resolve") {
       const timings = trailingArguments.includes("--timings");
-      verifyStage1Resolver(
-        [inputPath, ...trailingArguments.filter((argument) => argument !== "--timings").map((argument) => resolve(argument))],
-        timings,
-      );
+      const unexpected = trailingArguments.filter((argument) => argument !== "--timings");
+      if (unexpected.length > 0) throw new Error("self-host-resolve discovers local modules from its entry; pass only one .zs path");
+      verifyStage1Resolver(inputPath, timings);
     } else if (command === "check") {
       const source = readFileSync(inputPath, "utf8");
       for (const warning of check(source, inputPath)) console.error(formatDiagnostic(warning, source));
@@ -76,11 +75,18 @@ if (!command || !inputArgument || !["check", "emit", "run", "self-host-lex", "se
   }
 }
 
-function verifyStage1Resolver(inputPaths: readonly string[], timings: boolean): void {
+function verifyStage1Resolver(inputPath: string, timings: boolean): void {
   const projectRoot = resolve(dirname(new URL(import.meta.url).pathname), "../..");
-  const entryPath = realpathSync(inputPaths[0]);
-  const paths = [...new Set(inputPaths.map((path) => realpathSync(path)))];
-  const sources: Stage1ModuleSource[] = paths.map((path) => ({ path, source: readFileSync(path, "utf8") }));
+  const entryPath = realpathSync(inputPath);
+  const loadingStarted = performance.now();
+  const entrySource = readFileSync(entryPath, "utf8");
+  const entryProgram = parse(lex(entrySource, entryPath), entryPath);
+  const sourceBatch = loadSourceModuleBatch(entrySource, entryProgram, entryPath);
+  const loadingMilliseconds = performance.now() - loadingStarted;
+  const sources: Stage1ModuleSource[] = sourceBatch.modules.map((module) => ({
+    path: module.fileName,
+    source: module.source,
+  }));
   const bridgePath = join(projectRoot, "compiler/frontend/parser-library.zs");
   const boundary = prepareStage1ParserLibrary(projectRoot, bridgePath);
   const batchStarted = performance.now();
@@ -105,6 +111,7 @@ function verifyStage1Resolver(inputPaths: readonly string[], timings: boolean): 
     const cacheState = boundary.cacheHit ? "cache hit" : "cache miss; stage-0 compile + native build included";
     console.log(`stage-1 resolver timing (${stage1.modules.length} modules, ${cacheState})`);
     console.log(`  boundary preparation: ${formatMilliseconds(boundary.prepareMilliseconds)}`);
+    console.log(`  host discovery (file I/O + stage-0 import parse): ${formatMilliseconds(loadingMilliseconds)}`);
     console.log(`  host batch framing: ${formatMilliseconds(batchMilliseconds)}`);
     console.log(`  native in-process (FFI + lex + parse + resolve + encode): ${formatMilliseconds(executionMilliseconds)}`);
     console.log(`  protocol decode: ${formatMilliseconds(decodeMilliseconds)}`);
@@ -1379,5 +1386,5 @@ function usage(): void {
   console.error("usage: z <check|emit|run> <file.zs> [-- program arguments]");
   console.error("       z self-host-lex <file.zs> [more.zs ...]");
   console.error("       z self-host-parse <file.zs> [more.zs ...] [--timings]");
-  console.error("       z self-host-resolve <entry.zs> [module.zs ...] [--timings]");
+  console.error("       z self-host-resolve <entry.zs> [--timings]");
 }

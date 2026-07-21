@@ -24,15 +24,16 @@ Run exact stage-zero parity with:
 ```sh
 bun run z self-host-lex compiler/frontend/lexer.zs
 bun run z self-host-parse compiler/frontend/lexer.zs compiler/frontend/parser.zs
-bun run z self-host-resolve examples/language/modules/main.zs \
-  examples/language/modules/geometry.zs examples/language/modules/math.zs --timings
+bun run z self-host-resolve examples/language/modules/main.zs --timings
 ```
 
 The text protocol is a bootstrap boundary, not the intended final frontend API.
 The resolver intentionally receives host-canonicalized paths and source text in
-its first tier, keeping filesystem loading separate from graph semantics. The
-in-process command compares its module indexes, lexical edges, entry, and
+its first tier, keeping filesystem loading separate from graph semantics. A
+shared stage-zero loader discovers that canonical source batch once for both the
+current linker and native parity boundary. The in-process command compares its
+module indexes, lexical edges, entry, and
 dependency-first order with stage 0. Its timing report separates library
-preparation, host framing, native lex/parse/resolve/encode work, protocol decode,
-and stage-zero parity work. Repeated corpus measurements and incrementally
+preparation, host discovery, framing, native lex/parse/resolve/encode work,
+protocol decode, and stage-zero parity work. Repeated corpus measurements and incrementally
 feeding the native graph into ordinary compiler commands are the next layers.

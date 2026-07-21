@@ -273,7 +273,9 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    now crosses the compiler's existing in-process native-library boundary in one
    FFI call. `z self-host-resolve` compares module indexes, lexical edges, entry,
    and dependency order with a stage-zero graph and reports boundary, framing,
-   native execution, decoding, and stage-zero parity timings separately.
+   native execution, decoding, and stage-zero parity timings separately. The
+   stage-zero linker and native boundary now consume one canonical source batch;
+   the command discovers its full local graph from only the entry path.
    Template literals now
    retain ordered decoded-text leaves and ordinary embedded-expression roots,
    including nested templates, in the same flat arena. Expression-bodied
