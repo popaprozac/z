@@ -26,7 +26,9 @@ semantic analysis and code generation; the frontend itself is native Z code.
   capabilities and types, return type, and error type. Generic calls accept
   explicit type arguments or infer them from direct, nested-generic,
   fixed-array, `Slice`, nullable, and `view` parameter shapes, then substitute
-  their parameter and return contracts. The tier also covers
+  their parameter and return contracts. Local enums plus compiler-provided
+  `Option<T>` and `Result<T, E>` now drive native match subject, payload,
+  destructuring, exhaustiveness, and arm-result checks. The tier also covers
   closure result contracts, indexing, unary/binary operators, and ternaries. It
   validates known initializers, assignments, conditions, call arguments, and
   returns with native source-located diagnostics.
@@ -57,11 +59,11 @@ export state, aliases, local targets, and source coordinates with stage 0. Its
 timing report separates library preparation, host discovery, framing, native
 lex/parse/resolve/symbol/name/type work, protocol decode, and stage-zero parity
 work. Identifier and expression-level type lookup currently cover materialized
-expression trees. Unknown foreign/member/async/match shapes deliberately defer
-instead of guessing. Opaque expression spans, member typing, contextual
+expression trees. Unknown foreign/member/async and imported-enum match shapes
+deliberately defer instead of guessing. Opaque expression spans, member typing, contextual
 collection and return-driven generic inference, generic constraints and methods,
-type-constructor arity, trait conformance, control-flow merging, and ownership
-remain stage-zero work.
+type-constructor arity, cross-module enum/aggregate metadata, trait conformance,
+control-flow merging, and ownership remain stage-zero work.
 The reported native interval therefore does more semantic work than the
 graph-and-symbol-only stage-zero comparison.
 Repeated corpus measurements and incrementally

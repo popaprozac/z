@@ -1519,10 +1519,12 @@ ported independently rather than translated as one monolith.
    arguments and structurally substitute nested parameter and return shapes;
    unresolved contextual-only parameters continue to defer. Known initializers,
    assignments, conditions, arguments, and returns are checked with native
-   diagnostics. A missing native model for a
-   foreign/member/async/match expression produces an unresolved internal type,
-   not a guessed type or user-visible false positive; those shapes remain under
-   stage-zero authority until their metadata and control-flow rules migrate.
+   diagnostics. Local enums and the intrinsic `Option<T>`/`Result<T, E>` shapes
+   now provide match payload bindings, local aggregate destructuring,
+   exhaustiveness, and known arm-result unification. Imported enum/aggregate
+   metadata, match ownership effects, and control-flow merging remain at stage
+   zero. Any other missing foreign/member/async expression model produces an
+   unresolved internal type, not a guessed type or user-visible false positive.
 3. **Stage 2:** Compile the Z compiler with stage 0, then use that result to
    compile itself.
 4. **Bootstrap verification:** Compare generated native source and compiler test

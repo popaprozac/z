@@ -39,6 +39,7 @@ export enum ModuleResolveErrorKind {
   unknownType,
   typeMismatch,
   invalidOperator,
+  invalidMatch,
 }
 
 export struct ModuleResolveError {
@@ -72,6 +73,16 @@ struct NativeGenericTypeShape {
 struct NativeFixedArrayShape {
   elementType: String;
   length: String;
+}
+
+struct NativeMatchVariant {
+  name: String;
+  payloadType: String;
+}
+
+struct NativeMatchShape {
+  name: String;
+  variants: Array<NativeMatchVariant>;
 }
 
 export struct ResolvedModule {
@@ -1233,7 +1244,7 @@ function requireExpressionType(
   in expected: String,
   in actual: String
 ): void throws ModuleResolveError {
-  if (actual.byteLength == 0 || expected == actual) return;
+  if (actual.byteLength == 0 || actual == "__z_never" || expected == actual) return;
   if (isNumericTypeName(expected) && isNumericTypeName(actual) && isContextualNumericLiteral(tree, index)) return;
   if (expected == "cstring" && actual == "String" && tree.nodes[index].kind == ExpressionKind.stringExpression) return;
   if (actual == "null" && isNullableTypeName(expected)) return;
@@ -1568,6 +1579,428 @@ function explicitCallTypeArguments(
   return genericTypeShape(tree.nodes[calleeIndex].value);
 }
 
+function matchVariant(in name: String, in payloadType: String): NativeMatchVariant {
+  return NativeMatchVariant({
+    name: name.copyBytes(0, name.byteLength),
+    payloadType: payloadType.copyBytes(0, payloadType.byteLength),
+  });
+}
+
+function matchShape(
+  in module: ParsedModule,
+  in subjectType: String
+): Option<NativeMatchShape> {
+  match (genericTypeShape(subjectType)) {
+    some(generic) => {
+      if (generic.base == "Option" && generic.arguments.length == 1) {
+        let variants = Array<NativeMatchVariant>();
+        variants.push(matchVariant("some", generic.arguments[0]));
+        variants.push(matchVariant("none", ""));
+        return Option.some(NativeMatchShape({
+          name: subjectType.copyBytes(0, subjectType.byteLength),
+          variants,
+        }));
+      }
+      if (generic.base == "Result" && generic.arguments.length == 2) {
+        let variants = Array<NativeMatchVariant>();
+        let successType = "";
+        if (generic.arguments[0] != "void") {
+          successType = generic.arguments[0].copyBytes(0, generic.arguments[0].byteLength);
+        }
+        variants.push(matchVariant("success", successType));
+        variants.push(matchVariant("failure", generic.arguments[1]));
+        return Option.some(NativeMatchShape({
+          name: subjectType.copyBytes(0, subjectType.byteLength),
+          variants,
+        }));
+      }
+    }
+    none => {}
+  }
+  for (const declaration of module.program.enums) {
+    if (declaration.name != subjectType) continue;
+    let variants = Array<NativeMatchVariant>();
+    for (const variant of declaration.variants) {
+      let payloadType = "";
+      match (in variant.payload) {
+        some(payload) => payloadType = payload.name.copyBytes(0, payload.name.byteLength);
+        none => {}
+      }
+      variants.push(matchVariant(variant.name, payloadType));
+    }
+    return Option.some(NativeMatchShape({
+      name: subjectType.copyBytes(0, subjectType.byteLength),
+      variants,
+    }));
+  }
+  return Option<NativeMatchShape>.none;
+}
+
+function matchVariantIndex(
+  in shape: NativeMatchShape,
+  in name: String
+): usize {
+  let index: usize = 0;
+  while (index < shape.variants.length) {
+    if (shape.variants[index].name == name) return index;
+    index = index + 1;
+  }
+  return shape.variants.length;
+}
+
+function containsString(in values: Array<String>, in value: String): boolean {
+  for (const candidate of values) {
+    if (candidate == value) return true;
+  }
+  return false;
+}
+
+function matchError(
+  in module: ParsedModule,
+  in tree: ExpressionTree,
+  index: usize,
+  in message: String
+): ModuleResolveError {
+  return resolutionError(
+    ModuleResolveErrorKind.invalidMatch,
+    module.path,
+    message,
+    tree.nodes[index].line,
+    tree.nodes[index].column
+  );
+}
+
+function isDefinitelyNonMatchable(
+  in module: ParsedModule,
+  in subjectType: String
+): boolean {
+  const elementType = arrayElementType(subjectType);
+  if (
+    isNumericTypeName(subjectType)
+    || subjectType == "boolean"
+    || subjectType == "String"
+    || subjectType == "cstring"
+    || subjectType == "null"
+    || elementType.byteLength > 0
+  ) return true;
+  for (const declaration of module.program.aggregates) {
+    if (declaration.name == subjectType) return true;
+  }
+  return false;
+}
+
+function aggregateFieldType(
+  in module: ParsedModule,
+  in ownerType: String,
+  in fieldName: String
+): String {
+  let base = ownerType.copyBytes(0, ownerType.byteLength);
+  let arguments = Array<String>();
+  match (genericTypeShape(ownerType)) {
+    some(generic) => {
+      base = generic.base.copyBytes(0, generic.base.byteLength);
+      for (const argument of generic.arguments) {
+        arguments.push(argument.copyBytes(0, argument.byteLength));
+      }
+    }
+    none => {}
+  }
+  for (const declaration of module.program.aggregates) {
+    if (declaration.name != base) continue;
+    let substitutions = Array<NativeValueBinding>();
+    let typeIndex: usize = 0;
+    while (
+      typeIndex < declaration.typeParameters.length
+      && typeIndex < arguments.length
+    ) {
+      addValueBinding(
+        inout substitutions,
+        declaration.typeParameters[typeIndex].name,
+        arguments[typeIndex]
+      );
+      typeIndex = typeIndex + 1;
+    }
+    for (const field of declaration.fields) {
+      if (field.name == fieldName) {
+        return substituteGenericType(field.type.name, substitutions);
+      }
+    }
+  }
+  return "";
+}
+
+function hasLocalAggregate(in module: ParsedModule, in typeName: String): boolean {
+  let base = typeName.copyBytes(0, typeName.byteLength);
+  match (genericTypeShape(typeName)) {
+    some(generic) => base = generic.base.copyBytes(0, generic.base.byteLength);
+    none => {}
+  }
+  for (const declaration of module.program.aggregates) {
+    if (declaration.name == base) return true;
+  }
+  return false;
+}
+
+function inferMatchArmStatementType(
+  in module: ParsedModule,
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
+  in arena: StatementArena,
+  in tree: ExpressionTree,
+  statementIndex: usize,
+  in inherited: Array<NativeValueBinding>
+): String throws ModuleResolveError {
+  const kind = arena.nodes[statementIndex].kind;
+  if (
+    kind == StatementKind.expressionStatement
+    || kind == StatementKind.selectStatement
+    || kind == StatementKind.matchStatement
+  ) {
+    return match (in arena.nodes[statementIndex].expression) {
+      some(expression) => try inferExpressionType(
+        module,
+        modules,
+        moduleIndex,
+        arena,
+        expression,
+        inherited
+      );
+      none => "";
+    };
+  }
+  if (kind == StatementKind.returnStatement || kind == StatementKind.throwStatement) {
+    let bindings = copyValueBindings(inherited);
+    try inferStatement(
+      module,
+      modules,
+      moduleIndex,
+      arena,
+      statementIndex,
+      inout bindings,
+      ""
+    );
+    return "__z_never";
+  }
+  if (kind == StatementKind.blockStatement) {
+    const children = copyIndices(arena.nodes[statementIndex].children);
+    if (children.length == 0) return "";
+    let bindings = copyValueBindings(inherited);
+    let index: usize = 0;
+    while (index + 1 < children.length) {
+      try inferStatement(
+        module,
+        modules,
+        moduleIndex,
+        arena,
+        children[index],
+        inout bindings,
+        ""
+      );
+      index = index + 1;
+    }
+    return try inferMatchArmStatementType(
+      module,
+      modules,
+      moduleIndex,
+      arena,
+      tree,
+      children[children.length - 1],
+      bindings
+    );
+  }
+  let bindings = copyValueBindings(inherited);
+  try inferStatement(
+    module,
+    modules,
+    moduleIndex,
+    arena,
+    statementIndex,
+    inout bindings,
+    ""
+  );
+  return "";
+}
+
+function addMatchArmValueBindings(
+  in module: ParsedModule,
+  in tree: ExpressionTree,
+  armIndex: usize,
+  in variant: NativeMatchVariant,
+  inout bindings: Array<NativeValueBinding>
+): void throws ModuleResolveError {
+  let patternKind = "none";
+  if (tree.nodes[armIndex].labels.length > 0) {
+    patternKind = tree.nodes[armIndex].labels[0].copyBytes(
+      0,
+      tree.nodes[armIndex].labels[0].byteLength
+    );
+  }
+  const hasPattern = patternKind != "none";
+  const hasPayload = variant.payloadType.byteLength > 0;
+  if (hasPayload != hasPattern) {
+    const message = hasPayload
+      ? "payload variant requires a binding"
+      : "payloadless variant cannot bind a value";
+    throw matchError(
+      module,
+      tree,
+      armIndex,
+      message
+    );
+  }
+  if (!hasPattern) return;
+  const patterns = copyIndices(tree.nodes[armIndex].children);
+  if (patternKind == "binding" && patterns.length == 1) {
+    addValueBinding(
+      inout bindings,
+      tree.nodes[patterns[0]].value,
+      variant.payloadType
+    );
+    return;
+  }
+  if (patternKind != "object") return;
+  const localAggregate = hasLocalAggregate(module, variant.payloadType);
+  if (!localAggregate && isDefinitelyNonMatchable(module, variant.payloadType)) {
+    throw matchError(module, tree, armIndex, "an object pattern requires a struct or class payload");
+  }
+  let coveredFields = Array<String>();
+  for (const pattern of patterns) {
+    const fieldName = tree.nodes[pattern].value.copyBytes(
+      0,
+      tree.nodes[pattern].value.byteLength
+    );
+    if (containsString(coveredFields, fieldName)) {
+      throw matchError(module, tree, pattern, `duplicate object pattern field ${fieldName}`);
+    }
+    coveredFields.push(fieldName.copyBytes(0, fieldName.byteLength));
+    const fieldType = aggregateFieldType(module, variant.payloadType, fieldName);
+    if (localAggregate && fieldType.byteLength == 0) {
+      throw matchError(
+        module,
+        tree,
+        pattern,
+        `payload ${variant.payloadType} has no field ${fieldName}`
+      );
+    }
+    const fieldChildren = copyIndices(tree.nodes[pattern].children);
+    if (fieldChildren.length == 1) {
+      addValueBinding(
+        inout bindings,
+        tree.nodes[fieldChildren[0]].value,
+        fieldType
+      );
+    }
+  }
+}
+
+function inferMatchExpressionNodeType(
+  in module: ParsedModule,
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
+  in arena: StatementArena,
+  in tree: ExpressionTree,
+  index: usize,
+  in bindings: Array<NativeValueBinding>
+): String throws ModuleResolveError {
+  const children = copyIndices(tree.nodes[index].children);
+  if (children.length == 0) return "";
+  const subjectType = try inferExpressionNodeType(
+    module,
+    modules,
+    moduleIndex,
+    arena,
+    tree,
+    children[0],
+    bindings
+  );
+  if (subjectType.byteLength == 0) return "";
+  let shapeOption = matchShape(module, subjectType);
+  let shapeKnown = false;
+  let shape = NativeMatchShape({ name: "", variants: Array<NativeMatchVariant>() });
+  match (shapeOption) {
+    some(known) => {
+      shape = known;
+      shapeKnown = true;
+    }
+    none => {}
+  }
+  if (!shapeKnown) {
+    if (isDefinitelyNonMatchable(module, subjectType)) {
+      throw matchError(module, tree, children[0], `match requires an enum value, found ${subjectType}`);
+    }
+    return "";
+  }
+  let covered = Array<String>();
+  let resultType = "";
+  let unresolvedArm = false;
+  let hasContinuingArm = false;
+  let childIndex: usize = 1;
+  while (childIndex < children.length) {
+    const armIndex = children[childIndex];
+    const variantName = tree.nodes[armIndex].value.copyBytes(
+      0,
+      tree.nodes[armIndex].value.byteLength
+    );
+    const variantIndex = matchVariantIndex(shape, variantName);
+    if (variantIndex == shape.variants.length) {
+      throw matchError(module, tree, armIndex, `unknown variant ${variantName}`);
+    }
+    if (containsString(covered, variantName)) {
+      throw matchError(module, tree, armIndex, `duplicate match arm ${variantName}`);
+    }
+    covered.push(variantName.copyBytes(0, variantName.byteLength));
+    let armBindings = copyValueBindings(bindings);
+    try addMatchArmValueBindings(
+      module,
+      tree,
+      armIndex,
+      shape.variants[variantIndex],
+      inout armBindings
+    );
+    const statements = copyIndices(tree.nodes[armIndex].statements);
+    let armType = "";
+    if (statements.length == 1) {
+      armType = try inferMatchArmStatementType(
+        module,
+        modules,
+        moduleIndex,
+        arena,
+        tree,
+        statements[0],
+        armBindings
+      );
+    }
+    if (armType.byteLength == 0) unresolvedArm = true;
+    else if (armType != "__z_never") {
+      hasContinuingArm = true;
+      if (resultType.byteLength == 0) resultType = armType.copyBytes(0, armType.byteLength);
+      else if (resultType != armType) {
+        throw resolutionError(
+          ModuleResolveErrorKind.typeMismatch,
+          module.path,
+          `match arm produces ${armType}, but previous arms produce ${resultType}`,
+          tree.nodes[armIndex].line,
+          tree.nodes[armIndex].column
+        );
+      }
+    }
+    childIndex = childIndex + 1;
+  }
+  for (const variant of shape.variants) {
+    if (!containsString(covered, variant.name)) {
+      throw matchError(
+        module,
+        tree,
+        index,
+        `non-exhaustive match; missing ${shape.name}.${variant.name}`
+      );
+    }
+  }
+  if (unresolvedArm) return "";
+  if (!hasContinuingArm) return "__z_never";
+  return resultType;
+}
+
 function exportedFunctionLocation(
   in modules: Array<ResolvedModule>,
   moduleIndex: usize,
@@ -1656,6 +2089,7 @@ function inferExpressionNodeType(
   in module: ParsedModule,
   in modules: Array<ResolvedModule>,
   moduleIndex: usize,
+  in arena: StatementArena,
   in tree: ExpressionTree,
   index: usize,
   in bindings: Array<NativeValueBinding>
@@ -1676,11 +2110,22 @@ function inferExpressionNodeType(
   }
   if (kind == ExpressionKind.newExpression) return value;
   if (kind == ExpressionKind.variantExpression) return value;
+  if (kind == ExpressionKind.matchExpression) {
+    return try inferMatchExpressionNodeType(
+      module,
+      modules,
+      moduleIndex,
+      arena,
+      tree,
+      index,
+      bindings
+    );
+  }
   if (kind == ExpressionKind.argumentReferenceExpression && children.length == 1) {
-    return try inferExpressionNodeType(module, modules, moduleIndex, tree, children[0], bindings);
+    return try inferExpressionNodeType(module, modules, moduleIndex, arena, tree, children[0], bindings);
   }
   if (kind == ExpressionKind.unaryExpression && children.length == 1) {
-    const operand = try inferExpressionNodeType(module, modules, moduleIndex, tree, children[0], bindings);
+    const operand = try inferExpressionNodeType(module, modules, moduleIndex, arena, tree, children[0], bindings);
     if (operand.byteLength == 0) return "";
     if (value == "!" && operand == "boolean") return "boolean";
     if ((value == "+" || value == "-") && isNumericTypeName(operand)) return operand;
@@ -1691,8 +2136,8 @@ function inferExpressionNodeType(
     throw invalidOperator(module, tree, index, `operator ${value} requires ${requirement}`);
   }
   if (kind == ExpressionKind.binaryExpression && children.length == 2) {
-    let left = try inferExpressionNodeType(module, modules, moduleIndex, tree, children[0], bindings);
-    let right = try inferExpressionNodeType(module, modules, moduleIndex, tree, children[1], bindings);
+    let left = try inferExpressionNodeType(module, modules, moduleIndex, arena, tree, children[0], bindings);
+    let right = try inferExpressionNodeType(module, modules, moduleIndex, arena, tree, children[1], bindings);
     if (left.byteLength == 0 || right.byteLength == 0) return "";
     if (isContextualNumericLiteral(tree, children[1]) && isNumericTypeName(left)) right = left.copyBytes(0, left.byteLength);
     else if (isContextualNumericLiteral(tree, children[0]) && isNumericTypeName(right)) left = right.copyBytes(0, right.byteLength);
@@ -1720,12 +2165,12 @@ function inferExpressionNodeType(
     return "";
   }
   if (kind == ExpressionKind.conditionalExpression && children.length == 3) {
-    const condition = try inferExpressionNodeType(module, modules, moduleIndex, tree, children[0], bindings);
+    const condition = try inferExpressionNodeType(module, modules, moduleIndex, arena, tree, children[0], bindings);
     if (condition.byteLength > 0) {
       try requireExpressionType(module, tree, children[0], "boolean", condition);
     }
-    const thenType = try inferExpressionNodeType(module, modules, moduleIndex, tree, children[1], bindings);
-    const elseType = try inferExpressionNodeType(module, modules, moduleIndex, tree, children[2], bindings);
+    const thenType = try inferExpressionNodeType(module, modules, moduleIndex, arena, tree, children[1], bindings);
+    const elseType = try inferExpressionNodeType(module, modules, moduleIndex, arena, tree, children[2], bindings);
     if (thenType.byteLength == 0 || elseType.byteLength == 0) return "";
     if (thenType == elseType) return thenType;
     throw resolutionError(
@@ -1738,11 +2183,11 @@ function inferExpressionNodeType(
   }
   if (kind == ExpressionKind.arrayExpression) {
     if (children.length == 0) return "";
-    let elementType = try inferExpressionNodeType(module, modules, moduleIndex, tree, children[0], bindings);
+    let elementType = try inferExpressionNodeType(module, modules, moduleIndex, arena, tree, children[0], bindings);
     if (elementType.byteLength == 0) return "";
     let childIndex: usize = 1;
     while (childIndex < children.length) {
-      const candidate = try inferExpressionNodeType(module, modules, moduleIndex, tree, children[childIndex], bindings);
+      const candidate = try inferExpressionNodeType(module, modules, moduleIndex, arena, tree, children[childIndex], bindings);
       if (candidate.byteLength == 0) return "";
       try requireExpressionType(module, tree, children[childIndex], elementType, candidate);
       childIndex = childIndex + 1;
@@ -1750,8 +2195,8 @@ function inferExpressionNodeType(
     return `${elementType}[${children.length}]`;
   }
   if (kind == ExpressionKind.indexExpression && children.length == 2) {
-    const owner = try inferExpressionNodeType(module, modules, moduleIndex, tree, children[0], bindings);
-    const offset = try inferExpressionNodeType(module, modules, moduleIndex, tree, children[1], bindings);
+    const owner = try inferExpressionNodeType(module, modules, moduleIndex, arena, tree, children[0], bindings);
+    const offset = try inferExpressionNodeType(module, modules, moduleIndex, arena, tree, children[1], bindings);
     if (offset.byteLength > 0 && !isIntegerTypeName(offset)) {
       throw invalidOperator(module, tree, children[1], `index requires an integer, found ${offset}`);
     }
@@ -1771,6 +2216,7 @@ function inferExpressionNodeType(
         module,
         modules,
         moduleIndex,
+        arena,
         tree,
         children[argumentIndex],
         bindings
@@ -1889,13 +2335,14 @@ function inferExpressionType(
   in module: ParsedModule,
   in modules: Array<ResolvedModule>,
   moduleIndex: usize,
+  in arena: StatementArena,
   in expression: ExpressionSyntax,
   in bindings: Array<NativeValueBinding>
 ): String throws ModuleResolveError {
   return match (in expression.tree) {
     some(tree) => {
       const root = tree.root;
-      select try inferExpressionNodeType(module, modules, moduleIndex, tree, root, bindings);
+      select try inferExpressionNodeType(module, modules, moduleIndex, arena, tree, root, bindings);
     }
     none => "";
   };
@@ -1933,6 +2380,7 @@ function inferStatement(
         module,
         modules,
         moduleIndex,
+        arena,
         expression,
         bindings
       );
@@ -1974,7 +2422,7 @@ function inferStatement(
     }
     match (in arena.nodes[index].secondExpression) {
       some(value) => {
-        const actual = try inferExpressionType(module, modules, moduleIndex, value, bindings);
+        const actual = try inferExpressionType(module, modules, moduleIndex, arena, value, bindings);
         if (expected.byteLength > 0) {
           try requireExpressionSyntaxType(module, value, expected, actual);
         }
@@ -1986,8 +2434,8 @@ function inferStatement(
   if (kind == StatementKind.returnStatement || kind == StatementKind.selectStatement) {
     match (in arena.nodes[index].expression) {
       some(expression) => {
-        const actual = try inferExpressionType(module, modules, moduleIndex, expression, bindings);
-        if (expectedReturn.byteLength > 0) {
+        const actual = try inferExpressionType(module, modules, moduleIndex, arena, expression, bindings);
+        if (kind == StatementKind.returnStatement && expectedReturn.byteLength > 0) {
           try requireExpressionSyntaxType(module, expression, expectedReturn, actual);
         }
       }
@@ -2007,7 +2455,7 @@ function inferStatement(
   if (kind == StatementKind.ifStatement || kind == StatementKind.whileStatement) {
     match (in arena.nodes[index].expression) {
       some(condition) => {
-        const actual = try inferExpressionType(module, modules, moduleIndex, condition, bindings);
+        const actual = try inferExpressionType(module, modules, moduleIndex, arena, condition, bindings);
         if (actual.byteLength > 0) {
           try requireExpressionSyntaxType(module, condition, "boolean", actual);
         }
@@ -2020,7 +2468,7 @@ function inferStatement(
     let elementType = "";
     match (in arena.nodes[index].expression) {
       some(iterable) => {
-        const iterableType = try inferExpressionType(module, modules, moduleIndex, iterable, bindings);
+        const iterableType = try inferExpressionType(module, modules, moduleIndex, arena, iterable, bindings);
         elementType = arrayElementType(iterableType);
       }
       none => {}

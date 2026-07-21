@@ -338,6 +338,113 @@ export function identity<T>(value: T): T { return value; }
   return sources;
 }
 
+function matchTypingGraph(): Array<ModuleSource> {
+  let sources = Array<ModuleSource>();
+  sources.push(module("/workspace/main.zs", `
+struct User { id: i32; name: String; }
+enum Lookup { found User, missing, }
+
+function inspect(value: Lookup): i32 {
+  return match (value) {
+    found({ id }) => id;
+    missing => 0;
+  };
+}
+
+function inspectOption(value: Option<String>): String {
+  return match (in value) {
+    some(text) => text;
+    none => "";
+  };
+}
+
+function inspectResult(value: Result<i32, String>): i32 {
+  return match (value) {
+    success(answer) => answer;
+    failure(error) => 0;
+  };
+}
+`));
+  return sources;
+}
+
+function nonExhaustiveMatchGraph(): Array<ModuleSource> {
+  let sources = Array<ModuleSource>();
+  sources.push(module("/workspace/main.zs", `
+enum State { ready, stopped, }
+function inspect(value: State): i32 {
+  return match (value) { ready => 1; };
+}
+`));
+  return sources;
+}
+
+function unknownMatchVariantGraph(): Array<ModuleSource> {
+  let sources = Array<ModuleSource>();
+  sources.push(module("/workspace/main.zs", `
+enum State { ready, }
+function inspect(value: State): i32 {
+  return match (value) { missing => 1; };
+}
+`));
+  return sources;
+}
+
+function duplicateMatchArmGraph(): Array<ModuleSource> {
+  let sources = Array<ModuleSource>();
+  sources.push(module("/workspace/main.zs", `
+enum State { ready, }
+function inspect(value: State): i32 {
+  return match (value) { ready => 1; ready => 2; };
+}
+`));
+  return sources;
+}
+
+function invalidMatchPayloadGraph(): Array<ModuleSource> {
+  let sources = Array<ModuleSource>();
+  sources.push(module("/workspace/main.zs", `
+enum State { ready i32, stopped, }
+function inspect(value: State): i32 {
+  return match (value) { ready => 1; stopped(extra) => extra; };
+}
+`));
+  return sources;
+}
+
+function invalidMatchFieldGraph(): Array<ModuleSource> {
+  let sources = Array<ModuleSource>();
+  sources.push(module("/workspace/main.zs", `
+struct User { id: i32; }
+enum Lookup { found User, missing, }
+function inspect(value: Lookup): i32 {
+  return match (value) { found({ name }) => 1; missing => 0; };
+}
+`));
+  return sources;
+}
+
+function mismatchedMatchArmsGraph(): Array<ModuleSource> {
+  let sources = Array<ModuleSource>();
+  sources.push(module("/workspace/main.zs", `
+enum Choice { count i32, enabled boolean, }
+function inspect(value: Choice): i32 {
+  return match (value) { count(number) => number; enabled(flag) => flag; };
+}
+`));
+  return sources;
+}
+
+function nonEnumMatchGraph(): Array<ModuleSource> {
+  let sources = Array<ModuleSource>();
+  sources.push(module("/workspace/main.zs", `
+function inspect(value: i32): i32 {
+  return match (value) { ready => 1; };
+}
+`));
+  return sources;
+}
+
 function symbolKindsGraph(): Array<ModuleSource> {
   let sources = Array<ModuleSource>();
   sources.push(module("/workspace/main.zs", `
@@ -481,12 +588,26 @@ function main(): i32 {
   if (!resolvesTo(conflictingGenericInferenceGraph(), ModuleResolveErrorKind.typeMismatch)) return 20;
   if (!resolvesTo(explicitGenericMismatchGraph(), ModuleResolveErrorKind.typeMismatch)) return 21;
   if (!resolvesTo(genericArityMismatchGraph(), ModuleResolveErrorKind.typeMismatch)) return 22;
+  const matchSources = matchTypingGraph();
+  const matchOutcome = attempt resolveModules(matchSources, "/workspace/main.zs");
+  const matchesAreValid = match (matchOutcome) {
+    success(graph) => graph.modules.length == 1;
+    failure(error) => false;
+  };
+  if (!matchesAreValid) return 23;
+  if (!resolvesTo(nonExhaustiveMatchGraph(), ModuleResolveErrorKind.invalidMatch)) return 24;
+  if (!resolvesTo(unknownMatchVariantGraph(), ModuleResolveErrorKind.invalidMatch)) return 25;
+  if (!resolvesTo(duplicateMatchArmGraph(), ModuleResolveErrorKind.invalidMatch)) return 26;
+  if (!resolvesTo(invalidMatchPayloadGraph(), ModuleResolveErrorKind.invalidMatch)) return 27;
+  if (!resolvesTo(invalidMatchFieldGraph(), ModuleResolveErrorKind.invalidMatch)) return 28;
+  if (!resolvesTo(mismatchedMatchArmsGraph(), ModuleResolveErrorKind.typeMismatch)) return 29;
+  if (!resolvesTo(nonEnumMatchGraph(), ModuleResolveErrorKind.invalidMatch)) return 30;
   const kindSources = symbolKindsGraph();
   const kindOutcome = attempt resolveModules(kindSources, "/workspace/main.zs");
   const kindsAreValid = match (kindOutcome) {
     success(graph) => validSymbolKinds(graph);
     failure(error) => false;
   };
-  if (!kindsAreValid) return 23;
+  if (!kindsAreValid) return 31;
   return 0;
 }

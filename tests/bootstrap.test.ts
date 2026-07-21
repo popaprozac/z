@@ -4681,6 +4681,22 @@ test("resolves a canonical module graph directly from native Z ASTs", () => {
     /generic-main\.zs:3:29: conflicting inferred types for T in choose: i32 and boolean/,
   );
 
+  const matchMain = resolve(invalidDirectory, "match-main.zs");
+  writeFileSync(
+    matchMain,
+    "enum State { ready, stopped, }\nfunction inspect(value: State): i32 {\n  return match (value) { ready => 1; };\n}\n",
+  );
+  const invalidMatch = spawnSync(
+    process.execPath,
+    [cli, "self-host-resolve", matchMain],
+    { encoding: "utf8" },
+  );
+  assert.equal(invalidMatch.status, 1);
+  assert.match(
+    invalidMatch.stderr,
+    /match-main\.zs:3:10: non-exhaustive match; missing State\.stopped/,
+  );
+
   const encoded = encodeStage1ModuleBatch([{ path: "/a.zs", source: "é" }]);
   assert.equal(encoded.byteLength, 32 + Buffer.byteLength("/a.zs") + Buffer.byteLength("é"));
   assert.throws(() => decodeStage1ModuleGraphStream("order\n"), /did not contain an entry/);
