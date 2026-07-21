@@ -76,6 +76,14 @@ function bodyShapes(value: i32): i32 {
   } else if (value == 1) observed = value + 1;
   else observed = 0;
   if (observed < 0) return -1;
+  while (observed < 3) {
+    observed = observed + 1;
+    if (observed == 2) continue;
+    if (observed == 3) break;
+  }
+  for (const item of [value, observed]) {
+    observed = observed + item;
+  }
   {
     const adjusted: i32 = value + 1;
     bodyShapes(adjusted);

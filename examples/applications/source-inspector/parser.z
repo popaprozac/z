@@ -71,6 +71,8 @@ export enum StatementKind {
   expressionStatement,
   blockStatement,
   ifStatement,
+  whileStatement,
+  forStatement,
   breakStatement,
   continueStatement,
 }
@@ -1535,6 +1537,70 @@ function parseProjectedStatement(
     }));
     return Option.some(index);
   }
+  if (kind == TokenKind.whileKeyword) {
+    const start = snapshot(tokens[current]);
+    current = current + 1;
+    try expectKind(tokens, inout current, TokenKind.leftParen, "`(` after `while`");
+    const conditionStart = current;
+    const conditionEnd = try parenthesizedExpressionEnd(tokens, current, "a while condition");
+    const condition = try projectExpressionRange(tokens, conditionStart, conditionEnd, inout nodes);
+    current = conditionEnd + 1;
+    const bodyStart = snapshot(tokens[current]);
+    const bodyStatements = try parseProjectedBlock(tokens, inout current, "a `while` body", inout nodes);
+    let children = Array<usize>();
+    children.push(pushProjectedBlock(inout nodes, bodyStatements, bodyStart));
+    const index = nodes.length;
+    nodes.push(Statement({
+      kind: StatementKind.whileStatement,
+      mutableBinding: false,
+      name: "",
+      nameOffset: 0,
+      nameLine: 0,
+      nameColumn: 0,
+      typeAnnotation: Option<TypeReference>.none,
+      expression: Option.some(condition),
+      secondExpression: Option<ExpressionSyntax>.none,
+      children,
+      offset: start.offset,
+      line: start.line,
+      column: start.column,
+    }));
+    return Option.some(index);
+  }
+  if (kind == TokenKind.forKeyword) {
+    const start = snapshot(tokens[current]);
+    current = current + 1;
+    try expectKind(tokens, inout current, TokenKind.leftParen, "`(` after `for`");
+    try expectKind(tokens, inout current, TokenKind.constKeyword, "`const` in a read-only `for...of` binding");
+    const binding = snapshot(tokens[current]);
+    try expectKind(tokens, inout current, TokenKind.identifier, "an iteration binding");
+    try expectKind(tokens, inout current, TokenKind.ofKeyword, "`of` after an iteration binding");
+    const iterableStart = current;
+    const iterableEnd = try parenthesizedExpressionEnd(tokens, current, "a for-of iterable");
+    const iterable = try projectExpressionRange(tokens, iterableStart, iterableEnd, inout nodes);
+    current = iterableEnd + 1;
+    const bodyStart = snapshot(tokens[current]);
+    const bodyStatements = try parseProjectedBlock(tokens, inout current, "a `for...of` body", inout nodes);
+    let children = Array<usize>();
+    children.push(pushProjectedBlock(inout nodes, bodyStatements, bodyStart));
+    const index = nodes.length;
+    nodes.push(Statement({
+      kind: StatementKind.forStatement,
+      mutableBinding: false,
+      name: binding.text.copyBytes(0, binding.text.byteLength),
+      nameOffset: binding.offset,
+      nameLine: binding.line,
+      nameColumn: binding.column,
+      typeAnnotation: Option<TypeReference>.none,
+      expression: Option.some(iterable),
+      secondExpression: Option<ExpressionSyntax>.none,
+      children,
+      offset: start.offset,
+      line: start.line,
+      column: start.column,
+    }));
+    return Option.some(index);
+  }
   if (kind == TokenKind.constKeyword || kind == TokenKind.letKeyword) {
     const start = snapshot(tokens[current]);
     const mutableBinding = kind == TokenKind.letKeyword;
@@ -1653,9 +1719,7 @@ function parseProjectedStatement(
     return Option.some(index);
   }
   if (
-    kind == TokenKind.whileKeyword
-    || kind == TokenKind.forKeyword
-    || kind == TokenKind.matchKeyword
+    kind == TokenKind.matchKeyword
     || kind == TokenKind.asyncKeyword
   ) {
     try skipProjectedStatement(tokens, inout current, inout nodes);
@@ -2225,6 +2289,8 @@ function renderStatementText(in arena: StatementArena, in statement: Statement):
   else if (statement.kind == StatementKind.selectStatement) output.append("select@");
   else if (statement.kind == StatementKind.expressionStatement) output.append("expression@");
   else if (statement.kind == StatementKind.ifStatement) output.append("if@");
+  else if (statement.kind == StatementKind.whileStatement) output.append("while@");
+  else if (statement.kind == StatementKind.forStatement) output.append("for@");
   else if (statement.kind == StatementKind.breakStatement) output.append("break@");
   else if (statement.kind == StatementKind.continueStatement) output.append("continue@");
   else output.append("block@");
@@ -2263,6 +2329,19 @@ function renderStatementText(in arena: StatementArena, in statement: Statement):
       }
       none => {}
     }
+  } else if (statement.kind == StatementKind.forStatement) {
+    output.append("const:");
+    output.append(statement.name);
+    output.append("@");
+    output.append(`${statement.nameOffset},${statement.nameLine},${statement.nameColumn}`);
+    match (in statement.expression) {
+      some(expression) => {
+        output.append("iterable=");
+        const rendered = expressionSyntaxText(expression, arena);
+        output.append(rendered);
+      }
+      none => {}
+    }
   } else {
     match (in statement.expression) {
       some(expression) => {
@@ -2283,6 +2362,15 @@ function renderStatementText(in arena: StatementArena, in statement: Statement):
       output.append("else=");
       const branch = statementText(arena, statement.children[1]);
       output.append(branch);
+    }
+  } else if (
+    statement.kind == StatementKind.whileStatement
+    || statement.kind == StatementKind.forStatement
+  ) {
+    if (statement.children.length > 0) {
+      output.append("body=");
+      const body = statementText(arena, statement.children[0]);
+      output.append(body);
     }
   } else {
     for (const child of statement.children) {

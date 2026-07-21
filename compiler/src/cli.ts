@@ -68,7 +68,10 @@ function verifyStage1Parser(inputPaths: readonly string[], timings: boolean): vo
   const bridgePath = join(projectRoot, "examples/applications/source-inspector/parser-stream.z");
   const boundary = prepareStage1Bridge(projectRoot, bridgePath);
   const executionStarted = performance.now();
-  const execution = spawnSync(boundary.executablePath, inputPaths, { encoding: "utf8" });
+  const execution = spawnSync(boundary.executablePath, inputPaths, {
+    encoding: "utf8",
+    maxBuffer: 64 * 1024 * 1024,
+  });
   const executionMilliseconds = performance.now() - executionStarted;
   if (execution.error) throw execution.error;
   if (execution.status !== 0) throw new Error(execution.stderr || "the stage-1 parser failed");
@@ -264,24 +267,49 @@ function canonicalStatementText(statement: Statement, tokens: readonly Token[]):
     if (statementIndex < 0 || leftParenIndex < 0) {
       throw new Error(`could not locate if condition at source offset ${statement.location.offset}`);
     }
-    let depth = 1;
-    let rightParenIndex = leftParenIndex + 1;
-    while (rightParenIndex < tokens.length && depth > 0) {
-      if (tokens[rightParenIndex].kind === "leftParen") depth += 1;
-      else if (tokens[rightParenIndex].kind === "rightParen") depth -= 1;
-      rightParenIndex += 1;
-    }
-    if (depth !== 0 || rightParenIndex - 1 <= leftParenIndex) {
-      throw new Error(`could not close if condition at source offset ${statement.location.offset}`);
-    }
+    const rightParenIndex = matchingRightParenIndex(tokens, leftParenIndex, statement.location.offset, "if condition");
     const conditionStart = tokens[leftParenIndex + 1];
-    const conditionTokens = canonicalExpressionTokenRange(tokens, leftParenIndex + 1, rightParenIndex - 1);
+    const conditionTokens = canonicalExpressionTokenRange(tokens, leftParenIndex + 1, rightParenIndex);
     const condition = `=${canonicalLocation(conditionStart.location)}:${conditionTokens}#${
       canonicalExpressionTree(statement.condition, tokens) ?? "opaque"
     }`;
     const thenBranch = `then=${canonicalStatementText(statement.thenBranch, tokens)}`;
     const elseBranch = statement.elseBranch ? `else=${canonicalStatementText(statement.elseBranch, tokens)}` : "";
     return `if@${location}(${condition}${thenBranch}${elseBranch})`;
+  }
+  if (statement.kind === "while") {
+    const statementIndex = tokens.findIndex((token) => token.location.offset === statement.location.offset);
+    const leftParenIndex = tokens.findIndex((token, index) => index > statementIndex && token.kind === "leftParen");
+    if (statementIndex < 0 || leftParenIndex < 0) {
+      throw new Error(`could not locate while condition at source offset ${statement.location.offset}`);
+    }
+    const rightParenIndex = matchingRightParenIndex(tokens, leftParenIndex, statement.location.offset, "while condition");
+    const conditionStart = tokens[leftParenIndex + 1];
+    const conditionTokens = canonicalExpressionTokenRange(tokens, leftParenIndex + 1, rightParenIndex);
+    const condition = `=${canonicalLocation(conditionStart.location)}:${conditionTokens}#${
+      canonicalExpressionTree(statement.condition, tokens) ?? "opaque"
+    }`;
+    return `while@${location}(${condition}body=${canonicalStatementText(statement.body, tokens)})`;
+  }
+  if (statement.kind === "for") {
+    const statementIndex = tokens.findIndex((token) => token.location.offset === statement.location.offset);
+    const leftParenIndex = tokens.findIndex((token, index) => index > statementIndex && token.kind === "leftParen");
+    if (statementIndex < 0 || leftParenIndex < 0) {
+      throw new Error(`could not locate for-of header at source offset ${statement.location.offset}`);
+    }
+    const rightParenIndex = matchingRightParenIndex(tokens, leftParenIndex, statement.location.offset, "for-of header");
+    const bindingIndex = tokens.findIndex((token) => token.location.offset === statement.bindingLocation.offset);
+    const ofIndex = tokens.findIndex((token, index) => index > bindingIndex && index < rightParenIndex && token.kind === "of");
+    if (bindingIndex < 0 || ofIndex < 0 || ofIndex + 1 >= rightParenIndex) {
+      throw new Error(`could not locate for-of iterable at source offset ${statement.location.offset}`);
+    }
+    const iterableStart = tokens[ofIndex + 1];
+    const iterableTokens = canonicalExpressionTokenRange(tokens, ofIndex + 1, rightParenIndex);
+    const iterable = `${canonicalLocation(iterableStart.location)}:${iterableTokens}#${
+      canonicalExpressionTree(statement.iterable, tokens) ?? "opaque"
+    }`;
+    return `for@${location}(const:${statement.binding}@${canonicalLocation(statement.bindingLocation)}`
+      + `iterable=${iterable}body=${canonicalStatementText(statement.body, tokens)})`;
   }
   if (statement.kind === "expressionStatement") {
     if (statement.expression.kind === "executorPlacement") return "";
@@ -307,6 +335,25 @@ function lexicalExpressionLocation(expression: Expression): SourceLocation {
   }
   if (expression.kind === "call") return lexicalExpressionLocation(expression.callee);
   return expression.location;
+}
+
+function matchingRightParenIndex(
+  tokens: readonly Token[],
+  leftParenIndex: number,
+  statementOffset: number,
+  description: string,
+): number {
+  let depth = 1;
+  let rightParenIndex = leftParenIndex + 1;
+  while (rightParenIndex < tokens.length && depth > 0) {
+    if (tokens[rightParenIndex].kind === "leftParen") depth += 1;
+    else if (tokens[rightParenIndex].kind === "rightParen") depth -= 1;
+    rightParenIndex += 1;
+  }
+  if (depth !== 0 || rightParenIndex - 1 <= leftParenIndex) {
+    throw new Error(`could not close ${description} at source offset ${statementOffset}`);
+  }
+  return rightParenIndex - 1;
 }
 
 function lexicalFollowingToken(tokens: readonly Token[], statementOffset: number): Token {
