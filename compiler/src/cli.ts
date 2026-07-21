@@ -200,6 +200,7 @@ function stage0ModuleSymbols(
       })),
       variants: [],
       customDeinit: Boolean(declaration.deinitializer),
+      customConstructor: Boolean(declaration.constructor),
     } : declaration.kind === "enum" ? {
       typeParameters: [],
       fields: [],
@@ -209,6 +210,7 @@ function stage0ModuleSymbols(
         payloadType: variant.payload ? canonicalTypeName(variant.payload.name) : null,
       })),
       customDeinit: false,
+      customConstructor: false,
     } : null,
     location: {
       offset: declaration.location.offset,
@@ -293,6 +295,7 @@ function sameModuleTypeSignature(
 ): boolean {
   if (left === null || right === null) return left === right;
   return left.customDeinit === right.customDeinit
+    && left.customConstructor === right.customConstructor
     && left.typeParameters.length === right.typeParameters.length
     && left.typeParameters.every((value, index) => value === right.typeParameters[index])
     && left.fields.length === right.fields.length

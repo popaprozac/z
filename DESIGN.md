@@ -1496,7 +1496,7 @@ ported independently rather than translated as one monolith.
    signatures across the graph boundary: async state, generic parameters,
    parameter capabilities and types, return type, and error type. Type symbols
    retain aggregate type parameters, field types/visibility/read-only state,
-   custom-deinitializer state, and enum variants/payloads. Native match typing follows local,
+   custom-deinitializer/custom-constructor state, and enum variants/payloads. Native match typing follows local,
    selective-imported, and namespace-imported enums through that graph,
    including generic aggregate payload destructuring and exhaustiveness.
    Z-defined field reads and assignments use the same type metadata across those
@@ -1525,7 +1525,12 @@ ported independently rather than translated as one monolith.
    requires named storage and exposes borrowed cleanup-bearing payloads. Object
    patterns keep cleanup-bearing fields borrowed, and every continuing arm merges
    its outer flow state. Nested mutation and richer reachability remain later
-   flow-state layers over the same record. Native direct/imported function
+   flow-state layers over the same record. Local initialization, replacement
+   assignment, return, throw, selected match values, conditional branches,
+   fixed-array elements, synthesized aggregate fields, and enum payloads all use
+   the same transfer operation. Synthesized object construction validates and
+   consumes nested fields only when graph metadata proves there is no custom
+   constructor. Native direct/imported function
    and Z-method calls now consume their graph-carried parameter modes: `out` and
    `inout` require matching explicit markers and mutable bindings, `inout`
    requires initialized storage, invalid explicit markers on value/`in`
@@ -1550,8 +1555,8 @@ ported independently rather than translated as one monolith.
    annotations, closure/executor signatures, construction, and explicit generic
    arguments without parsing display text. Unknown inner types originate from Z
    at the inner token. Type-constructor generic arity, complete type
-   compatibility, value member lookup, opaque expression spans, and ownership
-   analysis intentionally remain at stage zero while the native semantic model
+   compatibility, value member lookup, opaque expression spans, and complete
+   ownership analysis intentionally remain at stage zero while the native semantic model
    grows vertically.
    A first expression-type pass now layers on those resolved names. It infers
    primitive/template/fixed-array literals, parameters and local aliases,
@@ -1565,7 +1570,9 @@ ported independently rather than translated as one monolith.
    diagnostics. Local enums and the intrinsic `Option<T>`/`Result<T, E>` shapes
    now provide match payload bindings, local aggregate destructuring,
    exhaustiveness, and known arm-result unification. Consuming versus borrowed
-   match subjects and payloads now participate in native ownership flow. Any other
+   match subjects and payloads now participate in native ownership flow. The same
+   flow now covers local/assignment/return destinations, fixed-array elements,
+   conditional results, synthesized aggregate fields, and enum payloads. Any other
    missing foreign/member/async expression model produces an
    unresolved internal type, not a guessed type or user-visible false positive.
 3. **Stage 2:** Compile the Z compiler with stage 0, then use that result to

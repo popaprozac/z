@@ -281,7 +281,7 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    bindings, aliases, exports, and local target modules. Function symbols also
    retain async state, generic parameters, parameter capabilities and types,
    return type, and error type through the native graph protocol; aggregate type
-   signatures also carry custom-deinitializer state. A first native lexical resolver
+   signatures also carry custom-deinitializer and custom-constructor state. A first native lexical resolver
    now walks every materialized function, constructor, method, and `deinit`
    expression tree in source order. It introduces parameter and local bindings,
    isolates nested blocks and loop bindings, adds closure parameters and
@@ -357,10 +357,16 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    access, cleanup-bearing destructured fields remain borrowed, and continuing
    arms merge outer move state. Readonly-field receiver paths, richer reachability,
    and nested value mutation remain part of the broader native ownership/flow pass.
+   Local initialization, whole-value replacement, return, throw, selected match
+   results, conditional branches, fixed-array elements, synthesized aggregate
+   fields, and enum payloads now share the same ownership-transfer primitive.
+   Synthesized object construction validates complete field shape and recursively
+   consumes ownership only when graph metadata rules out a custom constructor.
    Complete
    contextual literal and return-driven inference, foreign/intrinsic method lookup,
-   generic constraints/methods, remaining receiver-path capability enforcement,
-   closure ownership, and full recursive ownership contexts remain stage-zero work.
+   generic constraints/methods, custom-constructor signatures, remaining
+   receiver-path capability enforcement, closure ownership, and full recursive
+   ownership contexts remain stage-zero work.
    Template literals now
    retain ordered decoded-text leaves and ordinary embedded-expression roots,
    including nested templates, in the same flat arena. Expression-bodied

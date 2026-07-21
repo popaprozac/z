@@ -122,6 +122,7 @@ export type Stage1ModuleTypeSignature = {
   readonly methods: readonly Stage1ModuleMethodSignature[];
   readonly variants: readonly Stage1ModuleVariantSignature[];
   readonly customDeinit: boolean;
+  readonly customConstructor: boolean;
 };
 
 export type Stage1ModuleFunctionSignature = {
@@ -206,7 +207,7 @@ export function decodeStage1ModuleGraphStream(output: string): Stage1ModuleGraph
       continue;
     }
     if (fields[0] === "typeSignature") {
-      if (fields.length < 7) throw new Error(`malformed stage-1 type signature line: ${line}`);
+      if (fields.length < 8) throw new Error(`malformed stage-1 type signature line: ${line}`);
       const moduleIndex = parseProtocolHexInteger(fields[1], "type signature module");
       const symbolIndex = parseProtocolHexInteger(fields[2], "type signature symbol");
       const symbol = modules[moduleIndex]?.symbols[symbolIndex] as Stage1ModuleSymbol | undefined;
@@ -224,10 +225,14 @@ export function decodeStage1ModuleGraphStream(output: string): Stage1ModuleGraph
       if (customDeinit !== "0" && customDeinit !== "1") {
         throw new Error(`malformed stage-1 type signature deinit state: ${line}`);
       }
-      if (fields.length !== 7 + typeParameterCount + (fieldCount * 4) + (variantCount * 2)) {
+      const customConstructor = fields[7];
+      if (customConstructor !== "0" && customConstructor !== "1") {
+        throw new Error(`malformed stage-1 type signature constructor state: ${line}`);
+      }
+      if (fields.length !== 8 + typeParameterCount + (fieldCount * 4) + (variantCount * 2)) {
         throw new Error(`malformed stage-1 type signature arity: ${line}`);
       }
-      const encoded = fields.slice(7);
+      const encoded = fields.slice(8);
       const typeParameters = encoded.slice(0, typeParameterCount);
       const encodedFields = encoded.slice(typeParameterCount, typeParameterCount + (fieldCount * 4));
       const encodedVariants = encoded.slice(typeParameterCount + (fieldCount * 4));
@@ -270,6 +275,7 @@ export function decodeStage1ModuleGraphStream(output: string): Stage1ModuleGraph
         methods: [],
         variants: decodedVariants,
         customDeinit: customDeinit === "1",
+        customConstructor: customConstructor === "1",
       };
       continue;
     }

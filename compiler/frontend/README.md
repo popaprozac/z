@@ -27,7 +27,8 @@ semantic analysis and code generation; the frontend itself is native Z code.
   explicit type arguments or infer them from direct, nested-generic,
   fixed-array, `Slice`, nullable, and `view` parameter shapes, then substitute
   their parameter and return contracts. Type symbols retain aggregate type
-  parameters, field types/visibility/read-only state, custom-deinitializer state,
+  parameters, field types/visibility/read-only state, custom-deinitializer and
+  custom-constructor presence,
   and enum variants/payloads across the graph. Local and imported enums plus compiler-provided `Option<T>`
   and `Result<T, E>` now drive native match subject, payload, generic aggregate
   destructuring, exhaustiveness, and arm-result checks. The tier also covers
@@ -70,7 +71,13 @@ semantic analysis and code generation; the frontend itself is native Z code.
   storage while `match (in value)` borrows named storage. Payload bindings inherit
   owned or borrowed access, cleanup-bearing object-pattern fields remain borrowed,
   and continuing arms merge their outer ownership effects. Reads after definite
-  or conditional transfer originate in Z.
+  or conditional transfer originate in Z. Ordinary value destinations now use
+  the same transfer rule: local initialization, replacement assignment, return,
+  throw, selected match results, conditional branches, fixed-array elements,
+  synthesized aggregate fields, and enum payload construction. Synthesized
+  object construction validates exact fields and recursively consumes nested
+  ownership; custom constructors remain explicitly deferred rather than being
+  mistaken for field initialization.
 - `module-resolver-protocol.zs` frames that host-loaded batch and returns the
   resolved graph through the same in-process native-library boundary.
 - `parser-protocol.zs` encodes the temporary parity protocol shared by native
@@ -101,7 +108,7 @@ work. Identifier and expression-level type lookup currently cover materialized
 expression trees. Unknown foreign/intrinsic-member/async shapes deliberately defer
 instead of guessing. Opaque expression spans, contextual
 collection and return-driven generic inference, generic constraints and methods,
-type-constructor arity, trait conformance, closure and remaining expression
+type-constructor arity, trait conformance, custom-constructor signatures, closure
 ownership effects, and complete recursive ownership lowering remain stage-zero work.
 The reported native interval therefore does more semantic work than the
 graph-and-symbol-only stage-zero comparison.

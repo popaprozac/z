@@ -4776,6 +4776,10 @@ test("resolves a canonical module graph directly from native Z ASTs", () => {
       + "export class Secret {\n"
       + "  private value: i32;\n"
       + "  function same(other: Secret): boolean { return other.value == this.value; }\n"
+      + "}\n"
+      + "export struct Constructed {\n"
+      + "  value: i32;\n"
+      + "  constructor(value: i32) { this.value = value; }\n"
       + "}\n",
   );
   writeFileSync(
@@ -5431,6 +5435,7 @@ test("resolves a canonical module graph directly from native Z ASTs", () => {
       + "  id: i32;\n"
       + "  deinit {}\n"
       + "}\n"
+      + "export struct Envelope { resource: Resource; }\n"
       + "export function consume(resource: Resource): void {}\n",
   );
   writeFileSync(
@@ -5448,6 +5453,22 @@ test("resolves a canonical module graph directly from native Z ASTs", () => {
   );
   assert.equal(importedOwnedArgument.status, 1);
   assert.match(importedOwnedArgument.stderr, /use of moved value "resource"/);
+
+  writeFileSync(
+    ownershipMain,
+    "import native from \"./ownership-model.zs\";\n"
+      + "function invalid(resource: native.Resource): i32 {\n"
+      + "  const envelope = native.Envelope({ resource });\n"
+      + "  return resource.id;\n"
+      + "}\n",
+  );
+  const importedAggregateField = spawnSync(
+    process.execPath,
+    [cli, "self-host-resolve", ownershipMain],
+    { encoding: "utf8" },
+  );
+  assert.equal(importedAggregateField.status, 1);
+  assert.match(importedAggregateField.stderr, /use of moved value "resource"/);
 
   writeFileSync(
     bindingState,
@@ -5634,6 +5655,147 @@ test("resolves a canonical module graph directly from native Z ASTs", () => {
     /match \(in \.\.\.\) requires stored enum storage/,
   );
 
+  writeFileSync(
+    bindingState,
+    "struct Resource {\n"
+      + "  id: i32;\n"
+      + "  deinit {}\n"
+      + "}\n"
+      + "function invalid(): i32 {\n"
+      + "  const first = Resource({ id: 1 });\n"
+      + "  const second = first;\n"
+      + "  return first.id;\n"
+      + "}\n",
+  );
+  const movedInitializer = spawnSync(
+    process.execPath,
+    [cli, "self-host-resolve", bindingState],
+    { encoding: "utf8" },
+  );
+  assert.equal(movedInitializer.status, 1);
+  assert.match(movedInitializer.stderr, /use of moved value "first"/);
+
+  writeFileSync(
+    bindingState,
+    "class Session { id: i32; }\n"
+      + "function valid(): i32 {\n"
+      + "  const first = new Session({ id: 20 });\n"
+      + "  const second = first;\n"
+      + "  return first.id + second.id;\n"
+      + "}\n",
+  );
+  const copiedClassInitializer = spawnSync(
+    process.execPath,
+    [cli, "self-host-resolve", bindingState],
+    { encoding: "utf8" },
+  );
+  assert.equal(copiedClassInitializer.status, 0, copiedClassInitializer.stderr);
+
+  writeFileSync(
+    bindingState,
+    "struct Resource {\n"
+      + "  id: i32;\n"
+      + "  deinit {}\n"
+      + "}\n"
+      + "function invalid(): i32 {\n"
+      + "  let target = Resource({ id: 1 });\n"
+      + "  const source = Resource({ id: 2 });\n"
+      + "  target = source;\n"
+      + "  return source.id;\n"
+      + "}\n",
+  );
+  const movedAssignment = spawnSync(
+    process.execPath,
+    [cli, "self-host-resolve", bindingState],
+    { encoding: "utf8" },
+  );
+  assert.equal(movedAssignment.status, 1);
+  assert.match(movedAssignment.stderr, /use of moved value "source"/);
+
+  writeFileSync(
+    bindingState,
+    "struct Resource {\n"
+      + "  id: i32;\n"
+      + "  deinit {}\n"
+      + "}\n"
+      + "function invalid(): i32 {\n"
+      + "  const resource = Resource({ id: 1 });\n"
+      + "  const values = [resource];\n"
+      + "  return resource.id;\n"
+      + "}\n",
+  );
+  const movedArrayElement = spawnSync(
+    process.execPath,
+    [cli, "self-host-resolve", bindingState],
+    { encoding: "utf8" },
+  );
+  assert.equal(movedArrayElement.status, 1);
+  assert.match(movedArrayElement.stderr, /use of moved value "resource"/);
+
+  writeFileSync(
+    bindingState,
+    "struct Resource {\n"
+      + "  id: i32;\n"
+      + "  deinit {}\n"
+      + "}\n"
+      + "struct Envelope { resource: Resource; }\n"
+      + "enum ResourceState { ready Envelope, empty, }\n"
+      + "function invalid(): i32 {\n"
+      + "  const resource = Resource({ id: 1 });\n"
+      + "  const state = ResourceState.ready(Envelope({ resource }));\n"
+      + "  return resource.id;\n"
+      + "}\n",
+  );
+  const movedNestedConstruction = spawnSync(
+    process.execPath,
+    [cli, "self-host-resolve", bindingState],
+    { encoding: "utf8" },
+  );
+  assert.equal(movedNestedConstruction.status, 1);
+  assert.match(movedNestedConstruction.stderr, /use of moved value "resource"/);
+
+  writeFileSync(
+    bindingState,
+    "struct Resource {\n"
+      + "  id: i32;\n"
+      + "  deinit {}\n"
+      + "}\n"
+      + "function invalid(flag: boolean): i32 {\n"
+      + "  const first = Resource({ id: 1 });\n"
+      + "  const second = Resource({ id: 2 });\n"
+      + "  const selected = flag ? first : second;\n"
+      + "  return first.id;\n"
+      + "}\n",
+  );
+  const conditionalDestinationMove = spawnSync(
+    process.execPath,
+    [cli, "self-host-resolve", bindingState],
+    { encoding: "utf8" },
+  );
+  assert.equal(conditionalDestinationMove.status, 1);
+  assert.match(
+    conditionalDestinationMove.stderr,
+    /value "first" may have moved on another control-flow path/,
+  );
+
+  writeFileSync(
+    bindingState,
+    "struct Resource {\n"
+      + "  id: i32;\n"
+      + "  deinit {}\n"
+      + "}\n"
+      + "function invalid(in resource: Resource): Resource {\n"
+      + "  return resource;\n"
+      + "}\n",
+  );
+  const borrowedReturn = spawnSync(
+    process.execPath,
+    [cli, "self-host-resolve", bindingState],
+    { encoding: "utf8" },
+  );
+  assert.equal(borrowedReturn.status, 1);
+  assert.match(borrowedReturn.stderr, /cannot move borrowed parameter "resource"/);
+
   const encoded = encodeStage1ModuleBatch([{ path: "/a.zs", source: "é" }]);
   assert.equal(encoded.byteLength, 32 + Buffer.byteLength("/a.zs") + Buffer.byteLength("é"));
   assert.throws(() => decodeStage1ModuleGraphStream("order\n"), /did not contain an entry/);
@@ -5674,7 +5836,7 @@ test("resolves a canonical module graph directly from native Z ASTs", () => {
       "entry\t0000000000000000\n"
       + "module\t2f612e7a73\n"
       + "symbol\t0000000000000000\tenum\t5374617465\t1\t-\t5374617465\t0000000000000000\t0000000000000001\t0000000000000001\n"
-      + "typeSignature\t0000000000000000\t0000000000000000\t0000000000000000\t0000000000000000\t0000000000000001\t0\n"
+      + "typeSignature\t0000000000000000\t0000000000000000\t0000000000000000\t0000000000000000\t0000000000000001\t0\t0\n"
       + "order\t0000000000000000\n",
     ),
     /malformed stage-1 type signature arity/,
@@ -5684,7 +5846,7 @@ test("resolves a canonical module graph directly from native Z ASTs", () => {
       "entry\t0000000000000000\n"
       + "module\t2f612e7a73\n"
       + "symbol\t0000000000000000\tstruct\t506f696e74\t1\t-\t506f696e74\t0000000000000000\t0000000000000001\t0000000000000001\n"
-      + "typeSignature\t0000000000000000\t0000000000000000\t0000000000000000\t0000000000000000\t0000000000000000\t0\n"
+      + "typeSignature\t0000000000000000\t0000000000000000\t0000000000000000\t0000000000000000\t0000000000000000\t0\t0\n"
       + "methodSignature\t0000000000000000\t0000000000000000\t72656164\t0\t7075626c6963\t626164\t0\t693332\t\t0000000000000000\t0000000000000000\n"
       + "order\t0000000000000000\n",
     ),

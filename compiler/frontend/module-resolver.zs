@@ -190,6 +190,7 @@ export struct ModuleTypeSignature {
   methods: Array<ModuleMethodSignature>;
   variants: Array<ModuleVariantSignature>;
   customDeinit: boolean;
+  customConstructor: boolean;
 }
 
 export struct ModuleFunctionSignature {
@@ -484,12 +485,18 @@ function moduleTypeSignature(
         some(deinitializer) => customDeinit = true;
         none => {}
       }
+      let customConstructor = false;
+      match (in aggregate.constructorDeclaration) {
+        some(initializer) => customConstructor = true;
+        none => {}
+      }
       return Option.some(ModuleTypeSignature({
         typeParameters,
         fields,
         methods,
         variants: Array<ModuleVariantSignature>(),
         customDeinit,
+        customConstructor,
       }));
     }
   }
@@ -514,6 +521,7 @@ function moduleTypeSignature(
         methods: Array<ModuleMethodSignature>(),
         variants,
         customDeinit: false,
+        customConstructor: false,
       }));
     }
   }
@@ -1706,6 +1714,68 @@ function expressionStorageRootName(
   return "";
 }
 
+function consumeOwnedExpressionNode(
+  in module: ParsedModule,
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
+  in tree: ExpressionTree,
+  index: usize,
+  in typeName: String,
+  inout bindings: Array<NativeValueBinding>
+): void throws ModuleResolveError {
+  if (!typeMovesOnOwnedUse(modules, moduleIndex, typeName)) return;
+  const kind = tree.nodes[index].kind;
+  if (kind == ExpressionKind.memberExpression || kind == ExpressionKind.indexExpression) {
+    throw resolutionError(
+      ModuleResolveErrorKind.typeMismatch,
+      module.path,
+      "cannot move an ownership-bearing field or element out of its owner",
+      tree.nodes[index].line,
+      tree.nodes[index].column
+    );
+  }
+  const root = expressionStorageRootName(tree, index);
+  if (root.byteLength == 0) return;
+  if (valueBindingIsBorrowed(bindings, root)) {
+    const message = valueBindingIsMatchBorrowed(bindings, root)
+      ? `cannot move borrowed match binding "${root}"`
+      : `cannot move borrowed parameter "${root}"`;
+    throw resolutionError(
+      ModuleResolveErrorKind.typeMismatch,
+      module.path,
+      message,
+      tree.nodes[index].line,
+      tree.nodes[index].column
+    );
+  }
+  setValueBindingOwnership(inout bindings, root, NativeOwnershipState.moved);
+}
+
+function consumeOwnedExpressionSyntax(
+  in module: ParsedModule,
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
+  in expression: ExpressionSyntax,
+  in typeName: String,
+  inout bindings: Array<NativeValueBinding>
+): void throws ModuleResolveError {
+  match (in expression.tree) {
+    some(tree) => {
+      const root = tree.root;
+      try consumeOwnedExpressionNode(
+        module,
+        modules,
+        moduleIndex,
+        tree,
+        root,
+        typeName,
+        inout bindings
+      );
+    }
+    none => {}
+  }
+}
+
 function callCapabilitiesConflict(in left: String, in right: String): boolean {
   return !(
     (left == "in" && right == "in")
@@ -2541,6 +2611,23 @@ function typeMovesOnOwnedUse(
   return typeHasCleanup(modules, moduleIndex, typeName, visiting);
 }
 
+function typeHasCustomConstructor(
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
+  in typeName: String
+): boolean {
+  match (typeSymbolLocation(modules, moduleIndex, typeName)) {
+    some(location) => {
+      match (in modules[location.moduleIndex].symbols[location.symbolIndex].typeSignature) {
+        some(signature) => return signature.customConstructor;
+        none => {}
+      }
+    }
+    none => {}
+  }
+  return false;
+}
+
 function matchShape(
   in modules: Array<ResolvedModule>,
   moduleIndex: usize,
@@ -3012,14 +3099,25 @@ function inferMatchArmStatementType(
     || kind == StatementKind.matchStatement
   ) {
     return match (in arena.nodes[statementIndex].expression) {
-      some(expression) => try inferExpressionType(
-        module,
-        modules,
-        moduleIndex,
-        arena,
-        expression,
-        inout bindings
-      );
+      some(expression) => {
+        const typeName = try inferExpressionType(
+          module,
+          modules,
+          moduleIndex,
+          arena,
+          expression,
+          inout bindings
+        );
+        try consumeOwnedExpressionSyntax(
+          module,
+          modules,
+          moduleIndex,
+          expression,
+          typeName,
+          inout bindings
+        );
+        return typeName;
+      }
       none => "";
     };
   }
@@ -3198,6 +3296,121 @@ function addMatchArmValueBindings(
   }
 }
 
+function inferContextualObjectExpressionNode(
+  in module: ParsedModule,
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
+  in arena: StatementArena,
+  in tree: ExpressionTree,
+  index: usize,
+  in expectedType: String,
+  inout bindings: Array<NativeValueBinding>
+): String throws ModuleResolveError {
+  if (tree.nodes[index].kind != ExpressionKind.objectExpression) return "";
+  let known = false;
+  match (typeSymbolLocation(modules, moduleIndex, expectedType)) {
+    some(location) => {
+      match (in modules[location.moduleIndex].symbols[location.symbolIndex].typeSignature) {
+        some(signature) => known = true;
+        none => {}
+      }
+    }
+    none => {}
+  }
+  if (!known) return "";
+  const children = copyIndices(tree.nodes[index].children);
+  let covered = Array<String>();
+  let childIndex: usize = 0;
+  while (childIndex < children.length && childIndex < tree.nodes[index].labels.length) {
+    const fieldName = tree.nodes[index].labels[childIndex].copyBytes(
+      0,
+      tree.nodes[index].labels[childIndex].byteLength
+    );
+    if (containsString(covered, fieldName)) {
+      throw resolutionError(
+        ModuleResolveErrorKind.typeMismatch,
+        module.path,
+        `duplicate field initializer "${fieldName}"`,
+        tree.nodes[children[childIndex]].line,
+        tree.nodes[children[childIndex]].column
+      );
+    }
+    covered.push(fieldName.copyBytes(0, fieldName.byteLength));
+    match (aggregateFieldShape(modules, moduleIndex, expectedType, fieldName)) {
+      some(field) => {
+        try requireVisibleField(
+          module,
+          modules,
+          moduleIndex,
+          tree,
+          children[childIndex],
+          bindings,
+          field
+        );
+        const actual = try inferExpressionNodeType(
+          module,
+          modules,
+          moduleIndex,
+          arena,
+          tree,
+          children[childIndex],
+          inout bindings
+        );
+        try requireExpressionType(
+          module,
+          modules,
+          moduleIndex,
+          tree,
+          children[childIndex],
+          field.typeName,
+          actual
+        );
+        try consumeOwnedExpressionNode(
+          module,
+          modules,
+          moduleIndex,
+          tree,
+          children[childIndex],
+          field.typeName,
+          inout bindings
+        );
+      }
+      none => {
+        throw resolutionError(
+          ModuleResolveErrorKind.unknownMember,
+          module.path,
+          `type ${expectedType} has no field ${fieldName}`,
+          tree.nodes[children[childIndex]].line,
+          tree.nodes[children[childIndex]].column
+        );
+      }
+    }
+    childIndex = childIndex + 1;
+  }
+  match (typeSymbolLocation(modules, moduleIndex, expectedType)) {
+    some(location) => {
+      match (in modules[location.moduleIndex].symbols[location.symbolIndex].typeSignature) {
+        some(signature) => {
+          for (const field of signature.fields) {
+            if (!containsString(covered, field.name)) {
+              throw resolutionError(
+                ModuleResolveErrorKind.typeMismatch,
+                module.path,
+                `missing field "${field.name}" when constructing ${expectedType}`,
+                tree.nodes[index].line,
+                tree.nodes[index].column
+              );
+            }
+          }
+        }
+        none => {}
+      }
+    }
+    none => {}
+  }
+  return expectedType.copyBytes(0, expectedType.byteLength);
+}
+
 function inferMatchExpressionNodeType(
   in module: ParsedModule,
   in modules: Array<ResolvedModule>,
@@ -3241,26 +3454,16 @@ function inferMatchExpressionNodeType(
       "match (in ...) requires stored enum storage"
     );
   }
-  if (!borrowedMatch && typeMovesOnOwnedUse(modules, moduleIndex, subjectType)) {
-    if (
-      tree.nodes[subjectIndex].kind == ExpressionKind.memberExpression
-      || tree.nodes[subjectIndex].kind == ExpressionKind.indexExpression
-    ) {
-      throw resolutionError(
-        ModuleResolveErrorKind.typeMismatch,
-        module.path,
-        "cannot move an ownership-bearing field or element out of its owner",
-        tree.nodes[subjectIndex].line,
-        tree.nodes[subjectIndex].column
-      );
-    }
-    if (subjectRoot.byteLength > 0) {
-      setValueBindingOwnership(
-        inout bindings,
-        subjectRoot,
-        NativeOwnershipState.moved
-      );
-    }
+  if (!borrowedMatch) {
+    try consumeOwnedExpressionNode(
+      module,
+      modules,
+      moduleIndex,
+      tree,
+      subjectIndex,
+      subjectType,
+      inout bindings
+    );
   }
   let shapeOption = matchShape(modules, moduleIndex, subjectType);
   let shapeKnown = false;
@@ -3605,36 +3808,16 @@ function inferSignatureCallType(
       if (
         mode == "value"
         && !stringStartsWith(signature.parameterTypes[argumentIndex], "Slice<")
-        && typeMovesOnOwnedUse(modules, moduleIndex, argumentType)
       ) {
-        const root = expressionStorageRootName(tree, nodeIndex);
-        if (
-          tree.nodes[nodeIndex].kind == ExpressionKind.memberExpression
-          || tree.nodes[nodeIndex].kind == ExpressionKind.indexExpression
-        ) {
-          throw resolutionError(
-            ModuleResolveErrorKind.typeMismatch,
-            module.path,
-            "cannot move an ownership-bearing field or element out of its owner",
-            tree.nodes[nodeIndex].line,
-            tree.nodes[nodeIndex].column
-          );
-        }
-        if (root.byteLength > 0) {
-          if (valueBindingIsBorrowed(bindings, root)) {
-            const message = valueBindingIsMatchBorrowed(bindings, root)
-              ? `cannot move borrowed match binding "${root}"`
-              : `cannot move borrowed parameter "${root}"`;
-            throw resolutionError(
-              ModuleResolveErrorKind.typeMismatch,
-              module.path,
-              message,
-              tree.nodes[nodeIndex].line,
-              tree.nodes[nodeIndex].column
-            );
-          }
-          setValueBindingOwnership(inout bindings, root, NativeOwnershipState.moved);
-        }
+        try consumeOwnedExpressionNode(
+          module,
+          modules,
+          moduleIndex,
+          tree,
+          nodeIndex,
+          argumentType,
+          inout bindings
+        );
       }
       argumentTypes.push(argumentType);
     }
@@ -3773,8 +3956,100 @@ function inferExpressionNodeType(
     try requireInitializedBinding(module, tree, index, bindings, lookup);
     return valueBindingType(bindings, lookup);
   }
-  if (kind == ExpressionKind.newExpression) return value;
-  if (kind == ExpressionKind.variantExpression) return value;
+  if (kind == ExpressionKind.newExpression) {
+    if (
+      children.length == 1
+      && tree.nodes[children[0]].kind == ExpressionKind.objectExpression
+      && !typeHasCustomConstructor(modules, moduleIndex, value)
+    ) {
+      const contextual = try inferContextualObjectExpressionNode(
+        module,
+        modules,
+        moduleIndex,
+        arena,
+        tree,
+        children[0],
+        value,
+        inout bindings
+      );
+      if (contextual.byteLength > 0) return value;
+    }
+    for (const child of children) {
+      const argumentType = try inferExpressionNodeType(
+        module,
+        modules,
+        moduleIndex,
+        arena,
+        tree,
+        child,
+        inout bindings
+      );
+      if (argumentType.byteLength == 0) continue;
+    }
+    return value;
+  }
+  if (kind == ExpressionKind.variantExpression) {
+    if (children.length == 2) {
+      const variantName = tree.nodes[children[0]].value.copyBytes(
+        0,
+        tree.nodes[children[0]].value.byteLength
+      );
+      match (matchShape(modules, moduleIndex, value)) {
+        some(shape) => {
+          const variantIndex = matchVariantIndex(shape, variantName);
+          if (variantIndex < shape.variants.length) {
+            const expected = shape.variants[variantIndex].payloadType.copyBytes(
+              0,
+              shape.variants[variantIndex].payloadType.byteLength
+            );
+            let actual = "";
+            if (tree.nodes[children[1]].kind == ExpressionKind.objectExpression) {
+              actual = try inferContextualObjectExpressionNode(
+                module,
+                modules,
+                moduleIndex,
+                arena,
+                tree,
+                children[1],
+                expected,
+                inout bindings
+              );
+            } else {
+              actual = try inferExpressionNodeType(
+                module,
+                modules,
+                moduleIndex,
+                arena,
+                tree,
+                children[1],
+                inout bindings
+              );
+            }
+            try requireExpressionType(
+              module,
+              modules,
+              moduleIndex,
+              tree,
+              children[1],
+              expected,
+              actual
+            );
+            try consumeOwnedExpressionNode(
+              module,
+              modules,
+              moduleIndex,
+              tree,
+              children[1],
+              expected,
+              inout bindings
+            );
+          }
+        }
+        none => {}
+      }
+    }
+    return value;
+  }
   if (kind == ExpressionKind.matchExpression) {
     return try inferMatchExpressionNodeType(
       module,
@@ -3930,9 +4205,32 @@ function inferExpressionNodeType(
       children[2],
       inout elseBindings
     );
-    mergeBindingFlowStates(inout bindings, thenBindings, elseBindings);
-    if (thenType.byteLength == 0 || elseType.byteLength == 0) return "";
-    if (equivalentTypes(modules, moduleIndex, thenType, elseType)) return thenType;
+    if (thenType.byteLength == 0 || elseType.byteLength == 0) {
+      mergeBindingFlowStates(inout bindings, thenBindings, elseBindings);
+      return "";
+    }
+    if (equivalentTypes(modules, moduleIndex, thenType, elseType)) {
+      try consumeOwnedExpressionNode(
+        module,
+        modules,
+        moduleIndex,
+        tree,
+        children[1],
+        thenType,
+        inout thenBindings
+      );
+      try consumeOwnedExpressionNode(
+        module,
+        modules,
+        moduleIndex,
+        tree,
+        children[2],
+        elseType,
+        inout elseBindings
+      );
+      mergeBindingFlowStates(inout bindings, thenBindings, elseBindings);
+      return thenType;
+    }
     throw resolutionError(
       ModuleResolveErrorKind.typeMismatch,
       module.path,
@@ -3945,11 +4243,29 @@ function inferExpressionNodeType(
     if (children.length == 0) return "";
     let elementType = try inferExpressionNodeType(module, modules, moduleIndex, arena, tree, children[0], inout bindings);
     if (elementType.byteLength == 0) return "";
+    try consumeOwnedExpressionNode(
+      module,
+      modules,
+      moduleIndex,
+      tree,
+      children[0],
+      elementType,
+      inout bindings
+    );
     let childIndex: usize = 1;
     while (childIndex < children.length) {
       const candidate = try inferExpressionNodeType(module, modules, moduleIndex, arena, tree, children[childIndex], inout bindings);
       if (candidate.byteLength == 0) return "";
       try requireExpressionType(module, modules, moduleIndex, tree, children[childIndex], elementType, candidate);
+      try consumeOwnedExpressionNode(
+        module,
+        modules,
+        moduleIndex,
+        tree,
+        children[childIndex],
+        elementType,
+        inout bindings
+      );
       childIndex = childIndex + 1;
     }
     return `${elementType}[${children.length}]`;
@@ -3970,6 +4286,107 @@ function inferExpressionNodeType(
   }
   if (kind == ExpressionKind.callExpression && children.length > 0) {
     const calleeIndex = children[0];
+    if (
+      tree.nodes[calleeIndex].kind == ExpressionKind.memberExpression
+      && tree.nodes[calleeIndex].children.length == 1
+    ) {
+      const enumReceiverIndex = tree.nodes[calleeIndex].children[0];
+      const enumType = typeExpressionName(
+        tree,
+        enumReceiverIndex
+      );
+      const variantName = identifierLookupName(tree.nodes[calleeIndex].value);
+      match (matchShape(modules, moduleIndex, enumType)) {
+        some(shape) => {
+          const variantIndex = matchVariantIndex(shape, variantName);
+          if (variantIndex < shape.variants.length) {
+            const expected = shape.variants[variantIndex].payloadType.copyBytes(
+              0,
+              shape.variants[variantIndex].payloadType.byteLength
+            );
+            if (expected.byteLength == 0 || children.length != 2) {
+              const message = expected.byteLength == 0
+                ? "payloadless variant does not accept a value"
+                : "payload variant requires exactly one value";
+              throw matchError(
+                module,
+                tree,
+                calleeIndex,
+                message
+              );
+            }
+            let actual = "";
+            if (tree.nodes[children[1]].kind == ExpressionKind.objectExpression) {
+              actual = try inferContextualObjectExpressionNode(
+                module,
+                modules,
+                moduleIndex,
+                arena,
+                tree,
+                children[1],
+                expected,
+                inout bindings
+              );
+            } else {
+              actual = try inferExpressionNodeType(
+                module,
+                modules,
+                moduleIndex,
+                arena,
+                tree,
+                children[1],
+                inout bindings
+              );
+            }
+            try requireExpressionType(
+              module,
+              modules,
+              moduleIndex,
+              tree,
+              children[1],
+              expected,
+              actual
+            );
+            try consumeOwnedExpressionNode(
+              module,
+              modules,
+              moduleIndex,
+              tree,
+              children[1],
+              expected,
+              inout bindings
+            );
+            return enumType;
+          }
+        }
+        none => {}
+      }
+    }
+    const constructionType = typeExpressionName(tree, calleeIndex);
+    match (typeSymbolLocation(modules, moduleIndex, constructionType)) {
+      some(location) => {
+        const constructionKind = modules[location.moduleIndex].symbols[location.symbolIndex].kind;
+        if (
+          constructionKind == ModuleSymbolKind.structSymbol
+          && children.length == 2
+          && tree.nodes[children[1]].kind == ExpressionKind.objectExpression
+          && !typeHasCustomConstructor(modules, moduleIndex, constructionType)
+        ) {
+          const contextual = try inferContextualObjectExpressionNode(
+            module,
+            modules,
+            moduleIndex,
+            arena,
+            tree,
+            children[1],
+            constructionType,
+            inout bindings
+          );
+          if (contextual.byteLength > 0) return constructionType;
+        }
+      }
+      none => {}
+    }
     if (tree.nodes[calleeIndex].kind == ExpressionKind.identifierExpression) {
       const callee = tree.nodes[calleeIndex].value.copyBytes(
         0,
@@ -4317,6 +4734,17 @@ function inferStatement(
       }
       none => {}
     }
+    match (in arena.nodes[index].expression) {
+      some(expression) => try consumeOwnedExpressionSyntax(
+        module,
+        modules,
+        moduleIndex,
+        expression,
+        stored,
+        inout bindings
+      );
+      none => {}
+    }
     if (arena.nodes[index].mutableBinding) {
       match (in arena.nodes[index].expression) {
         some(expression) => addMutableValueBinding(
@@ -4424,6 +4852,18 @@ function inferStatement(
             actual
           );
         }
+        let consumedType = expected.copyBytes(0, expected.byteLength);
+        if (consumedType.byteLength == 0) {
+          consumedType = actual.copyBytes(0, actual.byteLength);
+        }
+        try consumeOwnedExpressionSyntax(
+          module,
+          modules,
+          moduleIndex,
+          value,
+          consumedType,
+          inout bindings
+        );
       }
       none => {}
     }
@@ -4431,17 +4871,33 @@ function inferStatement(
       some(target) => {
         match (in target.tree) {
           some(tree) => {
-            if (tree.nodes[tree.root].kind == ExpressionKind.identifierExpression) {
+            const targetRoot = tree.root;
+            if (tree.nodes[targetRoot].kind == ExpressionKind.identifierExpression) {
               setValueBindingInitialization(
                 inout bindings,
-                tree.nodes[tree.root].value,
+                tree.nodes[targetRoot].value,
                 NativeInitializationState.initialized
               );
               setValueBindingOwnership(
                 inout bindings,
-                tree.nodes[tree.root].value,
+                tree.nodes[targetRoot].value,
                 NativeOwnershipState.available
               );
+            } else if (typeMovesOnOwnedUse(modules, moduleIndex, expected)) {
+              const rootName = expressionStorageRootName(tree, targetRoot);
+              if (
+                rootName.byteLength > 0
+                && valueBindingOwnership(bindings, rootName)
+                  != NativeOwnershipState.available
+              ) {
+                throw resolutionError(
+                  ModuleResolveErrorKind.typeMismatch,
+                  module.path,
+                  `cannot replace a field after its owner "${rootName}" moves while evaluating the new value`,
+                  tree.nodes[targetRoot].line,
+                  tree.nodes[targetRoot].column
+                );
+              }
             }
           }
           none => {}
@@ -4467,6 +4923,16 @@ function inferStatement(
           inout bindings
         );
         if (expressionType.byteLength == 0) return;
+        if (kind == StatementKind.throwStatement) {
+          try consumeOwnedExpressionSyntax(
+            module,
+            modules,
+            moduleIndex,
+            expression,
+            expressionType,
+            inout bindings
+          );
+        }
       }
       none => {}
     }
@@ -4486,6 +4952,18 @@ function inferStatement(
             actual
           );
         }
+        let consumedType = actual.copyBytes(0, actual.byteLength);
+        if (kind == StatementKind.returnStatement && expectedReturn.byteLength > 0) {
+          consumedType = expectedReturn.copyBytes(0, expectedReturn.byteLength);
+        }
+        try consumeOwnedExpressionSyntax(
+          module,
+          modules,
+          moduleIndex,
+          expression,
+          consumedType,
+          inout bindings
+        );
       }
       none => {
         if (kind == StatementKind.returnStatement && expectedReturn != "void") {

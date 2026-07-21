@@ -352,7 +352,7 @@ function inspect(value: Lookup): i32 {
 }
 
 function inspectOption(value: Option<String>): String {
-  return match (in value) {
+  return match (value) {
     some(text) => text;
     none => "";
   };
