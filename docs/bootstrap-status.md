@@ -217,11 +217,13 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    UTF-8 boundary-preserving token copies, escape decoding, source locations,
    typed lexer errors, exact current keyword/operator kinds, decimal/exponent
    numbers, template interpolation modes, line and non-nesting block-comment
-   trivia, and
-   unknown-byte rejection. Stage 0 compiles a native token-stream bridge and
-   compares its kinds, decoded text, offsets, lines, and columns with the
-   TypeScript lexer through `z self-host-lex`; the Z lexer also tokenizes its own
-   complete source. The bridge buffers its full protocol into one native write.
+   trivia, and unknown-byte rejection. Native scanning and slicing retain UTF-8
+   byte indexes while public offsets and columns use the shared UTF-16 code-unit
+   contract required by stage 0 and LSP clients. Stage 0 compiles a native
+   token-stream bridge and compares its kinds, decoded text, offsets, lines, and
+   columns with the TypeScript lexer through `z self-host-lex`; the Z lexer also
+   tokenizes its own complete source. The bridge buffers its full protocol into
+   one native write.
    A linear Z parser now consumes the native token array and retains an owned,
    source-located top-level declaration skeleton for imports, functions, structs,
    classes, traits, and enums. `z self-host-parse` checks exact declaration kind,
@@ -287,11 +289,9 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    error types, and the placed body. This leaves a structural insertion point for
    the planned contextual `using` capture clause.
    Contextual keywords are accepted as member names after `.` just as they are
-   by stage 0. Enum-constructor and explicit capability-argument projections, Unicode
-   identifiers and direct in-process driver integration remain. Stage 0
-   currently reports UTF-16 source coordinates while the stage-1 lexer retains
-   UTF-8 byte coordinates; exact location parity after non-ASCII source text is
-   therefore a known coordinate-contract seam that must be resolved explicitly.
+   by stage 0. Unicode identifiers and direct in-process driver integration remain.
+   Exact lexer and parser parity now covers UTF-16 locations after BMP and
+   supplementary Unicode text without giving up byte-oriented native slicing.
 5. **Threaded concurrency evidence — Copy, unique-owner, native-owner, readonly ARC, and owned-error slices implemented.**
    `thread.spawn` now proves one real cross-thread task frame with explicit
    move capture, hot start, structured join, private Copy snapshots, and moved

@@ -89,9 +89,9 @@ projected block bodies. Assignments, non-branching control statements,
 conditionals, loops, matches, async scopes, value-producing `if` expressions,
 enum payload construction, and explicit `out`/`inout` call arguments are
 structural too. Unicode identifiers, direct in-process compiler integration, and
-the complete syntax tree remain future slices. Stage 0 and
-stage 1 also need one shared coordinate contract: stage 0 currently measures
-UTF-16 positions while stage 1 retains UTF-8 byte positions, so locations after
-non-ASCII text do not yet compare exactly. Build time and subprocess startup
+the complete syntax tree remain future slices. Stage 0 and stage 1 expose one
+UTF-16 code-unit coordinate contract for offsets and columns while stage 1 keeps
+separate UTF-8 byte indexes for native slicing. Exact parity covers both BMP and
+supplementary text. Build time and subprocess startup
 still dominate these bootstrap commands, so native-vs-stage-0 parser performance
 should be compared only after the frontend has an in-process driver boundary.

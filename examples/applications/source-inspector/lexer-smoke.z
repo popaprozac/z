@@ -37,6 +37,10 @@ function verifyLexer(): i32 throws LexerError {
   if (!hasKind(commentTokens, 0, TokenKind.constKeyword)) return 22;
   if (!hasKind(commentTokens, 1, TokenKind.identifier)) return 23;
   if (commentTokens[1].line != 2 || commentTokens[1].column != 11) return 24;
+
+  const unicodeTokens = try tokenize("\"é😀\" value");
+  if (unicodeTokens.length != 3) return 25;
+  if (unicodeTokens[1].offset != 6 || unicodeTokens[1].column != 7) return 26;
   return 0;
 }
 
@@ -50,14 +54,14 @@ function main(): i32 {
 
   const unterminatedComment = attempt tokenize("value /* open");
   const commentStatus = match (unterminatedComment) {
-    success(tokens) => 25;
-    failure(error) => error.line == 1 && error.column == 7 ? 0 : 26;
+    success(tokens) => 27;
+    failure(error) => error.line == 1 && error.column == 7 ? 0 : 28;
   };
   if (commentStatus != 0) return commentStatus;
 
   const invalid = attempt tokenize("@");
   return match (invalid) {
-    success(tokens) => 27;
-    failure(error) => error.line == 1 && error.column == 1 ? 0 : 28;
+    success(tokens) => 29;
+    failure(error) => error.line == 1 && error.column == 1 ? 0 : 30;
   };
 }

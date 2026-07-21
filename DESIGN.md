@@ -1440,9 +1440,11 @@ ported independently rather than translated as one monolith.
    platform substrate. The first components are now concrete: a Z lexer emits
    the same parser-facing token kinds, decoded text, and source locations as
    stage 0 across an adversarial parity corpus and tokenizes its own complete
-   source. A linear declaration parser retains source-located top-level kinds,
-   names, export/async state, complete function signatures, aggregate fields and
-   lifecycle members, trait methods, and enum payload variants. Generic
+   source. Public offsets and columns are UTF-16 code units for LSP/stage-0
+   compatibility, while the native frontend retains separate UTF-8 byte indexes
+   for slicing. A linear declaration parser retains source-located top-level
+   kinds, names, export/async state, complete function signatures, aggregate
+   fields and lifecycle members, trait methods, and enum payload variants. Generic
    constraints, capabilities, nested types, returns, typed errors, constructors,
    static/async methods, and `deinit` all have canonical stage-0 parity. Function
    bodies now own the first statement AST slice: `const`/`let`, `return`,

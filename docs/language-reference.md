@@ -410,11 +410,17 @@ if (source.isEmpty) console.log("empty source");
 
 `byteAt(index)` checks its index. `copyBytes(start, end)` uses a half-open range,
 creates an independently owned `String`, and checks both bounds and UTF-8
-boundaries. Compiler offsets and binary-facing code should use these explicit
-byte operations. `String.length` is reserved for a Unicode grapheme-counting
-text API; it is not implemented by treating UTF-8 bytes or JavaScript UTF-16
-code units as characters. `byteLength` is constant-time; the eventual
-grapheme-aware `length` may require a text scan.
+boundaries. Binary-facing code and internal text slicing should use these
+explicit byte operations. `String.length` is reserved for a Unicode
+grapheme-counting text API; it is not implemented by treating UTF-8 bytes or
+JavaScript UTF-16 code units as characters. `byteLength` is constant-time; the
+eventual grapheme-aware `length` may require a text scan.
+
+Public source locations deliberately use one-based lines and columns plus
+zero-based UTF-16 code-unit offsets. UTF-16 is a protocol coordinate—not Z's
+text representation or character model—and matches LSP/VS Code plus the
+bootstrap compiler. Native frontend code keeps a separate UTF-8 byte cursor for
+`copyBytes`; it must not use public source offsets to slice a `String`.
 
 `String == String` and `String != String` compare exact UTF-8 byte sequences.
 Equality performs no locale folding, Unicode normalization, or JavaScript-style

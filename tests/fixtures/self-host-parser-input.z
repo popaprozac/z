@@ -1,3 +1,4 @@
+// Parser coordinates remain UTF-16 after café and 😀.
 import fs from "std/fs";
 import { TextBuffer as Buffer } from "std/text";
 import { thread } from "std/thread";
@@ -125,6 +126,7 @@ function bodyShapes(value: i32): i32 {
 }
 
 function expressionShapes(value: i32): i32 {
+  const unicodeMessage = `café 😀 ${value}`; const afterUnicode = value;
   const numberValue = 42;
   const stringValue = "ready";
   const trueValue = true;

@@ -226,14 +226,43 @@ function pushToken(
   tokens.push(Token({ kind, text, offset, line, column }));
 }
 
+function advanceSource(
+  in source: String,
+  inout offset: usize,
+  inout byteSurplus: usize,
+  inout line: usize,
+  inout column: usize
+): void {
+  // Native slices use `offset` bytes. Public locations subtract the accumulated
+  // UTF-8-byte/UTF-16-unit difference stored in `byteSurplus`.
+  const byte = source.byteAt(offset);
+  if (byte == 10) {
+    offset = offset + 1;
+    line = line + 1;
+    column = 1;
+    return;
+  }
+  let byteWidth: usize = 1;
+  let utf16Width: usize = 1;
+  if (byte >= 240) {
+    byteWidth = 4;
+    utf16Width = 2;
+  } else if (byte >= 224) byteWidth = 3;
+  else if (byte >= 192) byteWidth = 2;
+  offset = offset + byteWidth;
+  byteSurplus = byteSurplus + byteWidth - utf16Width;
+  column = column + utf16Width;
+}
+
 function skipBlockComment(
   in source: String,
   baseOffset: usize,
   inout offset: usize,
+  inout byteSurplus: usize,
   inout line: usize,
   inout column: usize
 ): void throws LexerError {
-  const commentOffset = offset;
+  const commentOffset = offset - byteSurplus;
   const commentLine = line;
   const commentColumn = column;
   offset = offset + 2;
@@ -248,13 +277,7 @@ function skipBlockComment(
       column = column + 2;
       return;
     }
-    if (source.byteAt(offset) == 10) {
-      line = line + 1;
-      column = 1;
-    } else {
-      column = column + 1;
-    }
-    offset = offset + 1;
+    advanceSource(source, inout offset, inout byteSurplus, inout line, inout column);
   }
   throw LexerError({
     message: "unterminated block comment",
@@ -273,6 +296,7 @@ function tokenizeInto(
   emitEof: boolean
 ): void throws LexerError {
   let offset: usize = 0;
+  let byteSurplus: usize = 0;
   let line = baseLine;
   let column = baseColumn;
 
@@ -280,17 +304,12 @@ function tokenizeInto(
     const byte = source.byteAt(offset);
 
     if (isWhitespace(byte)) {
-      if (byte == 10) {
-        line = line + 1;
-        column = 1;
-      } else {
-        column = column + 1;
-      }
-      offset = offset + 1;
+      advanceSource(source, inout offset, inout byteSurplus, inout line, inout column);
       continue;
     }
 
     const tokenOffset = offset;
+    const tokenCoordinateOffset = offset - byteSurplus;
     const tokenLine = line;
     const tokenColumn = column;
 
@@ -298,22 +317,21 @@ function tokenizeInto(
       offset = offset + 2;
       column = column + 2;
       while (offset < source.byteLength && source.byteAt(offset) != 10) {
-        offset = offset + 1;
-        column = column + 1;
+        advanceSource(source, inout offset, inout byteSurplus, inout line, inout column);
       }
       continue;
     }
 
     if (byte == 47 && offset + 1 < source.byteLength && source.byteAt(offset + 1) == 42) {
-      try skipBlockComment(source, baseOffset, inout offset, inout line, inout column);
+      try skipBlockComment(source, baseOffset, inout offset, inout byteSurplus, inout line, inout column);
       continue;
     }
 
     if (byte == 96) {
-      pushToken(inout tokens, TokenKind.templateStart, "`", baseOffset + tokenOffset, tokenLine, tokenColumn);
+      pushToken(inout tokens, TokenKind.templateStart, "`", baseOffset + tokenCoordinateOffset, tokenLine, tokenColumn);
       offset = offset + 1;
       column = column + 1;
-      let textOffset = offset;
+      let textCoordinateOffset = offset - byteSurplus;
       let textLine = line;
       let textColumn = column;
       let chunkStart = offset;
@@ -322,14 +340,13 @@ function tokenizeInto(
       while (offset < source.byteLength && source.byteAt(offset) != 96) {
         const templateByte = source.byteAt(offset);
         if (templateByte == 92) {
-          const escapeOffset = offset;
+          const escapeCoordinateOffset = offset - byteSurplus;
           const escapeLine = line;
           const escapeColumn = column;
           decoded.appendBytes(source, chunkStart, offset);
-          offset = offset + 1;
-          column = column + 1;
+          advanceSource(source, inout offset, inout byteSurplus, inout line, inout column);
           if (offset >= source.byteLength) {
-            throw LexerError({ message: "unterminated template escape", offset: baseOffset + escapeOffset, line: escapeLine, column: escapeColumn });
+            throw LexerError({ message: "unterminated template escape", offset: baseOffset + escapeCoordinateOffset, line: escapeLine, column: escapeColumn });
           }
           const escaped = source.byteAt(offset);
           if (escaped == 110) decoded.appendAscii(10);
@@ -337,10 +354,9 @@ function tokenizeInto(
           else if (escaped == 116) decoded.appendAscii(9);
           else if (escaped == 92 || escaped == 96 || escaped == 36) decoded.appendAscii(escaped);
           else {
-            throw LexerError({ message: "unknown template escape", offset: baseOffset + escapeOffset, line: escapeLine, column: escapeColumn });
+            throw LexerError({ message: "unknown template escape", offset: baseOffset + escapeCoordinateOffset, line: escapeLine, column: escapeColumn });
           }
-          offset = offset + 1;
-          column = column + 1;
+          advanceSource(source, inout offset, inout byteSurplus, inout line, inout column);
           chunkStart = offset;
           continue;
         }
@@ -349,12 +365,13 @@ function tokenizeInto(
           decoded.appendBytes(source, chunkStart, offset);
           const text = decoded.finish();
           if (!text.isEmpty) {
-            pushToken(inout tokens, TokenKind.templateText, text, baseOffset + textOffset, textLine, textColumn);
+            pushToken(inout tokens, TokenKind.templateText, text, baseOffset + textCoordinateOffset, textLine, textColumn);
           }
-          pushToken(inout tokens, TokenKind.templateExpressionStart, "${", baseOffset + offset, line, column);
+          pushToken(inout tokens, TokenKind.templateExpressionStart, "${", baseOffset + offset - byteSurplus, line, column);
           offset = offset + 2;
           column = column + 2;
           const expressionOffset = offset;
+          const expressionCoordinateOffset = offset - byteSurplus;
           const expressionLine = line;
           const expressionColumn = column;
           let depth: usize = 0;
@@ -364,44 +381,29 @@ function tokenizeInto(
             const expressionByte = source.byteAt(offset);
             if (quote != 0) {
               if (expressionByte == 92) {
-                offset = offset + 1;
-                column = column + 1;
+                advanceSource(source, inout offset, inout byteSurplus, inout line, inout column);
                 if (offset < source.byteLength) {
-                  if (source.byteAt(offset) == 10) {
-                    line = line + 1;
-                    column = 1;
-                  } else {
-                    column = column + 1;
-                  }
-                  offset = offset + 1;
+                  advanceSource(source, inout offset, inout byteSurplus, inout line, inout column);
                 }
                 continue;
               }
               if (expressionByte == quote) quote = 0;
-              if (expressionByte == 10) {
-                line = line + 1;
-                column = 1;
-              } else {
-                column = column + 1;
-              }
-              offset = offset + 1;
+              advanceSource(source, inout offset, inout byteSurplus, inout line, inout column);
               continue;
             }
             if (expressionByte == 34 || expressionByte == 39 || expressionByte == 96) {
               quote = expressionByte;
-              offset = offset + 1;
-              column = column + 1;
+              advanceSource(source, inout offset, inout byteSurplus, inout line, inout column);
               continue;
             }
             if (expressionByte == 47 && offset + 1 < source.byteLength && source.byteAt(offset + 1) == 47) {
               while (offset < source.byteLength && source.byteAt(offset) != 10) {
-                offset = offset + 1;
-                column = column + 1;
+                advanceSource(source, inout offset, inout byteSurplus, inout line, inout column);
               }
               continue;
             }
             if (expressionByte == 47 && offset + 1 < source.byteLength && source.byteAt(offset + 1) == 42) {
-              try skipBlockComment(source, baseOffset, inout offset, inout line, inout column);
+              try skipBlockComment(source, baseOffset, inout offset, inout byteSurplus, inout line, inout column);
               continue;
             }
             if (expressionByte == 123) {
@@ -417,24 +419,18 @@ function tokenizeInto(
               column = column + 1;
               continue;
             }
-            if (expressionByte == 10) {
-              line = line + 1;
-              column = 1;
-            } else {
-              column = column + 1;
-            }
-            offset = offset + 1;
+            advanceSource(source, inout offset, inout byteSurplus, inout line, inout column);
           }
 
           if (offset >= source.byteLength) {
-            throw LexerError({ message: "unterminated template interpolation", offset: baseOffset + tokenOffset, line: tokenLine, column: tokenColumn });
+            throw LexerError({ message: "unterminated template interpolation", offset: baseOffset + tokenCoordinateOffset, line: tokenLine, column: tokenColumn });
           }
           const expressionSource = source.copyBytes(expressionOffset, offset);
-          try tokenizeInto(inout tokens, expressionSource, baseOffset + expressionOffset, expressionLine, expressionColumn, false);
-          pushToken(inout tokens, TokenKind.templateExpressionEnd, "}", baseOffset + offset, line, column);
+          try tokenizeInto(inout tokens, expressionSource, baseOffset + expressionCoordinateOffset, expressionLine, expressionColumn, false);
+          pushToken(inout tokens, TokenKind.templateExpressionEnd, "}", baseOffset + offset - byteSurplus, line, column);
           offset = offset + 1;
           column = column + 1;
-          textOffset = offset;
+          textCoordinateOffset = offset - byteSurplus;
           textLine = line;
           textColumn = column;
           chunkStart = offset;
@@ -442,105 +438,87 @@ function tokenizeInto(
           continue;
         }
 
-        if (templateByte == 10) {
-          line = line + 1;
-          column = 1;
-        } else {
-          column = column + 1;
-        }
-        offset = offset + 1;
+        advanceSource(source, inout offset, inout byteSurplus, inout line, inout column);
       }
 
       if (offset >= source.byteLength) {
-        throw LexerError({ message: "unterminated template literal", offset: baseOffset + tokenOffset, line: tokenLine, column: tokenColumn });
+        throw LexerError({ message: "unterminated template literal", offset: baseOffset + tokenCoordinateOffset, line: tokenLine, column: tokenColumn });
       }
       decoded.appendBytes(source, chunkStart, offset);
       const text = decoded.finish();
       if (!text.isEmpty) {
-        pushToken(inout tokens, TokenKind.templateText, text, baseOffset + textOffset, textLine, textColumn);
+        pushToken(inout tokens, TokenKind.templateText, text, baseOffset + textCoordinateOffset, textLine, textColumn);
       }
-      pushToken(inout tokens, TokenKind.templateEnd, "`", baseOffset + offset, line, column);
+      pushToken(inout tokens, TokenKind.templateEnd, "`", baseOffset + offset - byteSurplus, line, column);
       offset = offset + 1;
       column = column + 1;
       continue;
     }
 
     if (isIdentifierStart(byte)) {
-      offset = offset + 1;
-      column = column + 1;
+      advanceSource(source, inout offset, inout byteSurplus, inout line, inout column);
       while (offset < source.byteLength && isIdentifierContinue(source.byteAt(offset))) {
-        offset = offset + 1;
-        column = column + 1;
+        advanceSource(source, inout offset, inout byteSurplus, inout line, inout column);
       }
       const text = source.copyBytes(tokenOffset, offset);
       const keyword = keywordKind(text);
       match (keyword) {
-        some(kind) => pushToken(inout tokens, kind, text, baseOffset + tokenOffset, tokenLine, tokenColumn);
-        none => pushToken(inout tokens, TokenKind.identifier, text, baseOffset + tokenOffset, tokenLine, tokenColumn);
+        some(kind) => pushToken(inout tokens, kind, text, baseOffset + tokenCoordinateOffset, tokenLine, tokenColumn);
+        none => pushToken(inout tokens, TokenKind.identifier, text, baseOffset + tokenCoordinateOffset, tokenLine, tokenColumn);
       }
       continue;
     }
 
     if (isDigit(byte)) {
-      offset = offset + 1;
-      column = column + 1;
+      advanceSource(source, inout offset, inout byteSurplus, inout line, inout column);
       while (offset < source.byteLength && isDigit(source.byteAt(offset))) {
-        offset = offset + 1;
-        column = column + 1;
+        advanceSource(source, inout offset, inout byteSurplus, inout line, inout column);
       }
       if (offset + 1 < source.byteLength && source.byteAt(offset) == 46 && isDigit(source.byteAt(offset + 1))) {
-        offset = offset + 1;
-        column = column + 1;
+        advanceSource(source, inout offset, inout byteSurplus, inout line, inout column);
         while (offset < source.byteLength && isDigit(source.byteAt(offset))) {
-          offset = offset + 1;
-          column = column + 1;
+          advanceSource(source, inout offset, inout byteSurplus, inout line, inout column);
         }
       }
       if (offset < source.byteLength && (source.byteAt(offset) == 101 || source.byteAt(offset) == 69)) {
-        offset = offset + 1;
-        column = column + 1;
+        advanceSource(source, inout offset, inout byteSurplus, inout line, inout column);
         if (offset < source.byteLength && (source.byteAt(offset) == 43 || source.byteAt(offset) == 45)) {
-          offset = offset + 1;
-          column = column + 1;
+          advanceSource(source, inout offset, inout byteSurplus, inout line, inout column);
         }
         if (offset >= source.byteLength || !isDigit(source.byteAt(offset))) {
-          throw LexerError({ message: "a numeric exponent requires at least one digit", offset: baseOffset + tokenOffset, line: tokenLine, column: tokenColumn });
+          throw LexerError({ message: "a numeric exponent requires at least one digit", offset: baseOffset + tokenCoordinateOffset, line: tokenLine, column: tokenColumn });
         }
         while (offset < source.byteLength && isDigit(source.byteAt(offset))) {
-          offset = offset + 1;
-          column = column + 1;
+          advanceSource(source, inout offset, inout byteSurplus, inout line, inout column);
         }
       }
-      pushToken(inout tokens, TokenKind.number, source.copyBytes(tokenOffset, offset), baseOffset + tokenOffset, tokenLine, tokenColumn);
+      pushToken(inout tokens, TokenKind.number, source.copyBytes(tokenOffset, offset), baseOffset + tokenCoordinateOffset, tokenLine, tokenColumn);
       continue;
     }
 
     if (byte == 34 || byte == 39) {
       const quote = byte;
       let decoded = TextBuffer();
-      offset = offset + 1;
-      column = column + 1;
+      advanceSource(source, inout offset, inout byteSurplus, inout line, inout column);
       let chunkStart = offset;
 
       while (offset < source.byteLength && source.byteAt(offset) != quote) {
         const quotedByte = source.byteAt(offset);
         if (quotedByte == 10) {
-          throw LexerError({ message: "unterminated string literal", offset: baseOffset + tokenOffset, line: tokenLine, column: tokenColumn });
+          throw LexerError({ message: "unterminated string literal", offset: baseOffset + tokenCoordinateOffset, line: tokenLine, column: tokenColumn });
         }
         if (quotedByte != 92) {
-          offset = offset + 1;
-          column = column + 1;
+          advanceSource(source, inout offset, inout byteSurplus, inout line, inout column);
           continue;
         }
 
         decoded.appendBytes(source, chunkStart, offset);
-        const escapeOffset = offset;
+        const escapeCoordinateOffset = offset - byteSurplus;
         const escapeLine = line;
         const escapeColumn = column;
-        offset = offset + 1;
-        column = column + 1;
+        advanceSource(source, inout offset, inout byteSurplus, inout line, inout column);
         if (offset >= source.byteLength) {
-          throw LexerError({ message: "unterminated string escape", offset: baseOffset + tokenOffset, line: tokenLine, column: tokenColumn });
+          throw LexerError({ message: "unterminated string escape", offset: baseOffset + tokenCoordinateOffset, line: tokenLine, column: tokenColumn });
         }
         const escaped = source.byteAt(offset);
         if (escaped == 110) decoded.appendAscii(10);
@@ -548,20 +526,18 @@ function tokenizeInto(
         else if (escaped == 116) decoded.appendAscii(9);
         else if (escaped == 92 || escaped == 34 || escaped == 39) decoded.appendAscii(escaped);
         else {
-          throw LexerError({ message: "unknown string escape", offset: baseOffset + escapeOffset, line: escapeLine, column: escapeColumn });
+          throw LexerError({ message: "unknown string escape", offset: baseOffset + escapeCoordinateOffset, line: escapeLine, column: escapeColumn });
         }
-        offset = offset + 1;
-        column = column + 1;
+        advanceSource(source, inout offset, inout byteSurplus, inout line, inout column);
         chunkStart = offset;
       }
 
       if (offset >= source.byteLength) {
-        throw LexerError({ message: "unterminated string literal", offset: baseOffset + tokenOffset, line: tokenLine, column: tokenColumn });
+        throw LexerError({ message: "unterminated string literal", offset: baseOffset + tokenCoordinateOffset, line: tokenLine, column: tokenColumn });
       }
       decoded.appendBytes(source, chunkStart, offset);
-      offset = offset + 1;
-      column = column + 1;
-      pushToken(inout tokens, TokenKind.string, decoded.finish(), baseOffset + tokenOffset, tokenLine, tokenColumn);
+      advanceSource(source, inout offset, inout byteSurplus, inout line, inout column);
+      pushToken(inout tokens, TokenKind.string, decoded.finish(), baseOffset + tokenCoordinateOffset, tokenLine, tokenColumn);
       continue;
     }
 
@@ -572,19 +548,18 @@ function tokenizeInto(
       some(kind) => {
         offset = offset + 2;
         column = column + 2;
-        pushToken(inout tokens, kind, source.copyBytes(tokenOffset, offset), baseOffset + tokenOffset, tokenLine, tokenColumn);
+        pushToken(inout tokens, kind, source.copyBytes(tokenOffset, offset), baseOffset + tokenCoordinateOffset, tokenLine, tokenColumn);
       }
       none => {
         const single = singleSymbolKind(byte);
         match (single) {
           some(kind) => {
-            offset = offset + 1;
-            column = column + 1;
-            pushToken(inout tokens, kind, source.copyBytes(tokenOffset, offset), baseOffset + tokenOffset, tokenLine, tokenColumn);
+            advanceSource(source, inout offset, inout byteSurplus, inout line, inout column);
+            pushToken(inout tokens, kind, source.copyBytes(tokenOffset, offset), baseOffset + tokenCoordinateOffset, tokenLine, tokenColumn);
           }
           none => throw LexerError({
             message: `unexpected source byte ${byte}`,
-            offset: baseOffset + tokenOffset,
+            offset: baseOffset + tokenCoordinateOffset,
             line: tokenLine,
             column: tokenColumn,
           });
@@ -594,7 +569,7 @@ function tokenizeInto(
   }
 
   if (emitEof) {
-    pushToken(inout tokens, TokenKind.eof, "", baseOffset + offset, line, column);
+    pushToken(inout tokens, TokenKind.eof, "", baseOffset + offset - byteSurplus, line, column);
   }
 }
 

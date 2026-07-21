@@ -4538,7 +4538,7 @@ test("parses declarations, function bodies, and type shapes in native Z", () => 
   const result = spawnSync(process.execPath, [cli, "self-host-parse", fixture, lexer, parser, "--timings"], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /self-host-parser-input\.z: stage-1 parser matches 16 declarations, 7 function signatures, 7 function bodies, and 6 type shapes/);
-  assert.match(result.stdout, /lexer\.z: stage-1 parser matches 16 declarations, 12 function signatures, 12 function bodies, and 3 type shapes/);
+  assert.match(result.stdout, /lexer\.z: stage-1 parser matches 17 declarations, 13 function signatures, 13 function bodies, and 3 type shapes/);
   assert.match(result.stdout, /parser\.z: stage-1 parser matches \d+ declarations, \d+ function signatures, \d+ function bodies, and \d+ type shapes/);
   assert.match(result.stdout, /stage-1 parser timing \(3 files, cache (?:hit|miss; stage-0 compile \+ native build included)\)/);
   assert.match(result.stdout, /native batch \(process startup \+ file I\/O \+ lex \+ parse \+ encode\): \d+\.\d{2} ms/);
