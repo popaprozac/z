@@ -365,11 +365,15 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    consumes ownership only when graph metadata rules out a custom constructor.
    Declared class construction uses its graph-carried parameter capabilities and
    types, substitutes aggregate generics, and shares the ordinary call transition
-   rules for owned, `in`, `inout`, and `out` arguments. Constructor error types
-   are retained for the upcoming native error-flow tier.
+   rules for owned, `in`, `inout`, and `out` arguments. Synchronous Z functions,
+   methods, and constructors retain a pending error effect until `attempt`
+   produces `Result<T, E>` or `try` validates compatible propagation from an
+   enclosing throwing body. Unhandled calls, non-throwing wrapper operands,
+   incompatible errors, and invalid `throw` statements diagnose natively, with
+   generic substitution and imported aliases preserved.
    Complete
    contextual literal and return-driven inference, foreign/intrinsic method lookup,
-   generic constraints/methods, throwing-call effects, remaining
+   generic constraints/methods, async/closure/foreign call effects, remaining
    receiver-path capability enforcement, closure ownership, and full recursive
    ownership contexts remain stage-zero work.
    Template literals now

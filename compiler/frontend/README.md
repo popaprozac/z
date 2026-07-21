@@ -79,8 +79,12 @@ semantic analysis and code generation; the frontend itself is native Z code.
   ownership. Declared class constructors instead use their graph-carried
   parameter capabilities and types, including owner-generic substitution, so
   owned, `in`, `inout`, and `out` arguments behave exactly like ordinary calls.
-  Constructor error types cross the graph; native `try`/`attempt` effect
-  enforcement remains in the error-flow tier.
+  Synchronous Z functions, methods, and constructors preserve a pending error
+  effect until `attempt` materializes `Result<T, E>` or `try` validates and
+  propagates `E` from an enclosing `throws E` body. Unhandled throwing calls,
+  non-throwing operands, incompatible propagation, and mismatched or undeclared
+  `throw` values now originate in Z. Generic error types and imported aliases use
+  the same substitution and nominal-identity rules as ordinary call results.
 - `module-resolver-protocol.zs` frames that host-loaded batch and returns the
   resolved graph through the same in-process native-library boundary.
 - `parser-protocol.zs` encodes the temporary parity protocol shared by native
@@ -111,8 +115,9 @@ work. Identifier and expression-level type lookup currently cover materialized
 expression trees. Unknown foreign/intrinsic-member/async shapes deliberately defer
 instead of guessing. Opaque expression spans, contextual
 collection and return-driven generic inference, generic constraints and methods,
-type-constructor arity, trait conformance, throwing-call effects, closure ownership
-effects, and complete recursive ownership lowering remain stage-zero work.
+type-constructor arity, trait conformance, async/closure/foreign call effects,
+closure ownership effects, and complete recursive ownership lowering remain
+stage-zero work.
 The reported native interval therefore does more semantic work than the
 graph-and-symbol-only stage-zero comparison.
 Repeated corpus measurements and incrementally

@@ -5916,6 +5916,232 @@ test("resolves a canonical module graph directly from native Z ASTs", () => {
   assert.equal(borrowedReturn.status, 1);
   assert.match(borrowedReturn.stderr, /cannot move borrowed parameter "resource"/);
 
+  writeFileSync(
+    bindingState,
+    "struct Problem { code: i32; }\n"
+      + "function fallible(): i32 throws Problem { return 42; }\n"
+      + "function invalid(): i32 { return fallible(); }\n",
+  );
+  const unhandledThrowingCall = spawnSync(
+    process.execPath,
+    [cli, "self-host-resolve", bindingState],
+    { encoding: "utf8" },
+  );
+  assert.equal(unhandledThrowingCall.status, 1);
+  assert.match(unhandledThrowingCall.stderr, /throwing call requires `attempt` or `try`/);
+
+  writeFileSync(
+    bindingState,
+    "struct Problem { code: i32; }\n"
+      + "function fallible(): i32 throws Problem { return 42; }\n"
+      + "function invalid(): String { return `value=${fallible()}`; }\n",
+  );
+  const interpolatedThrowingCall = spawnSync(
+    process.execPath,
+    [cli, "self-host-resolve", bindingState],
+    { encoding: "utf8" },
+  );
+  assert.equal(interpolatedThrowingCall.status, 1);
+  assert.match(interpolatedThrowingCall.stderr, /throwing call requires `attempt` or `try`/);
+
+  writeFileSync(
+    bindingState,
+    "struct Problem { code: i32; }\n"
+      + "function fallible(): i32 throws Problem { return 42; }\n"
+      + "function valid(): i32 {\n"
+      + "  const result = attempt fallible();\n"
+      + "  return match (result) {\n"
+      + "    success(value) => value;\n"
+      + "    failure(problem) => problem.code;\n"
+      + "  };\n"
+      + "}\n",
+  );
+  const materializedThrowingCall = spawnSync(
+    process.execPath,
+    [cli, "self-host-resolve", bindingState],
+    { encoding: "utf8" },
+  );
+  assert.equal(materializedThrowingCall.status, 0, materializedThrowingCall.stderr);
+
+  writeFileSync(
+    bindingState,
+    "function stable(): i32 { return 42; }\n"
+      + "function invalid(): i32 { const result = attempt stable(); return 0; }\n",
+  );
+  const attemptNonThrowingCall = spawnSync(
+    process.execPath,
+    [cli, "self-host-resolve", bindingState],
+    { encoding: "utf8" },
+  );
+  assert.equal(attemptNonThrowingCall.status, 1);
+  assert.match(attemptNonThrowingCall.stderr, /attempt requires a throwing function call/);
+
+  writeFileSync(
+    bindingState,
+    "struct Problem { code: i32; }\n"
+      + "function fallible(): i32 throws Problem { return 42; }\n"
+      + "function invalid(): i32 { return try fallible(); }\n",
+  );
+  const propagatedWithoutErrorType = spawnSync(
+    process.execPath,
+    [cli, "self-host-resolve", bindingState],
+    { encoding: "utf8" },
+  );
+  assert.equal(propagatedWithoutErrorType.status, 1);
+  assert.match(propagatedWithoutErrorType.stderr, /try requires an enclosing throwing function/);
+
+  writeFileSync(
+    bindingState,
+    "struct FirstError { code: i32; }\n"
+      + "struct SecondError { code: i32; }\n"
+      + "function first(): i32 throws FirstError { return 1; }\n"
+      + "function invalid(): i32 throws SecondError { return try first(); }\n",
+  );
+  const incompatiblePropagatedError = spawnSync(
+    process.execPath,
+    [cli, "self-host-resolve", bindingState],
+    { encoding: "utf8" },
+  );
+  assert.equal(incompatiblePropagatedError.status, 1);
+  assert.match(
+    incompatiblePropagatedError.stderr,
+    /cannot propagate FirstError from a function throwing SecondError/,
+  );
+
+  writeFileSync(
+    bindingState,
+    "struct Problem { code: i32; }\n"
+      + "function fallible(): i32 throws Problem { return 42; }\n"
+      + "function valid(): i32 throws Problem { return try fallible(); }\n",
+  );
+  const compatiblePropagatedError = spawnSync(
+    process.execPath,
+    [cli, "self-host-resolve", bindingState],
+    { encoding: "utf8" },
+  );
+  assert.equal(compatiblePropagatedError.status, 0, compatiblePropagatedError.stderr);
+
+  writeFileSync(
+    bindingState,
+    "struct Problem { code: i32; }\n"
+      + "function invalid(): i32 { throw Problem({ code: 1 }); }\n",
+  );
+  const throwWithoutErrorType = spawnSync(
+    process.execPath,
+    [cli, "self-host-resolve", bindingState],
+    { encoding: "utf8" },
+  );
+  assert.equal(throwWithoutErrorType.status, 1);
+  assert.match(throwWithoutErrorType.stderr, /function "invalid" does not declare an error type/);
+
+  writeFileSync(
+    bindingState,
+    "struct Problem { code: i32; }\n"
+      + "function invalid(): i32 throws Problem { throw 1; }\n",
+  );
+  const incompatibleThrownError = spawnSync(
+    process.execPath,
+    [cli, "self-host-resolve", bindingState],
+    { encoding: "utf8" },
+  );
+  assert.equal(incompatibleThrownError.status, 1);
+  assert.match(incompatibleThrownError.stderr, /expected Problem, found i32/);
+
+  writeFileSync(
+    bindingState,
+    "struct Problem { code: i32; }\n"
+      + "class Session {\n"
+      + "  id: i32;\n"
+      + "  constructor(id: i32) throws Problem { this.id = id; }\n"
+      + "}\n"
+      + "function invalid(): i32 { return new Session(42).id; }\n",
+  );
+  const unhandledThrowingConstructor = spawnSync(
+    process.execPath,
+    [cli, "self-host-resolve", bindingState],
+    { encoding: "utf8" },
+  );
+  assert.equal(unhandledThrowingConstructor.status, 1);
+  assert.match(
+    unhandledThrowingConstructor.stderr,
+    /throwing constructor requires `attempt` or `try`/,
+  );
+
+  writeFileSync(
+    bindingState,
+    "struct Problem { code: i32; }\n"
+      + "class Session {\n"
+      + "  id: i32;\n"
+      + "  constructor(id: i32) throws Problem { this.id = id; }\n"
+      + "}\n"
+      + "function valid(): i32 {\n"
+      + "  const result = attempt new Session(42);\n"
+      + "  return match (result) {\n"
+      + "    success(session) => session.id;\n"
+      + "    failure(problem) => problem.code;\n"
+      + "  };\n"
+      + "}\n",
+  );
+  const materializedThrowingConstructor = spawnSync(
+    process.execPath,
+    [cli, "self-host-resolve", bindingState],
+    { encoding: "utf8" },
+  );
+  assert.equal(materializedThrowingConstructor.status, 0, materializedThrowingConstructor.stderr);
+
+  writeFileSync(
+    bindingState,
+    "struct Problem { code: i32; }\n"
+      + "class Reader {\n"
+      + "  function load(): i32 throws Problem { return 42; }\n"
+      + "}\n"
+      + "function valid(reader: Reader): i32 throws Problem { return try reader.load(); }\n",
+  );
+  const propagatedMethodError = spawnSync(
+    process.execPath,
+    [cli, "self-host-resolve", bindingState],
+    { encoding: "utf8" },
+  );
+  assert.equal(propagatedMethodError.status, 0, propagatedMethodError.stderr);
+
+  writeFileSync(
+    bindingState,
+    "struct Problem { code: i32; }\n"
+      + "function fail<T>(error: T): i32 throws T { throw error; }\n"
+      + "function valid(): i32 {\n"
+      + "  const result = attempt fail(Problem({ code: 7 }));\n"
+      + "  return match (result) {\n"
+      + "    success(value) => value;\n"
+      + "    failure(problem) => problem.code;\n"
+      + "  };\n"
+      + "}\n",
+  );
+  const inferredGenericError = spawnSync(
+    process.execPath,
+    [cli, "self-host-resolve", bindingState],
+    { encoding: "utf8" },
+  );
+  assert.equal(inferredGenericError.status, 0, inferredGenericError.stderr);
+
+  const errorModel = resolve(invalidDirectory, "error-model.zs");
+  const errorMain = resolve(invalidDirectory, "error-main.zs");
+  writeFileSync(
+    errorModel,
+    "export struct Problem { code: i32; }\n"
+      + "export function fallible(): i32 throws Problem { return 42; }\n",
+  );
+  writeFileSync(
+    errorMain,
+    "import { Problem as Issue, fallible } from \"./error-model.zs\";\n"
+      + "function valid(): i32 throws Issue { return try fallible(); }\n",
+  );
+  const importedPropagatedError = spawnSync(
+    process.execPath,
+    [cli, "self-host-resolve", errorMain],
+    { encoding: "utf8" },
+  );
+  assert.equal(importedPropagatedError.status, 0, importedPropagatedError.stderr);
+
   const encoded = encodeStage1ModuleBatch([{ path: "/a.zs", source: "é" }]);
   assert.equal(encoded.byteLength, 32 + Buffer.byteLength("/a.zs") + Buffer.byteLength("é"));
   assert.throws(() => decodeStage1ModuleGraphStream("order\n"), /did not contain an entry/);

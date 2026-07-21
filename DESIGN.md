@@ -1533,7 +1533,12 @@ ported independently rather than translated as one monolith.
    constructor. Declared class construction instead checks the constructor's
    graph-carried parameter modes and types, substitutes owner generics, and
    applies the same borrow/transfer transitions as an ordinary call. Constructor
-   error types are retained for the native error-flow tier. Native direct/imported function
+   errors and errors from synchronous Z functions/methods remain pending effects
+   until `attempt` materializes `Result<T, E>` or `try` validates the enclosing
+   `throws E` contract and yields `T`. Unhandled calls, non-throwing operands,
+   incompatible propagation, and invalid `throw` values now diagnose natively;
+   async, closure, standard-library, and foreign effect models remain later
+   layers. Native direct/imported function
    and Z-method calls now consume their graph-carried parameter modes: `out` and
    `inout` require matching explicit markers and mutable bindings, `inout`
    requires initialized storage, invalid explicit markers on value/`in`
@@ -1576,7 +1581,9 @@ ported independently rather than translated as one monolith.
    match subjects and payloads now participate in native ownership flow. The same
    flow now covers local/assignment/return destinations, fixed-array elements,
    conditional results, synthesized aggregate fields, enum payloads, and declared
-   constructor arguments. Any other
+   constructor arguments. Synchronous Z call effects now compose through direct
+   and nested value contexts without confusing a pending error with an ordinary
+   `Result` value. Any other
    missing foreign/member/async expression model produces an
    unresolved internal type, not a guessed type or user-visible false positive.
 3. **Stage 2:** Compile the Z compiler with stage 0, then use that result to
