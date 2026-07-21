@@ -31,6 +31,12 @@ function verifyLexer(): i32 throws LexerError {
   if (!hasKind(templateTokens, 6, TokenKind.templateExpressionEnd)) return 18;
   if (!hasKind(templateTokens, 7, TokenKind.templateEnd)) return 19;
   if (!hasKind(templateTokens, 8, TokenKind.onKeyword)) return 20;
+
+  const commentTokens = try tokenize("const /* first\nsecond */ value = 1;");
+  if (commentTokens.length != 6) return 21;
+  if (!hasKind(commentTokens, 0, TokenKind.constKeyword)) return 22;
+  if (!hasKind(commentTokens, 1, TokenKind.identifier)) return 23;
+  if (commentTokens[1].line != 2 || commentTokens[1].column != 11) return 24;
   return 0;
 }
 
@@ -42,9 +48,16 @@ function main(): i32 {
   };
   if (status != 0) return status;
 
+  const unterminatedComment = attempt tokenize("value /* open");
+  const commentStatus = match (unterminatedComment) {
+    success(tokens) => 25;
+    failure(error) => error.line == 1 && error.column == 7 ? 0 : 26;
+  };
+  if (commentStatus != 0) return commentStatus;
+
   const invalid = attempt tokenize("@");
   return match (invalid) {
-    success(tokens) => 21;
-    failure(error) => error.line == 1 && error.column == 1 ? 0 : 22;
+    success(tokens) => 27;
+    failure(error) => error.line == 1 && error.column == 1 ? 0 : 28;
   };
 }

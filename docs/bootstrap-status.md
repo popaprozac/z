@@ -216,7 +216,8 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    and `std/text` `TextBuffer` now support a multi-module Z source inspector with
    UTF-8 boundary-preserving token copies, escape decoding, source locations,
    typed lexer errors, exact current keyword/operator kinds, decimal/exponent
-   numbers, template interpolation modes, trivia-compatible comments, and
+   numbers, template interpolation modes, line and non-nesting block-comment
+   trivia, and
    unknown-byte rejection. Stage 0 compiles a native token-stream bridge and
    compares its kinds, decoded text, offsets, lines, and columns with the
    TypeScript lexer through `z self-host-lex`; the Z lexer also tokenizes its own
@@ -287,7 +288,7 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    the planned contextual `using` capture clause.
    Contextual keywords are accepted as member names after `.` just as they are
    by stage 0. Enum-constructor and explicit capability-argument projections, Unicode
-   identifiers, block comments, and direct in-process driver integration remain. Stage 0
+   identifiers and direct in-process driver integration remain. Stage 0
    currently reports UTF-16 source coordinates while the stage-1 lexer retains
    UTF-8 byte coordinates; exact location parity after non-ASCII source text is
    therefore a known coordinate-contract seam that must be resolved explicitly.

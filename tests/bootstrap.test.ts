@@ -4514,10 +4514,16 @@ test("tokenizes real Z source with checked UTF-8 operations and TextBuffer", () 
   assert.match(result.stdout, /first identifier: TextBuffer/);
 
   const parityInput = resolve(projectRoot, "tests/fixtures/self-host-lexer-input.z");
+  assert.doesNotThrow(() => check(readFileSync(parityInput, "utf8"), parityInput));
   const parityResult = spawnSync(process.execPath, [cli, "self-host-lex", parityInput, lexer], { encoding: "utf8" });
   assert.equal(parityResult.status, 0, parityResult.stderr);
   assert.match(parityResult.stdout, /self-host-lexer-input\.z: stage-1 lexer matches \d+ tokens/);
   assert.match(parityResult.stdout, /lexer\.z: stage-1 lexer matches \d+ tokens/);
+
+  assert.throws(
+    () => check("const value = 1; /* open", "unterminated-comment.z"),
+    /unterminated block comment/,
+  );
 
   assert.throws(
     () => decodeStage1TokenStream("identifier\tnope\t0000000000000001\t0000000000000001\t61\n", parityInput),
@@ -4532,7 +4538,7 @@ test("parses declarations, function bodies, and type shapes in native Z", () => 
   const result = spawnSync(process.execPath, [cli, "self-host-parse", fixture, lexer, parser, "--timings"], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /self-host-parser-input\.z: stage-1 parser matches 16 declarations, 7 function signatures, 7 function bodies, and 6 type shapes/);
-  assert.match(result.stdout, /lexer\.z: stage-1 parser matches 15 declarations, 11 function signatures, 11 function bodies, and 3 type shapes/);
+  assert.match(result.stdout, /lexer\.z: stage-1 parser matches 16 declarations, 12 function signatures, 12 function bodies, and 3 type shapes/);
   assert.match(result.stdout, /parser\.z: stage-1 parser matches \d+ declarations, \d+ function signatures, \d+ function bodies, and \d+ type shapes/);
   assert.match(result.stdout, /stage-1 parser timing \(3 files, cache (?:hit|miss; stage-0 compile \+ native build included)\)/);
   assert.match(result.stdout, /native batch \(process startup \+ file I\/O \+ lex \+ parse \+ encode\): \d+\.\d{2} ms/);
@@ -7162,6 +7168,7 @@ test("editor grammar tracks keywords without reserving Result variants", () => {
   const operatorScopes = grammar.repository.operators.patterns.map((pattern: { name: string }) => pattern.name).join(" ");
   const typePattern = grammar.repository.types.patterns.map((pattern: { match: string }) => pattern.match).join(" ");
   const stringPatterns = JSON.stringify(grammar.repository.strings.patterns);
+  const commentPatterns = JSON.stringify(grammar.repository.comments.patterns);
   const selectiveImportPatterns = grammar.repository.imports.patterns[0].patterns
     .map((pattern: { match: string }) => pattern.match)
     .join(" ");
@@ -7245,6 +7252,7 @@ test("editor grammar tracks keywords without reserving Result variants", () => {
   assert.match(stringPatterns, /meta\.interpolation\.z/);
   assert.match(stringPatterns, /punctuation\.definition\.template-expression\.begin\.z/);
   assert.match(stringPatterns, /punctuation\.definition\.template-expression\.end\.z/);
+  assert.match(commentPatterns, /comment\.block\.z/);
   assert.doesNotMatch(keywordPattern, /success|failure/);
 
   const extension = readFileSync(resolve(projectRoot, "editors/vscode/extension.js"), "utf8");

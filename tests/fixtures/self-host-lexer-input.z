@@ -1,11 +1,18 @@
 // The stage-1 lexer must treat this comment as trivia.
+/* Block comments are trivia too.
+   Quotes, braces, and line-comment markers are inert here: " } // */
+import console from "std/console";
+import { thread } from "std/thread";
+
 export async function render(in value: i32): String {
   const escaped = "line\nvalue";
-  const state = `ready ${value >= 1 ? { id: value }.id : 0}; literal \${value}`;
+  const state = `ready ${value >= 1 ? value : 0}; literal \${value}`;
   const multiline = `begin ${value // interpolation trivia
     + 1} end`;
+  const commented = `block ${value /* interpolation
+    } remains inside trivia */ + 2} end`;
   await on thread.main {
-    console.log(`${escaped}: ${state} / ${multiline}`);
+    console.log(`${escaped}: ${state} / ${multiline} / ${commented}`);
   }
   return state;
 }

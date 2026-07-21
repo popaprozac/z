@@ -88,7 +88,7 @@ and closures with borrow/move capture, typed parameters, expression bodies, or
 projected block bodies. Assignments, non-branching control statements,
 conditionals, loops, matches, async scopes, value-producing `if` expressions,
 enum payload construction, and explicit `out`/`inout` call arguments are
-structural too. Unicode identifiers, block comments, direct in-process compiler integration, and
+structural too. Unicode identifiers, direct in-process compiler integration, and
 the complete syntax tree remain future slices. Stage 0 and
 stage 1 also need one shared coordinate contract: stage 0 currently measures
 UTF-16 positions while stage 1 retains UTF-8 byte positions, so locations after

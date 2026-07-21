@@ -24,6 +24,20 @@ Relative `.z` imports form a source-module graph. Native headers use the same
 surface (`import C from "library.h"`) but bind declarations supplied by the
 foreign interface rather than redeclaring their ABI.
 
+## Comments
+
+Z supports TypeScript/C-style line and block comments:
+
+```z
+// Continues to the end of the line.
+const answer = 42; /* May span
+                      multiple lines. */
+```
+
+Block comments do not nest. An unclosed `/*` is a compile error reported at its
+opening delimiter. Comments are trivia wherever source tokens are permitted,
+including inside template interpolation expressions.
+
 ## Bindings and mutation
 
 - `const` creates an immutable lexical binding.

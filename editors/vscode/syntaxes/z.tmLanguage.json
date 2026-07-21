@@ -18,7 +18,10 @@
   ],
   "repository": {
     "comments": {
-      "patterns": [{ "name": "comment.line.double-slash.z", "match": "//.*$" }]
+      "patterns": [
+        { "name": "comment.block.z", "begin": "/\\*", "end": "\\*/" },
+        { "name": "comment.line.double-slash.z", "match": "//.*$" }
+      ]
     },
     "foreignDeclarations": {
       "patterns": [{

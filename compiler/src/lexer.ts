@@ -183,6 +183,19 @@ export function lex(
       continue;
     }
 
+    if (character === "/" && peek(1) === "*") {
+      const commentStart = location();
+      advance();
+      advance();
+      while (peek() !== "\0" && !(peek() === "*" && peek(1) === "/")) advance();
+      if (peek() === "\0") {
+        throw new DiagnosticError(fileName, commentStart, "unterminated block comment");
+      }
+      advance();
+      advance();
+      continue;
+    }
+
     const start = location();
 
     if (character === "`") {
@@ -245,6 +258,18 @@ export function lex(
             }
             if (current === "/" && peek(1) === "/") {
               while (peek() !== "\n" && peek() !== "\0") advance();
+              continue;
+            }
+            if (current === "/" && peek(1) === "*") {
+              const commentStart = location();
+              advance();
+              advance();
+              while (peek() !== "\0" && !(peek() === "*" && peek(1) === "/")) advance();
+              if (peek() === "\0") {
+                throw new DiagnosticError(fileName, commentStart, "unterminated block comment");
+              }
+              advance();
+              advance();
               continue;
             }
             if (current === "{") {
