@@ -27,6 +27,7 @@ import {
   type Stage1ImportShape,
   type Stage1ModuleGraph,
   type Stage1ModuleSource,
+  type Stage1ModuleSymbol,
   type Stage1TypeShape,
 } from "./self-hosting.ts";
 import { parseViewType } from "./view-types.ts";
@@ -105,17 +106,20 @@ function verifyStage1Resolver(inputPath: string, timings: boolean): void {
     throw new Error(`stage-1 module graph mismatch: stage 0 produced ${JSON.stringify(stage0)}, stage 1 produced ${JSON.stringify(stage1)}`);
   }
   const edges = stage1.modules.reduce((count, module) => count + module.dependencies.length, 0);
+  const symbols = stage1.modules.reduce((count, module) => count + module.symbols.length, 0);
   const order = stage1.dependencyOrder.map((index) => basename(stage1.modules[index].path)).join(" -> ");
-  console.log(`${entryPath}: stage-1 resolver matches ${stage1.modules.length} modules and ${edges} local edges (${order})`);
+  const edgeLabel = edges === 1 ? "edge" : "edges";
+  const symbolLabel = symbols === 1 ? "symbol" : "symbols";
+  console.log(`${entryPath}: stage-1 resolver matches ${stage1.modules.length} modules, ${edges} local ${edgeLabel}, and ${symbols} ${symbolLabel} (${order})`);
   if (timings) {
     const cacheState = boundary.cacheHit ? "cache hit" : "cache miss; stage-0 compile + native build included";
     console.log(`stage-1 resolver timing (${stage1.modules.length} modules, ${cacheState})`);
     console.log(`  boundary preparation: ${formatMilliseconds(boundary.prepareMilliseconds)}`);
     console.log(`  host discovery (file I/O + stage-0 import parse): ${formatMilliseconds(loadingMilliseconds)}`);
     console.log(`  host batch framing: ${formatMilliseconds(batchMilliseconds)}`);
-    console.log(`  native in-process (FFI + lex + parse + resolve + encode): ${formatMilliseconds(executionMilliseconds)}`);
+    console.log(`  native in-process (FFI + lex + parse + resolve + symbols + encode): ${formatMilliseconds(executionMilliseconds)}`);
     console.log(`  protocol decode: ${formatMilliseconds(decodeMilliseconds)}`);
-    console.log(`  stage-0 parity (lex + parse + graph): ${formatMilliseconds(stage0Milliseconds)}`);
+    console.log(`  stage-0 parity (lex + parse + graph + symbols): ${formatMilliseconds(stage0Milliseconds)}`);
   }
 }
 
@@ -131,7 +135,7 @@ function stage0ModuleGraph(sources: readonly Stage1ModuleSource[], entryPath: st
         if (dependency === undefined) throw new Error(`stage-0 parity batch is missing ${dependencyPath}`);
         return dependency;
       });
-    return { path: source.path, dependencies };
+    return { path: source.path, dependencies, symbols: stage0ModuleSymbols(program, source.path, indexByPath) };
   });
   const entry = indexByPath.get(entryPath);
   if (entry === undefined) throw new Error(`stage-0 parity batch is missing its entry ${entryPath}`);
@@ -147,6 +151,66 @@ function stage0ModuleGraph(sources: readonly Stage1ModuleSource[], entryPath: st
   return { modules, dependencyOrder, entry };
 }
 
+function stage0ModuleSymbols(
+  program: Program,
+  fileName: string,
+  indexByPath: ReadonlyMap<string, number>,
+): Stage1ModuleSymbol[] {
+  const exported = new Set(program.exports.map((declaration) => `${declaration.declarationKind}\0${declaration.name}`));
+  const symbols: Stage1ModuleSymbol[] = [
+    ...program.traits,
+    ...program.structs,
+    ...program.enums,
+    ...program.functions,
+  ].map((declaration) => ({
+    name: declaration.name,
+    kind: declaration.kind,
+    exported: exported.has(`${declaration.kind}\0${declaration.name}`),
+    targetModule: null,
+    importedName: declaration.name,
+    location: {
+      offset: declaration.location.offset,
+      line: declaration.location.line,
+      column: declaration.location.column,
+    },
+  })).sort((left, right) => left.location.offset - right.location.offset);
+  for (const declaration of program.imports) {
+    const targetModule = isLocalSourceModuleSpecifier(declaration.header)
+      ? indexByPath.get(realpathSync(resolve(dirname(fileName), declaration.header))) ?? null
+      : null;
+    if (declaration.bindings) {
+      for (const binding of declaration.bindings) {
+        symbols.push({
+          name: binding.localName,
+          kind: "imported",
+          exported: false,
+          targetModule,
+          importedName: binding.importedName,
+          location: {
+            offset: binding.location.offset,
+            line: binding.location.line,
+            column: binding.location.column,
+          },
+        });
+      }
+    } else {
+      symbols.push({
+        name: declaration.moduleName,
+        kind: "namespace",
+        exported: false,
+        targetModule,
+        importedName: declaration.header,
+        location: {
+          offset: declaration.location.offset,
+          line: declaration.location.line,
+          column: declaration.location.column,
+        },
+      });
+    }
+  }
+  return symbols;
+}
+
 function sameModuleGraph(left: Stage1ModuleGraph, right: Stage1ModuleGraph): boolean {
   return left.entry === right.entry
     && left.dependencyOrder.length === right.dependencyOrder.length
@@ -157,8 +221,22 @@ function sameModuleGraph(left: Stage1ModuleGraph, right: Stage1ModuleGraph): boo
       return other !== undefined
         && module.path === other.path
         && module.dependencies.length === other.dependencies.length
-        && module.dependencies.every((value, dependencyIndex) => value === other.dependencies[dependencyIndex]);
+        && module.dependencies.every((value, dependencyIndex) => value === other.dependencies[dependencyIndex])
+        && module.symbols.length === other.symbols.length
+        && module.symbols.every((symbol, symbolIndex) => sameModuleSymbol(symbol, other.symbols[symbolIndex]));
     });
+}
+
+function sameModuleSymbol(left: Stage1ModuleSymbol, right: Stage1ModuleSymbol | undefined): boolean {
+  return right !== undefined
+    && left.name === right.name
+    && left.kind === right.kind
+    && left.exported === right.exported
+    && left.targetModule === right.targetModule
+    && left.importedName === right.importedName
+    && left.location.offset === right.location.offset
+    && left.location.line === right.location.line
+    && left.location.column === right.location.column;
 }
 
 function verifyStage1Parser(inputPaths: readonly string[], timings: boolean): void {

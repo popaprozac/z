@@ -32,6 +32,28 @@ struct ParsedModule {
 export struct ResolvedModule {
   path: String;
   dependencies: Array<usize>;
+  symbols: Array<ModuleSymbol>;
+}
+
+export enum ModuleSymbolKind {
+  functionSymbol,
+  structSymbol,
+  classSymbol,
+  traitSymbol,
+  enumSymbol,
+  namespaceSymbol,
+  importedSymbol,
+}
+
+export struct ModuleSymbol {
+  name: String;
+  kind: ModuleSymbolKind;
+  exported: boolean;
+  targetModule: Option<usize>;
+  importedName: String;
+  offset: usize;
+  line: usize;
+  column: usize;
 }
 
 export struct ModuleGraph {
@@ -206,6 +228,113 @@ function moduleExports(in module: ParsedModule, in name: String): boolean {
   return false;
 }
 
+function declarationSymbolKind(kind: DeclarationKind): ModuleSymbolKind {
+  if (kind == DeclarationKind.functionDeclaration) return ModuleSymbolKind.functionSymbol;
+  if (kind == DeclarationKind.structDeclaration) return ModuleSymbolKind.structSymbol;
+  if (kind == DeclarationKind.classDeclaration) return ModuleSymbolKind.classSymbol;
+  if (kind == DeclarationKind.traitDeclaration) return ModuleSymbolKind.traitSymbol;
+  return ModuleSymbolKind.enumSymbol;
+}
+
+function ownSymbol(in declaration: Declaration): ModuleSymbol {
+  return ModuleSymbol({
+    name: declaration.name.copyBytes(0, declaration.name.byteLength),
+    kind: declarationSymbolKind(declaration.kind),
+    exported: declaration.exported,
+    targetModule: Option<usize>.none,
+    importedName: declaration.name.copyBytes(0, declaration.name.byteLength),
+    offset: declaration.offset,
+    line: declaration.line,
+    column: declaration.column,
+  });
+}
+
+function importedSymbol(
+  in name: String,
+  in importedName: String,
+  kind: ModuleSymbolKind,
+  targetModule: Option<usize>,
+  offset: usize,
+  line: usize,
+  column: usize
+): ModuleSymbol {
+  return ModuleSymbol({
+    name: name.copyBytes(0, name.byteLength),
+    kind,
+    exported: false,
+    targetModule,
+    importedName: importedName.copyBytes(0, importedName.byteLength),
+    offset,
+    line,
+    column,
+  });
+}
+
+function importTarget(
+  in modules: Array<ParsedModule>,
+  in module: ParsedModule,
+  in declaration: ImportDeclaration
+): Option<usize> {
+  if (!isLocalHeader(declaration.header)) return Option<usize>.none;
+  const targetPath = importedPath(module.path, declaration.header);
+  return findModule(modules, targetPath);
+}
+
+function buildSymbols(
+  in modules: Array<ParsedModule>,
+  in module: ParsedModule
+): Array<ModuleSymbol> {
+  let symbols = Array<ModuleSymbol>();
+  for (const declaration of module.program.declarations) {
+    if (declaration.kind == DeclarationKind.importDeclaration) continue;
+    symbols.push(ownSymbol(declaration));
+  }
+  for (const declaration of module.program.imports) {
+    const target = importTarget(modules, module, declaration);
+    if (declaration.selective) {
+      for (const binding of declaration.bindings) {
+        const offset = binding.offset;
+        const line = binding.line;
+        const column = binding.column;
+        symbols.push(importedSymbol(
+          binding.localName,
+          binding.importedName,
+          ModuleSymbolKind.importedSymbol,
+          target,
+          offset,
+          line,
+          column
+        ));
+      }
+    } else {
+      const name = bindingName(declaration);
+      const offset = declaration.offset;
+      const line = declaration.line;
+      const column = declaration.column;
+      symbols.push(importedSymbol(
+        name,
+        declaration.header,
+        ModuleSymbolKind.namespaceSymbol,
+        target,
+        offset,
+        line,
+        column
+      ));
+    }
+  }
+  return symbols;
+}
+
+export function moduleSymbolKindName(kind: ModuleSymbolKind): String {
+  if (kind == ModuleSymbolKind.functionSymbol) return "function";
+  if (kind == ModuleSymbolKind.structSymbol) return "struct";
+  if (kind == ModuleSymbolKind.classSymbol) return "class";
+  if (kind == ModuleSymbolKind.traitSymbol) return "trait";
+  if (kind == ModuleSymbolKind.enumSymbol) return "enum";
+  if (kind == ModuleSymbolKind.namespaceSymbol) return "namespace";
+  return "imported";
+}
+
 function bindingName(in declaration: ImportDeclaration): String {
   return declaration.moduleName.copyBytes(0, declaration.moduleName.byteLength);
 }
@@ -363,9 +492,11 @@ export function resolveModules(
   let index: usize = 0;
   while (index < parsed.length) {
     const dependencies = try resolveDependencies(parsed, parsed[index]);
+    const symbols = buildSymbols(parsed, parsed[index]);
     modules.push(ResolvedModule({
       path: parsed[index].path.copyBytes(0, parsed[index].path.byteLength),
       dependencies,
+      symbols,
     }));
     index = index + 1;
   }

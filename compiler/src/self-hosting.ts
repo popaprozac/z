@@ -76,6 +76,22 @@ export type Stage1ModuleSource = {
 export type Stage1ResolvedModule = {
   readonly path: string;
   readonly dependencies: readonly number[];
+  readonly symbols: readonly Stage1ModuleSymbol[];
+};
+
+export type Stage1ModuleSymbolKind = "function" | "struct" | "class" | "trait" | "enum" | "namespace" | "imported";
+
+export type Stage1ModuleSymbol = {
+  readonly name: string;
+  readonly kind: Stage1ModuleSymbolKind;
+  readonly exported: boolean;
+  readonly targetModule: number | null;
+  readonly importedName: string;
+  readonly location: {
+    readonly offset: number;
+    readonly line: number;
+    readonly column: number;
+  };
 };
 
 export type Stage1ModuleGraph = {
@@ -117,6 +133,34 @@ export function decodeStage1ModuleGraphStream(output: string): Stage1ModuleGraph
       modules.push({
         path: Buffer.from(fields[1], "hex").toString("utf8"),
         dependencies: fields.slice(2).map((field) => parseProtocolHexInteger(field, "module dependency")),
+        symbols: [],
+      });
+      continue;
+    }
+    if (fields[0] === "symbol") {
+      if (fields.length !== 10) throw new Error(`malformed stage-1 module symbol line: ${line}`);
+      const [, moduleText, kind, nameText, exportedText, targetText, importedNameText, offsetText, lineText, columnText] = fields;
+      const moduleIndex = parseProtocolHexInteger(moduleText, "symbol module");
+      const module = modules[moduleIndex];
+      if (!module) throw new Error("stage-1 module symbol appeared before its module");
+      if (!isStage1ModuleSymbolKind(kind)) throw new Error(`malformed stage-1 module symbol kind: ${kind}`);
+      if (!/^(?:[0-9a-f]{2})*$/.test(nameText) || !/^(?:[0-9a-f]{2})*$/.test(importedNameText)) {
+        throw new Error(`malformed stage-1 module symbol text: ${line}`);
+      }
+      if (exportedText !== "0" && exportedText !== "1") {
+        throw new Error(`malformed stage-1 module symbol export state: ${exportedText}`);
+      }
+      (module.symbols as Stage1ModuleSymbol[]).push({
+        name: Buffer.from(nameText, "hex").toString("utf8"),
+        kind,
+        exported: exportedText === "1",
+        targetModule: targetText === "-" ? null : parseProtocolHexInteger(targetText, "symbol target"),
+        importedName: Buffer.from(importedNameText, "hex").toString("utf8"),
+        location: {
+          offset: parseProtocolHexInteger(offsetText, "symbol offset"),
+          line: parseProtocolHexInteger(lineText, "symbol line"),
+          column: parseProtocolHexInteger(columnText, "symbol column"),
+        },
       });
       continue;
     }
@@ -134,11 +178,24 @@ export function decodeStage1ModuleGraphStream(output: string): Stage1ModuleGraph
     if (module.dependencies.some((dependency) => dependency >= modules.length)) {
       throw new Error("stage-1 module dependency is outside the module batch");
     }
+    if (module.symbols.some((symbol) => symbol.targetModule !== null && symbol.targetModule >= modules.length)) {
+      throw new Error("stage-1 module symbol target is outside the module batch");
+    }
   }
   if (dependencyOrder.some((index) => index >= modules.length)) {
     throw new Error("stage-1 module order is outside the module batch");
   }
   return { modules, dependencyOrder, entry };
+}
+
+function isStage1ModuleSymbolKind(value: string): value is Stage1ModuleSymbolKind {
+  return value === "function"
+    || value === "struct"
+    || value === "class"
+    || value === "trait"
+    || value === "enum"
+    || value === "namespace"
+    || value === "imported";
 }
 
 // Token parity still crosses a subprocess boundary. Keep that bootstrap protocol

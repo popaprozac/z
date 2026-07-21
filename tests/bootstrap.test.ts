@@ -4604,10 +4604,10 @@ test("resolves a canonical module graph directly from native Z ASTs", () => {
     { encoding: "utf8" },
   );
   assert.equal(integrated.status, 0, integrated.stderr);
-  assert.match(integrated.stdout, /stage-1 resolver matches 3 modules and 3 local edges \(math\.zs -> geometry\.zs -> main\.zs\)/);
+  assert.match(integrated.stdout, /stage-1 resolver matches 3 modules, 3 local edges, and 10 symbols \(math\.zs -> geometry\.zs -> main\.zs\)/);
   assert.match(integrated.stdout, /host discovery \(file I\/O \+ stage-0 import parse\): \d+\.\d{2} ms/);
-  assert.match(integrated.stdout, /native in-process \(FFI \+ lex \+ parse \+ resolve \+ encode\): \d+\.\d{2} ms/);
-  assert.match(integrated.stdout, /stage-0 parity \(lex \+ parse \+ graph\): \d+\.\d{2} ms/);
+  assert.match(integrated.stdout, /native in-process \(FFI \+ lex \+ parse \+ resolve \+ symbols \+ encode\): \d+\.\d{2} ms/);
+  assert.match(integrated.stdout, /stage-0 parity \(lex \+ parse \+ graph \+ symbols\): \d+\.\d{2} ms/);
 
   const invalidDirectory = mkdtempSync("/tmp/z-self-host-resolver-");
   const invalidMain = resolve(invalidDirectory, "main.zs");
@@ -4623,6 +4623,15 @@ test("resolves a canonical module graph directly from native Z ASTs", () => {
   assert.throws(
     () => decodeStage1ModuleGraphStream("entry\t0000000000000001\nmodule\t2f612e7a73\norder\t0000000000000000\n"),
     /entry is outside the module batch/,
+  );
+  assert.throws(
+    () => decodeStage1ModuleGraphStream(
+      "entry\t0000000000000000\n"
+      + "module\t2f612e7a73\n"
+      + "symbol\t0000000000000000\tunknown\t76616c7565\t1\t-\t76616c7565\t0000000000000000\t0000000000000001\t0000000000000001\n"
+      + "order\t0000000000000000\n",
+    ),
+    /malformed stage-1 module symbol kind/,
   );
 }, 10_000);
 

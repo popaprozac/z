@@ -275,7 +275,11 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    and dependency order with a stage-zero graph and reports boundary, framing,
    native execution, decoding, and stage-zero parity timings separately. The
    stage-zero linker and native boundary now consume one canonical source batch;
-   the command discovers its full local graph from only the entry path.
+   the command discovers its full local graph from only the entry path. The first
+   native semantic tier builds and parity-checks source-located symbols for Z
+   functions, structs, classes, traits, enums, namespace imports, selective
+   bindings, aliases, exports, and local target modules. Expression typing and
+   ownership analysis remain stage-zero work.
    Template literals now
    retain ordered decoded-text leaves and ordinary embedded-expression roots,
    including nested templates, in the same flat arena. Expression-bodied

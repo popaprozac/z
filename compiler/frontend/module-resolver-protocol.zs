@@ -2,7 +2,13 @@
 // native graphs. Paths are canonicalized by the host; graph semantics stay in Z.
 
 import { TextBuffer } from "std/text";
-import { ModuleResolveError, ModuleSource, resolveModules } from "./module-resolver.zs";
+import {
+  ModuleResolveError,
+  ModuleSource,
+  ModuleSymbol,
+  moduleSymbolKindName,
+  resolveModules,
+} from "./module-resolver.zs";
 import { appendHexText, appendHexUsize } from "./parser-protocol.zs";
 
 function hexValue(byte: u8): usize throws String {
@@ -61,6 +67,42 @@ function resolverMessage(in error: ModuleResolveError): String {
   return `${error.path}:${error.line}:${error.column}: ${error.message}`;
 }
 
+function appendTarget(inout output: TextBuffer, in target: Option<usize>): void {
+  match (in target) {
+    some(index) => appendHexUsize(inout output, index);
+    none => output.append("-");
+  }
+}
+
+function appendSymbol(
+  inout output: TextBuffer,
+  moduleIndex: usize,
+  in symbol: ModuleSymbol
+): void {
+  output.append("symbol");
+  output.appendAscii(9);
+  appendHexUsize(inout output, moduleIndex);
+  output.appendAscii(9);
+  const kind = moduleSymbolKindName(symbol.kind);
+  output.append(kind);
+  output.appendAscii(9);
+  appendHexText(inout output, symbol.name);
+  output.appendAscii(9);
+  if (symbol.exported) output.appendAscii(49);
+  else output.appendAscii(48);
+  output.appendAscii(9);
+  appendTarget(inout output, symbol.targetModule);
+  output.appendAscii(9);
+  appendHexText(inout output, symbol.importedName);
+  output.appendAscii(9);
+  appendHexUsize(inout output, symbol.offset);
+  output.appendAscii(9);
+  appendHexUsize(inout output, symbol.line);
+  output.appendAscii(9);
+  appendHexUsize(inout output, symbol.column);
+  output.appendAscii(10);
+}
+
 export function renderModuleGraph(
   in entryPath: String,
   in batch: String
@@ -77,6 +119,7 @@ export function renderModuleGraph(
   output.appendAscii(9);
   appendHexUsize(inout output, graph.entry);
   output.appendAscii(10);
+  let moduleIndex: usize = 0;
   for (const module of graph.modules) {
     output.append("module");
     output.appendAscii(9);
@@ -86,6 +129,10 @@ export function renderModuleGraph(
       appendHexUsize(inout output, dependency);
     }
     output.appendAscii(10);
+    for (const symbol of module.symbols) {
+      appendSymbol(inout output, moduleIndex, symbol);
+    }
+    moduleIndex = moduleIndex + 1;
   }
   output.append("order");
   for (const index of graph.dependencyOrder) {
