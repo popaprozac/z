@@ -10,9 +10,11 @@ import { normalizeForeignContracts } from "../compiler/src/foreign-contracts.ts"
 import type { ForeignFunctionDeclaration } from "../compiler/src/foreign-ir.ts";
 import {
   decodeStage1DeclarationStream,
+  decodeStage1ModuleGraphStream,
   decodeStage1ProgramBatchStream,
   decodeStage1ProgramStream,
   decodeStage1TokenStream,
+  encodeStage1ModuleBatch,
 } from "../compiler/src/self-hosting.ts";
 import {
   completions,
@@ -4585,6 +4587,31 @@ test("resolves a canonical module graph directly from native Z ASTs", () => {
   const result = spawnSync(process.execPath, [cli, "run", fixture], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stdout, "");
+
+  const main = resolve(projectRoot, "examples/language/modules/main.zs");
+  const geometry = resolve(projectRoot, "examples/language/modules/geometry.zs");
+  const math = resolve(projectRoot, "examples/language/modules/math.zs");
+  const integrated = spawnSync(
+    process.execPath,
+    [cli, "self-host-resolve", main, geometry, math, "--timings"],
+    { encoding: "utf8" },
+  );
+  assert.equal(integrated.status, 0, integrated.stderr);
+  assert.match(integrated.stdout, /stage-1 resolver matches 3 modules and 3 local edges \(math\.zs -> geometry\.zs -> main\.zs\)/);
+  assert.match(integrated.stdout, /native in-process \(FFI \+ lex \+ parse \+ resolve \+ encode\): \d+\.\d{2} ms/);
+  assert.match(integrated.stdout, /stage-0 parity \(lex \+ parse \+ graph\): \d+\.\d{2} ms/);
+
+  const incomplete = spawnSync(process.execPath, [cli, "self-host-resolve", main], { encoding: "utf8" });
+  assert.equal(incomplete.status, 1);
+  assert.match(incomplete.stderr, /could not find Z module \.\/geometry\.zs/);
+
+  const encoded = encodeStage1ModuleBatch([{ path: "/a.zs", source: "é" }]);
+  assert.equal(encoded.byteLength, 32 + Buffer.byteLength("/a.zs") + Buffer.byteLength("é"));
+  assert.throws(() => decodeStage1ModuleGraphStream("order\n"), /did not contain an entry/);
+  assert.throws(
+    () => decodeStage1ModuleGraphStream("entry\t0000000000000001\nmodule\t2f612e7a73\norder\t0000000000000000\n"),
+    /entry is outside the module batch/,
+  );
 }, 10_000);
 
 test("builds owned UTF-8 String values through explicit std/text TextBuffer", () => {

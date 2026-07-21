@@ -36,7 +36,7 @@ function appendHexDigit(inout output: TextBuffer, value: usize): void {
   else output.appendAscii(102);
 }
 
-function appendHexUsize(inout output: TextBuffer, value: usize): void {
+export function appendHexUsize(inout output: TextBuffer, value: usize): void {
   let shift: usize = 60;
   while (true) {
     appendHexDigit(inout output, (value >> shift) & 15);
@@ -45,7 +45,7 @@ function appendHexUsize(inout output: TextBuffer, value: usize): void {
   }
 }
 
-function appendHexText(inout output: TextBuffer, in text: String): void {
+export function appendHexText(inout output: TextBuffer, in text: String): void {
   let offset: usize = 0;
   while (offset < text.byteLength) {
     const byte = text.byteAt(offset);

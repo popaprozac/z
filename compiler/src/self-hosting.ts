@@ -68,6 +68,79 @@ export type Stage1Program = {
 
 export type Stage1ProgramBatch = ReadonlyMap<string, Stage1Program>;
 
+export type Stage1ModuleSource = {
+  readonly path: string;
+  readonly source: string;
+};
+
+export type Stage1ResolvedModule = {
+  readonly path: string;
+  readonly dependencies: readonly number[];
+};
+
+export type Stage1ModuleGraph = {
+  readonly modules: readonly Stage1ResolvedModule[];
+  readonly dependencyOrder: readonly number[];
+  readonly entry: number;
+};
+
+export function encodeStage1ModuleBatch(sources: readonly Stage1ModuleSource[]): Buffer {
+  const records: Buffer[] = [];
+  for (const source of sources) {
+    const path = Buffer.from(source.path, "utf8");
+    const text = Buffer.from(source.source, "utf8");
+    const header = Buffer.from(
+      path.byteLength.toString(16).padStart(16, "0")
+      + text.byteLength.toString(16).padStart(16, "0"),
+      "ascii",
+    );
+    records.push(header, path, text);
+  }
+  return Buffer.concat(records);
+}
+
+export function decodeStage1ModuleGraphStream(output: string): Stage1ModuleGraph {
+  let entry: number | null = null;
+  let dependencyOrder: number[] | null = null;
+  const modules: Stage1ResolvedModule[] = [];
+  for (const line of output.split("\n").filter((candidate) => candidate.length > 0)) {
+    const fields = line.split("\t");
+    if (fields[0] === "entry") {
+      if (entry !== null || fields.length !== 2) throw new Error(`malformed stage-1 module entry line: ${line}`);
+      entry = parseProtocolHexInteger(fields[1], "module entry");
+      continue;
+    }
+    if (fields[0] === "module") {
+      if (fields.length < 2 || !/^(?:[0-9a-f]{2})*$/.test(fields[1])) {
+        throw new Error(`malformed stage-1 module line: ${line}`);
+      }
+      modules.push({
+        path: Buffer.from(fields[1], "hex").toString("utf8"),
+        dependencies: fields.slice(2).map((field) => parseProtocolHexInteger(field, "module dependency")),
+      });
+      continue;
+    }
+    if (fields[0] === "order") {
+      if (dependencyOrder !== null) throw new Error("duplicate stage-1 module dependency order");
+      dependencyOrder = fields.slice(1).map((field) => parseProtocolHexInteger(field, "module order"));
+      continue;
+    }
+    throw new Error(`unknown stage-1 module graph record: ${line}`);
+  }
+  if (entry === null) throw new Error("stage-1 module graph did not contain an entry");
+  if (dependencyOrder === null) throw new Error("stage-1 module graph did not contain a dependency order");
+  if (entry >= modules.length) throw new Error("stage-1 module graph entry is outside the module batch");
+  for (const module of modules) {
+    if (module.dependencies.some((dependency) => dependency >= modules.length)) {
+      throw new Error("stage-1 module dependency is outside the module batch");
+    }
+  }
+  if (dependencyOrder.some((index) => index >= modules.length)) {
+    throw new Error("stage-1 module order is outside the module batch");
+  }
+  return { modules, dependencyOrder, entry };
+}
+
 // Token parity still crosses a subprocess boundary. Keep that bootstrap protocol
 // isolated here so the parser-facing Token shape does not learn about transport;
 // parser parity reuses the decoders through its in-process native-library bridge.

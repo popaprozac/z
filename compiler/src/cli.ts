@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 
-import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -12,16 +12,21 @@ import { DiagnosticError, formatDiagnostic } from "./diagnostics.ts";
 import { parseFunctionType } from "./function-types.ts";
 import { parseGenericType } from "./generic-types.ts";
 import { lex, type Token } from "./lexer.ts";
+import { isLocalSourceModuleSpecifier } from "./modules.ts";
 import { isNullableObjCTypeName, publicObjCTypeName } from "./objc-types.ts";
 import { parse } from "./parser.ts";
 import { deploymentTargetFlags } from "./project.ts";
 import {
   decodeStage1ProgramBatchStream,
+  decodeStage1ModuleGraphStream,
   decodeStage1TokenStream,
+  encodeStage1ModuleBatch,
   type Stage1Declaration,
   type Stage1FunctionBody,
   type Stage1FunctionSignature,
   type Stage1ImportShape,
+  type Stage1ModuleGraph,
+  type Stage1ModuleSource,
   type Stage1TypeShape,
 } from "./self-hosting.ts";
 import { parseViewType } from "./view-types.ts";
@@ -29,7 +34,7 @@ import { parseViewType } from "./view-types.ts";
 const [command, inputArgument, ...trailingArguments] = process.argv.slice(2);
 const programArguments = trailingArguments[0] === "--" ? trailingArguments.slice(1) : trailingArguments;
 
-if (!command || !inputArgument || !["check", "emit", "run", "self-host-lex", "self-host-parse"].includes(command)) {
+if (!command || !inputArgument || !["check", "emit", "run", "self-host-lex", "self-host-parse", "self-host-resolve"].includes(command)) {
   usage();
   process.exitCode = 2;
 } else {
@@ -40,6 +45,12 @@ if (!command || !inputArgument || !["check", "emit", "run", "self-host-lex", "se
     } else if (command === "self-host-parse") {
       const timings = trailingArguments.includes("--timings");
       verifyStage1Parser(
+        [inputPath, ...trailingArguments.filter((argument) => argument !== "--timings").map((argument) => resolve(argument))],
+        timings,
+      );
+    } else if (command === "self-host-resolve") {
+      const timings = trailingArguments.includes("--timings");
+      verifyStage1Resolver(
         [inputPath, ...trailingArguments.filter((argument) => argument !== "--timings").map((argument) => resolve(argument))],
         timings,
       );
@@ -63,6 +74,84 @@ if (!command || !inputArgument || !["check", "emit", "run", "self-host-lex", "se
       : error instanceof Error ? error.message : String(error));
     process.exitCode = 1;
   }
+}
+
+function verifyStage1Resolver(inputPaths: readonly string[], timings: boolean): void {
+  const projectRoot = resolve(dirname(new URL(import.meta.url).pathname), "../..");
+  const entryPath = realpathSync(inputPaths[0]);
+  const paths = [...new Set(inputPaths.map((path) => realpathSync(path)))];
+  const sources: Stage1ModuleSource[] = paths.map((path) => ({ path, source: readFileSync(path, "utf8") }));
+  const bridgePath = join(projectRoot, "compiler/frontend/parser-library.zs");
+  const boundary = prepareStage1ParserLibrary(projectRoot, bridgePath);
+  const batchStarted = performance.now();
+  const batch = encodeStage1ModuleBatch(sources);
+  const batchMilliseconds = performance.now() - batchStarted;
+  const executionStarted = performance.now();
+  const nativeStream = resolveWithStage1Library(boundary.libraryPath, entryPath, batch);
+  const executionMilliseconds = performance.now() - executionStarted;
+  const decodeStarted = performance.now();
+  const stage1 = decodeStage1ModuleGraphStream(nativeStream);
+  const decodeMilliseconds = performance.now() - decodeStarted;
+  const stage0Started = performance.now();
+  const stage0 = stage0ModuleGraph(sources, entryPath);
+  const stage0Milliseconds = performance.now() - stage0Started;
+  if (!sameModuleGraph(stage0, stage1)) {
+    throw new Error(`stage-1 module graph mismatch: stage 0 produced ${JSON.stringify(stage0)}, stage 1 produced ${JSON.stringify(stage1)}`);
+  }
+  const edges = stage1.modules.reduce((count, module) => count + module.dependencies.length, 0);
+  const order = stage1.dependencyOrder.map((index) => basename(stage1.modules[index].path)).join(" -> ");
+  console.log(`${entryPath}: stage-1 resolver matches ${stage1.modules.length} modules and ${edges} local edges (${order})`);
+  if (timings) {
+    const cacheState = boundary.cacheHit ? "cache hit" : "cache miss; stage-0 compile + native build included";
+    console.log(`stage-1 resolver timing (${stage1.modules.length} modules, ${cacheState})`);
+    console.log(`  boundary preparation: ${formatMilliseconds(boundary.prepareMilliseconds)}`);
+    console.log(`  host batch framing: ${formatMilliseconds(batchMilliseconds)}`);
+    console.log(`  native in-process (FFI + lex + parse + resolve + encode): ${formatMilliseconds(executionMilliseconds)}`);
+    console.log(`  protocol decode: ${formatMilliseconds(decodeMilliseconds)}`);
+    console.log(`  stage-0 parity (lex + parse + graph): ${formatMilliseconds(stage0Milliseconds)}`);
+  }
+}
+
+function stage0ModuleGraph(sources: readonly Stage1ModuleSource[], entryPath: string): Stage1ModuleGraph {
+  const indexByPath = new Map(sources.map((source, index) => [source.path, index] as const));
+  const modules = sources.map((source) => {
+    const program = parse(lex(source.source, source.path), source.path);
+    const dependencies = program.imports
+      .filter((declaration) => isLocalSourceModuleSpecifier(declaration.header))
+      .map((declaration) => {
+        const dependencyPath = realpathSync(resolve(dirname(source.path), declaration.header));
+        const dependency = indexByPath.get(dependencyPath);
+        if (dependency === undefined) throw new Error(`stage-0 parity batch is missing ${dependencyPath}`);
+        return dependency;
+      });
+    return { path: source.path, dependencies };
+  });
+  const entry = indexByPath.get(entryPath);
+  if (entry === undefined) throw new Error(`stage-0 parity batch is missing its entry ${entryPath}`);
+  const dependencyOrder: number[] = [];
+  const visited = new Set<number>();
+  const visit = (index: number): void => {
+    if (visited.has(index)) return;
+    visited.add(index);
+    for (const dependency of modules[index].dependencies) visit(dependency);
+    dependencyOrder.push(index);
+  };
+  visit(entry);
+  return { modules, dependencyOrder, entry };
+}
+
+function sameModuleGraph(left: Stage1ModuleGraph, right: Stage1ModuleGraph): boolean {
+  return left.entry === right.entry
+    && left.dependencyOrder.length === right.dependencyOrder.length
+    && left.dependencyOrder.every((value, index) => value === right.dependencyOrder[index])
+    && left.modules.length === right.modules.length
+    && left.modules.every((module, index) => {
+      const other = right.modules[index];
+      return other !== undefined
+        && module.path === other.path
+        && module.dependencies.length === other.dependencies.length
+        && module.dependencies.every((value, dependencyIndex) => value === other.dependencies[dependencyIndex]);
+    });
 }
 
 function verifyStage1Parser(inputPaths: readonly string[], timings: boolean): void {
@@ -1077,6 +1166,41 @@ function parseWithStage1Library(libraryPath: string, inputPaths: readonly string
   }
 }
 
+function resolveWithStage1Library(libraryPath: string, entryPath: string, batch: Buffer): string {
+  const library = dlopen(libraryPath, {
+    z_stage1_resolve: {
+      args: [FFIType.ptr, FFIType.u64, FFIType.ptr, FFIType.u64],
+      returns: FFIType.ptr,
+    },
+    z_stage1_free: {
+      args: [FFIType.ptr],
+      returns: FFIType.void,
+    },
+  });
+  try {
+    const entryBytes = Buffer.from(entryPath, "utf8");
+    const entryStorage = entryBytes.byteLength > 0 ? entryBytes : Buffer.alloc(1);
+    const batchStorage = batch.byteLength > 0 ? batch : Buffer.alloc(1);
+    const resultPointer = library.symbols.z_stage1_resolve(
+      ptr(entryStorage),
+      entryBytes.byteLength,
+      ptr(batchStorage),
+      batch.byteLength,
+    );
+    if (!resultPointer) throw new Error("the stage-1 resolver library returned a null response");
+    try {
+      const response = new CString(resultPointer).toString();
+      if (response.startsWith("error\n")) throw new Error(response.slice("error\n".length));
+      if (!response.startsWith("ok\n")) throw new Error("the stage-1 resolver library returned a malformed response");
+      return response.slice("ok\n".length);
+    } finally {
+      library.symbols.z_stage1_free(resultPointer);
+    }
+  } finally {
+    library.close();
+  }
+}
+
 function buildNativeLibrary(inputPath: string, artifact: NativeArtifact, outputStem: string): string {
   const projectRoot = resolve(dirname(new URL(import.meta.url).pathname), "../..");
   const cacheDirectory = join(projectRoot, ".z-cache");
@@ -1123,6 +1247,15 @@ function stage1ParserLibraryWrapper(): string {
 #define Z_STAGE1_EXPORT __attribute__((visibility("default")))
 #endif
 
+static void *z_stage1_copy_string(Z_String result) {
+  char *copy = (char *)malloc(result.length + 1);
+  if (copy == NULL) abort();
+  if (result.length > 0) memcpy(copy, result.data, result.length);
+  copy[result.length] = '\\0';
+  if (result.capacity > 0) free((void *)result.data);
+  return copy;
+}
+
 Z_STAGE1_EXPORT void *z_stage1_parse(
   const uint8_t *path_data,
   uintptr_t path_length,
@@ -1131,13 +1264,18 @@ Z_STAGE1_EXPORT void *z_stage1_parse(
 ) {
   Z_String path = { (const char *)path_data, path_length, 0 };
   Z_String source = { (const char *)source_data, source_length, 0 };
-  Z_String result = stage1Parse(&path, &source);
-  char *copy = (char *)malloc(result.length + 1);
-  if (copy == NULL) abort();
-  if (result.length > 0) memcpy(copy, result.data, result.length);
-  copy[result.length] = '\\0';
-  if (result.capacity > 0) free((void *)result.data);
-  return copy;
+  return z_stage1_copy_string(stage1Parse(&path, &source));
+}
+
+Z_STAGE1_EXPORT void *z_stage1_resolve(
+  const uint8_t *entry_data,
+  uintptr_t entry_length,
+  const uint8_t *batch_data,
+  uintptr_t batch_length
+) {
+  Z_String entry = { (const char *)entry_data, entry_length, 0 };
+  Z_String batch = { (const char *)batch_data, batch_length, 0 };
+  return z_stage1_copy_string(stage1Resolve(&entry, &batch));
 }
 
 Z_STAGE1_EXPORT void z_stage1_free(void *pointer) {
@@ -1241,4 +1379,5 @@ function usage(): void {
   console.error("usage: z <check|emit|run> <file.zs> [-- program arguments]");
   console.error("       z self-host-lex <file.zs> [more.zs ...]");
   console.error("       z self-host-parse <file.zs> [more.zs ...] [--timings]");
+  console.error("       z self-host-resolve <entry.zs> [module.zs ...] [--timings]");
 }

@@ -1485,7 +1485,11 @@ ported independently rather than translated as one monolith.
    every module, and directly validates local edges, dependency order, selective
    exports, aliases, duplicate bindings, missing modules, and cycles. Keeping
    loading/canonicalization at the host boundary avoids freezing `std/path`
-   before the graph semantics are proven; batch FFI integration is next.
+   before the graph semantics are proven. The batch now crosses one in-process
+   FFI call and returns a compact graph protocol; `z self-host-resolve` checks it
+   against stage zero while reporting boundary, framing, native execution,
+   decode, and parity timings independently. Feeding this graph into ordinary
+   compiler commands and replacing the temporary protocol remain next.
 3. **Stage 2:** Compile the Z compiler with stage 0, then use that result to
    compile itself.
 4. **Bootstrap verification:** Compare generated native source and compiler test

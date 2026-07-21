@@ -269,7 +269,12 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    directly consumes parsed Z `Program` values from a host-loaded canonical
    source batch. It validates lexical `./`/`../` edges, dependency-first order,
    selective exports and aliases, duplicate bindings, missing modules, and
-   cycles without serializing the AST between parsing and resolution. Template literals now
+   cycles without serializing the AST between parsing and resolution. That batch
+   now crosses the compiler's existing in-process native-library boundary in one
+   FFI call. `z self-host-resolve` compares module indexes, lexical edges, entry,
+   and dependency order with a stage-zero graph and reports boundary, framing,
+   native execution, decoding, and stage-zero parity timings separately.
+   Template literals now
    retain ordered decoded-text leaves and ordinary embedded-expression roots,
    including nested templates, in the same flat arena. Expression-bodied
    closures retain borrow/move capture mode, source-located parameters,

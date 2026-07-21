@@ -10,6 +10,8 @@ semantic analysis and code generation; the frontend itself is native Z code.
 - `module-resolver.zs` consumes those native ASTs directly and validates a
   host-loaded batch of canonical module paths: local edges, dependency order,
   selective exports, aliases, duplicate bindings, missing modules, and cycles.
+- `module-resolver-protocol.zs` frames that host-loaded batch and returns the
+  resolved graph through the same in-process native-library boundary.
 - `parser-protocol.zs` encodes the temporary parity protocol shared by native
   clients.
 - `parser-library.zs` is the compiler-facing root compiled into a
@@ -22,10 +24,15 @@ Run exact stage-zero parity with:
 ```sh
 bun run z self-host-lex compiler/frontend/lexer.zs
 bun run z self-host-parse compiler/frontend/lexer.zs compiler/frontend/parser.zs
+bun run z self-host-resolve examples/language/modules/main.zs \
+  examples/language/modules/geometry.zs examples/language/modules/math.zs --timings
 ```
 
 The text protocol is a bootstrap boundary, not the intended final frontend API.
 The resolver intentionally receives host-canonicalized paths and source text in
 its first tier, keeping filesystem loading separate from graph semantics. The
-next integration layer is feeding that batch through the in-process library and
-incrementally replacing stage-zero module resolution.
+in-process command compares its module indexes, lexical edges, entry, and
+dependency-first order with stage 0. Its timing report separates library
+preparation, host framing, native lex/parse/resolve/encode work, protocol decode,
+and stage-zero parity work. Repeated corpus measurements and incrementally
+feeding the native graph into ordinary compiler commands are the next layers.
