@@ -1,6 +1,6 @@
 import console from "std/console";
 import AppKit from "AppKit/AppKit.h";
-import { Document, Workspace } from "./model.z";
+import { Document, Workspace } from "./model.zs";
 
 class WindowController {
   window: AppKit.NSWindow;

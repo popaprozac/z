@@ -1,7 +1,7 @@
 import console from "std/console";
 import AppKit from "AppKit/AppKit.h";
-import { Note, NoteStore } from "./model.z";
-import { canOpenMemoryDatabase, sqliteVersion } from "./persistence.z";
+import { Note, NoteStore } from "./model.zs";
+import { canOpenMemoryDatabase, sqliteVersion } from "./persistence.zs";
 
 function seed(store: NoteStore): void {
   store.add(Note({

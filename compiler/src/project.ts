@@ -58,7 +58,7 @@ export function prepareProject(fileName: string): ProjectBuild {
 
   const swift = manifest.target?.swift;
   if (manifest.target?.entry !== undefined) {
-    if (typeof manifest.target.entry !== "string" || !manifest.target.entry.endsWith(".z")) {
+    if (typeof manifest.target.entry !== "string" || !manifest.target.entry.endsWith(".zs")) {
       throw projectDiagnostic(fileName, "z.json target.entry must be a Z source path");
     }
     const entry = resolve(directory, manifest.target.entry);

@@ -136,15 +136,15 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
   owned flat AST arenas, and the in-process parser-library bridge to stage 0.
 - [`examples/applications/source-inspector`](../examples/applications/source-inspector): readable clients and smoke tests for the native frontend, including the
   standalone lexer/parser protocol executables.
-- [`examples/interop/objc/nswindow.z`](../examples/interop/objc/nswindow.z): direct AppKit window.
-- [`examples/interop/objc/objc-nullability.z`](../examples/interop/objc/objc-nullability.z): explicit
+- [`examples/interop/objc/nswindow.zs`](../examples/interop/objc/nswindow.zs): direct AppKit window.
+- [`examples/interop/objc/objc-nullability.zs`](../examples/interop/objc/objc-nullability.zs): explicit
   `T | null` AppKit guard narrowing alongside `Option.fromNullable` and
   `some`/`none` matching.
 - [`examples/interop/objc/desktop-ownership`](../examples/interop/objc/desktop-ownership): ARC application
   model plus move-only owned documents and AppKit shell.
-- [`examples/interop/objc/desktop-ownership/ownership-views.z`](../examples/interop/objc/desktop-ownership/ownership-views.z): zero-copy scoped
+- [`examples/interop/objc/desktop-ownership/ownership-views.zs`](../examples/interop/objc/desktop-ownership/ownership-views.zs): zero-copy scoped
   lookup compared with an independently owned document snapshot.
-- [`examples/interop/objc/appkit-events.z`](../examples/interop/objc/appkit-events.z): persistent native
+- [`examples/interop/objc/appkit-events.zs`](../examples/interop/objc/appkit-events.zs): persistent native
   notification callbacks, weak Z capture, imported notification constants, and
   explicit observer-token removal.
 - [`examples/interop/swift/swift-interop`](../examples/interop/swift/swift-interop): Swift class through its
@@ -155,28 +155,28 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
 - [`examples/interop/swift/swift-enum-interop`](../examples/interop/swift/swift-enum-interop): Swift-native
   associated-value enum cases constructed directly through generated callable
   case factories, then copied and called as owned values.
-- [`examples/interop/cpp/foreign-values.z`](../examples/interop/cpp/foreign-values.z): `.zd`-contracted
+- [`examples/interop/cpp/foreign-values.zs`](../examples/interop/cpp/foreign-values.zs): `.zd`-contracted
   copyable C++ RAII value copied through an owning Z aggregate with zero live
   native values after scope exit.
-- [`examples/interop/cpp/cpp-move-only.z`](../examples/interop/cpp/cpp-move-only.z): `.zd`-contracted
+- [`examples/interop/cpp/cpp-move-only.zs`](../examples/interop/cpp/cpp-move-only.zs): `.zd`-contracted
   non-copyable C++ RAII value borrowed, moved through an owned function and a Z
   value struct, then deterministically released with zero live native values.
-- [`examples/interop/cpp/cpp-move-only-array.z`](../examples/interop/cpp/cpp-move-only-array.z): move-only
+- [`examples/interop/cpp/cpp-move-only-array.zs`](../examples/interop/cpp/cpp-move-only-array.zs): move-only
   native values stored in a growable array, relocated through native move
   construction, and destroyed in reverse order, including a mixed `String`
   aggregate.
-- [`examples/interop/cpp/cpp-move-only-enum.z`](../examples/interop/cpp/cpp-move-only-enum.z): named
+- [`examples/interop/cpp/cpp-move-only-enum.zs`](../examples/interop/cpp/cpp-move-only-enum.zs): named
   enum payloads borrowed or consumed through `match`, replaced safely, and
   deterministically destroyed.
-- [`examples/interop/cpp/cpp-arena.z`](../examples/interop/cpp/cpp-arena.z): move-only C++
+- [`examples/interop/cpp/cpp-arena.zs`](../examples/interop/cpp/cpp-arena.zs): move-only C++
   values transferred into stable arena storage and destructed by reset.
-- [`examples/interop/cpp/cpp-references.z`](../examples/interop/cpp/cpp-references.z): C++ named-value
+- [`examples/interop/cpp/cpp-references.zs`](../examples/interop/cpp/cpp-references.zs): C++ named-value
   references and receiver qualifiers mapped onto existing Z `in`, `inout`, and
   owned-transfer semantics with direct lvalue/`std::move` lowering.
-- [`examples/async/async-native-ownership.z`](../examples/async/async-native-ownership.z): a move-only
+- [`examples/async/async-native-ownership.zs`](../examples/async/async-native-ownership.zs): a move-only
   C++ value constructed directly in aligned task-frame storage, returned and
   relayed through task results, consumed by its caller, and cleaned exactly once.
-- [`examples/async/async-collection-slices.z`](../examples/async/async-collection-slices.z): growable
+- [`examples/async/async-collection-slices.zs`](../examples/async/async-collection-slices.zs): growable
   and cleanup-bearing collection owners borrowed as Slices across direct await,
   scoped spawn, and cancellation, followed by safe growth and reverse cleanup.
 - `bun test`: compiler, runtime, diagnostics, interop, async, and editor

@@ -818,17 +818,17 @@ Z declarations are private to their source module unless marked `export`.
 Relative source imports use TypeScript-shaped namespace or selective bindings:
 
 ```z
-// geometry.z
+// geometry.zs
 export struct Point { x: i32; y: i32; }
 export function total(in point: Point): i32 { return point.x + point.y; }
 ```
 
 ```z
-import geometry from "./geometry.z";
-import { total as sum } from "./geometry.z";
+import geometry from "./geometry.zs";
+import { total as sum } from "./geometry.zs";
 ```
 
-The bootstrap recognizes explicit relative paths ending in `.z`, recursively
+The bootstrap recognizes explicit relative paths ending in `.zs`, recursively
 loads an acyclic dependency graph, and links it into one native translation
 unit. Each dependency receives private compiler identities so unrelated files
 may reuse ordinary declaration and native-import names without collision.

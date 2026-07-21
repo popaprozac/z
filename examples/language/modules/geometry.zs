@@ -1,4 +1,4 @@
-import { add } from "./math.z";
+import { add } from "./math.zs";
 
 export struct Point {
   x: i32;

@@ -67,7 +67,7 @@ if (!command || !inputArgument || !["check", "emit", "run", "self-host-lex", "se
 
 function verifyStage1Parser(inputPaths: readonly string[], timings: boolean): void {
   const projectRoot = resolve(dirname(new URL(import.meta.url).pathname), "../..");
-  const bridgePath = join(projectRoot, "compiler/frontend/parser-library.z");
+  const bridgePath = join(projectRoot, "compiler/frontend/parser-library.zs");
   const boundary = prepareStage1ParserLibrary(projectRoot, bridgePath);
   const executionStarted = performance.now();
   const nativeStream = parseWithStage1Library(boundary.libraryPath, inputPaths);
@@ -984,7 +984,7 @@ function buildNative(inputPath: string, artifact: NativeArtifact, outputStem?: s
   const projectRoot = resolve(dirname(new URL(import.meta.url).pathname), "../..");
   const cacheDirectory = join(projectRoot, ".z-cache");
   mkdirSync(cacheDirectory, { recursive: true });
-  const stem = outputStem ?? basename(inputPath).replace(/\.z$/, "");
+  const stem = outputStem ?? basename(inputPath).replace(/\.zs$/, "");
   const sourcePath = join(cacheDirectory, `${stem}.${nativeExtension(artifact.language)}`);
   const executablePath = join(cacheDirectory, `${stem}${process.platform === "win32" ? ".exe" : ""}`);
   writeFileSync(sourcePath, artifact.source);
@@ -1024,7 +1024,7 @@ type PreparedStage1ParserLibrary = {
 function prepareStage1ParserLibrary(projectRoot: string, bridgePath: string): PreparedStage1ParserLibrary {
   const started = performance.now();
   const fingerprint = stage1BridgeFingerprint(projectRoot);
-  const outputStem = `stage1-${basename(bridgePath, ".z")}-${fingerprint.slice(0, 20)}`;
+  const outputStem = `stage1-${basename(bridgePath, ".zs")}-${fingerprint.slice(0, 20)}`;
   const libraryPath = join(projectRoot, ".z-cache", `${outputStem}${nativeLibraryExtension()}`);
   if (existsSync(libraryPath)) {
     return { libraryPath, cacheHit: true, prepareMilliseconds: performance.now() - started };
@@ -1169,7 +1169,7 @@ function collectBootstrapFiles(root: string): string[] {
   for (const entry of readdirSync(root, { withFileTypes: true })) {
     const path = join(root, entry.name);
     if (entry.isDirectory()) files.push(...collectBootstrapFiles(path));
-    else if (entry.isFile() && (path.endsWith(".ts") || path.endsWith(".z"))) files.push(path);
+    else if (entry.isFile() && (path.endsWith(".ts") || path.endsWith(".zs"))) files.push(path);
   }
   return files;
 }
@@ -1180,7 +1180,7 @@ function formatMilliseconds(value: number): string {
 
 function verifyStage1Lexer(inputPaths: readonly string[]): void {
   const projectRoot = resolve(dirname(new URL(import.meta.url).pathname), "../..");
-  const bridgePath = join(projectRoot, "examples/applications/source-inspector/token-stream.z");
+  const bridgePath = join(projectRoot, "examples/applications/source-inspector/token-stream.zs");
   const bridgeSource = readFileSync(bridgePath, "utf8");
   const artifact = compileToNative(bridgeSource, bridgePath);
   for (const warning of artifact.warnings) console.error(formatDiagnostic(warning, bridgeSource));
@@ -1238,7 +1238,7 @@ function nativeLanguageFlags(language: NativeArtifact["language"]): string[] {
 }
 
 function usage(): void {
-  console.error("usage: z <check|emit|run> <file.z> [-- program arguments]");
-  console.error("       z self-host-lex <file.z> [more.z ...]");
-  console.error("       z self-host-parse <file.z> [more.z ...] [--timings]");
+  console.error("usage: z <check|emit|run> <file.zs> [-- program arguments]");
+  console.error("       z self-host-lex <file.zs> [more.zs ...]");
+  console.error("       z self-host-parse <file.zs> [more.zs ...] [--timings]");
 }

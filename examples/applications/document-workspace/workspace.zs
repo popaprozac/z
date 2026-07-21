@@ -2,7 +2,7 @@ import {
   DocumentSession,
   WorkspaceError,
   openDocument,
-} from "./document.z";
+} from "./document.zs";
 
 export struct DocumentWorkspace {
   documents: Array<DocumentSession>;

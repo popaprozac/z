@@ -3,7 +3,7 @@ import {
   ModuleResolveErrorKind,
   ModuleSource,
   resolveModules,
-} from "../../compiler/frontend/module-resolver.z";
+} from "../../compiler/frontend/module-resolver.zs";
 
 function module(in path: String, in source: String): ModuleSource {
   return ModuleSource({
@@ -14,21 +14,21 @@ function module(in path: String, in source: String): ModuleSource {
 
 function successfulGraph(): Array<ModuleSource> {
   let sources = Array<ModuleSource>();
-  sources.push(module("/workspace/app/main.z", `
-import { value as selected } from "./model.z";
-import helper from "./nested/helper.z";
+  sources.push(module("/workspace/app/main.zs", `
+import { value as selected } from "./model.zs";
+import helper from "./nested/helper.zs";
 
 function main(): i32 {
   return selected() + helper.adjust();
 }
 `));
-  sources.push(module("/workspace/app/model.z", `
+  sources.push(module("/workspace/app/model.zs", `
 export function value(): i32 {
   return 40;
 }
 `));
-  sources.push(module("/workspace/app/nested/helper.z", `
-import model from "../model.z";
+  sources.push(module("/workspace/app/nested/helper.zs", `
+import model from "../model.zs";
 
 export function adjust(): i32 {
   return model.value() + 2;
@@ -39,8 +39,8 @@ export function adjust(): i32 {
 
 function missingModuleGraph(): Array<ModuleSource> {
   let sources = Array<ModuleSource>();
-  sources.push(module("/workspace/main.z", `
-import missing from "./missing.z";
+  sources.push(module("/workspace/main.zs", `
+import missing from "./missing.zs";
 function main(): i32 { return 0; }
 `));
   return sources;
@@ -48,11 +48,11 @@ function main(): i32 { return 0; }
 
 function missingExportGraph(): Array<ModuleSource> {
   let sources = Array<ModuleSource>();
-  sources.push(module("/workspace/main.z", `
-import { hidden } from "./model.z";
+  sources.push(module("/workspace/main.zs", `
+import { hidden } from "./model.zs";
 function main(): i32 { return hidden(); }
 `));
-  sources.push(module("/workspace/model.z", `
+  sources.push(module("/workspace/model.zs", `
 function hidden(): i32 { return 1; }
 `));
   return sources;
@@ -60,12 +60,12 @@ function hidden(): i32 { return 1; }
 
 function circularGraph(): Array<ModuleSource> {
   let sources = Array<ModuleSource>();
-  sources.push(module("/workspace/main.z", `
-import next from "./next.z";
+  sources.push(module("/workspace/main.zs", `
+import next from "./next.zs";
 function main(): i32 { return next.value(); }
 `));
-  sources.push(module("/workspace/next.z", `
-import main from "./main.z";
+  sources.push(module("/workspace/next.zs", `
+import main from "./main.zs";
 export function value(): i32 { return main.main(); }
 `));
   return sources;
@@ -73,7 +73,7 @@ export function value(): i32 { return main.main(); }
 
 function duplicateBindingGraph(): Array<ModuleSource> {
   let sources = Array<ModuleSource>();
-  sources.push(module("/workspace/main.z", `
+  sources.push(module("/workspace/main.zs", `
 import value from "native.h";
 function value(): i32 { return 1; }
 function main(): i32 { return value(); }
@@ -85,7 +85,7 @@ function resolvesTo(
   sources: Array<ModuleSource>,
   kind: ModuleResolveErrorKind
 ): boolean {
-  const outcome = attempt resolveModules(sources, "/workspace/main.z");
+  const outcome = attempt resolveModules(sources, "/workspace/main.zs");
   return match (outcome) {
     success(graph) => false;
     failure(error) => error.kind == kind;
@@ -108,7 +108,7 @@ function validOrder(in graph: ModuleGraph): boolean {
 
 function main(): i32 {
   const successSources = successfulGraph();
-  const success = attempt resolveModules(successSources, "/workspace/app/main.z");
+  const success = attempt resolveModules(successSources, "/workspace/app/main.zs");
   const graphIsValid = match (success) {
     success(graph) => validOrder(graph);
     failure(error) => false;

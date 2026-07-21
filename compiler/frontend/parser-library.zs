@@ -1,7 +1,7 @@
 // In-process stage-one parser root. A tiny generated-C wrapper exposes
 // stage1Parse to the Bun host without making Z module exports imply a C ABI.
 
-import { renderProgram } from "./parser-protocol.z";
+import { renderProgram } from "./parser-protocol.zs";
 
 function stage1Parse(in path: String, in source: String): String {
   const outcome = attempt renderProgram(path, source);

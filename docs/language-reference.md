@@ -11,18 +11,22 @@ see [`bootstrap-status.md`](bootstrap-status.md).
 Z source uses explicit exports and TypeScript-shaped imports:
 
 ```z
-// geometry.z
+// geometry.zs
 export struct Point { x: i32; y: i32; }
 export function sum(in point: Point): i32 { return point.x + point.y; }
 
-// main.z
-import geometry from "./geometry.z";
-import { sum as total } from "./geometry.z";
+// main.zs
+import geometry from "./geometry.zs";
+import { sum as total } from "./geometry.zs";
 ```
 
-Relative `.z` imports form a source-module graph. Native headers use the same
+Relative `.zs` imports form a source-module graph. Native headers use the same
 surface (`import C from "library.h"`) but bind declarations supplied by the
 foreign interface rather than redeclaring their ABI.
+
+The filename contract is `.zs` for Z source and `.zd` for foreign declarations.
+Z intentionally leaves `.z` to its established use as a compressed-archive
+suffix on Unix systems.
 
 ## Comments
 
@@ -459,7 +463,7 @@ import process from "std/process";
 
 function stage(in path: String): i32 throws String {
   const source = try fs.readText(path);
-  try fs.writeText(".z-cache/input.z", source);
+  try fs.writeText(".z-cache/input.zs", source);
   const clangArguments = ["--version"];
   return try process.run("clang", clangArguments);
 }
@@ -475,7 +479,7 @@ borrows a stored fixed array or `Array<String>` as a non-escaping
 parent standard streams, and returns its exit code. Failure to launch or wait is
 a typed failure; a child program's nonzero exit is a successful `i32` result.
 
-`z run file.z -- one two` forwards `one` and `two` to the native program.
+`z run file.zs -- one two` forwards `one` and `two` to the native program.
 Stage 0 currently lowers these APIs to a small cross-platform C runtime. The
 portable standard-library layers are intended to become ordinary Z modules;
 OS/ABI calls remain a thin platform substrate.

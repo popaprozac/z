@@ -1,4 +1,4 @@
-import { LexerError, Token, TokenKind, tokenize } from "../../../compiler/frontend/lexer.z";
+import { LexerError, Token, TokenKind, tokenize } from "../../../compiler/frontend/lexer.zs";
 
 function hasKind(in tokens: Array<Token>, index: usize, kind: TokenKind): boolean {
   return tokens[index].kind == kind;

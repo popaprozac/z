@@ -1,7 +1,7 @@
 // Shared stage-one parser framing used by executable and in-process clients.
 
 import { TextBuffer } from "std/text";
-import { tokenize } from "./lexer.z";
+import { tokenize } from "./lexer.zs";
 import {
   aggregateShapeText,
   declarationKindName,
@@ -11,7 +11,7 @@ import {
   importShapeText,
   parseProgram,
   traitShapeText,
-} from "./parser.z";
+} from "./parser.zs";
 
 function hexDigit(value: u8): u8 {
   return value < 10 ? value + 48 : value + 87;

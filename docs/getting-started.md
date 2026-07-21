@@ -22,7 +22,7 @@ bun test
 
 ## Your first Z program
 
-Create `hello.z`:
+Create `hello.zs`:
 
 ```z
 import console from "std/console";
@@ -37,24 +37,28 @@ function main(): i32 {
 Run it through the bootstrap CLI:
 
 ```sh
-bun run z run hello.z
+bun run z run hello.zs
 ```
 
 `main` is required for an executable entry point and returns the native process
-exit code. Export-only `.z` files are valid modules and can be checked without a
+exit code. Export-only `.zs` files are valid modules and can be checked without a
 `main` function.
+
+Z uses `.zs` for source modules and `.zd` for foreign declaration contracts.
+The project intentionally does not associate `.z` with Z source because Unix
+tooling commonly recognizes it as a compressed archive.
 
 ## CLI commands
 
 ```text
-usage: z <check|emit|run> <file.z>
+usage: z <check|emit|run> <file.zs>
 ```
 
 | Command | Purpose |
 | --- | --- |
-| `bun run z check file.z` | Parse, type-check, and validate ownership without producing a binary |
-| `bun run z emit file.z` | Print the generated C-family source for inspection |
-| `bun run z run file.z` | Generate, compile, link, and execute a native binary |
+| `bun run z check file.zs` | Parse, type-check, and validate ownership without producing a binary |
+| `bun run z emit file.zs` | Print the generated C-family source for inspection |
+| `bun run z run file.zs` | Generate, compile, link, and execute a native binary |
 
 `z run` streams stdout and stderr while the program is alive, including during
 a native GUI event loop.
@@ -64,7 +68,7 @@ a native GUI event loop.
 Declarations are private to a source file unless exported:
 
 ```z
-// geometry.z
+// geometry.zs
 export struct Point {
   x: i32;
   y: i32;
@@ -78,8 +82,8 @@ export function total(in point: Point): i32 {
 Import a namespace, selected declarations, or an alias:
 
 ```z
-import geometry from "./geometry.z";
-import { total as sum } from "./geometry.z";
+import geometry from "./geometry.zs";
+import { total as sum } from "./geometry.zs";
 
 function main(): i32 {
   const point = geometry.Point({ x: 20, y: 22 });
@@ -90,7 +94,7 @@ function main(): i32 {
 Run the repository version with:
 
 ```sh
-bun run z run examples/language/modules/main.z
+bun run z run examples/language/modules/main.zs
 ```
 
 ## Native modules
@@ -114,7 +118,7 @@ and the system libraries the final binary must link:
 ```json
 {
   "target": {
-    "entry": "main.z",
+    "entry": "main.zs",
     "platform": "macos",
     "minimumVersion": "13.0",
     "link": {
@@ -138,7 +142,7 @@ a library describes where its implementation comes from, so the two concerns
 remain explicit and independent. Run the macOS probe with:
 
 ```sh
-bun run z run examples/interop/c/deployment-target/main.z
+bun run z run examples/interop/c/deployment-target/main.zs
 ```
 
 ## Editor setup
@@ -149,7 +153,7 @@ Install the repository's development extension:
 ./scripts/install-editor-extension.sh
 ```
 
-Reload VS Code or Cursor, then open a `.z` source or `.zd` declaration file.
+Reload VS Code or Cursor, then open a `.zs` source or `.zd` declaration file.
 The extension provides TextMate highlighting immediately and starts the
 compiler-backed language server. Z source receives diagnostics, semantic
 highlighting, hover, completion, and definitions. Completion is contextual:

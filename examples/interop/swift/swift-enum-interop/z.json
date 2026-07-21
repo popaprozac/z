@@ -1,6 +1,6 @@
 {
   "target": {
-    "entry": "main.z",
+    "entry": "main.zs",
     "swift": {
       "module": "ZSwiftState",
       "sources": ["LoadState.swift"],

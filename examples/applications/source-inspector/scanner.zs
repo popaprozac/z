@@ -1,7 +1,7 @@
 import {
   TokenKind,
   tokenize,
-} from "../../../compiler/frontend/lexer.z";
+} from "../../../compiler/frontend/lexer.zs";
 
 export struct SourceSummary {
   byteCount: usize;

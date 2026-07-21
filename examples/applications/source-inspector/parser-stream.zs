@@ -4,7 +4,7 @@
 import console from "std/console";
 import fs from "std/fs";
 import process from "std/process";
-import { renderProgram } from "../../../compiler/frontend/parser-protocol.z";
+import { renderProgram } from "../../../compiler/frontend/parser-protocol.zs";
 
 function streamProgram(in path: String): i32 throws String {
   const source = try fs.readText(path);
@@ -16,7 +16,7 @@ function streamProgram(in path: String): i32 throws String {
 function main(): i32 {
   const arguments = process.args();
   if (arguments.length == 0) {
-    console.error("usage: parser-stream <input.z> [more.z ...]");
+    console.error("usage: parser-stream <input.zs> [more.zs ...]");
     return 2;
   }
 

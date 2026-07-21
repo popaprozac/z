@@ -1077,7 +1077,7 @@ function localAggregateFields(source: string, typeName: string): ObjectFieldShap
   const base = generic?.base ?? typeName;
   let tokens;
   try {
-    tokens = lex(source, "completion.z");
+    tokens = lex(source, "completion.zs");
   } catch {
     return null;
   }
@@ -1164,7 +1164,7 @@ function localEnumPayloads(source: string): Array<{
 }> {
   let tokens;
   try {
-    tokens = lex(source, "completion.z");
+    tokens = lex(source, "completion.zs");
   } catch {
     return [];
   }
@@ -1596,8 +1596,8 @@ function foreignDeclarationNativeModule(source: string, fileName: string): Forei
   if (!moduleSpecifier) return null;
   const suffix = `${moduleSpecifier}.zd`;
   const importer = fileName.endsWith(suffix)
-    ? `${fileName.slice(0, -suffix.length)}__zd_editor.z`
-    : resolve(dirname(fileName), "__zd_editor.z");
+    ? `${fileName.slice(0, -suffix.length)}__zd_editor.zs`
+    : resolve(dirname(fileName), "__zd_editor.zs");
   try {
     const context = analyzeSource(
       `import declarationNative from ${JSON.stringify(moduleSpecifier)}; function main(): i32 { return 0; }`,

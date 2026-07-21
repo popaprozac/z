@@ -2,11 +2,11 @@ import console from "std/console";
 import {
   liveDocumentLeases,
   movedDocumentLeases,
-} from "./document.z";
+} from "./document.zs";
 import {
   DocumentWorkspace,
   saveWorkspace,
-} from "./workspace.z";
+} from "./workspace.zs";
 
 struct WorkspaceRunSummary {
   registered: usize;

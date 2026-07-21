@@ -1,6 +1,6 @@
 import console from "std/console";
-import geometry from "./geometry.z";
-import { translate as move } from "./geometry.z";
+import geometry from "./geometry.zs";
+import { translate as move } from "./geometry.zs";
 
 function main(): i32 {
   const origin = geometry.Point({ x: 20, y: 22 });

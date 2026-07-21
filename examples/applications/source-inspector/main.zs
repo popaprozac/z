@@ -1,7 +1,7 @@
 import console from "std/console";
 import fs from "std/fs";
 import process from "std/process";
-import { scanSource } from "./scanner.z";
+import { scanSource } from "./scanner.zs";
 
 function inspectFile(in path: String): i32 throws String {
   const source = try fs.readText(path);
@@ -16,7 +16,7 @@ function inspectFile(in path: String): i32 throws String {
 function main(): i32 {
   const arguments = process.args();
   if (arguments.length == 0) {
-    console.error("usage: source-inspector <input.z>");
+    console.error("usage: source-inspector <input.zs>");
     return 2;
   }
 

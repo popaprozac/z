@@ -9,8 +9,8 @@ string literals, and typed lexer errors.
 Run it against its own lexer:
 
 ```sh
-bun run z run examples/applications/source-inspector/main.z -- \
-  compiler/frontend/lexer.z
+bun run z run examples/applications/source-inspector/main.zs -- \
+  compiler/frontend/lexer.zs
 ```
 
 The lexer deliberately uses `byteLength` and `byteAt` because compiler source
@@ -30,23 +30,23 @@ errors, and unknown bytes are rejected rather than accepted as generic symbols.
 Run its focused grammar checks with:
 
 ```sh
-bun run z run examples/applications/source-inspector/lexer-smoke.z
+bun run z run examples/applications/source-inspector/lexer-smoke.zs
 ```
 
-[`token-stream.z`](token-stream.z) is the first stage-1 bridge. It emits a stable
+[`token-stream.zs`](token-stream.zs) is the first stage-1 bridge. It emits a stable
 tab-separated token stream with fixed-width hexadecimal locations and
 hexadecimal token text. It buffers the complete stream and performs one native
 write rather than flushing once per token. The TypeScript driver exposes the
 parity path directly:
 
 ```sh
-bun run z self-host-lex compiler/frontend/lexer.z
+bun run z self-host-lex compiler/frontend/lexer.zs
 ```
 
 That command compiles the bridge with stage 0, runs it natively, and compares
 its complete token sequence and source locations with the bootstrap lexer.
 
-[`parser.z`](../../../compiler/frontend/parser.z) is the first parser foundation. It consumes those owned
+[`parser.zs`](../../../compiler/frontend/parser.zs) is the first parser foundation. It consumes those owned
 tokens with a linear cursor and builds a declaration skeleton containing source
 locations, declaration kinds, names, and export/async state. Top-level function
 nodes additionally retain generic parameters and multi-trait constraints,
@@ -78,8 +78,8 @@ Only text retained in the tree becomes an owned snapshot.
 Run exact stage-0 parity across one or more source files with:
 
 ```sh
-bun run z self-host-parse compiler/frontend/lexer.z \
-  compiler/frontend/parser.z
+bun run z self-host-parse compiler/frontend/lexer.zs \
+  compiler/frontend/parser.zs
 ```
 
 The parity command checks canonical function signatures, complete type shapes,
@@ -99,9 +99,9 @@ identifiers and the complete syntax tree remain future
 slices. Stage 0 and stage 1 expose one
 UTF-16 code-unit coordinate contract for offsets and columns while stage 1 keeps
 separate UTF-8 byte indexes for native slicing. Exact parity covers both BMP and
-supplementary text. [`parser-protocol.z`](../../../compiler/frontend/parser-protocol.z) owns the shared framing,
-`parser-stream.z` remains a standalone executable client, and
-[`parser-library.z`](../../../compiler/frontend/parser-library.z) is compiled into a content-addressed dynamic library. The Bun
+supplementary text. [`parser-protocol.zs`](../../../compiler/frontend/parser-protocol.zs) owns the shared framing,
+`parser-stream.zs` remains a standalone executable client, and
+[`parser-library.zs`](../../../compiler/frontend/parser-library.zs) is compiled into a content-addressed dynamic library. The Bun
 driver passes source bytes directly to that library through a narrow FFI wrapper,
 so parser parity no longer pays subprocess startup or native-side file I/O.
 Performance comparisons remain provisional until stage 1 covers the same

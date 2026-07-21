@@ -34,14 +34,14 @@ test("emits functions and direct imported C calls", () => {
       return 0;
     }
   `;
-  const generated = compileToC(source, "memory.z");
+  const generated = compileToC(source, "memory.zs");
   assert.match(generated, /#include <stdio\.h>/);
   assert.match(generated, /puts\("hello"\);/);
   assert.doesNotMatch(generated, /stdio\.puts/);
 });
 
 test("selectively imports C functions with optional local aliases", () => {
-  const example = resolve(projectRoot, "examples/interop/c/selective-import.z");
+  const example = resolve(projectRoot, "examples/interop/c/selective-import.zs");
   const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stdout, "selective C imports\nanswer=42\n");
@@ -58,7 +58,7 @@ test("selectively imports C functions with optional local aliases", () => {
       return value;
     }
   `;
-  const shadowedC = compileToC(shadowed, "selective-shadow.z");
+  const shadowedC = compileToC(shadowed, "selective-shadow.zs");
   assert.match(shadowedC, /const int32_t value = 7;/);
   assert.match(shadowedC, /return value;/);
   assert.doesNotMatch(shadowedC, /return printf;/);
@@ -73,19 +73,19 @@ test("keeps unselected C functions out of scope", () => {
     }
   `;
   assert.throws(
-    () => compileToC(source, "selective-scope.z"),
+    () => compileToC(source, "selective-scope.zs"),
     /unknown function "printf"/,
   );
 
   const missing = source.replace("puts", "not_a_real_c_function").replace("printf", "not_a_real_c_function");
   assert.throws(
-    () => compileToC(missing, "selective-missing.z"),
+    () => compileToC(missing, "selective-missing.zs"),
     /header "stdio\.h" has no declaration "not_a_real_c_function"/,
   );
 });
 
 test("loads explicit Z exports through selective and namespace module imports", () => {
-  const example = resolve(projectRoot, "examples/language/modules/main.z");
+  const example = resolve(projectRoot, "examples/language/modules/main.zs");
   const source = readFileSync(example, "utf8");
   const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
@@ -97,17 +97,17 @@ test("loads explicit Z exports through selective and namespace module imports", 
   const generated = compileToC(source, example);
   assert.match(generated, /__z_module_\d+_translate/);
   assert.match(generated, /__z_module_\d+_add/);
-  assert.doesNotMatch(generated, /#include <\.\/geometry\.z>/);
-  assert.doesNotMatch(generated, /#include <\.\/math\.z>/);
+  assert.doesNotMatch(generated, /#include <\.\/geometry\.zs>/);
+  assert.doesNotMatch(generated, /#include <\.\/math\.zs>/);
 });
 
 test("diagnoses missing Z exports, missing files, cycles, and module binding collisions", () => {
   const directory = mkdtempSync("/tmp/z-modules-");
-  const main = resolve(directory, "main.z");
-  const values = resolve(directory, "values.z");
+  const main = resolve(directory, "main.zs");
+  const values = resolve(directory, "values.zs");
   writeFileSync(values, "function hidden(): i32 { return 42; }\n");
 
-  const missingExport = `import { hidden } from "./values.z"; function main(): i32 { return hidden(); }`;
+  const missingExport = `import { hidden } from "./values.zs"; function main(): i32 { return hidden(); }`;
   assert.throws(() => compileToC(missingExport, main), (error: unknown) => {
     assert.ok(error instanceof DiagnosticError);
     assert.equal(error.code, "Z0602");
@@ -115,7 +115,7 @@ test("diagnoses missing Z exports, missing files, cycles, and module binding col
     return true;
   });
 
-  const missingFile = `import missing from "./missing.z"; function main(): i32 { return 0; }`;
+  const missingFile = `import missing from "./missing.zs"; function main(): i32 { return 0; }`;
   assert.throws(() => compileToC(missingFile, main), (error: unknown) => {
     assert.ok(error instanceof DiagnosticError);
     assert.equal(error.code, "Z0602");
@@ -123,21 +123,21 @@ test("diagnoses missing Z exports, missing files, cycles, and module binding col
     return true;
   });
 
-  const left = resolve(directory, "left.z");
-  const right = resolve(directory, "right.z");
-  writeFileSync(left, `import right from "./right.z"; export function left(): i32 { return right.right(); }`);
-  writeFileSync(right, `import left from "./left.z"; export function right(): i32 { return left.left(); }`);
-  const cycleMain = `import left from "./left.z"; function main(): i32 { return left.left(); }`;
+  const left = resolve(directory, "left.zs");
+  const right = resolve(directory, "right.zs");
+  writeFileSync(left, `import right from "./right.zs"; export function left(): i32 { return right.right(); }`);
+  writeFileSync(right, `import left from "./left.zs"; export function right(): i32 { return left.left(); }`);
+  const cycleMain = `import left from "./left.zs"; function main(): i32 { return left.left(); }`;
   assert.throws(() => compileToC(cycleMain, main), (error: unknown) => {
     assert.ok(error instanceof DiagnosticError);
     assert.equal(error.code, "Z0601");
-    assert.match(error.message, /left\.z -> right\.z -> left\.z/);
+    assert.match(error.message, /left\.zs -> right\.zs -> left\.zs/);
     return true;
   });
 
   writeFileSync(values, "export function answer(): i32 { return 42; }\n");
   const collision = `
-    import { answer } from "./values.z";
+    import { answer } from "./values.zs";
     function answer(): i32 { return 0; }
     function main(): i32 { return answer(); }
   `;
@@ -148,24 +148,24 @@ test("diagnoses missing Z exports, missing files, cycles, and module binding col
     return true;
   });
 
-  const broken = resolve(directory, "broken.z");
+  const broken = resolve(directory, "broken.zs");
   writeFileSync(broken, `export function broken(): i32 { return missing; }`);
-  const brokenMain = `import { broken } from "./broken.z"; function main(): i32 { return broken(); }`;
+  const brokenMain = `import { broken } from "./broken.zs"; function main(): i32 { return broken(); }`;
   assert.throws(() => compileToC(brokenMain, main), (error: unknown) => {
     assert.ok(error instanceof DiagnosticError);
-    assert.match(error.fileName, /broken\.z$/);
-    assert.match(error.message, /broken\.z:1:40: error: unknown name "missing"/);
+    assert.match(error.fileName, /broken\.zs$/);
+    assert.match(error.message, /broken\.zs:1:40: error: unknown name "missing"/);
     return true;
   });
   const editorDiagnostic = diagnostics(brokenMain, main)[0];
-  assert.match(editorDiagnostic.message, /broken\.z: unknown name "missing"/);
-  assert.match(editorDiagnostic.relatedInformation?.[0].location.uri ?? "", /broken\.z$/);
+  assert.match(editorDiagnostic.message, /broken\.zs: unknown name "missing"/);
+  assert.match(editorDiagnostic.relatedInformation?.[0].location.uri ?? "", /broken\.zs$/);
 });
 
 test("preserves generic inference and local shadowing across Z modules", () => {
   const directory = mkdtempSync("/tmp/z-generic-modules-");
-  const library = resolve(directory, "library.z");
-  const main = resolve(directory, "main.z");
+  const library = resolve(directory, "library.zs");
+  const main = resolve(directory, "main.zs");
   writeFileSync(library, `
     export struct Pair<T> { first: T; second: T; }
     class HiddenCounter { value: i32; }
@@ -175,8 +175,8 @@ test("preserves generic inference and local shadowing across Z modules", () => {
     export function shadowed(): i32 { const helper = 42; return helper; }
   `);
   const source = `
-    import library from "./library.z";
-    import { first } from "./library.z";
+    import library from "./library.zs";
+    import { first } from "./library.zs";
     function main(): i32 {
       const pair = library.Pair({ first: 20, second: 22 });
       return library.first<i32>(pair) + first(pair) + library.shadowed() - 82;
@@ -184,14 +184,14 @@ test("preserves generic inference and local shadowing across Z modules", () => {
   `;
   const generated = compileToC(source, main);
   assert.match(generated, /__z_mono___z_module_\d+_Pair_i32/);
-  const sourcePath = resolve(directory, "main.z");
+  const sourcePath = resolve(directory, "main.zs");
   writeFileSync(sourcePath, source);
   const result = spawnSync(process.execPath, [cli, "run", sourcePath], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
 });
 
 test("provides completion, hover, definitions, and semantic tokens across Z modules", () => {
-  const example = resolve(projectRoot, "examples/language/modules/main.z");
+  const example = resolve(projectRoot, "examples/language/modules/main.zs");
   const source = readFileSync(example, "utf8");
   const uri = `file://${example}`;
 
@@ -210,16 +210,16 @@ test("provides completion, hover, definitions, and semantic tokens across Z modu
   const moveUse = source.indexOf("move(origin") + 1;
   const moveHover = hover(source, example, moveUse)?.contents.value ?? "";
   assert.match(moveHover, /function move\(point: Point, dx: i32, dy: i32\): Point/);
-  assert.match(moveHover, /Alias of `translate` from `"\.\/geometry\.z"`\./);
+  assert.match(moveHover, /Alias of `translate` from `"\.\/geometry\.zs"`\./);
   const moveDeclaration = source.indexOf("move", source.indexOf("translate as")) + 1;
   assert.match(hover(source, example, moveDeclaration)?.contents.value ?? "", /Alias of `translate`/);
 
   const totalUse = source.indexOf("total(moved") + 1;
   const totalDefinition = definition(source, uri, totalUse);
-  assert.match(totalDefinition?.uri ?? "", /geometry\.z$/);
+  assert.match(totalDefinition?.uri ?? "", /geometry\.zs$/);
   assert.equal(totalDefinition?.range.start.line, 11);
   const moveDefinition = definition(source, uri, moveUse);
-  assert.match(moveDefinition?.uri ?? "", /geometry\.z$/);
+  assert.match(moveDefinition?.uri ?? "", /geometry\.zs$/);
   assert.equal(moveDefinition?.range.start.line, 7);
 
   const symbolSource = source.replace("return 0;", "mov; return 0;");
@@ -227,7 +227,7 @@ test("provides completion, hover, definitions, and semantic tokens across Z modu
   const moveCompletion = completions(symbolSource, example, symbolOffset).find((item) => item.label === "move");
   assert.equal(moveCompletion?.kind, 3);
   assert.match(moveCompletion?.detail ?? "", /function move\(point: Point, dx: i32, dy: i32\): Point/);
-  assert.match(moveCompletion?.detail ?? "", /alias of translate from "\.\/geometry\.z"/);
+  assert.match(moveCompletion?.detail ?? "", /alias of translate from "\.\/geometry\.zs"/);
 
   const tokens = decodeSemanticTokens(semanticTokens(source, example).data);
   const namespacePosition = positionForOffset(source, source.indexOf("geometry.Point"));
@@ -241,11 +241,11 @@ test("provides completion, hover, definitions, and semantic tokens across Z modu
 });
 
 test("suggests Z tokens while source and declaration syntax is incomplete", () => {
-  const functionItems = completions("fun", "tokens.z", 3);
+  const functionItems = completions("fun", "tokens.zs", 3);
   assert.equal(functionItems.find((item) => item.label === "function")?.kind, 14);
   assert.equal(functionItems.find((item) => item.label === "function")?.detail, "Z keyword");
 
-  const returnItems = completions("function main(): i32 { ret", "tokens.z", 26);
+  const returnItems = completions("function main(): i32 { ret", "tokens.zs", 26);
   assert.equal(returnItems.find((item) => item.label === "return")?.kind, 14);
 
   const declaration = `declare module "vendor.h" {\n  exp`;
@@ -272,8 +272,8 @@ test("suggests Z tokens while source and declaration syntax is incomplete", () =
 });
 
 test("suggests selective imports and typed object fields", () => {
-  const moduleFile = resolve(projectRoot, "examples/language/modules/main.z");
-  const localImport = `import { tr } from "./geometry.z"; function main(): i32 { return 0; }`;
+  const moduleFile = resolve(projectRoot, "examples/language/modules/main.zs");
+  const localImport = `import { tr } from "./geometry.zs"; function main(): i32 { return 0; }`;
   const localImportOffset = localImport.indexOf("tr }") + 2;
   const translate = completions(localImport, moduleFile, localImportOffset)
     .find((item) => item.label === "translate");
@@ -287,7 +287,7 @@ test("suggests selective imports and typed object fields", () => {
     /async delay\(milliseconds: u64\): void/,
   );
 
-  const nativeFile = resolve(projectRoot, "examples/interop/cpp/cpp-move-only-array.z");
+  const nativeFile = resolve(projectRoot, "examples/interop/cpp/cpp-move-only-array.zs");
   const nativeImport = `import { zc } from "../../../tests/fixtures/move-only.hpp"; function main(): i32 { return 0; }`;
   const nativeImportOffset = nativeImport.indexOf("zc }") + 2;
   assert.equal(
@@ -296,7 +296,7 @@ test("suggests selective imports and typed object fields", () => {
   );
 
   const importedObject = `
-    import geometry from "./geometry.z";
+    import geometry from "./geometry.zs";
     function main(): i32 {
       const point = geometry.Point({ x: 20, y });
       return point.x;
@@ -326,12 +326,12 @@ test("suggests selective imports and typed object fields", () => {
     }
   `;
   const constructorOffset = objectPatterns.indexOf("na });") + 2;
-  const constructorField = completions(objectPatterns, "object-patterns.z", constructorOffset)
+  const constructorField = completions(objectPatterns, "object-patterns.zs", constructorOffset)
     .find((item) => item.label === "name");
   assert.equal(constructorField?.detail, "name: String");
   assert.equal(constructorField?.insertText, "name: ");
   const patternOffset = objectPatterns.lastIndexOf("na })") + 2;
-  const patternItems = completions(objectPatterns, "object-patterns.z", patternOffset);
+  const patternItems = completions(objectPatterns, "object-patterns.zs", patternOffset);
   assert.equal(patternItems.some((item) => item.label === "id"), false);
   const patternField = patternItems.find((item) => item.label === "name");
   assert.equal(patternField?.detail, "name: String");
@@ -339,7 +339,7 @@ test("suggests selective imports and typed object fields", () => {
 });
 
 test("analyzes export-only files as modules while executable commands still require main", () => {
-  const moduleFile = resolve(projectRoot, "examples/language/modules/geometry.z");
+  const moduleFile = resolve(projectRoot, "examples/language/modules/geometry.zs");
   const source = readFileSync(moduleFile, "utf8");
   assert.doesNotThrow(() => check(source, moduleFile));
   assert.deepEqual(diagnostics(source, moduleFile), []);
@@ -350,7 +350,7 @@ test("analyzes export-only files as modules while executable commands still requ
 
   const checkResult = spawnSync(process.execPath, [cli, "check", moduleFile], { encoding: "utf8" });
   assert.equal(checkResult.status, 0, checkResult.stderr);
-  assert.match(checkResult.stdout, /geometry\.z: ok/);
+  assert.match(checkResult.stdout, /geometry\.zs: ok/);
 
   assert.throws(() => compileToNative(source, moduleFile), /program must declare `function main\(\): i32`/);
   const runResult = spawnSync(process.execPath, [cli, "run", moduleFile], { encoding: "utf8" });
@@ -363,13 +363,13 @@ test("resolves native headers relative to the Z module that imports them", () =>
   const libraryDirectory = resolve(directory, "library");
   mkdirSync(libraryDirectory);
   writeFileSync(resolve(libraryDirectory, "native.h"), `static inline int z_module_answer(void) { return 42; }\n`);
-  writeFileSync(resolve(libraryDirectory, "native.z"), `
+  writeFileSync(resolve(libraryDirectory, "native.zs"), `
     import native from "native.h";
     export function answer(): i32 { return native.z_module_answer(); }
   `);
-  const main = resolve(directory, "main.z");
+  const main = resolve(directory, "main.zs");
   const source = `
-    import { answer } from "./library/native.z";
+    import { answer } from "./library/native.zs";
     function main(): i32 { return answer() - 42; }
   `;
   writeFileSync(main, source);
@@ -381,7 +381,7 @@ test("resolves native headers relative to the Z module that imports them", () =>
 });
 
 test("selectively imports C types and constants with the same aliases used by functions", () => {
-  const example = resolve(projectRoot, "examples/interop/c/selective-declarations.z");
+  const example = resolve(projectRoot, "examples/interop/c/selective-declarations.zs");
   const source = readFileSync(example, "utf8");
   const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
@@ -408,7 +408,7 @@ test("keeps unselected C types and constants out of scope", () => {
     function main(): i32 { return 0; }
   `;
   assert.throws(
-    () => compileToC(missingType, resolve(projectRoot, "selective-type-scope.z")),
+    () => compileToC(missingType, resolve(projectRoot, "selective-type-scope.zs")),
     /unknown type "ZPoint"/,
   );
 
@@ -420,7 +420,7 @@ test("keeps unselected C types and constants out of scope", () => {
     }
   `;
   assert.throws(
-    () => compileToC(missingConstant, resolve(projectRoot, "selective-constant-scope.z")),
+    () => compileToC(missingConstant, resolve(projectRoot, "selective-constant-scope.zs")),
     /unknown name "ZForward"/,
   );
 });
@@ -434,7 +434,7 @@ test("shares imported C type identity across namespace and selective imports", (
       return z_read(point);
     }
   `;
-  const generated = compileToC(source, resolve(projectRoot, "selective-record.z"));
+  const generated = compileToC(source, resolve(projectRoot, "selective-record.zs"));
   assert.match(generated, /return z_read\(&\(point\)\);/);
 });
 
@@ -446,13 +446,13 @@ test("imports C function signatures through Clang", () => {
       return written;
     }
   `;
-  const generated = compileToC(source, "typed-header.z");
+  const generated = compileToC(source, "typed-header.zs");
   assert.match(generated, /const int32_t written = puts\("typed"\);/);
-  assert.equal(analyzeSource(source, "typed-header.z").foreignModules.get("stdio")?.producer, "clang");
+  assert.equal(analyzeSource(source, "typed-header.zs").foreignModules.get("stdio")?.producer, "clang");
 });
 
 test("passes typed Z functions to call-only C callbacks with optional context adapters", () => {
-  const fixture = resolve(projectRoot, "tests/fixtures/callbacks-main.z");
+  const fixture = resolve(projectRoot, "tests/fixtures/callbacks-main.zs");
   const source = readFileSync(fixture, "utf8");
   const generated = compileToC(source, fixture);
   assert.match(generated, /z_apply_i32\(6, 7, multiply\)/);
@@ -596,7 +596,7 @@ test("passes typed Z functions to call-only C callbacks with optional context ad
 });
 
 test("passes contextual inline closures directly to imported C callbacks", () => {
-  const fixture = resolve(projectRoot, "tests/fixtures/callbacks-inline.z");
+  const fixture = resolve(projectRoot, "tests/fixtures/callbacks-inline.zs");
   const source = readFileSync(fixture, "utf8");
   const generated = compileToC(source, fixture);
   assert.match(generated, /z_apply_i32\(6, 7, __z_closure_call_[0-9]+\)/);
@@ -614,7 +614,7 @@ test("passes contextual inline closures directly to imported C callbacks", () =>
 test("rejects invalid C callback and context declaration pairs", () => {
   const directory = mkdtempSync("/tmp/z-callback-context-notes-");
   const header = resolve(directory, "invalid-context.h");
-  const sourceFile = resolve(directory, "main.z");
+  const sourceFile = resolve(directory, "main.zs");
   writeFileSync(header, `
     #include <stdint.h>
     typedef int32_t (*InvalidContextCallback)(int32_t value, void *context);
@@ -652,7 +652,7 @@ test("rejects invalid C callback and context declaration pairs", () => {
 test("rejects escaping C callbacks without complete release and threading contracts", () => {
   const directory = mkdtempSync("/tmp/z-escaping-callback-notes-");
   const header = resolve(directory, "escaping.h");
-  const sourceFile = resolve(directory, "main.z");
+  const sourceFile = resolve(directory, "main.zs");
   writeFileSync(header, `
     #include <stdint.h>
     typedef int32_t (*EscapingCallback)(int32_t value, void *context);
@@ -690,7 +690,7 @@ test("rejects unknown functions from imported headers", () => {
     }
   `;
   assert.throws(
-    () => compileToC(source, "foreign-name.z"),
+    () => compileToC(source, "foreign-name.zs"),
     /header "stdio\.h" has no function "not_a_real_function"/,
   );
 });
@@ -703,7 +703,7 @@ test("checks fixed C arguments and variadic boundaries", () => {
     }
   `;
   assert.throws(
-    () => compileToC(wrongType, "foreign-type.z"),
+    () => compileToC(wrongType, "foreign-type.zs"),
     /expected cstring, found i32/,
   );
 
@@ -714,7 +714,7 @@ test("checks fixed C arguments and variadic boundaries", () => {
     }
   `;
   assert.throws(
-    () => compileToC(missingFormat, "foreign-variadic.z"),
+    () => compileToC(missingFormat, "foreign-variadic.zs"),
     /C function "printf" expects at least 1 argument\(s\), found 0/,
   );
 });
@@ -728,13 +728,13 @@ test("reports unsupported C signatures at the Z call site", () => {
     }
   `;
   assert.throws(
-    () => compileToC(source, "foreign-pointer.z"),
+    () => compileToC(source, "foreign-pointer.zs"),
     /C function "freopen" uses unsupported type "FILE \*"/,
   );
 });
 
 test("narrows, borrows, consumes, and cleans up owned C handles", () => {
-  const example = resolve(projectRoot, "examples/interop/c/foreign-handle.z");
+  const example = resolve(projectRoot, "examples/interop/c/foreign-handle.zs");
   const exampleSource = readFileSync(example, "utf8");
   const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
@@ -758,7 +758,7 @@ test("narrows, borrows, consumes, and cleans up owned C handles", () => {
     }
   `;
   assert.throws(
-    () => compileToC(source, "foreign-consume.z"),
+    () => compileToC(source, "foreign-consume.zs"),
     /use of moved value "file"/,
   );
 });
@@ -772,7 +772,7 @@ test("discovers owned-handle contracts from adjacent Z declaration files", () =>
       return handles.z_test_use(handle);
     }
   `;
-  const generated = compileToC(source, resolve(projectRoot, "foreign-local-notes.z"));
+  const generated = compileToC(source, resolve(projectRoot, "foreign-local-notes.zs"));
   assert.match(generated, /ZTestHandle \* const handle = z_test_open\(\);/);
   assert.match(generated, /if \(_z_live_handle_0 && handle != NULL\) z_test_close\(handle\);/);
 
@@ -786,14 +786,14 @@ test("discovers owned-handle contracts from adjacent Z declaration files", () =>
       return handles.z_test_created_use(handle);
     }
   `;
-  const outputGenerated = compileToC(outputSource, resolve(projectRoot, "foreign-output-handle.z"));
+  const outputGenerated = compileToC(outputSource, resolve(projectRoot, "foreign-output-handle.zs"));
   assert.match(outputGenerated, /ZCreatedHandle \*handle = NULL;/);
   assert.match(outputGenerated, /z_test_create\(&\(handle\)\)/);
   assert.match(outputGenerated, /if \(_z_live_handle_\d+ && handle != NULL\) z_test_created_close\(handle\);/);
   const outputBindingOffset = outputSource.indexOf("handle;") + 2;
-  assert.match(hover(outputSource, resolve(projectRoot, "foreign-output-handle.z"), outputBindingOffset)?.contents.value ?? "", /handle: ZCreatedHandle \* \| null/);
+  assert.match(hover(outputSource, resolve(projectRoot, "foreign-output-handle.zs"), outputBindingOffset)?.contents.value ?? "", /handle: ZCreatedHandle \* \| null/);
   assert.match(
-    diagnostics("function main(): i32 { let unresolved; return 0; }", "unresolved-out.z")[0]?.message ?? "",
+    diagnostics("function main(): i32 { let unresolved; return 0; }", "unresolved-out.zs")[0]?.message ?? "",
     /cannot infer type of uninitialized let "unresolved"/,
   );
 
@@ -851,7 +851,7 @@ test("discovers owned-handle contracts from adjacent Z declaration files", () =>
     "transfer;",
   );
 
-  const example = resolve(projectRoot, "examples/interop/c/declared-handle.z");
+  const example = resolve(projectRoot, "examples/interop/c/declared-handle.zs");
   const exampleSource = readFileSync(example, "utf8");
   const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
@@ -926,7 +926,7 @@ test("diagnoses malformed and mismatched Z declaration contracts", () => {
 
   const mismatchDirectory = mkdtempSync("/tmp/z-zd-module-");
   const mismatchHeader = resolve(mismatchDirectory, "contract.h");
-  const mismatchSource = resolve(mismatchDirectory, "main.z");
+  const mismatchSource = resolve(mismatchDirectory, "main.zs");
   writeFileSync(mismatchHeader, "int known(void);\n");
   writeFileSync(`${mismatchHeader}.zd`, `
     declare module "other.h" {
@@ -940,7 +940,7 @@ test("diagnoses malformed and mismatched Z declaration contracts", () => {
 
   const parameterDirectory = mkdtempSync("/tmp/z-zd-parameter-");
   const parameterHeader = resolve(parameterDirectory, "contract.h");
-  const parameterSource = resolve(parameterDirectory, "main.z");
+  const parameterSource = resolve(parameterDirectory, "main.zs");
   writeFileSync(parameterHeader, "int use(void *handle);\n");
   writeFileSync(`${parameterHeader}.zd`, `
     declare module "contract.h" {
@@ -953,7 +953,7 @@ test("diagnoses malformed and mismatched Z declaration contracts", () => {
 
   const callbackDirectory = mkdtempSync("/tmp/z-zd-callback-");
   const callbackHeader = resolve(callbackDirectory, "contract.h");
-  const callbackSource = resolve(callbackDirectory, "main.z");
+  const callbackSource = resolve(callbackDirectory, "main.zs");
   writeFileSync(callbackHeader, `
     typedef int (*Operation)(int value, void *context);
     static inline int apply(int value, void *context, Operation operation) {
@@ -1052,7 +1052,7 @@ test("normalizes producer declarations without exposing Clang nodes to FIIR cons
 });
 
 test("preserves native declaration locations for FIIR and editor definitions", () => {
-  const example = resolve(projectRoot, "examples/interop/c/foreign-types.z");
+  const example = resolve(projectRoot, "examples/interop/c/foreign-types.zs");
   const source = readFileSync(example, "utf8");
   const context = analyzeSource(source, example);
   const geometry = context.foreignModules.get("geometry")!;
@@ -1071,7 +1071,7 @@ test("preserves native declaration locations for FIIR and editor definitions", (
 });
 
 test("surfaces native availability in hover and rejects universally unavailable APIs", () => {
-  const fileName = resolve(projectRoot, "examples/interop/c/availability-metadata-test.z");
+  const fileName = resolve(projectRoot, "examples/interop/c/availability-metadata-test.zs");
   const source = `
     import native from "../../../tests/fixtures/z-availability.h";
     function main(): i32 { return native.z_legacy(1); }
@@ -1105,7 +1105,7 @@ test("checks native availability against an explicit deployment target", () => {
   if (process.platform !== "darwin") return;
   const directory = mkdtempSync("/tmp/z-deployment-target-");
   const header = resolve(directory, "z-availability.h");
-  const sourceFile = resolve(directory, "main.z");
+  const sourceFile = resolve(directory, "main.zs");
   const manifest = resolve(directory, "z.json");
   writeFileSync(header, readFileSync(resolve(projectRoot, "tests/fixtures/z-availability.h"), "utf8"));
   const sourceFor = (name: string) => `
@@ -1156,7 +1156,7 @@ test("checks native availability against an explicit deployment target", () => {
 
 test("threads deployment targets and warnings through CLI native execution", () => {
   if (process.platform !== "darwin") return;
-  const example = resolve(projectRoot, "examples/interop/c/deployment-target/main.z");
+  const example = resolve(projectRoot, "examples/interop/c/deployment-target/main.zs");
   const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stderr, /warning\[Z0804\]: foreign declaration "z_legacy" is deprecated in macOS 13\.0/);
@@ -1165,13 +1165,13 @@ test("threads deployment targets and warnings through CLI native execution", () 
 
 test("adds explicit target native libraries without exposing raw linker flags", () => {
   const directory = mkdtempSync("/tmp/z-native-link-");
-  const sourceFile = resolve(directory, "main.z");
+  const sourceFile = resolve(directory, "main.zs");
   const manifest = resolve(directory, "z.json");
   const source = "function main(): i32 { return 0; }";
   writeFileSync(sourceFile, source);
   writeFileSync(manifest, JSON.stringify({
     target: {
-      entry: "main.z",
+      entry: "main.zs",
       link: { libraries: ["sqlite3", "sqlite3"] },
     },
   }));
@@ -1180,7 +1180,7 @@ test("adds explicit target native libraries without exposing raw linker flags", 
   assert.deepEqual(artifact.nativeLinkerArguments, ["-lsqlite3"]);
 
   writeFileSync(manifest, JSON.stringify({
-    target: { entry: "main.z", link: { libraries: ["-Wl,unsafe"] } },
+    target: { entry: "main.zs", link: { libraries: ["-Wl,unsafe"] } },
   }));
   assert.match(
     diagnostics(source, sourceFile)[0]?.message ?? "",
@@ -1191,7 +1191,7 @@ test("adds explicit target native libraries without exposing raw linker flags", 
 test("rejects malformed or unmatched Z declarations before FIIR reaches sema", () => {
   const directory = mkdtempSync("/tmp/z-fiir-notes-");
   const header = resolve(directory, "contract.h");
-  const sourceFile = resolve(directory, "main.z");
+  const sourceFile = resolve(directory, "main.zs");
   const source = `
     import contract from "contract.h";
     function main(): i32 { return contract.known(); }
@@ -1226,7 +1226,7 @@ test("rejects malformed or unmatched Z declarations before FIIR reaches sema", (
 });
 
 test("imports C typedefs, records, enums, constants, and qualified signatures", () => {
-  const example = resolve(projectRoot, "examples/interop/c/foreign-types.z");
+  const example = resolve(projectRoot, "examples/interop/c/foreign-types.zs");
   const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stdout, "point=13,20 width=640 flags=7 id=42\n");
@@ -1254,14 +1254,14 @@ test("checks contextual literals and preserves exact integer expression types", 
       return 0;
     }
   `;
-  const generated = compileToC(source, "integer-widths.z");
+  const generated = compileToC(source, "integer-widths.zs");
   assert.match(generated, /static uint16_t plus\(uint16_t value\)/);
   assert.match(generated, /const uint16_t result = z_checked_add_u16\(value, 3\);/);
   assert.match(generated, /return 4294967295U;/);
   assert.match(generated, /return 18446744073709551615ULL;/);
 
   assert.throws(
-    () => compileToC(source.replace("65535", "65536"), "integer-overflow.z"),
+    () => compileToC(source.replace("65535", "65536"), "integer-overflow.zs"),
     /integer literal 65536 does not fit u16/,
   );
 
@@ -1272,7 +1272,7 @@ test("checks contextual literals and preserves exact integer expression types", 
     }
   `;
   assert.throws(
-    () => compileToC(inferredWide, "integer-default.z"),
+    () => compileToC(inferredWide, "integer-default.zs"),
     /does not fit default i32; add an explicit integer type/,
   );
 });
@@ -1298,7 +1298,7 @@ test("contextually types signed literals at their destination width", () => {
       return 1;
     }
   `;
-  const generated = compileToC(source, "signed-context.z");
+  const generated = compileToC(source, "signed-context.zs");
   assert.match(generated, /const int8_t narrow = INT8_MIN;/);
   assert.match(generated, /const int16_t positive = 32767;/);
   assert.match(generated, /const float fraction = \(-1\.5F\);/);
@@ -1307,26 +1307,26 @@ test("contextually types signed literals at their destination width", () => {
   assert.match(generated, /\.value = INT8_MIN/);
 
   const narrowLiteral = source.indexOf("128", source.indexOf("narrow:")) + 1;
-  assert.match(hover(source, "signed-context.z", narrowLiteral)?.contents.value ?? "", /128: i8/);
+  assert.match(hover(source, "signed-context.zs", narrowLiteral)?.contents.value ?? "", /128: i8/);
 
   assert.throws(
-    () => compileToC(source.replace("const narrow: i8 = -128", "const narrow: i8 = -129"), "signed-too-small.z"),
+    () => compileToC(source.replace("const narrow: i8 = -128", "const narrow: i8 = -129"), "signed-too-small.zs"),
     /integer literal -129 does not fit i8/,
   );
   assert.throws(
-    () => compileToC(source.replace("const narrow: i8 = -128", "const narrow: u8 = -1"), "unsigned-negative.z"),
+    () => compileToC(source.replace("const narrow: i8 = -128", "const narrow: u8 = -1"), "unsigned-negative.zs"),
     /integer literal -1 does not fit u8/,
   );
 
   const directory = mkdtempSync("/tmp/z-signed-context-");
-  const fileName = resolve(directory, "main.z");
+  const fileName = resolve(directory, "main.zs");
   writeFileSync(fileName, source);
   const result = spawnSync(process.execPath, [cli, "run", fileName], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
 });
 
 test("checks integer arithmetic and provides explicit wrapping and saturation", () => {
-  const example = resolve(projectRoot, "examples/language/basics/integer-safety.z");
+  const example = resolve(projectRoot, "examples/language/basics/integer-safety.zs");
   const source = readFileSync(example, "utf8");
   const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
@@ -1355,9 +1355,9 @@ test("checks integer arithmetic and provides explicit wrapping and saturation", 
   assert.match(wrappingCompletion?.detail ?? "", /wraps modulo the integer width/);
 
   const constantCases = [
-    ["function main(): i32 { return 2147483647 + 1; }", "constant-add-overflow.z", "Z0101", /overflows i32/],
-    ["function main(): i32 { return 10 / 0; }", "constant-divide-zero.z", "Z0102", /division by zero/],
-    ["function main(): i32 { return 1 << 32; }", "constant-shift-range.z", "Z0103", /outside the range for i32/],
+    ["function main(): i32 { return 2147483647 + 1; }", "constant-add-overflow.zs", "Z0101", /overflows i32/],
+    ["function main(): i32 { return 10 / 0; }", "constant-divide-zero.zs", "Z0102", /division by zero/],
+    ["function main(): i32 { return 1 << 32; }", "constant-shift-range.zs", "Z0103", /outside the range for i32/],
   ] as const;
   for (const [invalidSource, fileName, code, summary] of constantCases) {
     let caught: unknown;
@@ -1373,7 +1373,7 @@ test("checks integer arithmetic and provides explicit wrapping and saturation", 
   }
 
   const directory = mkdtempSync("/tmp/z-integer-trap-");
-  const trapSource = resolve(directory, "main.z");
+  const trapSource = resolve(directory, "main.zs");
   writeFileSync(trapSource, `
     function overflow(value: i32): i32 { return value + 1; }
     function main(): i32 { return overflow(2147483647); }
@@ -1383,7 +1383,7 @@ test("checks integer arithmetic and provides explicit wrapping and saturation", 
 });
 
 test("runs floating-point values and typed bitwise option masks", () => {
-  const example = resolve(projectRoot, "examples/interop/c/apple-groundwork.z");
+  const example = resolve(projectRoot, "examples/interop/c/apple-groundwork.zs");
   const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stdout, "");
@@ -1403,7 +1403,7 @@ test("runs floating-point values and typed bitwise option masks", () => {
 });
 
 test("preserves C++ namespaces and resolves overload sets", () => {
-  const example = resolve(projectRoot, "examples/interop/cpp/cpp-interop.z");
+  const example = resolve(projectRoot, "examples/interop/cpp/cpp-interop.zs");
   const source = readFileSync(example, "utf8");
   const artifact = compileToNative(source, example);
   assert.equal(artifact.language, "c++");
@@ -1468,7 +1468,7 @@ test("preserves C++ namespaces and resolves overload sets", () => {
 });
 
 test("selectively imports and aliases C++ namespaces", () => {
-  const example = resolve(projectRoot, "examples/interop/cpp/cpp-selective-interop.z");
+  const example = resolve(projectRoot, "examples/interop/cpp/cpp-selective-interop.zs");
   const source = readFileSync(example, "utf8");
   const artifact = compileToNative(source, example);
   assert.equal(artifact.language, "c++");
@@ -1509,7 +1509,7 @@ test("selectively imports and aliases C++ namespaces", () => {
 });
 
 test("declares, copies, aggregates, and destroys foreign C++ values", () => {
-  const example = resolve(projectRoot, "examples/interop/cpp/foreign-values.z");
+  const example = resolve(projectRoot, "examples/interop/cpp/foreign-values.zs");
   const source = readFileSync(example, "utf8");
   const artifact = compileToNative(source, example);
   assert.equal(artifact.language, "c++");
@@ -1612,7 +1612,7 @@ test("declares, copies, aggregates, and destroys foreign C++ values", () => {
 
   const invalidDirectory = mkdtempSync("/tmp/z-foreign-value-lifecycle-");
   const invalidHeader = resolve(invalidDirectory, "foreign-values.hpp");
-  const invalidSource = resolve(invalidDirectory, "main.z");
+  const invalidSource = resolve(invalidDirectory, "main.zs");
   writeFileSync(invalidHeader, readFileSync(resolve(projectRoot, "tests/fixtures/foreign-values.hpp"), "utf8"));
   writeFileSync(`${invalidHeader}.zd`, `
     declare module "foreign-values.hpp" {
@@ -1629,7 +1629,7 @@ test("declares, copies, aggregates, and destroys foreign C++ values", () => {
 
   const moveOnlyDirectory = mkdtempSync("/tmp/z-foreign-move-only-");
   const moveOnlyHeader = resolve(moveOnlyDirectory, "move-only.hpp");
-  const moveOnlySource = resolve(moveOnlyDirectory, "main.z");
+  const moveOnlySource = resolve(moveOnlyDirectory, "main.zs");
   writeFileSync(moveOnlyHeader, `
     namespace zcpp {
       class MoveOnly {
@@ -1659,7 +1659,7 @@ test("declares, copies, aggregates, and destroys foreign C++ values", () => {
 });
 
 test("moves non-copyable C++ values through owned Z bindings and value structs", () => {
-  const example = resolve(projectRoot, "examples/interop/cpp/cpp-move-only.z");
+  const example = resolve(projectRoot, "examples/interop/cpp/cpp-move-only.zs");
   const source = readFileSync(example, "utf8");
   const generated = compileToNative(source, example).source;
   assert.match(generated, /#include <utility>/);
@@ -1717,7 +1717,7 @@ test("moves non-copyable C++ values through owned Z bindings and value structs",
 });
 
 test("stores move-only C++ values in Array and named enum payloads", () => {
-  const arrayExample = resolve(projectRoot, "examples/interop/cpp/cpp-move-only-array.z");
+  const arrayExample = resolve(projectRoot, "examples/interop/cpp/cpp-move-only-array.zs");
   const arraySource = readFileSync(arrayExample, "utf8");
   const arrayGenerated = compileToNative(arraySource, arrayExample).source;
   assert.match(arrayGenerated, /#include <memory>/);
@@ -1736,7 +1736,7 @@ test("stores move-only C++ values in Array and named enum payloads", () => {
   assert.equal(arrayResult.status, 0, arrayResult.stderr);
   assert.match(arrayResult.stdout, /^array answer=42, moves=[1-9][0-9]*, live=0\n$/);
 
-  const enumExample = resolve(projectRoot, "examples/interop/cpp/cpp-move-only-enum.z");
+  const enumExample = resolve(projectRoot, "examples/interop/cpp/cpp-move-only-enum.zs");
   const enumSource = readFileSync(enumExample, "utf8");
   const enumGenerated = compileToNative(enumSource, enumExample).source;
   assert.match(enumGenerated, /Z_NativeState\(Z_NativeState &&other\)/);
@@ -1769,7 +1769,7 @@ test("stores move-only C++ values in Array and named enum payloads", () => {
   assert.match(elementDiagnostic.message, /cannot move an ownership-bearing field or element out of its owner/);
 
   const optionDirectory = mkdtempSync("/tmp/z-native-option-");
-  const optionFile = resolve(optionDirectory, "main.z");
+  const optionFile = resolve(optionDirectory, "main.zs");
   const compilerOption = `
     import native from ${JSON.stringify(resolve(projectRoot, "tests/fixtures/move-only.hpp"))};
 
@@ -1834,7 +1834,7 @@ test("stores move-only C++ values in Array and named enum payloads", () => {
 });
 
 test("maps C++ references and receiver qualifiers onto existing Z capabilities", () => {
-  const example = resolve(projectRoot, "examples/interop/cpp/cpp-references.z");
+  const example = resolve(projectRoot, "examples/interop/cpp/cpp-references.zs");
   const source = readFileSync(example, "utf8");
   const analysis = analyzeSource(source, example);
   const module = analysis.foreignModules.get("native")!;
@@ -1928,7 +1928,7 @@ test("maps C++ references and receiver qualifiers onto existing Z capabilities",
 });
 
 test("imports C++ constructors and static methods as direct type-level calls", () => {
-  const example = resolve(projectRoot, "examples/interop/cpp/cpp-callables.z");
+  const example = resolve(projectRoot, "examples/interop/cpp/cpp-callables.zs");
   const source = readFileSync(example, "utf8");
   const generated = compileToNative(source, example).source;
   assert.match(generated, /const zcpp::ManagedValue direct = zcpp::ManagedValue\(20\);/);
@@ -1984,7 +1984,7 @@ test("imports C++ constructors and static methods as direct type-level calls", (
 
 test("imports AppKit classes and emits an ARC Objective-C NSWindow program", () => {
   if (process.platform !== "darwin") return;
-  const example = resolve(projectRoot, "examples/interop/objc/nswindow.z");
+  const example = resolve(projectRoot, "examples/interop/objc/nswindow.zs");
   const source = readFileSync(example, "utf8");
   const artifact = compileToNative(source, example);
 
@@ -2045,7 +2045,7 @@ test("imports AppKit classes and emits an ARC Objective-C NSWindow program", () 
 
 test("narrows nullable Objective-C references before member access", () => {
   if (process.platform !== "darwin") return;
-  const fileName = resolve(projectRoot, "objc-nullability.z");
+  const fileName = resolve(projectRoot, "objc-nullability.zs");
   const source = `
     import AppKit from "AppKit/AppKit.h";
     function main(): i32 {
@@ -2134,7 +2134,7 @@ test("narrows nullable Objective-C references before member access", () => {
       return 0;
     }
   `;
-  const wrongDiagnostic = diagnostics(wrongOptional, "value-nullability.z")[0];
+  const wrongDiagnostic = diagnostics(wrongOptional, "value-nullability.zs")[0];
   assert.match(wrongDiagnostic?.message ?? "", /i32 \| null.*currently requires an imported Objective-C reference type/);
 
   const unsafeArgument = `
@@ -2153,7 +2153,7 @@ test("narrows nullable Objective-C references before member access", () => {
 
 test("lifts nullable Objective-C references into Option values", () => {
   if (process.platform !== "darwin") return;
-  const example = resolve(projectRoot, "examples/interop/objc/objc-nullability.z");
+  const example = resolve(projectRoot, "examples/interop/objc/objc-nullability.zs");
   const source = readFileSync(example, "utf8");
   const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
@@ -2228,7 +2228,7 @@ test("lifts nullable Objective-C references into Option values", () => {
 
 test("compiles a desktop ownership slice and preserves its current pressure walls", () => {
   if (process.platform !== "darwin") return;
-  const example = resolve(projectRoot, "examples/interop/objc/desktop-ownership/main.z");
+  const example = resolve(projectRoot, "examples/interop/objc/desktop-ownership/main.zs");
   const source = readFileSync(example, "utf8");
   const artifact = compileToNative(source, example);
   assert.equal(artifact.language, "objective-c");
@@ -2258,7 +2258,7 @@ test("compiles a desktop ownership slice and preserves its current pressure wall
 
 test("builds the Z Notes AppKit and sqlite3 application skeleton", () => {
   if (process.platform !== "darwin") return;
-  const application = resolve(projectRoot, "examples/applications/z-notes/main.z");
+  const application = resolve(projectRoot, "examples/applications/z-notes/main.zs");
   const source = readFileSync(application, "utf8");
   const artifact = compileToNative(source, application);
   assert.equal(artifact.language, "objective-c");
@@ -2270,7 +2270,7 @@ test("builds the Z Notes AppKit and sqlite3 application skeleton", () => {
   assert.match(artifact.source, /\[\[NSWindow alloc\] initWithContentRect/);
   assert.match(artifact.source, /Z_Option_usize_some/);
 
-  const smoke = resolve(projectRoot, "examples/applications/z-notes/smoke.z");
+  const smoke = resolve(projectRoot, "examples/applications/z-notes/smoke.zs");
   const result = spawnSync(process.execPath, [cli, "run", smoke], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /^z-notes sqlite=[0-9.]+, notes=1, database=true\n$/);
@@ -2278,7 +2278,7 @@ test("builds the Z Notes AppKit and sqlite3 application skeleton", () => {
   const selectionUse = source.indexOf("selectNote(0)") + 1;
   assert.match(hover(source, application, selectionUse)?.contents.value ?? "", /selectNote\(index: usize\): boolean/);
 
-  const persistence = resolve(projectRoot, "examples/applications/z-notes/persistence.z");
+  const persistence = resolve(projectRoot, "examples/applications/z-notes/persistence.zs");
   const persistenceSource = readFileSync(persistence, "utf8");
   const databaseOffset = persistenceSource.indexOf("database;") + 2;
   assert.match(hover(persistenceSource, persistence, databaseOffset)?.contents.value ?? "", /database: sqlite3 \* \| null/);
@@ -2297,7 +2297,7 @@ test("builds the Z Notes AppKit and sqlite3 application skeleton", () => {
   assert.match(definition(declarationSource, `file://${declarationFile}`, closeOffset)?.uri ?? "", /sqlite3\.h$/);
 
   const availabilityDirectory = mkdtempSync("/tmp/z-appkit-availability-");
-  const availabilityFile = resolve(availabilityDirectory, "main.z");
+  const availabilityFile = resolve(availabilityDirectory, "main.zs");
   const availabilitySource = `
     import AppKit from "AppKit/AppKit.h";
     function main(): i32 {
@@ -2316,7 +2316,7 @@ test("builds the Z Notes AppKit and sqlite3 application skeleton", () => {
 }, 10_000);
 
 test("runs an application-shaped document workspace across ownership and interop features", () => {
-  const example = resolve(projectRoot, "examples/applications/document-workspace/main.z");
+  const example = resolve(projectRoot, "examples/applications/document-workspace/main.zs");
   const source = readFileSync(example, "utf8");
   const artifact = compileToNative(source, example);
   assert.equal(artifact.language, "c++");
@@ -2336,7 +2336,7 @@ test("runs an application-shaped document workspace across ownership and interop
 });
 
 test("compares scoped document borrows with independently owned snapshots", () => {
-  const example = resolve(projectRoot, "examples/interop/objc/desktop-ownership/ownership-views.z");
+  const example = resolve(projectRoot, "examples/interop/objc/desktop-ownership/ownership-views.zs");
   const source = readFileSync(example, "utf8");
   const generated = compileToC(source, example);
   assert.match(
@@ -2385,7 +2385,7 @@ test("keeps receiver-tied views read-only, local, and value-struct-owned", () =>
       return item.value;
     }
   `;
-  assert.equal(diagnostics(liveMutation, "view-live-mutation.z")[0].code, "Z0205");
+  assert.equal(diagnostics(liveMutation, "view-live-mutation.zs")[0].code, "Z0205");
 
   const mutationAfterBranch = `${base}
     function main(): i32 {
@@ -2397,7 +2397,7 @@ test("keeps receiver-tied views read-only, local, and value-struct-owned", () =>
       return item.value;
     }
   `;
-  assert.equal(diagnostics(mutationAfterBranch, "view-live-after-branch.z")[0].code, "Z0205");
+  assert.equal(diagnostics(mutationAfterBranch, "view-live-after-branch.zs")[0].code, "Z0205");
 
   const capture = `${base}
     function main(): i32 {
@@ -2408,7 +2408,7 @@ test("keeps receiver-tied views read-only, local, and value-struct-owned", () =>
       return read();
     }
   `;
-  const captureDiagnostic = diagnostics(capture, "view-capture.z")[0];
+  const captureDiagnostic = diagnostics(capture, "view-capture.zs")[0];
   assert.equal(captureDiagnostic.code, "Z0206");
   assert.match(captureDiagnostic.message, /proven nonescaping closure/);
 
@@ -2423,15 +2423,15 @@ test("keeps receiver-tied views read-only, local, and value-struct-owned", () =>
       return observed - 1;
     }
   `;
-  assert.equal(diagnostics(inlineCapture, "view-inline-capture.z").length, 0);
+  assert.equal(diagnostics(inlineCapture, "view-inline-capture.zs").length, 0);
   const inlineDirectory = mkdtempSync("/tmp/z-view-inline-capture-");
-  const inlineFile = resolve(inlineDirectory, "main.z");
+  const inlineFile = resolve(inlineDirectory, "main.zs");
   writeFileSync(inlineFile, inlineCapture);
   const inlineResult = spawnSync(process.execPath, [cli, "run", inlineFile], { encoding: "utf8" });
   assert.equal(inlineResult.status, 0, inlineResult.stderr);
   const capturedViewOffset = inlineCapture.indexOf("item.value") + 1;
   assert.match(
-    hover(inlineCapture, "view-inline-capture.z", capturedViewOffset)?.contents.value ?? "",
+    hover(inlineCapture, "view-inline-capture.zs", capturedViewOffset)?.contents.value ?? "",
     /item: view Item/,
   );
 
@@ -2439,7 +2439,7 @@ test("keeps receiver-tied views read-only, local, and value-struct-owned", () =>
     "function inspect(in operation: () => i32)",
     "function inspect(operation: () => i32)",
   );
-  const escapingCaptureDiagnostic = diagnostics(escapingCapture, "view-escaping-capture.z")[0];
+  const escapingCaptureDiagnostic = diagnostics(escapingCapture, "view-escaping-capture.zs")[0];
   assert.equal(escapingCaptureDiagnostic.code, "Z0212");
   assert.match(escapingCaptureDiagnostic.message, /borrowed capturing closure cannot become a function value/);
 
@@ -2452,11 +2452,11 @@ test("keeps receiver-tied views read-only, local, and value-struct-owned", () =>
       return inspect(item);
     }
   `;
-  assert.equal(diagnostics(forwarded, "view-forward.z").length, 0);
-  assert.match(compileToC(forwarded, "view-forward.z"), /return inspect\(item\);/);
+  assert.equal(diagnostics(forwarded, "view-forward.zs").length, 0);
+  assert.match(compileToC(forwarded, "view-forward.zs"), /return inspect\(item\);/);
 
   const ownedForward = forwarded.replace("function inspect(in item: Item)", "function inspect(item: Item)");
-  const forwardDiagnostic = diagnostics(ownedForward, "view-owned-forward.z")[0];
+  const forwardDiagnostic = diagnostics(ownedForward, "view-owned-forward.zs")[0];
   assert.equal(forwardDiagnostic.code, "Z0206");
   assert.match(forwardDiagnostic.message, /only enter a synchronous in parameter/);
 
@@ -2468,7 +2468,7 @@ test("keeps receiver-tied views read-only, local, and value-struct-owned", () =>
     }
     function main(): i32 { return 0; }
   `;
-  const classDiagnostic = diagnostics(classOwner, "view-class-owner.z")[0];
+  const classDiagnostic = diagnostics(classOwner, "view-class-owner.zs")[0];
   assert.equal(classDiagnostic.code, "Z0206");
   assert.match(classDiagnostic.message, /value-struct owner/);
 
@@ -2483,13 +2483,13 @@ test("keeps receiver-tied views read-only, local, and value-struct-owned", () =>
     }
     function main(): i32 { return 0; }
   `;
-  const projectionDiagnostic = diagnostics(wrongProjection, "view-wrong-projection.z")[0];
+  const projectionDiagnostic = diagnostics(wrongProjection, "view-wrong-projection.zs")[0];
   assert.equal(projectionDiagnostic.code, "Z0206");
   assert.match(projectionDiagnostic.message, /derived directly from this/);
 });
 
 test("allocates stable owner-tied views in Arena and cleans them newest-first", () => {
-  const example = resolve(projectRoot, "examples/language/ownership/arena.z");
+  const example = resolve(projectRoot, "examples/language/ownership/arena.zs");
   const source = readFileSync(example, "utf8");
   const generated = compileToC(source, example);
   assert.match(generated, /typedef struct Z_Arena/);
@@ -2516,7 +2516,7 @@ test("allocates stable owner-tied views in Arena and cleans them newest-first", 
     "scratch.reset();",
     "scratch.reset();\n  const invalid = describe(body);",
   );
-  const resetDiagnostic = diagnostics(liveReset, "arena-live-reset.z")[0];
+  const resetDiagnostic = diagnostics(liveReset, "arena-live-reset.zs")[0];
   assert.equal(resetDiagnostic.code, "Z0205");
   assert.match(resetDiagnostic.message, /cannot reset .*scratch.* while view .*body.* is live/);
 
@@ -2524,7 +2524,7 @@ test("allocates stable owner-tied views in Arena and cleans them newest-first", 
     "let scratch = Arena({ initialCapacity: 65536 });",
     "const scratch = Arena({ initialCapacity: 65536 });",
   );
-  const immutableDiagnostic = diagnostics(immutable, "arena-const.z")[0];
+  const immutableDiagnostic = diagnostics(immutable, "arena-const.zs")[0];
   assert.equal(immutableDiagnostic.code, "Z0205");
   assert.match(immutableDiagnostic.message, /requires addressable let storage/);
 
@@ -2549,7 +2549,7 @@ test("allocates stable owner-tied views in Arena and cleans them newest-first", 
   );
 
   const invalidOptions = source.replace("initialCapacity: 65536", "capacity: 65536");
-  assert.match(diagnostics(invalidOptions, "arena-options.z")[0].message, /require exactly initialCapacity/);
+  assert.match(diagnostics(invalidOptions, "arena-options.zs")[0].message, /require exactly initialCapacity/);
 
   const liveMove = `
     import { Arena } from "std/memory";
@@ -2562,7 +2562,7 @@ test("allocates stable owner-tied views in Arena and cleans them newest-first", 
       return item.value;
     }
   `;
-  const moveDiagnostic = diagnostics(liveMove, "arena-live-move.z")[0];
+  const moveDiagnostic = diagnostics(liveMove, "arena-live-move.zs")[0];
   assert.equal(moveDiagnostic.code, "Z0205");
   assert.match(moveDiagnostic.message, /cannot move .*arena.* while view .*item.* is live/);
 
@@ -2576,7 +2576,7 @@ test("allocates stable owner-tied views in Arena and cleans them newest-first", 
     }
   `;
   assert.match(
-    diagnostics(directClass, "arena-class-root.z")[0].message,
+    diagnostics(directClass, "arena-class-root.zs")[0].message,
     /does not directly root reference-identity objects/,
   );
 
@@ -2589,7 +2589,7 @@ test("allocates stable owner-tied views in Arena and cleans them newest-first", 
       return item.value;
     }
   `;
-  const asyncDiagnostic = diagnostics(asyncArena, "arena-async.z")[0];
+  const asyncDiagnostic = diagnostics(asyncArena, "arena-async.zs")[0];
   assert.equal(asyncDiagnostic.code, "Z0704");
   assert.match(asyncDiagnostic.message, /cannot cross suspension/);
 
@@ -2605,11 +2605,11 @@ test("allocates stable owner-tied views in Arena and cleans them newest-first", 
       return observed - 42;
     }
   `;
-  const trivialGenerated = compileToC(trivial, "arena-trivial.z");
+  const trivialGenerated = compileToC(trivial, "arena-trivial.zs");
   assert.doesNotMatch(trivialGenerated, /z_arena_create_Point_cleanup/);
   assert.doesNotMatch(trivialGenerated, /z_arena_register_cleanup\(arena, stored/);
   const trivialDirectory = mkdtempSync("/tmp/z-arena-trivial-");
-  const trivialFile = resolve(trivialDirectory, "main.z");
+  const trivialFile = resolve(trivialDirectory, "main.zs");
   writeFileSync(trivialFile, trivial);
   const trivialResult = spawnSync(process.execPath, [cli, "run", trivialFile], { encoding: "utf8" });
   assert.equal(trivialResult.status, 0, trivialResult.stderr);
@@ -2631,13 +2631,13 @@ test("allocates stable owner-tied views in Arena and cleans them newest-first", 
     }
   `;
   const builtinDirectory = mkdtempSync("/tmp/z-arena-builtins-");
-  const builtinFile = resolve(builtinDirectory, "main.z");
+  const builtinFile = resolve(builtinDirectory, "main.zs");
   writeFileSync(builtinFile, builtinViews);
   const builtinResult = spawnSync(process.execPath, [cli, "run", builtinFile], { encoding: "utf8" });
   assert.equal(builtinResult.status, 0, builtinResult.stderr);
 
   const arcDirectory = mkdtempSync("/tmp/z-arena-arc-");
-  const arcFile = resolve(arcDirectory, "main.z");
+  const arcFile = resolve(arcDirectory, "main.zs");
   writeFileSync(arcFile, `
     import console from "std/console";
     import { Arena } from "std/memory";
@@ -2658,7 +2658,7 @@ test("allocates stable owner-tied views in Arena and cleans them newest-first", 
   assert.equal(arcResult.status, 0, arcResult.stderr);
   assert.equal(arcResult.stdout, "session 7\nreleased session 7\n");
 
-  const nativeExample = resolve(projectRoot, "examples/interop/cpp/cpp-arena.z");
+  const nativeExample = resolve(projectRoot, "examples/interop/cpp/cpp-arena.zs");
   const nativeSource = readFileSync(nativeExample, "utf8");
   const nativeGenerated = compileToC(nativeSource, nativeExample);
   assert.match(nativeGenerated, /std::construct_at\(stored, std::move\(value\)\)/);
@@ -2668,7 +2668,7 @@ test("allocates stable owner-tied views in Arena and cleans them newest-first", 
   assert.equal(nativeResult.stdout, "arena answer=42, live before=2, live after=0\n");
 
   const copyDirectory = mkdtempSync("/tmp/z-arena-copy-raii-");
-  const copyFile = resolve(copyDirectory, "main.z");
+  const copyFile = resolve(copyDirectory, "main.zs");
   const copyHeader = resolve(projectRoot, "tests/fixtures/foreign-values.hpp");
   writeFileSync(copyFile, `
     import console from "std/console";
@@ -2721,8 +2721,8 @@ test("returns zero-overhead optional receiver-tied views through Option and matc
       return observed - 22;
     }
   `;
-  assert.deepEqual(diagnostics(source, "optional-view.z"), []);
-  const generated = compileToC(source, "optional-view.z");
+  assert.deepEqual(diagnostics(source, "optional-view.zs"), []);
+  const generated = compileToC(source, "optional-view.zs");
   assert.match(generated, /typedef const Z_Item \*Z_Option___z_view_3a_Item;/);
   assert.match(generated, /Z_Option___z_view_3a_Item Z_Store_find\(const Z_Store \*self, int32_t id\)/);
   assert.match(generated, /return &\(\(\(self->items\)\.data\[/);
@@ -2739,7 +2739,7 @@ test("returns zero-overhead optional receiver-tied views through Option and matc
     "some(item) => item.value;",
     "some(item) => { store.append(Item({ id: 3, value: 24 })); select item.value; }",
   );
-  const mutationDiagnostic = diagnostics(liveMutation, "optional-view-live-mutation.z")[0];
+  const mutationDiagnostic = diagnostics(liveMutation, "optional-view-live-mutation.zs")[0];
   assert.equal(mutationDiagnostic.code, "Z0205");
   assert.match(mutationDiagnostic.message, /cannot mutate .*store.* while view .*item.* is live/);
 
@@ -2747,10 +2747,10 @@ test("returns zero-overhead optional receiver-tied views through Option and matc
     "some(item) => item.value;",
     "some(item) => { const value = item.value; store.append(Item({ id: 3, value: 24 })); select value; }",
   );
-  assert.deepEqual(diagnostics(mutationAfterUse, "optional-view-last-use.z"), []);
+  assert.deepEqual(diagnostics(mutationAfterUse, "optional-view-last-use.zs"), []);
 
   const consumingMatch = source.replace("match (in found)", "match (found)");
-  const matchDiagnostic = diagnostics(consumingMatch, "optional-view-consuming-match.z")[0];
+  const matchDiagnostic = diagnostics(consumingMatch, "optional-view-consuming-match.zs")[0];
   assert.equal(matchDiagnostic.code, "Z0206");
   assert.match(matchDiagnostic.message, /match \(in value\)/);
 
@@ -2759,19 +2759,19 @@ test("returns zero-overhead optional receiver-tied views through Option and matc
     struct Invalid { found: Option<view Item>; }
     function main(): i32 { return 0; }
   `;
-  const storageDiagnostic = diagnostics(storedView, "optional-view-storage.z")[0];
+  const storageDiagnostic = diagnostics(storedView, "optional-view-storage.zs")[0];
   assert.equal(storageDiagnostic.code, "Z0206");
   assert.match(storageDiagnostic.message, /cannot be stored in fields/);
 
   const bindingOffset = source.indexOf("found =") + 1;
-  assert.match(hover(source, "optional-view.z", bindingOffset)?.contents.value ?? "", /found: Option<view Item>.*view of store/);
+  assert.match(hover(source, "optional-view.zs", bindingOffset)?.contents.value ?? "", /found: Option<view Item>.*view of store/);
   const payloadOffset = source.indexOf("some(item)") + "some(".length + 1;
-  assert.match(hover(source, "optional-view.z", payloadOffset)?.contents.value ?? "", /item: view Item/);
+  assert.match(hover(source, "optional-view.zs", payloadOffset)?.contents.value ?? "", /item: view Item/);
 });
 
 test("retains owned Z closure environments across Objective-C blocks", () => {
   if (process.platform !== "darwin") return;
-  const example = resolve(projectRoot, "tests/fixtures/objc-blocks.z");
+  const example = resolve(projectRoot, "tests/fixtures/objc-blocks.zs");
   const source = readFileSync(example, "utf8");
   const artifact = compileToNative(source, example);
   assert.equal(artifact.language, "objective-c");
@@ -2793,7 +2793,7 @@ test("retains owned Z closure environments across Objective-C blocks", () => {
 
 test("registers persistent Objective-C event callbacks with explicit token cleanup", () => {
   if (process.platform !== "darwin") return;
-  const fixture = resolve(projectRoot, "tests/fixtures/objc-notifications.z");
+  const fixture = resolve(projectRoot, "tests/fixtures/objc-notifications.zs");
   const source = readFileSync(fixture, "utf8");
   const artifact = compileToNative(source, fixture);
   assert.equal(artifact.language, "objective-c");
@@ -2822,7 +2822,7 @@ test("registers persistent Objective-C event callbacks with explicit token clean
     true,
   );
 
-  const appKitExample = resolve(projectRoot, "examples/interop/objc/appkit-events.z");
+  const appKitExample = resolve(projectRoot, "examples/interop/objc/appkit-events.zs");
   const appKitSource = readFileSync(appKitExample, "utf8");
   const appKitArtifact = compileToNative(appKitSource, appKitExample);
   assert.match(appKitArtifact.source, /_z_argument_[0-9]+ = NSWindowDidBecomeKeyNotification;/);
@@ -2866,7 +2866,7 @@ test("registers persistent Objective-C event callbacks with explicit token clean
 
 test("copies owned Z strings across NSString boundaries without losing embedded nulls", () => {
   if (process.platform !== "darwin") return;
-  const example = resolve(projectRoot, "tests/fixtures/objc-strings.z");
+  const example = resolve(projectRoot, "tests/fixtures/objc-strings.zs");
   const source = readFileSync(example, "utf8");
   const artifact = compileToNative(source, example);
   assert.equal(artifact.language, "objective-c");
@@ -2907,7 +2907,7 @@ test("imports and executes Swift through its generated Objective-C compatibility
       return 0;
     }
   `;
-  const zSource = resolve(directory, "swift-interop.z");
+  const zSource = resolve(directory, "swift-interop.zs");
   writeFileSync(zSource, source);
   const artifact = compileToNative(source, zSource);
   assert.equal(artifact.language, "objective-c");
@@ -2955,7 +2955,7 @@ test("imports and executes Swift through its generated Objective-C compatibility
 
 test("builds a declared Swift target for ordinary CLI and editor workflows", () => {
   if (process.platform !== "darwin") return;
-  const example = resolve(projectRoot, "examples/interop/swift/swift-interop/main.z");
+  const example = resolve(projectRoot, "examples/interop/swift/swift-interop/main.zs");
   const source = readFileSync(example, "utf8");
   const artifact = compileToNative(source, example);
   assert.equal(artifact.language, "objective-c");
@@ -2980,10 +2980,10 @@ test("builds a declared Swift target for ordinary CLI and editor workflows", () 
   assert.match(hover(source, example, addOffset)?.contents.value ?? "", /add\(amount: i32\): i32/);
 
   const invalidDirectory = mkdtempSync("/tmp/z-invalid-project-");
-  const invalidSource = resolve(invalidDirectory, "main.z");
+  const invalidSource = resolve(invalidDirectory, "main.zs");
   writeFileSync(invalidSource, "function main(): i32 { return 0; }");
   writeFileSync(resolve(invalidDirectory, "z.json"), JSON.stringify({
-    target: { entry: "main.z", swift: { module: "not-valid!", sources: ["Counter.swift"] } },
+    target: { entry: "main.zs", swift: { module: "not-valid!", sources: ["Counter.swift"] } },
   }));
   assert.throws(
     () => compileToNative(readFileSync(invalidSource, "utf8"), invalidSource),
@@ -2993,7 +2993,7 @@ test("builds a declared Swift target for ordinary CLI and editor workflows", () 
 
 test("imports and owns a Swift value through its generated C++ compatibility header", () => {
   if (process.platform !== "darwin") return;
-  const example = resolve(projectRoot, "examples/interop/swift/swift-value-interop/main.z");
+  const example = resolve(projectRoot, "examples/interop/swift/swift-value-interop/main.zs");
   const source = readFileSync(example, "utf8");
   const artifact = compileToNative(source, example);
   assert.equal(artifact.language, "c++");
@@ -3071,7 +3071,7 @@ test("imports and owns a Swift value through its generated C++ compatibility hea
 
 test("constructs Swift associated-value enum cases through generated C++ factories", () => {
   if (process.platform !== "darwin") return;
-  const example = resolve(projectRoot, "examples/interop/swift/swift-enum-interop/main.z");
+  const example = resolve(projectRoot, "examples/interop/swift/swift-enum-interop/main.zs");
   const source = readFileSync(example, "utf8");
   const artifact = compileToNative(source, example);
   assert.equal(artifact.language, "c++");
@@ -3136,14 +3136,14 @@ test("keeps labeled arguments reserved for Objective-C selectors", () => {
     function main(): i32 { return identity(value: 1); }
   `;
   assert.throws(
-    () => compileToC(source, "labeled-native-call.z"),
+    () => compileToC(source, "labeled-native-call.zs"),
     /labeled arguments are currently supported only for Objective-C method calls/,
   );
 });
 
 test("provides compiler-backed AppKit completion, labels, hover, diagnostics, and definitions", () => {
   if (process.platform !== "darwin") return;
-  const example = resolve(projectRoot, "examples/interop/objc/nswindow.z");
+  const example = resolve(projectRoot, "examples/interop/objc/nswindow.zs");
   const source = readFileSync(example, "utf8");
 
   const memberSource = source.replace("window.center();", "window.");
@@ -3247,7 +3247,7 @@ test("checks floating-point widths and integer-only bitwise operators", () => {
       return 0;
     }
   `;
-  assert.throws(() => compileToC(mismatch, "float-width.z"), /expected f32, found f64/);
+  assert.throws(() => compileToC(mismatch, "float-width.zs"), /expected f32, found f64/);
 
   const floatToInteger = `
     function main(): i32 {
@@ -3256,7 +3256,7 @@ test("checks floating-point widths and integer-only bitwise operators", () => {
     }
   `;
   assert.throws(
-    () => compileToC(floatToInteger, "float-to-integer.z"),
+    () => compileToC(floatToInteger, "float-to-integer.zs"),
     /floating-point literal 1\.5 cannot initialize i32/,
   );
 
@@ -3267,7 +3267,7 @@ test("checks floating-point widths and integer-only bitwise operators", () => {
     }
   `;
   assert.throws(
-    () => compileToC(floatMask, "float-mask.z"),
+    () => compileToC(floatMask, "float-mask.zs"),
     /operator "\|" requires matching integer operands/,
   );
 
@@ -3278,7 +3278,7 @@ test("checks floating-point widths and integer-only bitwise operators", () => {
       return 0;
     }
   `;
-  assert.match(compileToC(variadicFloat, "variadic-float.z"), /printf\("%\.1f", 1\.5\)/);
+  assert.match(compileToC(variadicFloat, "variadic-float.zs"), /printf\("%\.1f", 1\.5\)/);
 });
 
 test("accepts null only at explicitly nullable foreign boundaries", () => {
@@ -3290,13 +3290,13 @@ test("accepts null only at explicitly nullable foreign boundaries", () => {
     }
   `;
   assert.match(
-    compileToC(nullable, resolve(projectRoot, "nullable-null.z")),
+    compileToC(nullable, resolve(projectRoot, "nullable-null.zs")),
     /z_test_optional\(NULL\);/,
   );
 
   const nonnull = nullable.replace("z_test_optional", "z_test_use");
   assert.throws(
-    () => compileToC(nonnull, resolve(projectRoot, "nonnull-null.z")),
+    () => compileToC(nonnull, resolve(projectRoot, "nonnull-null.zs")),
     /C function "z_test_use" requires a non-null ZTestHandle \*/,
   );
 
@@ -3307,7 +3307,7 @@ test("accepts null only at explicitly nullable foreign boundaries", () => {
     }
   `;
   assert.throws(
-    () => compileToC(inferred, "inferred-null.z"),
+    () => compileToC(inferred, "inferred-null.zs"),
     /cannot infer a type from null; provide an explicitly nullable type/,
   );
 });
@@ -3321,7 +3321,7 @@ test("checks imported C record fields and enum arguments in Z", () => {
     }
   `;
   assert.throws(
-    () => compileToC(missingField, resolve(projectRoot, "foreign-record-fields.z")),
+    () => compileToC(missingField, resolve(projectRoot, "foreign-record-fields.zs")),
     /missing field "y" when constructing "geometry\.ZPoint"/,
   );
 
@@ -3334,13 +3334,13 @@ test("checks imported C record fields and enum arguments in Z", () => {
     }
   `;
   assert.throws(
-    () => compileToC(wrongEnum, resolve(projectRoot, "foreign-enum-argument.z")),
+    () => compileToC(wrongEnum, resolve(projectRoot, "foreign-enum-argument.zs")),
     /expected geometry\.ZDirection, found i32/,
   );
 });
 
 test("borrows and explicitly mutates imported C records through safe pointer modes", () => {
-  const example = resolve(projectRoot, "examples/interop/c/foreign-pointers.z");
+  const example = resolve(projectRoot, "examples/interop/c/foreign-pointers.zs");
   const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stdout, "before=10 after=11 point=5,6\n");
@@ -3383,7 +3383,7 @@ test("requires exact pointer modes and mutable storage at imported record bounda
   `;
   const uninitializedOutputC = compileToC(
     uninitializedOutput,
-    resolve(projectRoot, "foreign-record-uninitialized-out.z"),
+    resolve(projectRoot, "foreign-record-uninitialized-out.zs"),
   );
   assert.match(uninitializedOutputC, /ZPoint point;/);
   assert.match(uninitializedOutputC, /z_reset\(&\(point\)\);/);
@@ -3397,7 +3397,7 @@ test("requires exact pointer modes and mutable storage at imported record bounda
     }
   `;
   assert.throws(
-    () => compileToC(immutable, resolve(projectRoot, "foreign-record-const.z")),
+    () => compileToC(immutable, resolve(projectRoot, "foreign-record-const.zs")),
     /out argument "point" requires a mutable let binding/,
   );
 
@@ -3410,7 +3410,7 @@ test("requires exact pointer modes and mutable storage at imported record bounda
     }
   `;
   assert.throws(
-    () => compileToC(missingMode, resolve(projectRoot, "foreign-record-mode.z")),
+    () => compileToC(missingMode, resolve(projectRoot, "foreign-record-mode.zs")),
     /requires inout <mutable binding> for parameter 1/,
   );
 
@@ -3423,7 +3423,7 @@ test("requires exact pointer modes and mutable storage at imported record bounda
     }
   `;
   assert.throws(
-    () => compileToC(wrongMode, resolve(projectRoot, "foreign-record-wrong-mode.z")),
+    () => compileToC(wrongMode, resolve(projectRoot, "foreign-record-wrong-mode.zs")),
     /expects out point, found inout point/,
   );
 
@@ -3436,7 +3436,7 @@ test("requires exact pointer modes and mutable storage at imported record bounda
     }
   `;
   assert.throws(
-    () => compileToC(escapedModifier, "escaped-out.z"),
+    () => compileToC(escapedModifier, "escaped-out.zs"),
     /out is not valid for an owned value parameter/,
   );
 });
@@ -3451,7 +3451,7 @@ test("requires nullable C handles to be checked before borrowing", () => {
     }
   `;
   assert.throws(
-    () => compileToC(source, "foreign-nullability.z"),
+    () => compileToC(source, "foreign-nullability.zs"),
     /nullable FILE \* must be checked before passing it to "fputs"/,
   );
 });
@@ -3464,7 +3464,7 @@ test("does not treat mutable C strings as safe cstrings", () => {
     }
   `;
   assert.match(
-    compileToC(supportedSource, resolve(projectRoot, "foreign-boolean.z")),
+    compileToC(supportedSource, resolve(projectRoot, "foreign-boolean.zs")),
     /return z_test_bool\(true\);/,
   );
 
@@ -3475,7 +3475,7 @@ test("does not treat mutable C strings as safe cstrings", () => {
     }
   `;
   assert.throws(
-    () => compileToC(source, resolve(projectRoot, "mutable-cstring.z")),
+    () => compileToC(source, resolve(projectRoot, "mutable-cstring.zs")),
     /C function "z_test_mutate" uses unsupported type "char \*"/,
   );
 });
@@ -3486,15 +3486,15 @@ test("reports headers Clang cannot import", () => {
     function main(): i32 { return 0; }
   `;
   assert.throws(
-    () => compileToC(source, "missing-header.z"),
+    () => compileToC(source, "missing-header.zs"),
     /could not import header "z_header_that_does_not_exist\.h"/,
   );
 });
 
 test("reports source locations for parser errors", () => {
   assert.throws(
-    () => compileToC("function main(: i32 {}", "broken.z"),
-    /broken\.z:1:15: error:/,
+    () => compileToC("function main(: i32 {}", "broken.zs"),
+    /broken\.zs:1:15: error:/,
   );
 });
 
@@ -3505,8 +3505,8 @@ test("rejects unknown names during semantic analysis", () => {
     }
   `;
   assert.throws(
-    () => compileToC(source, "unknown.z"),
-    /unknown\.z:3:14: error: unknown name "missing"/,
+    () => compileToC(source, "unknown.zs"),
+    /unknown\.zs:3:14: error: unknown name "missing"/,
   );
 });
 
@@ -3520,8 +3520,8 @@ test("checks Z function arguments", () => {
     }
   `;
   assert.throws(
-    () => compileToC(source, "arguments.z"),
-    /arguments\.z:6:23: error: expected i32, found String/,
+    () => compileToC(source, "arguments.zs"),
+    /arguments\.zs:6:23: error: expected i32, found String/,
   );
 });
 
@@ -3535,12 +3535,12 @@ test("infers primitive local types for C emission", () => {
       return value;
     }
   `;
-  const generated = compileToC(source, "inference.z");
+  const generated = compileToC(source, "inference.zs");
   assert.match(generated, /const int32_t value = answer\(\);/);
 });
 
 test("compiles boolean expressions and path-complete if statements", () => {
-  const example = resolve(projectRoot, "examples/language/control-flow/control-flow.z");
+  const example = resolve(projectRoot, "examples/language/control-flow/control-flow.zs");
   const source = readFileSync(example, "utf8");
   const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
@@ -3550,12 +3550,12 @@ test("compiles boolean expressions and path-complete if statements", () => {
   assert.match(hover(source, example, enabled)?.contents.value ?? "", /enabled: boolean/);
 
   const incomplete = "function ready(value: boole";
-  const typeItems = completions(incomplete, "boolean-completion.z", incomplete.length);
+  const typeItems = completions(incomplete, "boolean-completion.zs", incomplete.length);
   assert.equal(typeItems.some((item) => item.label === "boolean"), true);
   assert.equal(typeItems.some((item) => item.label === "bool"), false);
 
   const removedSpelling = `function ready(value: bool): boolean { return value; } function main(): i32 { return 0; }`;
-  assert.throws(() => compileToC(removedSpelling, "removed-bool.z"), /unknown type "bool"/);
+  assert.throws(() => compileToC(removedSpelling, "removed-bool.zs"), /unknown type "bool"/);
 });
 
 test("supports single-statement if, else-if, else, and void guards", () => {
@@ -3577,7 +3577,7 @@ test("supports single-statement if, else-if, else, and void guards", () => {
       return choose(0) + nested(false, false) - 3;
     }
   `;
-  const generated = compileToC(source, "single-statement-if.z");
+  const generated = compileToC(source, "single-statement-if.zs");
   assert.match(generated, /if \(value > 0\) \{\n\s+return 1;/);
   assert.match(generated, /else if \(value < 0\)/);
   assert.match(generated, /if \(stop\) \{\n\s+return;/);
@@ -3585,7 +3585,7 @@ test("supports single-statement if, else-if, else, and void guards", () => {
 });
 
 test("compiles ternaries and value-producing if expressions with select", () => {
-  const example = resolve(projectRoot, "examples/language/control-flow/conditional-expressions.z");
+  const example = resolve(projectRoot, "examples/language/control-flow/conditional-expressions.zs");
   const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stdout, "exact=yes\nselected=42\nten=ten\nlarge=large\nsmall=small\n");
@@ -3603,8 +3603,8 @@ test("requires matching branch types in conditional expressions", () => {
     }
   `;
   assert.throws(
-    () => compileToC(source, "if-expression-types.z"),
-    /if-expression-types\.z:5:14: error: if branch produces String, but the other branch produces i32/,
+    () => compileToC(source, "if-expression-types.zs"),
+    /if-expression-types\.zs:5:14: error: if branch produces String, but the other branch produces i32/,
   );
 });
 
@@ -3616,8 +3616,8 @@ test("requires an else branch and explicit select in statement-bodied if express
     }
   `;
   assert.throws(
-    () => compileToC(missingElse, "if-expression-else.z"),
-    /if-expression-else\.z:3:45: error: expected `else` in a value-producing `if`, found ";"/,
+    () => compileToC(missingElse, "if-expression-else.zs"),
+    /if-expression-else\.zs:3:45: error: expected `else` in a value-producing `if`, found ";"/,
   );
 
   const missingSelect = `
@@ -3631,13 +3631,13 @@ test("requires an else branch and explicit select in statement-bodied if express
     }
   `;
   assert.throws(
-    () => compileToC(missingSelect, "if-expression-select.z"),
-    /if-expression-select\.z:4:9: error: a value-producing block must produce a value with an expression or `select`/,
+    () => compileToC(missingSelect, "if-expression-select.zs"),
+    /if-expression-select\.zs:4:9: error: a value-producing block must produce a value with an expression or `select`/,
   );
 });
 
 test("runs non-escaping arrow closures with inferred borrow, mutation, and move captures", () => {
-  const example = resolve(projectRoot, "examples/language/basics/closures.z");
+  const example = resolve(projectRoot, "examples/language/basics/closures.zs");
   const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stdout, "add=42\ntotal=20,42\nsnapshot=15 seed=100\ntarget=42\n");
@@ -3655,8 +3655,8 @@ test("checks closure parameters, block return types, and immutable captures", ()
     }
   `;
   assert.throws(
-    () => compileToC(blockInference, "closure-block-type.z"),
-    /closure-block-type\.z:3:23: error: a block-bodied closure requires an explicit or contextual return type/,
+    () => compileToC(blockInference, "closure-block-type.zs"),
+    /closure-block-type\.zs:3:23: error: a block-bodied closure requires an explicit or contextual return type/,
   );
 
   const immutableCapture = `
@@ -3670,8 +3670,8 @@ test("checks closure parameters, block return types, and immutable captures", ()
     }
   `;
   assert.throws(
-    () => compileToC(immutableCapture, "closure-const.z"),
-    /closure-const\.z:5:9: error: closure cannot mutate immutable capture "value"/,
+    () => compileToC(immutableCapture, "closure-const.zs"),
+    /closure-const\.zs:5:9: error: closure cannot mutate immutable capture "value"/,
   );
 
   const wrongArgument = `
@@ -3681,8 +3681,8 @@ test("checks closure parameters, block return types, and immutable captures", ()
     }
   `;
   assert.throws(
-    () => compileToC(wrongArgument, "closure-argument.z"),
-    /closure-argument\.z:4:23: error: expected i32, found String/,
+    () => compileToC(wrongArgument, "closure-argument.zs"),
+    /closure-argument\.zs:4:23: error: expected i32, found String/,
   );
 });
 
@@ -3701,10 +3701,10 @@ test("contextually infers closure parameter and result types from function value
       return double(10) + sum(total, 0);
     }
   `;
-  const generated = compileToC(source, "contextual-closure.z");
+  const generated = compileToC(source, "contextual-closure.zs");
   assert.match(generated, /__z_closure_call_/);
   const parameter = source.indexOf("(value) =>") + 2;
-  assert.match(hover(source, "contextual-closure.z", parameter)?.contents.value ?? "", /value: i32/);
+  assert.match(hover(source, "contextual-closure.zs", parameter)?.contents.value ?? "", /value: i32/);
 
   const missingContext = `
     function main(): i32 {
@@ -3712,13 +3712,13 @@ test("contextually infers closure parameter and result types from function value
       return identity(42);
     }
   `;
-  const inferenceDiagnostic = diagnostics(missingContext, "closure-inference.z")[0];
+  const inferenceDiagnostic = diagnostics(missingContext, "closure-inference.zs")[0];
   assert.equal(inferenceDiagnostic.code, "Z0215");
   assert.match(inferenceDiagnostic.message, /cannot infer the type of closure parameter "value"/);
 
   const implicitCapability = source.replace("(inout value) =>", "(value) =>");
   assert.throws(
-    () => compileToC(implicitCapability, "closure-capability.z"),
+    () => compileToC(implicitCapability, "closure-capability.zs"),
     /closure parameter "value" requires the `inout` capability from its destination function type/,
   );
 });
@@ -3764,34 +3764,34 @@ test("passes contextual inline closures through borrowed and owned function para
       return 1;
     }
   `;
-  const generated = compileToC(source, "inline-closures.z");
+  const generated = compileToC(source, "inline-closures.zs");
   assert.match(generated, /Z_ClosureEnv_/);
   assert.match(generated, /calloc\(1, sizeof\(Z_ClosureEnv_/);
   assert.match(generated, /_z_borrowed_closure_environment_/);
   assert.match(generated, /_z_argument_/);
 
   const parameter = source.indexOf("(value) => value + offset") + 2;
-  assert.match(hover(source, "inline-closures.z", parameter)?.contents.value ?? "", /value: i32/);
+  assert.match(hover(source, "inline-closures.zs", parameter)?.contents.value ?? "", /value: i32/);
   const completionSource = source.replace("value + offset, 41", "val + offset, 41");
   const completionOffset = completionSource.indexOf("val + offset, 41") + 3;
   assert.match(
-    completions(completionSource, "inline-closures.z", completionOffset).find((item) => item.label === "value")?.detail ?? "",
+    completions(completionSource, "inline-closures.zs", completionOffset).find((item) => item.label === "value")?.detail ?? "",
     /value: i32/,
   );
 
   const borrowedCapture = source.replace("move (value) => value + offset", "(value) => value + offset");
-  const captureDiagnostic = diagnostics(borrowedCapture, "inline-borrowed-capture.z")[0];
+  const captureDiagnostic = diagnostics(borrowedCapture, "inline-borrowed-capture.zs")[0];
   assert.equal(captureDiagnostic.code, "Z0212");
   assert.match(captureDiagnostic.message, /borrowed capturing closure cannot become a function value/);
 
   const missingCapability = source.replace("(inout value) =>", "(value) =>");
   assert.throws(
-    () => compileToC(missingCapability, "inline-capability.z"),
+    () => compileToC(missingCapability, "inline-capability.zs"),
     /closure parameter "value" requires the `inout` capability from its destination function type/,
   );
 
   const directory = mkdtempSync("/tmp/z-inline-closures-");
-  const fileName = resolve(directory, "main.z");
+  const fileName = resolve(directory, "main.zs");
   writeFileSync(fileName, source);
   const result = spawnSync(process.execPath, [cli, "run", fileName], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
@@ -3810,13 +3810,13 @@ test("requires an explicit function type for cleanup-bearing move captures", () 
     }
   `;
   assert.throws(
-    () => compileToC(source, "closure-owned-move.z"),
-    /closure-owned-move\.z:8:39: error: move-capturing cleanup-bearing Resource requires an explicitly typed owned closure/,
+    () => compileToC(source, "closure-owned-move.zs"),
+    /closure-owned-move\.zs:8:39: error: move-capturing cleanup-bearing Resource requires an explicitly typed owned closure/,
   );
 });
 
 test("returns, copies, shares, and deterministically destroys owned closure environments", () => {
-  const example = resolve(projectRoot, "examples/language/ownership/owned-closures.z");
+  const example = resolve(projectRoot, "examples/language/ownership/owned-closures.zs");
   const source = readFileSync(example, "utf8");
   const generated = compileToC(source, example);
   assert.match(generated, /typedef struct Z_ClosureEnv_[0-9]+/);
@@ -3837,7 +3837,7 @@ test("returns, copies, shares, and deterministically destroys owned closure envi
     }
   `;
   assert.throws(
-    () => compileToC(useAfterCapture, "owned-closure-move.z"),
+    () => compileToC(useAfterCapture, "owned-closure-move.zs"),
     /use of moved value "resource"/,
   );
 });
@@ -3852,10 +3852,10 @@ test("exposes closure bindings and parameters to editor services", () => {
     }
   `;
   const addUse = source.indexOf("add(41)") + 1;
-  assert.match(hover(source, "closure-editor.z", addUse)?.contents.value ?? "", /add: \(value: i32\) => i32/);
+  assert.match(hover(source, "closure-editor.zs", addUse)?.contents.value ?? "", /add: \(value: i32\) => i32/);
   const parameter = source.indexOf("value: i32") + 1;
-  assert.match(hover(source, "closure-editor.z", parameter)?.contents.value ?? "", /value: i32/);
-  const items = completions(source.replace("add(41)", "ad"), "closure-editor.z", source.indexOf("add(41)") + 2);
+  assert.match(hover(source, "closure-editor.zs", parameter)?.contents.value ?? "", /value: i32/);
+  const items = completions(source.replace("add(41)", "ad"), "closure-editor.zs", source.indexOf("add(41)") + 2);
   assert.equal(items.find((item) => item.label === "add")?.detail, "const add: (value: i32) => i32");
 });
 
@@ -3889,7 +3889,7 @@ test("stores and calls explicitly typed non-capturing function values", () => {
       return 1;
     }
   `;
-  const generated = compileToC(source, "function-values.z");
+  const generated = compileToC(source, "function-values.zs");
   assert.match(generated, /struct Z_Function_[0-9a-f]+ \{[\s\S]*int32_t \(\*call\)\(void \*context, int32_t (?:first|x|left), int32_t (?:second|y|right)\)/);
   assert.match(generated, /operation = \(Z_Function_[0-9a-f]+\)\{ \.call = __z_function_adapter_add/);
   assert.match(generated, /inferred = \(Z_Function_[0-9a-f]+\)\{ \.call = __z_function_adapter_subtract/);
@@ -3898,16 +3898,16 @@ test("stores and calls explicitly typed non-capturing function values", () => {
   assert.match(generated, /\(\(calculator\)\.operation\)\.call\(\(\(calculator\)\.operation\)\.context, 20, 22\)/);
 
   const operationUse = source.indexOf("operation(left") + 1;
-  assert.match(hover(source, "function-values.z", operationUse)?.contents.value ?? "", /operation: \(first: i32, second: i32\) => i32/);
+  assert.match(hover(source, "function-values.zs", operationUse)?.contents.value ?? "", /operation: \(first: i32, second: i32\) => i32/);
   const completionSource = source.replace("apply(operation, 20", "apply(oper, 20");
   const completionOffset = completionSource.indexOf("apply(oper, 20") + "apply(oper".length;
   assert.match(
-    completions(completionSource, "function-values.z", completionOffset).find((item) => item.label === "operation")?.detail ?? "",
+    completions(completionSource, "function-values.zs", completionOffset).find((item) => item.label === "operation")?.detail ?? "",
     /\(first: i32, second: i32\) => i32/,
   );
 
   const directory = mkdtempSync("/tmp/z-function-values-");
-  const fileName = resolve(directory, "main.z");
+  const fileName = resolve(directory, "main.zs");
   writeFileSync(fileName, source);
   const result = spawnSync(process.execPath, [cli, "run", fileName], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
@@ -3916,18 +3916,18 @@ test("stores and calls explicitly typed non-capturing function values", () => {
     "const double: (value: i32) => i32 = (value: i32): i32 => value * 2;",
     "const offset = 2; const double: (value: i32) => i32 = (value: i32): i32 => value + offset;",
   );
-  const capturedDiagnostic = diagnostics(captured, "captured-function-value.z")[0];
+  const capturedDiagnostic = diagnostics(captured, "captured-function-value.zs")[0];
   assert.equal(capturedDiagnostic.code, "Z0212");
   assert.match(capturedDiagnostic.message, /borrowed capturing closure/);
 
   assert.throws(
-    () => compileToC(source.replace("= add;", "= subtract;").replace("(x: i32, y: i32) => i32", "(x: i32) => i32"), "function-value-mismatch.z"),
+    () => compileToC(source.replace("= add;", "= subtract;").replace("(x: i32, y: i32) => i32", "(x: i32) => i32"), "function-value-mismatch.zs"),
     /expected \(x: i32\) => i32, found \(left: i32, right: i32\) => i32/,
   );
 });
 
 test("renders structured ownership diagnostics in the CLI and language server", () => {
-  const fixture = resolve(projectRoot, "tests/fixtures/ownership-diagnostic.z");
+  const fixture = resolve(projectRoot, "tests/fixtures/ownership-diagnostic.zs");
   const source = readFileSync(fixture, "utf8");
   let caught: unknown;
   try {
@@ -3972,7 +3972,7 @@ test("guides closure borrows and explicit mutable call-site capabilities", () =>
   `;
   let captureError: unknown;
   try {
-    compileToC(capturedOwner, "captured-owner.z");
+    compileToC(capturedOwner, "captured-owner.zs");
   } catch (error) {
     captureError = error;
   }
@@ -3990,13 +3990,13 @@ test("guides closure borrows and explicit mutable call-site capabilities", () =>
       return value;
     }
   `;
-  const editor = diagnostics(missingInout, "missing-inout.z");
+  const editor = diagnostics(missingInout, "missing-inout.zs");
   assert.equal(editor[0].code, "Z0301");
   assert.match(editor[0].message, /help: pass mutable storage explicitly as `inout value`/);
 });
 
 test("runs deterministic deinit across normal, return, throw, and try exits", () => {
-  const example = resolve(projectRoot, "examples/language/ownership/deinit.z");
+  const example = resolve(projectRoot, "examples/language/ownership/deinit.zs");
   const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
   assert.equal(
@@ -4018,7 +4018,7 @@ test("rejects using a cleanup-bearing value after it moves", () => {
     }
   `;
   assert.throws(
-    () => compileToC(source, "owned-copy.z"),
+    () => compileToC(source, "owned-copy.zs"),
     /use of moved value "first"/,
   );
 });
@@ -4040,7 +4040,7 @@ test("rejects values that may have moved on another branch", () => {
     function main(): i32 { return choose(false); }
   `;
   assert.throws(
-    () => compileToC(source, "maybe-moved.z"),
+    () => compileToC(source, "maybe-moved.zs"),
     /value "resource" may have been moved on another control-flow path/,
   );
 });
@@ -4065,7 +4065,7 @@ test("merges ownership state across exhaustive match arms", () => {
     }
   `;
   assert.throws(
-    () => compileToC(source, "match-moved.z"),
+    () => compileToC(source, "match-moved.zs"),
     /value "resource" may have been moved on another control-flow path/,
   );
 });
@@ -4083,7 +4083,7 @@ test("rejects discarding cleanup-bearing return values", () => {
     }
   `;
   assert.throws(
-    () => compileToC(source, "owned-discard.z"),
+    () => compileToC(source, "owned-discard.zs"),
     /an ownership-bearing value must be bound or transferred; it cannot be discarded/,
   );
 });
@@ -4097,7 +4097,7 @@ test("keeps deinit synchronous and free of explicit control-flow exits", () => {
     function main(): i32 { return 0; }
   `;
   assert.throws(
-    () => compileToC(source, "deinit-return.z"),
+    () => compileToC(source, "deinit-return.zs"),
     /deinit cannot contain "return"/,
   );
 });
@@ -4109,8 +4109,8 @@ test("requires boolean if conditions", () => {
     }
   `;
   assert.throws(
-    () => compileToC(source, "if-condition.z"),
-    /if-condition\.z:3:11: error: expected boolean, found i32/,
+    () => compileToC(source, "if-condition.zs"),
+    /if-condition\.zs:3:11: error: expected boolean, found i32/,
   );
 
   const pointerTruthiness = `
@@ -4122,7 +4122,7 @@ test("requires boolean if conditions", () => {
     }
   `;
   assert.throws(
-    () => compileToC(pointerTruthiness, "pointer-truthiness.z"),
+    () => compileToC(pointerTruthiness, "pointer-truthiness.zs"),
     /expected boolean/,
   );
 });
@@ -4135,7 +4135,7 @@ test("requires every reachable if path to return", () => {
     function main(): i32 { return choose(true); }
   `;
   assert.throws(
-    () => compileToC(source, "if-return.z"),
+    () => compileToC(source, "if-return.zs"),
     /function "choose" must end with a return value/,
   );
 });
@@ -4149,13 +4149,13 @@ test("rejects statements after every branch exits", () => {
     function main(): i32 { return choose(true); }
   `;
   assert.throws(
-    () => compileToC(source, "unreachable.z"),
-    /unreachable\.z:4:7: error: unreachable statement after guaranteed function exit/,
+    () => compileToC(source, "unreachable.zs"),
+    /unreachable\.zs:4:7: error: unreachable statement after guaranteed function exit/,
   );
 });
 
 test("runs while loops with cleanup-aware break and continue", () => {
-  const example = resolve(projectRoot, "examples/language/control-flow/loops.z");
+  const example = resolve(projectRoot, "examples/language/control-flow/loops.zs");
   const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stdout, "drop=1\ndrop=2\ndrop=3\ndrop=4\ntotal=8\n");
@@ -4167,7 +4167,7 @@ test("runs while loops with cleanup-aware break and continue", () => {
 });
 
 test("iterates fixed arrays, Array values, Slices, and borrowed owned elements", () => {
-  const example = resolve(projectRoot, "examples/language/control-flow/iteration.z");
+  const example = resolve(projectRoot, "examples/language/control-flow/iteration.zs");
   const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stdout, "sum=22 slice=18\nvisit=8\nvisit=9\ndrop=9\ndrop=8\n");
@@ -4187,7 +4187,7 @@ test("keeps for-of iteration storage stable and owned elements borrowed", () => 
       return 0;
     }
   `;
-  const mutationDiagnostics = diagnostics(structuralMutation, "iteration-mutation.z");
+  const mutationDiagnostics = diagnostics(structuralMutation, "iteration-mutation.zs");
   assert.equal(mutationDiagnostics[0].code, "Z0311");
   assert.match(mutationDiagnostics[0].message, /may reallocate storage/);
   assert.match(mutationDiagnostics[0].message, /finish the loop before pushing/);
@@ -4206,7 +4206,7 @@ test("keeps for-of iteration storage stable and owned elements borrowed", () => 
   `;
   let moveError: unknown;
   try {
-    compileToC(movedElement, "iteration-move.z");
+    compileToC(movedElement, "iteration-move.zs");
   } catch (error) {
     moveError = error;
   }
@@ -4228,7 +4228,7 @@ test("keeps for-of iteration storage stable and owned elements borrowed", () => 
     }
   `;
   assert.throws(
-    () => compileToC(movedOuter, "iteration-outer-move.z"),
+    () => compileToC(movedOuter, "iteration-outer-move.zs"),
     /value "resource" may have been moved on another control-flow path/,
   );
 });
@@ -4245,18 +4245,18 @@ test("exposes for-of bindings to hover, completion, and semantic tokens", () => 
     }
   `;
   const use = source.indexOf("value;", source.indexOf("for")) + 1;
-  assert.match(hover(source, "iteration-editor.z", use)?.contents.value ?? "", /value: i32/);
+  assert.match(hover(source, "iteration-editor.zs", use)?.contents.value ?? "", /value: i32/);
   const completionSource = source.replace("total = total + value", "total = total + val");
   const completionOffset = completionSource.indexOf("val;", completionSource.indexOf("for")) + 3;
-  assert.equal(completions(completionSource, "iteration-editor.z", completionOffset).find((item) => item.label === "value")?.detail, "const value: i32");
-  const tokens = decodeSemanticTokens(semanticTokens(source, "iteration-editor.z").data);
+  assert.equal(completions(completionSource, "iteration-editor.zs", completionOffset).find((item) => item.label === "value")?.detail, "const value: i32");
+  const tokens = decodeSemanticTokens(semanticTokens(source, "iteration-editor.zs").data);
   const bindingOffset = source.indexOf("value of");
   const bindingPosition = positionForOffset(source, bindingOffset);
   assert.ok(tokens.some((token) => token.line === bindingPosition.line && token.character === bindingPosition.character));
 });
 
 test("formats typed values through the imported console namespace and interpolation", () => {
-  const example = resolve(projectRoot, "examples/language/basics/console.z");
+  const example = resolve(projectRoot, "examples/language/basics/console.zs");
   const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
   assert.match(
@@ -4277,7 +4277,7 @@ test("formats typed values through the imported console namespace and interpolat
 
 test("streams native console output before z run exits", async () => {
   const directory = mkdtempSync("/tmp/z-streaming-console-");
-  const fileName = resolve(directory, "main.z");
+  const fileName = resolve(directory, "main.zs");
   writeFileSync(fileName, `
     import console from "std/console";
     import { sleep } from "std/time";
@@ -4321,7 +4321,7 @@ test("streams native console output before z run exits", async () => {
 
 test("resolves explicit standard console imports without routing them through Clang", () => {
   const missing = `function main(): i32 { console.log(42); return 0; }`;
-  const missingDiagnostic = diagnostics(missing, "missing-console.z")[0];
+  const missingDiagnostic = diagnostics(missing, "missing-console.zs")[0];
   assert.equal(missingDiagnostic.code, "Z0403");
   assert.match(missingDiagnostic.message, /import console from "std\/console"/);
 
@@ -4329,8 +4329,8 @@ test("resolves explicit standard console imports without routing them through Cl
     import logging from "std/console";
     function main(): i32 { logging.log(42); return 0; }
   `;
-  assert.deepEqual(diagnostics(focused, "focused-console.z"), []);
-  const focusedGenerated = compileToC(focused, "focused-console.z");
+  assert.deepEqual(diagnostics(focused, "focused-console.zs"), []);
+  const focusedGenerated = compileToC(focused, "focused-console.zs");
   assert.match(focusedGenerated, /fprintf\(stdout, "%lld", \(long long\)/);
   assert.doesNotMatch(focusedGenerated, /#include <std\/console>/);
 
@@ -4338,13 +4338,13 @@ test("resolves explicit standard console imports without routing them through Cl
     import { console as logging } from "std";
     function main(): i32 { logging.write(42); return 0; }
   `;
-  assert.deepEqual(diagnostics(facade, "facade-console.z"), []);
-  assert.doesNotMatch(compileToC(facade, "facade-console.z"), /#include <std>/);
+  assert.deepEqual(diagnostics(facade, "facade-console.zs"), []);
+  assert.doesNotMatch(compileToC(facade, "facade-console.zs"), /#include <std>/);
 
   const unknownModule = `import future from "std/future"; function main(): i32 { return 0; }`;
-  assert.equal(diagnostics(unknownModule, "unknown-std.z")[0].code, "Z0501");
+  assert.equal(diagnostics(unknownModule, "unknown-std.zs")[0].code, "Z0501");
   const unknownExport = `import { future } from "std"; function main(): i32 { return 0; }`;
-  assert.match(diagnostics(unknownExport, "unknown-std-export.z")[0].message, /std has no export "future"/);
+  assert.match(diagnostics(unknownExport, "unknown-std-export.zs")[0].message, /std has no export "future"/);
 });
 
 test("sleeps the current thread through the portable std/time module", () => {
@@ -4357,7 +4357,7 @@ test("sleeps the current thread through the portable std/time module", () => {
       return 0;
     }
   `;
-  const generated = compileToC(source, "sleep.z");
+  const generated = compileToC(source, "sleep.zs");
   assert.match(generated, /#if defined\(_WIN32\)[\s\S]*#include <windows\.h>[\s\S]*#include <time\.h>/);
   assert.match(generated, /static void z_sleep_ms\(uint64_t milliseconds\)/);
   assert.match(generated, /nanosleep\(&remaining, &remaining\)/);
@@ -4368,21 +4368,21 @@ test("sleeps the current thread through the portable std/time module", () => {
   assert.doesNotMatch(generated, /#include <std\/time>/);
 
   const directory = mkdtempSync("/tmp/z-sleep-");
-  const fileName = resolve(directory, "main.z");
+  const fileName = resolve(directory, "main.zs");
   writeFileSync(fileName, source);
   const result = spawnSync(process.execPath, [cli, "run", fileName], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
 
   const pauseUse = source.indexOf("pause(1)") + 1;
-  assert.match(hover(source, "sleep-editor.z", pauseUse)?.contents.value ?? "", /pause\(milliseconds: u64\): void/);
-  assert.match(hover(source, "sleep-editor.z", pauseUse)?.contents.value ?? "", /alias of sleep/);
+  assert.match(hover(source, "sleep-editor.zs", pauseUse)?.contents.value ?? "", /pause\(milliseconds: u64\): void/);
+  assert.match(hover(source, "sleep-editor.zs", pauseUse)?.contents.value ?? "", /alias of sleep/);
   const completionSource = source.replace("pause(1)", "pau");
   const completionOffset = completionSource.indexOf("pau", completionSource.indexOf("main")) + 3;
   assert.match(
-    completions(completionSource, "sleep-editor.z", completionOffset).find((item) => item.label === "pause")?.detail ?? "",
+    completions(completionSource, "sleep-editor.zs", completionOffset).find((item) => item.label === "pause")?.detail ?? "",
     /blocks the current thread/,
   );
-  const tokens = decodeSemanticTokens(semanticTokens(source, "sleep-editor.z").data);
+  const tokens = decodeSemanticTokens(semanticTokens(source, "sleep-editor.zs").data);
   const pausePosition = positionForOffset(source, pauseUse - 1);
   assert.ok(tokens.some((token) => (
     token.line === pausePosition.line
@@ -4391,17 +4391,17 @@ test("sleeps the current thread through the portable std/time module", () => {
   )));
 
   const defaultImport = `import time from "std/time"; function main(): i32 { return 0; }`;
-  assert.equal(diagnostics(defaultImport, "sleep-default.z")[0].code, "Z0501");
+  assert.equal(diagnostics(defaultImport, "sleep-default.zs")[0].code, "Z0501");
   const unknownExport = `import { timer } from "std/time"; function main(): i32 { return 0; }`;
-  assert.match(diagnostics(unknownExport, "sleep-export.z")[0].message, /std\/time has no export "timer"/);
+  assert.match(diagnostics(unknownExport, "sleep-export.zs")[0].message, /std\/time has no export "timer"/);
   const wrongType = `import { sleep } from "std/time"; function main(): i32 { sleep(-1); return 0; }`;
-  assert.match(diagnostics(wrongType, "sleep-type.z")[0].message, /integer literal -1 does not fit u64/);
+  assert.match(diagnostics(wrongType, "sleep-type.zs")[0].message, /integer literal -1 does not fit u64/);
 });
 
 test("reads files, exposes program arguments, and runs child processes through standard modules", () => {
   const directory = mkdtempSync("/tmp/z-system-std-");
-  const fileName = resolve(directory, "main.z");
-  const copyPath = resolve(directory, "copy.z");
+  const fileName = resolve(directory, "main.zs");
+  const copyPath = resolve(directory, "copy.zs");
   const source = `
     import console from "std/console";
     import fs from "std/fs";
@@ -4465,11 +4465,11 @@ test("reads files, exposes program arguments, and runs child processes through s
   )));
 
   const unchecked = `import fs from "std/fs"; function main(): i32 { fs.readText("missing"); return 0; }`;
-  assert.match(diagnostics(unchecked, "unchecked-fs.z")[0].message, /requires `attempt` or `try`/);
+  assert.match(diagnostics(unchecked, "unchecked-fs.zs")[0].message, /requires `attempt` or `try`/);
   const selective = `import { readText } from "std/fs"; function main(): i32 { return 0; }`;
-  assert.match(diagnostics(selective, "selective-fs.z")[0].message, /default module import/);
+  assert.match(diagnostics(selective, "selective-fs.zs")[0].message, /default module import/);
 
-  const mixedFile = resolve(directory, "mixed.z");
+  const mixedFile = resolve(directory, "mixed.zs");
   const nativeHeader = resolve(projectRoot, "tests/fixtures/foreign-values.hpp");
   writeFileSync(mixedFile, `
     import fs from "std/fs";
@@ -4485,7 +4485,7 @@ test("reads files, exposes program arguments, and runs child processes through s
 
   const invalidUtf8Path = resolve(directory, "invalid-utf8.txt");
   writeFileSync(invalidUtf8Path, Buffer.from([0xc3, 0x28]));
-  const invalidUtf8File = resolve(directory, "invalid-utf8.z");
+  const invalidUtf8File = resolve(directory, "invalid-utf8.zs");
   writeFileSync(invalidUtf8File, `
     import fs from "std/fs";
     function main(): i32 {
@@ -4501,27 +4501,27 @@ test("reads files, exposes program arguments, and runs child processes through s
 });
 
 test("tokenizes real Z source with checked UTF-8 operations and TextBuffer", () => {
-  const application = resolve(projectRoot, "examples/applications/source-inspector/main.z");
-  const lexer = resolve(projectRoot, "compiler/frontend/lexer.z");
-  const smoke = resolve(projectRoot, "examples/applications/source-inspector/lexer-smoke.z");
+  const application = resolve(projectRoot, "examples/applications/source-inspector/main.zs");
+  const lexer = resolve(projectRoot, "compiler/frontend/lexer.zs");
+  const smoke = resolve(projectRoot, "examples/applications/source-inspector/lexer-smoke.zs");
   const smokeResult = spawnSync(process.execPath, [cli, "run", smoke], { encoding: "utf8" });
   assert.equal(smokeResult.status, 0, smokeResult.stderr);
   const result = spawnSync(process.execPath, [cli, "run", application, "--", lexer], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
-  assert.match(result.stdout, /lexer\.z: \d+ lines, \d+ UTF-8 bytes/);
+  assert.match(result.stdout, /lexer\.zs: \d+ lines, \d+ UTF-8 bytes/);
   assert.match(result.stdout, /\d+ tokens: \d+ identifiers, \d+ numbers/);
   assert.match(result.stdout, /\d+ strings/);
   assert.match(result.stdout, /first identifier: TextBuffer/);
 
-  const parityInput = resolve(projectRoot, "tests/fixtures/self-host-lexer-input.z");
+  const parityInput = resolve(projectRoot, "tests/fixtures/self-host-lexer-input.zs");
   assert.doesNotThrow(() => check(readFileSync(parityInput, "utf8"), parityInput));
   const parityResult = spawnSync(process.execPath, [cli, "self-host-lex", parityInput, lexer], { encoding: "utf8" });
   assert.equal(parityResult.status, 0, parityResult.stderr);
-  assert.match(parityResult.stdout, /self-host-lexer-input\.z: stage-1 lexer matches \d+ tokens/);
-  assert.match(parityResult.stdout, /lexer\.z: stage-1 lexer matches \d+ tokens/);
+  assert.match(parityResult.stdout, /self-host-lexer-input\.zs: stage-1 lexer matches \d+ tokens/);
+  assert.match(parityResult.stdout, /lexer\.zs: stage-1 lexer matches \d+ tokens/);
 
   assert.throws(
-    () => check("const value = 1; /* open", "unterminated-comment.z"),
+    () => check("const value = 1; /* open", "unterminated-comment.zs"),
     /unterminated block comment/,
   );
 
@@ -4532,19 +4532,19 @@ test("tokenizes real Z source with checked UTF-8 operations and TextBuffer", () 
 }, 10_000);
 
 test("parses declarations, function bodies, and type shapes in native Z", () => {
-  const fixture = resolve(projectRoot, "tests/fixtures/self-host-parser-input.z");
-  const lexer = resolve(projectRoot, "compiler/frontend/lexer.z");
-  const parser = resolve(projectRoot, "compiler/frontend/parser.z");
+  const fixture = resolve(projectRoot, "tests/fixtures/self-host-parser-input.zs");
+  const lexer = resolve(projectRoot, "compiler/frontend/lexer.zs");
+  const parser = resolve(projectRoot, "compiler/frontend/parser.zs");
   const result = spawnSync(process.execPath, [cli, "self-host-parse", fixture, lexer, parser, "--timings"], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
-  assert.match(result.stdout, /self-host-parser-input\.z: stage-1 parser matches 16 declarations, 3 imports, 7 function signatures, 7 function bodies, and 6 type shapes/);
-  assert.match(result.stdout, /lexer\.z: stage-1 parser matches 17 declarations, 1 imports, 13 function signatures, 13 function bodies, and 3 type shapes/);
-  assert.match(result.stdout, /parser\.z: stage-1 parser matches \d+ declarations, \d+ imports, \d+ function signatures, \d+ function bodies, and \d+ type shapes/);
+  assert.match(result.stdout, /self-host-parser-input\.zs: stage-1 parser matches 16 declarations, 3 imports, 7 function signatures, 7 function bodies, and 6 type shapes/);
+  assert.match(result.stdout, /lexer\.zs: stage-1 parser matches 17 declarations, 1 imports, 13 function signatures, 13 function bodies, and 3 type shapes/);
+  assert.match(result.stdout, /parser\.zs: stage-1 parser matches \d+ declarations, \d+ imports, \d+ function signatures, \d+ function bodies, and \d+ type shapes/);
   assert.match(result.stdout, /stage-1 parser timing \(3 files, cache (?:hit|miss; stage-0 compile \+ native build included)\)/);
   assert.match(result.stdout, /native in-process batch \(host file I\/O \+ FFI \+ lex \+ parse \+ encode\): \d+\.\d{2} ms/);
 
   const directory = mkdtempSync("/tmp/z-self-host-parser-");
-  const invalidPath = resolve(directory, "invalid.z");
+  const invalidPath = resolve(directory, "invalid.zs");
   writeFileSync(invalidPath, "function incomplete(): i32 {\n");
   const invalid = spawnSync(process.execPath, [cli, "self-host-parse", invalidPath], { encoding: "utf8" });
   assert.equal(invalid.status, 1);
@@ -4581,7 +4581,7 @@ test("parses declarations, function bodies, and type shapes in native Z", () => 
 }, 10_000);
 
 test("resolves a canonical module graph directly from native Z ASTs", () => {
-  const fixture = resolve(projectRoot, "tests/fixtures/self-host-module-resolver.z");
+  const fixture = resolve(projectRoot, "tests/fixtures/self-host-module-resolver.zs");
   const result = spawnSync(process.execPath, [cli, "run", fixture], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stdout, "");
@@ -4589,7 +4589,7 @@ test("resolves a canonical module graph directly from native Z ASTs", () => {
 
 test("builds owned UTF-8 String values through explicit std/text TextBuffer", () => {
   const directory = mkdtempSync("/tmp/z-text-buffer-");
-  const fileName = resolve(directory, "main.z");
+  const fileName = resolve(directory, "main.zs");
   const source = `
     import console from "std/console";
     import { TextBuffer } from "std/text";
@@ -4620,20 +4620,20 @@ test("builds owned UTF-8 String values through explicit std/text TextBuffer", ()
   const aliased = source
     .replace("{ TextBuffer }", "{ TextBuffer as Buffer }")
     .replace("TextBuffer()", "Buffer()");
-  assert.doesNotThrow(() => compileToC(aliased, "aliased-text-buffer.z"));
+  assert.doesNotThrow(() => compileToC(aliased, "aliased-text-buffer.zs"));
 
   const missingImport = `function main(): i32 { let text = TextBuffer(); return 0; }`;
-  assert.match(diagnostics(missingImport, "missing-text-import.z")[0].message, /unknown function "TextBuffer"/);
+  assert.match(diagnostics(missingImport, "missing-text-import.zs")[0].message, /unknown function "TextBuffer"/);
 
   const immutable = `
     import { TextBuffer } from "std/text";
     function main(): i32 { const text = TextBuffer(); text.append("no"); return 0; }
   `;
-  const immutableDiagnostic = diagnostics(immutable, "immutable-text-buffer.z")[0];
+  const immutableDiagnostic = diagnostics(immutable, "immutable-text-buffer.zs")[0];
   assert.match(immutableDiagnostic.message, /requires addressable let storage/);
   let immutableCompilerDiagnostic: unknown;
   try {
-    compileToC(immutable, "immutable-text-buffer.z");
+    compileToC(immutable, "immutable-text-buffer.zs");
   } catch (error) {
     immutableCompilerDiagnostic = error;
   }
@@ -4649,25 +4649,25 @@ test("builds owned UTF-8 String values through explicit std/text TextBuffer", ()
       return finished.byteLength;
     }
   `;
-  assert.match(diagnostics(consumed, "consumed-text-buffer.z")[0].message, /moved value "text"/);
+  assert.match(diagnostics(consumed, "consumed-text-buffer.zs")[0].message, /moved value "text"/);
 
   const printable = `
     import console from "std/console";
     import { TextBuffer } from "std/text";
     function main(): i32 { let text = TextBuffer(); console.log(text); return 0; }
   `;
-  const printableDiagnostic = diagnostics(printable, "printable-text-buffer.z")[0];
+  const printableDiagnostic = diagnostics(printable, "printable-text-buffer.zs")[0];
   assert.match(printableDiagnostic.message, /mutable construction storage, not printable text/);
   let printableCompilerDiagnostic: unknown;
   try {
-    compileToC(printable, "printable-text-buffer.z");
+    compileToC(printable, "printable-text-buffer.zs");
   } catch (error) {
     printableCompilerDiagnostic = error;
   }
   assert.ok(printableCompilerDiagnostic instanceof DiagnosticError);
   assert.match(printableCompilerDiagnostic.helps.join(" "), /finish\(\)/);
 
-  const invalidBoundaryFile = resolve(directory, "invalid-boundary.z");
+  const invalidBoundaryFile = resolve(directory, "invalid-boundary.zs");
   writeFileSync(invalidBoundaryFile, `
     import { TextBuffer } from "std/text";
     function main(): i32 { let text = TextBuffer(); text.appendBytes("é", 1, 2); return 0; }
@@ -4675,7 +4675,7 @@ test("builds owned UTF-8 String values through explicit std/text TextBuffer", ()
   const invalidBoundary = spawnSync(process.execPath, [cli, "run", invalidBoundaryFile], { encoding: "utf8" });
   assert.notEqual(invalidBoundary.status, 0);
 
-  const invalidAsciiFile = resolve(directory, "invalid-ascii.z");
+  const invalidAsciiFile = resolve(directory, "invalid-ascii.zs");
   writeFileSync(invalidAsciiFile, `
     import { TextBuffer } from "std/text";
     function main(): i32 { let text = TextBuffer(); text.appendAscii(128); return 0; }
@@ -4707,7 +4707,7 @@ test("builds owned UTF-8 String values through explicit std/text TextBuffer", ()
 });
 
 test("stores, returns, moves, and formats owned String values", () => {
-  const example = resolve(projectRoot, "examples/language/basics/strings.z");
+  const example = resolve(projectRoot, "examples/language/basics/strings.zs");
   const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
   assert.equal(
@@ -4754,7 +4754,7 @@ test("stores, returns, moves, and formats owned String values", () => {
       return 0;
     }
   `;
-  const byteFile = resolve(mkdtempSync("/tmp/z-string-bytes-"), "main.z");
+  const byteFile = resolve(mkdtempSync("/tmp/z-string-bytes-"), "main.zs");
   writeFileSync(byteFile, byteSource);
   const byteResult = spawnSync(process.execPath, [cli, "run", byteFile], { encoding: "utf8" });
   assert.equal(byteResult.status, 0, byteResult.stderr);
@@ -4788,11 +4788,11 @@ test("stores, returns, moves, and formats owned String values", () => {
   )));
 
   const invalidByteCall = `function main(): i32 { const text = "hello"; return text.byteAt("0"); }`;
-  assert.match(diagnostics(invalidByteCall, "invalid-string-byte.z")[0].message, /expected usize, found String/);
+  assert.match(diagnostics(invalidByteCall, "invalid-string-byte.zs")[0].message, /expected usize, found String/);
   const reservedLength = `function main(): i32 { const text = "hello"; return text.length; }`;
-  assert.match(diagnostics(reservedLength, "reserved-string-length.z")[0].message, /String has no property "length"/);
+  assert.match(diagnostics(reservedLength, "reserved-string-length.zs")[0].message, /String has no property "length"/);
 
-  const invalidBoundaryFile = resolve(mkdtempSync("/tmp/z-string-boundary-"), "main.z");
+  const invalidBoundaryFile = resolve(mkdtempSync("/tmp/z-string-boundary-"), "main.zs");
   writeFileSync(invalidBoundaryFile, `
     function main(): i32 {
       const text = "é";
@@ -4810,21 +4810,21 @@ test("stores, returns, moves, and formats owned String values", () => {
       return 0;
     }
   `;
-  assert.match(diagnostics(escapingBorrow, "escaping-cstring.z")[0].message, /expected cstring, found String/);
+  assert.match(diagnostics(escapingBorrow, "escaping-cstring.zs")[0].message, /expected cstring, found String/);
 
   const singleQuotedImport = `
     import stdio from 'stdio.h';
     function main(): i32 { return stdio.puts('single import'); }
   `;
-  assert.deepEqual(diagnostics(singleQuotedImport, "single-quoted-import.z"), []);
-  assert.match(compileToC(singleQuotedImport, "single-quoted-import.z"), /return puts\("single import"\);/);
+  assert.deepEqual(diagnostics(singleQuotedImport, "single-quoted-import.zs"), []);
+  assert.match(compileToC(singleQuotedImport, "single-quoted-import.zs"), /return puts\("single import"\);/);
 
   const directArgument = `
     function consume(value: String): void {}
     function main(): i32 { consume(\`value=\${42}\`); return 0; }
   `;
-  assert.deepEqual(diagnostics(directArgument, "string-argument.z"), []);
-  assert.doesNotThrow(() => compileToC(directArgument, "string-argument.z"));
+  assert.deepEqual(diagnostics(directArgument, "string-argument.zs"), []);
+  assert.doesNotThrow(() => compileToC(directArgument, "string-argument.zs"));
 
   const throwingArgument = `
     enum ParseError { invalid, }
@@ -4832,8 +4832,8 @@ test("stores, returns, moves, and formats owned String values", () => {
     function forward(): i32 throws ParseError { return try parse(\`value=\${42}\`); }
     function main(): i32 { return 0; }
   `;
-  assert.deepEqual(diagnostics(throwingArgument, "throwing-string-argument.z"), []);
-  const throwingGenerated = compileToC(throwingArgument, "throwing-string-argument.z");
+  assert.deepEqual(diagnostics(throwingArgument, "throwing-string-argument.zs"), []);
+  const throwingGenerated = compileToC(throwingArgument, "throwing-string-argument.zs");
   assert.match(throwingGenerated, /const Z_Result_i32_ParseError _z_call_result_\d+ = parse/);
 
   const movedString = `
@@ -4845,7 +4845,7 @@ test("stores, returns, moves, and formats owned String values", () => {
       return 0;
     }
   `;
-  const movedStringDiagnostic = diagnostics(movedString, "moved-string.z");
+  const movedStringDiagnostic = diagnostics(movedString, "moved-string.zs");
   assert.equal(movedStringDiagnostic[0].code, "Z0201");
   assert.match(movedStringDiagnostic[0].message, /use of moved value "first"/);
 
@@ -4860,7 +4860,7 @@ test("stores, returns, moves, and formats owned String values", () => {
       return 0;
     }
   `;
-  const cppFile = resolve(projectRoot, "examples/interop/cpp/string-cpp-probe.z");
+  const cppFile = resolve(projectRoot, "examples/interop/cpp/string-cpp-probe.zs");
   const cppArtifact = compileToNative(cppSource, cppFile);
   assert.equal(cppArtifact.language, "c++");
   const cppCompilation = spawnSync("clang++", [
@@ -4878,7 +4878,7 @@ test("stores, returns, moves, and formats owned String values", () => {
       return 0;
     }
   `;
-  const cleanupDiagnostic = diagnostics(cleanupTemporary, "console-temporary.z");
+  const cleanupDiagnostic = diagnostics(cleanupTemporary, "console-temporary.zs");
   assert.equal(cleanupDiagnostic[0].code, "Z0402");
   assert.match(cleanupDiagnostic[0].message, /bind the value to a const or let before logging it/);
 
@@ -4886,14 +4886,14 @@ test("stores, returns, moves, and formats owned String values", () => {
     import console from "std/console";
     function main(): i32 { console.table(42); return 0; }
   `;
-  const methodDiagnostic = diagnostics(unknownMethod, "console-method.z");
+  const methodDiagnostic = diagnostics(unknownMethod, "console-method.zs");
   assert.equal(methodDiagnostic[0].code, "Z0401");
   assert.match(methodDiagnostic[0].message, /use console\.log, console\.write, console\.error, or console\.debug/);
 });
 
 test("compares owned String values by their UTF-8 bytes", () => {
   const directory = mkdtempSync("/tmp/z-string-equality-");
-  const fileName = resolve(directory, "main.z");
+  const fileName = resolve(directory, "main.zs");
   const source = `
     function main(): i32 {
       const source: cstring = "same";
@@ -4912,7 +4912,7 @@ test("compares owned String values by their UTF-8 bytes", () => {
   assert.match(generated, /static .*bool z_string_equal\(Z_String left, Z_String right\)/);
   assert.match(generated, /!z_string_equal\(copied, built\)/);
 
-  const asyncFile = resolve(directory, "async.z");
+  const asyncFile = resolve(directory, "async.zs");
   const asyncSource = `
     async function equal(): boolean {
       const left = "same";
@@ -4939,7 +4939,7 @@ test("compares payload-free Z enums by tag", () => {
     }
   `;
   const directory = mkdtempSync("/tmp/z-enum-equality-");
-  const fileName = resolve(directory, "main.z");
+  const fileName = resolve(directory, "main.zs");
   writeFileSync(fileName, source);
   const result = spawnSync(process.execPath, [cli, "run", fileName], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
@@ -4950,7 +4950,7 @@ test("compares payload-free Z enums by tag", () => {
     "return Payload.value(1) == Payload.value(1) ? 0 : 1;",
   );
   assert.match(
-    diagnostics(payloadComparison, "payload-enum-equality.z")[0]?.message ?? "",
+    diagnostics(payloadComparison, "payload-enum-equality.zs")[0]?.message ?? "",
     /payload-free enum/,
   );
 });
@@ -4965,28 +4965,28 @@ test("exposes console methods and interpolated expressions to editor services", 
     }
   `;
   const consoleOffset = source.indexOf("console") + 1;
-  assert.match(hover(source, "console-editor.z", consoleOffset)?.contents.value ?? "", /standard console imported as console/);
+  assert.match(hover(source, "console-editor.zs", consoleOffset)?.contents.value ?? "", /standard console imported as console/);
   const logOffset = source.indexOf("log") + 1;
-  assert.match(hover(source, "console-editor.z", logOffset)?.contents.value ?? "", /stdout with newline/);
-  const items = completions(source.replace("console.log", "console.lo"), "console-editor.z", source.indexOf("console.log") + "console.lo".length);
+  assert.match(hover(source, "console-editor.zs", logOffset)?.contents.value ?? "", /stdout with newline/);
+  const items = completions(source.replace("console.log", "console.lo"), "console-editor.zs", source.indexOf("console.log") + "console.lo".length);
   assert.equal(items.find((item) => item.label === "log")?.kind, 2);
   const answerUse = source.lastIndexOf("answer") + 1;
-  assert.match(hover(source, "console-editor.z", answerUse)?.contents.value ?? "", /answer: i32/);
+  assert.match(hover(source, "console-editor.zs", answerUse)?.contents.value ?? "", /answer: i32/);
 
   const aliasSource = source
     .replace("import console from", "import logging from")
     .replaceAll("console.log", "logging.log");
   const aliasUse = aliasSource.indexOf("logging.log") + 1;
-  assert.match(hover(aliasSource, "console-alias-editor.z", aliasUse)?.contents.value ?? "", /standard console imported as logging/);
+  assert.match(hover(aliasSource, "console-alias-editor.zs", aliasUse)?.contents.value ?? "", /standard console imported as logging/);
   const incompleteAlias = aliasSource.replace("logging.log", "logging.lo");
   const incompleteAliasOffset = incompleteAlias.indexOf("logging.lo") + "logging.lo".length;
-  assert.equal(completions(incompleteAlias, "console-alias-editor.z", incompleteAliasOffset).find((item) => item.label === "log")?.kind, 2);
+  assert.equal(completions(incompleteAlias, "console-alias-editor.zs", incompleteAliasOffset).find((item) => item.label === "log")?.kind, 2);
   const symbolSource = `
     import logging from "std/console";
     function main(): i32 { logg; return 0; }
   `;
   const symbolOffset = symbolSource.indexOf("logg;") + 4;
-  assert.equal(completions(symbolSource, "console-alias-editor.z", symbolOffset).find((item) => item.label === "logging")?.kind, 9);
+  assert.equal(completions(symbolSource, "console-alias-editor.zs", symbolOffset).find((item) => item.label === "logging")?.kind, 9);
 });
 
 test("keeps loop control inside an enclosing loop", () => {
@@ -4996,10 +4996,10 @@ test("keeps loop control inside an enclosing loop", () => {
       return 0;
     }
   `;
-  assert.throws(() => compileToC(outsideBreak, "break-outside.z"), /break requires an enclosing loop/);
+  assert.throws(() => compileToC(outsideBreak, "break-outside.zs"), /break requires an enclosing loop/);
 
   const outsideContinue = outsideBreak.replace("break", "continue");
-  assert.throws(() => compileToC(outsideContinue, "continue-outside.z"), /continue requires an enclosing loop/);
+  assert.throws(() => compileToC(outsideContinue, "continue-outside.zs"), /continue requires an enclosing loop/);
 
   const unreachable = `
     function main(): i32 {
@@ -5011,7 +5011,7 @@ test("keeps loop control inside an enclosing loop", () => {
     }
   `;
   assert.throws(
-    () => compileToC(unreachable, "loop-unreachable.z"),
+    () => compileToC(unreachable, "loop-unreachable.zs"),
     /unreachable statement after guaranteed loop control transfer/,
   );
 });
@@ -5023,7 +5023,7 @@ test("requires boolean while conditions", () => {
       return 0;
     }
   `;
-  assert.throws(() => compileToC(source, "while-condition.z"), /expected boolean, found i32/);
+  assert.throws(() => compileToC(source, "while-condition.zs"), /expected boolean, found i32/);
 });
 
 test("reaches a fixed ownership state across loop iterations", () => {
@@ -5041,7 +5041,7 @@ test("reaches a fixed ownership state across loop iterations", () => {
     }
   `;
   assert.throws(
-    () => compileToC(repeatedMove, "loop-repeated-move.z"),
+    () => compileToC(repeatedMove, "loop-repeated-move.zs"),
     /resource.*may have been moved|may have been moved.*resource/,
   );
 
@@ -5049,7 +5049,7 @@ test("reaches a fixed ownership state across loop iterations", () => {
     .replace("index = index + 1;", "break;")
     .replace("      return 0;", "      consume(resource);\n      return 0;");
   assert.throws(
-    () => compileToC(maybeMovedAfterBreak, "loop-break-move.z"),
+    () => compileToC(maybeMovedAfterBreak, "loop-break-move.zs"),
     /resource.*may have been moved|may have been moved.*resource/,
   );
 
@@ -5068,7 +5068,7 @@ test("reaches a fixed ownership state across loop iterations", () => {
       return 0;
     }
   `;
-  assert.match(compileToC(restored, "loop-restored-owner.z"), /while \(index < 2\)/);
+  assert.match(compileToC(restored, "loop-restored-owner.zs"), /while \(index < 2\)/);
 });
 
 test("lowers loop control through match without targeting the generated switch", () => {
@@ -5085,7 +5085,7 @@ test("lowers loop control through match without targeting the generated switch",
       return 0;
     }
   `;
-  const generated = compileToC(source, "loop-match-control.z");
+  const generated = compileToC(source, "loop-match-control.zs");
   assert.match(generated, /case Z_Action_skip:[\s\S]*goto _z_loop_continue_0;/);
   assert.match(generated, /case Z_Action_stop:[\s\S]*goto _z_loop_break_0;/);
 });
@@ -5102,12 +5102,12 @@ test("keeps loop-local bindings visible to editor services", () => {
     }
   `;
   const offset = source.indexOf("ins;") + 3;
-  const items = completions(source, "loop-editor.z", offset);
+  const items = completions(source, "loop-editor.zs", offset);
   assert.equal(items.find((item) => item.label === "inside")?.detail, "const inside: i32");
 });
 
 test("runs fixed arrays with checked indexing and reverse element cleanup", () => {
-  const example = resolve(projectRoot, "examples/language/collections/arrays.z");
+  const example = resolve(projectRoot, "examples/language/collections/arrays.zs");
   const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stdout, "length=4 sum=112\nmiddle=2\ndrop=3\ndrop=2\ndrop=1\n");
@@ -5127,7 +5127,7 @@ test("checks fixed array types, indices, and mutability", () => {
     }
   `;
   assert.throws(
-    () => compileToC(immutable, "array-immutable.z"),
+    () => compileToC(immutable, "array-immutable.zs"),
     /cannot mutate an indexed element through immutable binding "values"/,
   );
 
@@ -5137,7 +5137,7 @@ test("checks fixed array types, indices, and mutability", () => {
       return 0;
     }
   `;
-  assert.throws(() => compileToC(wrongLength, "array-length.z"), /expected i32\[3\], found i32\[2\]/);
+  assert.throws(() => compileToC(wrongLength, "array-length.zs"), /expected i32\[3\], found i32\[2\]/);
 
   const wrongIndex = `
     function main(): i32 {
@@ -5145,16 +5145,16 @@ test("checks fixed array types, indices, and mutability", () => {
       return values[1.5];
     }
   `;
-  assert.throws(() => compileToC(wrongIndex, "array-index.z"), /array index must be an integer, found f64/);
+  assert.throws(() => compileToC(wrongIndex, "array-index.zs"), /array index must be an integer, found f64/);
 
   const staticBounds = wrongIndex.replace("1.5", "2");
   assert.throws(
-    () => compileToC(staticBounds, "array-static-bounds.z"),
+    () => compileToC(staticBounds, "array-static-bounds.zs"),
     /array index 2 is out of bounds for length 2/,
   );
 
   const empty = `function main(): i32 { const values = []; return 0; }`;
-  assert.throws(() => compileToC(empty, "array-empty.z"), /cannot infer an empty fixed array/);
+  assert.throws(() => compileToC(empty, "array-empty.zs"), /cannot infer an empty fixed array/);
 });
 
 test("supports nested fixed arrays and arrays inside value structs", () => {
@@ -5166,7 +5166,7 @@ test("supports nested fixed arrays and arrays inside value structs", () => {
       return matrix.rows[1][0] + matrix.rows[0][1];
     }
   `;
-  const generated = compileToC(source, "nested-arrays.z");
+  const generated = compileToC(source, "nested-arrays.zs");
   assert.match(generated, /data\[2\]/);
   assert.match(generated, /struct Z_Matrix/);
   assert.match(generated, /z_bounds_index/);
@@ -5175,7 +5175,7 @@ test("supports nested fixed arrays and arrays inside value structs", () => {
     struct Node { children: Node[1]; }
     function main(): i32 { return 0; }
   `;
-  assert.throws(() => compileToC(recursive, "recursive-array-layout.z"), /recursive value layout/);
+  assert.throws(() => compileToC(recursive, "recursive-array-layout.zs"), /recursive value layout/);
 });
 
 test("does not move cleanup-bearing elements out of fixed arrays", () => {
@@ -5189,7 +5189,7 @@ test("does not move cleanup-bearing elements out of fixed arrays", () => {
     }
   `;
   assert.throws(
-    () => compileToC(source, "array-element-move.z"),
+    () => compileToC(source, "array-element-move.zs"),
     /cannot move an ownership-bearing field or element out of its owner/,
   );
 });
@@ -5203,16 +5203,16 @@ test("exposes fixed array length and readable types to editor services", () => {
     }
   `;
   const offset = source.indexOf("values.;") + "values.".length;
-  const items = completions(source, "array-editor.z", offset);
+  const items = completions(source, "array-editor.zs", offset);
   assert.equal(items.find((item) => item.label === "length")?.detail, "usize");
 
   const valid = source.replace("      values.;\n", "      const count = values.length;\n");
   const valuesDeclaration = valid.indexOf("values =");
-  assert.match(hover(valid, "array-editor.z", valuesDeclaration + 1)?.contents.value ?? "", /values: i32\[3\]/);
+  assert.match(hover(valid, "array-editor.zs", valuesDeclaration + 1)?.contents.value ?? "", /values: i32\[3\]/);
 });
 
 test("borrows fixed arrays as read-only and mutable Slice parameters", () => {
-  const example = resolve(projectRoot, "examples/language/collections/slices.z");
+  const example = resolve(projectRoot, "examples/language/collections/slices.zs");
   const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stdout, "before=10 after=28\n");
@@ -5229,7 +5229,7 @@ test("keeps Slice values non-escaping until lifetime contracts exist", () => {
     function main(): i32 { return 0; }
   `;
   assert.throws(
-    () => compileToC(returned, "slice-return.z"),
+    () => compileToC(returned, "slice-return.zs"),
     /returning Slice values requires an explicit lifetime contract/,
   );
 
@@ -5237,7 +5237,7 @@ test("keeps Slice values non-escaping until lifetime contracts exist", () => {
     struct Holder { values: Slice<i32>; }
     function main(): i32 { return 0; }
   `;
-  assert.throws(() => compileToC(stored, "slice-field.z"), /Slice values cannot be stored in struct or class fields/);
+  assert.throws(() => compileToC(stored, "slice-field.zs"), /Slice values cannot be stored in struct or class fields/);
 
   const local = `
     function inspect(values: Slice<i32>): i32 {
@@ -5246,7 +5246,7 @@ test("keeps Slice values non-escaping until lifetime contracts exist", () => {
     }
     function main(): i32 { return 0; }
   `;
-  assert.throws(() => compileToC(local, "slice-local.z"), /Slice values cannot be stored in local bindings yet/);
+  assert.throws(() => compileToC(local, "slice-local.zs"), /Slice values cannot be stored in local bindings yet/);
 });
 
 test("checks Slice capabilities, element types, and overlapping borrows", () => {
@@ -5255,7 +5255,7 @@ test("checks Slice capabilities, element types, and overlapping borrows", () => 
     function main(): i32 { return 0; }
   `;
   assert.throws(
-    () => compileToC(readOnlyMutation, "slice-readonly.z"),
+    () => compileToC(readOnlyMutation, "slice-readonly.zs"),
     /cannot mutate an indexed element through immutable binding "values"/,
   );
 
@@ -5263,7 +5263,7 @@ test("checks Slice capabilities, element types, and overlapping borrows", () => 
     function inspect(in values: Slice<i32>): i32 { return values.length; }
     function main(): i32 { return 0; }
   `;
-  assert.throws(() => compileToC(redundantIn, "slice-in.z"), /Slice parameters are already borrowed; omit `in`/);
+  assert.throws(() => compileToC(redundantIn, "slice-in.zs"), /Slice parameters are already borrowed; omit `in`/);
 
   const immutableMutation = `
     function fill(inout values: Slice<i32>): void { values[0] = 1; }
@@ -5273,7 +5273,7 @@ test("checks Slice capabilities, element types, and overlapping borrows", () => 
       return 0;
     }
   `;
-  assert.throws(() => compileToC(immutableMutation, "slice-const.z"), /requires a mutable let binding/);
+  assert.throws(() => compileToC(immutableMutation, "slice-const.zs"), /requires a mutable let binding/);
 
   const wrongElement = `
     function sum(values: Slice<u32>): u32 { return values[0]; }
@@ -5283,7 +5283,7 @@ test("checks Slice capabilities, element types, and overlapping borrows", () => 
       return 0;
     }
   `;
-  assert.throws(() => compileToC(wrongElement, "slice-element.z"), /expected Slice<u32>, found i32\[2\]/);
+  assert.throws(() => compileToC(wrongElement, "slice-element.zs"), /expected Slice<u32>, found i32\[2\]/);
 
   const overlap = `
     function mix(inout target: Slice<i32>, source: Slice<i32>): void {}
@@ -5293,7 +5293,7 @@ test("checks Slice capabilities, element types, and overlapping borrows", () => 
       return 0;
     }
   `;
-  assert.throws(() => compileToC(overlap, "slice-overlap.z"), /overlapping inout and in uses of "values"/);
+  assert.throws(() => compileToC(overlap, "slice-overlap.zs"), /overlapping inout and in uses of "values"/);
 });
 
 test("exposes Slice length and generic spelling to editor services", () => {
@@ -5305,15 +5305,15 @@ test("exposes Slice length and generic spelling to editor services", () => {
     function main(): i32 { return 0; }
   `;
   const offset = source.indexOf("values.;") + "values.".length;
-  assert.equal(completions(source, "slice-editor.z", offset).find((item) => item.label === "length")?.detail, "usize");
+  assert.equal(completions(source, "slice-editor.zs", offset).find((item) => item.label === "length")?.detail, "usize");
 
   const valid = source.replace("      values.;\n", "      const count = values.length;\n");
   const declaration = valid.indexOf("values:");
-  assert.match(hover(valid, "slice-editor.z", declaration + 1)?.contents.value ?? "", /values: Slice<i32>/);
+  assert.match(hover(valid, "slice-editor.zs", declaration + 1)?.contents.value ?? "", /values: Slice<i32>/);
 });
 
 test("monomorphizes generic structs and functions", () => {
-  const example = resolve(projectRoot, "examples/language/types/generics.z");
+  const example = resolve(projectRoot, "examples/language/types/generics.zs");
   const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stdout, "generic=42\n");
@@ -5333,7 +5333,7 @@ test("creates distinct generic instances and preserves ownership semantics", () 
       return 0;
     }
   `;
-  const generated = compileToC(distinct, "generic-distinct.z");
+  const generated = compileToC(distinct, "generic-distinct.zs");
   assert.match(generated, /__z_mono_identity_i32/);
   assert.match(generated, /__z_mono_identity_boolean/);
 
@@ -5346,7 +5346,7 @@ test("creates distinct generic instances and preserves ownership semantics", () 
       return resource.id + other.id;
     }
   `;
-  assert.throws(() => compileToC(moved, "generic-move.z"), /use of moved value "resource"/);
+  assert.throws(() => compileToC(moved, "generic-move.zs"), /use of moved value "resource"/);
 });
 
 test("infers generic calls while preserving explicit instantiation", () => {
@@ -5354,37 +5354,37 @@ test("infers generic calls while preserving explicit instantiation", () => {
     struct Pair<T, U> { first: T; second: U; }
     function main(): i32 { const pair = Pair<i32>({ first: 1, second: 2 }); return 0; }
   `;
-  assert.throws(() => compileToC(wrongArity, "generic-arity.z"), /Pair expects 2 type argument\(s\), received 1/);
+  assert.throws(() => compileToC(wrongArity, "generic-arity.zs"), /Pair expects 2 type argument\(s\), received 1/);
 
   const implicit = `
     function identity<T>(value: T): T { return value; }
     function main(): i32 { return identity(42); }
   `;
-  assert.match(compileToC(implicit, "generic-inferred.z"), /__z_mono_identity_i32\(42\)/);
+  assert.match(compileToC(implicit, "generic-inferred.zs"), /__z_mono_identity_i32\(42\)/);
 
   const explicit = `
     function identity<T>(value: T): T { return value; }
     function main(): i32 { return identity<i32>(42); }
   `;
-  assert.match(compileToC(explicit, "generic-explicit.z"), /__z_mono_identity_i32\(42\)/);
+  assert.match(compileToC(explicit, "generic-explicit.zs"), /__z_mono_identity_i32\(42\)/);
 
   const ambiguous = `
     function make<T>(): T { return 1; }
     function main(): i32 { return make(); }
   `;
-  assert.throws(() => compileToC(ambiguous, "generic-ambiguous.z"), /cannot infer type parameter "T" for "make"/);
+  assert.throws(() => compileToC(ambiguous, "generic-ambiguous.zs"), /cannot infer type parameter "T" for "make"/);
 
   const conflicting = `
     function choose<T>(left: T, right: T): T { return left; }
     function main(): i32 { return choose(1, true); }
   `;
-  assert.throws(() => compileToC(conflicting, "generic-conflict.z"), /conflicting inferred types for T.*i32 and boolean/);
+  assert.throws(() => compileToC(conflicting, "generic-conflict.zs"), /conflicting inferred types for T.*i32 and boolean/);
 
   const duplicate = `
     struct Invalid<T, T> { value: T; }
     function main(): i32 { return 0; }
   `;
-  assert.throws(() => compileToC(duplicate, "generic-duplicate.z"), /duplicate type parameter "T"/);
+  assert.throws(() => compileToC(duplicate, "generic-duplicate.zs"), /duplicate type parameter "T"/);
 });
 
 test("infers generic aggregate construction, class construction, and static factories", () => {
@@ -5427,16 +5427,16 @@ test("infers generic aggregate construction, class construction, and static fact
         + wrapped.value + explicit.value + shelf.get() + marker.tag + makeMarker().tag - 252;
     }
   `;
-  const generated = compileToC(source, "aggregate-inference.z");
+  const generated = compileToC(source, "aggregate-inference.zs");
   assert.match(generated, /Z___z_mono_Pair_i32/);
   assert.match(generated, /Z___z_mono_Envelope_i32_new\(int32_t value\)/);
   assert.match(generated, /Z___z_mono_Holder_i32_new\(int32_t value\)/);
   assert.match(generated, /Z___z_mono_Container_i32_wrap\(int32_t value\)/);
   assert.match(generated, /Z___z_mono_Shelf_i32_new\(int32_t value\)/);
   assert.match(generated, /Z___z_mono_Marker_i32_create\(void\)/);
-  assert.match(hover(source, "aggregate-inference.z", source.indexOf("pair =") + 1)?.contents.value ?? "", /pair: Pair<i32>/);
-  assert.match(hover(source, "aggregate-inference.z", source.indexOf("envelope =") + 1)?.contents.value ?? "", /envelope: Envelope<i32>/);
-  assert.match(hover(source, "aggregate-inference.z", source.indexOf("wrapped =") + 1)?.contents.value ?? "", /wrapped: Container<i32>/);
+  assert.match(hover(source, "aggregate-inference.zs", source.indexOf("pair =") + 1)?.contents.value ?? "", /pair: Pair<i32>/);
+  assert.match(hover(source, "aggregate-inference.zs", source.indexOf("envelope =") + 1)?.contents.value ?? "", /envelope: Envelope<i32>/);
+  assert.match(hover(source, "aggregate-inference.zs", source.indexOf("wrapped =") + 1)?.contents.value ?? "", /wrapped: Container<i32>/);
 
   const contextualWidth = `
     struct Pair<T> { first: T; second: T; }
@@ -5446,25 +5446,25 @@ test("infers generic aggregate construction, class construction, and static fact
     }
     function main(): i32 { return 0; }
   `;
-  assert.match(compileToC(contextualWidth, "aggregate-expected-type.z"), /struct Z___z_mono_Pair_i64 \{[\s\S]*int64_t first/);
+  assert.match(compileToC(contextualWidth, "aggregate-expected-type.zs"), /struct Z___z_mono_Pair_i64 \{[\s\S]*int64_t first/);
 
   const conflict = `
     struct Pair<T> { first: T; second: T; }
     function main(): i32 { const pair = Pair({ first: 1, second: true }); return 0; }
   `;
-  assert.throws(() => compileToC(conflict, "aggregate-inference-conflict.z"), /conflicting inferred types for T.*i32 and boolean/);
+  assert.throws(() => compileToC(conflict, "aggregate-inference-conflict.zs"), /conflicting inferred types for T.*i32 and boolean/);
 
   const ambiguous = `
     struct Marker<T> { tag: i32; static function create(): Marker<T> { return Marker<T>({ tag: 0 }); } }
     function main(): i32 { const marker = Marker.create(); return marker.tag; }
   `;
-  assert.throws(() => compileToC(ambiguous, "static-inference-ambiguous.z"), /cannot infer type parameter "T" for "Marker\.create"/);
+  assert.throws(() => compileToC(ambiguous, "static-inference-ambiguous.zs"), /cannot infer type parameter "T" for "Marker\.create"/);
 
   const wrongStaticArity = source.replace("Container.wrap<i32>(42)", "Container.wrap<i32, boolean>(42)");
-  assert.throws(() => compileToC(wrongStaticArity, "static-inference-arity.z"), /expects 1 type argument\(s\), received 2/);
+  assert.throws(() => compileToC(wrongStaticArity, "static-inference-arity.zs"), /expects 1 type argument\(s\), received 2/);
 
   const oldStaticShape = source.replace("Container.wrap<i32>(42)", "Container<i32>.wrap(42)");
-  assert.throws(() => compileToC(oldStaticShape, "static-owner-specialization.z"), /static generic arguments follow the method name/);
+  assert.throws(() => compileToC(oldStaticShape, "static-owner-specialization.zs"), /static generic arguments follow the method name/);
 });
 
 test("infers nested generic calls and calls within generic functions", () => {
@@ -5477,7 +5477,7 @@ test("infers nested generic calls and calls within generic functions", () => {
       return identity(unwrap(envelope));
     }
   `;
-  const generated = compileToC(source, "generic-nested-inference.z");
+  const generated = compileToC(source, "generic-nested-inference.zs");
   assert.match(generated, /__z_mono_unwrap_i32/);
   assert.match(generated, /__z_mono_identity_i32/);
 });
@@ -5490,7 +5490,7 @@ test("infers generic Slice element types from fixed arrays", () => {
       return firstItem(values);
     }
   `;
-  const generated = compileToC(source, "generic-slice-inference.z");
+  const generated = compileToC(source, "generic-slice-inference.zs");
   assert.match(generated, /__z_mono_firstItem_i32/);
   assert.match(generated, /\.length = 2/);
 });
@@ -5501,12 +5501,12 @@ test("infers generic arguments from imported C results", () => {
     function identity<T>(value: T): T { return value; }
     function main(): i32 { return identity(stdio.getchar()); }
   `;
-  const generated = compileToC(source, "generic-c-inference.z");
+  const generated = compileToC(source, "generic-c-inference.zs");
   assert.match(generated, /__z_mono_identity_i32\(getchar\(\)\)/);
 });
 
 test("checks nominal trait constraints on inferred and explicit generic instances", () => {
-  const example = resolve(projectRoot, "examples/language/types/generic-constraints.z");
+  const example = resolve(projectRoot, "examples/language/types/generic-constraints.zs");
   const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stdout, "measured=42\n");
@@ -5518,7 +5518,7 @@ test("checks nominal trait constraints on inferred and explicit generic instance
     function main(): i32 { return read(Reading({})); }
   `;
   assert.throws(
-    () => compileToC(structuralOnly, "generic-constraint-nominal.z"),
+    () => compileToC(structuralOnly, "generic-constraint-nominal.zs"),
     /Reading does not satisfy Measured for T in "read"/,
   );
 
@@ -5528,7 +5528,7 @@ test("checks nominal trait constraints on inferred and explicit generic instance
     function main(): i32 { return read<i32>(42); }
   `;
   assert.throws(
-    () => compileToC(primitive, "generic-constraint-primitive.z"),
+    () => compileToC(primitive, "generic-constraint-primitive.zs"),
     /i32 does not satisfy Measured for T in "read"/,
   );
 
@@ -5536,7 +5536,7 @@ test("checks nominal trait constraints on inferred and explicit generic instance
     function read<T: Missing>(value: T): T { return value; }
     function main(): i32 { return 0; }
   `;
-  assert.throws(() => compileToC(unknown, "generic-constraint-unknown.z"), /unknown trait constraint "Missing"/);
+  assert.throws(() => compileToC(unknown, "generic-constraint-unknown.zs"), /unknown trait constraint "Missing"/);
 
   const outsideSurface = `
     trait Measured { function measure(): i32; }
@@ -5544,7 +5544,7 @@ test("checks nominal trait constraints on inferred and explicit generic instance
     function main(): i32 { return 0; }
   `;
   assert.throws(
-    () => compileToC(outsideSurface, "generic-constraint-surface.z"),
+    () => compileToC(outsideSurface, "generic-constraint-surface.zs"),
     /member "secret" is not provided by the trait constraints on T/,
   );
 });
@@ -5567,7 +5567,7 @@ test("supports multiple trait constraints and constrained generic aggregates", (
       return read(holder.value);
     }
   `;
-  assert.match(compileToC(valid, "generic-multiple-constraints.z"), /__z_mono_Holder_Reading/);
+  assert.match(compileToC(valid, "generic-multiple-constraints.zs"), /__z_mono_Holder_Reading/);
 
   const invalidAggregate = `
     trait Measured { function measure(): i32; }
@@ -5576,7 +5576,7 @@ test("supports multiple trait constraints and constrained generic aggregates", (
     function main(): i32 { const holder = Holder<Plain>({ value: Plain({}) }); return 0; }
   `;
   assert.throws(
-    () => compileToC(invalidAggregate, "generic-aggregate-constraint.z"),
+    () => compileToC(invalidAggregate, "generic-aggregate-constraint.zs"),
     /Plain does not satisfy Measured for T in "Holder"/,
   );
 });
@@ -5590,12 +5590,12 @@ test("shows generic trait constraints in editor signatures", () => {
   `;
   const declaration = source.indexOf("read<T:");
   assert.match(
-    hover(source.replace(" rea;", ""), "generic-constraint-editor.z", declaration + 1)?.contents.value ?? "",
+    hover(source.replace(" rea;", ""), "generic-constraint-editor.zs", declaration + 1)?.contents.value ?? "",
     /function read<T: Measured>\(value: T\): i32/,
   );
   const offset = source.indexOf("rea;") + 3;
   assert.equal(
-    completions(source, "generic-constraint-editor.z", offset).find((item) => item.label === "read")?.detail,
+    completions(source, "generic-constraint-editor.zs", offset).find((item) => item.label === "read")?.detail,
     "function read<T: Measured>",
   );
 });
@@ -5607,11 +5607,11 @@ test("exposes generic templates without leaking monomorphized names to editor co
     function main(): i32 { const value = identity<i32>(1); ide; return value; }
   `;
   const offset = source.indexOf("ide;") + 3;
-  const items = completions(source, "generic-editor.z", offset);
+  const items = completions(source, "generic-editor.zs", offset);
   assert.equal(items.find((item) => item.label === "identity")?.detail, "function identity<T>");
   assert.equal(items.some((item) => item.label.startsWith("__z_mono_")), false);
   const declaration = source.indexOf("identity<T>");
-  assert.match(hover(source.replace(" ide;", ""), "generic-editor.z", declaration + 1)?.contents.value ?? "", /function identity<T>/);
+  assert.match(hover(source.replace(" ide;", ""), "generic-editor.zs", declaration + 1)?.contents.value ?? "", /function identity<T>/);
 });
 
 test("shows source generic fields and concrete generic binding types on hover", () => {
@@ -5631,27 +5631,27 @@ test("shows source generic fields and concrete generic binding types on hover", 
   const firstInitializer = source.indexOf("first: 20");
   const secondInitializer = source.indexOf("second: 22");
   const pairBinding = source.indexOf("pair =");
-  assert.match(hover(source, "generic-hover.z", firstField + 1)?.contents.value ?? "", /first: T/);
-  assert.match(hover(source, "generic-hover.z", secondField + 1)?.contents.value ?? "", /second: T/);
-  assert.match(hover(source, "generic-hover.z", firstInitializer + 1)?.contents.value ?? "", /first: i32/);
-  assert.match(hover(source, "generic-hover.z", secondInitializer + 1)?.contents.value ?? "", /second: i32/);
-  const pairHover = hover(source, "generic-hover.z", pairBinding + 1)?.contents.value ?? "";
+  assert.match(hover(source, "generic-hover.zs", firstField + 1)?.contents.value ?? "", /first: T/);
+  assert.match(hover(source, "generic-hover.zs", secondField + 1)?.contents.value ?? "", /second: T/);
+  assert.match(hover(source, "generic-hover.zs", firstInitializer + 1)?.contents.value ?? "", /first: i32/);
+  assert.match(hover(source, "generic-hover.zs", secondInitializer + 1)?.contents.value ?? "", /second: i32/);
+  const pairHover = hover(source, "generic-hover.zs", pairBinding + 1)?.contents.value ?? "";
   assert.match(pairHover, /pair: Pair<i32>/);
   assert.doesNotMatch(pairHover, /__z_mono_/);
   const beforeFirst = source.slice(0, firstField).split("\n");
-  const firstToken = decodeSemanticTokens(semanticTokens(source, "generic-hover.z").data).find((token) => (
+  const firstToken = decodeSemanticTokens(semanticTokens(source, "generic-hover.zs").data).find((token) => (
     token.line === beforeFirst.length - 1 && token.character === beforeFirst.at(-1)!.length
   ));
   assert.equal(semanticTokenTypes[firstToken?.type ?? -1], "property");
   const beforeInitializer = source.slice(0, firstInitializer).split("\n");
-  const initializerToken = decodeSemanticTokens(semanticTokens(source, "generic-hover.z").data).find((token) => (
+  const initializerToken = decodeSemanticTokens(semanticTokens(source, "generic-hover.zs").data).find((token) => (
     token.line === beforeInitializer.length - 1 && token.character === beforeInitializer.at(-1)!.length
   ));
   assert.equal(semanticTokenTypes[initializerToken?.type ?? -1], "property");
 });
 
 test("grows owned Array values with checked indexing and generic inout mutation", () => {
-  const example = resolve(projectRoot, "examples/language/collections/dynamic-arrays.z");
+  const example = resolve(projectRoot, "examples/language/collections/dynamic-arrays.zs");
   const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stdout, "length=3 capacity=4 middle=42\n");
@@ -5673,7 +5673,7 @@ test("borrows growable Array storage as read-only and mutable Slice values", () 
       return first(values);
     }
   `;
-  const generated = compileToC(source, "dynamic-array-slice.z");
+  const generated = compileToC(source, "dynamic-array-slice.zs");
   assert.match(generated, /\.data = \(values\)\.data, \.length = \(values\)\.length/);
   assert.match(generated, /__z_mono_first_i32/);
 });
@@ -5690,7 +5690,7 @@ test("specializes generic Array mutation helpers for every element type", () => 
       return 0;
     }
   `;
-  const generated = compileToC(source, "dynamic-array-specializations.z");
+  const generated = compileToC(source, "dynamic-array-specializations.zs");
   assert.match(generated, /DynamicArray_.*i32.*_push/);
   assert.match(generated, /DynamicArray_.*boolean.*_push/);
   const compilation = spawnSync("clang", ["-x", "c", "-Wall", "-Wextra", "-Werror", "-fsyntax-only", "-"], {
@@ -5710,19 +5710,19 @@ test("parses adjacent generic closers for nested Array types", () => {
       return outer[0][0];
     }
   `;
-  const generated = compileToC(source, "nested-dynamic-arrays.z");
+  const generated = compileToC(source, "nested-dynamic-arrays.zs");
   assert.match(generated, /Z_DynamicArray_.*Z_DynamicArray_/);
   assert.match(generated, /free\(\(\(outer\)\.data\[/);
 });
 
 test("moves Array storage and destroys initialized owned elements in reverse order", () => {
-  const example = resolve(projectRoot, "examples/language/collections/dynamic-array-cleanup.z");
+  const example = resolve(projectRoot, "examples/language/collections/dynamic-array-cleanup.zs");
   const source = readFileSync(example, "utf8");
   const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stdout, "drop=2\ndrop=1\n");
   assert.throws(
-    () => compileToC(source.replace("  return 0;", "  return first.id;"), "dynamic-array-move.z"),
+    () => compileToC(source.replace("  return 0;", "  return first.id;"), "dynamic-array-move.zs"),
     /use of moved value "first"/,
   );
 
@@ -5734,14 +5734,14 @@ test("moves Array storage and destroys initialized owned elements in reverse ord
       return first.length + second.length;
     }
   `;
-  assert.throws(() => compileToC(movedArray, "dynamic-array-owner-move.z"), /use of moved value "first"/);
+  assert.throws(() => compileToC(movedArray, "dynamic-array-owner-move.zs"), /use of moved value "first"/);
 });
 
 test("checks Array mutation, element types, and partial moves", () => {
   const empty = `
     function main(): i32 { const values = Array<i32>(); return 0; }
   `;
-  const emptyGenerated = compileToC(empty, "dynamic-array-empty.z");
+  const emptyGenerated = compileToC(empty, "dynamic-array-empty.zs");
   assert.doesNotMatch(emptyGenerated, /DynamicArray_.*_push\(/);
 
   const immutable = `
@@ -5751,7 +5751,7 @@ test("checks Array mutation, element types, and partial moves", () => {
       return 0;
     }
   `;
-  assert.throws(() => compileToC(immutable, "dynamic-array-const.z"), /Array.push requires addressable let storage/);
+  assert.throws(() => compileToC(immutable, "dynamic-array-const.zs"), /Array.push requires addressable let storage/);
 
   const wrongElement = `
     function main(): i32 {
@@ -5760,7 +5760,7 @@ test("checks Array mutation, element types, and partial moves", () => {
       return 0;
     }
   `;
-  assert.throws(() => compileToC(wrongElement, "dynamic-array-element.z"), /expected i32, found boolean/);
+  assert.throws(() => compileToC(wrongElement, "dynamic-array-element.zs"), /expected i32, found boolean/);
 
   const partialMove = `
     struct Item { id: i32; deinit {} }
@@ -5771,7 +5771,7 @@ test("checks Array mutation, element types, and partial moves", () => {
       return item.id;
     }
   `;
-  assert.throws(() => compileToC(partialMove, "dynamic-array-partial-move.z"), /cannot move an ownership-bearing field or element out of its owner/);
+  assert.throws(() => compileToC(partialMove, "dynamic-array-partial-move.zs"), /cannot move an ownership-bearing field or element out of its owner/);
 });
 
 test("exposes Array members and source-level types to editor services", () => {
@@ -5783,16 +5783,16 @@ test("exposes Array members and source-level types to editor services", () => {
     }
   `;
   const offset = source.indexOf("values.;") + "values.".length;
-  const items = completions(source, "dynamic-array-editor.z", offset);
+  const items = completions(source, "dynamic-array-editor.zs", offset);
   assert.equal(items.find((item) => item.label === "length")?.detail, "usize");
   assert.equal(items.find((item) => item.label === "capacity")?.detail, "usize");
   assert.match(items.find((item) => item.label === "push")?.detail ?? "", /push\(value: i32\): void/);
 
   const valid = source.replace("      values.;", "      values.push(1);");
   const declaration = valid.indexOf("values =");
-  assert.match(hover(valid, "dynamic-array-editor.z", declaration + 1)?.contents.value ?? "", /values: Array<i32>/);
+  assert.match(hover(valid, "dynamic-array-editor.zs", declaration + 1)?.contents.value ?? "", /values: Array<i32>/);
   const push = valid.indexOf("push(1)");
-  assert.match(hover(valid, "dynamic-array-editor.z", push + 1)?.contents.value ?? "", /push\(value: i32\): void/);
+  assert.match(hover(valid, "dynamic-array-editor.zs", push + 1)?.contents.value ?? "", /push\(value: i32\): void/);
 });
 
 test("checks logical operand types", () => {
@@ -5803,7 +5803,7 @@ test("checks logical operand types", () => {
     }
   `;
   assert.throws(
-    () => compileToC(source, "logical-types.z"),
+    () => compileToC(source, "logical-types.zs"),
     /operator "&&" requires boolean operands/,
   );
 });
@@ -5822,7 +5822,7 @@ test("emits struct layouts, literals, fields, and borrowed methods", () => {
       return point.sum();
     }
   `;
-  const generated = compileToC(source, "point.z");
+  const generated = compileToC(source, "point.zs");
   assert.match(generated, /struct Z_Point \{/);
   assert.match(generated, /static int32_t Z_Point_sum\(const Z_Point \*self\)/);
   assert.match(generated, /const Z_Point point = \(Z_Point\)\{ \.x = 20, \.y = 22 \};/);
@@ -5830,7 +5830,7 @@ test("emits struct layouts, literals, fields, and borrowed methods", () => {
 });
 
 test("constructs structs from object values and classes through class-only new", () => {
-  const example = resolve(projectRoot, "examples/language/basics/construction.z");
+  const example = resolve(projectRoot, "examples/language/basics/construction.zs");
   const source = readFileSync(example, "utf8");
   const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
@@ -5840,13 +5840,13 @@ test("constructs structs from object values and classes through class-only new",
   assert.match(generated, /Z_Session \* const session = Z_Session_new/);
 
   const structWithNew = source.replace("Point({ x: 20, y: 22 })", "new Point({ x: 20, y: 22 })");
-  assert.throws(() => compileToC(structWithNew, "new-struct.z"), /new requires a class type/);
+  assert.throws(() => compileToC(structWithNew, "new-struct.zs"), /new requires a class type/);
 
   const classWithoutNew = source.replace("new Session({ id: point.x + point.y })", "Session({ id: point.x + point.y })");
-  assert.throws(() => compileToC(classWithoutNew, "class-without-new.z"), /class construction requires new Session/);
+  assert.throws(() => compileToC(classWithoutNew, "class-without-new.zs"), /class construction requires new Session/);
 
   const legacy = source.replace("Point({ x: 20, y: 22 })", "Point { x: 20, y: 22 }");
-  assert.throws(() => compileToC(legacy, "legacy-construction.z"));
+  assert.throws(() => compileToC(legacy, "legacy-construction.zs"));
 
   const qualifiedLegacy = `
     import geometry from "tests/fixtures/geometry.h";
@@ -5855,11 +5855,11 @@ test("constructs structs from object values and classes through class-only new",
       return point.x + point.y - 42;
     }
   `;
-  assert.throws(() => compileToC(qualifiedLegacy, "qualified-legacy-construction.z"));
+  assert.throws(() => compileToC(qualifiedLegacy, "qualified-legacy-construction.zs"));
 });
 
 test("initializes private class state through safe user constructors", () => {
-  const example = resolve(projectRoot, "examples/language/basics/constructors.z");
+  const example = resolve(projectRoot, "examples/language/basics/constructors.zs");
   const source = readFileSync(example, "utf8");
   const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
@@ -5872,16 +5872,16 @@ test("initializes private class state through safe user constructors", () => {
   assert.match(generated, /if \(_z_live_field_name_\d+ && \(self->name\)\.capacity > 0\)[\s\S]*free\(self\);[\s\S]*Z_Result_CheckedSession_InvalidSession_failure/);
 
   const privateRead = source.replace("return session.identifier() + failureCode - 35;", "return session.id;");
-  assert.throws(() => compileToC(privateRead, "private-field.z"), /field "id" is private to class "Session"/);
+  assert.throws(() => compileToC(privateRead, "private-field.zs"), /field "id" is private to class "Session"/);
 
   const missingField = source.replace("    this.name = name;\n", "");
-  assert.throws(() => compileToC(missingField, "constructor-missing-field.z"), /does not initialize field "name"/);
+  assert.throws(() => compileToC(missingField, "constructor-missing-field.zs"), /does not initialize field "name"/);
 
   const earlyRead = source.replace("    this.id = id;", "    this.name = this.name;\n    this.id = id;");
-  assert.throws(() => compileToC(earlyRead, "constructor-early-read.z"), /field "name" is read before it is initialized/);
+  assert.throws(() => compileToC(earlyRead, "constructor-early-read.zs"), /field "name" is read before it is initialized/);
 
   const escapedThis = source.replace("    this.id = id;", "    const escaped = this;\n    this.id = id;");
-  assert.throws(() => compileToC(escapedThis, "constructor-this-escape.z"), /this cannot escape before field "id" is initialized/);
+  assert.throws(() => compileToC(escapedThis, "constructor-this-escape.zs"), /this cannot escape before field "id" is initialized/);
 
   const privateDeclaration = source.indexOf("id: i32");
   assert.match(hover(source, example, privateDeclaration + 1)?.contents.value ?? "", /private id: i32/);
@@ -5913,9 +5913,9 @@ test("initializes private class state through safe user constructors", () => {
     }
     function main(): i32 { const choice = new Choice(42, true); return choice.read() - 42; }
   `;
-  assert.doesNotThrow(() => compileToC(branchInitialized, "constructor-branches.z"));
+  assert.doesNotThrow(() => compileToC(branchInitialized, "constructor-branches.zs"));
   const incompleteBranch = branchInitialized.replace("else { this.value = -value; }", "else {}");
-  assert.throws(() => compileToC(incompleteBranch, "constructor-incomplete-branch.z"), /does not initialize field "value"/);
+  assert.throws(() => compileToC(incompleteBranch, "constructor-incomplete-branch.zs"), /does not initialize field "value"/);
 
   const genericConstructor = `
     class Envelope<T> {
@@ -5925,14 +5925,14 @@ test("initializes private class state through safe user constructors", () => {
     }
     function main(): i32 { const envelope = new Envelope(42); return envelope.get() - 42; }
   `;
-  assert.match(compileToC(genericConstructor, "generic-class-constructor.z"), /Z___z_mono_Envelope_i32_new\(int32_t value\)/);
+  assert.match(compileToC(genericConstructor, "generic-class-constructor.zs"), /Z___z_mono_Envelope_i32_new\(int32_t value\)/);
 
   const objectBypass = `
     class Secret { private value: i32; constructor(value: i32) { this.value = value; } }
     enum Wrapped { secret Secret }
     function main(): i32 { const wrapped = Wrapped.secret({ value: 42 }); return 0; }
   `;
-  assert.throws(() => compileToC(objectBypass, "constructor-object-bypass.z"), /has a constructor and cannot be initialized from an object value/);
+  assert.throws(() => compileToC(objectBypass, "constructor-object-bypass.zs"), /has a constructor and cannot be initialized from an object value/);
 
   const privatePattern = `
     class Secret { private value: i32; constructor(value: i32) { this.value = value; } }
@@ -5942,11 +5942,11 @@ test("initializes private class state through safe user constructors", () => {
     }
     function main(): i32 { const secret = new Secret(42); return read(Wrapped.secret(secret)) - 42; }
   `;
-  assert.throws(() => compileToC(privatePattern, "private-pattern.z"), /field "value" is private to class "Secret"/);
+  assert.throws(() => compileToC(privatePattern, "private-pattern.zs"), /field "value" is private to class "Secret"/);
 });
 
 test("runs visible type-scoped static methods on structs, classes, and generic instances", () => {
-  const example = resolve(projectRoot, "examples/language/basics/static-methods.z");
+  const example = resolve(projectRoot, "examples/language/basics/static-methods.zs");
   const source = readFileSync(example, "utf8");
   const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
@@ -5969,18 +5969,18 @@ test("runs visible type-scoped static methods on structs, classes, and generic i
       return inferred.value + explicit.value - 84;
     }
   `;
-  assert.match(compileToC(generic, "generic-static.z"), /Z___z_mono_Container_i32_wrap\(int32_t value\)/);
+  assert.match(compileToC(generic, "generic-static.zs"), /Z___z_mono_Container_i32_wrap\(int32_t value\)/);
 
   const directory = mkdtempSync("/tmp/z-static-module-");
-  const factory = resolve(directory, "factory.z");
-  const main = resolve(directory, "main.z");
+  const factory = resolve(directory, "factory.zs");
+  const main = resolve(directory, "main.zs");
   writeFileSync(factory, `
     export struct Factory {
       static function answer(): i32 { return 42; }
     }
   `);
   const imported = `
-    import { Factory } from "./factory.z";
+    import { Factory } from "./factory.zs";
     function main(): i32 { return Factory.answer() - 42; }
   `;
   writeFileSync(main, imported);
@@ -5989,7 +5989,7 @@ test("runs visible type-scoped static methods on structs, classes, and generic i
   const importedOffset = importedCompletion.indexOf("Factory.;") + "Factory.".length;
   assert.equal(completions(importedCompletion, main, importedOffset).some((item) => item.label === "answer"), true);
   const namespaced = `
-    import factory from "./factory.z";
+    import factory from "./factory.zs";
     function main(): i32 { return factory.Factory.answer() - 42; }
   `;
   assert.match(compileToC(namespaced, main), /__z_module_\d+_Factory_answer\(void\)/);
@@ -6013,29 +6013,29 @@ test("keeps static and instance method capabilities distinct", () => {
       return session.identifier();
     }
   `;
-  assert.doesNotThrow(() => compileToC(base, "static-capabilities.z"));
+  assert.doesNotThrow(() => compileToC(base, "static-capabilities.zs"));
   assert.throws(
-    () => compileToC(base.replace("session.identifier()", "session.create(1).identifier()"), "static-through-instance.z"),
+    () => compileToC(base.replace("session.identifier()", "session.create(1).identifier()"), "static-through-instance.zs"),
     /static method "create" must be called as Session\.create\(\)/,
   );
   assert.throws(
-    () => compileToC(base.replace("session.identifier()", "Session.identifier()"), "instance-through-type.z"),
+    () => compileToC(base.replace("session.identifier()", "Session.identifier()"), "instance-through-type.zs"),
     /instance method "identifier" must be called through a Session value/,
   );
   assert.throws(
-    () => compileToC(base.replace("session.identifier()", "Session.secret()"), "private-static.z"),
+    () => compileToC(base.replace("session.identifier()", "Session.secret()"), "private-static.zs"),
     /static method "secret" is private to class "Session"/,
   );
   assert.throws(
-    () => compileToC(base.replace("session.identifier()", "session.hidden()"), "private-instance.z"),
+    () => compileToC(base.replace("session.identifier()", "session.hidden()"), "private-instance.zs"),
     /method "hidden" is private to class "Session"/,
   );
   assert.throws(
-    () => compileToC(base.replace("static function create(id: i32)", "static function create(inout this, id: i32)"), "static-this.z"),
+    () => compileToC(base.replace("static function create(id: i32)", "static function create(inout this, id: i32)"), "static-this.zs"),
     /static methods cannot declare a `this` receiver/,
   );
   assert.throws(
-    () => compileToC(base.replace("private id: i32;", "static id: i32;"), "static-field.z"),
+    () => compileToC(base.replace("private id: i32;", "static id: i32;"), "static-field.zs"),
     /static fields are not implemented/,
   );
 });
@@ -6056,23 +6056,23 @@ test("completes and explains static methods on their type namespace", () => {
     }
   `;
   const staticOffset = source.indexOf("Session.;") + "Session.".length;
-  const staticItems = completions(source, "static-editor.z", staticOffset);
+  const staticItems = completions(source, "static-editor.zs", staticOffset);
   assert.equal(staticItems.some((item) => item.label === "create"), true);
   assert.equal(staticItems.some((item) => item.label === "secret"), false);
   assert.equal(staticItems.some((item) => item.label === "identifier"), false);
 
   const instanceSource = source.replace("      Session.;\n", "");
   const instanceOffset = instanceSource.indexOf("session.;") + "session.".length;
-  const instanceItems = completions(instanceSource, "static-editor.z", instanceOffset);
+  const instanceItems = completions(instanceSource, "static-editor.zs", instanceOffset);
   assert.equal(instanceItems.some((item) => item.label === "identifier"), true);
   assert.equal(instanceItems.some((item) => item.label === "create"), false);
 
   const valid = source.replace("      Session.;\n", "").replace("      session.;\n", "");
   const createOffset = valid.indexOf("Session.create") + "Session.".length;
-  assert.match(hover(valid, "static-editor.z", createOffset + 1)?.contents.value ?? "", /public static function create\(id: i32\): Session/);
-  const tokens = decodeSemanticTokens(semanticTokens(valid, "static-editor.z").data);
+  assert.match(hover(valid, "static-editor.zs", createOffset + 1)?.contents.value ?? "", /public static function create\(id: i32\): Session/);
+  const tokens = decodeSemanticTokens(semanticTokens(valid, "static-editor.zs").data);
   const declarationOffset = valid.indexOf("create(id");
-  assert.match(hover(valid, "static-editor.z", declarationOffset + 1)?.contents.value ?? "", /public static function create/);
+  assert.match(hover(valid, "static-editor.zs", declarationOffset + 1)?.contents.value ?? "", /public static function create/);
   const declarationPrefix = valid.slice(0, declarationOffset);
   const declarationLine = declarationPrefix.split("\n").length - 1;
   const declarationCharacter = declarationOffset - (declarationPrefix.lastIndexOf("\n") + 1);
@@ -6090,7 +6090,7 @@ test("completes and explains static methods on their type namespace", () => {
     function main(): i32 { Container.; return 0; }
   `;
   const genericOffset = genericSource.indexOf("Container.;") + "Container.".length;
-  const genericItems = completions(genericSource, "generic-static-editor.z", genericOffset);
+  const genericItems = completions(genericSource, "generic-static-editor.zs", genericOffset);
   assert.match(genericItems.find((item) => item.label === "wrap")?.detail ?? "", /wrap<T>\(value: T\).*Container<T>/);
 });
 
@@ -6106,8 +6106,8 @@ test("requires every struct field exactly once", () => {
     }
   `;
   assert.throws(
-    () => compileToC(source, "missing-field.z"),
-    /missing-field\.z:7:27: error: missing field "y" when constructing "Point"/,
+    () => compileToC(source, "missing-field.zs"),
+    /missing-field\.zs:7:27: error: missing field "y" when constructing "Point"/,
   );
 });
 
@@ -6125,8 +6125,8 @@ test("checks struct method arguments", () => {
     }
   `;
   assert.throws(
-    () => compileToC(source, "method-arguments.z"),
-    /method-arguments\.z:10:26: error: expected i32, found String/,
+    () => compileToC(source, "method-arguments.zs"),
+    /method-arguments\.zs:10:26: error: expected i32, found String/,
   );
 });
 
@@ -6144,13 +6144,13 @@ test("requires exhaustive enum matches", () => {
     }
   `;
   assert.throws(
-    () => compileToC(source, "exhaustive.z"),
-    /exhaustive\.z:8:7: error: non-exhaustive match; missing Outcome\.failure/,
+    () => compileToC(source, "exhaustive.zs"),
+    /exhaustive\.zs:8:7: error: non-exhaustive match; missing Outcome\.failure/,
   );
 });
 
 test("compiles payload enums and exhaustive matches", () => {
-  const example = resolve(projectRoot, "examples/language/control-flow/match.z");
+  const example = resolve(projectRoot, "examples/language/control-flow/match.zs");
   const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stdout, "matched=42\n");
@@ -6168,11 +6168,11 @@ test("compiles payload enums and exhaustive matches", () => {
       return 0;
     }
   `;
-  assert.doesNotThrow(() => compileToC(emptyArms, "empty-match-arms.z"));
+  assert.doesNotThrow(() => compileToC(emptyArms, "empty-match-arms.zs"));
 });
 
 test("composes enums through value aggregates and emits dependency-ordered C layouts", () => {
-  const example = resolve(projectRoot, "examples/language/types/aggregate-enums.z");
+  const example = resolve(projectRoot, "examples/language/types/aggregate-enums.zs");
   const source = readFileSync(example, "utf8");
   const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
@@ -6192,13 +6192,13 @@ test("composes enums through value aggregates and emits dependency-ordered C lay
     function main(): i32 { return 0; }
   `;
   assert.throws(
-    () => compileToC(recursive, "recursive-aggregate.z"),
+    () => compileToC(recursive, "recursive-aggregate.zs"),
     /type "(?:Link|Node)" has a recursive value layout/,
   );
 });
 
 test("moves, matches, nests, and destroys cleanup-bearing enum payloads", () => {
-  const example = resolve(projectRoot, "examples/language/ownership/owned-enums.z");
+  const example = resolve(projectRoot, "examples/language/ownership/owned-enums.zs");
   const source = readFileSync(example, "utf8");
   const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
@@ -6219,7 +6219,7 @@ test("moves, matches, nests, and destroys cleanup-bearing enum payloads", () => 
     "  const consumed = consume(state);\n  console.log(resource.id);",
   );
   assert.throws(
-    () => compileToC(moved, "owned-enum-move.z"),
+    () => compileToC(moved, "owned-enum-move.zs"),
     /use of moved value "resource"/,
   );
 
@@ -6233,7 +6233,7 @@ test("moves, matches, nests, and destroys cleanup-bearing enum payloads", () => 
     }
   `;
   assert.throws(
-    () => compileToC(borrowedTemporary, "borrowed-match-temporary.z"),
+    () => compileToC(borrowedTemporary, "borrowed-match-temporary.zs"),
     /match \(in \.\.\.\) requires stored enum storage/,
   );
 
@@ -6249,7 +6249,7 @@ test("moves, matches, nests, and destroys cleanup-bearing enum payloads", () => 
     function main(): i32 { return 0; }
   `;
   assert.throws(
-    () => compileToC(borrowedMove, "borrowed-match-move.z"),
+    () => compileToC(borrowedMove, "borrowed-match-move.zs"),
     /cannot move borrowed match binding "item"/,
   );
 
@@ -6267,20 +6267,20 @@ test("moves, matches, nests, and destroys cleanup-bearing enum payloads", () => 
     function main(): i32 { return 0; }
   `;
   assert.throws(
-    () => compileToC(borrowedMutation, "borrowed-match-mutation.z"),
+    () => compileToC(borrowedMutation, "borrowed-match-mutation.zs"),
     /cannot assign to immutable binding "choice"/,
   );
 });
 
 test("compiles expression matches with concise and selecting block arms", () => {
-  const example = resolve(projectRoot, "examples/language/control-flow/match-expression.z");
+  const example = resolve(projectRoot, "examples/language/control-flow/match-expression.zs");
   const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stdout, "code=41\ndirect=41\nselected=42\n");
 });
 
 test("constructs contextual enum payloads and destructures their named fields", () => {
-  const example = resolve(projectRoot, "examples/language/control-flow/enum-patterns.z");
+  const example = resolve(projectRoot, "examples/language/control-flow/enum-patterns.zs");
   const source = readFileSync(example, "utf8");
   const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
@@ -6300,7 +6300,7 @@ test("constructs contextual enum payloads and destructures their named fields", 
 });
 
 test("materializes inferred and explicitly empty Option values with owned payloads", () => {
-  const example = resolve(projectRoot, "examples/language/types/option.z");
+  const example = resolve(projectRoot, "examples/language/types/option.zs");
   const source = readFileSync(example, "utf8");
   const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
@@ -6355,15 +6355,15 @@ test("exposes match variants, payload bindings, and source Result names to edito
     }
   `;
   const failedUse = source.indexOf("failed)") + 1;
-  assert.match(hover(source, "match-editor.z", failedUse)?.contents.value ?? "", /failed: Result<User, UserError>/);
+  assert.match(hover(source, "match-editor.zs", failedUse)?.contents.value ?? "", /failed: Result<User, UserError>/);
   const successVariant = source.indexOf("success(user)") + 1;
-  assert.match(hover(source, "match-editor.z", successVariant)?.contents.value ?? "", /Result<User, UserError>\.success\(User\)/);
+  assert.match(hover(source, "match-editor.zs", successVariant)?.contents.value ?? "", /Result<User, UserError>\.success\(User\)/);
   const userBinding = source.indexOf("user) =>") + 1;
-  assert.match(hover(source, "match-editor.z", userBinding)?.contents.value ?? "", /user: User/);
+  assert.match(hover(source, "match-editor.zs", userBinding)?.contents.value ?? "", /user: User/);
   const errorBinding = source.indexOf("error) =>") + 1;
-  assert.match(hover(source, "match-editor.z", errorBinding)?.contents.value ?? "", /error: UserError/);
+  assert.match(hover(source, "match-editor.zs", errorBinding)?.contents.value ?? "", /error: UserError/);
 
-  const tokens = decodeSemanticTokens(semanticTokens(source, "match-editor.z").data);
+  const tokens = decodeSemanticTokens(semanticTokens(source, "match-editor.zs").data);
   const successPosition = positionForOffset(source, source.indexOf("success(user)"));
   assert.ok(tokens.some((token) => token.line === successPosition.line
     && token.character === successPosition.character
@@ -6383,8 +6383,8 @@ test("requires select to target a value-producing block", () => {
     }
   `;
   assert.throws(
-    () => compileToC(source, "orphan-select.z"),
-    /orphan-select\.z:3:7: error: select requires an enclosing value-producing block/,
+    () => compileToC(source, "orphan-select.zs"),
+    /orphan-select\.zs:3:7: error: select requires an enclosing value-producing block/,
   );
 });
 
@@ -6396,8 +6396,8 @@ test("reserves yield for generators", () => {
     }
   `;
   assert.throws(
-    () => compileToC(source, "future-generator.z"),
-    /future-generator\.z:3:7: error: yield is reserved for generators, which are not implemented yet/,
+    () => compileToC(source, "future-generator.zs"),
+    /future-generator\.zs:3:7: error: yield is reserved for generators, which are not implemented yet/,
   );
 });
 
@@ -6414,8 +6414,8 @@ test("requires expression match arms to agree on a value type", () => {
     }
   `;
   assert.throws(
-    () => compileToC(source, "match-types.z"),
-    /match-types\.z:7:9: error: match arm produces String, but previous arms produce i32/,
+    () => compileToC(source, "match-types.zs"),
+    /match-types\.zs:7:9: error: match arm produces String, but previous arms produce i32/,
   );
 });
 
@@ -6426,7 +6426,7 @@ test("requires explicit handling for throwing calls", () => {
     function main(): i32 { return fallible(); }
   `;
   assert.throws(
-    () => compileToC(source, "explicit-errors.z"),
+    () => compileToC(source, "explicit-errors.zs"),
     /throwing call requires `attempt` or `try`/,
   );
 });
@@ -6437,13 +6437,13 @@ test("rejects throw outside a throwing function", () => {
     function main(): i32 { throw Problem({ code: 1 }); }
   `;
   assert.throws(
-    () => compileToC(source, "invalid-throw.z"),
+    () => compileToC(source, "invalid-throw.zs"),
     /function "main" does not declare an error type/,
   );
 });
 
 test("compiles typed Result success and failure paths", () => {
-  const example = resolve(projectRoot, "examples/language/control-flow/result.z");
+  const example = resolve(projectRoot, "examples/language/control-flow/result.zs");
   const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stdout, "found=42\nerror=7\n");
@@ -6456,7 +6456,7 @@ test("requires try inside a throwing function", () => {
     function main(): i32 { return try fallible(); }
   `;
   assert.throws(
-    () => compileToC(source, "try-context.z"),
+    () => compileToC(source, "try-context.zs"),
     /try requires an enclosing throwing function/,
   );
 });
@@ -6473,27 +6473,27 @@ test("requires compatible propagated error types", () => {
     function main(): i32 { return 0; }
   `;
   assert.throws(
-    () => compileToC(source, "try-errors.z"),
+    () => compileToC(source, "try-errors.zs"),
     /cannot propagate FirstError from a function throwing SecondError/,
   );
 });
 
 test("propagates typed failures through try", () => {
-  const example = resolve(projectRoot, "examples/language/control-flow/try.z");
+  const example = resolve(projectRoot, "examples/language/control-flow/try.zs");
   const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stdout, "id=42\nforwarded=9\nerror=7\n");
 });
 
 test("compiles and runs structs as native values", () => {
-  const example = resolve(projectRoot, "examples/language/basics/structs.z");
+  const example = resolve(projectRoot, "examples/language/basics/structs.zs");
   const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stdout, "original=42 translated=45\n");
 });
 
 test("assigns mutable locals and nested value fields", () => {
-  const example = resolve(projectRoot, "examples/language/basics/mutation.z");
+  const example = resolve(projectRoot, "examples/language/basics/mutation.zs");
   const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stdout, "count=2 point=40,2 frame=40,2/640\n");
@@ -6506,7 +6506,7 @@ test("assigns mutable locals and nested value fields", () => {
 });
 
 test("runs explicit mutable receivers while immutable methods remain borrowable", () => {
-  const example = resolve(projectRoot, "examples/language/basics/mutable-methods.z");
+  const example = resolve(projectRoot, "examples/language/basics/mutable-methods.zs");
   const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stdout, "counter=3 snapshot=3 nested=15 temporary=7\n");
@@ -6534,7 +6534,7 @@ test("requires addressable mutable storage for inout method receivers", () => {
     }
   `;
   assert.throws(
-    () => compileToC(immutable, "immutable-receiver.z"),
+    () => compileToC(immutable, "immutable-receiver.zs"),
     /mutable method "add" cannot be called through immutable binding "counter"/,
   );
 
@@ -6543,7 +6543,7 @@ test("requires addressable mutable storage for inout method receivers", () => {
     "Counter({ value: 1 }).add(2);",
   );
   assert.throws(
-    () => compileToC(temporary, "temporary-receiver.z"),
+    () => compileToC(temporary, "temporary-receiver.zs"),
     /mutable method "add" requires addressable let storage/,
   );
 
@@ -6563,7 +6563,7 @@ test("requires addressable mutable storage for inout method receivers", () => {
     function main(): i32 { return 0; }
   `;
   assert.throws(
-    () => compileToC(transitive, "transitive-receiver.z"),
+    () => compileToC(transitive, "transitive-receiver.zs"),
     /mutable method "add" cannot be called through immutable binding "this"/,
   );
 });
@@ -6574,7 +6574,7 @@ test("keeps receiver capabilities in method signatures", () => {
     function main(): i32 { return 0; }
   `;
   assert.throws(
-    () => compileToC(topLevelReceiver, "top-level-receiver.z"),
+    () => compileToC(topLevelReceiver, "top-level-receiver.zs"),
     /`inout this` is only valid on a struct method/,
   );
 
@@ -6583,7 +6583,7 @@ test("keeps receiver capabilities in method signatures", () => {
     function main(): i32 { return 0; }
   `;
   assert.throws(
-    () => compileToC(topLevelMoveReceiver, "top-level-move-receiver.z"),
+    () => compileToC(topLevelMoveReceiver, "top-level-move-receiver.zs"),
     /`move this` is only valid on a struct method/,
   );
 
@@ -6600,13 +6600,13 @@ test("keeps receiver capabilities in method signatures", () => {
     }
   `;
   assert.throws(
-    () => compileToC(movedReceiver, "moved-receiver.z"),
+    () => compileToC(movedReceiver, "moved-receiver.zs"),
     /overlapping inout and value uses of "resource" in one call are not allowed/,
   );
 });
 
 test("moves consuming receivers and cleans them up exactly once", () => {
-  const example = resolve(projectRoot, "examples/language/ownership/consuming-methods.z");
+  const example = resolve(projectRoot, "examples/language/ownership/consuming-methods.zs");
   const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stdout, "drop=42\nresult=42 copy=7,7\n");
@@ -6631,7 +6631,7 @@ test("moves consuming receivers and cleans them up exactly once", () => {
     }
   `;
   assert.throws(
-    () => compileToC(useAfterConsume, "use-after-consuming-method.z"),
+    () => compileToC(useAfterConsume, "use-after-consuming-method.zs"),
     /use of moved value "resource"/,
   );
 
@@ -6645,7 +6645,7 @@ test("moves consuming receivers and cleans them up exactly once", () => {
     function main(): i32 { return 0; }
   `;
   assert.throws(
-    () => compileToC(borrowedConsume, "consume-borrowed-receiver.z"),
+    () => compileToC(borrowedConsume, "consume-borrowed-receiver.zs"),
     /cannot move the borrowed method receiver `this`; declare `move this`/,
   );
 
@@ -6662,13 +6662,13 @@ test("moves consuming receivers and cleans them up exactly once", () => {
     }
   `;
   assert.throws(
-    () => compileToC(overlappingConsume, "overlapping-consuming-receiver.z"),
+    () => compileToC(overlappingConsume, "overlapping-consuming-receiver.zs"),
     /overlapping move and in uses of "resource" in one call are not allowed/,
   );
 });
 
 test("borrows native parameters immutably and mutably", () => {
-  const example = resolve(projectRoot, "examples/language/ownership/borrowed-parameters.z");
+  const example = resolve(projectRoot, "examples/language/ownership/borrowed-parameters.zs");
   const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stdout, "counter=16 literal=7 resource=42\ndrop=42\n");
@@ -6695,7 +6695,7 @@ test("enforces native parameter capabilities at declaration and call sites", () 
     }
   `;
   assert.throws(
-    () => compileToC(missingInout, "missing-native-inout.z"),
+    () => compileToC(missingInout, "missing-native-inout.zs"),
     /"increment" requires inout <mutable binding> for parameter 1/,
   );
 
@@ -6703,7 +6703,7 @@ test("enforces native parameter capabilities at declaration and call sites", () 
     .replace("let value = 1", "const value = 1")
     .replace("increment(value)", "increment(inout value)");
   assert.throws(
-    () => compileToC(immutableInout, "immutable-native-inout.z"),
+    () => compileToC(immutableInout, "immutable-native-inout.zs"),
     /inout argument "value" requires a mutable let binding/,
   );
 
@@ -6716,7 +6716,7 @@ test("enforces native parameter capabilities at declaration and call sites", () 
     }
   `;
   assert.throws(
-    () => compileToC(overlapping, "overlapping-inout.z"),
+    () => compileToC(overlapping, "overlapping-inout.zs"),
     /overlapping inout and inout uses of "value" in one call are not allowed/,
   );
 
@@ -6731,7 +6731,7 @@ test("enforces native parameter capabilities at declaration and call sites", () 
     }
   `;
   assert.throws(
-    () => compileToC(mutateInput, "mutate-input.z"),
+    () => compileToC(mutateInput, "mutate-input.zs"),
     /cannot assign to immutable binding "value"/,
   );
 
@@ -6740,13 +6740,13 @@ test("enforces native parameter capabilities at declaration and call sites", () 
     function main(): i32 { return 0; }
   `;
   assert.throws(
-    () => compileToC(legacyTypePosition, "legacy-capability-order.z"),
+    () => compileToC(legacyTypePosition, "legacy-capability-order.zs"),
     /expected a type name, found "in"/,
   );
 });
 
 test("initializes native out parameters with flow-sensitive checking", () => {
-  const example = resolve(projectRoot, "examples/interop/c/native-out.z");
+  const example = resolve(projectRoot, "examples/interop/c/native-out.zs");
   const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
   assert.equal(
@@ -6769,7 +6769,7 @@ test("initializes native out parameters with flow-sensitive checking", () => {
     }
   `;
   assert.throws(
-    () => compileToC(readBeforeInitialization, "read-uninitialized.z"),
+    () => compileToC(readBeforeInitialization, "read-uninitialized.zs"),
     /use of uninitialized value "value"/,
   );
 
@@ -6781,7 +6781,7 @@ test("initializes native out parameters with flow-sensitive checking", () => {
     }
   `;
   assert.throws(
-    () => compileToC(maybeInitialized, "maybe-uninitialized.z"),
+    () => compileToC(maybeInitialized, "maybe-uninitialized.zs"),
     /value "value" may be uninitialized on another control-flow path/,
   );
 
@@ -6792,7 +6792,7 @@ test("initializes native out parameters with flow-sensitive checking", () => {
     function main(): i32 { return 0; }
   `;
   assert.throws(
-    () => compileToC(missingOutput, "missing-out-initialization.z"),
+    () => compileToC(missingOutput, "missing-out-initialization.zs"),
     /out parameter "value" may be uninitialized on a successful return path/,
   );
 
@@ -6805,7 +6805,7 @@ test("initializes native out parameters with flow-sensitive checking", () => {
     }
   `;
   assert.throws(
-    () => compileToC(missingModifier, "missing-out-call-modifier.z"),
+    () => compileToC(missingModifier, "missing-out-call-modifier.zs"),
     /"initialize" requires out <mutable binding> for parameter 1/,
   );
 
@@ -6818,7 +6818,7 @@ test("initializes native out parameters with flow-sensitive checking", () => {
     }
   `;
   assert.throws(
-    () => compileToC(immutableOutput, "immutable-out.z"),
+    () => compileToC(immutableOutput, "immutable-out.zs"),
     /out argument "value" requires a mutable let binding/,
   );
 
@@ -6831,7 +6831,7 @@ test("initializes native out parameters with flow-sensitive checking", () => {
     }
   `;
   assert.throws(
-    () => compileToC(uninitializedInout, "uninitialized-inout.z"),
+    () => compileToC(uninitializedInout, "uninitialized-inout.zs"),
     /inout argument "value" must be initialized before the call/,
   );
 
@@ -6844,16 +6844,16 @@ test("initializes native out parameters with flow-sensitive checking", () => {
     function main(): i32 { return 0; }
   `;
   assert.throws(
-    () => compileToC(throwingOutput, "throwing-out.z"),
+    () => compileToC(throwingOutput, "throwing-out.zs"),
     /throwing functions with out parameters are not implemented yet/,
   );
 
   assert.throws(
-    () => compileToC("function main(): i32 { let value; return 0; }", "untyped-uninitialized.z"),
+    () => compileToC("function main(): i32 { let value; return 0; }", "untyped-uninitialized.zs"),
     /cannot infer type of uninitialized let "value"/,
   );
   assert.throws(
-    () => compileToC("function main(): i32 { const value: i32; return 0; }", "uninitialized-const.z"),
+    () => compileToC("function main(): i32 { const value: i32; return 0; }", "uninitialized-const.zs"),
     /const declarations require an initializer/,
   );
 });
@@ -6870,7 +6870,7 @@ test("borrowed cleanup values cannot be consumed", () => {
     function main(): i32 { return 0; }
   `;
   assert.throws(
-    () => compileToC(source, "move-borrowed-parameter.z"),
+    () => compileToC(source, "move-borrowed-parameter.zs"),
     /cannot move borrowed parameter "resource"/,
   );
 });
@@ -6884,7 +6884,7 @@ test("keeps const values, parameters, and borrowed receivers immutable", () => {
     }
   `;
   assert.throws(
-    () => compileToC(immutableLocal, "const-assignment.z"),
+    () => compileToC(immutableLocal, "const-assignment.zs"),
     /cannot assign to immutable binding "value"/,
   );
 
@@ -6897,7 +6897,7 @@ test("keeps const values, parameters, and borrowed receivers immutable", () => {
     }
   `;
   assert.throws(
-    () => compileToC(immutableField, "const-field-assignment.z"),
+    () => compileToC(immutableField, "const-field-assignment.zs"),
     /cannot mutate a field through immutable binding "point"/,
   );
 
@@ -6909,7 +6909,7 @@ test("keeps const values, parameters, and borrowed receivers immutable", () => {
     function main(): i32 { return change(1); }
   `;
   assert.throws(
-    () => compileToC(immutableParameter, "parameter-assignment.z"),
+    () => compileToC(immutableParameter, "parameter-assignment.zs"),
     /cannot assign to immutable binding "value"/,
   );
 
@@ -6924,7 +6924,7 @@ test("keeps const values, parameters, and borrowed receivers immutable", () => {
     function main(): i32 { return 0; }
   `;
   assert.throws(
-    () => compileToC(borrowedReceiver, "receiver-assignment.z"),
+    () => compileToC(borrowedReceiver, "receiver-assignment.zs"),
     /cannot mutate a field through immutable binding "this"/,
   );
 });
@@ -6938,11 +6938,11 @@ test("type-checks assignments and replaces cleanup-bearing values safely", () =>
     }
   `;
   assert.throws(
-    () => compileToC(wrongType, "assignment-type.z"),
+    () => compileToC(wrongType, "assignment-type.zs"),
     /expected i32, found boolean/,
   );
 
-  const example = resolve(projectRoot, "examples/language/ownership/replacement.z");
+  const example = resolve(projectRoot, "examples/language/ownership/replacement.zs");
   const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stdout, "make=2\ndrop=1\nlive=5\ndrop=10\nholder=20\ndrop=20\ndrop=5\n");
@@ -6955,7 +6955,7 @@ test("type-checks assignments and replaces cleanup-bearing values safely", () =>
 });
 
 test("runs ARC classes with shared identity and one final deinit", () => {
-  const example = resolve(projectRoot, "examples/language/basics/classes.z");
+  const example = resolve(projectRoot, "examples/language/basics/classes.zs");
   const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stdout, "first=42 second=42 third=42\ndrop=42\n");
@@ -6983,7 +6983,7 @@ test("checks explicit trait conformance for structs and classes", () => {
       return size.measure();
     }
   `;
-  assert.match(compileToC(validStruct, "trait-struct.z"), /Z_Size_measure/);
+  assert.match(compileToC(validStruct, "trait-struct.zs"), /Z_Size_measure/);
 
   const missing = `
     trait Named { function name(): cstring; }
@@ -6991,7 +6991,7 @@ test("checks explicit trait conformance for structs and classes", () => {
     function main(): i32 { return 0; }
   `;
   assert.throws(
-    () => compileToC(missing, "trait-missing.z"),
+    () => compileToC(missing, "trait-missing.zs"),
     /class "User" does not implement Named\.name/,
   );
 
@@ -7004,7 +7004,7 @@ test("checks explicit trait conformance for structs and classes", () => {
     function main(): i32 { return 0; }
   `;
   assert.throws(
-    () => compileToC(mismatch, "trait-mismatch.z"),
+    () => compileToC(mismatch, "trait-mismatch.zs"),
     /does not match trait requirement Adjustable\.add/,
   );
 
@@ -7012,7 +7012,7 @@ test("checks explicit trait conformance for structs and classes", () => {
     struct Value implements Missing { value: i32; }
     function main(): i32 { return 0; }
   `;
-  assert.throws(() => compileToC(unknown, "trait-unknown.z"), /unknown trait "Missing"/);
+  assert.throws(() => compileToC(unknown, "trait-unknown.zs"), /unknown trait "Missing"/);
 });
 
 test("keeps class binding immutability separate from instance mutation", () => {
@@ -7031,18 +7031,18 @@ test("keeps class binding immutability separate from instance mutation", () => {
     }
   `;
   assert.throws(
-    () => compileToC(source, "class-move-this.z"),
+    () => compileToC(source, "class-move-this.zs"),
     /class methods cannot declare `move this`/,
   );
   const withoutConsume = source.replace("      function consume(move this): i32 { return this.value; }\n", "");
-  assert.match(compileToC(withoutConsume, "class-const-mutation.z"), /Z_Counter_add\(counter, 2\)/);
+  assert.match(compileToC(withoutConsume, "class-const-mutation.zs"), /Z_Counter_add\(counter, 2\)/);
 
   const implicitMutation = withoutConsume.replace(
     "      function add(inout this, amount: i32): void {",
     "      function add(amount: i32): void {",
   );
   assert.throws(
-    () => compileToC(implicitMutation, "class-implicit-mutation.z"),
+    () => compileToC(implicitMutation, "class-implicit-mutation.zs"),
     /cannot mutate a field through immutable binding "this"/,
   );
 
@@ -7051,7 +7051,7 @@ test("keeps class binding immutability separate from instance mutation", () => {
     "    function update(in counter: Counter): void { counter.add(1); }\n    function main(): i32 {",
   );
   assert.throws(
-    () => compileToC(immutableBorrow, "class-immutable-borrow.z"),
+    () => compileToC(immutableBorrow, "class-immutable-borrow.zs"),
     /mutable method "add" cannot be called through immutable binding "counter"/,
   );
 });
@@ -7070,20 +7070,20 @@ test("exposes Z classes and traits to editor services", () => {
     }
   `;
   const completionOffset = source.indexOf("Cou;") + 3;
-  const items = completions(source, "class-editor.z", completionOffset);
+  const items = completions(source, "class-editor.zs", completionOffset);
   assert.equal(items.find((item) => item.label === "Counter")?.kind, 7);
   assert.equal(items.find((item) => item.label === "Counted")?.kind, 8);
 
   const valid = source.replace("      Cou;\n", "");
   const classOffset = valid.indexOf("Counter");
-  assert.match(hover(valid, "class-editor.z", classOffset + 1)?.contents.value ?? "", /class Counter/);
+  assert.match(hover(valid, "class-editor.zs", classOffset + 1)?.contents.value ?? "", /class Counter/);
   const traitUse = valid.indexOf("Counted", valid.indexOf("implements"));
-  const target = definition(valid, "file:///class-editor.z", traitUse + 1);
+  const target = definition(valid, "file:///class-editor.zs", traitUse + 1);
   assert.equal(target?.range.start.line, 1);
 });
 
 test("compiles and runs the first native program", () => {
-  const example = resolve(projectRoot, "examples/language/basics/first.z");
+  const example = resolve(projectRoot, "examples/language/basics/first.zs");
   const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stdout, "Z says 42\n");
@@ -7123,7 +7123,7 @@ function dirnameFromImportMeta(): string {
 }
 
 test("zeroes weak class references and breaks owned closure cycles", () => {
-  const example = resolve(projectRoot, "examples/language/ownership/weak-references.z");
+  const example = resolve(projectRoot, "examples/language/ownership/weak-references.zs");
   const source = readFileSync(example, "utf8");
   const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
@@ -7162,7 +7162,7 @@ test("zeroes weak class references and breaks owned closure cycles", () => {
   assert.match(hover(source, example, upgradeUse)?.contents.value ?? "", /upgrade\(\): Session throws WeakExpired/);
 
   const invalidTarget = `function main(): i32 { const value = 42; const observer = weak value; return 0; }`;
-  assert.throws(() => compileToC(invalidTarget, "weak-value.z"), /weak requires a class reference, found i32/);
+  assert.throws(() => compileToC(invalidTarget, "weak-value.zs"), /weak requires a class reference, found i32/);
 
   const unhandled = source.replace("attempt observer.upgrade()", "observer.upgrade()");
   assert.throws(() => compileToC(unhandled, example), /throwing call requires `attempt` or `try`/);
@@ -7211,7 +7211,9 @@ test("editor grammar tracks keywords without reserving Result variants", () => {
   assert.match(keywordPattern, /implements/);
   assert.match(keywordPattern, /export/);
   assert.match(keywordPattern, /declare/);
+  assert.ok(editorPackage.contributes.languages[0].extensions.includes(".zs"));
   assert.ok(editorPackage.contributes.languages[0].extensions.includes(".zd"));
+  assert.ok(!editorPackage.contributes.languages[0].extensions.includes(".z"));
   assert.equal(foreignDeclarationPatterns[0].captures[2].name, "storage.type.module.z");
   assert.equal(foreignDeclarationPatterns[1].captures[1].name, "storage.type.declaration.z");
   assert.equal(foreignDeclarationPatterns[1].captures[2].name, "entity.name.type.z");
@@ -7275,7 +7277,7 @@ test("editor grammar tracks keywords without reserving Result variants", () => {
 });
 
 test("type-checks main-thread executor placement and exposes thread.main to editors", () => {
-  const example = resolve(projectRoot, "examples/async/executor-placement.z");
+  const example = resolve(projectRoot, "examples/async/executor-placement.zs");
   const source = readFileSync(example, "utf8");
   check(source, example);
   assert.deepEqual(diagnostics(source, example), []);
@@ -7309,7 +7311,7 @@ test("type-checks main-thread executor placement and exposes thread.main to edit
     }
     function main(): i32 { return inspect(); }
   `;
-  const proofDiagnostic = diagnostics(unproven, "executor-proof.z")[0];
+  const proofDiagnostic = diagnostics(unproven, "executor-proof.zs")[0];
   assert.equal(proofDiagnostic.code, "Z0711");
   assert.match(proofDiagnostic.message, /requires proven main-executor context/);
 
@@ -7324,7 +7326,7 @@ test("type-checks main-thread executor placement and exposes thread.main to edit
       return 0;
     }
   `;
-  assert.throws(() => check(synchronousHelper, "executor-helper.z"), (error: unknown) => {
+  assert.throws(() => check(synchronousHelper, "executor-helper.zs"), (error: unknown) => {
     assert.ok(error instanceof DiagnosticError);
     assert.equal(error.code, "Z0711");
     assert.match(error.summary, /enclosing async function or the direct thread\.spawn closure/);
@@ -7342,7 +7344,7 @@ test("type-checks main-thread executor placement and exposes thread.main to edit
   assert.equal(result.status, 0, result.stderr);
 
   const directory = mkdtempSync("/tmp/z-sync-main-placement-");
-  const syncMain = resolve(directory, "main.z");
+  const syncMain = resolve(directory, "main.zs");
   writeFileSync(syncMain, `
     import { thread } from "std/thread";
     function main(): i32 {
@@ -7355,7 +7357,7 @@ test("type-checks main-thread executor placement and exposes thread.main to edit
 });
 
 test("places structured work onto main from a native worker without blocking main", () => {
-  const example = resolve(projectRoot, "examples/async/thread-main-placement.z");
+  const example = resolve(projectRoot, "examples/async/thread-main-placement.zs");
   const source = readFileSync(example, "utf8");
   const artifact = compileToNative(source, example);
   assert.match(artifact.source, /z_async_enqueue_from_thread/);
@@ -7374,7 +7376,7 @@ test("places structured work onto main from a native worker without blocking mai
   );
 
   if (process.platform === "darwin") {
-    const runLoopExample = resolve(projectRoot, "examples/async/darwin-main-run-loop.z");
+    const runLoopExample = resolve(projectRoot, "examples/async/darwin-main-run-loop.zs");
     const runLoopResult = spawnSync(process.execPath, [cli, "run", runLoopExample], { encoding: "utf8" });
     assert.equal(runLoopResult.status, 0, runLoopResult.stderr);
     assert.equal(runLoopResult.stdout, "placed child is running on the Darwin main run loop\n");
@@ -7383,7 +7385,7 @@ test("places structured work onto main from a native worker without blocking mai
 
 test("retains Z ARC identities captured by main-executor placement", () => {
   const directory = mkdtempSync("/tmp/z-main-class-capture-");
-  const fileName = resolve(directory, "main.z");
+  const fileName = resolve(directory, "main.zs");
   const source = `
     import { thread } from "std/thread";
     class Session { id: i32; }
@@ -7407,7 +7409,7 @@ test("retains Z ARC identities captured by main-executor placement", () => {
 
 test("publishes owned worker results through retained Objective-C identity on main", () => {
   if (process.platform !== "darwin") return;
-  const example = resolve(projectRoot, "examples/async/appkit-main-result.z");
+  const example = resolve(projectRoot, "examples/async/appkit-main-result.zs");
   const source = readFileSync(example, "utf8");
   const artifact = compileToNative(source, example);
 
@@ -7423,7 +7425,7 @@ test("publishes owned worker results through retained Objective-C identity on ma
 }, 10_000);
 
 test("runs async match expressions with checked arithmetic and editor details", () => {
-  const example = resolve(projectRoot, "examples/async/async-phase-0.z");
+  const example = resolve(projectRoot, "examples/async/async-phase-0.zs");
   const source = readFileSync(example, "utf8");
   check(source, example);
 
@@ -7474,7 +7476,7 @@ test("runs async match expressions with checked arithmetic and editor details", 
 
 test("normalizes embedded awaits left-to-right and resumes awaited branches", () => {
   const directory = mkdtempSync("/tmp/z-async-expressions-");
-  const fileName = resolve(directory, "main.z");
+  const fileName = resolve(directory, "main.zs");
   writeFileSync(fileName, `
     import console from "std/console";
     function combine(left: i32, right: i32): i32 { return left + right; }
@@ -7521,7 +7523,7 @@ test("diagnoses embedded awaits whose lazy branch lowering has not landed", () =
       return 0;
     }
   `;
-  assert.throws(() => compileToC(shortCircuit, "async-short-circuit.z"), (error: unknown) => {
+  assert.throws(() => compileToC(shortCircuit, "async-short-circuit.zs"), (error: unknown) => {
     assert.ok(error instanceof DiagnosticError);
     assert.equal(error.code, "Z0700");
     assert.match(error.message, /short-circuit logic/);
@@ -7539,7 +7541,7 @@ test("diagnoses embedded awaits whose lazy branch lowering has not landed", () =
       };
     }
   `;
-  assert.throws(() => compileToC(selectedArm, "async-selected-arm.z"), (error: unknown) => {
+  assert.throws(() => compileToC(selectedArm, "async-selected-arm.zs"), (error: unknown) => {
     assert.ok(error instanceof DiagnosticError);
     assert.equal(error.code, "Z0700");
     assert.match(error.message, /selected-arm suspension/);
@@ -7549,7 +7551,7 @@ test("diagnoses embedded awaits whose lazy branch lowering has not landed", () =
 
 test("executes async failure matches with scalar and object payload bindings", () => {
   const directory = mkdtempSync("/tmp/z-async-match-");
-  const scalarFile = resolve(directory, "scalar.z");
+  const scalarFile = resolve(directory, "scalar.zs");
   writeFileSync(scalarFile, `
     async function fail(): i32 throws i32 { throw 7; }
     async function main(): i32 {
@@ -7562,7 +7564,7 @@ test("executes async failure matches with scalar and object payload bindings", (
   const scalar = spawnSync(process.execPath, [cli, "run", scalarFile], { encoding: "utf8" });
   assert.equal(scalar.status, 0, scalar.stderr);
 
-  const objectFile = resolve(directory, "object.z");
+  const objectFile = resolve(directory, "object.zs");
   writeFileSync(objectFile, `
     struct NetworkError { code: i32; }
     async function fail(): i32 throws NetworkError {
@@ -7592,7 +7594,7 @@ test("keeps async match ownership and suspending-arm boundaries explicit", () =>
       };
     }
   `;
-  assert.throws(() => compileToC(owned, "async-owned-match.z"), (error: unknown) => {
+  assert.throws(() => compileToC(owned, "async-owned-match.zs"), (error: unknown) => {
     assert.ok(error instanceof DiagnosticError);
     assert.equal(error.code, "Z0700");
     assert.match(error.message, /ownership-bearing enum/);
@@ -7609,7 +7611,7 @@ test("keeps async match ownership and suspending-arm boundaries explicit", () =>
       };
     }
   `;
-  assert.throws(() => compileToC(blockArm, "async-block-match.z"), (error: unknown) => {
+  assert.throws(() => compileToC(blockArm, "async-block-match.zs"), (error: unknown) => {
     assert.ok(error instanceof DiagnosticError);
     assert.equal(error.code, "Z0700");
     assert.match(error.message, /single synchronous expressions/);
@@ -7618,7 +7620,7 @@ test("keeps async match ownership and suspending-arm boundaries explicit", () =>
 });
 
 test("runs scalar async functions as stackless Phase 1 task frames", () => {
-  const example = resolve(projectRoot, "examples/async/async-sequential.z");
+  const example = resolve(projectRoot, "examples/async/async-sequential.zs");
   const source = readFileSync(example, "utf8");
   const generated = compileToC(source, example);
   assert.match(generated, /struct Z_AsyncFrame_fetchValue/);
@@ -7631,7 +7633,7 @@ test("runs scalar async functions as stackless Phase 1 task frames", () => {
 });
 
 test("runs typed scalar async errors through try and attempt await", () => {
-  const example = resolve(projectRoot, "examples/async/async-errors.z");
+  const example = resolve(projectRoot, "examples/async/async-errors.zs");
   const source = readFileSync(example, "utf8");
   const generated = compileToC(source, example);
   assert.match(generated, /bool failed;/);
@@ -7645,7 +7647,7 @@ test("runs typed scalar async errors through try and attempt await", () => {
   assert.equal(result.status, 0, result.stderr);
 
   const directory = mkdtempSync("/tmp/z-async-error-");
-  const failing = resolve(directory, "main.z");
+  const failing = resolve(directory, "main.zs");
   writeFileSync(failing, `
     async function fail(): i32 throws i32 { throw 7; }
     async function main(): i32 throws i32 {
@@ -7657,7 +7659,7 @@ test("runs typed scalar async errors through try and attempt await", () => {
 });
 
 test("carries plain struct values and errors through async task frames", () => {
-  const example = resolve(projectRoot, "examples/async/async-aggregates.z");
+  const example = resolve(projectRoot, "examples/async/async-aggregates.zs");
   const source = readFileSync(example, "utf8");
   const generated = compileToC(source, example);
   assert.match(generated, /Z_User result;/);
@@ -7673,7 +7675,7 @@ test("carries plain struct values and errors through async task frames", () => {
 });
 
 test("moves owned structs and retains ARC classes across async task frames", () => {
-  const example = resolve(projectRoot, "examples/async/async-ownership.z");
+  const example = resolve(projectRoot, "examples/async/async-ownership.zs");
   const source = readFileSync(example, "utf8");
   const generated = compileToC(source, example);
   assert.match(generated, /bool live_result;/);
@@ -7689,7 +7691,7 @@ test("moves owned structs and retains ARC classes across async task frames", () 
   assert.equal(result.stdout, "released resource 40\nreleased session 42\n");
 
   const directory = mkdtempSync("/tmp/z-async-owned-error-");
-  const failing = resolve(directory, "main.z");
+  const failing = resolve(directory, "main.zs");
   writeFileSync(failing, `
     import console from "std/console";
     class Session {
@@ -7708,7 +7710,7 @@ test("moves owned structs and retains ARC classes across async task frames", () 
 });
 
 test("constructs and destroys move-only C++ values across async suspension", () => {
-  const example = resolve(projectRoot, "examples/async/async-native-ownership.z");
+  const example = resolve(projectRoot, "examples/async/async-native-ownership.zs");
   const source = readFileSync(example, "utf8");
   const generated = compileToNative(source, example).source;
   assert.match(generated, /#include <memory>/);
@@ -7736,7 +7738,7 @@ test("constructs and destroys move-only C++ values across async suspension", () 
   );
 
   const directory = mkdtempSync("/tmp/z-async-native-cancel-");
-  const cancellation = resolve(directory, "main.z");
+  const cancellation = resolve(directory, "main.zs");
   const header = resolve(projectRoot, "tests/fixtures/move-only.hpp");
   writeFileSync(cancellation, `
     import { delay } from "std/time";
@@ -7774,7 +7776,7 @@ test("constructs and destroys move-only C++ values across async suspension", () 
   const cancelled = spawnSync(process.execPath, [cli, "run", cancellation], { encoding: "utf8" });
   assert.equal(cancelled.status, 0, cancelled.stderr);
 
-  const consuming = resolve(directory, "consume.z");
+  const consuming = resolve(directory, "consume.zs");
   writeFileSync(consuming, `
     import { delay } from "std/time";
     import native from ${JSON.stringify(header)};
@@ -7795,7 +7797,7 @@ test("constructs and destroys move-only C++ values across async suspension", () 
   const consumed = spawnSync(process.execPath, [cli, "run", consuming], { encoding: "utf8" });
   assert.equal(consumed.status, 0, consumed.stderr);
 
-  const parameterExample = resolve(projectRoot, "examples/async/async-native-parameters.z");
+  const parameterExample = resolve(projectRoot, "examples/async/async-native-parameters.zs");
   const parameterSource = readFileSync(parameterExample, "utf8");
   const parameterGenerated = compileToNative(parameterSource, parameterExample).source;
   assert.match(
@@ -7833,11 +7835,11 @@ test("constructs and destroys move-only C++ values across async suspension", () 
       return resource.value();
     }
   `;
-  const parameterMoveDiagnostic = diagnostics(parameterUseAfterMove, resolve(directory, "parameter-move.z"))[0];
+  const parameterMoveDiagnostic = diagnostics(parameterUseAfterMove, resolve(directory, "parameter-move.zs"))[0];
   assert.equal(parameterMoveDiagnostic.code, "Z0201");
   assert.match(parameterMoveDiagnostic.message, /use of moved value "resource"/);
 
-  const parameterCancellation = resolve(directory, "parameter-cancellation.z");
+  const parameterCancellation = resolve(directory, "parameter-cancellation.zs");
   writeFileSync(parameterCancellation, `
     import { delay } from "std/time";
     import native from ${JSON.stringify(header)};
@@ -7860,7 +7862,7 @@ test("constructs and destroys move-only C++ values across async suspension", () 
   const parameterCancelled = spawnSync(process.execPath, [cli, "run", parameterCancellation], { encoding: "utf8" });
   assert.equal(parameterCancelled.status, 0, parameterCancelled.stderr);
 
-  const fallible = resolve(directory, "fallible.z");
+  const fallible = resolve(directory, "fallible.zs");
   writeFileSync(fallible, `
     import { delay } from "std/time";
     import native from ${JSON.stringify(header)};
@@ -7902,7 +7904,7 @@ test("constructs and destroys move-only C++ values across async suspension", () 
   const fallibleResult = spawnSync(process.execPath, [cli, "run", fallible], { encoding: "utf8" });
   assert.equal(fallibleResult.status, 0, fallibleResult.stderr);
 
-  const aggregateExample = resolve(projectRoot, "examples/async/async-native-aggregate.z");
+  const aggregateExample = resolve(projectRoot, "examples/async/async-native-aggregate.zs");
   const aggregateSource = readFileSync(aggregateExample, "utf8");
   const aggregateGenerated = compileToNative(aggregateSource, aggregateExample).source;
   assert.match(aggregateGenerated, /alignas\(Z_DocumentLease\) unsigned char result\[sizeof\(Z_DocumentLease\)\]/);
@@ -7921,7 +7923,7 @@ test("constructs and destroys move-only C++ values across async suspension", () 
     /document: DocumentLease/,
   );
 
-  const aggregateCancellation = resolve(directory, "aggregate-cancellation.z");
+  const aggregateCancellation = resolve(directory, "aggregate-cancellation.zs");
   writeFileSync(aggregateCancellation, `
     import { delay } from "std/time";
     import native from ${JSON.stringify(header)};
@@ -7957,7 +7959,7 @@ test("constructs and destroys move-only C++ values across async suspension", () 
   const aggregateCancelled = spawnSync(process.execPath, [cli, "run", aggregateCancellation], { encoding: "utf8" });
   assert.equal(aggregateCancelled.status, 0, aggregateCancelled.stderr);
 
-  const enumAggregate = resolve(directory, "native-enum.z");
+  const enumAggregate = resolve(directory, "native-enum.zs");
   writeFileSync(enumAggregate, `
     import { delay } from "std/time";
     import native from ${JSON.stringify(header)};
@@ -7987,7 +7989,7 @@ test("constructs and destroys move-only C++ values across async suspension", () 
 }, 15000);
 
 test("destroys active Option and Result payloads in async task frames", () => {
-  const example = resolve(projectRoot, "examples/async/async-owned-enums.z");
+  const example = resolve(projectRoot, "examples/async/async-owned-enums.zs");
   const source = readFileSync(example, "utf8");
   const generated = compileToC(source, example);
   assert.match(generated, /Z_Option_Session result;/);
@@ -8020,7 +8022,7 @@ test("represents fallible void success without an enum payload", () => {
       };
     }
   `;
-  const generated = compileToC(source, "fallible-void.z");
+  const generated = compileToC(source, "fallible-void.zs");
   assert.match(generated, /Z_Result_void_NetworkError_success/);
   assert.doesNotMatch(generated, /data\.success/);
   const compilation = spawnSync("clang", ["-x", "c", "-Wall", "-Wextra", "-Werror", "-fsyntax-only", "-"], {
@@ -8035,7 +8037,7 @@ test("allows root-scoped spawn and diagnoses unacknowledged async calls and asyn
     async function fetch(value: i32): i32 { return value; }
   `;
   const naked = `${prelude} async function use(): i32 { return fetch(42); }`;
-  assert.throws(() => check(naked, "async-naked.z"), (error: unknown) => {
+  assert.throws(() => check(naked, "async-naked.zs"), (error: unknown) => {
     assert.ok(error instanceof DiagnosticError);
     assert.equal(error.code, "Z0702");
     assert.match(error.message, /requires `await` or `spawn`/);
@@ -8043,10 +8045,10 @@ test("allows root-scoped spawn and diagnoses unacknowledged async calls and asyn
   });
 
   const rootScoped = `${prelude} async function use(): i32 { const task = spawn fetch(42); return await task; }`;
-  check(rootScoped, "async-root-scope.z");
+  check(rootScoped, "async-root-scope.zs");
 
   const immediatelyJoined = `${prelude} async function use(): i32 { return await spawn fetch(42); }`;
-  assert.throws(() => check(immediatelyJoined, "async-await-spawn.z"), (error: unknown) => {
+  assert.throws(() => check(immediatelyJoined, "async-await-spawn.zs"), (error: unknown) => {
     assert.ok(error instanceof DiagnosticError);
     assert.equal(error.code, "Z0701");
     assert.match(error.message, /`await spawn` is redundant/);
@@ -8054,7 +8056,7 @@ test("allows root-scoped spawn and diagnoses unacknowledged async calls and asyn
   });
 
   const synchronousSpawn = `${prelude} function use(): i32 { const task = spawn fetch(42); return 42; }`;
-  assert.throws(() => check(synchronousSpawn, "async-sync-spawn.z"), (error: unknown) => {
+  assert.throws(() => check(synchronousSpawn, "async-sync-spawn.zs"), (error: unknown) => {
     assert.ok(error instanceof DiagnosticError);
     assert.equal(error.code, "Z0703");
     assert.match(error.message, /spawn requires an enclosing async function/);
@@ -8062,10 +8064,10 @@ test("allows root-scoped spawn and diagnoses unacknowledged async calls and asyn
   });
 
   const borrowed = `async function inspect(in value: i32): i32 { return value; }`;
-  check(borrowed, "async-borrow.z");
+  check(borrowed, "async-borrow.zs");
 
   const synchronousAwait = `function value(): i32 { return 42; } async function use(): i32 { return await value(); }`;
-  assert.throws(() => check(synchronousAwait, "async-sync-await.z"), (error: unknown) => {
+  assert.throws(() => check(synchronousAwait, "async-sync-await.zs"), (error: unknown) => {
     assert.ok(error instanceof DiagnosticError);
     assert.equal(error.code, "Z0701");
     assert.match(error.message, /await requires an async call or Task value/);
@@ -8073,7 +8075,7 @@ test("allows root-scoped spawn and diagnoses unacknowledged async calls and asyn
   });
 
   const synchronousScope = `function use(): i32 { async scope {} return 42; }`;
-  assert.throws(() => check(synchronousScope, "async-sync-scope.z"), (error: unknown) => {
+  assert.throws(() => check(synchronousScope, "async-sync-scope.zs"), (error: unknown) => {
     assert.ok(error instanceof DiagnosticError);
     assert.equal(error.code, "Z0703");
     assert.match(error.message, /async scope requires an enclosing async function/);
@@ -8082,7 +8084,7 @@ test("allows root-scoped spawn and diagnoses unacknowledged async calls and asyn
 });
 
 test("borrows immutable values across direct await and scoped spawn", () => {
-  const example = resolve(projectRoot, "examples/async/async-borrowing.z");
+  const example = resolve(projectRoot, "examples/async/async-borrowing.zs");
   const header = resolve(projectRoot, "tests/fixtures/move-only.hpp");
   const source = readFileSync(example, "utf8");
   const generated = compileToNative(source, example).source;
@@ -8123,7 +8125,7 @@ test("borrows immutable values across direct await and scoped spawn", () => {
       return await task;
     }
   `;
-  const outsideScopeDiagnostic = diagnostics(outsideScope, "async-borrow-outside-scope.z")[0];
+  const outsideScopeDiagnostic = diagnostics(outsideScope, "async-borrow-outside-scope.zs")[0];
   assert.equal(outsideScopeDiagnostic.code, "Z0704");
   assert.match(outsideScopeDiagnostic.message, /requires an explicit async scope/);
 
@@ -8139,7 +8141,7 @@ test("borrows immutable values across direct await and scoped spawn", () => {
       return resource.id;
     }
   `;
-  const mutationDiagnostic = diagnostics(mutation, "async-borrow-mutation.z")[0];
+  const mutationDiagnostic = diagnostics(mutation, "async-borrow-mutation.zs")[0];
   assert.equal(mutationDiagnostic.code, "Z0704");
   assert.match(mutationDiagnostic.message, /cannot mutate "resource" while a spawned task borrows it/);
 
@@ -8155,7 +8157,7 @@ test("borrows immutable values across direct await and scoped spawn", () => {
       return 0;
     }
   `;
-  const moveDiagnostic = diagnostics(moved, "async-borrow-move.z")[0];
+  const moveDiagnostic = diagnostics(moved, "async-borrow-move.zs")[0];
   assert.equal(moveDiagnostic.code, "Z0704");
   assert.match(moveDiagnostic.message, /cannot move "resource" while a spawned task borrows it/);
 
@@ -8163,12 +8165,12 @@ test("borrows immutable values across direct await and scoped spawn", () => {
     class Session { id: i32; }
     async function inspect(in session: Session): i32 { return session.id; }
   `;
-  const classDiagnostic = diagnostics(ownedClass, "async-borrow-class.z")[0];
+  const classDiagnostic = diagnostics(ownedClass, "async-borrow-class.zs")[0];
   assert.equal(classDiagnostic.code, "Z0704");
   assert.match(classDiagnostic.message, /should use the ordinary owned parameter form/);
 
   const directory = mkdtempSync("/tmp/z-async-borrow-cancel-");
-  const cancellation = resolve(directory, "main.z");
+  const cancellation = resolve(directory, "main.zs");
   writeFileSync(cancellation, `
     import { delay } from "std/time";
     import native from ${JSON.stringify(header)};
@@ -8194,7 +8196,7 @@ test("borrows immutable values across direct await and scoped spawn", () => {
   const cancelled = spawnSync(process.execPath, [cli, "run", cancellation], { encoding: "utf8" });
   assert.equal(cancelled.status, 0, cancelled.stderr);
 
-  const native = resolve(directory, "native.z");
+  const native = resolve(directory, "native.zs");
   writeFileSync(native, `
     import { delay } from "std/time";
     import { zcpp } from ${JSON.stringify(resolve(projectRoot, "tests/fixtures/move-only.hpp"))};
@@ -8219,7 +8221,7 @@ test("borrows immutable values across direct await and scoped spawn", () => {
 });
 
 test("mutates caller storage through a direct-awaited async inout parameter", () => {
-  const example = resolve(projectRoot, "examples/async/async-inout.z");
+  const example = resolve(projectRoot, "examples/async/async-inout.zs");
   const source = readFileSync(example, "utf8");
   const generated = compileToNative(source, example).source;
   assert.match(generated, /Z_Counter \* value_counter;/);
@@ -8253,7 +8255,7 @@ test("mutates caller storage through a direct-awaited async inout parameter", ()
       return 0;
     }
   `;
-  const spawnedDiagnostic = diagnostics(spawned, "async-spawn-inout.z")[0];
+  const spawnedDiagnostic = diagnostics(spawned, "async-spawn-inout.zs")[0];
   assert.equal(spawnedDiagnostic.code, "Z0704");
   assert.match(spawnedDiagnostic.message, /requires an explicit async scope/);
 
@@ -8266,7 +8268,7 @@ test("mutates caller storage through a direct-awaited async inout parameter", ()
       return counter.value;
     }
   `;
-  const immutableDiagnostic = diagnostics(immutable, "async-const-inout.z")[0];
+  const immutableDiagnostic = diagnostics(immutable, "async-const-inout.zs")[0];
   assert.equal(immutableDiagnostic.code, "Z0301");
   assert.match(immutableDiagnostic.message, /requires a mutable let binding/);
 
@@ -8274,12 +8276,12 @@ test("mutates caller storage through a direct-awaited async inout parameter", ()
     class Session { id: i32; }
     async function replace(inout session: Session): void { return; }
   `;
-  const arcDiagnostic = diagnostics(arcRebinding, "async-class-inout.z")[0];
+  const arcDiagnostic = diagnostics(arcRebinding, "async-class-inout.zs")[0];
   assert.equal(arcDiagnostic.code, "Z0704");
   assert.match(arcDiagnostic.message, /cannot rebind caller storage yet/);
 
   const directory = mkdtempSync("/tmp/z-async-inout-cancel-");
-  const cancellation = resolve(directory, "main.z");
+  const cancellation = resolve(directory, "main.zs");
   writeFileSync(cancellation, `
     import { delay } from "std/time";
     import { zcpp } from ${JSON.stringify(resolve(projectRoot, "tests/fixtures/move-only.hpp"))};
@@ -8313,7 +8315,7 @@ test("mutates caller storage through a direct-awaited async inout parameter", ()
   const cancelled = spawnSync(process.execPath, [cli, "run", cancellation], { encoding: "utf8" });
   assert.equal(cancelled.status, 0, cancelled.stderr);
 
-  const failure = resolve(directory, "failure.z");
+  const failure = resolve(directory, "failure.zs");
   writeFileSync(failure, `
     import { delay } from "std/time";
 
@@ -8343,7 +8345,7 @@ test("mutates caller storage through a direct-awaited async inout parameter", ()
 });
 
 test("mutably borrows caller storage through scoped spawn and releases it on join", () => {
-  const example = resolve(projectRoot, "examples/async/async-scoped-inout.z");
+  const example = resolve(projectRoot, "examples/async/async-scoped-inout.zs");
   const source = readFileSync(example, "utf8");
   const generated = compileToNative(source, example).source;
   assert.match(generated, /Z_ImportProgress \* value_progress;/);
@@ -8375,7 +8377,7 @@ test("mutably borrows caller storage through scoped spawn and releases it on joi
       return 0;
     }
   `;
-  const readDiagnostic = diagnostics(beforeJoin, "async-scoped-inout-read.z")[0];
+  const readDiagnostic = diagnostics(beforeJoin, "async-scoped-inout-read.zs")[0];
   assert.equal(readDiagnostic.code, "Z0704");
   assert.match(readDiagnostic.message, /cannot read "counter" while a spawned task mutably borrows it/);
 
@@ -8383,7 +8385,7 @@ test("mutably borrows caller storage through scoped spawn and releases it on joi
     "const observed = counter.value;",
     "const second = spawn add(inout counter);",
   );
-  const overlapDiagnostic = diagnostics(overlapping, "async-scoped-inout-overlap.z")[0];
+  const overlapDiagnostic = diagnostics(overlapping, "async-scoped-inout-overlap.zs")[0];
   assert.equal(overlapDiagnostic.code, "Z0704");
   assert.match(overlapDiagnostic.message, /cannot borrow "counter" as inout while an active inout loan exists/);
   assert.match(overlapDiagnostic.message, /call- and task-lifetime access use the same exclusivity rules/);
@@ -8397,7 +8399,7 @@ test("mutably borrows caller storage through scoped spawn and releases it on joi
       return 0;
     }
   `;
-  const callOverlapDiagnostic = diagnostics(callOverlap, "call-loan-overlap.z")[0];
+  const callOverlapDiagnostic = diagnostics(callOverlap, "call-loan-overlap.zs")[0];
   assert.match(callOverlapDiagnostic.message, /overlapping in and inout uses of "counter"/);
 
   const taskOverlap = `
@@ -8413,14 +8415,14 @@ test("mutably borrows caller storage through scoped spawn and releases it on joi
       return 0;
     }
   `;
-  const taskOverlapDiagnostic = diagnostics(taskOverlap, "task-loan-overlap.z")[0];
+  const taskOverlapDiagnostic = diagnostics(taskOverlap, "task-loan-overlap.zs")[0];
   assert.match(taskOverlapDiagnostic.message, /cannot borrow "counter" as inout while an active in loan exists/);
 
   const conditionalJoin = beforeJoin.replace(
     "const observed = counter.value;\n        await task;",
     "if (false) { await task; }\n        const observed = counter.value;",
   );
-  const conditionalDiagnostic = diagnostics(conditionalJoin, "async-scoped-inout-conditional-join.z")[0];
+  const conditionalDiagnostic = diagnostics(conditionalJoin, "async-scoped-inout-conditional-join.zs")[0];
   assert.equal(conditionalDiagnostic.code, "Z0704");
   assert.match(conditionalDiagnostic.message, /cannot read "counter" while a spawned task mutably borrows it/);
 
@@ -8442,9 +8444,9 @@ test("mutably borrows caller storage through scoped spawn and releases it on joi
       return counter.value - 43;
     }
   `;
-  check(joinedOnEveryPath, "async-scoped-inout-all-paths-join.z");
+  check(joinedOnEveryPath, "async-scoped-inout-all-paths-join.zs");
   const conditionalDirectory = mkdtempSync("/tmp/z-async-scoped-inout-conditional-");
-  const conditionalProgram = resolve(conditionalDirectory, "main.z");
+  const conditionalProgram = resolve(conditionalDirectory, "main.zs");
   writeFileSync(conditionalProgram, joinedOnEveryPath);
   const conditionalResult = spawnSync(process.execPath, [cli, "run", conditionalProgram], { encoding: "utf8" });
   assert.equal(conditionalResult.status, 0, conditionalResult.stderr);
@@ -8470,8 +8472,8 @@ test("mutably borrows caller storage through scoped spawn and releases it on joi
       return observed - 43;
     }
   `;
-  check(exitingPath, "async-scoped-inout-exiting-path.z");
-  const exitingProgram = resolve(conditionalDirectory, "exiting.z");
+  check(exitingPath, "async-scoped-inout-exiting-path.zs");
+  const exitingProgram = resolve(conditionalDirectory, "exiting.zs");
   writeFileSync(exitingProgram, exitingPath);
   const exitingResult = spawnSync(process.execPath, [cli, "run", exitingProgram], { encoding: "utf8" });
   assert.equal(exitingResult.status, 0, exitingResult.stderr);
@@ -8491,17 +8493,17 @@ test("mutably borrows caller storage through scoped spawn and releases it on joi
       return 0;
     }
   `;
-  const sharedDiagnostic = diagnostics(sharedAfterOneJoin, "async-shared-partial-join.z")[0];
+  const sharedDiagnostic = diagnostics(sharedAfterOneJoin, "async-shared-partial-join.zs")[0];
   assert.equal(sharedDiagnostic.code, "Z0704");
   assert.match(sharedDiagnostic.message, /cannot mutate "resource" while a spawned task borrows it/);
   const sharedAfterBothJoin = sharedAfterOneJoin.replace(
     "resource.value = 43;\n        await second;",
     "await second;\n        resource.value = 43;",
   );
-  check(sharedAfterBothJoin, "async-shared-complete-join.z");
+  check(sharedAfterBothJoin, "async-shared-complete-join.zs");
 
   const directory = mkdtempSync("/tmp/z-async-scoped-inout-cancel-");
-  const cancellation = resolve(directory, "main.z");
+  const cancellation = resolve(directory, "main.zs");
   writeFileSync(cancellation, `
     import { delay } from "std/time";
 
@@ -8531,7 +8533,7 @@ test("mutably borrows caller storage through scoped spawn and releases it on joi
 });
 
 test("borrows fixed-array storage as Slice across async suspension", () => {
-  const example = resolve(projectRoot, "examples/async/async-slices.z");
+  const example = resolve(projectRoot, "examples/async/async-slices.zs");
   const source = readFileSync(example, "utf8");
   const generated = compileToNative(source, example).source;
   assert.match(generated, /Z_Slice_\S+ value_readings;/);
@@ -8558,7 +8560,7 @@ test("borrows fixed-array storage as Slice across async suspension", () => {
       return await task;
     }
   `;
-  const scopeDiagnostic = diagnostics(outsideScope, "async-slice-scope.z")[0];
+  const scopeDiagnostic = diagnostics(outsideScope, "async-slice-scope.zs")[0];
   assert.equal(scopeDiagnostic.code, "Z0704");
   assert.match(scopeDiagnostic.message, /spawned Slice borrow of "values" requires an explicit async scope/);
 
@@ -8574,7 +8576,7 @@ test("borrows fixed-array storage as Slice across async suspension", () => {
       return 0;
     }
   `;
-  const mutationDiagnostic = diagnostics(mutateBeforeJoin, "async-slice-mutate-before-join.z")[0];
+  const mutationDiagnostic = diagnostics(mutateBeforeJoin, "async-slice-mutate-before-join.zs")[0];
   assert.equal(mutationDiagnostic.code, "Z0704");
   assert.match(mutationDiagnostic.message, /cannot mutate "values" while a spawned task borrows it/);
 
@@ -8582,7 +8584,7 @@ test("borrows fixed-array storage as Slice across async suspension", () => {
     "values[0] = 42;\n        await task;",
     "await task;\n        values[0] = 42;",
   );
-  check(mutateAfterJoin, "async-slice-mutate-after-join.z");
+  check(mutateAfterJoin, "async-slice-mutate-after-join.zs");
 
   const overlapping = `
     async function inspect(values: Slice<i32>): i32 { return values[0]; }
@@ -8598,13 +8600,13 @@ test("borrows fixed-array storage as Slice across async suspension", () => {
       return 0;
     }
   `;
-  const overlapDiagnostic = diagnostics(overlapping, "async-slice-overlap.z")[0];
+  const overlapDiagnostic = diagnostics(overlapping, "async-slice-overlap.zs")[0];
   assert.equal(overlapDiagnostic.code, "Z0704");
   assert.match(overlapDiagnostic.message, /cannot borrow "values" as inout while an active in loan exists/);
 });
 
 test("borrows growable and cleanup-bearing collection storage across async suspension", () => {
-  const example = resolve(projectRoot, "examples/async/async-collection-slices.z");
+  const example = resolve(projectRoot, "examples/async/async-collection-slices.zs");
   const source = readFileSync(example, "utf8");
   const generated = compileToNative(source, example).source;
 
@@ -8640,7 +8642,7 @@ test("borrows growable and cleanup-bearing collection storage across async suspe
       return 0;
     }
   `;
-  const growDiagnostic = diagnostics(liveGrow, "async-grow-live-slice.z")[0];
+  const growDiagnostic = diagnostics(liveGrow, "async-grow-live-slice.zs")[0];
   assert.equal(growDiagnostic.code, "Z0704");
   assert.match(growDiagnostic.message, /cannot mutate "values" while a spawned task borrows it/);
 
@@ -8648,12 +8650,12 @@ test("borrows growable and cleanup-bearing collection storage across async suspe
     "values.push(42);\n        await task;",
     "await task;\n        values.push(42);",
   );
-  check(afterJoin, "async-grow-after-join.z");
+  check(afterJoin, "async-grow-after-join.zs");
 });
 
 test("destroys move-only native collection elements on async completion and cancellation", () => {
   const directory = mkdtempSync("/tmp/z-async-native-collections-");
-  const sourceFile = resolve(directory, "main.z");
+  const sourceFile = resolve(directory, "main.zs");
   const header = resolve(projectRoot, "tests/fixtures/move-only.hpp");
   writeFileSync(sourceFile, `
     import native from ${JSON.stringify(header)};
@@ -8721,7 +8723,7 @@ test("destroys move-only native collection elements on async completion and canc
 });
 
 test("initializes cleanup-free caller storage through a direct-awaited async out parameter", () => {
-  const example = resolve(projectRoot, "examples/async/async-out.z");
+  const example = resolve(projectRoot, "examples/async/async-out.zs");
   const source = readFileSync(example, "utf8");
   const generated = compileToNative(source, example).source;
   assert.match(generated, /Z_SensorReading \* value_reading;/);
@@ -8747,14 +8749,14 @@ test("initializes cleanup-free caller storage through a direct-awaited async out
       return value;
     }
   `;
-  const spawnedDiagnostic = diagnostics(spawned, "async-spawn-out.z")[0];
+  const spawnedDiagnostic = diagnostics(spawned, "async-spawn-out.zs")[0];
   assert.equal(spawnedDiagnostic.code, "Z0704");
   assert.match(spawnedDiagnostic.message, /spawned output borrow of "value" is not supported/);
 
   const incomplete = `
     async function fill(out value: i32): void { return; }
   `;
-  const incompleteDiagnostic = diagnostics(incomplete, "async-incomplete-out.z")[0];
+  const incompleteDiagnostic = diagnostics(incomplete, "async-incomplete-out.zs")[0];
   assert.equal(incompleteDiagnostic.code, "Z0305");
   assert.match(incompleteDiagnostic.message, /out parameter "value" is not initialized/);
 
@@ -8767,7 +8769,7 @@ test("initializes cleanup-free caller storage through a direct-awaited async out
       resource = Resource({ value: 42 });
     }
   `;
-  const ownedDiagnostic = diagnostics(ownedOutput, "async-owned-out.z")[0];
+  const ownedDiagnostic = diagnostics(ownedOutput, "async-owned-out.zs")[0];
   assert.equal(ownedDiagnostic.code, "Z0704");
   assert.match(ownedDiagnostic.message, /cannot initialize ownership-bearing storage yet/);
 });
@@ -8788,10 +8790,10 @@ test("checks retained class receivers and consuming struct receivers in async me
       return left + right;
     }
   `;
-  check(source, "async-methods.z");
+  check(source, "async-methods.zs");
 
   const borrowedStruct = source.replace("send(move this)", "send()");
-  assert.throws(() => check(borrowedStruct, "async-borrowed-method.z"), (error: unknown) => {
+  assert.throws(() => check(borrowedStruct, "async-borrowed-method.zs"), (error: unknown) => {
     assert.ok(error instanceof DiagnosticError);
     assert.equal(error.code, "Z0704");
     assert.match(error.message, /async struct method must take ownership with `move this`/);
@@ -8800,7 +8802,7 @@ test("checks retained class receivers and consuming struct receivers in async me
 });
 
 test("runs retained class, consuming struct, and static async methods", () => {
-  const example = resolve(projectRoot, "examples/async/async-methods.z");
+  const example = resolve(projectRoot, "examples/async/async-methods.zs");
   const source = readFileSync(example, "utf8");
   const generated = compileToC(source, example);
   assert.match(generated, /struct Z_AsyncFrame_Client_load/);
@@ -8823,7 +8825,7 @@ test("runs retained class, consuming struct, and static async methods", () => {
 });
 
 test("schedules hot spawned functions and methods on the FIFO executor", () => {
-  const example = resolve(projectRoot, "examples/async/async-spawn.z");
+  const example = resolve(projectRoot, "examples/async/async-spawn.zs");
   const source = readFileSync(example, "utf8");
   const generated = compileToC(source, example);
   assert.match(generated, /struct Z_AsyncExecutor/);
@@ -8848,7 +8850,7 @@ test("schedules hot spawned functions and methods on the FIFO executor", () => {
       return 0;
     }
   `;
-  assert.throws(() => compileToC(unacknowledgedFailure, "async-unjoined-error.z"), (error: unknown) => {
+  assert.throws(() => compileToC(unacknowledgedFailure, "async-unjoined-error.zs"), (error: unknown) => {
     assert.ok(error instanceof DiagnosticError);
     assert.equal(error.code, "Z0700");
     assert.match(error.message, /throwing spawned task must be joined explicitly/);
@@ -8856,7 +8858,7 @@ test("schedules hot spawned functions and methods on the FIFO executor", () => {
   });
 
   const directory = mkdtempSync("/tmp/z-async-spawn-error-");
-  const failing = resolve(directory, "main.z");
+  const failing = resolve(directory, "main.zs");
   writeFileSync(failing, `
     import console from "std/console";
     struct Resource {
@@ -8878,7 +8880,7 @@ test("schedules hot spawned functions and methods on the FIFO executor", () => {
 });
 
 test("joins nested async scopes at their lexical boundaries", () => {
-  const example = resolve(projectRoot, "examples/async/async-scopes.z");
+  const example = resolve(projectRoot, "examples/async/async-scopes.zs");
   const source = readFileSync(example, "utf8");
   const generated = compileToC(source, example);
   assert.match(generated, /z_async_wait\(&frame->task, &frame->child_\d+->task\)/);
@@ -8907,7 +8909,7 @@ test("joins nested async scopes at their lexical boundaries", () => {
       return 0;
     }
   `;
-  const acknowledgedC = compileToC(acknowledged, "async-scoped-error.z");
+  const acknowledgedC = compileToC(acknowledged, "async-scoped-error.zs");
   assert.match(acknowledgedC, /frame->value_task = NULL/);
 
   const localValue = `
@@ -8916,7 +8918,7 @@ test("joins nested async scopes at their lexical boundaries", () => {
       return 0;
     }
   `;
-  assert.throws(() => compileToC(localValue, "async-scope-local.z"), (error: unknown) => {
+  assert.throws(() => compileToC(localValue, "async-scope-local.zs"), (error: unknown) => {
     assert.ok(error instanceof DiagnosticError);
     assert.equal(error.code, "Z0700");
     assert.match(error.message, /scope-local value bindings are not executable yet/);
@@ -8925,7 +8927,7 @@ test("joins nested async scopes at their lexical boundaries", () => {
 });
 
 test("cancels live siblings and descendants when an async failure propagates", () => {
-  const example = resolve(projectRoot, "examples/async/async-cancellation.z");
+  const example = resolve(projectRoot, "examples/async/async-cancellation.zs");
   const source = readFileSync(example, "utf8");
   const generated = compileToC(source, example);
   assert.match(generated, /bool cancellation_requested;/);
@@ -8942,7 +8944,7 @@ test("cancels live siblings and descendants when an async failure propagates", (
   assert.doesNotMatch(result.stdout, /work 3/);
 
   const directory = mkdtempSync("/tmp/z-async-handled-failure-");
-  const handled = resolve(directory, "main.z");
+  const handled = resolve(directory, "main.zs");
   writeFileSync(
     handled,
     source.replace(
@@ -8964,7 +8966,7 @@ test("cancels live siblings and descendants when an async failure propagates", (
 });
 
 test("requests and joins caller-driven task cancellation", () => {
-  const example = resolve(projectRoot, "examples/async/async-caller-cancellation.z");
+  const example = resolve(projectRoot, "examples/async/async-caller-cancellation.zs");
   const source = readFileSync(example, "utf8");
   const generated = compileToNative(source, example).source;
   assert.match(generated, /z_async_cancel\(&frame->child_\d+->task\);/);
@@ -8986,7 +8988,7 @@ test("requests and joins caller-driven task cancellation", () => {
   );
 
   const directory = mkdtempSync("/tmp/z-async-caller-cancel-");
-  const completed = resolve(directory, "completed.z");
+  const completed = resolve(directory, "completed.zs");
   writeFileSync(completed, `
     import { delay } from "std/time";
     import { zcpp } from ${JSON.stringify(resolve(projectRoot, "tests/fixtures/move-only.hpp"))};
@@ -9005,7 +9007,7 @@ test("requests and joins caller-driven task cancellation", () => {
   const completedResult = spawnSync(process.execPath, [cli, "run", completed], { encoding: "utf8" });
   assert.equal(completedResult.status, 0, completedResult.stderr);
 
-  const completedError = resolve(directory, "completed-error.z");
+  const completedError = resolve(directory, "completed-error.zs");
   writeFileSync(completedError, `
     import { delay } from "std/time";
 
@@ -9035,17 +9037,17 @@ test("requests and joins caller-driven task cancellation", () => {
       return 0;
     }
   `;
-  const nakedDiagnostic = diagnostics(naked, "async-naked-cancel.z")[0];
+  const nakedDiagnostic = diagnostics(naked, "async-naked-cancel.zs")[0];
   assert.equal(nakedDiagnostic.code, "Z0702");
   assert.match(nakedDiagnostic.message, /Task\.cancel requires direct await/);
 
   const spawned = naked.replace("task.cancel();", "spawn task.cancel();");
-  const spawnedDiagnostic = diagnostics(spawned, "async-spawn-cancel.z")[0];
+  const spawnedDiagnostic = diagnostics(spawned, "async-spawn-cancel.zs")[0];
   assert.equal(spawnedDiagnostic.code, "Z0703");
   assert.match(spawnedDiagnostic.message, /Task\.cancel cannot be spawned/);
 
   const reused = naked.replace("task.cancel();", "await task.cancel(); await task;");
-  const reusedDiagnostic = diagnostics(reused, "async-reused-task.z")[0];
+  const reusedDiagnostic = diagnostics(reused, "async-reused-task.zs")[0];
   assert.equal(reusedDiagnostic.code, "Z0201");
   assert.match(reusedDiagnostic.message, /use of moved value "task"/);
 
@@ -9060,7 +9062,7 @@ test("requests and joins caller-driven task cancellation", () => {
 });
 
 test("suspends async tasks on scheduler-aware std/time delay", () => {
-  const example = resolve(projectRoot, "examples/async/async-delay.z");
+  const example = resolve(projectRoot, "examples/async/async-delay.zs");
   const source = readFileSync(example, "utf8");
   const generated = compileToC(source, example);
   assert.match(generated, /clock_gettime\(CLOCK_MONOTONIC, &now\)/);
@@ -9098,7 +9100,7 @@ test("suspends async tasks on scheduler-aware std/time delay", () => {
   );
 
   const naked = `import { delay } from "std/time"; function main(): i32 { delay(1); return 0; }`;
-  assert.throws(() => check(naked, "naked-delay.z"), (error: unknown) => {
+  assert.throws(() => check(naked, "naked-delay.zs"), (error: unknown) => {
     assert.ok(error instanceof DiagnosticError);
     assert.equal(error.code, "Z0702");
     assert.match(error.message, /requires `await` or `spawn`/);
@@ -9109,7 +9111,7 @@ test("suspends async tasks on scheduler-aware std/time delay", () => {
     import { delay } from "std/time";
     async function main(): i32 { spawn delay(1); return 0; }
   `;
-  assert.throws(() => compileToC(spawned, "spawn-delay.z"), (error: unknown) => {
+  assert.throws(() => compileToC(spawned, "spawn-delay.zs"), (error: unknown) => {
     assert.ok(error instanceof DiagnosticError);
     assert.equal(error.code, "Z0700");
     assert.match(error.message, /spawning the delay intrinsic is not executable yet/);
@@ -9117,7 +9119,7 @@ test("suspends async tasks on scheduler-aware std/time delay", () => {
   });
 
   const directory = mkdtempSync("/tmp/z-async-delay-cancel-");
-  const cancelled = resolve(directory, "main.z");
+  const cancelled = resolve(directory, "main.zs");
   writeFileSync(cancelled, `
     import console from "std/console";
     import { delay } from "std/time";
@@ -9160,7 +9162,7 @@ test("runs synchronous calls and typed console output inside async frames", () =
       return 0;
     }
   `;
-  const generated = compileToC(source, "async-sync-calls.z");
+  const generated = compileToC(source, "async-sync-calls.zs");
   assert.match(generated, /show\(&\(frame->value_point\)\)/);
   assert.match(generated, /sum\(20, 22\)/);
   assert.match(generated, /Z_Point_total\(&\(frame->value_point\)\)/);
@@ -9168,7 +9170,7 @@ test("runs synchronous calls and typed console output inside async frames", () =
   assert.match(generated, /fputs\("Point \{ ", stdout\)/);
 
   const directory = mkdtempSync("/tmp/z-async-sync-calls-");
-  const fileName = resolve(directory, "main.z");
+  const fileName = resolve(directory, "main.zs");
   writeFileSync(fileName, source);
   const result = spawnSync(process.execPath, [cli, "run", fileName], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
@@ -9180,7 +9182,7 @@ test("runs synchronous calls and typed console output inside async frames", () =
 });
 
 test("runs cleanup-free owned work on an explicit native thread", () => {
-  const example = resolve(projectRoot, "examples/async/thread-spawn.z");
+  const example = resolve(projectRoot, "examples/async/thread-spawn.zs");
   const source = readFileSync(example, "utf8");
   const artifact = compileToNative(source, example);
   assert.match(artifact.source, /pthread_create|CreateThread/);
@@ -9207,7 +9209,7 @@ test("runs cleanup-free owned work on an explicit native thread", () => {
   assert.doesNotMatch(nativeCancel, /z_async_join_native_thread/);
 
   const directory = mkdtempSync("/tmp/z-thread-implicit-join-");
-  const implicitJoin = resolve(directory, "main.z");
+  const implicitJoin = resolve(directory, "main.zs");
   writeFileSync(implicitJoin, `
     import console from "std/console";
     import { thread } from "std/thread";
@@ -9244,7 +9246,7 @@ test("runs cleanup-free owned work on an explicit native thread", () => {
       return await task;
     }
   `;
-  assert.throws(() => check(missingMove, "thread-missing-move.z"), (error: unknown) => {
+  assert.throws(() => check(missingMove, "thread-missing-move.zs"), (error: unknown) => {
     assert.ok(error instanceof DiagnosticError);
     assert.equal(error.code, "Z0704");
     assert.match(error.message, /requires `move`/);
@@ -9258,7 +9260,7 @@ test("runs cleanup-free owned work on an explicit native thread", () => {
       return await task;
     }
   `;
-  assert.throws(() => check(borrowedCapture, "thread-borrow.z"), (error: unknown) => {
+  assert.throws(() => check(borrowedCapture, "thread-borrow.zs"), (error: unknown) => {
     assert.ok(error instanceof DiagnosticError);
     assert.equal(error.code, "Z0704");
     assert.match(error.message, /borrowed capture "input" cannot cross/);
@@ -9274,7 +9276,7 @@ test("runs cleanup-free owned work on an explicit native thread", () => {
       return await task;
     }
   `;
-  assert.throws(() => check(referenceCapture, "thread-reference.z"), (error: unknown) => {
+  assert.throws(() => check(referenceCapture, "thread-reference.zs"), (error: unknown) => {
     assert.ok(error instanceof DiagnosticError);
     assert.equal(error.code, "Z0704");
     assert.match(error.message, /type "Session" cannot cross/);
@@ -9288,7 +9290,7 @@ test("runs cleanup-free owned work on an explicit native thread", () => {
       return 0;
     }
   `;
-  assert.throws(() => check(synchronous, "thread-synchronous.z"), (error: unknown) => {
+  assert.throws(() => check(synchronous, "thread-synchronous.zs"), (error: unknown) => {
     assert.ok(error instanceof DiagnosticError);
     assert.equal(error.code, "Z0703");
     assert.match(error.message, /requires an enclosing async function/);
@@ -9297,7 +9299,7 @@ test("runs cleanup-free owned work on an explicit native thread", () => {
 });
 
 test("preserves typed errors from thread.spawn as Task<T, E>", () => {
-  const example = resolve(projectRoot, "examples/async/thread-errors.z");
+  const example = resolve(projectRoot, "examples/async/thread-errors.zs");
   const source = readFileSync(example, "utf8");
   const artifact = compileToNative(source, example);
   assert.match(artifact.source, /struct Z_AsyncFrame___z_thread_job_/);
@@ -9338,7 +9340,7 @@ test("preserves typed errors from thread.spawn as Task<T, E>", () => {
       return try await task;
     }
   `;
-  const unshareableErrorDiagnostic = diagnostics(unshareableError, "thread-owned-error.z")[0];
+  const unshareableErrorDiagnostic = diagnostics(unshareableError, "thread-owned-error.zs")[0];
   assert.equal(unshareableErrorDiagnostic.code, "Z0704");
   assert.match(unshareableErrorDiagnostic.message, /error type "OwnedError" cannot cross/);
   assert.match(unshareableErrorDiagnostic.message, /mutable field "code"/);
@@ -9358,7 +9360,7 @@ test("preserves typed errors from thread.spawn as Task<T, E>", () => {
     }
     async function main(): i32 { return await observe(); }
   `;
-  const arcErrorFile = resolve(mkdtempSync("/tmp/z-thread-arc-error-"), "main.z");
+  const arcErrorFile = resolve(mkdtempSync("/tmp/z-thread-arc-error-"), "main.zs");
   writeFileSync(arcErrorFile, arcError);
   const arcErrorResult = spawnSync(process.execPath, [cli, "run", arcErrorFile], { encoding: "utf8" });
   assert.equal(arcErrorResult.status, 0, arcErrorResult.stderr);
@@ -9377,7 +9379,7 @@ test("preserves typed errors from thread.spawn as Task<T, E>", () => {
     }
   `;
   const directory = mkdtempSync("/tmp/z-thread-error-");
-  const localClosureFile = resolve(directory, "local.z");
+  const localClosureFile = resolve(directory, "local.zs");
   writeFileSync(localClosureFile, localClosure);
   const localClosureResult = spawnSync(process.execPath, [cli, "run", localClosureFile], { encoding: "utf8" });
   assert.equal(localClosureResult.status, 0, localClosureResult.stderr);
@@ -9391,7 +9393,7 @@ test("preserves typed errors from thread.spawn as Task<T, E>", () => {
     resolve(nativeTryDirectory, "move-only.hpp.zd"),
     readFileSync(resolve(projectRoot, "tests/fixtures/move-only.hpp.zd"), "utf8"),
   );
-  const nativeTryFile = resolve(nativeTryDirectory, "main.z");
+  const nativeTryFile = resolve(nativeTryDirectory, "main.zs");
   writeFileSync(nativeTryFile, `
     import { thread } from "std/thread";
     import native from "move-only.hpp";
@@ -9424,7 +9426,7 @@ test("preserves typed errors from thread.spawn as Task<T, E>", () => {
       return try await task;
     }
   `;
-  const embeddedTryDiagnostic = diagnostics(embeddedTry, "thread-embedded-try.z")[0];
+  const embeddedTryDiagnostic = diagnostics(embeddedTry, "thread-embedded-try.zs")[0];
   assert.match(embeddedTryDiagnostic.message, /try must be the direct value of a binding/);
 
   const missingReturnType = `
@@ -9435,9 +9437,9 @@ test("preserves typed errors from thread.spawn as Task<T, E>", () => {
       return 0;
     }
   `;
-  assert.throws(() => check(missingReturnType, "thread-error-return.z"), /throwing closure requires an explicit return type/);
+  assert.throws(() => check(missingReturnType, "thread-error-return.zs"), /throwing closure requires an explicit return type/);
 
-  const nativeFailureExample = resolve(projectRoot, "examples/async/thread-native-errors.z");
+  const nativeFailureExample = resolve(projectRoot, "examples/async/thread-native-errors.zs");
   const nativeFailureSource = readFileSync(nativeFailureExample, "utf8");
   const nativeFailureGenerated = compileToNative(nativeFailureSource, nativeFailureExample).source;
   assert.match(nativeFailureGenerated, /alignas\(Z_WorkerError\) unsigned char error\[sizeof\(Z_WorkerError\)\]/);
@@ -9455,7 +9457,7 @@ test("preserves typed errors from thread.spawn as Task<T, E>", () => {
 });
 
 test("copies plain thread captures and moves uniquely owned Array storage", () => {
-  const example = resolve(projectRoot, "examples/async/thread-transfer.z");
+  const example = resolve(projectRoot, "examples/async/thread-transfer.zs");
   const source = readFileSync(example, "utf8");
   const generated = compileToC(source, example);
   assert.match(generated, /int32_t value_parentCounter/);
@@ -9480,13 +9482,13 @@ test("copies plain thread captures and moves uniquely owned Array storage", () =
       return await task;
     }
   `;
-  assert.throws(() => check(useAfterMove, "thread-array-move.z"), (error: unknown) => {
+  assert.throws(() => check(useAfterMove, "thread-array-move.zs"), (error: unknown) => {
     assert.ok(error instanceof DiagnosticError);
     assert.equal(error.code, "Z0201");
     assert.match(error.message, /use of moved value "readings"/);
     return true;
   });
-  const editorMoveDiagnostic = diagnostics(useAfterMove, "thread-array-move.z")[0];
+  const editorMoveDiagnostic = diagnostics(useAfterMove, "thread-array-move.zs")[0];
   assert.equal(editorMoveDiagnostic.code, "Z0201");
   assert.match(editorMoveDiagnostic.message, /use of moved value "readings"/);
 
@@ -9500,7 +9502,7 @@ test("copies plain thread captures and moves uniquely owned Array storage", () =
     }
   `;
   const directory = mkdtempSync("/tmp/z-thread-owned-result-");
-  const returnedOwnerFile = resolve(directory, "main.z");
+  const returnedOwnerFile = resolve(directory, "main.zs");
   writeFileSync(returnedOwnerFile, returnedOwner);
   const returnedOwnerResult = spawnSync(process.execPath, [cli, "run", returnedOwnerFile], { encoding: "utf8" });
   assert.equal(returnedOwnerResult.status, 0, returnedOwnerResult.stderr);
@@ -9516,7 +9518,7 @@ test("copies plain thread captures and moves uniquely owned Array storage", () =
       return await task - 42;
     }
   `;
-  const aggregateOwnerFile = resolve(directory, "aggregate.z");
+  const aggregateOwnerFile = resolve(directory, "aggregate.zs");
   writeFileSync(aggregateOwnerFile, aggregateOwner);
   const aggregateOwnerResult = spawnSync(process.execPath, [cli, "run", aggregateOwnerFile], { encoding: "utf8" });
   assert.equal(aggregateOwnerResult.status, 0, aggregateOwnerResult.stderr);
@@ -9533,7 +9535,7 @@ test("copies plain thread captures and moves uniquely owned Array storage", () =
       return await task;
     }
   `;
-  assert.throws(() => check(customCleanup, "thread-custom-cleanup.z"), (error: unknown) => {
+  assert.throws(() => check(customCleanup, "thread-custom-cleanup.zs"), (error: unknown) => {
     assert.ok(error instanceof DiagnosticError);
     assert.equal(error.code, "Z0704");
     assert.match(error.message, /type "ThreadAffine" cannot cross/);
@@ -9542,7 +9544,7 @@ test("copies plain thread captures and moves uniquely owned Array storage", () =
 });
 
 test("moves explicitly contracted native owners across thread boundaries", () => {
-  const example = resolve(projectRoot, "examples/async/thread-native.z");
+  const example = resolve(projectRoot, "examples/async/thread-native.zs");
   const source = readFileSync(example, "utf8");
   const generated = compileToNative(source, example).source;
   assert.match(generated, /alignas\(zcpp::UniqueValue\).*value_measurement/);
@@ -9574,7 +9576,7 @@ test("moves explicitly contracted native owners across thread boundaries", () =>
       return await task;
     }
   `;
-  const cHandleGenerated = compileToC(cHandleSource, resolve(projectRoot, "thread-native-handle.z"));
+  const cHandleGenerated = compileToC(cHandleSource, resolve(projectRoot, "thread-native-handle.zs"));
   assert.match(cHandleGenerated, /ZTestHandle \*\s+value_handle/);
   assert.match(cHandleGenerated, /z_test_close\(frame->value_handle\)/);
   const handleWorkerPoll = cHandleGenerated.slice(cHandleGenerated.lastIndexOf("static void z_async_poll___z_thread_job_"));
@@ -9583,7 +9585,7 @@ test("moves explicitly contracted native owners across thread boundaries", () =>
 
   const uncontractedDirectory = mkdtempSync("/tmp/z-thread-native-uncontracted-");
   const uncontractedHeader = resolve(uncontractedDirectory, "native.hpp");
-  const uncontractedFile = resolve(uncontractedDirectory, "main.z");
+  const uncontractedFile = resolve(uncontractedDirectory, "main.zs");
   writeFileSync(uncontractedHeader, readFileSync(resolve(projectRoot, "tests/fixtures/move-only.hpp"), "utf8"));
   writeFileSync(`${uncontractedHeader}.zd`, `
     declare module "native.hpp" {
@@ -9637,7 +9639,7 @@ test("moves explicitly contracted native owners across thread boundaries", () =>
 });
 
 test("shares deeply readonly ARC classes through atomic thread captures", () => {
-  const example = resolve(projectRoot, "examples/async/thread-shared-class.z");
+  const example = resolve(projectRoot, "examples/async/thread-shared-class.zs");
   const source = readFileSync(example, "utf8");
   const generated = compileToC(source, example);
   assert.match(generated, /__atomic_add_fetch\(&value->_z_refcount, 1, __ATOMIC_RELAXED\)/);
@@ -9664,7 +9666,7 @@ test("shares deeply readonly ARC classes through atomic thread captures", () => 
       return 0;
     }
   `;
-  const readonlyDiagnostic = diagnostics(readonlyMutation, "readonly-field.z")[0];
+  const readonlyDiagnostic = diagnostics(readonlyMutation, "readonly-field.zs")[0];
   assert.equal(readonlyDiagnostic.code, "Z0214");
   assert.match(readonlyDiagnostic.message, /cannot assign to readonly field "retries"/);
 
@@ -9679,7 +9681,7 @@ test("shares deeply readonly ARC classes through atomic thread captures", () => 
       return configuration.count() - 3;
     }
   `;
-  assert.match(compileToC(constructorInitialization, "readonly-constructor.z"), /self->retries = retries/);
+  assert.match(compileToC(constructorInitialization, "readonly-constructor.zs"), /self->retries = retries/);
 
   const mutableClass = `
     import { thread } from "std/thread";
@@ -9690,7 +9692,7 @@ test("shares deeply readonly ARC classes through atomic thread captures", () => 
       return await task;
     }
   `;
-  const mutableDiagnostic = diagnostics(mutableClass, "thread-mutable-class.z")[0];
+  const mutableDiagnostic = diagnostics(mutableClass, "thread-mutable-class.zs")[0];
   assert.equal(mutableDiagnostic.code, "Z0704");
   assert.match(mutableDiagnostic.message, /cannot cross a native thread boundary/);
   assert.match(mutableDiagnostic.message, /mutable field "id"/);
@@ -9704,7 +9706,7 @@ test("shares deeply readonly ARC classes through atomic thread captures", () => 
       return await task;
     }
   `;
-  const storageDiagnostic = diagnostics(mutableStorage, "thread-readonly-array.z")[0];
+  const storageDiagnostic = diagnostics(mutableStorage, "thread-readonly-array.zs")[0];
   assert.equal(storageDiagnostic.code, "Z0704");
   assert.match(storageDiagnostic.message, /mutable Array<i32> storage/);
 
@@ -9718,13 +9720,13 @@ test("shares deeply readonly ARC classes through atomic thread captures", () => 
       return await task;
     }
   `;
-  const weakDiagnostic = diagnostics(weakShared, "thread-shared-weak.z")[0];
+  const weakDiagnostic = diagnostics(weakShared, "thread-shared-weak.zs")[0];
   assert.equal(weakDiagnostic.code, "Z0704");
   assert.match(weakDiagnostic.message, /cannot cross.*while Weak<Configuration> is used/);
 });
 
 test("moves owned String and TextBuffer storage through native thread frames", () => {
-  const example = resolve(projectRoot, "examples/async/thread-text.z");
+  const example = resolve(projectRoot, "examples/async/thread-text.zs");
   const source = readFileSync(example, "utf8");
   const generated = compileToC(source, example);
   assert.match(generated, /Z_String value_source;/);
@@ -9748,7 +9750,7 @@ test("moves owned String and TextBuffer storage through native thread frames", (
       return await task;
     }
   `;
-  const movedDiagnostic = diagnostics(movedString, "thread-string-move.z")[0];
+  const movedDiagnostic = diagnostics(movedString, "thread-string-move.zs")[0];
   assert.equal(movedDiagnostic.code, "Z0201");
   assert.match(movedDiagnostic.message, /use of moved value "text"/);
 
@@ -9763,7 +9765,7 @@ test("moves owned String and TextBuffer storage through native thread frames", (
     }
   `;
   const directory = mkdtempSync("/tmp/z-thread-text-");
-  const arrayFile = resolve(directory, "array.z");
+  const arrayFile = resolve(directory, "array.zs");
   writeFileSync(arrayFile, arrayOfStrings);
   const arrayResult = spawnSync(process.execPath, [cli, "run", arrayFile], { encoding: "utf8" });
   assert.equal(arrayResult.status, 0, arrayResult.stderr);

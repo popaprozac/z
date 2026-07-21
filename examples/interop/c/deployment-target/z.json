@@ -1,6 +1,6 @@
 {
   "target": {
-    "entry": "main.z",
+    "entry": "main.zs",
     "platform": "macos",
     "minimumVersion": "13.0"
   }

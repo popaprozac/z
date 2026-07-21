@@ -1,6 +1,6 @@
 import { TextBuffer } from "std/text";
-import { tokenize } from "./lexer.z";
-import { Declaration, DeclarationKind, ImportDeclaration, Program, parseProgram } from "./parser.z";
+import { tokenize } from "./lexer.zs";
+import { Declaration, DeclarationKind, ImportDeclaration, Program, parseProgram } from "./parser.zs";
 
 export struct ModuleSource {
   path: String;
@@ -108,9 +108,10 @@ function isLocalHeader(in header: String): boolean {
         && isSlash(header.byteAt(2))
       )
     );
-  if (!relative || header.byteLength < 2) return false;
-  return header.byteAt(header.byteLength - 2) == 46
-    && header.byteAt(header.byteLength - 1) == 122;
+  if (!relative || header.byteLength < 3) return false;
+  return header.byteAt(header.byteLength - 3) == 46
+    && header.byteAt(header.byteLength - 2) == 122
+    && header.byteAt(header.byteLength - 1) == 115;
 }
 
 function directoryName(in path: String): String {

@@ -55,7 +55,7 @@ type ModuleScope = {
 };
 
 export function isLocalSourceModuleSpecifier(specifier: string): boolean {
-  return (specifier.startsWith("./") || specifier.startsWith("../")) && specifier.endsWith(".z");
+  return (specifier.startsWith("./") || specifier.startsWith("../")) && specifier.endsWith(".zs");
 }
 
 export function linkSourceModules(entryProgram: Program, entryFileName: string): ModuleLinkResult {
@@ -88,7 +88,7 @@ export function linkSourceModules(entryProgram: Program, entryFileName: string):
         importDeclaration?.location.fileName ?? entryPath,
         importDeclaration?.location ?? { offset: 0, line: 1, column: 1, fileName: entryPath },
         `could not find Z module ${JSON.stringify(importDeclaration?.header ?? canonical)}`,
-        { code: "Z0602", helps: ["use a relative path ending in `.z`"] },
+        { code: "Z0602", helps: ["use a relative path ending in `.zs`"] },
       );
     }
     const program = suppliedProgram ?? parse(lex(readFileSync(canonical, "utf8"), canonical), canonical);

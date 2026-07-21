@@ -22,7 +22,7 @@ function main(): i32 {
 ```
 
 ```sh
-bun run z run examples/language/basics/first.z
+bun run z run examples/language/basics/first.zs
 ```
 
 The stage-0 compiler is written in TypeScript, runs on Bun, and emits readable
@@ -36,6 +36,10 @@ Z source -> parser and semantic model -> ownership/async lowering
 
 Self-hosting is the goal. TypeScript is the bootstrap implementation, not Z's
 runtime model.
+
+Z source modules use `.zs` (Z source), while foreign declaration contracts use
+`.zd` (Z declaration). The compiler intentionally does not claim `.z`, which is
+already conventionally used for compressed archives on Unix systems.
 
 ## Why Z
 
@@ -97,7 +101,7 @@ weakly captures ARC-managed Z state, receives repeated callbacks, and explicitly
 removes the returned observer tokens:
 
 ```sh
-bun run z run examples/interop/objc/appkit-events.z
+bun run z run examples/interop/objc/appkit-events.zs
 ```
 
 See [the interop model](docs/interop-model.md) for the cost model and
@@ -107,8 +111,8 @@ are normalized.
 The first native application composition probe is Z Notes:
 
 ```sh
-bun run z run examples/applications/z-notes/main.z
-bun run z run examples/applications/z-notes/smoke.z
+bun run z run examples/applications/z-notes/main.zs
+bun run z run examples/applications/z-notes/smoke.zs
 ```
 
 It combines AppKit, an ARC-managed Z notes model, optional selection, direct
@@ -125,10 +129,10 @@ Line Tools provide Clang, Apple frameworks, and Swift for the interop probes.
 
 ```sh
 bun test
-bun run z check examples/language/basics/first.z
-bun run z emit examples/language/basics/first.z
-bun run z run examples/language/basics/first.z
-bun run z run examples/applications/source-stager/main.z -- examples/language/basics/first.z
+bun run z check examples/language/basics/first.zs
+bun run z emit examples/language/basics/first.zs
+bun run z run examples/language/basics/first.zs
+bun run z run examples/applications/source-stager/main.zs -- examples/language/basics/first.zs
 ```
 
 Install the development editor extension for VS Code and Cursor:
@@ -137,7 +141,7 @@ Install the development editor extension for VS Code and Cursor:
 ./scripts/install-editor-extension.sh
 ```
 
-Then reload the editor window and open a `.z` source or `.zd` declaration file.
+Then reload the editor window and open a `.zs` source or `.zd` declaration file.
 The extension starts the Bun-based language server automatically.
 
 Continue with [Getting started](docs/getting-started.md), then use the
@@ -179,6 +183,6 @@ docs/             focused reference, model, and status documents
 
 The integration suite is the executable truth for the bootstrap. Before a
 change lands, run `bun test` and keep generated native code readable enough to
-inspect with `bun run z emit <file.z>`.
+inspect with `bun run z emit <file.zs>`.
 
 Browse the categorized runnable index in [`examples/README.md`](examples/README.md).

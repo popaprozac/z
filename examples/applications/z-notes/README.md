@@ -14,13 +14,13 @@ The first skeleton already combines:
 Run the non-GUI model/link smoke test with:
 
 ```sh
-bun run z run examples/applications/z-notes/smoke.z
+bun run z run examples/applications/z-notes/smoke.zs
 ```
 
 Open the native application with:
 
 ```sh
-bun run z run examples/applications/z-notes/main.z
+bun run z run examples/applications/z-notes/main.zs
 ```
 
 The project targets macOS 14 because `NSApplication.activate()` was introduced

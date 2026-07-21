@@ -42,7 +42,7 @@ Do not choose among them from syntax alone. Add the smallest spike when a real
 program needs to retain or return a view, then compare call sites, diagnostics,
 code generation, and optimizer results.
 
-The deterministic [`ownership-views.z`](../examples/interop/objc/desktop-ownership/ownership-views.z) probe now
+The deterministic [`ownership-views.zs`](../examples/interop/objc/desktop-ownership/ownership-views.zs) probe now
 exercises candidates 1 through 3 against the same lookup:
 
 | Shape | Source contract | Generated cost | Usability boundary |
@@ -68,7 +68,7 @@ storage. ARC class owners remain excluded because an alias could mutate the same
 storage. Callers needing aliasing or survival across reallocation must use an
 owned snapshot or a future stable reference model.
 
-The follow-up [`arena.z`](../examples/language/ownership/arena.z) probe gives a
+The follow-up [`arena.zs`](../examples/language/ownership/arena.zs) probe gives a
 region owner stable allocation addresses. Multiple direct views coexist across
 later allocation; `reset` and destruction are excluded until their last uses.
 Generated code omits cleanup records for trivial values and registers reverse

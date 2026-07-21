@@ -4,7 +4,7 @@ import process from "std/process";
 
 function stageCompilerInput(in path: String): i32 throws String {
   const source = try fs.readText(path);
-  const stagedPath = ".z-cache/self-host-input.z";
+  const stagedPath = ".z-cache/self-host-input.zs";
   try fs.writeText(stagedPath, source);
 
   const compilerArguments = ["--version"];
@@ -16,7 +16,7 @@ function stageCompilerInput(in path: String): i32 throws String {
 function main(): i32 {
   const arguments = process.args();
   if (arguments.length == 0) {
-    console.error("usage: source-stager <input.z>");
+    console.error("usage: source-stager <input.zs>");
     return 2;
   }
 

@@ -1,6 +1,6 @@
 import console from "std/console";
-import { Note, NoteStore } from "./model.z";
-import { canOpenMemoryDatabase, sqliteVersion } from "./persistence.z";
+import { Note, NoteStore } from "./model.zs";
+import { canOpenMemoryDatabase, sqliteVersion } from "./persistence.zs";
 
 function main(): i32 {
   const store = new NoteStore({

@@ -4,7 +4,7 @@ Examples are grouped by the concept or native boundary they exercise. Run an
 executable example from the repository root:
 
 ```sh
-bun run z run examples/language/basics/first.z
+bun run z run examples/language/basics/first.zs
 ```
 
 Use `bun run z check <path>` for type checking and `bun run z emit <path>` to
@@ -15,33 +15,33 @@ inspect the generated C-family source. The broader guided index lives in
 
 ### Basics
 
-- [`first.z`](language/basics/first.z): first native program and direct C call
-- [`console.z`](language/basics/console.z): typed logging and interpolation
-- [`construction.z`](language/basics/construction.z): struct construction and class-only `new`
-- [`structs.z`](language/basics/structs.z), [`classes.z`](language/basics/classes.z), and [`constructors.z`](language/basics/constructors.z)
-- [`mutation.z`](language/basics/mutation.z), [`mutable-methods.z`](language/basics/mutable-methods.z), and [`static-methods.z`](language/basics/static-methods.z)
-- [`function-values.z`](language/basics/function-values.z) and [`closures.z`](language/basics/closures.z)
-- [`strings.z`](language/basics/strings.z), [`integer-safety.z`](language/basics/integer-safety.z), and [`sleep.z`](language/basics/sleep.z)
+- [`first.zs`](language/basics/first.zs): first native program and direct C call
+- [`console.zs`](language/basics/console.zs): typed logging and interpolation
+- [`construction.zs`](language/basics/construction.zs): struct construction and class-only `new`
+- [`structs.zs`](language/basics/structs.zs), [`classes.zs`](language/basics/classes.zs), and [`constructors.zs`](language/basics/constructors.zs)
+- [`mutation.zs`](language/basics/mutation.zs), [`mutable-methods.zs`](language/basics/mutable-methods.zs), and [`static-methods.zs`](language/basics/static-methods.zs)
+- [`function-values.zs`](language/basics/function-values.zs) and [`closures.zs`](language/basics/closures.zs)
+- [`strings.zs`](language/basics/strings.zs), [`integer-safety.zs`](language/basics/integer-safety.zs), and [`sleep.zs`](language/basics/sleep.zs)
 
 ### Control flow and errors
 
-- [`control-flow.z`](language/control-flow/control-flow.z), [`conditional-expressions.z`](language/control-flow/conditional-expressions.z), [`loops.z`](language/control-flow/loops.z), and [`iteration.z`](language/control-flow/iteration.z)
-- [`match.z`](language/control-flow/match.z), [`match-expression.z`](language/control-flow/match-expression.z), and [`enum-patterns.z`](language/control-flow/enum-patterns.z)
-- [`result.z`](language/control-flow/result.z) and [`try.z`](language/control-flow/try.z)
+- [`control-flow.zs`](language/control-flow/control-flow.zs), [`conditional-expressions.zs`](language/control-flow/conditional-expressions.zs), [`loops.zs`](language/control-flow/loops.zs), and [`iteration.zs`](language/control-flow/iteration.zs)
+- [`match.zs`](language/control-flow/match.zs), [`match-expression.zs`](language/control-flow/match-expression.zs), and [`enum-patterns.zs`](language/control-flow/enum-patterns.zs)
+- [`result.zs`](language/control-flow/result.zs) and [`try.zs`](language/control-flow/try.zs)
 
 ### Types and collections
 
-- [`aggregate-enums.z`](language/types/aggregate-enums.z), [`option.z`](language/types/option.z), [`generics.z`](language/types/generics.z), and [`generic-constraints.z`](language/types/generic-constraints.z)
-- [`arrays.z`](language/collections/arrays.z), [`slices.z`](language/collections/slices.z), [`dynamic-arrays.z`](language/collections/dynamic-arrays.z), and [`dynamic-array-cleanup.z`](language/collections/dynamic-array-cleanup.z)
-- [`modules/main.z`](language/modules/main.z): multi-file exports and imports
+- [`aggregate-enums.zs`](language/types/aggregate-enums.zs), [`option.zs`](language/types/option.zs), [`generics.zs`](language/types/generics.zs), and [`generic-constraints.zs`](language/types/generic-constraints.zs)
+- [`arrays.zs`](language/collections/arrays.zs), [`slices.zs`](language/collections/slices.zs), [`dynamic-arrays.zs`](language/collections/dynamic-arrays.zs), and [`dynamic-array-cleanup.zs`](language/collections/dynamic-array-cleanup.zs)
+- [`modules/main.zs`](language/modules/main.zs): multi-file exports and imports
 
 ### Ownership
 
-- [`borrowed-parameters.z`](language/ownership/borrowed-parameters.z) and [`consuming-methods.z`](language/ownership/consuming-methods.z)
-- [`deinit.z`](language/ownership/deinit.z) and [`replacement.z`](language/ownership/replacement.z)
-- [`optional-views.z`](language/ownership/optional-views.z): zero-copy fallible lookup with `Option<view T>` and proven nonescaping inline capture
-- [`arena.z`](language/ownership/arena.z): stable region allocation, synchronous `in` views, reset, and reverse cleanup
-- [`owned-closures.z`](language/ownership/owned-closures.z), [`owned-enums.z`](language/ownership/owned-enums.z), and [`weak-references.z`](language/ownership/weak-references.z)
+- [`borrowed-parameters.zs`](language/ownership/borrowed-parameters.zs) and [`consuming-methods.zs`](language/ownership/consuming-methods.zs)
+- [`deinit.zs`](language/ownership/deinit.zs) and [`replacement.zs`](language/ownership/replacement.zs)
+- [`optional-views.zs`](language/ownership/optional-views.zs): zero-copy fallible lookup with `Option<view T>` and proven nonescaping inline capture
+- [`arena.zs`](language/ownership/arena.zs): stable region allocation, synchronous `in` views, reset, and reverse cleanup
+- [`owned-closures.zs`](language/ownership/owned-closures.zs), [`owned-enums.zs`](language/ownership/owned-enums.zs), and [`weak-references.zs`](language/ownership/weak-references.zs)
 
 [`language/design/future.md`](language/design/future.md) contains a non-runnable
 syntax sketch. It records intended language shape without claiming bootstrap
@@ -66,41 +66,41 @@ support or producing language-server diagnostics from hypothetical imports.
 
 ## Async
 
-- [`async-phase-0.z`](async/async-phase-0.z): overview of the implemented model
-- [`async-sequential.z`](async/async-sequential.z), [`async-spawn.z`](async/async-spawn.z), and [`async-scopes.z`](async/async-scopes.z)
-- [`async-errors.z`](async/async-errors.z), [`async-cancellation.z`](async/async-cancellation.z), [`async-caller-cancellation.z`](async/async-caller-cancellation.z), and [`async-delay.z`](async/async-delay.z)
-- [`async-aggregates.z`](async/async-aggregates.z), [`async-ownership.z`](async/async-ownership.z), and [`async-owned-enums.z`](async/async-owned-enums.z)
-- [`async-native-ownership.z`](async/async-native-ownership.z): move-only C++ ownership across suspension, fallible task-result relays, `try await`, `attempt await`, and match
-- [`async-native-aggregate.z`](async/async-native-aggregate.z): a native-owning Z value struct across suspension, fallible relay, consuming match, and deterministic aggregate/native cleanup
-- [`async-native-parameters.z`](async/async-native-parameters.z): direct C++ and native-owning Z values transferred into hot spawned task frames
-- [`async-borrowing.z`](async/async-borrowing.z): direct-await and explicit-scope spawned immutable borrows without moving the owner
-- [`async-inout.z`](async/async-inout.z): direct-awaited mutation of a Z struct and move-only C++ owner across suspension
-- [`async-scoped-inout.z`](async/async-scoped-inout.z): scope-bounded spawned mutation with early release after explicit join
-- [`async-slices.z`](async/async-slices.z): direct and scope-bounded Slice borrowing over fixed-array storage
-- [`async-collection-slices.z`](async/async-collection-slices.z): growable and cleanup-bearing Slice backing, post-cancel growth, and reverse owner cleanup
-- [`async-out.z`](async/async-out.z): direct-awaited initialization of caller storage across suspension
-- [`async-methods.z`](async/async-methods.z)
-- [`thread-native.z`](async/thread-native.z): trusted `.zd` thread transfer and receiving-thread destruction for a move-only C++ owner
+- [`async-phase-0.zs`](async/async-phase-0.zs): overview of the implemented model
+- [`async-sequential.zs`](async/async-sequential.zs), [`async-spawn.zs`](async/async-spawn.zs), and [`async-scopes.zs`](async/async-scopes.zs)
+- [`async-errors.zs`](async/async-errors.zs), [`async-cancellation.zs`](async/async-cancellation.zs), [`async-caller-cancellation.zs`](async/async-caller-cancellation.zs), and [`async-delay.zs`](async/async-delay.zs)
+- [`async-aggregates.zs`](async/async-aggregates.zs), [`async-ownership.zs`](async/async-ownership.zs), and [`async-owned-enums.zs`](async/async-owned-enums.zs)
+- [`async-native-ownership.zs`](async/async-native-ownership.zs): move-only C++ ownership across suspension, fallible task-result relays, `try await`, `attempt await`, and match
+- [`async-native-aggregate.zs`](async/async-native-aggregate.zs): a native-owning Z value struct across suspension, fallible relay, consuming match, and deterministic aggregate/native cleanup
+- [`async-native-parameters.zs`](async/async-native-parameters.zs): direct C++ and native-owning Z values transferred into hot spawned task frames
+- [`async-borrowing.zs`](async/async-borrowing.zs): direct-await and explicit-scope spawned immutable borrows without moving the owner
+- [`async-inout.zs`](async/async-inout.zs): direct-awaited mutation of a Z struct and move-only C++ owner across suspension
+- [`async-scoped-inout.zs`](async/async-scoped-inout.zs): scope-bounded spawned mutation with early release after explicit join
+- [`async-slices.zs`](async/async-slices.zs): direct and scope-bounded Slice borrowing over fixed-array storage
+- [`async-collection-slices.zs`](async/async-collection-slices.zs): growable and cleanup-bearing Slice backing, post-cancel growth, and reverse owner cleanup
+- [`async-out.zs`](async/async-out.zs): direct-awaited initialization of caller storage across suspension
+- [`async-methods.zs`](async/async-methods.zs)
+- [`thread-native.zs`](async/thread-native.zs): trusted `.zd` thread transfer and receiving-thread destruction for a move-only C++ owner
 
 ## Native interop
 
 ### C
 
-- [`selective-import.z`](interop/c/selective-import.z), [`selective-declarations.z`](interop/c/selective-declarations.z), and [`foreign-types.z`](interop/c/foreign-types.z)
-- [`foreign-pointers.z`](interop/c/foreign-pointers.z), [`foreign-handle.z`](interop/c/foreign-handle.z), and [`native-out.z`](interop/c/native-out.z)
-- [`declared-handle.z`](interop/c/declared-handle.z) with its adjacent [`.zd` contract](interop/c/declared-handle.h.zd)
-- [`callbacks.z`](interop/c/callbacks.z) with its adjacent [`.zd` contract](interop/c/callbacks.h.zd)
-- [`deployment-target`](interop/c/deployment-target) and [`apple-groundwork.z`](interop/c/apple-groundwork.z)
+- [`selective-import.zs`](interop/c/selective-import.zs), [`selective-declarations.zs`](interop/c/selective-declarations.zs), and [`foreign-types.zs`](interop/c/foreign-types.zs)
+- [`foreign-pointers.zs`](interop/c/foreign-pointers.zs), [`foreign-handle.zs`](interop/c/foreign-handle.zs), and [`native-out.zs`](interop/c/native-out.zs)
+- [`declared-handle.zs`](interop/c/declared-handle.zs) with its adjacent [`.zd` contract](interop/c/declared-handle.h.zd)
+- [`callbacks.zs`](interop/c/callbacks.zs) with its adjacent [`.zd` contract](interop/c/callbacks.h.zd)
+- [`deployment-target`](interop/c/deployment-target) and [`apple-groundwork.zs`](interop/c/apple-groundwork.zs)
 
 ### C++
 
-- [`cpp-interop.z`](interop/cpp/cpp-interop.z) and [`cpp-selective-interop.z`](interop/cpp/cpp-selective-interop.z)
-- [`foreign-values.z`](interop/cpp/foreign-values.z) and [`cpp-callables.z`](interop/cpp/cpp-callables.z)
-- [`cpp-move-only.z`](interop/cpp/cpp-move-only.z), [`cpp-move-only-array.z`](interop/cpp/cpp-move-only-array.z), [`cpp-move-only-enum.z`](interop/cpp/cpp-move-only-enum.z), [`cpp-arena.z`](interop/cpp/cpp-arena.z), and [`cpp-references.z`](interop/cpp/cpp-references.z)
+- [`cpp-interop.zs`](interop/cpp/cpp-interop.zs) and [`cpp-selective-interop.zs`](interop/cpp/cpp-selective-interop.zs)
+- [`foreign-values.zs`](interop/cpp/foreign-values.zs) and [`cpp-callables.zs`](interop/cpp/cpp-callables.zs)
+- [`cpp-move-only.zs`](interop/cpp/cpp-move-only.zs), [`cpp-move-only-array.zs`](interop/cpp/cpp-move-only-array.zs), [`cpp-move-only-enum.zs`](interop/cpp/cpp-move-only-enum.zs), [`cpp-arena.zs`](interop/cpp/cpp-arena.zs), and [`cpp-references.zs`](interop/cpp/cpp-references.zs)
 
 ### Objective-C and Swift
 
-- [`nswindow.z`](interop/objc/nswindow.z), [`objc-nullability.z`](interop/objc/objc-nullability.z), and [`appkit-events.z`](interop/objc/appkit-events.z)
+- [`nswindow.zs`](interop/objc/nswindow.zs), [`objc-nullability.zs`](interop/objc/objc-nullability.zs), and [`appkit-events.zs`](interop/objc/appkit-events.zs)
 - [`desktop-ownership`](interop/objc/desktop-ownership): application-shaped ownership and view probes
 - [`swift-interop`](interop/swift/swift-interop): Swift class through a generated Objective-C header
 - [`swift-value-interop`](interop/swift/swift-value-interop): Swift value and owned string return through a generated C++ header

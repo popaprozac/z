@@ -6,7 +6,7 @@ import console from "std/console";
 import fs from "std/fs";
 import process from "std/process";
 import { TextBuffer } from "std/text";
-import { tokenKindName, tokenize } from "../../../compiler/frontend/lexer.z";
+import { tokenKindName, tokenize } from "../../../compiler/frontend/lexer.zs";
 
 function hexDigit(value: u8): u8 {
   return value < 10 ? value + 48 : value + 87;
@@ -80,7 +80,7 @@ function streamTokens(in path: String): i32 throws String {
 function main(): i32 {
   const arguments = process.args();
   if (arguments.length == 0) {
-    console.error("usage: token-stream <input.z>");
+    console.error("usage: token-stream <input.zs>");
     return 2;
   }
 

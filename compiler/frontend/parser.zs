@@ -1,4 +1,4 @@
-import { Token, TokenKind, tokenKindName } from "./lexer.z";
+import { Token, TokenKind, tokenKindName } from "./lexer.zs";
 import { TextBuffer } from "std/text";
 
 export enum DeclarationKind {

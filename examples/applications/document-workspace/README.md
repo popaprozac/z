@@ -8,7 +8,7 @@ that every native lease is released when the workspace finishes.
 Run it from the repository root:
 
 ```sh
-bun run z run examples/applications/document-workspace/main.z
+bun run z run examples/applications/document-workspace/main.zs
 ```
 
 Expected shape:
@@ -22,14 +22,14 @@ invariant.
 
 ## Read it in this order
 
-1. [`document.z`](document.z) defines the domain model. `DocumentSession` owns a
+1. [`document.zs`](document.zs) defines the domain model. `DocumentSession` owns a
    title and a move-only native `DocumentLease`. `WorkspaceError` owns a useful
    message. `DocumentOpenResult` distinguishes an opened document from a
    rejected request.
-2. [`workspace.z`](workspace.z) owns `Array<DocumentSession>`. Registration
+2. [`workspace.zs`](workspace.zs) owns `Array<DocumentSession>`. Registration
    consumes an opened session into that array, lookup returns
    `Option<view DocumentSession>`, and saving mutates each registered session.
-3. [`main.z`](main.z) runs one understandable scenario: reject an invalid draft,
+3. [`main.zs`](main.zs) runs one understandable scenario: reject an invalid draft,
    register three documents, look one up, save them, and inspect the outcome.
 4. [`document-lease.hpp`](../../../tests/fixtures/document-lease.hpp) is the
    deterministic native resource used by the probe. Its adjacent

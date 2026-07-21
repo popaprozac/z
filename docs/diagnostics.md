@@ -5,11 +5,11 @@ code, a primary error location, relevant secondary locations, explanatory
 notes, and actionable help when the compiler can recommend a safe correction.
 
 ```text
-example.z:9:10: error[Z0201]: use of moved value "first"
+example.zs:9:10: error[Z0201]: use of moved value "first"
   |
 9 |   return first.id + second.id;
   |          ^^^^^ use of moved value "first"
-  ::: example.z:8:18
+  ::: example.zs:8:18
   |
 8 |   const second = first;
   |                  ^^^^^ ownership was transferred here
