@@ -281,7 +281,8 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    bindings, aliases, exports, and local target modules. Function symbols also
    retain async state, generic parameters, parameter capabilities and types,
    return type, and error type through the native graph protocol; aggregate type
-   signatures also carry custom-deinitializer and custom-constructor state. A first native lexical resolver
+   signatures also carry custom-deinitializer/custom-constructor state and the
+   constructor's parameter/result/error contract. A first native lexical resolver
    now walks every materialized function, constructor, method, and `deinit`
    expression tree in source order. It introduces parameter and local bindings,
    isolates nested blocks and loop bindings, adds closure parameters and
@@ -362,9 +363,13 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    fields, and enum payloads now share the same ownership-transfer primitive.
    Synthesized object construction validates complete field shape and recursively
    consumes ownership only when graph metadata rules out a custom constructor.
+   Declared class construction uses its graph-carried parameter capabilities and
+   types, substitutes aggregate generics, and shares the ordinary call transition
+   rules for owned, `in`, `inout`, and `out` arguments. Constructor error types
+   are retained for the upcoming native error-flow tier.
    Complete
    contextual literal and return-driven inference, foreign/intrinsic method lookup,
-   generic constraints/methods, custom-constructor signatures, remaining
+   generic constraints/methods, throwing-call effects, remaining
    receiver-path capability enforcement, closure ownership, and full recursive
    ownership contexts remain stage-zero work.
    Template literals now

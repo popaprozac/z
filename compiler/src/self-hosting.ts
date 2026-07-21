@@ -123,6 +123,7 @@ export type Stage1ModuleTypeSignature = {
   readonly variants: readonly Stage1ModuleVariantSignature[];
   readonly customDeinit: boolean;
   readonly customConstructor: boolean;
+  readonly constructorSignature: Stage1ModuleFunctionSignature | null;
 };
 
 export type Stage1ModuleFunctionSignature = {
@@ -276,6 +277,52 @@ export function decodeStage1ModuleGraphStream(output: string): Stage1ModuleGraph
         variants: decodedVariants,
         customDeinit: customDeinit === "1",
         customConstructor: customConstructor === "1",
+        constructorSignature: null,
+      };
+      continue;
+    }
+    if (fields[0] === "constructorSignature") {
+      if (fields.length < 8) throw new Error(`malformed stage-1 constructor signature line: ${line}`);
+      const moduleIndex = parseProtocolHexInteger(fields[1], "constructor signature module");
+      const symbolIndex = parseProtocolHexInteger(fields[2], "constructor signature symbol");
+      const symbol = modules[moduleIndex]?.symbols[symbolIndex] as Stage1ModuleSymbol | undefined;
+      if (
+        !symbol?.typeSignature
+        || !symbol.typeSignature.customConstructor
+        || symbol.typeSignature.constructorSignature !== null
+      ) {
+        throw new Error("stage-1 constructor signature does not identify an unsigned constructor type");
+      }
+      if (fields[3] !== "0") {
+        throw new Error(`malformed stage-1 constructor async state: ${fields[3]}`);
+      }
+      if (!/^(?:[0-9a-f]{2})*$/.test(fields[4]) || !/^(?:[0-9a-f]{2})*$/.test(fields[5])) {
+        throw new Error(`malformed stage-1 constructor signature text: ${line}`);
+      }
+      const typeParameterCount = parseProtocolHexInteger(fields[6], "constructor type parameter count");
+      const parameterCount = parseProtocolHexInteger(fields[7], "constructor parameter count");
+      if (fields.length !== 8 + typeParameterCount + (parameterCount * 2)) {
+        throw new Error(`malformed stage-1 constructor signature arity: ${line}`);
+      }
+      const encodedTypes = fields.slice(8);
+      if (encodedTypes.some((field) => !/^(?:[0-9a-f]{2})*$/.test(field))) {
+        throw new Error(`malformed stage-1 constructor signature type: ${line}`);
+      }
+      const encodedParameters = encodedTypes.slice(typeParameterCount);
+      const parameterModes = encodedParameters.filter((_, index) => index % 2 === 0)
+        .map((field) => Buffer.from(field, "hex").toString("utf8"));
+      if (!parameterModes.every(isStage1ParameterMode)) {
+        throw new Error(`malformed stage-1 constructor parameter mode: ${line}`);
+      }
+      (symbol.typeSignature as { constructorSignature: Stage1ModuleFunctionSignature | null }).constructorSignature = {
+        asynchronous: false,
+        returnType: Buffer.from(fields[4], "hex").toString("utf8"),
+        errorType: fields[5].length === 0 ? null : Buffer.from(fields[5], "hex").toString("utf8"),
+        typeParameters: encodedTypes.slice(0, typeParameterCount)
+          .map((field) => Buffer.from(field, "hex").toString("utf8")),
+        parameterModes,
+        parameterTypes: encodedParameters.filter((_, index) => index % 2 === 1)
+          .map((field) => Buffer.from(field, "hex").toString("utf8")),
       };
       continue;
     }
@@ -392,6 +439,12 @@ export function decodeStage1ModuleGraphStream(output: string): Stage1ModuleGraph
     }
     if (module.symbols.some((symbol) => symbol.targetModule !== null && symbol.targetModule >= modules.length)) {
       throw new Error("stage-1 module symbol target is outside the module batch");
+    }
+    if (module.symbols.some((symbol) => (
+      symbol.typeSignature?.customConstructor === true
+      && symbol.typeSignature.constructorSignature === null
+    ))) {
+      throw new Error("stage-1 custom constructor is missing its callable signature");
     }
   }
   if (dependencyOrder.some((index) => index >= modules.length)) {

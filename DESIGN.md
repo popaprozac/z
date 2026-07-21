@@ -1496,7 +1496,7 @@ ported independently rather than translated as one monolith.
    signatures across the graph boundary: async state, generic parameters,
    parameter capabilities and types, return type, and error type. Type symbols
    retain aggregate type parameters, field types/visibility/read-only state,
-   custom-deinitializer/custom-constructor state, and enum variants/payloads. Native match typing follows local,
+   custom-deinitializer/custom-constructor state, constructor signatures, and enum variants/payloads. Native match typing follows local,
    selective-imported, and namespace-imported enums through that graph,
    including generic aggregate payload destructuring and exhaustiveness.
    Z-defined field reads and assignments use the same type metadata across those
@@ -1530,7 +1530,10 @@ ported independently rather than translated as one monolith.
    fixed-array elements, synthesized aggregate fields, and enum payloads all use
    the same transfer operation. Synthesized object construction validates and
    consumes nested fields only when graph metadata proves there is no custom
-   constructor. Native direct/imported function
+   constructor. Declared class construction instead checks the constructor's
+   graph-carried parameter modes and types, substitutes owner generics, and
+   applies the same borrow/transfer transitions as an ordinary call. Constructor
+   error types are retained for the native error-flow tier. Native direct/imported function
    and Z-method calls now consume their graph-carried parameter modes: `out` and
    `inout` require matching explicit markers and mutable bindings, `inout`
    requires initialized storage, invalid explicit markers on value/`in`
@@ -1572,7 +1575,8 @@ ported independently rather than translated as one monolith.
    exhaustiveness, and known arm-result unification. Consuming versus borrowed
    match subjects and payloads now participate in native ownership flow. The same
    flow now covers local/assignment/return destinations, fixed-array elements,
-   conditional results, synthesized aggregate fields, and enum payloads. Any other
+   conditional results, synthesized aggregate fields, enum payloads, and declared
+   constructor arguments. Any other
    missing foreign/member/async expression model produces an
    unresolved internal type, not a guessed type or user-visible false positive.
 3. **Stage 2:** Compile the Z compiler with stage 0, then use that result to

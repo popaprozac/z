@@ -191,6 +191,7 @@ export struct ModuleTypeSignature {
   variants: Array<ModuleVariantSignature>;
   customDeinit: boolean;
   customConstructor: boolean;
+  constructorSignature: Option<ModuleFunctionSignature>;
 }
 
 export struct ModuleFunctionSignature {
@@ -436,6 +437,31 @@ function functionDeclarationSignature(
   });
 }
 
+function constructorDeclarationSignature(
+  in ownerName: String,
+  in declaration: ConstructorDeclaration
+): ModuleFunctionSignature {
+  let parameterTypes = Array<String>();
+  let parameterModes = Array<String>();
+  for (const parameter of declaration.parameters) {
+    parameterModes.push(moduleParameterModeName(parameter.mode));
+    parameterTypes.push(parameter.type.name.copyBytes(0, parameter.type.name.byteLength));
+  }
+  let errorType = "";
+  match (in declaration.errorType) {
+    some(error) => errorType = error.name.copyBytes(0, error.name.byteLength);
+    none => {}
+  }
+  return ModuleFunctionSignature({
+    asynchronous: false,
+    typeParameters: Array<String>(),
+    parameterModes,
+    parameterTypes,
+    returnType: ownerName.copyBytes(0, ownerName.byteLength),
+    errorType,
+  });
+}
+
 function moduleReceiverModeName(mode: ReceiverMode): String {
   if (mode == ReceiverMode.inputOutput) return "inout";
   if (mode == ReceiverMode.move) return "move";
@@ -486,8 +512,15 @@ function moduleTypeSignature(
         none => {}
       }
       let customConstructor = false;
+      let constructorSignature = Option<ModuleFunctionSignature>.none;
       match (in aggregate.constructorDeclaration) {
-        some(initializer) => customConstructor = true;
+        some(initializer) => {
+          customConstructor = true;
+          constructorSignature = Option.some(constructorDeclarationSignature(
+            aggregate.name,
+            initializer
+          ));
+        }
         none => {}
       }
       return Option.some(ModuleTypeSignature({
@@ -497,6 +530,7 @@ function moduleTypeSignature(
         variants: Array<ModuleVariantSignature>(),
         customDeinit,
         customConstructor,
+        constructorSignature,
       }));
     }
   }
@@ -522,6 +556,7 @@ function moduleTypeSignature(
         variants,
         customDeinit: false,
         customConstructor: false,
+        constructorSignature: Option<ModuleFunctionSignature>.none,
       }));
     }
   }
@@ -806,7 +841,9 @@ function resolveExpressionNode(
     kind == ExpressionKind.newExpression
     || kind == ExpressionKind.variantExpression
   ) {
-    try requireKnownName(module, symbols, bindings, value, line, column);
+    const typeName = identifierLookupName(value);
+    const typeRoot = qualifiedTypeBase(typeName);
+    try requireKnownName(module, symbols, bindings, typeRoot, line, column);
   }
   if (kind == ExpressionKind.closureExpression) {
     let closureBindings = copyBindings(bindings);
@@ -3660,6 +3697,16 @@ function callableSymbolLocation(
   return Option<ModuleSymbolLocation>.none;
 }
 
+function callArgumentNodes(in children: Array<usize>): Array<usize> {
+  let arguments = Array<usize>();
+  let index: usize = 1;
+  while (index < children.length) {
+    arguments.push(children[index]);
+    index = index + 1;
+  }
+  return arguments;
+}
+
 function inferSignatureCallType(
   in module: ParsedModule,
   in modules: Array<ResolvedModule>,
@@ -3667,7 +3714,7 @@ function inferSignatureCallType(
   in arena: StatementArena,
   in tree: ExpressionTree,
   calleeIndex: usize,
-  in children: Array<usize>,
+  in argumentNodes: Array<usize>,
   inout bindings: Array<NativeValueBinding>,
   in receiverRoot: String,
   in receiverMode: String,
@@ -3675,7 +3722,7 @@ function inferSignatureCallType(
   in signature: ModuleFunctionSignature,
   in initialSubstitutions: Array<NativeValueBinding>
 ): String throws ModuleResolveError {
-  const argumentCount = children.length - 1;
+  const argumentCount = argumentNodes.length;
   if (signature.parameterTypes.length != argumentCount) {
     throw genericCallError(
       module,
@@ -3697,7 +3744,7 @@ function inferSignatureCallType(
   }
   let accessIndex: usize = 0;
   while (accessIndex < argumentCount) {
-    const nodeIndex = children[accessIndex + 1];
+    const nodeIndex = argumentNodes[accessIndex];
     const root = expressionStorageRootName(tree, nodeIndex);
     let capability = signature.parameterModes[accessIndex].copyBytes(
       0,
@@ -3720,7 +3767,7 @@ function inferSignatureCallType(
   let argumentTypes = Array<String>();
   let argumentIndex: usize = 0;
   while (argumentIndex < argumentCount) {
-    const nodeIndex = children[argumentIndex + 1];
+    const nodeIndex = argumentNodes[argumentIndex];
     const mode = signature.parameterModes[argumentIndex].copyBytes(
       0,
       signature.parameterModes[argumentIndex].byteLength
@@ -3852,7 +3899,7 @@ function inferSignatureCallType(
           modules,
           moduleIndex,
           tree,
-          children[parameterIndex + 1],
+          argumentNodes[parameterIndex],
           functionName,
           signature.parameterTypes[parameterIndex],
           argumentTypes[parameterIndex],
@@ -3878,7 +3925,7 @@ function inferSignatureCallType(
       modules,
       moduleIndex,
       tree,
-      children[parameterIndex + 1],
+      argumentNodes[parameterIndex],
       expected,
       argumentTypes[parameterIndex]
     );
@@ -3887,7 +3934,7 @@ function inferSignatureCallType(
   parameterIndex = 0;
   while (parameterIndex < argumentTypes.length) {
     if (signature.parameterModes[parameterIndex] == "out") {
-      const nodeIndex = children[parameterIndex + 1];
+      const nodeIndex = argumentNodes[parameterIndex];
       const bindingIndex = tree.nodes[nodeIndex].children[0];
       const bindingName = identifierLookupName(tree.nodes[bindingIndex].value);
       setValueBindingInitialization(
@@ -3957,36 +4004,100 @@ function inferExpressionNodeType(
     return valueBindingType(bindings, lookup);
   }
   if (kind == ExpressionKind.newExpression) {
-    if (
-      children.length == 1
-      && tree.nodes[children[0]].kind == ExpressionKind.objectExpression
-      && !typeHasCustomConstructor(modules, moduleIndex, value)
-    ) {
-      const contextual = try inferContextualObjectExpressionNode(
-        module,
-        modules,
-        moduleIndex,
-        arena,
-        tree,
-        children[0],
-        value,
-        inout bindings
-      );
-      if (contextual.byteLength > 0) return value;
+    match (typeSymbolLocation(modules, moduleIndex, value)) {
+      some(location) => {
+        if (
+          modules[location.moduleIndex].symbols[location.symbolIndex].kind
+          != ModuleSymbolKind.classSymbol
+        ) {
+          throw resolutionError(
+            ModuleResolveErrorKind.typeMismatch,
+            module.path,
+            `new requires a class type; construct ${value} as ${value}({ ... })`,
+            tree.nodes[index].line,
+            tree.nodes[index].column
+          );
+        }
+        match (
+          in modules[location.moduleIndex].symbols[location.symbolIndex].typeSignature
+        ) {
+          some(typeSignature) => {
+            match (in typeSignature.constructorSignature) {
+              some(signature) => {
+                let substitutions = Array<NativeValueBinding>();
+                match (genericTypeShape(value)) {
+                  some(generic) => {
+                    let typeIndex: usize = 0;
+                    while (
+                      typeIndex < typeSignature.typeParameters.length
+                      && typeIndex < generic.arguments.length
+                    ) {
+                      addValueBinding(
+                        inout substitutions,
+                        typeSignature.typeParameters[typeIndex],
+                        generic.arguments[typeIndex]
+                      );
+                      typeIndex = typeIndex + 1;
+                    }
+                  }
+                  none => {}
+                }
+                let callableSignature = rebaseModuleFunctionSignature(
+                  modules,
+                  location.moduleIndex,
+                  moduleIndex,
+                  signature
+                );
+                callableSignature.returnType = value.copyBytes(0, value.byteLength);
+                return try inferSignatureCallType(
+                  module,
+                  modules,
+                  moduleIndex,
+                  arena,
+                  tree,
+                  index,
+                  children,
+                  inout bindings,
+                  "",
+                  "",
+                  `${value}.constructor`,
+                  callableSignature,
+                  substitutions
+                );
+              }
+              none => {
+                if (
+                  children.length != 1
+                  || tree.nodes[children[0]].kind != ExpressionKind.objectExpression
+                ) {
+                  throw resolutionError(
+                    ModuleResolveErrorKind.typeMismatch,
+                    module.path,
+                    "synthesized class initialization requires one object literal",
+                    tree.nodes[index].line,
+                    tree.nodes[index].column
+                  );
+                }
+                const contextual = try inferContextualObjectExpressionNode(
+                  module,
+                  modules,
+                  moduleIndex,
+                  arena,
+                  tree,
+                  children[0],
+                  value,
+                  inout bindings
+                );
+                if (contextual.byteLength > 0) return value;
+              }
+            }
+          }
+          none => {}
+        }
+      }
+      none => {}
     }
-    for (const child of children) {
-      const argumentType = try inferExpressionNodeType(
-        module,
-        modules,
-        moduleIndex,
-        arena,
-        tree,
-        child,
-        inout bindings
-      );
-      if (argumentType.byteLength == 0) continue;
-    }
-    return value;
+    return "";
   }
   if (kind == ExpressionKind.variantExpression) {
     if (children.length == 2) {
@@ -4465,6 +4576,7 @@ function inferExpressionNodeType(
               moduleIndex,
               signature
             );
+            const argumentNodes = callArgumentNodes(children);
             return try inferSignatureCallType(
               module,
               modules,
@@ -4472,7 +4584,7 @@ function inferExpressionNodeType(
               arena,
               tree,
               calleeIndex,
-              children,
+              argumentNodes,
               inout bindings,
               "",
               "",
@@ -4604,6 +4716,7 @@ function inferExpressionNodeType(
               ownerIndex = ownerIndex + 1;
             }
             const callableSignature = methodCallableSignature(method);
+            const argumentNodes = callArgumentNodes(children);
             const callType = try inferSignatureCallType(
               module,
               modules,
@@ -4611,7 +4724,7 @@ function inferExpressionNodeType(
               arena,
               tree,
               calleeIndex,
-              children,
+              argumentNodes,
               inout bindings,
               receiverRoot,
               receiverAccess,

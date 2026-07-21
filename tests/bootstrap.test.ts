@@ -4777,9 +4777,13 @@ test("resolves a canonical module graph directly from native Z ASTs", () => {
       + "  private value: i32;\n"
       + "  function same(other: Secret): boolean { return other.value == this.value; }\n"
       + "}\n"
-      + "export struct Constructed {\n"
+      + "export class Constructed {\n"
       + "  value: i32;\n"
       + "  constructor(value: i32) { this.value = value; }\n"
+      + "}\n"
+      + "export class Holder<T> {\n"
+      + "  value: T;\n"
+      + "  constructor(value: T) { this.value = value; }\n"
       + "}\n",
   );
   writeFileSync(
@@ -4845,6 +4849,19 @@ test("resolves a canonical module graph directly from native Z ASTs", () => {
   );
   assert.equal(readonlyImportedField.status, 1);
   assert.match(readonlyImportedField.stderr, /cannot assign to readonly field "value"/);
+
+  writeFileSync(
+    fieldMain,
+    "import model from \"./field-model.zs\";\n"
+      + "function invalid(): model.Holder<i32> { return new model.Holder<i32>(true); }\n",
+  );
+  const invalidImportedConstructorArgument = spawnSync(
+    process.execPath,
+    [cli, "self-host-resolve", fieldMain],
+    { encoding: "utf8" },
+  );
+  assert.equal(invalidImportedConstructorArgument.status, 1);
+  assert.match(invalidImportedConstructorArgument.stderr, /expected i32, found boolean/);
 
   writeFileSync(
     fieldMain,
@@ -5436,6 +5453,10 @@ test("resolves a canonical module graph directly from native Z ASTs", () => {
       + "  deinit {}\n"
       + "}\n"
       + "export struct Envelope { resource: Resource; }\n"
+      + "export class Owner {\n"
+      + "  resource: Resource;\n"
+      + "  constructor(resource: Resource) { this.resource = resource; }\n"
+      + "}\n"
       + "export function consume(resource: Resource): void {}\n",
   );
   writeFileSync(
@@ -5469,6 +5490,22 @@ test("resolves a canonical module graph directly from native Z ASTs", () => {
   );
   assert.equal(importedAggregateField.status, 1);
   assert.match(importedAggregateField.stderr, /use of moved value "resource"/);
+
+  writeFileSync(
+    ownershipMain,
+    "import native from \"./ownership-model.zs\";\n"
+      + "function invalid(resource: native.Resource): i32 {\n"
+      + "  const owner = new native.Owner(resource);\n"
+      + "  return resource.id;\n"
+      + "}\n",
+  );
+  const importedOwnedConstructorArgument = spawnSync(
+    process.execPath,
+    [cli, "self-host-resolve", ownershipMain],
+    { encoding: "utf8" },
+  );
+  assert.equal(importedOwnedConstructorArgument.status, 1);
+  assert.match(importedOwnedConstructorArgument.stderr, /use of moved value "resource"/);
 
   writeFileSync(
     bindingState,
@@ -5697,6 +5734,89 @@ test("resolves a canonical module graph directly from native Z ASTs", () => {
       + "  id: i32;\n"
       + "  deinit {}\n"
       + "}\n"
+      + "class Owner {\n"
+      + "  resource: Resource;\n"
+      + "  constructor(resource: Resource) { this.resource = resource; }\n"
+      + "}\n"
+      + "function invalid(): i32 {\n"
+      + "  const resource = Resource({ id: 1 });\n"
+      + "  const owner = new Owner(resource);\n"
+      + "  return resource.id;\n"
+      + "}\n",
+  );
+  const movedConstructorArgument = spawnSync(
+    process.execPath,
+    [cli, "self-host-resolve", bindingState],
+    { encoding: "utf8" },
+  );
+  assert.equal(movedConstructorArgument.status, 1);
+  assert.match(movedConstructorArgument.stderr, /use of moved value "resource"/);
+
+  writeFileSync(
+    bindingState,
+    "struct Resource {\n"
+      + "  id: i32;\n"
+      + "  deinit {}\n"
+      + "}\n"
+      + "class Inspector { constructor(in resource: Resource) {} }\n"
+      + "function valid(in resource: Resource): i32 {\n"
+      + "  const inspector = new Inspector(resource);\n"
+      + "  return resource.id;\n"
+      + "}\n",
+  );
+  const borrowedConstructorArgument = spawnSync(
+    process.execPath,
+    [cli, "self-host-resolve", bindingState],
+    { encoding: "utf8" },
+  );
+  assert.equal(borrowedConstructorArgument.status, 0, borrowedConstructorArgument.stderr);
+
+  writeFileSync(
+    bindingState,
+    "struct Counter { value: i32; }\n"
+      + "class Mutator {\n"
+      + "  constructor(inout counter: Counter) { counter.value = counter.value + 1; }\n"
+      + "}\n"
+      + "function invalid(): i32 {\n"
+      + "  let counter = Counter({ value: 1 });\n"
+      + "  const mutator = new Mutator(counter);\n"
+      + "  return counter.value;\n"
+      + "}\n",
+  );
+  const implicitMutableConstructorArgument = spawnSync(
+    process.execPath,
+    [cli, "self-host-resolve", bindingState],
+    { encoding: "utf8" },
+  );
+  assert.equal(implicitMutableConstructorArgument.status, 1);
+  assert.match(
+    implicitMutableConstructorArgument.stderr,
+    /requires inout <mutable binding> for parameter 1/,
+  );
+
+  writeFileSync(
+    bindingState,
+    "struct Counter { value: i32; }\n"
+      + "class Initializer { constructor(out value: i32) { value = 42; } }\n"
+      + "function valid(): i32 {\n"
+      + "  let value: i32;\n"
+      + "  const initializer = new Initializer(out value);\n"
+      + "  return value;\n"
+      + "}\n",
+  );
+  const initializedConstructorOutput = spawnSync(
+    process.execPath,
+    [cli, "self-host-resolve", bindingState],
+    { encoding: "utf8" },
+  );
+  assert.equal(initializedConstructorOutput.status, 0, initializedConstructorOutput.stderr);
+
+  writeFileSync(
+    bindingState,
+    "struct Resource {\n"
+      + "  id: i32;\n"
+      + "  deinit {}\n"
+      + "}\n"
       + "function invalid(): i32 {\n"
       + "  let target = Resource({ id: 1 });\n"
       + "  const source = Resource({ id: 2 });\n"
@@ -5830,6 +5950,17 @@ test("resolves a canonical module graph directly from native Z ASTs", () => {
       + "order\t0000000000000000\n",
     ),
     /malformed stage-1 function parameter mode/,
+  );
+  assert.throws(
+    () => decodeStage1ModuleGraphStream(
+      "entry\t0000000000000000\n"
+      + "module\t2f612e7a73\n"
+      + "symbol\t0000000000000000\tclass\t536563726574\t1\t-\t536563726574\t0000000000000000\t0000000000000001\t0000000000000001\n"
+      + "typeSignature\t0000000000000000\t0000000000000000\t0000000000000000\t0000000000000000\t0000000000000000\t0\t1\n"
+      + "constructorSignature\t0000000000000000\t0000000000000000\t0\t536563726574\t\t0000000000000000\t0000000000000001\t626164\t693332\n"
+      + "order\t0000000000000000\n",
+    ),
+    /malformed stage-1 constructor parameter mode/,
   );
   assert.throws(
     () => decodeStage1ModuleGraphStream(

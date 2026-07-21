@@ -28,7 +28,7 @@ semantic analysis and code generation; the frontend itself is native Z code.
   fixed-array, `Slice`, nullable, and `view` parameter shapes, then substitute
   their parameter and return contracts. Type symbols retain aggregate type
   parameters, field types/visibility/read-only state, custom-deinitializer and
-  custom-constructor presence,
+  custom-constructor presence and constructor callable signatures,
   and enum variants/payloads across the graph. Local and imported enums plus compiler-provided `Option<T>`
   and `Result<T, E>` now drive native match subject, payload, generic aggregate
   destructuring, exhaustiveness, and arm-result checks. The tier also covers
@@ -76,8 +76,11 @@ semantic analysis and code generation; the frontend itself is native Z code.
   throw, selected match results, conditional branches, fixed-array elements,
   synthesized aggregate fields, and enum payload construction. Synthesized
   object construction validates exact fields and recursively consumes nested
-  ownership; custom constructors remain explicitly deferred rather than being
-  mistaken for field initialization.
+  ownership. Declared class constructors instead use their graph-carried
+  parameter capabilities and types, including owner-generic substitution, so
+  owned, `in`, `inout`, and `out` arguments behave exactly like ordinary calls.
+  Constructor error types cross the graph; native `try`/`attempt` effect
+  enforcement remains in the error-flow tier.
 - `module-resolver-protocol.zs` frames that host-loaded batch and returns the
   resolved graph through the same in-process native-library boundary.
 - `parser-protocol.zs` encodes the temporary parity protocol shared by native
@@ -108,8 +111,8 @@ work. Identifier and expression-level type lookup currently cover materialized
 expression trees. Unknown foreign/intrinsic-member/async shapes deliberately defer
 instead of guessing. Opaque expression spans, contextual
 collection and return-driven generic inference, generic constraints and methods,
-type-constructor arity, trait conformance, custom-constructor signatures, closure
-ownership effects, and complete recursive ownership lowering remain stage-zero work.
+type-constructor arity, trait conformance, throwing-call effects, closure ownership
+effects, and complete recursive ownership lowering remain stage-zero work.
 The reported native interval therefore does more semantic work than the
 graph-and-symbol-only stage-zero comparison.
 Repeated corpus measurements and incrementally
