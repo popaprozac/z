@@ -295,6 +295,16 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    foreign namespace member verification, generic arity, value member lookup,
    duplicate local diagnostics, type compatibility/conformance, and ownership
    remain stage-zero work.
+   The first native expression-typing tier now carries declared parameter types
+   into source-ordered scopes; infers scalar, template, fixed-array, identifier,
+   and explicitly typed closure values; and propagates direct non-generic Z call
+   results. It validates known local initializers, assignments, boolean
+   conditions, call arguments, return values, unary/binary operators, indexing,
+   and ternaries. Unknown member, foreign, async, and match result shapes remain
+   explicitly unresolved, so this tier increases guarantees without emitting
+   speculative errors. Complete contextual literal typing, imported call
+   signatures, member lookup, generic substitution, match/branch result typing,
+   and flow/ownership state remain stage-zero work.
    Template literals now
    retain ordered decoded-text leaves and ordinary embedded-expression roots,
    including nested templates, in the same flat arena. Expression-bodied

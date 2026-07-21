@@ -4606,7 +4606,7 @@ test("resolves a canonical module graph directly from native Z ASTs", () => {
   assert.equal(integrated.status, 0, integrated.stderr);
   assert.match(integrated.stdout, /stage-1 resolver matches 3 modules, 3 local edges, and 10 symbols \(math\.zs -> geometry\.zs -> main\.zs\)/);
   assert.match(integrated.stdout, /host discovery \(file I\/O \+ stage-0 import parse\): \d+\.\d{2} ms/);
-  assert.match(integrated.stdout, /native in-process \(FFI \+ lex \+ parse \+ resolve \+ symbols \+ names \+ types \+ encode\): \d+\.\d{2} ms/);
+  assert.match(integrated.stdout, /native in-process \(FFI \+ lex \+ parse \+ resolve \+ symbols \+ names \+ types \+ expressions \+ encode\): \d+\.\d{2} ms/);
   assert.match(integrated.stdout, /stage-0 parity \(lex \+ parse \+ graph \+ symbols\): \d+\.\d{2} ms/);
 
   const invalidDirectory = mkdtempSync("/tmp/z-self-host-resolver-");
@@ -4632,6 +4632,21 @@ test("resolves a canonical module graph directly from native Z ASTs", () => {
   );
   assert.equal(unknownType.status, 1);
   assert.match(unknownType.stderr, /unknown-type\.zs:1:29: unknown type Missing/);
+
+  const mismatchMain = resolve(invalidDirectory, "type-mismatch.zs");
+  writeFileSync(
+    mismatchMain,
+    "function main(): boolean {\n  const answer = 42;\n  return answer;\n}\n",
+  );
+  const mismatch = spawnSync(process.execPath, [cli, "self-host-resolve", mismatchMain], { encoding: "utf8" });
+  assert.equal(mismatch.status, 1);
+  assert.match(mismatch.stderr, /type-mismatch\.zs:3:10: expected boolean, found i32/);
+
+  const operatorMain = resolve(invalidDirectory, "invalid-operator.zs");
+  writeFileSync(operatorMain, "function main(): boolean {\n  return true + false;\n}\n");
+  const operator = spawnSync(process.execPath, [cli, "self-host-resolve", operatorMain], { encoding: "utf8" });
+  assert.equal(operator.status, 1);
+  assert.match(operator.stderr, /invalid-operator\.zs:2:15: operator \+ requires matching numeric operands/);
 
   const encoded = encodeStage1ModuleBatch([{ path: "/a.zs", source: "é" }]);
   assert.equal(encoded.byteLength, 32 + Buffer.byteLength("/a.zs") + Buffer.byteLength("é"));

@@ -1506,6 +1506,14 @@ ported independently rather than translated as one monolith.
    at the inner token. Generic arity, type compatibility, value member lookup,
    opaque expression spans, and ownership analysis intentionally remain at
    stage zero while the native semantic model grows vertically.
+   A first expression-type pass now layers on those resolved names. It infers
+   primitive/template/fixed-array literals, parameters and local aliases,
+   explicitly typed closures, indexes, core operators, ternaries, and direct
+   non-generic Z calls. Known initializers, assignments, conditions, arguments,
+   and returns are checked with native diagnostics. A missing native model for a
+   foreign/member/async/match expression produces an unresolved internal type,
+   not a guessed type or user-visible false positive; those shapes remain under
+   stage-zero authority until their metadata and control-flow rules migrate.
 3. **Stage 2:** Compile the Z compiler with stage 0, then use that result to
    compile itself.
 4. **Bootstrap verification:** Compare generated native source and compiler test

@@ -211,6 +211,47 @@ function main(): i32 {
   return sources;
 }
 
+function expressionTypingGraph(): Array<ModuleSource> {
+  let sources = Array<ModuleSource>();
+  sources.push(module("/workspace/main.zs", `
+function increment(value: i32): i32 {
+  const one = 1;
+  let total: i32 = value + one;
+  total = total + 1;
+  if (total > 0) {
+    const positive: boolean = true;
+  }
+  return total;
+}
+
+function choose(flag: boolean): i32 {
+  return flag ? increment(20) : increment(22);
+}
+`));
+  return sources;
+}
+
+function expressionMismatchGraph(): Array<ModuleSource> {
+  let sources = Array<ModuleSource>();
+  sources.push(module("/workspace/main.zs", `
+function main(): boolean {
+  const answer = 42;
+  return answer;
+}
+`));
+  return sources;
+}
+
+function invalidOperatorGraph(): Array<ModuleSource> {
+  let sources = Array<ModuleSource>();
+  sources.push(module("/workspace/main.zs", `
+function main(): boolean {
+  return true + false;
+}
+`));
+  return sources;
+}
+
 function symbolKindsGraph(): Array<ModuleSource> {
   let sources = Array<ModuleSource>();
   sources.push(module("/workspace/main.zs", `
@@ -319,12 +360,21 @@ function main(): i32 {
     failure(error) => false;
   };
   if (!typesAreValid) return 13;
+  const expressionSources = expressionTypingGraph();
+  const expressionOutcome = attempt resolveModules(expressionSources, "/workspace/main.zs");
+  const expressionsAreValid = match (expressionOutcome) {
+    success(graph) => graph.modules.length == 1;
+    failure(error) => false;
+  };
+  if (!expressionsAreValid) return 14;
+  if (!resolvesTo(expressionMismatchGraph(), ModuleResolveErrorKind.typeMismatch)) return 15;
+  if (!resolvesTo(invalidOperatorGraph(), ModuleResolveErrorKind.invalidOperator)) return 16;
   const kindSources = symbolKindsGraph();
   const kindOutcome = attempt resolveModules(kindSources, "/workspace/main.zs");
   const kindsAreValid = match (kindOutcome) {
     success(graph) => validSymbolKinds(graph);
     failure(error) => false;
   };
-  if (!kindsAreValid) return 14;
+  if (!kindsAreValid) return 17;
   return 0;
 }
