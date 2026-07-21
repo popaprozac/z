@@ -108,9 +108,18 @@ export type Stage1ModuleVariantSignature = {
   readonly payloadType: string | null;
 };
 
+export type Stage1ModuleMethodSignature = {
+  readonly name: string;
+  readonly staticMethod: boolean;
+  readonly visibility: "public" | "private";
+  readonly receiverMode: "in" | "inout" | "move";
+  readonly signature: Stage1ModuleFunctionSignature;
+};
+
 export type Stage1ModuleTypeSignature = {
   readonly typeParameters: readonly string[];
   readonly fields: readonly Stage1ModuleFieldSignature[];
+  readonly methods: readonly Stage1ModuleMethodSignature[];
   readonly variants: readonly Stage1ModuleVariantSignature[];
 };
 
@@ -253,8 +262,65 @@ export function decodeStage1ModuleGraphStream(output: string): Stage1ModuleGraph
       (symbol as { typeSignature: Stage1ModuleTypeSignature | null }).typeSignature = {
         typeParameters: typeParameters.map((field) => Buffer.from(field, "hex").toString("utf8")),
         fields: decodedFields,
+        methods: [],
         variants: decodedVariants,
       };
+      continue;
+    }
+    if (fields[0] === "methodSignature") {
+      if (fields.length < 12) throw new Error(`malformed stage-1 method signature line: ${line}`);
+      const moduleIndex = parseProtocolHexInteger(fields[1], "method signature module");
+      const symbolIndex = parseProtocolHexInteger(fields[2], "method signature symbol");
+      const symbol = modules[moduleIndex]?.symbols[symbolIndex] as Stage1ModuleSymbol | undefined;
+      if (!symbol?.typeSignature) throw new Error("stage-1 method signature appeared before its type signature");
+      if (fields[4] !== "0" && fields[4] !== "1") {
+        throw new Error(`malformed stage-1 method static state: ${fields[4]}`);
+      }
+      if (fields[7] !== "0" && fields[7] !== "1") {
+        throw new Error(`malformed stage-1 method async state: ${fields[7]}`);
+      }
+      if (![fields[3], fields[5], fields[6], fields[8], fields[9]].every((field) => /^(?:[0-9a-f]{2})*$/.test(field))) {
+        throw new Error(`malformed stage-1 method signature text: ${line}`);
+      }
+      const visibility = Buffer.from(fields[5], "hex").toString("utf8");
+      const receiverMode = Buffer.from(fields[6], "hex").toString("utf8");
+      if (visibility !== "public" && visibility !== "private") {
+        throw new Error(`malformed stage-1 method visibility: ${line}`);
+      }
+      if (receiverMode !== "in" && receiverMode !== "inout" && receiverMode !== "move") {
+        throw new Error(`malformed stage-1 method receiver mode: ${line}`);
+      }
+      const typeParameterCount = parseProtocolHexInteger(fields[10], "method type parameter count");
+      const parameterCount = parseProtocolHexInteger(fields[11], "method parameter count");
+      if (fields.length !== 12 + typeParameterCount + (parameterCount * 2)) {
+        throw new Error(`malformed stage-1 method signature arity: ${line}`);
+      }
+      const encodedTypes = fields.slice(12);
+      if (encodedTypes.some((field) => !/^(?:[0-9a-f]{2})*$/.test(field))) {
+        throw new Error(`malformed stage-1 method signature type: ${line}`);
+      }
+      const encodedParameters = encodedTypes.slice(typeParameterCount);
+      const parameterModes = encodedParameters.filter((_, index) => index % 2 === 0)
+        .map((field) => Buffer.from(field, "hex").toString("utf8"));
+      if (!parameterModes.every(isStage1ParameterMode)) {
+        throw new Error(`malformed stage-1 method parameter mode: ${line}`);
+      }
+      (symbol.typeSignature.methods as Stage1ModuleMethodSignature[]).push({
+        name: Buffer.from(fields[3], "hex").toString("utf8"),
+        staticMethod: fields[4] === "1",
+        visibility,
+        receiverMode,
+        signature: {
+          asynchronous: fields[7] === "1",
+          returnType: Buffer.from(fields[8], "hex").toString("utf8"),
+          errorType: fields[9].length === 0 ? null : Buffer.from(fields[9], "hex").toString("utf8"),
+          typeParameters: encodedTypes.slice(0, typeParameterCount)
+            .map((field) => Buffer.from(field, "hex").toString("utf8")),
+          parameterModes,
+          parameterTypes: encodedParameters.filter((_, index) => index % 2 === 1)
+            .map((field) => Buffer.from(field, "hex").toString("utf8")),
+        },
+      });
       continue;
     }
     if (fields[0] === "signature") {

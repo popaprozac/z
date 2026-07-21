@@ -191,6 +191,59 @@ function appendTypeSignature(
   }
 }
 
+function appendMethodSignatures(
+  inout output: TextBuffer,
+  moduleIndex: usize,
+  symbolIndex: usize,
+  in symbol: ModuleSymbol
+): void {
+  match (in symbol.typeSignature) {
+    some(typeSignature) => {
+      for (const method of typeSignature.methods) {
+        output.append("methodSignature");
+        output.appendAscii(9);
+        appendHexUsize(inout output, moduleIndex);
+        output.appendAscii(9);
+        appendHexUsize(inout output, symbolIndex);
+        output.appendAscii(9);
+        appendHexText(inout output, method.name);
+        output.appendAscii(9);
+        if (method.staticMethod) output.appendAscii(49);
+        else output.appendAscii(48);
+        output.appendAscii(9);
+        appendHexText(inout output, method.visibility);
+        output.appendAscii(9);
+        appendHexText(inout output, method.receiverMode);
+        output.appendAscii(9);
+        if (method.signature.asynchronous) output.appendAscii(49);
+        else output.appendAscii(48);
+        output.appendAscii(9);
+        appendHexText(inout output, method.signature.returnType);
+        output.appendAscii(9);
+        appendHexText(inout output, method.signature.errorType);
+        output.appendAscii(9);
+        appendHexUsize(inout output, method.signature.typeParameters.length);
+        output.appendAscii(9);
+        appendHexUsize(inout output, method.signature.parameterTypes.length);
+        for (const typeParameter of method.signature.typeParameters) {
+          output.appendAscii(9);
+          appendHexText(inout output, typeParameter);
+        }
+        let parameterIndex: usize = 0;
+        while (parameterIndex < method.signature.parameterTypes.length) {
+          output.appendAscii(9);
+          appendHexText(inout output, method.signature.parameterModes[parameterIndex]);
+          output.appendAscii(9);
+          appendHexText(inout output, method.signature.parameterTypes[parameterIndex]);
+          parameterIndex = parameterIndex + 1;
+        }
+        output.appendAscii(10);
+      }
+    }
+    none => {}
+  }
+}
+
 export function renderModuleGraph(
   in entryPath: String,
   in batch: String
@@ -222,6 +275,7 @@ export function renderModuleGraph(
       appendSymbol(inout output, moduleIndex, symbol);
       appendFunctionSignature(inout output, moduleIndex, symbolIndex, symbol);
       appendTypeSignature(inout output, moduleIndex, symbolIndex, symbol);
+      appendMethodSignatures(inout output, moduleIndex, symbolIndex, symbol);
       symbolIndex = symbolIndex + 1;
     }
     moduleIndex = moduleIndex + 1;

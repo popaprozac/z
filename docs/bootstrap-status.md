@@ -62,7 +62,7 @@ an inferred receiver-tied view.
 | Foreign Interface IR | Implemented foundation | Raw declarations, API-note merge, normalized contracts, source locations, and availability metadata are separate; richer native hierarchies remain |
 | Language server | Partial | Diagnostics, semantic highlighting, contextual selective-import/object-pattern completion, hover, and Z/native definitions |
 | Native definitions | Implemented slice | Namespace/selective C symbols, Objective-C members, and generated Swift compatibility declarations jump to their native headers |
-| Self-hosting | Partial frontend | Stage 0 remains TypeScript/Bun; native Z owns the lexer, current full parser arenas, module graph, function/type signatures, lexical/type lookup, and initial primitive/generic/cross-module-match/field expression typing with parity commands; ownership, complete semantics, lowering, code generation, and the CLI driver remain in stage 0 |
+| Self-hosting | Partial frontend | Stage 0 remains TypeScript/Bun; native Z owns the lexer, current full parser arenas, module graph, function/type/method signatures, lexical/type lookup, and initial primitive/generic/cross-module-match/field/method expression typing with parity commands; ownership, complete semantics, lowering, code generation, and the CLI driver remain in stage 0 |
 
 ## Foreign interfaces
 
@@ -315,13 +315,16 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    variants/payloads across the native graph protocol. The pass validates unknown
    and duplicate variants, payload/payloadless patterns, local or imported generic
    aggregate destructuring fields, exhaustiveness, and known expression-arm result
-   types. Unknown method, foreign, and async shapes remain explicitly unresolved,
+   types. Unknown foreign and async shapes remain explicitly unresolved,
    so this tier increases guarantees without emitting speculative errors.
    Z-defined field reads and assignments now resolve across local, selective,
    and namespace type names, substitute generic field types, enforce private and
    read-only contracts, and make enum comparisons concrete. Foreign, intrinsic,
-   and method members still defer. Complete contextual literal and return-driven
-   inference, method lookup,
+   and extracted method values still defer. Z-defined instance and static calls now follow
+   local/imported type metadata, enforce visibility and argument/result contracts,
+   and substitute aggregate and method generics. Receiver capability state is
+   retained but awaits the native ownership pass. Complete contextual literal and
+   return-driven inference, foreign/intrinsic method lookup,
    generic constraints/methods, normalized cross-module type identities, match
    ownership/control-flow merging, capability enforcement, and flow/ownership
    state remain stage-zero work.

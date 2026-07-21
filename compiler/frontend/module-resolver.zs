@@ -15,6 +15,7 @@ import {
   Parameter,
   ParameterMode,
   Program,
+  ReceiverMode,
   StatementArena,
   StatementKind,
   TraitDeclaration,
@@ -98,6 +99,19 @@ struct NativeFieldShape {
   readonlyField: boolean;
 }
 
+struct NativeMethodCallShape {
+  name: String;
+  ownerName: String;
+  ownerModuleIndex: usize;
+  ownerSymbolIndex: usize;
+  staticMethod: boolean;
+  visibility: String;
+  receiverMode: String;
+  ownerTypeParameters: Array<String>;
+  ownerTypeArguments: Array<String>;
+  signature: ModuleFunctionSignature;
+}
+
 export struct ResolvedModule {
   path: String;
   dependencies: Array<usize>;
@@ -139,9 +153,18 @@ export struct ModuleVariantSignature {
   payloadType: String;
 }
 
+export struct ModuleMethodSignature {
+  name: String;
+  staticMethod: boolean;
+  visibility: String;
+  receiverMode: String;
+  signature: ModuleFunctionSignature;
+}
+
 export struct ModuleTypeSignature {
   typeParameters: Array<String>;
   fields: Array<ModuleFieldSignature>;
+  methods: Array<ModuleMethodSignature>;
   variants: Array<ModuleVariantSignature>;
 }
 
@@ -352,34 +375,46 @@ function moduleFunctionSignature(
   }
   for (const functionDeclaration of module.program.functions) {
     if (functionDeclaration.name != declaration.name) continue;
-    let typeParameters = Array<String>();
-    for (const parameter of functionDeclaration.typeParameters) {
-      typeParameters.push(parameter.name.copyBytes(0, parameter.name.byteLength));
-    }
-    let parameterTypes = Array<String>();
-    let parameterModes = Array<String>();
-    for (const parameter of functionDeclaration.parameters) {
-      parameterModes.push(moduleParameterModeName(parameter.mode));
-      parameterTypes.push(parameter.type.name.copyBytes(0, parameter.type.name.byteLength));
-    }
-    let errorType = "";
-    match (in functionDeclaration.errorType) {
-      some(error) => errorType = error.name.copyBytes(0, error.name.byteLength);
-      none => {}
-    }
-    return Option.some(ModuleFunctionSignature({
-      asynchronous: functionDeclaration.asynchronous,
-      typeParameters,
-      parameterModes,
-      parameterTypes,
-      returnType: functionDeclaration.returnType.name.copyBytes(
-        0,
-        functionDeclaration.returnType.name.byteLength
-      ),
-      errorType,
-    }));
+    return Option.some(functionDeclarationSignature(functionDeclaration));
   }
   return Option<ModuleFunctionSignature>.none;
+}
+
+function functionDeclarationSignature(
+  in declaration: FunctionDeclaration
+): ModuleFunctionSignature {
+  let typeParameters = Array<String>();
+  for (const parameter of declaration.typeParameters) {
+    typeParameters.push(parameter.name.copyBytes(0, parameter.name.byteLength));
+  }
+  let parameterTypes = Array<String>();
+  let parameterModes = Array<String>();
+  for (const parameter of declaration.parameters) {
+    parameterModes.push(moduleParameterModeName(parameter.mode));
+    parameterTypes.push(parameter.type.name.copyBytes(0, parameter.type.name.byteLength));
+  }
+  let errorType = "";
+  match (in declaration.errorType) {
+    some(error) => errorType = error.name.copyBytes(0, error.name.byteLength);
+    none => {}
+  }
+  return ModuleFunctionSignature({
+    asynchronous: declaration.asynchronous,
+    typeParameters,
+    parameterModes,
+    parameterTypes,
+    returnType: declaration.returnType.name.copyBytes(
+      0,
+      declaration.returnType.name.byteLength
+    ),
+    errorType,
+  });
+}
+
+function moduleReceiverModeName(mode: ReceiverMode): String {
+  if (mode == ReceiverMode.inputOutput) return "inout";
+  if (mode == ReceiverMode.move) return "move";
+  return "in";
 }
 
 function moduleVisibilityName(visibility: Visibility): String {
@@ -410,9 +445,20 @@ function moduleTypeSignature(
           readonlyField: field.readonlyField,
         }));
       }
+      let methods = Array<ModuleMethodSignature>();
+      for (const method of aggregate.methods) {
+        methods.push(ModuleMethodSignature({
+          name: method.name.copyBytes(0, method.name.byteLength),
+          staticMethod: method.staticMethod,
+          visibility: moduleVisibilityName(method.visibility),
+          receiverMode: moduleReceiverModeName(method.receiverMode),
+          signature: functionDeclarationSignature(method),
+        }));
+      }
       return Option.some(ModuleTypeSignature({
         typeParameters,
         fields,
+        methods,
         variants: Array<ModuleVariantSignature>(),
       }));
     }
@@ -435,6 +481,7 @@ function moduleTypeSignature(
       return Option.some(ModuleTypeSignature({
         typeParameters: Array<String>(),
         fields: Array<ModuleFieldSignature>(),
+        methods: Array<ModuleMethodSignature>(),
         variants,
       }));
     }
@@ -1944,6 +1991,145 @@ function activeOwnerMatches(
   };
 }
 
+function copyModuleFunctionSignature(
+  in signature: ModuleFunctionSignature
+): ModuleFunctionSignature {
+  let typeParameters = Array<String>();
+  for (const parameter of signature.typeParameters) {
+    typeParameters.push(parameter.copyBytes(0, parameter.byteLength));
+  }
+  let parameterModes = Array<String>();
+  for (const mode of signature.parameterModes) {
+    parameterModes.push(mode.copyBytes(0, mode.byteLength));
+  }
+  let parameterTypes = Array<String>();
+  for (const typeName of signature.parameterTypes) {
+    parameterTypes.push(typeName.copyBytes(0, typeName.byteLength));
+  }
+  return ModuleFunctionSignature({
+    asynchronous: signature.asynchronous,
+    typeParameters,
+    parameterModes,
+    parameterTypes,
+    returnType: signature.returnType.copyBytes(0, signature.returnType.byteLength),
+    errorType: signature.errorType.copyBytes(0, signature.errorType.byteLength),
+  });
+}
+
+function methodCallShape(
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
+  in ownerType: String,
+  in methodName: String,
+  staticMethod: boolean
+): Option<NativeMethodCallShape> {
+  let ownerArguments = Array<String>();
+  match (genericTypeShape(ownerType)) {
+    some(generic) => {
+      for (const argument of generic.arguments) {
+        ownerArguments.push(argument.copyBytes(0, argument.byteLength));
+      }
+    }
+    none => {}
+  }
+  match (typeSymbolLocation(modules, moduleIndex, ownerType)) {
+    some(location) => {
+      match (
+        in modules[location.moduleIndex].symbols[location.symbolIndex].typeSignature
+      ) {
+        some(typeSignature) => {
+          for (const method of typeSignature.methods) {
+            if (method.name != methodName || method.staticMethod != staticMethod) continue;
+            let ownerTypeParameters = Array<String>();
+            for (const parameter of typeSignature.typeParameters) {
+              ownerTypeParameters.push(parameter.copyBytes(0, parameter.byteLength));
+            }
+            return Option.some(NativeMethodCallShape({
+              name: method.name.copyBytes(0, method.name.byteLength),
+              ownerName: modules[location.moduleIndex].symbols[location.symbolIndex].name.copyBytes(
+                0,
+                modules[location.moduleIndex].symbols[location.symbolIndex].name.byteLength
+              ),
+              ownerModuleIndex: location.moduleIndex,
+              ownerSymbolIndex: location.symbolIndex,
+              staticMethod: method.staticMethod,
+              visibility: method.visibility.copyBytes(0, method.visibility.byteLength),
+              receiverMode: method.receiverMode.copyBytes(0, method.receiverMode.byteLength),
+              ownerTypeParameters,
+              ownerTypeArguments: ownerArguments,
+              signature: copyModuleFunctionSignature(method.signature),
+            }));
+          }
+        }
+        none => {}
+      }
+    }
+    none => {}
+  }
+  return Option<NativeMethodCallShape>.none;
+}
+
+function typeExpressionName(in tree: ExpressionTree, index: usize): String {
+  if (tree.nodes[index].kind == ExpressionKind.identifierExpression) {
+    return tree.nodes[index].value.copyBytes(0, tree.nodes[index].value.byteLength);
+  }
+  if (
+    tree.nodes[index].kind == ExpressionKind.memberExpression
+    && tree.nodes[index].children.length == 1
+  ) {
+    const receiverIndex = tree.nodes[index].children[0];
+    const receiver = typeExpressionName(tree, receiverIndex);
+    if (receiver.byteLength == 0) return "";
+    return `${receiver}.${tree.nodes[index].value}`;
+  }
+  return "";
+}
+
+function activeOwnerMatchesMethod(
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
+  in bindings: Array<NativeValueBinding>,
+  in method: NativeMethodCallShape
+): boolean {
+  const ownerType = valueBindingType(bindings, "__z_native_owner_type");
+  if (ownerType.byteLength == 0) return false;
+  return match (typeSymbolLocation(modules, moduleIndex, ownerType)) {
+    some(location) => location.moduleIndex == method.ownerModuleIndex
+      && location.symbolIndex == method.ownerSymbolIndex;
+    none => false;
+  };
+}
+
+function methodCallableSignature(
+  in method: NativeMethodCallShape
+): ModuleFunctionSignature {
+  let typeParameters = Array<String>();
+  if (method.staticMethod && method.ownerTypeArguments.length == 0) {
+    for (const parameter of method.ownerTypeParameters) {
+      typeParameters.push(parameter.copyBytes(0, parameter.byteLength));
+    }
+  }
+  for (const parameter of method.signature.typeParameters) {
+    typeParameters.push(parameter.copyBytes(0, parameter.byteLength));
+  }
+  let parameterModes = Array<String>();
+  for (const mode of method.signature.parameterModes) {
+    parameterModes.push(mode.copyBytes(0, mode.byteLength));
+  }
+  let parameterTypes = Array<String>();
+  for (const typeName of method.signature.parameterTypes) {
+    parameterTypes.push(typeName.copyBytes(0, typeName.byteLength));
+  }
+  return ModuleFunctionSignature({
+    asynchronous: method.signature.asynchronous,
+    typeParameters,
+    parameterModes,
+    parameterTypes,
+    returnType: method.signature.returnType.copyBytes(0, method.signature.returnType.byteLength),
+    errorType: method.signature.errorType.copyBytes(0, method.signature.errorType.byteLength),
+  });
+}
+
 function requireVisibleField(
   in module: ParsedModule,
   in modules: Array<ResolvedModule>,
@@ -2373,6 +2559,84 @@ function callableSymbolLocation(
   return Option<ModuleSymbolLocation>.none;
 }
 
+function inferSignatureCallType(
+  in module: ParsedModule,
+  in tree: ExpressionTree,
+  calleeIndex: usize,
+  in children: Array<usize>,
+  in argumentTypes: Array<String>,
+  in functionName: String,
+  in signature: ModuleFunctionSignature,
+  in initialSubstitutions: Array<NativeValueBinding>
+): String throws ModuleResolveError {
+  if (signature.parameterTypes.length != argumentTypes.length) {
+    throw genericCallError(
+      module,
+      tree,
+      calleeIndex,
+      `${functionName} expects ${signature.parameterTypes.length} argument(s), received ${argumentTypes.length}`
+    );
+  }
+  let substitutions = copyValueBindings(initialSubstitutions);
+  match (explicitCallTypeArguments(tree, calleeIndex)) {
+    some(explicit) => {
+      if (explicit.arguments.length != signature.typeParameters.length) {
+        throw genericCallError(
+          module,
+          tree,
+          calleeIndex,
+          `${functionName} expects ${signature.typeParameters.length} type argument(s), received ${explicit.arguments.length}`
+        );
+      }
+      let typeIndex: usize = 0;
+      while (typeIndex < signature.typeParameters.length) {
+        addValueBinding(
+          inout substitutions,
+          signature.typeParameters[typeIndex],
+          explicit.arguments[typeIndex]
+        );
+        typeIndex = typeIndex + 1;
+      }
+    }
+    none => {
+      let parameterIndex: usize = 0;
+      while (parameterIndex < argumentTypes.length) {
+        try bindGenericType(
+          module,
+          tree,
+          children[parameterIndex + 1],
+          functionName,
+          signature.parameterTypes[parameterIndex],
+          argumentTypes[parameterIndex],
+          signature.typeParameters,
+          inout substitutions
+        );
+        parameterIndex = parameterIndex + 1;
+      }
+    }
+  }
+  for (const typeParameter of signature.typeParameters) {
+    const substituted = valueBindingType(substitutions, typeParameter);
+    if (substituted.byteLength == 0) return "";
+  }
+  let parameterIndex: usize = 0;
+  while (parameterIndex < argumentTypes.length) {
+    const expected = substituteGenericType(
+      signature.parameterTypes[parameterIndex],
+      substitutions
+    );
+    try requireExpressionType(
+      module,
+      tree,
+      children[parameterIndex + 1],
+      expected,
+      argumentTypes[parameterIndex]
+    );
+    parameterIndex = parameterIndex + 1;
+  }
+  return substituteGenericType(signature.returnType, substitutions);
+}
+
 function inferExpressionNodeType(
   in module: ParsedModule,
   in modules: Array<ResolvedModule>,
@@ -2588,77 +2852,112 @@ function inferExpressionNodeType(
               0,
               modules[location.moduleIndex].symbols[location.symbolIndex].name.byteLength
             );
-            if (signature.parameterTypes.length != argumentTypes.length) {
-              throw genericCallError(
-                module,
-                tree,
-                calleeIndex,
-                `${functionName} expects ${signature.parameterTypes.length} argument(s), received ${argumentTypes.length}`
-              );
-            }
-            let substitutions = Array<NativeValueBinding>();
-            match (explicitCallTypeArguments(tree, calleeIndex)) {
-              some(explicit) => {
-                if (explicit.arguments.length != signature.typeParameters.length) {
-                  throw genericCallError(
-                    module,
-                    tree,
-                    calleeIndex,
-                    `${functionName} expects ${signature.typeParameters.length} type argument(s), received ${explicit.arguments.length}`
-                  );
-                }
-                let typeIndex: usize = 0;
-                while (typeIndex < signature.typeParameters.length) {
-                  addValueBinding(
-                    inout substitutions,
-                    signature.typeParameters[typeIndex],
-                    explicit.arguments[typeIndex]
-                  );
-                  typeIndex = typeIndex + 1;
-                }
-              }
-              none => {
-                let parameterIndex: usize = 0;
-                while (parameterIndex < argumentTypes.length) {
-                  try bindGenericType(
-                    module,
-                    tree,
-                    children[parameterIndex + 1],
-                    functionName,
-                    signature.parameterTypes[parameterIndex],
-                    argumentTypes[parameterIndex],
-                    signature.typeParameters,
-                    inout substitutions
-                  );
-                  parameterIndex = parameterIndex + 1;
-                }
-              }
-            }
-            for (const typeParameter of signature.typeParameters) {
-              const substituted = valueBindingType(substitutions, typeParameter);
-              if (substituted.byteLength == 0) return "";
-            }
-            let parameterIndex: usize = 0;
-            while (parameterIndex < argumentTypes.length) {
-              const expected = substituteGenericType(
-                signature.parameterTypes[parameterIndex],
-                substitutions
-              );
-              try requireExpressionType(
-                module,
-                tree,
-                children[parameterIndex + 1],
-                expected,
-                argumentTypes[parameterIndex]
-              );
-              parameterIndex = parameterIndex + 1;
-            }
-            return substituteGenericType(signature.returnType, substitutions);
+            const substitutions = Array<NativeValueBinding>();
+            return try inferSignatureCallType(
+              module,
+              tree,
+              calleeIndex,
+              children,
+              argumentTypes,
+              functionName,
+              signature,
+              substitutions
+            );
           }
           none => {}
         }
       }
       none => {}
+    }
+    if (
+      tree.nodes[calleeIndex].kind == ExpressionKind.memberExpression
+      && tree.nodes[calleeIndex].children.length == 1
+    ) {
+      const receiverIndex = tree.nodes[calleeIndex].children[0];
+      let ownerType = try inferExpressionNodeType(
+        module,
+        modules,
+        moduleIndex,
+        arena,
+        tree,
+        receiverIndex,
+        bindings
+      );
+      let staticMethod = false;
+      if (ownerType.byteLength == 0) {
+        const candidate = typeExpressionName(tree, receiverIndex);
+        match (typeSymbolLocation(modules, moduleIndex, candidate)) {
+          some(typeLocation) => {
+            const typeKind = modules[typeLocation.moduleIndex].symbols[typeLocation.symbolIndex].kind;
+            if (
+              typeKind == ModuleSymbolKind.structSymbol
+              || typeKind == ModuleSymbolKind.classSymbol
+            ) {
+              ownerType = candidate.copyBytes(0, candidate.byteLength);
+              staticMethod = true;
+            }
+          }
+          none => {}
+        }
+      }
+      if (ownerType.byteLength > 0) {
+        const methodName = identifierLookupName(tree.nodes[calleeIndex].value);
+        match (methodCallShape(modules, moduleIndex, ownerType, methodName, staticMethod)) {
+          some(method) => {
+            if (
+              method.visibility == "private"
+              && !activeOwnerMatchesMethod(modules, moduleIndex, bindings, method)
+            ) {
+              throw resolutionError(
+                ModuleResolveErrorKind.unknownMember,
+                module.path,
+                `method "${method.name}" is private to type "${method.ownerName}"`,
+                tree.nodes[calleeIndex].line,
+                tree.nodes[calleeIndex].column
+              );
+            }
+            if (
+              !method.staticMethod
+              && method.ownerTypeParameters.length != method.ownerTypeArguments.length
+            ) return "";
+            let substitutions = Array<NativeValueBinding>();
+            let ownerIndex: usize = 0;
+            while (ownerIndex < method.ownerTypeParameters.length) {
+              if (ownerIndex >= method.ownerTypeArguments.length) break;
+              addValueBinding(
+                inout substitutions,
+                method.ownerTypeParameters[ownerIndex],
+                method.ownerTypeArguments[ownerIndex]
+              );
+              ownerIndex = ownerIndex + 1;
+            }
+            const callableSignature = methodCallableSignature(method);
+            return try inferSignatureCallType(
+              module,
+              tree,
+              calleeIndex,
+              children,
+              argumentTypes,
+              `${method.ownerName}.${method.name}`,
+              callableSignature,
+              substitutions
+            );
+          }
+          none => {
+            if (hasKnownAggregate(modules, moduleIndex, ownerType)) {
+              let methodKind = "";
+              if (staticMethod) methodKind = "static ";
+              throw resolutionError(
+                ModuleResolveErrorKind.unknownMember,
+                module.path,
+                `type ${ownerType} has no ${methodKind}method ${methodName}`,
+                tree.nodes[calleeIndex].line,
+                tree.nodes[calleeIndex].column
+              );
+            }
+          }
+        }
+      }
     }
     return "";
   }

@@ -4765,7 +4765,13 @@ test("resolves a canonical module graph directly from native Z ASTs", () => {
   const fieldModel = resolve(invalidDirectory, "field-model.zs");
   writeFileSync(
     fieldModel,
-    "export struct Record<T> {\n  value: T;\n}\n"
+    "export struct Record<T> {\n"
+      + "  value: T;\n"
+      + "  function get(): T { return this.value; }\n"
+      + "  function preserve<U>(candidate: U): U { return candidate; }\n"
+      + "  static function echo(candidate: T): T { return candidate; }\n"
+      + "  private function hidden(): T { return this.value; }\n"
+      + "}\n"
       + "export struct Frozen {\n  readonly value: i32;\n}\n"
       + "export class Secret {\n"
       + "  private value: i32;\n"
@@ -4836,6 +4842,59 @@ test("resolves a canonical module graph directly from native Z ASTs", () => {
   assert.equal(readonlyImportedField.status, 1);
   assert.match(readonlyImportedField.stderr, /cannot assign to readonly field "value"/);
 
+  writeFileSync(
+    fieldMain,
+    "import model from \"./field-model.zs\";\n"
+      + "function read(record: model.Record<i32>): i32 {\n"
+      + "  return record.get() + record.preserve(2) + model.Record.echo(3) - 5;\n"
+      + "}\n",
+  );
+  const importedMethods = spawnSync(
+    process.execPath,
+    [cli, "self-host-resolve", fieldMain],
+    { encoding: "utf8" },
+  );
+  assert.equal(importedMethods.status, 0, importedMethods.stderr);
+
+  writeFileSync(
+    fieldMain,
+    "import model from \"./field-model.zs\";\n"
+      + "function read(record: model.Record<i32>): i32 { return record.preserve(true); }\n",
+  );
+  const mismatchedMethodResult = spawnSync(
+    process.execPath,
+    [cli, "self-host-resolve", fieldMain],
+    { encoding: "utf8" },
+  );
+  assert.equal(mismatchedMethodResult.status, 1);
+  assert.match(mismatchedMethodResult.stderr, /expected i32, found boolean/);
+
+  writeFileSync(
+    fieldMain,
+    "import model from \"./field-model.zs\";\n"
+      + "function read(record: model.Record<i32>): i32 { return record.hidden(); }\n",
+  );
+  const privateImportedMethod = spawnSync(
+    process.execPath,
+    [cli, "self-host-resolve", fieldMain],
+    { encoding: "utf8" },
+  );
+  assert.equal(privateImportedMethod.status, 1);
+  assert.match(privateImportedMethod.stderr, /method "hidden" is private to type "Record"/);
+
+  writeFileSync(
+    fieldMain,
+    "import model from \"./field-model.zs\";\n"
+      + "function read(record: model.Record<i32>): i32 { return record.missing(); }\n",
+  );
+  const unknownImportedMethod = spawnSync(
+    process.execPath,
+    [cli, "self-host-resolve", fieldMain],
+    { encoding: "utf8" },
+  );
+  assert.equal(unknownImportedMethod.status, 1);
+  assert.match(unknownImportedMethod.stderr, /type model.Record<i32> has no method missing/);
+
   const encoded = encodeStage1ModuleBatch([{ path: "/a.zs", source: "é" }]);
   assert.equal(encoded.byteLength, 32 + Buffer.byteLength("/a.zs") + Buffer.byteLength("é"));
   assert.throws(() => decodeStage1ModuleGraphStream("order\n"), /did not contain an entry/);
@@ -4880,6 +4939,17 @@ test("resolves a canonical module graph directly from native Z ASTs", () => {
       + "order\t0000000000000000\n",
     ),
     /malformed stage-1 type signature arity/,
+  );
+  assert.throws(
+    () => decodeStage1ModuleGraphStream(
+      "entry\t0000000000000000\n"
+      + "module\t2f612e7a73\n"
+      + "symbol\t0000000000000000\tstruct\t506f696e74\t1\t-\t506f696e74\t0000000000000000\t0000000000000001\t0000000000000001\n"
+      + "typeSignature\t0000000000000000\t0000000000000000\t0000000000000000\t0000000000000000\t0000000000000000\n"
+      + "methodSignature\t0000000000000000\t0000000000000000\t72656164\t0\t7075626c6963\t626164\t0\t693332\t\t0000000000000000\t0000000000000000\n"
+      + "order\t0000000000000000\n",
+    ),
+    /malformed stage-1 method receiver mode/,
   );
 }, 10_000);
 

@@ -1502,6 +1502,10 @@ ported independently rather than translated as one monolith.
    Z-defined field reads and assignments use the same type metadata across those
    boundaries, substitute generic fields, and enforce private/read-only access;
    concrete enum fields also participate in equality typing.
+   Aggregate method contracts also cross the graph: static/instance identity,
+   visibility, receiver mode, async/error state, generics, parameters, and result.
+   Native calls use those contracts across local and imported types; authoritative
+   `inout`/`move` receiver enforcement remains coupled to native ownership state.
    Feeding this graph into ordinary
    compiler commands and replacing the temporary protocol remain next. Native
    semantic analysis has also begun on that graph: source-ordered lexical lookup

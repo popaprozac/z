@@ -184,10 +184,25 @@ function stage0ModuleSymbols(
         visibility: field.visibility,
         readonlyField: field.readonly,
       })),
+      methods: declaration.methods.map((method) => ({
+        name: method.name,
+        staticMethod: method.static ?? false,
+        visibility: method.visibility ?? "public",
+        receiverMode: method.receiverMode ?? "in",
+        signature: {
+          asynchronous: method.async ?? false,
+          typeParameters: method.typeParameters ?? [],
+          parameterModes: method.parameters.map((parameter) => parameter.mode),
+          parameterTypes: method.parameters.map((parameter) => canonicalTypeName(parameter.type.name)),
+          returnType: canonicalTypeName(method.returnType.name),
+          errorType: method.errorType ? canonicalTypeName(method.errorType.name) : null,
+        },
+      })),
       variants: [],
     } : declaration.kind === "enum" ? {
       typeParameters: [],
       fields: [],
+      methods: [],
       variants: declaration.variants.map((variant) => ({
         name: variant.name,
         payloadType: variant.payload ? canonicalTypeName(variant.payload.name) : null,
@@ -285,6 +300,16 @@ function sameModuleTypeSignature(
         && field.typeName === other.typeName
         && field.visibility === other.visibility
         && field.readonlyField === other.readonlyField;
+    })
+    && left.methods.length === right.methods.length
+    && left.methods.every((method, index) => {
+      const other = right.methods[index];
+      return other !== undefined
+        && method.name === other.name
+        && method.staticMethod === other.staticMethod
+        && method.visibility === other.visibility
+        && method.receiverMode === other.receiverMode
+        && sameModuleFunctionSignature(method.signature, other.signature);
     })
     && left.variants.length === right.variants.length
     && left.variants.every((variant, index) => {

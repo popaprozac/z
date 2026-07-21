@@ -33,9 +33,12 @@ semantic analysis and code generation; the frontend itself is native Z code.
   destructuring, exhaustiveness, and arm-result checks. The tier also covers
   Z-defined field reads and assignments across local/selective/namespace type
   identities, including generic substitution, private access, read-only writes,
-  and enum equality. It covers closure result contracts, indexing, unary/binary
-  operators, and ternaries, and validates known initializers, assignments,
-  conditions, call arguments, and returns with native source-located diagnostics.
+  and enum equality. Z-defined instance and static method calls use graph-carried
+  visibility, receiver mode, async/error state, method and owner generics,
+  parameter capabilities/types, and result types. It covers closure result
+  contracts, indexing, unary/binary operators, and ternaries, and validates known
+  initializers, assignments, conditions, call arguments, and returns with native
+  source-located diagnostics.
 - `module-resolver-protocol.zs` frames that host-loaded batch and returns the
   resolved graph through the same in-process native-library boundary.
 - `parser-protocol.zs` encodes the temporary parity protocol shared by native
@@ -63,8 +66,9 @@ export state, aliases, local targets, and source coordinates with stage 0. Its
 timing report separates library preparation, host discovery, framing, native
 lex/parse/resolve/symbol/name/type work, protocol decode, and stage-zero parity
 work. Identifier and expression-level type lookup currently cover materialized
-expression trees. Unknown foreign/method/intrinsic-member/async shapes deliberately
-defer instead of guessing. Opaque expression spans, method typing, contextual
+expression trees. Unknown foreign/intrinsic-member/async shapes deliberately defer
+instead of guessing. Opaque expression spans, receiver-capability enforcement,
+contextual
 collection and return-driven generic inference, generic constraints and methods,
 type-constructor arity, normalized cross-module type identity, trait conformance,
 control-flow merging, and ownership remain stage-zero work.
