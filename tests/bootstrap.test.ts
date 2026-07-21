@@ -5449,6 +5449,191 @@ test("resolves a canonical module graph directly from native Z ASTs", () => {
   assert.equal(importedOwnedArgument.status, 1);
   assert.match(importedOwnedArgument.stderr, /use of moved value "resource"/);
 
+  writeFileSync(
+    bindingState,
+    "struct Resource {\n"
+      + "  id: i32;\n"
+      + "  deinit {}\n"
+      + "}\n"
+      + "enum ResourceState { ready Resource, empty, }\n"
+      + "function invalid(state: ResourceState): i32 {\n"
+      + "  const observed = match (state) {\n"
+      + "    ready(resource) => resource.id;\n"
+      + "    empty => 0;\n"
+      + "  };\n"
+      + "  const again = state;\n"
+      + "  return observed;\n"
+      + "}\n",
+  );
+  const consumingMatchSubject = spawnSync(
+    process.execPath,
+    [cli, "self-host-resolve", bindingState],
+    { encoding: "utf8" },
+  );
+  assert.equal(consumingMatchSubject.status, 1);
+  assert.match(consumingMatchSubject.stderr, /use of moved value "state"/);
+
+  writeFileSync(
+    bindingState,
+    "struct Resource {\n"
+      + "  id: i32;\n"
+      + "  deinit {}\n"
+      + "}\n"
+      + "enum ResourceState { ready Resource, empty, }\n"
+      + "function valid(in state: ResourceState): i32 {\n"
+      + "  const first = match (in state) { ready(resource) => resource.id; empty => 0; };\n"
+      + "  const second = match (in state) { ready(resource) => resource.id; empty => 0; };\n"
+      + "  return first + second;\n"
+      + "}\n",
+  );
+  const repeatedBorrowedMatch = spawnSync(
+    process.execPath,
+    [cli, "self-host-resolve", bindingState],
+    { encoding: "utf8" },
+  );
+  assert.equal(repeatedBorrowedMatch.status, 0, repeatedBorrowedMatch.stderr);
+
+  writeFileSync(
+    bindingState,
+    "struct Resource {\n"
+      + "  id: i32;\n"
+      + "  deinit {}\n"
+      + "}\n"
+      + "enum ResourceState { ready Resource, empty, }\n"
+      + "function consume(resource: Resource): void {}\n"
+      + "function invalid(in state: ResourceState): i32 {\n"
+      + "  return match (in state) {\n"
+      + "    ready(resource) => { consume(resource); select 1; }\n"
+      + "    empty => 0;\n"
+      + "  };\n"
+      + "}\n",
+  );
+  const borrowedMatchPayload = spawnSync(
+    process.execPath,
+    [cli, "self-host-resolve", bindingState],
+    { encoding: "utf8" },
+  );
+  assert.equal(borrowedMatchPayload.status, 1);
+  assert.match(borrowedMatchPayload.stderr, /cannot move borrowed match binding "resource"/);
+
+  writeFileSync(
+    bindingState,
+    "struct Resource {\n"
+      + "  id: i32;\n"
+      + "  deinit {}\n"
+      + "}\n"
+      + "enum ResourceState { ready Resource, empty, }\n"
+      + "function consume(resource: Resource): void {}\n"
+      + "function valid(state: ResourceState): i32 {\n"
+      + "  return match (state) {\n"
+      + "    ready(resource) => { consume(resource); select 1; }\n"
+      + "    empty => 0;\n"
+      + "  };\n"
+      + "}\n",
+  );
+  const transferredMatchPayload = spawnSync(
+    process.execPath,
+    [cli, "self-host-resolve", bindingState],
+    { encoding: "utf8" },
+  );
+  assert.equal(transferredMatchPayload.status, 0, transferredMatchPayload.stderr);
+
+  writeFileSync(
+    bindingState,
+    "struct Resource {\n"
+      + "  id: i32;\n"
+      + "  deinit {}\n"
+      + "}\n"
+      + "enum Choice { yes, no, }\n"
+      + "function consume(resource: Resource): void {}\n"
+      + "function invalid(choice: Choice, resource: Resource): i32 {\n"
+      + "  const observed = match (choice) {\n"
+      + "    yes => { consume(resource); select 1; }\n"
+      + "    no => 0;\n"
+      + "  };\n"
+      + "  return resource.id + observed;\n"
+      + "}\n",
+  );
+  const conditionalArmMove = spawnSync(
+    process.execPath,
+    [cli, "self-host-resolve", bindingState],
+    { encoding: "utf8" },
+  );
+  assert.equal(conditionalArmMove.status, 1);
+  assert.match(
+    conditionalArmMove.stderr,
+    /value "resource" may have moved on another control-flow path/,
+  );
+
+  writeFileSync(
+    bindingState,
+    "struct Resource {\n"
+      + "  id: i32;\n"
+      + "  deinit {}\n"
+      + "}\n"
+      + "enum Choice { yes, no, }\n"
+      + "function consume(resource: Resource): void {}\n"
+      + "function invalid(choice: Choice, resource: Resource): i32 {\n"
+      + "  const observed = match (choice) {\n"
+      + "    yes => { consume(resource); select 1; }\n"
+      + "    no => { consume(resource); select 0; }\n"
+      + "  };\n"
+      + "  return resource.id + observed;\n"
+      + "}\n",
+  );
+  const definiteArmMove = spawnSync(
+    process.execPath,
+    [cli, "self-host-resolve", bindingState],
+    { encoding: "utf8" },
+  );
+  assert.equal(definiteArmMove.status, 1);
+  assert.match(definiteArmMove.stderr, /use of moved value "resource"/);
+
+  writeFileSync(
+    bindingState,
+    "struct Resource {\n"
+      + "  id: i32;\n"
+      + "  deinit {}\n"
+      + "}\n"
+      + "struct Envelope { resource: Resource; }\n"
+      + "enum ResourceState { ready Envelope, empty, }\n"
+      + "function consume(resource: Resource): void {}\n"
+      + "function invalid(state: ResourceState): i32 {\n"
+      + "  return match (state) {\n"
+      + "    ready({ resource }) => { consume(resource); select 1; }\n"
+      + "    empty => 0;\n"
+      + "  };\n"
+      + "}\n",
+  );
+  const borrowedDestructuredField = spawnSync(
+    process.execPath,
+    [cli, "self-host-resolve", bindingState],
+    { encoding: "utf8" },
+  );
+  assert.equal(borrowedDestructuredField.status, 1);
+  assert.match(
+    borrowedDestructuredField.stderr,
+    /cannot move borrowed match binding "resource"/,
+  );
+
+  writeFileSync(
+    bindingState,
+    "enum Choice { yes, no, }\n"
+      + "function invalid(): i32 {\n"
+      + "  return match (in Choice.yes) { yes => 1; no => 0; };\n"
+      + "}\n",
+  );
+  const borrowedTemporaryMatch = spawnSync(
+    process.execPath,
+    [cli, "self-host-resolve", bindingState],
+    { encoding: "utf8" },
+  );
+  assert.equal(borrowedTemporaryMatch.status, 1);
+  assert.match(
+    borrowedTemporaryMatch.stderr,
+    /match \(in \.\.\.\) requires stored enum storage/,
+  );
+
   const encoded = encodeStage1ModuleBatch([{ path: "/a.zs", source: "é" }]);
   assert.equal(encoded.byteLength, 32 + Buffer.byteLength("/a.zs") + Buffer.byteLength("é"));
   assert.throws(() => decodeStage1ModuleGraphStream("order\n"), /did not contain an entry/);

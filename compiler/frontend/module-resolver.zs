@@ -75,6 +75,7 @@ struct NativeValueBinding {
   typeName: String;
   mutableBinding: boolean;
   borrowedBinding: boolean;
+  matchBorrowedBinding: boolean;
   initialization: NativeInitializationState;
   ownership: NativeOwnershipState;
   outputParameter: boolean;
@@ -1321,6 +1322,7 @@ function copyValueBindings(in bindings: Array<NativeValueBinding>): Array<Native
       typeName: binding.typeName.copyBytes(0, binding.typeName.byteLength),
       mutableBinding: binding.mutableBinding,
       borrowedBinding: binding.borrowedBinding,
+      matchBorrowedBinding: binding.matchBorrowedBinding,
       initialization: binding.initialization,
       ownership: binding.ownership,
       outputParameter: binding.outputParameter,
@@ -1339,6 +1341,7 @@ function addValueBinding(
     typeName: typeName.copyBytes(0, typeName.byteLength),
     mutableBinding: false,
     borrowedBinding: false,
+    matchBorrowedBinding: false,
     initialization: NativeInitializationState.initialized,
     ownership: NativeOwnershipState.available,
     outputParameter: false,
@@ -1355,6 +1358,7 @@ function addMutableValueBinding(
     typeName: typeName.copyBytes(0, typeName.byteLength),
     mutableBinding: true,
     borrowedBinding: false,
+    matchBorrowedBinding: false,
     initialization: NativeInitializationState.initialized,
     ownership: NativeOwnershipState.available,
     outputParameter: false,
@@ -1372,6 +1376,7 @@ function addUninitializedMutableValueBinding(
     typeName: typeName.copyBytes(0, typeName.byteLength),
     mutableBinding: true,
     borrowedBinding: outputParameter,
+    matchBorrowedBinding: false,
     initialization: NativeInitializationState.uninitialized,
     ownership: NativeOwnershipState.available,
     outputParameter,
@@ -1389,6 +1394,24 @@ function addBorrowedValueBinding(
     typeName: typeName.copyBytes(0, typeName.byteLength),
     mutableBinding,
     borrowedBinding: true,
+    matchBorrowedBinding: false,
+    initialization: NativeInitializationState.initialized,
+    ownership: NativeOwnershipState.available,
+    outputParameter: false,
+  }));
+}
+
+function addMatchBorrowedValueBinding(
+  inout bindings: Array<NativeValueBinding>,
+  in name: String,
+  in typeName: String
+): void {
+  bindings.push(NativeValueBinding({
+    name: name.copyBytes(0, name.byteLength),
+    typeName: typeName.copyBytes(0, typeName.byteLength),
+    mutableBinding: false,
+    borrowedBinding: true,
+    matchBorrowedBinding: true,
     initialization: NativeInitializationState.initialized,
     ownership: NativeOwnershipState.available,
     outputParameter: false,
@@ -1433,6 +1456,18 @@ function valueBindingIsBorrowed(
   return false;
 }
 
+function valueBindingIsMatchBorrowed(
+  in bindings: Array<NativeValueBinding>,
+  in name: String
+): boolean {
+  let index = bindings.length;
+  while (index > 0) {
+    index = index - 1;
+    if (bindings[index].name == name) return bindings[index].matchBorrowedBinding;
+  }
+  return false;
+}
+
 function valueBindingInitialization(
   in bindings: Array<NativeValueBinding>,
   in name: String
@@ -1455,6 +1490,7 @@ function replaceBindingInitialization(
     typeName: bindings[index].typeName.copyBytes(0, bindings[index].typeName.byteLength),
     mutableBinding: bindings[index].mutableBinding,
     borrowedBinding: bindings[index].borrowedBinding,
+    matchBorrowedBinding: bindings[index].matchBorrowedBinding,
     initialization,
     ownership: bindings[index].ownership,
     outputParameter: bindings[index].outputParameter,
@@ -1498,6 +1534,7 @@ function replaceBindingOwnership(
     typeName: bindings[index].typeName.copyBytes(0, bindings[index].typeName.byteLength),
     mutableBinding: bindings[index].mutableBinding,
     borrowedBinding: bindings[index].borrowedBinding,
+    matchBorrowedBinding: bindings[index].matchBorrowedBinding,
     initialization: bindings[index].initialization,
     ownership,
     outputParameter: bindings[index].outputParameter,
@@ -1514,6 +1551,29 @@ function setValueBindingOwnership(
     index = index - 1;
     if (bindings[index].name == name) {
       replaceBindingOwnership(inout bindings, index, ownership);
+      return;
+    }
+  }
+}
+
+function borrowValueBindingInPlace(
+  inout bindings: Array<NativeValueBinding>,
+  in name: String
+): void {
+  let index = bindings.length;
+  while (index > 0) {
+    index = index - 1;
+    if (bindings[index].name == name) {
+      bindings[index] = NativeValueBinding({
+        name: bindings[index].name.copyBytes(0, bindings[index].name.byteLength),
+        typeName: bindings[index].typeName.copyBytes(0, bindings[index].typeName.byteLength),
+        mutableBinding: false,
+        borrowedBinding: true,
+        matchBorrowedBinding: bindings[index].matchBorrowedBinding,
+        initialization: bindings[index].initialization,
+        ownership: bindings[index].ownership,
+        outputParameter: bindings[index].outputParameter,
+      });
       return;
     }
   }
@@ -2943,7 +3003,7 @@ function inferMatchArmStatementType(
   in arena: StatementArena,
   in tree: ExpressionTree,
   statementIndex: usize,
-  in inherited: Array<NativeValueBinding>
+  inout bindings: Array<NativeValueBinding>
 ): String throws ModuleResolveError {
   const kind = arena.nodes[statementIndex].kind;
   if (
@@ -2951,7 +3011,6 @@ function inferMatchArmStatementType(
     || kind == StatementKind.selectStatement
     || kind == StatementKind.matchStatement
   ) {
-    let bindings = copyValueBindings(inherited);
     return match (in arena.nodes[statementIndex].expression) {
       some(expression) => try inferExpressionType(
         module,
@@ -2965,7 +3024,6 @@ function inferMatchArmStatementType(
     };
   }
   if (kind == StatementKind.returnStatement || kind == StatementKind.throwStatement) {
-    let bindings = copyValueBindings(inherited);
     try inferStatement(
       module,
       modules,
@@ -2980,7 +3038,6 @@ function inferMatchArmStatementType(
   if (kind == StatementKind.blockStatement) {
     const children = copyIndices(arena.nodes[statementIndex].children);
     if (children.length == 0) return "";
-    let bindings = copyValueBindings(inherited);
     let index: usize = 0;
     while (index + 1 < children.length) {
       try inferStatement(
@@ -3001,10 +3058,9 @@ function inferMatchArmStatementType(
       arena,
       tree,
       children[children.length - 1],
-      bindings
+      inout bindings
     );
   }
-  let bindings = copyValueBindings(inherited);
   try inferStatement(
     module,
     modules,
@@ -3024,6 +3080,7 @@ function addMatchArmValueBindings(
   in tree: ExpressionTree,
   armIndex: usize,
   in variant: NativeMatchVariant,
+  borrowedMatch: boolean,
   inout bindings: Array<NativeValueBinding>
 ): void throws ModuleResolveError {
   let patternKind = "none";
@@ -3049,11 +3106,23 @@ function addMatchArmValueBindings(
   if (!hasPattern) return;
   const patterns = copyIndices(tree.nodes[armIndex].children);
   if (patternKind == "binding" && patterns.length == 1) {
-    addValueBinding(
-      inout bindings,
-      tree.nodes[patterns[0]].value,
-      variant.payloadType
-    );
+    let visiting = Array<String>();
+    if (
+      borrowedMatch
+      && typeHasCleanup(modules, moduleIndex, variant.payloadType, visiting)
+    ) {
+      addMatchBorrowedValueBinding(
+        inout bindings,
+        tree.nodes[patterns[0]].value,
+        variant.payloadType
+      );
+    } else {
+      addValueBinding(
+        inout bindings,
+        tree.nodes[patterns[0]].value,
+        variant.payloadType
+      );
+    }
     return;
   }
   if (patternKind != "object") return;
@@ -3111,11 +3180,20 @@ function addMatchArmValueBindings(
     }
     const fieldChildren = copyIndices(tree.nodes[pattern].children);
     if (fieldChildren.length == 1) {
-      addValueBinding(
-        inout bindings,
-        tree.nodes[fieldChildren[0]].value,
-        fieldType
-      );
+      let visiting = Array<String>();
+      if (typeHasCleanup(modules, moduleIndex, fieldType, visiting)) {
+        addMatchBorrowedValueBinding(
+          inout bindings,
+          tree.nodes[fieldChildren[0]].value,
+          fieldType
+        );
+      } else {
+        addValueBinding(
+          inout bindings,
+          tree.nodes[fieldChildren[0]].value,
+          fieldType
+        );
+      }
     }
   }
 }
@@ -3141,6 +3219,49 @@ function inferMatchExpressionNodeType(
     inout bindings
   );
   if (subjectType.byteLength == 0) return "";
+  const subjectIndex = children[0];
+  const subjectRoot = expressionStorageRootName(tree, subjectIndex);
+  const subjectRootType = valueBindingType(bindings, subjectRoot);
+  let borrowedMatch = tree.nodes[index].value == "in";
+  if (
+    subjectRoot.byteLength > 0
+    && valueBindingIsBorrowed(bindings, subjectRoot)
+  ) borrowedMatch = true;
+  if (
+    tree.nodes[index].value == "in"
+    && (
+      subjectRoot.byteLength == 0
+      || subjectRootType.byteLength == 0
+    )
+  ) {
+    throw matchError(
+      module,
+      tree,
+      subjectIndex,
+      "match (in ...) requires stored enum storage"
+    );
+  }
+  if (!borrowedMatch && typeMovesOnOwnedUse(modules, moduleIndex, subjectType)) {
+    if (
+      tree.nodes[subjectIndex].kind == ExpressionKind.memberExpression
+      || tree.nodes[subjectIndex].kind == ExpressionKind.indexExpression
+    ) {
+      throw resolutionError(
+        ModuleResolveErrorKind.typeMismatch,
+        module.path,
+        "cannot move an ownership-bearing field or element out of its owner",
+        tree.nodes[subjectIndex].line,
+        tree.nodes[subjectIndex].column
+      );
+    }
+    if (subjectRoot.byteLength > 0) {
+      setValueBindingOwnership(
+        inout bindings,
+        subjectRoot,
+        NativeOwnershipState.moved
+      );
+    }
+  }
   let shapeOption = matchShape(modules, moduleIndex, subjectType);
   let shapeKnown = false;
   let shape = NativeMatchShape({ name: "", variants: Array<NativeMatchVariant>() });
@@ -3161,6 +3282,8 @@ function inferMatchExpressionNodeType(
   let resultType = "";
   let unresolvedArm = false;
   let hasContinuingArm = false;
+  let hasContinuingFlow = false;
+  let continuingBindings = copyValueBindings(bindings);
   let childIndex: usize = 1;
   while (childIndex < children.length) {
     const armIndex = children[childIndex];
@@ -3177,6 +3300,9 @@ function inferMatchExpressionNodeType(
     }
     covered.push(variantName.copyBytes(0, variantName.byteLength));
     let armBindings = copyValueBindings(bindings);
+    if (borrowedMatch && subjectRoot.byteLength > 0) {
+      borrowValueBindingInPlace(inout armBindings, subjectRoot);
+    }
     try addMatchArmValueBindings(
       module,
       modules,
@@ -3184,6 +3310,7 @@ function inferMatchExpressionNodeType(
       tree,
       armIndex,
       shape.variants[variantIndex],
+      borrowedMatch,
       inout armBindings
     );
     const statements = copyIndices(tree.nodes[armIndex].statements);
@@ -3196,8 +3323,21 @@ function inferMatchExpressionNodeType(
         arena,
         tree,
         statements[0],
-        armBindings
+        inout armBindings
       );
+    }
+    if (armType != "__z_never") {
+      if (!hasContinuingFlow) {
+        continuingBindings = copyValueBindings(armBindings);
+        hasContinuingFlow = true;
+      } else {
+        const previousBindings = copyValueBindings(continuingBindings);
+        mergeBindingFlowStates(
+          inout continuingBindings,
+          previousBindings,
+          armBindings
+        );
+      }
     }
     if (armType.byteLength == 0) unresolvedArm = true;
     else if (armType != "__z_never") {
@@ -3224,6 +3364,9 @@ function inferMatchExpressionNodeType(
         `non-exhaustive match; missing ${shape.name}.${variant.name}`
       );
     }
+  }
+  if (hasContinuingFlow) {
+    copyBindingFlowStates(inout bindings, continuingBindings);
   }
   if (unresolvedArm) return "";
   if (!hasContinuingArm) return "__z_never";
@@ -3479,10 +3622,13 @@ function inferSignatureCallType(
         }
         if (root.byteLength > 0) {
           if (valueBindingIsBorrowed(bindings, root)) {
+            const message = valueBindingIsMatchBorrowed(bindings, root)
+              ? `cannot move borrowed match binding "${root}"`
+              : `cannot move borrowed parameter "${root}"`;
             throw resolutionError(
               ModuleResolveErrorKind.typeMismatch,
               module.path,
-              `cannot move borrowed parameter "${root}"`,
+              message,
               tree.nodes[nodeIndex].line,
               tree.nodes[nodeIndex].column
             );
@@ -3657,8 +3803,21 @@ function inferExpressionNodeType(
       children[0],
       inout bindings
     );
-    if (receiverType.byteLength == 0) return "";
     const memberName = identifierLookupName(value);
+    if (receiverType.byteLength == 0) {
+      const candidateType = typeExpressionName(tree, children[0]);
+      match (matchShape(modules, moduleIndex, candidateType)) {
+        some(shape) => {
+          const variantIndex = matchVariantIndex(shape, memberName);
+          if (
+            variantIndex < shape.variants.length
+            && shape.variants[variantIndex].payloadType.byteLength == 0
+          ) return candidateType;
+        }
+        none => {}
+      }
+      return "";
+    }
     match (aggregateFieldShape(modules, moduleIndex, receiverType, memberName)) {
       some(field) => {
         try requireVisibleField(

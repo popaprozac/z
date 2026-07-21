@@ -1520,9 +1520,12 @@ ported independently rather than translated as one monolith.
    maybe-moved; cleanup-bearing values passed to owned parameters transfer while
    ARC classes, weak references, and function values copy their managed handle.
    Branches and loops merge that state, assignment and successful `out` restore
-   it, and borrowed storage cannot be consumed. Match-expression side effects,
-   nested mutation, and richer reachability remain later flow-state layers over
-   the same record. Native direct/imported function
+   it, and borrowed storage cannot be consumed. Exhaustive consuming matches move
+   cleanup-bearing subjects and expose owned payload bindings; `match (in value)`
+   requires named storage and exposes borrowed cleanup-bearing payloads. Object
+   patterns keep cleanup-bearing fields borrowed, and every continuing arm merges
+   its outer flow state. Nested mutation and richer reachability remain later
+   flow-state layers over the same record. Native direct/imported function
    and Z-method calls now consume their graph-carried parameter modes: `out` and
    `inout` require matching explicit markers and mutable bindings, `inout`
    requires initialized storage, invalid explicit markers on value/`in`
@@ -1561,8 +1564,9 @@ ported independently rather than translated as one monolith.
    assignments, conditions, arguments, and returns are checked with native
    diagnostics. Local enums and the intrinsic `Option<T>`/`Result<T, E>` shapes
    now provide match payload bindings, local aggregate destructuring,
-   exhaustiveness, and known arm-result unification. Match ownership effects
-   remain at stage zero. Any other missing foreign/member/async expression model produces an
+   exhaustiveness, and known arm-result unification. Consuming versus borrowed
+   match subjects and payloads now participate in native ownership flow. Any other
+   missing foreign/member/async expression model produces an
    unresolved internal type, not a guessed type or user-visible false positive.
 3. **Stage 2:** Compile the Z compiler with stage 0, then use that result to
    compile itself.

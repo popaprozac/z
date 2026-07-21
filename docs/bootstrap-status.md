@@ -352,14 +352,15 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    ARC classes, weak references, and function values copy; branches and loops
    merge state conservatively, borrowed bindings cannot be consumed, assignment
    and successful `out` restore storage, and `move this` invalidates a named
-   receiver. Match-arm side effects, readonly-field receiver paths, richer
-   reachability, and nested value mutation remain part of the broader native
-   ownership/flow pass.
+   receiver. Exhaustive `match (value)` consumes cleanup-bearing subjects while
+   `match (in value)` borrows named storage; payload bindings inherit the matching
+   access, cleanup-bearing destructured fields remain borrowed, and continuing
+   arms merge outer move state. Readonly-field receiver paths, richer reachability,
+   and nested value mutation remain part of the broader native ownership/flow pass.
    Complete
    contextual literal and return-driven inference, foreign/intrinsic method lookup,
-   generic constraints/methods, match ownership/control-flow merging, remaining
-   receiver-path capability enforcement, and full recursive ownership contexts
-   remain stage-zero work.
+   generic constraints/methods, remaining receiver-path capability enforcement,
+   closure ownership, and full recursive ownership contexts remain stage-zero work.
    Template literals now
    retain ordered decoded-text leaves and ordinary embedded-expression roots,
    including nested templates, in the same flat arena. Expression-bodied

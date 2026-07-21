@@ -66,7 +66,11 @@ semantic analysis and code generation; the frontend itself is native Z code.
   classes, weak references, and closures copy their managed handle. Branches and
   loops merge move state conservatively, borrowed bindings cannot be consumed,
   assignment and successful `out` restore ownership, and `move this` invalidates
-  a named receiver. Reads after definite or conditional transfer originate in Z.
+  a named receiver. Exhaustive `match (value)` consumes cleanup-bearing enum
+  storage while `match (in value)` borrows named storage. Payload bindings inherit
+  owned or borrowed access, cleanup-bearing object-pattern fields remain borrowed,
+  and continuing arms merge their outer ownership effects. Reads after definite
+  or conditional transfer originate in Z.
 - `module-resolver-protocol.zs` frames that host-loaded batch and returns the
   resolved graph through the same in-process native-library boundary.
 - `parser-protocol.zs` encodes the temporary parity protocol shared by native
@@ -97,8 +101,8 @@ work. Identifier and expression-level type lookup currently cover materialized
 expression trees. Unknown foreign/intrinsic-member/async shapes deliberately defer
 instead of guessing. Opaque expression spans, contextual
 collection and return-driven generic inference, generic constraints and methods,
-type-constructor arity, trait conformance, match/closure ownership effects, and
-complete recursive ownership lowering remain stage-zero work.
+type-constructor arity, trait conformance, closure and remaining expression
+ownership effects, and complete recursive ownership lowering remain stage-zero work.
 The reported native interval therefore does more semantic work than the
 graph-and-symbol-only stage-zero comparison.
 Repeated corpus measurements and incrementally
