@@ -147,7 +147,8 @@ expressions retain condition, value-block, and nested else-if edges, with branch
 statements pointing into the shared arena. `on`, `await on`, and `spawn on`
 retain placement mode, exact `on` location, executor root, optional result/error
 types, and body statements. Enum payload construction and explicit `out`/`inout`
-arguments are structural expression nodes too. `z self-host-parse` caches its
+arguments are structural expression nodes too. Generic callees and generic
+member calls retain canonical nested type arguments. `z self-host-parse` caches its
 native parser library by compiler/frontend content, loads it in-process, and
 passes every requested source file directly from the Bun host through a narrow
 FFI boundary. Add `--timings` to see library preparation, native frontend work,

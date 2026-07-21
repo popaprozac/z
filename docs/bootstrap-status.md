@@ -245,7 +245,9 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    integer child edges, argument/field labels, and locations without recursive
    heap boxes. Enum payload construction retains separate enum/case/payload
    identities, and explicit `out`/`inout` call arguments retain their capability
-   and source-located binding as first-class nodes.
+   and source-located binding as first-class nodes. Generic identifier and member
+   callees retain canonical nested type arguments, making the parser's pervasive
+   `Array<T>()` arena construction structural rather than opaque.
    Unsupported expressions remain source-located canonical token spans marked
    opaque; unsupported statement forms remain traversable but unmaterialized.
    Exact body parity now covers the fixture plus the lexer and parser sources
@@ -293,7 +295,7 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    error types, and the placed body. This leaves a structural insertion point for
    the planned contextual `using` capture clause.
    Contextual keywords are accepted as member names after `.` just as they are
-   by stage 0. Unicode identifiers and direct in-process driver integration remain.
+   by stage 0. Unicode identifiers remain future lexer work.
    Exact lexer and parser parity now covers UTF-16 locations after BMP and
    supplementary Unicode text without giving up byte-oriented native slicing.
 5. **Threaded concurrency evidence — Copy, unique-owner, native-owner, readonly ARC, and owned-error slices implemented.**

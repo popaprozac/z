@@ -1457,7 +1457,9 @@ ported independently rather than translated as one monolith.
    right-nested conditional expressions. Z-specific `new`, `weak`, `try`,
    `attempt`, direct `await`, and direct `spawn` nodes share the arena while
    preserving their postfix-operand grammar; `new` retains its canonical type,
-   labels, and argument edges. Expressions outside that slice retain
+   labels, and argument edges. Generic identifier and member callees retain
+   canonical nested type arguments, including the `Array<T>()` construction used
+   throughout the native frontend. Expressions outside that slice retain
    source-located canonical token spans and are explicitly opaque until their
    parser slice lands; assignments and other statement forms are traversed
    but deliberately not materialized as this subset. Exact stage-0 parity covers

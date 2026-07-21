@@ -69,6 +69,9 @@ Executor placement retains sync/await/spawn mode, exact `on` location, executor
 root, optional result/error types, and body statements in the same flat model.
 Supported expressions use a separate flat owned arena;
 block-bodied closure nodes reference roots in the enclosing statement arena.
+Generic expression and member names retain canonical nested type arguments, so
+collection constructors such as `Array<Token>()` are structural rather than
+opaque.
 Unsupported statement and expression forms remain traversable canonical spans.
 Only text retained in the tree becomes an owned snapshot.
 Run exact stage-0 parity across one or more source files with:
@@ -88,7 +91,8 @@ and closures with borrow/move capture, typed parameters, expression bodies, or
 projected block bodies. Assignments, non-branching control statements,
 conditionals, loops, matches, async scopes, value-producing `if` expressions,
 enum payload construction, and explicit `out`/`inout` call arguments are
-structural too. Unicode identifiers and the complete syntax tree remain future
+structural too. Generic callees and generic member calls preserve their complete
+canonical names. Unicode identifiers and the complete syntax tree remain future
 slices. Stage 0 and stage 1 expose one
 UTF-16 code-unit coordinate contract for offsets and columns while stage 1 keeps
 separate UTF-8 byte indexes for native slicing. Exact parity covers both BMP and

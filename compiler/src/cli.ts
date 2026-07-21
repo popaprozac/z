@@ -511,8 +511,7 @@ function flattenExpression(
     return index;
   };
   if (expression.kind === "identifier") {
-    if (parseGenericType(expression.name)) return null;
-    return leaf("identifier", expression.name);
+    return leaf("identifier", parseGenericType(expression.name) ? canonicalTypeName(expression.name) : expression.name);
   }
   if (expression.kind === "number") return leaf("number", expression.value);
   if (expression.kind === "string") return leaf("string", expression.value);
@@ -676,7 +675,8 @@ function flattenExpression(
   }
   if (expression.kind === "member") {
     const object = flattenExpression(expression.object, nodes, tokens);
-    return object === null ? null : append("member", expression.property, [object], []);
+    const property = parseGenericType(expression.property) ? canonicalTypeName(expression.property) : expression.property;
+    return object === null ? null : append("member", property, [object], []);
   }
   if (expression.kind === "call") {
     const callee = flattenExpression(expression.callee, nodes, tokens);
