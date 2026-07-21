@@ -38,7 +38,10 @@ semantic analysis and code generation; the frontend itself is native Z code.
   parameter capabilities/types, and result types. It covers closure result
   contracts, indexing, unary/binary operators, and ternaries, and validates known
   initializers, assignments, conditions, call arguments, and returns with native
-  source-located diagnostics.
+  source-located diagnostics. Nominal type identity is resolved by defining
+  module and symbol rather than source spelling, while signatures, fields,
+  methods, and enum payloads are rebased to the caller's visible namespace or
+  selective alias for readable diagnostics.
 - `module-resolver-protocol.zs` frames that host-loaded batch and returns the
   resolved graph through the same in-process native-library boundary.
 - `parser-protocol.zs` encodes the temporary parity protocol shared by native
@@ -70,8 +73,8 @@ expression trees. Unknown foreign/intrinsic-member/async shapes deliberately def
 instead of guessing. Opaque expression spans, receiver-capability enforcement,
 contextual
 collection and return-driven generic inference, generic constraints and methods,
-type-constructor arity, normalized cross-module type identity, trait conformance,
-control-flow merging, and ownership remain stage-zero work.
+type-constructor arity, trait conformance, control-flow merging, and ownership
+remain stage-zero work.
 The reported native interval therefore does more semantic work than the
 graph-and-symbol-only stage-zero comparison.
 Repeated corpus measurements and incrementally

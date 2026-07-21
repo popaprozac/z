@@ -1380,12 +1380,18 @@ function isNullableTypeName(in name: String): boolean {
 
 function requireExpressionType(
   in module: ParsedModule,
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
   in tree: ExpressionTree,
   index: usize,
   in expected: String,
   in actual: String
 ): void throws ModuleResolveError {
-  if (actual.byteLength == 0 || actual == "__z_never" || expected == actual) return;
+  if (
+    actual.byteLength == 0
+    || actual == "__z_never"
+    || equivalentTypes(modules, moduleIndex, expected, actual)
+  ) return;
   if (isNumericTypeName(expected) && isNumericTypeName(actual) && isContextualNumericLiteral(tree, index)) return;
   if (expected == "cstring" && actual == "String" && tree.nodes[index].kind == ExpressionKind.stringExpression) return;
   if (actual == "null" && isNullableTypeName(expected)) return;
@@ -1393,7 +1399,7 @@ function requireExpressionType(
     some(generic) => {
       if (generic.base == "Slice" && generic.arguments.length == 1) {
         const actualElement = arrayElementType(actual);
-        if (actualElement == generic.arguments[0]) return;
+        if (equivalentTypes(modules, moduleIndex, actualElement, generic.arguments[0])) return;
       }
     }
     none => {}
@@ -1794,6 +1800,171 @@ function typeSymbolLocation(
   return Option<ModuleSymbolLocation>.none;
 }
 
+function localTypeSpelling(
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
+  in location: ModuleSymbolLocation
+): String {
+  const targetName = modules[location.moduleIndex].symbols[location.symbolIndex].name.copyBytes(
+    0,
+    modules[location.moduleIndex].symbols[location.symbolIndex].name.byteLength
+  );
+  let symbolIndex: usize = 0;
+  while (symbolIndex < modules[moduleIndex].symbols.length) {
+    if (
+      moduleIndex == location.moduleIndex
+      && symbolIndex == location.symbolIndex
+    ) return targetName;
+    if (modules[moduleIndex].symbols[symbolIndex].kind == ModuleSymbolKind.importedSymbol) {
+      match (in modules[moduleIndex].symbols[symbolIndex].targetModule) {
+        some(target) => {
+          if (
+            target == location.moduleIndex
+            && modules[moduleIndex].symbols[symbolIndex].importedName == targetName
+          ) return modules[moduleIndex].symbols[symbolIndex].name.copyBytes(
+            0,
+            modules[moduleIndex].symbols[symbolIndex].name.byteLength
+          );
+        }
+        none => {}
+      }
+    }
+    symbolIndex = symbolIndex + 1;
+  }
+  symbolIndex = 0;
+  while (symbolIndex < modules[moduleIndex].symbols.length) {
+    if (modules[moduleIndex].symbols[symbolIndex].kind == ModuleSymbolKind.namespaceSymbol) {
+      match (in modules[moduleIndex].symbols[symbolIndex].targetModule) {
+        some(target) => {
+          if (target == location.moduleIndex) {
+            return `${modules[moduleIndex].symbols[symbolIndex].name}.${targetName}`;
+          }
+        }
+        none => {}
+      }
+    }
+    symbolIndex = symbolIndex + 1;
+  }
+  return targetName;
+}
+
+function rebaseTypeName(
+  in modules: Array<ResolvedModule>,
+  fromModuleIndex: usize,
+  toModuleIndex: usize,
+  in name: String
+): String {
+  const nullableTarget = nullableTargetType(name);
+  if (nullableTarget.byteLength > 0) {
+    const rebased = rebaseTypeName(modules, fromModuleIndex, toModuleIndex, nullableTarget);
+    return `${rebased} | null`;
+  }
+  if (stringStartsWith(name, "view ")) {
+    const target = name.copyBytes(5, name.byteLength);
+    const rebased = rebaseTypeName(modules, fromModuleIndex, toModuleIndex, target);
+    return `view ${rebased}`;
+  }
+  match (fixedArrayShape(name)) {
+    some(array) => {
+      const element = rebaseTypeName(modules, fromModuleIndex, toModuleIndex, array.elementType);
+      return `${element}[${array.length}]`;
+    }
+    none => {}
+  }
+  match (genericTypeShape(name)) {
+    some(generic) => {
+      let base = generic.base.copyBytes(0, generic.base.byteLength);
+      match (typeSymbolLocation(modules, fromModuleIndex, generic.base)) {
+        some(location) => base = localTypeSpelling(modules, toModuleIndex, location);
+        none => {}
+      }
+      let output = TextBuffer();
+      output.append(base);
+      output.append("<");
+      let index: usize = 0;
+      while (index < generic.arguments.length) {
+        if (index > 0) output.append(", ");
+        const argument = rebaseTypeName(
+          modules,
+          fromModuleIndex,
+          toModuleIndex,
+          generic.arguments[index]
+        );
+        output.append(argument);
+        index = index + 1;
+      }
+      output.append(">");
+      return output.finish();
+    }
+    none => {}
+  }
+  return match (typeSymbolLocation(modules, fromModuleIndex, name)) {
+    some(location) => localTypeSpelling(modules, toModuleIndex, location);
+    none => name.copyBytes(0, name.byteLength);
+  };
+}
+
+function semanticTypeIdentity(
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
+  in name: String
+): String {
+  const nullableTarget = nullableTargetType(name);
+  if (nullableTarget.byteLength > 0) {
+    const identity = semanticTypeIdentity(modules, moduleIndex, nullableTarget);
+    return `${identity} | null`;
+  }
+  if (stringStartsWith(name, "view ")) {
+    const target = name.copyBytes(5, name.byteLength);
+    const identity = semanticTypeIdentity(modules, moduleIndex, target);
+    return `view ${identity}`;
+  }
+  match (fixedArrayShape(name)) {
+    some(array) => {
+      const identity = semanticTypeIdentity(modules, moduleIndex, array.elementType);
+      return `${identity}[${array.length}]`;
+    }
+    none => {}
+  }
+  match (genericTypeShape(name)) {
+    some(generic) => {
+      let base = generic.base.copyBytes(0, generic.base.byteLength);
+      match (typeSymbolLocation(modules, moduleIndex, generic.base)) {
+        some(location) => base = `@${location.moduleIndex}:${location.symbolIndex}`;
+        none => {}
+      }
+      let output = TextBuffer();
+      output.append(base);
+      output.append("<");
+      let index: usize = 0;
+      while (index < generic.arguments.length) {
+        if (index > 0) output.append(",");
+        const argument = semanticTypeIdentity(modules, moduleIndex, generic.arguments[index]);
+        output.append(argument);
+        index = index + 1;
+      }
+      output.append(">");
+      return output.finish();
+    }
+    none => {}
+  }
+  return match (typeSymbolLocation(modules, moduleIndex, name)) {
+    some(location) => `@${location.moduleIndex}:${location.symbolIndex}`;
+    none => name.copyBytes(0, name.byteLength);
+  };
+}
+
+function equivalentTypes(
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
+  in left: String,
+  in right: String
+): boolean {
+  if (left == right) return true;
+  return semanticTypeIdentity(modules, moduleIndex, left)
+    == semanticTypeIdentity(modules, moduleIndex, right);
+}
+
 function matchShape(
   in modules: Array<ResolvedModule>,
   moduleIndex: usize,
@@ -1838,10 +2009,19 @@ function matchShape(
         some(signature) => {
           let variants = Array<NativeMatchVariant>();
           for (const variant of signature.variants) {
+            let payloadType = "";
+            if (variant.payloadType.byteLength > 0) {
+              payloadType = rebaseTypeName(
+                modules,
+                location.moduleIndex,
+                moduleIndex,
+                variant.payloadType
+              );
+            }
             variants.push(matchVariant(
               variant.name,
-              variant.payloadType,
-              location.moduleIndex
+              payloadType,
+              moduleIndex
             ));
           }
           return Option.some(NativeMatchShape({
@@ -1953,6 +2133,12 @@ function aggregateFieldShape(
           }
           for (const field of signature.fields) {
             if (field.name == fieldName) {
+              const fieldType = rebaseTypeName(
+                modules,
+                location.moduleIndex,
+                moduleIndex,
+                field.typeName
+              );
               return Option.some(NativeFieldShape({
                 name: field.name.copyBytes(0, field.name.byteLength),
                 ownerName: modules[location.moduleIndex].symbols[location.symbolIndex].name.copyBytes(
@@ -1961,7 +2147,7 @@ function aggregateFieldShape(
                 ),
                 ownerModuleIndex: location.moduleIndex,
                 ownerSymbolIndex: location.symbolIndex,
-                typeName: substituteGenericType(field.typeName, substitutions),
+                typeName: substituteGenericType(fieldType, substitutions),
                 visibility: field.visibility.copyBytes(0, field.visibility.byteLength),
                 readonlyField: field.readonlyField,
               }));
@@ -2016,6 +2202,53 @@ function copyModuleFunctionSignature(
   });
 }
 
+function rebaseModuleFunctionSignature(
+  in modules: Array<ResolvedModule>,
+  fromModuleIndex: usize,
+  toModuleIndex: usize,
+  in signature: ModuleFunctionSignature
+): ModuleFunctionSignature {
+  let typeParameters = Array<String>();
+  for (const parameter of signature.typeParameters) {
+    typeParameters.push(parameter.copyBytes(0, parameter.byteLength));
+  }
+  let parameterModes = Array<String>();
+  for (const mode of signature.parameterModes) {
+    parameterModes.push(mode.copyBytes(0, mode.byteLength));
+  }
+  let parameterTypes = Array<String>();
+  for (const typeName of signature.parameterTypes) {
+    parameterTypes.push(rebaseTypeName(
+      modules,
+      fromModuleIndex,
+      toModuleIndex,
+      typeName
+    ));
+  }
+  let errorType = "";
+  if (signature.errorType.byteLength > 0) {
+    errorType = rebaseTypeName(
+      modules,
+      fromModuleIndex,
+      toModuleIndex,
+      signature.errorType
+    );
+  }
+  return ModuleFunctionSignature({
+    asynchronous: signature.asynchronous,
+    typeParameters,
+    parameterModes,
+    parameterTypes,
+    returnType: rebaseTypeName(
+      modules,
+      fromModuleIndex,
+      toModuleIndex,
+      signature.returnType
+    ),
+    errorType,
+  });
+}
+
 function methodCallShape(
   in modules: Array<ResolvedModule>,
   moduleIndex: usize,
@@ -2057,7 +2290,12 @@ function methodCallShape(
               receiverMode: method.receiverMode.copyBytes(0, method.receiverMode.byteLength),
               ownerTypeParameters,
               ownerTypeArguments: ownerArguments,
-              signature: copyModuleFunctionSignature(method.signature),
+            signature: rebaseModuleFunctionSignature(
+              modules,
+              location.moduleIndex,
+              moduleIndex,
+              method.signature
+            ),
             }));
           }
         }
@@ -2448,7 +2686,7 @@ function inferMatchExpressionNodeType(
     else if (armType != "__z_never") {
       hasContinuingArm = true;
       if (resultType.byteLength == 0) resultType = armType.copyBytes(0, armType.byteLength);
-      else if (resultType != armType) {
+      else if (!equivalentTypes(modules, moduleIndex, resultType, armType)) {
         throw resolutionError(
           ModuleResolveErrorKind.typeMismatch,
           module.path,
@@ -2561,6 +2799,8 @@ function callableSymbolLocation(
 
 function inferSignatureCallType(
   in module: ParsedModule,
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
   in tree: ExpressionTree,
   calleeIndex: usize,
   in children: Array<usize>,
@@ -2627,6 +2867,8 @@ function inferSignatureCallType(
     );
     try requireExpressionType(
       module,
+      modules,
+      moduleIndex,
       tree,
       children[parameterIndex + 1],
       expected,
@@ -2745,7 +2987,7 @@ function inferExpressionNodeType(
     }
     if (value == "==" || value == "!=") {
       if (
-        left == right
+        equivalentTypes(modules, moduleIndex, left, right)
         && (
           isNumericTypeName(left)
           || left == "boolean"
@@ -2765,12 +3007,12 @@ function inferExpressionNodeType(
   if (kind == ExpressionKind.conditionalExpression && children.length == 3) {
     const condition = try inferExpressionNodeType(module, modules, moduleIndex, arena, tree, children[0], bindings);
     if (condition.byteLength > 0) {
-      try requireExpressionType(module, tree, children[0], "boolean", condition);
+      try requireExpressionType(module, modules, moduleIndex, tree, children[0], "boolean", condition);
     }
     const thenType = try inferExpressionNodeType(module, modules, moduleIndex, arena, tree, children[1], bindings);
     const elseType = try inferExpressionNodeType(module, modules, moduleIndex, arena, tree, children[2], bindings);
     if (thenType.byteLength == 0 || elseType.byteLength == 0) return "";
-    if (thenType == elseType) return thenType;
+    if (equivalentTypes(modules, moduleIndex, thenType, elseType)) return thenType;
     throw resolutionError(
       ModuleResolveErrorKind.typeMismatch,
       module.path,
@@ -2787,7 +3029,7 @@ function inferExpressionNodeType(
     while (childIndex < children.length) {
       const candidate = try inferExpressionNodeType(module, modules, moduleIndex, arena, tree, children[childIndex], bindings);
       if (candidate.byteLength == 0) return "";
-      try requireExpressionType(module, tree, children[childIndex], elementType, candidate);
+      try requireExpressionType(module, modules, moduleIndex, tree, children[childIndex], elementType, candidate);
       childIndex = childIndex + 1;
     }
     return `${elementType}[${children.length}]`;
@@ -2853,14 +3095,22 @@ function inferExpressionNodeType(
               modules[location.moduleIndex].symbols[location.symbolIndex].name.byteLength
             );
             const substitutions = Array<NativeValueBinding>();
+            const callableSignature = rebaseModuleFunctionSignature(
+              modules,
+              location.moduleIndex,
+              moduleIndex,
+              signature
+            );
             return try inferSignatureCallType(
               module,
+              modules,
+              moduleIndex,
               tree,
               calleeIndex,
               children,
               argumentTypes,
               functionName,
-              signature,
+              callableSignature,
               substitutions
             );
           }
@@ -2934,6 +3184,8 @@ function inferExpressionNodeType(
             const callableSignature = methodCallableSignature(method);
             return try inferSignatureCallType(
               module,
+              modules,
+              moduleIndex,
               tree,
               calleeIndex,
               children,
@@ -2983,6 +3235,8 @@ function inferExpressionType(
 
 function requireExpressionSyntaxType(
   in module: ParsedModule,
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
   in expression: ExpressionSyntax,
   in expected: String,
   in actual: String
@@ -2990,7 +3244,7 @@ function requireExpressionSyntaxType(
   match (in expression.tree) {
     some(tree) => {
       const root = tree.root;
-      try requireExpressionType(module, tree, root, expected, actual);
+      try requireExpressionType(module, modules, moduleIndex, tree, root, expected, actual);
     }
     none => {}
   }
@@ -3025,6 +3279,8 @@ function inferStatement(
         match (in arena.nodes[index].expression) {
           some(expression) => try requireExpressionSyntaxType(
             module,
+            modules,
+            moduleIndex,
             expression,
             type.name,
             inferred
@@ -3104,7 +3360,14 @@ function inferStatement(
       some(value) => {
         const actual = try inferExpressionType(module, modules, moduleIndex, arena, value, bindings);
         if (expected.byteLength > 0) {
-          try requireExpressionSyntaxType(module, value, expected, actual);
+          try requireExpressionSyntaxType(
+            module,
+            modules,
+            moduleIndex,
+            value,
+            expected,
+            actual
+          );
         }
       }
       none => {}
@@ -3116,7 +3379,14 @@ function inferStatement(
       some(expression) => {
         const actual = try inferExpressionType(module, modules, moduleIndex, arena, expression, bindings);
         if (kind == StatementKind.returnStatement && expectedReturn.byteLength > 0) {
-          try requireExpressionSyntaxType(module, expression, expectedReturn, actual);
+          try requireExpressionSyntaxType(
+            module,
+            modules,
+            moduleIndex,
+            expression,
+            expectedReturn,
+            actual
+          );
         }
       }
       none => {
@@ -3137,7 +3407,14 @@ function inferStatement(
       some(condition) => {
         const actual = try inferExpressionType(module, modules, moduleIndex, arena, condition, bindings);
         if (actual.byteLength > 0) {
-          try requireExpressionSyntaxType(module, condition, "boolean", actual);
+          try requireExpressionSyntaxType(
+            module,
+            modules,
+            moduleIndex,
+            condition,
+            "boolean",
+            actual
+          );
         }
       }
       none => {}

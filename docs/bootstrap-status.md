@@ -55,7 +55,7 @@ an inferred receiver-tied view.
 
 | Area | Status | Current boundary |
 | --- | --- | --- |
-| Z source modules | Partial | Explicit exports, namespace/selective imports, aliases, cycle diagnostics; exported signatures containing selectively imported standard named types still need cross-module normalization |
+| Z source modules | Partial | Explicit exports, namespace/selective imports, aliases, cycle diagnostics, and canonical native type identity across intermediate modules; ordinary lowering still uses stage 0 |
 | CLI | Implemented | `z check`, `z emit`, and `z run` through Bun; native run I/O streams live and arguments after `--` are forwarded |
 | System standard APIs | Implemented foundation | Default `std/fs` and `std/process` modules; owned reads/arguments, borrowed writes/process argv, direct no-shell child launch, typed OS failures |
 | Native backends | Partial | Readable C, C++20, Objective-C ARC, and Objective-C++ source generation |
@@ -323,9 +323,13 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    and extracted method values still defer. Z-defined instance and static calls now follow
    local/imported type metadata, enforce visibility and argument/result contracts,
    and substitute aggregate and method generics. Receiver capability state is
-   retained but awaits the native ownership pass. Complete contextual literal and
-   return-driven inference, foreign/intrinsic method lookup,
-   generic constraints/methods, normalized cross-module type identities, match
+   retained but awaits the native ownership pass. Nominal identity now uses
+   defining module/symbol coordinates independently of whether source spells a
+   type locally, through a namespace, or through a selective alias. Imported
+   function/method signatures, fields, and enum payloads rebase into the caller's
+   visible spelling, including transit through an intermediate module. Complete
+   contextual literal and return-driven inference, foreign/intrinsic method lookup,
+   generic constraints/methods, match
    ownership/control-flow merging, capability enforcement, and flow/ownership
    state remain stage-zero work.
    Template literals now

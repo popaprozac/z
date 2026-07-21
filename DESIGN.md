@@ -1506,6 +1506,10 @@ ported independently rather than translated as one monolith.
    visibility, receiver mode, async/error state, generics, parameters, and result.
    Native calls use those contracts across local and imported types; authoritative
    `inout`/`move` receiver enforcement remains coupled to native ownership state.
+   Native nominal equality is keyed by the defining module and symbol, not the
+   source spelling. A local name, namespace-qualified name, selective alias, and
+   type forwarded through an intermediate module therefore compare as one type;
+   diagnostics still use a spelling visible in the caller.
    Feeding this graph into ordinary
    compiler commands and replacing the temporary protocol remain next. Native
    semantic analysis has also begun on that graph: source-ordered lexical lookup

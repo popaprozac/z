@@ -4758,7 +4758,7 @@ test("resolves a canonical module graph directly from native Z ASTs", () => {
   assert.equal(invalidImportedField.status, 1);
   assert.match(
     invalidImportedField.stderr,
-    /payload Envelope<i32> has no field id/,
+    /payload model\.Envelope<i32> has no field id/,
   );
 
   const fieldMain = resolve(invalidDirectory, "field-main.zs");
@@ -4894,6 +4894,45 @@ test("resolves a canonical module graph directly from native Z ASTs", () => {
   );
   assert.equal(unknownImportedMethod.status, 1);
   assert.match(unknownImportedMethod.stderr, /type model.Record<i32> has no method missing/);
+
+  const identityModel = resolve(invalidDirectory, "identity-model.zs");
+  const identityBridge = resolve(invalidDirectory, "identity-bridge.zs");
+  const identityMain = resolve(invalidDirectory, "identity-main.zs");
+  writeFileSync(
+    identityModel,
+    "export struct Record {\n  id: i32;\n}\n"
+      + "export struct Holder {\n"
+      + "  record: Record;\n"
+      + "  function get(): Record { return this.record; }\n"
+      + "  static function keep(value: Record): Record { return value; }\n"
+      + "}\n"
+      + "export enum Lookup { found Record, missing, }\n",
+  );
+  writeFileSync(
+    identityBridge,
+    "import { Record } from \"./identity-model.zs\";\n"
+      + "export function forward(value: Record): Record { return value; }\n",
+  );
+  writeFileSync(
+    identityMain,
+    "import model from \"./identity-model.zs\";\n"
+      + "import { Record as Entry, Holder, Lookup } from \"./identity-model.zs\";\n"
+      + "import bridge from \"./identity-bridge.zs\";\n"
+      + "function through(value: Entry): model.Record { return bridge.forward(value); }\n"
+      + "function field(holder: Holder): model.Record { return holder.record; }\n"
+      + "function method(holder: model.Holder): Entry { return holder.get(); }\n"
+      + "function staticMethod(value: model.Record): Entry { return Holder.keep(value); }\n"
+      + "function matched(value: Lookup, fallback: Entry): model.Record {\n"
+      + "  return match (value) { found(record) => record; missing => fallback; };\n"
+      + "}\n",
+  );
+  const canonicalIdentity = spawnSync(
+    process.execPath,
+    [cli, "self-host-resolve", identityMain],
+    { encoding: "utf8" },
+  );
+  assert.equal(canonicalIdentity.status, 0, canonicalIdentity.stderr);
+  assert.match(canonicalIdentity.stdout, /stage-1 resolver matches 3 modules, 4 local edges/);
 
   const encoded = encodeStage1ModuleBatch([{ path: "/a.zs", source: "é" }]);
   assert.equal(encoded.byteLength, 32 + Buffer.byteLength("/a.zs") + Buffer.byteLength("é"));
