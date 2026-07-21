@@ -4959,7 +4959,15 @@ test("resolves a canonical module graph directly from native Z ASTs", () => {
       + "  return value;\n"
       + "}\n"
       + "function mutateParameter(inout value: i32): void { value = 2; }\n"
-      + "function initializeParameter(out value: i32): void { value = 1; }\n",
+      + "function initializeParameter(out value: i32): void { value = 1; }\n"
+      + "function initializeBranch(flag: boolean, out value: i32): void {\n"
+      + "  if (flag) { value = 1; } else { value = 2; }\n"
+      + "}\n"
+      + "function readBranch(flag: boolean): i32 {\n"
+      + "  let value: i32;\n"
+      + "  if (flag) { value = 1; } else { value = 2; }\n"
+      + "  return value;\n"
+      + "}\n",
   );
   const mutableBindings = spawnSync(
     process.execPath,
@@ -5007,6 +5015,57 @@ test("resolves a canonical module graph directly from native Z ASTs", () => {
   );
   assert.equal(immutableInputParameter.status, 1);
   assert.match(immutableInputParameter.stderr, /cannot assign to immutable binding "value"/);
+
+  writeFileSync(
+    bindingState,
+    "function invalid(): i32 {\n"
+      + "  let value: i32;\n"
+      + "  return value;\n"
+      + "}\n",
+  );
+  const uninitializedRead = spawnSync(
+    process.execPath,
+    [cli, "self-host-resolve", bindingState],
+    { encoding: "utf8" },
+  );
+  assert.equal(uninitializedRead.status, 1);
+  assert.match(uninitializedRead.stderr, /use of uninitialized value "value"/);
+
+  writeFileSync(
+    bindingState,
+    "function invalid(flag: boolean): i32 {\n"
+      + "  let value: i32;\n"
+      + "  if (flag) { value = 1; }\n"
+      + "  return value;\n"
+      + "}\n",
+  );
+  const maybeUninitializedRead = spawnSync(
+    process.execPath,
+    [cli, "self-host-resolve", bindingState],
+    { encoding: "utf8" },
+  );
+  assert.equal(maybeUninitializedRead.status, 1);
+  assert.match(
+    maybeUninitializedRead.stderr,
+    /value "value" may be uninitialized on another control-flow path/,
+  );
+
+  writeFileSync(
+    bindingState,
+    "function invalid(flag: boolean, out value: i32): void {\n"
+      + "  if (flag) { value = 1; }\n"
+      + "}\n",
+  );
+  const maybeUninitializedOutput = spawnSync(
+    process.execPath,
+    [cli, "self-host-resolve", bindingState],
+    { encoding: "utf8" },
+  );
+  assert.equal(maybeUninitializedOutput.status, 1);
+  assert.match(
+    maybeUninitializedOutput.stderr,
+    /out parameter "value" may be uninitialized on a successful return path/,
+  );
 
   const encoded = encodeStage1ModuleBatch([{ path: "/a.zs", source: "é" }]);
   assert.equal(encoded.byteLength, 32 + Buffer.byteLength("/a.zs") + Buffer.byteLength("é"));

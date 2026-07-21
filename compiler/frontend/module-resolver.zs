@@ -58,10 +58,18 @@ struct ParsedModule {
   program: Program;
 }
 
+enum NativeInitializationState {
+  initialized,
+  uninitialized,
+  maybeUninitialized,
+}
+
 struct NativeValueBinding {
   name: String;
   typeName: String;
   mutableBinding: boolean;
+  initialization: NativeInitializationState;
+  outputParameter: boolean;
 }
 
 struct ModuleSymbolLocation {
@@ -1291,6 +1299,8 @@ function copyValueBindings(in bindings: Array<NativeValueBinding>): Array<Native
       name: binding.name.copyBytes(0, binding.name.byteLength),
       typeName: binding.typeName.copyBytes(0, binding.typeName.byteLength),
       mutableBinding: binding.mutableBinding,
+      initialization: binding.initialization,
+      outputParameter: binding.outputParameter,
     }));
   }
   return copied;
@@ -1305,6 +1315,8 @@ function addValueBinding(
     name: name.copyBytes(0, name.byteLength),
     typeName: typeName.copyBytes(0, typeName.byteLength),
     mutableBinding: false,
+    initialization: NativeInitializationState.initialized,
+    outputParameter: false,
   }));
 }
 
@@ -1317,6 +1329,23 @@ function addMutableValueBinding(
     name: name.copyBytes(0, name.byteLength),
     typeName: typeName.copyBytes(0, typeName.byteLength),
     mutableBinding: true,
+    initialization: NativeInitializationState.initialized,
+    outputParameter: false,
+  }));
+}
+
+function addUninitializedMutableValueBinding(
+  inout bindings: Array<NativeValueBinding>,
+  in name: String,
+  in typeName: String,
+  outputParameter: boolean
+): void {
+  bindings.push(NativeValueBinding({
+    name: name.copyBytes(0, name.byteLength),
+    typeName: typeName.copyBytes(0, typeName.byteLength),
+    mutableBinding: true,
+    initialization: NativeInitializationState.uninitialized,
+    outputParameter,
   }));
 }
 
@@ -1344,6 +1373,125 @@ function valueBindingIsMutable(
     if (bindings[index].name == name) return bindings[index].mutableBinding;
   }
   return false;
+}
+
+function valueBindingInitialization(
+  in bindings: Array<NativeValueBinding>,
+  in name: String
+): NativeInitializationState {
+  let index = bindings.length;
+  while (index > 0) {
+    index = index - 1;
+    if (bindings[index].name == name) return bindings[index].initialization;
+  }
+  return NativeInitializationState.initialized;
+}
+
+function replaceBindingInitialization(
+  inout bindings: Array<NativeValueBinding>,
+  index: usize,
+  initialization: NativeInitializationState
+): void {
+  bindings[index] = NativeValueBinding({
+    name: bindings[index].name.copyBytes(0, bindings[index].name.byteLength),
+    typeName: bindings[index].typeName.copyBytes(0, bindings[index].typeName.byteLength),
+    mutableBinding: bindings[index].mutableBinding,
+    initialization,
+    outputParameter: bindings[index].outputParameter,
+  });
+}
+
+function setValueBindingInitialization(
+  inout bindings: Array<NativeValueBinding>,
+  in name: String,
+  initialization: NativeInitializationState
+): void {
+  let index = bindings.length;
+  while (index > 0) {
+    index = index - 1;
+    if (bindings[index].name == name) {
+      replaceBindingInitialization(inout bindings, index, initialization);
+      return;
+    }
+  }
+}
+
+function mergedInitialization(
+  left: NativeInitializationState,
+  right: NativeInitializationState
+): NativeInitializationState {
+  if (left == right) return left;
+  return NativeInitializationState.maybeUninitialized;
+}
+
+function copyBindingInitializationStates(
+  inout target: Array<NativeValueBinding>,
+  in source: Array<NativeValueBinding>
+): void {
+  let index: usize = 0;
+  while (index < target.length && index < source.length) {
+    replaceBindingInitialization(inout target, index, source[index].initialization);
+    index = index + 1;
+  }
+}
+
+function mergeBindingInitializationStates(
+  inout target: Array<NativeValueBinding>,
+  in left: Array<NativeValueBinding>,
+  in right: Array<NativeValueBinding>
+): void {
+  let index: usize = 0;
+  while (index < target.length && index < left.length && index < right.length) {
+    replaceBindingInitialization(
+      inout target,
+      index,
+      mergedInitialization(left[index].initialization, right[index].initialization)
+    );
+    index = index + 1;
+  }
+}
+
+function requireInitializedBinding(
+  in module: ParsedModule,
+  in tree: ExpressionTree,
+  index: usize,
+  in bindings: Array<NativeValueBinding>,
+  in name: String
+): void throws ModuleResolveError {
+  const initialization = valueBindingInitialization(bindings, name);
+  if (initialization == NativeInitializationState.initialized) return;
+  const message = initialization == NativeInitializationState.uninitialized
+    ? `use of uninitialized value "${name}"`
+    : `value "${name}" may be uninitialized on another control-flow path`;
+  throw resolutionError(
+    ModuleResolveErrorKind.typeMismatch,
+    module.path,
+    message,
+    tree.nodes[index].line,
+    tree.nodes[index].column
+  );
+}
+
+function requireInitializedOutputParameters(
+  in module: ParsedModule,
+  line: usize,
+  column: usize,
+  in bindings: Array<NativeValueBinding>
+): void throws ModuleResolveError {
+  for (const binding of bindings) {
+    if (
+      binding.outputParameter
+      && binding.initialization != NativeInitializationState.initialized
+    ) {
+      throw resolutionError(
+        ModuleResolveErrorKind.typeMismatch,
+        module.path,
+        `out parameter "${binding.name}" may be uninitialized on a successful return path`,
+        line,
+        column
+      );
+    }
+  }
 }
 
 function isIntegerTypeName(in name: String): boolean {
@@ -2944,6 +3092,7 @@ function inferExpressionNodeType(
     || kind == ExpressionKind.argumentBindingExpression
   ) {
     const lookup = identifierLookupName(value);
+    try requireInitializedBinding(module, tree, index, bindings, lookup);
     return valueBindingType(bindings, lookup);
   }
   if (kind == ExpressionKind.newExpression) return value;
@@ -2960,6 +3109,10 @@ function inferExpressionNodeType(
     );
   }
   if (kind == ExpressionKind.argumentReferenceExpression && children.length == 1) {
+    if (value == "out") {
+      const bindingName = identifierLookupName(tree.nodes[children[0]].value);
+      return valueBindingType(bindings, bindingName);
+    }
     return try inferExpressionNodeType(module, modules, moduleIndex, arena, tree, children[0], bindings);
   }
   if (kind == ExpressionKind.memberExpression && children.length == 1) {
@@ -3304,6 +3457,7 @@ function inferStatement(
   in expectedReturn: String
 ): void throws ModuleResolveError {
   const kind = arena.nodes[index].kind;
+  const statementChildren = copyIndices(arena.nodes[index].children);
   if (kind == StatementKind.variableStatement) {
     let inferred = "";
     match (in arena.nodes[index].expression) {
@@ -3336,7 +3490,19 @@ function inferStatement(
       none => {}
     }
     if (arena.nodes[index].mutableBinding) {
-      addMutableValueBinding(inout bindings, arena.nodes[index].name, stored);
+      match (in arena.nodes[index].expression) {
+        some(expression) => addMutableValueBinding(
+          inout bindings,
+          arena.nodes[index].name,
+          stored
+        );
+        none => addUninitializedMutableValueBinding(
+          inout bindings,
+          arena.nodes[index].name,
+          stored,
+          false
+        );
+      }
     } else {
       addValueBinding(inout bindings, arena.nodes[index].name, stored);
     }
@@ -3349,25 +3515,26 @@ function inferStatement(
         match (in target.tree) {
           some(tree) => {
             const root = tree.root;
-            expected = try inferExpressionNodeType(
-              module,
-              modules,
-              moduleIndex,
-              arena,
-              tree,
-              root,
-              bindings
-            );
-            if (
-              tree.nodes[root].kind == ExpressionKind.identifierExpression
-              && !valueBindingIsMutable(bindings, tree.nodes[root].value)
-            ) {
-              throw resolutionError(
-                ModuleResolveErrorKind.typeMismatch,
-                module.path,
-                `cannot assign to immutable binding "${tree.nodes[root].value}"`,
-                tree.nodes[root].line,
-                tree.nodes[root].column
+            if (tree.nodes[root].kind == ExpressionKind.identifierExpression) {
+              expected = valueBindingType(bindings, tree.nodes[root].value);
+              if (!valueBindingIsMutable(bindings, tree.nodes[root].value)) {
+                throw resolutionError(
+                  ModuleResolveErrorKind.typeMismatch,
+                  module.path,
+                  `cannot assign to immutable binding "${tree.nodes[root].value}"`,
+                  tree.nodes[root].line,
+                  tree.nodes[root].column
+                );
+              }
+            } else {
+              expected = try inferExpressionNodeType(
+                module,
+                modules,
+                moduleIndex,
+                arena,
+                tree,
+                root,
+                bindings
               );
             }
             if (
@@ -3432,6 +3599,23 @@ function inferStatement(
       }
       none => {}
     }
+    match (in arena.nodes[index].expression) {
+      some(target) => {
+        match (in target.tree) {
+          some(tree) => {
+            if (tree.nodes[tree.root].kind == ExpressionKind.identifierExpression) {
+              setValueBindingInitialization(
+                inout bindings,
+                tree.nodes[tree.root].value,
+                NativeInitializationState.initialized
+              );
+            }
+          }
+          none => {}
+        }
+      }
+      none => {}
+    }
     return;
   }
   if (kind == StatementKind.returnStatement || kind == StatementKind.selectStatement) {
@@ -3461,6 +3645,15 @@ function inferStatement(
         }
       }
     }
+    if (kind == StatementKind.returnStatement) {
+      try requireInitializedOutputParameters(
+        module,
+        arena.nodes[index].line,
+        arena.nodes[index].column,
+        bindings
+      );
+    }
+    return;
   }
   if (kind == StatementKind.ifStatement || kind == StatementKind.whileStatement) {
     match (in arena.nodes[index].expression) {
@@ -3480,7 +3673,59 @@ function inferStatement(
       none => {}
     }
   }
+  if (kind == StatementKind.ifStatement) {
+    let thenBindings = copyValueBindings(bindings);
+    let elseBindings = copyValueBindings(bindings);
+    if (statementChildren.length > 0) {
+      try inferStatement(
+        module,
+        modules,
+        moduleIndex,
+        arena,
+        statementChildren[0],
+        inout thenBindings,
+        expectedReturn
+      );
+    }
+    if (statementChildren.length > 1) {
+      try inferStatement(
+        module,
+        modules,
+        moduleIndex,
+        arena,
+        statementChildren[1],
+        inout elseBindings,
+        expectedReturn
+      );
+    }
+    mergeBindingInitializationStates(
+      inout bindings,
+      thenBindings,
+      elseBindings
+    );
+    return;
+  }
+  if (kind == StatementKind.whileStatement) {
+    const beforeLoop = copyValueBindings(bindings);
+    let loopBindings = copyValueBindings(bindings);
+    try inferStatementSequence(
+      module,
+      modules,
+      moduleIndex,
+      arena,
+      statementChildren,
+      inout loopBindings,
+      expectedReturn
+    );
+    mergeBindingInitializationStates(
+      inout bindings,
+      beforeLoop,
+      loopBindings
+    );
+    return;
+  }
   if (kind == StatementKind.forStatement) {
+    const beforeLoop = copyValueBindings(bindings);
     let loopBindings = copyValueBindings(bindings);
     let elementType = "";
     match (in arena.nodes[index].expression) {
@@ -3496,21 +3741,28 @@ function inferStatement(
       modules,
       moduleIndex,
       arena,
-      arena.nodes[index].children,
-      loopBindings,
+      statementChildren,
+      inout loopBindings,
       expectedReturn
+    );
+    mergeBindingInitializationStates(
+      inout bindings,
+      beforeLoop,
+      loopBindings
     );
     return;
   }
+  let nestedBindings = copyValueBindings(bindings);
   try inferStatementSequence(
     module,
     modules,
     moduleIndex,
     arena,
-    arena.nodes[index].children,
-    bindings,
+    statementChildren,
+    inout nestedBindings,
     expectedReturn
   );
+  copyBindingInitializationStates(inout bindings, nestedBindings);
 }
 
 function inferStatementSequence(
@@ -3519,10 +3771,9 @@ function inferStatementSequence(
   moduleIndex: usize,
   in arena: StatementArena,
   in indices: Array<usize>,
-  in inherited: Array<NativeValueBinding>,
+  inout bindings: Array<NativeValueBinding>,
   in expectedReturn: String
 ): void throws ModuleResolveError {
-  let bindings = copyValueBindings(inherited);
   for (const index of indices) {
     try inferStatement(
       module,
@@ -3539,11 +3790,15 @@ function inferStatementSequence(
 function functionValueBindings(in parameters: Array<Parameter>): Array<NativeValueBinding> {
   let bindings = Array<NativeValueBinding>();
   for (const parameter of parameters) {
-    if (
-      parameter.mode == ParameterMode.inputOutput
-      || parameter.mode == ParameterMode.output
-    ) {
+    if (parameter.mode == ParameterMode.inputOutput) {
       addMutableValueBinding(inout bindings, parameter.name, parameter.type.name);
+    } else if (parameter.mode == ParameterMode.output) {
+      addUninitializedMutableValueBinding(
+        inout bindings,
+        parameter.name,
+        parameter.type.name,
+        true
+      );
     } else {
       addValueBinding(inout bindings, parameter.name, parameter.type.name);
     }
@@ -3578,8 +3833,14 @@ function inferFunctionExpressions(
     moduleIndex,
     declaration.body,
     declaration.body.roots,
-    bindings,
+    inout bindings,
     declaration.returnType.name
+  );
+  try requireInitializedOutputParameters(
+    module,
+    declaration.line,
+    declaration.column,
+    bindings
   );
 }
 
@@ -3604,8 +3865,14 @@ function validateExpressionTypesAndLocals(
           moduleIndex,
           initializer.body,
           initializer.body.roots,
-          bindings,
+          inout bindings,
           "void"
+        );
+        try requireInitializedOutputParameters(
+          module,
+          initializer.line,
+          initializer.column,
+          bindings
         );
       }
       none => {}
@@ -3624,7 +3891,7 @@ function validateExpressionTypesAndLocals(
           moduleIndex,
           deinitializer.body,
           deinitializer.body.roots,
-          bindings,
+          inout bindings,
           "void"
         );
       }

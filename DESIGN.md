@@ -1513,9 +1513,13 @@ ported independently rather than translated as one monolith.
    recursively compares that identity rather than raw aliases. Native value
    bindings now retain mutability independently of their type spelling, and
    direct assignment enforces the `const`/value/`in` versus
-   `let`/`inout`/`out` distinction. Definite initialization, nested mutation,
-   call-site capability enforcement, and ownership remain later flow-state
-   layers over the same binding record.
+   `let`/`inout`/`out` distinction. That record now also carries definite
+   initialization state. Direct assignments and nested blocks update it, `if`
+   branches merge it, loops conservatively include zero iterations, reads reject
+   uninitialized/maybe-uninitialized values, and successful exits require every
+   `out` parameter to be initialized. Match-expression side effects, call-site
+   capability transitions, nested mutation, reachability, and ownership remain
+   later flow-state layers over the same record.
    Feeding this graph into ordinary
    compiler commands and replacing the temporary protocol remain next. Native
    semantic analysis has also begun on that graph: source-ordered lexical lookup

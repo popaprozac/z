@@ -333,9 +333,14 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    `view`, fixed-array, and nested-generic shapes while retaining readable source
    spellings in genuine conflict diagnostics. Native bindings now retain the
    first capability-state bit: direct reassignment accepts `let`, `inout`, and
-   `out` storage while rejecting `const`, value, and `in` bindings. Nested value
-   mutation, call-site capability enforcement, definite `out` initialization,
-   and branch/loop state merging remain coupled to the broader native flow pass.
+   `out` storage while rejecting `const`, value, and `in` bindings. Bindings also
+   carry initialized, uninitialized, or maybe-uninitialized state. Direct
+   assignments and nested blocks update it, `if` branches merge it, loops retain
+   the conservative zero-iteration path, and successful returns/fallthrough
+   require every `out` parameter to be initialized. Match-expression side
+   effects, call-site `out` transitions, richer reachability, nested value
+   mutation, and capability enforcement remain part of the broader native flow
+   pass.
    Complete
    contextual literal and return-driven inference, foreign/intrinsic method lookup,
    generic constraints/methods, match
