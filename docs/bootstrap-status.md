@@ -240,7 +240,9 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    representation. `new`, `weak`, `try`, `attempt`, direct `await`, and direct
    `spawn` retain their distinct grammar and node kinds too. Nodes retain values,
    integer child edges, argument/field labels, and locations without recursive
-   heap boxes.
+   heap boxes. Enum payload construction retains separate enum/case/payload
+   identities, and explicit `out`/`inout` call arguments retain their capability
+   and source-located binding as first-class nodes.
    Unsupported expressions remain source-located canonical token spans marked
    opaque; unsupported statement forms remain traversable but unmaterialized.
    Exact body parity now covers the fixture plus the lexer and parser sources

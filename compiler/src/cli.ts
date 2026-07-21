@@ -486,6 +486,24 @@ function canonicalExpressionTree(expression: Expression, tokens: readonly Token[
   )).join("")}`;
 }
 
+function variantMarkerLocation(
+  expression: Extract<Expression, { kind: "variantExpression" }>,
+  tokens: readonly Token[],
+): SourceLocation {
+  const start = tokens.findIndex((token) => token.location.offset === expression.location.offset);
+  if (start < 0) return expression.location;
+  for (let index = start + 1; index + 1 < tokens.length; index += 1) {
+    const token = tokens[index]!;
+    if (token.location.offset >= expression.payload.location.offset) break;
+    if (
+      token.kind === "dot"
+      && tokens[index + 1]?.kind === "identifier"
+      && tokens[index + 1]?.text === expression.variantName
+    ) return tokens[index + 1]!.location;
+  }
+  return expression.location;
+}
+
 function flattenExpression(
   expression: Expression,
   nodes: FlatExpressionNode[],
@@ -520,6 +538,15 @@ function flattenExpression(
   const append = (kind: string, value: string, children: readonly number[], labels: readonly string[]): number => (
     appendAt(kind, value, children, labels, expression.location)
   );
+  if (expression.kind === "argumentReference") {
+    const binding = appendAt("argumentBinding", expression.name, [], [], expression.nameLocation);
+    return append("argumentReference", expression.access, [binding], []);
+  }
+  if (expression.kind === "variantExpression") {
+    const marker = appendAt("variantMarker", expression.variantName, [], [], variantMarkerLocation(expression, tokens));
+    const payload = flattenExpression(expression.payload, nodes, tokens);
+    return payload === null ? null : append("variant", expression.enumName, [marker, payload], []);
+  }
   if (expression.kind === "template") {
     const children: number[] = [];
     for (const part of expression.parts) {

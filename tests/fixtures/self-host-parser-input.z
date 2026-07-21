@@ -86,6 +86,11 @@ function consume(move this): i32 {
   return 0;
 }
 
+function writeValues(inout value: i32, out observed: i32): void {
+  value = value + 1;
+  observed = value;
+}
+
 function bodyShapes(value: i32): i32 {
   let observed: i32;
   if (value > 1) {
@@ -144,6 +149,11 @@ function expressionShapes(value: i32): i32 {
     throw LoadError({ code: adjusted });
     return adjusted;
   };
+  let mutableValue = value;
+  let outputValue: i32;
+  writeValues(inout mutableValue, out outputValue);
+  const projectedReading = Reading({ value: mutableValue });
+  const projectedState = LoadState.ready projectedReading;
   const values = [value, 42];
   const selected = values[0];
   const object = { value, label: "sample" };

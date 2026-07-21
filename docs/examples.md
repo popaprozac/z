@@ -146,8 +146,8 @@ required block as the lexical structured-join edge. Value-producing `if`
 expressions retain condition, value-block, and nested else-if edges, with branch
 statements pointing into the shared arena. `on`, `await on`, and `spawn on`
 retain placement mode, exact `on` location, executor root, optional result/error
-types, and body statements. Enum-constructor and explicit capability-argument
-projections remain canonical opaque spans. `z self-host-parse`
+types, and body statements. Enum payload construction and explicit `out`/`inout`
+arguments are structural expression nodes too. `z self-host-parse`
 caches its native bridge by compiler/frontend content and sends every requested source file
 through one framed native invocation. Add `--timings` to see bridge preparation,
 native batch work, protocol decoding, and stage-0 parity parsing separately.

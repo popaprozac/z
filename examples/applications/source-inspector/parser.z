@@ -98,6 +98,10 @@ export enum ExpressionKind {
   binaryExpression,
   conditionalExpression,
   newExpression,
+  variantMarkerExpression,
+  variantExpression,
+  argumentBindingExpression,
+  argumentReferenceExpression,
   weakExpression,
   tryExpression,
   attemptExpression,
@@ -888,6 +892,28 @@ function parsePrimaryTree(
 ): usize throws ParserError {
   if (current >= end) throw fail(tokens[current], "expected a primary expression");
   const start = snapshot(tokens[current]);
+  if (start.kind == TokenKind.outKeyword || start.kind == TokenKind.inoutKeyword) {
+    current = current + 1;
+    const binding = try expect(tokens, inout current, TokenKind.identifier, "a mutable binding");
+    const bindingNode = pushExpressionNode(
+      inout nodes,
+      ExpressionKind.argumentBindingExpression,
+      binding.text.copyBytes(0, binding.text.byteLength),
+      Array<usize>(),
+      Array<String>(),
+      binding
+    );
+    let children = Array<usize>();
+    children.push(bindingNode);
+    return pushExpressionNode(
+      inout nodes,
+      ExpressionKind.argumentReferenceExpression,
+      start.text.copyBytes(0, start.text.byteLength),
+      children,
+      Array<String>(),
+      start
+    );
+  }
   if (startsExecutorPlacement(tokens, current)) {
     return try parseExecutorPlacementTree(tokens, inout current, end, inout nodes, inout statementNodes);
   }
@@ -1055,6 +1081,68 @@ function parsePrimaryTree(
     );
   }
   if (start.kind == TokenKind.identifier) {
+    let variantDot = Option<usize>.none;
+    let cursor = current + 1;
+    if (cursor < end && tokens[cursor].kind == TokenKind.less) {
+      let depth: usize = 0;
+      while (cursor < end) {
+        if (tokens[cursor].kind == TokenKind.less) depth = depth + 1;
+        else if (tokens[cursor].kind == TokenKind.greater) {
+          if (depth == 0) break;
+          depth = depth - 1;
+          cursor = cursor + 1;
+          if (depth == 0) break;
+          continue;
+        } else if (tokens[cursor].kind == TokenKind.shiftRight) {
+          if (depth < 2) break;
+          depth = depth - 2;
+          cursor = cursor + 1;
+          if (depth == 0) break;
+          continue;
+        }
+        cursor = cursor + 1;
+      }
+    }
+    if (
+      cursor + 2 < end
+      && tokens[cursor].kind == TokenKind.dot
+      && tokens[cursor + 1].kind == TokenKind.identifier
+      && (
+        tokens[cursor + 2].kind == TokenKind.identifier
+        || tokens[cursor + 2].kind == TokenKind.number
+        || tokens[cursor + 2].kind == TokenKind.string
+        || tokens[cursor + 2].kind == TokenKind.trueKeyword
+        || tokens[cursor + 2].kind == TokenKind.falseKeyword
+        || tokens[cursor + 2].kind == TokenKind.nullKeyword
+      )
+    ) variantDot = Option.some(cursor);
+    match (variantDot) {
+      some(dot) => {
+        const variant = snapshot(tokens[dot + 1]);
+        current = dot + 2;
+        const marker = pushExpressionNode(
+          inout nodes,
+          ExpressionKind.variantMarkerExpression,
+          variant.text.copyBytes(0, variant.text.byteLength),
+          Array<usize>(),
+          Array<String>(),
+          variant
+        );
+        const payload = try parsePrimaryTree(tokens, inout current, end, inout nodes, inout statementNodes);
+        let children = Array<usize>();
+        children.push(marker);
+        children.push(payload);
+        return pushExpressionNode(
+          inout nodes,
+          ExpressionKind.variantExpression,
+          start.text.copyBytes(0, start.text.byteLength),
+          children,
+          Array<String>(),
+          start
+        );
+      }
+      none => {}
+    }
     current = current + 1;
     return pushExpressionNode(
       inout nodes,
@@ -2540,6 +2628,10 @@ function expressionKindName(kind: ExpressionKind): String {
     binaryExpression => "binary";
     conditionalExpression => "conditional";
     newExpression => "new";
+    variantMarkerExpression => "variantMarker";
+    variantExpression => "variant";
+    argumentBindingExpression => "argumentBinding";
+    argumentReferenceExpression => "argumentReference";
     weakExpression => "weak";
     tryExpression => "try";
     attemptExpression => "attempt";
