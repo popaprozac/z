@@ -4606,7 +4606,7 @@ test("resolves a canonical module graph directly from native Z ASTs", () => {
   assert.equal(integrated.status, 0, integrated.stderr);
   assert.match(integrated.stdout, /stage-1 resolver matches 3 modules, 3 local edges, and 10 symbols \(math\.zs -> geometry\.zs -> main\.zs\)/);
   assert.match(integrated.stdout, /host discovery \(file I\/O \+ stage-0 import parse\): \d+\.\d{2} ms/);
-  assert.match(integrated.stdout, /native in-process \(FFI \+ lex \+ parse \+ resolve \+ symbols \+ names \+ encode\): \d+\.\d{2} ms/);
+  assert.match(integrated.stdout, /native in-process \(FFI \+ lex \+ parse \+ resolve \+ symbols \+ names \+ types \+ encode\): \d+\.\d{2} ms/);
   assert.match(integrated.stdout, /stage-0 parity \(lex \+ parse \+ graph \+ symbols\): \d+\.\d{2} ms/);
 
   const invalidDirectory = mkdtempSync("/tmp/z-self-host-resolver-");
@@ -4622,6 +4622,16 @@ test("resolves a canonical module graph directly from native Z ASTs", () => {
   const unknown = spawnSync(process.execPath, [cli, "self-host-resolve", unknownMain], { encoding: "utf8" });
   assert.equal(unknown.status, 1);
   assert.match(unknown.stderr, /unknown\.zs:3:18: unknown name missing/);
+
+  const unknownTypeMain = resolve(invalidDirectory, "unknown-type.zs");
+  writeFileSync(unknownTypeMain, "function load(value: Option<Missing>): void {\n  return;\n}\n");
+  const unknownType = spawnSync(
+    process.execPath,
+    [cli, "self-host-resolve", unknownTypeMain],
+    { encoding: "utf8" },
+  );
+  assert.equal(unknownType.status, 1);
+  assert.match(unknownType.stderr, /unknown-type\.zs:1:29: unknown type Missing/);
 
   const encoded = encodeStage1ModuleBatch([{ path: "/a.zs", source: "é" }]);
   assert.equal(encoded.byteLength, 32 + Buffer.byteLength("/a.zs") + Buffer.byteLength("é"));

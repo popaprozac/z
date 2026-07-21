@@ -117,7 +117,7 @@ function verifyStage1Resolver(inputPath: string, timings: boolean): void {
     console.log(`  boundary preparation: ${formatMilliseconds(boundary.prepareMilliseconds)}`);
     console.log(`  host discovery (file I/O + stage-0 import parse): ${formatMilliseconds(loadingMilliseconds)}`);
     console.log(`  host batch framing: ${formatMilliseconds(batchMilliseconds)}`);
-    console.log(`  native in-process (FFI + lex + parse + resolve + symbols + names + encode): ${formatMilliseconds(executionMilliseconds)}`);
+    console.log(`  native in-process (FFI + lex + parse + resolve + symbols + names + types + encode): ${formatMilliseconds(executionMilliseconds)}`);
     console.log(`  protocol decode: ${formatMilliseconds(decodeMilliseconds)}`);
     console.log(`  stage-0 parity (lex + parse + graph + symbols): ${formatMilliseconds(stage0Milliseconds)}`);
   }

@@ -40,6 +40,14 @@ export enum Visibility {
 
 export struct TypeReference {
   name: String;
+  references: Array<TypeNameReference>;
+  offset: usize;
+  line: usize;
+  column: usize;
+}
+
+export struct TypeNameReference {
+  name: String;
   offset: usize;
   line: usize;
   column: usize;
@@ -123,6 +131,7 @@ export struct ExpressionNode {
   children: Array<usize>;
   statements: Array<usize>;
   labels: Array<String>;
+  typeReferences: Array<TypeReference>;
   offset: usize;
   line: usize;
   column: usize;
@@ -381,6 +390,45 @@ function normalizePositiveInteger(in text: String): String {
   return text.copyBytes(start, text.byteLength);
 }
 
+function appendTypeNameReferences(
+  inout target: Array<TypeNameReference>,
+  in source: Array<TypeNameReference>
+): void {
+  for (const reference of source) {
+    target.push(TypeNameReference({
+      name: reference.name.copyBytes(0, reference.name.byteLength),
+      offset: reference.offset,
+      line: reference.line,
+      column: reference.column,
+    }));
+  }
+}
+
+function appendGenericArgumentReference(
+  inout target: Array<TypeReference>,
+  in type: TypeReference
+): void {
+  if (type.references.length < 2) return;
+  let references = Array<TypeNameReference>();
+  let index: usize = 1;
+  while (index < type.references.length) {
+    references.push(TypeNameReference({
+      name: type.references[index].name.copyBytes(0, type.references[index].name.byteLength),
+      offset: type.references[index].offset,
+      line: type.references[index].line,
+      column: type.references[index].column,
+    }));
+    index = index + 1;
+  }
+  target.push(TypeReference({
+    name: type.name.copyBytes(0, type.name.byteLength),
+    references,
+    offset: type.offset,
+    line: type.line,
+    column: type.column,
+  }));
+}
+
 function parseType(
   in tokens: Array<Token>,
   inout current: usize,
@@ -389,6 +437,7 @@ function parseType(
   if (tokens[current].kind == TokenKind.leftParen) {
     const start = try expect(tokens, inout current, TokenKind.leftParen, "a function type");
     let output = TextBuffer();
+    let references = Array<TypeNameReference>();
     output.append("(");
     let first = true;
     while (tokens[current].kind != TokenKind.rightParen) {
@@ -405,14 +454,17 @@ function parseType(
       output.append(name.text);
       output.append(": ");
       output.append(type.name);
+      appendTypeNameReferences(inout references, type.references);
     }
     try expectKind(tokens, inout current, TokenKind.rightParen, "`)` after function-type parameters");
     try expectKind(tokens, inout current, TokenKind.fatArrow, "`=>` in a function type");
     const returnType = try parseType(tokens, inout current, inout pendingGreater);
     output.append(") => ");
     output.append(returnType.name);
+    appendTypeNameReferences(inout references, returnType.references);
     return TypeReference({
       name: output.finish(),
+      references,
       offset: start.offset,
       line: start.line,
       column: start.column,
@@ -422,8 +474,11 @@ function parseType(
   const start = try expect(tokens, inout current, TokenKind.identifier, "a type name");
   if (start.text == "view") {
     const target = try parseType(tokens, inout current, inout pendingGreater);
+    let references = Array<TypeNameReference>();
+    appendTypeNameReferences(inout references, target.references);
     return TypeReference({
       name: `view ${target.name}`,
+      references,
       offset: start.offset,
       line: start.line,
       column: start.column,
@@ -431,10 +486,17 @@ function parseType(
   }
 
   let name = start.text.copyBytes(0, start.text.byteLength);
+  let references = Array<TypeNameReference>();
   while (takeIf(tokens, inout current, TokenKind.dot)) {
     const member = try expect(tokens, inout current, TokenKind.identifier, "an imported type name");
     name = `${name}.${member.text}`;
   }
+  references.push(TypeNameReference({
+    name: name.copyBytes(0, name.byteLength),
+    offset: start.offset,
+    line: start.line,
+    column: start.column,
+  }));
 
   if (takeIf(tokens, inout current, TokenKind.less)) {
     let output = TextBuffer();
@@ -446,6 +508,7 @@ function parseType(
       first = false;
       const argument = try parseType(tokens, inout current, inout pendingGreater);
       output.append(argument.name);
+      appendTypeNameReferences(inout references, argument.references);
       if (pendingGreater > 0) break;
       if (!takeIf(tokens, inout current, TokenKind.comma)) break;
     }
@@ -469,6 +532,7 @@ function parseType(
 
   return TypeReference({
     name,
+    references,
     offset: start.offset,
     line: start.line,
     column: start.column,
@@ -586,6 +650,7 @@ function pushExpressionNodeAt(
     children,
     statements: Array<usize>(),
     labels,
+    typeReferences: Array<TypeReference>(),
     offset,
     line,
     column,
@@ -609,6 +674,56 @@ function pushExpressionNodeWithStatements(
     children,
     statements,
     labels,
+    typeReferences: Array<TypeReference>(),
+    offset: token.offset,
+    line: token.line,
+    column: token.column,
+  }));
+  return index;
+}
+
+function pushExpressionNodeWithTypes(
+  inout nodes: Array<ExpressionNode>,
+  kind: ExpressionKind,
+  value: String,
+  children: Array<usize>,
+  labels: Array<String>,
+  typeReferences: Array<TypeReference>,
+  in token: Token
+): usize {
+  const index = nodes.length;
+  nodes.push(ExpressionNode({
+    kind,
+    value,
+    children,
+    statements: Array<usize>(),
+    labels,
+    typeReferences,
+    offset: token.offset,
+    line: token.line,
+    column: token.column,
+  }));
+  return index;
+}
+
+function pushExpressionNodeWithStatementsAndTypes(
+  inout nodes: Array<ExpressionNode>,
+  kind: ExpressionKind,
+  value: String,
+  children: Array<usize>,
+  statements: Array<usize>,
+  labels: Array<String>,
+  typeReferences: Array<TypeReference>,
+  in token: Token
+): usize {
+  const index = nodes.length;
+  nodes.push(ExpressionNode({
+    kind,
+    value,
+    children,
+    statements,
+    labels,
+    typeReferences,
     offset: token.offset,
     line: token.line,
     column: token.column,
@@ -870,17 +985,20 @@ function parseExecutorPlacementTree(
   ));
   const executor = try parsePostfixTree(tokens, inout current, end, inout nodes, inout statementNodes);
   children.push(executor);
+  let typeReferences = Array<TypeReference>();
   let returnType = "";
   if (takeIf(tokens, inout current, TokenKind.colon)) {
     let pendingGreater: usize = 0;
     const type = try parseType(tokens, inout current, inout pendingGreater);
     returnType = type.name.copyBytes(0, type.name.byteLength);
+    typeReferences.push(type);
   }
   let errorType = "";
   if (takeIf(tokens, inout current, TokenKind.throwsKeyword)) {
     let pendingGreater: usize = 0;
     const type = try parseType(tokens, inout current, inout pendingGreater);
     errorType = type.name.copyBytes(0, type.name.byteLength);
+    typeReferences.push(type);
   }
   const statements = try parseProjectedBlock(
     tokens,
@@ -891,13 +1009,14 @@ function parseExecutorPlacementTree(
   let labels = Array<String>();
   labels.push(returnType);
   labels.push(errorType);
-  return pushExpressionNodeWithStatements(
+  return pushExpressionNodeWithStatementsAndTypes(
     inout nodes,
     ExpressionKind.executorPlacementExpression,
     mode,
     children,
     statements,
     labels,
+    typeReferences,
     start
   );
 }
@@ -970,37 +1089,43 @@ function parsePrimaryTree(
           "a closure parameter name"
         );
         let parameterType = "";
+        let parameterTypes = Array<TypeReference>();
         if (takeIf(tokens, inout current, TokenKind.colon)) {
           let pendingGreater: usize = 0;
           const type = try parseType(tokens, inout current, inout pendingGreater);
           parameterType = type.name.copyBytes(0, type.name.byteLength);
+          parameterTypes.push(type);
         }
         let labels = Array<String>();
         labels.push(capability);
         labels.push(parameterType);
-        children.push(pushExpressionNode(
+        children.push(pushExpressionNodeWithTypes(
           inout nodes,
           ExpressionKind.closureParameterExpression,
           parameter.text.copyBytes(0, parameter.text.byteLength),
           Array<usize>(),
           labels,
+          parameterTypes,
           parameter
         ));
         if (!takeIf(tokens, inout current, TokenKind.comma)) break;
       }
     }
     try expectKind(tokens, inout current, TokenKind.rightParen, "`)` after closure parameters");
+    let signatureTypes = Array<TypeReference>();
     let returnType = "";
     if (takeIf(tokens, inout current, TokenKind.colon)) {
       let pendingGreater: usize = 0;
       const type = try parseType(tokens, inout current, inout pendingGreater);
       returnType = type.name.copyBytes(0, type.name.byteLength);
+      signatureTypes.push(type);
     }
     let errorType = "";
     if (takeIf(tokens, inout current, TokenKind.throwsKeyword)) {
       let pendingGreater: usize = 0;
       const type = try parseType(tokens, inout current, inout pendingGreater);
       errorType = type.name.copyBytes(0, type.name.byteLength);
+      signatureTypes.push(type);
     }
     try expectKind(tokens, inout current, TokenKind.fatArrow, "`=>` after a closure signature");
     let labels = Array<String>();
@@ -1014,13 +1139,14 @@ function parsePrimaryTree(
         inout statementNodes
       );
       labels.push("block");
-      return pushExpressionNodeWithStatements(
+      return pushExpressionNodeWithStatementsAndTypes(
         inout nodes,
         ExpressionKind.closureExpression,
         captureMode,
         children,
         statements,
         labels,
+        signatureTypes,
         start
       );
     }
@@ -1033,12 +1159,13 @@ function parsePrimaryTree(
     );
     children.push(body);
     labels.push("expression");
-    return pushExpressionNode(
+    return pushExpressionNodeWithTypes(
       inout nodes,
       ExpressionKind.closureExpression,
       captureMode,
       children,
       labels,
+      signatureTypes,
       start
     );
   }
@@ -1065,12 +1192,16 @@ function parsePrimaryTree(
       }
     }
     try expectKind(tokens, inout current, TokenKind.rightParen, "`)` after a class initializer");
-    return pushExpressionNode(
+    const typeName = type.name.copyBytes(0, type.name.byteLength);
+    let typeReferences = Array<TypeReference>();
+    typeReferences.push(type);
+    return pushExpressionNodeWithTypes(
       inout nodes,
       ExpressionKind.newExpression,
-      type.name.copyBytes(0, type.name.byteLength),
+      typeName,
       children,
       labels,
+      typeReferences,
       start
     );
   }
@@ -1101,6 +1232,7 @@ function parsePrimaryTree(
   }
   if (start.kind == TokenKind.identifier) {
     let name = start.text.copyBytes(0, start.text.byteLength);
+    let genericTypes = Array<TypeReference>();
     let afterName = current + 1;
     if (afterName < end && tokens[afterName].kind == TokenKind.less) {
       let candidate = current;
@@ -1118,6 +1250,7 @@ function parsePrimaryTree(
           ) {
             name = type.name.copyBytes(0, type.name.byteLength);
             afterName = candidate;
+            appendGenericArgumentReference(inout genericTypes, type);
           }
         }
         failure(error) => {}
@@ -1153,24 +1286,26 @@ function parsePrimaryTree(
         let children = Array<usize>();
         children.push(marker);
         children.push(payload);
-        return pushExpressionNode(
+        return pushExpressionNodeWithTypes(
           inout nodes,
           ExpressionKind.variantExpression,
           start.text.copyBytes(0, start.text.byteLength),
           children,
           Array<String>(),
+          genericTypes,
           start
         );
       }
       none => {}
     }
     current = afterName;
-    return pushExpressionNode(
+    return pushExpressionNodeWithTypes(
       inout nodes,
       ExpressionKind.identifierExpression,
       name,
       Array<usize>(),
       Array<String>(),
+      genericTypes,
       start
     );
   }
@@ -1338,6 +1473,7 @@ function parsePostfixTree(
       const property = snapshot(tokens[current]);
       current = current + 1;
       let propertyName = property.text.copyBytes(0, property.text.byteLength);
+      let typeReferences = Array<TypeReference>();
       if (current < end && tokens[current].kind == TokenKind.less) {
         let candidate = current - 1;
         let pendingGreater: usize = 0;
@@ -1347,6 +1483,7 @@ function parsePostfixTree(
             if (candidate < end && tokens[candidate].kind == TokenKind.leftParen) {
               propertyName = type.name.copyBytes(0, type.name.byteLength);
               current = candidate;
+              appendGenericArgumentReference(inout typeReferences, type);
             }
           }
           failure(error) => {}
@@ -1354,12 +1491,13 @@ function parsePostfixTree(
       }
       let children = Array<usize>();
       children.push(root);
-      root = pushExpressionNode(
+      root = pushExpressionNodeWithTypes(
         inout nodes,
         ExpressionKind.memberExpression,
         propertyName,
         children,
         Array<String>(),
+        typeReferences,
         property
       );
       continue;

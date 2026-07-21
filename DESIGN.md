@@ -1498,9 +1498,14 @@ ported independently rather than translated as one monolith.
    resolves materialized identifiers against module symbols, parameters, and
    locals, with nested scopes for blocks, loops, closures, match arms,
    constructors, methods, and `deinit`. Unknown names now originate from Z with
-   exact locations. Type/member lookup, opaque expression spans, and ownership
-   analysis intentionally remain at stage zero while the native semantic model
-   grows vertically.
+   exact locations. Types retain a structural flat list of source-located
+   nominal references in addition to their canonical spelling. Native lookup
+   therefore resolves nested generics, constraints, declaration and local
+   annotations, closure/executor signatures, construction, and explicit generic
+   arguments without parsing display text. Unknown inner types originate from Z
+   at the inner token. Generic arity, type compatibility, value member lookup,
+   opaque expression spans, and ownership analysis intentionally remain at
+   stage zero while the native semantic model grows vertically.
 3. **Stage 2:** Compile the Z compiler with stage 0, then use that result to
    compile itself.
 4. **Bootstrap verification:** Compare generated native source and compiler test

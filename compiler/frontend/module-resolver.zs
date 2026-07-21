@@ -6,6 +6,7 @@ import {
   Declaration,
   DeclarationKind,
   DeinitDeclaration,
+  EnumDeclaration,
   ExpressionKind,
   ExpressionSyntax,
   ExpressionTree,
@@ -15,6 +16,9 @@ import {
   Program,
   StatementArena,
   StatementKind,
+  TraitDeclaration,
+  TypeParameter,
+  TypeReference,
   parseProgram,
 } from "./parser.zs";
 
@@ -31,6 +35,7 @@ export enum ModuleResolveErrorKind {
   missingExport,
   duplicateBinding,
   unknownName,
+  unknownType,
 }
 
 export struct ModuleResolveError {
@@ -710,6 +715,339 @@ function validateNames(
   }
 }
 
+function isTypeSymbolKind(kind: ModuleSymbolKind): boolean {
+  return kind == ModuleSymbolKind.structSymbol
+    || kind == ModuleSymbolKind.classSymbol
+    || kind == ModuleSymbolKind.traitSymbol
+    || kind == ModuleSymbolKind.enumSymbol;
+}
+
+function isIntrinsicTypeName(in name: String): boolean {
+  return name == "void"
+    || name == "boolean"
+    || name == "i8"
+    || name == "i16"
+    || name == "i32"
+    || name == "i64"
+    || name == "u8"
+    || name == "u16"
+    || name == "u32"
+    || name == "u64"
+    || name == "isize"
+    || name == "usize"
+    || name == "f32"
+    || name == "f64"
+    || name == "cstring"
+    || name == "String"
+    || name == "TextBuffer"
+    || name == "Arena"
+    || name == "Array"
+    || name == "Slice"
+    || name == "Option"
+    || name == "Result"
+    || name == "Task"
+    || name == "Weak";
+}
+
+function qualifiedTypeBase(in name: String): String {
+  let index: usize = 0;
+  while (index < name.byteLength) {
+    if (name.byteAt(index) == 46) return name.copyBytes(0, index);
+    index = index + 1;
+  }
+  return name.copyBytes(0, name.byteLength);
+}
+
+function qualifiedTypeMember(in name: String): String {
+  let index: usize = 0;
+  while (index < name.byteLength) {
+    if (name.byteAt(index) == 46) return name.copyBytes(index + 1, name.byteLength);
+    index = index + 1;
+  }
+  return "";
+}
+
+function moduleHasExportedType(
+  in module: ResolvedModule,
+  in name: String
+): boolean {
+  for (const symbol of module.symbols) {
+    if (symbol.name == name && symbol.exported && isTypeSymbolKind(symbol.kind)) return true;
+  }
+  return false;
+}
+
+function hasTypeName(
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
+  in typeBindings: Array<String>,
+  in name: String
+): boolean {
+  const base = qualifiedTypeBase(name);
+  const member = qualifiedTypeMember(name);
+  if (member.byteLength == 0 && isIntrinsicTypeName(base)) return true;
+  if (member.byteLength == 0) {
+    for (const binding of typeBindings) {
+      if (binding == base) return true;
+    }
+  }
+  for (const symbol of modules[moduleIndex].symbols) {
+    if (symbol.name != base) continue;
+    if (member.byteLength > 0) {
+      if (symbol.kind != ModuleSymbolKind.namespaceSymbol) return false;
+      return match (in symbol.targetModule) {
+        some(target) => moduleHasExportedType(modules[target], member);
+        none => true;
+      };
+    }
+    if (isTypeSymbolKind(symbol.kind)) return true;
+    if (symbol.kind != ModuleSymbolKind.importedSymbol) return false;
+    return match (in symbol.targetModule) {
+      some(target) => moduleHasExportedType(modules[target], symbol.importedName);
+      none => true;
+    };
+  }
+  return false;
+}
+
+function validateTypeReference(
+  in module: ParsedModule,
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
+  in typeBindings: Array<String>,
+  in type: TypeReference
+): void throws ModuleResolveError {
+  for (const reference of type.references) {
+    if (hasTypeName(modules, moduleIndex, typeBindings, reference.name)) continue;
+    throw resolutionError(
+      ModuleResolveErrorKind.unknownType,
+      module.path,
+      `unknown type ${reference.name}`,
+      reference.line,
+      reference.column
+    );
+  }
+}
+
+function typeParameterBindings(
+  in inherited: Array<String>,
+  in parameters: Array<TypeParameter>
+): Array<String> {
+  let bindings = copyBindings(inherited);
+  for (const parameter of parameters) {
+    bindings.push(parameter.name.copyBytes(0, parameter.name.byteLength));
+  }
+  return bindings;
+}
+
+function validateTypeParameters(
+  in module: ParsedModule,
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
+  in inherited: Array<String>,
+  in parameters: Array<TypeParameter>
+): Array<String> throws ModuleResolveError {
+  const bindings = typeParameterBindings(inherited, parameters);
+  for (const parameter of parameters) {
+    for (const constraint of parameter.constraints) {
+      try validateTypeReference(module, modules, moduleIndex, bindings, constraint);
+    }
+  }
+  return bindings;
+}
+
+function validateExpressionTypes(
+  in module: ParsedModule,
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
+  in typeBindings: Array<String>,
+  in expression: ExpressionSyntax
+): void throws ModuleResolveError {
+  match (in expression.tree) {
+    some(tree) => {
+      let nodeIndex: usize = 0;
+      while (nodeIndex < tree.nodes.length) {
+        for (const type of tree.nodes[nodeIndex].typeReferences) {
+          try validateTypeReference(module, modules, moduleIndex, typeBindings, type);
+        }
+        nodeIndex = nodeIndex + 1;
+      }
+    }
+    none => {}
+  }
+}
+
+function validateArenaTypes(
+  in module: ParsedModule,
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
+  in typeBindings: Array<String>,
+  in arena: StatementArena
+): void throws ModuleResolveError {
+  let index: usize = 0;
+  while (index < arena.nodes.length) {
+    match (in arena.nodes[index].typeAnnotation) {
+      some(type) => try validateTypeReference(module, modules, moduleIndex, typeBindings, type);
+      none => {}
+    }
+    match (in arena.nodes[index].expression) {
+      some(expression) => try validateExpressionTypes(
+        module,
+        modules,
+        moduleIndex,
+        typeBindings,
+        expression
+      );
+      none => {}
+    }
+    match (in arena.nodes[index].secondExpression) {
+      some(expression) => try validateExpressionTypes(
+        module,
+        modules,
+        moduleIndex,
+        typeBindings,
+        expression
+      );
+      none => {}
+    }
+    index = index + 1;
+  }
+}
+
+function validateFunctionTypes(
+  in module: ParsedModule,
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
+  in inherited: Array<String>,
+  in declaration: FunctionDeclaration
+): void throws ModuleResolveError {
+  const bindings = try validateTypeParameters(
+    module,
+    modules,
+    moduleIndex,
+    inherited,
+    declaration.typeParameters
+  );
+  for (const parameter of declaration.parameters) {
+    try validateTypeReference(module, modules, moduleIndex, bindings, parameter.type);
+  }
+  try validateTypeReference(module, modules, moduleIndex, bindings, declaration.returnType);
+  match (in declaration.errorType) {
+    some(error) => try validateTypeReference(module, modules, moduleIndex, bindings, error);
+    none => {}
+  }
+  try validateArenaTypes(module, modules, moduleIndex, bindings, declaration.body);
+}
+
+function validateConstructorTypes(
+  in module: ParsedModule,
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
+  in typeBindings: Array<String>,
+  in declaration: ConstructorDeclaration
+): void throws ModuleResolveError {
+  for (const parameter of declaration.parameters) {
+    try validateTypeReference(module, modules, moduleIndex, typeBindings, parameter.type);
+  }
+  match (in declaration.errorType) {
+    some(error) => try validateTypeReference(module, modules, moduleIndex, typeBindings, error);
+    none => {}
+  }
+  try validateArenaTypes(module, modules, moduleIndex, typeBindings, declaration.body);
+}
+
+function validateAggregateTypes(
+  in module: ParsedModule,
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
+  in declaration: AggregateDeclaration
+): void throws ModuleResolveError {
+  let empty = Array<String>();
+  const bindings = try validateTypeParameters(
+    module,
+    modules,
+    moduleIndex,
+    empty,
+    declaration.typeParameters
+  );
+  for (const implemented of declaration.implementedTraits) {
+    try validateTypeReference(module, modules, moduleIndex, bindings, implemented);
+  }
+  for (const field of declaration.fields) {
+    try validateTypeReference(module, modules, moduleIndex, bindings, field.type);
+  }
+  match (in declaration.constructorDeclaration) {
+    some(initializer) => try validateConstructorTypes(
+      module,
+      modules,
+      moduleIndex,
+      bindings,
+      initializer
+    );
+    none => {}
+  }
+  for (const method of declaration.methods) {
+    try validateFunctionTypes(module, modules, moduleIndex, bindings, method);
+  }
+  match (in declaration.deinitializer) {
+    some(deinitializer) => try validateArenaTypes(
+      module,
+      modules,
+      moduleIndex,
+      bindings,
+      deinitializer.body
+    );
+    none => {}
+  }
+}
+
+function validateTraitTypes(
+  in module: ParsedModule,
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
+  in declaration: TraitDeclaration
+): void throws ModuleResolveError {
+  let empty = Array<String>();
+  for (const method of declaration.methods) {
+    try validateFunctionTypes(module, modules, moduleIndex, empty, method);
+  }
+}
+
+function validateEnumTypes(
+  in module: ParsedModule,
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
+  in declaration: EnumDeclaration
+): void throws ModuleResolveError {
+  let empty = Array<String>();
+  for (const variant of declaration.variants) {
+    match (in variant.payload) {
+      some(payload) => try validateTypeReference(module, modules, moduleIndex, empty, payload);
+      none => {}
+    }
+  }
+}
+
+function validateTypes(
+  in module: ParsedModule,
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize
+): void throws ModuleResolveError {
+  let empty = Array<String>();
+  for (const declaration of module.program.functions) {
+    try validateFunctionTypes(module, modules, moduleIndex, empty, declaration);
+  }
+  for (const declaration of module.program.aggregates) {
+    try validateAggregateTypes(module, modules, moduleIndex, declaration);
+  }
+  for (const declaration of module.program.traits) {
+    try validateTraitTypes(module, modules, moduleIndex, declaration);
+  }
+  for (const declaration of module.program.enums) {
+    try validateEnumTypes(module, modules, moduleIndex, declaration);
+  }
+}
+
 function resolveDependencies(
   in modules: Array<ParsedModule>,
   in module: ParsedModule
@@ -813,6 +1151,7 @@ export function resolveModules(
 
   index = 0;
   while (index < parsed.length) {
+    try validateTypes(parsed[index], modules, index);
     try validateNames(parsed[index], modules[index].symbols);
     index = index + 1;
   }

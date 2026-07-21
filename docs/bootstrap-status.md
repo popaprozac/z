@@ -285,8 +285,16 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    isolates nested blocks and loop bindings, adds closure parameters and
    match-arm payload/destructuring bindings, recognizes `this` only in instance
    bodies, and reports unknown names at their native source coordinates.
-   Opaque expression spans, type/member lookup, duplicate local diagnostics,
-   typing, and ownership remain stage-zero work.
+   Native type-name lookup now retains every nested nominal component directly
+   in `TypeReference` rather than reparsing its canonical display string. It
+   resolves primitives and standard type constructors, generic parameters,
+   local/imported declarations, local namespace exports, fields, constraints,
+   parameters/results/errors, enum payloads, local annotations,
+   closure/executor signatures, `new`, and explicit generic arguments. Unknown
+   nested types report the exact inner token location. Opaque expression spans,
+   foreign namespace member verification, generic arity, value member lookup,
+   duplicate local diagnostics, type compatibility/conformance, and ownership
+   remain stage-zero work.
    Template literals now
    retain ordered decoded-text leaves and ordinary embedded-expression roots,
    including nested templates, in the same flat arena. Expression-bodied

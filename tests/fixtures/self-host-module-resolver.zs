@@ -118,6 +118,71 @@ function main(): i32 {
   return sources;
 }
 
+function unknownTypeGraph(): Array<ModuleSource> {
+  let sources = Array<ModuleSource>();
+  sources.push(module("/workspace/main.zs", `
+function load(value: Option<Missing>): void {
+  return;
+}
+`));
+  return sources;
+}
+
+function unknownClosureTypeGraph(): Array<ModuleSource> {
+  let sources = Array<ModuleSource>();
+  sources.push(module("/workspace/main.zs", `
+function main(): void {
+  const identity = (value: Missing): Missing => value;
+  return;
+}
+`));
+  return sources;
+}
+
+function importedValueAsTypeGraph(): Array<ModuleSource> {
+  let sources = Array<ModuleSource>();
+  sources.push(module("/workspace/main.zs", `
+import { value } from "./model.zs";
+function load(input: value): void { return; }
+`));
+  sources.push(module("/workspace/model.zs", `
+export function value(): i32 { return 42; }
+`));
+  return sources;
+}
+
+function typeScopesGraph(): Array<ModuleSource> {
+  let sources = Array<ModuleSource>();
+  sources.push(module("/workspace/main.zs", `
+import model from "./model.zs";
+
+trait Named {}
+
+struct Holder<T: Named> {
+  value: T;
+
+  function preserve<U: Named>(input: U): U {
+    const identity = (value: U): U => value;
+    const observed: Option<U> = Option.some(input);
+    return match (observed) {
+      some(value) => value;
+      none => input;
+    };
+  }
+}
+
+function inspect(value: Array<Option<model.Record>>): void {
+  return;
+}
+`));
+  sources.push(module("/workspace/model.zs", `
+export struct Record {
+  id: i32;
+}
+`));
+  return sources;
+}
+
 function lexicalScopesGraph(): Array<ModuleSource> {
   let sources = Array<ModuleSource>();
   sources.push(module("/workspace/main.zs", `
@@ -237,19 +302,29 @@ function main(): i32 {
   if (!resolvesTo(unknownNameGraph(), ModuleResolveErrorKind.unknownName)) return 6;
   if (!resolvesTo(useBeforeBindingGraph(), ModuleResolveErrorKind.unknownName)) return 7;
   if (!resolvesTo(escapedBlockBindingGraph(), ModuleResolveErrorKind.unknownName)) return 8;
+  if (!resolvesTo(unknownTypeGraph(), ModuleResolveErrorKind.unknownType)) return 9;
+  if (!resolvesTo(unknownClosureTypeGraph(), ModuleResolveErrorKind.unknownType)) return 10;
+  if (!resolvesTo(importedValueAsTypeGraph(), ModuleResolveErrorKind.unknownType)) return 11;
   const lexicalSources = lexicalScopesGraph();
   const lexicalOutcome = attempt resolveModules(lexicalSources, "/workspace/main.zs");
   const lexicalIsValid = match (lexicalOutcome) {
     success(graph) => graph.modules.length == 1;
     failure(error) => false;
   };
-  if (!lexicalIsValid) return 9;
+  if (!lexicalIsValid) return 12;
+  const typeSources = typeScopesGraph();
+  const typeOutcome = attempt resolveModules(typeSources, "/workspace/main.zs");
+  const typesAreValid = match (typeOutcome) {
+    success(graph) => graph.modules.length == 2;
+    failure(error) => false;
+  };
+  if (!typesAreValid) return 13;
   const kindSources = symbolKindsGraph();
   const kindOutcome = attempt resolveModules(kindSources, "/workspace/main.zs");
   const kindsAreValid = match (kindOutcome) {
     success(graph) => validSymbolKinds(graph);
     failure(error) => false;
   };
-  if (!kindsAreValid) return 10;
+  if (!kindsAreValid) return 14;
   return 0;
 }
