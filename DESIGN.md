@@ -1426,7 +1426,9 @@ ported independently rather than translated as one monolith.
    postfix expressions now use an owned flat node arena: identifiers, scalar
    literals, parenthesized expressions, arrays, objects, calls, member access,
    and indexes have exact node-kind, value, edge, label, and location parity
-   without per-node heap boxes. Expressions outside that slice retain
+   without per-node heap boxes. The same arena now retains prefix unary nodes,
+   precedence-climbed binary trees for the complete current operator table, and
+   right-nested conditional expressions. Expressions outside that slice retain
    source-located canonical token spans and are explicitly opaque until the
    precedence parser lands; assignments and other statement forms are traversed
    but deliberately not materialized as this subset. Exact stage-0 parity covers
@@ -1435,8 +1437,8 @@ ported independently rather than translated as one monolith.
    `z self-host-parse`. The parser bridge is content-addressed across compiler
    and frontend sources and parses a complete corpus in one native process;
    `--timings` separates bridge preparation, native startup/I/O/frontend work,
-   protocol decoding, and the stage-0 parity parse. Unary/binary/conditional and
-   language-specific prefix expressions, complete statements, a direct
+   protocol decoding, and the stage-0 parity parse. Language-specific prefix and
+   value-block expressions, complete statements, a direct
    in-process driver ABI, and a broader parity corpus precede replacing
    bootstrap frontend phases in ordinary commands. Performance claims wait for
    that in-process seam and equivalent frontend coverage rather than conflating

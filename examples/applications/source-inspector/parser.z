@@ -80,6 +80,9 @@ export enum ExpressionKind {
   memberExpression,
   callExpression,
   indexExpression,
+  unaryExpression,
+  binaryExpression,
+  conditionalExpression,
 }
 
 export struct ExpressionNode {
@@ -496,15 +499,37 @@ function pushExpressionNode(
   labels: Array<String>,
   in token: Token
 ): usize {
+  return pushExpressionNodeAt(
+    inout nodes,
+    kind,
+    value,
+    children,
+    labels,
+    token.offset,
+    token.line,
+    token.column
+  );
+}
+
+function pushExpressionNodeAt(
+  inout nodes: Array<ExpressionNode>,
+  kind: ExpressionKind,
+  value: String,
+  children: Array<usize>,
+  labels: Array<String>,
+  offset: usize,
+  line: usize,
+  column: usize
+): usize {
   const index = nodes.length;
   nodes.push(ExpressionNode({
     kind,
     value,
     children,
     labels,
-    offset: token.offset,
-    line: token.line,
-    column: token.column,
+    offset,
+    line,
+    column,
   }));
   return index;
 }
@@ -574,7 +599,7 @@ function parsePrimaryTree(
   }
   if (start.kind == TokenKind.leftParen) {
     current = current + 1;
-    const root = try parsePostfixTree(tokens, inout current, end, inout nodes);
+    const root = try parseConditionalTree(tokens, inout current, end, inout nodes);
     try expectKind(tokens, inout current, TokenKind.rightParen, "`)` after a parenthesized expression");
     return root;
   }
@@ -583,7 +608,7 @@ function parsePrimaryTree(
     let children = Array<usize>();
     if (tokens[current].kind != TokenKind.rightBracket) {
       while (true) {
-        const element = try parsePostfixTree(tokens, inout current, end, inout nodes);
+        const element = try parseConditionalTree(tokens, inout current, end, inout nodes);
         children.push(element);
         if (!takeIf(tokens, inout current, TokenKind.comma)) break;
         if (tokens[current].kind == TokenKind.rightBracket) break;
@@ -607,7 +632,7 @@ function parsePrimaryTree(
       const field = try expect(tokens, inout current, TokenKind.identifier, "an object field name");
       labels.push(field.text.copyBytes(0, field.text.byteLength));
       if (takeIf(tokens, inout current, TokenKind.colon)) {
-        const value = try parsePostfixTree(tokens, inout current, end, inout nodes);
+        const value = try parseConditionalTree(tokens, inout current, end, inout nodes);
         children.push(value);
       } else {
         const value = pushExpressionNode(
@@ -674,7 +699,7 @@ function parsePostfixTree(
             labels.push(tokens[current].text.copyBytes(0, tokens[current].text.byteLength));
             current = current + 2;
           } else labels.push("");
-          const argument = try parsePostfixTree(tokens, inout current, end, inout nodes);
+          const argument = try parseConditionalTree(tokens, inout current, end, inout nodes);
           children.push(argument);
           if (!takeIf(tokens, inout current, TokenKind.comma)) break;
         }
@@ -693,7 +718,7 @@ function parsePostfixTree(
     if (tokens[current].kind == TokenKind.leftBracket) {
       const bracket = snapshot(tokens[current]);
       current = current + 1;
-      const index = try parsePostfixTree(tokens, inout current, end, inout nodes);
+      const index = try parseConditionalTree(tokens, inout current, end, inout nodes);
       try expectKind(tokens, inout current, TokenKind.rightBracket, "`]` after an index expression");
       let children = Array<usize>();
       children.push(root);
@@ -713,6 +738,114 @@ function parsePostfixTree(
   return root;
 }
 
+function binaryPrecedence(kind: TokenKind): i32 {
+  if (kind == TokenKind.orOr) return 1;
+  if (kind == TokenKind.andAnd) return 2;
+  if (kind == TokenKind.bitOr) return 3;
+  if (kind == TokenKind.bitXor) return 4;
+  if (kind == TokenKind.bitAnd) return 5;
+  if (kind == TokenKind.equalEqual || kind == TokenKind.bangEqual) return 6;
+  if (
+    kind == TokenKind.less
+    || kind == TokenKind.lessEqual
+    || kind == TokenKind.greater
+    || kind == TokenKind.greaterEqual
+  ) return 7;
+  if (kind == TokenKind.shiftLeft || kind == TokenKind.shiftRight) return 8;
+  if (kind == TokenKind.plus || kind == TokenKind.minus) return 10;
+  if (kind == TokenKind.star || kind == TokenKind.slash || kind == TokenKind.percent) return 20;
+  return -1;
+}
+
+function parseUnaryTree(
+  in tokens: Array<Token>,
+  inout current: usize,
+  end: usize,
+  inout nodes: Array<ExpressionNode>
+): usize throws ParserError {
+  const kind = tokens[current].kind;
+  if (
+    kind == TokenKind.bang
+    || kind == TokenKind.plus
+    || kind == TokenKind.minus
+    || kind == TokenKind.tilde
+  ) {
+    const operator = snapshot(tokens[current]);
+    current = current + 1;
+    const operand = try parseUnaryTree(tokens, inout current, end, inout nodes);
+    let children = Array<usize>();
+    children.push(operand);
+    return pushExpressionNode(
+      inout nodes,
+      ExpressionKind.unaryExpression,
+      operator.text.copyBytes(0, operator.text.byteLength),
+      children,
+      Array<String>(),
+      operator
+    );
+  }
+  return try parsePostfixTree(tokens, inout current, end, inout nodes);
+}
+
+function parseBinaryTree(
+  in tokens: Array<Token>,
+  inout current: usize,
+  end: usize,
+  minimumPrecedence: i32,
+  inout nodes: Array<ExpressionNode>
+): usize throws ParserError {
+  let left = try parseUnaryTree(tokens, inout current, end, inout nodes);
+  while (current < end) {
+    const precedence = binaryPrecedence(tokens[current].kind);
+    if (precedence < minimumPrecedence) break;
+    const operator = snapshot(tokens[current]);
+    current = current + 1;
+    const right = try parseBinaryTree(tokens, inout current, end, precedence + 1, inout nodes);
+    let children = Array<usize>();
+    children.push(left);
+    children.push(right);
+    left = pushExpressionNode(
+      inout nodes,
+      ExpressionKind.binaryExpression,
+      operator.text.copyBytes(0, operator.text.byteLength),
+      children,
+      Array<String>(),
+      operator
+    );
+  }
+  return left;
+}
+
+function parseConditionalTree(
+  in tokens: Array<Token>,
+  inout current: usize,
+  end: usize,
+  inout nodes: Array<ExpressionNode>
+): usize throws ParserError {
+  const condition = try parseBinaryTree(tokens, inout current, end, 0, inout nodes);
+  if (!takeIf(tokens, inout current, TokenKind.question)) return condition;
+  const thenExpression = try parseConditionalTree(tokens, inout current, end, inout nodes);
+  try expectKind(tokens, inout current, TokenKind.colon, "`:` in a conditional expression");
+  const elseExpression = try parseConditionalTree(tokens, inout current, end, inout nodes);
+  let children = Array<usize>();
+  children.push(condition);
+  children.push(thenExpression);
+  children.push(elseExpression);
+  const offset = nodes[condition].offset;
+  const line = nodes[condition].line;
+  const column = nodes[condition].column;
+  return pushExpressionNodeAt(
+    inout nodes,
+    ExpressionKind.conditionalExpression,
+    "",
+    children,
+    Array<String>(),
+    offset,
+    line,
+    column
+  );
+}
+
 function parseExpressionTree(
   in tokens: Array<Token>,
   start: usize,
@@ -720,7 +853,7 @@ function parseExpressionTree(
 ): ExpressionTree throws ParserError {
   let current = start;
   let nodes = Array<ExpressionNode>();
-  const root = try parsePostfixTree(tokens, inout current, end, inout nodes);
+  const root = try parseConditionalTree(tokens, inout current, end, inout nodes);
   if (current != end) throw fail(tokens[current], `expression token ${tokens[current].text} is not in the first expression-tree slice`);
   return ExpressionTree({ nodes, root });
 }
@@ -1406,6 +1539,9 @@ function expressionKindName(kind: ExpressionKind): String {
     memberExpression => "member";
     callExpression => "call";
     indexExpression => "index";
+    unaryExpression => "unary";
+    binaryExpression => "binary";
+    conditionalExpression => "conditional";
   };
 }
 

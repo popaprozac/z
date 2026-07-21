@@ -342,6 +342,24 @@ function flattenExpression(expression: Expression, nodes: FlatExpressionNode[]):
     const index = flattenExpression(expression.index, nodes);
     return index === null ? null : append("index", "", [object, index], []);
   }
+  if (expression.kind === "unary") {
+    const operand = flattenExpression(expression.operand, nodes);
+    return operand === null ? null : append("unary", expression.operator, [operand], []);
+  }
+  if (expression.kind === "binary") {
+    const left = flattenExpression(expression.left, nodes);
+    if (left === null) return null;
+    const right = flattenExpression(expression.right, nodes);
+    return right === null ? null : append("binary", expression.operator, [left, right], []);
+  }
+  if (expression.kind === "conditional") {
+    const condition = flattenExpression(expression.condition, nodes);
+    if (condition === null) return null;
+    const thenExpression = flattenExpression(expression.thenExpression, nodes);
+    if (thenExpression === null) return null;
+    const elseExpression = flattenExpression(expression.elseExpression, nodes);
+    return elseExpression === null ? null : append("conditional", "", [condition, thenExpression, elseExpression], []);
+  }
   return null;
 }
 

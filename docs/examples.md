@@ -128,8 +128,9 @@ proving ground for the stage-1 Z lexer and parser. Its current AST covers the
 complete declaration layer plus variable declarations, returns, expression
 statements, and nested standalone blocks. Identifiers, scalar literals, arrays,
 objects, calls, members, and indexes use a flat owned expression arena; later
-operator/prefix forms remain canonical opaque spans while the precedence parser
-is built. `z self-host-parse` caches its native bridge by compiler/frontend
+unary, binary-precedence, and ternary nodes share that arena. Language-specific
+prefix and value-block forms remain canonical opaque spans. `z self-host-parse`
+caches its native bridge by compiler/frontend
 content and sends every requested source file
 through one framed native invocation. Add `--timings` to see bridge preparation,
 native batch work, protocol decoding, and stage-0 parity parsing separately.

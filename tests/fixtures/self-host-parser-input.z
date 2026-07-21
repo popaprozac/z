@@ -87,6 +87,11 @@ function expressionShapes(value: i32): i32 {
   const values = [value, 42];
   const selected = values[0];
   const object = { value, label: "sample" };
+  const arithmetic = value + 2 * 3 - 4 / 2 % 2;
+  const shifted = arithmetic << 1 >> 1;
+  const compared = shifted >= value && value != 0 || false;
+  const bits = ~value & 7 ^ 2 | 1;
+  const chosen = !false ? -value : true ? +value : 0;
   bodyShapes(value: selected);
   return (object.value);
 }

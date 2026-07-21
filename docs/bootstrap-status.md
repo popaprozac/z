@@ -235,8 +235,10 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    function bodies now retain owned `const`/`let`, `return`, expression-statement,
    and recursively nested block nodes. Primary and postfix expressions are now
    real flat arenas covering identifiers, scalar literals, parentheses, arrays,
-   objects, calls, member access, and indexes. Nodes retain values, integer child
-   edges, argument/field labels, and locations without recursive heap boxes.
+   objects, calls, member access, and indexes. Prefix unary operators, the full
+   current binary-precedence table, and right-nested ternaries use the same
+   representation. Nodes retain values, integer child edges, argument/field
+   labels, and locations without recursive heap boxes.
    Unsupported expressions remain source-located canonical token spans marked
    opaque; unsupported statement forms remain traversable but unmaterialized.
    Exact body parity now covers the fixture plus the lexer and parser sources themselves. Traversal
@@ -247,9 +249,9 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    batch work, protocol decoding, and the stage-0 parity parse independently.
    The source-inspector location remains a proving ground; after complete bodies
    and a compiler-facing interface are stable, the frontend moves into the
-   compiler tree and the example becomes its client. Precedence/prefix
-   expressions, complete statement trees, Unicode identifiers, block comments,
-   and direct in-process driver integration remain.
+   compiler tree and the example becomes its client. Language-specific prefix
+   and value-block expressions, complete statement trees, Unicode identifiers,
+   block comments, and direct in-process driver integration remain.
 5. **Threaded concurrency evidence — Copy, unique-owner, native-owner, readonly ARC, and owned-error slices implemented.**
    `thread.spawn` now proves one real cross-thread task frame with explicit
    move capture, hot start, structured join, private Copy snapshots, and moved
