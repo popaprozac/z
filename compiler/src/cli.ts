@@ -311,6 +311,21 @@ function canonicalStatementText(statement: Statement, tokens: readonly Token[]):
     return `for@${location}(const:${statement.binding}@${canonicalLocation(statement.bindingLocation)}`
       + `iterable=${iterable}body=${canonicalStatementText(statement.body, tokens)})`;
   }
+  if (statement.kind === "match") {
+    const statementIndex = tokens.findIndex((token) => token.location.offset === statement.location.offset);
+    if (statementIndex < 0) throw new Error(`could not locate match at source offset ${statement.location.offset}`);
+    const endIndex = matchingMatchEndIndex(tokens, statementIndex, statement.location.offset);
+    const expression: Expression = {
+      kind: "matchExpression",
+      mode: statement.mode,
+      expression: statement.expression,
+      arms: statement.arms,
+      location: statement.location,
+    };
+    return `match@${location}(=${location}:${canonicalExpressionTokenRange(tokens, statementIndex, endIndex)}#${
+      canonicalExpressionTree(expression, tokens) ?? "opaque"
+    })`;
+  }
   if (statement.kind === "expressionStatement") {
     if (statement.expression.kind === "executorPlacement") return "";
     const expressionLocation = lexicalExpressionLocation(statement.expression);
@@ -354,6 +369,27 @@ function matchingRightParenIndex(
     throw new Error(`could not close ${description} at source offset ${statementOffset}`);
   }
   return rightParenIndex - 1;
+}
+
+function matchingMatchEndIndex(
+  tokens: readonly Token[],
+  matchIndex: number,
+  statementOffset: number,
+): number {
+  const leftParenIndex = tokens.findIndex((token, index) => index > matchIndex && token.kind === "leftParen");
+  if (leftParenIndex < 0) throw new Error(`could not locate match subject at source offset ${statementOffset}`);
+  const rightParenIndex = matchingRightParenIndex(tokens, leftParenIndex, statementOffset, "match subject");
+  const leftBraceIndex = tokens.findIndex((token, index) => index > rightParenIndex && token.kind === "leftBrace");
+  if (leftBraceIndex < 0) throw new Error(`could not locate match arms at source offset ${statementOffset}`);
+  let depth = 1;
+  let index = leftBraceIndex + 1;
+  while (index < tokens.length && depth > 0) {
+    if (tokens[index].kind === "leftBrace") depth += 1;
+    else if (tokens[index].kind === "rightBrace") depth -= 1;
+    index += 1;
+  }
+  if (depth !== 0) throw new Error(`could not close match arms at source offset ${statementOffset}`);
+  return index;
 }
 
 function lexicalFollowingToken(tokens: readonly Token[], statementOffset: number): Token {
@@ -502,6 +538,40 @@ function flattenExpression(
         "expression",
       ],
     );
+  }
+  if (expression.kind === "matchExpression") {
+    const subject = flattenExpression(expression.expression, nodes, tokens);
+    if (subject === null) return null;
+    const children = [subject];
+    for (const arm of expression.arms) {
+      const patternChildren: number[] = [];
+      let patternKind = "none";
+      if (arm.binding && arm.bindingLocation) {
+        patternKind = "binding";
+        patternChildren.push(appendAt("matchBinding", arm.binding, [], [], arm.bindingLocation));
+      } else if (arm.objectBindings) {
+        patternKind = "object";
+        for (const binding of arm.objectBindings) {
+          const bindingNode = appendAt("matchBinding", binding.bindingName, [], [], binding.bindingLocation);
+          patternChildren.push(appendAt(
+            "matchObjectField",
+            binding.fieldName,
+            [bindingNode],
+            [],
+            binding.fieldLocation,
+          ));
+        }
+      }
+      children.push(appendAt(
+        "matchArm",
+        arm.variantName,
+        patternChildren,
+        [patternKind],
+        arm.location,
+        [[arm.body]],
+      ));
+    }
+    return append("match", expression.mode, children, []);
   }
   if (expression.kind === "arrayExpression") {
     const children = flattenExpressions(expression.elements, nodes, tokens);

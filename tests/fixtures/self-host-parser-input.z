@@ -84,6 +84,17 @@ function bodyShapes(value: i32): i32 {
   for (const item of [value, observed]) {
     observed = observed + item;
   }
+  const state = LoadState.ready(Reading({ value: observed }));
+  match (in state) {
+    ready({ value: matchedValue }) => observed = matchedValue;
+    empty => observed = 0;
+  }
+  const matched = match (state) {
+    ready(reading) => {
+      select reading.value;
+    }
+    empty => 0;
+  };
   {
     const adjusted: i32 = value + 1;
     bodyShapes(adjusted);

@@ -73,6 +73,7 @@ export enum StatementKind {
   ifStatement,
   whileStatement,
   forStatement,
+  matchStatement,
   breakStatement,
   continueStatement,
 }
@@ -101,6 +102,10 @@ export enum ExpressionKind {
   attemptExpression,
   awaitExpression,
   spawnExpression,
+  matchExpression,
+  matchArmExpression,
+  matchBindingExpression,
+  matchObjectFieldExpression,
 }
 
 export struct ExpressionNode {
@@ -630,6 +635,118 @@ function startsClosureExpression(
     || tokens[cursor].kind == TokenKind.throwsKeyword;
 }
 
+function parseMatchTree(
+  in tokens: Array<Token>,
+  inout current: usize,
+  end: usize,
+  inout nodes: Array<ExpressionNode>,
+  inout statementNodes: Array<Statement>
+): usize throws ParserError {
+  const start = snapshot(tokens[current]);
+  try expectKind(tokens, inout current, TokenKind.matchKeyword, "`match`");
+  try expectKind(tokens, inout current, TokenKind.leftParen, "`(` after `match`");
+  let mode = "auto";
+  if (takeIf(tokens, inout current, TokenKind.inKeyword)) mode = "in";
+  let children = Array<usize>();
+  const subject = try parseConditionalTree(tokens, inout current, end, inout nodes, inout statementNodes);
+  children.push(subject);
+  try expectKind(tokens, inout current, TokenKind.rightParen, "`)` after the match subject");
+  try expectKind(tokens, inout current, TokenKind.leftBrace, "`{` starting match arms");
+  while (tokens[current].kind != TokenKind.rightBrace && tokens[current].kind != TokenKind.eof) {
+    const variant = snapshot(tokens[current]);
+    try expectKind(tokens, inout current, TokenKind.identifier, "a variant name");
+    let patternKind = "none";
+    let patternChildren = Array<usize>();
+    if (takeIf(tokens, inout current, TokenKind.leftParen)) {
+      if (takeIf(tokens, inout current, TokenKind.leftBrace)) {
+        patternKind = "object";
+        if (tokens[current].kind != TokenKind.rightBrace) {
+          while (true) {
+            const field = snapshot(tokens[current]);
+            try expectKind(tokens, inout current, TokenKind.identifier, "a payload field name");
+            let bindingName = field.text.copyBytes(0, field.text.byteLength);
+            let bindingOffset = field.offset;
+            let bindingLine = field.line;
+            let bindingColumn = field.column;
+            if (takeIf(tokens, inout current, TokenKind.colon)) {
+              const binding = snapshot(tokens[current]);
+              try expectKind(tokens, inout current, TokenKind.identifier, "a pattern binding name");
+              bindingName = binding.text.copyBytes(0, binding.text.byteLength);
+              bindingOffset = binding.offset;
+              bindingLine = binding.line;
+              bindingColumn = binding.column;
+            }
+            const bindingNode = pushExpressionNodeAt(
+              inout nodes,
+              ExpressionKind.matchBindingExpression,
+              bindingName,
+              Array<usize>(),
+              Array<String>(),
+              bindingOffset,
+              bindingLine,
+              bindingColumn
+            );
+            let fieldChildren = Array<usize>();
+            fieldChildren.push(bindingNode);
+            patternChildren.push(pushExpressionNode(
+              inout nodes,
+              ExpressionKind.matchObjectFieldExpression,
+              field.text.copyBytes(0, field.text.byteLength),
+              fieldChildren,
+              Array<String>(),
+              field
+            ));
+            if (!takeIf(tokens, inout current, TokenKind.comma)) break;
+            if (tokens[current].kind == TokenKind.rightBrace) break;
+          }
+        }
+        try expectKind(tokens, inout current, TokenKind.rightBrace, "`}` ending an object pattern");
+      } else {
+        patternKind = "binding";
+        const binding = snapshot(tokens[current]);
+        try expectKind(tokens, inout current, TokenKind.identifier, "a payload binding");
+        patternChildren.push(pushExpressionNode(
+          inout nodes,
+          ExpressionKind.matchBindingExpression,
+          binding.text.copyBytes(0, binding.text.byteLength),
+          Array<usize>(),
+          Array<String>(),
+          binding
+        ));
+      }
+      try expectKind(tokens, inout current, TokenKind.rightParen, "`)` ending a variant pattern");
+    }
+    try expectKind(tokens, inout current, TokenKind.fatArrow, "`=>` after a variant pattern");
+    let body = Array<usize>();
+    const parsedBody = try parseProjectedStatement(tokens, inout current, inout statementNodes);
+    match (parsedBody) {
+      some(index) => body.push(index);
+      none => {}
+    }
+    let labels = Array<String>();
+    labels.push(patternKind);
+    const arm = pushExpressionNodeWithStatements(
+      inout nodes,
+      ExpressionKind.matchArmExpression,
+      variant.text.copyBytes(0, variant.text.byteLength),
+      patternChildren,
+      body,
+      labels,
+      variant
+    );
+    children.push(arm);
+  }
+  try expectKind(tokens, inout current, TokenKind.rightBrace, "`}` ending match arms");
+  return pushExpressionNode(
+    inout nodes,
+    ExpressionKind.matchExpression,
+    mode,
+    children,
+    Array<String>(),
+    start
+  );
+}
+
 function parsePrimaryTree(
   in tokens: Array<Token>,
   inout current: usize,
@@ -639,6 +756,9 @@ function parsePrimaryTree(
 ): usize throws ParserError {
   if (current >= end) throw fail(tokens[current], "expected a primary expression");
   const start = snapshot(tokens[current]);
+  if (start.kind == TokenKind.matchKeyword) {
+    return try parseMatchTree(tokens, inout current, end, inout nodes, inout statementNodes);
+  }
   if (startsClosureExpression(tokens, current, end)) {
     let captureMode = "borrow";
     if (tokens[current].kind == TokenKind.identifier && tokens[current].text == "move") {
@@ -1394,6 +1514,16 @@ function parenthesizedExpressionEnd(
   throw fail(tokens[start], `unterminated ${description}`);
 }
 
+function projectedMatchEnd(
+  in tokens: Array<Token>,
+  start: usize
+): usize throws ParserError {
+  let current = start + 1;
+  try skipDelimited(tokens, inout current, TokenKind.leftParen, TokenKind.rightParen, "a match subject");
+  try skipDelimited(tokens, inout current, TokenKind.leftBrace, TokenKind.rightBrace, "match arms");
+  return current;
+}
+
 function pushProjectedBlock(
   inout nodes: Array<Statement>,
   children: Array<usize>,
@@ -1531,6 +1661,30 @@ function parseProjectedStatement(
       expression: Option.some(condition),
       secondExpression: Option<ExpressionSyntax>.none,
       children,
+      offset: start.offset,
+      line: start.line,
+      column: start.column,
+    }));
+    return Option.some(index);
+  }
+  if (kind == TokenKind.matchKeyword) {
+    const startIndex = current;
+    const start = snapshot(tokens[current]);
+    const end = try projectedMatchEnd(tokens, current);
+    const expression = try projectExpressionRange(tokens, startIndex, end, inout nodes);
+    current = end;
+    const index = nodes.length;
+    nodes.push(Statement({
+      kind: StatementKind.matchStatement,
+      mutableBinding: false,
+      name: "",
+      nameOffset: 0,
+      nameLine: 0,
+      nameColumn: 0,
+      typeAnnotation: Option<TypeReference>.none,
+      expression: Option.some(expression),
+      secondExpression: Option<ExpressionSyntax>.none,
+      children: Array<usize>(),
       offset: start.offset,
       line: start.line,
       column: start.column,
@@ -1718,10 +1872,7 @@ function parseProjectedStatement(
     }));
     return Option.some(index);
   }
-  if (
-    kind == TokenKind.matchKeyword
-    || kind == TokenKind.asyncKeyword
-  ) {
+  if (kind == TokenKind.asyncKeyword) {
     try skipProjectedStatement(tokens, inout current, inout nodes);
     return Option<usize>.none;
   }
@@ -2214,6 +2365,10 @@ function expressionKindName(kind: ExpressionKind): String {
     attemptExpression => "attempt";
     awaitExpression => "await";
     spawnExpression => "spawn";
+    matchExpression => "match";
+    matchArmExpression => "matchArm";
+    matchBindingExpression => "matchBinding";
+    matchObjectFieldExpression => "matchObjectField";
   };
 }
 
@@ -2291,6 +2446,7 @@ function renderStatementText(in arena: StatementArena, in statement: Statement):
   else if (statement.kind == StatementKind.ifStatement) output.append("if@");
   else if (statement.kind == StatementKind.whileStatement) output.append("while@");
   else if (statement.kind == StatementKind.forStatement) output.append("for@");
+  else if (statement.kind == StatementKind.matchStatement) output.append("match@");
   else if (statement.kind == StatementKind.breakStatement) output.append("break@");
   else if (statement.kind == StatementKind.continueStatement) output.append("continue@");
   else output.append("block@");
