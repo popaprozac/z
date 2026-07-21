@@ -109,6 +109,8 @@ export enum ExpressionKind {
   matchObjectFieldExpression,
   ifExpression,
   valueBlockExpression,
+  executorPlacementExpression,
+  executorOnExpression,
 }
 
 export struct ExpressionNode {
@@ -816,6 +818,67 @@ function parseIfExpressionTree(
   );
 }
 
+function parseExecutorPlacementTree(
+  in tokens: Array<Token>,
+  inout current: usize,
+  end: usize,
+  inout nodes: Array<ExpressionNode>,
+  inout statementNodes: Array<Statement>
+): usize throws ParserError {
+  const start = snapshot(tokens[current]);
+  let mode = "sync";
+  if (tokens[current].kind == TokenKind.awaitKeyword) {
+    mode = "await";
+    current = current + 1;
+  } else if (tokens[current].kind == TokenKind.spawnKeyword) {
+    mode = "spawn";
+    current = current + 1;
+  }
+  const onToken = snapshot(tokens[current]);
+  try expectKind(tokens, inout current, TokenKind.onKeyword, "`on` in an executor placement");
+  let children = Array<usize>();
+  children.push(pushExpressionNode(
+    inout nodes,
+    ExpressionKind.executorOnExpression,
+    "",
+    Array<usize>(),
+    Array<String>(),
+    onToken
+  ));
+  const executor = try parsePostfixTree(tokens, inout current, end, inout nodes, inout statementNodes);
+  children.push(executor);
+  let returnType = "";
+  if (takeIf(tokens, inout current, TokenKind.colon)) {
+    let pendingGreater: usize = 0;
+    const type = try parseType(tokens, inout current, inout pendingGreater);
+    returnType = type.name.copyBytes(0, type.name.byteLength);
+  }
+  let errorType = "";
+  if (takeIf(tokens, inout current, TokenKind.throwsKeyword)) {
+    let pendingGreater: usize = 0;
+    const type = try parseType(tokens, inout current, inout pendingGreater);
+    errorType = type.name.copyBytes(0, type.name.byteLength);
+  }
+  const statements = try parseProjectedBlock(
+    tokens,
+    inout current,
+    "an executor-placement body",
+    inout statementNodes
+  );
+  let labels = Array<String>();
+  labels.push(returnType);
+  labels.push(errorType);
+  return pushExpressionNodeWithStatements(
+    inout nodes,
+    ExpressionKind.executorPlacementExpression,
+    mode,
+    children,
+    statements,
+    labels,
+    start
+  );
+}
+
 function parsePrimaryTree(
   in tokens: Array<Token>,
   inout current: usize,
@@ -825,6 +888,9 @@ function parsePrimaryTree(
 ): usize throws ParserError {
   if (current >= end) throw fail(tokens[current], "expected a primary expression");
   const start = snapshot(tokens[current]);
+  if (startsExecutorPlacement(tokens, current)) {
+    return try parseExecutorPlacementTree(tokens, inout current, end, inout nodes, inout statementNodes);
+  }
   if (start.kind == TokenKind.ifKeyword) {
     return try parseIfExpressionTree(tokens, inout current, end, inout nodes, inout statementNodes);
   }
@@ -970,11 +1036,6 @@ function parsePrimaryTree(
     || start.kind == TokenKind.awaitKeyword
     || start.kind == TokenKind.spawnKeyword
   ) {
-    if (
-      (start.kind == TokenKind.awaitKeyword || start.kind == TokenKind.spawnKeyword)
-      && current + 1 < end
-      && tokens[current + 1].kind == TokenKind.onKeyword
-    ) throw fail(start, "executor placement is not in the prefix-expression slice");
     current = current + 1;
     const operand = try parsePostfixTree(tokens, inout current, end, inout nodes, inout statementNodes);
     let children = Array<usize>();
@@ -1487,8 +1548,12 @@ function startsExecutorPlacement(in tokens: Array<Token>, current: usize): boole
     && tokens[current + 1].kind == TokenKind.onKeyword;
 }
 
-function skipExecutorPlacement(in tokens: Array<Token>, inout current: usize): void throws ParserError {
-  const start = snapshot(tokens[current]);
+function projectedExecutorPlacementEnd(
+  in tokens: Array<Token>,
+  startIndex: usize
+): usize throws ParserError {
+  const start = snapshot(tokens[startIndex]);
+  let current = startIndex;
   if (tokens[current].kind == TokenKind.awaitKeyword || tokens[current].kind == TokenKind.spawnKeyword) {
     current = current + 1;
   }
@@ -1506,7 +1571,7 @@ function skipExecutorPlacement(in tokens: Array<Token>, inout current: usize): v
     current = current + 1;
   }
   try skipDelimited(tokens, inout current, TokenKind.leftBrace, TokenKind.rightBrace, "an executor-placement body");
-  takeIf(tokens, inout current, TokenKind.semicolon);
+  return current;
 }
 
 function parseProjectedBlock(
@@ -1690,8 +1755,29 @@ function parseProjectedStatement(
 ): Option<usize> throws ParserError {
   const kind = tokens[current].kind;
   if (startsExecutorPlacement(tokens, current)) {
-    try skipExecutorPlacement(tokens, inout current);
-    return Option<usize>.none;
+    const startIndex = current;
+    const start = snapshot(tokens[current]);
+    const end = try projectedExecutorPlacementEnd(tokens, current);
+    const expression = try projectExpressionRange(tokens, startIndex, end, inout nodes);
+    current = end;
+    takeIf(tokens, inout current, TokenKind.semicolon);
+    const index = nodes.length;
+    nodes.push(Statement({
+      kind: StatementKind.expressionStatement,
+      mutableBinding: false,
+      name: "",
+      nameOffset: 0,
+      nameLine: 0,
+      nameColumn: 0,
+      typeAnnotation: Option<TypeReference>.none,
+      expression: Option.some(expression),
+      secondExpression: Option<ExpressionSyntax>.none,
+      children: Array<usize>(),
+      offset: start.offset,
+      line: start.line,
+      column: start.column,
+    }));
+    return Option.some(index);
   }
   if (kind == TokenKind.leftBrace) {
     const start = snapshot(tokens[current]);
@@ -2465,6 +2551,8 @@ function expressionKindName(kind: ExpressionKind): String {
     matchObjectFieldExpression => "matchObjectField";
     ifExpression => "ifExpression";
     valueBlockExpression => "valueBlock";
+    executorPlacementExpression => "executorPlacement";
+    executorOnExpression => "executorOn";
   };
 }
 

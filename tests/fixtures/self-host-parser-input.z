@@ -1,5 +1,6 @@
 import fs from "std/fs";
 import { TextBuffer as Buffer } from "std/text";
+import { thread } from "std/thread";
 
 export trait Measured {
   function measure(): i32;
@@ -51,6 +52,19 @@ export enum LoadState {
 }
 
 export async function load(id: i32): Reading {
+  const immediate = on thread.main: i32 {
+    select id;
+  };
+  const hopped = await on thread.main: i32 throws LoadError {
+    select immediate;
+  };
+  const task = spawn on thread.main: i32 {
+    select hopped;
+  };
+  spawn on thread.main {
+    const copied = id;
+  }
+  const placed = await task;
   async scope {
     const observed = id;
   }

@@ -330,11 +330,17 @@ function canonicalStatementText(statement: Statement, tokens: readonly Token[]):
     return `asyncScope@${location}(body=${canonicalStatementText(statement.body, tokens)})`;
   }
   if (statement.kind === "expressionStatement") {
-    if (statement.expression.kind === "executorPlacement") return "";
     const expressionLocation = lexicalExpressionLocation(statement.expression);
     const expressionStart = tokens.find((token) => token.location.offset === expressionLocation.offset);
     if (!expressionStart) {
       throw new Error(`could not locate expression statement at source offset ${statement.location.offset}`);
+    }
+    if (statement.expression.kind === "executorPlacement") {
+      const expressionIndex = tokens.findIndex((token) => token.location.offset === expressionStart.location.offset);
+      const endIndex = executorPlacementEndIndex(tokens, statement.expression);
+      return `expression@${canonicalLocation(expressionStart.location)}(=${canonicalLocation(expressionStart.location)}:${
+        canonicalExpressionTokenRange(tokens, expressionIndex, endIndex)
+      }#${canonicalExpressionTree(statement.expression, tokens) ?? "opaque"})`;
     }
     return `expression@${canonicalLocation(expressionStart.location)}(=${canonicalLocation(expressionStart.location)}:${canonicalExpressionTokens(
       tokens,
@@ -392,6 +398,27 @@ function matchingMatchEndIndex(
     index += 1;
   }
   if (depth !== 0) throw new Error(`could not close match arms at source offset ${statementOffset}`);
+  return index;
+}
+
+function executorPlacementEndIndex(
+  tokens: readonly Token[],
+  expression: Extract<Expression, { kind: "executorPlacement" }>,
+): number {
+  const leftBraceIndex = tokens.findIndex((token) => token.location.offset === expression.body.location.offset);
+  if (leftBraceIndex < 0) {
+    throw new Error(`could not locate executor-placement body at source offset ${expression.location.offset}`);
+  }
+  let depth = 1;
+  let index = leftBraceIndex + 1;
+  while (index < tokens.length && depth > 0) {
+    if (tokens[index].kind === "leftBrace") depth += 1;
+    else if (tokens[index].kind === "rightBrace") depth -= 1;
+    index += 1;
+  }
+  if (depth !== 0) {
+    throw new Error(`could not close executor-placement body at source offset ${expression.location.offset}`);
+  }
   return index;
 }
 
@@ -599,6 +626,22 @@ function flattenExpression(
         );
     if (elseBranch === null) return null;
     return append("ifExpression", "", [condition, thenBranch, elseBranch], []);
+  }
+  if (expression.kind === "executorPlacement") {
+    const marker = appendAt("executorOn", "", [], [], expression.onLocation);
+    const executor = flattenExpression(expression.executor, nodes, tokens);
+    if (executor === null) return null;
+    return appendAt(
+      "executorPlacement",
+      expression.mode,
+      [marker, executor],
+      [
+        expression.returnType ? canonicalTypeName(expression.returnType.name) : "",
+        expression.errorType ? canonicalTypeName(expression.errorType.name) : "",
+      ],
+      expression.location,
+      [expression.body.statements],
+    );
   }
   if (expression.kind === "arrayExpression") {
     const children = flattenExpressions(expression.elements, nodes, tokens);

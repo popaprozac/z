@@ -279,8 +279,12 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    Value-producing `if` expressions retain condition, then-value-block, and
    else-value-block/if-expression edges. Their branch statements use the shared
    statement arena, preserving local declarations and explicit `select` nodes.
+   Executor-placement expressions retain sync/await/spawn mode, a distinct
+   source-located `on` marker, the executor expression root, optional success and
+   error types, and the placed body. This leaves a structural insertion point for
+   the planned contextual `using` capture clause.
    Contextual keywords are accepted as member names after `.` just as they are
-   by stage 0. Executor-placement expressions, Unicode
+   by stage 0. Enum-constructor and explicit capability-argument projections, Unicode
    identifiers, block comments, and direct in-process driver integration remain. Stage 0
    currently reports UTF-16 source coordinates while the stage-1 lexer retains
    UTF-8 byte coordinates; exact location parity after non-ASCII source text is
