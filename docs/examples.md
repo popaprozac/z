@@ -135,8 +135,10 @@ Expression-bodied closures retain capture mode, typed/capability-bearing
 parameters, result/error types, and their body root. Block-bodied closures carry
 cross-arena edges into the same flat statement storage used by function,
 constructor, and cleanup bodies. Assignment targets/values, `throw`, `select`,
-`break`, and `continue` are distinct statement nodes; unsupported branching,
-loop structure, and value-block forms remain canonical opaque spans. `z self-host-parse`
+`break`, and `continue` are distinct statement nodes. Structured `if`, `else if`,
+and `else` retain condition roots and branch edges; braced and single-statement
+branches share one block representation. Unsupported loops, matches, and
+value-block forms remain canonical opaque spans. `z self-host-parse`
 caches its native bridge by compiler/frontend content and sends every requested source file
 through one framed native invocation. Add `--timings` to see bridge preparation,
 native batch work, protocol decoding, and stage-0 parity parsing separately.

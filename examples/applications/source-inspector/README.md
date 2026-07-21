@@ -56,7 +56,9 @@ methods, and `deinit`; trait signatures and enum payload variants are also
 structural nodes. Function and lifecycle bodies retain projected variable,
 assignment, return, throw, select, expression, break/continue, and nested-block
 statements in flat arenas with integer child edges. Assignments have separate
-target and value roots. Supported expressions use a separate flat owned arena;
+target and value roots. Structured `if`, `else if`, and `else` retain condition
+roots plus explicit branch edges; single statements and braced branches use the
+same block representation. Supported expressions use a separate flat owned arena;
 block-bodied closure nodes reference roots in the enclosing statement arena.
 Unsupported statement and expression forms remain traversable canonical spans.
 Only text retained in the tree becomes an owned snapshot.
@@ -74,9 +76,9 @@ arrays, `view`, nullability, capabilities, aggregate modifiers, constructors,
 methods, lifecycle cleanup, traits, enum payloads, scalar and aggregate
 expressions, operator precedence, Z prefix forms, nested template interpolation,
 and closures with borrow/move capture, typed parameters, expression bodies, or
-projected block bodies. Assignment and non-branching control statements are
-structural too. Value-producing blocks, branching and loop structures, Unicode
-identifiers, block comments, direct in-process compiler
+projected block bodies. Assignments, non-branching control statements, and
+structured conditionals are structural too. Value-producing blocks, matches,
+loop structures, Unicode identifiers, block comments, direct in-process compiler
 integration, and the complete syntax tree remain future slices. Stage 0 and
 stage 1 also need one shared coordinate contract: stage 0 currently measures
 UTF-16 positions while stage 1 retains UTF-8 byte positions, so locations after

@@ -70,6 +70,7 @@ export enum StatementKind {
   selectStatement,
   expressionStatement,
   blockStatement,
+  ifStatement,
   breakStatement,
   continueStatement,
 }
@@ -1373,6 +1374,111 @@ function topLevelAssignmentIndex(
   return Option<usize>.none;
 }
 
+function parenthesizedExpressionEnd(
+  in tokens: Array<Token>,
+  start: usize,
+  in description: String
+): usize throws ParserError {
+  let current = start;
+  let depth: usize = 1;
+  while (tokens[current].kind != TokenKind.eof) {
+    if (tokens[current].kind == TokenKind.leftParen) depth = depth + 1;
+    else if (tokens[current].kind == TokenKind.rightParen) {
+      depth = depth - 1;
+      if (depth == 0) return current;
+    }
+    current = current + 1;
+  }
+  throw fail(tokens[start], `unterminated ${description}`);
+}
+
+function pushProjectedBlock(
+  inout nodes: Array<Statement>,
+  children: Array<usize>,
+  in start: Token
+): usize {
+  return pushProjectedBlockAt(
+    inout nodes,
+    children,
+    start.offset,
+    start.line,
+    start.column
+  );
+}
+
+function pushProjectedBlockAt(
+  inout nodes: Array<Statement>,
+  children: Array<usize>,
+  offset: usize,
+  line: usize,
+  column: usize
+): usize {
+  const index = nodes.length;
+  nodes.push(Statement({
+    kind: StatementKind.blockStatement,
+    mutableBinding: false,
+    name: "",
+    nameOffset: 0,
+    nameLine: 0,
+    nameColumn: 0,
+    typeAnnotation: Option<TypeReference>.none,
+    expression: Option<ExpressionSyntax>.none,
+    secondExpression: Option<ExpressionSyntax>.none,
+    children,
+    offset,
+    line,
+    column,
+  }));
+  return index;
+}
+
+function parseProjectedBranch(
+  in tokens: Array<Token>,
+  inout current: usize,
+  inout nodes: Array<Statement>
+): usize throws ParserError {
+  const start = snapshot(tokens[current]);
+  let children = Array<usize>();
+  if (tokens[current].kind == TokenKind.leftBrace) {
+    children = try parseProjectedBlock(tokens, inout current, "a statement block", inout nodes);
+  } else {
+    const statement = try parseProjectedStatement(tokens, inout current, inout nodes);
+    match (statement) {
+      some(index) => {
+        children.push(index);
+        let offset = nodes[index].offset;
+        let line = nodes[index].line;
+        let column = nodes[index].column;
+        if (
+          nodes[index].kind == StatementKind.expressionStatement
+          || nodes[index].kind == StatementKind.assignmentStatement
+        ) {
+          match (in nodes[index].expression) {
+            some(expression) => {
+              match (in expression.tree) {
+                some(tree) => {
+                  offset = tree.nodes[tree.root].offset;
+                  line = tree.nodes[tree.root].line;
+                  column = tree.nodes[tree.root].column;
+                }
+                none => {
+                  offset = expression.offset;
+                  line = expression.line;
+                  column = expression.column;
+                }
+              }
+            }
+            none => {}
+          }
+        }
+        return pushProjectedBlockAt(inout nodes, children, offset, line, column);
+      }
+      none => {}
+    }
+  }
+  return pushProjectedBlock(inout nodes, children, start);
+}
+
 function parseProjectedStatement(
   in tokens: Array<Token>,
   inout current: usize,
@@ -1386,18 +1492,43 @@ function parseProjectedStatement(
   if (kind == TokenKind.leftBrace) {
     const start = snapshot(tokens[current]);
     const statements = try parseProjectedBlock(tokens, inout current, "a statement block", inout nodes);
+    return Option.some(pushProjectedBlock(inout nodes, statements, start));
+  }
+  if (kind == TokenKind.ifKeyword) {
+    const start = snapshot(tokens[current]);
+    current = current + 1;
+    try expectKind(tokens, inout current, TokenKind.leftParen, "`(` after `if`");
+    const conditionStart = current;
+    const conditionEnd = try parenthesizedExpressionEnd(tokens, current, "an if condition");
+    const condition = try projectExpressionRange(tokens, conditionStart, conditionEnd, inout nodes);
+    current = conditionEnd + 1;
+    let children = Array<usize>();
+    const thenBranch = try parseProjectedBranch(tokens, inout current, inout nodes);
+    children.push(thenBranch);
+    if (takeIf(tokens, inout current, TokenKind.elseKeyword)) {
+      if (tokens[current].kind == TokenKind.ifKeyword) {
+        const elseStatement = try parseProjectedStatement(tokens, inout current, inout nodes);
+        match (elseStatement) {
+          some(index) => children.push(index);
+          none => {}
+        }
+      } else {
+        const elseBranch = try parseProjectedBranch(tokens, inout current, inout nodes);
+        children.push(elseBranch);
+      }
+    }
     const index = nodes.length;
     nodes.push(Statement({
-      kind: StatementKind.blockStatement,
+      kind: StatementKind.ifStatement,
       mutableBinding: false,
       name: "",
       nameOffset: 0,
       nameLine: 0,
       nameColumn: 0,
       typeAnnotation: Option<TypeReference>.none,
-      expression: Option<ExpressionSyntax>.none,
+      expression: Option.some(condition),
       secondExpression: Option<ExpressionSyntax>.none,
-      children: statements,
+      children,
       offset: start.offset,
       line: start.line,
       column: start.column,
@@ -1522,8 +1653,7 @@ function parseProjectedStatement(
     return Option.some(index);
   }
   if (
-    kind == TokenKind.ifKeyword
-    || kind == TokenKind.whileKeyword
+    kind == TokenKind.whileKeyword
     || kind == TokenKind.forKeyword
     || kind == TokenKind.matchKeyword
     || kind == TokenKind.asyncKeyword
@@ -2094,6 +2224,7 @@ function renderStatementText(in arena: StatementArena, in statement: Statement):
   else if (statement.kind == StatementKind.throwStatement) output.append("throw@");
   else if (statement.kind == StatementKind.selectStatement) output.append("select@");
   else if (statement.kind == StatementKind.expressionStatement) output.append("expression@");
+  else if (statement.kind == StatementKind.ifStatement) output.append("if@");
   else if (statement.kind == StatementKind.breakStatement) output.append("break@");
   else if (statement.kind == StatementKind.continueStatement) output.append("continue@");
   else output.append("block@");
@@ -2142,9 +2273,22 @@ function renderStatementText(in arena: StatementArena, in statement: Statement):
       none => {}
     }
   }
-  for (const child of statement.children) {
-    const childText = statementText(arena, child);
-    output.append(childText);
+  if (statement.kind == StatementKind.ifStatement) {
+    if (statement.children.length > 0) {
+      output.append("then=");
+      const branch = statementText(arena, statement.children[0]);
+      output.append(branch);
+    }
+    if (statement.children.length > 1) {
+      output.append("else=");
+      const branch = statementText(arena, statement.children[1]);
+      output.append(branch);
+    }
+  } else {
+    for (const child of statement.children) {
+      const childText = statementText(arena, child);
+      output.append(childText);
+    }
   }
   output.append(")");
   return output.finish();

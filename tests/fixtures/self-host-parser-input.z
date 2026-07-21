@@ -71,6 +71,11 @@ function consume(move this): i32 {
 
 function bodyShapes(value: i32): i32 {
   let observed: i32;
+  if (value > 1) {
+    observed = value;
+  } else if (value == 1) observed = value + 1;
+  else observed = 0;
+  if (observed < 0) return -1;
   {
     const adjusted: i32 = value + 1;
     bodyShapes(adjusted);

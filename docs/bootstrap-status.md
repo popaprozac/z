@@ -263,6 +263,10 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    and nested-block statements are structural without recursive per-block
    allocation. Assignments retain separate target and value expression roots,
    preserving Z's rule that assignment itself is not an expression.
+   Structured `if`, `else if`, and `else` statements retain ordinary condition
+   expression roots and integer branch edges. Explicit blocks and single-statement
+   branches normalize to the same block node, while else-if chains point directly
+   to the next conditional node.
    Contextual keywords are accepted as member names after `.` just as they are
    by stage 0. Value-block expressions, complete control-flow statements, Unicode
    identifiers, block comments, and direct in-process driver integration remain. Stage 0

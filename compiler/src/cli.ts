@@ -239,7 +239,9 @@ function canonicalStatementText(statement: Statement, tokens: readonly Token[]):
     return `${statement.kind}@${location}(${expression})`;
   }
   if (statement.kind === "assignment") {
-    const targetStart = lexicalStatementStart(tokens, statement.location.offset);
+    const targetStartLocation = lexicalExpressionLocation(statement.target);
+    const targetStart = tokens.find((token) => token.location.offset === targetStartLocation.offset);
+    if (!targetStart) throw new Error(`could not locate assignment target at source offset ${statement.location.offset}`);
     const targetIndex = tokens.findIndex((token) => token.location.offset === targetStart.location.offset);
     if (targetIndex < 0) throw new Error(`could not locate assignment at source offset ${statement.location.offset}`);
     const equalIndex = tokens.findIndex((token, index) => index >= targetIndex && token.kind === "equal");
@@ -256,9 +258,38 @@ function canonicalStatementText(statement: Statement, tokens: readonly Token[]):
   if (statement.kind === "break" || statement.kind === "continue") {
     return `${statement.kind}@${location}()`;
   }
+  if (statement.kind === "if") {
+    const statementIndex = tokens.findIndex((token) => token.location.offset === statement.location.offset);
+    const leftParenIndex = tokens.findIndex((token, index) => index > statementIndex && token.kind === "leftParen");
+    if (statementIndex < 0 || leftParenIndex < 0) {
+      throw new Error(`could not locate if condition at source offset ${statement.location.offset}`);
+    }
+    let depth = 1;
+    let rightParenIndex = leftParenIndex + 1;
+    while (rightParenIndex < tokens.length && depth > 0) {
+      if (tokens[rightParenIndex].kind === "leftParen") depth += 1;
+      else if (tokens[rightParenIndex].kind === "rightParen") depth -= 1;
+      rightParenIndex += 1;
+    }
+    if (depth !== 0 || rightParenIndex - 1 <= leftParenIndex) {
+      throw new Error(`could not close if condition at source offset ${statement.location.offset}`);
+    }
+    const conditionStart = tokens[leftParenIndex + 1];
+    const conditionTokens = canonicalExpressionTokenRange(tokens, leftParenIndex + 1, rightParenIndex - 1);
+    const condition = `=${canonicalLocation(conditionStart.location)}:${conditionTokens}#${
+      canonicalExpressionTree(statement.condition, tokens) ?? "opaque"
+    }`;
+    const thenBranch = `then=${canonicalStatementText(statement.thenBranch, tokens)}`;
+    const elseBranch = statement.elseBranch ? `else=${canonicalStatementText(statement.elseBranch, tokens)}` : "";
+    return `if@${location}(${condition}${thenBranch}${elseBranch})`;
+  }
   if (statement.kind === "expressionStatement") {
     if (statement.expression.kind === "executorPlacement") return "";
-    const expressionStart = lexicalStatementStart(tokens, statement.location.offset);
+    const expressionLocation = lexicalExpressionLocation(statement.expression);
+    const expressionStart = tokens.find((token) => token.location.offset === expressionLocation.offset);
+    if (!expressionStart) {
+      throw new Error(`could not locate expression statement at source offset ${statement.location.offset}`);
+    }
     return `expression@${canonicalLocation(expressionStart.location)}(=${canonicalLocation(expressionStart.location)}:${canonicalExpressionTokens(
       tokens,
       expressionStart.location.offset,
@@ -268,6 +299,14 @@ function canonicalStatementText(statement: Statement, tokens: readonly Token[]):
     return `block@${location}(${statement.statements.map((child) => canonicalStatementText(child, tokens)).join("")})`;
   }
   return "";
+}
+
+function lexicalExpressionLocation(expression: Expression): SourceLocation {
+  if (expression.kind === "member" || expression.kind === "index") {
+    return lexicalExpressionLocation(expression.object);
+  }
+  if (expression.kind === "call") return lexicalExpressionLocation(expression.callee);
+  return expression.location;
 }
 
 function lexicalFollowingToken(tokens: readonly Token[], statementOffset: number): Token {
@@ -287,18 +326,6 @@ function canonicalExpressionTokenRange(
   return tokens.slice(start, end).map((token) => (
     `${token.kind}:${Buffer.byteLength(token.text, "utf8")}:${token.text};`
   )).join("");
-}
-
-function lexicalStatementStart(tokens: readonly Token[], rootOffset: number): Token {
-  const rootIndex = tokens.findIndex((token) => token.location.offset === rootOffset);
-  if (rootIndex < 0) throw new Error(`could not find expression root at source offset ${rootOffset}`);
-  let index = rootIndex;
-  while (index > 0) {
-    const previous = tokens[index - 1];
-    if (previous.kind === "semicolon" || previous.kind === "leftBrace" || previous.kind === "rightBrace") break;
-    index -= 1;
-  }
-  return tokens[index];
 }
 
 function lexicalExpressionStart(
