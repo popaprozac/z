@@ -337,15 +337,19 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    carry initialized, uninitialized, or maybe-uninitialized state. Direct
    assignments and nested blocks update it, `if` branches merge it, loops retain
    the conservative zero-iteration path, and successful returns/fallthrough
-   require every `out` parameter to be initialized. Match-expression side
-   effects, call-site `out` transitions, richer reachability, nested value
-   mutation, and capability enforcement remain part of the broader native flow
-   pass.
+   require every `out` parameter to be initialized. Direct/imported function and
+   Z-method calls now enforce `out`/`inout` markers, mutable storage, initialized
+   `inout` input, invalid explicit capabilities on value/`in` parameters, and
+   parameter types before a successful `out` transition initializes storage.
+   Expression traversal carries effects left-to-right; ternary and short-circuit
+   alternatives merge them conservatively. Match-arm side effects, overlapping
+   per-call access checks, receiver capability enforcement, richer reachability,
+   and nested value mutation remain part of the broader native flow pass.
    Complete
    contextual literal and return-driven inference, foreign/intrinsic method lookup,
    generic constraints/methods, match
-   ownership/control-flow merging, capability enforcement, and flow/ownership
-   state remain stage-zero work.
+   ownership/control-flow merging, remaining receiver/alias capability
+   enforcement, and ownership state remain stage-zero work.
    Template literals now
    retain ordered decoded-text leaves and ordinary embedded-expression roots,
    including nested templates, in the same flat arena. Expression-bodied

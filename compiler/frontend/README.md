@@ -50,7 +50,12 @@ semantic analysis and code generation; the frontend itself is native Z code.
   uninitialized, or maybe-uninitialized flow state. Direct assignment and
   nested blocks update that state, `if` branches merge it, loops conservatively
   include their zero-iteration path, and successful exits require every `out`
-  parameter to be initialized.
+  parameter to be initialized. Direct and imported Z calls enforce declared
+  parameter capabilities before evaluating storage: `out` and `inout` require
+  their matching explicit call-site marker and mutable bindings, `inout`
+  requires initialized storage, and a successful `out` call initializes it.
+  Expression traversal carries these transitions left-to-right while ternary
+  and short-circuit branches merge them conservatively.
 - `module-resolver-protocol.zs` frames that host-loaded batch and returns the
   resolved graph through the same in-process native-library boundary.
 - `parser-protocol.zs` encodes the temporary parity protocol shared by native

@@ -1517,9 +1517,16 @@ ported independently rather than translated as one monolith.
    initialization state. Direct assignments and nested blocks update it, `if`
    branches merge it, loops conservatively include zero iterations, reads reject
    uninitialized/maybe-uninitialized values, and successful exits require every
-   `out` parameter to be initialized. Match-expression side effects, call-site
-   capability transitions, nested mutation, reachability, and ownership remain
-   later flow-state layers over the same record.
+   `out` parameter to be initialized. Match-expression side effects, nested
+   mutation, reachability, and ownership remain later flow-state layers over the
+   same record. Native direct/imported function
+   and Z-method calls now consume their graph-carried parameter modes: `out` and
+   `inout` require matching explicit markers and mutable bindings, `inout`
+   requires initialized storage, invalid explicit markers on value/`in`
+   parameters are rejected, and successful `out` calls initialize their target.
+   Left-to-right evaluation carries that transition through expressions while
+   ternary and short-circuit alternatives merge it conservatively. Per-call
+   alias overlap and receiver capability enforcement remain next.
    Feeding this graph into ordinary
    compiler commands and replacing the temporary protocol remain next. Native
    semantic analysis has also begun on that graph: source-ordered lexical lookup

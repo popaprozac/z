@@ -4915,7 +4915,8 @@ test("resolves a canonical module graph directly from native Z ASTs", () => {
     identityBridge,
     "import { Record } from \"./identity-model.zs\";\n"
       + "export function forward(value: Record): Record { return value; }\n"
-      + "export function choose<T>(left: T, right: T): T { return left; }\n",
+      + "export function choose<T>(left: T, right: T): T { return left; }\n"
+      + "export function initialize(out value: i32): void { value = 42; }\n",
   );
   writeFileSync(
     identityMain,
@@ -4937,6 +4938,11 @@ test("resolves a canonical module graph directly from native Z ASTs", () => {
       + "}\n"
       + "function genericMethod(owner: Entry, left: Entry, right: model.Record): model.Record {\n"
       + "  return owner.choose(left, right);\n"
+      + "}\n"
+      + "function importedOutput(): i32 {\n"
+      + "  let value: i32;\n"
+      + "  bridge.initialize(out value);\n"
+      + "  return value;\n"
       + "}\n"
       + "function matched(value: Lookup, fallback: Entry): model.Record {\n"
       + "  return match (value) { found(record) => record; missing => fallback; };\n"
@@ -4960,6 +4966,14 @@ test("resolves a canonical module graph directly from native Z ASTs", () => {
       + "}\n"
       + "function mutateParameter(inout value: i32): void { value = 2; }\n"
       + "function initializeParameter(out value: i32): void { value = 1; }\n"
+      + "function initializeValue(out value: i32): i32 { value = 40; return 0; }\n"
+      + "function increase(inout value: i32): void { value = value + 2; }\n"
+      + "function useCapabilities(): i32 {\n"
+      + "  let value: i32;\n"
+      + "  initializeValue(out value);\n"
+      + "  increase(inout value);\n"
+      + "  return value;\n"
+      + "}\n"
       + "function initializeBranch(flag: boolean, out value: i32): void {\n"
       + "  if (flag) { value = 1; } else { value = 2; }\n"
       + "}\n"
@@ -5065,6 +5079,83 @@ test("resolves a canonical module graph directly from native Z ASTs", () => {
   assert.match(
     maybeUninitializedOutput.stderr,
     /out parameter "value" may be uninitialized on a successful return path/,
+  );
+
+  writeFileSync(
+    bindingState,
+    "function initialize(out value: i32): void { value = 1; }\n"
+      + "function invalid(): i32 {\n"
+      + "  let value: i32;\n"
+      + "  initialize(value);\n"
+      + "  return value;\n"
+      + "}\n",
+  );
+  const missingOutCapability = spawnSync(
+    process.execPath,
+    [cli, "self-host-resolve", bindingState],
+    { encoding: "utf8" },
+  );
+  assert.equal(missingOutCapability.status, 1);
+  assert.match(
+    missingOutCapability.stderr,
+    /"initialize" requires out <mutable binding> for parameter 1/,
+  );
+
+  writeFileSync(
+    bindingState,
+    "function initialize(out value: i32): void { value = 1; }\n"
+      + "function invalid(): void {\n"
+      + "  const value = 0;\n"
+      + "  initialize(out value);\n"
+      + "}\n",
+  );
+  const immutableOutCapability = spawnSync(
+    process.execPath,
+    [cli, "self-host-resolve", bindingState],
+    { encoding: "utf8" },
+  );
+  assert.equal(immutableOutCapability.status, 1);
+  assert.match(
+    immutableOutCapability.stderr,
+    /out argument "value" requires a mutable let binding/,
+  );
+
+  writeFileSync(
+    bindingState,
+    "function increase(inout value: i32): void { value = value + 1; }\n"
+      + "function invalid(): void {\n"
+      + "  let value: i32;\n"
+      + "  increase(inout value);\n"
+      + "}\n",
+  );
+  const uninitializedInoutCapability = spawnSync(
+    process.execPath,
+    [cli, "self-host-resolve", bindingState],
+    { encoding: "utf8" },
+  );
+  assert.equal(uninitializedInoutCapability.status, 1);
+  assert.match(
+    uninitializedInoutCapability.stderr,
+    /inout argument "value" must be initialized before the call/,
+  );
+
+  writeFileSync(
+    bindingState,
+    "function observe(in value: i32): i32 { return value; }\n"
+      + "function invalid(): i32 {\n"
+      + "  let value = 1;\n"
+      + "  return observe(inout value);\n"
+      + "}\n",
+  );
+  const invalidExplicitCapability = spawnSync(
+    process.execPath,
+    [cli, "self-host-resolve", bindingState],
+    { encoding: "utf8" },
+  );
+  assert.equal(invalidExplicitCapability.status, 1);
+  assert.match(
+    invalidExplicitCapability.stderr,
+    /inout is not valid for an immutable borrow/,
   );
 
   const encoded = encodeStage1ModuleBatch([{ path: "/a.zs", source: "é" }]);
