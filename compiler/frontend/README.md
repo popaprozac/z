@@ -11,7 +11,10 @@ semantic analysis and code generation; the frontend itself is native Z code.
   host-loaded batch of canonical module paths: local edges, dependency order,
   selective exports, aliases, duplicate bindings, missing modules, and cycles.
   Its first semantic tier builds source-located symbol tables for declarations,
-  namespace imports, and selective bindings.
+  namespace imports, and selective bindings. It also performs source-ordered
+  lexical identifier lookup through parameters, locals, nested blocks,
+  `for...of`, closures, match-arm payloads, constructors, methods, and `deinit`,
+  producing native unknown-name diagnostics with exact source locations.
 - `module-resolver-protocol.zs` frames that host-loaded batch and returns the
   resolved graph through the same in-process native-library boundary.
 - `parser-protocol.zs` encodes the temporary parity protocol shared by native
@@ -37,6 +40,10 @@ current linker and native parity boundary. The in-process command compares its
 module indexes, lexical edges, entry, dependency-first order, symbol kinds,
 export state, aliases, local targets, and source coordinates with stage 0. Its
 timing report separates library preparation, host discovery, framing, native
-lex/parse/resolve/symbol work, protocol decode, and stage-zero parity work.
+lex/parse/resolve/symbol/name work, protocol decode, and stage-zero parity work.
+Identifier lookup currently covers materialized expression trees; opaque
+expression spans, type lookup, member lookup, typing, and ownership remain
+stage-zero work. The reported native interval therefore does more semantic work
+than the graph-and-symbol-only stage-zero comparison.
 Repeated corpus measurements and incrementally
 feeding the native graph into ordinary compiler commands are the next layers.

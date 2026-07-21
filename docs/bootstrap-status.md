@@ -279,7 +279,14 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    native semantic tier builds and parity-checks source-located symbols for Z
    functions, structs, classes, traits, enums, namespace imports, selective
    bindings, aliases, exports, and local target modules. Expression typing and
-   ownership analysis remain stage-zero work.
+   ownership analysis remain stage-zero work. A first native lexical resolver
+   now walks every materialized function, constructor, method, and `deinit`
+   expression tree in source order. It introduces parameter and local bindings,
+   isolates nested blocks and loop bindings, adds closure parameters and
+   match-arm payload/destructuring bindings, recognizes `this` only in instance
+   bodies, and reports unknown names at their native source coordinates.
+   Opaque expression spans, type/member lookup, duplicate local diagnostics,
+   typing, and ownership remain stage-zero work.
    Template literals now
    retain ordered decoded-text leaves and ordinary embedded-expression roots,
    including nested templates, in the same flat arena. Expression-bodied

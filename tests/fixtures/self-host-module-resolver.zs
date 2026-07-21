@@ -83,6 +83,69 @@ function main(): i32 { return value(); }
   return sources;
 }
 
+function unknownNameGraph(): Array<ModuleSource> {
+  let sources = Array<ModuleSource>();
+  sources.push(module("/workspace/main.zs", `
+function main(): i32 {
+  const known = 40;
+  return known + missing;
+}
+`));
+  return sources;
+}
+
+function useBeforeBindingGraph(): Array<ModuleSource> {
+  let sources = Array<ModuleSource>();
+  sources.push(module("/workspace/main.zs", `
+function main(): i32 {
+  const answer = answer;
+  return answer;
+}
+`));
+  return sources;
+}
+
+function escapedBlockBindingGraph(): Array<ModuleSource> {
+  let sources = Array<ModuleSource>();
+  sources.push(module("/workspace/main.zs", `
+function main(): i32 {
+  {
+    const answer = 42;
+  }
+  return answer;
+}
+`));
+  return sources;
+}
+
+function lexicalScopesGraph(): Array<ModuleSource> {
+  let sources = Array<ModuleSource>();
+  sources.push(module("/workspace/main.zs", `
+enum Outcome { ready i32, empty, }
+
+function inspect(value: Outcome): i32 {
+  const offset = 2;
+  const apply = (input: i32): i32 => input + offset;
+  return match (value) {
+    ready(payload) => apply(payload);
+    empty => {
+      const fallback = 40;
+      select fallback + offset;
+    }
+  };
+}
+
+function main(): i32 {
+  let total = 0;
+  for (const value of [20, 22]) {
+    total = total + value;
+  }
+  return total;
+}
+`));
+  return sources;
+}
+
 function symbolKindsGraph(): Array<ModuleSource> {
   let sources = Array<ModuleSource>();
   sources.push(module("/workspace/main.zs", `
@@ -171,12 +234,22 @@ function main(): i32 {
   if (!resolvesTo(missingExportGraph(), ModuleResolveErrorKind.missingExport)) return 3;
   if (!resolvesTo(circularGraph(), ModuleResolveErrorKind.circularImport)) return 4;
   if (!resolvesTo(duplicateBindingGraph(), ModuleResolveErrorKind.duplicateBinding)) return 5;
+  if (!resolvesTo(unknownNameGraph(), ModuleResolveErrorKind.unknownName)) return 6;
+  if (!resolvesTo(useBeforeBindingGraph(), ModuleResolveErrorKind.unknownName)) return 7;
+  if (!resolvesTo(escapedBlockBindingGraph(), ModuleResolveErrorKind.unknownName)) return 8;
+  const lexicalSources = lexicalScopesGraph();
+  const lexicalOutcome = attempt resolveModules(lexicalSources, "/workspace/main.zs");
+  const lexicalIsValid = match (lexicalOutcome) {
+    success(graph) => graph.modules.length == 1;
+    failure(error) => false;
+  };
+  if (!lexicalIsValid) return 9;
   const kindSources = symbolKindsGraph();
   const kindOutcome = attempt resolveModules(kindSources, "/workspace/main.zs");
   const kindsAreValid = match (kindOutcome) {
     success(graph) => validSymbolKinds(graph);
     failure(error) => false;
   };
-  if (!kindsAreValid) return 6;
+  if (!kindsAreValid) return 10;
   return 0;
 }

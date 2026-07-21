@@ -1493,7 +1493,14 @@ ported independently rather than translated as one monolith.
    The graph now carries a first native semantic table: source-located Z
    declarations and namespace/selective import bindings with kinds, exports,
    aliases, and local module targets. Feeding this graph into ordinary
-   compiler commands and replacing the temporary protocol remain next.
+   compiler commands and replacing the temporary protocol remain next. Native
+   semantic analysis has also begun on that graph: source-ordered lexical lookup
+   resolves materialized identifiers against module symbols, parameters, and
+   locals, with nested scopes for blocks, loops, closures, match arms,
+   constructors, methods, and `deinit`. Unknown names now originate from Z with
+   exact locations. Type/member lookup, opaque expression spans, and ownership
+   analysis intentionally remain at stage zero while the native semantic model
+   grows vertically.
 3. **Stage 2:** Compile the Z compiler with stage 0, then use that result to
    compile itself.
 4. **Bootstrap verification:** Compare generated native source and compiler test
