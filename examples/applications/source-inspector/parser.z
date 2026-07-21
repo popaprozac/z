@@ -107,6 +107,8 @@ export enum ExpressionKind {
   matchArmExpression,
   matchBindingExpression,
   matchObjectFieldExpression,
+  ifExpression,
+  valueBlockExpression,
 }
 
 export struct ExpressionNode {
@@ -748,6 +750,72 @@ function parseMatchTree(
   );
 }
 
+function parseValueBlockTree(
+  in tokens: Array<Token>,
+  inout current: usize,
+  in description: String,
+  inout nodes: Array<ExpressionNode>,
+  inout statementNodes: Array<Statement>
+): usize throws ParserError {
+  const start = snapshot(tokens[current]);
+  const statements = try parseProjectedBlock(tokens, inout current, description, inout statementNodes);
+  return pushExpressionNodeWithStatements(
+    inout nodes,
+    ExpressionKind.valueBlockExpression,
+    "",
+    Array<usize>(),
+    statements,
+    Array<String>(),
+    start
+  );
+}
+
+function parseIfExpressionTree(
+  in tokens: Array<Token>,
+  inout current: usize,
+  end: usize,
+  inout nodes: Array<ExpressionNode>,
+  inout statementNodes: Array<Statement>
+): usize throws ParserError {
+  const start = snapshot(tokens[current]);
+  try expectKind(tokens, inout current, TokenKind.ifKeyword, "`if`");
+  try expectKind(tokens, inout current, TokenKind.leftParen, "`(` after `if`");
+  let children = Array<usize>();
+  const condition = try parseConditionalTree(tokens, inout current, end, inout nodes, inout statementNodes);
+  children.push(condition);
+  try expectKind(tokens, inout current, TokenKind.rightParen, "`)` after an if-expression condition");
+  const thenBranch = try parseValueBlockTree(
+    tokens,
+    inout current,
+    "an `if` expression body",
+    inout nodes,
+    inout statementNodes
+  );
+  children.push(thenBranch);
+  try expectKind(tokens, inout current, TokenKind.elseKeyword, "`else` in a value-producing `if`");
+  let elseBranch: usize;
+  if (tokens[current].kind == TokenKind.ifKeyword) {
+    elseBranch = try parseIfExpressionTree(tokens, inout current, end, inout nodes, inout statementNodes);
+  } else {
+    elseBranch = try parseValueBlockTree(
+      tokens,
+      inout current,
+      "an `else` expression body",
+      inout nodes,
+      inout statementNodes
+    );
+  }
+  children.push(elseBranch);
+  return pushExpressionNode(
+    inout nodes,
+    ExpressionKind.ifExpression,
+    "",
+    children,
+    Array<String>(),
+    start
+  );
+}
+
 function parsePrimaryTree(
   in tokens: Array<Token>,
   inout current: usize,
@@ -757,6 +825,9 @@ function parsePrimaryTree(
 ): usize throws ParserError {
   if (current >= end) throw fail(tokens[current], "expected a primary expression");
   const start = snapshot(tokens[current]);
+  if (start.kind == TokenKind.ifKeyword) {
+    return try parseIfExpressionTree(tokens, inout current, end, inout nodes, inout statementNodes);
+  }
   if (start.kind == TokenKind.matchKeyword) {
     return try parseMatchTree(tokens, inout current, end, inout nodes, inout statementNodes);
   }
@@ -2392,6 +2463,8 @@ function expressionKindName(kind: ExpressionKind): String {
     matchArmExpression => "matchArm";
     matchBindingExpression => "matchBinding";
     matchObjectFieldExpression => "matchObjectField";
+    ifExpression => "ifExpression";
+    valueBlockExpression => "valueBlock";
   };
 }
 

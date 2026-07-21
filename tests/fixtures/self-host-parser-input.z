@@ -138,6 +138,14 @@ function expressionShapes(value: i32): i32 {
   const compared = shifted >= value && value != 0 || false;
   const bits = ~value & 7 ^ 2 | 1;
   const chosen = !false ? -value : true ? +value : 0;
+  const blockChoice = if (value > 0) {
+    select value;
+  } else if (value < 0) {
+    select -value;
+  } else {
+    const zero = 0;
+    select zero;
+  };
   const created = new Store<Reading>({ readings: [], label: "ready" });
   const weakValue = weak created;
   const attempted = attempt load(value);

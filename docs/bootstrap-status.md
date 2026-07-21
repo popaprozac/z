@@ -276,8 +276,11 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    aliases, source locations, and each arm's statement body are structural.
    `async scope` statements retain their required block edge, preserving the
    lexical child-lifetime and implicit-join boundary for later native analysis.
+   Value-producing `if` expressions retain condition, then-value-block, and
+   else-value-block/if-expression edges. Their branch statements use the shared
+   statement arena, preserving local declarations and explicit `select` nodes.
    Contextual keywords are accepted as member names after `.` just as they are
-   by stage 0. Conditional value blocks, Unicode
+   by stage 0. Executor-placement expressions, Unicode
    identifiers, block comments, and direct in-process driver integration remain. Stage 0
    currently reports UTF-16 source coordinates while the stage-1 lexer retains
    UTF-8 byte coordinates; exact location parity after non-ASCII source text is

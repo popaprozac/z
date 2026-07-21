@@ -63,6 +63,8 @@ same block representation. `while` retains a condition and required body edge;
 Statement and expression `match` forms share flat subject and arm nodes;
 payload bindings, object patterns, aliases, and arm bodies are structural.
 `async scope` retains its required body as a lexical structured-join edge.
+Value-producing `if` expressions retain condition and value-block edges, with
+else-if nodes linked directly and branch statements stored in the shared arena.
 Supported expressions use a separate flat owned arena;
 block-bodied closure nodes reference roots in the enclosing statement arena.
 Unsupported statement and expression forms remain traversable canonical spans.
@@ -82,9 +84,10 @@ methods, lifecycle cleanup, traits, enum payloads, scalar and aggregate
 expressions, operator precedence, Z prefix forms, nested template interpolation,
 and closures with borrow/move capture, typed parameters, expression bodies, or
 projected block bodies. Assignments, non-branching control statements,
-conditionals, loops, matches, and async scopes are structural too. Conditional
-value blocks, Unicode identifiers, block comments, direct in-process compiler
-integration, and the complete syntax tree remain future slices. Stage 0 and
+conditionals, loops, matches, async scopes, and value-producing `if` expressions
+are structural too. Executor-placement expressions, Unicode identifiers, block
+comments, direct in-process compiler integration, and the complete syntax tree
+remain future slices. Stage 0 and
 stage 1 also need one shared coordinate contract: stage 0 currently measures
 UTF-16 positions while stage 1 retains UTF-8 byte positions, so locations after
 non-ASCII text do not yet compare exactly. Build time and subprocess startup

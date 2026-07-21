@@ -576,6 +576,30 @@ function flattenExpression(
     }
     return append("match", expression.mode, children, []);
   }
+  if (expression.kind === "ifExpression") {
+    const condition = flattenExpression(expression.condition, nodes, tokens);
+    if (condition === null) return null;
+    const thenBranch = appendAt(
+      "valueBlock",
+      "",
+      [],
+      [],
+      expression.thenBranch.location,
+      [expression.thenBranch.statements],
+    );
+    const elseBranch = expression.elseBranch.kind === "ifExpression"
+      ? flattenExpression(expression.elseBranch, nodes, tokens)
+      : appendAt(
+          "valueBlock",
+          "",
+          [],
+          [],
+          expression.elseBranch.location,
+          [expression.elseBranch.statements],
+        );
+    if (elseBranch === null) return null;
+    return append("ifExpression", "", [condition, thenBranch, elseBranch], []);
+  }
   if (expression.kind === "arrayExpression") {
     const children = flattenExpressions(expression.elements, nodes, tokens);
     return children ? append("arrayExpression", "", children, []) : null;
