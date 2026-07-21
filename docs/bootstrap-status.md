@@ -231,7 +231,12 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    Structs/classes now retain generic constraints, implemented traits, visible
    and readonly fields, throwing constructors, static/async/receiver methods,
    and `deinit`; trait methods and enum payload variants are structural too.
-   Canonical type-shape parity covers the complete declaration layer. Traversal
+   Canonical type-shape parity covers the complete declaration layer. Top-level
+   function bodies now retain owned `const`/`let`, `return`, expression-statement,
+   and recursively nested block nodes. Their expressions are source-located,
+   canonical token spans rather than premature expression trees; unsupported
+   statement forms remain traversable but unmaterialized. Exact body parity now
+   covers the fixture plus the lexer and parser sources themselves. Traversal
    borrows tokens and copies only AST-retained text. The parser bridge is now
    content-addressed by its compiler/frontend inputs and accepts the whole parity
    corpus in one native invocation instead of recompiling and spawning once per
@@ -239,9 +244,9 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    batch work, protocol decoding, and the stage-0 parity parse independently.
    The source-inspector location remains a proving ground; after complete bodies
    and a compiler-facing interface are stable, the frontend moves into the
-   compiler tree and the example becomes its client. Statements, expressions,
-   Unicode identifiers, block comments, and direct in-process driver integration
-   remain.
+   compiler tree and the example becomes its client. Complete statement and
+   expression trees, Unicode identifiers, block comments, and direct in-process
+   driver integration remain.
 5. **Threaded concurrency evidence — Copy, unique-owner, native-owner, readonly ARC, and owned-error slices implemented.**
    `thread.spawn` now proves one real cross-thread task frame with explicit
    move capture, hot start, structured join, private Copy snapshots, and moved

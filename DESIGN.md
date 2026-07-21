@@ -1420,13 +1420,19 @@ ported independently rather than translated as one monolith.
    names, export/async state, complete function signatures, aggregate fields and
    lifecycle members, trait methods, and enum payload variants. Generic
    constraints, capabilities, nested types, returns, typed errors, constructors,
-   static/async methods, and `deinit` all have canonical stage-0 parity while
-   bodies remain borrowed balanced-token traversals. The temporary buffered
+   static/async methods, and `deinit` all have canonical stage-0 parity. Function
+   bodies now own the first statement AST slice: `const`/`let`, `return`,
+   expression statements, and recursively nested standalone blocks. Expression
+   nodes retain source-located canonical token spans until the precedence parser
+   lands; assignments and other statement forms are traversed but deliberately
+   not materialized as this subset. Exact stage-0 parity covers every top-level
+   function body in the fixture, lexer, and parser corpus. The temporary buffered
    native protocols are exposed through `z self-host-lex` and
    `z self-host-parse`. The parser bridge is content-addressed across compiler
    and frontend sources and parses a complete corpus in one native process;
    `--timings` separates bridge preparation, native startup/I/O/frontend work,
-   protocol decoding, and the stage-0 parity parse. Statements, expressions, a
+   protocol decoding, and the stage-0 parity parse. Complete statements, parsed
+   expression trees, a
    direct in-process driver ABI, and a broader parity corpus precede replacing
    bootstrap frontend phases in ordinary commands. Performance claims wait for
    that in-process seam and equivalent frontend coverage rather than conflating

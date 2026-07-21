@@ -4,7 +4,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 
 import { basename, dirname, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import type { FunctionDeclaration, Program } from "./ast.ts";
+import type { FunctionDeclaration, Program, SourceLocation, Statement } from "./ast.ts";
 import { parseDynamicArrayType, parseFixedArrayType, parseSliceType } from "./array-types.ts";
 import { check, compileToNative, type NativeArtifact } from "./compiler.ts";
 import { DiagnosticError, formatDiagnostic } from "./diagnostics.ts";
@@ -18,6 +18,7 @@ import {
   decodeStage1ProgramBatchStream,
   decodeStage1TokenStream,
   type Stage1Declaration,
+  type Stage1FunctionBody,
   type Stage1FunctionSignature,
   type Stage1TypeShape,
 } from "./self-hosting.ts";
@@ -80,7 +81,8 @@ function verifyStage1Parser(inputPaths: readonly string[], timings: boolean): vo
     const stage1Program = stage1Programs.get(inputPath);
     if (!stage1Program) throw new Error(`the stage-1 parser did not emit a program for ${inputPath}`);
     const stage0Started = performance.now();
-    const stage0Program = parse(lex(source, inputPath), inputPath);
+    const stage0Tokens = lex(source, inputPath);
+    const stage0Program = parse(stage0Tokens, inputPath);
     stage0Milliseconds += performance.now() - stage0Started;
     const stage1 = stage1Program.declarations;
     const stage0 = stage0Declarations(stage0Program, inputPath);
@@ -101,6 +103,16 @@ function verifyStage1Parser(inputPaths: readonly string[], timings: boolean): vo
         `stage-1 parser mismatch at function signature ${index}: stage 0 produced ${describeFunctionSignature(stage0Signature)}, stage 1 produced ${describeFunctionSignature(stage1Signature)}`,
       );
     }
+    const stage0Bodies = stage0Program.functions.map((declaration) => stage0FunctionBody(declaration, stage0Tokens, inputPath));
+    const bodyCount = Math.max(stage0Bodies.length, stage1Program.functionBodies.length);
+    for (let index = 0; index < bodyCount; index += 1) {
+      const stage0Body = stage0Bodies[index];
+      const stage1Body = stage1Program.functionBodies[index];
+      if (sameFunctionBody(stage0Body, stage1Body)) continue;
+      throw new Error(
+        `stage-1 parser mismatch at function body ${index}: stage 0 produced ${describeFunctionBody(stage0Body)}, stage 1 produced ${describeFunctionBody(stage1Body)}`,
+      );
+    }
     const stage0Shapes = stage0TypeShapes(stage0Program, inputPath);
     const shapeCount = Math.max(stage0Shapes.length, stage1Program.typeShapes.length);
     for (let index = 0; index < shapeCount; index += 1) {
@@ -111,7 +123,7 @@ function verifyStage1Parser(inputPaths: readonly string[], timings: boolean): vo
         `stage-1 parser mismatch at type shape ${index}: stage 0 produced ${describeTypeShape(stage0Shape)}, stage 1 produced ${describeTypeShape(stage1Shape)}`,
       );
     }
-    console.log(`${inputPath}: stage-1 parser matches ${stage1.length} declarations, ${stage1Program.functionSignatures.length} function signatures, and ${stage1Program.typeShapes.length} type shapes`);
+    console.log(`${inputPath}: stage-1 parser matches ${stage1.length} declarations, ${stage1Program.functionSignatures.length} function signatures, ${stage1Program.functionBodies.length} function bodies, and ${stage1Program.typeShapes.length} type shapes`);
   }
   if (timings) {
     const cacheState = boundary.cacheHit ? "cache hit" : "cache miss; stage-0 compile + native build included";
@@ -181,6 +193,116 @@ function canonicalFunctionText(declaration: FunctionDeclaration): string {
   const error = declaration.errorType ? ` throws ${canonicalTypeName(declaration.errorType.name)}` : "";
   const asynchronous = declaration.async ? "async " : "";
   return `${asynchronous}function ${declaration.name}${generic}(${parameters.join(", ")}): ${canonicalTypeName(declaration.returnType.name)}${error}`;
+}
+
+function stage0FunctionBody(
+  declaration: FunctionDeclaration,
+  tokens: readonly Token[],
+  fileName: string,
+): Stage1FunctionBody {
+  return {
+    text: `{${declaration.body.map((statement) => canonicalStatementText(statement, tokens)).join("")}}`,
+    location: { ...declaration.location, fileName },
+  };
+}
+
+function canonicalStatementText(statement: Statement, tokens: readonly Token[]): string {
+  const location = canonicalLocation(statement.location);
+  if (statement.kind === "variable") {
+    const binding = statement.mutable ? "let" : "const";
+    const type = statement.type
+      ? `:${canonicalTypeName(statement.type.name)}@${canonicalLocation(statement.type.location)}`
+      : "";
+    const initializerStart = statement.initializer ? lexicalExpressionStart(tokens, statement.location.offset, "equal") : null;
+    const expression = initializerStart
+      ? `=${canonicalLocation(initializerStart.location)}:${canonicalExpressionTokens(tokens, initializerStart.location.offset)}`
+      : "";
+    return `variable@${location}(${binding}:${statement.name}@${canonicalLocation(statement.nameLocation)}${type}${expression})`;
+  }
+  if (statement.kind === "return") {
+    const returnStart = statement.expression ? lexicalExpressionStart(tokens, statement.location.offset, "return") : null;
+    const expression = returnStart
+      ? `=${canonicalLocation(returnStart.location)}:${canonicalExpressionTokens(tokens, returnStart.location.offset)}`
+      : "";
+    return `return@${location}(${expression})`;
+  }
+  if (statement.kind === "expressionStatement") {
+    if (statement.expression.kind === "executorPlacement") return "";
+    const expressionStart = lexicalStatementStart(tokens, statement.location.offset);
+    return `expression@${canonicalLocation(expressionStart.location)}(=${canonicalLocation(expressionStart.location)}:${canonicalExpressionTokens(
+      tokens,
+      expressionStart.location.offset,
+    )})`;
+  }
+  if (statement.kind === "block") {
+    return `block@${location}(${statement.statements.map((child) => canonicalStatementText(child, tokens)).join("")})`;
+  }
+  return "";
+}
+
+function lexicalStatementStart(tokens: readonly Token[], rootOffset: number): Token {
+  const rootIndex = tokens.findIndex((token) => token.location.offset === rootOffset);
+  if (rootIndex < 0) throw new Error(`could not find expression root at source offset ${rootOffset}`);
+  let index = rootIndex;
+  while (index > 0) {
+    const previous = tokens[index - 1];
+    if (previous.kind === "semicolon" || previous.kind === "leftBrace" || previous.kind === "rightBrace") break;
+    index -= 1;
+  }
+  return tokens[index];
+}
+
+function lexicalExpressionStart(
+  tokens: readonly Token[],
+  statementOffset: number,
+  marker: "equal" | "return",
+): Token {
+  const statementIndex = tokens.findIndex((token) => token.location.offset === statementOffset);
+  if (statementIndex < 0) throw new Error(`could not find statement token at source offset ${statementOffset}`);
+  if (marker === "return") {
+    const token = tokens[statementIndex + 1];
+    if (!token || token.kind === "semicolon") throw new Error(`could not find return value at source offset ${statementOffset}`);
+    return token;
+  }
+  for (let index = statementIndex + 1; index < tokens.length; index += 1) {
+    if (tokens[index].kind === "equal") {
+      const token = tokens[index + 1];
+      if (!token) throw new Error(`could not find variable initializer at source offset ${statementOffset}`);
+      return token;
+    }
+    if (tokens[index].kind === "semicolon" || tokens[index].kind === "eof") break;
+  }
+  throw new Error(`could not find variable initializer at source offset ${statementOffset}`);
+}
+
+function canonicalExpressionTokens(tokens: readonly Token[], startOffset: number): string {
+  let index = tokens.findIndex((token) => token.location.offset === startOffset);
+  if (index < 0) throw new Error(`could not find expression token at source offset ${startOffset}`);
+  let parentheses = 0;
+  let brackets = 0;
+  let braces = 0;
+  let templates = 0;
+  let text = "";
+  while (index < tokens.length) {
+    const token = tokens[index];
+    if (token.kind === "eof") throw new Error(`unterminated expression token span at source offset ${startOffset}`);
+    if (token.kind === "semicolon" && parentheses === 0 && brackets === 0 && braces === 0 && templates === 0) break;
+    text += `${token.kind}:${Buffer.byteLength(token.text, "utf8")}:${token.text};`;
+    if (token.kind === "leftParen") parentheses += 1;
+    else if (token.kind === "rightParen" && parentheses > 0) parentheses -= 1;
+    else if (token.kind === "leftBracket") brackets += 1;
+    else if (token.kind === "rightBracket" && brackets > 0) brackets -= 1;
+    else if (token.kind === "leftBrace") braces += 1;
+    else if (token.kind === "rightBrace" && braces > 0) braces -= 1;
+    else if (token.kind === "templateExpressionStart") templates += 1;
+    else if (token.kind === "templateExpressionEnd" && templates > 0) templates -= 1;
+    index += 1;
+  }
+  return text;
+}
+
+function canonicalLocation(location: SourceLocation): string {
+  return `${location.offset},${location.line},${location.column}`;
 }
 
 function canonicalTypeParameters(
@@ -290,6 +412,20 @@ function sameFunctionSignature(left: Stage1FunctionSignature | undefined, right:
 function describeFunctionSignature(signature: Stage1FunctionSignature | undefined): string {
   if (!signature) return "no function signature";
   return `${JSON.stringify(signature.text)} at ${signature.location.line}:${signature.location.column}`;
+}
+
+function sameFunctionBody(left: Stage1FunctionBody | undefined, right: Stage1FunctionBody | undefined): boolean {
+  return left !== undefined
+    && right !== undefined
+    && left.text === right.text
+    && left.location.offset === right.location.offset
+    && left.location.line === right.location.line
+    && left.location.column === right.location.column;
+}
+
+function describeFunctionBody(body: Stage1FunctionBody | undefined): string {
+  if (!body) return "no function body";
+  return `${JSON.stringify(body.text)} at ${body.location.line}:${body.location.column}`;
 }
 
 function sameTypeShape(left: Stage1TypeShape | undefined, right: Stage1TypeShape | undefined): boolean {

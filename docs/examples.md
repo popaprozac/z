@@ -124,7 +124,10 @@ copies that source through `std/fs`, invokes Clang directly through
 `process.run`, and handles the typed failure path without exceptions or a shell.
 
 [`source-inspector`](../examples/applications/source-inspector) is the temporary
-proving ground for the stage-1 Z lexer and parser. `z self-host-parse` caches its
+proving ground for the stage-1 Z lexer and parser. Its current AST covers the
+complete declaration layer plus variable declarations, returns, expression
+statements, and nested standalone blocks; expressions remain canonical token
+spans while the precedence parser is built. `z self-host-parse` caches its
 native bridge by compiler/frontend content and sends every requested source file
 through one framed native invocation. Add `--timings` to see bridge preparation,
 native batch work, protocol decoding, and stage-0 parity parsing separately.

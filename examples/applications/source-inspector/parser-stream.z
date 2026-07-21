@@ -9,6 +9,7 @@ import {
   aggregateShapeText,
   declarationKindName,
   enumShapeText,
+  functionBodyText,
   functionSignatureText,
   parseProgram,
   traitShapeText,
@@ -125,6 +126,17 @@ function streamProgram(in path: String): i32 throws String {
     appendHexUsize(inout output, functionDeclaration.column);
     output.appendAscii(9);
     appendHexText(inout output, signature);
+    output.appendAscii(10);
+    const body = functionBodyText(functionDeclaration);
+    output.append("body");
+    output.appendAscii(9);
+    appendHexUsize(inout output, functionDeclaration.offset);
+    output.appendAscii(9);
+    appendHexUsize(inout output, functionDeclaration.line);
+    output.appendAscii(9);
+    appendHexUsize(inout output, functionDeclaration.column);
+    output.appendAscii(9);
+    appendHexText(inout output, body);
     output.appendAscii(10);
   }
   for (const aggregate of program.aggregates) {

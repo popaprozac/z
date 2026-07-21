@@ -1,4 +1,4 @@
-import { Token, TokenKind } from "./lexer.z";
+import { Token, TokenKind, tokenKindName } from "./lexer.z";
 import { TextBuffer } from "std/text";
 
 export enum DeclarationKind {
@@ -62,6 +62,36 @@ export struct Parameter {
   column: usize;
 }
 
+export enum StatementKind {
+  variableStatement,
+  returnStatement,
+  expressionStatement,
+  blockStatement,
+}
+
+export struct ExpressionSyntax {
+  tokens: String;
+  assignment: boolean;
+  offset: usize;
+  line: usize;
+  column: usize;
+}
+
+export struct Statement {
+  kind: StatementKind;
+  mutableBinding: boolean;
+  name: String;
+  nameOffset: usize;
+  nameLine: usize;
+  nameColumn: usize;
+  typeAnnotation: Option<TypeReference>;
+  expression: Option<ExpressionSyntax>;
+  statements: Array<Statement>;
+  offset: usize;
+  line: usize;
+  column: usize;
+}
+
 export struct FunctionDeclaration {
   name: String;
   asynchronous: boolean;
@@ -72,6 +102,7 @@ export struct FunctionDeclaration {
   parameters: Array<Parameter>;
   returnType: TypeReference;
   errorType: Option<TypeReference>;
+  body: Array<Statement>;
   offset: usize;
   line: usize;
   column: usize;
@@ -90,12 +121,14 @@ export struct FieldDeclaration {
 export struct ConstructorDeclaration {
   parameters: Array<Parameter>;
   errorType: Option<TypeReference>;
+  body: Array<Statement>;
   offset: usize;
   line: usize;
   column: usize;
 }
 
 export struct DeinitDeclaration {
+  body: Array<Statement>;
   offset: usize;
   line: usize;
   column: usize;
@@ -426,12 +459,270 @@ function skipDelimited(
   }
 }
 
-function seekBody(in tokens: Array<Token>, inout current: usize, in description: String): void throws ParserError {
-  while (tokens[current].kind != TokenKind.leftBrace) {
-    if (tokens[current].kind == TokenKind.eof) throw fail(tokens[current], `expected ${description}`);
+function scanExpression(
+  in tokens: Array<Token>,
+  inout current: usize,
+  in description: String
+): ExpressionSyntax throws ParserError {
+  const startIndex = current;
+  const start = snapshot(tokens[current]);
+  let output = TextBuffer();
+  let parentheses: usize = 0;
+  let brackets: usize = 0;
+  let braces: usize = 0;
+  let templates: usize = 0;
+  let assignment = false;
+  while (true) {
+    const kind = tokens[current].kind;
+    if (kind == TokenKind.eof) throw fail(start, `unterminated ${description}`);
+    if (
+      kind == TokenKind.semicolon
+      && parentheses == 0
+      && brackets == 0
+      && braces == 0
+      && templates == 0
+    ) break;
+    if (
+      kind == TokenKind.rightBrace
+      && parentheses == 0
+      && brackets == 0
+      && braces == 0
+      && templates == 0
+    ) throw fail(start, `expected \`;\` after ${description}`);
+    if (
+      kind == TokenKind.equal
+      && parentheses == 0
+      && brackets == 0
+      && braces == 0
+      && templates == 0
+    ) assignment = true;
+    output.append(tokenKindName(kind));
+    output.append(":");
+    output.append(`${tokens[current].text.byteLength}`);
+    output.append(":");
+    output.append(tokens[current].text);
+    output.append(";");
+    if (kind == TokenKind.leftParen) parentheses = parentheses + 1;
+    else if (kind == TokenKind.rightParen && parentheses > 0) parentheses = parentheses - 1;
+    else if (kind == TokenKind.leftBracket) brackets = brackets + 1;
+    else if (kind == TokenKind.rightBracket && brackets > 0) brackets = brackets - 1;
+    else if (kind == TokenKind.leftBrace) braces = braces + 1;
+    else if (kind == TokenKind.rightBrace && braces > 0) braces = braces - 1;
+    else if (kind == TokenKind.templateExpressionStart) templates = templates + 1;
+    else if (kind == TokenKind.templateExpressionEnd && templates > 0) templates = templates - 1;
     current = current + 1;
   }
-  try skipDelimited(tokens, inout current, TokenKind.leftBrace, TokenKind.rightBrace, description);
+  if (current == startIndex) throw fail(start, `expected ${description}`);
+  current = current + 1;
+  return ExpressionSyntax({
+    tokens: output.finish(),
+    assignment,
+    offset: start.offset,
+    line: start.line,
+    column: start.column,
+  });
+}
+
+function skipProjectedStatement(in tokens: Array<Token>, inout current: usize): void throws ParserError {
+  const kind = tokens[current].kind;
+  if (kind == TokenKind.leftBrace) {
+    try skipDelimited(tokens, inout current, TokenKind.leftBrace, TokenKind.rightBrace, "a statement block");
+    return;
+  }
+  if (kind == TokenKind.ifKeyword) {
+    current = current + 1;
+    try skipDelimited(tokens, inout current, TokenKind.leftParen, TokenKind.rightParen, "an if condition");
+    try skipProjectedStatement(tokens, inout current);
+    if (takeIf(tokens, inout current, TokenKind.elseKeyword)) {
+      try skipProjectedStatement(tokens, inout current);
+    }
+    return;
+  }
+  if (kind == TokenKind.whileKeyword || kind == TokenKind.forKeyword) {
+    current = current + 1;
+    try skipDelimited(tokens, inout current, TokenKind.leftParen, TokenKind.rightParen, "a loop condition");
+    try skipProjectedStatement(tokens, inout current);
+    return;
+  }
+  if (kind == TokenKind.matchKeyword) {
+    current = current + 1;
+    try skipDelimited(tokens, inout current, TokenKind.leftParen, TokenKind.rightParen, "a match subject");
+    try skipDelimited(tokens, inout current, TokenKind.leftBrace, TokenKind.rightBrace, "match arms");
+    return;
+  }
+  if (kind == TokenKind.asyncKeyword && current + 1 < tokens.length && tokens[current + 1].kind == TokenKind.scopeKeyword) {
+    current = current + 2;
+    try skipProjectedStatement(tokens, inout current);
+    return;
+  }
+  const ignored = try scanExpression(tokens, inout current, "a statement");
+  if (ignored.assignment) return;
+}
+
+function startsExecutorPlacement(in tokens: Array<Token>, current: usize): boolean {
+  if (tokens[current].kind == TokenKind.onKeyword) return true;
+  return (tokens[current].kind == TokenKind.awaitKeyword || tokens[current].kind == TokenKind.spawnKeyword)
+    && current + 1 < tokens.length
+    && tokens[current + 1].kind == TokenKind.onKeyword;
+}
+
+function skipExecutorPlacement(in tokens: Array<Token>, inout current: usize): void throws ParserError {
+  const start = snapshot(tokens[current]);
+  if (tokens[current].kind == TokenKind.awaitKeyword || tokens[current].kind == TokenKind.spawnKeyword) {
+    current = current + 1;
+  }
+  try expectKind(tokens, inout current, TokenKind.onKeyword, "`on` in an executor placement");
+  let parentheses: usize = 0;
+  let brackets: usize = 0;
+  while (true) {
+    const kind = tokens[current].kind;
+    if (kind == TokenKind.eof) throw fail(start, "unterminated executor placement");
+    if (kind == TokenKind.leftBrace && parentheses == 0 && brackets == 0) break;
+    if (kind == TokenKind.leftParen) parentheses = parentheses + 1;
+    else if (kind == TokenKind.rightParen && parentheses > 0) parentheses = parentheses - 1;
+    else if (kind == TokenKind.leftBracket) brackets = brackets + 1;
+    else if (kind == TokenKind.rightBracket && brackets > 0) brackets = brackets - 1;
+    current = current + 1;
+  }
+  try skipDelimited(tokens, inout current, TokenKind.leftBrace, TokenKind.rightBrace, "an executor-placement body");
+  takeIf(tokens, inout current, TokenKind.semicolon);
+}
+
+function parseProjectedBlock(
+  in tokens: Array<Token>,
+  inout current: usize,
+  in description: String
+): Array<Statement> throws ParserError {
+  const start = snapshot(tokens[current]);
+  try expectKind(tokens, inout current, TokenKind.leftBrace, description);
+  let statements = Array<Statement>();
+  while (tokens[current].kind != TokenKind.rightBrace && tokens[current].kind != TokenKind.eof) {
+    const statement = try parseProjectedStatement(tokens, inout current);
+    match (statement) {
+      some(value) => statements.push(value);
+      none => {}
+    }
+  }
+  if (tokens[current].kind == TokenKind.eof) throw fail(start, `unterminated ${description}`);
+  try expectKind(tokens, inout current, TokenKind.rightBrace, "`}` after a statement block");
+  return statements;
+}
+
+function parseProjectedStatement(
+  in tokens: Array<Token>,
+  inout current: usize
+): Option<Statement> throws ParserError {
+  const kind = tokens[current].kind;
+  if (startsExecutorPlacement(tokens, current)) {
+    try skipExecutorPlacement(tokens, inout current);
+    return Option<Statement>.none;
+  }
+  if (kind == TokenKind.leftBrace) {
+    const start = snapshot(tokens[current]);
+    const statements = try parseProjectedBlock(tokens, inout current, "a statement block");
+    return Option.some(Statement({
+      kind: StatementKind.blockStatement,
+      mutableBinding: false,
+      name: "",
+      nameOffset: 0,
+      nameLine: 0,
+      nameColumn: 0,
+      typeAnnotation: Option<TypeReference>.none,
+      expression: Option<ExpressionSyntax>.none,
+      statements,
+      offset: start.offset,
+      line: start.line,
+      column: start.column,
+    }));
+  }
+  if (kind == TokenKind.constKeyword || kind == TokenKind.letKeyword) {
+    const start = snapshot(tokens[current]);
+    const mutableBinding = kind == TokenKind.letKeyword;
+    current = current + 1;
+    const name = try expect(tokens, inout current, TokenKind.identifier, "a variable name");
+    let typeAnnotation = Option<TypeReference>.none;
+    if (takeIf(tokens, inout current, TokenKind.colon)) {
+      let pendingGreater: usize = 0;
+      const parsedType = try parseType(tokens, inout current, inout pendingGreater);
+      typeAnnotation = Option.some(parsedType);
+    }
+    let expression = Option<ExpressionSyntax>.none;
+    if (takeIf(tokens, inout current, TokenKind.semicolon)) {
+      if (!mutableBinding) throw fail(start, "const declarations require an initializer");
+    } else {
+      try expectKind(tokens, inout current, TokenKind.equal, "`=` in a variable declaration");
+      const scanned = try scanExpression(tokens, inout current, "a variable initializer");
+      expression = Option.some(scanned);
+    }
+    return Option.some(Statement({
+      kind: StatementKind.variableStatement,
+      mutableBinding,
+      name: name.text.copyBytes(0, name.text.byteLength),
+      nameOffset: name.offset,
+      nameLine: name.line,
+      nameColumn: name.column,
+      typeAnnotation,
+      expression,
+      statements: Array<Statement>(),
+      offset: start.offset,
+      line: start.line,
+      column: start.column,
+    }));
+  }
+  if (kind == TokenKind.returnKeyword) {
+    const start = snapshot(tokens[current]);
+    current = current + 1;
+    let expression = Option<ExpressionSyntax>.none;
+    if (!takeIf(tokens, inout current, TokenKind.semicolon)) {
+      const scanned = try scanExpression(tokens, inout current, "a return value");
+      expression = Option.some(scanned);
+    }
+    return Option.some(Statement({
+      kind: StatementKind.returnStatement,
+      mutableBinding: false,
+      name: "",
+      nameOffset: 0,
+      nameLine: 0,
+      nameColumn: 0,
+      typeAnnotation: Option<TypeReference>.none,
+      expression,
+      statements: Array<Statement>(),
+      offset: start.offset,
+      line: start.line,
+      column: start.column,
+    }));
+  }
+  if (
+    kind == TokenKind.ifKeyword
+    || kind == TokenKind.whileKeyword
+    || kind == TokenKind.forKeyword
+    || kind == TokenKind.matchKeyword
+    || kind == TokenKind.breakKeyword
+    || kind == TokenKind.continueKeyword
+    || kind == TokenKind.throwKeyword
+    || kind == TokenKind.selectKeyword
+    || kind == TokenKind.asyncKeyword
+  ) {
+    try skipProjectedStatement(tokens, inout current);
+    return Option<Statement>.none;
+  }
+  const start = snapshot(tokens[current]);
+  const scanned = try scanExpression(tokens, inout current, "an expression statement");
+  if (scanned.assignment) return Option<Statement>.none;
+  return Option.some(Statement({
+    kind: StatementKind.expressionStatement,
+    mutableBinding: false,
+    name: "",
+    nameOffset: 0,
+    nameLine: 0,
+    nameColumn: 0,
+    typeAnnotation: Option<TypeReference>.none,
+  expression: Option.some(scanned),
+    statements: Array<Statement>(),
+    offset: start.offset,
+    line: start.line,
+    column: start.column,
+  }));
 }
 
 function parseImport(
@@ -502,10 +793,11 @@ function parseFunctionDeclaration(
     const error = try parseType(tokens, inout current, inout pendingGreater);
     errorType = Option.some(error);
   }
+  let body = Array<Statement>();
   if (signatureOnly) {
     try expectKind(tokens, inout current, TokenKind.semicolon, "`;` after a function signature");
   } else {
-    try seekBody(tokens, inout current, `the body of ${name.text}`);
+    body = try parseProjectedBlock(tokens, inout current, `the body of ${name.text}`);
   }
   return FunctionDeclaration({
     name: name.text.copyBytes(0, name.text.byteLength),
@@ -517,6 +809,7 @@ function parseFunctionDeclaration(
     parameters,
     returnType,
     errorType,
+    body,
     offset: start.offset,
     line: start.line,
     column: start.column,
@@ -538,10 +831,11 @@ function parseConstructor(
     const error = try parseType(tokens, inout current, inout pendingGreater);
     errorType = Option.some(error);
   }
-  try seekBody(tokens, inout current, `the constructor body of ${ownerName}`);
+  const body = try parseProjectedBlock(tokens, inout current, `the constructor body of ${ownerName}`);
   return ConstructorDeclaration({
     parameters,
     errorType,
+    body,
     offset: start.offset,
     line: start.line,
     column: start.column,
@@ -586,8 +880,9 @@ function parseAggregateDeclaration(
     if (tokens[current].kind == TokenKind.deinitKeyword) {
       if (hasDeinitializer) throw fail(tokens[current], `${name.text} cannot declare more than one deinit block`);
       const cleanupToken = try expect(tokens, inout current, TokenKind.deinitKeyword, "a deinit declaration");
-      try skipDelimited(tokens, inout current, TokenKind.leftBrace, TokenKind.rightBrace, `the deinit body of ${name.text}`);
+      const body = try parseProjectedBlock(tokens, inout current, `the deinit body of ${name.text}`);
       deinitializer = Option.some(DeinitDeclaration({
+        body,
         offset: cleanupToken.offset,
         line: cleanupToken.line,
         column: cleanupToken.column,
@@ -824,6 +1119,58 @@ export function parseProgram(in tokens: Array<Token>): Program throws ParserErro
     }
   }
   return Program({ declarations, functions, aggregates, traits, enums });
+}
+
+function statementText(in statement: Statement): String {
+  let output = TextBuffer();
+  if (statement.kind == StatementKind.variableStatement) output.append("variable@");
+  else if (statement.kind == StatementKind.returnStatement) output.append("return@");
+  else if (statement.kind == StatementKind.expressionStatement) output.append("expression@");
+  else output.append("block@");
+  output.append(`${statement.offset},${statement.line},${statement.column}`);
+  output.append("(");
+  if (statement.kind == StatementKind.variableStatement) {
+    if (statement.mutableBinding) output.append("let:");
+    else output.append("const:");
+    output.append(statement.name);
+    output.append("@");
+    output.append(`${statement.nameOffset},${statement.nameLine},${statement.nameColumn}`);
+    match (in statement.typeAnnotation) {
+      some(typeAnnotation) => {
+        output.append(":");
+        output.append(typeAnnotation.name);
+        output.append("@");
+        output.append(`${typeAnnotation.offset},${typeAnnotation.line},${typeAnnotation.column}`);
+      }
+      none => {}
+    }
+  }
+  match (in statement.expression) {
+    some(expression) => {
+      output.append("=");
+      output.append(`${expression.offset},${expression.line},${expression.column}`);
+      output.append(":");
+      output.append(expression.tokens);
+    }
+    none => {}
+  }
+  for (const child of statement.statements) {
+    const childText = statementText(child);
+    output.append(childText);
+  }
+  output.append(")");
+  return output.finish();
+}
+
+export function functionBodyText(in declaration: FunctionDeclaration): String {
+  let output = TextBuffer();
+  output.append("{");
+  for (const statement of declaration.body) {
+    const rendered = statementText(statement);
+    output.append(rendered);
+  }
+  output.append("}");
+  return output.finish();
 }
 
 export function functionSignatureText(in declaration: FunctionDeclaration): String {

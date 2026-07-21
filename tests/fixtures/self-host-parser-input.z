@@ -69,6 +69,15 @@ function consume(move this): i32 {
   return 0;
 }
 
+function bodyShapes(value: i32): i32 {
+  let observed: i32;
+  {
+    const adjusted: i32 = value + 1;
+    bodyShapes(adjusted);
+  }
+  return value;
+}
+
 function main(): i32 {
   const reading = Reading({ value: 42 });
   return reading.measure();

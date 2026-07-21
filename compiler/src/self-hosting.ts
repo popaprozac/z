@@ -25,6 +25,16 @@ export type Stage1FunctionSignature = {
   };
 };
 
+export type Stage1FunctionBody = {
+  readonly text: string;
+  readonly location: {
+    readonly offset: number;
+    readonly line: number;
+    readonly column: number;
+    readonly fileName: string;
+  };
+};
+
 export type Stage1TypeShapeKind = "struct" | "class" | "trait" | "enum";
 
 export type Stage1TypeShape = {
@@ -41,6 +51,7 @@ export type Stage1TypeShape = {
 export type Stage1Program = {
   readonly declarations: readonly Stage1Declaration[];
   readonly functionSignatures: readonly Stage1FunctionSignature[];
+  readonly functionBodies: readonly Stage1FunctionBody[];
   readonly typeShapes: readonly Stage1TypeShape[];
 };
 
@@ -74,6 +85,7 @@ export function decodeStage1DeclarationStream(output: string, fileName: string):
 export function decodeStage1ProgramStream(output: string, fileName: string): Stage1Program {
   const declarations: Stage1Declaration[] = [];
   const functionSignatures: Stage1FunctionSignature[] = [];
+  const functionBodies: Stage1FunctionBody[] = [];
   const typeShapes: Stage1TypeShape[] = [];
   for (const line of output.split("\n").filter((candidate) => candidate.length > 0)) {
     const fields = line.split("\t");
@@ -89,6 +101,23 @@ export function decodeStage1ProgramStream(output: string, fileName: string): Sta
           offset: parseProtocolHexInteger(offsetText, "function signature offset"),
           line: parseProtocolHexInteger(lineText, "function signature line"),
           column: parseProtocolHexInteger(columnText, "function signature column"),
+          fileName,
+        },
+      });
+      continue;
+    }
+    if (fields[0] === "body") {
+      if (fields.length !== 5) throw new Error(`malformed stage-1 function body line: ${line}`);
+      const [, offsetText, lineText, columnText, hexadecimalText] = fields;
+      if (!/^(?:[0-9a-f]{2})*$/.test(hexadecimalText)) {
+        throw new Error(`malformed stage-1 function body text: ${hexadecimalText}`);
+      }
+      functionBodies.push({
+        text: Buffer.from(hexadecimalText, "hex").toString("utf8"),
+        location: {
+          offset: parseProtocolHexInteger(offsetText, "function body offset"),
+          line: parseProtocolHexInteger(lineText, "function body line"),
+          column: parseProtocolHexInteger(columnText, "function body column"),
           fileName,
         },
       });
@@ -139,7 +168,7 @@ export function decodeStage1ProgramStream(output: string, fileName: string): Sta
     });
   }
   typeShapes.sort((left, right) => left.location.offset - right.location.offset);
-  return { declarations, functionSignatures, typeShapes };
+  return { declarations, functionSignatures, functionBodies, typeShapes };
 }
 
 export function decodeStage1ProgramBatchStream(output: string): Stage1ProgramBatch {
