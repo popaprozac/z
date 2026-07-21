@@ -4,7 +4,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 
 import { basename, dirname, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import type { FunctionDeclaration, Program, SourceLocation, Statement } from "./ast.ts";
+import type { Expression, FunctionDeclaration, Program, SourceLocation, Statement } from "./ast.ts";
 import { parseDynamicArrayType, parseFixedArrayType, parseSliceType } from "./array-types.ts";
 import { check, compileToNative, type NativeArtifact } from "./compiler.ts";
 import { DiagnosticError, formatDiagnostic } from "./diagnostics.ts";
@@ -215,14 +215,18 @@ function canonicalStatementText(statement: Statement, tokens: readonly Token[]):
       : "";
     const initializerStart = statement.initializer ? lexicalExpressionStart(tokens, statement.location.offset, "equal") : null;
     const expression = initializerStart
-      ? `=${canonicalLocation(initializerStart.location)}:${canonicalExpressionTokens(tokens, initializerStart.location.offset)}`
+      ? `=${canonicalLocation(initializerStart.location)}:${canonicalExpressionTokens(tokens, initializerStart.location.offset)}#${
+          canonicalExpressionTree(statement.initializer!) ?? "opaque"
+        }`
       : "";
     return `variable@${location}(${binding}:${statement.name}@${canonicalLocation(statement.nameLocation)}${type}${expression})`;
   }
   if (statement.kind === "return") {
     const returnStart = statement.expression ? lexicalExpressionStart(tokens, statement.location.offset, "return") : null;
     const expression = returnStart
-      ? `=${canonicalLocation(returnStart.location)}:${canonicalExpressionTokens(tokens, returnStart.location.offset)}`
+      ? `=${canonicalLocation(returnStart.location)}:${canonicalExpressionTokens(tokens, returnStart.location.offset)}#${
+          canonicalExpressionTree(statement.expression!) ?? "opaque"
+        }`
       : "";
     return `return@${location}(${expression})`;
   }
@@ -232,7 +236,7 @@ function canonicalStatementText(statement: Statement, tokens: readonly Token[]):
     return `expression@${canonicalLocation(expressionStart.location)}(=${canonicalLocation(expressionStart.location)}:${canonicalExpressionTokens(
       tokens,
       expressionStart.location.offset,
-    )})`;
+    )}#${canonicalExpressionTree(statement.expression) ?? "opaque"})`;
   }
   if (statement.kind === "block") {
     return `block@${location}(${statement.statements.map((child) => canonicalStatementText(child, tokens)).join("")})`;
@@ -273,6 +277,82 @@ function lexicalExpressionStart(
     if (tokens[index].kind === "semicolon" || tokens[index].kind === "eof") break;
   }
   throw new Error(`could not find variable initializer at source offset ${statementOffset}`);
+}
+
+type FlatExpressionNode = {
+  readonly kind: string;
+  readonly value: string;
+  readonly children: readonly number[];
+  readonly labels: readonly string[];
+  readonly location: SourceLocation;
+};
+
+function canonicalExpressionTree(expression: Expression): string | null {
+  const nodes: FlatExpressionNode[] = [];
+  const root = flattenExpression(expression, nodes);
+  if (root === null) return null;
+  return `root:${root};${nodes.map((node) => (
+    `${node.kind}@${canonicalLocation(node.location)}:${Buffer.byteLength(node.value, "utf8")}:${node.value}`
+    + `[${node.children.join(",")}]`
+    + `{${node.labels.map((label) => `${Buffer.byteLength(label, "utf8")}:${label}`).join(",")}};`
+  )).join("")}`;
+}
+
+function flattenExpression(expression: Expression, nodes: FlatExpressionNode[]): number | null {
+  const leaf = (kind: string, value: string): number => {
+    const index = nodes.length;
+    nodes.push({ kind, value, children: [], labels: [], location: expression.location });
+    return index;
+  };
+  if (expression.kind === "identifier") {
+    if (parseGenericType(expression.name)) return null;
+    return leaf("identifier", expression.name);
+  }
+  if (expression.kind === "number") return leaf("number", expression.value);
+  if (expression.kind === "string") return leaf("string", expression.value);
+  if (expression.kind === "boolean") return leaf("boolean", expression.value ? "true" : "false");
+  if (expression.kind === "null") return leaf("null", "");
+
+  const append = (kind: string, value: string, children: readonly number[], labels: readonly string[]): number => {
+    const index = nodes.length;
+    nodes.push({ kind, value, children, labels, location: expression.location });
+    return index;
+  };
+  if (expression.kind === "arrayExpression") {
+    const children = flattenExpressions(expression.elements, nodes);
+    return children ? append("arrayExpression", "", children, []) : null;
+  }
+  if (expression.kind === "objectExpression") {
+    const children = flattenExpressions(expression.fields.map((field) => field.expression), nodes);
+    return children ? append("objectExpression", "", children, expression.fields.map((field) => field.name)) : null;
+  }
+  if (expression.kind === "member") {
+    const object = flattenExpression(expression.object, nodes);
+    return object === null ? null : append("member", expression.property, [object], []);
+  }
+  if (expression.kind === "call") {
+    const callee = flattenExpression(expression.callee, nodes);
+    if (callee === null) return null;
+    const arguments_ = flattenExpressions(expression.arguments, nodes);
+    return arguments_ ? append("call", "", [callee, ...arguments_], expression.argumentLabels.map((label) => label ?? "")) : null;
+  }
+  if (expression.kind === "index") {
+    const object = flattenExpression(expression.object, nodes);
+    if (object === null) return null;
+    const index = flattenExpression(expression.index, nodes);
+    return index === null ? null : append("index", "", [object, index], []);
+  }
+  return null;
+}
+
+function flattenExpressions(expressions: readonly Expression[], nodes: FlatExpressionNode[]): number[] | null {
+  const children: number[] = [];
+  for (const expression of expressions) {
+    const child = flattenExpression(expression, nodes);
+    if (child === null) return null;
+    children.push(child);
+  }
+  return children;
 }
 
 function canonicalExpressionTokens(tokens: readonly Token[], startOffset: number): string {

@@ -69,9 +69,38 @@ export enum StatementKind {
   blockStatement,
 }
 
+export enum ExpressionKind {
+  identifierExpression,
+  numberExpression,
+  stringExpression,
+  booleanExpression,
+  nullExpression,
+  arrayExpression,
+  objectExpression,
+  memberExpression,
+  callExpression,
+  indexExpression,
+}
+
+export struct ExpressionNode {
+  kind: ExpressionKind;
+  value: String;
+  children: Array<usize>;
+  labels: Array<String>;
+  offset: usize;
+  line: usize;
+  column: usize;
+}
+
+export struct ExpressionTree {
+  nodes: Array<ExpressionNode>;
+  root: usize;
+}
+
 export struct ExpressionSyntax {
   tokens: String;
   assignment: boolean;
+  tree: Option<ExpressionTree>;
   offset: usize;
   line: usize;
   column: usize;
@@ -459,6 +488,243 @@ function skipDelimited(
   }
 }
 
+function pushExpressionNode(
+  inout nodes: Array<ExpressionNode>,
+  kind: ExpressionKind,
+  value: String,
+  children: Array<usize>,
+  labels: Array<String>,
+  in token: Token
+): usize {
+  const index = nodes.length;
+  nodes.push(ExpressionNode({
+    kind,
+    value,
+    children,
+    labels,
+    offset: token.offset,
+    line: token.line,
+    column: token.column,
+  }));
+  return index;
+}
+
+function parsePrimaryTree(
+  in tokens: Array<Token>,
+  inout current: usize,
+  end: usize,
+  inout nodes: Array<ExpressionNode>
+): usize throws ParserError {
+  if (current >= end) throw fail(tokens[current], "expected a primary expression");
+  const start = snapshot(tokens[current]);
+  if (start.kind == TokenKind.identifier) {
+    current = current + 1;
+    return pushExpressionNode(
+      inout nodes,
+      ExpressionKind.identifierExpression,
+      start.text.copyBytes(0, start.text.byteLength),
+      Array<usize>(),
+      Array<String>(),
+      start
+    );
+  }
+  if (start.kind == TokenKind.number) {
+    current = current + 1;
+    return pushExpressionNode(
+      inout nodes,
+      ExpressionKind.numberExpression,
+      start.text.copyBytes(0, start.text.byteLength),
+      Array<usize>(),
+      Array<String>(),
+      start
+    );
+  }
+  if (start.kind == TokenKind.string) {
+    current = current + 1;
+    return pushExpressionNode(
+      inout nodes,
+      ExpressionKind.stringExpression,
+      start.text.copyBytes(0, start.text.byteLength),
+      Array<usize>(),
+      Array<String>(),
+      start
+    );
+  }
+  if (start.kind == TokenKind.trueKeyword || start.kind == TokenKind.falseKeyword) {
+    current = current + 1;
+    return pushExpressionNode(
+      inout nodes,
+      ExpressionKind.booleanExpression,
+      start.text.copyBytes(0, start.text.byteLength),
+      Array<usize>(),
+      Array<String>(),
+      start
+    );
+  }
+  if (start.kind == TokenKind.nullKeyword) {
+    current = current + 1;
+    return pushExpressionNode(
+      inout nodes,
+      ExpressionKind.nullExpression,
+      "",
+      Array<usize>(),
+      Array<String>(),
+      start
+    );
+  }
+  if (start.kind == TokenKind.leftParen) {
+    current = current + 1;
+    const root = try parsePostfixTree(tokens, inout current, end, inout nodes);
+    try expectKind(tokens, inout current, TokenKind.rightParen, "`)` after a parenthesized expression");
+    return root;
+  }
+  if (start.kind == TokenKind.leftBracket) {
+    current = current + 1;
+    let children = Array<usize>();
+    if (tokens[current].kind != TokenKind.rightBracket) {
+      while (true) {
+        const element = try parsePostfixTree(tokens, inout current, end, inout nodes);
+        children.push(element);
+        if (!takeIf(tokens, inout current, TokenKind.comma)) break;
+        if (tokens[current].kind == TokenKind.rightBracket) break;
+      }
+    }
+    try expectKind(tokens, inout current, TokenKind.rightBracket, "`]` after array elements");
+    return pushExpressionNode(
+      inout nodes,
+      ExpressionKind.arrayExpression,
+      "",
+      children,
+      Array<String>(),
+      start
+    );
+  }
+  if (start.kind == TokenKind.leftBrace) {
+    current = current + 1;
+    let children = Array<usize>();
+    let labels = Array<String>();
+    while (tokens[current].kind != TokenKind.rightBrace) {
+      const field = try expect(tokens, inout current, TokenKind.identifier, "an object field name");
+      labels.push(field.text.copyBytes(0, field.text.byteLength));
+      if (takeIf(tokens, inout current, TokenKind.colon)) {
+        const value = try parsePostfixTree(tokens, inout current, end, inout nodes);
+        children.push(value);
+      } else {
+        const value = pushExpressionNode(
+          inout nodes,
+          ExpressionKind.identifierExpression,
+          field.text.copyBytes(0, field.text.byteLength),
+          Array<usize>(),
+          Array<String>(),
+          field
+        );
+        children.push(value);
+      }
+      if (!takeIf(tokens, inout current, TokenKind.comma)) break;
+      if (tokens[current].kind == TokenKind.rightBrace) break;
+    }
+    try expectKind(tokens, inout current, TokenKind.rightBrace, "`}` after object fields");
+    return pushExpressionNode(
+      inout nodes,
+      ExpressionKind.objectExpression,
+      "",
+      children,
+      labels,
+      start
+    );
+  }
+  throw fail(start, `primary expression ${start.text} is not in the first expression-tree slice`);
+}
+
+function parsePostfixTree(
+  in tokens: Array<Token>,
+  inout current: usize,
+  end: usize,
+  inout nodes: Array<ExpressionNode>
+): usize throws ParserError {
+  let root = try parsePrimaryTree(tokens, inout current, end, inout nodes);
+  while (current < end) {
+    if (takeIf(tokens, inout current, TokenKind.dot)) {
+      const property = try expect(tokens, inout current, TokenKind.identifier, "a member name");
+      let children = Array<usize>();
+      children.push(root);
+      root = pushExpressionNode(
+        inout nodes,
+        ExpressionKind.memberExpression,
+        property.text.copyBytes(0, property.text.byteLength),
+        children,
+        Array<String>(),
+        property
+      );
+      continue;
+    }
+    if (tokens[current].kind == TokenKind.leftParen) {
+      const call = snapshot(tokens[current]);
+      current = current + 1;
+      let children = Array<usize>();
+      let labels = Array<String>();
+      children.push(root);
+      if (tokens[current].kind != TokenKind.rightParen) {
+        while (true) {
+          if (
+            current + 1 < end
+            && tokens[current].kind == TokenKind.identifier
+            && tokens[current + 1].kind == TokenKind.colon
+          ) {
+            labels.push(tokens[current].text.copyBytes(0, tokens[current].text.byteLength));
+            current = current + 2;
+          } else labels.push("");
+          const argument = try parsePostfixTree(tokens, inout current, end, inout nodes);
+          children.push(argument);
+          if (!takeIf(tokens, inout current, TokenKind.comma)) break;
+        }
+      }
+      try expectKind(tokens, inout current, TokenKind.rightParen, "`)` after call arguments");
+      root = pushExpressionNode(
+        inout nodes,
+        ExpressionKind.callExpression,
+        "",
+        children,
+        labels,
+        call
+      );
+      continue;
+    }
+    if (tokens[current].kind == TokenKind.leftBracket) {
+      const bracket = snapshot(tokens[current]);
+      current = current + 1;
+      const index = try parsePostfixTree(tokens, inout current, end, inout nodes);
+      try expectKind(tokens, inout current, TokenKind.rightBracket, "`]` after an index expression");
+      let children = Array<usize>();
+      children.push(root);
+      children.push(index);
+      root = pushExpressionNode(
+        inout nodes,
+        ExpressionKind.indexExpression,
+        "",
+        children,
+        Array<String>(),
+        bracket
+      );
+      continue;
+    }
+    break;
+  }
+  return root;
+}
+
+function parseExpressionTree(
+  in tokens: Array<Token>,
+  start: usize,
+  end: usize
+): ExpressionTree throws ParserError {
+  let current = start;
+  let nodes = Array<ExpressionNode>();
+  const root = try parsePostfixTree(tokens, inout current, end, inout nodes);
+  if (current != end) throw fail(tokens[current], `expression token ${tokens[current].text} is not in the first expression-tree slice`);
+  return ExpressionTree({ nodes, root });
+}
+
 function scanExpression(
   in tokens: Array<Token>,
   inout current: usize,
@@ -513,10 +779,17 @@ function scanExpression(
     current = current + 1;
   }
   if (current == startIndex) throw fail(start, `expected ${description}`);
+  let tree = Option<ExpressionTree>.none;
+  const treeOutcome = attempt parseExpressionTree(tokens, startIndex, current);
+  match (treeOutcome) {
+    success(parsed) => tree = Option.some(parsed);
+    failure(error) => {}
+  }
   current = current + 1;
   return ExpressionSyntax({
     tokens: output.finish(),
     assignment,
+    tree,
     offset: start.offset,
     line: start.line,
     column: start.column,
@@ -717,7 +990,7 @@ function parseProjectedStatement(
     nameLine: 0,
     nameColumn: 0,
     typeAnnotation: Option<TypeReference>.none,
-  expression: Option.some(scanned),
+    expression: Option.some(scanned),
     statements: Array<Statement>(),
     offset: start.offset,
     line: start.line,
@@ -1121,6 +1394,52 @@ export function parseProgram(in tokens: Array<Token>): Program throws ParserErro
   return Program({ declarations, functions, aggregates, traits, enums });
 }
 
+function expressionKindName(kind: ExpressionKind): String {
+  return match (kind) {
+    identifierExpression => "identifier";
+    numberExpression => "number";
+    stringExpression => "string";
+    booleanExpression => "boolean";
+    nullExpression => "null";
+    arrayExpression => "arrayExpression";
+    objectExpression => "objectExpression";
+    memberExpression => "member";
+    callExpression => "call";
+    indexExpression => "index";
+  };
+}
+
+function expressionTreeText(in tree: ExpressionTree): String {
+  let output = TextBuffer();
+  output.append(`root:${tree.root};`);
+  for (const node of tree.nodes) {
+    output.append(expressionKindName(node.kind));
+    output.append("@");
+    output.append(`${node.offset},${node.line},${node.column}`);
+    output.append(":");
+    output.append(`${node.value.byteLength}`);
+    output.append(":");
+    output.append(node.value);
+    output.append("[");
+    let firstChild = true;
+    for (const child of node.children) {
+      if (!firstChild) output.append(",");
+      firstChild = false;
+      output.append(`${child}`);
+    }
+    output.append("]{");
+    let firstLabel = true;
+    for (const label of node.labels) {
+      if (!firstLabel) output.append(",");
+      firstLabel = false;
+      output.append(`${label.byteLength}:`);
+      output.append(label);
+    }
+    output.append("};");
+  }
+  return output.finish();
+}
+
 function statementText(in statement: Statement): String {
   let output = TextBuffer();
   if (statement.kind == StatementKind.variableStatement) output.append("variable@");
@@ -1151,6 +1470,14 @@ function statementText(in statement: Statement): String {
       output.append(`${expression.offset},${expression.line},${expression.column}`);
       output.append(":");
       output.append(expression.tokens);
+      output.append("#");
+      match (in expression.tree) {
+        some(tree) => {
+          const renderedTree = expressionTreeText(tree);
+          output.append(renderedTree);
+        }
+        none => output.append("opaque");
+      }
     }
     none => {}
   }

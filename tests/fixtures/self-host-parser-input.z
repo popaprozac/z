@@ -78,6 +78,19 @@ function bodyShapes(value: i32): i32 {
   return value;
 }
 
+function expressionShapes(value: i32): i32 {
+  const numberValue = 42;
+  const stringValue = "ready";
+  const trueValue = true;
+  const falseValue = false;
+  const emptyValue = null;
+  const values = [value, 42];
+  const selected = values[0];
+  const object = { value, label: "sample" };
+  bodyShapes(value: selected);
+  return (object.value);
+}
+
 function main(): i32 {
   const reading = Reading({ value: 42 });
   return reading.measure();

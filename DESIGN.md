@@ -1422,18 +1422,22 @@ ported independently rather than translated as one monolith.
    constraints, capabilities, nested types, returns, typed errors, constructors,
    static/async methods, and `deinit` all have canonical stage-0 parity. Function
    bodies now own the first statement AST slice: `const`/`let`, `return`,
-   expression statements, and recursively nested standalone blocks. Expression
-   nodes retain source-located canonical token spans until the precedence parser
-   lands; assignments and other statement forms are traversed but deliberately
-   not materialized as this subset. Exact stage-0 parity covers every top-level
-   function body in the fixture, lexer, and parser corpus. The temporary buffered
+   expression statements, and recursively nested standalone blocks. Primary and
+   postfix expressions now use an owned flat node arena: identifiers, scalar
+   literals, parenthesized expressions, arrays, objects, calls, member access,
+   and indexes have exact node-kind, value, edge, label, and location parity
+   without per-node heap boxes. Expressions outside that slice retain
+   source-located canonical token spans and are explicitly opaque until the
+   precedence parser lands; assignments and other statement forms are traversed
+   but deliberately not materialized as this subset. Exact stage-0 parity covers
+   every top-level function body in the fixture, lexer, and parser corpus. The temporary buffered
    native protocols are exposed through `z self-host-lex` and
    `z self-host-parse`. The parser bridge is content-addressed across compiler
    and frontend sources and parses a complete corpus in one native process;
    `--timings` separates bridge preparation, native startup/I/O/frontend work,
-   protocol decoding, and the stage-0 parity parse. Complete statements, parsed
-   expression trees, a
-   direct in-process driver ABI, and a broader parity corpus precede replacing
+   protocol decoding, and the stage-0 parity parse. Unary/binary/conditional and
+   language-specific prefix expressions, complete statements, a direct
+   in-process driver ABI, and a broader parity corpus precede replacing
    bootstrap frontend phases in ordinary commands. Performance claims wait for
    that in-process seam and equivalent frontend coverage rather than conflating
    partial parsing, native compilation, and subprocess startup.
