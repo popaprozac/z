@@ -1514,17 +1514,18 @@ ported independently rather than translated as one monolith.
    direct assignment enforces the `const`/value/`in` versus
    `let`/`inout`/`out` distinction. That record now also carries definite
    initialization and ownership state. Direct assignments and nested blocks update it, `if`
-   branches merge it, loops conservatively include zero iterations, reads reject
+   merges only branches that can continue, loops conservatively include zero iterations, reads reject
    uninitialized/maybe-uninitialized values, and successful exits require every
    `out` parameter to be initialized. Ownership is available, moved, or
    maybe-moved; cleanup-bearing values passed to owned parameters transfer while
    ARC classes, weak references, and function values copy their managed handle.
-   Branches and loops merge that state, assignment and successful `out` restore
-   it, and borrowed storage cannot be consumed. Exhaustive consuming matches move
+   Continuing branches and loops merge that state while exiting branches are
+   excluded; assignment and successful `out` restore it, and borrowed storage
+   cannot be consumed. Exhaustive consuming matches move
    cleanup-bearing subjects and expose owned payload bindings; `match (in value)`
    requires named storage and exposes borrowed cleanup-bearing payloads. Object
    patterns keep cleanup-bearing fields borrowed, and every continuing arm merges
-   its outer flow state. Nested mutation and richer reachability remain later
+   its outer flow state. Nested mutation and loop-control reachability remain later
    flow-state layers over the same record. Local initialization, replacement
    assignment, return, throw, selected match values, conditional branches,
    fixed-array elements, synthesized aggregate fields, and enum payloads all use

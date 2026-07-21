@@ -336,8 +336,8 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    first capability-state bit: direct reassignment accepts `let`, `inout`, and
    `out` storage while rejecting `const`, value, and `in` bindings. Bindings also
    carry initialized, uninitialized, or maybe-uninitialized state. Direct
-   assignments and nested blocks update it, `if` branches merge it, loops retain
-   the conservative zero-iteration path, and successful returns/fallthrough
+   assignments and nested blocks update it, `if` merges only continuing branches,
+   loops retain the conservative zero-iteration path, and successful returns/fallthrough
    require every `out` parameter to be initialized. Direct/imported function and
    Z-method calls now enforce `out`/`inout` markers, mutable storage, initialized
    `inout` input, invalid explicit capabilities on value/`in` parameters, and
@@ -350,8 +350,9 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    class borrows reject it, and borrowed `this` cannot invoke `move this`.
    Bindings now additionally carry available, moved, or maybe-moved state.
    Cleanup-bearing values passed to owned parameters transfer ownership while
-   ARC classes, weak references, and function values copy; branches and loops
-   merge state conservatively, borrowed bindings cannot be consumed, assignment
+   ARC classes, weak references, and function values copy; continuing branches
+   and loops merge state conservatively while exiting branches are excluded,
+   borrowed bindings cannot be consumed, assignment
    and successful `out` restore storage, and `move this` invalidates a named
    receiver. Exhaustive `match (value)` consumes cleanup-bearing subjects while
    `match (in value)` borrows named storage; payload bindings inherit the matching
@@ -383,8 +384,9 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    Enclosing return contracts now flow through statement match arms, and
    payload-free enum/`Option` constructors no longer resemble partial field
    moves to ownership analysis. With explicit copies on alternate owned-String
-   result paths, the resolver now analyzes its own implementation before the
-   native pass advances into its parser dependency.
+   result paths, the native resolver now analyzes the complete three-module
+   frontend graph—lexer, parser, and resolver—with 335 symbols and exact
+   stage-zero graph/symbol parity.
    Complete
    contextual literal and return-driven inference, foreign/intrinsic method lookup,
    generic constraints/methods, async/foreign call effects, contextual untyped

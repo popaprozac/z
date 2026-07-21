@@ -3291,7 +3291,7 @@ function inferMatchArmStatementType(
     };
   }
   if (kind == StatementKind.returnStatement || kind == StatementKind.throwStatement) {
-    try inferStatement(
+    const continues = try inferStatement(
       module,
       modules,
       moduleIndex,
@@ -3300,14 +3300,15 @@ function inferMatchArmStatementType(
       inout bindings,
       expectedReturn
     );
-    return "__z_never";
+    if (!continues) return "__z_never";
+    return "";
   }
   if (kind == StatementKind.blockStatement) {
     const children = copyIndices(arena.nodes[statementIndex].children);
     if (children.length == 0) return "";
     let index: usize = 0;
     while (index + 1 < children.length) {
-      try inferStatement(
+      const continues = try inferStatement(
         module,
         modules,
         moduleIndex,
@@ -3316,6 +3317,7 @@ function inferMatchArmStatementType(
         inout bindings,
         expectedReturn
       );
+      if (!continues) return "__z_never";
       index = index + 1;
     }
     return try inferMatchArmStatementType(
@@ -3328,7 +3330,7 @@ function inferMatchArmStatementType(
       inout bindings
     );
   }
-  try inferStatement(
+  const continues = try inferStatement(
     module,
     modules,
     moduleIndex,
@@ -3337,6 +3339,7 @@ function inferMatchArmStatementType(
     inout bindings,
     expectedReturn
   );
+  if (!continues) return "__z_never";
   return "";
 }
 
@@ -5637,7 +5640,7 @@ function inferStatement(
   index: usize,
   inout bindings: Array<NativeValueBinding>,
   in expectedReturn: String
-): void throws ModuleResolveError {
+): boolean throws ModuleResolveError {
   const kind = arena.nodes[index].kind;
   const statementChildren = copyIndices(arena.nodes[index].children);
   if (kind == StatementKind.variableStatement) {
@@ -5702,7 +5705,7 @@ function inferStatement(
     } else {
       addValueBinding(inout bindings, arena.nodes[index].name, stored);
     }
-    return;
+    return true;
   }
   if (kind == StatementKind.assignmentStatement) {
     let expected = "";
@@ -5845,7 +5848,7 @@ function inferStatement(
       }
       none => {}
     }
-    return;
+    return true;
   }
   if (kind == StatementKind.throwStatement) {
     const expectedError = valueBindingType(bindings, "__z_native_error_type");
@@ -5889,7 +5892,7 @@ function inferStatement(
       }
       none => {}
     }
-    return;
+    return false;
   }
   if (
     kind == StatementKind.expressionStatement
@@ -5905,11 +5908,11 @@ function inferStatement(
           expression,
           inout bindings
         );
-        if (expressionType.byteLength == 0) return;
+        if (expressionType == "__z_never") return false;
       }
       none => {}
     }
-    return;
+    return true;
   }
   if (kind == StatementKind.returnStatement || kind == StatementKind.selectStatement) {
     match (in arena.nodes[index].expression) {
@@ -5958,7 +5961,7 @@ function inferStatement(
         bindings
       );
     }
-    return;
+    return false;
   }
   if (kind == StatementKind.ifStatement || kind == StatementKind.whileStatement) {
     match (in arena.nodes[index].expression) {
@@ -5981,8 +5984,10 @@ function inferStatement(
   if (kind == StatementKind.ifStatement) {
     let thenBindings = copyValueBindings(bindings);
     let elseBindings = copyValueBindings(bindings);
+    let thenContinues = true;
+    let elseContinues = true;
     if (statementChildren.length > 0) {
-      try inferStatement(
+      thenContinues = try inferStatement(
         module,
         modules,
         moduleIndex,
@@ -5993,7 +5998,7 @@ function inferStatement(
       );
     }
     if (statementChildren.length > 1) {
-      try inferStatement(
+      elseContinues = try inferStatement(
         module,
         modules,
         moduleIndex,
@@ -6003,17 +6008,23 @@ function inferStatement(
         expectedReturn
       );
     }
-    mergeBindingFlowStates(
-      inout bindings,
-      thenBindings,
-      elseBindings
-    );
-    return;
+    if (thenContinues && elseContinues) {
+      mergeBindingFlowStates(
+        inout bindings,
+        thenBindings,
+        elseBindings
+      );
+    } else if (thenContinues) {
+      copyBindingFlowStates(inout bindings, thenBindings);
+    } else if (elseContinues) {
+      copyBindingFlowStates(inout bindings, elseBindings);
+    }
+    return thenContinues || elseContinues;
   }
   if (kind == StatementKind.whileStatement) {
     const beforeLoop = copyValueBindings(bindings);
     let loopBindings = copyValueBindings(bindings);
-    try inferStatementSequence(
+    const loopContinues = try inferStatementSequence(
       module,
       modules,
       moduleIndex,
@@ -6022,12 +6033,16 @@ function inferStatement(
       inout loopBindings,
       expectedReturn
     );
-    mergeBindingFlowStates(
-      inout bindings,
-      beforeLoop,
-      loopBindings
-    );
-    return;
+    if (loopContinues) {
+      mergeBindingFlowStates(
+        inout bindings,
+        beforeLoop,
+        loopBindings
+      );
+    } else {
+      copyBindingFlowStates(inout bindings, beforeLoop);
+    }
+    return true;
   }
   if (kind == StatementKind.forStatement) {
     const beforeLoop = copyValueBindings(bindings);
@@ -6041,7 +6056,7 @@ function inferStatement(
       none => {}
     }
     addValueBinding(inout loopBindings, arena.nodes[index].name, elementType);
-    try inferStatementSequence(
+    const loopContinues = try inferStatementSequence(
       module,
       modules,
       moduleIndex,
@@ -6050,15 +6065,19 @@ function inferStatement(
       inout loopBindings,
       expectedReturn
     );
-    mergeBindingFlowStates(
-      inout bindings,
-      beforeLoop,
-      loopBindings
-    );
-    return;
+    if (loopContinues) {
+      mergeBindingFlowStates(
+        inout bindings,
+        beforeLoop,
+        loopBindings
+      );
+    } else {
+      copyBindingFlowStates(inout bindings, beforeLoop);
+    }
+    return true;
   }
   let nestedBindings = copyValueBindings(bindings);
-  try inferStatementSequence(
+  const nestedContinues = try inferStatementSequence(
     module,
     modules,
     moduleIndex,
@@ -6067,7 +6086,8 @@ function inferStatement(
     inout nestedBindings,
     expectedReturn
   );
-  copyBindingFlowStates(inout bindings, nestedBindings);
+  if (nestedContinues) copyBindingFlowStates(inout bindings, nestedBindings);
+  return nestedContinues;
 }
 
 function inferStatementSequence(
@@ -6078,9 +6098,9 @@ function inferStatementSequence(
   in indices: Array<usize>,
   inout bindings: Array<NativeValueBinding>,
   in expectedReturn: String
-): void throws ModuleResolveError {
+): boolean throws ModuleResolveError {
   for (const index of indices) {
-    try inferStatement(
+    const continues = try inferStatement(
       module,
       modules,
       moduleIndex,
@@ -6089,7 +6109,9 @@ function inferStatementSequence(
       inout bindings,
       expectedReturn
     );
+    if (!continues) return false;
   }
+  return true;
 }
 
 function functionValueBindings(in parameters: Array<Parameter>): Array<NativeValueBinding> {

@@ -6236,6 +6236,37 @@ test("resolves a canonical module graph directly from native Z ASTs", () => {
   writeFileSync(
     bindingState,
     "struct Resource { id: i32; deinit {} }\n"
+      + "function choose(flag: boolean): Resource {\n"
+      + "  const resource = Resource({ id: 42 });\n"
+      + "  if (flag) return resource;\n"
+      + "  return resource;\n"
+      + "}\n",
+  );
+  const moveOnExitingBranch = spawnSync(
+    process.execPath,
+    [cli, "self-host-resolve", bindingState],
+    { encoding: "utf8" },
+  );
+  assert.equal(moveOnExitingBranch.status, 0, moveOnExitingBranch.stderr);
+
+  writeFileSync(
+    bindingState,
+    "function initializedOnContinuingBranch(flag: boolean): i32 {\n"
+      + "  let value: i32;\n"
+      + "  if (flag) value = 42; else return 0;\n"
+      + "  return value;\n"
+      + "}\n",
+  );
+  const initializedContinuingBranch = spawnSync(
+    process.execPath,
+    [cli, "self-host-resolve", bindingState],
+    { encoding: "utf8" },
+  );
+  assert.equal(initializedContinuingBranch.status, 0, initializedContinuingBranch.stderr);
+
+  writeFileSync(
+    bindingState,
+    "struct Resource { id: i32; deinit {} }\n"
       + "function invalid(): i32 {\n"
       + "  const resource = Resource({ id: 42 });\n"
       + "  const inspect: () => i32 = move (): i32 => resource.id;\n"

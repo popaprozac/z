@@ -55,9 +55,9 @@ semantic analysis and code generation; the frontend itself is native Z code.
   `let`, `inout`, and `out` storage while rejecting `const`, value, and `in`
   bindings at the assignment target. The same record carries initialized,
   uninitialized, or maybe-uninitialized flow state. Direct assignment and
-  nested blocks update that state, `if` branches merge it, loops conservatively
-  include their zero-iteration path, and successful exits require every `out`
-  parameter to be initialized. Direct and imported Z calls enforce declared
+  nested blocks update that state, `if` merges only branches that can continue,
+  loops conservatively include their zero-iteration path, and successful exits
+  require every `out` parameter to be initialized. Direct and imported Z calls enforce declared
   parameter capabilities before evaluating storage: `out` and `inout` require
   their matching explicit call-site marker and mutable bindings, `inout`
   requires initialized storage, and a successful `out` call initializes it.
@@ -70,8 +70,9 @@ semantic analysis and code generation; the frontend itself is native Z code.
   borrow cannot invoke the mutating method. The binding record also carries
   available, moved, or maybe-moved ownership state. Owned value arguments move
   deterministic-cleanup structs, enums, arrays, and standard storage while ARC
-  classes, weak references, and closures copy their managed handle. Branches and
-  loops merge move state conservatively, borrowed bindings cannot be consumed,
+  classes, weak references, and closures copy their managed handle. Continuing
+  branches and loops merge move state conservatively while exiting branches do
+  not poison later flow; borrowed bindings cannot be consumed,
   assignment and successful `out` restore ownership, and `move this` invalidates
   a named receiver. Exhaustive `match (value)` consumes cleanup-bearing enum
   storage while `match (in value)` borrows named storage. Payload bindings inherit
