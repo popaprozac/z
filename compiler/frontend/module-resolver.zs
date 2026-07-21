@@ -68,8 +68,14 @@ struct NativeValueBinding {
   name: String;
   typeName: String;
   mutableBinding: boolean;
+  borrowedBinding: boolean;
   initialization: NativeInitializationState;
   outputParameter: boolean;
+}
+
+struct NativeCallAccess {
+  root: String;
+  capability: String;
 }
 
 struct ModuleSymbolLocation {
@@ -1299,6 +1305,7 @@ function copyValueBindings(in bindings: Array<NativeValueBinding>): Array<Native
       name: binding.name.copyBytes(0, binding.name.byteLength),
       typeName: binding.typeName.copyBytes(0, binding.typeName.byteLength),
       mutableBinding: binding.mutableBinding,
+      borrowedBinding: binding.borrowedBinding,
       initialization: binding.initialization,
       outputParameter: binding.outputParameter,
     }));
@@ -1315,6 +1322,7 @@ function addValueBinding(
     name: name.copyBytes(0, name.byteLength),
     typeName: typeName.copyBytes(0, typeName.byteLength),
     mutableBinding: false,
+    borrowedBinding: false,
     initialization: NativeInitializationState.initialized,
     outputParameter: false,
   }));
@@ -1329,6 +1337,7 @@ function addMutableValueBinding(
     name: name.copyBytes(0, name.byteLength),
     typeName: typeName.copyBytes(0, typeName.byteLength),
     mutableBinding: true,
+    borrowedBinding: false,
     initialization: NativeInitializationState.initialized,
     outputParameter: false,
   }));
@@ -1344,8 +1353,25 @@ function addUninitializedMutableValueBinding(
     name: name.copyBytes(0, name.byteLength),
     typeName: typeName.copyBytes(0, typeName.byteLength),
     mutableBinding: true,
+    borrowedBinding: outputParameter,
     initialization: NativeInitializationState.uninitialized,
     outputParameter,
+  }));
+}
+
+function addBorrowedValueBinding(
+  inout bindings: Array<NativeValueBinding>,
+  in name: String,
+  in typeName: String,
+  mutableBinding: boolean
+): void {
+  bindings.push(NativeValueBinding({
+    name: name.copyBytes(0, name.byteLength),
+    typeName: typeName.copyBytes(0, typeName.byteLength),
+    mutableBinding,
+    borrowedBinding: true,
+    initialization: NativeInitializationState.initialized,
+    outputParameter: false,
   }));
 }
 
@@ -1375,6 +1401,18 @@ function valueBindingIsMutable(
   return false;
 }
 
+function valueBindingIsBorrowed(
+  in bindings: Array<NativeValueBinding>,
+  in name: String
+): boolean {
+  let index = bindings.length;
+  while (index > 0) {
+    index = index - 1;
+    if (bindings[index].name == name) return bindings[index].borrowedBinding;
+  }
+  return false;
+}
+
 function valueBindingInitialization(
   in bindings: Array<NativeValueBinding>,
   in name: String
@@ -1396,6 +1434,7 @@ function replaceBindingInitialization(
     name: bindings[index].name.copyBytes(0, bindings[index].name.byteLength),
     typeName: bindings[index].typeName.copyBytes(0, bindings[index].typeName.byteLength),
     mutableBinding: bindings[index].mutableBinding,
+    borrowedBinding: bindings[index].borrowedBinding,
     initialization,
     outputParameter: bindings[index].outputParameter,
   });
@@ -1492,6 +1531,64 @@ function requireInitializedOutputParameters(
       );
     }
   }
+}
+
+function expressionStorageRootName(
+  in tree: ExpressionTree,
+  index: usize
+): String {
+  const kind = tree.nodes[index].kind;
+  if (
+    kind == ExpressionKind.identifierExpression
+    || kind == ExpressionKind.argumentBindingExpression
+  ) return identifierLookupName(tree.nodes[index].value);
+  if (
+    kind == ExpressionKind.argumentReferenceExpression
+    || kind == ExpressionKind.memberExpression
+    || kind == ExpressionKind.indexExpression
+  ) {
+    if (tree.nodes[index].children.length > 0) {
+      const child = tree.nodes[index].children[0];
+      return expressionStorageRootName(tree, child);
+    }
+  }
+  return "";
+}
+
+function callCapabilitiesConflict(in left: String, in right: String): boolean {
+  return !(
+    (left == "in" && right == "in")
+    || (left == "value" && right == "value")
+  );
+}
+
+function registerCallAccess(
+  in module: ParsedModule,
+  in tree: ExpressionTree,
+  nodeIndex: usize,
+  inout accesses: Array<NativeCallAccess>,
+  in root: String,
+  in capability: String
+): void throws ModuleResolveError {
+  if (root.byteLength == 0) return;
+  for (const access of accesses) {
+    if (
+      access.root == root
+      && callCapabilitiesConflict(access.capability, capability)
+    ) {
+      throw resolutionError(
+        ModuleResolveErrorKind.typeMismatch,
+        module.path,
+        `overlapping ${access.capability} and ${capability} uses of "${root}" in one call are not allowed`,
+        tree.nodes[nodeIndex].line,
+        tree.nodes[nodeIndex].column
+      );
+    }
+  }
+  accesses.push(NativeCallAccess({
+    root: root.copyBytes(0, root.byteLength),
+    capability: capability.copyBytes(0, capability.byteLength),
+  }));
 }
 
 function isIntegerTypeName(in name: String): boolean {
@@ -2997,6 +3094,8 @@ function inferSignatureCallType(
   calleeIndex: usize,
   in children: Array<usize>,
   inout bindings: Array<NativeValueBinding>,
+  in receiverRoot: String,
+  in receiverMode: String,
   in functionName: String,
   in signature: ModuleFunctionSignature,
   in initialSubstitutions: Array<NativeValueBinding>
@@ -3009,6 +3108,39 @@ function inferSignatureCallType(
       calleeIndex,
       `${functionName} expects ${signature.parameterTypes.length} argument(s), received ${argumentCount}`
     );
+  }
+  let accesses = Array<NativeCallAccess>();
+  if (receiverRoot.byteLength > 0 && receiverMode.byteLength > 0) {
+    try registerCallAccess(
+      module,
+      tree,
+      calleeIndex,
+      inout accesses,
+      receiverRoot,
+      receiverMode
+    );
+  }
+  let accessIndex: usize = 0;
+  while (accessIndex < argumentCount) {
+    const nodeIndex = children[accessIndex + 1];
+    const root = expressionStorageRootName(tree, nodeIndex);
+    let capability = signature.parameterModes[accessIndex].copyBytes(
+      0,
+      signature.parameterModes[accessIndex].byteLength
+    );
+    if (
+      capability == "value"
+      && stringStartsWith(signature.parameterTypes[accessIndex], "Slice<")
+    ) capability = "in";
+    try registerCallAccess(
+      module,
+      tree,
+      nodeIndex,
+      inout accesses,
+      root,
+      capability
+    );
+    accessIndex = accessIndex + 1;
   }
   let argumentTypes = Array<String>();
   let argumentIndex: usize = 0;
@@ -3488,6 +3620,8 @@ function inferExpressionNodeType(
               calleeIndex,
               children,
               inout bindings,
+              "",
+              "",
               functionName,
               callableSignature,
               substitutions
@@ -3549,6 +3683,61 @@ function inferExpressionNodeType(
               !method.staticMethod
               && method.ownerTypeParameters.length != method.ownerTypeArguments.length
             ) return "";
+            let receiverRoot = "";
+            let receiverAccess = "";
+            if (!method.staticMethod && method.receiverMode == "inout") {
+              receiverRoot = expressionStorageRootName(tree, receiverIndex);
+              if (receiverRoot.byteLength == 0) {
+                let storageDescription = "addressable let storage";
+                if (
+                  modules[method.ownerModuleIndex].symbols[method.ownerSymbolIndex].kind
+                  == ModuleSymbolKind.classSymbol
+                ) storageDescription = "an addressable class reference";
+                throw resolutionError(
+                  ModuleResolveErrorKind.typeMismatch,
+                  module.path,
+                  `mutable method "${method.name}" requires ${storageDescription}`,
+                  tree.nodes[receiverIndex].line,
+                  tree.nodes[receiverIndex].column
+                );
+              }
+              const ownerKind = modules[method.ownerModuleIndex].symbols[method.ownerSymbolIndex].kind;
+              if (
+                (
+                  ownerKind == ModuleSymbolKind.structSymbol
+                  && !valueBindingIsMutable(bindings, receiverRoot)
+                )
+                || (
+                  ownerKind == ModuleSymbolKind.classSymbol
+                  && valueBindingIsBorrowed(bindings, receiverRoot)
+                  && !valueBindingIsMutable(bindings, receiverRoot)
+                )
+              ) {
+                throw resolutionError(
+                  ModuleResolveErrorKind.typeMismatch,
+                  module.path,
+                  `mutable method "${method.name}" cannot be called through immutable binding "${receiverRoot}"`,
+                  tree.nodes[receiverIndex].line,
+                  tree.nodes[receiverIndex].column
+                );
+              }
+              receiverAccess = "inout";
+            } else if (!method.staticMethod && method.receiverMode == "move") {
+              receiverRoot = expressionStorageRootName(tree, receiverIndex);
+              if (
+                receiverRoot == "this"
+                && valueBindingIsBorrowed(bindings, receiverRoot)
+              ) {
+                throw resolutionError(
+                  ModuleResolveErrorKind.typeMismatch,
+                  module.path,
+                  "cannot move the borrowed method receiver `this`; declare `move this`",
+                  tree.nodes[receiverIndex].line,
+                  tree.nodes[receiverIndex].column
+                );
+              }
+              receiverAccess = "move";
+            }
             let substitutions = Array<NativeValueBinding>();
             let ownerIndex: usize = 0;
             while (ownerIndex < method.ownerTypeParameters.length) {
@@ -3570,6 +3759,8 @@ function inferExpressionNodeType(
               calleeIndex,
               children,
               inout bindings,
+              receiverRoot,
+              receiverAccess,
               `${method.ownerName}.${method.name}`,
               callableSignature,
               substitutions
@@ -4004,13 +4195,25 @@ function functionValueBindings(in parameters: Array<Parameter>): Array<NativeVal
   let bindings = Array<NativeValueBinding>();
   for (const parameter of parameters) {
     if (parameter.mode == ParameterMode.inputOutput) {
-      addMutableValueBinding(inout bindings, parameter.name, parameter.type.name);
+      addBorrowedValueBinding(
+        inout bindings,
+        parameter.name,
+        parameter.type.name,
+        true
+      );
     } else if (parameter.mode == ParameterMode.output) {
       addUninitializedMutableValueBinding(
         inout bindings,
         parameter.name,
         parameter.type.name,
         true
+      );
+    } else if (parameter.mode == ParameterMode.input) {
+      addBorrowedValueBinding(
+        inout bindings,
+        parameter.name,
+        parameter.type.name,
+        false
       );
     } else {
       addValueBinding(inout bindings, parameter.name, parameter.type.name);
@@ -4028,13 +4231,12 @@ function inferFunctionExpressions(
 ): void throws ModuleResolveError {
   let bindings = functionValueBindings(declaration.parameters);
   if (!declaration.staticMethod && ownerType.byteLength > 0) {
-    if (
-      declaration.receiverMode == ReceiverMode.inputOutput
-      || declaration.receiverMode == ReceiverMode.move
-    ) {
+    if (declaration.receiverMode == ReceiverMode.inputOutput) {
+      addBorrowedValueBinding(inout bindings, "this", ownerType, true);
+    } else if (declaration.receiverMode == ReceiverMode.move) {
       addMutableValueBinding(inout bindings, "this", ownerType);
     } else {
-      addValueBinding(inout bindings, "this", ownerType);
+      addBorrowedValueBinding(inout bindings, "this", ownerType, false);
     }
   }
   if (ownerType.byteLength > 0) {

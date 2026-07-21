@@ -4974,6 +4974,28 @@ test("resolves a canonical module graph directly from native Z ASTs", () => {
       + "  increase(inout value);\n"
       + "  return value;\n"
       + "}\n"
+      + "struct Counter {\n"
+      + "  value: i32;\n"
+      + "  function add(inout this, amount: i32): void { this.value = this.value + amount; }\n"
+      + "  function read(): i32 { return this.value; }\n"
+      + "}\n"
+      + "function useMutableReceiver(): i32 {\n"
+      + "  let counter = Counter({ value: 40 });\n"
+      + "  counter.add(2);\n"
+      + "  return counter.read();\n"
+      + "}\n"
+      + "class SharedCounter {\n"
+      + "  value: i32;\n"
+      + "  function add(inout this, amount: i32): void { this.value = this.value + amount; }\n"
+      + "  function read(): i32 { return this.value; }\n"
+      + "}\n"
+      + "function useClassReceiver(): i32 {\n"
+      + "  const counter = new SharedCounter({ value: 40 });\n"
+      + "  counter.add(2);\n"
+      + "  return counter.read();\n"
+      + "}\n"
+      + "function observePair(in first: i32, in second: i32): i32 { return first + second; }\n"
+      + "function useSharedInput(value: i32): i32 { return observePair(value, value); }\n"
       + "function initializeBranch(flag: boolean, out value: i32): void {\n"
       + "  if (flag) { value = 1; } else { value = 2; }\n"
       + "}\n"
@@ -5156,6 +5178,149 @@ test("resolves a canonical module graph directly from native Z ASTs", () => {
   assert.match(
     invalidExplicitCapability.stderr,
     /inout is not valid for an immutable borrow/,
+  );
+
+  writeFileSync(
+    bindingState,
+    "struct Counter {\n"
+      + "  value: i32;\n"
+      + "  function add(inout this, amount: i32): void { this.value = this.value + amount; }\n"
+      + "}\n"
+      + "function invalid(): void {\n"
+      + "  const counter = Counter({ value: 1 });\n"
+      + "  counter.add(1);\n"
+      + "}\n",
+  );
+  const immutableMethodReceiver = spawnSync(
+    process.execPath,
+    [cli, "self-host-resolve", bindingState],
+    { encoding: "utf8" },
+  );
+  assert.equal(immutableMethodReceiver.status, 1);
+  assert.match(
+    immutableMethodReceiver.stderr,
+    /mutable method "add" cannot be called through immutable binding "counter"/,
+  );
+
+  writeFileSync(
+    bindingState,
+    "class Counter {\n"
+      + "  value: i32;\n"
+      + "  function add(inout this, amount: i32): void { this.value = this.value + amount; }\n"
+      + "}\n"
+      + "function invalid(in counter: Counter): void { counter.add(1); }\n",
+  );
+  const immutableClassBorrow = spawnSync(
+    process.execPath,
+    [cli, "self-host-resolve", bindingState],
+    { encoding: "utf8" },
+  );
+  assert.equal(immutableClassBorrow.status, 1);
+  assert.match(
+    immutableClassBorrow.stderr,
+    /mutable method "add" cannot be called through immutable binding "counter"/,
+  );
+
+  writeFileSync(
+    bindingState,
+    "struct Counter {\n"
+      + "  value: i32;\n"
+      + "  function add(inout this, amount: i32): void { this.value = this.value + amount; }\n"
+      + "}\n"
+      + "function invalid(): void { Counter({ value: 1 }).add(1); }\n",
+  );
+  const temporaryMethodReceiver = spawnSync(
+    process.execPath,
+    [cli, "self-host-resolve", bindingState],
+    { encoding: "utf8" },
+  );
+  assert.equal(temporaryMethodReceiver.status, 1);
+  assert.match(
+    temporaryMethodReceiver.stderr,
+    /mutable method "add" requires addressable let storage/,
+  );
+
+  writeFileSync(
+    bindingState,
+    "function combine(inout first: i32, inout second: i32): void {}\n"
+      + "function invalid(): i32 {\n"
+      + "  let value = 1;\n"
+      + "  combine(inout value, inout value);\n"
+      + "  return value;\n"
+      + "}\n",
+  );
+  const overlappingArguments = spawnSync(
+    process.execPath,
+    [cli, "self-host-resolve", bindingState],
+    { encoding: "utf8" },
+  );
+  assert.equal(overlappingArguments.status, 1);
+  assert.match(
+    overlappingArguments.stderr,
+    /overlapping inout and inout uses of "value" in one call are not allowed/,
+  );
+
+  writeFileSync(
+    bindingState,
+    "struct Resource {\n"
+      + "  id: i32;\n"
+      + "  function merge(inout this, other: Resource): void {}\n"
+      + "}\n"
+      + "function invalid(): void {\n"
+      + "  let resource = Resource({ id: 1 });\n"
+      + "  resource.merge(resource);\n"
+      + "}\n",
+  );
+  const overlappingReceiver = spawnSync(
+    process.execPath,
+    [cli, "self-host-resolve", bindingState],
+    { encoding: "utf8" },
+  );
+  assert.equal(overlappingReceiver.status, 1);
+  assert.match(
+    overlappingReceiver.stderr,
+    /overlapping inout and value uses of "resource" in one call are not allowed/,
+  );
+
+  writeFileSync(
+    bindingState,
+    "struct Resource {\n"
+      + "  id: i32;\n"
+      + "  function finish(move this): void {}\n"
+      + "  function invalid(): void { this.finish(); }\n"
+      + "}\n",
+  );
+  const borrowedConsumingReceiver = spawnSync(
+    process.execPath,
+    [cli, "self-host-resolve", bindingState],
+    { encoding: "utf8" },
+  );
+  assert.equal(borrowedConsumingReceiver.status, 1);
+  assert.match(
+    borrowedConsumingReceiver.stderr,
+    /cannot move the borrowed method receiver `this`; declare `move this`/,
+  );
+
+  writeFileSync(
+    bindingState,
+    "struct Resource {\n"
+      + "  id: i32;\n"
+      + "  function merge(move this, in other: Resource): void {}\n"
+      + "}\n"
+      + "function invalid(): void {\n"
+      + "  const resource = Resource({ id: 1 });\n"
+      + "  resource.merge(resource);\n"
+      + "}\n",
+  );
+  const overlappingConsumingReceiver = spawnSync(
+    process.execPath,
+    [cli, "self-host-resolve", bindingState],
+    { encoding: "utf8" },
+  );
+  assert.equal(overlappingConsumingReceiver.status, 1);
+  assert.match(
+    overlappingConsumingReceiver.stderr,
+    /overlapping move and in uses of "resource" in one call are not allowed/,
   );
 
   const encoded = encodeStage1ModuleBatch([{ path: "/a.zs", source: "é" }]);

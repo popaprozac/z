@@ -55,7 +55,14 @@ semantic analysis and code generation; the frontend itself is native Z code.
   their matching explicit call-site marker and mutable bindings, `inout`
   requires initialized storage, and a successful `out` call initializes it.
   Expression traversal carries these transitions left-to-right while ternary
-  and short-circuit branches merge them conservatively.
+  and short-circuit branches merge them conservatively. Per-call access roots
+  reject every overlap except shared `in`/`in` and copyable `value`/`value`
+  uses, including conflicts between a receiver and its arguments. Value-struct
+  `inout this` requires mutable addressable storage; a class reference keeps
+  identity mutation through an owned `const` binding while an immutable `in`
+  borrow cannot invoke the mutating method. Borrowed `this` cannot call a
+  consuming receiver. Marking the receiver moved remains part of native
+  ownership state.
 - `module-resolver-protocol.zs` frames that host-loaded batch and returns the
   resolved graph through the same in-process native-library boundary.
 - `parser-protocol.zs` encodes the temporary parity protocol shared by native

@@ -1526,7 +1526,13 @@ ported independently rather than translated as one monolith.
    parameters are rejected, and successful `out` calls initialize their target.
    Left-to-right evaluation carries that transition through expressions while
    ternary and short-circuit alternatives merge it conservatively. Per-call
-   alias overlap and receiver capability enforcement remain next.
+   access roots reject all conflicts except shared `in`/`in` and copyable
+   `value`/`value` uses, including receiver/argument overlap. Value-struct
+   `inout this` requires mutable addressable storage. An owned `const` class
+   reference may still mutate its shared identity, while an immutable `in`
+   class borrow may not; borrowed `this` also cannot invoke a `move this`
+   method. Readonly receiver paths and the actual moved-state transition remain
+   coupled to the native ownership layer.
    Feeding this graph into ordinary
    compiler commands and replacing the temporary protocol remain next. Native
    semantic analysis has also begun on that graph: source-ordered lexical lookup

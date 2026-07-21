@@ -342,13 +342,18 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    `inout` input, invalid explicit capabilities on value/`in` parameters, and
    parameter types before a successful `out` transition initializes storage.
    Expression traversal carries effects left-to-right; ternary and short-circuit
-   alternatives merge them conservatively. Match-arm side effects, overlapping
-   per-call access checks, receiver capability enforcement, richer reachability,
-   and nested value mutation remain part of the broader native flow pass.
+   alternatives merge them conservatively. Per-call access roots now reject all
+   overlaps except `in`/`in` and `value`/`value`, including receiver/argument
+   conflicts. Value-struct `inout this` requires mutable addressable storage;
+   owned `const` class references retain identity mutation while immutable `in`
+   class borrows reject it, and borrowed `this` cannot invoke `move this`.
+   Match-arm side effects, readonly-field receiver paths, marking consuming
+   receivers moved, richer reachability, and nested value mutation remain part
+   of the broader native ownership/flow pass.
    Complete
    contextual literal and return-driven inference, foreign/intrinsic method lookup,
    generic constraints/methods, match
-   ownership/control-flow merging, remaining receiver/alias capability
+   ownership/control-flow merging, remaining receiver-path capability
    enforcement, and ownership state remain stage-zero work.
    Template literals now
    retain ordered decoded-text leaves and ordinary embedded-expression roots,
