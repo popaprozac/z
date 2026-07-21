@@ -360,6 +360,22 @@ function flattenExpression(expression: Expression, nodes: FlatExpressionNode[]):
     const elseExpression = flattenExpression(expression.elseExpression, nodes);
     return elseExpression === null ? null : append("conditional", "", [condition, thenExpression, elseExpression], []);
   }
+  if (expression.kind === "new") {
+    const arguments_ = flattenExpressions(expression.arguments, nodes);
+    return arguments_
+      ? append("new", canonicalTypeName(expression.typeName), arguments_, expression.argumentLabels.map((label) => label ?? ""))
+      : null;
+  }
+  if (
+    expression.kind === "weak"
+    || expression.kind === "try"
+    || expression.kind === "attempt"
+    || expression.kind === "await"
+    || expression.kind === "spawn"
+  ) {
+    const operand = flattenExpression(expression.expression, nodes);
+    return operand === null ? null : append(expression.kind, "", [operand], []);
+  }
   return null;
 }
 

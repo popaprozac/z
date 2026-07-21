@@ -92,6 +92,13 @@ function expressionShapes(value: i32): i32 {
   const compared = shifted >= value && value != 0 || false;
   const bits = ~value & 7 ^ 2 | 1;
   const chosen = !false ? -value : true ? +value : 0;
+  const created = new Store<Reading>({ readings: [], label: "ready" });
+  const weakValue = weak created;
+  const attempted = attempt load(value);
+  const awaitedAttempt = attempt await load(value);
+  const tried = try load(value);
+  const awaited = await load(value);
+  const spawned = spawn load(value);
   bodyShapes(value: selected);
   return (object.value);
 }

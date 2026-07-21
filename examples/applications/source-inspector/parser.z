@@ -83,6 +83,12 @@ export enum ExpressionKind {
   unaryExpression,
   binaryExpression,
   conditionalExpression,
+  newExpression,
+  weakExpression,
+  tryExpression,
+  attemptExpression,
+  awaitExpression,
+  spawnExpression,
 }
 
 export struct ExpressionNode {
@@ -542,6 +548,68 @@ function parsePrimaryTree(
 ): usize throws ParserError {
   if (current >= end) throw fail(tokens[current], "expected a primary expression");
   const start = snapshot(tokens[current]);
+  if (start.kind == TokenKind.newKeyword) {
+    current = current + 1;
+    let pendingGreater: usize = 0;
+    const type = try parseType(tokens, inout current, inout pendingGreater);
+    try expectKind(tokens, inout current, TokenKind.leftParen, "`(` after a class name");
+    let children = Array<usize>();
+    let labels = Array<String>();
+    if (tokens[current].kind != TokenKind.rightParen) {
+      while (true) {
+        if (
+          current + 1 < end
+          && tokens[current].kind == TokenKind.identifier
+          && tokens[current + 1].kind == TokenKind.colon
+        ) {
+          labels.push(tokens[current].text.copyBytes(0, tokens[current].text.byteLength));
+          current = current + 2;
+        } else labels.push("");
+        const argument = try parseConditionalTree(tokens, inout current, end, inout nodes);
+        children.push(argument);
+        if (!takeIf(tokens, inout current, TokenKind.comma)) break;
+      }
+    }
+    try expectKind(tokens, inout current, TokenKind.rightParen, "`)` after a class initializer");
+    return pushExpressionNode(
+      inout nodes,
+      ExpressionKind.newExpression,
+      type.name.copyBytes(0, type.name.byteLength),
+      children,
+      labels,
+      start
+    );
+  }
+  if (
+    start.kind == TokenKind.weakKeyword
+    || start.kind == TokenKind.tryKeyword
+    || start.kind == TokenKind.attemptKeyword
+    || start.kind == TokenKind.awaitKeyword
+    || start.kind == TokenKind.spawnKeyword
+  ) {
+    if (
+      (start.kind == TokenKind.awaitKeyword || start.kind == TokenKind.spawnKeyword)
+      && current + 1 < end
+      && tokens[current + 1].kind == TokenKind.onKeyword
+    ) throw fail(start, "executor placement is not in the prefix-expression slice");
+    current = current + 1;
+    const operand = try parsePostfixTree(tokens, inout current, end, inout nodes);
+    let children = Array<usize>();
+    children.push(operand);
+    let expressionKind = ExpressionKind.weakExpression;
+    if (start.kind == TokenKind.tryKeyword) expressionKind = ExpressionKind.tryExpression;
+    else if (start.kind == TokenKind.attemptKeyword) expressionKind = ExpressionKind.attemptExpression;
+    else if (start.kind == TokenKind.awaitKeyword) expressionKind = ExpressionKind.awaitExpression;
+    else if (start.kind == TokenKind.spawnKeyword) expressionKind = ExpressionKind.spawnExpression;
+    return pushExpressionNode(
+      inout nodes,
+      expressionKind,
+      "",
+      children,
+      Array<String>(),
+      start
+    );
+  }
   if (start.kind == TokenKind.identifier) {
     current = current + 1;
     return pushExpressionNode(
@@ -1542,6 +1610,12 @@ function expressionKindName(kind: ExpressionKind): String {
     unaryExpression => "unary";
     binaryExpression => "binary";
     conditionalExpression => "conditional";
+    newExpression => "new";
+    weakExpression => "weak";
+    tryExpression => "try";
+    attemptExpression => "attempt";
+    awaitExpression => "await";
+    spawnExpression => "spawn";
   };
 }
 
