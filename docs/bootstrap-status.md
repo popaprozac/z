@@ -371,11 +371,21 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    enclosing throwing body. Unhandled calls, non-throwing wrapper operands,
    incompatible errors, and invalid `throw` statements diagnose natively, with
    generic substitution and imported aliases preserved.
+   Local closure expressions now retain callable parameter modes/types and
+   inferred or explicit result contracts, analyze expression and block bodies in
+   nested value environments, and invoke through the same argument capability,
+   exclusivity, transfer, and type rules as named functions. Native capture
+   discovery excludes parameters and closure-local bindings. Borrow closures
+   conservatively loan cleanup-bearing outer values; `move` closures consume
+   unique owners while ARC identities remain copyable. Immutable capture writes,
+   use-after-capture moves, uninitialized captures, and moved captures diagnose
+   in Z.
    Complete
    contextual literal and return-driven inference, foreign/intrinsic method lookup,
-   generic constraints/methods, async/closure/foreign call effects, remaining
-   receiver-path capability enforcement, closure ownership, and full recursive
-   ownership contexts remain stage-zero work.
+   generic constraints/methods, async/foreign call effects, contextual untyped
+   closure parameters, escaping closure-environment validation, precise closure
+   borrow last-use release, remaining receiver-path capability enforcement, and
+   full recursive ownership contexts remain stage-zero work.
    Template literals now
    retain ordered decoded-text leaves and ordinary embedded-expression roots,
    including nested templates, in the same flat arena. Expression-bodied

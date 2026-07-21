@@ -36,8 +36,14 @@ semantic analysis and code generation; the frontend itself is native Z code.
   identities, including generic substitution, private access, read-only writes,
   and enum equality. Z-defined instance and static method calls use graph-carried
   visibility, receiver mode, async/error state, method and owner generics,
-  parameter capabilities/types, and result types. It covers closure result
-  contracts, indexing, unary/binary operators, and ternaries, and validates known
+  parameter capabilities/types, and result types. Local closures preserve
+  explicit parameter capabilities/types and inferred or explicit result types,
+  validate expression and block bodies in nested scopes, and route local calls
+  through the ordinary capability/type checker. Capture discovery distinguishes
+  parameters and closure locals from outer bindings: borrowed cleanup-bearing
+  captures become conservative loans, while `move` consumes uniquely owned
+  captures and copies ARC-managed identities. It also covers indexing,
+  unary/binary operators, and ternaries, and validates known
   initializers, assignments, conditions, call arguments, and returns with native
   source-located diagnostics. Nominal type identity is resolved by defining
   module and symbol rather than source spelling, while signatures, fields,
@@ -115,8 +121,9 @@ work. Identifier and expression-level type lookup currently cover materialized
 expression trees. Unknown foreign/intrinsic-member/async shapes deliberately defer
 instead of guessing. Opaque expression spans, contextual
 collection and return-driven generic inference, generic constraints and methods,
-type-constructor arity, trait conformance, async/closure/foreign call effects,
-closure ownership effects, and complete recursive ownership lowering remain
+type-constructor arity, trait conformance, async/foreign call effects,
+contextual untyped closure parameters, escaping closure-environment validation,
+borrow last-use release, and complete recursive ownership lowering remain
 stage-zero work.
 The reported native interval therefore does more semantic work than the
 graph-and-symbol-only stage-zero comparison.

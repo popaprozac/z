@@ -6142,6 +6142,112 @@ test("resolves a canonical module graph directly from native Z ASTs", () => {
   );
   assert.equal(importedPropagatedError.status, 0, importedPropagatedError.stderr);
 
+  writeFileSync(
+    bindingState,
+    "function valid(): i32 {\n"
+      + "  const add: (first: i32, second: i32) => i32 = (left: i32, right: i32): i32 => left + right;\n"
+      + "  return add(20, 22);\n"
+      + "}\n",
+  );
+  const localClosureCall = spawnSync(
+    process.execPath,
+    [cli, "self-host-resolve", bindingState],
+    { encoding: "utf8" },
+  );
+  assert.equal(localClosureCall.status, 0, localClosureCall.stderr);
+
+  writeFileSync(
+    bindingState,
+    "function invalid(): i32 {\n"
+      + "  const identity = (value: i32): i32 => value;\n"
+      + "  return identity(\"wrong\");\n"
+      + "}\n",
+  );
+  const invalidClosureArgument = spawnSync(
+    process.execPath,
+    [cli, "self-host-resolve", bindingState],
+    { encoding: "utf8" },
+  );
+  assert.equal(invalidClosureArgument.status, 1);
+  assert.match(invalidClosureArgument.stderr, /expected i32, found String/);
+
+  writeFileSync(
+    bindingState,
+    "function invalid(): i32 {\n"
+      + "  const value = 41;\n"
+      + "  const increment = (): i32 => { value = value + 1; return value; };\n"
+      + "  return increment();\n"
+      + "}\n",
+  );
+  const immutableClosureCapture = spawnSync(
+    process.execPath,
+    [cli, "self-host-resolve", bindingState],
+    { encoding: "utf8" },
+  );
+  assert.equal(immutableClosureCapture.status, 1);
+  assert.match(immutableClosureCapture.stderr, /cannot assign to immutable binding "value"/);
+
+  writeFileSync(
+    bindingState,
+    "struct Resource { id: i32; deinit {} }\n"
+      + "function valid(): i32 {\n"
+      + "  const resource = Resource({ id: 21 });\n"
+      + "  const inspect = (): i32 => resource.id;\n"
+      + "  return inspect() + resource.id;\n"
+      + "}\n",
+  );
+  const borrowedClosureCapture = spawnSync(
+    process.execPath,
+    [cli, "self-host-resolve", bindingState],
+    { encoding: "utf8" },
+  );
+  assert.equal(borrowedClosureCapture.status, 0, borrowedClosureCapture.stderr);
+
+  writeFileSync(
+    bindingState,
+    "struct Resource { id: i32; deinit {} }\n"
+      + "function absent(): Option<Resource> { return Option<Resource>.none; }\n",
+  );
+  const emptyOwnedOption = spawnSync(
+    process.execPath,
+    [cli, "self-host-resolve", bindingState],
+    { encoding: "utf8" },
+  );
+  assert.equal(emptyOwnedOption.status, 0, emptyOwnedOption.stderr);
+
+  writeFileSync(
+    bindingState,
+    "struct Resource { id: i32; deinit {} }\n"
+      + "function invalid(): i32 {\n"
+      + "  const resource = Resource({ id: 42 });\n"
+      + "  const inspect: () => i32 = move (): i32 => resource.id;\n"
+      + "  return resource.id;\n"
+      + "}\n",
+  );
+  const movedClosureCapture = spawnSync(
+    process.execPath,
+    [cli, "self-host-resolve", bindingState],
+    { encoding: "utf8" },
+  );
+  assert.equal(movedClosureCapture.status, 1);
+  assert.match(movedClosureCapture.stderr, /use of moved value "resource"/);
+
+  writeFileSync(
+    bindingState,
+    "function valid(): i32 {\n"
+      + "  let value = 40;\n"
+      + "  const increment = (inout target: i32): void => { target = target + 2; };\n"
+      + "  increment(inout value);\n"
+      + "  return value;\n"
+      + "}\n",
+  );
+  const closureCapability = spawnSync(
+    process.execPath,
+    [cli, "self-host-resolve", bindingState],
+    { encoding: "utf8" },
+  );
+  assert.equal(closureCapability.status, 0, closureCapability.stderr);
+
   const encoded = encodeStage1ModuleBatch([{ path: "/a.zs", source: "é" }]);
   assert.equal(encoded.byteLength, 32 + Buffer.byteLength("/a.zs") + Buffer.byteLength("é"));
   assert.throws(() => decodeStage1ModuleGraphStream("order\n"), /did not contain an entry/);

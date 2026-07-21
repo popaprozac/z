@@ -1537,8 +1537,14 @@ ported independently rather than translated as one monolith.
    until `attempt` materializes `Result<T, E>` or `try` validates the enclosing
    `throws E` contract and yields `T`. Unhandled calls, non-throwing operands,
    incompatible propagation, and invalid `throw` values now diagnose natively;
-   async, closure, standard-library, and foreign effect models remain later
-   layers. Native direct/imported function
+   async, standard-library, and foreign effect models remain later layers. Local
+   closure expressions now carry explicit parameter capabilities/types and an
+   inferred or explicit result contract into a nested native analysis scope.
+   Their calls reuse ordinary capability and argument checking. Native capture
+   discovery applies conservative loans to borrowed cleanup-bearing values and
+   consumes unique owners for `move`, while ARC identities retain copy
+   semantics. Contextual untyped parameters, escaping closure environments, and
+   precise last-use release of closure borrows remain later layers. Native direct/imported function
    and Z-method calls now consume their graph-carried parameter modes: `out` and
    `inout` require matching explicit markers and mutable bindings, `inout`
    requires initialized storage, invalid explicit markers on value/`in`
@@ -1568,8 +1574,8 @@ ported independently rather than translated as one monolith.
    grows vertically.
    A first expression-type pass now layers on those resolved names. It infers
    primitive/template/fixed-array literals, parameters and local aliases,
-   explicitly typed closures, indexes, core operators, ternaries, and direct Z
-   calls. Calls resolve through local declarations, selective imports and
+   typed local closures, their capture effects and calls, indexes, core operators,
+   ternaries, and direct Z calls. Calls resolve through local declarations, selective imports and
    aliases, and namespace imports, validating known argument types against the
    target module's signature. Generic calls infer or accept explicit type
    arguments and structurally substitute nested parameter and return shapes;
