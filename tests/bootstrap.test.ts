@@ -4580,6 +4580,13 @@ test("parses declarations, function bodies, and type shapes in native Z", () => 
   );
 }, 10_000);
 
+test("resolves a canonical module graph directly from native Z ASTs", () => {
+  const fixture = resolve(projectRoot, "tests/fixtures/self-host-module-resolver.z");
+  const result = spawnSync(process.execPath, [cli, "run", fixture], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, "");
+}, 10_000);
+
 test("builds owned UTF-8 String values through explicit std/text TextBuffer", () => {
   const directory = mkdtempSync("/tmp/z-text-buffer-");
   const fileName = resolve(directory, "main.z");

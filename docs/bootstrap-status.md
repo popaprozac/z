@@ -265,7 +265,11 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    `TextBuffer`/`Arena` type identity through intermediate source modules.
    The reusable lexer, parser, protocol, and in-process library now live under
    `compiler/frontend`; Source Inspector remains their readable application
-   client and standalone bridge pressure test. Template literals now
+   client and standalone bridge pressure test. The first native module resolver
+   directly consumes parsed Z `Program` values from a host-loaded canonical
+   source batch. It validates lexical `./`/`../` edges, dependency-first order,
+   selective exports and aliases, duplicate bindings, missing modules, and
+   cycles without serializing the AST between parsing and resolution. Template literals now
    retain ordered decoded-text leaves and ordinary embedded-expression roots,
    including nested templates, in the same flat arena. Expression-bodied
    closures retain borrow/move capture mode, source-located parameters,

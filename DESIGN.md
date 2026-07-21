@@ -1480,7 +1480,12 @@ ported independently rather than translated as one monolith.
    The reusable implementation now lives under `compiler/frontend`. The
    Source Inspector example remains a small inspectable client with smoke tests
    and standalone protocol executables while stage 0 compiles the native
-   frontend and consumes its in-process library boundary.
+   frontend and consumes its in-process library boundary. A first pure native
+   module-resolver phase accepts host-canonicalized paths and source text, parses
+   every module, and directly validates local edges, dependency order, selective
+   exports, aliases, duplicate bindings, missing modules, and cycles. Keeping
+   loading/canonicalization at the host boundary avoids freezing `std/path`
+   before the graph semantics are proven; batch FFI integration is next.
 3. **Stage 2:** Compile the Z compiler with stage 0, then use that result to
    compile itself.
 4. **Bootstrap verification:** Compare generated native source and compiler test

@@ -17,7 +17,7 @@ compile-only probes and `emit` to inspect generated native code.
 | Native application skeleton | [`z-notes`](../examples/applications/z-notes) | AppKit, ARC application state, nullable selection, direct SQLite header import, and explicit native library linkage |
 | Application walkthrough | [`document-workspace`](../examples/applications/document-workspace) | A native document model combining modules, errors, arrays, named enums, optional views, mutation, and deterministic cleanup |
 | Self-hosting groundwork | [`source-stager`](../examples/applications/source-stager) | File IO, owned argv, typed OS failures, and direct no-shell child launch |
-| Stage-1 Z frontend | [`compiler/frontend`](../compiler/frontend) | Checked UTF-8 tokens, owned flat AST shapes, self-parsing, and exact stage-0 parity |
+| Stage-1 Z frontend | [`compiler/frontend`](../compiler/frontend) | Checked UTF-8 tokens, owned flat AST shapes, native module graphs, self-parsing, and exact stage-0 parity |
 | Frontend client | [`source-inspector`](../examples/applications/source-inspector) | Readable scanner, smoke tests, and standalone protocol clients |
 
 ```sh
@@ -156,6 +156,11 @@ native parser library by compiler/frontend content, loads it in-process, and
 passes every requested source file directly from the Bun host through a narrow
 FFI boundary. Add `--timings` to see library preparation, native frontend work,
 protocol decoding, and stage-0 parity parsing separately.
+The native resolver takes a host-loaded batch of canonical paths and source
+strings, parses each module, and consumes the resulting ASTs directly to check
+local edges, dependency order, exports, aliases, collisions, missing modules,
+and cycles. Its first pressure fixture includes transitive `../` resolution and
+each failure shape; in-process batch wiring is the next boundary.
 The frontend remains stage-zero-compiled, while the example directory is now a
 small educational consumer rather than the implementation home.
 
