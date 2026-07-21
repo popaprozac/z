@@ -1592,6 +1592,8 @@ function genericCallError(
 
 function bindGenericType(
   in module: ParsedModule,
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
   in tree: ExpressionTree,
   argumentIndex: usize,
   in functionName: String,
@@ -1604,7 +1606,10 @@ function bindGenericType(
   for (const typeParameter of typeParameters) {
     if (pattern != typeParameter) continue;
     const previous = valueBindingType(substitutions, typeParameter);
-    if (previous.byteLength > 0 && previous != actual) {
+    if (
+      previous.byteLength > 0
+      && !equivalentTypes(modules, moduleIndex, previous, actual)
+    ) {
       throw genericCallError(
         module,
         tree,
@@ -1620,6 +1625,8 @@ function bindGenericType(
   if (patternNullable.byteLength > 0 && actualNullable.byteLength > 0) {
     try bindGenericType(
       module,
+      modules,
+      moduleIndex,
       tree,
       argumentIndex,
       functionName,
@@ -1635,6 +1642,8 @@ function bindGenericType(
     const actualTarget = actual.copyBytes(5, actual.byteLength);
     try bindGenericType(
       module,
+      modules,
+      moduleIndex,
       tree,
       argumentIndex,
       functionName,
@@ -1652,6 +1661,8 @@ function bindGenericType(
           if (patternArray.length == actualArray.length) {
             try bindGenericType(
               module,
+              modules,
+              moduleIndex,
               tree,
               argumentIndex,
               functionName,
@@ -1680,6 +1691,8 @@ function bindGenericType(
             while (index < patternGeneric.arguments.length) {
               try bindGenericType(
                 module,
+                modules,
+                moduleIndex,
                 tree,
                 argumentIndex,
                 functionName,
@@ -1698,6 +1711,8 @@ function bindGenericType(
             if (patternGeneric.arguments.length == 1 && actualElement.byteLength > 0) {
               try bindGenericType(
                 module,
+                modules,
+                moduleIndex,
                 tree,
                 argumentIndex,
                 functionName,
@@ -2843,6 +2858,8 @@ function inferSignatureCallType(
       while (parameterIndex < argumentTypes.length) {
         try bindGenericType(
           module,
+          modules,
+          moduleIndex,
           tree,
           children[parameterIndex + 1],
           functionName,

@@ -4900,7 +4900,10 @@ test("resolves a canonical module graph directly from native Z ASTs", () => {
   const identityMain = resolve(invalidDirectory, "identity-main.zs");
   writeFileSync(
     identityModel,
-    "export struct Record {\n  id: i32;\n}\n"
+    "export struct Record {\n"
+      + "  id: i32;\n"
+      + "  function choose<U>(left: U, right: U): U { return left; }\n"
+      + "}\n"
       + "export struct Holder {\n"
       + "  record: Record;\n"
       + "  function get(): Record { return this.record; }\n"
@@ -4911,7 +4914,8 @@ test("resolves a canonical module graph directly from native Z ASTs", () => {
   writeFileSync(
     identityBridge,
     "import { Record } from \"./identity-model.zs\";\n"
-      + "export function forward(value: Record): Record { return value; }\n",
+      + "export function forward(value: Record): Record { return value; }\n"
+      + "export function choose<T>(left: T, right: T): T { return left; }\n",
   );
   writeFileSync(
     identityMain,
@@ -4922,6 +4926,18 @@ test("resolves a canonical module graph directly from native Z ASTs", () => {
       + "function field(holder: Holder): model.Record { return holder.record; }\n"
       + "function method(holder: model.Holder): Entry { return holder.get(); }\n"
       + "function staticMethod(value: model.Record): Entry { return Holder.keep(value); }\n"
+      + "function genericDirect(left: Entry, right: model.Record): model.Record {\n"
+      + "  return bridge.choose(left, right);\n"
+      + "}\n"
+      + "function genericNested(left: Option<Entry>, right: Option<model.Record>): Option<Entry> {\n"
+      + "  return bridge.choose(left, right);\n"
+      + "}\n"
+      + "function genericFixed(left: Entry[2], right: model.Record[2]): Entry[2] {\n"
+      + "  return bridge.choose(left, right);\n"
+      + "}\n"
+      + "function genericMethod(owner: Entry, left: Entry, right: model.Record): model.Record {\n"
+      + "  return owner.choose(left, right);\n"
+      + "}\n"
       + "function matched(value: Lookup, fallback: Entry): model.Record {\n"
       + "  return match (value) { found(record) => record; missing => fallback; };\n"
       + "}\n",

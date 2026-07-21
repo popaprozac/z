@@ -1509,7 +1509,8 @@ ported independently rather than translated as one monolith.
    Native nominal equality is keyed by the defining module and symbol, not the
    source spelling. A local name, namespace-qualified name, selective alias, and
    type forwarded through an intermediate module therefore compare as one type;
-   diagnostics still use a spelling visible in the caller.
+   diagnostics still use a spelling visible in the caller. Generic unification
+   recursively compares that identity rather than raw aliases.
    Feeding this graph into ordinary
    compiler commands and replacing the temporary protocol remain next. Native
    semantic analysis has also begun on that graph: source-ordered lexical lookup

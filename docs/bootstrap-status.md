@@ -320,14 +320,18 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    Z-defined field reads and assignments now resolve across local, selective,
    and namespace type names, substitute generic field types, enforce private and
    read-only contracts, and make enum comparisons concrete. Foreign, intrinsic,
-   and extracted method values still defer. Z-defined instance and static calls now follow
+   and extracted method values still defer. Z-defined instance and static calls
+   now follow
    local/imported type metadata, enforce visibility and argument/result contracts,
    and substitute aggregate and method generics. Receiver capability state is
    retained but awaits the native ownership pass. Nominal identity now uses
    defining module/symbol coordinates independently of whether source spells a
    type locally, through a namespace, or through a selective alias. Imported
    function/method signatures, fields, and enum payloads rebase into the caller's
-   visible spelling, including transit through an intermediate module. Complete
+   visible spelling, including transit through an intermediate module. Generic
+   inference compares those identities recursively through nullable,
+   `view`, fixed-array, and nested-generic shapes while retaining readable source
+   spellings in genuine conflict diagnostics. Complete
    contextual literal and return-driven inference, foreign/intrinsic method lookup,
    generic constraints/methods, match
    ownership/control-flow merging, capability enforcement, and flow/ownership

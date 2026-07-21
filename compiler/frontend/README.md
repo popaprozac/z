@@ -41,7 +41,9 @@ semantic analysis and code generation; the frontend itself is native Z code.
   source-located diagnostics. Nominal type identity is resolved by defining
   module and symbol rather than source spelling, while signatures, fields,
   methods, and enum payloads are rebased to the caller's visible namespace or
-  selective alias for readable diagnostics.
+  selective alias for readable diagnostics. Generic unification uses the same
+  identity recursively through nullable, `view`, fixed-array, and nested-generic
+  shapes, so aliases do not create false inference conflicts.
 - `module-resolver-protocol.zs` frames that host-loaded batch and returns the
   resolved graph through the same in-process native-library boundary.
 - `parser-protocol.zs` encodes the temporary parity protocol shared by native
