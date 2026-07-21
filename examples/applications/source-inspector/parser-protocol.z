@@ -8,6 +8,7 @@ import {
   enumShapeText,
   functionBodyText,
   functionSignatureText,
+  importShapeText,
   parseProgram,
   traitShapeText,
 } from "./parser.z";
@@ -76,6 +77,25 @@ function appendShape(
   output.appendAscii(10);
 }
 
+function appendImportShape(
+  inout output: TextBuffer,
+  offset: usize,
+  line: usize,
+  column: usize,
+  in shape: String
+): void {
+  output.append("importShape");
+  output.appendAscii(9);
+  appendHexUsize(inout output, offset);
+  output.appendAscii(9);
+  appendHexUsize(inout output, line);
+  output.appendAscii(9);
+  appendHexUsize(inout output, column);
+  output.appendAscii(9);
+  appendHexText(inout output, shape);
+  output.appendAscii(10);
+}
+
 export function renderProgram(in path: String, in source: String): String throws String {
   const tokenOutcome = attempt tokenize(source);
   const tokens = match (tokenOutcome) {
@@ -110,6 +130,16 @@ export function renderProgram(in path: String, in source: String): String throws
     output.appendAscii(9);
     appendHexText(inout output, declaration.name);
     output.appendAscii(10);
+  }
+  for (const importDeclaration of program.imports) {
+    const shape = importShapeText(importDeclaration);
+    appendImportShape(
+      inout output,
+      importDeclaration.offset,
+      importDeclaration.line,
+      importDeclaration.column,
+      shape
+    );
   }
   for (const functionDeclaration of program.functions) {
     const signature = functionSignatureText(functionDeclaration);

@@ -243,8 +243,27 @@ export struct EnumDeclaration {
   column: usize;
 }
 
+export struct ImportBinding {
+  importedName: String;
+  localName: String;
+  offset: usize;
+  line: usize;
+  column: usize;
+}
+
+export struct ImportDeclaration {
+  moduleName: String;
+  bindings: Array<ImportBinding>;
+  selective: boolean;
+  header: String;
+  offset: usize;
+  line: usize;
+  column: usize;
+}
+
 export struct Program {
   declarations: Array<Declaration>;
+  imports: Array<ImportDeclaration>;
   functions: Array<FunctionDeclaration>;
   aggregates: Array<AggregateDeclaration>;
   traits: Array<TraitDeclaration>;
@@ -2210,29 +2229,47 @@ function parseProjectedStatement(
 
 function parseImport(
   in tokens: Array<Token>,
-  inout current: usize,
-  exported: boolean
-): Declaration throws ParserError {
+  inout current: usize
+): ImportDeclaration throws ParserError {
   const start = try expect(tokens, inout current, TokenKind.importKeyword, "an import declaration");
-  let header = "";
-  let foundFrom = false;
-  while (tokens[current].kind != TokenKind.semicolon) {
-    if (tokens[current].kind == TokenKind.eof) throw fail(start, "unterminated import declaration");
-    if (foundFrom && tokens[current].kind == TokenKind.string) {
-      header = tokens[current].text.copyBytes(0, tokens[current].text.byteLength);
-      foundFrom = false;
-    } else if (tokens[current].kind == TokenKind.fromKeyword) {
-      foundFrom = true;
+  let moduleName = "";
+  let bindings = Array<ImportBinding>();
+  let selective = false;
+  if (takeIf(tokens, inout current, TokenKind.leftBrace)) {
+    selective = true;
+    if (tokens[current].kind == TokenKind.rightBrace) {
+      throw fail(tokens[current], "a selective import requires at least one imported name");
     }
-    current = current + 1;
+    while (true) {
+      const imported = try expect(tokens, inout current, TokenKind.identifier, "an imported name");
+      let localName = imported.text.copyBytes(0, imported.text.byteLength);
+      if (takeIf(tokens, inout current, TokenKind.asKeyword)) {
+        const local = try expect(tokens, inout current, TokenKind.identifier, "a local import alias");
+        localName = local.text.copyBytes(0, local.text.byteLength);
+      }
+      bindings.push(ImportBinding({
+        importedName: imported.text.copyBytes(0, imported.text.byteLength),
+        localName,
+        offset: imported.offset,
+        line: imported.line,
+        column: imported.column,
+      }));
+      if (!takeIf(tokens, inout current, TokenKind.comma)) break;
+      if (tokens[current].kind == TokenKind.rightBrace) break;
+    }
+    try expectKind(tokens, inout current, TokenKind.rightBrace, "`}` after selective imports");
+  } else {
+    const module = try expect(tokens, inout current, TokenKind.identifier, "an import name");
+    moduleName = module.text.copyBytes(0, module.text.byteLength);
   }
-  if (header.isEmpty) throw fail(start, "an import declaration requires a module path after `from`");
-  current = current + 1;
-  return Declaration({
-    kind: DeclarationKind.importDeclaration,
-    name: header,
-    exported,
-    asynchronous: false,
+  try expectKind(tokens, inout current, TokenKind.fromKeyword, "`from`");
+  const header = try expect(tokens, inout current, TokenKind.string, "a module path");
+  try expectKind(tokens, inout current, TokenKind.semicolon, "`;` after an import declaration");
+  return ImportDeclaration({
+    moduleName,
+    bindings,
+    selective,
+    header: header.text.copyBytes(0, header.text.byteLength),
     offset: start.offset,
     line: start.line,
     column: start.column,
@@ -2506,6 +2543,7 @@ function parseEnumDeclaration(
 
 export function parseProgram(in tokens: Array<Token>): Program throws ParserError {
   let declarations = Array<Declaration>();
+  let imports = Array<ImportDeclaration>();
   let functions = Array<FunctionDeclaration>();
   let aggregates = Array<AggregateDeclaration>();
   let traits = Array<TraitDeclaration>();
@@ -2528,8 +2566,18 @@ export function parseProgram(in tokens: Array<Token>): Program throws ParserErro
     if (kind == TokenKind.importKeyword) {
       if (exported) throw fail(tokens[current], "imports cannot be exported");
       if (asynchronous) throw fail(tokens[current], "imports cannot be async");
-      const declaration = try parseImport(tokens, inout current, false);
+      const importDeclaration = try parseImport(tokens, inout current);
+      const declaration = Declaration({
+        kind: DeclarationKind.importDeclaration,
+        name: importDeclaration.header.copyBytes(0, importDeclaration.header.byteLength),
+        exported: false,
+        asynchronous: false,
+        offset: importDeclaration.offset,
+        line: importDeclaration.line,
+        column: importDeclaration.column,
+      });
       declarations.push(declaration);
+      imports.push(importDeclaration);
     } else if (kind == TokenKind.functionKeyword) {
       const functionDeclaration = try parseFunctionDeclaration(
         tokens,
@@ -2622,7 +2670,7 @@ export function parseProgram(in tokens: Array<Token>): Program throws ParserErro
       throw fail(tokens[current], "expected an import, function, struct, class, trait, or enum declaration");
     }
   }
-  return Program({ declarations, functions, aggregates, traits, enums });
+  return Program({ declarations, imports, functions, aggregates, traits, enums });
 }
 
 function expressionKindName(kind: ExpressionKind): String {
@@ -3037,4 +3085,28 @@ export function declarationKindName(kind: DeclarationKind): String {
     traitDeclaration => "trait";
     enumDeclaration => "enum";
   };
+}
+
+export function importShapeText(in declaration: ImportDeclaration): String {
+  let output = TextBuffer();
+  output.append("import ");
+  if (declaration.selective) {
+    output.append("{");
+    let first = true;
+    for (const binding of declaration.bindings) {
+      if (!first) output.append(", ");
+      first = false;
+      output.append(binding.importedName);
+      output.append(`@${binding.offset},${binding.line},${binding.column}`);
+      if (binding.localName != binding.importedName) {
+        output.append(" as ");
+        output.append(binding.localName);
+      }
+    }
+    output.append("}");
+  } else output.append(declaration.moduleName);
+  output.append(" from \"");
+  output.append(declaration.header);
+  output.append("\";");
+  return output.finish();
 }

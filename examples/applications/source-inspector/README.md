@@ -92,7 +92,9 @@ projected block bodies. Assignments, non-branching control statements,
 conditionals, loops, matches, async scopes, value-producing `if` expressions,
 enum payload construction, and explicit `out`/`inout` call arguments are
 structural too. Generic callees and generic member calls preserve their complete
-canonical names. Unicode identifiers and the complete syntax tree remain future
+canonical names. Imports retain namespace names, selective bindings, aliases,
+headers, and binding locations for the future native module resolver. Unicode
+identifiers and the complete syntax tree remain future
 slices. Stage 0 and stage 1 expose one
 UTF-16 code-unit coordinate contract for offsets and columns while stage 1 keeps
 separate UTF-8 byte indexes for native slicing. Exact parity covers both BMP and

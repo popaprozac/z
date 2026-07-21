@@ -35,6 +35,16 @@ export type Stage1FunctionBody = {
   };
 };
 
+export type Stage1ImportShape = {
+  readonly text: string;
+  readonly location: {
+    readonly offset: number;
+    readonly line: number;
+    readonly column: number;
+    readonly fileName: string;
+  };
+};
+
 export type Stage1TypeShapeKind = "struct" | "class" | "trait" | "enum";
 
 export type Stage1TypeShape = {
@@ -50,6 +60,7 @@ export type Stage1TypeShape = {
 
 export type Stage1Program = {
   readonly declarations: readonly Stage1Declaration[];
+  readonly importShapes: readonly Stage1ImportShape[];
   readonly functionSignatures: readonly Stage1FunctionSignature[];
   readonly functionBodies: readonly Stage1FunctionBody[];
   readonly typeShapes: readonly Stage1TypeShape[];
@@ -57,8 +68,9 @@ export type Stage1Program = {
 
 export type Stage1ProgramBatch = ReadonlyMap<string, Stage1Program>;
 
-// Stage 1 currently crosses a subprocess boundary. Keep that bootstrap protocol
-// isolated here so the parser-facing Token shape does not learn about transport.
+// Token parity still crosses a subprocess boundary. Keep that bootstrap protocol
+// isolated here so the parser-facing Token shape does not learn about transport;
+// parser parity reuses the decoders through its in-process native-library bridge.
 export function decodeStage1TokenStream(output: string, fileName: string): readonly Token[] {
   return output.split("\n").filter((line) => line.length > 0).map((line) => {
     const fields = line.split("\t");
@@ -84,11 +96,29 @@ export function decodeStage1DeclarationStream(output: string, fileName: string):
 
 export function decodeStage1ProgramStream(output: string, fileName: string): Stage1Program {
   const declarations: Stage1Declaration[] = [];
+  const importShapes: Stage1ImportShape[] = [];
   const functionSignatures: Stage1FunctionSignature[] = [];
   const functionBodies: Stage1FunctionBody[] = [];
   const typeShapes: Stage1TypeShape[] = [];
   for (const line of output.split("\n").filter((candidate) => candidate.length > 0)) {
     const fields = line.split("\t");
+    if (fields[0] === "importShape") {
+      if (fields.length !== 5) throw new Error(`malformed stage-1 import shape line: ${line}`);
+      const [, offsetText, lineText, columnText, hexadecimalText] = fields;
+      if (!/^(?:[0-9a-f]{2})*$/.test(hexadecimalText)) {
+        throw new Error(`malformed stage-1 import shape text: ${hexadecimalText}`);
+      }
+      importShapes.push({
+        text: Buffer.from(hexadecimalText, "hex").toString("utf8"),
+        location: {
+          offset: parseProtocolHexInteger(offsetText, "import shape offset"),
+          line: parseProtocolHexInteger(lineText, "import shape line"),
+          column: parseProtocolHexInteger(columnText, "import shape column"),
+          fileName,
+        },
+      });
+      continue;
+    }
     if (fields[0] === "signature") {
       if (fields.length !== 5) throw new Error(`malformed stage-1 function signature line: ${line}`);
       const [, offsetText, lineText, columnText, hexadecimalText] = fields;
@@ -168,7 +198,8 @@ export function decodeStage1ProgramStream(output: string, fileName: string): Sta
     });
   }
   typeShapes.sort((left, right) => left.location.offset - right.location.offset);
-  return { declarations, functionSignatures, functionBodies, typeShapes };
+  importShapes.sort((left, right) => left.location.offset - right.location.offset);
+  return { declarations, importShapes, functionSignatures, functionBodies, typeShapes };
 }
 
 export function decodeStage1ProgramBatchStream(output: string): Stage1ProgramBatch {

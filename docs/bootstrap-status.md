@@ -229,7 +229,10 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    classes, traits, and enums. `z self-host-parse` checks exact declaration kind,
    name, export/async state, order, and location parity against stage 0 across an
    adversarial fixture plus the lexer and parser sources themselves. Complete
-   top-level function signatures retain generics and constraints, receiver and
+   import nodes retain default namespace bindings or selective imported/local
+   names, alias source locations, and module headers with exact parity, providing
+   the first structural input for a native module resolver. Complete top-level
+   function signatures retain generics and constraints, receiver and
    parameter capabilities, nested canonical types, return types, and `throws`.
    Structs/classes now retain generic constraints, implemented traits, visible
    and readonly fields, throwing constructors, static/async/receiver methods,

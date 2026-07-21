@@ -4537,9 +4537,9 @@ test("parses declarations, function bodies, and type shapes in native Z", () => 
   const parser = resolve(projectRoot, "examples/applications/source-inspector/parser.z");
   const result = spawnSync(process.execPath, [cli, "self-host-parse", fixture, lexer, parser, "--timings"], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
-  assert.match(result.stdout, /self-host-parser-input\.z: stage-1 parser matches 16 declarations, 7 function signatures, 7 function bodies, and 6 type shapes/);
-  assert.match(result.stdout, /lexer\.z: stage-1 parser matches 17 declarations, 13 function signatures, 13 function bodies, and 3 type shapes/);
-  assert.match(result.stdout, /parser\.z: stage-1 parser matches \d+ declarations, \d+ function signatures, \d+ function bodies, and \d+ type shapes/);
+  assert.match(result.stdout, /self-host-parser-input\.z: stage-1 parser matches 16 declarations, 3 imports, 7 function signatures, 7 function bodies, and 6 type shapes/);
+  assert.match(result.stdout, /lexer\.z: stage-1 parser matches 17 declarations, 1 imports, 13 function signatures, 13 function bodies, and 3 type shapes/);
+  assert.match(result.stdout, /parser\.z: stage-1 parser matches \d+ declarations, \d+ imports, \d+ function signatures, \d+ function bodies, and \d+ type shapes/);
   assert.match(result.stdout, /stage-1 parser timing \(3 files, cache (?:hit|miss; stage-0 compile \+ native build included)\)/);
   assert.match(result.stdout, /native in-process batch \(host file I\/O \+ FFI \+ lex \+ parse \+ encode\): \d+\.\d{2} ms/);
 
@@ -4561,6 +4561,10 @@ test("parses declarations, function bodies, and type shapes in native Z", () => 
   assert.throws(
     () => decodeStage1ProgramStream("shape\tfunction\t0000000000000000\t0000000000000001\t0000000000000001\t6d61696e\n", fixture),
     /malformed stage-1 type shape kind/,
+  );
+  assert.throws(
+    () => decodeStage1ProgramStream("importShape\t0000000000000000\t0000000000000001\t0000000000000001\tnot-hex\n", fixture),
+    /malformed stage-1 import shape text/,
   );
   assert.throws(
     () => decodeStage1ProgramStream("body\t0000000000000000\t0000000000000001\t0000000000000001\tnot-hex\n", fixture),

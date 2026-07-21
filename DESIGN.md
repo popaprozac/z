@@ -1444,7 +1444,9 @@ ported independently rather than translated as one monolith.
    compatibility, while the native frontend retains separate UTF-8 byte indexes
    for slicing. A linear declaration parser retains source-located top-level
    kinds, names, export/async state, complete function signatures, aggregate
-   fields and lifecycle members, trait methods, and enum payload variants. Generic
+   fields and lifecycle members, trait methods, and enum payload variants.
+   Imports retain namespace or selective bindings, local aliases, binding
+   locations, and module headers as structural module-resolver input. Generic
    constraints, capabilities, nested types, returns, typed errors, constructors,
    static/async methods, and `deinit` all have canonical stage-0 parity. Function
    bodies now own the first statement AST slice: `const`/`let`, `return`,

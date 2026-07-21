@@ -21,6 +21,7 @@ import {
   type Stage1Declaration,
   type Stage1FunctionBody,
   type Stage1FunctionSignature,
+  type Stage1ImportShape,
   type Stage1TypeShape,
 } from "./self-hosting.ts";
 import { parseViewType } from "./view-types.ts";
@@ -92,6 +93,16 @@ function verifyStage1Parser(inputPaths: readonly string[], timings: boolean): vo
         `stage-1 parser mismatch at declaration ${index}: stage 0 produced ${describeDeclaration(stage0[index])}, stage 1 produced ${describeDeclaration(stage1[index])}`,
       );
     }
+    const stage0Imports = stage0ImportShapes(stage0Program, inputPath);
+    const importCount = Math.max(stage0Imports.length, stage1Program.importShapes.length);
+    for (let index = 0; index < importCount; index += 1) {
+      const stage0Import = stage0Imports[index];
+      const stage1Import = stage1Program.importShapes[index];
+      if (sameImportShape(stage0Import, stage1Import)) continue;
+      throw new Error(
+        `stage-1 parser mismatch at import shape ${index}: stage 0 produced ${describeImportShape(stage0Import)}, stage 1 produced ${describeImportShape(stage1Import)}`,
+      );
+    }
     const stage0Signatures = stage0Program.functions.map((declaration) => stage0FunctionSignature(declaration, inputPath));
     const signatureCount = Math.max(stage0Signatures.length, stage1Program.functionSignatures.length);
     for (let index = 0; index < signatureCount; index += 1) {
@@ -122,7 +133,7 @@ function verifyStage1Parser(inputPaths: readonly string[], timings: boolean): vo
         `stage-1 parser mismatch at type shape ${index}: stage 0 produced ${describeTypeShape(stage0Shape)}, stage 1 produced ${describeTypeShape(stage1Shape)}`,
       );
     }
-    console.log(`${inputPath}: stage-1 parser matches ${stage1.length} declarations, ${stage1Program.functionSignatures.length} function signatures, ${stage1Program.functionBodies.length} function bodies, and ${stage1Program.typeShapes.length} type shapes`);
+    console.log(`${inputPath}: stage-1 parser matches ${stage1.length} declarations, ${stage1Program.importShapes.length} imports, ${stage1Program.functionSignatures.length} function signatures, ${stage1Program.functionBodies.length} function bodies, and ${stage1Program.typeShapes.length} type shapes`);
   }
   if (timings) {
     const cacheState = boundary.cacheHit ? "cache hit" : "cache miss; stage-0 compile + native build included";
@@ -132,6 +143,32 @@ function verifyStage1Parser(inputPaths: readonly string[], timings: boolean): vo
     console.log(`  protocol decode: ${formatMilliseconds(decodeMilliseconds)}`);
     console.log(`  stage-0 parity parse (file I/O excluded): ${formatMilliseconds(stage0Milliseconds)}`);
   }
+}
+
+function stage0ImportShapes(program: Program, fileName: string): readonly Stage1ImportShape[] {
+  return program.imports.map((declaration) => ({
+    text: declaration.bindings
+      ? `import {${declaration.bindings.map((binding) => (
+          `${binding.importedName}@${canonicalLocation(binding.location)}`
+          + (binding.localName === binding.importedName ? "" : ` as ${binding.localName}`)
+        )).join(", ")}} from ${JSON.stringify(declaration.header)};`
+      : `import ${declaration.moduleName} from ${JSON.stringify(declaration.header)};`,
+    location: { ...declaration.location, fileName },
+  }));
+}
+
+function sameImportShape(left: Stage1ImportShape | undefined, right: Stage1ImportShape | undefined): boolean {
+  return left !== undefined
+    && right !== undefined
+    && left.text === right.text
+    && left.location.offset === right.location.offset
+    && left.location.line === right.location.line
+    && left.location.column === right.location.column;
+}
+
+function describeImportShape(shape: Stage1ImportShape | undefined): string {
+  if (!shape) return "no import shape";
+  return `${JSON.stringify(shape.text)} at ${shape.location.line}:${shape.location.column}`;
 }
 
 function stage0Declarations(program: Program, fileName: string): readonly Stage1Declaration[] {
