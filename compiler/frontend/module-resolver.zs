@@ -38,6 +38,7 @@ export enum ModuleResolveErrorKind {
   duplicateBinding,
   unknownName,
   unknownType,
+  unknownMember,
   typeMismatch,
   invalidOperator,
   invalidMatch,
@@ -85,6 +86,16 @@ struct NativeMatchVariant {
 struct NativeMatchShape {
   name: String;
   variants: Array<NativeMatchVariant>;
+}
+
+struct NativeFieldShape {
+  name: String;
+  ownerName: String;
+  ownerModuleIndex: usize;
+  ownerSymbolIndex: usize;
+  typeName: String;
+  visibility: String;
+  readonlyField: boolean;
 }
 
 export struct ResolvedModule {
@@ -1861,12 +1872,12 @@ function isDefinitelyNonMatchable(
   return false;
 }
 
-function aggregateFieldType(
+function aggregateFieldShape(
   in modules: Array<ResolvedModule>,
   moduleIndex: usize,
   in ownerType: String,
   in fieldName: String
-): String {
+): Option<NativeFieldShape> {
   let arguments = Array<String>();
   match (genericTypeShape(ownerType)) {
     some(generic) => {
@@ -1895,7 +1906,18 @@ function aggregateFieldType(
           }
           for (const field of signature.fields) {
             if (field.name == fieldName) {
-              return substituteGenericType(field.typeName, substitutions);
+              return Option.some(NativeFieldShape({
+                name: field.name.copyBytes(0, field.name.byteLength),
+                ownerName: modules[location.moduleIndex].symbols[location.symbolIndex].name.copyBytes(
+                  0,
+                  modules[location.moduleIndex].symbols[location.symbolIndex].name.byteLength
+                ),
+                ownerModuleIndex: location.moduleIndex,
+                ownerSymbolIndex: location.symbolIndex,
+                typeName: substituteGenericType(field.typeName, substitutions),
+                visibility: field.visibility.copyBytes(0, field.visibility.byteLength),
+                readonlyField: field.readonlyField,
+              }));
             }
           }
         }
@@ -1904,7 +1926,47 @@ function aggregateFieldType(
     }
     none => {}
   }
-  return "";
+  return Option<NativeFieldShape>.none;
+}
+
+function activeOwnerMatches(
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
+  in bindings: Array<NativeValueBinding>,
+  in field: NativeFieldShape
+): boolean {
+  const ownerType = valueBindingType(bindings, "__z_native_owner_type");
+  if (ownerType.byteLength == 0) return false;
+  return match (typeSymbolLocation(modules, moduleIndex, ownerType)) {
+    some(location) => location.moduleIndex == field.ownerModuleIndex
+      && location.symbolIndex == field.ownerSymbolIndex;
+    none => false;
+  };
+}
+
+function requireVisibleField(
+  in module: ParsedModule,
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
+  in tree: ExpressionTree,
+  index: usize,
+  in bindings: Array<NativeValueBinding>,
+  in field: NativeFieldShape
+): void throws ModuleResolveError {
+  if (field.visibility != "private") return;
+  if (activeOwnerMatches(modules, moduleIndex, bindings, field)) return;
+  let ownerKind = "struct";
+  if (
+    modules[field.ownerModuleIndex].symbols[field.ownerSymbolIndex].kind
+    == ModuleSymbolKind.classSymbol
+  ) ownerKind = "class";
+  throw resolutionError(
+    ModuleResolveErrorKind.unknownMember,
+    module.path,
+    `field "${field.name}" is private to ${ownerKind} "${field.ownerName}"`,
+    tree.nodes[index].line,
+    tree.nodes[index].column
+  );
 }
 
 function hasKnownAggregate(
@@ -1920,6 +1982,18 @@ function hasKnownAggregate(
     none => {}
   }
   return false;
+}
+
+function isKnownEnumType(
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
+  in typeName: String
+): boolean {
+  return match (typeSymbolLocation(modules, moduleIndex, typeName)) {
+    some(location) => modules[location.moduleIndex].symbols[location.symbolIndex].kind
+      == ModuleSymbolKind.enumSymbol;
+    none => false;
+  };
 }
 
 function inferMatchArmStatementType(
@@ -2005,6 +2079,7 @@ function inferMatchArmStatementType(
 function addMatchArmValueBindings(
   in module: ParsedModule,
   in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
   in tree: ExpressionTree,
   armIndex: usize,
   in variant: NativeMatchVariant,
@@ -2064,12 +2139,27 @@ function addMatchArmValueBindings(
       throw matchError(module, tree, pattern, `duplicate object pattern field ${fieldName}`);
     }
     coveredFields.push(fieldName.copyBytes(0, fieldName.byteLength));
-    const fieldType = aggregateFieldType(
+    let fieldType = "";
+    match (aggregateFieldShape(
       modules,
       payloadModuleIndex,
       payloadType,
       fieldName
-    );
+    )) {
+      some(field) => {
+        try requireVisibleField(
+          module,
+          modules,
+          moduleIndex,
+          tree,
+          pattern,
+          bindings,
+          field
+        );
+        fieldType = field.typeName.copyBytes(0, field.typeName.byteLength);
+      }
+      none => {}
+    }
     if (knownAggregate && fieldType.byteLength == 0) {
       throw matchError(
         module,
@@ -2149,6 +2239,7 @@ function inferMatchExpressionNodeType(
     try addMatchArmValueBindings(
       module,
       modules,
+      moduleIndex,
       tree,
       armIndex,
       shape.variants[variantIndex],
@@ -2321,6 +2412,44 @@ function inferExpressionNodeType(
   if (kind == ExpressionKind.argumentReferenceExpression && children.length == 1) {
     return try inferExpressionNodeType(module, modules, moduleIndex, arena, tree, children[0], bindings);
   }
+  if (kind == ExpressionKind.memberExpression && children.length == 1) {
+    const receiverType = try inferExpressionNodeType(
+      module,
+      modules,
+      moduleIndex,
+      arena,
+      tree,
+      children[0],
+      bindings
+    );
+    if (receiverType.byteLength == 0) return "";
+    const memberName = identifierLookupName(value);
+    match (aggregateFieldShape(modules, moduleIndex, receiverType, memberName)) {
+      some(field) => {
+        try requireVisibleField(
+          module,
+          modules,
+          moduleIndex,
+          tree,
+          index,
+          bindings,
+          field
+        );
+        return field.typeName.copyBytes(0, field.typeName.byteLength);
+      }
+      none => {}
+    }
+    if (hasKnownAggregate(modules, moduleIndex, receiverType)) {
+      throw resolutionError(
+        ModuleResolveErrorKind.unknownMember,
+        module.path,
+        `type ${receiverType} has no field ${memberName}`,
+        tree.nodes[index].line,
+        tree.nodes[index].column
+      );
+    }
+    return "";
+  }
   if (kind == ExpressionKind.unaryExpression && children.length == 1) {
     const operand = try inferExpressionNodeType(module, modules, moduleIndex, arena, tree, children[0], bindings);
     if (operand.byteLength == 0) return "";
@@ -2351,7 +2480,15 @@ function inferExpressionNodeType(
       throw invalidOperator(module, tree, index, `operator ${value} requires matching numeric operands`);
     }
     if (value == "==" || value == "!=") {
-      if (left == right && (isNumericTypeName(left) || left == "boolean" || left == "String")) return "boolean";
+      if (
+        left == right
+        && (
+          isNumericTypeName(left)
+          || left == "boolean"
+          || left == "String"
+          || isKnownEnumType(modules, moduleIndex, left)
+        )
+      ) return "boolean";
       if ((left == "null" && isNullableTypeName(right)) || (right == "null" && isNullableTypeName(left))) return "boolean";
       throw invalidOperator(module, tree, index, `operator ${value} requires matching comparable operands`);
     }
@@ -2608,8 +2745,55 @@ function inferStatement(
       some(target) => {
         match (in target.tree) {
           some(tree) => {
-            if (tree.nodes[tree.root].kind == ExpressionKind.identifierExpression) {
-              expected = valueBindingType(bindings, tree.nodes[tree.root].value);
+            const root = tree.root;
+            expected = try inferExpressionNodeType(
+              module,
+              modules,
+              moduleIndex,
+              arena,
+              tree,
+              root,
+              bindings
+            );
+            if (
+              tree.nodes[root].kind == ExpressionKind.memberExpression
+              && tree.nodes[root].children.length == 1
+            ) {
+              const receiverIndex = tree.nodes[root].children[0];
+              const receiverType = try inferExpressionNodeType(
+                module,
+                modules,
+                moduleIndex,
+                arena,
+                tree,
+                receiverIndex,
+                bindings
+              );
+              const memberName = identifierLookupName(tree.nodes[root].value);
+              match (aggregateFieldShape(modules, moduleIndex, receiverType, memberName)) {
+                some(field) => {
+                  const constructorType = valueBindingType(
+                    bindings,
+                    "__z_native_constructor_type"
+                  );
+                  const initializesThis = tree.nodes[receiverIndex].kind
+                    == ExpressionKind.identifierExpression
+                    && tree.nodes[receiverIndex].value == "this";
+                  if (
+                    field.readonlyField
+                    && (constructorType.byteLength == 0 || !initializesThis)
+                  ) {
+                    throw resolutionError(
+                      ModuleResolveErrorKind.unknownMember,
+                      module.path,
+                      `cannot assign to readonly field "${field.name}"`,
+                      tree.nodes[root].line,
+                      tree.nodes[root].column
+                    );
+                  }
+                }
+                none => {}
+              }
             }
           }
           none => {}
@@ -2735,6 +2919,9 @@ function inferFunctionExpressions(
   if (!declaration.staticMethod && ownerType.byteLength > 0) {
     addValueBinding(inout bindings, "this", ownerType);
   }
+  if (ownerType.byteLength > 0) {
+    addValueBinding(inout bindings, "__z_native_owner_type", ownerType);
+  }
   try inferStatementSequence(
     module,
     modules,
@@ -2759,6 +2946,8 @@ function validateExpressionTypesAndLocals(
       some(initializer) => {
         let bindings = functionValueBindings(initializer.parameters);
         addValueBinding(inout bindings, "this", aggregate.name);
+        addValueBinding(inout bindings, "__z_native_owner_type", aggregate.name);
+        addValueBinding(inout bindings, "__z_native_constructor_type", aggregate.name);
         try inferStatementSequence(
           module,
           modules,
@@ -2778,6 +2967,7 @@ function validateExpressionTypesAndLocals(
       some(deinitializer) => {
         let bindings = Array<NativeValueBinding>();
         addValueBinding(inout bindings, "this", aggregate.name);
+        addValueBinding(inout bindings, "__z_native_owner_type", aggregate.name);
         try inferStatementSequence(
           module,
           modules,

@@ -1499,6 +1499,9 @@ ported independently rather than translated as one monolith.
    and enum variants/payloads. Native match typing follows local,
    selective-imported, and namespace-imported enums through that graph,
    including generic aggregate payload destructuring and exhaustiveness.
+   Z-defined field reads and assignments use the same type metadata across those
+   boundaries, substitute generic fields, and enforce private/read-only access;
+   concrete enum fields also participate in equality typing.
    Feeding this graph into ordinary
    compiler commands and replacing the temporary protocol remain next. Native
    semantic analysis has also begun on that graph: source-ordered lexical lookup

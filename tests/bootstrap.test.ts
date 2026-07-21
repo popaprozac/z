@@ -4761,6 +4761,81 @@ test("resolves a canonical module graph directly from native Z ASTs", () => {
     /payload Envelope<i32> has no field id/,
   );
 
+  const fieldMain = resolve(invalidDirectory, "field-main.zs");
+  const fieldModel = resolve(invalidDirectory, "field-model.zs");
+  writeFileSync(
+    fieldModel,
+    "export struct Record<T> {\n  value: T;\n}\n"
+      + "export struct Frozen {\n  readonly value: i32;\n}\n"
+      + "export class Secret {\n"
+      + "  private value: i32;\n"
+      + "  function same(other: Secret): boolean { return other.value == this.value; }\n"
+      + "}\n",
+  );
+  writeFileSync(
+    fieldMain,
+    "import model from \"./field-model.zs\";\n"
+      + "function read(record: model.Record<i32>): i32 { return record.value; }\n",
+  );
+  const importedField = spawnSync(
+    process.execPath,
+    [cli, "self-host-resolve", fieldMain],
+    { encoding: "utf8" },
+  );
+  assert.equal(importedField.status, 0, importedField.stderr);
+
+  writeFileSync(
+    fieldMain,
+    "import { Record as Entry } from \"./field-model.zs\";\n"
+      + "function read(record: Entry<i32>): i32 { return record.missing; }\n",
+  );
+  const unknownImportedField = spawnSync(
+    process.execPath,
+    [cli, "self-host-resolve", fieldMain],
+    { encoding: "utf8" },
+  );
+  assert.equal(unknownImportedField.status, 1);
+  assert.match(unknownImportedField.stderr, /type Entry<i32> has no field missing/);
+
+  writeFileSync(
+    fieldMain,
+    "import model from \"./field-model.zs\";\n"
+      + "function reveal(secret: model.Secret): i32 { return secret.value; }\n",
+  );
+  const privateImportedField = spawnSync(
+    process.execPath,
+    [cli, "self-host-resolve", fieldMain],
+    { encoding: "utf8" },
+  );
+  assert.equal(privateImportedField.status, 1);
+  assert.match(privateImportedField.stderr, /field "value" is private to class "Secret"/);
+
+  writeFileSync(
+    fieldMain,
+    "import model from \"./field-model.zs\";\n"
+      + "function update(inout record: model.Record<i32>): void { record.value = true; }\n",
+  );
+  const invalidImportedFieldAssignment = spawnSync(
+    process.execPath,
+    [cli, "self-host-resolve", fieldMain],
+    { encoding: "utf8" },
+  );
+  assert.equal(invalidImportedFieldAssignment.status, 1);
+  assert.match(invalidImportedFieldAssignment.stderr, /expected i32, found boolean/);
+
+  writeFileSync(
+    fieldMain,
+    "import model from \"./field-model.zs\";\n"
+      + "function update(inout frozen: model.Frozen): void { frozen.value = 42; }\n",
+  );
+  const readonlyImportedField = spawnSync(
+    process.execPath,
+    [cli, "self-host-resolve", fieldMain],
+    { encoding: "utf8" },
+  );
+  assert.equal(readonlyImportedField.status, 1);
+  assert.match(readonlyImportedField.stderr, /cannot assign to readonly field "value"/);
+
   const encoded = encodeStage1ModuleBatch([{ path: "/a.zs", source: "é" }]);
   assert.equal(encoded.byteLength, 32 + Buffer.byteLength("/a.zs") + Buffer.byteLength("é"));
   assert.throws(() => decodeStage1ModuleGraphStream("order\n"), /did not contain an entry/);
