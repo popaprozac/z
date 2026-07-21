@@ -115,7 +115,10 @@ planned experiment rather than a rejected direction.
    one native thread. Extend that evidence through application-driven
    cross-thread callbacks, UI-thread delivery, weak-reference and
    destruction-affinity protocols, and mutable shared-state isolation before
-   fixing pools or a multithreaded executor design.
+   fixing pools or a multithreaded executor design. The intended placed-block
+   capture spelling is contextual `using (in value, inout state, move owner)`:
+   Copy snapshots may remain inferred, loans end only when the child actually
+   joins, and spawned `out` remains deferred pending failure/cancellation rules.
 4. **Probed:** Swift 6.2 does not expose noncopyable values or Swift async APIs
    through its generated C++ interface. Z records that gate and now imports a
    nearby Swift-only surface—associated-value enum case factories—directly.

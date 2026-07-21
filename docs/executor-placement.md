@@ -240,9 +240,45 @@ checker:
 - borrows, views, and slices require a proven cross-executor loan lifetime; and
 - the parent may not use a uniquely moved capture after the fork.
 
-The exact capture spelling for a placed block remains open. Possible source
-shapes should be evaluated against existing move closures and real application
-examples before adding syntax.
+The planned explicit capture contract is a contextual `using` clause after the
+executor expression:
+
+```z
+const task = spawn on thread.pool({ timeout: 5000 })
+  using (in config, inout value, move buffer)
+  : i32 throws WorkError {
+    value += config.increment;
+    consume(move buffer);
+    select value;
+  };
+```
+
+`using` is contextual in this position rather than a globally reserved word.
+The executor call configures where and how the operation runs; `using (...)`
+states how the placed operation may access existing bindings. Capture entries
+reuse Z's ordinary capability vocabulary and do not repeat types:
+
+- recursively Copy values may be inferred as private snapshots and omitted;
+- `in binding` is an explicit readonly loan for a non-Copy capture;
+- `inout binding` is one exclusive mutable loan;
+- `move binding` transfers ownership into the placed operation; and
+- `out` is deferred until failure, cancellation, and definite initialization
+  have one sound spawned-output contract.
+
+The same clause is intended to compose with all placement forms:
+
+```z
+on thread.main using (in window) { /* prove current placement */ }
+await on thread.main using (in window) { /* hop and join */ }
+spawn on thread.pool using (move work) { /* structured child */ }
+```
+
+An `in` or `inout` loan remains active until the child actually joins, either
+through an explicit `await`/cancelling join or the enclosing `async scope`'s
+implicit join. Merely requesting cancellation does not release a loan. The
+parent may use the binding again after that join; a `move` capture remains moved
+unless ownership is explicitly returned as the task result. This syntax and
+the borrowed/mutable cross-executor tiers are planned, not yet executable.
 
 The current executable tier applies these concrete rules:
 
@@ -458,8 +494,11 @@ later without making executor blocks a special case.
 
 - How are executor values created, retained, and compared for current-context
   proof?
-- What explicit capture syntax is required when a placed task moves ownership?
 - Which cross-executor borrows can the unified loan checker prove safely?
+- Which inferred Copy captures should diagnostics ask users to spell explicitly
+  for clarity or ABI stability?
+- What eventual spawned-`out` contract remains sound across failure and
+  cancellation?
 - What is the final function-level isolation syntax?
 - What is the final `.zd` spelling for method, callback, and type affinity?
 - Should any runtime-owned detached operation exist, and how must it report

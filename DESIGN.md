@@ -929,6 +929,30 @@ Directly async native-thread closures remain a future thread-affine continuation
 tier rather than a rejected feature. Detailed semantics and lowering order live
 in [`docs/executor-placement.md`](docs/executor-placement.md).
 
+The planned source contract for those later tiers is a contextual `using`
+clause after the executor expression:
+
+```z
+const task = spawn on thread.pool({ timeout: 5000 })
+  using (in config, inout value, move buffer)
+  : i32 throws WorkError {
+    value += config.increment;
+    consume(move buffer);
+    select value;
+  };
+```
+
+Executor arguments configure placement; `using (...)` declares access to
+existing bindings. Its entries reuse the ordinary `in`, `inout`, and `move`
+capabilities without repeating types. Recursively Copy captures may remain
+inferred private snapshots. `out` is reserved until spawned initialization has
+sound failure, cancellation, and definite-assignment semantics. A borrowed
+capture remains unavailable to conflicting parent access until the task is
+actually joined, explicitly or by the enclosing `async scope`; cancellation
+request alone does not end the loan. A moved binding remains consumed unless
+the task explicitly returns ownership. This is committed design direction, not
+implemented syntax yet.
+
 The error contract is the same as local `spawn`: a synchronous worker closure
 declared `(): T throws E` produces `Task<T, E>`, `try await` propagates `E`, and
 `attempt await` materializes it. Error slots carry explicit liveness just like
