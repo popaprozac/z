@@ -230,6 +230,32 @@ function canonicalStatementText(statement: Statement, tokens: readonly Token[]):
       : "";
     return `return@${location}(${expression})`;
   }
+  if (statement.kind === "throw" || statement.kind === "select") {
+    const expressionStart = lexicalFollowingToken(tokens, statement.location.offset);
+    const expression = `=${canonicalLocation(expressionStart.location)}:${canonicalExpressionTokens(
+      tokens,
+      expressionStart.location.offset,
+    )}#${canonicalExpressionTree(statement.expression, tokens) ?? "opaque"}`;
+    return `${statement.kind}@${location}(${expression})`;
+  }
+  if (statement.kind === "assignment") {
+    const targetStart = lexicalStatementStart(tokens, statement.location.offset);
+    const targetIndex = tokens.findIndex((token) => token.location.offset === targetStart.location.offset);
+    if (targetIndex < 0) throw new Error(`could not locate assignment at source offset ${statement.location.offset}`);
+    const equalIndex = tokens.findIndex((token, index) => index >= targetIndex && token.kind === "equal");
+    if (equalIndex < 0) throw new Error(`could not find assignment operator at source offset ${statement.location.offset}`);
+    const valueStart = tokens[equalIndex + 1];
+    if (!valueStart) throw new Error(`could not find assignment value at source offset ${statement.location.offset}`);
+    const targetTokens = canonicalExpressionTokenRange(tokens, targetIndex, equalIndex);
+    const valueTokens = canonicalExpressionTokens(tokens, valueStart.location.offset);
+    return `assignment@${canonicalLocation(targetStart.location)}(`
+      + `target=${canonicalLocation(targetStart.location)}:${targetTokens}#${canonicalExpressionTree(statement.target, tokens) ?? "opaque"}`
+      + `value=${canonicalLocation(valueStart.location)}:${valueTokens}#${canonicalExpressionTree(statement.expression, tokens) ?? "opaque"}`
+      + ")";
+  }
+  if (statement.kind === "break" || statement.kind === "continue") {
+    return `${statement.kind}@${location}()`;
+  }
   if (statement.kind === "expressionStatement") {
     if (statement.expression.kind === "executorPlacement") return "";
     const expressionStart = lexicalStatementStart(tokens, statement.location.offset);
@@ -242,6 +268,25 @@ function canonicalStatementText(statement: Statement, tokens: readonly Token[]):
     return `block@${location}(${statement.statements.map((child) => canonicalStatementText(child, tokens)).join("")})`;
   }
   return "";
+}
+
+function lexicalFollowingToken(tokens: readonly Token[], statementOffset: number): Token {
+  const statementIndex = tokens.findIndex((token) => token.location.offset === statementOffset);
+  const token = statementIndex >= 0 ? tokens[statementIndex + 1] : undefined;
+  if (!token || token.kind === "semicolon") {
+    throw new Error(`could not find statement value at source offset ${statementOffset}`);
+  }
+  return token;
+}
+
+function canonicalExpressionTokenRange(
+  tokens: readonly Token[],
+  start: number,
+  end: number,
+): string {
+  return tokens.slice(start, end).map((token) => (
+    `${token.kind}:${Buffer.byteLength(token.text, "utf8")}:${token.text};`
+  )).join("");
 }
 
 function lexicalStatementStart(tokens: readonly Token[], rootOffset: number): Token {

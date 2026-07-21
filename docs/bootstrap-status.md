@@ -259,8 +259,10 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    expression body root. Function, constructor, `deinit`, and closure bodies now
    use flat statement arenas with integer child edges. Block-bodied closures
    carry statement-root edges into the enclosing arena, so their currently
-   supported variable, return, expression, and nested-block statements are
-   structural without recursive per-block allocation.
+   supported variable, assignment, return, throw, select, expression, loop-control,
+   and nested-block statements are structural without recursive per-block
+   allocation. Assignments retain separate target and value expression roots,
+   preserving Z's rule that assignment itself is not an expression.
    Contextual keywords are accepted as member names after `.` just as they are
    by stage 0. Value-block expressions, complete control-flow statements, Unicode
    identifiers, block comments, and direct in-process driver integration remain. Stage 0

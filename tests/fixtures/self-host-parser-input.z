@@ -90,12 +90,17 @@ function expressionShapes(value: i32): i32 {
   const borrowedClosure = (in item: i32, amount): i32 => item + amount + value;
   const movedClosure = move (item: i32): i32 => item + value;
   const throwingClosure = (out item: i32): i32 throws LoadError => item;
-  const blockClosure = move (in item: i32): i32 => {
-    const adjusted = item + value;
+  const blockClosure = move (in item: i32): i32 throws LoadError => {
+    let adjusted = item;
+    adjusted = adjusted + value;
     {
       const observed = adjusted;
       bodyShapes(observed);
+      select observed;
+      break;
+      continue;
     }
+    throw LoadError({ code: adjusted });
     return adjusted;
   };
   const values = [value, 42];
