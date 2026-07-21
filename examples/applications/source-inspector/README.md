@@ -88,10 +88,14 @@ and closures with borrow/move capture, typed parameters, expression bodies, or
 projected block bodies. Assignments, non-branching control statements,
 conditionals, loops, matches, async scopes, value-producing `if` expressions,
 enum payload construction, and explicit `out`/`inout` call arguments are
-structural too. Unicode identifiers, direct in-process compiler integration, and
-the complete syntax tree remain future slices. Stage 0 and stage 1 expose one
+structural too. Unicode identifiers and the complete syntax tree remain future
+slices. Stage 0 and stage 1 expose one
 UTF-16 code-unit coordinate contract for offsets and columns while stage 1 keeps
 separate UTF-8 byte indexes for native slicing. Exact parity covers both BMP and
-supplementary text. Build time and subprocess startup
-still dominate these bootstrap commands, so native-vs-stage-0 parser performance
-should be compared only after the frontend has an in-process driver boundary.
+supplementary text. `parser-protocol.z` owns the shared framing,
+`parser-stream.z` remains a standalone executable client, and
+`parser-library.z` is compiled into a content-addressed dynamic library. The Bun
+driver passes source bytes directly to that library through a narrow FFI wrapper,
+so parser parity no longer pays subprocess startup or native-side file I/O.
+Performance comparisons remain provisional until stage 1 covers the same
+frontend work as stage 0 and the temporary text protocol is replaced.

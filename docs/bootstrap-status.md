@@ -249,11 +249,15 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    Unsupported expressions remain source-located canonical token spans marked
    opaque; unsupported statement forms remain traversable but unmaterialized.
    Exact body parity now covers the fixture plus the lexer and parser sources
-   themselves. Traversal borrows tokens and copies only AST-retained text. The parser bridge is now
-   content-addressed by its compiler/frontend inputs and accepts the whole parity
-   corpus in one native invocation instead of recompiling and spawning once per
-   file. `z self-host-parse ... --timings` exposes bridge preparation, native
-   batch work, protocol decoding, and the stage-0 parity parse independently.
+   themselves. Traversal borrows tokens and copies only AST-retained text. Parser
+   framing is shared by executable and library clients. The compiler-facing
+   parser bridge is content-addressed by its compiler/frontend inputs, loaded
+   once as a native dynamic library, and receives each file's path and source
+   bytes synchronously through Bun FFI. It therefore avoids both helper-process
+   startup and native-side file I/O. `z self-host-parse ... --timings` exposes
+   library preparation, in-process native frontend work, protocol decoding, and
+   the stage-0 parity parse independently. This pressure also closed canonical
+   `TextBuffer`/`Arena` type identity through intermediate source modules.
    The source-inspector location remains a proving ground; after complete bodies
    and a compiler-facing interface are stable, the frontend moves into the
    compiler tree and the example becomes its client. Template literals now

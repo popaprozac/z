@@ -1464,14 +1464,14 @@ ported independently rather than translated as one monolith.
    every top-level function body in the fixture, lexer, and parser corpus. The
    temporary buffered native protocols are exposed through `z self-host-lex` and
    `z self-host-parse`. The parser bridge is content-addressed across compiler
-   and frontend sources and parses a complete corpus in one native process;
-   `--timings` separates bridge preparation, native startup/I/O/frontend work,
-   protocol decoding, and the stage-0 parity parse. Templates, closures, and
-   value-block expressions, complete statements, a direct in-process driver ABI,
-   and a broader parity corpus precede replacing
-   bootstrap frontend phases in ordinary commands. Performance claims wait for
-   that in-process seam and equivalent frontend coverage rather than conflating
-   partial parsing, native compilation, and subprocess startup.
+   and frontend sources, compiled as a dynamic library, and invoked synchronously
+   in-process through Bun FFI with host-provided path and source bytes. `--timings`
+   separates library preparation, native frontend work, protocol decoding, and
+   the stage-0 parity parse. The lexer parity command still uses its standalone
+   executable client. Complete syntax coverage and a broader parity corpus
+   precede replacing bootstrap frontend phases in ordinary commands. Performance
+   claims wait for equivalent frontend coverage and removal of the temporary text
+   protocol rather than comparing unlike amounts of work.
 
    The implementation currently lives under `examples/applications/source-inspector`
    so it remains an inspectable pressure test while its AST changes quickly.

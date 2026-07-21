@@ -4541,7 +4541,7 @@ test("parses declarations, function bodies, and type shapes in native Z", () => 
   assert.match(result.stdout, /lexer\.z: stage-1 parser matches 17 declarations, 13 function signatures, 13 function bodies, and 3 type shapes/);
   assert.match(result.stdout, /parser\.z: stage-1 parser matches \d+ declarations, \d+ function signatures, \d+ function bodies, and \d+ type shapes/);
   assert.match(result.stdout, /stage-1 parser timing \(3 files, cache (?:hit|miss; stage-0 compile \+ native build included)\)/);
-  assert.match(result.stdout, /native batch \(process startup \+ file I\/O \+ lex \+ parse \+ encode\): \d+\.\d{2} ms/);
+  assert.match(result.stdout, /native in-process batch \(host file I\/O \+ FFI \+ lex \+ parse \+ encode\): \d+\.\d{2} ms/);
 
   const directory = mkdtempSync("/tmp/z-self-host-parser-");
   const invalidPath = resolve(directory, "invalid.z");

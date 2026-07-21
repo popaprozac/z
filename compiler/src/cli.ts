@@ -4,6 +4,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 
 import { basename, dirname, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
+import { CString, dlopen, FFIType, ptr } from "bun:ffi";
 import type { Expression, FunctionDeclaration, Program, SourceLocation, Statement } from "./ast.ts";
 import { parseDynamicArrayType, parseFixedArrayType, parseSliceType } from "./array-types.ts";
 import { check, compileToNative, type NativeArtifact } from "./compiler.ts";
@@ -65,18 +66,13 @@ if (!command || !inputArgument || !["check", "emit", "run", "self-host-lex", "se
 
 function verifyStage1Parser(inputPaths: readonly string[], timings: boolean): void {
   const projectRoot = resolve(dirname(new URL(import.meta.url).pathname), "../..");
-  const bridgePath = join(projectRoot, "examples/applications/source-inspector/parser-stream.z");
-  const boundary = prepareStage1Bridge(projectRoot, bridgePath);
+  const bridgePath = join(projectRoot, "examples/applications/source-inspector/parser-library.z");
+  const boundary = prepareStage1ParserLibrary(projectRoot, bridgePath);
   const executionStarted = performance.now();
-  const execution = spawnSync(boundary.executablePath, inputPaths, {
-    encoding: "utf8",
-    maxBuffer: 64 * 1024 * 1024,
-  });
+  const nativeStream = parseWithStage1Library(boundary.libraryPath, inputPaths);
   const executionMilliseconds = performance.now() - executionStarted;
-  if (execution.error) throw execution.error;
-  if (execution.status !== 0) throw new Error(execution.stderr || "the stage-1 parser failed");
   const decodeStarted = performance.now();
-  const stage1Programs = decodeStage1ProgramBatchStream(execution.stdout);
+  const stage1Programs = decodeStage1ProgramBatchStream(nativeStream);
   const decodeMilliseconds = performance.now() - decodeStarted;
   let stage0Milliseconds = 0;
   for (const inputPath of inputPaths) {
@@ -132,7 +128,7 @@ function verifyStage1Parser(inputPaths: readonly string[], timings: boolean): vo
     const cacheState = boundary.cacheHit ? "cache hit" : "cache miss; stage-0 compile + native build included";
     console.log(`stage-1 parser timing (${inputPaths.length} ${inputPaths.length === 1 ? "file" : "files"}, ${cacheState})`);
     console.log(`  boundary preparation: ${formatMilliseconds(boundary.prepareMilliseconds)}`);
-    console.log(`  native batch (process startup + file I/O + lex + parse + encode): ${formatMilliseconds(executionMilliseconds)}`);
+    console.log(`  native in-process batch (host file I/O + FFI + lex + parse + encode): ${formatMilliseconds(executionMilliseconds)}`);
     console.log(`  protocol decode: ${formatMilliseconds(decodeMilliseconds)}`);
     console.log(`  stage-0 parity parse (file I/O excluded): ${formatMilliseconds(stage0Milliseconds)}`);
   }
@@ -982,35 +978,139 @@ function buildNative(inputPath: string, artifact: NativeArtifact, outputStem?: s
   return executablePath;
 }
 
-type PreparedStage1Bridge = {
-  readonly executablePath: string;
+type PreparedStage1ParserLibrary = {
+  readonly libraryPath: string;
   readonly cacheHit: boolean;
   readonly prepareMilliseconds: number;
 };
 
-function prepareStage1Bridge(projectRoot: string, bridgePath: string): PreparedStage1Bridge {
+function prepareStage1ParserLibrary(projectRoot: string, bridgePath: string): PreparedStage1ParserLibrary {
   const started = performance.now();
   const fingerprint = stage1BridgeFingerprint(projectRoot);
   const outputStem = `stage1-${basename(bridgePath, ".z")}-${fingerprint.slice(0, 20)}`;
-  const executablePath = join(
-    projectRoot,
-    ".z-cache",
-    `${outputStem}${process.platform === "win32" ? ".exe" : ""}`,
-  );
-  if (existsSync(executablePath)) {
-    return { executablePath, cacheHit: true, prepareMilliseconds: performance.now() - started };
+  const libraryPath = join(projectRoot, ".z-cache", `${outputStem}${nativeLibraryExtension()}`);
+  if (existsSync(libraryPath)) {
+    return { libraryPath, cacheHit: true, prepareMilliseconds: performance.now() - started };
   }
 
   const bridgeSource = readFileSync(bridgePath, "utf8");
   const artifact = compileToNative(bridgeSource, bridgePath);
   for (const warning of artifact.warnings) console.error(formatDiagnostic(warning, bridgeSource));
-  const builtPath = buildNative(bridgePath, artifact, outputStem);
-  return { executablePath: builtPath, cacheHit: false, prepareMilliseconds: performance.now() - started };
+  const builtPath = buildNativeLibrary(bridgePath, artifact, outputStem);
+  return { libraryPath: builtPath, cacheHit: false, prepareMilliseconds: performance.now() - started };
+}
+
+function parseWithStage1Library(libraryPath: string, inputPaths: readonly string[]): string {
+  const library = dlopen(libraryPath, {
+    z_stage1_parse: {
+      args: [FFIType.ptr, FFIType.u64, FFIType.ptr, FFIType.u64],
+      returns: FFIType.ptr,
+    },
+    z_stage1_free: {
+      args: [FFIType.ptr],
+      returns: FFIType.void,
+    },
+  });
+  try {
+    let stream = "";
+    for (const inputPath of inputPaths) {
+      const pathBytes = Buffer.from(inputPath, "utf8");
+      const sourceBytes = Buffer.from(readFileSync(inputPath, "utf8"), "utf8");
+      const pathStorage = pathBytes.byteLength > 0 ? pathBytes : Buffer.alloc(1);
+      const sourceStorage = sourceBytes.byteLength > 0 ? sourceBytes : Buffer.alloc(1);
+      const resultPointer = library.symbols.z_stage1_parse(
+        ptr(pathStorage),
+        pathBytes.byteLength,
+        ptr(sourceStorage),
+        sourceBytes.byteLength,
+      );
+      if (!resultPointer) throw new Error("the stage-1 parser library returned a null response");
+      try {
+        const response = new CString(resultPointer).toString();
+        if (response.startsWith("error\n")) throw new Error(response.slice("error\n".length));
+        if (!response.startsWith("ok\n")) throw new Error("the stage-1 parser library returned a malformed response");
+        stream += response.slice("ok\n".length);
+      } finally {
+        library.symbols.z_stage1_free(resultPointer);
+      }
+    }
+    return stream;
+  } finally {
+    library.close();
+  }
+}
+
+function buildNativeLibrary(inputPath: string, artifact: NativeArtifact, outputStem: string): string {
+  const projectRoot = resolve(dirname(new URL(import.meta.url).pathname), "../..");
+  const cacheDirectory = join(projectRoot, ".z-cache");
+  mkdirSync(cacheDirectory, { recursive: true });
+  const sourcePath = join(cacheDirectory, `${outputStem}.${nativeExtension(artifact.language)}`);
+  const libraryPath = join(cacheDirectory, `${outputStem}${nativeLibraryExtension()}`);
+  writeFileSync(sourcePath, `${artifact.source}\n${stage1ParserLibraryWrapper()}`);
+
+  const compiler = nativeCompiler(artifact.language);
+  const compilerArguments = [
+    ...nativeLanguageFlags(artifact.language),
+    ...deploymentTargetFlags(artifact.deploymentTarget),
+    ...(process.platform === "darwin" ? ["-dynamiclib"] : process.platform === "win32" ? ["-shared"] : ["-shared", "-fPIC"]),
+    "-Wall",
+    "-Wextra",
+    "-Werror",
+    ...(artifact.deploymentTarget ? ["-Wno-deprecated-declarations"] : []),
+    "-I", dirname(inputPath),
+    ...artifact.includeDirectories.flatMap((directory) => ["-I", directory]),
+    sourcePath,
+    ...artifact.nativeLibraries,
+    ...artifact.nativeLinkerArguments,
+    ...artifact.frameworks.flatMap((framework) => ["-framework", framework]),
+    "-o",
+    libraryPath,
+  ];
+  const compilation = process.platform === "darwin"
+    ? spawnSync("xcrun", [compiler, ...compilerArguments], { encoding: "utf8" })
+    : spawnSync(compiler, compilerArguments, { encoding: "utf8" });
+  if (compilation.status !== 0) throw new Error(compilation.stderr || "Clang failed");
+  return libraryPath;
+}
+
+function nativeLibraryExtension(): string {
+  if (process.platform === "darwin") return ".dylib";
+  if (process.platform === "win32") return ".dll";
+  return ".so";
+}
+
+function stage1ParserLibraryWrapper(): string {
+  return `#if defined(_WIN32)
+#define Z_STAGE1_EXPORT __declspec(dllexport)
+#else
+#define Z_STAGE1_EXPORT __attribute__((visibility("default")))
+#endif
+
+Z_STAGE1_EXPORT void *z_stage1_parse(
+  const uint8_t *path_data,
+  uintptr_t path_length,
+  const uint8_t *source_data,
+  uintptr_t source_length
+) {
+  Z_String path = { (const char *)path_data, path_length, 0 };
+  Z_String source = { (const char *)source_data, source_length, 0 };
+  Z_String result = stage1Parse(&path, &source);
+  char *copy = (char *)malloc(result.length + 1);
+  if (copy == NULL) abort();
+  if (result.length > 0) memcpy(copy, result.data, result.length);
+  copy[result.length] = '\\0';
+  if (result.capacity > 0) free((void *)result.data);
+  return copy;
+}
+
+Z_STAGE1_EXPORT void z_stage1_free(void *pointer) {
+  free(pointer);
+}`;
 }
 
 function stage1BridgeFingerprint(projectRoot: string): string {
   const hash = createHash("sha256");
-  hash.update(`z-stage1-bridge-v1\0${process.platform}\0${process.arch}\0${Bun.version}\0`);
+  hash.update(`z-stage1-bridge-v2\0${process.platform}\0${process.arch}\0${Bun.version}\0`);
   const roots = [
     join(projectRoot, "compiler/src"),
     join(projectRoot, "examples/applications/source-inspector"),

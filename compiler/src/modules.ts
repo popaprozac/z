@@ -51,6 +51,7 @@ type ModuleNode = {
 type ModuleScope = {
   readonly globals: Map<string, string>;
   readonly namespaces: Map<string, ModuleNode>;
+  readonly standardTypes: Map<string, "TextBuffer" | "Arena">;
 };
 
 export function isLocalSourceModuleSpecifier(specifier: string): boolean {
@@ -244,6 +245,7 @@ function collectOwnNames(node: ModuleNode, entry: boolean): void {
 function buildScope(node: ModuleNode): ModuleScope {
   const globals = new Map(node.ownNames);
   const namespaces = new Map<string, ModuleNode>();
+  const standardTypes = new Map<string, "TextBuffer" | "Arena">();
   const occupied = new Map<string, SourceLocation>();
   for (const declaration of [
     ...node.program.traits,
@@ -287,11 +289,16 @@ function buildScope(node: ModuleNode): ModuleScope {
       bind(declaration.moduleName, linkedImportName(node, declaration.moduleName), declaration.location);
     } else {
       for (const binding of declaration.bindings) {
+        if (declaration.header === "std/text" && binding.importedName === "TextBuffer") {
+          standardTypes.set(binding.localName, "TextBuffer");
+        } else if (declaration.header === "std/memory" && binding.importedName === "Arena") {
+          standardTypes.set(binding.localName, "Arena");
+        }
         bind(binding.localName, linkedImportName(node, binding.localName), binding.location);
       }
     }
   }
-  return { globals, namespaces };
+  return { globals, namespaces, standardTypes };
 }
 
 function linkedImportName(node: ModuleNode, name: string): string {
@@ -682,6 +689,8 @@ function renameTypeName(name: string, scope: ModuleScope, typeParameters: Readon
 }
 
 function renameSimpleType(name: string, scope: ModuleScope): string {
+  const standardType = scope.standardTypes.get(name);
+  if (standardType) return standardType;
   const separator = name.indexOf(".");
   if (separator >= 0) {
     const namespace = name.slice(0, separator);

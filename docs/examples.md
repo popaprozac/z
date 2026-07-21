@@ -147,10 +147,11 @@ expressions retain condition, value-block, and nested else-if edges, with branch
 statements pointing into the shared arena. `on`, `await on`, and `spawn on`
 retain placement mode, exact `on` location, executor root, optional result/error
 types, and body statements. Enum payload construction and explicit `out`/`inout`
-arguments are structural expression nodes too. `z self-host-parse`
-caches its native bridge by compiler/frontend content and sends every requested source file
-through one framed native invocation. Add `--timings` to see bridge preparation,
-native batch work, protocol decoding, and stage-0 parity parsing separately.
+arguments are structural expression nodes too. `z self-host-parse` caches its
+native parser library by compiler/frontend content, loads it in-process, and
+passes every requested source file directly from the Bun host through a narrow
+FFI boundary. Add `--timings` to see library preparation, native frontend work,
+protocol decoding, and stage-0 parity parsing separately.
 Once complete bodies and the compiler-facing boundary are stable, the reusable
 frontend will move into the compiler tree and this directory will remain as a
 small educational consumer.
