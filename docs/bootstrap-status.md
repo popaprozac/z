@@ -380,6 +380,11 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    unique owners while ARC identities remain copyable. Immutable capture writes,
    use-after-capture moves, uninitialized captures, and moved captures diagnose
    in Z.
+   Enclosing return contracts now flow through statement match arms, and
+   payload-free enum/`Option` constructors no longer resemble partial field
+   moves to ownership analysis. With explicit copies on alternate owned-String
+   result paths, the resolver now analyzes its own implementation before the
+   native pass advances into its parser dependency.
    Complete
    contextual literal and return-driven inference, foreign/intrinsic method lookup,
    generic constraints/methods, async/foreign call effects, contextual untyped

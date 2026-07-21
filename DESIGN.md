@@ -1557,6 +1557,10 @@ ported independently rather than translated as one monolith.
    reference may still mutate its shared identity, while an immutable `in`
    class borrow may not; borrowed `this` also cannot invoke a `move this`
    method, and a successful consuming call marks named receiver storage moved.
+   Enclosing function result contracts remain active inside statement match
+   arms, while payload-free enum constructors are excluded from partial-field
+   move rules. These distinctions are sufficient for the native resolver to
+   analyze its own implementation and continue into the parser dependency.
    Feeding this graph into ordinary
    compiler commands and replacing the temporary protocol remain next. Native
    semantic analysis has also begun on that graph: source-ordered lexical lookup

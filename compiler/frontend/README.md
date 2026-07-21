@@ -91,6 +91,9 @@ semantic analysis and code generation; the frontend itself is native Z code.
   non-throwing operands, incompatible propagation, and mismatched or undeclared
   `throw` values now originate in Z. Generic error types and imported aliases use
   the same substitution and nominal-identity rules as ordinary call results.
+  Function return contracts also remain visible through nested match-arm
+  statements, and payload-free constructors such as `Option<T>.none` are
+  classified as fresh enum values rather than ownership-bearing field moves.
 - `module-resolver-protocol.zs` frames that host-loaded batch and returns the
   resolved graph through the same in-process native-library boundary.
 - `parser-protocol.zs` encodes the temporary parity protocol shared by native

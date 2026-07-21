@@ -6217,6 +6217,24 @@ test("resolves a canonical module graph directly from native Z ASTs", () => {
 
   writeFileSync(
     bindingState,
+    "enum Choice { yes, no }\n"
+      + "function inspect(choice: Choice): i32 {\n"
+      + "  match (choice) {\n"
+      + "    yes => return 1;\n"
+      + "    no => {}\n"
+      + "  }\n"
+      + "  return 0;\n"
+      + "}\n",
+  );
+  const returnFromMatchArm = spawnSync(
+    process.execPath,
+    [cli, "self-host-resolve", bindingState],
+    { encoding: "utf8" },
+  );
+  assert.equal(returnFromMatchArm.status, 0, returnFromMatchArm.stderr);
+
+  writeFileSync(
+    bindingState,
     "struct Resource { id: i32; deinit {} }\n"
       + "function invalid(): i32 {\n"
       + "  const resource = Resource({ id: 42 });\n"

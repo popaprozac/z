@@ -744,6 +744,11 @@ function copyBindings(in bindings: Array<String>): Array<String> {
   return copied;
 }
 
+function copiedString(in value: String): String {
+  const length = value.byteLength;
+  return value.copyBytes(0, length);
+}
+
 function copyIndices(in indices: Array<usize>): Array<usize> {
   let copied = Array<usize>();
   for (const index of indices) {
@@ -1797,12 +1802,7 @@ function consumeOwnedExpressionNode(
     const receiverIndex = tree.nodes[index].children[0];
     const enumType = typeExpressionName(tree, receiverIndex);
     const variantName = identifierLookupName(tree.nodes[index].value);
-    match (matchShape(modules, moduleIndex, enumType)) {
-      some(shape) => {
-        if (matchVariantIndex(shape, variantName) < shape.variants.length) return;
-      }
-      none => {}
-    }
+    if (isKnownMatchVariant(modules, moduleIndex, enumType, variantName)) return;
   }
   if (kind == ExpressionKind.memberExpression || kind == ExpressionKind.indexExpression) {
     throw resolutionError(
@@ -2030,15 +2030,7 @@ function requireExpressionType(
   if (isNumericTypeName(expected) && isNumericTypeName(actual) && isContextualNumericLiteral(tree, index)) return;
   if (expected == "cstring" && actual == "String" && tree.nodes[index].kind == ExpressionKind.stringExpression) return;
   if (actual == "null" && isNullableTypeName(expected)) return;
-  match (genericTypeShape(expected)) {
-    some(generic) => {
-      if (generic.base == "Slice" && generic.arguments.length == 1) {
-        const actualElement = arrayElementType(actual);
-        if (equivalentTypes(modules, moduleIndex, actualElement, generic.arguments[0])) return;
-      }
-    }
-    none => {}
-  }
+  if (compatibleSliceTypes(modules, moduleIndex, expected, actual)) return;
   throw resolutionError(
     ModuleResolveErrorKind.typeMismatch,
     module.path,
@@ -2046,6 +2038,21 @@ function requireExpressionType(
     tree.nodes[index].line,
     tree.nodes[index].column
   );
+}
+
+function compatibleSliceTypes(
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
+  in expected: String,
+  in actual: String
+): boolean {
+  const actualElement = arrayElementType(actual);
+  return match (genericTypeShape(expected)) {
+    some(generic) => generic.base == "Slice"
+      && generic.arguments.length == 1
+      && equivalentTypes(modules, moduleIndex, actualElement, generic.arguments[0]);
+    none => false;
+  };
 }
 
 function invalidOperator(
@@ -2459,12 +2466,13 @@ function localTypeSpelling(
     0,
     modules[location.moduleIndex].symbols[location.symbolIndex].name.byteLength
   );
+  const targetNameLength = targetName.byteLength;
   let symbolIndex: usize = 0;
   while (symbolIndex < modules[moduleIndex].symbols.length) {
     if (
       moduleIndex == location.moduleIndex
       && symbolIndex == location.symbolIndex
-    ) return targetName;
+    ) return targetName.copyBytes(0, targetNameLength);
     if (modules[moduleIndex].symbols[symbolIndex].kind == ModuleSymbolKind.importedSymbol) {
       match (in modules[moduleIndex].symbols[symbolIndex].targetModule) {
         some(target) => {
@@ -2854,6 +2862,18 @@ function matchVariantIndex(
   return shape.variants.length;
 }
 
+function isKnownMatchVariant(
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
+  in subjectType: String,
+  in variantName: String
+): boolean {
+  return match (matchShape(modules, moduleIndex, subjectType)) {
+    some(shape) => matchVariantIndex(shape, variantName) < shape.variants.length;
+    none => false;
+  };
+}
+
 function containsString(in values: Array<String>, in value: String): boolean {
   for (const candidate of values) {
     if (candidate == value) return true;
@@ -3241,6 +3261,7 @@ function inferMatchArmStatementType(
   inout bindings: Array<NativeValueBinding>
 ): String throws ModuleResolveError {
   const kind = arena.nodes[statementIndex].kind;
+  const expectedReturn = valueBindingType(bindings, "__z_native_return_type");
   if (
     kind == StatementKind.expressionStatement
     || kind == StatementKind.selectStatement
@@ -3277,7 +3298,7 @@ function inferMatchArmStatementType(
       arena,
       statementIndex,
       inout bindings,
-      ""
+      expectedReturn
     );
     return "__z_never";
   }
@@ -3293,7 +3314,7 @@ function inferMatchArmStatementType(
         arena,
         children[index],
         inout bindings,
-        ""
+        expectedReturn
       );
       index = index + 1;
     }
@@ -3314,7 +3335,7 @@ function inferMatchArmStatementType(
     arena,
     statementIndex,
     inout bindings,
-    ""
+    expectedReturn
   );
   return "";
 }
@@ -4465,6 +4486,7 @@ function inferExpressionNodeType(
 ): String throws ModuleResolveError {
   const kind = tree.nodes[index].kind;
   const value = tree.nodes[index].value.copyBytes(0, tree.nodes[index].value.byteLength);
+  const valueLength = value.byteLength;
   const children = copyIndices(tree.nodes[index].children);
   if (kind == ExpressionKind.numberExpression) return numberLiteralType(value);
   if (kind == ExpressionKind.stringExpression) return "String";
@@ -4636,7 +4658,7 @@ function inferExpressionNodeType(
                   value,
                   inout bindings
                 );
-                if (contextual.byteLength > 0) return value;
+                if (contextual.byteLength > 0) return value.copyBytes(0, valueLength);
               }
             }
           }
@@ -4707,7 +4729,7 @@ function inferExpressionNodeType(
         none => {}
       }
     }
-    return value;
+    return value.copyBytes(0, valueLength);
   }
   if (kind == ExpressionKind.matchExpression) {
     return try inferMatchExpressionNodeType(
@@ -4784,8 +4806,8 @@ function inferExpressionNodeType(
     try requireSettledExpressionType(module, tree, children[0], operand);
     if (operand.byteLength == 0) return "";
     if (value == "!" && operand == "boolean") return "boolean";
-    if ((value == "+" || value == "-") && isNumericTypeName(operand)) return operand;
-    if (value == "~" && isIntegerTypeName(operand)) return operand;
+    if ((value == "+" || value == "-") && isNumericTypeName(operand)) return copiedString(operand);
+    if (value == "~" && isIntegerTypeName(operand)) return copiedString(operand);
     const requirement = value == "!"
       ? "a boolean operand"
       : value == "~" ? "an integer operand" : "a numeric operand";
@@ -4818,11 +4840,11 @@ function inferExpressionNodeType(
     if (isContextualNumericLiteral(tree, children[1]) && isNumericTypeName(left)) right = left.copyBytes(0, left.byteLength);
     else if (isContextualNumericLiteral(tree, children[0]) && isNumericTypeName(right)) left = right.copyBytes(0, right.byteLength);
     if (value == "+" || value == "-" || value == "*" || value == "/" || value == "%") {
-      if (left == right && isNumericTypeName(left)) return left;
+      if (left == right && isNumericTypeName(left)) return copiedString(left);
       throw invalidOperator(module, tree, index, `operator ${value} requires matching numeric operands`);
     }
     if (value == "&" || value == "|" || value == "^" || value == "<<" || value == ">>") {
-      if (left == right && isIntegerTypeName(left)) return left;
+      if (left == right && isIntegerTypeName(left)) return copiedString(left);
       throw invalidOperator(module, tree, index, `operator ${value} requires matching integer operands`);
     }
     if (value == "<" || value == "<=" || value == ">" || value == ">=") {
@@ -4896,7 +4918,7 @@ function inferExpressionNodeType(
         inout elseBindings
       );
       mergeBindingFlowStates(inout bindings, thenBindings, elseBindings);
-      return thenType;
+      return copiedString(thenType);
     }
     throw resolutionError(
       ModuleResolveErrorKind.typeMismatch,
@@ -5127,6 +5149,7 @@ function inferExpressionNodeType(
       }
     }
     addValueBinding(inout closureBindings, "__z_native_function_name", "closure");
+    addValueBinding(inout closureBindings, "__z_native_return_type", returnType);
     if (bodyKind == "block") {
       const statements = copyIndices(tree.nodes[index].statements);
       try inferStatementSequence(
@@ -5333,7 +5356,7 @@ function inferExpressionNodeType(
           children,
           inout bindings
         );
-        return callee;
+        return copiedString(callee);
       }
       for (const declaration of module.program.aggregates) {
         if (declaration.name == base) {
@@ -5346,7 +5369,7 @@ function inferExpressionNodeType(
             children,
             inout bindings
           );
-          return callee;
+          return copiedString(callee);
         }
       }
     }
@@ -6109,6 +6132,7 @@ function inferFunctionExpressions(
 ): void throws ModuleResolveError {
   let bindings = functionValueBindings(declaration.parameters);
   addValueBinding(inout bindings, "__z_native_function_name", declaration.name);
+  addValueBinding(inout bindings, "__z_native_return_type", declaration.returnType.name);
   match (in declaration.errorType) {
     some(error) => addValueBinding(inout bindings, "__z_native_error_type", error.name);
     none => {}
@@ -6155,6 +6179,7 @@ function validateExpressionTypesAndLocals(
       some(initializer) => {
         let bindings = functionValueBindings(initializer.parameters);
         addValueBinding(inout bindings, "__z_native_function_name", "constructor");
+        addValueBinding(inout bindings, "__z_native_return_type", "void");
         match (in initializer.errorType) {
           some(error) => addValueBinding(inout bindings, "__z_native_error_type", error.name);
           none => {}
@@ -6187,6 +6212,7 @@ function validateExpressionTypesAndLocals(
       some(deinitializer) => {
         let bindings = Array<NativeValueBinding>();
         addValueBinding(inout bindings, "__z_native_function_name", "deinit");
+        addValueBinding(inout bindings, "__z_native_return_type", "void");
         addValueBinding(inout bindings, "this", aggregate.name);
         addValueBinding(inout bindings, "__z_native_owner_type", aggregate.name);
         try inferStatementSequence(
