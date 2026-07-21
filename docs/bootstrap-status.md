@@ -251,9 +251,15 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    batch work, protocol decoding, and the stage-0 parity parse independently.
    The source-inspector location remains a proving ground; after complete bodies
    and a compiler-facing interface are stable, the frontend moves into the
-   compiler tree and the example becomes its client. Templates, closures,
+   compiler tree and the example becomes its client. Template literals now
+   retain ordered decoded-text leaves and ordinary embedded-expression roots,
+   including nested templates, in the same flat arena. Contextual keywords are
+   accepted as member names after `.` just as they are by stage 0. Closures,
    value-block expressions, complete statement trees, Unicode identifiers,
-   block comments, and direct in-process driver integration remain.
+   block comments, and direct in-process driver integration remain. Stage 0
+   currently reports UTF-16 source coordinates while the stage-1 lexer retains
+   UTF-8 byte coordinates; exact location parity after non-ASCII source text is
+   therefore a known coordinate-contract seam that must be resolved explicitly.
 5. **Threaded concurrency evidence — Copy, unique-owner, native-owner, readonly ARC, and owned-error slices implemented.**
    `thread.spawn` now proves one real cross-thread task frame with explicit
    move capture, hot start, structured join, private Copy snapshots, and moved

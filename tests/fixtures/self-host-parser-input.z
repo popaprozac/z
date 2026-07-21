@@ -84,6 +84,9 @@ function expressionShapes(value: i32): i32 {
   const trueValue = true;
   const falseValue = false;
   const emptyValue = null;
+  const message = `reading ${value}: ${value != 0 ? "ready" : "empty"}`;
+  const nestedMessage = `outer ${`inner ${value + 1}`}`;
+  const copiedString = String.from(stringValue);
   const values = [value, 42];
   const selected = values[0];
   const object = { value, label: "sample" };

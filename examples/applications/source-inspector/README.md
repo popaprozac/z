@@ -62,12 +62,17 @@ bun run z self-host-parse examples/applications/source-inspector/lexer.z \
   examples/applications/source-inspector/parser.z
 ```
 
-The parity command checks canonical function signatures and complete type shapes
-as well as declaration metadata. Its adversarial corpus covers nested generics,
-function types, fixed arrays, `view`, nullability, capabilities, aggregate
-modifiers, constructors, methods, lifecycle cleanup, traits, and enum payloads.
-Statements and expressions are not constructed yet. Unicode identifiers, block
-comments, direct in-process compiler integration, and the complete syntax tree
-remain future slices. Build time and subprocess startup still dominate these
-bootstrap commands, so native-vs-stage-0 parser performance should be compared
-only after the frontend has an in-process driver boundary.
+The parity command checks canonical function signatures, complete type shapes,
+function-body statements, and flat expression arenas as well as declaration
+metadata. Its adversarial corpus covers nested generics, function types, fixed
+arrays, `view`, nullability, capabilities, aggregate modifiers, constructors,
+methods, lifecycle cleanup, traits, enum payloads, scalar and aggregate
+expressions, operator precedence, Z prefix forms, and nested template
+interpolation. Closures, value-producing blocks, complete control-flow
+statements, Unicode identifiers, block comments, direct in-process compiler
+integration, and the complete syntax tree remain future slices. Stage 0 and
+stage 1 also need one shared coordinate contract: stage 0 currently measures
+UTF-16 positions while stage 1 retains UTF-8 byte positions, so locations after
+non-ASCII text do not yet compare exactly. Build time and subprocess startup
+still dominate these bootstrap commands, so native-vs-stage-0 parser performance
+should be compared only after the frontend has an in-process driver boundary.

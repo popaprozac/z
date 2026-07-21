@@ -313,11 +313,33 @@ function flattenExpression(expression: Expression, nodes: FlatExpressionNode[]):
   if (expression.kind === "boolean") return leaf("boolean", expression.value ? "true" : "false");
   if (expression.kind === "null") return leaf("null", "");
 
-  const append = (kind: string, value: string, children: readonly number[], labels: readonly string[]): number => {
+  const appendAt = (
+    kind: string,
+    value: string,
+    children: readonly number[],
+    labels: readonly string[],
+    location: SourceLocation,
+  ): number => {
     const index = nodes.length;
-    nodes.push({ kind, value, children, labels, location: expression.location });
+    nodes.push({ kind, value, children, labels, location });
     return index;
   };
+  const append = (kind: string, value: string, children: readonly number[], labels: readonly string[]): number => (
+    appendAt(kind, value, children, labels, expression.location)
+  );
+  if (expression.kind === "template") {
+    const children: number[] = [];
+    for (const part of expression.parts) {
+      if (part.kind === "text") {
+        children.push(appendAt("templateText", part.value, [], [], part.location));
+        continue;
+      }
+      const child = flattenExpression(part.expression, nodes);
+      if (child === null) return null;
+      children.push(child);
+    }
+    return append("template", "", children, []);
+  }
   if (expression.kind === "arrayExpression") {
     const children = flattenExpressions(expression.elements, nodes);
     return children ? append("arrayExpression", "", children, []) : null;
