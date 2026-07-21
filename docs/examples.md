@@ -130,8 +130,10 @@ statements, and nested standalone blocks. Identifiers, scalar literals, arrays,
 objects, calls, members, and indexes use a flat owned expression arena;
 unary, binary-precedence, and ternary nodes share that arena. Z-specific
 `new`, `weak`, `try`, `attempt`, `await`, and `spawn` nodes do too. Templates
-retain ordered text/value children, including nested embedded expressions;
-closures and value-block forms remain canonical opaque spans. `z self-host-parse`
+retain ordered text/value children, including nested embedded expressions.
+Expression-bodied closures retain capture mode, typed/capability-bearing
+parameters, result/error types, and their body root; block-bodied closures and
+value-block forms remain canonical opaque spans. `z self-host-parse`
 caches its native bridge by compiler/frontend content and sends every requested source file
 through one framed native invocation. Add `--timings` to see bridge preparation,
 native batch work, protocol decoding, and stage-0 parity parsing separately.

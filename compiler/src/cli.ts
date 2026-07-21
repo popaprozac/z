@@ -340,6 +340,28 @@ function flattenExpression(expression: Expression, nodes: FlatExpressionNode[]):
     }
     return append("template", "", children, []);
   }
+  if (expression.kind === "closure") {
+    if (expression.body.kind === "block") return null;
+    const children = expression.parameters.map((parameter) => appendAt(
+      "closureParameter",
+      parameter.name,
+      [],
+      [parameter.mode, parameter.type ? canonicalTypeName(parameter.type.name) : ""],
+      parameter.location,
+    ));
+    const body = flattenExpression(expression.body, nodes);
+    if (body === null) return null;
+    children.push(body);
+    return append(
+      "closure",
+      expression.captureMode,
+      children,
+      [
+        expression.returnType ? canonicalTypeName(expression.returnType.name) : "",
+        expression.errorType ? canonicalTypeName(expression.errorType.name) : "",
+      ],
+    );
+  }
   if (expression.kind === "arrayExpression") {
     const children = flattenExpressions(expression.elements, nodes);
     return children ? append("arrayExpression", "", children, []) : null;
