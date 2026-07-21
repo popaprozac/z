@@ -54,10 +54,11 @@ typed `throws`. Struct and class nodes retain generic constraints, implemented
 traits, field visibility and mutability, constructors, static/async/receiver
 methods, and `deinit`; trait signatures and enum payload variants are also
 structural nodes. Function and lifecycle bodies retain projected variable,
-return, expression, and nested-block statements. Their supported expressions
-use a flat owned arena, while unsupported statement and expression forms remain
-traversable canonical spans. Only text retained in the tree becomes an owned
-snapshot.
+return, expression, and nested-block statements in flat arenas with integer
+child edges. Their supported expressions use a separate flat owned arena;
+block-bodied closure nodes reference roots in the enclosing statement arena.
+Unsupported statement and expression forms remain traversable canonical spans.
+Only text retained in the tree becomes an owned snapshot.
 Run exact stage-0 parity across one or more source files with:
 
 ```sh
@@ -71,8 +72,8 @@ metadata. Its adversarial corpus covers nested generics, function types, fixed
 arrays, `view`, nullability, capabilities, aggregate modifiers, constructors,
 methods, lifecycle cleanup, traits, enum payloads, scalar and aggregate
 expressions, operator precedence, Z prefix forms, nested template interpolation,
-and expression-bodied closures with borrow/move capture and typed parameters.
-Block-bodied closures, value-producing blocks, complete control-flow statements,
+and closures with borrow/move capture, typed parameters, expression bodies, or
+projected block bodies. Value-producing blocks, complete control-flow statements,
 Unicode identifiers, block comments, direct in-process compiler
 integration, and the complete syntax tree remain future slices. Stage 0 and
 stage 1 also need one shared coordinate contract: stage 0 currently measures

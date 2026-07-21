@@ -216,7 +216,7 @@ function canonicalStatementText(statement: Statement, tokens: readonly Token[]):
     const initializerStart = statement.initializer ? lexicalExpressionStart(tokens, statement.location.offset, "equal") : null;
     const expression = initializerStart
       ? `=${canonicalLocation(initializerStart.location)}:${canonicalExpressionTokens(tokens, initializerStart.location.offset)}#${
-          canonicalExpressionTree(statement.initializer!) ?? "opaque"
+          canonicalExpressionTree(statement.initializer!, tokens) ?? "opaque"
         }`
       : "";
     return `variable@${location}(${binding}:${statement.name}@${canonicalLocation(statement.nameLocation)}${type}${expression})`;
@@ -225,7 +225,7 @@ function canonicalStatementText(statement: Statement, tokens: readonly Token[]):
     const returnStart = statement.expression ? lexicalExpressionStart(tokens, statement.location.offset, "return") : null;
     const expression = returnStart
       ? `=${canonicalLocation(returnStart.location)}:${canonicalExpressionTokens(tokens, returnStart.location.offset)}#${
-          canonicalExpressionTree(statement.expression!) ?? "opaque"
+          canonicalExpressionTree(statement.expression!, tokens) ?? "opaque"
         }`
       : "";
     return `return@${location}(${expression})`;
@@ -236,7 +236,7 @@ function canonicalStatementText(statement: Statement, tokens: readonly Token[]):
     return `expression@${canonicalLocation(expressionStart.location)}(=${canonicalLocation(expressionStart.location)}:${canonicalExpressionTokens(
       tokens,
       expressionStart.location.offset,
-    )}#${canonicalExpressionTree(statement.expression) ?? "opaque"})`;
+    )}#${canonicalExpressionTree(statement.expression, tokens) ?? "opaque"})`;
   }
   if (statement.kind === "block") {
     return `block@${location}(${statement.statements.map((child) => canonicalStatementText(child, tokens)).join("")})`;
@@ -284,24 +284,31 @@ type FlatExpressionNode = {
   readonly value: string;
   readonly children: readonly number[];
   readonly labels: readonly string[];
+  readonly statementBodies: readonly (readonly Statement[])[];
   readonly location: SourceLocation;
 };
 
-function canonicalExpressionTree(expression: Expression): string | null {
+function canonicalExpressionTree(expression: Expression, tokens: readonly Token[]): string | null {
   const nodes: FlatExpressionNode[] = [];
-  const root = flattenExpression(expression, nodes);
+  const root = flattenExpression(expression, nodes, tokens);
   if (root === null) return null;
   return `root:${root};${nodes.map((node) => (
     `${node.kind}@${canonicalLocation(node.location)}:${Buffer.byteLength(node.value, "utf8")}:${node.value}`
     + `[${node.children.join(",")}]`
-    + `{${node.labels.map((label) => `${Buffer.byteLength(label, "utf8")}:${label}`).join(",")}};`
+    + `{${node.labels.map((label) => `${Buffer.byteLength(label, "utf8")}:${label}`).join(",")}}`
+    + node.statementBodies.map((body) => `body{${body.map((statement) => canonicalStatementText(statement, tokens)).join("")}}`).join("")
+    + ";"
   )).join("")}`;
 }
 
-function flattenExpression(expression: Expression, nodes: FlatExpressionNode[]): number | null {
+function flattenExpression(
+  expression: Expression,
+  nodes: FlatExpressionNode[],
+  tokens: readonly Token[],
+): number | null {
   const leaf = (kind: string, value: string): number => {
     const index = nodes.length;
-    nodes.push({ kind, value, children: [], labels: [], location: expression.location });
+    nodes.push({ kind, value, children: [], labels: [], statementBodies: [], location: expression.location });
     return index;
   };
   if (expression.kind === "identifier") {
@@ -319,9 +326,10 @@ function flattenExpression(expression: Expression, nodes: FlatExpressionNode[]):
     children: readonly number[],
     labels: readonly string[],
     location: SourceLocation,
+    statementBodies: readonly (readonly Statement[])[] = [],
   ): number => {
     const index = nodes.length;
-    nodes.push({ kind, value, children, labels, location });
+    nodes.push({ kind, value, children, labels, statementBodies, location });
     return index;
   };
   const append = (kind: string, value: string, children: readonly number[], labels: readonly string[]): number => (
@@ -334,14 +342,13 @@ function flattenExpression(expression: Expression, nodes: FlatExpressionNode[]):
         children.push(appendAt("templateText", part.value, [], [], part.location));
         continue;
       }
-      const child = flattenExpression(part.expression, nodes);
+      const child = flattenExpression(part.expression, nodes, tokens);
       if (child === null) return null;
       children.push(child);
     }
     return append("template", "", children, []);
   }
   if (expression.kind === "closure") {
-    if (expression.body.kind === "block") return null;
     const children = expression.parameters.map((parameter) => appendAt(
       "closureParameter",
       parameter.name,
@@ -349,7 +356,21 @@ function flattenExpression(expression: Expression, nodes: FlatExpressionNode[]):
       [parameter.mode, parameter.type ? canonicalTypeName(parameter.type.name) : ""],
       parameter.location,
     ));
-    const body = flattenExpression(expression.body, nodes);
+    if (expression.body.kind === "block") {
+      return appendAt(
+        "closure",
+        expression.captureMode,
+        children,
+        [
+          expression.returnType ? canonicalTypeName(expression.returnType.name) : "",
+          expression.errorType ? canonicalTypeName(expression.errorType.name) : "",
+          "block",
+        ],
+        expression.location,
+        [expression.body.statements],
+      );
+    }
+    const body = flattenExpression(expression.body, nodes, tokens);
     if (body === null) return null;
     children.push(body);
     return append(
@@ -359,53 +380,54 @@ function flattenExpression(expression: Expression, nodes: FlatExpressionNode[]):
       [
         expression.returnType ? canonicalTypeName(expression.returnType.name) : "",
         expression.errorType ? canonicalTypeName(expression.errorType.name) : "",
+        "expression",
       ],
     );
   }
   if (expression.kind === "arrayExpression") {
-    const children = flattenExpressions(expression.elements, nodes);
+    const children = flattenExpressions(expression.elements, nodes, tokens);
     return children ? append("arrayExpression", "", children, []) : null;
   }
   if (expression.kind === "objectExpression") {
-    const children = flattenExpressions(expression.fields.map((field) => field.expression), nodes);
+    const children = flattenExpressions(expression.fields.map((field) => field.expression), nodes, tokens);
     return children ? append("objectExpression", "", children, expression.fields.map((field) => field.name)) : null;
   }
   if (expression.kind === "member") {
-    const object = flattenExpression(expression.object, nodes);
+    const object = flattenExpression(expression.object, nodes, tokens);
     return object === null ? null : append("member", expression.property, [object], []);
   }
   if (expression.kind === "call") {
-    const callee = flattenExpression(expression.callee, nodes);
+    const callee = flattenExpression(expression.callee, nodes, tokens);
     if (callee === null) return null;
-    const arguments_ = flattenExpressions(expression.arguments, nodes);
+    const arguments_ = flattenExpressions(expression.arguments, nodes, tokens);
     return arguments_ ? append("call", "", [callee, ...arguments_], expression.argumentLabels.map((label) => label ?? "")) : null;
   }
   if (expression.kind === "index") {
-    const object = flattenExpression(expression.object, nodes);
+    const object = flattenExpression(expression.object, nodes, tokens);
     if (object === null) return null;
-    const index = flattenExpression(expression.index, nodes);
+    const index = flattenExpression(expression.index, nodes, tokens);
     return index === null ? null : append("index", "", [object, index], []);
   }
   if (expression.kind === "unary") {
-    const operand = flattenExpression(expression.operand, nodes);
+    const operand = flattenExpression(expression.operand, nodes, tokens);
     return operand === null ? null : append("unary", expression.operator, [operand], []);
   }
   if (expression.kind === "binary") {
-    const left = flattenExpression(expression.left, nodes);
+    const left = flattenExpression(expression.left, nodes, tokens);
     if (left === null) return null;
-    const right = flattenExpression(expression.right, nodes);
+    const right = flattenExpression(expression.right, nodes, tokens);
     return right === null ? null : append("binary", expression.operator, [left, right], []);
   }
   if (expression.kind === "conditional") {
-    const condition = flattenExpression(expression.condition, nodes);
+    const condition = flattenExpression(expression.condition, nodes, tokens);
     if (condition === null) return null;
-    const thenExpression = flattenExpression(expression.thenExpression, nodes);
+    const thenExpression = flattenExpression(expression.thenExpression, nodes, tokens);
     if (thenExpression === null) return null;
-    const elseExpression = flattenExpression(expression.elseExpression, nodes);
+    const elseExpression = flattenExpression(expression.elseExpression, nodes, tokens);
     return elseExpression === null ? null : append("conditional", "", [condition, thenExpression, elseExpression], []);
   }
   if (expression.kind === "new") {
-    const arguments_ = flattenExpressions(expression.arguments, nodes);
+    const arguments_ = flattenExpressions(expression.arguments, nodes, tokens);
     return arguments_
       ? append("new", canonicalTypeName(expression.typeName), arguments_, expression.argumentLabels.map((label) => label ?? ""))
       : null;
@@ -417,16 +439,20 @@ function flattenExpression(expression: Expression, nodes: FlatExpressionNode[]):
     || expression.kind === "await"
     || expression.kind === "spawn"
   ) {
-    const operand = flattenExpression(expression.expression, nodes);
+    const operand = flattenExpression(expression.expression, nodes, tokens);
     return operand === null ? null : append(expression.kind, "", [operand], []);
   }
   return null;
 }
 
-function flattenExpressions(expressions: readonly Expression[], nodes: FlatExpressionNode[]): number[] | null {
+function flattenExpressions(
+  expressions: readonly Expression[],
+  nodes: FlatExpressionNode[],
+  tokens: readonly Token[],
+): number[] | null {
   const children: number[] = [];
   for (const expression of expressions) {
-    const child = flattenExpression(expression, nodes);
+    const child = flattenExpression(expression, nodes, tokens);
     if (child === null) return null;
     children.push(child);
   }

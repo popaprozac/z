@@ -90,6 +90,14 @@ function expressionShapes(value: i32): i32 {
   const borrowedClosure = (in item: i32, amount): i32 => item + amount + value;
   const movedClosure = move (item: i32): i32 => item + value;
   const throwingClosure = (out item: i32): i32 throws LoadError => item;
+  const blockClosure = move (in item: i32): i32 => {
+    const adjusted = item + value;
+    {
+      const observed = adjusted;
+      bodyShapes(observed);
+    }
+    return adjusted;
+  };
   const values = [value, 42];
   const selected = values[0];
   const object = { value, label: "sample" };

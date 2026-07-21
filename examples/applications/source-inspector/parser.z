@@ -99,6 +99,7 @@ export struct ExpressionNode {
   kind: ExpressionKind;
   value: String;
   children: Array<usize>;
+  statements: Array<usize>;
   labels: Array<String>;
   offset: usize;
   line: usize;
@@ -128,10 +129,15 @@ export struct Statement {
   nameColumn: usize;
   typeAnnotation: Option<TypeReference>;
   expression: Option<ExpressionSyntax>;
-  statements: Array<Statement>;
+  children: Array<usize>;
   offset: usize;
   line: usize;
   column: usize;
+}
+
+export struct StatementArena {
+  nodes: Array<Statement>;
+  roots: Array<usize>;
 }
 
 export struct FunctionDeclaration {
@@ -144,7 +150,7 @@ export struct FunctionDeclaration {
   parameters: Array<Parameter>;
   returnType: TypeReference;
   errorType: Option<TypeReference>;
-  body: Array<Statement>;
+  body: StatementArena;
   offset: usize;
   line: usize;
   column: usize;
@@ -163,14 +169,14 @@ export struct FieldDeclaration {
 export struct ConstructorDeclaration {
   parameters: Array<Parameter>;
   errorType: Option<TypeReference>;
-  body: Array<Statement>;
+  body: StatementArena;
   offset: usize;
   line: usize;
   column: usize;
 }
 
 export struct DeinitDeclaration {
-  body: Array<Statement>;
+  body: StatementArena;
   offset: usize;
   line: usize;
   column: usize;
@@ -536,10 +542,34 @@ function pushExpressionNodeAt(
     kind,
     value,
     children,
+    statements: Array<usize>(),
     labels,
     offset,
     line,
     column,
+  }));
+  return index;
+}
+
+function pushExpressionNodeWithStatements(
+  inout nodes: Array<ExpressionNode>,
+  kind: ExpressionKind,
+  value: String,
+  children: Array<usize>,
+  statements: Array<usize>,
+  labels: Array<String>,
+  in token: Token
+): usize {
+  const index = nodes.length;
+  nodes.push(ExpressionNode({
+    kind,
+    value,
+    children,
+    statements,
+    labels,
+    offset: token.offset,
+    line: token.line,
+    column: token.column,
   }));
   return index;
 }
@@ -595,7 +625,8 @@ function parsePrimaryTree(
   in tokens: Array<Token>,
   inout current: usize,
   end: usize,
-  inout nodes: Array<ExpressionNode>
+  inout nodes: Array<ExpressionNode>,
+  inout statementNodes: Array<Statement>
 ): usize throws ParserError {
   if (current >= end) throw fail(tokens[current], "expected a primary expression");
   const start = snapshot(tokens[current]);
@@ -660,14 +691,36 @@ function parsePrimaryTree(
       errorType = type.name.copyBytes(0, type.name.byteLength);
     }
     try expectKind(tokens, inout current, TokenKind.fatArrow, "`=>` after a closure signature");
-    if (tokens[current].kind == TokenKind.leftBrace) {
-      throw fail(tokens[current], "block-bodied closures require the statement-arena slice");
-    }
-    const body = try parseConditionalTree(tokens, inout current, end, inout nodes);
-    children.push(body);
     let labels = Array<String>();
     labels.push(returnType);
     labels.push(errorType);
+    if (tokens[current].kind == TokenKind.leftBrace) {
+      const statements = try parseProjectedBlock(
+        tokens,
+        inout current,
+        "a closure body",
+        inout statementNodes
+      );
+      labels.push("block");
+      return pushExpressionNodeWithStatements(
+        inout nodes,
+        ExpressionKind.closureExpression,
+        captureMode,
+        children,
+        statements,
+        labels,
+        start
+      );
+    }
+    const body = try parseConditionalTree(
+      tokens,
+      inout current,
+      end,
+      inout nodes,
+      inout statementNodes
+    );
+    children.push(body);
+    labels.push("expression");
     return pushExpressionNode(
       inout nodes,
       ExpressionKind.closureExpression,
@@ -694,7 +747,7 @@ function parsePrimaryTree(
           labels.push(tokens[current].text.copyBytes(0, tokens[current].text.byteLength));
           current = current + 2;
         } else labels.push("");
-        const argument = try parseConditionalTree(tokens, inout current, end, inout nodes);
+        const argument = try parseConditionalTree(tokens, inout current, end, inout nodes, inout statementNodes);
         children.push(argument);
         if (!takeIf(tokens, inout current, TokenKind.comma)) break;
       }
@@ -722,7 +775,7 @@ function parsePrimaryTree(
       && tokens[current + 1].kind == TokenKind.onKeyword
     ) throw fail(start, "executor placement is not in the prefix-expression slice");
     current = current + 1;
-    const operand = try parsePostfixTree(tokens, inout current, end, inout nodes);
+    const operand = try parsePostfixTree(tokens, inout current, end, inout nodes, inout statementNodes);
     let children = Array<usize>();
     children.push(operand);
     let expressionKind = ExpressionKind.weakExpression;
@@ -817,7 +870,7 @@ function parsePrimaryTree(
         TokenKind.templateExpressionStart,
         "`${` starting an interpolated expression"
       );
-      const expression = try parseConditionalTree(tokens, inout current, end, inout nodes);
+      const expression = try parseConditionalTree(tokens, inout current, end, inout nodes, inout statementNodes);
       children.push(expression);
       try expectKind(
         tokens,
@@ -838,7 +891,7 @@ function parsePrimaryTree(
   }
   if (start.kind == TokenKind.leftParen) {
     current = current + 1;
-    const root = try parseConditionalTree(tokens, inout current, end, inout nodes);
+    const root = try parseConditionalTree(tokens, inout current, end, inout nodes, inout statementNodes);
     try expectKind(tokens, inout current, TokenKind.rightParen, "`)` after a parenthesized expression");
     return root;
   }
@@ -847,7 +900,7 @@ function parsePrimaryTree(
     let children = Array<usize>();
     if (tokens[current].kind != TokenKind.rightBracket) {
       while (true) {
-        const element = try parseConditionalTree(tokens, inout current, end, inout nodes);
+        const element = try parseConditionalTree(tokens, inout current, end, inout nodes, inout statementNodes);
         children.push(element);
         if (!takeIf(tokens, inout current, TokenKind.comma)) break;
         if (tokens[current].kind == TokenKind.rightBracket) break;
@@ -871,7 +924,7 @@ function parsePrimaryTree(
       const field = try expect(tokens, inout current, TokenKind.identifier, "an object field name");
       labels.push(field.text.copyBytes(0, field.text.byteLength));
       if (takeIf(tokens, inout current, TokenKind.colon)) {
-        const value = try parseConditionalTree(tokens, inout current, end, inout nodes);
+        const value = try parseConditionalTree(tokens, inout current, end, inout nodes, inout statementNodes);
         children.push(value);
       } else {
         const value = pushExpressionNode(
@@ -904,9 +957,10 @@ function parsePostfixTree(
   in tokens: Array<Token>,
   inout current: usize,
   end: usize,
-  inout nodes: Array<ExpressionNode>
+  inout nodes: Array<ExpressionNode>,
+  inout statementNodes: Array<Statement>
 ): usize throws ParserError {
-  let root = try parsePrimaryTree(tokens, inout current, end, inout nodes);
+  let root = try parsePrimaryTree(tokens, inout current, end, inout nodes, inout statementNodes);
   while (current < end) {
     if (takeIf(tokens, inout current, TokenKind.dot)) {
       if (!isAsciiMemberName(tokens[current])) throw fail(tokens[current], "expected a member name");
@@ -940,7 +994,7 @@ function parsePostfixTree(
             labels.push(tokens[current].text.copyBytes(0, tokens[current].text.byteLength));
             current = current + 2;
           } else labels.push("");
-          const argument = try parseConditionalTree(tokens, inout current, end, inout nodes);
+          const argument = try parseConditionalTree(tokens, inout current, end, inout nodes, inout statementNodes);
           children.push(argument);
           if (!takeIf(tokens, inout current, TokenKind.comma)) break;
         }
@@ -959,7 +1013,7 @@ function parsePostfixTree(
     if (tokens[current].kind == TokenKind.leftBracket) {
       const bracket = snapshot(tokens[current]);
       current = current + 1;
-      const index = try parseConditionalTree(tokens, inout current, end, inout nodes);
+      const index = try parseConditionalTree(tokens, inout current, end, inout nodes, inout statementNodes);
       try expectKind(tokens, inout current, TokenKind.rightBracket, "`]` after an index expression");
       let children = Array<usize>();
       children.push(root);
@@ -1002,7 +1056,8 @@ function parseUnaryTree(
   in tokens: Array<Token>,
   inout current: usize,
   end: usize,
-  inout nodes: Array<ExpressionNode>
+  inout nodes: Array<ExpressionNode>,
+  inout statementNodes: Array<Statement>
 ): usize throws ParserError {
   const kind = tokens[current].kind;
   if (
@@ -1013,7 +1068,7 @@ function parseUnaryTree(
   ) {
     const operator = snapshot(tokens[current]);
     current = current + 1;
-    const operand = try parseUnaryTree(tokens, inout current, end, inout nodes);
+    const operand = try parseUnaryTree(tokens, inout current, end, inout nodes, inout statementNodes);
     let children = Array<usize>();
     children.push(operand);
     return pushExpressionNode(
@@ -1025,7 +1080,7 @@ function parseUnaryTree(
       operator
     );
   }
-  return try parsePostfixTree(tokens, inout current, end, inout nodes);
+  return try parsePostfixTree(tokens, inout current, end, inout nodes, inout statementNodes);
 }
 
 function parseBinaryTree(
@@ -1033,15 +1088,16 @@ function parseBinaryTree(
   inout current: usize,
   end: usize,
   minimumPrecedence: i32,
-  inout nodes: Array<ExpressionNode>
+  inout nodes: Array<ExpressionNode>,
+  inout statementNodes: Array<Statement>
 ): usize throws ParserError {
-  let left = try parseUnaryTree(tokens, inout current, end, inout nodes);
+  let left = try parseUnaryTree(tokens, inout current, end, inout nodes, inout statementNodes);
   while (current < end) {
     const precedence = binaryPrecedence(tokens[current].kind);
     if (precedence < minimumPrecedence) break;
     const operator = snapshot(tokens[current]);
     current = current + 1;
-    const right = try parseBinaryTree(tokens, inout current, end, precedence + 1, inout nodes);
+    const right = try parseBinaryTree(tokens, inout current, end, precedence + 1, inout nodes, inout statementNodes);
     let children = Array<usize>();
     children.push(left);
     children.push(right);
@@ -1061,13 +1117,14 @@ function parseConditionalTree(
   in tokens: Array<Token>,
   inout current: usize,
   end: usize,
-  inout nodes: Array<ExpressionNode>
+  inout nodes: Array<ExpressionNode>,
+  inout statementNodes: Array<Statement>
 ): usize throws ParserError {
-  const condition = try parseBinaryTree(tokens, inout current, end, 0, inout nodes);
+  const condition = try parseBinaryTree(tokens, inout current, end, 0, inout nodes, inout statementNodes);
   if (!takeIf(tokens, inout current, TokenKind.question)) return condition;
-  const thenExpression = try parseConditionalTree(tokens, inout current, end, inout nodes);
+  const thenExpression = try parseConditionalTree(tokens, inout current, end, inout nodes, inout statementNodes);
   try expectKind(tokens, inout current, TokenKind.colon, "`:` in a conditional expression");
-  const elseExpression = try parseConditionalTree(tokens, inout current, end, inout nodes);
+  const elseExpression = try parseConditionalTree(tokens, inout current, end, inout nodes, inout statementNodes);
   let children = Array<usize>();
   children.push(condition);
   children.push(thenExpression);
@@ -1090,11 +1147,12 @@ function parseConditionalTree(
 function parseExpressionTree(
   in tokens: Array<Token>,
   start: usize,
-  end: usize
+  end: usize,
+  inout statementNodes: Array<Statement>
 ): ExpressionTree throws ParserError {
   let current = start;
   let nodes = Array<ExpressionNode>();
-  const root = try parseConditionalTree(tokens, inout current, end, inout nodes);
+  const root = try parseConditionalTree(tokens, inout current, end, inout nodes, inout statementNodes);
   if (current != end) throw fail(tokens[current], `expression token ${tokens[current].text} is not in the first expression-tree slice`);
   return ExpressionTree({ nodes, root });
 }
@@ -1102,7 +1160,8 @@ function parseExpressionTree(
 function scanExpression(
   in tokens: Array<Token>,
   inout current: usize,
-  in description: String
+  in description: String,
+  inout statementNodes: Array<Statement>
 ): ExpressionSyntax throws ParserError {
   const startIndex = current;
   const start = snapshot(tokens[current]);
@@ -1154,7 +1213,7 @@ function scanExpression(
   }
   if (current == startIndex) throw fail(start, `expected ${description}`);
   let tree = Option<ExpressionTree>.none;
-  const treeOutcome = attempt parseExpressionTree(tokens, startIndex, current);
+  const treeOutcome = attempt parseExpressionTree(tokens, startIndex, current, inout statementNodes);
   match (treeOutcome) {
     success(parsed) => tree = Option.some(parsed);
     failure(error) => {}
@@ -1170,7 +1229,11 @@ function scanExpression(
   });
 }
 
-function skipProjectedStatement(in tokens: Array<Token>, inout current: usize): void throws ParserError {
+function skipProjectedStatement(
+  in tokens: Array<Token>,
+  inout current: usize,
+  inout statementNodes: Array<Statement>
+): void throws ParserError {
   const kind = tokens[current].kind;
   if (kind == TokenKind.leftBrace) {
     try skipDelimited(tokens, inout current, TokenKind.leftBrace, TokenKind.rightBrace, "a statement block");
@@ -1179,16 +1242,16 @@ function skipProjectedStatement(in tokens: Array<Token>, inout current: usize): 
   if (kind == TokenKind.ifKeyword) {
     current = current + 1;
     try skipDelimited(tokens, inout current, TokenKind.leftParen, TokenKind.rightParen, "an if condition");
-    try skipProjectedStatement(tokens, inout current);
+    try skipProjectedStatement(tokens, inout current, inout statementNodes);
     if (takeIf(tokens, inout current, TokenKind.elseKeyword)) {
-      try skipProjectedStatement(tokens, inout current);
+      try skipProjectedStatement(tokens, inout current, inout statementNodes);
     }
     return;
   }
   if (kind == TokenKind.whileKeyword || kind == TokenKind.forKeyword) {
     current = current + 1;
     try skipDelimited(tokens, inout current, TokenKind.leftParen, TokenKind.rightParen, "a loop condition");
-    try skipProjectedStatement(tokens, inout current);
+    try skipProjectedStatement(tokens, inout current, inout statementNodes);
     return;
   }
   if (kind == TokenKind.matchKeyword) {
@@ -1199,10 +1262,10 @@ function skipProjectedStatement(in tokens: Array<Token>, inout current: usize): 
   }
   if (kind == TokenKind.asyncKeyword && current + 1 < tokens.length && tokens[current + 1].kind == TokenKind.scopeKeyword) {
     current = current + 2;
-    try skipProjectedStatement(tokens, inout current);
+    try skipProjectedStatement(tokens, inout current, inout statementNodes);
     return;
   }
-  const ignored = try scanExpression(tokens, inout current, "a statement");
+  const ignored = try scanExpression(tokens, inout current, "a statement", inout statementNodes);
   if (ignored.assignment) return;
 }
 
@@ -1238,13 +1301,14 @@ function skipExecutorPlacement(in tokens: Array<Token>, inout current: usize): v
 function parseProjectedBlock(
   in tokens: Array<Token>,
   inout current: usize,
-  in description: String
-): Array<Statement> throws ParserError {
+  in description: String,
+  inout nodes: Array<Statement>
+): Array<usize> throws ParserError {
   const start = snapshot(tokens[current]);
   try expectKind(tokens, inout current, TokenKind.leftBrace, description);
-  let statements = Array<Statement>();
+  let statements = Array<usize>();
   while (tokens[current].kind != TokenKind.rightBrace && tokens[current].kind != TokenKind.eof) {
-    const statement = try parseProjectedStatement(tokens, inout current);
+    const statement = try parseProjectedStatement(tokens, inout current, inout nodes);
     match (statement) {
       some(value) => statements.push(value);
       none => {}
@@ -1257,17 +1321,19 @@ function parseProjectedBlock(
 
 function parseProjectedStatement(
   in tokens: Array<Token>,
-  inout current: usize
-): Option<Statement> throws ParserError {
+  inout current: usize,
+  inout nodes: Array<Statement>
+): Option<usize> throws ParserError {
   const kind = tokens[current].kind;
   if (startsExecutorPlacement(tokens, current)) {
     try skipExecutorPlacement(tokens, inout current);
-    return Option<Statement>.none;
+    return Option<usize>.none;
   }
   if (kind == TokenKind.leftBrace) {
     const start = snapshot(tokens[current]);
-    const statements = try parseProjectedBlock(tokens, inout current, "a statement block");
-    return Option.some(Statement({
+    const statements = try parseProjectedBlock(tokens, inout current, "a statement block", inout nodes);
+    const index = nodes.length;
+    nodes.push(Statement({
       kind: StatementKind.blockStatement,
       mutableBinding: false,
       name: "",
@@ -1276,11 +1342,12 @@ function parseProjectedStatement(
       nameColumn: 0,
       typeAnnotation: Option<TypeReference>.none,
       expression: Option<ExpressionSyntax>.none,
-      statements,
+      children: statements,
       offset: start.offset,
       line: start.line,
       column: start.column,
     }));
+    return Option.some(index);
   }
   if (kind == TokenKind.constKeyword || kind == TokenKind.letKeyword) {
     const start = snapshot(tokens[current]);
@@ -1298,10 +1365,11 @@ function parseProjectedStatement(
       if (!mutableBinding) throw fail(start, "const declarations require an initializer");
     } else {
       try expectKind(tokens, inout current, TokenKind.equal, "`=` in a variable declaration");
-      const scanned = try scanExpression(tokens, inout current, "a variable initializer");
+      const scanned = try scanExpression(tokens, inout current, "a variable initializer", inout nodes);
       expression = Option.some(scanned);
     }
-    return Option.some(Statement({
+    const index = nodes.length;
+    nodes.push(Statement({
       kind: StatementKind.variableStatement,
       mutableBinding,
       name: name.text.copyBytes(0, name.text.byteLength),
@@ -1310,21 +1378,23 @@ function parseProjectedStatement(
       nameColumn: name.column,
       typeAnnotation,
       expression,
-      statements: Array<Statement>(),
+      children: Array<usize>(),
       offset: start.offset,
       line: start.line,
       column: start.column,
     }));
+    return Option.some(index);
   }
   if (kind == TokenKind.returnKeyword) {
     const start = snapshot(tokens[current]);
     current = current + 1;
     let expression = Option<ExpressionSyntax>.none;
     if (!takeIf(tokens, inout current, TokenKind.semicolon)) {
-      const scanned = try scanExpression(tokens, inout current, "a return value");
+      const scanned = try scanExpression(tokens, inout current, "a return value", inout nodes);
       expression = Option.some(scanned);
     }
-    return Option.some(Statement({
+    const index = nodes.length;
+    nodes.push(Statement({
       kind: StatementKind.returnStatement,
       mutableBinding: false,
       name: "",
@@ -1333,11 +1403,12 @@ function parseProjectedStatement(
       nameColumn: 0,
       typeAnnotation: Option<TypeReference>.none,
       expression,
-      statements: Array<Statement>(),
+      children: Array<usize>(),
       offset: start.offset,
       line: start.line,
       column: start.column,
     }));
+    return Option.some(index);
   }
   if (
     kind == TokenKind.ifKeyword
@@ -1350,13 +1421,14 @@ function parseProjectedStatement(
     || kind == TokenKind.selectKeyword
     || kind == TokenKind.asyncKeyword
   ) {
-    try skipProjectedStatement(tokens, inout current);
-    return Option<Statement>.none;
+    try skipProjectedStatement(tokens, inout current, inout nodes);
+    return Option<usize>.none;
   }
   const start = snapshot(tokens[current]);
-  const scanned = try scanExpression(tokens, inout current, "an expression statement");
-  if (scanned.assignment) return Option<Statement>.none;
-  return Option.some(Statement({
+  const scanned = try scanExpression(tokens, inout current, "an expression statement", inout nodes);
+  if (scanned.assignment) return Option<usize>.none;
+  const index = nodes.length;
+  nodes.push(Statement({
     kind: StatementKind.expressionStatement,
     mutableBinding: false,
     name: "",
@@ -1365,11 +1437,12 @@ function parseProjectedStatement(
     nameColumn: 0,
     typeAnnotation: Option<TypeReference>.none,
     expression: Option.some(scanned),
-    statements: Array<Statement>(),
+    children: Array<usize>(),
     offset: start.offset,
     line: start.line,
     column: start.column,
   }));
+  return Option.some(index);
 }
 
 function parseImport(
@@ -1440,11 +1513,18 @@ function parseFunctionDeclaration(
     const error = try parseType(tokens, inout current, inout pendingGreater);
     errorType = Option.some(error);
   }
-  let body = Array<Statement>();
+  let body = StatementArena({ nodes: Array<Statement>(), roots: Array<usize>() });
   if (signatureOnly) {
     try expectKind(tokens, inout current, TokenKind.semicolon, "`;` after a function signature");
   } else {
-    body = try parseProjectedBlock(tokens, inout current, `the body of ${name.text}`);
+    let bodyNodes = Array<Statement>();
+    const bodyRoots = try parseProjectedBlock(
+      tokens,
+      inout current,
+      `the body of ${name.text}`,
+      inout bodyNodes
+    );
+    body = StatementArena({ nodes: bodyNodes, roots: bodyRoots });
   }
   return FunctionDeclaration({
     name: name.text.copyBytes(0, name.text.byteLength),
@@ -1478,7 +1558,14 @@ function parseConstructor(
     const error = try parseType(tokens, inout current, inout pendingGreater);
     errorType = Option.some(error);
   }
-  const body = try parseProjectedBlock(tokens, inout current, `the constructor body of ${ownerName}`);
+  let bodyNodes = Array<Statement>();
+  const bodyRoots = try parseProjectedBlock(
+    tokens,
+    inout current,
+    `the constructor body of ${ownerName}`,
+    inout bodyNodes
+  );
+  const body = StatementArena({ nodes: bodyNodes, roots: bodyRoots });
   return ConstructorDeclaration({
     parameters,
     errorType,
@@ -1527,7 +1614,14 @@ function parseAggregateDeclaration(
     if (tokens[current].kind == TokenKind.deinitKeyword) {
       if (hasDeinitializer) throw fail(tokens[current], `${name.text} cannot declare more than one deinit block`);
       const cleanupToken = try expect(tokens, inout current, TokenKind.deinitKeyword, "a deinit declaration");
-      const body = try parseProjectedBlock(tokens, inout current, `the deinit body of ${name.text}`);
+      let bodyNodes = Array<Statement>();
+      const bodyRoots = try parseProjectedBlock(
+        tokens,
+        inout current,
+        `the deinit body of ${name.text}`,
+        inout bodyNodes
+      );
+      const body = StatementArena({ nodes: bodyNodes, roots: bodyRoots });
       deinitializer = Option.some(DeinitDeclaration({
         body,
         offset: cleanupToken.offset,
@@ -1796,7 +1890,7 @@ function expressionKindName(kind: ExpressionKind): String {
   };
 }
 
-function expressionTreeText(in tree: ExpressionTree): String {
+function expressionTreeText(in tree: ExpressionTree, in arena: StatementArena): String {
   let output = TextBuffer();
   output.append(`root:${tree.root};`);
   for (const node of tree.nodes) {
@@ -1822,12 +1916,25 @@ function expressionTreeText(in tree: ExpressionTree): String {
       output.append(`${label.byteLength}:`);
       output.append(label);
     }
-    output.append("};");
+    output.append("}");
+    if (node.statements.length > 0) {
+      output.append("body{");
+      for (const statement of node.statements) {
+        const rendered = statementText(arena, statement);
+        output.append(rendered);
+      }
+      output.append("}");
+    }
+    output.append(";");
   }
   return output.finish();
 }
 
-function statementText(in statement: Statement): String {
+function statementText(in arena: StatementArena, index: usize): String {
+  return renderStatementText(arena, arena.nodes[index]);
+}
+
+function renderStatementText(in arena: StatementArena, in statement: Statement): String {
   let output = TextBuffer();
   if (statement.kind == StatementKind.variableStatement) output.append("variable@");
   else if (statement.kind == StatementKind.returnStatement) output.append("return@");
@@ -1860,7 +1967,7 @@ function statementText(in statement: Statement): String {
       output.append("#");
       match (in expression.tree) {
         some(tree) => {
-          const renderedTree = expressionTreeText(tree);
+          const renderedTree = expressionTreeText(tree, arena);
           output.append(renderedTree);
         }
         none => output.append("opaque");
@@ -1868,8 +1975,8 @@ function statementText(in statement: Statement): String {
     }
     none => {}
   }
-  for (const child of statement.statements) {
-    const childText = statementText(child);
+  for (const child of statement.children) {
+    const childText = statementText(arena, child);
     output.append(childText);
   }
   output.append(")");
@@ -1879,8 +1986,8 @@ function statementText(in statement: Statement): String {
 export function functionBodyText(in declaration: FunctionDeclaration): String {
   let output = TextBuffer();
   output.append("{");
-  for (const statement of declaration.body) {
-    const rendered = statementText(statement);
+  for (const root of declaration.body.roots) {
+    const rendered = statementText(declaration.body, root);
     output.append(rendered);
   }
   output.append("}");

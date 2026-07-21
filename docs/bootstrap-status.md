@@ -256,10 +256,13 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    including nested templates, in the same flat arena. Expression-bodied
    closures retain borrow/move capture mode, source-located parameters,
    capabilities, optional parameter and result/error types, and an ordinary
-   expression body root. Block-bodied closures remain opaque until the flat
-   statement arena can represent their body without recursive heap boxes.
+   expression body root. Function, constructor, `deinit`, and closure bodies now
+   use flat statement arenas with integer child edges. Block-bodied closures
+   carry statement-root edges into the enclosing arena, so their currently
+   supported variable, return, expression, and nested-block statements are
+   structural without recursive per-block allocation.
    Contextual keywords are accepted as member names after `.` just as they are
-   by stage 0. Value-block expressions, complete statement trees, Unicode
+   by stage 0. Value-block expressions, complete control-flow statements, Unicode
    identifiers, block comments, and direct in-process driver integration remain. Stage 0
    currently reports UTF-16 source coordinates while the stage-1 lexer retains
    UTF-8 byte coordinates; exact location parity after non-ASCII source text is
