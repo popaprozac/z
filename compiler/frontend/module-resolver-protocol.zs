@@ -103,6 +103,48 @@ function appendSymbol(
   output.appendAscii(10);
 }
 
+function appendFunctionSignature(
+  inout output: TextBuffer,
+  moduleIndex: usize,
+  symbolIndex: usize,
+  in symbol: ModuleSymbol
+): void {
+  match (in symbol.functionSignature) {
+    some(signature) => {
+      output.append("signature");
+      output.appendAscii(9);
+      appendHexUsize(inout output, moduleIndex);
+      output.appendAscii(9);
+      appendHexUsize(inout output, symbolIndex);
+      output.appendAscii(9);
+      if (signature.asynchronous) output.appendAscii(49);
+      else output.appendAscii(48);
+      output.appendAscii(9);
+      appendHexText(inout output, signature.returnType);
+      output.appendAscii(9);
+      appendHexText(inout output, signature.errorType);
+      output.appendAscii(9);
+      appendHexUsize(inout output, signature.typeParameters.length);
+      output.appendAscii(9);
+      appendHexUsize(inout output, signature.parameterTypes.length);
+      for (const typeParameter of signature.typeParameters) {
+        output.appendAscii(9);
+        appendHexText(inout output, typeParameter);
+      }
+      let parameterIndex: usize = 0;
+      while (parameterIndex < signature.parameterTypes.length) {
+        output.appendAscii(9);
+        appendHexText(inout output, signature.parameterModes[parameterIndex]);
+        output.appendAscii(9);
+        appendHexText(inout output, signature.parameterTypes[parameterIndex]);
+        parameterIndex = parameterIndex + 1;
+      }
+      output.appendAscii(10);
+    }
+    none => {}
+  }
+}
+
 export function renderModuleGraph(
   in entryPath: String,
   in batch: String
@@ -129,8 +171,11 @@ export function renderModuleGraph(
       appendHexUsize(inout output, dependency);
     }
     output.appendAscii(10);
+    let symbolIndex: usize = 0;
     for (const symbol of module.symbols) {
       appendSymbol(inout output, moduleIndex, symbol);
+      appendFunctionSignature(inout output, moduleIndex, symbolIndex, symbol);
+      symbolIndex = symbolIndex + 1;
     }
     moduleIndex = moduleIndex + 1;
   }

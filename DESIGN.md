@@ -1492,7 +1492,10 @@ ported independently rather than translated as one monolith.
    supplies both the current linker and native boundary from one entry path.
    The graph now carries a first native semantic table: source-located Z
    declarations and namespace/selective import bindings with kinds, exports,
-   aliases, and local module targets. Feeding this graph into ordinary
+   aliases, and local module targets. Function symbols retain callable
+   signatures across the graph boundary: async state, generic parameters,
+   parameter capabilities and types, return type, and error type. Feeding this
+   graph into ordinary
    compiler commands and replacing the temporary protocol remain next. Native
    semantic analysis has also begun on that graph: source-ordered lexical lookup
    resolves materialized identifiers against module symbols, parameters, and
@@ -1509,8 +1512,11 @@ ported independently rather than translated as one monolith.
    A first expression-type pass now layers on those resolved names. It infers
    primitive/template/fixed-array literals, parameters and local aliases,
    explicitly typed closures, indexes, core operators, ternaries, and direct
-   non-generic Z calls. Known initializers, assignments, conditions, arguments,
-   and returns are checked with native diagnostics. A missing native model for a
+   non-generic Z calls. Calls resolve through local declarations, selective
+   imports and aliases, and namespace imports, validating known argument types
+   against the target module's signature. Known initializers, assignments,
+   conditions, arguments, and returns are checked with native diagnostics. A
+   missing native model for a
    foreign/member/async/match expression produces an unresolved internal type,
    not a guessed type or user-visible false positive; those shapes remain under
    stage-zero authority until their metadata and control-flow rules migrate.

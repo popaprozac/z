@@ -252,6 +252,18 @@ function main(): boolean {
   return sources;
 }
 
+function crossModuleTypeMismatchGraph(): Array<ModuleSource> {
+  let sources = Array<ModuleSource>();
+  sources.push(module("/workspace/main.zs", `
+import { add } from "./math.zs";
+function main(): i32 { return add(true, 2); }
+`));
+  sources.push(module("/workspace/math.zs", `
+export function add(left: i32, right: i32): i32 { return left + right; }
+`));
+  return sources;
+}
+
 function symbolKindsGraph(): Array<ModuleSource> {
   let sources = Array<ModuleSource>();
   sources.push(module("/workspace/main.zs", `
@@ -290,6 +302,18 @@ function hasNoTarget(in symbol: ModuleSymbol): boolean {
   };
 }
 
+function hasFunctionSignature(
+  in symbol: ModuleSymbol,
+  parameterCount: usize,
+  in returnType: String
+): boolean {
+  return match (in symbol.functionSignature) {
+    some(signature) => signature.parameterTypes.length == parameterCount
+      && signature.returnType == returnType;
+    none => false;
+  };
+}
+
 function validOrder(in graph: ModuleGraph): boolean {
   return graph.entry == 0
     && graph.modules.length == 3
@@ -313,6 +337,8 @@ function validOrder(in graph: ModuleGraph): boolean {
     && graph.modules[0].symbols[2].kind == ModuleSymbolKind.namespaceSymbol
     && targetIs(graph.modules[0].symbols[2], 2)
     && graph.modules[1].symbols[0].exported
+    && hasFunctionSignature(graph.modules[1].symbols[0], 0, "i32")
+    && hasFunctionSignature(graph.modules[2].symbols[0], 0, "i32")
     && graph.modules[2].symbols[0].exported;
 }
 
@@ -369,12 +395,13 @@ function main(): i32 {
   if (!expressionsAreValid) return 14;
   if (!resolvesTo(expressionMismatchGraph(), ModuleResolveErrorKind.typeMismatch)) return 15;
   if (!resolvesTo(invalidOperatorGraph(), ModuleResolveErrorKind.invalidOperator)) return 16;
+  if (!resolvesTo(crossModuleTypeMismatchGraph(), ModuleResolveErrorKind.typeMismatch)) return 17;
   const kindSources = symbolKindsGraph();
   const kindOutcome = attempt resolveModules(kindSources, "/workspace/main.zs");
   const kindsAreValid = match (kindOutcome) {
     success(graph) => validSymbolKinds(graph);
     failure(error) => false;
   };
-  if (!kindsAreValid) return 17;
+  if (!kindsAreValid) return 18;
   return 0;
 }

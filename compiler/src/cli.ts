@@ -117,7 +117,7 @@ function verifyStage1Resolver(inputPath: string, timings: boolean): void {
     console.log(`  boundary preparation: ${formatMilliseconds(boundary.prepareMilliseconds)}`);
     console.log(`  host discovery (file I/O + stage-0 import parse): ${formatMilliseconds(loadingMilliseconds)}`);
     console.log(`  host batch framing: ${formatMilliseconds(batchMilliseconds)}`);
-    console.log(`  native in-process (FFI + lex + parse + resolve + symbols + names + types + expressions + encode): ${formatMilliseconds(executionMilliseconds)}`);
+    console.log(`  native in-process (FFI + lex + parse + resolve + symbols + signatures + names + types + expressions + encode): ${formatMilliseconds(executionMilliseconds)}`);
     console.log(`  protocol decode: ${formatMilliseconds(decodeMilliseconds)}`);
     console.log(`  stage-0 parity (lex + parse + graph + symbols): ${formatMilliseconds(stage0Milliseconds)}`);
   }
@@ -168,6 +168,14 @@ function stage0ModuleSymbols(
     exported: exported.has(`${declaration.kind}\0${declaration.name}`),
     targetModule: null,
     importedName: declaration.name,
+    functionSignature: declaration.kind === "function" ? {
+      asynchronous: declaration.async ?? false,
+      typeParameters: declaration.typeParameters ?? [],
+      parameterModes: declaration.parameters.map((parameter) => parameter.mode),
+      parameterTypes: declaration.parameters.map((parameter) => canonicalTypeName(parameter.type.name)),
+      returnType: canonicalTypeName(declaration.returnType.name),
+      errorType: declaration.errorType ? canonicalTypeName(declaration.errorType.name) : null,
+    } : null,
     location: {
       offset: declaration.location.offset,
       line: declaration.location.line,
@@ -186,6 +194,7 @@ function stage0ModuleSymbols(
           exported: false,
           targetModule,
           importedName: binding.importedName,
+          functionSignature: null,
           location: {
             offset: binding.location.offset,
             line: binding.location.line,
@@ -200,6 +209,7 @@ function stage0ModuleSymbols(
         exported: false,
         targetModule,
         importedName: declaration.header,
+        functionSignature: null,
         location: {
           offset: declaration.location.offset,
           line: declaration.location.line,
@@ -234,9 +244,26 @@ function sameModuleSymbol(left: Stage1ModuleSymbol, right: Stage1ModuleSymbol | 
     && left.exported === right.exported
     && left.targetModule === right.targetModule
     && left.importedName === right.importedName
+    && sameModuleFunctionSignature(left.functionSignature, right.functionSignature)
     && left.location.offset === right.location.offset
     && left.location.line === right.location.line
     && left.location.column === right.location.column;
+}
+
+function sameModuleFunctionSignature(
+  left: Stage1ModuleSymbol["functionSignature"],
+  right: Stage1ModuleSymbol["functionSignature"],
+): boolean {
+  if (left === null || right === null) return left === right;
+  return left.asynchronous === right.asynchronous
+    && left.returnType === right.returnType
+    && left.errorType === right.errorType
+    && left.typeParameters.length === right.typeParameters.length
+    && left.typeParameters.every((value, index) => value === right.typeParameters[index])
+    && left.parameterModes.length === right.parameterModes.length
+    && left.parameterModes.every((value, index) => value === right.parameterModes[index])
+    && left.parameterTypes.length === right.parameterTypes.length
+    && left.parameterTypes.every((value, index) => value === right.parameterTypes[index]);
 }
 
 function verifyStage1Parser(inputPaths: readonly string[], timings: boolean): void {

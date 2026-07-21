@@ -87,11 +87,21 @@ export type Stage1ModuleSymbol = {
   readonly exported: boolean;
   readonly targetModule: number | null;
   readonly importedName: string;
+  readonly functionSignature: Stage1ModuleFunctionSignature | null;
   readonly location: {
     readonly offset: number;
     readonly line: number;
     readonly column: number;
   };
+};
+
+export type Stage1ModuleFunctionSignature = {
+  readonly asynchronous: boolean;
+  readonly typeParameters: readonly string[];
+  readonly parameterModes: readonly ("value" | "in" | "inout" | "out")[];
+  readonly parameterTypes: readonly string[];
+  readonly returnType: string;
+  readonly errorType: string | null;
 };
 
 export type Stage1ModuleGraph = {
@@ -156,12 +166,54 @@ export function decodeStage1ModuleGraphStream(output: string): Stage1ModuleGraph
         exported: exportedText === "1",
         targetModule: targetText === "-" ? null : parseProtocolHexInteger(targetText, "symbol target"),
         importedName: Buffer.from(importedNameText, "hex").toString("utf8"),
+        functionSignature: null,
         location: {
           offset: parseProtocolHexInteger(offsetText, "symbol offset"),
           line: parseProtocolHexInteger(lineText, "symbol line"),
           column: parseProtocolHexInteger(columnText, "symbol column"),
         },
       });
+      continue;
+    }
+    if (fields[0] === "signature") {
+      if (fields.length < 8) throw new Error(`malformed stage-1 function signature line: ${line}`);
+      const moduleIndex = parseProtocolHexInteger(fields[1], "signature module");
+      const symbolIndex = parseProtocolHexInteger(fields[2], "signature symbol");
+      const symbol = modules[moduleIndex]?.symbols[symbolIndex] as Stage1ModuleSymbol | undefined;
+      if (!symbol) throw new Error("stage-1 function signature appeared before its symbol");
+      if (symbol.kind !== "function" || symbol.functionSignature !== null) {
+        throw new Error("stage-1 function signature does not identify an unsigned function symbol");
+      }
+      if (fields[3] !== "0" && fields[3] !== "1") {
+        throw new Error(`malformed stage-1 function async state: ${fields[3]}`);
+      }
+      if (!/^(?:[0-9a-f]{2})*$/.test(fields[4]) || !/^(?:[0-9a-f]{2})*$/.test(fields[5])) {
+        throw new Error(`malformed stage-1 function signature text: ${line}`);
+      }
+      const typeParameterCount = parseProtocolHexInteger(fields[6], "signature type parameter count");
+      const parameterCount = parseProtocolHexInteger(fields[7], "signature parameter count");
+      if (fields.length !== 8 + typeParameterCount + (parameterCount * 2)) {
+        throw new Error(`malformed stage-1 function signature arity: ${line}`);
+      }
+      const encodedTypes = fields.slice(8);
+      if (encodedTypes.some((field) => !/^(?:[0-9a-f]{2})*$/.test(field))) {
+        throw new Error(`malformed stage-1 function signature type: ${line}`);
+      }
+      const encodedParameters = encodedTypes.slice(typeParameterCount);
+      const parameterModes = encodedParameters.filter((_, index) => index % 2 === 0)
+        .map((field) => Buffer.from(field, "hex").toString("utf8"));
+      if (!parameterModes.every(isStage1ParameterMode)) {
+        throw new Error(`malformed stage-1 function parameter mode: ${line}`);
+      }
+      (symbol as { functionSignature: Stage1ModuleFunctionSignature | null }).functionSignature = {
+        asynchronous: fields[3] === "1",
+        returnType: Buffer.from(fields[4], "hex").toString("utf8"),
+        errorType: fields[5].length === 0 ? null : Buffer.from(fields[5], "hex").toString("utf8"),
+        typeParameters: encodedTypes.slice(0, typeParameterCount).map((field) => Buffer.from(field, "hex").toString("utf8")),
+        parameterModes,
+        parameterTypes: encodedParameters.filter((_, index) => index % 2 === 1)
+          .map((field) => Buffer.from(field, "hex").toString("utf8")),
+      };
       continue;
     }
     if (fields[0] === "order") {
@@ -186,6 +238,10 @@ export function decodeStage1ModuleGraphStream(output: string): Stage1ModuleGraph
     throw new Error("stage-1 module order is outside the module batch");
   }
   return { modules, dependencyOrder, entry };
+}
+
+function isStage1ParameterMode(value: string): value is "value" | "in" | "inout" | "out" {
+  return value === "value" || value === "in" || value === "inout" || value === "out";
 }
 
 function isStage1ModuleSymbolKind(value: string): value is Stage1ModuleSymbolKind {

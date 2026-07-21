@@ -4606,7 +4606,7 @@ test("resolves a canonical module graph directly from native Z ASTs", () => {
   assert.equal(integrated.status, 0, integrated.stderr);
   assert.match(integrated.stdout, /stage-1 resolver matches 3 modules, 3 local edges, and 10 symbols \(math\.zs -> geometry\.zs -> main\.zs\)/);
   assert.match(integrated.stdout, /host discovery \(file I\/O \+ stage-0 import parse\): \d+\.\d{2} ms/);
-  assert.match(integrated.stdout, /native in-process \(FFI \+ lex \+ parse \+ resolve \+ symbols \+ names \+ types \+ expressions \+ encode\): \d+\.\d{2} ms/);
+  assert.match(integrated.stdout, /native in-process \(FFI \+ lex \+ parse \+ resolve \+ symbols \+ signatures \+ names \+ types \+ expressions \+ encode\): \d+\.\d{2} ms/);
   assert.match(integrated.stdout, /stage-0 parity \(lex \+ parse \+ graph \+ symbols\): \d+\.\d{2} ms/);
 
   const invalidDirectory = mkdtempSync("/tmp/z-self-host-resolver-");
@@ -4648,6 +4648,19 @@ test("resolves a canonical module graph directly from native Z ASTs", () => {
   assert.equal(operator.status, 1);
   assert.match(operator.stderr, /invalid-operator\.zs:2:15: operator \+ requires matching numeric operands/);
 
+  const callMain = resolve(invalidDirectory, "call-main.zs");
+  writeFileSync(
+    callMain,
+    "import { add } from \"./math.zs\";\nfunction main(): i32 {\n  return add(true, 2);\n}\n",
+  );
+  writeFileSync(
+    resolve(invalidDirectory, "math.zs"),
+    "export function add(left: i32, right: i32): i32 { return left + right; }\n",
+  );
+  const invalidCall = spawnSync(process.execPath, [cli, "self-host-resolve", callMain], { encoding: "utf8" });
+  assert.equal(invalidCall.status, 1);
+  assert.match(invalidCall.stderr, /call-main\.zs:3:14: expected i32, found boolean/);
+
   const encoded = encodeStage1ModuleBatch([{ path: "/a.zs", source: "é" }]);
   assert.equal(encoded.byteLength, 32 + Buffer.byteLength("/a.zs") + Buffer.byteLength("é"));
   assert.throws(() => decodeStage1ModuleGraphStream("order\n"), /did not contain an entry/);
@@ -4663,6 +4676,25 @@ test("resolves a canonical module graph directly from native Z ASTs", () => {
       + "order\t0000000000000000\n",
     ),
     /malformed stage-1 module symbol kind/,
+  );
+  assert.throws(
+    () => decodeStage1ModuleGraphStream(
+      "entry\t0000000000000000\n"
+      + "module\t2f612e7a73\n"
+      + "signature\t0000000000000000\t0000000000000000\t0\t693332\t\t0000000000000000\t0000000000000000\n"
+      + "order\t0000000000000000\n",
+    ),
+    /function signature appeared before its symbol/,
+  );
+  assert.throws(
+    () => decodeStage1ModuleGraphStream(
+      "entry\t0000000000000000\n"
+      + "module\t2f612e7a73\n"
+      + "symbol\t0000000000000000\tfunction\t76616c7565\t1\t-\t76616c7565\t0000000000000000\t0000000000000001\t0000000000000001\n"
+      + "signature\t0000000000000000\t0000000000000000\t0\t693332\t\t0000000000000000\t0000000000000001\t626164\t693332\n"
+      + "order\t0000000000000000\n",
+    ),
+    /malformed stage-1 function parameter mode/,
   );
 }, 10_000);
 

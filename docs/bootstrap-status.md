@@ -278,8 +278,10 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    the command discovers its full local graph from only the entry path. The first
    native semantic tier builds and parity-checks source-located symbols for Z
    functions, structs, classes, traits, enums, namespace imports, selective
-   bindings, aliases, exports, and local target modules. Expression typing and
-   ownership analysis remain stage-zero work. A first native lexical resolver
+   bindings, aliases, exports, and local target modules. Function symbols also
+   retain async state, generic parameters, parameter capabilities and types,
+   return type, and error type through the native graph protocol. Ownership
+   analysis remains stage-zero work. A first native lexical resolver
    now walks every materialized function, constructor, method, and `deinit`
    expression tree in source order. It introduces parameter and local bindings,
    isolates nested blocks and loop bindings, adds closure parameters and
@@ -300,11 +302,14 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    and explicitly typed closure values; and propagates direct non-generic Z call
    results. It validates known local initializers, assignments, boolean
    conditions, call arguments, return values, unary/binary operators, indexing,
-   and ternaries. Unknown member, foreign, async, and match result shapes remain
-   explicitly unresolved, so this tier increases guarantees without emitting
-   speculative errors. Complete contextual literal typing, imported call
-   signatures, member lookup, generic substitution, match/branch result typing,
-   and flow/ownership state remain stage-zero work.
+   and ternaries. Direct non-generic calls now follow local declarations,
+   selective imports (including aliases), and namespace imports to their target
+   signatures, so known cross-module argument mismatches originate in Z.
+   Unknown member, foreign, async, and match result shapes remain explicitly
+   unresolved, so this tier increases guarantees without emitting speculative
+   errors. Complete contextual literal typing, member lookup, generic
+   substitution, match/branch result typing, capability enforcement, and
+   flow/ownership state remain stage-zero work.
    Template literals now
    retain ordered decoded-text leaves and ordinary embedded-expression roots,
    including nested templates, in the same flat arena. Expression-bodied
