@@ -6,7 +6,7 @@ import console from "std/console";
 import fs from "std/fs";
 import process from "std/process";
 import { TextBuffer } from "std/text";
-import { tokenKindName, tokenize } from "./lexer.z";
+import { tokenKindName, tokenize } from "../../../compiler/frontend/lexer.z";
 
 function hexDigit(value: u8): u8 {
   return value < 10 ? value + 48 : value + 87;

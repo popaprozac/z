@@ -1477,11 +1477,10 @@ ported independently rather than translated as one monolith.
    claims wait for equivalent frontend coverage and removal of the temporary text
    protocol rather than comparing unlike amounts of work.
 
-   The implementation currently lives under `examples/applications/source-inspector`
-   so it remains an inspectable pressure test while its AST changes quickly.
-   Once complete statement/expression parsing and the compiler-facing boundary
-   are proven together, the frontend graduates into the compiler source tree;
-   the example will become a small consumer of that production module.
+   The reusable implementation now lives under `compiler/frontend`. The
+   Source Inspector example remains a small inspectable client with smoke tests
+   and standalone protocol executables while stage 0 compiles the native
+   frontend and consumes its in-process library boundary.
 3. **Stage 2:** Compile the Z compiler with stage 0, then use that result to
    compile itself.
 4. **Bootstrap verification:** Compare generated native source and compiler test

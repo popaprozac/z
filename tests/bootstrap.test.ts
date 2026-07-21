@@ -4502,7 +4502,7 @@ test("reads files, exposes program arguments, and runs child processes through s
 
 test("tokenizes real Z source with checked UTF-8 operations and TextBuffer", () => {
   const application = resolve(projectRoot, "examples/applications/source-inspector/main.z");
-  const lexer = resolve(projectRoot, "examples/applications/source-inspector/lexer.z");
+  const lexer = resolve(projectRoot, "compiler/frontend/lexer.z");
   const smoke = resolve(projectRoot, "examples/applications/source-inspector/lexer-smoke.z");
   const smokeResult = spawnSync(process.execPath, [cli, "run", smoke], { encoding: "utf8" });
   assert.equal(smokeResult.status, 0, smokeResult.stderr);
@@ -4533,8 +4533,8 @@ test("tokenizes real Z source with checked UTF-8 operations and TextBuffer", () 
 
 test("parses declarations, function bodies, and type shapes in native Z", () => {
   const fixture = resolve(projectRoot, "tests/fixtures/self-host-parser-input.z");
-  const lexer = resolve(projectRoot, "examples/applications/source-inspector/lexer.z");
-  const parser = resolve(projectRoot, "examples/applications/source-inspector/parser.z");
+  const lexer = resolve(projectRoot, "compiler/frontend/lexer.z");
+  const parser = resolve(projectRoot, "compiler/frontend/parser.z");
   const result = spawnSync(process.execPath, [cli, "self-host-parse", fixture, lexer, parser, "--timings"], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /self-host-parser-input\.z: stage-1 parser matches 16 declarations, 3 imports, 7 function signatures, 7 function bodies, and 6 type shapes/);

@@ -4,7 +4,7 @@
 import console from "std/console";
 import fs from "std/fs";
 import process from "std/process";
-import { renderProgram } from "./parser-protocol.z";
+import { renderProgram } from "../../../compiler/frontend/parser-protocol.z";
 
 function streamProgram(in path: String): i32 throws String {
   const source = try fs.readText(path);

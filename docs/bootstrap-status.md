@@ -132,10 +132,10 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
 - [`examples/applications/source-stager`](../examples/applications/source-stager): reads a requested Z
   source file, writes a staged copy, observes native argv, and launches Clang
   directly through the first self-hosting standard APIs.
-- [`examples/applications/source-inspector`](../examples/applications/source-inspector): tokenizes real Z
-  source with owned tokens, checked UTF-8 byte operations, typed lexer errors,
-  `std/text` `TextBuffer` escape decoding, nested template-interpolation modes,
-  and native lexer/declaration-parser parity bridges to stage 0.
+- [`compiler/frontend`](../compiler/frontend): reusable native Z lexer/parser,
+  owned flat AST arenas, and the in-process parser-library bridge to stage 0.
+- [`examples/applications/source-inspector`](../examples/applications/source-inspector): readable clients and smoke tests for the native frontend, including the
+  standalone lexer/parser protocol executables.
 - [`examples/interop/objc/nswindow.z`](../examples/interop/objc/nswindow.z): direct AppKit window.
 - [`examples/interop/objc/objc-nullability.z`](../examples/interop/objc/objc-nullability.z): explicit
   `T | null` AppKit guard narrowing alongside `Option.fromNullable` and
@@ -263,9 +263,9 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    library preparation, in-process native frontend work, protocol decoding, and
    the stage-0 parity parse independently. This pressure also closed canonical
    `TextBuffer`/`Arena` type identity through intermediate source modules.
-   The source-inspector location remains a proving ground; after complete bodies
-   and a compiler-facing interface are stable, the frontend moves into the
-   compiler tree and the example becomes its client. Template literals now
+   The reusable lexer, parser, protocol, and in-process library now live under
+   `compiler/frontend`; Source Inspector remains their readable application
+   client and standalone bridge pressure test. Template literals now
    retain ordered decoded-text leaves and ordinary embedded-expression roots,
    including nested templates, in the same flat arena. Expression-bodied
    closures retain borrow/move capture mode, source-located parameters,

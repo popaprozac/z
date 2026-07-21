@@ -67,7 +67,7 @@ if (!command || !inputArgument || !["check", "emit", "run", "self-host-lex", "se
 
 function verifyStage1Parser(inputPaths: readonly string[], timings: boolean): void {
   const projectRoot = resolve(dirname(new URL(import.meta.url).pathname), "../..");
-  const bridgePath = join(projectRoot, "examples/applications/source-inspector/parser-library.z");
+  const bridgePath = join(projectRoot, "compiler/frontend/parser-library.z");
   const boundary = prepareStage1ParserLibrary(projectRoot, bridgePath);
   const executionStarted = performance.now();
   const nativeStream = parseWithStage1Library(boundary.libraryPath, inputPaths);
@@ -1150,7 +1150,7 @@ function stage1BridgeFingerprint(projectRoot: string): string {
   hash.update(`z-stage1-bridge-v2\0${process.platform}\0${process.arch}\0${Bun.version}\0`);
   const roots = [
     join(projectRoot, "compiler/src"),
-    join(projectRoot, "examples/applications/source-inspector"),
+    join(projectRoot, "compiler/frontend"),
   ];
   const files = roots.flatMap((root) => collectBootstrapFiles(root)).sort();
   const packagePath = join(projectRoot, "package.json");

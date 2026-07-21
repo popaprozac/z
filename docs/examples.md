@@ -17,7 +17,8 @@ compile-only probes and `emit` to inspect generated native code.
 | Native application skeleton | [`z-notes`](../examples/applications/z-notes) | AppKit, ARC application state, nullable selection, direct SQLite header import, and explicit native library linkage |
 | Application walkthrough | [`document-workspace`](../examples/applications/document-workspace) | A native document model combining modules, errors, arrays, named enums, optional views, mutation, and deterministic cleanup |
 | Self-hosting groundwork | [`source-stager`](../examples/applications/source-stager) | File IO, owned argv, typed OS failures, and direct no-shell child launch |
-| Stage-1 Z frontend | [`source-inspector`](../examples/applications/source-inspector) | Checked UTF-8 tokens, complete declaration/type shapes, self-parsing, and exact stage-0 parity |
+| Stage-1 Z frontend | [`compiler/frontend`](../compiler/frontend) | Checked UTF-8 tokens, owned flat AST shapes, self-parsing, and exact stage-0 parity |
+| Frontend client | [`source-inspector`](../examples/applications/source-inspector) | Readable scanner, smoke tests, and standalone protocol clients |
 
 ```sh
 bun run z run examples/language/basics/first.z
@@ -123,8 +124,9 @@ self-hosting-groundwork tool. It reads a source path from `process.args()`,
 copies that source through `std/fs`, invokes Clang directly through
 `process.run`, and handles the typed failure path without exceptions or a shell.
 
-[`source-inspector`](../examples/applications/source-inspector) is the temporary
-proving ground for the stage-1 Z lexer and parser. Its current AST covers the
+[`compiler/frontend`](../compiler/frontend) now owns the reusable stage-1 Z
+lexer and parser; [`source-inspector`](../examples/applications/source-inspector)
+is its readable client and smoke-test application. The current AST covers the
 complete declaration layer plus variable declarations, returns, expression
 statements, and nested standalone blocks. Identifiers, scalar literals, arrays,
 objects, calls, members, and indexes use a flat owned expression arena;
@@ -154,9 +156,8 @@ native parser library by compiler/frontend content, loads it in-process, and
 passes every requested source file directly from the Bun host through a narrow
 FFI boundary. Add `--timings` to see library preparation, native frontend work,
 protocol decoding, and stage-0 parity parsing separately.
-Once complete bodies and the compiler-facing boundary are stable, the reusable
-frontend will move into the compiler tree and this directory will remain as a
-small educational consumer.
+The frontend remains stage-zero-compiled, while the example directory is now a
+small educational consumer rather than the implementation home.
 
 [`desktop-ownership`](../examples/interop/objc/desktop-ownership) combines an ARC-managed Z
 application model, move-only documents and strings, borrowed enumeration, and
