@@ -129,6 +129,12 @@ planned experiment rather than a rejected direction.
    concrete Z-facing interface to Clang and Swift metadata.
 7. Design and test a deliberately small `comptime` experiment only after the
    ownership, interop, and execution foundations above provide real use cases.
+8. Add a first-class `z test` workflow once function-body parsing and module
+   discovery are stable. The intended surface includes Z-native test
+   declarations, file/module discovery, name filtering, clear source-located
+   failures, deterministic execution by default, and explicit support for
+   native/interop fixtures. This should be a language-aware runner rather than
+   only an alias for the compiler's existing Bun regression suite.
 
 ## Immediate application sequence
 
