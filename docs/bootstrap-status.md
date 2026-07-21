@@ -62,7 +62,7 @@ an inferred receiver-tied view.
 | Foreign Interface IR | Implemented foundation | Raw declarations, API-note merge, normalized contracts, source locations, and availability metadata are separate; richer native hierarchies remain |
 | Language server | Partial | Diagnostics, semantic highlighting, contextual selective-import/object-pattern completion, hover, and Z/native definitions |
 | Native definitions | Implemented slice | Namespace/selective C symbols, Objective-C members, and generated Swift compatibility declarations jump to their native headers |
-| Self-hosting | Partial frontend | Stage 0 remains TypeScript/Bun; native Z owns the lexer, current full parser arenas, module graph, symbols/signatures, lexical/type lookup, and initial primitive/generic/match expression typing with parity commands; ownership, complete semantics, lowering, code generation, and the CLI driver remain in stage 0 |
+| Self-hosting | Partial frontend | Stage 0 remains TypeScript/Bun; native Z owns the lexer, current full parser arenas, module graph, function/type signatures, lexical/type lookup, and initial primitive/generic/cross-module-match expression typing with parity commands; ownership, complete semantics, lowering, code generation, and the CLI driver remain in stage 0 |
 
 ## Foreign interfaces
 
@@ -309,16 +309,18 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    explicit type arguments, before substituting parameter and result types.
    Conflicting inference, value/type arity, and known cross-module argument
    mismatches originate in Z.
-   Local enums plus compiler-provided `Option<T>` and `Result<T, E>` now drive
-   native match subject and payload types. The pass validates unknown and
-   duplicate variants, payload/payloadless patterns, local aggregate
-   destructuring fields, exhaustiveness, and known expression-arm result types.
-   Unknown member, foreign, async, and imported-enum match shapes remain
-   explicitly unresolved, so this tier increases guarantees without emitting
-   speculative errors. Complete contextual literal and return-driven inference,
-   member lookup, generic constraints/methods, cross-module enum/aggregate
-   metadata, match ownership/control-flow merging, capability enforcement, and
-   flow/ownership state remain stage-zero work.
+   Local and imported enums plus compiler-provided `Option<T>` and `Result<T, E>`
+   now drive native match subject and payload types. Type symbols carry aggregate
+   type parameters, field contracts, visibility/read-only state, and enum
+   variants/payloads across the native graph protocol. The pass validates unknown
+   and duplicate variants, payload/payloadless patterns, local or imported generic
+   aggregate destructuring fields, exhaustiveness, and known expression-arm result
+   types. Unknown member, foreign, and async shapes remain explicitly unresolved,
+   so this tier increases guarantees without emitting speculative errors.
+   Complete contextual literal and return-driven inference, member lookup,
+   generic constraints/methods, normalized cross-module type identities, match
+   ownership/control-flow merging, capability enforcement, and flow/ownership
+   state remain stage-zero work.
    Template literals now
    retain ordered decoded-text leaves and ordinary embedded-expression roots,
    including nested templates, in the same flat arena. Expression-bodied

@@ -20,6 +20,7 @@ import {
   TraitDeclaration,
   TypeParameter,
   TypeReference,
+  Visibility,
   parseProgram,
 } from "./parser.zs";
 
@@ -78,6 +79,7 @@ struct NativeFixedArrayShape {
 struct NativeMatchVariant {
   name: String;
   payloadType: String;
+  payloadModuleIndex: usize;
 }
 
 struct NativeMatchShape {
@@ -108,9 +110,28 @@ export struct ModuleSymbol {
   targetModule: Option<usize>;
   importedName: String;
   functionSignature: Option<ModuleFunctionSignature>;
+  typeSignature: Option<ModuleTypeSignature>;
   offset: usize;
   line: usize;
   column: usize;
+}
+
+export struct ModuleFieldSignature {
+  name: String;
+  typeName: String;
+  visibility: String;
+  readonlyField: boolean;
+}
+
+export struct ModuleVariantSignature {
+  name: String;
+  payloadType: String;
+}
+
+export struct ModuleTypeSignature {
+  typeParameters: Array<String>;
+  fields: Array<ModuleFieldSignature>;
+  variants: Array<ModuleVariantSignature>;
 }
 
 export struct ModuleFunctionSignature {
@@ -350,6 +371,66 @@ function moduleFunctionSignature(
   return Option<ModuleFunctionSignature>.none;
 }
 
+function moduleVisibilityName(visibility: Visibility): String {
+  if (visibility == Visibility.privateVisibility) return "private";
+  return "public";
+}
+
+function moduleTypeSignature(
+  in module: ParsedModule,
+  in declaration: Declaration
+): Option<ModuleTypeSignature> {
+  if (
+    declaration.kind == DeclarationKind.structDeclaration
+    || declaration.kind == DeclarationKind.classDeclaration
+  ) {
+    for (const aggregate of module.program.aggregates) {
+      if (aggregate.name != declaration.name) continue;
+      let typeParameters = Array<String>();
+      for (const parameter of aggregate.typeParameters) {
+        typeParameters.push(parameter.name.copyBytes(0, parameter.name.byteLength));
+      }
+      let fields = Array<ModuleFieldSignature>();
+      for (const field of aggregate.fields) {
+        fields.push(ModuleFieldSignature({
+          name: field.name.copyBytes(0, field.name.byteLength),
+          typeName: field.type.name.copyBytes(0, field.type.name.byteLength),
+          visibility: moduleVisibilityName(field.visibility),
+          readonlyField: field.readonlyField,
+        }));
+      }
+      return Option.some(ModuleTypeSignature({
+        typeParameters,
+        fields,
+        variants: Array<ModuleVariantSignature>(),
+      }));
+    }
+  }
+  if (declaration.kind == DeclarationKind.enumDeclaration) {
+    for (const enumDeclaration of module.program.enums) {
+      if (enumDeclaration.name != declaration.name) continue;
+      let variants = Array<ModuleVariantSignature>();
+      for (const variant of enumDeclaration.variants) {
+        let payloadType = "";
+        match (in variant.payload) {
+          some(payload) => payloadType = payload.name.copyBytes(0, payload.name.byteLength);
+          none => {}
+        }
+        variants.push(ModuleVariantSignature({
+          name: variant.name.copyBytes(0, variant.name.byteLength),
+          payloadType,
+        }));
+      }
+      return Option.some(ModuleTypeSignature({
+        typeParameters: Array<String>(),
+        fields: Array<ModuleFieldSignature>(),
+        variants,
+      }));
+    }
+  }
+  return Option<ModuleTypeSignature>.none;
+}
+
 function ownSymbol(in module: ParsedModule, in declaration: Declaration): ModuleSymbol {
   return ModuleSymbol({
     name: declaration.name.copyBytes(0, declaration.name.byteLength),
@@ -358,6 +439,7 @@ function ownSymbol(in module: ParsedModule, in declaration: Declaration): Module
     targetModule: Option<usize>.none,
     importedName: declaration.name.copyBytes(0, declaration.name.byteLength),
     functionSignature: moduleFunctionSignature(module, declaration),
+    typeSignature: moduleTypeSignature(module, declaration),
     offset: declaration.offset,
     line: declaration.line,
     column: declaration.column,
@@ -380,6 +462,7 @@ function importedSymbol(
     targetModule,
     importedName: importedName.copyBytes(0, importedName.byteLength),
     functionSignature: Option<ModuleFunctionSignature>.none,
+    typeSignature: Option<ModuleTypeSignature>.none,
     offset,
     line,
     column,
@@ -1579,23 +1662,91 @@ function explicitCallTypeArguments(
   return genericTypeShape(tree.nodes[calleeIndex].value);
 }
 
-function matchVariant(in name: String, in payloadType: String): NativeMatchVariant {
+function matchVariant(
+  in name: String,
+  in payloadType: String,
+  payloadModuleIndex: usize
+): NativeMatchVariant {
   return NativeMatchVariant({
     name: name.copyBytes(0, name.byteLength),
     payloadType: payloadType.copyBytes(0, payloadType.byteLength),
+    payloadModuleIndex,
   });
 }
 
+function exportedTypeLocation(
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
+  in name: String
+): Option<ModuleSymbolLocation> {
+  let symbolIndex: usize = 0;
+  while (symbolIndex < modules[moduleIndex].symbols.length) {
+    if (
+      modules[moduleIndex].symbols[symbolIndex].name == name
+      && modules[moduleIndex].symbols[symbolIndex].exported
+      && isTypeSymbolKind(modules[moduleIndex].symbols[symbolIndex].kind)
+    ) return Option.some(ModuleSymbolLocation({ moduleIndex, symbolIndex }));
+    symbolIndex = symbolIndex + 1;
+  }
+  return Option<ModuleSymbolLocation>.none;
+}
+
+function typeSymbolLocation(
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
+  in sourceType: String
+): Option<ModuleSymbolLocation> {
+  let typeName = sourceType.copyBytes(0, sourceType.byteLength);
+  match (genericTypeShape(sourceType)) {
+    some(generic) => typeName = generic.base.copyBytes(0, generic.base.byteLength);
+    none => {}
+  }
+  const base = qualifiedTypeBase(typeName);
+  const member = qualifiedTypeMember(typeName);
+  let symbolIndex: usize = 0;
+  while (symbolIndex < modules[moduleIndex].symbols.length) {
+    if (modules[moduleIndex].symbols[symbolIndex].name != base) {
+      symbolIndex = symbolIndex + 1;
+      continue;
+    }
+    if (member.byteLength > 0) {
+      if (modules[moduleIndex].symbols[symbolIndex].kind != ModuleSymbolKind.namespaceSymbol) {
+        return Option<ModuleSymbolLocation>.none;
+      }
+      return match (in modules[moduleIndex].symbols[symbolIndex].targetModule) {
+        some(target) => exportedTypeLocation(modules, target, member);
+        none => Option<ModuleSymbolLocation>.none;
+      };
+    }
+    if (isTypeSymbolKind(modules[moduleIndex].symbols[symbolIndex].kind)) {
+      return Option.some(ModuleSymbolLocation({ moduleIndex, symbolIndex }));
+    }
+    if (modules[moduleIndex].symbols[symbolIndex].kind == ModuleSymbolKind.importedSymbol) {
+      const importedName = modules[moduleIndex].symbols[symbolIndex].importedName.copyBytes(
+        0,
+        modules[moduleIndex].symbols[symbolIndex].importedName.byteLength
+      );
+      return match (in modules[moduleIndex].symbols[symbolIndex].targetModule) {
+        some(target) => exportedTypeLocation(modules, target, importedName);
+        none => Option<ModuleSymbolLocation>.none;
+      };
+    }
+    return Option<ModuleSymbolLocation>.none;
+  }
+  return Option<ModuleSymbolLocation>.none;
+}
+
 function matchShape(
-  in module: ParsedModule,
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
   in subjectType: String
 ): Option<NativeMatchShape> {
   match (genericTypeShape(subjectType)) {
     some(generic) => {
       if (generic.base == "Option" && generic.arguments.length == 1) {
         let variants = Array<NativeMatchVariant>();
-        variants.push(matchVariant("some", generic.arguments[0]));
-        variants.push(matchVariant("none", ""));
+        variants.push(matchVariant("some", generic.arguments[0], moduleIndex));
+        variants.push(matchVariant("none", "", moduleIndex));
         return Option.some(NativeMatchShape({
           name: subjectType.copyBytes(0, subjectType.byteLength),
           variants,
@@ -1607,8 +1758,8 @@ function matchShape(
         if (generic.arguments[0] != "void") {
           successType = generic.arguments[0].copyBytes(0, generic.arguments[0].byteLength);
         }
-        variants.push(matchVariant("success", successType));
-        variants.push(matchVariant("failure", generic.arguments[1]));
+        variants.push(matchVariant("success", successType, moduleIndex));
+        variants.push(matchVariant("failure", generic.arguments[1], moduleIndex));
         return Option.some(NativeMatchShape({
           name: subjectType.copyBytes(0, subjectType.byteLength),
           variants,
@@ -1617,21 +1768,33 @@ function matchShape(
     }
     none => {}
   }
-  for (const declaration of module.program.enums) {
-    if (declaration.name != subjectType) continue;
-    let variants = Array<NativeMatchVariant>();
-    for (const variant of declaration.variants) {
-      let payloadType = "";
-      match (in variant.payload) {
-        some(payload) => payloadType = payload.name.copyBytes(0, payload.name.byteLength);
+  match (typeSymbolLocation(modules, moduleIndex, subjectType)) {
+    some(location) => {
+      if (
+        modules[location.moduleIndex].symbols[location.symbolIndex].kind
+        != ModuleSymbolKind.enumSymbol
+      ) {
+        return Option<NativeMatchShape>.none;
+      }
+      match (in modules[location.moduleIndex].symbols[location.symbolIndex].typeSignature) {
+        some(signature) => {
+          let variants = Array<NativeMatchVariant>();
+          for (const variant of signature.variants) {
+            variants.push(matchVariant(
+              variant.name,
+              variant.payloadType,
+              location.moduleIndex
+            ));
+          }
+          return Option.some(NativeMatchShape({
+            name: subjectType.copyBytes(0, subjectType.byteLength),
+            variants,
+          }));
+        }
         none => {}
       }
-      variants.push(matchVariant(variant.name, payloadType));
     }
-    return Option.some(NativeMatchShape({
-      name: subjectType.copyBytes(0, subjectType.byteLength),
-      variants,
-    }));
+    none => {}
   }
   return Option<NativeMatchShape>.none;
 }
@@ -1671,7 +1834,8 @@ function matchError(
 }
 
 function isDefinitelyNonMatchable(
-  in module: ParsedModule,
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
   in subjectType: String
 ): boolean {
   const elementType = arrayElementType(subjectType);
@@ -1683,60 +1847,77 @@ function isDefinitelyNonMatchable(
     || subjectType == "null"
     || elementType.byteLength > 0
   ) return true;
-  for (const declaration of module.program.aggregates) {
-    if (declaration.name == subjectType) return true;
+  match (typeSymbolLocation(modules, moduleIndex, subjectType)) {
+    some(location) => {
+      const kind = modules[location.moduleIndex].symbols[location.symbolIndex].kind;
+      if (
+        kind == ModuleSymbolKind.structSymbol
+        || kind == ModuleSymbolKind.classSymbol
+        || kind == ModuleSymbolKind.traitSymbol
+      ) return true;
+    }
+    none => {}
   }
   return false;
 }
 
 function aggregateFieldType(
-  in module: ParsedModule,
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
   in ownerType: String,
   in fieldName: String
 ): String {
-  let base = ownerType.copyBytes(0, ownerType.byteLength);
   let arguments = Array<String>();
   match (genericTypeShape(ownerType)) {
     some(generic) => {
-      base = generic.base.copyBytes(0, generic.base.byteLength);
       for (const argument of generic.arguments) {
         arguments.push(argument.copyBytes(0, argument.byteLength));
       }
     }
     none => {}
   }
-  for (const declaration of module.program.aggregates) {
-    if (declaration.name != base) continue;
-    let substitutions = Array<NativeValueBinding>();
-    let typeIndex: usize = 0;
-    while (
-      typeIndex < declaration.typeParameters.length
-      && typeIndex < arguments.length
-    ) {
-      addValueBinding(
-        inout substitutions,
-        declaration.typeParameters[typeIndex].name,
-        arguments[typeIndex]
-      );
-      typeIndex = typeIndex + 1;
-    }
-    for (const field of declaration.fields) {
-      if (field.name == fieldName) {
-        return substituteGenericType(field.type.name, substitutions);
+  match (typeSymbolLocation(modules, moduleIndex, ownerType)) {
+    some(location) => {
+      match (in modules[location.moduleIndex].symbols[location.symbolIndex].typeSignature) {
+        some(signature) => {
+          let substitutions = Array<NativeValueBinding>();
+          let typeIndex: usize = 0;
+          while (
+            typeIndex < signature.typeParameters.length
+            && typeIndex < arguments.length
+          ) {
+            addValueBinding(
+              inout substitutions,
+              signature.typeParameters[typeIndex],
+              arguments[typeIndex]
+            );
+            typeIndex = typeIndex + 1;
+          }
+          for (const field of signature.fields) {
+            if (field.name == fieldName) {
+              return substituteGenericType(field.typeName, substitutions);
+            }
+          }
+        }
+        none => {}
       }
     }
+    none => {}
   }
   return "";
 }
 
-function hasLocalAggregate(in module: ParsedModule, in typeName: String): boolean {
-  let base = typeName.copyBytes(0, typeName.byteLength);
-  match (genericTypeShape(typeName)) {
-    some(generic) => base = generic.base.copyBytes(0, generic.base.byteLength);
+function hasKnownAggregate(
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
+  in typeName: String
+): boolean {
+  match (typeSymbolLocation(modules, moduleIndex, typeName)) {
+    some(location) => {
+      const kind = modules[location.moduleIndex].symbols[location.symbolIndex].kind;
+      return kind == ModuleSymbolKind.structSymbol || kind == ModuleSymbolKind.classSymbol;
+    }
     none => {}
-  }
-  for (const declaration of module.program.aggregates) {
-    if (declaration.name == base) return true;
   }
   return false;
 }
@@ -1823,6 +2004,7 @@ function inferMatchArmStatementType(
 
 function addMatchArmValueBindings(
   in module: ParsedModule,
+  in modules: Array<ResolvedModule>,
   in tree: ExpressionTree,
   armIndex: usize,
   in variant: NativeMatchVariant,
@@ -1859,8 +2041,17 @@ function addMatchArmValueBindings(
     return;
   }
   if (patternKind != "object") return;
-  const localAggregate = hasLocalAggregate(module, variant.payloadType);
-  if (!localAggregate && isDefinitelyNonMatchable(module, variant.payloadType)) {
+  const payloadModuleIndex = variant.payloadModuleIndex;
+  const payloadType = variant.payloadType.copyBytes(0, variant.payloadType.byteLength);
+  const knownAggregate = hasKnownAggregate(
+    modules,
+    payloadModuleIndex,
+    payloadType
+  );
+  if (
+    !knownAggregate
+    && isDefinitelyNonMatchable(modules, payloadModuleIndex, payloadType)
+  ) {
     throw matchError(module, tree, armIndex, "an object pattern requires a struct or class payload");
   }
   let coveredFields = Array<String>();
@@ -1873,13 +2064,18 @@ function addMatchArmValueBindings(
       throw matchError(module, tree, pattern, `duplicate object pattern field ${fieldName}`);
     }
     coveredFields.push(fieldName.copyBytes(0, fieldName.byteLength));
-    const fieldType = aggregateFieldType(module, variant.payloadType, fieldName);
-    if (localAggregate && fieldType.byteLength == 0) {
+    const fieldType = aggregateFieldType(
+      modules,
+      payloadModuleIndex,
+      payloadType,
+      fieldName
+    );
+    if (knownAggregate && fieldType.byteLength == 0) {
       throw matchError(
         module,
         tree,
         pattern,
-        `payload ${variant.payloadType} has no field ${fieldName}`
+        `payload ${payloadType} has no field ${fieldName}`
       );
     }
     const fieldChildren = copyIndices(tree.nodes[pattern].children);
@@ -1914,7 +2110,7 @@ function inferMatchExpressionNodeType(
     bindings
   );
   if (subjectType.byteLength == 0) return "";
-  let shapeOption = matchShape(module, subjectType);
+  let shapeOption = matchShape(modules, moduleIndex, subjectType);
   let shapeKnown = false;
   let shape = NativeMatchShape({ name: "", variants: Array<NativeMatchVariant>() });
   match (shapeOption) {
@@ -1925,7 +2121,7 @@ function inferMatchExpressionNodeType(
     none => {}
   }
   if (!shapeKnown) {
-    if (isDefinitelyNonMatchable(module, subjectType)) {
+    if (isDefinitelyNonMatchable(modules, moduleIndex, subjectType)) {
       throw matchError(module, tree, children[0], `match requires an enum value, found ${subjectType}`);
     }
     return "";
@@ -1952,6 +2148,7 @@ function inferMatchExpressionNodeType(
     let armBindings = copyValueBindings(bindings);
     try addMatchArmValueBindings(
       module,
+      modules,
       tree,
       armIndex,
       shape.variants[variantIndex],

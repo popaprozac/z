@@ -88,11 +88,30 @@ export type Stage1ModuleSymbol = {
   readonly targetModule: number | null;
   readonly importedName: string;
   readonly functionSignature: Stage1ModuleFunctionSignature | null;
+  readonly typeSignature: Stage1ModuleTypeSignature | null;
   readonly location: {
     readonly offset: number;
     readonly line: number;
     readonly column: number;
   };
+};
+
+export type Stage1ModuleFieldSignature = {
+  readonly name: string;
+  readonly typeName: string;
+  readonly visibility: "public" | "private";
+  readonly readonlyField: boolean;
+};
+
+export type Stage1ModuleVariantSignature = {
+  readonly name: string;
+  readonly payloadType: string | null;
+};
+
+export type Stage1ModuleTypeSignature = {
+  readonly typeParameters: readonly string[];
+  readonly fields: readonly Stage1ModuleFieldSignature[];
+  readonly variants: readonly Stage1ModuleVariantSignature[];
 };
 
 export type Stage1ModuleFunctionSignature = {
@@ -167,12 +186,75 @@ export function decodeStage1ModuleGraphStream(output: string): Stage1ModuleGraph
         targetModule: targetText === "-" ? null : parseProtocolHexInteger(targetText, "symbol target"),
         importedName: Buffer.from(importedNameText, "hex").toString("utf8"),
         functionSignature: null,
+        typeSignature: null,
         location: {
           offset: parseProtocolHexInteger(offsetText, "symbol offset"),
           line: parseProtocolHexInteger(lineText, "symbol line"),
           column: parseProtocolHexInteger(columnText, "symbol column"),
         },
       });
+      continue;
+    }
+    if (fields[0] === "typeSignature") {
+      if (fields.length < 6) throw new Error(`malformed stage-1 type signature line: ${line}`);
+      const moduleIndex = parseProtocolHexInteger(fields[1], "type signature module");
+      const symbolIndex = parseProtocolHexInteger(fields[2], "type signature symbol");
+      const symbol = modules[moduleIndex]?.symbols[symbolIndex] as Stage1ModuleSymbol | undefined;
+      if (!symbol) throw new Error("stage-1 type signature appeared before its symbol");
+      if (
+        (symbol.kind !== "struct" && symbol.kind !== "class" && symbol.kind !== "enum")
+        || symbol.typeSignature !== null
+      ) {
+        throw new Error("stage-1 type signature does not identify an unsigned type symbol");
+      }
+      const typeParameterCount = parseProtocolHexInteger(fields[3], "type signature parameter count");
+      const fieldCount = parseProtocolHexInteger(fields[4], "type signature field count");
+      const variantCount = parseProtocolHexInteger(fields[5], "type signature variant count");
+      if (fields.length !== 6 + typeParameterCount + (fieldCount * 4) + (variantCount * 2)) {
+        throw new Error(`malformed stage-1 type signature arity: ${line}`);
+      }
+      const encoded = fields.slice(6);
+      const typeParameters = encoded.slice(0, typeParameterCount);
+      const encodedFields = encoded.slice(typeParameterCount, typeParameterCount + (fieldCount * 4));
+      const encodedVariants = encoded.slice(typeParameterCount + (fieldCount * 4));
+      if (
+        typeParameters.some((field) => !/^(?:[0-9a-f]{2})*$/.test(field))
+        || encodedFields.some((field, index) => index % 4 !== 3 && !/^(?:[0-9a-f]{2})*$/.test(field))
+        || encodedVariants.some((field) => !/^(?:[0-9a-f]{2})*$/.test(field))
+      ) {
+        throw new Error(`malformed stage-1 type signature text: ${line}`);
+      }
+      const decodedFields: Stage1ModuleFieldSignature[] = [];
+      for (let index = 0; index < encodedFields.length; index += 4) {
+        const visibility = Buffer.from(encodedFields[index + 2], "hex").toString("utf8");
+        const readonlyField = encodedFields[index + 3];
+        if (visibility !== "public" && visibility !== "private") {
+          throw new Error(`malformed stage-1 field visibility: ${line}`);
+        }
+        if (readonlyField !== "0" && readonlyField !== "1") {
+          throw new Error(`malformed stage-1 field readonly state: ${line}`);
+        }
+        decodedFields.push({
+          name: Buffer.from(encodedFields[index], "hex").toString("utf8"),
+          typeName: Buffer.from(encodedFields[index + 1], "hex").toString("utf8"),
+          visibility,
+          readonlyField: readonlyField === "1",
+        });
+      }
+      const decodedVariants: Stage1ModuleVariantSignature[] = [];
+      for (let index = 0; index < encodedVariants.length; index += 2) {
+        decodedVariants.push({
+          name: Buffer.from(encodedVariants[index], "hex").toString("utf8"),
+          payloadType: encodedVariants[index + 1].length === 0
+            ? null
+            : Buffer.from(encodedVariants[index + 1], "hex").toString("utf8"),
+        });
+      }
+      (symbol as { typeSignature: Stage1ModuleTypeSignature | null }).typeSignature = {
+        typeParameters: typeParameters.map((field) => Buffer.from(field, "hex").toString("utf8")),
+        fields: decodedFields,
+        variants: decodedVariants,
+      };
       continue;
     }
     if (fields[0] === "signature") {

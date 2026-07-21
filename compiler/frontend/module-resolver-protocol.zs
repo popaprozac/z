@@ -145,6 +145,52 @@ function appendFunctionSignature(
   }
 }
 
+function appendTypeSignature(
+  inout output: TextBuffer,
+  moduleIndex: usize,
+  symbolIndex: usize,
+  in symbol: ModuleSymbol
+): void {
+  match (in symbol.typeSignature) {
+    some(signature) => {
+      output.append("typeSignature");
+      output.appendAscii(9);
+      appendHexUsize(inout output, moduleIndex);
+      output.appendAscii(9);
+      appendHexUsize(inout output, symbolIndex);
+      output.appendAscii(9);
+      appendHexUsize(inout output, signature.typeParameters.length);
+      output.appendAscii(9);
+      appendHexUsize(inout output, signature.fields.length);
+      output.appendAscii(9);
+      appendHexUsize(inout output, signature.variants.length);
+      for (const typeParameter of signature.typeParameters) {
+        output.appendAscii(9);
+        appendHexText(inout output, typeParameter);
+      }
+      for (const field of signature.fields) {
+        output.appendAscii(9);
+        appendHexText(inout output, field.name);
+        output.appendAscii(9);
+        appendHexText(inout output, field.typeName);
+        output.appendAscii(9);
+        appendHexText(inout output, field.visibility);
+        output.appendAscii(9);
+        if (field.readonlyField) output.appendAscii(49);
+        else output.appendAscii(48);
+      }
+      for (const variant of signature.variants) {
+        output.appendAscii(9);
+        appendHexText(inout output, variant.name);
+        output.appendAscii(9);
+        appendHexText(inout output, variant.payloadType);
+      }
+      output.appendAscii(10);
+    }
+    none => {}
+  }
+}
+
 export function renderModuleGraph(
   in entryPath: String,
   in batch: String
@@ -175,6 +221,7 @@ export function renderModuleGraph(
     for (const symbol of module.symbols) {
       appendSymbol(inout output, moduleIndex, symbol);
       appendFunctionSignature(inout output, moduleIndex, symbolIndex, symbol);
+      appendTypeSignature(inout output, moduleIndex, symbolIndex, symbol);
       symbolIndex = symbolIndex + 1;
     }
     moduleIndex = moduleIndex + 1;

@@ -1494,8 +1494,12 @@ ported independently rather than translated as one monolith.
    declarations and namespace/selective import bindings with kinds, exports,
    aliases, and local module targets. Function symbols retain callable
    signatures across the graph boundary: async state, generic parameters,
-   parameter capabilities and types, return type, and error type. Feeding this
-   graph into ordinary
+   parameter capabilities and types, return type, and error type. Type symbols
+   retain aggregate type parameters, field types/visibility/read-only state,
+   and enum variants/payloads. Native match typing follows local,
+   selective-imported, and namespace-imported enums through that graph,
+   including generic aggregate payload destructuring and exhaustiveness.
+   Feeding this graph into ordinary
    compiler commands and replacing the temporary protocol remain next. Native
    semantic analysis has also begun on that graph: source-ordered lexical lookup
    resolves materialized identifiers against module symbols, parameters, and

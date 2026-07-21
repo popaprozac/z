@@ -176,6 +176,23 @@ function stage0ModuleSymbols(
       returnType: canonicalTypeName(declaration.returnType.name),
       errorType: declaration.errorType ? canonicalTypeName(declaration.errorType.name) : null,
     } : null,
+    typeSignature: declaration.kind === "struct" || declaration.kind === "class" ? {
+      typeParameters: declaration.typeParameters ?? [],
+      fields: declaration.fields.map((field) => ({
+        name: field.name,
+        typeName: canonicalTypeName(field.type.name),
+        visibility: field.visibility,
+        readonlyField: field.readonly,
+      })),
+      variants: [],
+    } : declaration.kind === "enum" ? {
+      typeParameters: [],
+      fields: [],
+      variants: declaration.variants.map((variant) => ({
+        name: variant.name,
+        payloadType: variant.payload ? canonicalTypeName(variant.payload.name) : null,
+      })),
+    } : null,
     location: {
       offset: declaration.location.offset,
       line: declaration.location.line,
@@ -195,6 +212,7 @@ function stage0ModuleSymbols(
           targetModule,
           importedName: binding.importedName,
           functionSignature: null,
+          typeSignature: null,
           location: {
             offset: binding.location.offset,
             line: binding.location.line,
@@ -210,6 +228,7 @@ function stage0ModuleSymbols(
         targetModule,
         importedName: declaration.header,
         functionSignature: null,
+        typeSignature: null,
         location: {
           offset: declaration.location.offset,
           line: declaration.location.line,
@@ -245,9 +264,35 @@ function sameModuleSymbol(left: Stage1ModuleSymbol, right: Stage1ModuleSymbol | 
     && left.targetModule === right.targetModule
     && left.importedName === right.importedName
     && sameModuleFunctionSignature(left.functionSignature, right.functionSignature)
+    && sameModuleTypeSignature(left.typeSignature, right.typeSignature)
     && left.location.offset === right.location.offset
     && left.location.line === right.location.line
     && left.location.column === right.location.column;
+}
+
+function sameModuleTypeSignature(
+  left: Stage1ModuleSymbol["typeSignature"],
+  right: Stage1ModuleSymbol["typeSignature"],
+): boolean {
+  if (left === null || right === null) return left === right;
+  return left.typeParameters.length === right.typeParameters.length
+    && left.typeParameters.every((value, index) => value === right.typeParameters[index])
+    && left.fields.length === right.fields.length
+    && left.fields.every((field, index) => {
+      const other = right.fields[index];
+      return other !== undefined
+        && field.name === other.name
+        && field.typeName === other.typeName
+        && field.visibility === other.visibility
+        && field.readonlyField === other.readonlyField;
+    })
+    && left.variants.length === right.variants.length
+    && left.variants.every((variant, index) => {
+      const other = right.variants[index];
+      return other !== undefined
+        && variant.name === other.name
+        && variant.payloadType === other.payloadType;
+    });
 }
 
 function sameModuleFunctionSignature(

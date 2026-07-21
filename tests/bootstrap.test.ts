@@ -4697,6 +4697,70 @@ test("resolves a canonical module graph directly from native Z ASTs", () => {
     /match-main\.zs:3:10: non-exhaustive match; missing State\.stopped/,
   );
 
+  const importedMatchMain = resolve(invalidDirectory, "imported-match.zs");
+  const importedMatchModel = resolve(invalidDirectory, "match-model.zs");
+  writeFileSync(
+    importedMatchModel,
+    "export struct Envelope<T> {\n  value: T;\n}\n"
+      + "export enum Lookup {\n  found Envelope<i32>,\n  missing,\n}\n",
+  );
+  writeFileSync(
+    importedMatchMain,
+    "import model from \"./match-model.zs\";\n"
+      + "function inspect(value: model.Lookup): i32 {\n"
+      + "  return match (value) {\n"
+      + "    found({ value }) => value;\n"
+      + "    missing => 0;\n"
+      + "  };\n"
+      + "}\n",
+  );
+  const importedMatch = spawnSync(
+    process.execPath,
+    [cli, "self-host-resolve", importedMatchMain],
+    { encoding: "utf8" },
+  );
+  assert.equal(importedMatch.status, 0, importedMatch.stderr);
+  assert.match(importedMatch.stdout, /stage-1 resolver matches 2 modules, 1 local edge, and 4 symbols/);
+
+  writeFileSync(
+    importedMatchMain,
+    "import { Lookup as State } from \"./match-model.zs\";\n"
+      + "function inspect(value: State): i32 {\n"
+      + "  return match (value) { found({ value }) => value; };\n"
+      + "}\n",
+  );
+  const incompleteImportedMatch = spawnSync(
+    process.execPath,
+    [cli, "self-host-resolve", importedMatchMain],
+    { encoding: "utf8" },
+  );
+  assert.equal(incompleteImportedMatch.status, 1);
+  assert.match(
+    incompleteImportedMatch.stderr,
+    /imported-match\.zs:3:10: non-exhaustive match; missing State\.missing/,
+  );
+
+  writeFileSync(
+    importedMatchMain,
+    "import model from \"./match-model.zs\";\n"
+      + "function inspect(value: model.Lookup): i32 {\n"
+      + "  return match (value) {\n"
+      + "    found({ id }) => id;\n"
+      + "    missing => 0;\n"
+      + "  };\n"
+      + "}\n",
+  );
+  const invalidImportedField = spawnSync(
+    process.execPath,
+    [cli, "self-host-resolve", importedMatchMain],
+    { encoding: "utf8" },
+  );
+  assert.equal(invalidImportedField.status, 1);
+  assert.match(
+    invalidImportedField.stderr,
+    /payload Envelope<i32> has no field id/,
+  );
+
   const encoded = encodeStage1ModuleBatch([{ path: "/a.zs", source: "é" }]);
   assert.equal(encoded.byteLength, 32 + Buffer.byteLength("/a.zs") + Buffer.byteLength("é"));
   assert.throws(() => decodeStage1ModuleGraphStream("order\n"), /did not contain an entry/);
@@ -4731,6 +4795,16 @@ test("resolves a canonical module graph directly from native Z ASTs", () => {
       + "order\t0000000000000000\n",
     ),
     /malformed stage-1 function parameter mode/,
+  );
+  assert.throws(
+    () => decodeStage1ModuleGraphStream(
+      "entry\t0000000000000000\n"
+      + "module\t2f612e7a73\n"
+      + "symbol\t0000000000000000\tenum\t5374617465\t1\t-\t5374617465\t0000000000000000\t0000000000000001\t0000000000000001\n"
+      + "typeSignature\t0000000000000000\t0000000000000000\t0000000000000000\t0000000000000000\t0000000000000001\n"
+      + "order\t0000000000000000\n",
+    ),
+    /malformed stage-1 type signature arity/,
   );
 }, 10_000);
 
