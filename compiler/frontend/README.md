@@ -20,13 +20,16 @@ semantic analysis and code generation; the frontend itself is native Z code.
   local annotations, closure/executor signatures, `new`, and explicit generic
   arguments against intrinsics, generic parameters, and module type symbols. A
   first expression-typing tier infers scalar/template/array literals,
-  parameters, annotated and inferred locals, local aliases, and direct
-  non-generic calls across local, selective-import, and namespace-import
-  boundaries. Module function symbols retain async state, generic parameters,
-  parameter capabilities and types, return type, and error type. The tier also
-  covers closure result contracts, indexing, unary/binary operators, and
-  ternaries. It validates known initializers, assignments, conditions, call
-  arguments, and returns with native source-located diagnostics.
+  parameters, annotated and inferred locals, local aliases, and direct calls
+  across local, selective-import, and namespace-import boundaries. Module
+  function symbols retain async state, generic parameters, parameter
+  capabilities and types, return type, and error type. Generic calls accept
+  explicit type arguments or infer them from direct, nested-generic,
+  fixed-array, `Slice`, nullable, and `view` parameter shapes, then substitute
+  their parameter and return contracts. The tier also covers
+  closure result contracts, indexing, unary/binary operators, and ternaries. It
+  validates known initializers, assignments, conditions, call arguments, and
+  returns with native source-located diagnostics.
 - `module-resolver-protocol.zs` frames that host-loaded batch and returns the
   resolved graph through the same in-process native-library boundary.
 - `parser-protocol.zs` encodes the temporary parity protocol shared by native
@@ -56,8 +59,9 @@ lex/parse/resolve/symbol/name/type work, protocol decode, and stage-zero parity
 work. Identifier and expression-level type lookup currently cover materialized
 expression trees. Unknown foreign/member/async/match shapes deliberately defer
 instead of guessing. Opaque expression spans, member typing, contextual
-collection literals, generic substitution and arity, trait
-conformance, control-flow merging, and ownership remain stage-zero work.
+collection and return-driven generic inference, generic constraints and methods,
+type-constructor arity, trait conformance, control-flow merging, and ownership
+remain stage-zero work.
 The reported native interval therefore does more semantic work than the
 graph-and-symbol-only stage-zero comparison.
 Repeated corpus measurements and incrementally

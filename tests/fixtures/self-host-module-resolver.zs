@@ -264,6 +264,80 @@ export function add(left: i32, right: i32): i32 { return left + right; }
   return sources;
 }
 
+function genericInferenceGraph(): Array<ModuleSource> {
+  let sources = Array<ModuleSource>();
+  sources.push(module("/workspace/main.zs", `
+import { identity as copy } from "./model.zs";
+import model from "./model.zs";
+function main(): i32 {
+  const explicit: i32 = copy<i32>(20);
+  const values = Array<i32>();
+  const pair = [1, 2];
+  return explicit + model.keep(values, 19) + model.first(pair) + model.fixed(pair);
+}
+
+function recover(result: Result<i32, String>): i32 {
+  return model.recover(result, 0);
+}
+`));
+  sources.push(module("/workspace/model.zs", `
+export function identity<T>(value: T): T { return value; }
+export function keep<T>(in values: Array<T>, fallback: T): T { return fallback; }
+export function first<T>(in values: Slice<T>): T { return values[0]; }
+export function fixed<T>(in values: T[2]): T { return values[0]; }
+export function recover<T, E>(in result: Result<T, E>, fallback: T): T { return fallback; }
+`));
+  return sources;
+}
+
+function genericReturnMismatchGraph(): Array<ModuleSource> {
+  let sources = Array<ModuleSource>();
+  sources.push(module("/workspace/main.zs", `
+import { identity } from "./model.zs";
+function main(): boolean { return identity(42); }
+`));
+  sources.push(module("/workspace/model.zs", `
+export function identity<T>(value: T): T { return value; }
+`));
+  return sources;
+}
+
+function conflictingGenericInferenceGraph(): Array<ModuleSource> {
+  let sources = Array<ModuleSource>();
+  sources.push(module("/workspace/main.zs", `
+import model from "./model.zs";
+function main(): i32 { return model.choose(42, true); }
+`));
+  sources.push(module("/workspace/model.zs", `
+export function choose<T>(left: T, right: T): T { return left; }
+`));
+  return sources;
+}
+
+function explicitGenericMismatchGraph(): Array<ModuleSource> {
+  let sources = Array<ModuleSource>();
+  sources.push(module("/workspace/main.zs", `
+import { identity } from "./model.zs";
+function main(): boolean { return identity<boolean>(42); }
+`));
+  sources.push(module("/workspace/model.zs", `
+export function identity<T>(value: T): T { return value; }
+`));
+  return sources;
+}
+
+function genericArityMismatchGraph(): Array<ModuleSource> {
+  let sources = Array<ModuleSource>();
+  sources.push(module("/workspace/main.zs", `
+import { identity } from "./model.zs";
+function main(): i32 { return identity<i32, boolean>(42); }
+`));
+  sources.push(module("/workspace/model.zs", `
+export function identity<T>(value: T): T { return value; }
+`));
+  return sources;
+}
+
 function symbolKindsGraph(): Array<ModuleSource> {
   let sources = Array<ModuleSource>();
   sources.push(module("/workspace/main.zs", `
@@ -396,12 +470,23 @@ function main(): i32 {
   if (!resolvesTo(expressionMismatchGraph(), ModuleResolveErrorKind.typeMismatch)) return 15;
   if (!resolvesTo(invalidOperatorGraph(), ModuleResolveErrorKind.invalidOperator)) return 16;
   if (!resolvesTo(crossModuleTypeMismatchGraph(), ModuleResolveErrorKind.typeMismatch)) return 17;
+  const genericSources = genericInferenceGraph();
+  const genericOutcome = attempt resolveModules(genericSources, "/workspace/main.zs");
+  const genericsAreValid = match (genericOutcome) {
+    success(graph) => graph.modules.length == 2;
+    failure(error) => false;
+  };
+  if (!genericsAreValid) return 18;
+  if (!resolvesTo(genericReturnMismatchGraph(), ModuleResolveErrorKind.typeMismatch)) return 19;
+  if (!resolvesTo(conflictingGenericInferenceGraph(), ModuleResolveErrorKind.typeMismatch)) return 20;
+  if (!resolvesTo(explicitGenericMismatchGraph(), ModuleResolveErrorKind.typeMismatch)) return 21;
+  if (!resolvesTo(genericArityMismatchGraph(), ModuleResolveErrorKind.typeMismatch)) return 22;
   const kindSources = symbolKindsGraph();
   const kindOutcome = attempt resolveModules(kindSources, "/workspace/main.zs");
   const kindsAreValid = match (kindOutcome) {
     success(graph) => validSymbolKinds(graph);
     failure(error) => false;
   };
-  if (!kindsAreValid) return 18;
+  if (!kindsAreValid) return 23;
   return 0;
 }

@@ -4661,6 +4661,26 @@ test("resolves a canonical module graph directly from native Z ASTs", () => {
   assert.equal(invalidCall.status, 1);
   assert.match(invalidCall.stderr, /call-main\.zs:3:14: expected i32, found boolean/);
 
+  const genericMain = resolve(invalidDirectory, "generic-main.zs");
+  writeFileSync(
+    genericMain,
+    "import generic from \"./generic.zs\";\nfunction main(): i32 {\n  return generic.choose(42, true);\n}\n",
+  );
+  writeFileSync(
+    resolve(invalidDirectory, "generic.zs"),
+    "export function choose<T>(left: T, right: T): T { return left; }\n",
+  );
+  const invalidGeneric = spawnSync(
+    process.execPath,
+    [cli, "self-host-resolve", genericMain],
+    { encoding: "utf8" },
+  );
+  assert.equal(invalidGeneric.status, 1);
+  assert.match(
+    invalidGeneric.stderr,
+    /generic-main\.zs:3:29: conflicting inferred types for T in choose: i32 and boolean/,
+  );
+
   const encoded = encodeStage1ModuleBatch([{ path: "/a.zs", source: "é" }]);
   assert.equal(encoded.byteLength, 32 + Buffer.byteLength("/a.zs") + Buffer.byteLength("é"));
   assert.throws(() => decodeStage1ModuleGraphStream("order\n"), /did not contain an entry/);

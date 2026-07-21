@@ -64,6 +64,16 @@ struct ModuleSymbolLocation {
   symbolIndex: usize;
 }
 
+struct NativeGenericTypeShape {
+  base: String;
+  arguments: Array<String>;
+}
+
+struct NativeFixedArrayShape {
+  elementType: String;
+  length: String;
+}
+
 export struct ResolvedModule {
   path: String;
   dependencies: Array<usize>;
@@ -1227,6 +1237,15 @@ function requireExpressionType(
   if (isNumericTypeName(expected) && isNumericTypeName(actual) && isContextualNumericLiteral(tree, index)) return;
   if (expected == "cstring" && actual == "String" && tree.nodes[index].kind == ExpressionKind.stringExpression) return;
   if (actual == "null" && isNullableTypeName(expected)) return;
+  match (genericTypeShape(expected)) {
+    some(generic) => {
+      if (generic.base == "Slice" && generic.arguments.length == 1) {
+        const actualElement = arrayElementType(actual);
+        if (actualElement == generic.arguments[0]) return;
+      }
+    }
+    none => {}
+  }
   throw resolutionError(
     ModuleResolveErrorKind.typeMismatch,
     module.path,
@@ -1264,6 +1283,289 @@ function arrayElementType(in name: String): String {
     if (name.byteAt(index) == 91) return name.copyBytes(0, index);
   }
   return "";
+}
+
+function trimmedTypeSlice(in name: String, start: usize, end: usize): String {
+  let first = start;
+  let last = end;
+  while (first < last && name.byteAt(first) == 32) {
+    first = first + 1;
+  }
+  while (last > first && name.byteAt(last - 1) == 32) {
+    last = last - 1;
+  }
+  return name.copyBytes(first, last);
+}
+
+function genericTypeShape(in name: String): Option<NativeGenericTypeShape> {
+  let open = name.byteLength;
+  let index: usize = 0;
+  while (index < name.byteLength) {
+    if (name.byteAt(index) == 60) {
+      open = index;
+      break;
+    }
+    index = index + 1;
+  }
+  if (open == name.byteLength || name.byteAt(name.byteLength - 1) != 62) {
+    return Option<NativeGenericTypeShape>.none;
+  }
+  let arguments = Array<String>();
+  let angleDepth: usize = 1;
+  let parenthesisDepth: usize = 0;
+  let bracketDepth: usize = 0;
+  let argumentStart = open + 1;
+  index = argumentStart;
+  while (index < name.byteLength) {
+    const byte = name.byteAt(index);
+    if (byte == 40) parenthesisDepth = parenthesisDepth + 1;
+    else if (byte == 41 && parenthesisDepth > 0) parenthesisDepth = parenthesisDepth - 1;
+    else if (byte == 91) bracketDepth = bracketDepth + 1;
+    else if (byte == 93 && bracketDepth > 0) bracketDepth = bracketDepth - 1;
+    else if (byte == 60) angleDepth = angleDepth + 1;
+    else if (byte == 62 && (index == 0 || name.byteAt(index - 1) != 61)) {
+      angleDepth = angleDepth - 1;
+      if (angleDepth == 0) {
+        if (index != name.byteLength - 1 || index == argumentStart) {
+          return Option<NativeGenericTypeShape>.none;
+        }
+        arguments.push(trimmedTypeSlice(name, argumentStart, index));
+        return Option.some(NativeGenericTypeShape({
+          base: trimmedTypeSlice(name, 0, open),
+          arguments,
+        }));
+      }
+    } else if (
+      byte == 44
+      && angleDepth == 1
+      && parenthesisDepth == 0
+      && bracketDepth == 0
+    ) {
+      if (index == argumentStart) return Option<NativeGenericTypeShape>.none;
+      arguments.push(trimmedTypeSlice(name, argumentStart, index));
+      argumentStart = index + 1;
+    }
+    index = index + 1;
+  }
+  return Option<NativeGenericTypeShape>.none;
+}
+
+function fixedArrayShape(in name: String): Option<NativeFixedArrayShape> {
+  if (name.byteLength < 4 || name.byteAt(name.byteLength - 1) != 93) {
+    return Option<NativeFixedArrayShape>.none;
+  }
+  let index = name.byteLength - 1;
+  while (index > 0) {
+    index = index - 1;
+    if (name.byteAt(index) == 91) {
+      if (index == 0 || index + 1 == name.byteLength - 1) {
+        return Option<NativeFixedArrayShape>.none;
+      }
+      return Option.some(NativeFixedArrayShape({
+        elementType: name.copyBytes(0, index),
+        length: name.copyBytes(index + 1, name.byteLength - 1),
+      }));
+    }
+  }
+  return Option<NativeFixedArrayShape>.none;
+}
+
+function nullableTargetType(in name: String): String {
+  if (!isNullableTypeName(name)) return "";
+  return name.copyBytes(0, name.byteLength - 7);
+}
+
+function substituteGenericType(
+  in name: String,
+  in substitutions: Array<NativeValueBinding>
+): String {
+  const direct = valueBindingType(substitutions, name);
+  if (direct.byteLength > 0) return direct;
+  const nullableTarget = nullableTargetType(name);
+  if (nullableTarget.byteLength > 0) {
+    const substituted = substituteGenericType(nullableTarget, substitutions);
+    return `${substituted} | null`;
+  }
+  if (stringStartsWith(name, "view ")) {
+    const target = name.copyBytes(5, name.byteLength);
+    const substituted = substituteGenericType(target, substitutions);
+    return `view ${substituted}`;
+  }
+  match (fixedArrayShape(name)) {
+    some(array) => {
+      const substituted = substituteGenericType(array.elementType, substitutions);
+      return `${substituted}[${array.length}]`;
+    }
+    none => {}
+  }
+  return match (genericTypeShape(name)) {
+    some(generic) => {
+      let output = TextBuffer();
+      output.append(generic.base);
+      output.append("<");
+      let index: usize = 0;
+      while (index < generic.arguments.length) {
+        if (index > 0) output.append(", ");
+        const argument = substituteGenericType(generic.arguments[index], substitutions);
+        output.append(argument);
+        index = index + 1;
+      }
+      output.append(">");
+      select output.finish();
+    }
+    none => name.copyBytes(0, name.byteLength);
+  };
+}
+
+function genericCallError(
+  in module: ParsedModule,
+  in tree: ExpressionTree,
+  index: usize,
+  in message: String
+): ModuleResolveError {
+  return resolutionError(
+    ModuleResolveErrorKind.typeMismatch,
+    module.path,
+    message,
+    tree.nodes[index].line,
+    tree.nodes[index].column
+  );
+}
+
+function bindGenericType(
+  in module: ParsedModule,
+  in tree: ExpressionTree,
+  argumentIndex: usize,
+  in functionName: String,
+  in pattern: String,
+  in actual: String,
+  in typeParameters: Array<String>,
+  inout substitutions: Array<NativeValueBinding>
+): void throws ModuleResolveError {
+  if (actual.byteLength == 0 || actual == "null") return;
+  for (const typeParameter of typeParameters) {
+    if (pattern != typeParameter) continue;
+    const previous = valueBindingType(substitutions, typeParameter);
+    if (previous.byteLength > 0 && previous != actual) {
+      throw genericCallError(
+        module,
+        tree,
+        argumentIndex,
+        `conflicting inferred types for ${typeParameter} in ${functionName}: ${previous} and ${actual}`
+      );
+    }
+    if (previous.byteLength == 0) addValueBinding(inout substitutions, typeParameter, actual);
+    return;
+  }
+  const patternNullable = nullableTargetType(pattern);
+  const actualNullable = nullableTargetType(actual);
+  if (patternNullable.byteLength > 0 && actualNullable.byteLength > 0) {
+    try bindGenericType(
+      module,
+      tree,
+      argumentIndex,
+      functionName,
+      patternNullable,
+      actualNullable,
+      typeParameters,
+      inout substitutions
+    );
+    return;
+  }
+  if (stringStartsWith(pattern, "view ") && stringStartsWith(actual, "view ")) {
+    const patternTarget = pattern.copyBytes(5, pattern.byteLength);
+    const actualTarget = actual.copyBytes(5, actual.byteLength);
+    try bindGenericType(
+      module,
+      tree,
+      argumentIndex,
+      functionName,
+      patternTarget,
+      actualTarget,
+      typeParameters,
+      inout substitutions
+    );
+    return;
+  }
+  match (fixedArrayShape(pattern)) {
+    some(patternArray) => {
+      match (fixedArrayShape(actual)) {
+        some(actualArray) => {
+          if (patternArray.length == actualArray.length) {
+            try bindGenericType(
+              module,
+              tree,
+              argumentIndex,
+              functionName,
+              patternArray.elementType,
+              actualArray.elementType,
+              typeParameters,
+              inout substitutions
+            );
+          }
+        }
+        none => {}
+      }
+      return;
+    }
+    none => {}
+  }
+  match (genericTypeShape(pattern)) {
+    some(patternGeneric) => {
+      match (genericTypeShape(actual)) {
+        some(actualGeneric) => {
+          if (
+            patternGeneric.base == actualGeneric.base
+            && patternGeneric.arguments.length == actualGeneric.arguments.length
+          ) {
+            let index: usize = 0;
+            while (index < patternGeneric.arguments.length) {
+              try bindGenericType(
+                module,
+                tree,
+                argumentIndex,
+                functionName,
+                patternGeneric.arguments[index],
+                actualGeneric.arguments[index],
+                typeParameters,
+                inout substitutions
+              );
+              index = index + 1;
+            }
+          }
+        }
+        none => {
+          if (patternGeneric.base == "Slice") {
+            const actualElement = arrayElementType(actual);
+            if (patternGeneric.arguments.length == 1 && actualElement.byteLength > 0) {
+              try bindGenericType(
+                module,
+                tree,
+                argumentIndex,
+                functionName,
+                patternGeneric.arguments[0],
+                actualElement,
+                typeParameters,
+                inout substitutions
+              );
+            }
+          }
+        }
+      }
+    }
+    none => {}
+  }
+}
+
+function explicitCallTypeArguments(
+  in tree: ExpressionTree,
+  calleeIndex: usize
+): Option<NativeGenericTypeShape> {
+  if (
+    tree.nodes[calleeIndex].kind != ExpressionKind.identifierExpression
+    && tree.nodes[calleeIndex].kind != ExpressionKind.memberExpression
+  ) return Option<NativeGenericTypeShape>.none;
+  return genericTypeShape(tree.nodes[calleeIndex].value);
 }
 
 function exportedFunctionLocation(
@@ -1502,21 +1804,76 @@ function inferExpressionNodeType(
       some(location) => {
         match (in modules[location.moduleIndex].symbols[location.symbolIndex].functionSignature) {
           some(signature) => {
-            if (signature.typeParameters.length > 0) return "";
-            if (signature.parameterTypes.length == argumentTypes.length) {
-              let parameterIndex: usize = 0;
-              while (parameterIndex < argumentTypes.length) {
-                try requireExpressionType(
-                  module,
-                  tree,
-                  children[parameterIndex + 1],
-                  signature.parameterTypes[parameterIndex],
-                  argumentTypes[parameterIndex]
-                );
-                parameterIndex = parameterIndex + 1;
+            const functionName = modules[location.moduleIndex].symbols[location.symbolIndex].name.copyBytes(
+              0,
+              modules[location.moduleIndex].symbols[location.symbolIndex].name.byteLength
+            );
+            if (signature.parameterTypes.length != argumentTypes.length) {
+              throw genericCallError(
+                module,
+                tree,
+                calleeIndex,
+                `${functionName} expects ${signature.parameterTypes.length} argument(s), received ${argumentTypes.length}`
+              );
+            }
+            let substitutions = Array<NativeValueBinding>();
+            match (explicitCallTypeArguments(tree, calleeIndex)) {
+              some(explicit) => {
+                if (explicit.arguments.length != signature.typeParameters.length) {
+                  throw genericCallError(
+                    module,
+                    tree,
+                    calleeIndex,
+                    `${functionName} expects ${signature.typeParameters.length} type argument(s), received ${explicit.arguments.length}`
+                  );
+                }
+                let typeIndex: usize = 0;
+                while (typeIndex < signature.typeParameters.length) {
+                  addValueBinding(
+                    inout substitutions,
+                    signature.typeParameters[typeIndex],
+                    explicit.arguments[typeIndex]
+                  );
+                  typeIndex = typeIndex + 1;
+                }
+              }
+              none => {
+                let parameterIndex: usize = 0;
+                while (parameterIndex < argumentTypes.length) {
+                  try bindGenericType(
+                    module,
+                    tree,
+                    children[parameterIndex + 1],
+                    functionName,
+                    signature.parameterTypes[parameterIndex],
+                    argumentTypes[parameterIndex],
+                    signature.typeParameters,
+                    inout substitutions
+                  );
+                  parameterIndex = parameterIndex + 1;
+                }
               }
             }
-            return signature.returnType.copyBytes(0, signature.returnType.byteLength);
+            for (const typeParameter of signature.typeParameters) {
+              const substituted = valueBindingType(substitutions, typeParameter);
+              if (substituted.byteLength == 0) return "";
+            }
+            let parameterIndex: usize = 0;
+            while (parameterIndex < argumentTypes.length) {
+              const expected = substituteGenericType(
+                signature.parameterTypes[parameterIndex],
+                substitutions
+              );
+              try requireExpressionType(
+                module,
+                tree,
+                children[parameterIndex + 1],
+                expected,
+                argumentTypes[parameterIndex]
+              );
+              parameterIndex = parameterIndex + 1;
+            }
+            return substituteGenericType(signature.returnType, substitutions);
           }
           none => {}
         }

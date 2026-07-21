@@ -294,22 +294,26 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    parameters/results/errors, enum payloads, local annotations,
    closure/executor signatures, `new`, and explicit generic arguments. Unknown
    nested types report the exact inner token location. Opaque expression spans,
-   foreign namespace member verification, generic arity, value member lookup,
-   duplicate local diagnostics, type compatibility/conformance, and ownership
-   remain stage-zero work.
+   foreign namespace member verification, type-constructor generic arity, value
+   member lookup, duplicate local diagnostics, type compatibility/conformance,
+   and ownership remain stage-zero work.
    The first native expression-typing tier now carries declared parameter types
    into source-ordered scopes; infers scalar, template, fixed-array, identifier,
-   and explicitly typed closure values; and propagates direct non-generic Z call
-   results. It validates known local initializers, assignments, boolean
+   and explicitly typed closure values; and propagates direct Z call results. It
+   validates known local initializers, assignments, boolean
    conditions, call arguments, return values, unary/binary operators, indexing,
-   and ternaries. Direct non-generic calls now follow local declarations,
-   selective imports (including aliases), and namespace imports to their target
-   signatures, so known cross-module argument mismatches originate in Z.
+   and ternaries. Direct calls now follow local declarations, selective imports
+   (including aliases), and namespace imports to their target signatures.
+   Generic calls infer type parameters through direct, nested generic,
+   fixed-array, `Slice`, nullable, and `view` parameter shapes, or accept
+   explicit type arguments, before substituting parameter and result types.
+   Conflicting inference, value/type arity, and known cross-module argument
+   mismatches originate in Z.
    Unknown member, foreign, async, and match result shapes remain explicitly
    unresolved, so this tier increases guarantees without emitting speculative
-   errors. Complete contextual literal typing, member lookup, generic
-   substitution, match/branch result typing, capability enforcement, and
-   flow/ownership state remain stage-zero work.
+   errors. Complete contextual literal and return-driven inference, member
+   lookup, generic constraints/methods, match/branch result typing, capability
+   enforcement, and flow/ownership state remain stage-zero work.
    Template literals now
    retain ordered decoded-text leaves and ordinary embedded-expression roots,
    including nested templates, in the same flat arena. Expression-bodied

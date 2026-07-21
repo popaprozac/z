@@ -1506,17 +1506,20 @@ ported independently rather than translated as one monolith.
    therefore resolves nested generics, constraints, declaration and local
    annotations, closure/executor signatures, construction, and explicit generic
    arguments without parsing display text. Unknown inner types originate from Z
-   at the inner token. Generic arity, type compatibility, value member lookup,
-   opaque expression spans, and ownership analysis intentionally remain at
-   stage zero while the native semantic model grows vertically.
+   at the inner token. Type-constructor generic arity, complete type
+   compatibility, value member lookup, opaque expression spans, and ownership
+   analysis intentionally remain at stage zero while the native semantic model
+   grows vertically.
    A first expression-type pass now layers on those resolved names. It infers
    primitive/template/fixed-array literals, parameters and local aliases,
-   explicitly typed closures, indexes, core operators, ternaries, and direct
-   non-generic Z calls. Calls resolve through local declarations, selective
-   imports and aliases, and namespace imports, validating known argument types
-   against the target module's signature. Known initializers, assignments,
-   conditions, arguments, and returns are checked with native diagnostics. A
-   missing native model for a
+   explicitly typed closures, indexes, core operators, ternaries, and direct Z
+   calls. Calls resolve through local declarations, selective imports and
+   aliases, and namespace imports, validating known argument types against the
+   target module's signature. Generic calls infer or accept explicit type
+   arguments and structurally substitute nested parameter and return shapes;
+   unresolved contextual-only parameters continue to defer. Known initializers,
+   assignments, conditions, arguments, and returns are checked with native
+   diagnostics. A missing native model for a
    foreign/member/async/match expression produces an unresolved internal type,
    not a guessed type or user-visible false positive; those shapes remain under
    stage-zero authority until their metadata and control-flow rules migrate.
