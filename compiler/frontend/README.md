@@ -43,7 +43,10 @@ semantic analysis and code generation; the frontend itself is native Z code.
   methods, and enum payloads are rebased to the caller's visible namespace or
   selective alias for readable diagnostics. Generic unification uses the same
   identity recursively through nullable, `view`, fixed-array, and nested-generic
-  shapes, so aliases do not create false inference conflicts.
+  shapes, so aliases do not create false inference conflicts. Native value
+  bindings also retain declaration mutability: direct reassignment accepts
+  `let`, `inout`, and `out` storage while rejecting `const`, value, and `in`
+  bindings at the assignment target.
 - `module-resolver-protocol.zs` frames that host-loaded batch and returns the
   resolved graph through the same in-process native-library boundary.
 - `parser-protocol.zs` encodes the temporary parity protocol shared by native

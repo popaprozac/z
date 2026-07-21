@@ -1510,7 +1510,12 @@ ported independently rather than translated as one monolith.
    source spelling. A local name, namespace-qualified name, selective alias, and
    type forwarded through an intermediate module therefore compare as one type;
    diagnostics still use a spelling visible in the caller. Generic unification
-   recursively compares that identity rather than raw aliases.
+   recursively compares that identity rather than raw aliases. Native value
+   bindings now retain mutability independently of their type spelling, and
+   direct assignment enforces the `const`/value/`in` versus
+   `let`/`inout`/`out` distinction. Definite initialization, nested mutation,
+   call-site capability enforcement, and ownership remain later flow-state
+   layers over the same binding record.
    Feeding this graph into ordinary
    compiler commands and replacing the temporary protocol remain next. Native
    semantic analysis has also begun on that graph: source-ordered lexical lookup

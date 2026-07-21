@@ -4950,6 +4950,64 @@ test("resolves a canonical module graph directly from native Z ASTs", () => {
   assert.equal(canonicalIdentity.status, 0, canonicalIdentity.stderr);
   assert.match(canonicalIdentity.stdout, /stage-1 resolver matches 3 modules, 4 local edges/);
 
+  const bindingState = resolve(invalidDirectory, "binding-state.zs");
+  writeFileSync(
+    bindingState,
+    "function mutateLocal(): i32 {\n"
+      + "  let value = 1;\n"
+      + "  value = 2;\n"
+      + "  return value;\n"
+      + "}\n"
+      + "function mutateParameter(inout value: i32): void { value = 2; }\n"
+      + "function initializeParameter(out value: i32): void { value = 1; }\n",
+  );
+  const mutableBindings = spawnSync(
+    process.execPath,
+    [cli, "self-host-resolve", bindingState],
+    { encoding: "utf8" },
+  );
+  assert.equal(mutableBindings.status, 0, mutableBindings.stderr);
+
+  writeFileSync(
+    bindingState,
+    "function invalid(): i32 {\n"
+      + "  const value = 1;\n"
+      + "  value = 2;\n"
+      + "  return value;\n"
+      + "}\n",
+  );
+  const immutableLocal = spawnSync(
+    process.execPath,
+    [cli, "self-host-resolve", bindingState],
+    { encoding: "utf8" },
+  );
+  assert.equal(immutableLocal.status, 1);
+  assert.match(immutableLocal.stderr, /cannot assign to immutable binding "value"/);
+
+  writeFileSync(
+    bindingState,
+    "function invalid(value: i32): void { value = 2; }\n",
+  );
+  const immutableValueParameter = spawnSync(
+    process.execPath,
+    [cli, "self-host-resolve", bindingState],
+    { encoding: "utf8" },
+  );
+  assert.equal(immutableValueParameter.status, 1);
+  assert.match(immutableValueParameter.stderr, /cannot assign to immutable binding "value"/);
+
+  writeFileSync(
+    bindingState,
+    "function invalid(in value: i32): void { value = 2; }\n",
+  );
+  const immutableInputParameter = spawnSync(
+    process.execPath,
+    [cli, "self-host-resolve", bindingState],
+    { encoding: "utf8" },
+  );
+  assert.equal(immutableInputParameter.status, 1);
+  assert.match(immutableInputParameter.stderr, /cannot assign to immutable binding "value"/);
+
   const encoded = encodeStage1ModuleBatch([{ path: "/a.zs", source: "é" }]);
   assert.equal(encoded.byteLength, 32 + Buffer.byteLength("/a.zs") + Buffer.byteLength("é"));
   assert.throws(() => decodeStage1ModuleGraphStream("order\n"), /did not contain an entry/);

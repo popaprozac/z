@@ -61,6 +61,7 @@ struct ParsedModule {
 struct NativeValueBinding {
   name: String;
   typeName: String;
+  mutableBinding: boolean;
 }
 
 struct ModuleSymbolLocation {
@@ -1289,6 +1290,7 @@ function copyValueBindings(in bindings: Array<NativeValueBinding>): Array<Native
     copied.push(NativeValueBinding({
       name: binding.name.copyBytes(0, binding.name.byteLength),
       typeName: binding.typeName.copyBytes(0, binding.typeName.byteLength),
+      mutableBinding: binding.mutableBinding,
     }));
   }
   return copied;
@@ -1302,6 +1304,19 @@ function addValueBinding(
   bindings.push(NativeValueBinding({
     name: name.copyBytes(0, name.byteLength),
     typeName: typeName.copyBytes(0, typeName.byteLength),
+    mutableBinding: false,
+  }));
+}
+
+function addMutableValueBinding(
+  inout bindings: Array<NativeValueBinding>,
+  in name: String,
+  in typeName: String
+): void {
+  bindings.push(NativeValueBinding({
+    name: name.copyBytes(0, name.byteLength),
+    typeName: typeName.copyBytes(0, typeName.byteLength),
+    mutableBinding: true,
   }));
 }
 
@@ -1317,6 +1332,18 @@ function valueBindingType(
     }
   }
   return "";
+}
+
+function valueBindingIsMutable(
+  in bindings: Array<NativeValueBinding>,
+  in name: String
+): boolean {
+  let index = bindings.length;
+  while (index > 0) {
+    index = index - 1;
+    if (bindings[index].name == name) return bindings[index].mutableBinding;
+  }
+  return false;
 }
 
 function isIntegerTypeName(in name: String): boolean {
@@ -3308,7 +3335,11 @@ function inferStatement(
       }
       none => {}
     }
-    addValueBinding(inout bindings, arena.nodes[index].name, stored);
+    if (arena.nodes[index].mutableBinding) {
+      addMutableValueBinding(inout bindings, arena.nodes[index].name, stored);
+    } else {
+      addValueBinding(inout bindings, arena.nodes[index].name, stored);
+    }
     return;
   }
   if (kind == StatementKind.assignmentStatement) {
@@ -3327,6 +3358,18 @@ function inferStatement(
               root,
               bindings
             );
+            if (
+              tree.nodes[root].kind == ExpressionKind.identifierExpression
+              && !valueBindingIsMutable(bindings, tree.nodes[root].value)
+            ) {
+              throw resolutionError(
+                ModuleResolveErrorKind.typeMismatch,
+                module.path,
+                `cannot assign to immutable binding "${tree.nodes[root].value}"`,
+                tree.nodes[root].line,
+                tree.nodes[root].column
+              );
+            }
             if (
               tree.nodes[root].kind == ExpressionKind.memberExpression
               && tree.nodes[root].children.length == 1
@@ -3496,7 +3539,14 @@ function inferStatementSequence(
 function functionValueBindings(in parameters: Array<Parameter>): Array<NativeValueBinding> {
   let bindings = Array<NativeValueBinding>();
   for (const parameter of parameters) {
-    addValueBinding(inout bindings, parameter.name, parameter.type.name);
+    if (
+      parameter.mode == ParameterMode.inputOutput
+      || parameter.mode == ParameterMode.output
+    ) {
+      addMutableValueBinding(inout bindings, parameter.name, parameter.type.name);
+    } else {
+      addValueBinding(inout bindings, parameter.name, parameter.type.name);
+    }
   }
   return bindings;
 }
@@ -3510,7 +3560,14 @@ function inferFunctionExpressions(
 ): void throws ModuleResolveError {
   let bindings = functionValueBindings(declaration.parameters);
   if (!declaration.staticMethod && ownerType.byteLength > 0) {
-    addValueBinding(inout bindings, "this", ownerType);
+    if (
+      declaration.receiverMode == ReceiverMode.inputOutput
+      || declaration.receiverMode == ReceiverMode.move
+    ) {
+      addMutableValueBinding(inout bindings, "this", ownerType);
+    } else {
+      addValueBinding(inout bindings, "this", ownerType);
+    }
   }
   if (ownerType.byteLength > 0) {
     addValueBinding(inout bindings, "__z_native_owner_type", ownerType);
@@ -3538,7 +3595,7 @@ function validateExpressionTypesAndLocals(
     match (in aggregate.constructorDeclaration) {
       some(initializer) => {
         let bindings = functionValueBindings(initializer.parameters);
-        addValueBinding(inout bindings, "this", aggregate.name);
+        addMutableValueBinding(inout bindings, "this", aggregate.name);
         addValueBinding(inout bindings, "__z_native_owner_type", aggregate.name);
         addValueBinding(inout bindings, "__z_native_constructor_type", aggregate.name);
         try inferStatementSequence(

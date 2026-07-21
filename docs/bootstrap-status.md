@@ -331,7 +331,12 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    visible spelling, including transit through an intermediate module. Generic
    inference compares those identities recursively through nullable,
    `view`, fixed-array, and nested-generic shapes while retaining readable source
-   spellings in genuine conflict diagnostics. Complete
+   spellings in genuine conflict diagnostics. Native bindings now retain the
+   first capability-state bit: direct reassignment accepts `let`, `inout`, and
+   `out` storage while rejecting `const`, value, and `in` bindings. Nested value
+   mutation, call-site capability enforcement, definite `out` initialization,
+   and branch/loop state merging remain coupled to the broader native flow pass.
+   Complete
    contextual literal and return-driven inference, foreign/intrinsic method lookup,
    generic constraints/methods, match
    ownership/control-flow merging, capability enforcement, and flow/ownership
