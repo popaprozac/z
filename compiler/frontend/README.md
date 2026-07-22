@@ -157,8 +157,10 @@ bridge validates name, mutability, and type before using that native binding
 contract; materialized generic types use their source display names for the
 comparison. Direct aggregate bindings additionally carry their resolved module
 and symbol, so local, selective-import, and namespace-qualified spellings share
-one identity. Nested qualified types inside generic wrappers still defer until
-that identity becomes recursive.
+one identity. Identity paths now recurse through compiler-known wrappers such as
+`Option`, arrays and slices, views, `Weak`, tasks, function signatures, and
+materialized `Result` payloads. Arguments of user-defined generic monomorphs
+still defer because Stage 0 does not retain their source substitutions directly.
 The reported native interval therefore does more semantic work than the
 graph-and-symbol-only stage-zero comparison.
 Repeated corpus measurements, broadening ordinary-command shadow coverage, and

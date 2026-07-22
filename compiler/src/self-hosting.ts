@@ -88,8 +88,13 @@ export type Stage1ModuleBindingResolution = {
   readonly name: string;
   readonly mutableBinding: boolean;
   readonly typeName: string;
-  readonly targetModule: number | null;
-  readonly targetSymbol: number | null;
+  readonly typeIdentities: readonly Stage1ModuleTypeIdentity[];
+};
+
+export type Stage1ModuleTypeIdentity = {
+  readonly path: string;
+  readonly targetModule: number;
+  readonly targetSymbol: number;
 };
 
 export type Stage1ModuleCallResolution = {
@@ -305,7 +310,7 @@ export function decodeStage1ModuleGraphStream(output: string): Stage1ModuleGraph
       continue;
     }
     if (fields[0] === "bindingResolution") {
-      if (fields.length !== 10) throw new Error(`malformed stage-1 binding resolution line: ${line}`);
+      if (fields.length < 9) throw new Error(`malformed stage-1 binding resolution line: ${line}`);
       const moduleIndex = parseProtocolHexInteger(fields[1], "binding resolution module");
       const module = modules[moduleIndex];
       if (!module) throw new Error("stage-1 binding resolution appeared before its module");
@@ -315,6 +320,22 @@ export function decodeStage1ModuleGraphStream(output: string): Stage1ModuleGraph
       if (!/^(?:[0-9a-f]{2})*$/.test(fields[5]) || !/^(?:[0-9a-f]{2})*$/.test(fields[7])) {
         throw new Error(`malformed stage-1 binding resolution text: ${line}`);
       }
+      const identityCount = parseProtocolHexInteger(fields[8], "binding resolution identity count");
+      if (fields.length !== 9 + (identityCount * 3)) {
+        throw new Error(`malformed stage-1 binding resolution identity arity: ${line}`);
+      }
+      const encodedIdentities = fields.slice(9);
+      const typeIdentities: Stage1ModuleTypeIdentity[] = [];
+      for (let index = 0; index < encodedIdentities.length; index += 3) {
+        if (!/^(?:[0-9a-f]{2})*$/.test(encodedIdentities[index])) {
+          throw new Error(`malformed stage-1 binding resolution identity path: ${line}`);
+        }
+        typeIdentities.push({
+          path: Buffer.from(encodedIdentities[index], "hex").toString("utf8"),
+          targetModule: parseProtocolHexInteger(encodedIdentities[index + 1], "binding resolution identity module"),
+          targetSymbol: parseProtocolHexInteger(encodedIdentities[index + 2], "binding resolution identity symbol"),
+        });
+      }
       (module.bindingResolutions as Stage1ModuleBindingResolution[]).push({
         offset: parseProtocolHexInteger(fields[2], "binding resolution offset"),
         line: parseProtocolHexInteger(fields[3], "binding resolution line"),
@@ -322,8 +343,7 @@ export function decodeStage1ModuleGraphStream(output: string): Stage1ModuleGraph
         name: Buffer.from(fields[5], "hex").toString("utf8"),
         mutableBinding: fields[6] === "1",
         typeName: Buffer.from(fields[7], "hex").toString("utf8"),
-        targetModule: fields[8] === "-" ? null : parseProtocolHexInteger(fields[8], "binding resolution target module"),
-        targetSymbol: fields[9] === "-" ? null : parseProtocolHexInteger(fields[9], "binding resolution target symbol"),
+        typeIdentities,
       });
       continue;
     }

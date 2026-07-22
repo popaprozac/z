@@ -423,9 +423,15 @@ function appendBindingResolution(
   output.appendAscii(9);
   appendHexText(inout output, resolution.typeName);
   output.appendAscii(9);
-  appendTarget(inout output, resolution.targetModuleIndex);
-  output.appendAscii(9);
-  appendTarget(inout output, resolution.targetSymbolIndex);
+  appendHexUsize(inout output, resolution.typeIdentities.length);
+  for (const identity of resolution.typeIdentities) {
+    output.appendAscii(9);
+    appendHexText(inout output, identity.path);
+    output.appendAscii(9);
+    appendHexUsize(inout output, identity.targetModuleIndex);
+    output.appendAscii(9);
+    appendHexUsize(inout output, identity.targetSymbolIndex);
+  }
   output.appendAscii(10);
 }
 

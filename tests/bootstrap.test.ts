@@ -4890,6 +4890,33 @@ test("resolves a canonical module graph directly from native Z ASTs", () => {
   assert.match(inferredBindingEvidence.stdout, /observes 3 inferred local binding stage-0 Z resolutions/);
   assert.match(inferredBindingEvidence.stdout, /uses 3 inferred local binding native-authoritative contracts/);
 
+  const wrappedBindingMain = resolve(invalidDirectory, "wrapped-binding-main.zs");
+  const wrappedBindingModel = resolve(invalidDirectory, "wrapped-binding-model.zs");
+  writeFileSync(
+    wrappedBindingModel,
+    "export struct Item { value: i32; }\n"
+      + "export function optional(value: i32): Option<Item> {\n"
+      + "  return Option.some(Item({ value }));\n"
+      + "}\n",
+  );
+  writeFileSync(
+    wrappedBindingMain,
+    "import model from \"./wrapped-binding-model.zs\";\n"
+      + "function main(): i32 {\n"
+      + "  const wrapped = model.optional(42);\n"
+      + "  return match (in wrapped) { some(item) => item.value; none => 0; };\n"
+      + "}\n",
+  );
+  const wrappedBindingEvidence = spawnSync(
+    process.execPath,
+    [cli, "check", wrappedBindingMain, "--native-frontend"],
+    { encoding: "utf8" },
+  );
+  assert.equal(wrappedBindingEvidence.status, 0, wrappedBindingEvidence.stderr);
+  assert.match(wrappedBindingEvidence.stdout, /exports 1 inferred local binding contract/);
+  assert.match(wrappedBindingEvidence.stdout, /observes 1 inferred local binding stage-0 Z resolutions/);
+  assert.match(wrappedBindingEvidence.stdout, /uses 1 inferred local binding native-authoritative contracts/);
+
   const genericEvidenceMain = resolve(invalidDirectory, "generic-evidence-main.zs");
   const genericEvidenceModel = resolve(invalidDirectory, "generic-evidence-model.zs");
   writeFileSync(
@@ -6699,7 +6726,7 @@ test("resolves a canonical module graph directly from native Z ASTs", () => {
     + "symbol\t0000000000000000\tfunction\t6964656e74697479\t1\t-\t6964656e74697479\t0000000000000000\t0000000000000001\t0000000000000001\n"
     + "signature\t0000000000000000\t0000000000000000\t0\t54\t\t0000000000000001\t0000000000000001\t54\t76616c7565\t54\n"
     + "callResolution\t0000000000000000\t000000000000002a\t0000000000000002\t000000000000000a\t0000000000000000\t0000000000000000\t66756e6374696f6e\t6964656e74697479\t0\t\t693332\t\t0000000000000001\t0000000000000001\t54\t693332\t76616c7565\t693332\n"
-    + "bindingResolution\t0000000000000000\t000000000000001e\t0000000000000002\t0000000000000007\t76616c7565\t0\t693332\t-\t-\n"
+    + "bindingResolution\t0000000000000000\t000000000000001e\t0000000000000002\t0000000000000007\t76616c7565\t0\t693332\t0000000000000000\n"
     + "order\t0000000000000000\n",
   );
   assert.deepEqual(callEvidenceGraph.modules[0].callResolutions, [{
@@ -6726,8 +6753,7 @@ test("resolves a canonical module graph directly from native Z ASTs", () => {
     name: "value",
     mutableBinding: false,
     typeName: "i32",
-    targetModule: null,
-    targetSymbol: null,
+    typeIdentities: [],
   }]);
   assert.throws(() => decodeStage1ModuleGraphStream("order\n"), /did not contain an entry/);
   assert.throws(

@@ -7,7 +7,7 @@ import {
   stage0ConstructorSignature,
   stage0FunctionSignature,
 } from "./native-semantic-parity.ts";
-import type { SemanticObserver } from "./sema.ts";
+import type { SemanticObserver, SemanticTypeIdentity } from "./sema.ts";
 
 export type NativeSemanticBridge = {
   readonly observer: SemanticObserver;
@@ -249,7 +249,7 @@ export function createNativeSemanticBridge(
     name: string,
     mutable: boolean,
     inferredType: string,
-    declaration: StructDeclaration | EnumDeclaration | null,
+    typeIdentities: readonly SemanticTypeIdentity[],
   ) => {
     const modulePath = canonicalModulePathBySourcePath.get(
       location.fileName ?? sourceBatch.entryFileName,
@@ -269,18 +269,22 @@ export function createNativeSemanticBridge(
       );
     }
     if (concreteNativeTypeMatches(resolution.typeName, linkedDisplayType)) return resolution;
-    if (resolution.targetModule === null || resolution.targetSymbol === null || !declaration) return null;
-    const source = declaration.kind === "enum"
-      ? sourceEnum(sourceEnums, canonicalModulePathBySourcePath, declaration)
-      : sourceAggregate(sourceAggregates, canonicalModulePathBySourcePath, declaration);
-    const targetModule = index.graph.modules[resolution.targetModule];
-    const target = targetModule?.symbols[resolution.targetSymbol];
-    if (
-      !source
-      || targetModule?.path !== source.modulePath
-      || target?.name !== source.declaration.name
-      || target?.kind !== source.declaration.kind
-    ) return null;
+    if (resolution.typeIdentities.length !== typeIdentities.length) return null;
+    for (const nativeIdentity of resolution.typeIdentities) {
+      const linkedIdentity = typeIdentities.find((candidate) => candidate.path === nativeIdentity.path);
+      if (!linkedIdentity) return null;
+      const source = linkedIdentity.declaration.kind === "enum"
+        ? sourceEnum(sourceEnums, canonicalModulePathBySourcePath, linkedIdentity.declaration)
+        : sourceAggregate(sourceAggregates, canonicalModulePathBySourcePath, linkedIdentity.declaration);
+      const targetModule = index.graph.modules[nativeIdentity.targetModule];
+      const target = targetModule?.symbols[nativeIdentity.targetSymbol];
+      if (
+        !source
+        || targetModule?.path !== source.modulePath
+        || target?.name !== source.declaration.name
+        || target?.kind !== source.declaration.kind
+      ) return null;
+    }
     return resolution;
   };
   const observer: SemanticObserver = {
@@ -772,8 +776,8 @@ export function createNativeSemanticBridge(
         typeParameters: [],
       };
     },
-    resolveBindingType: ({ location, name, mutable, inferredType, declaration }) => {
-      const resolved = nativeBinding(location, name, mutable, inferredType, declaration);
+    resolveBindingType: ({ location, name, mutable, inferredType, typeIdentities }) => {
+      const resolved = nativeBinding(location, name, mutable, inferredType, typeIdentities);
       if (!resolved) return null;
       authoritativeBindings += 1;
       return inferredType;
@@ -806,8 +810,8 @@ export function createNativeSemanticBridge(
       if (!nativeType(location, declaration)) return;
       types += 1;
     },
-    onBindingResolution: ({ location, name, mutable, inferredType, declaration }) => {
-      if (!nativeBinding(location, name, mutable, inferredType, declaration)) return;
+    onBindingResolution: ({ location, name, mutable, inferredType, typeIdentities }) => {
+      if (!nativeBinding(location, name, mutable, inferredType, typeIdentities)) return;
       bindings += 1;
     },
   };

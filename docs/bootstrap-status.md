@@ -473,8 +473,11 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    `Option<i32>` through the compiler's source display-name map. Direct aggregate
    bindings also carry their resolved module and symbol, allowing local,
    selective-import, and namespace-qualified spellings to prove the same type
-   identity without string heuristics. Nested qualified types inside generic
-   wrappers retain the stage-zero fallback until type identity becomes recursive.
+   identity without string heuristics. Path-keyed identities now recurse through
+   compiler-known wrappers including `Option`, arrays and slices, views, `Weak`,
+   tasks, function signatures, and materialized `Result` payloads. Arguments of
+   user-defined generic monomorphs retain the stage-zero fallback because their
+   source substitutions are not preserved directly after materialization.
    Successful non-generic Z function, method, and explicit class-constructor calls
    are now native-authoritative semantic results. Their parameter modes and types,
    async/error state, and result type come from the native signature; methods also

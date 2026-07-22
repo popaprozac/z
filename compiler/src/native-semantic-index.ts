@@ -80,11 +80,13 @@ export class NativeSemanticIndex {
         if (resolution.name.length === 0 || resolution.typeName.length === 0) {
           throw new Error(`native frontend returned an incomplete binding resolution at offset ${resolution.offset} in ${module.path}`);
         }
-        if ((resolution.targetModule === null) !== (resolution.targetSymbol === null)) {
-          throw new Error(`native frontend returned a partial binding type identity at offset ${resolution.offset} in ${module.path}`);
-        }
-        if (resolution.targetModule !== null && resolution.targetSymbol !== null) {
-          const target = graph.modules[resolution.targetModule]?.symbols[resolution.targetSymbol];
+        const identityPaths = new Set<string>();
+        for (const identity of resolution.typeIdentities) {
+          if (identityPaths.has(identity.path)) {
+            throw new Error(`native frontend returned a duplicate binding type identity path at offset ${resolution.offset} in ${module.path}`);
+          }
+          identityPaths.add(identity.path);
+          const target = graph.modules[identity.targetModule]?.symbols[identity.targetSymbol];
           if (!target || (target.kind !== "struct" && target.kind !== "class" && target.kind !== "enum")) {
             throw new Error(`native frontend returned an invalid binding type identity at offset ${resolution.offset} in ${module.path}`);
           }

@@ -145,7 +145,12 @@ export type SemanticBindingResolution = {
   readonly name: string;
   readonly mutable: boolean;
   readonly inferredType: string;
-  readonly declaration: StructDeclaration | EnumDeclaration | null;
+  readonly typeIdentities: readonly SemanticTypeIdentity[];
+};
+
+export type SemanticTypeIdentity = {
+  readonly path: string;
+  readonly declaration: StructDeclaration | EnumDeclaration;
 };
 
 export type SemanticObserver = {
@@ -1542,6 +1547,64 @@ function statementStopsFlow(statement: Statement | undefined): boolean {
     && statement.arms.every((arm) => statementStopsFlow(arm.body));
 }
 
+function collectSemanticTypeIdentities(
+  typeName: string,
+  path: string,
+  structs: ReadonlyMap<string, StructDeclaration>,
+  enums: ReadonlyMap<string, EnumDeclaration>,
+  identities: SemanticTypeIdentity[] = [],
+): readonly SemanticTypeIdentity[] {
+  const childPath = (segment: string): string => path.length === 0 ? segment : `${path}/${segment}`;
+  const option = parseOptionType(typeName);
+  if (option) {
+    collectSemanticTypeIdentities(option.target, childPath("0"), structs, enums, identities);
+    return identities;
+  }
+  const view = parseViewType(typeName);
+  if (view) {
+    collectSemanticTypeIdentities(view.target, childPath("0"), structs, enums, identities);
+    return identities;
+  }
+  const fixed = parseFixedArrayType(typeName);
+  const slice = parseSliceType(typeName);
+  const dynamic = parseDynamicArrayType(typeName);
+  const arrayElement = fixed?.elementType ?? slice?.elementType ?? dynamic?.elementType;
+  if (arrayElement) {
+    collectSemanticTypeIdentities(arrayElement, childPath("0"), structs, enums, identities);
+    return identities;
+  }
+  const weak = parseWeakType(typeName);
+  if (weak) {
+    collectSemanticTypeIdentities(weak.target, childPath("0"), structs, enums, identities);
+    return identities;
+  }
+  const task = parseTaskType(typeName);
+  if (task) {
+    collectSemanticTypeIdentities(task.successType, childPath("0"), structs, enums, identities);
+    if (task.errorType) collectSemanticTypeIdentities(task.errorType, childPath("1"), structs, enums, identities);
+    return identities;
+  }
+  const functionType = parseFunctionType(typeName);
+  if (functionType) {
+    functionType.parameters.forEach((parameter, index) => {
+      collectSemanticTypeIdentities(parameter.type, childPath(`p${index}`), structs, enums, identities);
+    });
+    collectSemanticTypeIdentities(functionType.returnType, childPath("r"), structs, enums, identities);
+    return identities;
+  }
+  const result = enums.get(typeName);
+  if (typeName.startsWith("__z_Result_") && result) {
+    const success = result.variants.find((variant) => variant.name === "success")?.payload?.name;
+    const failure = result.variants.find((variant) => variant.name === "failure")?.payload?.name;
+    if (success) collectSemanticTypeIdentities(success, childPath("0"), structs, enums, identities);
+    if (failure) collectSemanticTypeIdentities(failure, childPath("1"), structs, enums, identities);
+    return identities;
+  }
+  const declaration = structs.get(typeName) ?? enums.get(typeName);
+  if (declaration) identities.push({ path, declaration });
+  return identities;
+}
+
 function analyzeStatement(
   statement: Statement,
   owner: FunctionDeclaration,
@@ -1610,7 +1673,7 @@ function analyzeStatement(
         name: statement.name,
         mutable: statement.mutable,
         inferredType: String(initializerType),
-        declaration: structs.get(inferredBindingType) ?? enums.get(inferredBindingType) ?? null,
+        typeIdentities: collectSemanticTypeIdentities(inferredBindingType, "", structs, enums),
       };
       let variableType = bindingResolution
         ? state.observer?.resolveBindingType?.(bindingResolution) ?? initializerType

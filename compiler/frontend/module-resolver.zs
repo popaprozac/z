@@ -170,8 +170,13 @@ export struct ModuleBindingResolution {
   name: String;
   mutableBinding: boolean;
   typeName: String;
-  targetModuleIndex: Option<usize>;
-  targetSymbolIndex: Option<usize>;
+  typeIdentities: Array<ModuleTypeIdentity>;
+}
+
+export struct ModuleTypeIdentity {
+  path: String;
+  targetModuleIndex: usize;
+  targetSymbolIndex: usize;
 }
 
 export struct ModuleCallResolution {
@@ -3029,6 +3034,96 @@ function typeSymbolLocation(
     return Option<ModuleSymbolLocation>.none;
   }
   return Option<ModuleSymbolLocation>.none;
+}
+
+function childTypeIdentityPath(in path: String, in segment: String): String {
+  if (path.byteLength == 0) return segment.copyBytes(0, segment.byteLength);
+  return `${path}/${segment}`;
+}
+
+function collectTypeIdentities(
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
+  in typeName: String,
+  in path: String,
+  inout identities: Array<ModuleTypeIdentity>
+): void {
+  match (genericTypeShape(typeName)) {
+    some(generic) => {
+      match (typeSymbolLocation(modules, moduleIndex, generic.base)) {
+        some(location) => identities.push(ModuleTypeIdentity({
+          path: path.copyBytes(0, path.byteLength),
+          targetModuleIndex: location.moduleIndex,
+          targetSymbolIndex: location.symbolIndex,
+        }));
+        none => {}
+      }
+      let index: usize = 0;
+      while (index < generic.arguments.length) {
+        const segment = `${index}`;
+        const childPath = childTypeIdentityPath(path, segment);
+        collectTypeIdentities(
+          modules,
+          moduleIndex,
+          generic.arguments[index],
+          childPath,
+          inout identities
+        );
+        index = index + 1;
+      }
+      return;
+    }
+    none => {}
+  }
+  const nullable = nullableTargetType(typeName);
+  if (nullable.byteLength > 0) {
+    const childPath = childTypeIdentityPath(path, "0");
+    collectTypeIdentities(modules, moduleIndex, nullable, childPath, inout identities);
+    return;
+  }
+  if (stringStartsWith(typeName, "view ")) {
+    const target = typeName.copyBytes(5, typeName.byteLength);
+    const childPath = childTypeIdentityPath(path, "0");
+    collectTypeIdentities(modules, moduleIndex, target, childPath, inout identities);
+    return;
+  }
+  match (fixedArrayShape(typeName)) {
+    some(array) => {
+      const childPath = childTypeIdentityPath(path, "0");
+      collectTypeIdentities(modules, moduleIndex, array.elementType, childPath, inout identities);
+      return;
+    }
+    none => {}
+  }
+  match (nativeFunctionSignature(typeName)) {
+    some(signature) => {
+      let index: usize = 0;
+      while (index < signature.parameterTypes.length) {
+        const segment = `p${index}`;
+        const childPath = childTypeIdentityPath(path, segment);
+        collectTypeIdentities(
+          modules,
+          moduleIndex,
+          signature.parameterTypes[index],
+          childPath,
+          inout identities
+        );
+        index = index + 1;
+      }
+      const returnPath = childTypeIdentityPath(path, "r");
+      collectTypeIdentities(modules, moduleIndex, signature.returnType, returnPath, inout identities);
+      return;
+    }
+    none => {}
+  }
+  match (typeSymbolLocation(modules, moduleIndex, typeName)) {
+    some(location) => identities.push(ModuleTypeIdentity({
+      path: path.copyBytes(0, path.byteLength),
+      targetModuleIndex: location.moduleIndex,
+      targetSymbolIndex: location.symbolIndex,
+    }));
+    none => {}
+  }
 }
 
 function localTypeSpelling(
@@ -7075,15 +7170,8 @@ function inferStatement(
         match (in arena.nodes[index].expression) {
           some(expression) => {
             if (expression.offset >= arena.nodes[index].offset && stored.byteLength > 0) {
-              let targetModuleIndex = Option<usize>.none;
-              let targetSymbolIndex = Option<usize>.none;
-              match (typeSymbolLocation(modules, moduleIndex, stored)) {
-                some(location) => {
-                  targetModuleIndex = Option.some(location.moduleIndex);
-                  targetSymbolIndex = Option.some(location.symbolIndex);
-                }
-                none => {}
-              }
+              let typeIdentities = Array<ModuleTypeIdentity>();
+              collectTypeIdentities(modules, moduleIndex, stored, "", inout typeIdentities);
               evidence.bindingResolutions.push(ModuleBindingResolution({
                 offset: arena.nodes[index].nameOffset,
                 line: arena.nodes[index].nameLine,
@@ -7091,8 +7179,7 @@ function inferStatement(
                 name: arena.nodes[index].name.copyBytes(0, arena.nodes[index].name.byteLength),
                 mutableBinding: arena.nodes[index].mutableBinding,
                 typeName: stored.copyBytes(0, stored.byteLength),
-                targetModuleIndex,
-                targetSymbolIndex,
+                typeIdentities,
               }));
             }
           }
