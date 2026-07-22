@@ -1,5 +1,10 @@
 import type { SourceModuleBatch } from "./modules.ts";
-import type { Stage1ModuleCallResolution, Stage1ModuleGraph, Stage1ModuleSymbol } from "./self-hosting.ts";
+import type {
+  Stage1ModuleBindingResolution,
+  Stage1ModuleCallResolution,
+  Stage1ModuleGraph,
+  Stage1ModuleSymbol,
+} from "./self-hosting.ts";
 
 export type NativeResolvedSymbol = {
   readonly modulePath: string;
@@ -14,6 +19,7 @@ export class NativeSemanticIndex {
   readonly #moduleIndexByPath: ReadonlyMap<string, number>;
   readonly #symbolsByModule: readonly ReadonlyMap<string, Stage1ModuleSymbol>[];
   readonly #callResolutionsByModule: readonly ReadonlyMap<number, Stage1ModuleCallResolution>[];
+  readonly #bindingResolutionsByModule: readonly ReadonlyMap<number, Stage1ModuleBindingResolution>[];
 
   constructor(graph: Stage1ModuleGraph, sourceBatch: SourceModuleBatch) {
     validateGraphShape(graph, sourceBatch);
@@ -65,6 +71,19 @@ export class NativeSemanticIndex {
       }
       return resolutions;
     });
+    this.#bindingResolutionsByModule = graph.modules.map((module) => {
+      const resolutions = new Map<number, Stage1ModuleBindingResolution>();
+      for (const resolution of module.bindingResolutions) {
+        if (resolutions.has(resolution.offset)) {
+          throw new Error(`native frontend returned duplicate binding resolution at offset ${resolution.offset} in ${module.path}`);
+        }
+        if (resolution.name.length === 0 || resolution.typeName.length === 0) {
+          throw new Error(`native frontend returned an incomplete binding resolution at offset ${resolution.offset} in ${module.path}`);
+        }
+        resolutions.set(resolution.offset, resolution);
+      }
+      return resolutions;
+    });
   }
 
   symbol(modulePath: string, name: string): Stage1ModuleSymbol | null {
@@ -106,6 +125,11 @@ export class NativeSemanticIndex {
   callResolution(modulePath: string, offset: number): Stage1ModuleCallResolution | null {
     const moduleIndex = this.#moduleIndexByPath.get(modulePath);
     return moduleIndex === undefined ? null : this.#callResolutionsByModule[moduleIndex].get(offset) ?? null;
+  }
+
+  bindingResolution(modulePath: string, offset: number): Stage1ModuleBindingResolution | null {
+    const moduleIndex = this.#moduleIndexByPath.get(modulePath);
+    return moduleIndex === undefined ? null : this.#bindingResolutionsByModule[moduleIndex].get(offset) ?? null;
   }
 }
 

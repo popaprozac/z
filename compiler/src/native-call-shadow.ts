@@ -18,6 +18,7 @@ export type NativeSemanticBridge = {
   readonly fieldCount: () => number;
   readonly enumVariantCount: () => number;
   readonly typeCount: () => number;
+  readonly bindingCount: () => number;
   readonly authoritativeFunctionCount: () => number;
   readonly authoritativeMethodCount: () => number;
   readonly authoritativeConstructorCount: () => number;
@@ -25,11 +26,13 @@ export type NativeSemanticBridge = {
   readonly authoritativeFieldCount: () => number;
   readonly authoritativeEnumVariantCount: () => number;
   readonly authoritativeTypeCount: () => number;
+  readonly authoritativeBindingCount: () => number;
 };
 
 export function createNativeSemanticBridge(
   sourceBatch: SourceModuleBatch,
   index: NativeSemanticIndex,
+  typeDisplayNames: ReadonlyMap<string, string>,
 ): NativeSemanticBridge {
   const sourceFunctions = new Map<string, { readonly modulePath: string; readonly declaration: FunctionDeclaration }>();
   const sourceAggregates = new Map<string, { readonly modulePath: string; readonly declaration: StructDeclaration }>();
@@ -75,6 +78,7 @@ export function createNativeSemanticBridge(
   let fields = 0;
   let enumVariants = 0;
   let types = 0;
+  let bindings = 0;
   let authoritativeFunctions = 0;
   let authoritativeMethods = 0;
   let authoritativeConstructors = 0;
@@ -82,6 +86,7 @@ export function createNativeSemanticBridge(
   let authoritativeFields = 0;
   let authoritativeEnumVariants = 0;
   let authoritativeTypes = 0;
+  let authoritativeBindings = 0;
   const nativeFunction = (location: FunctionDeclaration["location"], declaration: FunctionDeclaration) => {
     const definitionPath = declaration.location.fileName;
     const canonicalDefinitionPath = definitionPath
@@ -238,6 +243,32 @@ export function createNativeSemanticBridge(
       );
     }
     return { source, native };
+  };
+  const nativeBinding = (
+    location: FunctionDeclaration["location"],
+    name: string,
+    mutable: boolean,
+    inferredType: string,
+  ) => {
+    const modulePath = canonicalModulePathBySourcePath.get(
+      location.fileName ?? sourceBatch.entryFileName,
+    );
+    if (!modulePath) return null;
+    const resolution = index.bindingResolution(modulePath, location.offset);
+    if (!resolution) return null;
+    const linkedDisplayType = typeDisplayNames.get(inferredType) ?? inferredType;
+    if (
+      resolution.name !== name
+      || resolution.mutableBinding !== mutable
+      || resolution.line !== location.line
+      || resolution.column !== location.column
+    ) {
+      throw new Error(
+        `native semantic bridge binding mismatch for ${JSON.stringify(name)} inferred at ${callSite(location, sourceBatch)}`,
+      );
+    }
+    if (!concreteNativeTypeMatches(resolution.typeName, linkedDisplayType)) return null;
+    return resolution;
   };
   const observer: SemanticObserver = {
     resolveFunctionCall: ({ location, declaration }) => {
@@ -728,6 +759,12 @@ export function createNativeSemanticBridge(
         typeParameters: [],
       };
     },
+    resolveBindingType: ({ location, name, mutable, inferredType }) => {
+      const resolved = nativeBinding(location, name, mutable, inferredType);
+      if (!resolved) return null;
+      authoritativeBindings += 1;
+      return inferredType;
+    },
     onFunctionCall: ({ location, declaration }) => {
       if (!nativeFunction(location, declaration)) return;
       functions += 1;
@@ -756,6 +793,10 @@ export function createNativeSemanticBridge(
       if (!nativeType(location, declaration)) return;
       types += 1;
     },
+    onBindingResolution: ({ location, name, mutable, inferredType }) => {
+      if (!nativeBinding(location, name, mutable, inferredType)) return;
+      bindings += 1;
+    },
   };
   return {
     observer,
@@ -766,6 +807,7 @@ export function createNativeSemanticBridge(
     fieldCount: () => fields,
     enumVariantCount: () => enumVariants,
     typeCount: () => types,
+    bindingCount: () => bindings,
     authoritativeFunctionCount: () => authoritativeFunctions,
     authoritativeMethodCount: () => authoritativeMethods,
     authoritativeConstructorCount: () => authoritativeConstructors,
@@ -773,6 +815,7 @@ export function createNativeSemanticBridge(
     authoritativeFieldCount: () => authoritativeFields,
     authoritativeEnumVariantCount: () => authoritativeEnumVariants,
     authoritativeTypeCount: () => authoritativeTypes,
+    authoritativeBindingCount: () => authoritativeBindings,
   };
 }
 

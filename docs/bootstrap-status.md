@@ -465,6 +465,14 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    authoritative after validating the owner symbol, ordered substitutions,
    receiver contract, and fully concrete callable signature. Native checks report exported contracts
    separately from contracts actually consumed by the semantic bridge.
+   Unannotated initialized `const` and `let` declarations now export a second
+   source-located evidence stream containing the native frontend's settled local
+   type. The compiler indexes those records by binding-name offset and validates
+   name, mutability, and source-level type before using them as authoritative
+   local binding contracts. This includes materialized generic values such as
+   `Option<i32>` through the compiler's source display-name map. Qualified
+   cross-module type spellings deliberately retain the stage-zero fallback until
+   the evidence protocol carries resolved type identity in addition to text.
    Successful non-generic Z function, method, and explicit class-constructor calls
    are now native-authoritative semantic results. Their parameter modes and types,
    async/error state, and result type come from the native signature; methods also

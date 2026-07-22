@@ -151,6 +151,12 @@ recursive ownership lowering remain stage-zero work.
 Concrete generic call evidence retains source-level nested types such as
 `Option<i32>` and is rebased onto Stage 0's temporary materialized lowering
 types only after source-template substitution proves the contracts equivalent.
+The same native pass now exports settled types for unannotated initialized local
+bindings, keyed by the binding name's stable source location. The semantic
+bridge validates name, mutability, and type before using that native binding
+contract; materialized generic types use their source display names for the
+comparison. Qualified cross-module type spellings still defer until binding
+evidence carries resolved type identity rather than only source text.
 The reported native interval therefore does more semantic work than the
 graph-and-symbol-only stage-zero comparison.
 Repeated corpus measurements, broadening ordinary-command shadow coverage, and

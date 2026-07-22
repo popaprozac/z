@@ -140,6 +140,13 @@ export type SemanticTypeResolution = {
   readonly declaration: StructDeclaration | EnumDeclaration;
 };
 
+export type SemanticBindingResolution = {
+  readonly location: SourceLocation;
+  readonly name: string;
+  readonly mutable: boolean;
+  readonly inferredType: string;
+};
+
 export type SemanticObserver = {
   readonly resolveFunctionCall?: (resolution: SemanticFunctionCallResolution) => FunctionDeclaration | null;
   readonly resolveMethodCall?: (resolution: SemanticMethodCallResolution) => FunctionDeclaration | null;
@@ -148,6 +155,7 @@ export type SemanticObserver = {
   readonly resolveField?: (resolution: SemanticFieldResolution) => StructDeclaration["fields"][number] | null;
   readonly resolveEnumVariant?: (resolution: SemanticEnumVariantResolution) => EnumDeclaration["variants"][number] | null;
   readonly resolveType?: (resolution: SemanticTypeResolution) => StructDeclaration | EnumDeclaration | null;
+  readonly resolveBindingType?: (resolution: SemanticBindingResolution) => string | null;
   readonly onFunctionCall?: (resolution: SemanticFunctionCallResolution) => void;
   readonly onMethodCall?: (resolution: SemanticMethodCallResolution) => void;
   readonly onConstructorCall?: (resolution: SemanticConstructorCallResolution) => void;
@@ -155,6 +163,7 @@ export type SemanticObserver = {
   readonly onFieldResolution?: (resolution: SemanticFieldResolution) => void;
   readonly onEnumVariantResolution?: (resolution: SemanticEnumVariantResolution) => void;
   readonly onTypeResolution?: (resolution: SemanticTypeResolution) => void;
+  readonly onBindingResolution?: (resolution: SemanticBindingResolution) => void;
 };
 
 type ValueType = string | "unknown" | "never";
@@ -1594,7 +1603,16 @@ function analyzeStatement(
       let initializerType = statement.initializer.kind === "closure"
         ? inferClosureExpression(statement.initializer, locals, globals, structs, enums, fileName, state, contextualFunction)
         : inferDirectValue(statement.initializer, owner, locals, globals, structs, enums, fileName, state);
-      let variableType = initializerType;
+      const bindingResolution = statement.type ? null : {
+        location: statement.nameLocation,
+        name: statement.name,
+        mutable: statement.mutable,
+        inferredType: String(initializerType),
+      };
+      let variableType = bindingResolution
+        ? state.observer?.resolveBindingType?.(bindingResolution) ?? initializerType
+        : initializerType;
+      if (bindingResolution) state.observer?.onBindingResolution?.(bindingResolution);
       if (statement.type) {
         validateType(statement.type, structs, enums, state.foreignNamedTypes, fileName, false);
         variableType = resolveSemanticTypeName(statement.type, structs, enums, state);

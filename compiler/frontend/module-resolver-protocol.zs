@@ -4,6 +4,7 @@
 import { TextBuffer } from "std/text";
 import {
   ModuleResolveError,
+  ModuleBindingResolution,
   ModuleCallResolution,
   ModuleSource,
   ModuleSymbol,
@@ -400,6 +401,30 @@ function appendCallResolution(
   output.appendAscii(10);
 }
 
+function appendBindingResolution(
+  inout output: TextBuffer,
+  moduleIndex: usize,
+  in resolution: ModuleBindingResolution
+): void {
+  output.append("bindingResolution");
+  output.appendAscii(9);
+  appendHexUsize(inout output, moduleIndex);
+  output.appendAscii(9);
+  appendHexUsize(inout output, resolution.offset);
+  output.appendAscii(9);
+  appendHexUsize(inout output, resolution.line);
+  output.appendAscii(9);
+  appendHexUsize(inout output, resolution.column);
+  output.appendAscii(9);
+  appendHexText(inout output, resolution.name);
+  output.appendAscii(9);
+  if (resolution.mutableBinding) output.appendAscii(49);
+  else output.appendAscii(48);
+  output.appendAscii(9);
+  appendHexText(inout output, resolution.typeName);
+  output.appendAscii(10);
+}
+
 export function renderModuleGraph(
   in entryPath: String,
   in batch: String
@@ -435,8 +460,11 @@ export function renderModuleGraph(
       appendMethodSignatures(inout output, moduleIndex, symbolIndex, symbol);
       symbolIndex = symbolIndex + 1;
     }
-    for (const resolution of module.callResolutions) {
+    for (const resolution of module.semanticEvidence.callResolutions) {
       appendCallResolution(inout output, moduleIndex, resolution);
+    }
+    for (const resolution of module.semanticEvidence.bindingResolutions) {
+      appendBindingResolution(inout output, moduleIndex, resolution);
     }
     moduleIndex = moduleIndex + 1;
   }

@@ -47,6 +47,7 @@ export type AnalyzedSource = {
   readonly nativeSemanticIndex: NativeSemanticIndex | null;
   readonly nativeSemanticQueryCount: number;
   readonly nativeGenericCallEvidenceCount: number;
+  readonly nativeBindingEvidenceCount: number;
   readonly nativeCallResolutionCount: number;
   readonly nativeMethodResolutionCount: number;
   readonly nativeConstructorResolutionCount: number;
@@ -54,6 +55,7 @@ export type AnalyzedSource = {
   readonly nativeFieldResolutionCount: number;
   readonly nativeEnumVariantResolutionCount: number;
   readonly nativeTypeResolutionCount: number;
+  readonly nativeBindingResolutionCount: number;
   readonly nativeAuthoritativeFunctionResolutionCount: number;
   readonly nativeAuthoritativeMethodResolutionCount: number;
   readonly nativeAuthoritativeConstructorResolutionCount: number;
@@ -61,6 +63,7 @@ export type AnalyzedSource = {
   readonly nativeAuthoritativeFieldResolutionCount: number;
   readonly nativeAuthoritativeEnumVariantResolutionCount: number;
   readonly nativeAuthoritativeTypeResolutionCount: number;
+  readonly nativeAuthoritativeBindingResolutionCount: number;
   readonly nativeFrontendParityMilliseconds: number | null;
 };
 
@@ -110,7 +113,7 @@ export function analyzeSource(source: string, fileName: string, options: Analysi
     }
   }
   const nativeSemanticBridge = nativeEvidence
-    ? createNativeSemanticBridge(linked.sourceBatch, nativeEvidence.index)
+    ? createNativeSemanticBridge(linked.sourceBatch, nativeEvidence.index, typeDisplayNames)
     : null;
   const semanticInfo = analyze(
     program,
@@ -139,6 +142,10 @@ export function analyzeSource(source: string, fileName: string, options: Analysi
       (count, module) => count + module.callResolutions.length,
       0,
     ) ?? 0,
+    nativeBindingEvidenceCount: nativeFrontendGraph?.modules.reduce(
+      (count, module) => count + module.bindingResolutions.length,
+      0,
+    ) ?? 0,
     nativeCallResolutionCount: nativeSemanticBridge?.functionCount() ?? 0,
     nativeMethodResolutionCount: nativeSemanticBridge?.methodCount() ?? 0,
     nativeConstructorResolutionCount: nativeSemanticBridge?.constructorCount() ?? 0,
@@ -146,6 +153,7 @@ export function analyzeSource(source: string, fileName: string, options: Analysi
     nativeFieldResolutionCount: nativeSemanticBridge?.fieldCount() ?? 0,
     nativeEnumVariantResolutionCount: nativeSemanticBridge?.enumVariantCount() ?? 0,
     nativeTypeResolutionCount: nativeSemanticBridge?.typeCount() ?? 0,
+    nativeBindingResolutionCount: nativeSemanticBridge?.bindingCount() ?? 0,
     nativeAuthoritativeFunctionResolutionCount: nativeSemanticBridge?.authoritativeFunctionCount() ?? 0,
     nativeAuthoritativeMethodResolutionCount: nativeSemanticBridge?.authoritativeMethodCount() ?? 0,
     nativeAuthoritativeConstructorResolutionCount: nativeSemanticBridge?.authoritativeConstructorCount() ?? 0,
@@ -153,6 +161,7 @@ export function analyzeSource(source: string, fileName: string, options: Analysi
     nativeAuthoritativeFieldResolutionCount: nativeSemanticBridge?.authoritativeFieldCount() ?? 0,
     nativeAuthoritativeEnumVariantResolutionCount: nativeSemanticBridge?.authoritativeEnumVariantCount() ?? 0,
     nativeAuthoritativeTypeResolutionCount: nativeSemanticBridge?.authoritativeTypeCount() ?? 0,
+    nativeAuthoritativeBindingResolutionCount: nativeSemanticBridge?.authoritativeBindingCount() ?? 0,
     nativeFrontendParityMilliseconds,
   };
 }

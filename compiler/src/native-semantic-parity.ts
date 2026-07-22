@@ -70,6 +70,7 @@ export function buildStage0ModuleGraph(sourceBatch: SourceModuleBatch): Stage1Mo
       dependencies,
       symbols: stage0ModuleSymbols(module, indexByPath),
       callResolutions: [],
+      bindingResolutions: [],
     };
   });
   const entry = indexByPath.get(sourceBatch.entryFileName);

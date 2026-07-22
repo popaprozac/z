@@ -78,6 +78,16 @@ export type Stage1ResolvedModule = {
   readonly dependencies: readonly number[];
   readonly symbols: readonly Stage1ModuleSymbol[];
   readonly callResolutions: readonly Stage1ModuleCallResolution[];
+  readonly bindingResolutions: readonly Stage1ModuleBindingResolution[];
+};
+
+export type Stage1ModuleBindingResolution = {
+  readonly offset: number;
+  readonly line: number;
+  readonly column: number;
+  readonly name: string;
+  readonly mutableBinding: boolean;
+  readonly typeName: string;
 };
 
 export type Stage1ModuleCallResolution = {
@@ -203,6 +213,7 @@ export function decodeStage1ModuleGraphStream(output: string): Stage1ModuleGraph
         dependencies: fields.slice(2).map((field) => parseProtocolHexInteger(field, "module dependency")),
         symbols: [],
         callResolutions: [],
+        bindingResolutions: [],
       });
       continue;
     }
@@ -288,6 +299,27 @@ export function decodeStage1ModuleGraphStream(output: string): Stage1ModuleGraph
         parameterModes,
         parameterTypes: encodedParameters.filter((_, index) => index % 2 === 1)
           .map((field) => Buffer.from(field, "hex").toString("utf8")),
+      });
+      continue;
+    }
+    if (fields[0] === "bindingResolution") {
+      if (fields.length !== 8) throw new Error(`malformed stage-1 binding resolution line: ${line}`);
+      const moduleIndex = parseProtocolHexInteger(fields[1], "binding resolution module");
+      const module = modules[moduleIndex];
+      if (!module) throw new Error("stage-1 binding resolution appeared before its module");
+      if (fields[6] !== "0" && fields[6] !== "1") {
+        throw new Error(`malformed stage-1 binding resolution mutability: ${fields[6]}`);
+      }
+      if (!/^(?:[0-9a-f]{2})*$/.test(fields[5]) || !/^(?:[0-9a-f]{2})*$/.test(fields[7])) {
+        throw new Error(`malformed stage-1 binding resolution text: ${line}`);
+      }
+      (module.bindingResolutions as Stage1ModuleBindingResolution[]).push({
+        offset: parseProtocolHexInteger(fields[2], "binding resolution offset"),
+        line: parseProtocolHexInteger(fields[3], "binding resolution line"),
+        column: parseProtocolHexInteger(fields[4], "binding resolution column"),
+        name: Buffer.from(fields[5], "hex").toString("utf8"),
+        mutableBinding: fields[6] === "1",
+        typeName: Buffer.from(fields[7], "hex").toString("utf8"),
       });
       continue;
     }

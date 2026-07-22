@@ -155,7 +155,21 @@ export struct ResolvedModule {
   path: String;
   dependencies: Array<usize>;
   symbols: Array<ModuleSymbol>;
+  semanticEvidence: ModuleSemanticEvidence;
+}
+
+export struct ModuleSemanticEvidence {
   callResolutions: Array<ModuleCallResolution>;
+  bindingResolutions: Array<ModuleBindingResolution>;
+}
+
+export struct ModuleBindingResolution {
+  offset: usize;
+  line: usize;
+  column: usize;
+  name: String;
+  mutableBinding: boolean;
+  typeName: String;
 }
 
 export struct ModuleCallResolution {
@@ -4026,7 +4040,7 @@ function inferMatchArmStatementType(
   statementIndex: usize,
   in expectedType: String,
   inout bindings: Array<NativeValueBinding>,
-  inout callResolutions: Array<ModuleCallResolution>
+  inout evidence: ModuleSemanticEvidence
 ): String throws ModuleResolveError {
   const kind = arena.nodes[statementIndex].kind;
   const expectedReturn = valueBindingType(bindings, "__z_native_return_type");
@@ -4045,7 +4059,7 @@ function inferMatchArmStatementType(
           expression,
           expectedType,
           inout bindings,
-          inout callResolutions
+          inout evidence
         );
         try consumeOwnedExpressionSyntax(
           module,
@@ -4068,7 +4082,7 @@ function inferMatchArmStatementType(
       arena,
       statementIndex,
       inout bindings,
-      inout callResolutions,
+      inout evidence,
       expectedReturn
     );
     if (!continues) return "__z_never";
@@ -4086,7 +4100,7 @@ function inferMatchArmStatementType(
         arena,
         children[index],
         inout bindings,
-        inout callResolutions,
+        inout evidence,
         expectedReturn
       );
       if (!continues) return "__z_never";
@@ -4101,7 +4115,7 @@ function inferMatchArmStatementType(
       children[children.length - 1],
       expectedType,
       inout bindings,
-      inout callResolutions
+      inout evidence
     );
   }
   const continues = try inferStatement(
@@ -4111,7 +4125,7 @@ function inferMatchArmStatementType(
     arena,
     statementIndex,
     inout bindings,
-    inout callResolutions,
+    inout evidence,
     expectedReturn
   );
   if (!continues) return "__z_never";
@@ -4252,7 +4266,7 @@ function inferContextualObjectExpressionNode(
   index: usize,
   in expectedType: String,
   inout bindings: Array<NativeValueBinding>,
-  inout callResolutions: Array<ModuleCallResolution>
+  inout evidence: ModuleSemanticEvidence
 ): String throws ModuleResolveError {
   if (tree.nodes[index].kind != ExpressionKind.objectExpression) return "";
   let known = false;
@@ -4321,7 +4335,7 @@ function inferContextualObjectExpressionNode(
           children[childIndex],
           contextualFieldType,
           inout bindings,
-          inout callResolutions
+          inout evidence
         );
         if (genericParameters.length > 0) {
           try bindGenericType(
@@ -4473,7 +4487,7 @@ function inferMatchExpressionNodeType(
   in tree: ExpressionTree,
   index: usize,
   inout bindings: Array<NativeValueBinding>,
-  inout callResolutions: Array<ModuleCallResolution>
+  inout evidence: ModuleSemanticEvidence
 ): String throws ModuleResolveError {
   const children = copyIndices(tree.nodes[index].children);
   if (children.length == 0) return "";
@@ -4485,7 +4499,7 @@ function inferMatchExpressionNodeType(
     tree,
     children[0],
     inout bindings,
-    inout callResolutions
+    inout evidence
   );
   try requireSettledExpressionType(module, tree, children[0], subjectType);
   if (subjectType.byteLength == 0) return "";
@@ -4586,7 +4600,7 @@ function inferMatchExpressionNodeType(
         statements[0],
         expectedType,
         inout armBindings,
-        inout callResolutions
+        inout evidence
       );
     }
     if (armType != "__z_never") {
@@ -4739,7 +4753,7 @@ function inferExpressionNodeTypeExpected(
   index: usize,
   in expectedType: String,
   inout bindings: Array<NativeValueBinding>,
-  inout callResolutions: Array<ModuleCallResolution>
+  inout evidence: ModuleSemanticEvidence
 ): String throws ModuleResolveError {
   let expressionBindings = copyValueBindings(bindings);
   if (expectedType.byteLength > 0) {
@@ -4754,7 +4768,7 @@ function inferExpressionNodeTypeExpected(
     tree,
     index,
     inout expressionBindings,
-    inout callResolutions
+    inout evidence
   );
   copyBindingFlowStates(inout bindings, expressionBindings);
   return inferred;
@@ -4778,7 +4792,7 @@ function inferSignatureCallType(
   targetModuleIndex: usize,
   targetSymbolIndex: usize,
   in callKind: String,
-  inout callResolutions: Array<ModuleCallResolution>
+  inout evidence: ModuleSemanticEvidence
 ): String throws ModuleResolveError {
   const argumentCount = argumentNodes.length;
   if (signature.parameterTypes.length != argumentCount) {
@@ -4963,7 +4977,7 @@ function inferSignatureCallType(
         nodeIndex,
         expectedArgumentType,
         inout bindings,
-        inout callResolutions
+        inout evidence
       );
       if (
         mode == "value"
@@ -5073,7 +5087,7 @@ function inferSignatureCallType(
       ));
       concreteIndex = concreteIndex + 1;
     }
-    callResolutions.push(ModuleCallResolution({
+    evidence.callResolutions.push(ModuleCallResolution({
       offset: tree.nodes[callIndex].offset,
       line: tree.nodes[callIndex].line,
       column: tree.nodes[callIndex].column,
@@ -5106,7 +5120,7 @@ function inferUnclassifiedCallArguments(
   in tree: ExpressionTree,
   in children: Array<usize>,
   inout bindings: Array<NativeValueBinding>,
-  inout callResolutions: Array<ModuleCallResolution>
+  inout evidence: ModuleSemanticEvidence
 ): void throws ModuleResolveError {
   let argumentTypes = Array<String>();
   let argumentIndex: usize = 1;
@@ -5120,7 +5134,7 @@ function inferUnclassifiedCallArguments(
       tree,
       nodeIndex,
       inout bindings,
-      inout callResolutions
+      inout evidence
     );
     try requireSettledExpressionType(
       module,
@@ -5509,7 +5523,7 @@ function inferExpressionNodeType(
   in tree: ExpressionTree,
   index: usize,
   inout bindings: Array<NativeValueBinding>,
-  inout callResolutions: Array<ModuleCallResolution>
+  inout evidence: ModuleSemanticEvidence
 ): String throws ModuleResolveError {
   const kind = tree.nodes[index].kind;
   const value = tree.nodes[index].value.copyBytes(0, tree.nodes[index].value.byteLength);
@@ -5528,7 +5542,7 @@ function inferExpressionNodeType(
         tree,
         child,
         inout bindings,
-        inout callResolutions
+        inout evidence
       );
       try requireSettledExpressionType(module, tree, child, embedded);
     }
@@ -5569,7 +5583,7 @@ function inferExpressionNodeType(
       tree,
       children[0],
       inout bindings,
-      inout callResolutions
+      inout evidence
     );
     if (outcome.byteLength == 0) return "";
     match (pendingThrowingCallShape(outcome)) {
@@ -5700,7 +5714,7 @@ function inferExpressionNodeType(
                   location.moduleIndex,
                   location.symbolIndex,
                   "constructor",
-                  inout callResolutions
+                  inout evidence
                 );
               }
               none => {
@@ -5725,7 +5739,7 @@ function inferExpressionNodeType(
                   children[0],
                   value,
                   inout bindings,
-                  inout callResolutions
+                  inout evidence
                 );
                 if (contextual.byteLength > 0) return contextual;
               }
@@ -5763,7 +5777,7 @@ function inferExpressionNodeType(
                 children[1],
                 expected,
                 inout bindings,
-                inout callResolutions
+                inout evidence
               );
             } else {
               actual = try inferExpressionNodeType(
@@ -5774,7 +5788,7 @@ function inferExpressionNodeType(
                 tree,
                 children[1],
                 inout bindings,
-                inout callResolutions
+                inout evidence
               );
             }
             try requireExpressionType(
@@ -5811,7 +5825,7 @@ function inferExpressionNodeType(
       tree,
       index,
       inout bindings,
-      inout callResolutions
+      inout evidence
     );
   }
   if (kind == ExpressionKind.argumentReferenceExpression && children.length == 1) {
@@ -5819,7 +5833,7 @@ function inferExpressionNodeType(
       const bindingName = identifierLookupName(tree.nodes[children[0]].value);
       return valueBindingType(bindings, bindingName);
     }
-    return try inferExpressionNodeType(module, modules, moduleIndex, arena, tree, children[0], inout bindings, inout callResolutions);
+    return try inferExpressionNodeType(module, modules, moduleIndex, arena, tree, children[0], inout bindings, inout evidence);
   }
   if (kind == ExpressionKind.memberExpression && children.length == 1) {
     const receiverType = try inferExpressionNodeType(
@@ -5830,7 +5844,7 @@ function inferExpressionNodeType(
       tree,
       children[0],
       inout bindings,
-      inout callResolutions
+      inout evidence
     );
     try requireSettledExpressionType(module, tree, children[0], receiverType);
     const memberName = identifierLookupName(value);
@@ -5875,7 +5889,7 @@ function inferExpressionNodeType(
     return "";
   }
   if (kind == ExpressionKind.unaryExpression && children.length == 1) {
-    const operand = try inferExpressionNodeType(module, modules, moduleIndex, arena, tree, children[0], inout bindings, inout callResolutions);
+    const operand = try inferExpressionNodeType(module, modules, moduleIndex, arena, tree, children[0], inout bindings, inout evidence);
     try requireSettledExpressionType(module, tree, children[0], operand);
     if (operand.byteLength == 0) return "";
     if (value == "!" && operand == "boolean") return "boolean";
@@ -5887,7 +5901,7 @@ function inferExpressionNodeType(
     throw invalidOperator(module, tree, index, `operator ${value} requires ${requirement}`);
   }
   if (kind == ExpressionKind.binaryExpression && children.length == 2) {
-    let left = try inferExpressionNodeType(module, modules, moduleIndex, arena, tree, children[0], inout bindings, inout callResolutions);
+    let left = try inferExpressionNodeType(module, modules, moduleIndex, arena, tree, children[0], inout bindings, inout evidence);
     try requireSettledExpressionType(module, tree, children[0], left);
     if (value == "&&" || value == "||") {
       const beforeRight = copyValueBindings(bindings);
@@ -5900,7 +5914,7 @@ function inferExpressionNodeType(
         tree,
         children[1],
         inout rightBindings,
-        inout callResolutions
+        inout evidence
       );
       try requireSettledExpressionType(module, tree, children[1], right);
       mergeBindingFlowStates(inout bindings, beforeRight, rightBindings);
@@ -5908,7 +5922,7 @@ function inferExpressionNodeType(
       if (left == "boolean" && right == "boolean") return "boolean";
       throw invalidOperator(module, tree, index, `operator ${value} requires boolean operands`);
     }
-    let right = try inferExpressionNodeType(module, modules, moduleIndex, arena, tree, children[1], inout bindings, inout callResolutions);
+    let right = try inferExpressionNodeType(module, modules, moduleIndex, arena, tree, children[1], inout bindings, inout evidence);
     try requireSettledExpressionType(module, tree, children[1], right);
     if (left.byteLength == 0 || right.byteLength == 0) return "";
     if (isContextualNumericLiteral(tree, children[1]) && isNumericTypeName(left)) right = left.copyBytes(0, left.byteLength);
@@ -5954,7 +5968,7 @@ function inferExpressionNodeType(
         arena,
         statements[statementIndex],
         inout blockBindings,
-        inout callResolutions,
+        inout evidence,
         expectedReturn
       );
       if (!continues) return "__z_never";
@@ -5970,7 +5984,7 @@ function inferExpressionNodeType(
       statements[statements.length - 1],
       expectedType,
       inout blockBindings,
-      inout callResolutions
+      inout evidence
     );
     copyBindingFlowStates(inout bindings, blockBindings);
     return result;
@@ -5984,7 +5998,7 @@ function inferExpressionNodeType(
       tree,
       children[0],
       inout bindings,
-      inout callResolutions
+      inout evidence
     );
     try requireSettledExpressionType(module, tree, children[0], condition);
     if (condition.byteLength > 0) {
@@ -6010,7 +6024,7 @@ function inferExpressionNodeType(
       children[1],
       expectedType,
       inout thenBindings,
-      inout callResolutions
+      inout evidence
     );
     const elseType = try inferExpressionNodeTypeExpected(
       module,
@@ -6021,7 +6035,7 @@ function inferExpressionNodeType(
       children[2],
       expectedType,
       inout elseBindings,
-      inout callResolutions
+      inout evidence
     );
     try requireSettledExpressionType(module, tree, children[1], thenType);
     try requireSettledExpressionType(module, tree, children[2], elseType);
@@ -6041,7 +6055,7 @@ function inferExpressionNodeType(
     );
   }
   if (kind == ExpressionKind.conditionalExpression && children.length == 3) {
-    const condition = try inferExpressionNodeType(module, modules, moduleIndex, arena, tree, children[0], inout bindings, inout callResolutions);
+    const condition = try inferExpressionNodeType(module, modules, moduleIndex, arena, tree, children[0], inout bindings, inout evidence);
     try requireSettledExpressionType(module, tree, children[0], condition);
     if (condition.byteLength > 0) {
       try requireExpressionType(module, modules, moduleIndex, tree, children[0], "boolean", condition);
@@ -6058,7 +6072,7 @@ function inferExpressionNodeType(
       children[1],
       expectedType,
       inout thenBindings,
-      inout callResolutions
+      inout evidence
     );
     const elseType = try inferExpressionNodeTypeExpected(
       module,
@@ -6069,7 +6083,7 @@ function inferExpressionNodeType(
       children[2],
       expectedType,
       inout elseBindings,
-      inout callResolutions
+      inout evidence
     );
     try requireSettledExpressionType(module, tree, children[1], thenType);
     try requireSettledExpressionType(module, tree, children[2], elseType);
@@ -6109,7 +6123,7 @@ function inferExpressionNodeType(
   }
   if (kind == ExpressionKind.arrayExpression) {
     if (children.length == 0) return "";
-    let elementType = try inferExpressionNodeType(module, modules, moduleIndex, arena, tree, children[0], inout bindings, inout callResolutions);
+    let elementType = try inferExpressionNodeType(module, modules, moduleIndex, arena, tree, children[0], inout bindings, inout evidence);
     try requireSettledExpressionType(module, tree, children[0], elementType);
     if (elementType.byteLength == 0) return "";
     try consumeOwnedExpressionNode(
@@ -6123,7 +6137,7 @@ function inferExpressionNodeType(
     );
     let childIndex: usize = 1;
     while (childIndex < children.length) {
-      const candidate = try inferExpressionNodeType(module, modules, moduleIndex, arena, tree, children[childIndex], inout bindings, inout callResolutions);
+      const candidate = try inferExpressionNodeType(module, modules, moduleIndex, arena, tree, children[childIndex], inout bindings, inout evidence);
       try requireSettledExpressionType(module, tree, children[childIndex], candidate);
       if (candidate.byteLength == 0) return "";
       try requireExpressionType(module, modules, moduleIndex, tree, children[childIndex], elementType, candidate);
@@ -6141,8 +6155,8 @@ function inferExpressionNodeType(
     return `${elementType}[${children.length}]`;
   }
   if (kind == ExpressionKind.indexExpression && children.length == 2) {
-    const owner = try inferExpressionNodeType(module, modules, moduleIndex, arena, tree, children[0], inout bindings, inout callResolutions);
-    const offset = try inferExpressionNodeType(module, modules, moduleIndex, arena, tree, children[1], inout bindings, inout callResolutions);
+    const owner = try inferExpressionNodeType(module, modules, moduleIndex, arena, tree, children[0], inout bindings, inout evidence);
+    const offset = try inferExpressionNodeType(module, modules, moduleIndex, arena, tree, children[1], inout bindings, inout evidence);
     try requireSettledExpressionType(module, tree, children[0], owner);
     try requireSettledExpressionType(module, tree, children[1], offset);
     if (offset.byteLength > 0 && !isIntegerTypeName(offset)) {
@@ -6423,7 +6437,7 @@ function inferExpressionNodeType(
         arena,
         statements,
         inout closureBindings,
-        inout callResolutions,
+        inout evidence,
         returnType
       );
     } else {
@@ -6437,7 +6451,7 @@ function inferExpressionNodeType(
           tree,
           child,
           inout closureBindings,
-          inout callResolutions
+          inout evidence
         );
         if (returnType.byteLength == 0) {
           returnType = actual.copyBytes(0, actual.byteLength);
@@ -6513,7 +6527,7 @@ function inferExpressionNodeType(
                 children[1],
                 expected,
                 inout bindings,
-                inout callResolutions
+                inout evidence
               );
             } else {
               actual = try inferExpressionNodeType(
@@ -6524,7 +6538,7 @@ function inferExpressionNodeType(
                 tree,
                 children[1],
                 inout bindings,
-                inout callResolutions
+                inout evidence
               );
             }
             try requireExpressionType(
@@ -6599,7 +6613,7 @@ function inferExpressionNodeType(
             children[1],
             expectedConstructionType,
             inout bindings,
-            inout callResolutions
+            inout evidence
           );
           if (contextual.byteLength > 0) return contextual;
         }
@@ -6635,7 +6649,7 @@ function inferExpressionNodeType(
             0,
             0,
             "value",
-            inout callResolutions
+            inout evidence
           );
         }
         none => {}
@@ -6651,7 +6665,7 @@ function inferExpressionNodeType(
           tree,
           children,
           inout bindings,
-          inout callResolutions
+          inout evidence
         );
         return "";
       }
@@ -6665,7 +6679,7 @@ function inferExpressionNodeType(
           tree,
           children,
           inout bindings,
-          inout callResolutions
+          inout evidence
         );
         return copiedString(callee);
       }
@@ -6679,7 +6693,7 @@ function inferExpressionNodeType(
             tree,
             children,
             inout bindings,
-            inout callResolutions
+            inout evidence
           );
           return copiedString(callee);
         }
@@ -6720,7 +6734,7 @@ function inferExpressionNodeType(
               location.moduleIndex,
               location.symbolIndex,
               "function",
-              inout callResolutions
+              inout evidence
             );
           }
           none => {}
@@ -6741,7 +6755,7 @@ function inferExpressionNodeType(
         tree,
         receiverIndex,
         inout bindings,
-        inout callResolutions
+        inout evidence
       );
       try requireSettledExpressionType(module, tree, receiverIndex, ownerType);
       let staticMethod = false;
@@ -6879,7 +6893,7 @@ function inferExpressionNodeType(
               method.ownerModuleIndex,
               method.ownerSymbolIndex,
               callKind,
-              inout callResolutions
+              inout evidence
             );
             if (receiverAccess == "move" && receiverRoot.byteLength > 0) {
               setValueBindingOwnership(
@@ -6923,7 +6937,7 @@ function inferExpressionNodeType(
       tree,
       children,
       inout bindings,
-      inout callResolutions
+      inout evidence
     );
     return "";
   }
@@ -6938,7 +6952,7 @@ function inferExpressionTypeExpected(
   in expression: ExpressionSyntax,
   in expectedType: String,
   inout bindings: Array<NativeValueBinding>,
-  inout callResolutions: Array<ModuleCallResolution>
+  inout evidence: ModuleSemanticEvidence
 ): String throws ModuleResolveError {
   return match (in expression.tree) {
     some(tree) => {
@@ -6956,7 +6970,7 @@ function inferExpressionTypeExpected(
         tree,
         root,
         inout expressionBindings,
-        inout callResolutions
+        inout evidence
       );
       try requireSettledExpressionType(module, tree, root, inferred);
       copyBindingFlowStates(inout bindings, expressionBindings);
@@ -6973,7 +6987,7 @@ function inferExpressionType(
   in arena: StatementArena,
   in expression: ExpressionSyntax,
   inout bindings: Array<NativeValueBinding>,
-  inout callResolutions: Array<ModuleCallResolution>
+  inout evidence: ModuleSemanticEvidence
 ): String throws ModuleResolveError {
   return try inferExpressionTypeExpected(
     module,
@@ -6983,7 +6997,7 @@ function inferExpressionType(
     expression,
     "",
     inout bindings,
-    inout callResolutions
+    inout evidence
   );
 }
 
@@ -7011,7 +7025,7 @@ function inferStatement(
   in arena: StatementArena,
   index: usize,
   inout bindings: Array<NativeValueBinding>,
-  inout callResolutions: Array<ModuleCallResolution>,
+  inout evidence: ModuleSemanticEvidence,
   in expectedReturn: String
 ): boolean throws ModuleResolveError {
   const kind = arena.nodes[index].kind;
@@ -7032,7 +7046,7 @@ function inferStatement(
         expression,
         contextualExpected,
         inout bindings,
-        inout callResolutions
+        inout evidence
       );
       none => {}
     }
@@ -7055,7 +7069,23 @@ function inferStatement(
           stored = type.name.copyBytes(0, type.name.byteLength);
         }
       }
-      none => {}
+      none => {
+        match (in arena.nodes[index].expression) {
+          some(expression) => {
+            if (expression.offset >= arena.nodes[index].offset && stored.byteLength > 0) {
+              evidence.bindingResolutions.push(ModuleBindingResolution({
+                offset: arena.nodes[index].nameOffset,
+                line: arena.nodes[index].nameLine,
+                column: arena.nodes[index].nameColumn,
+                name: arena.nodes[index].name.copyBytes(0, arena.nodes[index].name.byteLength),
+                mutableBinding: arena.nodes[index].mutableBinding,
+                typeName: stored.copyBytes(0, stored.byteLength),
+              }));
+            }
+          }
+          none => {}
+        }
+      }
     }
     match (in arena.nodes[index].expression) {
       some(expression) => try consumeOwnedExpressionSyntax(
@@ -7114,7 +7144,7 @@ function inferStatement(
                 tree,
                 root,
                 inout bindings,
-                inout callResolutions
+                inout evidence
               );
             }
             if (
@@ -7130,7 +7160,7 @@ function inferStatement(
                 tree,
                 receiverIndex,
                 inout bindings,
-                inout callResolutions
+                inout evidence
               );
               const memberName = identifierLookupName(tree.nodes[root].value);
               match (aggregateFieldShape(modules, moduleIndex, receiverType, memberName)) {
@@ -7174,7 +7204,7 @@ function inferStatement(
           value,
           expected,
           inout bindings,
-          inout callResolutions
+          inout evidence
         );
         if (expected.byteLength > 0) {
           try requireExpressionSyntaxType(
@@ -7264,7 +7294,7 @@ function inferStatement(
           expression,
           expectedError,
           inout bindings,
-          inout callResolutions
+          inout evidence
         );
         try requireExpressionSyntaxType(
           module,
@@ -7300,7 +7330,7 @@ function inferStatement(
           arena,
           expression,
           inout bindings,
-          inout callResolutions
+          inout evidence
         );
         if (expressionType == "__z_never") return false;
       }
@@ -7323,7 +7353,7 @@ function inferStatement(
           expression,
           contextualExpected,
           inout bindings,
-          inout callResolutions
+          inout evidence
         );
         if (kind == StatementKind.returnStatement && expectedReturn.byteLength > 0) {
           try requireExpressionSyntaxType(
@@ -7373,7 +7403,7 @@ function inferStatement(
   if (kind == StatementKind.ifStatement || kind == StatementKind.whileStatement) {
     match (in arena.nodes[index].expression) {
       some(condition) => {
-        const actual = try inferExpressionType(module, modules, moduleIndex, arena, condition, inout bindings, inout callResolutions);
+        const actual = try inferExpressionType(module, modules, moduleIndex, arena, condition, inout bindings, inout evidence);
         if (actual.byteLength > 0) {
           try requireExpressionSyntaxType(
             module,
@@ -7401,7 +7431,7 @@ function inferStatement(
         arena,
         statementChildren[0],
         inout thenBindings,
-        inout callResolutions,
+        inout evidence,
         expectedReturn
       );
     }
@@ -7413,7 +7443,7 @@ function inferStatement(
         arena,
         statementChildren[1],
         inout elseBindings,
-        inout callResolutions,
+        inout evidence,
         expectedReturn
       );
     }
@@ -7440,7 +7470,7 @@ function inferStatement(
       arena,
       statementChildren,
       inout loopBindings,
-      inout callResolutions,
+      inout evidence,
       expectedReturn
     );
     if (loopContinues) {
@@ -7460,7 +7490,7 @@ function inferStatement(
     let elementType = "";
     match (in arena.nodes[index].expression) {
       some(iterable) => {
-        const iterableType = try inferExpressionType(module, modules, moduleIndex, arena, iterable, inout bindings, inout callResolutions);
+        const iterableType = try inferExpressionType(module, modules, moduleIndex, arena, iterable, inout bindings, inout evidence);
         elementType = arrayElementType(iterableType);
       }
       none => {}
@@ -7473,7 +7503,7 @@ function inferStatement(
       arena,
       statementChildren,
       inout loopBindings,
-      inout callResolutions,
+      inout evidence,
       expectedReturn
     );
     if (loopContinues) {
@@ -7495,7 +7525,7 @@ function inferStatement(
     arena,
     statementChildren,
     inout nestedBindings,
-    inout callResolutions,
+    inout evidence,
     expectedReturn
   );
   if (nestedContinues) copyBindingFlowStates(inout bindings, nestedBindings);
@@ -7509,7 +7539,7 @@ function inferStatementSequence(
   in arena: StatementArena,
   in indices: Array<usize>,
   inout bindings: Array<NativeValueBinding>,
-  inout callResolutions: Array<ModuleCallResolution>,
+  inout evidence: ModuleSemanticEvidence,
   in expectedReturn: String
 ): boolean throws ModuleResolveError {
   for (const index of indices) {
@@ -7520,7 +7550,7 @@ function inferStatementSequence(
       arena,
       index,
       inout bindings,
-      inout callResolutions,
+      inout evidence,
       expectedReturn
     );
     if (!continues) return false;
@@ -7566,7 +7596,7 @@ function inferFunctionExpressions(
   in declaration: FunctionDeclaration,
   in ownerType: String,
   in inheritedTypeParameters: Array<TypeParameter>,
-  inout callResolutions: Array<ModuleCallResolution>
+  inout evidence: ModuleSemanticEvidence
 ): void throws ModuleResolveError {
   let bindings = functionValueBindings(declaration.parameters);
   addTypeParameterBindings(inout bindings, inheritedTypeParameters);
@@ -7596,7 +7626,7 @@ function inferFunctionExpressions(
     declaration.body,
     declaration.body.roots,
     inout bindings,
-    inout callResolutions,
+    inout evidence,
     declaration.returnType.name
   );
   try requireInitializedOutputParameters(
@@ -7611,8 +7641,11 @@ function validateExpressionTypesAndLocals(
   in module: ParsedModule,
   in modules: Array<ResolvedModule>,
   moduleIndex: usize
-): Array<ModuleCallResolution> throws ModuleResolveError {
-  let callResolutions = Array<ModuleCallResolution>();
+): ModuleSemanticEvidence throws ModuleResolveError {
+  let evidence = ModuleSemanticEvidence({
+    callResolutions: Array<ModuleCallResolution>(),
+    bindingResolutions: Array<ModuleBindingResolution>(),
+  });
   const noTypeParameters = Array<TypeParameter>();
   for (const declaration of module.program.functions) {
     try inferFunctionExpressions(
@@ -7622,7 +7655,7 @@ function validateExpressionTypesAndLocals(
       declaration,
       "",
       noTypeParameters,
-      inout callResolutions
+      inout evidence
     );
   }
   for (const aggregate of module.program.aggregates) {
@@ -7646,7 +7679,7 @@ function validateExpressionTypesAndLocals(
           initializer.body,
           initializer.body.roots,
           inout bindings,
-          inout callResolutions,
+          inout evidence,
           "void"
         );
         try requireInitializedOutputParameters(
@@ -7666,7 +7699,7 @@ function validateExpressionTypesAndLocals(
         method,
         aggregate.name,
         aggregate.typeParameters,
-        inout callResolutions
+        inout evidence
       );
     }
     match (in aggregate.deinitializer) {
@@ -7684,14 +7717,14 @@ function validateExpressionTypesAndLocals(
           deinitializer.body,
           deinitializer.body.roots,
           inout bindings,
-          inout callResolutions,
+          inout evidence,
           "void"
         );
       }
       none => {}
     }
   }
-  return callResolutions;
+  return evidence;
 }
 
 function resolveDependencies(
@@ -7791,7 +7824,10 @@ export function resolveModules(
       path: parsed[index].path.copyBytes(0, parsed[index].path.byteLength),
       dependencies,
       symbols,
-      callResolutions: Array<ModuleCallResolution>(),
+      semanticEvidence: ModuleSemanticEvidence({
+        callResolutions: Array<ModuleCallResolution>(),
+        bindingResolutions: Array<ModuleBindingResolution>(),
+      }),
     }));
     index = index + 1;
   }
@@ -7800,7 +7836,7 @@ export function resolveModules(
   while (index < parsed.length) {
     try validateTypes(parsed[index], modules, index);
     try validateNames(parsed[index], modules[index].symbols);
-    modules[index].callResolutions = try validateExpressionTypesAndLocals(parsed[index], modules, index);
+    modules[index].semanticEvidence = try validateExpressionTypesAndLocals(parsed[index], modules, index);
     index = index + 1;
   }
 

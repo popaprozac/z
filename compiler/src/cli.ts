@@ -89,6 +89,7 @@ if (!command || !inputArgument || !["check", "emit", "run", "self-host-lex", "se
             analysis.nativeFieldResolutionCount,
             analysis.nativeEnumVariantResolutionCount,
             analysis.nativeTypeResolutionCount,
+            analysis.nativeBindingResolutionCount,
             analysis.nativeAuthoritativeFunctionResolutionCount,
             analysis.nativeAuthoritativeMethodResolutionCount,
             analysis.nativeAuthoritativeConstructorResolutionCount,
@@ -96,6 +97,7 @@ if (!command || !inputArgument || !["check", "emit", "run", "self-host-lex", "se
             analysis.nativeAuthoritativeFieldResolutionCount,
             analysis.nativeAuthoritativeEnumVariantResolutionCount,
             analysis.nativeAuthoritativeTypeResolutionCount,
+            analysis.nativeAuthoritativeBindingResolutionCount,
           );
         }
       }
@@ -182,6 +184,7 @@ function reportStage1Resolver(
   fieldResolutionCount = 0,
   enumVariantResolutionCount = 0,
   typeResolutionCount = 0,
+  bindingResolutionCount = 0,
   authoritativeFunctionResolutionCount = 0,
   authoritativeMethodResolutionCount = 0,
   authoritativeConstructorResolutionCount = 0,
@@ -189,6 +192,7 @@ function reportStage1Resolver(
   authoritativeFieldResolutionCount = 0,
   authoritativeEnumVariantResolutionCount = 0,
   authoritativeTypeResolutionCount = 0,
+  authoritativeBindingResolutionCount = 0,
 ): void {
   const edges = run.graph.modules.reduce((count, module) => count + module.dependencies.length, 0);
   const symbols = run.graph.modules.reduce((count, module) => count + module.symbols.length, 0);
@@ -200,17 +204,25 @@ function reportStage1Resolver(
     0,
   );
   const genericCallContractLabel = genericCallContracts === 1 ? "contract" : "contracts";
+  const bindingContracts = run.graph.modules.reduce(
+    (count, module) => count + module.bindingResolutions.length,
+    0,
+  );
+  const bindingContractLabel = bindingContracts === 1 ? "contract" : "contracts";
   const subject = presentation === "check-hybrid" ? "native frontend hybrid" : "stage-1 resolver";
   console.log(`${run.entryPath}: ${subject} matches ${run.graph.modules.length} modules, ${edges} local ${edgeLabel}, and ${symbols} ${symbolLabel} (${order})`);
   console.log(`${subject} compiler index matches ${queryCount} binding/signature queries`);
   console.log(`${subject} exports ${genericCallContracts} concrete generic call ${genericCallContractLabel}`);
+  console.log(`${subject} exports ${bindingContracts} inferred local binding ${bindingContractLabel}`);
   if (callResolutionCount !== null) {
     console.log(`${subject} observes ${callResolutionCount} function, ${methodResolutionCount} method, and ${constructorResolutionCount} constructor stage-0 Z resolutions`);
     console.log(`${subject} observes ${aggregateResolutionCount} aggregate, ${fieldResolutionCount} field, and ${enumVariantResolutionCount} enum-variant stage-0 Z resolutions`);
     console.log(`${subject} observes ${typeResolutionCount} explicit type-use stage-0 Z resolutions`);
+    console.log(`${subject} observes ${bindingResolutionCount} inferred local binding stage-0 Z resolutions`);
     console.log(`${subject} uses ${authoritativeFunctionResolutionCount} function, ${authoritativeMethodResolutionCount} method, and ${authoritativeConstructorResolutionCount} constructor native-authoritative contracts`);
     console.log(`${subject} uses ${authoritativeAggregateResolutionCount} aggregate, ${authoritativeFieldResolutionCount} field, and ${authoritativeEnumVariantResolutionCount} enum-variant native-authoritative contracts`);
     console.log(`${subject} uses ${authoritativeTypeResolutionCount} explicit type-use native-authoritative contracts`);
+    console.log(`${subject} uses ${authoritativeBindingResolutionCount} inferred local binding native-authoritative contracts`);
   }
   if (timings) {
     const cacheState = run.boundary.cacheHit ? "cache hit" : "cache miss; stage-0 compile + native build included";
