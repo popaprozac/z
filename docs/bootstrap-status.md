@@ -64,7 +64,7 @@ an inferred receiver-tied view.
 | System standard APIs | Implemented foundation | Default `std/fs` and `std/process` modules; owned reads/arguments, borrowed writes/process argv, direct no-shell child launch, typed OS failures |
 | Native backends | Partial | Readable C, C++20, Objective-C ARC, and Objective-C++ source generation |
 | Foreign Interface IR | Implemented foundation | Raw declarations, API-note merge, normalized contracts, source locations, and availability metadata are separate; richer native hierarchies remain |
-| Language server | Partial | Diagnostics, semantic highlighting, contextual selective-import/object-pattern completion, hover, and Z/native definitions |
+| Language server | Partial | Diagnostics, semantic highlighting, contextual selective-import/object-pattern completion, hover, and Z/native definitions; `copy`/`move` incompatibilities already diagnose live, while keyword hover should next explain the inferred type, synthesized/native capability source, copy cost, and source invalidation |
 | Native definitions | Implemented slice | Namespace/selective C symbols, Objective-C members, and generated Swift compatibility declarations jump to their native headers |
 | Self-hosting | Partial frontend | Stage 0 remains TypeScript/Bun; native Z owns the lexer, current full parser arenas, module graph, function/type/method signatures, lexical/type lookup, initial primitive/generic/cross-module-match/field/method expression typing, and the first definite-initialization/ownership flow tier with parity commands; complete semantics, lowering, code generation, and the CLI driver remain in stage 0 |
 
