@@ -25,6 +25,7 @@ import {
   parseDynamicArrayType,
   parseFixedArrayType,
   parseSliceType,
+  sliceTypeName,
 } from "./array-types.ts";
 import {
   displayFunctionType,
@@ -70,7 +71,7 @@ import {
   nullableObjCTypeName,
   publicObjCTypeName,
 } from "./objc-types.ts";
-import { parseOptionType } from "./option-types.ts";
+import { optionTypeName, parseOptionType } from "./option-types.ts";
 import { parseOptionalViewType, parseReceiverViewReturnType, parseViewType, viewTypeName } from "./view-types.ts";
 
 export type ObjCCallInfo = {
@@ -146,6 +147,7 @@ export type SemanticObserver = {
   readonly resolveAggregateConstruction?: (resolution: SemanticAggregateConstructionResolution) => StructDeclaration | null;
   readonly resolveField?: (resolution: SemanticFieldResolution) => StructDeclaration["fields"][number] | null;
   readonly resolveEnumVariant?: (resolution: SemanticEnumVariantResolution) => EnumDeclaration["variants"][number] | null;
+  readonly resolveType?: (resolution: SemanticTypeResolution) => StructDeclaration | EnumDeclaration | null;
   readonly onFunctionCall?: (resolution: SemanticFunctionCallResolution) => void;
   readonly onMethodCall?: (resolution: SemanticMethodCallResolution) => void;
   readonly onConstructorCall?: (resolution: SemanticConstructorCallResolution) => void;
@@ -1554,22 +1556,22 @@ function analyzeStatement(
         }
         const declaredType = statement.type;
         validateType(declaredType, structs, enums, state.foreignNamedTypes, fileName, false);
-        observeTypeResolution(declaredType, structs, enums, state);
-        if (hasMoveOnlyForeignType(declaredType.name, structs, enums, state.foreignNamedTypes)) {
+        const declaredTypeName = resolveSemanticTypeName(declaredType, structs, enums, state);
+        if (hasMoveOnlyForeignType(declaredTypeName, structs, enums, state.foreignNamedTypes)) {
           throw new DiagnosticError(fileName, declaredType.location, "move-only native values must be initialized when their storage is declared", {
             code: "Z0240",
             notes: ["uninitialized Z locals do not run a non-trivial C++ constructor"],
             helps: ["initialize the binding from a native constructor, owned return, or moved value"],
           });
         }
-        if (containsViewType(declaredType.name)) {
+        if (containsViewType(declaredTypeName)) {
           throw new DiagnosticError(fileName, declaredType.location, "view values cannot be declared as uninitialized storage", { code: "Z0206" });
         }
-        if (containsSliceType(declaredType.name)) {
+        if (containsSliceType(declaredTypeName)) {
           throw new DiagnosticError(fileName, declaredType.location, "Slice values cannot be stored in local bindings yet");
         }
-        locals.set(statement.name, `${uninitializedPrefix}${mutablePrefix}${declaredType.name}`);
-        state.bindingTypes.set(statement.nameLocation.offset, declaredType.name);
+        locals.set(statement.name, `${uninitializedPrefix}${mutablePrefix}${declaredTypeName}`);
+        state.bindingTypes.set(statement.nameLocation.offset, declaredTypeName);
         return;
       }
       if (statement.type && parseViewType(statement.type.name)) {
@@ -1595,8 +1597,7 @@ function analyzeStatement(
       let variableType = initializerType;
       if (statement.type) {
         validateType(statement.type, structs, enums, state.foreignNamedTypes, fileName, false);
-        observeTypeResolution(statement.type, structs, enums, state);
-        variableType = statement.type.name;
+        variableType = resolveSemanticTypeName(statement.type, structs, enums, state);
         if (statement.initializer.kind === "closure") {
           const expectedFunction = parseFunctionType(variableType)!;
           finalizeClosureFunctionValue(
@@ -2192,7 +2193,7 @@ function inferClosureExpression(
     );
   }
 
-  const resolvedParameters: Parameter[] = expression.parameters.map((parameter, index) => {
+  const contextualParameters: Parameter[] = expression.parameters.map((parameter, index) => {
     const contextual = expectedFunction?.parameters[index];
     if (!parameter.type && !contextual) {
       throw new DiagnosticError(fileName, parameter.location, `cannot infer the type of closure parameter ${JSON.stringify(parameter.name)}`, {
@@ -2229,27 +2230,31 @@ function inferClosureExpression(
   });
 
   const parameterNames = new Set<string>();
-  for (const [parameterIndex, parameter] of resolvedParameters.entries()) {
+  const resolvedParameters = contextualParameters.map((parameter, parameterIndex): Parameter => {
     if (parameterNames.has(parameter.name)) {
       throw new DiagnosticError(fileName, parameter.location, `duplicate closure parameter ${JSON.stringify(parameter.name)}`);
     }
     parameterNames.add(parameter.name);
     validateUserName(parameter.name, parameter.location, fileName);
     validateType(parameter.type, structs, enums, state.foreignNamedTypes, fileName, false);
-    if (expression.parameters[parameterIndex]?.type) {
-      observeTypeResolution(parameter.type, structs, enums, state);
-    }
+    const resolvedTypeName = expression.parameters[parameterIndex]?.type
+      ? resolveSemanticTypeName(parameter.type, structs, enums, state)
+      : parameter.type.name;
+    const resolvedParameter = resolvedTypeName === parameter.type.name
+      ? parameter
+      : { ...parameter, type: { ...parameter.type, name: resolvedTypeName } };
     if (parameter.mode === "out") {
       throw new DiagnosticError(fileName, parameter.location, "out closure parameters are deferred until escaping function types are implemented");
     }
-    const slice = parseSliceType(parameter.type.name);
+    const slice = parseSliceType(resolvedParameter.type.name);
     if (slice && parameter.mode === "in") {
       throw new DiagnosticError(fileName, parameter.location, "Slice parameters are already borrowed; omit `in`");
     }
-    if (parameter.mode !== "value" && parameter.type.name === "cstring") {
+    if (parameter.mode !== "value" && resolvedParameter.type.name === "cstring") {
       throw new DiagnosticError(fileName, parameter.location, "cstring already represents a borrowed C string; it cannot use in or inout");
     }
-  }
+    return resolvedParameter;
+  });
 
   const discovered = collectClosureCaptures(expression, locals, structs, parameterNames);
   const captures: ClosureCaptureInfo[] = [];
@@ -2342,7 +2347,7 @@ function inferClosureExpression(
     state.bindingTypes.set(parameter.location.offset, parameter.type.name);
   }
 
-  const contextualReturn = expression.returnType
+  let contextualReturn = expression.returnType
     ?? (expectedFunction ? { name: expectedFunction.returnType, location: expression.location } : null);
   if (expression.body.kind === "block" && !contextualReturn) {
     throw new DiagnosticError(fileName, expression.location, "a block-bodied closure requires an explicit or contextual return type");
@@ -2350,15 +2355,22 @@ function inferClosureExpression(
   if (contextualReturn && parseViewType(contextualReturn.name)) {
     throw new DiagnosticError(fileName, contextualReturn.location, "closures cannot return receiver-tied views", { code: "Z0206" });
   }
-  const provisionalReturn = contextualReturn ?? { name: "void", location: expression.location };
   if (expression.returnType) {
     validateType(expression.returnType, structs, enums, state.foreignNamedTypes, fileName, true);
-    observeTypeResolution(expression.returnType, structs, enums, state);
+    contextualReturn = {
+      ...expression.returnType,
+      name: resolveSemanticTypeName(expression.returnType, structs, enums, state),
+    };
   }
+  let resolvedErrorType = expression.errorType;
   if (expression.errorType) {
     validateType(expression.errorType, structs, enums, state.foreignNamedTypes, fileName, false);
-    observeTypeResolution(expression.errorType, structs, enums, state);
+    resolvedErrorType = {
+      ...expression.errorType,
+      name: resolveSemanticTypeName(expression.errorType, structs, enums, state),
+    };
   }
+  const provisionalReturn = contextualReturn ?? { name: "void", location: expression.location };
   const syntheticBase: FunctionDeclaration = {
     kind: "function",
     name: `__z_closure_call_${expression.location.offset}`,
@@ -2373,7 +2385,7 @@ function inferClosureExpression(
       ...resolvedParameters,
     ],
     returnType: provisionalReturn,
-    errorType: expression.errorType,
+    errorType: resolvedErrorType,
     body: [],
     location: expression.location,
   };
@@ -2961,19 +2973,27 @@ function inferExecutorPlacement(
       helps: ["make this helper async and await it from an async-capable caller"],
     });
   }
+  let resolvedReturnType = expression.returnType;
   if (expression.returnType) {
     validateType(expression.returnType, structs, enums, state.foreignNamedTypes, fileName, true);
-    observeTypeResolution(expression.returnType, structs, enums, state);
+    resolvedReturnType = {
+      ...expression.returnType,
+      name: resolveSemanticTypeName(expression.returnType, structs, enums, state),
+    };
   }
+  let resolvedErrorType = expression.errorType;
   if (expression.errorType) {
     validateType(expression.errorType, structs, enums, state.foreignNamedTypes, fileName, false);
-    observeTypeResolution(expression.errorType, structs, enums, state);
+    resolvedErrorType = {
+      ...expression.errorType,
+      name: resolveSemanticTypeName(expression.errorType, structs, enums, state),
+    };
   }
 
   const blockLocals = new Map(locals);
   const previousExecutor = state.executorContext;
   state.executorContext = "main";
-  state.placementErrorTypes.push(expression.errorType);
+  state.placementErrorTypes.push(resolvedErrorType);
   let successType: ValueType = "void";
   try {
     const final = expression.body.statements.at(-1);
@@ -3001,29 +3021,29 @@ function inferExecutorPlacement(
     state.executorContext = previousExecutor;
   }
 
-  if (expression.returnType) {
+  if (resolvedReturnType) {
     requireAssignable(
-      expression.returnType.name,
+      resolvedReturnType.name,
       successType,
       expression,
       fileName,
       state.foreignNamedTypes,
       state.numericLiteralTypes,
     );
-    successType = expression.returnType.name;
+    successType = resolvedReturnType.name;
   }
   if (expression.mode !== "spawn") propagateOuterOwnership(locals, blockLocals);
   if (expression.mode === "spawn") {
-    return taskTypeName(String(successType), expression.errorType?.name ?? null);
+    return taskTypeName(String(successType), resolvedErrorType?.name ?? null);
   }
-  if (!expression.errorType) return successType;
+  if (!resolvedErrorType) return successType;
   if (!allowThrowingCall) {
     throw new DiagnosticError(fileName, expression.location, "throwing executor block requires `attempt` or `try`", {
       code: "Z0712",
       helps: ["write `try await on ...` to propagate the error, or `attempt await on ...` to inspect Result<T, E>"],
     });
   }
-  return resultTypeName(String(successType), expression.errorType.name);
+  return resultTypeName(String(successType), resolvedErrorType.name);
 }
 
 function inferTrySuccess(
@@ -7612,49 +7632,53 @@ function validateType(
   }
 }
 
-function observeTypeResolution(
+function resolveSemanticTypeName(
   type: TypeReference,
   structs: ReadonlyMap<string, StructDeclaration>,
   enums: ReadonlyMap<string, EnumDeclaration>,
   state: AnalysisState,
-): void {
-  const observeName = (name: string): void => {
+): string {
+  const resolveName = (name: string): string => {
     const view = parseViewType(name);
     if (view) {
-      observeName(view.target);
-      return;
+      return viewTypeName(resolveName(view.target));
     }
     const functionType = parseFunctionType(name);
     if (functionType) {
-      for (const parameter of functionType.parameters) observeName(parameter.type);
-      observeName(functionType.returnType);
-      return;
+      return functionTypeName(
+        functionType.parameters.map((parameter) => ({ ...parameter, type: resolveName(parameter.type) })),
+        resolveName(functionType.returnType),
+      );
     }
     const weak = parseWeakType(name);
     if (weak) {
-      observeName(weak.target);
-      return;
+      return weakTypeName(resolveName(weak.target));
     }
     const task = parseTaskType(name);
     if (task) {
-      observeName(task.successType);
-      if (task.errorType) observeName(task.errorType);
-      return;
+      return taskTypeName(
+        resolveName(task.successType),
+        task.errorType ? resolveName(task.errorType) : null,
+      );
     }
     const option = parseOptionType(name);
     if (option) {
-      observeName(option.target);
-      return;
+      return optionTypeName(resolveName(option.target));
     }
-    const container = parseSliceType(name) ?? parseDynamicArrayType(name) ?? parseFixedArrayType(name);
-    if (container) {
-      observeName(container.elementType);
-      return;
-    }
+    const slice = parseSliceType(name);
+    if (slice) return sliceTypeName(resolveName(slice.elementType));
+    const dynamic = parseDynamicArrayType(name);
+    if (dynamic) return dynamicArrayTypeName(resolveName(dynamic.elementType));
+    const array = parseFixedArrayType(name);
+    if (array) return fixedArrayTypeName(resolveName(array.elementType), array.length);
     const declaration = structs.get(name) ?? enums.get(name);
-    if (declaration) state.observer?.onTypeResolution?.({ location: type.location, declaration });
+    if (!declaration) return name;
+    const resolution = { location: type.location, declaration };
+    const resolved = state.observer?.resolveType?.(resolution) ?? declaration;
+    state.observer?.onTypeResolution?.(resolution);
+    return resolved.name;
   };
-  observeName(type.name);
+  return resolveName(type.name);
 }
 
 function containsSliceType(name: string): boolean {

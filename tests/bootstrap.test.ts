@@ -112,6 +112,7 @@ test("loads explicit Z exports through selective and namespace module imports", 
   assert.equal(analysis.nativeAuthoritativeAggregateResolutionCount, 0);
   assert.equal(analysis.nativeAuthoritativeFieldResolutionCount, 0);
   assert.equal(analysis.nativeAuthoritativeEnumVariantResolutionCount, 0);
+  assert.equal(analysis.nativeAuthoritativeTypeResolutionCount, 0);
   assert.equal(analysis.nativeFrontendParityMilliseconds, null);
   assert.equal(analysis.sourceModuleBatch.entryFileName, example);
   assert.deepEqual(
@@ -156,6 +157,7 @@ test("attaches native frontend evidence after authoritative stage-0 analysis", (
   assert.equal(analysis.nativeAuthoritativeAggregateResolutionCount, analysis.nativeAggregateResolutionCount);
   assert.equal(analysis.nativeAuthoritativeFieldResolutionCount, analysis.nativeFieldResolutionCount);
   assert.equal(analysis.nativeAuthoritativeEnumVariantResolutionCount, analysis.nativeEnumVariantResolutionCount);
+  assert.equal(analysis.nativeAuthoritativeTypeResolutionCount, analysis.nativeTypeResolutionCount);
   assert.ok((analysis.nativeFrontendParityMilliseconds ?? -1) >= 0);
 
   const callableFile = resolve(projectRoot, "native-callable-shadow.zs");
@@ -219,6 +221,7 @@ test("attaches native frontend evidence after authoritative stage-0 analysis", (
   assert.equal(callable.nativeAuthoritativeAggregateResolutionCount, 2);
   assert.equal(callable.nativeAuthoritativeFieldResolutionCount, 10);
   assert.equal(callable.nativeAuthoritativeEnumVariantResolutionCount, 4);
+  assert.equal(callable.nativeAuthoritativeTypeResolutionCount, 4);
 
   const generic = analyzeSource(`
     function identity<T>(value: T): T {
@@ -253,6 +256,26 @@ test("attaches native frontend evidence after authoritative stage-0 analysis", (
   assert.equal(generic.nativeAuthoritativeAggregateResolutionCount, 0);
   assert.equal(generic.nativeAuthoritativeFieldResolutionCount, 0);
   assert.equal(generic.nativeAuthoritativeEnumVariantResolutionCount, 0);
+  assert.equal(generic.nativeAuthoritativeTypeResolutionCount, 0);
+
+  const nestedTypes = analyzeSource(`
+    struct Item {
+      value: i32;
+    }
+
+    function main(): i32 {
+      const transform: (item: Item) => Item = (item: Item): Item => item;
+      const items: Item[1] = [Item({ value: 42 })];
+      return transform(items[0]).value - 42;
+    }
+  `, resolve(projectRoot, "native-nested-type-resolution.zs"), {
+    nativeFrontendResolver: buildStage0ModuleGraph,
+  });
+  assert.ok(nestedTypes.nativeTypeResolutionCount > 0);
+  assert.equal(
+    nestedTypes.nativeAuthoritativeTypeResolutionCount,
+    nestedTypes.nativeTypeResolutionCount,
+  );
 
   assert.throws(
     () => analyzeSource(source, example, {
@@ -4799,6 +4822,7 @@ test("resolves a canonical module graph directly from native Z ASTs", () => {
   assert.match(ordinaryCheck.stdout, /native frontend hybrid observes \d+ explicit type-use stage-0 Z resolutions/);
   assert.match(ordinaryCheck.stdout, /native frontend hybrid uses \d+ function, \d+ method, and \d+ constructor native-authoritative contracts/);
   assert.match(ordinaryCheck.stdout, /native frontend hybrid uses \d+ aggregate, \d+ field, and \d+ enum-variant native-authoritative contracts/);
+  assert.match(ordinaryCheck.stdout, /native frontend hybrid uses \d+ explicit type-use native-authoritative contracts/);
   assert.match(ordinaryCheck.stdout, /native frontend hybrid timing \(3 modules, cache hit\)/);
   assert.match(ordinaryCheck.stdout, /main\.zs: ok/);
 

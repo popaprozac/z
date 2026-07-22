@@ -424,12 +424,14 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    object patterns use the same native field contract for binding types and
    ownership. Separate aggregate, field, and enum-variant authority counts keep
    this migration tier measurable. Generic aggregate owners remain shadow-only
-   until native substitutions cross the compiler boundary. Explicit
-   local, closure, and executor-placement type uses recursively observe Z types
-   nested in function values, `Weak`, `Task`, `Option`, arrays, slices, and views.
-   Native checks report these type-use resolutions independently, while primitive,
-   foreign, and compiler-synthesized types remain outside this source-identity
-   counter.
+   until native substitutions cross the compiler boundary. Explicit local,
+   closure, and executor-placement type uses now recursively rebuild Z types from
+   native declarations nested in function values, `Weak`, `Task`, `Option`,
+   arrays, slices, and views. The rebuilt names feed local storage, closure
+   signatures, and executor result/error contracts. Native checks report these
+   type-use authority resolutions independently, while primitive, foreign,
+   compiler-synthesized, and generic-substitution types remain on the stage-zero
+   path.
    Successful non-generic Z function, method, and explicit class-constructor calls
    are now native-authoritative semantic results. Their parameter modes and types,
    async/error state, and result type come from the native signature; methods also

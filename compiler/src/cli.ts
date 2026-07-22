@@ -95,6 +95,7 @@ if (!command || !inputArgument || !["check", "emit", "run", "self-host-lex", "se
             analysis.nativeAuthoritativeAggregateResolutionCount,
             analysis.nativeAuthoritativeFieldResolutionCount,
             analysis.nativeAuthoritativeEnumVariantResolutionCount,
+            analysis.nativeAuthoritativeTypeResolutionCount,
           );
         }
       }
@@ -187,6 +188,7 @@ function reportStage1Resolver(
   authoritativeAggregateResolutionCount = 0,
   authoritativeFieldResolutionCount = 0,
   authoritativeEnumVariantResolutionCount = 0,
+  authoritativeTypeResolutionCount = 0,
 ): void {
   const edges = run.graph.modules.reduce((count, module) => count + module.dependencies.length, 0);
   const symbols = run.graph.modules.reduce((count, module) => count + module.symbols.length, 0);
@@ -202,6 +204,7 @@ function reportStage1Resolver(
     console.log(`${subject} observes ${typeResolutionCount} explicit type-use stage-0 Z resolutions`);
     console.log(`${subject} uses ${authoritativeFunctionResolutionCount} function, ${authoritativeMethodResolutionCount} method, and ${authoritativeConstructorResolutionCount} constructor native-authoritative contracts`);
     console.log(`${subject} uses ${authoritativeAggregateResolutionCount} aggregate, ${authoritativeFieldResolutionCount} field, and ${authoritativeEnumVariantResolutionCount} enum-variant native-authoritative contracts`);
+    console.log(`${subject} uses ${authoritativeTypeResolutionCount} explicit type-use native-authoritative contracts`);
   }
   if (timings) {
     const cacheState = run.boundary.cacheHit ? "cache hit" : "cache miss; stage-0 compile + native build included";
