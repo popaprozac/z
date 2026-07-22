@@ -4842,14 +4842,27 @@ test("resolves a canonical module graph directly from native Z ASTs", () => {
   const genericEvidenceModel = resolve(invalidDirectory, "generic-evidence-model.zs");
   writeFileSync(
     genericEvidenceModel,
-    "export function identity<T>(value: T): T { return value; }\n",
+    "export function identity<T>(value: T): T { return value; }\n"
+      + "export struct Record<T> {\n"
+      + "  value: T;\n"
+      + "  function get(): T { return this.value; }\n"
+      + "  static function echo(value: T): T { return value; }\n"
+      + "}\n"
+      + "export class Holder<T> {\n"
+      + "  value: T;\n"
+      + "  constructor(value: T) { this.value = value; }\n"
+      + "  function get(): T { return this.value; }\n"
+      + "}\n",
   );
   writeFileSync(
     genericEvidenceMain,
-    "import { identity as keep } from \"./generic-evidence-model.zs\";\n"
+    "import { identity as keep, Record as Entry, Holder } from \"./generic-evidence-model.zs\";\n"
       + "function main(): i32 {\n"
       + "  const label = \"é\";\n"
-      + "  return keep(20) + keep<i32>(22);\n"
+      + "  const record = Entry<i32>({ value: keep(20) });\n"
+      + "  const echoed = Entry.echo(record.get());\n"
+      + "  const holder = new Holder<i32>(keep<i32>(22));\n"
+      + "  return echoed + holder.get();\n"
       + "}\n",
   );
   const genericEvidence = spawnSync(
@@ -4858,8 +4871,8 @@ test("resolves a canonical module graph directly from native Z ASTs", () => {
     { encoding: "utf8" },
   );
   assert.equal(genericEvidence.status, 0, genericEvidence.stderr);
-  assert.match(genericEvidence.stdout, /native frontend hybrid exports 2 concrete generic call contracts/);
-  assert.match(genericEvidence.stdout, /native frontend hybrid uses 2 function, 0 method, and 0 constructor native-authoritative contracts/);
+  assert.match(genericEvidence.stdout, /native frontend hybrid exports 6 concrete generic call contracts/);
+  assert.match(genericEvidence.stdout, /native frontend hybrid uses 2 function, 3 method, and 1 constructor native-authoritative contracts/);
 
   const genericErrorMain = resolve(invalidDirectory, "generic-error-main.zs");
   writeFileSync(

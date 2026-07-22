@@ -169,7 +169,9 @@ reports the result and timings. Ordinary semantic analysis also observes each
 successful direct Z call and verifies its native definition/signature, while
 buffering native failures behind authoritative stage-zero diagnostics. Generic
 function calls export their settled substitutions and concrete callable contract
-at the call site; `check --native-frontend` reports both exported and consumed
+at the call site. The same evidence now covers instance/static calls on generic
+owners and explicit generic-class construction without decoding stage-zero
+monomorph names; `check --native-frontend` reports both exported and consumed
 native evidence.
 The frontend remains stage-zero-compiled, while the example directory is now a
 small educational consumer rather than the implementation home.

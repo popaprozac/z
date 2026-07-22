@@ -264,6 +264,8 @@ export function createNativeSemanticBridge(
           ))
           || resolution.parameterModes.length !== declaration.parameters.length
           || resolution.parameterTypes.length !== declaration.parameters.length
+          || !resolution.parameterModes.every((mode, index) => mode === resolved.native.functionSignature!.parameterModes[index])
+          || resolution.asynchronous !== resolved.native.functionSignature.asynchronous
           || !resolution.parameterTypes.every((type, index) => concreteNativeTypeMatches(type, declaration.parameters[index].type.name))
           || !concreteNativeTypeMatches(resolution.returnType, declaration.returnType.name)
           || (resolution.errorType === null) !== (declaration.errorType === null)
@@ -340,11 +342,100 @@ export function createNativeSemanticBridge(
     },
     resolveMethodCall: ({ location, aggregate, declaration }) => {
       const resolved = nativeMethod(location, aggregate, declaration);
-      if (
-        !resolved
-        || (resolved.source.declaration.typeParameters?.length ?? 0) > 0
-        || (resolved.sourceMethod.typeParameters?.length ?? 0) > 0
-      ) return null;
+      if (!resolved) return null;
+      const ownerTypeParameters = resolved.source.declaration.typeParameters ?? [];
+      const methodTypeParameters = resolved.sourceMethod.typeParameters ?? [];
+      if (methodTypeParameters.length > 0) return null;
+      const typeParameters = ownerTypeParameters;
+      if (typeParameters.length > 0) {
+        const callPath = canonicalModulePathBySourcePath.get(
+          location.fileName ?? sourceBatch.entryFileName,
+        );
+        if (!callPath) return null;
+        const resolution = index.callResolution(callPath, location.offset);
+        if (!resolution) return null;
+        const targetModule = index.graph.modules[resolution.targetModule];
+        const target = targetModule?.symbols[resolution.targetSymbol];
+        const expectedTargetName = `${resolved.source.declaration.name}.${resolved.sourceMethod.name}`;
+        if (
+          resolution.kind !== "method"
+          || targetModule?.path !== resolved.source.modulePath
+          || (target?.kind !== "struct" && target?.kind !== "class")
+          || target.name !== resolved.source.declaration.name
+          || resolution.targetName !== expectedTargetName
+          || resolution.typeParameters.length !== typeParameters.length
+          || !resolution.typeParameters.every((parameter, index) => parameter === typeParameters[index])
+          || resolution.typeArguments.some((argument) => argument.length === 0)
+          || resolution.parameterModes.length !== declaration.parameters.length
+          || resolution.parameterTypes.length !== declaration.parameters.length
+          || !resolution.parameterModes.every((mode, index) => mode === resolved.method.signature.parameterModes[index])
+          || normalizeRecordedReceiverMode(resolution.receiverMode) !== resolved.method.receiverMode
+          || resolution.asynchronous !== resolved.method.signature.asynchronous
+          || !resolution.parameterTypes.every((type, index) => concreteGenericTypeMatches(
+            resolved.sourceMethod.parameters[index].type.name,
+            type,
+            resolution.typeParameters,
+            resolution.typeArguments,
+          ))
+          || !concreteGenericTypeMatches(
+            resolved.sourceMethod.returnType.name,
+            resolution.returnType,
+            resolution.typeParameters,
+            resolution.typeArguments,
+          )
+          || (resolution.errorType === null) !== (resolved.sourceMethod.errorType === null)
+          || (resolution.errorType === null) !== (declaration.errorType === null)
+          || (resolution.errorType !== null && !concreteGenericTypeMatches(
+            resolved.sourceMethod.errorType!.name,
+            resolution.errorType,
+            resolution.typeParameters,
+            resolution.typeArguments,
+          ))
+        ) return null;
+        authoritativeMethods += 1;
+        return {
+          ...declaration,
+          async: resolution.asynchronous,
+          static: resolved.method.staticMethod,
+          visibility: resolved.method.visibility,
+          receiverMode: resolved.method.receiverMode === "in" ? null : resolved.method.receiverMode,
+          typeParameters: [],
+          parameters: declaration.parameters.map((parameter, index) => ({
+            ...parameter,
+            mode: resolution.parameterModes[index],
+            type: {
+              ...parameter.type,
+              name: rebaseConcreteGenericType(
+                resolved.sourceMethod.parameters[index].type.name,
+                resolution.parameterTypes[index],
+                parameter.type.name,
+                resolution.typeParameters,
+                resolution.typeArguments,
+              ),
+            },
+          })),
+          returnType: {
+            ...declaration.returnType,
+            name: rebaseConcreteGenericType(
+              resolved.sourceMethod.returnType.name,
+              resolution.returnType,
+              declaration.returnType.name,
+              resolution.typeParameters,
+              resolution.typeArguments,
+            ),
+          },
+          errorType: resolution.errorType === null ? null : {
+            ...declaration.errorType!,
+            name: rebaseConcreteGenericType(
+              resolved.sourceMethod.errorType!.name,
+              resolution.errorType,
+              declaration.errorType!.name,
+              resolution.typeParameters,
+              resolution.typeArguments,
+            ),
+          },
+        };
+      }
       const signature = resolved.method.signature;
       if (signature.parameterModes.length !== declaration.parameters.length) {
         throw new Error(
@@ -396,8 +487,86 @@ export function createNativeSemanticBridge(
     },
     resolveConstructorCall: ({ location, aggregate, declaration }) => {
       const resolved = nativeConstructor(location, aggregate);
-      if (!resolved || (resolved.source.declaration.typeParameters?.length ?? 0) > 0) return null;
+      if (!resolved) return null;
       const sourceConstructor = resolved.source.declaration.constructor!;
+      const typeParameters = resolved.source.declaration.typeParameters ?? [];
+      if (typeParameters.length > 0) {
+        const callPath = canonicalModulePathBySourcePath.get(
+          location.fileName ?? sourceBatch.entryFileName,
+        );
+        if (!callPath) return null;
+        const resolution = index.callResolution(callPath, location.offset);
+        if (!resolution) return null;
+        const targetModule = index.graph.modules[resolution.targetModule];
+        const target = targetModule?.symbols[resolution.targetSymbol];
+        const substitutions = new Map(
+          resolution.typeParameters.map((parameter, index) => [parameter, resolution.typeArguments[index]] as const),
+        );
+        const concreteOwner = `${resolved.source.declaration.name}<${typeParameters.map((parameter) => substitutions.get(parameter) ?? "").join(", ")}>`;
+        if (
+          resolution.kind !== "constructor"
+          || targetModule?.path !== resolved.source.modulePath
+          || target?.kind !== "class"
+          || target.name !== resolved.source.declaration.name
+          || normalizeNativeType(resolution.targetName) !== normalizeNativeType(`${concreteOwner}.constructor`)
+          || resolution.typeParameters.length !== typeParameters.length
+          || !resolution.typeParameters.every((parameter, index) => parameter === typeParameters[index])
+          || resolution.typeArguments.some((argument) => argument.length === 0)
+          || resolution.parameterModes.length !== declaration.parameters.length
+          || resolution.parameterTypes.length !== declaration.parameters.length
+          || !resolution.parameterModes.every((mode, index) => mode === resolved.signature.parameterModes[index])
+          || resolution.asynchronous !== resolved.signature.asynchronous
+          || !resolution.parameterTypes.every((type, index) => concreteGenericTypeMatches(
+            sourceConstructor.parameters[index].type.name,
+            type,
+            resolution.typeParameters,
+            resolution.typeArguments,
+          ))
+          || normalizeNativeType(resolution.returnType) !== normalizeNativeType(concreteOwner)
+          || (resolution.errorType === null) !== (sourceConstructor.errorType === null)
+          || (resolution.errorType === null) !== (declaration.errorType === null)
+          || (resolution.errorType !== null && !concreteGenericTypeMatches(
+            sourceConstructor.errorType!.name,
+            resolution.errorType,
+            resolution.typeParameters,
+            resolution.typeArguments,
+          ))
+        ) return null;
+        authoritativeConstructors += 1;
+        return {
+          ...declaration,
+          async: resolution.asynchronous,
+          typeParameters: [],
+          parameters: declaration.parameters.map((parameter, index) => ({
+            ...parameter,
+            mode: resolution.parameterModes[index],
+            type: {
+              ...parameter.type,
+              name: rebaseConcreteGenericType(
+                sourceConstructor.parameters[index].type.name,
+                resolution.parameterTypes[index],
+                parameter.type.name,
+                resolution.typeParameters,
+                resolution.typeArguments,
+              ),
+            },
+          })),
+          returnType: {
+            ...declaration.returnType,
+            name: declaration.returnType.name,
+          },
+          errorType: resolution.errorType === null ? null : {
+            ...declaration.errorType!,
+            name: rebaseConcreteGenericType(
+              sourceConstructor.errorType!.name,
+              resolution.errorType,
+              declaration.errorType!.name,
+              resolution.typeParameters,
+              resolution.typeArguments,
+            ),
+          },
+        };
+      }
       const signature = resolved.signature;
       if (signature.parameterModes.length !== declaration.parameters.length) {
         throw new Error(
@@ -627,6 +796,58 @@ function rebaseConcreteNativeType(nativeType: string, linkedType: string): strin
     throw new Error(`native semantic bridge cannot rebase concrete ${JSON.stringify(nativeType)} onto ${JSON.stringify(linkedType)}`);
   }
   return linkedType;
+}
+
+function concreteGenericTypeMatches(
+  sourceType: string,
+  nativeType: string,
+  typeParameters: readonly string[],
+  typeArguments: readonly string[],
+): boolean {
+  return normalizeNativeType(nativeType) === normalizeNativeType(
+    substituteCanonicalType(sourceType, typeParameters, typeArguments),
+  );
+}
+
+function rebaseConcreteGenericType(
+  sourceType: string,
+  nativeType: string,
+  linkedType: string,
+  typeParameters: readonly string[],
+  typeArguments: readonly string[],
+): string {
+  if (!concreteGenericTypeMatches(sourceType, nativeType, typeParameters, typeArguments)) {
+    throw new Error(
+      `native semantic bridge cannot rebase concrete generic ${JSON.stringify(nativeType)} from ${JSON.stringify(sourceType)}`,
+    );
+  }
+  return linkedType;
+}
+
+function substituteCanonicalType(
+  sourceType: string,
+  typeParameters: readonly string[],
+  typeArguments: readonly string[],
+): string {
+  let concrete = canonicalTypeName(sourceType);
+  for (let index = 0; index < typeParameters.length; index += 1) {
+    const parameter = typeParameters[index];
+    const argument = typeArguments[index];
+    concrete = concrete.replace(new RegExp(`\\b${escapeRegExp(parameter)}\\b`, "g"), argument);
+  }
+  return concrete;
+}
+
+function normalizeNativeType(typeName: string): string {
+  return typeName.replace(/\s+/g, "");
+}
+
+function normalizeRecordedReceiverMode(mode: string): "in" | "inout" | "move" | string {
+  return mode.length === 0 ? "in" : mode;
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function definitionKey(modulePath: string, declaration: FunctionDeclaration | StructDeclaration | EnumDeclaration): string {

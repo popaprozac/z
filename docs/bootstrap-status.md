@@ -423,8 +423,10 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    parallel checker. Match statements and expressions use native variants, and
    object patterns use the same native field contract for binding types and
    ownership. Separate aggregate, field, and enum-variant authority counts keep
-   this migration tier measurable. Generic aggregate owners remain shadow-only
-   until native substitutions cross the compiler boundary. Explicit local,
+   this migration tier measurable. Construction, field, and explicit type-use
+   authority for generic aggregate owners remains shadow-only; generic-owner
+   call substitutions now cross the boundary for methods and constructors.
+   Explicit local,
    closure, and executor-placement type uses now recursively rebuild Z types from
    native declarations nested in function values, `Weak`, `Task`, `Option`,
    arrays, slices, and views. The rebuilt names feed local storage, closure
@@ -440,8 +442,11 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    generic Z functions are native-authoritative when the complete contract maps
    cleanly onto the linked concrete declaration; unresolved contextual inference
    and concrete names needing richer cross-module rebasing retain the stage-zero
-   fallback. Native checks report exported contracts separately from contracts
-   actually consumed by the semantic bridge.
+   fallback. The same source-keyed evidence now makes instance/static methods on
+   generic owners and explicit generic-class constructors authoritative after
+   validating the owner symbol, ordered substitutions, receiver contract, and
+   fully concrete callable signature. Native checks report exported contracts
+   separately from contracts actually consumed by the semantic bridge.
    Successful non-generic Z function, method, and explicit class-constructor calls
    are now native-authoritative semantic results. Their parameter modes and types,
    async/error state, and result type come from the native signature; methods also
@@ -451,12 +456,13 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    generation, so native `inout this` and `move this` feed the existing
    exclusivity and consumption checks rather than creating a parallel ownership
    path. Stage zero independently proves each contract equivalent before using
-   it. Direct generic functions with complete native substitutions now use the
-   same authority path. Generic methods and methods or constructors on generic
-   owners remain shadow-only while concrete owner/member identity and type-name
-   rebasing are expanded. Ordinary checks without `--native-frontend` retain the
-   stage-zero path. Native-authority counts are reported separately for functions,
-   methods, and constructors.
+   it. Direct generic functions, methods on generic owners, and explicit
+   generic-class constructors with complete native substitutions now use the
+   same authority path. Separately generic methods remain shadow-only until
+   stage zero and stage one share their full materialization surface. Ordinary
+   checks without `--native-frontend` retain the stage-zero path.
+   Native-authority counts are reported separately for functions, methods, and
+   constructors.
    Native failures are buffered: a stage-zero error remains authoritative, and a
    native error surfaces only after stage zero succeeds. Prepared-library invocation lives in a
    reusable native-frontend service rather than the CLI. Native checks therefore
