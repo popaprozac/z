@@ -2236,6 +2236,24 @@ function substituteGenericType(
   };
 }
 
+function parameterizedTypeName(
+  in base: String,
+  in parameters: Array<String>
+): String {
+  if (parameters.length == 0) return base.copyBytes(0, base.byteLength);
+  let output = TextBuffer();
+  output.append(base);
+  output.append("<");
+  let index: usize = 0;
+  while (index < parameters.length) {
+    if (index > 0) output.append(", ");
+    output.append(parameters[index]);
+    index = index + 1;
+  }
+  output.append(">");
+  return output.finish();
+}
+
 function genericCallError(
   in module: ParsedModule,
   in tree: ExpressionTree,
@@ -3506,10 +3524,21 @@ function inferContextualObjectExpressionNode(
 ): String throws ModuleResolveError {
   if (tree.nodes[index].kind != ExpressionKind.objectExpression) return "";
   let known = false;
+  let genericParameters = Array<String>();
   match (typeSymbolLocation(modules, moduleIndex, expectedType)) {
     some(location) => {
       match (in modules[location.moduleIndex].symbols[location.symbolIndex].typeSignature) {
-        some(signature) => known = true;
+        some(signature) => {
+          known = true;
+          match (genericTypeShape(expectedType)) {
+            some(generic) => {}
+            none => {
+              for (const parameter of signature.typeParameters) {
+                genericParameters.push(parameter.copyBytes(0, parameter.byteLength));
+              }
+            }
+          }
+        }
         none => {}
       }
     }
@@ -3518,6 +3547,7 @@ function inferContextualObjectExpressionNode(
   if (!known) return "";
   const children = copyIndices(tree.nodes[index].children);
   let covered = Array<String>();
+  let substitutions = Array<NativeValueBinding>();
   let childIndex: usize = 0;
   while (childIndex < children.length && childIndex < tree.nodes[index].labels.length) {
     const fieldName = tree.nodes[index].labels[childIndex].copyBytes(
@@ -3555,13 +3585,31 @@ function inferContextualObjectExpressionNode(
           inout bindings,
           inout callResolutions
         );
+        if (genericParameters.length > 0) {
+          try bindGenericType(
+            module,
+            modules,
+            moduleIndex,
+            tree,
+            children[childIndex],
+            expectedType,
+            field.typeName,
+            actual,
+            genericParameters,
+            inout substitutions
+          );
+        }
+        const concreteFieldType = substituteGenericType(
+          field.typeName,
+          substitutions
+        );
         try requireExpressionType(
           module,
           modules,
           moduleIndex,
           tree,
           children[childIndex],
-          field.typeName,
+          concreteFieldType,
           actual
         );
         try consumeOwnedExpressionNode(
@@ -3570,7 +3618,7 @@ function inferContextualObjectExpressionNode(
           moduleIndex,
           tree,
           children[childIndex],
-          field.typeName,
+          concreteFieldType,
           inout bindings
         );
       }
@@ -3607,7 +3655,16 @@ function inferContextualObjectExpressionNode(
     }
     none => {}
   }
-  return expectedType.copyBytes(0, expectedType.byteLength);
+  if (genericParameters.length == 0) {
+    return expectedType.copyBytes(0, expectedType.byteLength);
+  }
+  let arguments = Array<String>();
+  for (const parameter of genericParameters) {
+    const argument = valueBindingType(substitutions, parameter);
+    if (argument.byteLength == 0) return "";
+    arguments.push(argument);
+  }
+  return parameterizedTypeName(expectedType, arguments);
 }
 
 function inferMatchExpressionNodeType(
@@ -4681,6 +4738,12 @@ function inferExpressionNodeType(
             match (in typeSignature.constructorSignature) {
               some(signature) => {
                 let substitutions = Array<NativeValueBinding>();
+                let callableSignature = rebaseModuleFunctionSignature(
+                  modules,
+                  location.moduleIndex,
+                  moduleIndex,
+                  signature
+                );
                 match (genericTypeShape(value)) {
                   some(generic) => {
                     let typeIndex: usize = 0;
@@ -4695,16 +4758,33 @@ function inferExpressionNodeType(
                       );
                       typeIndex = typeIndex + 1;
                     }
+                    callableSignature.returnType = value.copyBytes(0, value.byteLength);
                   }
-                  none => {}
+                  none => {
+                    let typeIndex: usize = 0;
+                    while (typeIndex < typeSignature.typeParameters.length) {
+                      callableSignature.typeParameters.push(
+                        typeSignature.typeParameters[typeIndex].copyBytes(
+                          0,
+                          typeSignature.typeParameters[typeIndex].byteLength
+                        )
+                      );
+                      typeIndex = typeIndex + 1;
+                    }
+                    callableSignature.returnType = parameterizedTypeName(
+                      value,
+                      typeSignature.typeParameters
+                    );
+                  }
                 }
-                let callableSignature = rebaseModuleFunctionSignature(
-                  modules,
-                  location.moduleIndex,
-                  moduleIndex,
-                  signature
+                const targetName = modules[location.moduleIndex].symbols[
+                  location.symbolIndex
+                ].name.copyBytes(
+                  0,
+                  modules[location.moduleIndex].symbols[
+                    location.symbolIndex
+                  ].name.byteLength
                 );
-                callableSignature.returnType = value.copyBytes(0, value.byteLength);
                 return try inferSignatureCallType(
                   module,
                   modules,
@@ -4717,7 +4797,7 @@ function inferExpressionNodeType(
                   inout bindings,
                   "",
                   "",
-                  `${value}.constructor`,
+                  `${targetName}.constructor`,
                   callableSignature,
                   substitutions,
                   location.moduleIndex,
@@ -4750,7 +4830,7 @@ function inferExpressionNodeType(
                   inout bindings,
                   inout callResolutions
                 );
-                if (contextual.byteLength > 0) return value.copyBytes(0, valueLength);
+                if (contextual.byteLength > 0) return contextual;
               }
             }
           }
@@ -5401,7 +5481,7 @@ function inferExpressionNodeType(
             inout bindings,
             inout callResolutions
           );
-          if (contextual.byteLength > 0) return constructionType;
+          if (contextual.byteLength > 0) return contextual;
         }
       }
       none => {}

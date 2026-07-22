@@ -308,6 +308,12 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    Generic calls infer type parameters through direct, nested generic,
    fixed-array, `Slice`, nullable, and `view` parameter shapes, or accept
    explicit type arguments, before substituting parameter and result types.
+   Argument-driven inference now also specializes local or imported generic
+   struct literals, synthesized class initialization, and declared class
+   constructors; selective aliases preserve caller-visible result spellings
+   while evidence remains keyed to the defining type. Context-only aggregate
+   inference for parameters absent from every field/constructor argument remains
+   unresolved in the native tier.
    Conflicting inference, value/type arity, and known cross-module argument
    mismatches originate in Z.
    Local and imported enums plus compiler-provided `Option<T>` and `Result<T, E>`
@@ -445,9 +451,9 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    cleanly onto the linked concrete declaration; unresolved contextual inference
    and concrete names needing richer cross-module rebasing retain the stage-zero
    fallback. The same source-keyed evidence now makes instance/static methods on
-   generic owners and explicit generic-class constructors authoritative after
-   validating the owner symbol, ordered substitutions, receiver contract, and
-   fully concrete callable signature. Native checks report exported contracts
+   generic owners and inferred or explicit generic-class constructors
+   authoritative after validating the owner symbol, ordered substitutions,
+   receiver contract, and fully concrete callable signature. Native checks report exported contracts
    separately from contracts actually consumed by the semantic bridge.
    Successful non-generic Z function, method, and explicit class-constructor calls
    are now native-authoritative semantic results. Their parameter modes and types,
@@ -458,9 +464,9 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    generation, so native `inout this` and `move this` feed the existing
    exclusivity and consumption checks rather than creating a parallel ownership
    path. Stage zero independently proves each contract equivalent before using
-   it. Direct generic functions, methods on generic owners, and explicit
-   generic-class constructors with complete native substitutions now use the
-   same authority path. Separately generic methods remain shadow-only until
+   it. Direct generic functions, methods on generic owners, and inferred or
+   explicit generic-class constructors with complete native substitutions now
+   use the same authority path. Separately generic methods remain shadow-only until
    stage zero and stage one share their full materialization surface. Ordinary
    checks without `--native-frontend` retain the stage-zero path.
    Native-authority counts are reported separately for functions, methods, and

@@ -499,16 +499,12 @@ export function createNativeSemanticBridge(
         if (!resolution) return null;
         const targetModule = index.graph.modules[resolution.targetModule];
         const target = targetModule?.symbols[resolution.targetSymbol];
-        const substitutions = new Map(
-          resolution.typeParameters.map((parameter, index) => [parameter, resolution.typeArguments[index]] as const),
-        );
-        const concreteOwner = `${resolved.source.declaration.name}<${typeParameters.map((parameter) => substitutions.get(parameter) ?? "").join(", ")}>`;
         if (
           resolution.kind !== "constructor"
           || targetModule?.path !== resolved.source.modulePath
           || target?.kind !== "class"
           || target.name !== resolved.source.declaration.name
-          || normalizeNativeType(resolution.targetName) !== normalizeNativeType(`${concreteOwner}.constructor`)
+          || resolution.targetName !== `${resolved.source.declaration.name}.constructor`
           || resolution.typeParameters.length !== typeParameters.length
           || !resolution.typeParameters.every((parameter, index) => parameter === typeParameters[index])
           || resolution.typeArguments.some((argument) => argument.length === 0)
@@ -522,7 +518,14 @@ export function createNativeSemanticBridge(
             resolution.typeParameters,
             resolution.typeArguments,
           ))
-          || normalizeNativeType(resolution.returnType) !== normalizeNativeType(concreteOwner)
+          || !concreteGenericOwnerMatches(
+            index,
+            callPath,
+            resolution.returnType,
+            resolved.source.modulePath,
+            resolved.source.declaration.name,
+            resolution.typeArguments,
+          )
           || (resolution.errorType === null) !== (sourceConstructor.errorType === null)
           || (resolution.errorType === null) !== (declaration.errorType === null)
           || (resolution.errorType !== null && !concreteGenericTypeMatches(
@@ -841,6 +844,29 @@ function normalizeNativeType(typeName: string): string {
 
 function normalizeRecordedReceiverMode(mode: string): "in" | "inout" | "move" | string {
   return mode.length === 0 ? "in" : mode;
+}
+
+function concreteGenericOwnerMatches(
+  index: NativeSemanticIndex,
+  callPath: string,
+  concreteType: string,
+  sourceModulePath: string,
+  sourceName: string,
+  typeArguments: readonly string[],
+): boolean {
+  const normalized = normalizeNativeType(concreteType);
+  const opening = normalized.indexOf("<");
+  if (opening <= 0 || !normalized.endsWith(">")) return false;
+  const base = normalized.slice(0, opening);
+  const expected = `${base}<${typeArguments.map(normalizeNativeType).join(",")}>`;
+  if (normalized !== expected) return false;
+  const separator = base.indexOf(".");
+  const target = separator < 0
+    ? index.resolveSymbol(callPath, base)
+    : index.resolveNamespaceMember(callPath, base.slice(0, separator), base.slice(separator + 1));
+  return target?.modulePath === sourceModulePath
+    && target.declaration.name === sourceName
+    && target.declaration.kind === "class";
 }
 
 function escapeRegExp(value: string): string {

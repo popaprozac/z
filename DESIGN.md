@@ -1530,15 +1530,20 @@ ported independently rather than translated as one monolith.
    validating its target and mapping every concrete type onto the linked
    declaration; it never reconstructs semantics from a mangled monomorph name.
    This includes direct generic functions, instance/static methods whose owner is
-   generic, and explicit construction of generic classes. Method evidence also
-   proves receiver capability; constructor evidence proves the concrete owner
-   result. Separately generic methods remain a later authority tier because the
+   generic, and inferred or explicit construction of generic classes. Method
+   evidence also proves receiver capability; constructor evidence proves the
+   concrete owner result. Separately generic methods remain a later authority tier because the
    two bootstrap frontends do not yet share their complete materialization path.
    Generic aggregate construction, fields, and explicit type uses do not need a
    separate concrete-call record: the native template supplies structural
    metadata, and the already-linked concrete declaration supplies lowering
    identity. That rebase is keyed by source definition and member name, never by
    decoding a stage-zero monomorph spelling.
+   The native resolver performs argument-driven owner inference for generic
+   struct literals, synthesized classes, and declared constructors across local,
+   selective, and namespace type spellings. Constructor records keep the defining
+   class as their target while allowing the concrete result type to retain a
+   caller-visible alias. Purely contextual inference remains a later native tier.
    This call evidence is a temporary bootstrap transport—the eventual native
    driver will pass the same structural result directly between compiler phases.
    Type symbols

@@ -4852,17 +4852,27 @@ test("resolves a canonical module graph directly from native Z ASTs", () => {
       + "  value: T;\n"
       + "  constructor(value: T) { this.value = value; }\n"
       + "  function get(): T { return this.value; }\n"
+      + "}\n"
+      + "export class Slot<T> {\n"
+      + "  value: T;\n"
+      + "}\n"
+      + "export class Choice<T> {\n"
+      + "  constructor(left: T, right: T) {}\n"
       + "}\n",
   );
   writeFileSync(
     genericEvidenceMain,
-    "import { identity as keep, Record as Entry, Holder } from \"./generic-evidence-model.zs\";\n"
+    "import { identity as keep, Record as Entry, Holder as Stored, Slot as Cell } from \"./generic-evidence-model.zs\";\n"
+      + "import model from \"./generic-evidence-model.zs\";\n"
       + "function main(): i32 {\n"
       + "  const label = \"é\";\n"
-      + "  const record: Entry<i32> = Entry<i32>({ value: keep(20) });\n"
+      + "  const record: Entry<i32> = Entry({ value: keep(20) });\n"
       + "  const echoed = Entry.echo(record.get());\n"
-      + "  const holder = new Holder<i32>(keep<i32>(22));\n"
-      + "  return echoed + holder.get();\n"
+      + "  const holder = new Stored(keep<i32>(22));\n"
+      + "  const explicitHolder = new Stored<i32>(0);\n"
+      + "  const namespacedHolder = new model.Holder(0);\n"
+      + "  const cell = new Cell({ value: 0 });\n"
+      + "  return echoed + holder.get() + explicitHolder.get() + namespacedHolder.get() + cell.value;\n"
       + "}\n",
   );
   const genericEvidence = spawnSync(
@@ -4871,10 +4881,23 @@ test("resolves a canonical module graph directly from native Z ASTs", () => {
     { encoding: "utf8" },
   );
   assert.equal(genericEvidence.status, 0, genericEvidence.stderr);
-  assert.match(genericEvidence.stdout, /native frontend hybrid exports 6 concrete generic call contracts/);
-  assert.match(genericEvidence.stdout, /native frontend hybrid uses 2 function, 3 method, and 1 constructor native-authoritative contracts/);
-  assert.match(genericEvidence.stdout, /native frontend hybrid uses 1 aggregate, 5 field, and 0 enum-variant native-authoritative contracts/);
+  assert.match(genericEvidence.stdout, /native frontend hybrid exports 10 concrete generic call contracts/);
+  assert.match(genericEvidence.stdout, /native frontend hybrid uses 2 function, 5 method, and 3 constructor native-authoritative contracts/);
+  assert.match(genericEvidence.stdout, /native frontend hybrid uses 2 aggregate, 7 field, and 0 enum-variant native-authoritative contracts/);
   assert.match(genericEvidence.stdout, /native frontend hybrid uses 1 explicit type-use native-authoritative contract/);
+
+  writeFileSync(
+    genericEvidenceMain,
+    "import { Choice } from \"./generic-evidence-model.zs\";\n"
+      + "function main(): i32 { const choice = new Choice(1, true); return 0; }\n",
+  );
+  const conflictingConstructorInference = spawnSync(
+    process.execPath,
+    [cli, "self-host-resolve", genericEvidenceMain],
+    { encoding: "utf8" },
+  );
+  assert.equal(conflictingConstructorInference.status, 1);
+  assert.match(conflictingConstructorInference.stderr, /conflicting inferred types for T in Choice\.constructor: i32 and boolean/);
 
   const genericErrorMain = resolve(invalidDirectory, "generic-error-main.zs");
   writeFileSync(
