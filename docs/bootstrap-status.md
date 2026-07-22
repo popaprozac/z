@@ -480,12 +480,16 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    The CLI now owns only native preparation/invocation and reporting, not graph or
    signature semantics. Later compiler consumers have an explicit migration seam
    instead of reading a CLI-only side effect.
-   Complete
+   Native signatures now retain generic trait constraints and nominal aggregate
+   conformance. Native inference enforces those constraints for inferred and
+   explicit function/method calls and aggregate construction; constrained generic
+   bodies may call only methods supplied by their declared traits. Complete
    contextual literal and return-driven inference, foreign/intrinsic method lookup,
-   generic constraints/methods, async/foreign call effects, contextual untyped
-   closure parameters, escaping closure-environment validation, precise closure
-   borrow last-use release, remaining receiver-path capability enforcement, and
-   full recursive ownership contexts remain stage-zero work.
+   standalone generic type-use constraint validation, generic trait declarations,
+   async/foreign call effects, contextual untyped closure parameters, escaping
+   closure-environment validation, precise closure borrow last-use release,
+   remaining receiver-path capability enforcement, and full recursive ownership
+   contexts remain stage-zero work.
    Template literals now
    retain ordered decoded-text leaves and ordinary embedded-expression roots,
    including nested templates, in the same flat arena. Expression-bodied

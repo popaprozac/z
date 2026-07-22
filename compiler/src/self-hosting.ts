@@ -135,8 +135,15 @@ export type Stage1ModuleMethodSignature = {
   readonly signature: Stage1ModuleFunctionSignature;
 };
 
+export type Stage1ModuleTypeParameterConstraint = {
+  readonly parameter: string;
+  readonly traitName: string;
+};
+
 export type Stage1ModuleTypeSignature = {
   readonly typeParameters: readonly string[];
+  readonly typeParameterConstraints: readonly Stage1ModuleTypeParameterConstraint[];
+  readonly implementedTraits: readonly string[];
   readonly fields: readonly Stage1ModuleFieldSignature[];
   readonly methods: readonly Stage1ModuleMethodSignature[];
   readonly variants: readonly Stage1ModuleVariantSignature[];
@@ -148,6 +155,7 @@ export type Stage1ModuleTypeSignature = {
 export type Stage1ModuleFunctionSignature = {
   readonly asynchronous: boolean;
   readonly typeParameters: readonly string[];
+  readonly typeParameterConstraints: readonly Stage1ModuleTypeParameterConstraint[];
   readonly parameterModes: readonly ("value" | "in" | "inout" | "out")[];
   readonly parameterTypes: readonly string[];
   readonly returnType: string;
@@ -283,6 +291,61 @@ export function decodeStage1ModuleGraphStream(output: string): Stage1ModuleGraph
       });
       continue;
     }
+    if (fields[0] === "functionConstraint") {
+      if (fields.length !== 5 || !fields.slice(3).every((field) => /^(?:[0-9a-f]{2})*$/.test(field))) {
+        throw new Error(`malformed stage-1 function constraint: ${line}`);
+      }
+      const moduleIndex = parseProtocolHexInteger(fields[1], "function constraint module");
+      const symbolIndex = parseProtocolHexInteger(fields[2], "function constraint symbol");
+      const signature = modules[moduleIndex]?.symbols[symbolIndex]?.functionSignature;
+      if (!signature) throw new Error("stage-1 function constraint appeared before its signature");
+      (signature.typeParameterConstraints as Stage1ModuleTypeParameterConstraint[]).push({
+        parameter: Buffer.from(fields[3], "hex").toString("utf8"),
+        traitName: Buffer.from(fields[4], "hex").toString("utf8"),
+      });
+      continue;
+    }
+    if (fields[0] === "typeConstraint") {
+      if (fields.length !== 5 || !fields.slice(3).every((field) => /^(?:[0-9a-f]{2})*$/.test(field))) {
+        throw new Error(`malformed stage-1 type constraint: ${line}`);
+      }
+      const moduleIndex = parseProtocolHexInteger(fields[1], "type constraint module");
+      const symbolIndex = parseProtocolHexInteger(fields[2], "type constraint symbol");
+      const signature = modules[moduleIndex]?.symbols[symbolIndex]?.typeSignature;
+      if (!signature) throw new Error("stage-1 type constraint appeared before its signature");
+      (signature.typeParameterConstraints as Stage1ModuleTypeParameterConstraint[]).push({
+        parameter: Buffer.from(fields[3], "hex").toString("utf8"),
+        traitName: Buffer.from(fields[4], "hex").toString("utf8"),
+      });
+      continue;
+    }
+    if (fields[0] === "implements") {
+      if (fields.length !== 4 || !/^(?:[0-9a-f]{2})*$/.test(fields[3])) {
+        throw new Error(`malformed stage-1 implemented trait: ${line}`);
+      }
+      const moduleIndex = parseProtocolHexInteger(fields[1], "implemented trait module");
+      const symbolIndex = parseProtocolHexInteger(fields[2], "implemented trait symbol");
+      const signature = modules[moduleIndex]?.symbols[symbolIndex]?.typeSignature;
+      if (!signature) throw new Error("stage-1 implemented trait appeared before its type signature");
+      (signature.implementedTraits as string[]).push(Buffer.from(fields[3], "hex").toString("utf8"));
+      continue;
+    }
+    if (fields[0] === "methodConstraint") {
+      if (fields.length !== 6 || !fields.slice(3).every((field) => /^(?:[0-9a-f]{2})*$/.test(field))) {
+        throw new Error(`malformed stage-1 method constraint: ${line}`);
+      }
+      const moduleIndex = parseProtocolHexInteger(fields[1], "method constraint module");
+      const symbolIndex = parseProtocolHexInteger(fields[2], "method constraint symbol");
+      const signature = modules[moduleIndex]?.symbols[symbolIndex]?.typeSignature;
+      const methodName = Buffer.from(fields[3], "hex").toString("utf8");
+      const method = signature?.methods.find((candidate) => candidate.name === methodName);
+      if (!method) throw new Error("stage-1 method constraint appeared before its method signature");
+      (method.signature.typeParameterConstraints as Stage1ModuleTypeParameterConstraint[]).push({
+        parameter: Buffer.from(fields[4], "hex").toString("utf8"),
+        traitName: Buffer.from(fields[5], "hex").toString("utf8"),
+      });
+      continue;
+    }
     if (fields[0] === "typeSignature") {
       if (fields.length < 8) throw new Error(`malformed stage-1 type signature line: ${line}`);
       const moduleIndex = parseProtocolHexInteger(fields[1], "type signature module");
@@ -290,7 +353,7 @@ export function decodeStage1ModuleGraphStream(output: string): Stage1ModuleGraph
       const symbol = modules[moduleIndex]?.symbols[symbolIndex] as Stage1ModuleSymbol | undefined;
       if (!symbol) throw new Error("stage-1 type signature appeared before its symbol");
       if (
-        (symbol.kind !== "struct" && symbol.kind !== "class" && symbol.kind !== "enum")
+        (symbol.kind !== "struct" && symbol.kind !== "class" && symbol.kind !== "trait" && symbol.kind !== "enum")
         || symbol.typeSignature !== null
       ) {
         throw new Error("stage-1 type signature does not identify an unsigned type symbol");
@@ -348,6 +411,8 @@ export function decodeStage1ModuleGraphStream(output: string): Stage1ModuleGraph
       }
       (symbol as { typeSignature: Stage1ModuleTypeSignature | null }).typeSignature = {
         typeParameters: typeParameters.map((field) => Buffer.from(field, "hex").toString("utf8")),
+        typeParameterConstraints: [],
+        implementedTraits: [],
         fields: decodedFields,
         methods: [],
         variants: decodedVariants,
@@ -396,6 +461,7 @@ export function decodeStage1ModuleGraphStream(output: string): Stage1ModuleGraph
         errorType: fields[5].length === 0 ? null : Buffer.from(fields[5], "hex").toString("utf8"),
         typeParameters: encodedTypes.slice(0, typeParameterCount)
           .map((field) => Buffer.from(field, "hex").toString("utf8")),
+        typeParameterConstraints: [],
         parameterModes,
         parameterTypes: encodedParameters.filter((_, index) => index % 2 === 1)
           .map((field) => Buffer.from(field, "hex").toString("utf8")),
@@ -451,6 +517,7 @@ export function decodeStage1ModuleGraphStream(output: string): Stage1ModuleGraph
           errorType: fields[9].length === 0 ? null : Buffer.from(fields[9], "hex").toString("utf8"),
           typeParameters: encodedTypes.slice(0, typeParameterCount)
             .map((field) => Buffer.from(field, "hex").toString("utf8")),
+          typeParameterConstraints: [],
           parameterModes,
           parameterTypes: encodedParameters.filter((_, index) => index % 2 === 1)
             .map((field) => Buffer.from(field, "hex").toString("utf8")),
@@ -493,6 +560,7 @@ export function decodeStage1ModuleGraphStream(output: string): Stage1ModuleGraph
         returnType: Buffer.from(fields[4], "hex").toString("utf8"),
         errorType: fields[5].length === 0 ? null : Buffer.from(fields[5], "hex").toString("utf8"),
         typeParameters: encodedTypes.slice(0, typeParameterCount).map((field) => Buffer.from(field, "hex").toString("utf8")),
+        typeParameterConstraints: [],
         parameterModes,
         parameterTypes: encodedParameters.filter((_, index) => index % 2 === 1)
           .map((field) => Buffer.from(field, "hex").toString("utf8")),

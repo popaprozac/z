@@ -141,6 +141,18 @@ function appendFunctionSignature(
         parameterIndex = parameterIndex + 1;
       }
       output.appendAscii(10);
+      for (const constraint of signature.typeParameterConstraints) {
+        output.append("functionConstraint");
+        output.appendAscii(9);
+        appendHexUsize(inout output, moduleIndex);
+        output.appendAscii(9);
+        appendHexUsize(inout output, symbolIndex);
+        output.appendAscii(9);
+        appendHexText(inout output, constraint.parameter);
+        output.appendAscii(9);
+        appendHexText(inout output, constraint.traitName);
+        output.appendAscii(10);
+      }
     }
     none => {}
   }
@@ -193,6 +205,28 @@ function appendTypeSignature(
         appendHexText(inout output, variant.payloadType);
       }
       output.appendAscii(10);
+      for (const constraint of signature.typeParameterConstraints) {
+        output.append("typeConstraint");
+        output.appendAscii(9);
+        appendHexUsize(inout output, moduleIndex);
+        output.appendAscii(9);
+        appendHexUsize(inout output, symbolIndex);
+        output.appendAscii(9);
+        appendHexText(inout output, constraint.parameter);
+        output.appendAscii(9);
+        appendHexText(inout output, constraint.traitName);
+        output.appendAscii(10);
+      }
+      for (const implemented of signature.implementedTraits) {
+        output.append("implements");
+        output.appendAscii(9);
+        appendHexUsize(inout output, moduleIndex);
+        output.appendAscii(9);
+        appendHexUsize(inout output, symbolIndex);
+        output.appendAscii(9);
+        appendHexText(inout output, implemented);
+        output.appendAscii(10);
+      }
     }
     none => {}
   }
@@ -245,6 +279,20 @@ function appendMethodSignatures(
           parameterIndex = parameterIndex + 1;
         }
         output.appendAscii(10);
+        for (const constraint of method.signature.typeParameterConstraints) {
+          output.append("methodConstraint");
+          output.appendAscii(9);
+          appendHexUsize(inout output, moduleIndex);
+          output.appendAscii(9);
+          appendHexUsize(inout output, symbolIndex);
+          output.appendAscii(9);
+          appendHexText(inout output, method.name);
+          output.appendAscii(9);
+          appendHexText(inout output, constraint.parameter);
+          output.appendAscii(9);
+          appendHexText(inout output, constraint.traitName);
+          output.appendAscii(10);
+        }
       }
     }
     none => {}

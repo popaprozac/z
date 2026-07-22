@@ -7753,6 +7753,82 @@ test("checks nominal trait constraints on inferred and explicit generic instance
     () => compileToC(outsideSurface, "generic-constraint-surface.zs"),
     /member "secret" is not provided by the trait constraints on T/,
   );
+
+  const directory = mkdtempSync("/tmp/z-native-generic-constraints-");
+  const model = resolve(directory, "model.zs");
+  const main = resolve(directory, "main.zs");
+  writeFileSync(model, `
+    export trait Measured { function measure(): i32; }
+    export trait Named { function name(): cstring; }
+    export struct Reading implements Measured, Named {
+      function measure(): i32 { return 42; }
+      function name(): cstring { return "reading"; }
+    }
+    export struct Plain { function measure(): i32 { return 42; } }
+    export struct Holder<T: Measured> { value: T; }
+    export struct Utility {
+      static function inspect<T: Measured>(value: T): i32 { return value.measure(); }
+    }
+    export function read<T: Measured>(value: T): i32 { return value.measure(); }
+    export function readBoth<T: Measured & Named>(value: T): i32 {
+      const label = value.name();
+      return value.measure();
+    }
+  `);
+  writeFileSync(main, `
+    import model from "./model.zs";
+    function main(): i32 { return model.readBoth(model.Reading({})); }
+  `);
+  const nativeValid = spawnSync(process.execPath, [cli, "self-host-resolve", main], { encoding: "utf8" });
+  assert.equal(nativeValid.status, 0, nativeValid.stderr);
+
+  writeFileSync(main, `
+    import model from "./model.zs";
+    function main(): i32 { return model.read(model.Plain({})); }
+  `);
+  const nativeStructuralOnly = spawnSync(process.execPath, [cli, "self-host-resolve", main], { encoding: "utf8" });
+  assert.equal(nativeStructuralOnly.status, 1);
+  assert.match(nativeStructuralOnly.stderr, /Plain does not satisfy model\.Measured for T in "read"/);
+
+  writeFileSync(main, `
+    import model from "./model.zs";
+    function main(): i32 { return model.read<i32>(42); }
+  `);
+  const nativePrimitive = spawnSync(process.execPath, [cli, "self-host-resolve", main], { encoding: "utf8" });
+  assert.equal(nativePrimitive.status, 1);
+  assert.match(nativePrimitive.stderr, /i32 does not satisfy model\.Measured for T in "read"/);
+
+  writeFileSync(main, `
+    import model from "./model.zs";
+    function main(): i32 { return model.Utility.inspect(model.Plain({})); }
+  `);
+  const nativeMethodConstraint = spawnSync(process.execPath, [cli, "self-host-resolve", main], { encoding: "utf8" });
+  assert.equal(nativeMethodConstraint.status, 1);
+  assert.match(nativeMethodConstraint.stderr, /Plain does not satisfy model\.Measured for T in "Utility\.inspect"/);
+
+  writeFileSync(main, `
+    import model from "./model.zs";
+    function main(): i32 {
+      const holder = model.Holder({ value: model.Plain({}) });
+      return 0;
+    }
+  `);
+  const nativeAggregateConstraint = spawnSync(process.execPath, [cli, "self-host-resolve", main], { encoding: "utf8" });
+  assert.equal(nativeAggregateConstraint.status, 1);
+  assert.match(nativeAggregateConstraint.stderr, /Plain does not satisfy model\.Measured for T in "Holder"/);
+
+  const invalidBody = resolve(directory, "invalid-body.zs");
+  writeFileSync(invalidBody, `
+    trait Measured { function measure(): i32; }
+    function reveal<T: Measured>(value: T): i32 { return value.secret(); }
+    function main(): i32 { return 0; }
+  `);
+  const nativeOutsideSurface = spawnSync(process.execPath, [cli, "self-host-resolve", invalidBody], { encoding: "utf8" });
+  assert.equal(nativeOutsideSurface.status, 1);
+  assert.match(
+    nativeOutsideSurface.stderr,
+    /member "secret" is not provided by the trait constraints on T/,
+  );
 });
 
 test("supports multiple trait constraints and constrained generic aggregates", () => {

@@ -1563,7 +1563,12 @@ ported independently rather than translated as one monolith.
    concrete enum fields also participate in equality typing.
    Aggregate method contracts also cross the graph: static/instance identity,
    visibility, receiver mode, async/error state, generics, parameters, and result.
-   Native calls use those contracts across local and imported types.
+   Native calls use those contracts across local and imported types. Function,
+   method, and aggregate signatures also retain generic trait constraints, while
+   aggregate symbols retain their nominal conformances. Native inference validates
+   those constraints for inferred and explicit calls and construction. Inside a
+   constrained generic body, the declared trait methods are the complete legal
+   member surface; structurally similar but undeclared members do not leak through.
    Native nominal equality is keyed by the defining module and symbol, not the
    source spelling. A local name, namespace-qualified name, selective alias, and
    type forwarded through an intermediate module therefore compare as one type;

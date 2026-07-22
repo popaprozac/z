@@ -14,6 +14,12 @@ export function stage0FunctionSignature(declaration: FunctionDeclaration): Stage
   return {
     asynchronous: declaration.async ?? false,
     typeParameters: declaration.typeParameters ?? [],
+    typeParameterConstraints: (declaration.typeParameterConstraints ?? []).flatMap((constraint) => (
+      constraint.traits.map((trait) => ({
+        parameter: constraint.parameter,
+        traitName: canonicalTypeName(trait.name),
+      }))
+    )),
     parameterModes: declaration.parameters.map((parameter) => parameter.mode),
     parameterTypes: declaration.parameters.map((parameter) => canonicalTypeName(parameter.type.name)),
     returnType: canonicalTypeName(declaration.returnType.name),
@@ -26,6 +32,7 @@ export function stage0ConstructorSignature(declaration: StructDeclaration): Stag
   return {
     asynchronous: false,
     typeParameters: [],
+    typeParameterConstraints: [],
     parameterModes: declaration.constructor.parameters.map((parameter) => parameter.mode),
     parameterTypes: declaration.constructor.parameters.map((parameter) => canonicalTypeName(parameter.type.name)),
     returnType: canonicalTypeName(declaration.name),
@@ -99,6 +106,13 @@ function stage0ModuleSymbols(
     functionSignature: declaration.kind === "function" ? stage0FunctionSignature(declaration) : null,
     typeSignature: declaration.kind === "struct" || declaration.kind === "class" ? {
       typeParameters: declaration.typeParameters ?? [],
+      typeParameterConstraints: (declaration.typeParameterConstraints ?? []).flatMap((constraint) => (
+        constraint.traits.map((trait) => ({
+          parameter: constraint.parameter,
+          traitName: canonicalTypeName(trait.name),
+        }))
+      )),
+      implementedTraits: declaration.implements.map((trait) => canonicalTypeName(trait.name)),
       fields: declaration.fields.map((field) => ({
         name: field.name,
         typeName: canonicalTypeName(field.type.name),
@@ -113,6 +127,12 @@ function stage0ModuleSymbols(
         signature: {
           asynchronous: method.async ?? false,
           typeParameters: method.typeParameters ?? [],
+          typeParameterConstraints: (method.typeParameterConstraints ?? []).flatMap((constraint) => (
+            constraint.traits.map((trait) => ({
+              parameter: constraint.parameter,
+              traitName: canonicalTypeName(trait.name),
+            }))
+          )),
           parameterModes: method.parameters.map((parameter) => parameter.mode),
           parameterTypes: method.parameters.map((parameter) => canonicalTypeName(parameter.type.name)),
           returnType: canonicalTypeName(method.returnType.name),
@@ -123,8 +143,26 @@ function stage0ModuleSymbols(
       customDeinit: Boolean(declaration.deinitializer),
       customConstructor: Boolean(declaration.constructor),
       constructorSignature: stage0ConstructorSignature(declaration),
+    } : declaration.kind === "trait" ? {
+      typeParameters: [],
+      typeParameterConstraints: [],
+      implementedTraits: [],
+      fields: [],
+      methods: declaration.methods.map((method) => ({
+        name: method.name,
+        staticMethod: false,
+        visibility: "public",
+        receiverMode: "in",
+        signature: stage0FunctionSignature(method),
+      })),
+      variants: [],
+      customDeinit: false,
+      customConstructor: false,
+      constructorSignature: null,
     } : declaration.kind === "enum" ? {
       typeParameters: [],
+      typeParameterConstraints: [],
+      implementedTraits: [],
       fields: [],
       methods: [],
       variants: declaration.variants.map((variant) => ({
@@ -263,6 +301,9 @@ function sameModuleTypeSignature(
     && sameModuleFunctionSignature(left.constructorSignature, right.constructorSignature)
     && left.typeParameters.length === right.typeParameters.length
     && left.typeParameters.every((value, index) => value === right.typeParameters[index])
+    && sameTypeParameterConstraints(left.typeParameterConstraints, right.typeParameterConstraints)
+    && left.implementedTraits.length === right.implementedTraits.length
+    && left.implementedTraits.every((value, index) => value === right.implementedTraits[index])
     && left.fields.length === right.fields.length
     && left.fields.every((field, index) => {
       const other = right.fields[index];
@@ -301,8 +342,20 @@ export function sameModuleFunctionSignature(
     && left.errorType === right.errorType
     && left.typeParameters.length === right.typeParameters.length
     && left.typeParameters.every((value, index) => value === right.typeParameters[index])
+    && sameTypeParameterConstraints(left.typeParameterConstraints, right.typeParameterConstraints)
     && left.parameterModes.length === right.parameterModes.length
     && left.parameterModes.every((value, index) => value === right.parameterModes[index])
     && left.parameterTypes.length === right.parameterTypes.length
     && left.parameterTypes.every((value, index) => value === right.parameterTypes[index]);
+}
+
+function sameTypeParameterConstraints(
+  left: Stage1ModuleFunctionSignature["typeParameterConstraints"],
+  right: Stage1ModuleFunctionSignature["typeParameterConstraints"],
+): boolean {
+  return left.length === right.length
+    && left.every((constraint, index) => (
+      constraint.parameter === right[index]?.parameter
+      && constraint.traitName === right[index]?.traitName
+    ));
 }

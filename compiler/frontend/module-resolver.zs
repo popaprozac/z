@@ -137,6 +137,7 @@ struct NativeMethodCallShape {
   receiverMode: String;
   ownerTypeParameters: Array<String>;
   ownerTypeArguments: Array<String>;
+  ownerTypeParameterConstraints: Array<ModuleTypeParameterConstraint>;
   signature: ModuleFunctionSignature;
 }
 
@@ -208,8 +209,15 @@ export struct ModuleMethodSignature {
   signature: ModuleFunctionSignature;
 }
 
+export struct ModuleTypeParameterConstraint {
+  parameter: String;
+  traitName: String;
+}
+
 export struct ModuleTypeSignature {
   typeParameters: Array<String>;
+  typeParameterConstraints: Array<ModuleTypeParameterConstraint>;
+  implementedTraits: Array<String>;
   fields: Array<ModuleFieldSignature>;
   methods: Array<ModuleMethodSignature>;
   variants: Array<ModuleVariantSignature>;
@@ -221,6 +229,7 @@ export struct ModuleTypeSignature {
 export struct ModuleFunctionSignature {
   asynchronous: boolean;
   typeParameters: Array<String>;
+  typeParameterConstraints: Array<ModuleTypeParameterConstraint>;
   parameterModes: Array<String>;
   parameterTypes: Array<String>;
   returnType: String;
@@ -434,8 +443,15 @@ function functionDeclarationSignature(
   in declaration: FunctionDeclaration
 ): ModuleFunctionSignature {
   let typeParameters = Array<String>();
+  let typeParameterConstraints = Array<ModuleTypeParameterConstraint>();
   for (const parameter of declaration.typeParameters) {
     typeParameters.push(parameter.name.copyBytes(0, parameter.name.byteLength));
+    for (const constraint of parameter.constraints) {
+      typeParameterConstraints.push(ModuleTypeParameterConstraint({
+        parameter: parameter.name.copyBytes(0, parameter.name.byteLength),
+        traitName: constraint.name.copyBytes(0, constraint.name.byteLength),
+      }));
+    }
   }
   let parameterTypes = Array<String>();
   let parameterModes = Array<String>();
@@ -451,6 +467,7 @@ function functionDeclarationSignature(
   return ModuleFunctionSignature({
     asynchronous: declaration.asynchronous,
     typeParameters,
+    typeParameterConstraints,
     parameterModes,
     parameterTypes,
     returnType: declaration.returnType.name.copyBytes(
@@ -479,6 +496,7 @@ function constructorDeclarationSignature(
   return ModuleFunctionSignature({
     asynchronous: false,
     typeParameters: Array<String>(),
+    typeParameterConstraints: Array<ModuleTypeParameterConstraint>(),
     parameterModes,
     parameterTypes,
     returnType: ownerName.copyBytes(0, ownerName.byteLength),
@@ -508,8 +526,19 @@ function moduleTypeSignature(
     for (const aggregate of module.program.aggregates) {
       if (aggregate.name != declaration.name) continue;
       let typeParameters = Array<String>();
+      let typeParameterConstraints = Array<ModuleTypeParameterConstraint>();
       for (const parameter of aggregate.typeParameters) {
         typeParameters.push(parameter.name.copyBytes(0, parameter.name.byteLength));
+        for (const constraint of parameter.constraints) {
+          typeParameterConstraints.push(ModuleTypeParameterConstraint({
+            parameter: parameter.name.copyBytes(0, parameter.name.byteLength),
+            traitName: constraint.name.copyBytes(0, constraint.name.byteLength),
+          }));
+        }
+      }
+      let implementedTraits = Array<String>();
+      for (const implemented of aggregate.implementedTraits) {
+        implementedTraits.push(implemented.name.copyBytes(0, implemented.name.byteLength));
       }
       let fields = Array<ModuleFieldSignature>();
       for (const field of aggregate.fields) {
@@ -549,12 +578,40 @@ function moduleTypeSignature(
       }
       return Option.some(ModuleTypeSignature({
         typeParameters,
+        typeParameterConstraints,
+        implementedTraits,
         fields,
         methods,
         variants: Array<ModuleVariantSignature>(),
         customDeinit,
         customConstructor,
         constructorSignature,
+      }));
+    }
+  }
+  if (declaration.kind == DeclarationKind.traitDeclaration) {
+    for (const traitDeclaration of module.program.traits) {
+      if (traitDeclaration.name != declaration.name) continue;
+      let methods = Array<ModuleMethodSignature>();
+      for (const method of traitDeclaration.methods) {
+        methods.push(ModuleMethodSignature({
+          name: method.name.copyBytes(0, method.name.byteLength),
+          staticMethod: false,
+          visibility: "public",
+          receiverMode: "in",
+          signature: functionDeclarationSignature(method),
+        }));
+      }
+      return Option.some(ModuleTypeSignature({
+        typeParameters: Array<String>(),
+        typeParameterConstraints: Array<ModuleTypeParameterConstraint>(),
+        implementedTraits: Array<String>(),
+        fields: Array<ModuleFieldSignature>(),
+        methods,
+        variants: Array<ModuleVariantSignature>(),
+        customDeinit: false,
+        customConstructor: false,
+        constructorSignature: Option<ModuleFunctionSignature>.none,
       }));
     }
   }
@@ -575,6 +632,8 @@ function moduleTypeSignature(
       }
       return Option.some(ModuleTypeSignature({
         typeParameters: Array<String>(),
+        typeParameterConstraints: Array<ModuleTypeParameterConstraint>(),
+        implementedTraits: Array<String>(),
         fields: Array<ModuleFieldSignature>(),
         methods: Array<ModuleMethodSignature>(),
         variants,
@@ -3052,6 +3111,13 @@ function copyModuleFunctionSignature(
   for (const parameter of signature.typeParameters) {
     typeParameters.push(parameter.copyBytes(0, parameter.byteLength));
   }
+  let typeParameterConstraints = Array<ModuleTypeParameterConstraint>();
+  for (const constraint of signature.typeParameterConstraints) {
+    typeParameterConstraints.push(ModuleTypeParameterConstraint({
+      parameter: constraint.parameter.copyBytes(0, constraint.parameter.byteLength),
+      traitName: constraint.traitName.copyBytes(0, constraint.traitName.byteLength),
+    }));
+  }
   let parameterModes = Array<String>();
   for (const mode of signature.parameterModes) {
     parameterModes.push(mode.copyBytes(0, mode.byteLength));
@@ -3063,6 +3129,7 @@ function copyModuleFunctionSignature(
   return ModuleFunctionSignature({
     asynchronous: signature.asynchronous,
     typeParameters,
+    typeParameterConstraints,
     parameterModes,
     parameterTypes,
     returnType: signature.returnType.copyBytes(0, signature.returnType.byteLength),
@@ -3079,6 +3146,18 @@ function rebaseModuleFunctionSignature(
   let typeParameters = Array<String>();
   for (const parameter of signature.typeParameters) {
     typeParameters.push(parameter.copyBytes(0, parameter.byteLength));
+  }
+  let typeParameterConstraints = Array<ModuleTypeParameterConstraint>();
+  for (const constraint of signature.typeParameterConstraints) {
+    typeParameterConstraints.push(ModuleTypeParameterConstraint({
+      parameter: constraint.parameter.copyBytes(0, constraint.parameter.byteLength),
+      traitName: rebaseTypeName(
+        modules,
+        fromModuleIndex,
+        toModuleIndex,
+        constraint.traitName
+      ),
+    }));
   }
   let parameterModes = Array<String>();
   for (const mode of signature.parameterModes) {
@@ -3105,6 +3184,7 @@ function rebaseModuleFunctionSignature(
   return ModuleFunctionSignature({
     asynchronous: signature.asynchronous,
     typeParameters,
+    typeParameterConstraints,
     parameterModes,
     parameterTypes,
     returnType: rebaseTypeName(
@@ -3145,6 +3225,18 @@ function methodCallShape(
             for (const parameter of typeSignature.typeParameters) {
               ownerTypeParameters.push(parameter.copyBytes(0, parameter.byteLength));
             }
+            let ownerTypeParameterConstraints = Array<ModuleTypeParameterConstraint>();
+            for (const constraint of typeSignature.typeParameterConstraints) {
+              ownerTypeParameterConstraints.push(ModuleTypeParameterConstraint({
+                parameter: constraint.parameter.copyBytes(0, constraint.parameter.byteLength),
+                traitName: rebaseTypeName(
+                  modules,
+                  location.moduleIndex,
+                  moduleIndex,
+                  constraint.traitName
+                ),
+              }));
+            }
             return Option.some(NativeMethodCallShape({
               name: method.name.copyBytes(0, method.name.byteLength),
               ownerName: modules[location.moduleIndex].symbols[location.symbolIndex].name.copyBytes(
@@ -3158,12 +3250,13 @@ function methodCallShape(
               receiverMode: method.receiverMode.copyBytes(0, method.receiverMode.byteLength),
               ownerTypeParameters,
               ownerTypeArguments: ownerArguments,
-            signature: rebaseModuleFunctionSignature(
-              modules,
-              location.moduleIndex,
-              moduleIndex,
-              method.signature
-            ),
+              ownerTypeParameterConstraints,
+              signature: rebaseModuleFunctionSignature(
+                modules,
+                location.moduleIndex,
+                moduleIndex,
+                method.signature
+              ),
             }));
           }
         }
@@ -3171,6 +3264,103 @@ function methodCallShape(
       }
     }
     none => {}
+  }
+  return Option<NativeMethodCallShape>.none;
+}
+
+function typeParameterMarkerName(in parameter: String): String {
+  return `__z_native_type_parameter:${parameter}`;
+}
+
+function typeParameterConstraintName(in parameter: String): String {
+  return `__z_native_type_parameter_constraint:${parameter}`;
+}
+
+function addTypeParameterBindings(
+  inout bindings: Array<NativeValueBinding>,
+  in parameters: Array<TypeParameter>
+): void {
+  for (const parameter of parameters) {
+    const markerName = typeParameterMarkerName(parameter.name);
+    const constraintName = typeParameterConstraintName(parameter.name);
+    addValueBinding(inout bindings, markerName, "");
+    for (const constraint of parameter.constraints) {
+      addValueBinding(
+        inout bindings,
+        constraintName,
+        constraint.name
+      );
+    }
+  }
+}
+
+function typeParameterConstraintTraits(
+  in bindings: Array<NativeValueBinding>,
+  in parameter: String
+): Array<String> {
+  let constraints = Array<String>();
+  const markerName = typeParameterMarkerName(parameter);
+  const constraintName = typeParameterConstraintName(parameter);
+  let markerIndex = bindings.length;
+  while (markerIndex > 0) {
+    markerIndex = markerIndex - 1;
+    if (bindings[markerIndex].name == markerName) break;
+  }
+  if (bindings.length == 0 || bindings[markerIndex].name != markerName) return constraints;
+  let index = markerIndex + 1;
+  while (index < bindings.length) {
+    if (bindings[index].name == constraintName) {
+      constraints.push(bindings[index].typeName.copyBytes(0, bindings[index].typeName.byteLength));
+    }
+    index = index + 1;
+  }
+  return constraints;
+}
+
+function isActiveTypeParameter(
+  in bindings: Array<NativeValueBinding>,
+  in parameter: String
+): boolean {
+  const markerName = typeParameterMarkerName(parameter);
+  let index = bindings.length;
+  while (index > 0) {
+    index = index - 1;
+    if (bindings[index].name == markerName) return true;
+  }
+  return false;
+}
+
+function constrainedMethodCallShape(
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
+  in bindings: Array<NativeValueBinding>,
+  in ownerType: String,
+  in methodName: String
+): Option<NativeMethodCallShape> {
+  const constraints = typeParameterConstraintTraits(bindings, ownerType);
+  for (const traitName of constraints) {
+    match (methodCallShape(modules, moduleIndex, traitName, methodName, false)) {
+      some(method) => return Option.some(method);
+      none => {}
+    }
+  }
+  return Option<NativeMethodCallShape>.none;
+}
+
+function callableMethodCallShape(
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
+  in bindings: Array<NativeValueBinding>,
+  in ownerType: String,
+  in methodName: String,
+  staticMethod: boolean
+): Option<NativeMethodCallShape> {
+  match (methodCallShape(modules, moduleIndex, ownerType, methodName, staticMethod)) {
+    some(method) => return Option.some(method);
+    none => {}
+  }
+  if (!staticMethod) {
+    return constrainedMethodCallShape(modules, moduleIndex, bindings, ownerType, methodName);
   }
   return Option<NativeMethodCallShape>.none;
 }
@@ -3210,6 +3400,13 @@ function methodCallableSignature(
   in method: NativeMethodCallShape
 ): ModuleFunctionSignature {
   let typeParameters = Array<String>();
+  let typeParameterConstraints = Array<ModuleTypeParameterConstraint>();
+  for (const constraint of method.ownerTypeParameterConstraints) {
+    typeParameterConstraints.push(ModuleTypeParameterConstraint({
+      parameter: constraint.parameter.copyBytes(0, constraint.parameter.byteLength),
+      traitName: constraint.traitName.copyBytes(0, constraint.traitName.byteLength),
+    }));
+  }
   if (method.staticMethod && method.ownerTypeArguments.length == 0) {
     for (const parameter of method.ownerTypeParameters) {
       typeParameters.push(parameter.copyBytes(0, parameter.byteLength));
@@ -3217,6 +3414,12 @@ function methodCallableSignature(
   }
   for (const parameter of method.signature.typeParameters) {
     typeParameters.push(parameter.copyBytes(0, parameter.byteLength));
+  }
+  for (const constraint of method.signature.typeParameterConstraints) {
+    typeParameterConstraints.push(ModuleTypeParameterConstraint({
+      parameter: constraint.parameter.copyBytes(0, constraint.parameter.byteLength),
+      traitName: constraint.traitName.copyBytes(0, constraint.traitName.byteLength),
+    }));
   }
   let parameterModes = Array<String>();
   for (const mode of method.signature.parameterModes) {
@@ -3229,6 +3432,7 @@ function methodCallableSignature(
   return ModuleFunctionSignature({
     asynchronous: method.signature.asynchronous,
     typeParameters,
+    typeParameterConstraints,
     parameterModes,
     parameterTypes,
     returnType: method.signature.returnType.copyBytes(0, method.signature.returnType.byteLength),
@@ -3274,6 +3478,69 @@ function hasKnownAggregate(
     none => {}
   }
   return false;
+}
+
+function typeSatisfiesTrait(
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
+  in concreteType: String,
+  in requiredTrait: String
+): boolean {
+  const concreteLocation = match (typeSymbolLocation(modules, moduleIndex, concreteType)) {
+    some(location) => location;
+    none => return false;
+  };
+  const traitLocation = match (typeSymbolLocation(modules, moduleIndex, requiredTrait)) {
+    some(location) => location;
+    none => return false;
+  };
+  if (
+    modules[traitLocation.moduleIndex].symbols[traitLocation.symbolIndex].kind
+    != ModuleSymbolKind.traitSymbol
+  ) return false;
+  return match (
+    in modules[concreteLocation.moduleIndex].symbols[concreteLocation.symbolIndex].typeSignature
+  ) {
+    some(signature) => {
+      let satisfied = false;
+      for (const implemented of signature.implementedTraits) {
+        match (typeSymbolLocation(modules, concreteLocation.moduleIndex, implemented)) {
+          some(location) => {
+            if (
+              location.moduleIndex == traitLocation.moduleIndex
+              && location.symbolIndex == traitLocation.symbolIndex
+            ) satisfied = true;
+          }
+          none => {}
+        }
+      }
+      select satisfied;
+    }
+    none => false;
+  };
+}
+
+function requireGenericConstraints(
+  in module: ParsedModule,
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
+  in tree: ExpressionTree,
+  calleeIndex: usize,
+  in functionName: String,
+  in constraints: Array<ModuleTypeParameterConstraint>,
+  in substitutions: Array<NativeValueBinding>
+): void throws ModuleResolveError {
+  for (const constraint of constraints) {
+    const argument = valueBindingType(substitutions, constraint.parameter);
+    if (argument.byteLength == 0) continue;
+    if (typeSatisfiesTrait(modules, moduleIndex, argument, constraint.traitName)) continue;
+    throw genericCallError(
+      module,
+      tree,
+      calleeIndex,
+      `${argument} does not satisfy ${constraint.traitName} for ${constraint.parameter} in "${functionName}"`
+    );
+  }
 }
 
 function isKnownEnumType(
@@ -3655,14 +3922,74 @@ function inferContextualObjectExpressionNode(
     }
     none => {}
   }
-  if (genericParameters.length == 0) {
-    return expectedType.copyBytes(0, expectedType.byteLength);
-  }
   let arguments = Array<String>();
   for (const parameter of genericParameters) {
     const argument = valueBindingType(substitutions, parameter);
     if (argument.byteLength == 0) return "";
     arguments.push(argument);
+  }
+  let constraintSubstitutions = copyValueBindings(substitutions);
+  match (genericTypeShape(expectedType)) {
+    some(generic) => {
+      match (typeSymbolLocation(modules, moduleIndex, expectedType)) {
+        some(location) => {
+          match (in modules[location.moduleIndex].symbols[location.symbolIndex].typeSignature) {
+            some(signature) => {
+              let typeIndex: usize = 0;
+              while (
+                typeIndex < signature.typeParameters.length
+                && typeIndex < generic.arguments.length
+              ) {
+                addValueBinding(
+                  inout constraintSubstitutions,
+                  signature.typeParameters[typeIndex],
+                  generic.arguments[typeIndex]
+                );
+                typeIndex = typeIndex + 1;
+              }
+            }
+            none => {}
+          }
+        }
+        none => {}
+      }
+    }
+    none => {}
+  }
+  match (typeSymbolLocation(modules, moduleIndex, expectedType)) {
+    some(location) => {
+      match (in modules[location.moduleIndex].symbols[location.symbolIndex].typeSignature) {
+        some(signature) => {
+          let constraints = Array<ModuleTypeParameterConstraint>();
+          for (const constraint of signature.typeParameterConstraints) {
+            constraints.push(ModuleTypeParameterConstraint({
+              parameter: constraint.parameter.copyBytes(0, constraint.parameter.byteLength),
+              traitName: rebaseTypeName(
+                modules,
+                location.moduleIndex,
+                moduleIndex,
+                constraint.traitName
+              ),
+            }));
+          }
+          try requireGenericConstraints(
+            module,
+            modules,
+            moduleIndex,
+            tree,
+            index,
+            modules[location.moduleIndex].symbols[location.symbolIndex].name,
+            constraints,
+            constraintSubstitutions
+          );
+        }
+        none => {}
+      }
+    }
+    none => {}
+  }
+  if (genericParameters.length == 0) {
+    return expectedType.copyBytes(0, expectedType.byteLength);
   }
   return parameterizedTypeName(expectedType, arguments);
 }
@@ -4143,6 +4470,16 @@ function inferSignatureCallType(
     const substituted = valueBindingType(substitutions, typeParameter);
     if (substituted.byteLength == 0) return "";
   }
+  try requireGenericConstraints(
+    module,
+    modules,
+    moduleIndex,
+    tree,
+    calleeIndex,
+    functionName,
+    signature.typeParameterConstraints,
+    substitutions
+  );
   let parameterIndex: usize = 0;
   while (parameterIndex < argumentTypes.length) {
     const expected = substituteGenericType(
@@ -4424,6 +4761,7 @@ function nativeFunctionSignature(in typeName: String): Option<ModuleFunctionSign
   return Option.some(ModuleFunctionSignature({
     asynchronous: false,
     typeParameters: Array<String>(),
+    typeParameterConstraints: Array<ModuleTypeParameterConstraint>(),
     parameterModes,
     parameterTypes,
     returnType,
@@ -4744,6 +5082,17 @@ function inferExpressionNodeType(
                   moduleIndex,
                   signature
                 );
+                for (const constraint of typeSignature.typeParameterConstraints) {
+                  callableSignature.typeParameterConstraints.push(ModuleTypeParameterConstraint({
+                    parameter: constraint.parameter.copyBytes(0, constraint.parameter.byteLength),
+                    traitName: rebaseTypeName(
+                      modules,
+                      location.moduleIndex,
+                      moduleIndex,
+                      constraint.traitName
+                    ),
+                  }));
+                }
                 match (genericTypeShape(value)) {
                   some(generic) => {
                     let typeIndex: usize = 0;
@@ -5643,7 +5992,14 @@ function inferExpressionNodeType(
       }
       if (ownerType.byteLength > 0) {
         const methodName = identifierLookupName(tree.nodes[calleeIndex].value);
-        match (methodCallShape(modules, moduleIndex, ownerType, methodName, staticMethod)) {
+        match (callableMethodCallShape(
+          modules,
+          moduleIndex,
+          bindings,
+          ownerType,
+          methodName,
+          staticMethod
+        )) {
           some(method) => {
             if (
               method.visibility == "private"
@@ -5729,6 +6085,11 @@ function inferExpressionNodeType(
             }
             const callableSignature = methodCallableSignature(method);
             const argumentNodes = callArgumentNodes(children);
+            let callKind = "method";
+            if (
+              modules[method.ownerModuleIndex].symbols[method.ownerSymbolIndex].kind
+              == ModuleSymbolKind.traitSymbol
+            ) callKind = "value";
             const callType = try inferSignatureCallType(
               module,
               modules,
@@ -5746,7 +6107,7 @@ function inferExpressionNodeType(
               substitutions,
               method.ownerModuleIndex,
               method.ownerSymbolIndex,
-              "method",
+              callKind,
               inout callResolutions
             );
             if (receiverAccess == "move" && receiverRoot.byteLength > 0) {
@@ -5759,6 +6120,15 @@ function inferExpressionNodeType(
             return callType;
           }
           none => {
+            if (isActiveTypeParameter(bindings, ownerType)) {
+              throw resolutionError(
+                ModuleResolveErrorKind.unknownMember,
+                module.path,
+                `member "${methodName}" is not provided by the trait constraints on ${ownerType}`,
+                tree.nodes[calleeIndex].line,
+                tree.nodes[calleeIndex].column
+              );
+            }
             if (hasKnownAggregate(modules, moduleIndex, ownerType)) {
               let methodKind = "";
               if (staticMethod) methodKind = "static ";
@@ -6367,9 +6737,12 @@ function inferFunctionExpressions(
   moduleIndex: usize,
   in declaration: FunctionDeclaration,
   in ownerType: String,
+  in inheritedTypeParameters: Array<TypeParameter>,
   inout callResolutions: Array<ModuleCallResolution>
 ): void throws ModuleResolveError {
   let bindings = functionValueBindings(declaration.parameters);
+  addTypeParameterBindings(inout bindings, inheritedTypeParameters);
+  addTypeParameterBindings(inout bindings, declaration.typeParameters);
   addValueBinding(inout bindings, "__z_native_function_name", declaration.name);
   addValueBinding(inout bindings, "__z_native_return_type", declaration.returnType.name);
   match (in declaration.errorType) {
@@ -6412,8 +6785,17 @@ function validateExpressionTypesAndLocals(
   moduleIndex: usize
 ): Array<ModuleCallResolution> throws ModuleResolveError {
   let callResolutions = Array<ModuleCallResolution>();
+  const noTypeParameters = Array<TypeParameter>();
   for (const declaration of module.program.functions) {
-    try inferFunctionExpressions(module, modules, moduleIndex, declaration, "", inout callResolutions);
+    try inferFunctionExpressions(
+      module,
+      modules,
+      moduleIndex,
+      declaration,
+      "",
+      noTypeParameters,
+      inout callResolutions
+    );
   }
   for (const aggregate of module.program.aggregates) {
     match (in aggregate.constructorDeclaration) {
@@ -6428,6 +6810,7 @@ function validateExpressionTypesAndLocals(
         addMutableValueBinding(inout bindings, "this", aggregate.name);
         addValueBinding(inout bindings, "__z_native_owner_type", aggregate.name);
         addValueBinding(inout bindings, "__z_native_constructor_type", aggregate.name);
+        addTypeParameterBindings(inout bindings, aggregate.typeParameters);
         try inferStatementSequence(
           module,
           modules,
@@ -6448,7 +6831,15 @@ function validateExpressionTypesAndLocals(
       none => {}
     }
     for (const method of aggregate.methods) {
-      try inferFunctionExpressions(module, modules, moduleIndex, method, aggregate.name, inout callResolutions);
+      try inferFunctionExpressions(
+        module,
+        modules,
+        moduleIndex,
+        method,
+        aggregate.name,
+        aggregate.typeParameters,
+        inout callResolutions
+      );
     }
     match (in aggregate.deinitializer) {
       some(deinitializer) => {
@@ -6457,6 +6848,7 @@ function validateExpressionTypesAndLocals(
         addValueBinding(inout bindings, "__z_native_return_type", "void");
         addValueBinding(inout bindings, "this", aggregate.name);
         addValueBinding(inout bindings, "__z_native_owner_type", aggregate.name);
+        addTypeParameterBindings(inout bindings, aggregate.typeParameters);
         try inferStatementSequence(
           module,
           modules,

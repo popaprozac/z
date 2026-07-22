@@ -131,12 +131,14 @@ timing report separates library preparation, host discovery, framing, native
 lex/parse/resolve/symbol/name/type work, protocol decode, and stage-zero parity
 work. Identifier and expression-level type lookup currently cover materialized
 expression trees. Unknown foreign/intrinsic-member/async shapes deliberately defer
-instead of guessing. Opaque expression spans, contextual
-collection and return-driven generic inference, generic constraints and methods,
-type-constructor arity, trait conformance, async/foreign call effects,
-contextual untyped closure parameters, escaping closure-environment validation,
-borrow last-use release, and complete recursive ownership lowering remain
-stage-zero work.
+instead of guessing. Native signatures retain nominal trait constraints and
+aggregate conformance. Inferred and explicit generic calls, generic methods,
+generic construction, and trait-authorized calls inside constrained bodies enforce
+those contracts natively. Opaque expression spans, contextual collection and
+return-driven generic inference, constraint validation on every standalone type
+use, generic trait declarations, async/foreign call effects, contextual untyped
+closure parameters, escaping closure-environment validation, borrow last-use
+release, and complete recursive ownership lowering remain stage-zero work.
 The reported native interval therefore does more semantic work than the
 graph-and-symbol-only stage-zero comparison.
 Repeated corpus measurements, broadening ordinary-command shadow coverage, and
