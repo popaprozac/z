@@ -105,8 +105,21 @@ export type SemanticFunctionCallResolution = {
   readonly declaration: FunctionDeclaration;
 };
 
+export type SemanticMethodCallResolution = {
+  readonly location: SourceLocation;
+  readonly aggregate: StructDeclaration;
+  readonly declaration: FunctionDeclaration;
+};
+
+export type SemanticConstructorCallResolution = {
+  readonly location: SourceLocation;
+  readonly aggregate: StructDeclaration;
+};
+
 export type SemanticObserver = {
   readonly onFunctionCall?: (resolution: SemanticFunctionCallResolution) => void;
+  readonly onMethodCall?: (resolution: SemanticMethodCallResolution) => void;
+  readonly onConstructorCall?: (resolution: SemanticConstructorCallResolution) => void;
 };
 
 type ValueType = string | "unknown" | "never";
@@ -3446,6 +3459,7 @@ function inferExpressionInner(
       if (declaration.constructor) {
         const target = constructorFunction(declaration);
         checkArguments(target, expression.arguments, locals, globals, structs, enums, fileName, expression.location, state);
+        state.observer?.onConstructorCall?.({ location: expression.location, aggregate: declaration });
         if (target.errorType) {
           if (!allowThrowingCall) {
             throw new DiagnosticError(fileName, expression.location, "throwing constructor requires `attempt` or `try`");
@@ -4225,6 +4239,7 @@ function inferExpressionInner(
             rejectLabeledArguments(expression.argumentLabels, expression.location, fileName);
             checkArguments(method, expression.arguments, locals, globals, structs, enums, fileName, expression.location, state);
             registerAsyncCall(method, expression.location, fileName, state);
+            state.observer?.onMethodCall?.({ location: expression.location, aggregate, declaration: method });
             if (method.errorType) {
               if (!allowThrowingCall) throw new DiagnosticError(fileName, expression.location, "throwing call requires `attempt` or `try`");
               return resultTypeName(method.returnType.name, method.errorType.name);
@@ -4778,6 +4793,7 @@ function inferExpressionInner(
           if (consumingReceiverRoot) rejectOwnerMutationWhileViewed(consumingReceiverRoot.name, expression.callee.object.location, fileName, state);
           consumeOwnedValue(expression.callee.object, receiverType, locals, structs, enums, fileName, state);
         }
+        state.observer?.onMethodCall?.({ location: expression.location, aggregate: declaration, declaration: method });
         if (method.errorType) {
           if (!allowThrowingCall) throw new DiagnosticError(fileName, expression.location, "throwing call requires `attempt` or `try`");
           return resultTypeName(method.returnType.name, method.errorType.name);

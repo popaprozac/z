@@ -100,6 +100,8 @@ test("loads explicit Z exports through selective and namespace module imports", 
   assert.equal(analysis.nativeSemanticIndex, null);
   assert.equal(analysis.nativeSemanticQueryCount, 0);
   assert.equal(analysis.nativeCallResolutionCount, 0);
+  assert.equal(analysis.nativeMethodResolutionCount, 0);
+  assert.equal(analysis.nativeConstructorResolutionCount, 0);
   assert.equal(analysis.nativeFrontendParityMilliseconds, null);
   assert.equal(analysis.sourceModuleBatch.entryFileName, example);
   assert.deepEqual(
@@ -141,6 +143,44 @@ test("attaches native frontend evidence after authoritative stage-0 analysis", (
   assert.ok(analysis.nativeSemanticQueryCount > (analysis.nativeFrontendGraph?.modules.length ?? 0));
   assert.ok(analysis.nativeCallResolutionCount > 0);
   assert.ok((analysis.nativeFrontendParityMilliseconds ?? -1) >= 0);
+
+  const callableFile = resolve(projectRoot, "native-callable-shadow.zs");
+  const callable = analyzeSource(`
+    struct Counter {
+      value: i32;
+
+      function plus(amount: i32): i32 {
+        return this.value + amount;
+      }
+
+      static function zero(): Counter {
+        return Counter({ value: 0 });
+      }
+    }
+
+    class Session {
+      private id: i32;
+
+      constructor(id: i32) {
+        this.id = id;
+      }
+
+      function identifier(): i32 {
+        return this.id;
+      }
+    }
+
+    function main(): i32 {
+      const counter = Counter.zero();
+      const session = new Session(2);
+      return counter.plus(40) + session.identifier();
+    }
+  `, callableFile, {
+    nativeFrontendResolver: buildStage0ModuleGraph,
+  });
+  assert.equal(callable.nativeCallResolutionCount, 0);
+  assert.equal(callable.nativeMethodResolutionCount, 3);
+  assert.equal(callable.nativeConstructorResolutionCount, 1);
 
   assert.throws(
     () => analyzeSource(source, example, {
@@ -4682,7 +4722,7 @@ test("resolves a canonical module graph directly from native Z ASTs", () => {
     /main\.zs: native frontend shadow matches 3 modules, 3 local edges, and 10 symbols/,
   );
   assert.match(ordinaryCheck.stdout, /native frontend shadow compiler index matches \d+ binding\/signature queries/);
-  assert.match(ordinaryCheck.stdout, /native frontend shadow observes \d+ successful stage-0 Z call resolutions/);
+  assert.match(ordinaryCheck.stdout, /native frontend shadow observes \d+ function, \d+ method, and \d+ constructor stage-0 Z resolutions/);
   assert.match(ordinaryCheck.stdout, /native frontend shadow timing \(3 modules, cache hit\)/);
   assert.match(ordinaryCheck.stdout, /main\.zs: ok/);
 

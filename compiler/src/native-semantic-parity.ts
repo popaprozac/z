@@ -1,5 +1,5 @@
 import { canonicalTypeName } from "./canonical-type-name.ts";
-import type { FunctionDeclaration } from "./ast.ts";
+import type { FunctionDeclaration, StructDeclaration } from "./ast.ts";
 import type { SourceModuleBatch, SourceModuleBatchModule } from "./modules.ts";
 import { NativeSemanticIndex } from "./native-semantic-index.ts";
 import type { Stage1ModuleFunctionSignature, Stage1ModuleGraph, Stage1ModuleSymbol } from "./self-hosting.ts";
@@ -18,6 +18,20 @@ export function stage0FunctionSignature(declaration: FunctionDeclaration): Stage
     parameterTypes: declaration.parameters.map((parameter) => canonicalTypeName(parameter.type.name)),
     returnType: canonicalTypeName(declaration.returnType.name),
     errorType: declaration.errorType ? canonicalTypeName(declaration.errorType.name) : null,
+  };
+}
+
+export function stage0ConstructorSignature(declaration: StructDeclaration): Stage1ModuleFunctionSignature | null {
+  if (!declaration.constructor) return null;
+  return {
+    asynchronous: false,
+    typeParameters: [],
+    parameterModes: declaration.constructor.parameters.map((parameter) => parameter.mode),
+    parameterTypes: declaration.constructor.parameters.map((parameter) => canonicalTypeName(parameter.type.name)),
+    returnType: canonicalTypeName(declaration.name),
+    errorType: declaration.constructor.errorType
+      ? canonicalTypeName(declaration.constructor.errorType.name)
+      : null,
   };
 }
 
@@ -107,16 +121,7 @@ function stage0ModuleSymbols(
       variants: [],
       customDeinit: Boolean(declaration.deinitializer),
       customConstructor: Boolean(declaration.constructor),
-      constructorSignature: declaration.constructor ? {
-        asynchronous: false,
-        typeParameters: [],
-        parameterModes: declaration.constructor.parameters.map((parameter) => parameter.mode),
-        parameterTypes: declaration.constructor.parameters.map((parameter) => canonicalTypeName(parameter.type.name)),
-        returnType: declaration.name,
-        errorType: declaration.constructor.errorType
-          ? canonicalTypeName(declaration.constructor.errorType.name)
-          : null,
-      } : null,
+      constructorSignature: stage0ConstructorSignature(declaration),
     } : declaration.kind === "enum" ? {
       typeParameters: [],
       fields: [],

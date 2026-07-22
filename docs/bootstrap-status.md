@@ -402,8 +402,15 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    graph and proves each indexed binding lookup plus resolved selective/namespace
    signature against it; both `check --native-frontend` and
    `self-host-resolve` use that one service. Native evidence is prepared before
-   the main stage-zero semantic pass, allowing successful direct Z function calls
-   to shadow-resolve their defining native symbol and signature as they occur.
+   the main stage-zero semantic pass, allowing successful direct Z function,
+   static-method, instance-method, and explicit class-constructor calls to
+   shadow-resolve their defining native symbol and signature as they occur.
+   Method observations additionally prove static/instance identity, visibility,
+   receiver capability, async/error state, parameter capabilities and types, and
+   result type. Constructor observations prove the corresponding parameter,
+   result, and error contract. The check report keeps function, method, and
+   constructor resolution counts separate so this live migration surface remains
+   measurable instead of disappearing inside whole-graph parity.
    Native failures are buffered: a stage-zero error remains authoritative, and a
    native error surfaces only after stage zero succeeds. Prepared-library invocation lives in a
    reusable native-frontend service rather than the CLI. Native checks therefore

@@ -47,6 +47,8 @@ export type AnalyzedSource = {
   readonly nativeSemanticIndex: NativeSemanticIndex | null;
   readonly nativeSemanticQueryCount: number;
   readonly nativeCallResolutionCount: number;
+  readonly nativeMethodResolutionCount: number;
+  readonly nativeConstructorResolutionCount: number;
   readonly nativeFrontendParityMilliseconds: number | null;
 };
 
@@ -121,7 +123,9 @@ export function analyzeSource(source: string, fileName: string, options: Analysi
     nativeFrontendGraph,
     nativeSemanticIndex: nativeEvidence?.index ?? null,
     nativeSemanticQueryCount: nativeEvidence?.queryCount ?? 0,
-    nativeCallResolutionCount: nativeCallShadow?.count() ?? 0,
+    nativeCallResolutionCount: nativeCallShadow?.functionCount() ?? 0,
+    nativeMethodResolutionCount: nativeCallShadow?.methodCount() ?? 0,
+    nativeConstructorResolutionCount: nativeCallShadow?.constructorCount() ?? 0,
     nativeFrontendParityMilliseconds,
   };
 }
