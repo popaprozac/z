@@ -5,7 +5,10 @@ export function isStandardModuleSpecifier(specifier: string): boolean {
   return specifier === "std" || specifier.startsWith("std/");
 }
 
-export type StandardModuleName = "fs" | "process" | "thread";
+export type StandardModuleName = "fs" | "process" | "thread" | "objc";
+
+export const objcActionTypeName = "__z_std_objc_Action";
+export const objcSelectorTypeName = "__z_std_objc_Selector";
 
 export type StandardFunctionName =
   | "sleep"
@@ -92,6 +95,7 @@ const standardModuleMembers: Record<StandardModuleName, Readonly<Record<string, 
     run: "process.run",
   },
   thread: {},
+  objc: {},
 };
 
 export function standardModuleFunction(
@@ -107,6 +111,7 @@ export function standardModuleFunctions(module: StandardModuleName): readonly St
 
 export function standardModuleMemberNames(module: StandardModuleName): readonly string[] {
   if (module === "thread") return ["spawn", "main"];
+  if (module === "objc") return ["action"];
   return Object.keys(standardModuleMembers[module]);
 }
 

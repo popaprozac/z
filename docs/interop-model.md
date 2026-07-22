@@ -216,6 +216,7 @@ boundary**, not a claim that every bridge operation is free:
 | C scalar or function call | Native ABI call; no wrapper or allocation |
 | C record by value or scoped borrow | Native layout and calling convention; no wrapper allocation |
 | Objective-C method or property | Ordinary `objc_msgSend`-family dispatch under Clang ARC |
+| `objc.action` target/action bridge | One ARC adapter allocation, indirect closure call, and an owned environment allocation only when the closure captures |
 | Plain C++/Swift-C++ value or method | Native construction, copy, destruction, and member-call rules; no Z wrapper dispatch |
 | Non-capturing call-only callback | Function pointer or small adapter indirection; no environment allocation |
 | Escaping capturing closure / Objective-C block | Owned closure environment plus a native lifetime adapter, retains/releases, and indirect invocation |
@@ -407,3 +408,58 @@ probe remains caller-thread/AppKit-executor work; cross-thread callbacks still
 wait for atomic ARC and sendability rules. Conditional C ownership transfer and
 callback-to-async synthesis additionally require completion cardinality,
 cancellation, executor, and release metadata.
+
+## Direct Objective-C imports versus `std/objc`
+
+The default Objective-C experience remains header-first. Importing AppKit is
+enough for ordinary nominal types, class and instance methods, properties,
+constants, nullability, ARC identity, and block parameters:
+
+```z
+import AppKit from "AppKit/AppKit.h";
+
+const app = AppKit.NSApplication.sharedApplication;
+const window = AppKit.NSWindow.alloc().initWithContentRect(
+  AppKit.NSMakeRect(0.0, 0.0, 800.0, 600.0),
+  styleMask: AppKit.NSWindowStyleMaskTitled,
+  backing: AppKit.NSBackingStoreBuffered,
+  defer: false,
+);
+window.title = "Z Notes";
+```
+
+`std/objc` is the explicit bridge layer for runtime conventions that a header
+cannot express as an ordinary typed call. The first such convention is
+target/action: AppKit exposes a weak target object plus a `SEL`, while Z source
+wants an owned closure with a clear lifetime.
+
+```z
+import objc from "std/objc";
+import AppKit from "AppKit/AppKit.h";
+
+const saveAction = objc.action(move () => {
+  saveDocument();
+});
+
+button.target = saveAction;
+button.action = saveAction.selector;
+```
+
+`objc.action` allocates one ARC-managed adapter object. A capturing `move`
+closure also owns its normal Z closure environment; non-capturing operations do
+not allocate a separate environment. The adapter releases that environment
+when Objective-C releases the target. Source must keep the returned
+`objc.Action` alive for as long as the native control may invoke it, because
+AppKit's target property is weak.
+
+| Native surface | Ordinary header import | `std/objc` bridge |
+| --- | --- | --- |
+| `NSApplication.sharedApplication`, `NSWindow.alloc()`, methods/properties | Yes | No |
+| Objective-C object nullability and `Option.fromNullable` | Yes | No |
+| Typed block parameters and observer tokens | Yes | No |
+| Target object plus selector pair | Header exposes the raw convention | `objc.action` owns a Z closure and supplies `.selector` |
+| Future protocol/delegate synthesis or runtime-only adaptation | Declaration remains visible | Adapter required only when Z must synthesize native runtime behavior |
+
+This module is not a prerequisite for Objective-C interop and is not a generic
+escape hatch for message sending. If Clang can import a declaration with enough
+type and lifetime information, Z should continue to call it directly.

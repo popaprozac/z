@@ -3130,6 +3130,42 @@ test("retains owned Z closure environments across Objective-C blocks", () => {
   );
 }, 10_000);
 
+test("bridges owned Z closures to Objective-C target/action through std/objc", () => {
+  if (process.platform !== "darwin") return;
+  const example = resolve(projectRoot, "examples/interop/objc/target-action.zs");
+  const source = readFileSync(example, "utf8");
+  const artifact = compileToNative(source, example);
+
+  assert.equal(artifact.language, "objective-c");
+  assert.ok(artifact.frameworks.includes("Foundation"));
+  assert.ok(artifact.frameworks.includes("AppKit"));
+  assert.match(artifact.source, /@interface ZObjCAction : NSObject/);
+  assert.match(artifact.source, /Z_ActionState_retain\(state\)/);
+  assert.doesNotMatch(artifact.source, /Z_ActionState_retain\(state\)\)->value/);
+  assert.match(artifact.source, /\[button setTarget:action\]/);
+  assert.match(artifact.source, /\[button setAction:@selector\(z_invoke:\)\]/);
+  assert.match(artifact.source, /Z_Function_[a-f0-9]+_release\(_z_operation\)/);
+
+  const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, "button action value=42\n");
+
+  const borrowed = source.replace("objc.action(move ()", "objc.action(()");
+  assert.match(
+    diagnostics(borrowed, example)[0]?.message ?? "",
+    /borrowed capturing closure cannot become a function value/,
+  );
+
+  const actionCompletionSource = source.replace("objc.action", "objc.ac");
+  const actionCompletionOffset = actionCompletionSource.indexOf("objc.ac") + "objc.ac".length;
+  assert.ok(completions(actionCompletionSource, example, actionCompletionOffset).some((item) => item.label === "action"));
+  const selectorCompletionSource = source.replace("action.selector", "action.sel");
+  const selectorCompletionOffset = selectorCompletionSource.indexOf("action.sel") + "action.sel".length;
+  assert.ok(completions(selectorCompletionSource, example, selectorCompletionOffset).some((item) => item.label === "selector"));
+  const selectorOffset = source.indexOf("action.selector") + "action.".length + 2;
+  assert.match(hover(source, example, selectorOffset)?.contents.value ?? "", /selector: objc\.Selector/);
+}, 10_000);
+
 test("registers persistent Objective-C event callbacks with explicit token cleanup", () => {
   if (process.platform !== "darwin") return;
   const fixture = resolve(projectRoot, "tests/fixtures/objc-notifications.zs");

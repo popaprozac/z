@@ -11,6 +11,12 @@ The first skeleton already combines:
 - direct `sqlite3.h` import with an adjacent owned-output `.zd` contract;
 - explicit `target.link.libraries` configuration for `sqlite3`.
 
+The compiler now also has the first `std/objc` target/action adapter. Ordinary
+AppKit construction and calls in this application continue to come directly
+from `AppKit/AppKit.h`; the adapter is needed only when a control requires a
+target object plus selector instead of a typed block or method call. Integrating
+that adapter into the first interactive note controls is the next UI slice.
+
 Run the non-GUI model/link smoke test with:
 
 ```sh
@@ -39,6 +45,6 @@ proves this with an in-memory database. Schema creation and note loading are the
 next persistence layer.
 
 After persistence, this application should drive Objective-C protocol
-conformance, table data-source/delegate methods, target/action, escaping block
+conformance, table data-source/delegate methods, target/action integration, escaping block
 lifetime, background search through `thread.spawn`, cancellation, and
 main-thread UI delivery.

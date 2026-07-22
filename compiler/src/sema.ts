@@ -57,6 +57,8 @@ import {
 } from "./foreign.ts";
 import {
   isStandardModuleSpecifier,
+  objcActionTypeName,
+  objcSelectorTypeName,
   standardFunctionSignature,
   standardModuleFunction,
   standardModuleMemberNames,
@@ -260,6 +262,7 @@ export type SemanticInfo = {
   readonly swiftStringsToZ: ReadonlySet<number>;
   readonly cstringConversions: ReadonlySet<number>;
   readonly optionFromNullable: ReadonlySet<number>;
+  readonly objcActionCalls: ReadonlySet<number>;
   readonly expressionTypes: ReadonlyMap<number, string>;
   readonly bindingTypes: ReadonlyMap<number, string>;
   readonly borrowedMatches: ReadonlySet<number>;
@@ -325,6 +328,7 @@ type AnalysisState = {
   readonly swiftStringsToZ: Set<number>;
   readonly cstringConversions: Set<number>;
   readonly optionFromNullable: Set<number>;
+  readonly objcActionCalls: Set<number>;
   readonly expressionTypes: Map<number, string>;
   readonly bindingTypes: Map<number, string>;
   readonly resolvedFields: Map<number, StructDeclaration["fields"][number]>;
@@ -475,6 +479,34 @@ export function analyze(
     if (module.objectiveC) objectiveC = true;
     if (module.cPlusPlus) cPlusPlus = true;
   }
+  if (program.imports.some((declaration) => declaration.header === "std/objc")) {
+    objectiveC = true;
+    frameworks.add("Foundation");
+    const metadata: ForeignDeclarationMetadata = { source: null, availability: [] };
+    const action: ForeignNamedType = {
+      kind: "object",
+      exportName: "Action",
+      namespacePath: ["objc"],
+      qualifiedName: "objc.Action",
+      typeName: objcActionTypeName,
+      cName: "ZObjCAction *",
+      className: "ZObjCAction",
+      metadata,
+    };
+    foreignNamedTypes.set(objcActionTypeName, action);
+    foreignObjectTypes.set(objcActionTypeName, {
+      kind: "object",
+      typeName: objcActionTypeName,
+      cName: action.cName,
+      className: action.className,
+      nullable: false,
+    });
+    typeDisplayNames = new Map([
+      ...typeDisplayNames,
+      [objcActionTypeName, "objc.Action"],
+      [objcSelectorTypeName, "objc.Selector"],
+    ]);
+  }
   const state: AnalysisState = {
     warnings: [],
     warningKeys: new Set(),
@@ -522,6 +554,7 @@ export function analyze(
     swiftStringsToZ: new Set(),
     cstringConversions: new Set(),
     optionFromNullable: new Set(),
+    objcActionCalls: new Set(),
     expressionTypes: new Map(),
     bindingTypes: new Map(),
     resolvedFields: new Map(),
@@ -729,8 +762,10 @@ export function analyze(
         }
         continue;
       }
-      if (declaration.header === "std/fs" || declaration.header === "std/process") {
-        const module: StandardModuleName = declaration.header === "std/fs" ? "fs" : "process";
+      if (declaration.header === "std/fs" || declaration.header === "std/process" || declaration.header === "std/objc") {
+        const module: StandardModuleName = declaration.header === "std/fs"
+          ? "fs"
+          : declaration.header === "std/process" ? "process" : "objc";
         if (declaration.bindings) {
           throw new DiagnosticError(fileName, declaration.location, `${declaration.header} is a default module import`, {
             code: "Z0501",
@@ -744,7 +779,7 @@ export function analyze(
       }
       throw new DiagnosticError(fileName, declaration.location, `unknown standard module ${JSON.stringify(declaration.header)}`, {
         code: "Z0501",
-        helps: ["the bootstrap standard library currently provides `std`, `std/console`, `std/time`, `std/text`, `std/memory`, `std/collections`, `std/hash`, `std/thread`, `std/fs`, and `std/process`"],
+        helps: ["the bootstrap standard library currently provides `std`, `std/console`, `std/time`, `std/text`, `std/memory`, `std/collections`, `std/hash`, `std/thread`, `std/fs`, `std/process`, and `std/objc`"],
       });
     }
     const module = foreignModules.get(declaration.moduleName);
@@ -2773,6 +2808,12 @@ function finalizeClosureFunctionValue(
   state.expressionTypes.set(expression.location.offset, expectedType);
   for (const capture of closure.owned ? closure.captures : []) {
     if (!hasOwnershipType(capture.type, structs, enums, state)) continue;
+    // Shared identities are retained explicitly when codegen stores them in
+    // the owned environment. Marking the capture's source location as a
+    // managed copy also affected ordinary reads at that same AST location.
+    if (structs.get(capture.type)?.kind === "class" || parseFunctionType(capture.type) || parseWeakType(capture.type)) {
+      continue;
+    }
     consumeOwnedValue(
       { kind: "identifier", name: capture.name, location: capture.location },
       capture.type,
@@ -4303,6 +4344,10 @@ function inferExpressionInner(
         });
       }
       const receiverValueType = receiverView?.target ?? String(receiverType);
+      if (receiverValueType === objcActionTypeName) {
+        if (expression.property === "selector") return objcSelectorTypeName;
+        throw new DiagnosticError(fileName, expression.location, `objc.Action has no property ${JSON.stringify(expression.property)}`);
+      }
       const map = parseMapType(receiverValueType);
       if (map) {
         if (expression.property === "length") return "usize";
@@ -4626,6 +4671,37 @@ function inferExpressionInner(
           const localModuleName = expression.callee.object.name;
           const owner = globals.get(localModuleName);
           if (owner?.kind === "standardModule") {
+            if (owner.module === "objc") {
+              if (expression.callee.property !== "action") {
+                throw new DiagnosticError(fileName, expression.callee.location, `objc has no method ${JSON.stringify(expression.callee.property)}`, {
+                  helps: [`use ${localModuleName}.action(move () => operation())`],
+                });
+              }
+              rejectLabeledArguments(expression.argumentLabels, expression.location, fileName);
+              if (expression.arguments.length !== 1 || expression.arguments[0].kind !== "closure") {
+                throw new DiagnosticError(fileName, expression.location, "objc.action expects one synchronous closure", {
+                  code: "Z0804",
+                  helps: [`use \`${localModuleName}.action(move () => operation())\``],
+                });
+              }
+              const operation = expression.arguments[0];
+              const expectedFunction: FunctionType = { parameters: [], returnType: "void" };
+              const expectedType = functionTypeName([], "void");
+              inferClosureExpression(operation, locals, globals, structs, enums, fileName, state, expectedFunction);
+              finalizeClosureFunctionValue(
+                operation,
+                expectedFunction,
+                expectedType,
+                locals,
+                structs,
+                enums,
+                fileName,
+                state,
+              );
+              state.objcActionCalls.add(expression.location.offset);
+              state.expressionTypes.set(expression.location.offset, objcActionTypeName);
+              return objcActionTypeName;
+            }
             if (owner.module === "thread") {
               if (expression.callee.property !== "spawn") {
                 throw new DiagnosticError(fileName, expression.callee.location, `thread has no method ${JSON.stringify(expression.callee.property)}`, {
@@ -7589,6 +7665,7 @@ function findObjCProperty(
 
 function foreignValueType(type: ForeignType): ValueType {
   if (type.kind === "z") return type.name;
+  if (type.kind === "selector") return objcSelectorTypeName;
   if (type.kind === "swiftString") return swiftStringTypeName;
   if (type.kind === "named") return type.type.typeName;
   if (type.kind === "reference") return type.type.kind === "scalar" ? type.type.underlying : type.type.typeName;

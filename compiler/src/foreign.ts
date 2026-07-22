@@ -864,6 +864,16 @@ function mapObjCType(
   objectType: (className: string | null, nullable: boolean) => ForeignObjectType,
 ): ForeignType {
   const qualified = type.qualType ?? "";
+  const normalizedQualified = qualified
+    .replace(/\b(?:const|volatile|__strong|__weak|__unsafe_unretained|__autoreleasing|_(?:Nullable|Nonnull|Null_unspecified))\b/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  // Clang reports Objective-C's typedef'd selector as either `SEL` or, for
+  // some imported properties, `SEL *`. Both spellings represent the runtime
+  // selector value rather than an ordinary user-visible pointer in Z.
+  if (normalizedQualified === "SEL" || normalizedQualified === "SEL *") {
+    return { kind: "selector", cName: "SEL" };
+  }
   const nullable = /\b(?:_Nullable|_Null_unspecified)\b/.test(qualified);
   const block = mapObjCBlockType(
     qualified,

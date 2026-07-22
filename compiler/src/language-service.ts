@@ -42,6 +42,7 @@ import {
   type ForeignDeclarationContracts,
 } from "./foreign-declarations.ts";
 import {
+  objcActionTypeName,
   standardFunctionSignature,
   standardModuleFunction,
   standardModuleMemberNames,
@@ -641,6 +642,14 @@ export function hover(source: string, fileName: string, offset: number): Hover |
     if (standardOwner === "thread" && word.text === "main") {
       return markdownHover("thread.main: Executor  // main-thread execution target", source, word.start, word.end);
     }
+    if (standardOwner === "objc" && word.text === "action") {
+      return markdownHover(
+        "action(operation: () => void): objc.Action  // owns a Z closure as an Objective-C target/action adapter",
+        source,
+        word.start,
+        word.end,
+      );
+    }
     const standardName = standardOwner ? standardModuleFunction(standardOwner, word.text) : null;
     if (standardName) {
       return markdownHover(standardFunctionDetail(word.text, standardName), source, word.start, word.end);
@@ -708,6 +717,9 @@ export function hover(source: string, fileName: string, offset: number): Hover |
         word.start,
         word.end,
       );
+    }
+    if (resolved?.kind === "objcAction" && word.text === "selector") {
+      return markdownHover("selector: objc.Selector  // invokes the owned Z operation", source, word.start, word.end);
     }
     if (resolved?.kind === "integer") {
       const detail = integerMethodDetail(word.text, resolved.type);
@@ -1015,7 +1027,7 @@ function selectiveImportCandidates(specifier: string, fileName: string): Complet
       detail: "native thread task launcher",
     }];
   }
-  if (specifier === "std/console") return [];
+  if (specifier === "std/console" || specifier === "std/objc") return [];
   const alias = "__z_completion_module";
   let context: AnalyzedSource;
   try {
@@ -2251,7 +2263,9 @@ function memberCompletions(
         kind: completionKinds.method,
         detail: standardModule === "thread" && member === "spawn"
           ? "spawn<T, E?>(operation: () => T throws E?): Task<T, E?>  // starts one native thread"
-          : standardFunctionDetail(member, name!),
+          : standardModule === "objc" && member === "action"
+            ? "action(operation: () => void): objc.Action  // bridges target/action"
+            : standardFunctionDetail(member, name!),
         insertText: `${member}()`,
       };
     }), prefix, 100);
@@ -2325,11 +2339,19 @@ function memberCompletions(
   if (directReceiver?.kind === "set") {
     return filterCompletions(setCompletions(directReceiver.elementType, importContext.typeDisplayNames), prefix, 1000);
   }
+  if (directReceiver?.kind === "objcAction") {
+    return filterCompletions([{
+      label: "selector",
+      kind: completionKinds.property,
+      detail: "objc.Selector  // invokes the owned Z operation",
+    }], prefix, 1000);
+  }
   const dotOffset = receiverOffset + receiverText.length;
   const tailOffset = completionTailOffset(source, offset);
   const sanitized = source.slice(0, dotOffset) + source.slice(tailOffset);
   const lengthSanitized = source.slice(0, dotOffset) + ".length" + source.slice(tailOffset);
   const byteLengthSanitized = source.slice(0, dotOffset) + ".byteLength" + source.slice(tailOffset);
+  const selectorSanitized = source.slice(0, dotOffset) + ".selector" + source.slice(tailOffset);
   const upgradeSanitized = source.slice(0, dotOffset) + ".upgrade()" + source.slice(tailOffset);
   const statementTailOffset = source[tailOffset] === ";" ? tailOffset + 1 : tailOffset;
   const statementStart = Math.max(
@@ -2388,13 +2410,16 @@ function memberCompletions(
   const statementSanitized = source.slice(0, dotOffset) + ";" + source.slice(statementTailOffset);
   const lengthStatementSanitized = source.slice(0, dotOffset) + ".length;" + source.slice(statementTailOffset);
   const byteLengthStatementSanitized = source.slice(0, dotOffset) + ".byteLength;" + source.slice(statementTailOffset);
+  const selectorStatementSanitized = source.slice(0, dotOffset) + ".selector;" + source.slice(statementTailOffset);
   let context = safeAnalysis(sanitized, fileName)
     ?? safeAnalysis(statementSanitized, fileName)
     ?? safeAnalysis(lengthSanitized, fileName)
     ?? safeAnalysis(byteLengthSanitized, fileName)
+    ?? safeAnalysis(selectorSanitized, fileName)
     ?? safeAnalysis(upgradeSanitized, fileName)
     ?? safeAnalysis(lengthStatementSanitized, fileName)
-    ?? safeAnalysis(byteLengthStatementSanitized, fileName);
+    ?? safeAnalysis(byteLengthStatementSanitized, fileName)
+    ?? safeAnalysis(selectorStatementSanitized, fileName);
   let resolvedOffset = receiverOffset;
   if (!context) {
     const probePrefix = `${source.slice(0, statementStart)}const completionProbe = `;
@@ -2570,6 +2595,13 @@ function memberCompletions(
       kind: completionKinds.method,
       detail: "async cancel(): void  // consumes the Task; requests cancellation and joins cleanup",
       insertText: "cancel()",
+    }], prefix, 1000);
+  }
+  if (resolved?.kind === "objcAction") {
+    return filterCompletions([{
+      label: "selector",
+      kind: completionKinds.property,
+      detail: "objc.Selector  // invokes the owned Z operation",
     }], prefix, 1000);
   }
   return [];
@@ -2824,7 +2856,8 @@ type ResolvedReceiver =
   | { readonly kind: "map"; readonly keyType: string; readonly valueType: string }
   | { readonly kind: "set"; readonly elementType: string }
   | { readonly kind: "weak"; readonly target: string }
-  | { readonly kind: "task"; readonly successType: string; readonly errorType: string | null };
+  | { readonly kind: "task"; readonly successType: string; readonly errorType: string | null }
+  | { readonly kind: "objcAction" };
 
 function mapValueHasReferenceIdentity(context: AnalyzedSource, type: string): boolean {
   return context.program.structs.some((declaration) => declaration.name === type && declaration.kind === "class")
@@ -2846,6 +2879,7 @@ function resolveReceiver(context: AnalyzedSource, text: string, offset: number):
   if (!type) return null;
   const view = parseViewType(type);
   const receiverType = view?.target ?? type;
+  if (receiverType === objcActionTypeName) return { kind: "objcAction" };
   if (receiverType === "TextBuffer") return { kind: "textBuffer" };
   if (receiverType === "Arena") return { kind: "arena" };
   if (receiverType === "Hasher") return { kind: "hasher" };
@@ -3587,6 +3621,7 @@ function formatTypeParameters(
 
 function foreignTypeName(type: ForeignType): string {
   if (type.kind === "z") return type.name;
+  if (type.kind === "selector") return "objc.Selector";
   if (type.kind === "swiftString") return "String";
   if (type.kind === "named") return type.type.typeName;
   if (type.kind === "reference") return type.type.kind === "scalar" ? type.type.underlying : type.type.typeName;

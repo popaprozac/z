@@ -66,13 +66,13 @@ requiring lifetime syntax throughout ordinary application code.
 | Area | Implemented stage-0 slice |
 | --- | --- |
 | Values | Structs, classes, traits, generics, arrays, slices, owned strings |
-| Standard library | Explicit console/time/text/memory/collections plus initial `std/fs`, `std/process`, owned program arguments, move-only `TextBuffer`, `Arena` region storage, and ownership-aware `Map<K, V>` / `Set<T>` semantic tiers |
+| Standard library | Explicit console/time/text/memory/collections plus initial `std/fs`, `std/process`, `std/objc`, owned program arguments, move-only `TextBuffer`, `Arena` region storage, and ownership-aware `Map<K, V>` / `Set<T>` semantic tiers |
 | Ownership | Lexical borrows, moves, deterministic cleanup, ARC, `Weak<T>`, field-level and whole-aggregate `readonly`, inferred shareable classes, receiver-tied views, and synchronous arena regions |
 | Errors | Typed `throws`, `try` propagation, `attempt`, `Result<T, E>` |
 | Control flow | Checked arithmetic, loops, ternaries, value `if`, exhaustive `match` |
 | Async | Stackless tasks, FIFO executor, spawn/join scopes, cancellation, delay, and nonblocking `thread.spawn` joins with Copy snapshots, unique-owner moves, atomic-ARC readonly sharing, and owned typed worker errors on one native thread |
 | C | Header imports, functions, records, enums, constants, pointers with `.zd` contracts, callbacks, target-aware availability |
-| Objective-C | ARC objects, nullability, selectors, blocks, persistent observers, AppKit |
+| Objective-C | ARC objects, nullability, selectors, blocks, persistent observers, explicit target/action closure adapters, AppKit |
 | C++ | Hierarchical functions/types, overload selection, records, `.zd`-contracted copyable and move-only RAII values, constructors, methods, named-value references, and receiver qualifiers |
 | Swift | Generated Objective-C compatibility headers plus generated C++ values, associated-value enum cases, methods, copying, cleanup, and exact owned `String` returns |
 | Editor | VS Code/Cursor highlighting, diagnostics, hover, completion, and definitions |

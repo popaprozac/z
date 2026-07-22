@@ -18,6 +18,8 @@ import type { ClosureInfo, ForeignCallArgumentPlan, IntegerOperation, SemanticIn
 import { parsePointerTypeName, type ForeignBlockType } from "./foreign.ts";
 import {
   isStandardModuleSpecifier,
+  objcActionTypeName,
+  objcSelectorTypeName,
   standardFunctionSignature,
   type StandardFunctionName,
 } from "./standard-library.ts";
@@ -96,6 +98,7 @@ const primitiveTypeNames: Record<string, string> = {
   TextBuffer: "Z_String",
   Arena: "Z_Arena",
   Hasher: "Z_Hasher",
+  [objcSelectorTypeName]: "SEL",
 };
 
 export function generateC(program: Program, sourceName: string, semanticInfo: SemanticInfo): string {
@@ -232,6 +235,11 @@ export function generateC(program: Program, sourceName: string, semanticInfo: Se
     includedHeaders.add("string.h");
   }
 
+  if (semanticInfo.objcActionCalls.size > 0) {
+    lines.push("#import <Foundation/Foundation.h>");
+    includedHeaders.add("Foundation/Foundation.h");
+  }
+
   for (const declaration of program.imports) {
     if (isStandardModuleSpecifier(declaration.header)) continue;
     if (includedHeaders.has(declaration.header)) continue;
@@ -291,6 +299,9 @@ export function generateC(program: Program, sourceName: string, semanticInfo: Se
     lines.push(generateFunctionTypeDefinition(functionType, structs, enums, semanticInfo.foreignNamedTypes));
   }
   if (functionTypes.length > 0) lines.push("");
+  if (semanticInfo.objcActionCalls.size > 0) {
+    lines.push(generateObjCActionRuntime(), "");
+  }
   for (const helper of foreignEscapeHelpers) {
     lines.push(generateForeignEscapeHelpers(helper), "");
   }
@@ -838,6 +849,40 @@ static inline __attribute__((unused)) ${name} ${functionTypeRetainName(functionT
 
 static inline __attribute__((unused)) void ${functionTypeReleaseName(functionType)}(${name} value) {
   if (value.release != NULL) value.release(value.context);
+}`;
+}
+
+function generateObjCActionRuntime(): string {
+  const functionType: FunctionType = { parameters: [], returnType: "void" };
+  const functionName = functionTypeCName(functionType);
+  const releaseName = functionTypeReleaseName(functionType);
+  return `@interface ZObjCAction : NSObject {
+@public
+  ${functionName} _z_operation;
+}
+- (instancetype)initWithOperation:(${functionName})operation;
+- (void)z_invoke:(id)sender;
+@end
+
+@implementation ZObjCAction
+- (instancetype)initWithOperation:(${functionName})operation {
+  self = [super init];
+  if (self != nil) _z_operation = operation;
+  return self;
+}
+
+- (void)z_invoke:(id)sender {
+  (void)sender;
+  _z_operation.call(_z_operation.context);
+}
+
+- (void)dealloc {
+  ${releaseName}(_z_operation);
+}
+@end
+
+static inline __attribute__((unused)) ZObjCAction *z_objc_action(${functionName} operation) {
+  return [[ZObjCAction alloc] initWithOperation:operation];
 }`;
 }
 
@@ -2618,8 +2663,7 @@ function generateStatement(statement: Statement, context: GenerationContext): st
           const environmentType = closureEnvironmentName(closure);
           const environment = `_z_closure_environment_${closure.declaration.location.offset}`;
           const captures = closure.captures.map((capture) => {
-            const expression: Expression = { kind: "identifier", name: capture.name, location: capture.location };
-            return `${environment}->${capture.name} = ${generateExpression(expression, context)};`;
+            return `${environment}->${capture.name} = ${generateOwnedClosureCaptureValue(capture, context)};`;
           });
           const value = functionValueLiteral(
             functionType,
@@ -3390,7 +3434,9 @@ function generateClosureValue(
     : `_z_borrowed_closure_environment_${closure.declaration.location.offset}`;
   const captures = closure.captures.map((capture) => {
     const captured: Expression = { kind: "identifier", name: capture.name, location: capture.location };
-    const value = generateExpression(captured, context);
+    const value = closure.owned
+      ? generateOwnedClosureCaptureValue(capture, context)
+      : generateExpression(captured, context);
     const borrowedPointer = !closure.owned
       && capture.mode !== "value"
       && !(capture.mode === "in" && context.structs.get(capture.type)?.kind === "class");
@@ -3414,6 +3460,20 @@ if (${environment} == NULL) abort();
 ${environment}->refcount = 1;
 ${captures.join("\n")}
 ${consumeValue(value, context)}`;
+}
+
+function generateOwnedClosureCaptureValue(
+  capture: ClosureInfo["captures"][number],
+  context: GenerationContext,
+): string {
+  const captured: Expression = { kind: "identifier", name: capture.name, location: capture.location };
+  let value = generateExpression(captured, context);
+  const capturedClass = context.structs.get(capture.type);
+  const capturedFunction = parseFunctionType(capture.type);
+  if (capturedClass?.kind === "class") value = `${retainName(capture.type)}(${value})`;
+  else if (capturedFunction) value = `${functionTypeRetainName(capturedFunction)}(${value})`;
+  else if (parseWeakType(capture.type)) value = `z_weak_retain(${value})`;
+  return value;
 }
 
 function isStableStorageExpression(expression: Expression): boolean {
@@ -4735,6 +4795,9 @@ function generateExpressionInner(expression: Expression, context: GenerationCont
       const ownerType = inferExpressionType(expression.object, context);
       const ownerView = parseViewType(ownerType);
       const ownerValueType = ownerView?.target ?? ownerType;
+      if (ownerValueType === objcActionTypeName && expression.property === "selector") {
+        return "@selector(z_invoke:)";
+      }
       const array = parseFixedArrayType(ownerValueType);
       const slice = parseSliceType(ownerValueType);
       const dynamic = parseDynamicArrayType(ownerValueType);
@@ -4802,6 +4865,9 @@ function generateExpressionInner(expression: Expression, context: GenerationCont
     case "call": {
       if (context.semanticInfo.optionFromNullable.has(expression.location.offset)) {
         return generateExpression(expression.arguments[0], context);
+      }
+      if (context.semanticInfo.objcActionCalls.has(expression.location.offset)) {
+        return `z_objc_action(${generateExpression(expression.arguments[0], context)})`;
       }
       const integerOperation = context.semanticInfo.integerOperations.get(expression.location.offset);
       if (integerOperation && expression.callee.kind === "member") {

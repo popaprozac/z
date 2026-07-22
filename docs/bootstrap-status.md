@@ -78,14 +78,14 @@ an inferred receiver-tied view.
 | C callbacks | Partial | Call-only and caller-thread escaping callbacks use `.zd` with named context and exact release contracts; cross-thread callbacks remain unsupported |
 | Native availability | Implemented host slice | Explicit `z.json` platform/minimum target, introduced/obsoleted errors, deprecation warnings, native source locations, and matching Clang/Swift deployment flags; cross-compilation and runtime guards remain |
 | Native library linkage | Implemented host slice | Validated, deduplicated `target.link.libraries` names become host-native library arguments; raw linker flags and cross-platform library resolution remain outside the project contract |
-| Objective-C | Partial | ARC classes/fields, methods, properties/global object constants, labels, nullability, niche-backed `Option.fromNullable`, owned `String`/`NSString` copies, escaping blocks and persistent observer tokens |
+| Objective-C | Partial | ARC classes/fields, methods, properties/global object constants, labels, nullability, niche-backed `Option.fromNullable`, owned `String`/`NSString` copies, escaping blocks, persistent observer tokens, and `std/objc` target/action closure adapters |
 | C++ | Partial | Hierarchical/selectively aliased namespaces, typed overloads, records, and `.zd`-contracted copyable or move-only RAII values; move-only values work in synchronous locals/calls/returns, Z structs, dynamic arrays, named enums, compiler `Option`/`Result`, direct async locals, owned async parameters, scoped immutable async borrows, direct-awaited and scope-bounded spawned mutable async borrows, whole Z async value aggregates, fallible async results, and explicit native-thread transfer when `.zd` separately guarantees transfer and receiving-thread destruction; named references and receiver qualifiers map to existing Z capabilities with direct native lowering; reference returns, spawned output async borrows, ARC/closure storage, native sharing, capability-changing overloads, and templates remain |
 | Swift via Objective-C | Implemented slice | Generated compatibility header, classes/properties/methods, automatic local dylib build/link |
 | Swift value via C++ | Implemented probes | Native static construction, associated-value enum case factories, const/mutable instance methods, struct return/copy/aggregate storage/round-trip/destruction, and exact owned `String` returns without handwritten shim |
 | Broader Swift surface | Planned vertical slices | Length-aware `String` inputs, property sugar, generics, protocols, errors, async, packages; Swift 6.2 currently withholds noncopyable values and async functions from its generated C++ interface |
 
 Current interop gaps that block a richer desktop application include
-broader Objective-C block shapes, target/action adapters, protocol conformance,
+broader Objective-C block shapes, protocol conformance,
 cross-thread callbacks, runtime availability guards, cross-compilation, and API
 notes at SDK scale. General
 `T | null`/`Option<T>` representation unification remains language
@@ -154,6 +154,8 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
 - [`examples/interop/objc/appkit-events.zs`](../examples/interop/objc/appkit-events.zs): persistent native
   notification callbacks, weak Z capture, imported notification constants, and
   explicit observer-token removal.
+- [`examples/interop/objc/target-action.zs`](../examples/interop/objc/target-action.zs): explicit
+  `std/objc` closure ownership for AppKit's target plus selector convention.
 - [`examples/interop/swift/swift-interop`](../examples/interop/swift/swift-interop): Swift class through its
   generated Objective-C compatibility header.
 - [`examples/interop/swift/swift-value-interop`](../examples/interop/swift/swift-value-interop): Swift-native
