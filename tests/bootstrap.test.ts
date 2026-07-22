@@ -8639,6 +8639,15 @@ test("supports explicit copy and move ownership expressions", () => {
   assert.match(generated, /Z_Document snapshot = z_copy_Document\(/);
   assert.match(generated, /z_string_copy\(source\.title\)/);
   assert.match(generated, /_z_live_library_[0-9]+ = false/);
+  const copyHover = hover(source, "explicit-copy-move.zs", source.indexOf("copy library"))?.contents.value ?? "";
+  assert.match(copyHover, /copy view Document -> Document/);
+  assert.match(copyHover, /compiler-synthesized from copyable fields and payloads/);
+  assert.match(copyHover, /materializes an owned Document from borrowed storage/);
+  assert.match(copyHover, /allocates for owned strings or growable buffers/);
+  const moveHover = hover(source, "explicit-copy-move.zs", source.indexOf("move library"))?.contents.value ?? "";
+  assert.match(moveHover, /move Library -> Library/);
+  assert.match(moveHover, /named source becomes unavailable/);
+  assert.match(moveHover, /owned fields are not cloned/);
   const directory = mkdtempSync("/tmp/z-explicit-copy-move-");
   const input = resolve(directory, "main.zs");
   writeFileSync(input, source);

@@ -36,6 +36,7 @@ import { parseWeakType } from "./weak-types.ts";
 import { parseViewType } from "./view-types.ts";
 import { parseMapType } from "./map-types.ts";
 import { parseSetType } from "./set-types.ts";
+import type { ExplicitCopyPlan } from "./sema.ts";
 import {
   parseForeignDeclarationContracts,
   type ForeignDeclarationContracts,
@@ -479,6 +480,19 @@ export function hover(source: string, fileName: string, offset: number): Hover |
   const directWordType = context.semanticInfo.bindingTypes.get(word.start)
     ?? context.semanticInfo.numericLiteralTypes.get(word.start)
     ?? context.semanticInfo.expressionTypes.get(word.start);
+
+  if (word.text === "copy") {
+    const plan = context.semanticInfo.explicitCopies.get(word.start);
+    if (plan) return markdownHover(explicitCopyHover(plan, context), source, word.start, word.end);
+  }
+  if (
+    word.text === "move"
+    && !/^\s*\(/.test(source.slice(word.end))
+    && context.semanticInfo.expressionTypes.has(word.start)
+  ) {
+    const type = context.semanticInfo.expressionTypes.get(word.start)!;
+    return markdownHover(explicitMoveHover(type, context), source, word.start, word.end);
+  }
 
   const declaredField = context.sourceProgram.structs
     .flatMap((declaration) => declaration.fields)
@@ -3444,6 +3458,73 @@ function displayServiceType(type: string, context: AnalyzedSource): string {
     ? ` throws ${displayType(closure.declaration.errorType.name, displayNames)}`
     : "";
   return `(${parameters.join(", ")}) => ${displayType(closure.declaration.returnType.name, displayNames)}${throws}`;
+}
+
+function explicitCopyHover(
+  plan: ExplicitCopyPlan,
+  context: AnalyzedSource,
+): string {
+  const type = displayServiceType(plan.type, context);
+  const source = plan.sourceIsView ? `view ${type}` : type;
+  const capability = plan.kind === "trivial"
+    ? "built-in cleanup-free value copy"
+    : plan.kind === "string"
+      ? "built-in owned String copy"
+      : plan.kind === "native"
+        ? "native copy construction proven by the `.zd` contract"
+        : "compiler-synthesized from copyable fields and payloads";
+  const cost = plan.kind === "trivial"
+    ? "ordinary by-value copy; no allocation"
+    : plan.kind === "string"
+      ? "allocates and copies UTF-8 storage"
+      : plan.kind === "native"
+        ? "invokes the native copy operation; its internal cost is library-defined"
+        : aggregateCopyMayAllocate(plan.type, context)
+          ? "recursive value copy; allocates for owned strings or growable buffers"
+          : "recursive by-value copy; no Z allocation";
+  const materialization = plan.sourceIsView
+    ? `\n// materializes an owned ${type} from borrowed storage`
+    : "";
+  return `copy ${source} -> ${type}\n// ${capability}\n// source remains available${materialization}\n// cost: ${cost}`;
+}
+
+function explicitMoveHover(typeName: string, context: AnalyzedSource): string {
+  const type = displayServiceType(typeName, context);
+  const foreign = context.semanticInfo.foreignNamedTypes.get(typeName);
+  const aggregate = context.program.structs.find((candidate) => candidate.name === typeName);
+  const cost = foreign?.kind === "value"
+    ? "invokes native move construction proven by the `.zd` contract"
+    : aggregate?.kind === "class"
+      ? "transfers the ARC owner without retaining the identity"
+      : typeName === "String"
+        || typeName === "TextBuffer"
+        || typeName === "Arena"
+        || Boolean(parseDynamicArrayType(typeName))
+        ? "constant-time owned-storage transfer; no allocation"
+        : "whole-value ownership transfer; owned fields are not cloned";
+  return `move ${type} -> ${type}\n// transfers unique ownership; a named source becomes unavailable\n// cost: ${cost}`;
+}
+
+function aggregateCopyMayAllocate(
+  type: string,
+  context: AnalyzedSource,
+  visiting = new Set<string>(),
+): boolean {
+  if (type === "String" || parseDynamicArrayType(type)) return true;
+  if (visiting.has(type)) return false;
+  const fixed = parseFixedArrayType(type);
+  if (fixed) return aggregateCopyMayAllocate(fixed.elementType, context, visiting);
+  const aggregate = context.program.structs.find((candidate) => candidate.name === type);
+  const enumeration = context.program.enums.find((candidate) => candidate.name === type);
+  if (!aggregate && !enumeration) return false;
+  visiting.add(type);
+  const result = aggregate
+    ? aggregate.fields.some((field) => aggregateCopyMayAllocate(field.type.name, context, visiting))
+    : enumeration!.variants.some((variant) => (
+      Boolean(variant.payload) && aggregateCopyMayAllocate(variant.payload!.name, context, visiting)
+    ));
+  visiting.delete(type);
+  return result;
 }
 
 function visibleSelectiveImportType(type: string, context: AnalyzedSource): string {
