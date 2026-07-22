@@ -105,6 +105,7 @@ test("loads explicit Z exports through selective and namespace module imports", 
   assert.equal(analysis.nativeAggregateResolutionCount, 0);
   assert.equal(analysis.nativeFieldResolutionCount, 0);
   assert.equal(analysis.nativeEnumVariantResolutionCount, 0);
+  assert.equal(analysis.nativeTypeResolutionCount, 0);
   assert.equal(analysis.nativeFrontendParityMilliseconds, null);
   assert.equal(analysis.sourceModuleBatch.entryFileName, example);
   assert.deepEqual(
@@ -178,12 +179,20 @@ test("attaches native frontend evidence after authoritative stage-0 analysis", (
       empty,
     }
 
+    function stateValue(state: CounterState): i32 {
+      return match (state) {
+        active({ value }) => value;
+        empty => 0;
+      };
+    }
+
     function main(): i32 {
-      const counter = Counter.zero();
-      const session = new Session(2);
-      const active = CounterState.active(Counter({ value: 1 }));
-      const empty = CounterState.empty;
-      return counter.plus(40) + session.identifier();
+      let counter: Counter = Counter.zero();
+      counter.value = counter.value + 1;
+      const session: Session = new Session(2);
+      const active: CounterState = CounterState.active(Counter({ value: 1 }));
+      const empty: CounterState = CounterState.empty;
+      return counter.plus(39) + session.identifier();
     }
   `, callableFile, {
     nativeFrontendResolver: buildStage0ModuleGraph,
@@ -192,8 +201,9 @@ test("attaches native frontend evidence after authoritative stage-0 analysis", (
   assert.equal(callable.nativeMethodResolutionCount, 3);
   assert.equal(callable.nativeConstructorResolutionCount, 1);
   assert.equal(callable.nativeAggregateResolutionCount, 2);
-  assert.equal(callable.nativeFieldResolutionCount, 6);
-  assert.equal(callable.nativeEnumVariantResolutionCount, 2);
+  assert.equal(callable.nativeFieldResolutionCount, 10);
+  assert.equal(callable.nativeEnumVariantResolutionCount, 4);
+  assert.equal(callable.nativeTypeResolutionCount, 4);
 
   assert.throws(
     () => analyzeSource(source, example, {
@@ -4737,6 +4747,7 @@ test("resolves a canonical module graph directly from native Z ASTs", () => {
   assert.match(ordinaryCheck.stdout, /native frontend shadow compiler index matches \d+ binding\/signature queries/);
   assert.match(ordinaryCheck.stdout, /native frontend shadow observes \d+ function, \d+ method, and \d+ constructor stage-0 Z resolutions/);
   assert.match(ordinaryCheck.stdout, /native frontend shadow observes \d+ aggregate, \d+ field, and \d+ enum-variant stage-0 Z resolutions/);
+  assert.match(ordinaryCheck.stdout, /native frontend shadow observes \d+ explicit type-use stage-0 Z resolutions/);
   assert.match(ordinaryCheck.stdout, /native frontend shadow timing \(3 modules, cache hit\)/);
   assert.match(ordinaryCheck.stdout, /main\.zs: ok/);
 

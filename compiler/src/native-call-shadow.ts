@@ -17,6 +17,7 @@ export type NativeCallShadow = {
   readonly aggregateCount: () => number;
   readonly fieldCount: () => number;
   readonly enumVariantCount: () => number;
+  readonly typeCount: () => number;
 };
 
 export function createNativeCallShadow(
@@ -55,6 +56,7 @@ export function createNativeCallShadow(
   let aggregates = 0;
   let fields = 0;
   let enumVariants = 0;
+  let types = 0;
   const observer: SemanticObserver = {
     onFunctionCall: ({ location, declaration }) => {
       const definitionPath = declaration.location.fileName;
@@ -174,6 +176,19 @@ export function createNativeCallShadow(
       }
       enumVariants += 1;
     },
+    onTypeResolution: ({ location, declaration }) => {
+      const source = declaration.kind === "enum"
+        ? sourceEnum(sourceEnums, modulePaths, declaration)
+        : sourceAggregate(sourceAggregates, modulePaths, declaration);
+      if (!source) return;
+      const native = index.symbol(source.modulePath, source.declaration.name);
+      if (native?.kind !== source.declaration.kind || !native.typeSignature) {
+        throw new Error(
+          `native semantic shadow type mismatch for ${JSON.stringify(source.declaration.name)} resolved at ${callSite(location, sourceBatch)}`,
+        );
+      }
+      types += 1;
+    },
   };
   return {
     observer,
@@ -183,6 +198,7 @@ export function createNativeCallShadow(
     aggregateCount: () => aggregates,
     fieldCount: () => fields,
     enumVariantCount: () => enumVariants,
+    typeCount: () => types,
   };
 }
 
@@ -211,5 +227,5 @@ function callSite(location: { readonly fileName?: string; readonly line: number;
 }
 
 function definitionKey(modulePath: string, declaration: FunctionDeclaration | StructDeclaration | EnumDeclaration): string {
-  return `${modulePath}\0${declaration.location.line}\0${declaration.location.column}`;
+  return `${modulePath}\0${declaration.kind}\0${declaration.location.line}\0${declaration.location.column}`;
 }

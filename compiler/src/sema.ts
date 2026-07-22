@@ -133,6 +133,11 @@ export type SemanticEnumVariantResolution = {
   readonly variant: EnumDeclaration["variants"][number];
 };
 
+export type SemanticTypeResolution = {
+  readonly location: SourceLocation;
+  readonly declaration: StructDeclaration | EnumDeclaration;
+};
+
 export type SemanticObserver = {
   readonly onFunctionCall?: (resolution: SemanticFunctionCallResolution) => void;
   readonly onMethodCall?: (resolution: SemanticMethodCallResolution) => void;
@@ -140,6 +145,7 @@ export type SemanticObserver = {
   readonly onAggregateConstruction?: (resolution: SemanticAggregateConstructionResolution) => void;
   readonly onFieldResolution?: (resolution: SemanticFieldResolution) => void;
   readonly onEnumVariantResolution?: (resolution: SemanticEnumVariantResolution) => void;
+  readonly onTypeResolution?: (resolution: SemanticTypeResolution) => void;
 };
 
 type ValueType = string | "unknown" | "never";
@@ -1539,6 +1545,7 @@ function analyzeStatement(
         }
         const declaredType = statement.type;
         validateType(declaredType, structs, enums, state.foreignNamedTypes, fileName, false);
+        observeTypeResolution(declaredType, structs, enums, state);
         if (hasMoveOnlyForeignType(declaredType.name, structs, enums, state.foreignNamedTypes)) {
           throw new DiagnosticError(fileName, declaredType.location, "move-only native values must be initialized when their storage is declared", {
             code: "Z0240",
@@ -1579,6 +1586,7 @@ function analyzeStatement(
       let variableType = initializerType;
       if (statement.type) {
         validateType(statement.type, structs, enums, state.foreignNamedTypes, fileName, false);
+        observeTypeResolution(statement.type, structs, enums, state);
         variableType = statement.type.name;
         if (statement.initializer.kind === "closure") {
           const expectedFunction = parseFunctionType(variableType)!;
@@ -1991,9 +1999,11 @@ function analyzeStatement(
             if (field.visibility === "private" && state.activeReceiver !== payloadDeclaration.name) {
               throw new DiagnosticError(fileName, fieldBinding.fieldLocation, `field ${JSON.stringify(field.name)} is private to class ${JSON.stringify(payloadDeclaration.name)}`);
             }
+            state.observer?.onFieldResolution?.({ location: fieldBinding.fieldLocation, aggregate: payloadDeclaration, field });
             validateUserName(fieldBinding.bindingName, fieldBinding.bindingLocation, fileName);
           }
         }
+        state.observer?.onEnumVariantResolution?.({ location: arm.location, enumeration: declaration, variant });
         const armLocals = new Map(locals);
         if (borrowedRoot && borrowedRootType) {
           armLocals.set(borrowedRoot.name, `${borrowedPrefix}${underlyingType(borrowedRootType)}`);
@@ -2209,13 +2219,16 @@ function inferClosureExpression(
   });
 
   const parameterNames = new Set<string>();
-  for (const parameter of resolvedParameters) {
+  for (const [parameterIndex, parameter] of resolvedParameters.entries()) {
     if (parameterNames.has(parameter.name)) {
       throw new DiagnosticError(fileName, parameter.location, `duplicate closure parameter ${JSON.stringify(parameter.name)}`);
     }
     parameterNames.add(parameter.name);
     validateUserName(parameter.name, parameter.location, fileName);
     validateType(parameter.type, structs, enums, state.foreignNamedTypes, fileName, false);
+    if (expression.parameters[parameterIndex]?.type) {
+      observeTypeResolution(parameter.type, structs, enums, state);
+    }
     if (parameter.mode === "out") {
       throw new DiagnosticError(fileName, parameter.location, "out closure parameters are deferred until escaping function types are implemented");
     }
@@ -2328,8 +2341,14 @@ function inferClosureExpression(
     throw new DiagnosticError(fileName, contextualReturn.location, "closures cannot return receiver-tied views", { code: "Z0206" });
   }
   const provisionalReturn = contextualReturn ?? { name: "void", location: expression.location };
-  if (expression.returnType) validateType(expression.returnType, structs, enums, state.foreignNamedTypes, fileName, true);
-  if (expression.errorType) validateType(expression.errorType, structs, enums, state.foreignNamedTypes, fileName, false);
+  if (expression.returnType) {
+    validateType(expression.returnType, structs, enums, state.foreignNamedTypes, fileName, true);
+    observeTypeResolution(expression.returnType, structs, enums, state);
+  }
+  if (expression.errorType) {
+    validateType(expression.errorType, structs, enums, state.foreignNamedTypes, fileName, false);
+    observeTypeResolution(expression.errorType, structs, enums, state);
+  }
   const syntheticBase: FunctionDeclaration = {
     kind: "function",
     name: `__z_closure_call_${expression.location.offset}`,
@@ -2745,9 +2764,11 @@ function inferMatchExpression(
         if (field.visibility === "private" && state.activeReceiver !== payloadDeclaration.name) {
           throw new DiagnosticError(fileName, fieldBinding.fieldLocation, `field ${JSON.stringify(field.name)} is private to class ${JSON.stringify(payloadDeclaration.name)}`);
         }
+        state.observer?.onFieldResolution?.({ location: fieldBinding.fieldLocation, aggregate: payloadDeclaration, field });
         validateUserName(fieldBinding.bindingName, fieldBinding.bindingLocation, fileName);
       }
     }
+    state.observer?.onEnumVariantResolution?.({ location: arm.location, enumeration: declaration, variant });
     const armLocals = new Map(locals);
     if (borrowedRoot && borrowedRootType) {
       armLocals.set(borrowedRoot.name, `${borrowedPrefix}${underlyingType(borrowedRootType)}`);
@@ -2929,8 +2950,14 @@ function inferExecutorPlacement(
       helps: ["make this helper async and await it from an async-capable caller"],
     });
   }
-  if (expression.returnType) validateType(expression.returnType, structs, enums, state.foreignNamedTypes, fileName, true);
-  if (expression.errorType) validateType(expression.errorType, structs, enums, state.foreignNamedTypes, fileName, false);
+  if (expression.returnType) {
+    validateType(expression.returnType, structs, enums, state.foreignNamedTypes, fileName, true);
+    observeTypeResolution(expression.returnType, structs, enums, state);
+  }
+  if (expression.errorType) {
+    validateType(expression.errorType, structs, enums, state.foreignNamedTypes, fileName, false);
+    observeTypeResolution(expression.errorType, structs, enums, state);
+  }
 
   const blockLocals = new Map(locals);
   const previousExecutor = state.executorContext;
@@ -7533,6 +7560,51 @@ function validateType(
   if (!allowVoid && type.name === "void") {
     throw new DiagnosticError(fileName, type.location, "void is not a value type");
   }
+}
+
+function observeTypeResolution(
+  type: TypeReference,
+  structs: ReadonlyMap<string, StructDeclaration>,
+  enums: ReadonlyMap<string, EnumDeclaration>,
+  state: AnalysisState,
+): void {
+  const observeName = (name: string): void => {
+    const view = parseViewType(name);
+    if (view) {
+      observeName(view.target);
+      return;
+    }
+    const functionType = parseFunctionType(name);
+    if (functionType) {
+      for (const parameter of functionType.parameters) observeName(parameter.type);
+      observeName(functionType.returnType);
+      return;
+    }
+    const weak = parseWeakType(name);
+    if (weak) {
+      observeName(weak.target);
+      return;
+    }
+    const task = parseTaskType(name);
+    if (task) {
+      observeName(task.successType);
+      if (task.errorType) observeName(task.errorType);
+      return;
+    }
+    const option = parseOptionType(name);
+    if (option) {
+      observeName(option.target);
+      return;
+    }
+    const container = parseSliceType(name) ?? parseDynamicArrayType(name) ?? parseFixedArrayType(name);
+    if (container) {
+      observeName(container.elementType);
+      return;
+    }
+    const declaration = structs.get(name) ?? enums.get(name);
+    if (declaration) state.observer?.onTypeResolution?.({ location: type.location, declaration });
+  };
+  observeName(type.name);
 }
 
 function containsSliceType(name: string): boolean {

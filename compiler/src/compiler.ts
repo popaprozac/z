@@ -52,6 +52,7 @@ export type AnalyzedSource = {
   readonly nativeAggregateResolutionCount: number;
   readonly nativeFieldResolutionCount: number;
   readonly nativeEnumVariantResolutionCount: number;
+  readonly nativeTypeResolutionCount: number;
   readonly nativeFrontendParityMilliseconds: number | null;
 };
 
@@ -132,6 +133,7 @@ export function analyzeSource(source: string, fileName: string, options: Analysi
     nativeAggregateResolutionCount: nativeCallShadow?.aggregateCount() ?? 0,
     nativeFieldResolutionCount: nativeCallShadow?.fieldCount() ?? 0,
     nativeEnumVariantResolutionCount: nativeCallShadow?.enumVariantCount() ?? 0,
+    nativeTypeResolutionCount: nativeCallShadow?.typeCount() ?? 0,
     nativeFrontendParityMilliseconds,
   };
 }

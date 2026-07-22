@@ -419,6 +419,14 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    retain exact payload type. Separate aggregate, field, and enum-variant counts
    make this second expression-level migration tier visible in ordinary native
    checks, including ownership-bearing enum payloads and ARC class fields.
+   Match statements and match expressions now shadow-resolve every arm variant;
+   object patterns additionally resolve each destructured field through the same
+   field contract used by construction, reads, and assignment targets. Explicit
+   local, closure, and executor-placement type uses recursively observe Z types
+   nested in function values, `Weak`, `Task`, `Option`, arrays, slices, and views.
+   Native checks report these type-use resolutions independently, while primitive,
+   foreign, and compiler-synthesized types remain outside this source-identity
+   counter.
    Native failures are buffered: a stage-zero error remains authoritative, and a
    native error surfaces only after stage zero succeeds. Prepared-library invocation lives in a
    reusable native-frontend service rather than the CLI. Native checks therefore
