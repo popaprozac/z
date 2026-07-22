@@ -448,6 +448,23 @@ function canonicalStatementText(statement: Statement, tokens: readonly Token[]):
       : "";
     return `variable@${location}(${binding}:${statement.name}@${canonicalLocation(statement.nameLocation)}${type}${expression})`;
   }
+  if (statement.kind === "destructure") {
+    const statementIndex = tokens.findIndex((token) => token.location.offset === statement.location.offset);
+    const equalIndex = tokens.findIndex((token, index) => index > statementIndex && token.kind === "equal");
+    const initializerStart = tokens[equalIndex + 1];
+    if (statementIndex < 0 || equalIndex < 0 || !initializerStart) {
+      throw new Error(`could not locate object destructuring initializer at source offset ${statement.location.offset}`);
+    }
+    const binding = statement.mutable ? "let" : "const";
+    const fields = statement.objectBindings.map((field) => (
+      `${field.fieldName}@${canonicalLocation(field.fieldLocation)}:${field.bindingName}@${canonicalLocation(field.bindingLocation)}`
+    )).join(",");
+    const type = statement.type ? `:${canonicalTypeName(statement.type.name)}@${canonicalLocation(statement.type.location)}` : "";
+    return `destructure@${location}(${binding}:{${fields}}${type}`
+      + `=${canonicalLocation(initializerStart.location)}:${canonicalExpressionTokens(tokens, initializerStart.location.offset)}#${
+        canonicalExpressionTree(statement.initializer, tokens) ?? "opaque"
+      })`;
+  }
   if (statement.kind === "return") {
     const returnStart = statement.expression ? lexicalExpressionStart(tokens, statement.location.offset, "return") : null;
     const expression = returnStart
@@ -522,9 +539,8 @@ function canonicalStatementText(statement: Statement, tokens: readonly Token[]):
       throw new Error(`could not locate for-of header at source offset ${statement.location.offset}`);
     }
     const rightParenIndex = matchingRightParenIndex(tokens, leftParenIndex, statement.location.offset, "for-of header");
-    const bindingIndex = tokens.findIndex((token) => token.location.offset === statement.bindingLocation.offset);
-    const ofIndex = tokens.findIndex((token, index) => index > bindingIndex && index < rightParenIndex && token.kind === "of");
-    if (bindingIndex < 0 || ofIndex < 0 || ofIndex + 1 >= rightParenIndex) {
+    const ofIndex = tokens.findIndex((token, index) => index > leftParenIndex && index < rightParenIndex && token.kind === "of");
+    if (ofIndex < 0 || ofIndex + 1 >= rightParenIndex) {
       throw new Error(`could not locate for-of iterable at source offset ${statement.location.offset}`);
     }
     const iterableStart = tokens[ofIndex + 1];
@@ -532,7 +548,12 @@ function canonicalStatementText(statement: Statement, tokens: readonly Token[]):
     const iterable = `${canonicalLocation(iterableStart.location)}:${iterableTokens}#${
       canonicalExpressionTree(statement.iterable, tokens) ?? "opaque"
     }`;
-    return `for@${location}(const:${statement.binding}@${canonicalLocation(statement.bindingLocation)}`
+    const binding = statement.binding && statement.bindingLocation
+      ? `${statement.binding}@${canonicalLocation(statement.bindingLocation)}`
+      : `{${(statement.objectBindings ?? []).map((field) => (
+        `${field.fieldName}@${canonicalLocation(field.fieldLocation)}:${field.bindingName}@${canonicalLocation(field.bindingLocation)}`
+      )).join(",")}}`;
+    return `for@${location}(const:${binding}`
       + `iterable=${iterable}body=${canonicalStatementText(statement.body, tokens)})`;
   }
   if (statement.kind === "match") {

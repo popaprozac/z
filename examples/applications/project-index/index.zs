@@ -93,8 +93,8 @@ export struct ProjectIndex {
 
   function summary(): IndexSummary {
     let indexedBytes: usize = 0;
-    for (const entry of this.records) {
-      indexedBytes = indexedBytes + entry.value.byteLength();
+    for (const { value } of this.records) {
+      indexedBytes = indexedBytes + value.byteLength();
     }
 
     let dirtyPathBytes: usize = 0;

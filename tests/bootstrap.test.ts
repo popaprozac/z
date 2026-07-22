@@ -48,6 +48,7 @@ test("selectively imports C functions with optional local aliases", () => {
   const example = resolve(projectRoot, "examples/interop/c/selective-import.zs");
   const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
+
   assert.equal(result.stdout, "selective C imports\nanswer=42\n");
 
   const generated = compileToC(readFileSync(example, "utf8"), example);
@@ -4565,6 +4566,145 @@ test("exposes for-of bindings to hover, completion, and semantic tokens", () => 
   assert.ok(tokens.some((token) => token.line === bindingPosition.line && token.character === bindingPosition.character));
 });
 
+test("destructures value structs and borrowed collection entries", () => {
+  const example = resolve(projectRoot, "examples/language/basics/destructuring.zs");
+  const source = readFileSync(example, "utf8");
+  assert.deepEqual(diagnostics(source, example), []);
+
+  const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+
+  const nativeCheck = spawnSync(
+    process.execPath,
+    [cli, "check", example, "--native-frontend"],
+    { encoding: "utf8" },
+  );
+  assert.equal(nativeCheck.status, 0, nativeCheck.stderr);
+  assert.match(nativeCheck.stdout, /native frontend hybrid matches 1 module/);
+
+  const generated = compileToC(source, example);
+  assert.match(generated, /Z_FileRecord _z_destructure_/);
+  assert.match(generated, /z_copy_FileRecord\(original\)/);
+  assert.match(generated, /_z_live_original_[0-9]+ = false/);
+  assert.match(generated, /const Z_String \*key = &/);
+  assert.match(generated, /int32_t value =/);
+
+  const partialMove = `
+    struct Record { kept: String; discarded: String; }
+    function main(): i32 {
+      const record = Record({ kept: "answer", discarded: "temporary" });
+      const { kept } = move record;
+      return kept.byteLength == 6 ? 0 : 1;
+    }
+  `;
+  assert.deepEqual(diagnostics(partialMove, "destructure-partial-move.zs"), []);
+  const partialGenerated = compileToC(partialMove, "destructure-partial-move.zs");
+  assert.match(partialGenerated, /_z_destructure_[0-9]+\.kept = \(Z_String\)\{ 0 \}/);
+  assert.match(partialGenerated, /Z_Record_deinit\(&\(_z_destructure_[0-9]+\)\)/);
+  assert.match(partialGenerated, /free\(\(void \*\)\(self->discarded\)\.data\)/);
+
+  const implicitOwned = `
+    struct Record { path: String; revision: i32; }
+    function main(): i32 {
+      const record = Record({ path: "notes.zs", revision: 42 });
+      const { path } = record;
+      return path.byteLength == 8 ? 0 : 1;
+    }
+  `;
+  const ownershipDiagnostic = diagnostics(implicitOwned, "destructure-owned.zs")[0];
+  assert.equal(ownershipDiagnostic.code, "Z0220");
+  assert.match(ownershipDiagnostic.message, /requires explicit copy or move/);
+  assert.match(ownershipDiagnostic.message, /use `copy value` to keep the source/);
+
+  const useAfterMove = source.replace(
+    "if (copiedPath != movedPath) return 1;",
+    "if (original.path != movedPath) return 1;",
+  );
+  const movedDiagnostic = diagnostics(useAfterMove, "destructure-moved.zs")[0];
+  assert.equal(movedDiagnostic.code, "Z0201");
+  assert.match(movedDiagnostic.message, /use of moved value "original"/);
+
+  const customCleanup = `
+    struct Resource { id: i32; deinit {} }
+    struct Envelope { resource: Resource; label: String; }
+    function main(): i32 {
+      const envelope = Envelope({ resource: Resource({ id: 42 }), label: "answer" });
+      const { resource } = move envelope;
+      return resource.id - 42;
+    }
+  `;
+  const cleanupDiagnostic = diagnostics(customCleanup, "destructure-custom-cleanup.zs")[0];
+  assert.equal(cleanupDiagnostic.code, "Z0220");
+  assert.match(cleanupDiagnostic.message, /custom or foreign cleanup storage/);
+
+  const privateFields = `
+    struct Secret {
+      private value: i32;
+      function reveal(): i32 {
+        const { value } = this;
+        return value;
+      }
+    }
+    function main(): i32 {
+      const secret = Secret({ value: 42 });
+      return secret.reveal() - 42;
+    }
+  `;
+  assert.deepEqual(diagnostics(privateFields, "destructure-private-inside.zs"), []);
+  const externalPrivate = privateFields.replace(
+    "return secret.reveal() - 42;",
+    "const { value } = secret; return value - 42;",
+  );
+  assert.match(
+    diagnostics(externalPrivate, "destructure-private-outside.zs")[0].message,
+    /cannot destructure private field "value"/,
+  );
+
+  const borrowedFieldMove = `
+    import { Map } from "std/collections";
+    function main(): i32 {
+      let values = Map<String, i32>();
+      values.set("answer", 42);
+      for (const { key, value } of values) {
+        const owned = move key;
+        return owned.byteLength + value;
+      }
+      return 0;
+    }
+  `;
+  const borrowedDiagnostic = diagnostics(borrowedFieldMove, "destructure-borrowed-loop.zs")[0];
+  assert.equal(borrowedDiagnostic.code, "Z0203");
+  assert.match(borrowedDiagnostic.message, /cannot move borrowed iteration binding "key"/);
+
+  const pathUse = source.indexOf("copiedPath !=") + 2;
+  assert.match(hover(source, example, pathUse)?.contents.value ?? "", /copiedPath: String/);
+  const valueUse = source.indexOf("+ value") + 3;
+  assert.match(hover(source, example, valueUse)?.contents.value ?? "", /value: i32/);
+  const completionSource = source.replace("copiedPath != movedPath", "copiedP != movedPath");
+  const completionOffset = completionSource.indexOf("copiedP !=") + "copiedP".length;
+  assert.equal(
+    completions(completionSource, example, completionOffset).find((item) => item.label === "copiedPath")?.detail,
+    "const copiedPath: String",
+  );
+
+  const localPatternSource = source.replace(
+    "{ path: copiedPath, revision: copiedRevision }",
+    "{ pa }",
+  );
+  const localPatternOffset = localPatternSource.indexOf("{ pa }") + "{ pa".length;
+  const pathCompletion = completions(localPatternSource, example, localPatternOffset)
+    .find((item) => item.label === "path");
+  assert.equal(pathCompletion?.detail, "path: String");
+  assert.equal(pathCompletion?.insertText, "path");
+
+  const loopPatternSource = source.replace("{ key, value }", "{ ke }");
+  const loopPatternOffset = loopPatternSource.indexOf("{ ke }") + "{ ke".length;
+  assert.equal(
+    completions(loopPatternSource, example, loopPatternOffset).find((item) => item.label === "key")?.detail,
+    "key: String",
+  );
+});
+
 test("formats typed values through the imported console namespace and interpolation", () => {
   const example = resolve(projectRoot, "examples/language/basics/console.zs");
   const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
@@ -8491,7 +8631,7 @@ test("owns Map keys and values with optional views and deterministic removal", (
   assert.match(generated, /Map.*_delete/);
   assert.match(generated, /MapEntry.*_deinit/);
   assert.match(generated, /< \(users\)\.entries\.length/);
-  assert.match(generated, /const Z_.*MapEntry.*\*entry = &/);
+  assert.match(generated, /const Z_User \*value = &/);
 
   const directory = mkdtempSync("/tmp/z-map-cleanup-");
   const input = resolve(directory, "main.zs");

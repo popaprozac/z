@@ -27,7 +27,7 @@ import {
 import { genericTypeName, parseGenericType } from "./generic-types.ts";
 import { functionTypeName, parseFunctionType } from "./function-types.ts";
 import { isNullableObjCTypeName, publicObjCTypeName } from "./objc-types.ts";
-import { parseMapType } from "./map-types.ts";
+import { mapEntryTypeName, parseMapType } from "./map-types.ts";
 import { parseSetType } from "./set-types.ts";
 import { parseWeakType, weakResultTypeName, weakTypeName } from "./weak-types.ts";
 import { parseViewType, viewTypeName } from "./view-types.ts";
@@ -1277,6 +1277,18 @@ export function inferGenericCalls(
         if (type) environment.set(statement.name, type);
         return { ...statement, initializer: initializer?.expression ?? null };
       }
+      case "destructure": {
+        const initializer = rewriteExpression(statement.initializer, environment, statement.type?.name ?? null);
+        const type = statement.type?.name ?? initializer.type;
+        const declaration = type ? structs.get(type) : null;
+        if (declaration) {
+          for (const binding of statement.objectBindings) {
+            const field = declaration.fields.find((candidate) => candidate.name === binding.fieldName);
+            if (field) environment.set(binding.bindingName, field.type.name);
+          }
+        }
+        return { ...statement, initializer: initializer.expression };
+      }
       case "assignment": {
         const target = rewriteExpression(statement.target, environment);
         const expression = rewriteExpression(statement.expression, environment, target.type);
@@ -1313,11 +1325,24 @@ export function inferGenericCalls(
       }
       case "for": {
         const iterable = rewriteExpression(statement.iterable, environment);
+        const map = iterable.type ? parseMapType(iterable.type) : null;
+        const set = iterable.type ? parseSetType(iterable.type) : null;
         const collection = iterable.type
-          ? parseFixedArrayType(iterable.type) ?? parseSliceType(iterable.type) ?? parseDynamicArrayType(iterable.type)
+          ? parseFixedArrayType(iterable.type)
+            ?? parseSliceType(iterable.type)
+            ?? parseDynamicArrayType(iterable.type)
+            ?? (map ? { elementType: mapEntryTypeName(map.keyType, map.valueType) } : null)
+            ?? (set ? { elementType: set.elementType } : null)
           : null;
         const bodyEnvironment = new Map(environment);
-        if (collection) bodyEnvironment.set(statement.binding, collection.elementType);
+        if (collection && statement.binding) bodyEnvironment.set(statement.binding, collection.elementType);
+        const element = collection ? structs.get(collection.elementType) : null;
+        if (element) {
+          for (const binding of statement.objectBindings ?? []) {
+            const field = element.fields.find((candidate) => candidate.name === binding.fieldName);
+            if (field) bodyEnvironment.set(binding.bindingName, field.type.name);
+          }
+        }
         const body = rewriteStatement(statement.body, bodyEnvironment, returnType) as typeof statement.body;
         return { ...statement, iterable: iterable.expression, body };
       }

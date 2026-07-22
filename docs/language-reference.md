@@ -55,6 +55,20 @@ Local types are inferred from initializers when unambiguous. Public function
 parameters and returns, fields, uninitialized storage, empty collections, and
 foreign boundaries remain explicit contracts.
 
+Value structs support object binding patterns with TypeScript-shaped aliases:
+
+```z
+const { path, revision } = record;
+const { path: localPath } = record;
+```
+
+A cleanup-free struct may be destructured directly. Destructuring a named
+cleanup-bearing struct requires `copy record` to preserve the source or
+`move record` to consume it. Selected fields become independent bindings and
+unselected owned fields are destroyed. Private fields are accessible only from
+the declaring type. The current tier rejects classes, custom-`deinit` or foreign
+RAII storage, and nested, rest, default, array, parameter, and async patterns.
+
 ## Type vocabulary
 
 Z uses lowercase names for primitive machine values and PascalCase names for
@@ -455,8 +469,8 @@ stored value through `Option<T>`; ignoring that result destroys it normally.
 Both collections support direct read-only iteration:
 
 ```z
-for (const entry of users) {
-  console.log(`${entry.key}: ${entry.value.name}`);
+for (const { key, value } of users) {
+  console.log(`${key}: ${value.name}`);
 }
 
 for (const path of visited) {
@@ -464,13 +478,13 @@ for (const path of visited) {
 }
 ```
 
-A Map binding has the displayed type `Map.Entry<K, V>` and exposes borrowed
-`.key` and `.value` fields. A Set binding borrows its stored `T`. Neither can be
-moved out, and structural collection mutation is rejected until the loop ends;
-use `copy` explicitly when an independently owned copy is supported. Iteration
-order is unspecified. General object destructuring such as
-`for (const { key, value } of users)` is planned as part of reusable binding
-patterns, not as separate collection syntax.
+A whole Map binding has the displayed type `Map.Entry<K, V>` and exposes
+borrowed `.key` and `.value` fields. The same fields may be selected directly by
+an object binding pattern. Cleanup-free fields load by value; cleanup-bearing
+fields stay borrowed from the entry. A Set binding borrows its stored `T`.
+Neither whole elements nor borrowed fields can be moved out, and structural
+collection mutation is rejected until the loop ends; use `copy` explicitly when
+an independently owned copy is supported. Iteration order is unspecified.
 
 `Map` and `Set` use open-addressed hashed buckets for amortized O(1) lookup and
 membership. Owned entries remain in compact storage, while rehashing moves only

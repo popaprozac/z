@@ -1,6 +1,6 @@
 # Bootstrap implementation status
 
-Last reviewed: 2026-07-21.
+Last reviewed: 2026-07-22.
 
 This document answers “what does the Bun/TypeScript stage-0 compiler implement
 today?” It is not the language specification. Accepted source semantics live in
@@ -18,7 +18,7 @@ Status meanings:
 
 | Area | Status | Current boundary |
 | --- | --- | --- |
-| Bindings, functions, inference | Implemented | Local inference; public/API contracts remain explicit |
+| Bindings, functions, inference | Implemented | Local inference plus first-tier value-struct object destructuring and aliases; public/API contracts remain explicit |
 | Structs and methods | Implemented | Value layout, mutation, static methods, deterministic cleanup |
 | ARC classes | Implemented | Identity, sharing, constructors, private fields, weak references |
 | Traits | Partial | Nominal static conformance and generic constraints; no trait values/dynamic dispatch |
@@ -41,7 +41,7 @@ Status meanings:
 | Unified loan checker | Implemented foundation | Call-, task-, receiver-view-, and Arena-region lifetimes share one root/capability/lifetime representation and conflict matrix; cross-thread loans remain to integrate |
 | Fixed arrays | Implemented | Checked indexing and reverse element cleanup |
 | `Array<T>` | Implemented | Growable owned storage and move-aware elements |
-| `Map<K, V>` | Implemented hashed tier | Explicit `std/collections` import; amortized O(1) open-addressed lookup, owned value-storage transfer, deterministic replacement/removal/delete/clear, `Option<view V>` lookup tied into the unified loan checker, borrowed `Map.Entry<K, V>` iteration with mutation exclusion and editor support, built-in scalar/String/enum keys, and readonly nominal `Hashable` keys through `std/hash`; direct identity/native-RAII value storage remains |
+| `Map<K, V>` | Implemented hashed tier | Explicit `std/collections` import; amortized O(1) open-addressed lookup, owned value-storage transfer, deterministic replacement/removal/delete/clear, `Option<view V>` lookup tied into the unified loan checker, borrowed `Map.Entry<K, V>` iteration with whole-entry or `{ key, value }` patterns, mutation exclusion and editor support, built-in scalar/String/enum keys, and readonly nominal `Hashable` keys through `std/hash`; direct identity/native-RAII value storage remains |
 | `Set<T>` | Implemented hashed tier | Explicit `std/collections` import; amortized O(1) open-addressed membership, owned unique-value transfer, insertion status, deterministic duplicate/removal/delete/clear cleanup, owned `Option<T>` removal, borrowed element iteration with mutation exclusion and editor support, and the same built-in or nominal `Hashable` contract as `Map` |
 | `Slice<T>` | Partial | Non-escaping parameters plus direct-awaited and scope-bounded spawned borrowing from fixed and growable owners, including cleanup-bearing Z and move-only C++ elements; returned/stored and cross-thread Slices remain |
 | Receiver-tied `view T` | Implemented narrow tier | Direct field/index projections and niche-backed `Option<view T>` lookups from synchronous value-struct methods; inferred const local, read-only, non-storable, implicit ordinary by-value load when `T` is already cleanup-free and copyable—including contextual `match`/`if` expression arms—plus synchronous `in T` forwarding and proven nonescaping inline capture; no class owners |

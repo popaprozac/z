@@ -1047,6 +1047,70 @@ function objectFieldCompletions(
   offset: number,
 ): CompletionItem[] | null {
   const before = source.slice(0, offset);
+  const bindingPattern = before.match(/\b(?:const|let)\s*\{([^{}]*)$/);
+  if (bindingPattern && bindingPattern.index !== undefined) {
+    const remainder = source.slice(offset);
+    const close = remainder.indexOf("}");
+    if (close >= 0) {
+      const tail = remainder.slice(close);
+      const prefix = bindingPattern[1].match(/([A-Za-z_][A-Za-z0-9_]*)$/)?.[1] ?? "";
+      const used = new Set(
+        [...bindingPattern[1].matchAll(/(?:^|,)\s*([A-Za-z_][A-Za-z0-9_]*)\s*(?=:|,|$)/g)]
+          .map((match) => match[1]),
+      );
+      if (prefix) used.delete(prefix);
+      let fields: ObjectFieldShape[] | null = null;
+      const iteration = tail.match(/^\}\s+of\s+([A-Za-z_][A-Za-z0-9_]*)/);
+      if (iteration) {
+        const iterableType = declaredBindingType(source, iteration[1], offset);
+        const compactIterableType = iterableType?.replace(/\s+/g, "") ?? null;
+        const sourceGeneric = compactIterableType ? parseSourceGenericType(compactIterableType) : null;
+        const map = compactIterableType
+          ? parseMapType(compactIterableType)
+            ?? (sourceGeneric?.base === "Map" && sourceGeneric.arguments.length === 2
+              ? { keyType: sourceGeneric.arguments[0], valueType: sourceGeneric.arguments[1] }
+              : null)
+          : null;
+        if (map) {
+          fields = [
+            { name: "key", type: map.keyType, visibility: "public" },
+            { name: "value", type: map.valueType, visibility: "public" },
+          ];
+        } else if (compactIterableType) {
+          const element = parseFixedArrayType(compactIterableType)?.elementType
+            ?? parseSliceType(compactIterableType)?.elementType
+            ?? parseDynamicArrayType(compactIterableType)?.elementType
+            ?? parseSetType(compactIterableType)?.elementType
+            ?? (sourceGeneric && ["Array", "Slice", "Set"].includes(sourceGeneric.base)
+              ? sourceGeneric.arguments[0]
+              : /^(.+)\[[0-9]+\]$/.exec(compactIterableType)?.[1]);
+          if (element) fields = objectFieldsForType(source, safeAnalysis(source, fileName), element);
+        }
+      } else {
+        const local = tail.match(/^\}\s*(?::\s*([^=;]+))?\s*=\s*(?:(?:copy|move)\s+)?([A-Za-z_][A-Za-z0-9_.]*(?:<[^;=(){}]+>)?)(\s*\()?/);
+        if (local) {
+          const annotated = local[1]?.trim();
+          const sourceType = annotated
+            ?? (local[3]
+              ? local[2].trim()
+              : declaredBindingType(source, local[2].trim(), offset));
+          if (sourceType) fields = objectFieldsForType(source, safeAnalysis(source, fileName), sourceType);
+        }
+      }
+      if (fields) {
+        const items = fields
+          .filter((field) => field.visibility === "public" && !used.has(field.name))
+          .map((field) => ({
+            label: field.name,
+            kind: completionKinds.field,
+            detail: `${field.name}: ${field.type}`,
+            insertText: field.name,
+            sortText: `0-${field.name}`,
+          }));
+        return filterCompletions(items, prefix, 1000);
+      }
+    }
+  }
   const object = before.match(/(?:\bnew\s+)?([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*(?:<[^{}()]+>)?)\s*\(\s*\{([^{}]*)$/);
   if (!object) return null;
   const prefix = object[2].match(/([A-Za-z_][A-Za-z0-9_]*)$/)?.[1] ?? "";
@@ -1933,6 +1997,18 @@ function collectBindings(context: AnalyzedSource): Binding[] {
         });
         if (statement.initializer?.kind === "closure") visitClosure(statement.initializer);
       }
+      if (statement.kind === "destructure") {
+        for (const binding of statement.objectBindings) {
+          bindings.push({
+            name: binding.bindingName,
+            type: context.semanticInfo.bindingTypes.get(binding.bindingLocation.offset) ?? "unknown",
+            offset: binding.bindingLocation.offset,
+            readonly: !statement.mutable,
+            parameter: false,
+            fileName: binding.bindingLocation.fileName,
+          });
+        }
+      }
       if (statement.kind === "block") visitStatements(statement.statements);
       if (statement.kind === "if") {
         visitStatements(statement.thenBranch.statements);
@@ -1942,14 +2018,26 @@ function collectBindings(context: AnalyzedSource): Binding[] {
       if (statement.kind === "while") visitStatements(statement.body.statements);
       if (statement.kind === "asyncScope") visitStatements(statement.body.statements);
       if (statement.kind === "for") {
-        bindings.push({
-          name: statement.binding,
-          type: context.semanticInfo.bindingTypes.get(statement.bindingLocation.offset) ?? "unknown",
-          offset: statement.bindingLocation.offset,
-          readonly: true,
-          parameter: false,
-          fileName: statement.bindingLocation.fileName,
-        });
+        if (statement.binding && statement.bindingLocation) {
+          bindings.push({
+            name: statement.binding,
+            type: context.semanticInfo.bindingTypes.get(statement.bindingLocation.offset) ?? "unknown",
+            offset: statement.bindingLocation.offset,
+            readonly: true,
+            parameter: false,
+            fileName: statement.bindingLocation.fileName,
+          });
+        }
+        for (const binding of statement.objectBindings ?? []) {
+          bindings.push({
+            name: binding.bindingName,
+            type: context.semanticInfo.bindingTypes.get(binding.bindingLocation.offset) ?? "unknown",
+            offset: binding.bindingLocation.offset,
+            readonly: true,
+            parameter: false,
+            fileName: binding.bindingLocation.fileName,
+          });
+        }
         visitStatements(statement.body.statements);
       }
       if (statement.kind === "match") {

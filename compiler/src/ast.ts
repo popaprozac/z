@@ -133,6 +133,7 @@ export type TypeReference = {
 
 export type Statement =
   | VariableStatement
+  | DestructureStatement
   | AssignmentStatement
   | ReturnStatement
   | ThrowStatement
@@ -160,6 +161,15 @@ export type VariableStatement = {
   readonly nameLocation: SourceLocation;
   readonly type: TypeReference | null;
   readonly initializer: Expression | null;
+  readonly location: SourceLocation;
+};
+
+export type DestructureStatement = {
+  readonly kind: "destructure";
+  readonly mutable: boolean;
+  readonly objectBindings: MatchObjectBinding[];
+  readonly type: TypeReference | null;
+  readonly initializer: Expression;
   readonly location: SourceLocation;
 };
 
@@ -217,8 +227,9 @@ export type WhileStatement = {
 
 export type ForStatement = {
   readonly kind: "for";
-  readonly binding: string;
-  readonly bindingLocation: SourceLocation;
+  readonly binding: string | null;
+  readonly bindingLocation: SourceLocation | null;
+  readonly objectBindings: MatchObjectBinding[] | null;
   readonly iterable: Expression;
   readonly body: BlockStatement;
   readonly location: SourceLocation;

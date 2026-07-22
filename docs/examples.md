@@ -12,6 +12,7 @@ compile-only probes and `emit` to inspect generated native code.
 | Console and strings | [`console.zs`](../examples/language/basics/console.zs) | Explicit standard import, interpolation, typed formatting |
 | Modules | [`modules/main.zs`](../examples/language/modules/main.zs) | Exports, namespace imports, selective aliases |
 | Construction | [`construction.zs`](../examples/language/basics/construction.zs) | Struct object construction and class-only `new` |
+| Object destructuring | [`destructuring.zs`](../examples/language/basics/destructuring.zs) | Local field/alias patterns, explicit copy/move ownership, and borrowed Map-entry patterns |
 | Results | [`result.zs`](../examples/language/control-flow/result.zs) | `return`, `throw`, `attempt`, and exhaustive matching |
 | Options | [`option.zs`](../examples/language/types/option.zs) | `Option.some`, `Option.none`, and payload matching |
 | Native application skeleton | [`z-notes`](../examples/applications/z-notes) | AppKit, ARC application state, nullable selection, direct SQLite header import, and explicit native library linkage |
@@ -37,7 +38,7 @@ bun run z run examples/language/control-flow/result.zs
 | Deterministic cleanup | [`deinit.zs`](../examples/language/ownership/deinit.zs), [`replacement.zs`](../examples/language/ownership/replacement.zs), [`consuming-methods.zs`](../examples/language/ownership/consuming-methods.zs) |
 | ARC and weak references | [`classes.zs`](../examples/language/basics/classes.zs), [`weak-references.zs`](../examples/language/ownership/weak-references.zs) |
 | Closures | [`closures.zs`](../examples/language/basics/closures.zs), [`owned-closures.zs`](../examples/language/ownership/owned-closures.zs), [`function-values.zs`](../examples/language/basics/function-values.zs) |
-| Collections | [`arrays.zs`](../examples/language/collections/arrays.zs), [`slices.zs`](../examples/language/collections/slices.zs), [`dynamic-arrays.zs`](../examples/language/collections/dynamic-arrays.zs), [`map.zs`](../examples/language/collections/map.zs), [`set.zs`](../examples/language/collections/set.zs), [`custom-hash.zs`](../examples/language/collections/custom-hash.zs) |
+| Collections | [`arrays.zs`](../examples/language/collections/arrays.zs), [`slices.zs`](../examples/language/collections/slices.zs), [`dynamic-arrays.zs`](../examples/language/collections/dynamic-arrays.zs), [`map.zs`](../examples/language/collections/map.zs), [`set.zs`](../examples/language/collections/set.zs), [`custom-hash.zs`](../examples/language/collections/custom-hash.zs), [`destructuring.zs`](../examples/language/basics/destructuring.zs) |
 | Generics and traits | [`generics.zs`](../examples/language/types/generics.zs), [`generic-constraints.zs`](../examples/language/types/generic-constraints.zs) |
 | Enums and matching | [`enum-patterns.zs`](../examples/language/control-flow/enum-patterns.zs), [`match-expression.zs`](../examples/language/control-flow/match-expression.zs), [`owned-enums.zs`](../examples/language/ownership/owned-enums.zs) |
 

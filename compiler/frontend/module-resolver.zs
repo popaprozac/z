@@ -1084,9 +1084,20 @@ function resolveStatement(
     bindings.push(arena.nodes[index].name.copyBytes(0, arena.nodes[index].name.byteLength));
     return;
   }
+  if (arena.nodes[index].kind == StatementKind.destructureStatement) {
+    for (const binding of arena.nodes[index].objectBindings) {
+      bindings.push(binding.bindingName.copyBytes(0, binding.bindingName.byteLength));
+    }
+    return;
+  }
   if (arena.nodes[index].kind == StatementKind.forStatement) {
     let loopBindings = copyBindings(bindings);
-    loopBindings.push(arena.nodes[index].name.copyBytes(0, arena.nodes[index].name.byteLength));
+    if (arena.nodes[index].name.byteLength > 0) {
+      loopBindings.push(arena.nodes[index].name.copyBytes(0, arena.nodes[index].name.byteLength));
+    }
+    for (const binding of arena.nodes[index].objectBindings) {
+      loopBindings.push(binding.bindingName.copyBytes(0, binding.bindingName.byteLength));
+    }
     try resolveStatementSequence(module, symbols, arena, arena.nodes[index].children, loopBindings);
     return;
   }
@@ -2635,6 +2646,45 @@ function arrayElementType(in name: String): String {
     if (name.byteAt(index) == 91) return name.copyBytes(0, index);
   }
   return "";
+}
+
+function iterationElementType(in name: String): String {
+  match (genericTypeShape(name)) {
+    some(generic) => {
+      if (
+        (generic.base == "Array" || generic.base == "Slice" || generic.base == "Set")
+        && generic.arguments.length == 1
+      ) return generic.arguments[0].copyBytes(0, generic.arguments[0].byteLength);
+      if (generic.base == "Map" && generic.arguments.length == 2) {
+        return `Map.Entry<${generic.arguments[0]}, ${generic.arguments[1]}>`;
+      }
+    }
+    none => {}
+  }
+  return arrayElementType(name);
+}
+
+function iterationObjectFieldType(
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
+  in iterableType: String,
+  in fieldName: String
+): String {
+  match (genericTypeShape(iterableType)) {
+    some(generic) => {
+      if (generic.base == "Map" && generic.arguments.length == 2) {
+        if (fieldName == "key") return generic.arguments[0].copyBytes(0, generic.arguments[0].byteLength);
+        if (fieldName == "value") return generic.arguments[1].copyBytes(0, generic.arguments[1].byteLength);
+        return "";
+      }
+    }
+    none => {}
+  }
+  const elementType = iterationElementType(iterableType);
+  return match (aggregateFieldShape(modules, moduleIndex, elementType, fieldName)) {
+    some(field) => field.typeName.copyBytes(0, field.typeName.byteLength);
+    none => "";
+  };
 }
 
 function trimmedTypeSlice(in name: String, start: usize, end: usize): String {
@@ -5861,9 +5911,20 @@ function collectClosureStatementCaptures(
       addUniqueString(inout localNames, arena.nodes[statementIndex].name);
       continue;
     }
+    if (arena.nodes[statementIndex].kind == StatementKind.destructureStatement) {
+      for (const binding of arena.nodes[statementIndex].objectBindings) {
+        addUniqueString(inout localNames, binding.bindingName);
+      }
+      continue;
+    }
     let nestedNames = copyBindings(localNames);
     if (arena.nodes[statementIndex].kind == StatementKind.forStatement) {
-      addUniqueString(inout nestedNames, arena.nodes[statementIndex].name);
+      if (arena.nodes[statementIndex].name.byteLength > 0) {
+        addUniqueString(inout nestedNames, arena.nodes[statementIndex].name);
+      }
+      for (const binding of arena.nodes[statementIndex].objectBindings) {
+        addUniqueString(inout nestedNames, binding.bindingName);
+      }
     }
     const children = copyIndices(arena.nodes[statementIndex].children);
     collectClosureStatementCaptures(
@@ -7594,6 +7655,73 @@ function inferStatement(
     }
     return true;
   }
+  if (kind == StatementKind.destructureStatement) {
+    let inferred = "";
+    let sourceType = "";
+    match (in arena.nodes[index].typeAnnotation) {
+      some(type) => sourceType = type.name.copyBytes(0, type.name.byteLength);
+      none => {}
+    }
+    match (in arena.nodes[index].expression) {
+      some(expression) => {
+        inferred = try inferExpressionTypeExpected(
+          module,
+          modules,
+          moduleIndex,
+          arena,
+          expression,
+          sourceType,
+          inout bindings,
+          inout evidence
+        );
+        if (sourceType.byteLength > 0) {
+          try requireExpressionSyntaxType(
+            module,
+            modules,
+            moduleIndex,
+            expression,
+            sourceType,
+            inferred
+          );
+        } else {
+          sourceType = inferred.copyBytes(0, inferred.byteLength);
+        }
+        try consumeOwnedExpressionSyntax(
+          module,
+          modules,
+          moduleIndex,
+          expression,
+          sourceType,
+          inout bindings
+        );
+      }
+      none => {}
+    }
+    for (const binding of arena.nodes[index].objectBindings) {
+      let fieldType = "";
+      match (aggregateFieldShape(modules, moduleIndex, sourceType, binding.fieldName)) {
+        some(field) => fieldType = field.typeName.copyBytes(0, field.typeName.byteLength);
+        none => {}
+      }
+      let typeIdentities = Array<ModuleTypeIdentity>();
+      collectTypeIdentities(modules, moduleIndex, fieldType, "", inout typeIdentities);
+      evidence.bindingResolutions.push(ModuleBindingResolution({
+        offset: binding.bindingOffset,
+        line: binding.bindingLine,
+        column: binding.bindingColumn,
+        name: binding.bindingName.copyBytes(0, binding.bindingName.byteLength),
+        mutableBinding: arena.nodes[index].mutableBinding,
+        typeName: fieldType.copyBytes(0, fieldType.byteLength),
+        typeIdentities,
+      }));
+      if (arena.nodes[index].mutableBinding) {
+        addMutableValueBinding(inout bindings, binding.bindingName, fieldType);
+      } else {
+        addValueBinding(inout bindings, binding.bindingName, fieldType);
+      }
+    }
+    return true;
+  }
   if (kind == StatementKind.assignmentStatement) {
     let expected = "";
     match (in arena.nodes[index].expression) {
@@ -7965,14 +8093,26 @@ function inferStatement(
     const beforeLoop = copyValueBindings(bindings);
     let loopBindings = copyValueBindings(bindings);
     let elementType = "";
+    let iterableType = "";
     match (in arena.nodes[index].expression) {
       some(iterable) => {
-        const iterableType = try inferExpressionType(module, modules, moduleIndex, arena, iterable, inout bindings, inout evidence);
-        elementType = arrayElementType(iterableType);
+        iterableType = try inferExpressionType(module, modules, moduleIndex, arena, iterable, inout bindings, inout evidence);
+        elementType = iterationElementType(iterableType);
       }
       none => {}
     }
-    addValueBinding(inout loopBindings, arena.nodes[index].name, elementType);
+    if (arena.nodes[index].name.byteLength > 0) {
+      addValueBinding(inout loopBindings, arena.nodes[index].name, elementType);
+    }
+    for (const binding of arena.nodes[index].objectBindings) {
+      const fieldType = iterationObjectFieldType(
+        modules,
+        moduleIndex,
+        iterableType,
+        binding.fieldName
+      );
+      addValueBinding(inout loopBindings, binding.bindingName, fieldType);
+    }
     const loopContinues = try inferStatementSequence(
       module,
       modules,

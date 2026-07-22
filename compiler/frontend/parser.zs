@@ -72,6 +72,7 @@ export struct Parameter {
 
 export enum StatementKind {
   variableStatement,
+  destructureStatement,
   assignmentStatement,
   returnStatement,
   throwStatement,
@@ -85,6 +86,17 @@ export enum StatementKind {
   asyncScopeStatement,
   breakStatement,
   continueStatement,
+}
+
+export struct ObjectBinding {
+  fieldName: String;
+  bindingName: String;
+  fieldOffset: usize;
+  fieldLine: usize;
+  fieldColumn: usize;
+  bindingOffset: usize;
+  bindingLine: usize;
+  bindingColumn: usize;
 }
 
 export enum ExpressionKind {
@@ -161,6 +173,7 @@ export struct Statement {
   typeAnnotation: Option<TypeReference>;
   expression: Option<ExpressionSyntax>;
   secondExpression: Option<ExpressionSyntax>;
+  objectBindings: Array<ObjectBinding>;
   children: Array<usize>;
   offset: usize;
   line: usize;
@@ -1943,6 +1956,37 @@ function projectedMatchEnd(
   return current;
 }
 
+function parseObjectBindings(
+  in tokens: Array<Token>,
+  inout current: usize,
+  in fieldDescription: String
+): Array<ObjectBinding> throws ParserError {
+  let bindings = Array<ObjectBinding>();
+  if (tokens[current].kind != TokenKind.rightBrace) {
+    while (true) {
+      const field = try expect(tokens, inout current, TokenKind.identifier, fieldDescription);
+      let binding = snapshot(field);
+      if (takeIf(tokens, inout current, TokenKind.colon)) {
+        binding = try expect(tokens, inout current, TokenKind.identifier, "a pattern binding name");
+      }
+      bindings.push(ObjectBinding({
+        fieldName: field.text.copyBytes(0, field.text.byteLength),
+        bindingName: binding.text.copyBytes(0, binding.text.byteLength),
+        fieldOffset: field.offset,
+        fieldLine: field.line,
+        fieldColumn: field.column,
+        bindingOffset: binding.offset,
+        bindingLine: binding.line,
+        bindingColumn: binding.column,
+      }));
+      if (!takeIf(tokens, inout current, TokenKind.comma)) break;
+      if (tokens[current].kind == TokenKind.rightBrace) break;
+    }
+  }
+  try expectKind(tokens, inout current, TokenKind.rightBrace, "`}` ending an object pattern");
+  return bindings;
+}
+
 function pushProjectedBlock(
   inout nodes: Array<Statement>,
   children: Array<usize>,
@@ -1975,6 +2019,7 @@ function pushProjectedBlockAt(
     typeAnnotation: Option<TypeReference>.none,
     expression: Option<ExpressionSyntax>.none,
     secondExpression: Option<ExpressionSyntax>.none,
+    objectBindings: Array<ObjectBinding>(),
     children,
     offset,
     line,
@@ -2054,6 +2099,7 @@ function parseProjectedStatement(
       typeAnnotation: Option<TypeReference>.none,
       expression: Option.some(expression),
       secondExpression: Option<ExpressionSyntax>.none,
+      objectBindings: Array<ObjectBinding>(),
       children: Array<usize>(),
       offset: start.offset,
       line: start.line,
@@ -2085,6 +2131,7 @@ function parseProjectedStatement(
       typeAnnotation: Option<TypeReference>.none,
       expression: Option<ExpressionSyntax>.none,
       secondExpression: Option<ExpressionSyntax>.none,
+      objectBindings: Array<ObjectBinding>(),
       children,
       offset: start.offset,
       line: start.line,
@@ -2126,6 +2173,7 @@ function parseProjectedStatement(
       typeAnnotation: Option<TypeReference>.none,
       expression: Option.some(condition),
       secondExpression: Option<ExpressionSyntax>.none,
+      objectBindings: Array<ObjectBinding>(),
       children,
       offset: start.offset,
       line: start.line,
@@ -2150,6 +2198,7 @@ function parseProjectedStatement(
       typeAnnotation: Option<TypeReference>.none,
       expression: Option.some(expression),
       secondExpression: Option<ExpressionSyntax>.none,
+      objectBindings: Array<ObjectBinding>(),
       children: Array<usize>(),
       offset: start.offset,
       line: start.line,
@@ -2180,6 +2229,7 @@ function parseProjectedStatement(
       typeAnnotation: Option<TypeReference>.none,
       expression: Option.some(condition),
       secondExpression: Option<ExpressionSyntax>.none,
+      objectBindings: Array<ObjectBinding>(),
       children,
       offset: start.offset,
       line: start.line,
@@ -2192,8 +2242,20 @@ function parseProjectedStatement(
     current = current + 1;
     try expectKind(tokens, inout current, TokenKind.leftParen, "`(` after `for`");
     try expectKind(tokens, inout current, TokenKind.constKeyword, "`const` in a read-only `for...of` binding");
-    const binding = snapshot(tokens[current]);
-    try expectKind(tokens, inout current, TokenKind.identifier, "an iteration binding");
+    let bindingName = "";
+    let bindingOffset: usize = 0;
+    let bindingLine: usize = 0;
+    let bindingColumn: usize = 0;
+    let objectBindings = Array<ObjectBinding>();
+    if (takeIf(tokens, inout current, TokenKind.leftBrace)) {
+      objectBindings = try parseObjectBindings(tokens, inout current, "an iteration field name");
+    } else {
+      const binding = try expect(tokens, inout current, TokenKind.identifier, "an iteration binding");
+      bindingName = binding.text.copyBytes(0, binding.text.byteLength);
+      bindingOffset = binding.offset;
+      bindingLine = binding.line;
+      bindingColumn = binding.column;
+    }
     try expectKind(tokens, inout current, TokenKind.ofKeyword, "`of` after an iteration binding");
     const iterableStart = current;
     const iterableEnd = try parenthesizedExpressionEnd(tokens, current, "a for-of iterable");
@@ -2207,13 +2269,14 @@ function parseProjectedStatement(
     nodes.push(Statement({
       kind: StatementKind.forStatement,
       mutableBinding: false,
-      name: binding.text.copyBytes(0, binding.text.byteLength),
-      nameOffset: binding.offset,
-      nameLine: binding.line,
-      nameColumn: binding.column,
+      name: bindingName,
+      nameOffset: bindingOffset,
+      nameLine: bindingLine,
+      nameColumn: bindingColumn,
       typeAnnotation: Option<TypeReference>.none,
       expression: Option.some(iterable),
       secondExpression: Option<ExpressionSyntax>.none,
+      objectBindings,
       children,
       offset: start.offset,
       line: start.line,
@@ -2225,7 +2288,22 @@ function parseProjectedStatement(
     const start = snapshot(tokens[current]);
     const mutableBinding = kind == TokenKind.letKeyword;
     current = current + 1;
-    const name = try expect(tokens, inout current, TokenKind.identifier, "a variable name");
+    let name = "";
+    let nameOffset: usize = 0;
+    let nameLine: usize = 0;
+    let nameColumn: usize = 0;
+    let objectBindings = Array<ObjectBinding>();
+    let objectPattern = false;
+    if (takeIf(tokens, inout current, TokenKind.leftBrace)) {
+      objectPattern = true;
+      objectBindings = try parseObjectBindings(tokens, inout current, "an object field name");
+    } else {
+      const binding = try expect(tokens, inout current, TokenKind.identifier, "a variable name");
+      name = binding.text.copyBytes(0, binding.text.byteLength);
+      nameOffset = binding.offset;
+      nameLine = binding.line;
+      nameColumn = binding.column;
+    }
     let typeAnnotation = Option<TypeReference>.none;
     if (takeIf(tokens, inout current, TokenKind.colon)) {
       let pendingGreater: usize = 0;
@@ -2234,6 +2312,7 @@ function parseProjectedStatement(
     }
     let expression = Option<ExpressionSyntax>.none;
     if (takeIf(tokens, inout current, TokenKind.semicolon)) {
+      if (objectPattern) throw fail(start, "object destructuring requires an initializer");
       if (!mutableBinding) throw fail(start, "const declarations require an initializer");
     } else {
       try expectKind(tokens, inout current, TokenKind.equal, "`=` in a variable declaration");
@@ -2242,15 +2321,18 @@ function parseProjectedStatement(
     }
     const index = nodes.length;
     nodes.push(Statement({
-      kind: StatementKind.variableStatement,
+      kind: objectPattern
+        ? StatementKind.destructureStatement
+        : StatementKind.variableStatement,
       mutableBinding,
-      name: name.text.copyBytes(0, name.text.byteLength),
-      nameOffset: name.offset,
-      nameLine: name.line,
-      nameColumn: name.column,
+      name,
+      nameOffset,
+      nameLine,
+      nameColumn,
       typeAnnotation,
       expression,
       secondExpression: Option<ExpressionSyntax>.none,
+      objectBindings,
       children: Array<usize>(),
       offset: start.offset,
       line: start.line,
@@ -2277,6 +2359,7 @@ function parseProjectedStatement(
       typeAnnotation: Option<TypeReference>.none,
       expression,
       secondExpression: Option<ExpressionSyntax>.none,
+      objectBindings: Array<ObjectBinding>(),
       children: Array<usize>(),
       offset: start.offset,
       line: start.line,
@@ -2307,6 +2390,7 @@ function parseProjectedStatement(
       typeAnnotation: Option<TypeReference>.none,
       expression: Option.some(expression),
       secondExpression: Option<ExpressionSyntax>.none,
+      objectBindings: Array<ObjectBinding>(),
       children: Array<usize>(),
       offset: start.offset,
       line: start.line,
@@ -2331,6 +2415,7 @@ function parseProjectedStatement(
       typeAnnotation: Option<TypeReference>.none,
       expression: Option<ExpressionSyntax>.none,
       secondExpression: Option<ExpressionSyntax>.none,
+      objectBindings: Array<ObjectBinding>(),
       children: Array<usize>(),
       offset: start.offset,
       line: start.line,
@@ -2356,6 +2441,7 @@ function parseProjectedStatement(
         typeAnnotation: Option<TypeReference>.none,
         expression: Option.some(target),
         secondExpression: Option.some(value),
+        objectBindings: Array<ObjectBinding>(),
         children: Array<usize>(),
         offset: start.offset,
         line: start.line,
@@ -2377,6 +2463,7 @@ function parseProjectedStatement(
     typeAnnotation: Option<TypeReference>.none,
     expression: Option.some(scanned),
     secondExpression: Option<ExpressionSyntax>.none,
+    objectBindings: Array<ObjectBinding>(),
     children: Array<usize>(),
     offset: start.offset,
     line: start.line,
@@ -2948,9 +3035,29 @@ function expressionSyntaxText(
   return output.finish();
 }
 
+function objectBindingsText(in bindings: Array<ObjectBinding>): String {
+  let output = TextBuffer();
+  output.append("{");
+  let first = true;
+  for (const binding of bindings) {
+    if (!first) output.append(",");
+    first = false;
+    output.append(binding.fieldName);
+    output.append("@");
+    output.append(`${binding.fieldOffset},${binding.fieldLine},${binding.fieldColumn}`);
+    output.append(":");
+    output.append(binding.bindingName);
+    output.append("@");
+    output.append(`${binding.bindingOffset},${binding.bindingLine},${binding.bindingColumn}`);
+  }
+  output.append("}");
+  return output.finish();
+}
+
 function renderStatementText(in arena: StatementArena, in statement: Statement): String {
   let output = TextBuffer();
   if (statement.kind == StatementKind.variableStatement) output.append("variable@");
+  else if (statement.kind == StatementKind.destructureStatement) output.append("destructure@");
   else if (statement.kind == StatementKind.assignmentStatement) output.append("assignment@");
   else if (statement.kind == StatementKind.returnStatement) output.append("return@");
   else if (statement.kind == StatementKind.throwStatement) output.append("throw@");
@@ -2981,6 +3088,20 @@ function renderStatementText(in arena: StatementArena, in statement: Statement):
       }
       none => {}
     }
+  } else if (statement.kind == StatementKind.destructureStatement) {
+    if (statement.mutableBinding) output.append("let:");
+    else output.append("const:");
+    const pattern = objectBindingsText(statement.objectBindings);
+    output.append(pattern);
+    match (in statement.typeAnnotation) {
+      some(typeAnnotation) => {
+        output.append(":");
+        output.append(typeAnnotation.name);
+        output.append("@");
+        output.append(`${typeAnnotation.offset},${typeAnnotation.line},${typeAnnotation.column}`);
+      }
+      none => {}
+    }
   }
   if (statement.kind == StatementKind.assignmentStatement) {
     match (in statement.expression) {
@@ -3001,9 +3122,14 @@ function renderStatementText(in arena: StatementArena, in statement: Statement):
     }
   } else if (statement.kind == StatementKind.forStatement) {
     output.append("const:");
-    output.append(statement.name);
-    output.append("@");
-    output.append(`${statement.nameOffset},${statement.nameLine},${statement.nameColumn}`);
+    if (statement.name.byteLength > 0) {
+      output.append(statement.name);
+      output.append("@");
+      output.append(`${statement.nameOffset},${statement.nameLine},${statement.nameColumn}`);
+    } else {
+      const pattern = objectBindingsText(statement.objectBindings);
+      output.append(pattern);
+    }
     match (in statement.expression) {
       some(expression) => {
         output.append("iterable=");

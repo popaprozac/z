@@ -58,6 +58,22 @@ position.x = 10;
 position = Point({ x: position.x, y: 20 });
 ```
 
+Object binding patterns follow TypeScript's field and alias spelling:
+
+```z
+const { path, revision } = record;
+const { path: localPath } = record;
+```
+
+The first tier is deliberately ownership-visible. Cleanup-free structs may be
+destructured directly. A named cleanup-bearing struct requires `copy record`
+to retain the source or `move record` to consume it. Pattern bindings receive
+the selected fields, while unselected fields are destroyed. Types with custom
+`deinit`, foreign owned-handle cleanup, or embedded C++/Swift value storage are
+rejected until partial relocation can preserve their exact cleanup contract.
+Classes, nested/rest/default/array patterns, and parameter patterns remain later
+extensions.
+
 ## Type inference boundary
 
 Z uses inference to remove repetition inside an implementation, not to hide an
@@ -457,9 +473,8 @@ cleanup-free—and structural mutation is rejected until the loop exits. Their
 iteration order is deliberately unspecified; the hashed collections do not
 promise JavaScript's insertion ordering.
 
-Object destructuring should extend the general binding-pattern grammar rather
-than become a loop-only special case. The intended later surface composes the
-same pattern with locals and iteration:
+Object destructuring uses the same binding-pattern grammar for locals and
+iteration:
 
 ```z
 const { path, revision } = record;
@@ -469,12 +484,13 @@ for (const { key, value } of records) {
 }
 ```
 
-This must preserve the same copy-versus-borrow decision as the whole binding;
-destructuring must not silently move owned fields out of stored aggregates.
-Mutable element iteration, custom iteration traits, consuming iterators, array
-and tuple patterns, and async iteration remain later layers. The built-in
-lowering must be expressible through that eventual trait model rather than
-contradict it.
+The loop pattern inherits the collection's access: cleanup-free fields load by
+value, while cleanup-bearing fields remain borrowed and cannot move out. This
+preserves the same copy-versus-borrow decision as a whole-element binding and
+never silently transfers a stored owner. Mutable element iteration, custom
+iteration traits, consuming iterators, array and tuple patterns, and async
+iteration remain later layers. The built-in lowering must be expressible through
+that eventual trait model rather than contradict it.
 
 ## Arrays and views
 

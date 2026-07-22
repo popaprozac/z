@@ -2600,6 +2600,8 @@ bool ${liveFlag} = true;`;
       const liveFlag = ensureLiveFlag(statement.name, context);
       return `${initialized}\nbool ${liveFlag} = true;`;
     }
+    case "destructure":
+      return generateObjectDestructure(statement, context);
     case "assignment": {
       const objcProperty = context.semanticInfo.objcProperties.get(statement.target.location.offset);
       if (objcProperty?.setter && statement.target.kind === "member") {
@@ -3049,6 +3051,47 @@ function generateWhile(statement: Extract<Statement, { kind: "while" }>, context
   return `while ${controlCondition(generateExpression(statement.condition, context))} ${body}${breakLabel}`;
 }
 
+function generateObjectDestructure(
+  statement: Extract<Statement, { kind: "destructure" }>,
+  context: GenerationContext,
+): string {
+  const sourceType = statement.type?.name ?? directValueType(statement.initializer, context);
+  const declaration = context.structs.get(sourceType);
+  if (!declaration || declaration.kind !== "struct") throw new Error("object destructuring requires a value struct");
+  const temporary = `_z_destructure_${context.valueCounter.value++}`;
+  const temporaryDeclaration = generateLocalDeclaration(
+    sourceType,
+    temporary,
+    true,
+    context.structs,
+    context.enums,
+    context.semanticInfo.foreignNamedTypes,
+  );
+  return generateDirectValue(statement.initializer, context, (value, valueContext) => {
+    const lines = [`${temporaryDeclaration} = ${value};`];
+    for (const binding of statement.objectBindings) {
+      const field = declaration.fields.find((candidate) => candidate.name === binding.fieldName)!;
+      const local = generateLocalDeclaration(
+        field.type.name,
+        binding.bindingName,
+        statement.mutable,
+        valueContext.structs,
+        valueContext.enums,
+        valueContext.semanticInfo.foreignNamedTypes,
+      );
+      lines.push(`${local} = ${temporary}.${field.name};`);
+      if (hasCleanupType(field.type.name, valueContext.structs, valueContext.enums, valueContext.semanticInfo.foreignTypes)) {
+        lines.push(`${temporary}.${field.name} = ${mapZeroValue(field.type.name, valueContext.structs, valueContext.enums, valueContext.semanticInfo.foreignNamedTypes)};`);
+        lines.push(`bool ${ensureLiveFlag(binding.bindingName, valueContext)} = true;`);
+      }
+    }
+    if (hasCleanupType(sourceType, valueContext.structs, valueContext.enums, valueContext.semanticInfo.foreignTypes)) {
+      lines.push(generateValueCleanup(temporary, sourceType, null, valueContext));
+    }
+    return lines.join("\n");
+  });
+}
+
 function generateFor(statement: Extract<Statement, { kind: "for" }>, context: GenerationContext): string {
   const index = context.loopCounter.value++;
   const iterableType = inferExpressionType(statement.iterable, context);
@@ -3068,8 +3111,18 @@ function generateFor(statement: Extract<Statement, { kind: "for" }>, context: Ge
     || hasCleanupType(collection.elementType, context.structs, context.enums, context.semanticInfo.foreignTypes);
   const loopTypes = new Map(context.localTypes);
   const loopModes = new Map(context.parameterModes);
-  loopTypes.set(statement.binding, collection.elementType);
-  if (borrowedElement) loopModes.set(statement.binding, "in");
+  if (statement.binding) {
+    loopTypes.set(statement.binding, collection.elementType);
+    if (borrowedElement) loopModes.set(statement.binding, "in");
+  }
+  const elementOwner = statement.objectBindings ? context.structs.get(collection.elementType) : null;
+  for (const binding of statement.objectBindings ?? []) {
+    const field = elementOwner!.fields.find((candidate) => candidate.name === binding.fieldName)!;
+    loopTypes.set(binding.bindingName, field.type.name);
+    if (borrowedElement && hasCleanupType(field.type.name, context.structs, context.enums, context.semanticInfo.foreignTypes)) {
+      loopModes.set(binding.bindingName, "in");
+    }
+  }
   const loopContext = { ...context, localTypes: loopTypes, parameterModes: loopModes };
   const frame: LoopGenerationFrame = {
     breakLabel: `_z_loop_break_${index}`,
@@ -3085,13 +3138,28 @@ function generateFor(statement: Extract<Statement, { kind: "for" }>, context: Ge
   } finally {
     context.loopStack.pop();
   }
-  const elementType = mapType(collection.elementType, context.structs, context.enums, context.semanticInfo.foreignNamedTypes);
-  const elementDeclaration = borrowedElement
-    ? context.structs.get(collection.elementType)?.kind === "class"
-      ? `${elementType} const ${statement.binding} = ${item};`
-      : `const ${elementType} *${statement.binding} = &(${item});`
-    : `${generateLocalDeclaration(collection.elementType, statement.binding, false, context.structs, context.enums, context.semanticInfo.foreignNamedTypes)} = ${item};`;
-  body = body.replace("{\n", `{\n  ${elementDeclaration}\n`);
+  const bindingDeclarations: string[] = [];
+  if (statement.binding) {
+    const elementType = mapType(collection.elementType, context.structs, context.enums, context.semanticInfo.foreignNamedTypes);
+    bindingDeclarations.push(borrowedElement
+      ? context.structs.get(collection.elementType)?.kind === "class"
+        ? `${elementType} const ${statement.binding} = ${item};`
+        : `const ${elementType} *${statement.binding} = &(${item});`
+      : `${generateLocalDeclaration(collection.elementType, statement.binding, false, context.structs, context.enums, context.semanticInfo.foreignNamedTypes)} = ${item};`);
+  }
+  for (const binding of statement.objectBindings ?? []) {
+    const field = elementOwner!.fields.find((candidate) => candidate.name === binding.fieldName)!;
+    const fieldType = mapType(field.type.name, context.structs, context.enums, context.semanticInfo.foreignNamedTypes);
+    const fieldValue = `((${item}).${field.name})`;
+    const borrowedField = borrowedElement
+      && hasCleanupType(field.type.name, context.structs, context.enums, context.semanticInfo.foreignTypes);
+    bindingDeclarations.push(borrowedField
+      ? context.structs.get(field.type.name)?.kind === "class"
+        ? `${fieldType} const ${binding.bindingName} = ${fieldValue};`
+        : `const ${fieldType} *${binding.bindingName} = &(${fieldValue});`
+      : `${generateLocalDeclaration(field.type.name, binding.bindingName, false, context.structs, context.enums, context.semanticInfo.foreignNamedTypes)} = ${fieldValue};`);
+  }
+  body = body.replace("{\n", `{\n${bindingDeclarations.map((line) => `  ${line}`).join("\n")}\n`);
   if (frame.usedContinue) body = body.replace(/\n}$/, `\n  ${frame.continueLabel}: ;\n}`);
   const breakLabel = frame.usedBreak ? `\n${frame.breakLabel}: ;` : "";
   return `for (uintptr_t _z_for_index_${index} = 0; _z_for_index_${index} < ${length}; _z_for_index_${index} += 1) ${body}${breakLabel}`;
@@ -3575,6 +3643,17 @@ function indent(text: string, spaces: number): string {
 }
 
 function recordVariableType(statement: Statement, context: GenerationContext): void {
+  if (statement.kind === "destructure") {
+    for (const binding of statement.objectBindings) {
+      const type = context.semanticInfo.bindingTypes.get(binding.bindingLocation.offset);
+      if (!type) throw new Error(`missing inferred type for destructured binding ${JSON.stringify(binding.bindingName)}`);
+      context.localTypes.set(binding.bindingName, type);
+      if (hasCleanupType(type, context.structs, context.enums, context.semanticInfo.foreignTypes)) {
+        context.cleanupScopes.at(-1)!.push({ name: binding.bindingName, type, liveFlag: ensureLiveFlag(binding.bindingName, context) });
+      }
+    }
+    return;
+  }
   if (statement.kind !== "variable") return;
   const type = statement.type?.name
     ?? (statement.initializer

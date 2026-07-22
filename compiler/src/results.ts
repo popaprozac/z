@@ -94,6 +94,9 @@ function collectClosureResults(
         case "variable":
           if (statement.initializer) visitExpression(statement.initializer);
           break;
+        case "destructure":
+          visitExpression(statement.initializer);
+          break;
         case "assignment":
           visitExpression(statement.target);
           visitExpression(statement.expression);

@@ -2,6 +2,8 @@ import type {
   Expression,
   EnumDeclaration,
   FunctionDeclaration,
+  MatchObjectBinding,
+  FieldDeclaration,
   Program,
   SourceLocation,
   Statement,
@@ -1520,6 +1522,8 @@ function analyzeConstructorInitialization(
       }
       if (statement.kind === "variable") {
         if (statement.initializer) checkExpression(statement.initializer, initialized);
+      } else if (statement.kind === "destructure") {
+        checkExpression(statement.initializer, initialized);
       } else if (statement.kind === "assignment") {
         checkExpression(statement.target, initialized);
         checkExpression(statement.expression, initialized);
@@ -1912,6 +1916,87 @@ function analyzeStatement(
         && state.asyncSpawnBorrowRoots.has(statement.initializer.location.offset)
       ) {
         state.asyncTaskBorrowSpawns.set(statement.name, statement.initializer.location.offset);
+      }
+      return;
+    }
+    case "destructure": {
+      if (owner.async) {
+        throw new DiagnosticError(fileName, statement.location, "object destructuring is not executable in async functions yet", {
+          code: "Z0700",
+          helps: ["bind the aggregate normally in async code until destructuring is added to task-frame lowering"],
+        });
+      }
+      let expected: ValueType | null = null;
+      if (statement.type) {
+        validateType(statement.type, structs, enums, state.foreignNamedTypes, fileName, false);
+        expected = resolveSemanticTypeName(statement.type, structs, enums, state);
+      }
+      const initializerType = inferDirectValue(
+        statement.initializer,
+        owner,
+        locals,
+        globals,
+        structs,
+        enums,
+        fileName,
+        state,
+        expected,
+      );
+      if (expected) requireAssignable(expected, initializerType, statement.initializer, fileName, structs, enums, state);
+      const sourceType = String(underlyingType(expected ?? initializerType));
+      const declaration = structs.get(sourceType);
+      if (!declaration || declaration.kind !== "struct" || parseMapType(sourceType) || parseSetType(sourceType)) {
+        throw new DiagnosticError(fileName, statement.location, `object destructuring requires a Z value struct, found ${displayArrayType(sourceType)}`, {
+          code: "Z0220",
+          notes: ["classes preserve shared identity and collections expose their storage through iteration instead"],
+        });
+      }
+      const fields = resolveObjectBindingFields(
+        statement.objectBindings,
+        declaration,
+        locals,
+        fileName,
+        state.activeReceiver,
+      );
+      if (declaration.deinitializer) {
+        throw new DiagnosticError(fileName, statement.location, `cannot destructure ${declaration.name} because it defines deinit`, {
+          code: "Z0220",
+          notes: ["moving selected fields would leave the custom destructor with an incomplete value"],
+          helps: ["read fields directly, or provide a type-specific method that returns the desired values"],
+        });
+      }
+      if (containsForeignValueStorage(sourceType, structs, enums, state.foreignNamedTypes)) {
+        throw new DiagnosticError(fileName, statement.location, `cannot destructure ${declaration.name} while it contains native value storage`, {
+          code: "Z0240",
+          notes: ["the first destructuring tier does not partially relocate native RAII fields, including copyable C++ and Swift values"],
+          helps: ["move the complete aggregate or expose a type-specific extraction method"],
+        });
+      }
+      if (containsOpaqueCleanupStorage(sourceType, structs, enums, state.foreignTypes)) {
+        throw new DiagnosticError(fileName, statement.location, `cannot destructure ${declaration.name} while it contains custom or foreign cleanup storage`, {
+          code: "Z0220",
+          notes: ["the compiler cannot yet suppress cleanup for only the fields transferred by this pattern"],
+          helps: ["move the complete aggregate or expose a type-specific extraction method"],
+        });
+      }
+      const explicitOwnership = statement.initializer.kind === "unary"
+        && (statement.initializer.operator === "copy" || statement.initializer.operator === "move");
+      if (hasOwnershipType(sourceType, structs, enums, state)
+        && isNamedStorageExpression(statement.initializer)
+        && !explicitOwnership) {
+        throw new DiagnosticError(fileName, statement.initializer.location, `destructuring owned ${sourceType} requires explicit copy or move`, {
+          code: "Z0220",
+          notes: ["plain destructuring must not hide an allocation or partial ownership transfer"],
+          helps: ["use `copy value` to keep the source, or `move value` to consume it"],
+        });
+      }
+      if (!explicitOwnership) {
+        consumeOwnedValue(statement.initializer, sourceType, locals, structs, enums, fileName, state);
+      }
+      for (const { binding, field } of fields) {
+        const stored = statement.mutable ? `${mutablePrefix}${field.type.name}` : field.type.name;
+        locals.set(binding.bindingName, stored);
+        state.bindingTypes.set(binding.bindingLocation.offset, field.type.name);
       }
       return;
     }
@@ -2812,6 +2897,9 @@ function collectClosureCaptures(
       if (statement.kind === "variable") {
         if (statement.initializer) walkExpression(statement.initializer, localNames);
         localNames.add(statement.name);
+      } else if (statement.kind === "destructure") {
+        walkExpression(statement.initializer, localNames);
+        for (const binding of statement.objectBindings) localNames.add(binding.bindingName);
       } else walkStatement(statement, localNames);
     }
   };
@@ -2821,6 +2909,10 @@ function collectClosureCaptures(
       case "variable":
         if (statement.initializer) walkExpression(statement.initializer, localNames);
         localNames.add(statement.name);
+        return;
+      case "destructure":
+        walkExpression(statement.initializer, localNames);
+        for (const binding of statement.objectBindings) localNames.add(binding.bindingName);
         return;
       case "assignment":
         walkExpression(statement.target, localNames, true);
@@ -2849,7 +2941,8 @@ function collectClosureCaptures(
       case "for": {
         walkExpression(statement.iterable, localNames);
         const bodyNames = new Set(localNames);
-        bodyNames.add(statement.binding);
+        if (statement.binding) bodyNames.add(statement.binding);
+        for (const binding of statement.objectBindings ?? []) bodyNames.add(binding.bindingName);
         walkStatement(statement.body, bodyNames);
         return;
       }
@@ -5891,6 +5984,7 @@ function validateDeinitControlFlow(statements: Statement[], fileName: string): v
     }
     if (statement.kind === "block") validateDeinitControlFlow(statement.statements, fileName);
     if (statement.kind === "variable" && statement.initializer) validateDeinitExpression(statement.initializer, fileName);
+    if (statement.kind === "destructure") validateDeinitExpression(statement.initializer, fileName);
     if (statement.kind === "assignment") {
       validateDeinitExpression(statement.target, fileName);
       validateDeinitExpression(statement.expression, fileName);
@@ -6675,6 +6769,39 @@ function analyzeWhileLoop(
   mergeOwnershipStates(locals, exits, state);
 }
 
+function resolveObjectBindingFields(
+  bindings: readonly MatchObjectBinding[],
+  declaration: StructDeclaration,
+  locals: ReadonlyMap<string, ValueType>,
+  fileName: string,
+  activeReceiver: string | null,
+): Array<{ readonly binding: MatchObjectBinding; readonly field: FieldDeclaration }> {
+  if (bindings.length === 0) {
+    throw new DiagnosticError(fileName, declaration.location, "object destructuring requires at least one field", { code: "Z0220" });
+  }
+  const fields = new Set<string>();
+  const names = new Set<string>();
+  return bindings.map((binding) => {
+    validateUserName(binding.bindingName, binding.bindingLocation, fileName);
+    if (fields.has(binding.fieldName)) {
+      throw new DiagnosticError(fileName, binding.fieldLocation, `object pattern repeats field ${JSON.stringify(binding.fieldName)}`, { code: "Z0220" });
+    }
+    fields.add(binding.fieldName);
+    if (names.has(binding.bindingName) || locals.has(binding.bindingName)) {
+      throw new DiagnosticError(fileName, binding.bindingLocation, `duplicate local ${JSON.stringify(binding.bindingName)}`);
+    }
+    names.add(binding.bindingName);
+    const field = declaration.fields.find((candidate) => candidate.name === binding.fieldName);
+    if (!field) {
+      throw new DiagnosticError(fileName, binding.fieldLocation, `${declaration.name} has no field ${JSON.stringify(binding.fieldName)}`, { code: "Z0220" });
+    }
+    if (field.visibility === "private" && activeReceiver !== declaration.name) {
+      throw new DiagnosticError(fileName, binding.fieldLocation, `cannot destructure private field ${JSON.stringify(binding.fieldName)} of ${declaration.name}`, { code: "Z0220" });
+    }
+    return { binding, field };
+  });
+}
+
 function analyzeForLoop(
   statement: Extract<Statement, { kind: "for" }>,
   owner: FunctionDeclaration,
@@ -6685,9 +6812,11 @@ function analyzeForLoop(
   fileName: string,
   state: AnalysisState,
 ): void {
-  validateUserName(statement.binding, statement.bindingLocation, fileName);
-  if (locals.has(statement.binding)) {
-    throw new DiagnosticError(fileName, statement.bindingLocation, `duplicate local ${JSON.stringify(statement.binding)}`);
+  if (statement.binding && statement.bindingLocation) {
+    validateUserName(statement.binding, statement.bindingLocation, fileName);
+    if (locals.has(statement.binding)) {
+      throw new DiagnosticError(fileName, statement.bindingLocation, `duplicate local ${JSON.stringify(statement.binding)}`);
+    }
   }
   const root = storageRoot(statement.iterable);
   if (!root) {
@@ -6712,14 +6841,29 @@ function analyzeForLoop(
     });
   }
   const collectionBorrow = Boolean(map || set);
-  state.bindingTypes.set(statement.bindingLocation.offset, collection.elementType);
+  const elementDeclaration = statement.objectBindings ? structs.get(collection.elementType) : null;
+  if (statement.objectBindings && (!elementDeclaration || elementDeclaration.kind !== "struct")) {
+    throw new DiagnosticError(fileName, statement.location, `object iteration pattern requires struct elements, found ${displayArrayType(collection.elementType)}`, {
+      code: "Z0220",
+    });
+  }
+  const objectFields = statement.objectBindings && elementDeclaration
+    ? resolveObjectBindingFields(statement.objectBindings, elementDeclaration, locals, fileName, state.activeReceiver)
+    : [];
+  if (statement.binding && statement.bindingLocation) {
+    state.bindingTypes.set(statement.bindingLocation.offset, collection.elementType);
+  }
+  for (const { binding, field } of objectFields) {
+    state.bindingTypes.set(binding.bindingLocation.offset, field.type.name);
+  }
 
   const entry = new Map(locals);
   let header = new Map(entry);
   let finalFrame: LoopAnalysisFrame = { breaks: [], continues: [] };
   const normalize = (candidate: Map<string, ValueType>): Map<string, ValueType> => {
     const normalized = new Map(candidate);
-    normalized.delete(statement.binding);
+    if (statement.binding) normalized.delete(statement.binding);
+    for (const { binding } of objectFields) normalized.delete(binding.bindingName);
     const rootType = header.get(root.name);
     if (rootType) normalized.set(root.name, rootType);
     return normalized;
@@ -6730,17 +6874,29 @@ function analyzeForLoop(
     const rootType = bodyLocals.get(root.name);
     if (rootType) bodyLocals.set(root.name, `${borrowedPrefix}${underlyingType(rootType)}`);
     const borrowedElement = collectionBorrow || hasOwnershipType(collection.elementType, structs, enums, state);
-    const elementBinding = borrowedElement
-      ? `${borrowedPrefix}${collection.elementType}`
-      : collection.elementType;
-    bodyLocals.set(statement.binding, elementBinding);
+    if (statement.binding) {
+      const elementBinding = borrowedElement
+        ? `${borrowedPrefix}${collection.elementType}`
+        : collection.elementType;
+      bodyLocals.set(statement.binding, elementBinding);
+    }
+    for (const { binding, field } of objectFields) {
+      const borrowedField = borrowedElement && hasOwnershipType(field.type.name, structs, enums, state);
+      bodyLocals.set(binding.bindingName, borrowedField ? `${borrowedPrefix}${field.type.name}` : field.type.name);
+    }
 
     const frame: LoopAnalysisFrame = { breaks: [], continues: [] };
     const previousIterationBorrow = state.iterationBorrowOrigins.get(root.name);
-    const previousElementBorrow = state.borrowOrigins.get(statement.binding);
+    const previousElementBorrow = statement.binding ? state.borrowOrigins.get(statement.binding) : null;
+    const previousFieldBorrows = new Map(objectFields.map(({ binding }) => [binding.bindingName, state.borrowOrigins.get(binding.bindingName)]));
     state.iterationBorrowOrigins.set(root.name, statement.location);
-    if (borrowedElement) {
+    if (borrowedElement && statement.binding) {
       state.borrowOrigins.set(statement.binding, { location: statement.location, kind: "iteration" });
+    }
+    for (const { binding, field } of objectFields) {
+      if (borrowedElement && hasOwnershipType(field.type.name, structs, enums, state)) {
+        state.borrowOrigins.set(binding.bindingName, { location: statement.location, kind: "iteration" });
+      }
     }
     state.loopStack.push(frame);
     try {
@@ -6749,8 +6905,15 @@ function analyzeForLoop(
       state.loopStack.pop();
       if (previousIterationBorrow) state.iterationBorrowOrigins.set(root.name, previousIterationBorrow);
       else state.iterationBorrowOrigins.delete(root.name);
-      if (previousElementBorrow) state.borrowOrigins.set(statement.binding, previousElementBorrow);
-      else state.borrowOrigins.delete(statement.binding);
+      if (statement.binding) {
+        if (previousElementBorrow) state.borrowOrigins.set(statement.binding, previousElementBorrow);
+        else state.borrowOrigins.delete(statement.binding);
+      }
+      for (const { binding } of objectFields) {
+        const previous = previousFieldBorrows.get(binding.bindingName);
+        if (previous) state.borrowOrigins.set(binding.bindingName, previous);
+        else state.borrowOrigins.delete(binding.bindingName);
+      }
     }
 
     const backEdges = frame.continues.map(normalize);
@@ -8522,6 +8685,38 @@ function containsForeignValueStorage(
     : enumDeclaration!.variants.some((variant) => (
       variant.payload
       && containsForeignValueStorage(variant.payload.name, structs, enums, foreignNamedTypes, visiting)
+    ));
+  visiting.delete(actual);
+  return Boolean(result);
+}
+
+function containsOpaqueCleanupStorage(
+  type: ValueType,
+  structs: Map<string, StructDeclaration>,
+  enums: Map<string, EnumDeclaration>,
+  foreignTypes: ReadonlyMap<string, ForeignPointerType>,
+  visiting = new Set<string>(),
+): boolean {
+  const actual = String(underlyingType(type));
+  if (actual === "unknown" || actual === "never" || visiting.has(actual)) return false;
+  if (foreignTypes.get(actual)?.ownership === "owned") return true;
+  const array = parseFixedArrayType(actual);
+  if (array) return containsOpaqueCleanupStorage(array.elementType, structs, enums, foreignTypes, visiting);
+  const dynamic = parseDynamicArrayType(actual);
+  if (dynamic) return containsOpaqueCleanupStorage(dynamic.elementType, structs, enums, foreignTypes, visiting);
+  const declaration = structs.get(actual);
+  const enumDeclaration = enums.get(actual);
+  if (declaration?.kind === "class") return false;
+  if (declaration?.deinitializer) return true;
+  if (!declaration && !enumDeclaration) return false;
+  visiting.add(actual);
+  const result = declaration
+    ? declaration.fields.some((field) => (
+      containsOpaqueCleanupStorage(field.type.name, structs, enums, foreignTypes, visiting)
+    ))
+    : enumDeclaration!.variants.some((variant) => (
+      variant.payload
+      && containsOpaqueCleanupStorage(variant.payload.name, structs, enums, foreignTypes, visiting)
     ));
   visiting.delete(actual);
   return Boolean(result);

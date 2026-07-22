@@ -185,9 +185,9 @@ compiler-backed language server. Z source receives diagnostics, semantic
 highlighting, hover, completion, and definitions. Completion is contextual:
 selective imports suggest exported Z, standard-library, or native symbols;
 typed object construction suggests remaining fields as `field: value`; and
-enum payload destructuring suggests remaining field bindings. Ordinary
-declaration destructuring such as `const { x } = value` is not yet Z syntax and
-is therefore not suggested. `.zd` files receive
+enum payload destructuring suggests remaining field bindings. Value-struct
+declaration and `for...of` object patterns suggest fields while they are typed,
+then provide semantic highlighting, binding hover, and local completion. `.zd` files receive
 declaration-aware highlighting and diagnostics, plus header-backed completion
 for native functions, parameter names, and `deinit` targets. Hovering a native
 declaration, parameter, inferred `_` type, or `deinit` target shows the resolved

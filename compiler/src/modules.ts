@@ -453,6 +453,9 @@ function transformStatements(
   for (const statement of statements) {
     transformed.push(transformStatement(statement, scope, locals, typeParameters));
     if (statement.kind === "variable") locals.add(statement.name);
+    if (statement.kind === "destructure") {
+      for (const binding of statement.objectBindings) locals.add(binding.bindingName);
+    }
   }
   return transformed;
 }
@@ -469,6 +472,12 @@ function transformStatement(
         ...statement,
         type: statement.type ? renameTypeReference(statement.type, scope, typeParameters) : null,
         initializer: statement.initializer ? transformExpression(statement.initializer, scope, locals, typeParameters) : null,
+      };
+    case "destructure":
+      return {
+        ...statement,
+        type: statement.type ? renameTypeReference(statement.type, scope, typeParameters) : null,
+        initializer: transformExpression(statement.initializer, scope, locals, typeParameters),
       };
     case "assignment":
       return {
@@ -504,7 +513,8 @@ function transformStatement(
       };
     case "for": {
       const bodyLocals = new Set(locals);
-      bodyLocals.add(statement.binding);
+      if (statement.binding) bodyLocals.add(statement.binding);
+      for (const binding of statement.objectBindings ?? []) bodyLocals.add(binding.bindingName);
       return {
         ...statement,
         iterable: transformExpression(statement.iterable, scope, locals, typeParameters),

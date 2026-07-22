@@ -50,6 +50,10 @@ Currently structured codes include:
 | `Z0216` | throwing closure cannot become a general stored function value |
 | `Z0217` | explicit copy requested for a type without an independent-copy capability |
 | `Z0218` | explicit move requested for a view, non-owning value, or type without move capability |
+| `Z0220` | object binding pattern or partial aggregate extraction is invalid for the source type |
+| `Z0230` | borrowed match requires named, stored enum storage |
+| `Z0231` | ownership-bearing pattern field cannot be extracted from borrowed match storage |
+| `Z0240` | native value storage is used in a context without a proven relocation/initialization contract |
 | `Z0301` | invalid or missing `inout` capability |
 | `Z0302` | invalid or missing `out` capability |
 | `Z0303` | read before initialization |

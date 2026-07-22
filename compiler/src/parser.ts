@@ -543,6 +543,26 @@ export function parse(tokens: Token[], fileName: string): Program {
     };
   };
 
+  const parseObjectBindings = () => {
+    const bindings = [];
+    if (!at("rightBrace")) {
+      do {
+        const field = expect("identifier", "an object field name");
+        const binding = match("colon")
+          ? expect("identifier", "a pattern binding name")
+          : field;
+        bindings.push({
+          fieldName: field.text,
+          bindingName: binding.text,
+          fieldLocation: field.location,
+          bindingLocation: binding.location,
+        });
+      } while (match("comma") && !at("rightBrace"));
+    }
+    expect("rightBrace", "`}` ending an object pattern");
+    return bindings;
+  };
+
   const parseMatchArms = () => {
     expect("leftBrace", "`{`");
     const arms = [];
@@ -552,22 +572,7 @@ export function parse(tokens: Token[], fileName: string): Program {
       let objectBindings = null;
       if (match("leftParen")) {
         if (match("leftBrace")) {
-          objectBindings = [];
-          if (!at("rightBrace")) {
-            do {
-              const field = expect("identifier", "a payload field name");
-              const binding = match("colon")
-                ? expect("identifier", "a pattern binding name")
-                : field;
-              objectBindings.push({
-                fieldName: field.text,
-                bindingName: binding.text,
-                fieldLocation: field.location,
-                bindingLocation: binding.location,
-              });
-            } while (match("comma") && !at("rightBrace"));
-          }
-          expect("rightBrace", "`}` ending an object pattern");
+          objectBindings = parseObjectBindings();
         } else {
           bindingToken = expect("identifier", "a payload binding");
         }
@@ -618,15 +623,17 @@ export function parse(tokens: Token[], fileName: string): Program {
       const forToken = previous();
       expect("leftParen", "`(`");
       expect("const", "`const` in a read-only `for...of` binding");
-      const binding = expect("identifier", "an iteration binding");
+      const objectBindings = match("leftBrace") ? parseObjectBindings() : null;
+      const binding = objectBindings ? null : expect("identifier", "an iteration binding");
       expect("of", "`of`");
       const iterable = parseExpression();
       expect("rightParen", "`)`");
       const body = parseRequiredBlock("a `for...of` body");
       return {
         kind: "for",
-        binding: binding.text,
-        bindingLocation: binding.location,
+        binding: binding?.text ?? null,
+        bindingLocation: binding?.location ?? null,
+        objectBindings,
         iterable,
         body,
         location: forToken.location,
@@ -660,6 +667,14 @@ export function parse(tokens: Token[], fileName: string): Program {
     if (match("const") || match("let")) {
       const declarationToken = previous();
       const mutable = declarationToken.kind === "let";
+      if (match("leftBrace")) {
+        const objectBindings = parseObjectBindings();
+        const type = match("colon") ? parseType() : null;
+        expect("equal", "`=` after an object binding pattern");
+        const initializer = parseExpression();
+        expect("semicolon", "`;`");
+        return { kind: "destructure", mutable, objectBindings, type, initializer, location: declarationToken.location };
+      }
       const nameToken = expect("identifier", "a variable name");
       const name = nameToken.text;
       const type = match("colon") ? parseType() : null;

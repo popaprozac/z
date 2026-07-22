@@ -19,8 +19,8 @@ function main(): i32 {
   };
 
   let total = 0;
-  for (const entry of users) {
-    total = total + entry.value.id;
+  for (const { value } of users) {
+    total = total + value.id;
   }
 
   // The view's last use has ended, so structural mutation is legal again.

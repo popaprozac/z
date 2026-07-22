@@ -13,7 +13,8 @@ semantic analysis and code generation; the frontend itself is native Z code.
   Its first semantic tier builds source-located symbol tables for declarations,
   namespace imports, and selective bindings. It also performs source-ordered
   lexical identifier lookup through parameters, locals, nested blocks,
-  `for...of`, closures, match-arm payloads, constructors, methods, and `deinit`,
+  `for...of`, local/iteration object patterns, closures, match-arm payloads,
+  constructors, methods, and `deinit`,
   producing native unknown-name diagnostics with exact source locations. Type
   references retain their nested nominal components structurally, and the
   resolver checks declaration signatures, fields, constraints, enum payloads,
@@ -31,10 +32,13 @@ semantic analysis and code generation; the frontend itself is native Z code.
   custom-constructor presence and constructor callable signatures,
   and enum variants/payloads across the graph. Local and imported enums plus compiler-provided `Option<T>`
   and `Result<T, E>` now drive native match subject, payload, generic aggregate
-  destructuring, exhaustiveness, and arm-result checks. The tier also covers
-  Z-defined field reads and assignments across local/selective/namespace type
-  identities, including generic substitution, private access, read-only writes,
-  and enum equality. Z-defined instance and static method calls use graph-carried
+  destructuring, exhaustiveness, and arm-result checks. Local value-struct
+  patterns and iteration patterns retain field/alias locations, introduce
+  source-ordered bindings, and export inferred field contracts when known. The
+  tier also covers Z-defined field reads and assignments across
+  local/selective/namespace type identities, including generic substitution,
+  private access, read-only writes, and enum equality. Z-defined instance and
+  static method calls use graph-carried
   visibility, receiver mode, async/error state, method and owner generics,
   parameter capabilities/types, and result types. Local closures preserve
   explicit parameter capabilities/types and inferred or explicit result types,
