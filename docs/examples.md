@@ -124,8 +124,8 @@ scenario and an ownership-by-ownership explanation.
 [`project-index`](../examples/applications/project-index) pressure-tests Map and
 Set in an application-shaped module. File records are borrowed for ordinary
 lookups, explicitly copied for durable reports, and moved into their final
-consumer. Its deterministic smoke test and fixed benchmark are the regression
-baseline for replacing dense storage with hashed buckets unchanged.
+consumer. Its deterministic smoke test and fixed benchmark verified the move
+from dense storage to hashed buckets without changing application source.
 
 [`source-stager`](../examples/applications/source-stager) is the first
 self-hosting-groundwork tool. It reads a source path from `process.args()`,

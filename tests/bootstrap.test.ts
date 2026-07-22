@@ -2631,6 +2631,10 @@ test("runs the project index across borrowed lookups, owned snapshots, and colle
   const smokeResult = spawnSync(process.execPath, [cli, "run", smoke], { encoding: "utf8" });
   assert.equal(smokeResult.status, 0, smokeResult.stderr);
 
+  const benchmark = resolve(projectRoot, "examples/applications/project-index/benchmark.zs");
+  const benchmarkResult = spawnSync(process.execPath, [cli, "run", benchmark], { encoding: "utf8" });
+  assert.equal(benchmarkResult.status, 0, benchmarkResult.stderr);
+
   const application = resolve(projectRoot, "examples/applications/project-index/main.zs");
   const lexer = resolve(projectRoot, "compiler/frontend/lexer.zs");
   const parser = resolve(projectRoot, "compiler/frontend/parser.zs");
@@ -8480,7 +8484,9 @@ test("owns Map keys and values with optional views and deterministic removal", (
 
   const generated = compileToC(source, example);
   assert.match(generated, /Map.*_get\(const .*\*self, Z_String key\)/);
-  assert.match(generated, /return &self->entries\.data\[index\]\.value/);
+  assert.match(generated, /return &self->entries\.data\[stored - 1\]\.value/);
+  assert.match(generated, /Map.*_rehash/);
+  assert.match(generated, /self->buckets\.data\[slot\] = self->entries\.length/);
   assert.match(generated, /Map.*_remove/);
   assert.match(generated, /MapEntry.*_deinit/);
 
@@ -8797,7 +8803,8 @@ test("owns unique Set values with insertion status and deterministic removal", (
   assert.match(generated, /Set.*_add\(.*\*self, Z_String value\)/);
   assert.match(generated, /if \(\(value\)\.capacity > 0\) free/);
   assert.match(generated, /Set.*_remove/);
-  assert.match(generated, /self->values\.data\[index\] = \(Z_String\)\{ 0 \}/);
+  assert.match(generated, /Set.*_rehash/);
+  assert.match(generated, /self->values\.data\[last\] = \(Z_String\)\{ 0 \}/);
 
   const directory = mkdtempSync("/tmp/z-set-runtime-");
   const input = resolve(directory, "main.zs");

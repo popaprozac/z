@@ -13,8 +13,8 @@ The model deliberately combines recently landed language features:
 - `move report` hands a whole owned report to its final consumer;
 - `IndexError` carries typed owned path/message values without requiring a
   universal error base type; and
-- the same program will remain unchanged when collection storage moves from the
-  current dense representation to hashed buckets.
+- the same program remained unchanged when collection storage moved from dense
+  arrays to open-addressed hashed buckets.
 
 Run the deterministic ownership smoke test:
 
@@ -22,8 +22,8 @@ Run the deterministic ownership smoke test:
 bun run z run examples/applications/project-index/smoke.zs
 ```
 
-Run the fixed 4,000-entry Map/Set workload used to compare dense and hashed
-storage without changing application source:
+Run the fixed 4,000-entry Map/Set workload used to compare the former dense and
+current hashed storage without changing application source:
 
 ```sh
 bun run z run examples/applications/project-index/benchmark.zs

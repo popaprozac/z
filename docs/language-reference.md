@@ -447,12 +447,12 @@ value is destroyed. `remove` borrows its lookup argument and transfers the
 stored value through `Option<T>`; ignoring that result destroys it normally.
 `clear` destroys every stored value, while `has` and `.length` are read-only.
 
-The current `Map` and `Set` bootstrap representations use dense O(n) storage.
-This validates ownership, views, diagnostics, and editor behavior before the
-runtime changes to shared hashed buckets. Supported keys/elements are integers,
-`boolean`, `String`, and payload-free Z or native enums. Floating-point and
-custom keys remain excluded until a nominal hashing/equality contract is
-designed. `Map` values currently use ordinary Z value storage; direct
+`Map` and `Set` use open-addressed hashed buckets for amortized O(1) lookup and
+membership. Owned entries remain in compact storage, while rehashing moves only
+bucket indices; it does not copy or duplicate user-owned values. Supported
+keys/elements are integers, `boolean`, `String`, and payload-free Z or native
+enums. Floating-point and custom keys remain excluded until a nominal
+hashing/equality contract is designed. `Map` values currently use ordinary Z value storage; direct
 class/Objective-C identity, function/weak values, and native C++ RAII values
 wait for storage-specific lookup and construction rules. A Z value struct may
 provide an explicit owned wrapper where that is already safe.
