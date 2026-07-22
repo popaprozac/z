@@ -2519,6 +2519,7 @@ function parseAggregateDeclaration(
   inout current: usize,
   keyword: TokenKind,
   kind: DeclarationKind,
+  aggregateReadonly: boolean,
   in description: String
 ): AggregateDeclaration throws ParserError {
   let pendingGreater: usize = 0;
@@ -2573,11 +2574,11 @@ function parseAggregateDeclaration(
     let visibility = Visibility.publicVisibility;
     if (takeIf(tokens, inout current, TokenKind.publicKeyword)) visibility = Visibility.publicVisibility;
     else if (takeIf(tokens, inout current, TokenKind.privateKeyword)) visibility = Visibility.privateVisibility;
-    const isReadonly = takeIf(tokens, inout current, TokenKind.readonlyKeyword);
+    const fieldReadonly = takeIf(tokens, inout current, TokenKind.readonlyKeyword);
     const isStatic = takeIf(tokens, inout current, TokenKind.staticKeyword);
     const asynchronous = takeIf(tokens, inout current, TokenKind.asyncKeyword);
     if (tokens[current].kind == TokenKind.functionKeyword) {
-      if (isReadonly) throw fail(tokens[current], "`readonly` applies to stored fields, not methods");
+      if (fieldReadonly) throw fail(tokens[current], "`readonly` applies to stored fields, not methods");
       const method = try parseFunctionDeclaration(tokens, inout current, asynchronous, isStatic, visibility, false);
       methods.push(method);
       continue;
@@ -2592,7 +2593,7 @@ function parseAggregateDeclaration(
       name: field.text.copyBytes(0, field.text.byteLength),
       type,
       visibility,
-      readonlyField: isReadonly,
+      readonlyField: aggregateReadonly || fieldReadonly,
       offset: field.offset,
       line: field.line,
       column: field.column,
@@ -2694,6 +2695,12 @@ export function parseProgram(in tokens: Array<Token>): Program throws ParserErro
       current = current + 1;
     }
 
+    let aggregateReadonly = false;
+    if (tokens[current].kind == TokenKind.readonlyKeyword) {
+      aggregateReadonly = true;
+      current = current + 1;
+    }
+
     let asynchronous = false;
     if (tokens[current].kind == TokenKind.asyncKeyword) {
       asynchronous = true;
@@ -2702,6 +2709,7 @@ export function parseProgram(in tokens: Array<Token>): Program throws ParserErro
 
     const kind = tokens[current].kind;
     if (kind == TokenKind.importKeyword) {
+      if (aggregateReadonly) throw fail(tokens[current], "`readonly` can only modify a struct or class declaration");
       if (exported) throw fail(tokens[current], "imports cannot be exported");
       if (asynchronous) throw fail(tokens[current], "imports cannot be async");
       const importDeclaration = try parseImport(tokens, inout current);
@@ -2717,6 +2725,7 @@ export function parseProgram(in tokens: Array<Token>): Program throws ParserErro
       declarations.push(declaration);
       imports.push(importDeclaration);
     } else if (kind == TokenKind.functionKeyword) {
+      if (aggregateReadonly) throw fail(tokens[current], "`readonly` can only modify a struct or class declaration");
       const functionDeclaration = try parseFunctionDeclaration(
         tokens,
         inout current,
@@ -2743,6 +2752,7 @@ export function parseProgram(in tokens: Array<Token>): Program throws ParserErro
         inout current,
         TokenKind.structKeyword,
         DeclarationKind.structDeclaration,
+        aggregateReadonly,
         "a struct declaration"
       );
       const declaration = Declaration({
@@ -2763,6 +2773,7 @@ export function parseProgram(in tokens: Array<Token>): Program throws ParserErro
         inout current,
         TokenKind.classKeyword,
         DeclarationKind.classDeclaration,
+        aggregateReadonly,
         "a class declaration"
       );
       const declaration = Declaration({
@@ -2777,6 +2788,7 @@ export function parseProgram(in tokens: Array<Token>): Program throws ParserErro
       declarations.push(declaration);
       aggregates.push(aggregate);
     } else if (kind == TokenKind.traitKeyword) {
+      if (aggregateReadonly) throw fail(tokens[current], "`readonly` can only modify a struct or class declaration");
       if (asynchronous) throw fail(tokens[current], "a trait declaration cannot be async");
       const traitDeclaration = try parseTraitDeclaration(tokens, inout current);
       const declaration = Declaration({
@@ -2791,6 +2803,7 @@ export function parseProgram(in tokens: Array<Token>): Program throws ParserErro
       declarations.push(declaration);
       traits.push(traitDeclaration);
     } else if (kind == TokenKind.enumKeyword) {
+      if (aggregateReadonly) throw fail(tokens[current], "`readonly` can only modify a struct or class declaration");
       if (asynchronous) throw fail(tokens[current], "an enum declaration cannot be async");
       const enumDeclaration = try parseEnumDeclaration(tokens, inout current);
       const declaration = Declaration({
@@ -2805,6 +2818,7 @@ export function parseProgram(in tokens: Array<Token>): Program throws ParserErro
       declarations.push(declaration);
       enums.push(enumDeclaration);
     } else {
+      if (aggregateReadonly) throw fail(tokens[current], "`readonly` can only modify a struct or class declaration");
       throw fail(tokens[current], "expected an import, function, struct, class, trait, or enum declaration");
     }
   }

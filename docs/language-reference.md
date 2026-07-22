@@ -124,6 +124,26 @@ class Configuration {
 }
 ```
 
+Prefixing an aggregate applies the same rule to all of its stored fields:
+
+```z
+readonly struct Coordinate {
+  x: i32;
+  y: i32;
+}
+
+readonly class Configuration {
+  name: String;
+  retries: i32;
+}
+```
+
+This is shallow binding immutability. A field cannot be reassigned through the
+aggregate, but a referenced value is not recursively frozen merely because its
+field is readonly. Deep cross-thread shareability is a separate recursive
+compiler proof. Constructors may initialize readonly fields while establishing
+the value's initial state.
+
 When every reachable field is similarly immutable and safe to destroy on any
 thread, Z infers the class as shareable and uses atomic ARC for its references.
 Mutable collections, mutable receiver methods, custom `deinit`, and native

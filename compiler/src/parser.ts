@@ -759,7 +759,7 @@ export function parse(tokens: Token[], fileName: string): Program {
     };
   };
 
-  const parseAggregate = (): StructDeclaration => {
+  const parseAggregate = (aggregateReadonly = false): StructDeclaration => {
     const declarationToken = take();
     const kind = declarationToken.kind as "struct" | "class";
     const start = declarationToken.location;
@@ -805,11 +805,11 @@ export function parse(tokens: Token[], fileName: string): Program {
       }
       const visibilityToken = match("public") ? "public" : match("private") ? "private" : null;
       const visibility = visibilityToken ?? "public";
-      const readonly = Boolean(match("readonly"));
+      const fieldReadonly = Boolean(match("readonly"));
       const isStatic = match("static");
       const isAsync = match("async");
       if (at("function")) {
-        if (readonly) {
+        if (fieldReadonly) {
           throw new DiagnosticError(fileName, previous().location, "`readonly` applies to stored fields, not methods");
         }
         methods.push({ ...parseFunction(false, isAsync), static: isStatic, visibility });
@@ -823,7 +823,7 @@ export function parse(tokens: Token[], fileName: string): Program {
       }
       const field = expect("identifier", "a field or method declaration");
       expect("colon", "`:`");
-      fields.push({ name: field.text, type: parseType(), visibility, readonly, location: field.location });
+      fields.push({ name: field.text, type: parseType(), visibility, readonly: aggregateReadonly || fieldReadonly, location: field.location });
       expect("semicolon", "`;`");
     }
     expect("rightBrace", "`}`");
@@ -877,27 +877,33 @@ export function parse(tokens: Token[], fileName: string): Program {
   const functions: FunctionDeclaration[] = [];
   while (!at("eof")) {
     const exportToken = match("export") ? previous() : null;
+    const readonlyToken = match("readonly") ? previous() : null;
     if (at("import")) {
+      if (readonlyToken) throw new DiagnosticError(fileName, readonlyToken.location, "`readonly` can only modify a struct or class declaration");
       if (exportToken) throw new DiagnosticError(fileName, exportToken.location, "imports cannot be exported; export declarations from their defining module");
       imports.push(parseImport());
     } else if (at("trait")) {
+      if (readonlyToken) throw new DiagnosticError(fileName, readonlyToken.location, "`readonly` can only modify a struct or class declaration");
       const declaration = parseTrait();
       traits.push(declaration);
       if (exportToken) exports.push({ name: declaration.name, declarationKind: "trait", location: exportToken.location });
     } else if (at("struct") || at("class")) {
-      const declaration = parseAggregate();
+      const declaration = parseAggregate(Boolean(readonlyToken));
       structs.push(declaration);
       if (exportToken) exports.push({ name: declaration.name, declarationKind: declaration.kind, location: exportToken.location });
     } else if (at("enum")) {
+      if (readonlyToken) throw new DiagnosticError(fileName, readonlyToken.location, "`readonly` can only modify a struct or class declaration");
       const declaration = parseEnum();
       enums.push(declaration);
       if (exportToken) exports.push({ name: declaration.name, declarationKind: "enum", location: exportToken.location });
     } else if (at("function") || at("async")) {
+      if (readonlyToken) throw new DiagnosticError(fileName, readonlyToken.location, "`readonly` can only modify a struct or class declaration");
       const isAsync = match("async");
       const declaration = parseFunction(false, isAsync);
       functions.push(declaration);
       if (exportToken) exports.push({ name: declaration.name, declarationKind: "function", location: exportToken.location });
     } else {
+      if (readonlyToken) throw new DiagnosticError(fileName, readonlyToken.location, "`readonly` can only modify a struct or class declaration");
       throw new DiagnosticError(fileName, peek().location, "expected an import, export, trait, struct, class, enum, or function declaration");
     }
   }

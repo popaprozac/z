@@ -12375,6 +12375,61 @@ test("shares deeply readonly ARC classes through atomic thread captures", () => 
   assert.match(weakDiagnostic.message, /cannot cross.*while Weak<Configuration> is used/);
 });
 
+test("applies readonly aggregate shorthand to every stored field", () => {
+  const source = `
+    export readonly struct Snapshot<T> {
+      value: T;
+      readonly revision: i32;
+    }
+
+    readonly class Configuration {
+      retries: i32;
+      constructor(retries: i32) { this.retries = retries; }
+      function count(): i32 { return this.retries; }
+    }
+
+    function main(): i32 {
+      const snapshot = Snapshot<i32>({ value: 39, revision: 3 });
+      const configuration = new Configuration(3);
+      return snapshot.value + configuration.count();
+    }
+  `;
+  const generated = compileToC(source, "readonly-aggregate.zs");
+  assert.match(generated, /self->retries = retries/);
+
+  const snapshotFieldOffset = source.indexOf("value: T");
+  assert.match(hover(source, "readonly-aggregate.zs", snapshotFieldOffset)?.contents.value ?? "", /readonly value: T/);
+  const snapshotFieldPosition = positionForOffset(source, snapshotFieldOffset);
+  const snapshotFieldToken = decodeSemanticTokens(semanticTokens(source, "readonly-aggregate.zs").data).find((token) => (
+    token.line === snapshotFieldPosition.line && token.character === snapshotFieldPosition.character
+  ));
+  assert.equal(snapshotFieldToken?.modifiers, 3);
+
+  const structMutation = diagnostics(source.replace(
+    "return snapshot.value + configuration.count();",
+    "snapshot.value = 40; return snapshot.value + configuration.count();",
+  ), "readonly-struct-mutation.zs")[0];
+  assert.equal(structMutation.code, "Z0214");
+  assert.match(structMutation.message, /cannot assign to readonly field "value"/);
+
+  const classMutation = diagnostics(source.replace(
+    "return snapshot.value + configuration.count();",
+    "configuration.retries = 4; return snapshot.value + configuration.count();",
+  ), "readonly-class-mutation.zs")[0];
+  assert.equal(classMutation.code, "Z0214");
+  assert.match(classMutation.message, /cannot assign to readonly field "retries"/);
+
+  const invalidModifier = diagnostics("readonly enum State { ready }", "readonly-enum.zs")[0];
+  assert.match(invalidModifier.message, /`readonly` can only modify a struct or class declaration/);
+
+  const directory = mkdtempSync("/tmp/z-readonly-aggregate-");
+  const input = resolve(directory, "main.zs");
+  writeFileSync(input, source);
+  const nativeCheck = spawnSync(process.execPath, [cli, "check", input, "--native-frontend"], { encoding: "utf8" });
+  assert.equal(nativeCheck.status, 0, nativeCheck.stderr);
+  assert.match(nativeCheck.stdout, /native frontend hybrid matches 1 module/);
+});
+
 test("moves owned String and TextBuffer storage through native thread frames", () => {
   const example = resolve(projectRoot, "examples/async/thread-text.zs");
   const source = readFileSync(example, "utf8");
