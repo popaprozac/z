@@ -134,11 +134,14 @@ expression trees. Unknown foreign/intrinsic-member/async shapes deliberately def
 instead of guessing. Native signatures retain nominal trait constraints and
 aggregate conformance. Inferred and explicit generic calls, generic methods,
 generic construction, and trait-authorized calls inside constrained bodies enforce
-those contracts natively. Opaque expression spans, contextual collection and
-return-driven generic inference, constraint validation on every standalone type
-use, generic trait declarations, async/foreign call effects, contextual untyped
-closure parameters, escaping closure-environment validation, borrow last-use
-release, and complete recursive ownership lowering remain stage-zero work.
+those contracts natively. Standalone Z and intrinsic generic type uses recursively
+validate arity and constraints through arrays, nullable/view wrappers, nested
+generics, and function signatures; bare generic names remain available only at
+constructor-inference sites. Opaque expression spans, contextual collection and
+return-driven generic inference, generic trait declarations, async/foreign call
+effects, contextual untyped closure parameters, escaping closure-environment
+validation, borrow last-use release, and complete recursive ownership lowering
+remain stage-zero work.
 The reported native interval therefore does more semantic work than the
 graph-and-symbol-only stage-zero comparison.
 Repeated corpus measurements, broadening ordinary-command shadow coverage, and

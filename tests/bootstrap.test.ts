@@ -7829,6 +7829,66 @@ test("checks nominal trait constraints on inferred and explicit generic instance
     nativeOutsideSurface.stderr,
     /member "secret" is not provided by the trait constraints on T/,
   );
+
+  const typeUse = resolve(directory, "type-use.zs");
+  writeFileSync(typeUse, `
+    import { Measured, Holder, Reading } from "./model.zs";
+    function retain<T: Measured>(value: Holder<T>): i32 { return 1; }
+    function inspect(value: Option<Holder<Reading>>): i32 { return 1; }
+    function main(): i32 { return 0; }
+  `);
+  const nativeValidTypeUse = spawnSync(process.execPath, [cli, "self-host-resolve", typeUse], { encoding: "utf8" });
+  assert.equal(nativeValidTypeUse.status, 0, nativeValidTypeUse.stderr);
+
+  writeFileSync(typeUse, `
+    import { Holder, Plain } from "./model.zs";
+    function inspect(value: Option<Holder<Plain>>): i32 { return 1; }
+    function main(): i32 { return 0; }
+  `);
+  const nativeInvalidTypeUse = spawnSync(process.execPath, [cli, "self-host-resolve", typeUse], { encoding: "utf8" });
+  assert.equal(nativeInvalidTypeUse.status, 1);
+  assert.match(
+    nativeInvalidTypeUse.stderr,
+    /Plain does not satisfy Measured for T in "Holder"/,
+  );
+
+  writeFileSync(typeUse, `
+    import { Holder } from "./model.zs";
+    function inspect(value: Holder<i32, i32>): i32 { return 1; }
+    function main(): i32 { return 0; }
+  `);
+  const nativeInvalidTypeArity = spawnSync(process.execPath, [cli, "self-host-resolve", typeUse], { encoding: "utf8" });
+  assert.equal(nativeInvalidTypeArity.status, 1);
+  assert.match(nativeInvalidTypeArity.stderr, /Holder expects 1 type argument\(s\), received 2/);
+
+  writeFileSync(typeUse, `
+    import { Holder } from "./model.zs";
+    function inspect(value: Holder): i32 { return 1; }
+    function main(): i32 { return 0; }
+  `);
+  const nativeMissingTypeArgument = spawnSync(process.execPath, [cli, "self-host-resolve", typeUse], { encoding: "utf8" });
+  assert.equal(nativeMissingTypeArgument.status, 1);
+  assert.match(nativeMissingTypeArgument.stderr, /Holder expects 1 type argument\(s\), received 0/);
+
+  writeFileSync(typeUse, `
+    import { Holder, Plain } from "./model.zs";
+    function inspect(callback: (value: Holder<Plain>) => i32): i32 { return 1; }
+    function main(): i32 { return 0; }
+  `);
+  const nativeInvalidFunctionType = spawnSync(process.execPath, [cli, "self-host-resolve", typeUse], { encoding: "utf8" });
+  assert.equal(nativeInvalidFunctionType.status, 1);
+  assert.match(
+    nativeInvalidFunctionType.stderr,
+    /Plain does not satisfy Measured for T in "Holder"/,
+  );
+
+  writeFileSync(typeUse, `
+    function inspect(value: Option<i32, i32>): i32 { return 1; }
+    function main(): i32 { return 0; }
+  `);
+  const nativeIntrinsicTypeArity = spawnSync(process.execPath, [cli, "self-host-resolve", typeUse], { encoding: "utf8" });
+  assert.equal(nativeIntrinsicTypeArity.status, 1);
+  assert.match(nativeIntrinsicTypeArity.stderr, /Option expects 1 type argument\(s\), received 2/);
 });
 
 test("supports multiple trait constraints and constrained generic aggregates", () => {

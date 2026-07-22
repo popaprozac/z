@@ -1569,6 +1569,10 @@ ported independently rather than translated as one monolith.
    those constraints for inferred and explicit calls and construction. Inside a
    constrained generic body, the declared trait methods are the complete legal
    member surface; structurally similar but undeclared members do not leak through.
+   Standalone type uses recursively validate Z and intrinsic generic arity and
+   nominal constraints through nested generics, arrays, nullable/view wrappers,
+   and function signatures. Bare generic names are accepted only where aggregate
+   construction is designed to infer their arguments.
    Native nominal equality is keyed by the defining module and symbol, not the
    source spelling. A local name, namespace-qualified name, selective alias, and
    type forwarded through an intermediate module therefore compare as one type;

@@ -96,6 +96,16 @@ struct NativeGenericTypeShape {
   arguments: Array<String>;
 }
 
+struct NativeTypeArity {
+  minimum: usize;
+  maximum: usize;
+}
+
+struct NativeTypeParameterBinding {
+  name: String;
+  constraints: Array<String>;
+}
+
 struct NativeFixedArrayShape {
   elementType: String;
   length: String;
@@ -1179,7 +1189,7 @@ function moduleHasExportedType(
 function hasTypeName(
   in modules: Array<ResolvedModule>,
   moduleIndex: usize,
-  in typeBindings: Array<String>,
+  in typeBindings: Array<NativeTypeParameterBinding>,
   in name: String
 ): boolean {
   const base = qualifiedTypeBase(name);
@@ -1187,7 +1197,7 @@ function hasTypeName(
   if (member.byteLength == 0 && isIntrinsicTypeName(base)) return true;
   if (member.byteLength == 0) {
     for (const binding of typeBindings) {
-      if (binding == base) return true;
+      if (binding.name == base) return true;
     }
   }
   for (const symbol of modules[moduleIndex].symbols) {
@@ -1209,12 +1219,336 @@ function hasTypeName(
   return false;
 }
 
-function validateTypeReference(
+function copyTypeParameterBindings(
+  in bindings: Array<NativeTypeParameterBinding>
+): Array<NativeTypeParameterBinding> {
+  let copied = Array<NativeTypeParameterBinding>();
+  for (const binding of bindings) {
+    let constraints = Array<String>();
+    for (const constraint of binding.constraints) {
+      constraints.push(constraint.copyBytes(0, constraint.byteLength));
+    }
+    copied.push(NativeTypeParameterBinding({
+      name: binding.name.copyBytes(0, binding.name.byteLength),
+      constraints,
+    }));
+  }
+  return copied;
+}
+
+function intrinsicTypeArity(in name: String): Option<NativeTypeArity> {
+  if (
+    name == "Array"
+    || name == "Slice"
+    || name == "Option"
+    || name == "Weak"
+  ) return Option.some(NativeTypeArity({ minimum: 1, maximum: 1 }));
+  if (name == "Result") {
+    return Option.some(NativeTypeArity({ minimum: 2, maximum: 2 }));
+  }
+  if (name == "Task") {
+    return Option.some(NativeTypeArity({ minimum: 1, maximum: 2 }));
+  }
+  if (isIntrinsicTypeName(name)) {
+    return Option.some(NativeTypeArity({ minimum: 0, maximum: 0 }));
+  }
+  return Option<NativeTypeArity>.none;
+}
+
+function invalidTypeArityMessage(
+  in name: String,
+  in arity: NativeTypeArity,
+  received: usize
+): String {
+  if (arity.minimum == arity.maximum) {
+    return `${name} expects ${arity.minimum} type argument(s), received ${received}`;
+  }
+  return `${name} expects ${arity.minimum} or ${arity.maximum} type argument(s), received ${received}`;
+}
+
+function requireTypeArity(
+  in module: ParsedModule,
+  in name: String,
+  in arity: NativeTypeArity,
+  received: usize,
+  line: usize,
+  column: usize
+): void throws ModuleResolveError {
+  if (received >= arity.minimum && received <= arity.maximum) return;
+  const message = invalidTypeArityMessage(name, arity, received);
+  throw resolutionError(
+    ModuleResolveErrorKind.typeMismatch,
+    module.path,
+    message,
+    line,
+    column
+  );
+}
+
+function typeParameterSatisfiesTrait(
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
+  in bindings: Array<NativeTypeParameterBinding>,
+  in parameter: String,
+  in requiredTrait: String
+): boolean {
+  const requiredLocation = match (typeSymbolLocation(
+    modules,
+    moduleIndex,
+    requiredTrait
+  )) {
+    some(location) => location;
+    none => return false;
+  };
+  let bindingIndex = bindings.length;
+  while (bindingIndex > 0) {
+    bindingIndex = bindingIndex - 1;
+    if (bindings[bindingIndex].name != parameter) continue;
+    for (const constraint of bindings[bindingIndex].constraints) {
+      match (typeSymbolLocation(modules, moduleIndex, constraint)) {
+        some(location) => {
+          if (
+            location.moduleIndex == requiredLocation.moduleIndex
+            && location.symbolIndex == requiredLocation.symbolIndex
+          ) return true;
+        }
+        none => {}
+      }
+    }
+    return false;
+  }
+  return false;
+}
+
+function validateGenericTypeConstraints(
   in module: ParsedModule,
   in modules: Array<ResolvedModule>,
   moduleIndex: usize,
-  in typeBindings: Array<String>,
-  in type: TypeReference
+  in typeBindings: Array<NativeTypeParameterBinding>,
+  in generic: NativeGenericTypeShape,
+  in signature: ModuleTypeSignature,
+  signatureModuleIndex: usize,
+  line: usize,
+  column: usize
+): void throws ModuleResolveError {
+  for (const constraint of signature.typeParameterConstraints) {
+    let argument = "";
+    let parameterIndex: usize = 0;
+    while (parameterIndex < signature.typeParameters.length) {
+      if (signature.typeParameters[parameterIndex] == constraint.parameter) {
+        argument = generic.arguments[parameterIndex].copyBytes(
+          0,
+          generic.arguments[parameterIndex].byteLength
+        );
+        break;
+      }
+      parameterIndex = parameterIndex + 1;
+    }
+    if (argument.byteLength == 0) continue;
+    const requiredTrait = rebaseTypeName(
+      modules,
+      signatureModuleIndex,
+      moduleIndex,
+      constraint.traitName
+    );
+    if (
+      typeSatisfiesTrait(modules, moduleIndex, argument, requiredTrait)
+      || typeParameterSatisfiesTrait(
+        modules,
+        moduleIndex,
+        typeBindings,
+        argument,
+        requiredTrait
+      )
+    ) continue;
+    throw resolutionError(
+      ModuleResolveErrorKind.typeMismatch,
+      module.path,
+      `${argument} does not satisfy ${requiredTrait} for ${constraint.parameter} in "${generic.base}"`,
+      line,
+      column
+    );
+  }
+}
+
+function validateTypeNameShape(
+  in module: ParsedModule,
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
+  in typeBindings: Array<NativeTypeParameterBinding>,
+  in name: String,
+  line: usize,
+  column: usize,
+  allowInferredGeneric: boolean
+): void throws ModuleResolveError {
+  const nullableTarget = nullableTargetType(name);
+  if (nullableTarget.byteLength > 0) {
+    try validateTypeNameShape(
+      module,
+      modules,
+      moduleIndex,
+      typeBindings,
+      nullableTarget,
+      line,
+      column,
+      false
+    );
+    return;
+  }
+  if (stringStartsWith(name, "view ")) {
+    const target = name.copyBytes(5, name.byteLength);
+    try validateTypeNameShape(
+      module,
+      modules,
+      moduleIndex,
+      typeBindings,
+      target,
+      line,
+      column,
+      false
+    );
+    return;
+  }
+  match (fixedArrayShape(name)) {
+    some(array) => {
+      try validateTypeNameShape(
+        module,
+        modules,
+        moduleIndex,
+        typeBindings,
+        array.elementType,
+        line,
+        column,
+        false
+      );
+      return;
+    }
+    none => {}
+  }
+  match (nativeFunctionSignature(name)) {
+    some(signature) => {
+      for (const parameterType of signature.parameterTypes) {
+        try validateTypeNameShape(
+          module,
+          modules,
+          moduleIndex,
+          typeBindings,
+          parameterType,
+          line,
+          column,
+          false
+        );
+      }
+      try validateTypeNameShape(
+        module,
+        modules,
+        moduleIndex,
+        typeBindings,
+        signature.returnType,
+        line,
+        column,
+        false
+      );
+      return;
+    }
+    none => {}
+  }
+  match (genericTypeShape(name)) {
+    some(generic) => {
+      const genericBase = generic.base.copyBytes(0, generic.base.byteLength);
+      const genericArgumentCount = generic.arguments.length;
+      for (const argument of generic.arguments) {
+        try validateTypeNameShape(
+          module,
+          modules,
+          moduleIndex,
+          typeBindings,
+          argument,
+          line,
+          column,
+          false
+        );
+      }
+      match (intrinsicTypeArity(genericBase)) {
+        some(arity) => try requireTypeArity(
+          module,
+          genericBase,
+          arity,
+          genericArgumentCount,
+          line,
+          column
+        );
+        none => {}
+      }
+      match (typeSymbolLocation(modules, moduleIndex, genericBase)) {
+        some(location) => {
+          match (in modules[location.moduleIndex].symbols[location.symbolIndex].typeSignature) {
+            some(signature) => {
+              try requireTypeArity(
+                module,
+                genericBase,
+                NativeTypeArity({
+                  minimum: signature.typeParameters.length,
+                  maximum: signature.typeParameters.length,
+                }),
+                genericArgumentCount,
+                line,
+                column
+              );
+              try validateGenericTypeConstraints(
+                module,
+                modules,
+                moduleIndex,
+                typeBindings,
+                generic,
+                signature,
+                location.moduleIndex,
+                line,
+                column
+              );
+            }
+            none => {}
+          }
+        }
+        none => {}
+      }
+      return;
+    }
+    none => {}
+  }
+  if (allowInferredGeneric) return;
+  match (intrinsicTypeArity(name)) {
+    some(arity) => try requireTypeArity(module, name, arity, 0, line, column);
+    none => {}
+  }
+  match (typeSymbolLocation(modules, moduleIndex, name)) {
+    some(location) => {
+      match (in modules[location.moduleIndex].symbols[location.symbolIndex].typeSignature) {
+        some(signature) => try requireTypeArity(
+          module,
+          name,
+          NativeTypeArity({
+            minimum: signature.typeParameters.length,
+            maximum: signature.typeParameters.length,
+          }),
+          0,
+          line,
+          column
+        );
+        none => {}
+      }
+    }
+    none => {}
+  }
+}
+
+function validateTypeReferenceMode(
+  in module: ParsedModule,
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
+  in typeBindings: Array<NativeTypeParameterBinding>,
+  in type: TypeReference,
+  allowInferredGeneric: boolean
 ): void throws ModuleResolveError {
   for (const reference of type.references) {
     if (hasTypeName(modules, moduleIndex, typeBindings, reference.name)) continue;
@@ -1226,15 +1560,52 @@ function validateTypeReference(
       reference.column
     );
   }
+  const typeName = type.name.copyBytes(0, type.name.byteLength);
+  const typeLine = type.line;
+  const typeColumn = type.column;
+  try validateTypeNameShape(
+    module,
+    modules,
+    moduleIndex,
+    typeBindings,
+    typeName,
+    typeLine,
+    typeColumn,
+    allowInferredGeneric
+  );
+}
+
+function validateTypeReference(
+  in module: ParsedModule,
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
+  in typeBindings: Array<NativeTypeParameterBinding>,
+  in type: TypeReference
+): void throws ModuleResolveError {
+  try validateTypeReferenceMode(
+    module,
+    modules,
+    moduleIndex,
+    typeBindings,
+    type,
+    false
+  );
 }
 
 function typeParameterBindings(
-  in inherited: Array<String>,
+  in inherited: Array<NativeTypeParameterBinding>,
   in parameters: Array<TypeParameter>
-): Array<String> {
-  let bindings = copyBindings(inherited);
+): Array<NativeTypeParameterBinding> {
+  let bindings = copyTypeParameterBindings(inherited);
   for (const parameter of parameters) {
-    bindings.push(parameter.name.copyBytes(0, parameter.name.byteLength));
+    let constraints = Array<String>();
+    for (const constraint of parameter.constraints) {
+      constraints.push(constraint.name.copyBytes(0, constraint.name.byteLength));
+    }
+    bindings.push(NativeTypeParameterBinding({
+      name: parameter.name.copyBytes(0, parameter.name.byteLength),
+      constraints,
+    }));
   }
   return bindings;
 }
@@ -1243,9 +1614,9 @@ function validateTypeParameters(
   in module: ParsedModule,
   in modules: Array<ResolvedModule>,
   moduleIndex: usize,
-  in inherited: Array<String>,
+  in inherited: Array<NativeTypeParameterBinding>,
   in parameters: Array<TypeParameter>
-): Array<String> throws ModuleResolveError {
+): Array<NativeTypeParameterBinding> throws ModuleResolveError {
   const bindings = typeParameterBindings(inherited, parameters);
   for (const parameter of parameters) {
     for (const constraint of parameter.constraints) {
@@ -1259,15 +1630,23 @@ function validateExpressionTypes(
   in module: ParsedModule,
   in modules: Array<ResolvedModule>,
   moduleIndex: usize,
-  in typeBindings: Array<String>,
+  in typeBindings: Array<NativeTypeParameterBinding>,
   in expression: ExpressionSyntax
 ): void throws ModuleResolveError {
   match (in expression.tree) {
     some(tree) => {
       let nodeIndex: usize = 0;
       while (nodeIndex < tree.nodes.length) {
+        const allowInferredGeneric = tree.nodes[nodeIndex].kind == ExpressionKind.newExpression;
         for (const type of tree.nodes[nodeIndex].typeReferences) {
-          try validateTypeReference(module, modules, moduleIndex, typeBindings, type);
+          try validateTypeReferenceMode(
+            module,
+            modules,
+            moduleIndex,
+            typeBindings,
+            type,
+            allowInferredGeneric
+          );
         }
         nodeIndex = nodeIndex + 1;
       }
@@ -1280,7 +1659,7 @@ function validateArenaTypes(
   in module: ParsedModule,
   in modules: Array<ResolvedModule>,
   moduleIndex: usize,
-  in typeBindings: Array<String>,
+  in typeBindings: Array<NativeTypeParameterBinding>,
   in arena: StatementArena
 ): void throws ModuleResolveError {
   let index: usize = 0;
@@ -1317,7 +1696,7 @@ function validateFunctionTypes(
   in module: ParsedModule,
   in modules: Array<ResolvedModule>,
   moduleIndex: usize,
-  in inherited: Array<String>,
+  in inherited: Array<NativeTypeParameterBinding>,
   in declaration: FunctionDeclaration
 ): void throws ModuleResolveError {
   const bindings = try validateTypeParameters(
@@ -1342,7 +1721,7 @@ function validateConstructorTypes(
   in module: ParsedModule,
   in modules: Array<ResolvedModule>,
   moduleIndex: usize,
-  in typeBindings: Array<String>,
+  in typeBindings: Array<NativeTypeParameterBinding>,
   in declaration: ConstructorDeclaration
 ): void throws ModuleResolveError {
   for (const parameter of declaration.parameters) {
@@ -1361,7 +1740,7 @@ function validateAggregateTypes(
   moduleIndex: usize,
   in declaration: AggregateDeclaration
 ): void throws ModuleResolveError {
-  let empty = Array<String>();
+  let empty = Array<NativeTypeParameterBinding>();
   const bindings = try validateTypeParameters(
     module,
     modules,
@@ -1406,7 +1785,7 @@ function validateTraitTypes(
   moduleIndex: usize,
   in declaration: TraitDeclaration
 ): void throws ModuleResolveError {
-  let empty = Array<String>();
+  let empty = Array<NativeTypeParameterBinding>();
   for (const method of declaration.methods) {
     try validateFunctionTypes(module, modules, moduleIndex, empty, method);
   }
@@ -1418,7 +1797,7 @@ function validateEnumTypes(
   moduleIndex: usize,
   in declaration: EnumDeclaration
 ): void throws ModuleResolveError {
-  let empty = Array<String>();
+  let empty = Array<NativeTypeParameterBinding>();
   for (const variant of declaration.variants) {
     match (in variant.payload) {
       some(payload) => try validateTypeReference(module, modules, moduleIndex, empty, payload);
@@ -1432,7 +1811,7 @@ function validateTypes(
   in modules: Array<ResolvedModule>,
   moduleIndex: usize
 ): void throws ModuleResolveError {
-  let empty = Array<String>();
+  let empty = Array<NativeTypeParameterBinding>();
   for (const declaration of module.program.functions) {
     try validateFunctionTypes(module, modules, moduleIndex, empty, declaration);
   }

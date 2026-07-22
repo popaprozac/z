@@ -294,10 +294,13 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    local/imported declarations, local namespace exports, fields, constraints,
    parameters/results/errors, enum payloads, local annotations,
    closure/executor signatures, `new`, and explicit generic arguments. Unknown
-   nested types report the exact inner token location. Opaque expression spans,
-   foreign namespace member verification, type-constructor generic arity, value
-   member lookup, duplicate local diagnostics, type compatibility/conformance,
-   and complete ownership coverage remain stage-zero work.
+   nested types report the exact inner token location. Z and intrinsic generic
+   type uses now validate arity and nominal constraints recursively, including
+   nested generics and function signatures, while preserving bare generic names
+   at constructor-inference sites. Opaque expression spans, foreign namespace
+   member verification, value member lookup, duplicate local diagnostics, full
+   type compatibility/conformance, and complete ownership coverage remain
+   stage-zero work.
    The first native expression-typing tier now carries declared parameter types
    into source-ordered scopes; infers scalar, template, fixed-array, identifier,
    and explicitly typed closure values; and propagates direct Z call results. It
@@ -485,11 +488,10 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    explicit function/method calls and aggregate construction; constrained generic
    bodies may call only methods supplied by their declared traits. Complete
    contextual literal and return-driven inference, foreign/intrinsic method lookup,
-   standalone generic type-use constraint validation, generic trait declarations,
-   async/foreign call effects, contextual untyped closure parameters, escaping
-   closure-environment validation, precise closure borrow last-use release,
-   remaining receiver-path capability enforcement, and full recursive ownership
-   contexts remain stage-zero work.
+   generic trait declarations, async/foreign call effects, contextual untyped
+   closure parameters, escaping closure-environment validation, precise closure
+   borrow last-use release, remaining receiver-path capability enforcement, and
+   full recursive ownership contexts remain stage-zero work.
    Template literals now
    retain ordered decoded-text leaves and ordinary embedded-expression roots,
    including nested templates, in the same flat arena. Expression-bodied
