@@ -40,5 +40,10 @@ function main(): i32 {
       return 1;
     }
   }
+  const summary = index.summary();
+  console.log(
+    `summary: ${summary.indexedFiles} files, ${summary.indexedBytes} bytes,`,
+    `${summary.dirtyFiles} dirty paths (${summary.dirtyPathBytes} path bytes)`
+  );
   return 0;
 }

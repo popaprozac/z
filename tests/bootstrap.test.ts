@@ -4523,7 +4523,7 @@ test("keeps for-of iteration storage stable and owned elements borrowed", () => 
   assert.ok(moveError instanceof DiagnosticError);
   assert.equal(moveError.code, "Z0203");
   assert.match(moveError.summary, /cannot move borrowed iteration binding "resource"/);
-  assert.match(moveError.helps[0], /borrow the element with an `in` parameter/);
+  assert.match(moveError.helps[0], /use `copy` when an independent copy is supported/);
 
   const movedOuter = `
     struct Resource { id: i32; deinit {} }
@@ -8490,6 +8490,8 @@ test("owns Map keys and values with optional views and deterministic removal", (
   assert.match(generated, /Map.*_remove/);
   assert.match(generated, /Map.*_delete/);
   assert.match(generated, /MapEntry.*_deinit/);
+  assert.match(generated, /< \(users\)\.entries\.length/);
+  assert.match(generated, /const Z_.*MapEntry.*\*entry = &/);
 
   const directory = mkdtempSync("/tmp/z-map-cleanup-");
   const input = resolve(directory, "main.zs");
@@ -8543,6 +8545,29 @@ test("owns Map keys and values with optional views and deterministic removal", (
   const borrowDiagnostic = diagnostics(borrowed, "map-view-mutation.zs")[0];
   assert.equal(borrowDiagnostic.code, "Z0205");
   assert.match(borrowDiagnostic.message, /cannot set "values" while view/);
+
+  const iterationMutation = `
+    import { Map } from "std/collections";
+    function main(): i32 {
+      let values = Map<String, i32>();
+      values.set("answer", 42);
+      for (const entry of values) {
+        values.delete(entry.key);
+      }
+      return 0;
+    }
+  `;
+  const iterationMutationDiagnostic = diagnostics(iterationMutation, "map-iteration-mutation.zs")[0];
+  assert.equal(iterationMutationDiagnostic.code, "Z0311");
+  assert.match(iterationMutationDiagnostic.message, /cannot structurally mutate Map "values" while for\.\.\.of is borrowing it/);
+
+  const iterationMove = iterationMutation.replace(
+    "values.delete(entry.key);",
+    "const taken = move entry;",
+  );
+  const iterationMoveDiagnostic = diagnostics(iterationMove, "map-iteration-move.zs")[0];
+  assert.equal(iterationMoveDiagnostic.code, "Z0203");
+  assert.match(iterationMoveDiagnostic.message, /cannot move borrowed iteration binding "entry"/);
 
   const copyableView = `
     import { Map } from "std/collections";
@@ -8856,6 +8881,24 @@ test("exposes Map imports, members, and source-level types to editor services", 
   assert.match(hover(valid, "map-editor.zs", binding + 1)?.contents.value ?? "", /users: Map<String, i32>/);
   const method = valid.indexOf("set(\"answer") + 1;
   assert.match(hover(valid, "map-editor.zs", method)?.contents.value ?? "", /set\(key: String, value: i32\): void/);
+
+  const iteration = `
+    import { Map } from "std/collections";
+    function main(): i32 {
+      let users = Map<String, i32>();
+      for (const entry of users) {
+        entry.;
+      }
+      return 0;
+    }
+  `;
+  const entryOffset = iteration.indexOf("entry.;") + "entry.".length;
+  const entryItems = completions(iteration, "map-iteration-editor.zs", entryOffset);
+  assert.equal(entryItems.find((item) => item.label === "key")?.detail, "String");
+  assert.equal(entryItems.find((item) => item.label === "value")?.detail, "i32");
+  const validIteration = iteration.replace("entry.;", "const observed = entry.value;");
+  const entryBinding = validIteration.indexOf("entry of");
+  assert.match(hover(validIteration, "map-iteration-editor.zs", entryBinding + 1)?.contents.value ?? "", /entry: Map\.Entry<String, i32>/);
 });
 
 test("owns unique Set values with insertion status and deterministic removal", () => {
@@ -8871,6 +8914,8 @@ test("owns unique Set values with insertion status and deterministic removal", (
   assert.match(generated, /Set.*_delete/);
   assert.match(generated, /Set.*_rehash/);
   assert.match(generated, /self->values\.data\[last\] = \(Z_String\)\{ 0 \}/);
+  assert.match(generated, /< \(openDocuments\)\.values\.length/);
+  assert.match(generated, /const Z_String \*path = &/);
 
   const directory = mkdtempSync("/tmp/z-set-runtime-");
   const input = resolve(directory, "main.zs");
@@ -8911,6 +8956,21 @@ test("owns unique Set values with insertion status and deterministic removal", (
   `;
   assert.match(diagnostics(movedValue, "set-moved-value.zs")[0].message, /use of moved value "item"/);
 
+  const iterationMutation = `
+    import { Set } from "std/collections";
+    function main(): i32 {
+      let values = Set<String>();
+      values.add("ready");
+      for (const value of values) {
+        values.add(copy value);
+      }
+      return 0;
+    }
+  `;
+  const iterationMutationDiagnostic = diagnostics(iterationMutation, "set-iteration-mutation.zs")[0];
+  assert.equal(iterationMutationDiagnostic.code, "Z0311");
+  assert.match(iterationMutationDiagnostic.message, /cannot structurally mutate Set "values" while for\.\.\.of is borrowing it/);
+
   const unsupportedElement = `
     import { Set } from "std/collections";
     function main(): i32 { const values = Set<f64>(); return 0; }
@@ -8949,6 +9009,20 @@ test("exposes Set imports, members, and source-level types to editor services", 
   assert.match(hover(valid, "set-editor.zs", binding + 1)?.contents.value ?? "", /values: Set<String>/);
   const method = valid.indexOf("add(\"ready") + 1;
   assert.match(hover(valid, "set-editor.zs", method)?.contents.value ?? "", /add\(value: String\): boolean/);
+
+  const iteration = `
+    import { Set } from "std/collections";
+    function main(): i32 {
+      let values = Set<String>();
+      for (const value of values) {
+        value.;
+      }
+      return 0;
+    }
+  `;
+  const valueOffset = iteration.indexOf("value.;") + "value.".length;
+  const valueItems = completions(iteration, "set-iteration-editor.zs", valueOffset);
+  assert.equal(valueItems.find((item) => item.label === "byteLength")?.detail, "usize  // UTF-8 storage bytes");
 });
 
 test("checks logical operand types", () => {

@@ -8,6 +8,12 @@ function main(): i32 {
   if (openDocuments.add("notes/ideas.md")) return 3;
   if (!openDocuments.has("notes/todo.md")) return 4;
 
+  let totalPathBytes: usize = 0;
+  for (const path of openDocuments) {
+    totalPathBytes = totalPathBytes + path.byteLength;
+  }
+  if (totalPathBytes != 27) return 9;
+
   const closed = openDocuments.remove("notes/todo.md");
   const closedKnownDocument = match (closed) {
     some(path) => path == "notes/todo.md";

@@ -22,6 +22,13 @@ export struct IndexReport {
   dirty: boolean;
 }
 
+export readonly struct IndexSummary {
+  indexedFiles: usize;
+  indexedBytes: usize;
+  dirtyFiles: usize;
+  dirtyPathBytes: usize;
+}
+
 export struct ProjectIndex {
   private records: Map<String, FileRecord>;
   private dirtyPaths: Set<String>;
@@ -82,6 +89,25 @@ export struct ProjectIndex {
 
   function isDirty(in path: String): boolean {
     return this.dirtyPaths.has(path);
+  }
+
+  function summary(): IndexSummary {
+    let indexedBytes: usize = 0;
+    for (const entry of this.records) {
+      indexedBytes = indexedBytes + entry.value.byteLength();
+    }
+
+    let dirtyPathBytes: usize = 0;
+    for (const path of this.dirtyPaths) {
+      dirtyPathBytes = dirtyPathBytes + path.byteLength;
+    }
+
+    return IndexSummary({
+      indexedFiles: this.records.length,
+      indexedBytes,
+      dirtyFiles: this.dirtyPaths.length,
+      dirtyPathBytes,
+    });
   }
 }
 

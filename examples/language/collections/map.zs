@@ -18,10 +18,15 @@ function main(): i32 {
     none => 0;
   };
 
+  let total = 0;
+  for (const entry of users) {
+    total = total + entry.value.id;
+  }
+
   // The view's last use has ended, so structural mutation is legal again.
   const removed = users.remove("grace");
   return match (removed) {
-    some(user) => observed + user.id - 42;
+    some(user) => observed + user.id - total;
     none => 2;
   };
 }

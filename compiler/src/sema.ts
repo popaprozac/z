@@ -4956,6 +4956,7 @@ function inferExpressionInner(
           }
           const mutable = method === "set" || method === "remove" || method === "delete" || method === "clear";
           if (mutable) {
+            rejectCollectionMutationWhileIterating("Map", root.name, method, expression.callee.location, fileName, state);
             const readonlyField = readonlyFieldOnPath(expression.callee.object, structs, state);
             if (readonlyField) {
               throw new DiagnosticError(fileName, expression.callee.object.location, `cannot mutate Map through readonly field ${JSON.stringify(readonlyField.name)}`, {
@@ -5014,6 +5015,7 @@ function inferExpressionInner(
           }
           const mutable = method === "add" || method === "remove" || method === "delete" || method === "clear";
           if (mutable) {
+            rejectCollectionMutationWhileIterating("Set", root.name, method, expression.callee.location, fileName, state);
             const readonlyField = readonlyFieldOnPath(expression.callee.object, structs, state);
             if (readonlyField) {
               throw new DiagnosticError(fileName, expression.callee.object.location, `cannot mutate Set through readonly field ${JSON.stringify(readonlyField.name)}`, {
@@ -6040,9 +6042,9 @@ function consumeOwnedValue(
       throw new DiagnosticError(fileName, expression.location, `cannot move borrowed iteration binding ${JSON.stringify(expression.name)}`, {
         code: "Z0203",
         length: expression.name.length,
-        labels: [{ location: borrow.location, message: "for...of borrows cleanup-bearing elements here", length: 3 }],
+        labels: [{ location: borrow.location, message: "for...of borrows the collection element here", length: 3 }],
         notes: ["moving an element would leave a hole in collection storage that still owns its elements"],
-        helps: ["borrow the element with an `in` parameter inside the loop; explicit element removal is a future collection operation"],
+        helps: ["use `copy` when an independent copy is supported, or remove the value after iteration ends"],
       });
     }
     if (borrow?.kind === "match") {
@@ -6257,6 +6259,30 @@ function rejectOwnerMutationWhileViewed(
     notes: ["a receiver-tied view reads directly from its owner's storage"],
     helps: [`finish using ${JSON.stringify(viewName)} before mutating or moving ${JSON.stringify(owner)}`],
   });
+}
+
+function rejectCollectionMutationWhileIterating(
+  collection: "Map" | "Set",
+  owner: string,
+  method: string,
+  location: SourceLocation,
+  fileName: string,
+  state: AnalysisState,
+): void {
+  const iteration = state.iterationBorrowOrigins.get(owner);
+  if (!iteration) return;
+  throw new DiagnosticError(
+    fileName,
+    location,
+    `cannot structurally mutate ${collection} ${JSON.stringify(owner)} while for...of is borrowing it`,
+    {
+      code: "Z0311",
+      length: method.length,
+      labels: [{ location: iteration, message: "iteration borrow begins here", length: 3 }],
+      notes: [`${collection}.${method} can invalidate the entry or element currently being visited`],
+      helps: ["finish the loop before mutating the collection, or iterate a separate owned snapshot"],
+    },
+  );
 }
 
 function movedValueError(
@@ -6665,21 +6691,27 @@ function analyzeForLoop(
   }
   const root = storageRoot(statement.iterable);
   if (!root) {
-    throw new DiagnosticError(fileName, statement.iterable.location, "for...of requires stored array or Slice storage in the initial iteration tier", {
+    throw new DiagnosticError(fileName, statement.iterable.location, "for...of requires stored collection storage in the initial iteration tier", {
       code: "Z0310",
       helps: ["bind the collection to a const or let before iterating it"],
     });
   }
   const iterableType = inferExpression(statement.iterable, locals, globals, structs, enums, fileName, state);
-  const collection = parseFixedArrayType(String(iterableType))
-    ?? parseDynamicArrayType(String(iterableType))
-    ?? parseSliceType(String(iterableType));
+  const iterableName = String(underlyingType(iterableType));
+  const map = parseMapType(iterableName);
+  const set = parseSetType(iterableName);
+  const collection = parseFixedArrayType(iterableName)
+    ?? parseDynamicArrayType(iterableName)
+    ?? parseSliceType(iterableName)
+    ?? (map ? { elementType: mapEntryTypeName(map.keyType, map.valueType) } : null)
+    ?? (set ? { elementType: set.elementType } : null);
   if (!collection) {
-    throw new DiagnosticError(fileName, statement.iterable.location, `for...of requires an array or Slice, found ${iterableType}`, {
+    throw new DiagnosticError(fileName, statement.iterable.location, `for...of requires an array, Slice, Map, or Set, found ${iterableType}`, {
       code: "Z0310",
-      helps: ["iterate a fixed array, Array<T>, or Slice<T> value"],
+      helps: ["iterate a fixed array, Array<T>, Slice<T>, Map<K, V>, or Set<T> value"],
     });
   }
+  const collectionBorrow = Boolean(map || set);
   state.bindingTypes.set(statement.bindingLocation.offset, collection.elementType);
 
   const entry = new Map(locals);
@@ -6697,7 +6729,8 @@ function analyzeForLoop(
     const bodyLocals = new Map(header);
     const rootType = bodyLocals.get(root.name);
     if (rootType) bodyLocals.set(root.name, `${borrowedPrefix}${underlyingType(rootType)}`);
-    const elementBinding = hasOwnershipType(collection.elementType, structs, enums, state)
+    const borrowedElement = collectionBorrow || hasOwnershipType(collection.elementType, structs, enums, state);
+    const elementBinding = borrowedElement
       ? `${borrowedPrefix}${collection.elementType}`
       : collection.elementType;
     bodyLocals.set(statement.binding, elementBinding);
@@ -6706,7 +6739,7 @@ function analyzeForLoop(
     const previousIterationBorrow = state.iterationBorrowOrigins.get(root.name);
     const previousElementBorrow = state.borrowOrigins.get(statement.binding);
     state.iterationBorrowOrigins.set(root.name, statement.location);
-    if (hasOwnershipType(collection.elementType, structs, enums, state)) {
+    if (borrowedElement) {
       state.borrowOrigins.set(statement.binding, { location: statement.location, kind: "iteration" });
     }
     state.loopStack.push(frame);

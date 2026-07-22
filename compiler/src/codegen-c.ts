@@ -3052,14 +3052,20 @@ function generateWhile(statement: Extract<Statement, { kind: "while" }>, context
 function generateFor(statement: Extract<Statement, { kind: "for" }>, context: GenerationContext): string {
   const index = context.loopCounter.value++;
   const iterableType = inferExpressionType(statement.iterable, context);
+  const map = parseMapType(iterableType);
+  const set = parseSetType(iterableType);
   const collection = parseFixedArrayType(iterableType)
     ?? parseDynamicArrayType(iterableType)
-    ?? parseSliceType(iterableType);
-  if (!collection) throw new Error("for...of lowering requires an array or Slice");
+    ?? parseSliceType(iterableType)
+    ?? (map ? { elementType: mapEntryTypeName(map.keyType, map.valueType) } : null)
+    ?? (set ? { elementType: set.elementType } : null);
+  if (!collection) throw new Error("for...of lowering requires an array, Slice, Map, or Set");
   const iterable = generateExpression(statement.iterable, context);
-  const length = "length" in collection ? String(collection.length) : `(${iterable}).length`;
-  const item = `((${iterable}).data[_z_for_index_${index}])`;
-  const borrowedElement = hasCleanupType(collection.elementType, context.structs, context.enums, context.semanticInfo.foreignTypes);
+  const storage = map ? `(${iterable}).entries` : set ? `(${iterable}).values` : `(${iterable})`;
+  const length = "length" in collection ? String(collection.length) : `${storage}.length`;
+  const item = `((${storage}.data[_z_for_index_${index}]))`;
+  const borrowedElement = Boolean(map || set)
+    || hasCleanupType(collection.elementType, context.structs, context.enums, context.semanticInfo.foreignTypes);
   const loopTypes = new Map(context.localTypes);
   const loopModes = new Map(context.parameterModes);
   loopTypes.set(statement.binding, collection.elementType);

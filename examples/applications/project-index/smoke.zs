@@ -26,6 +26,9 @@ function main(): i32 {
   if (snapshotStatus != 0) return snapshotStatus;
   if (firstRevision != 1 || secondRevision != 2) return 6;
   if (index.count() != 1 || !index.isDirty(path)) return 7;
+  const summary = index.summary();
+  if (summary.indexedFiles != 1 || summary.indexedBytes != 13) return 11;
+  if (summary.dirtyFiles != 1 || summary.dirtyPathBytes != 15) return 12;
   if (!index.markSaved(path) || index.isDirty(path)) return 8;
 
   const afterMutation = index.snapshot(path);

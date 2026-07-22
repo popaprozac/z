@@ -436,7 +436,7 @@ unless every continuing path restores ownership. State after a loop merges the
 zero-iteration path with every reachable `break` path.
 
 The first collection iteration tier uses TypeScript-style `for...of` over fixed
-arrays, `Array<T>`, and `Slice<T>`:
+arrays, `Array<T>`, `Slice<T>`, `Map<K, V>`, and `Set<T>`:
 
 ```z
 for (const value of values) {
@@ -448,10 +448,33 @@ Primitive and other copyable elements copy into the immutable loop binding.
 Cleanup-bearing elements remain borrowed from their collection and cannot move
 out. The collection is structurally borrowed for the loop, so an `Array.push`
 that could reallocate storage is rejected until iteration ends. `break` and
-`continue` retain cleanup-aware loop semantics. Mutable element iteration,
-custom iteration traits, consuming iterators, and async iteration remain later
-layers; the built-in lowering must be expressible through that eventual trait
-model rather than contradict it.
+`continue` retain cleanup-aware loop semantics.
+
+Direct `Map` iteration exposes a borrowed `Map.Entry<K, V>` with readable
+`key` and `value` fields. Direct `Set` iteration exposes a borrowed `T`.
+Map/Set bindings always borrow their stored element—even when its fields are
+cleanup-free—and structural mutation is rejected until the loop exits. Their
+iteration order is deliberately unspecified; the hashed collections do not
+promise JavaScript's insertion ordering.
+
+Object destructuring should extend the general binding-pattern grammar rather
+than become a loop-only special case. The intended later surface composes the
+same pattern with locals and iteration:
+
+```z
+const { path, revision } = record;
+
+for (const { key, value } of records) {
+  use(key, value);
+}
+```
+
+This must preserve the same copy-versus-borrow decision as the whole binding;
+destructuring must not silently move owned fields out of stored aggregates.
+Mutable element iteration, custom iteration traits, consuming iterators, array
+and tuple patterns, and async iteration remain later layers. The built-in
+lowering must be expressible through that eventual trait model rather than
+contradict it.
 
 ## Arrays and views
 

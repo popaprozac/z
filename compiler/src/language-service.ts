@@ -2238,6 +2238,37 @@ function memberCompletions(
     source.lastIndexOf("{", receiverOffset - 1),
     source.lastIndexOf("}", receiverOffset - 1),
   ) + 1;
+  const iterationProbe = source.slice(0, statementStart) + source.slice(statementTailOffset);
+  const iterationContext = safeAnalysis(iterationProbe, fileName);
+  const iterationBinding = iterationContext
+    ? collectBindings(iterationContext)
+      .filter((binding) => binding.name === receiverText && binding.offset <= statementStart)
+      .at(-1)
+    : null;
+  if (iterationContext && iterationBinding) {
+    const map = parseMapType(iterationBinding.type);
+    if (map) {
+      return filterCompletions(mapCompletions(map.keyType, map.valueType, iterationContext.typeDisplayNames), prefix, 1000);
+    }
+    const set = parseSetType(iterationBinding.type);
+    if (set) {
+      return filterCompletions(setCompletions(set.elementType, iterationContext.typeDisplayNames), prefix, 1000);
+    }
+    if (iterationBinding.type === "String") {
+      return filterCompletions(stringValueCompletions(), prefix, 1000);
+    }
+    if (isIntegerSourceType(iterationBinding.type)) {
+      return filterCompletions(integerCompletions(iterationBinding.type), prefix, 1000);
+    }
+    const aggregate = iterationContext.program.structs.find((item) => item.name === iterationBinding.type);
+    if (aggregate) {
+      return filterCompletions(
+        structCompletions(aggregate, iterationContext.typeDisplayNames, false),
+        prefix,
+        1000,
+      );
+    }
+  }
   const staticProbe = `${source.slice(0, statementStart)}${source.slice(statementTailOffset)}`
     .replace(/(?:[A-Za-z_][A-Za-z0-9_]*|[A-Za-z_][A-Za-z0-9_]*<[^;{}]+>)\.\s*;/g, "");
   const staticContext = safeAnalysis(staticProbe, fileName);
@@ -2366,22 +2397,7 @@ function memberCompletions(
     return filterCompletions(items, prefix, 1000);
   }
   if (resolved?.kind === "string") {
-    return filterCompletions([
-      { label: "byteLength", kind: completionKinds.property, detail: "usize  // UTF-8 storage bytes" },
-      { label: "isEmpty", kind: completionKinds.property, detail: "boolean" },
-      {
-        label: "byteAt",
-        kind: completionKinds.method,
-        detail: "byteAt(index: usize): u8  // checked UTF-8 byte access",
-        insertText: "byteAt()",
-      },
-      {
-        label: "copyBytes",
-        kind: completionKinds.method,
-        detail: "copyBytes(start: usize, end: usize): String  // checked owned copy",
-        insertText: "copyBytes()",
-      },
-    ], prefix, 1000);
+    return filterCompletions(stringValueCompletions(), prefix, 1000);
   }
   if (resolved?.kind === "textBuffer") {
     return filterCompletions([
@@ -2745,6 +2761,25 @@ function resolveReceiver(context: AnalyzedSource, text: string, offset: number):
 
 function isIntegerSourceType(type: string): boolean {
   return /^(?:i8|u8|i16|u16|i32|u32|i64|u64|isize|usize)$/.test(type);
+}
+
+function stringValueCompletions(): CompletionItem[] {
+  return [
+    { label: "byteLength", kind: completionKinds.property, detail: "usize  // UTF-8 storage bytes" },
+    { label: "isEmpty", kind: completionKinds.property, detail: "boolean" },
+    {
+      label: "byteAt",
+      kind: completionKinds.method,
+      detail: "byteAt(index: usize): u8  // checked UTF-8 byte access",
+      insertText: "byteAt()",
+    },
+    {
+      label: "copyBytes",
+      kind: completionKinds.method,
+      detail: "copyBytes(start: usize, end: usize): String  // checked owned copy",
+      insertText: "copyBytes()",
+    },
+  ];
 }
 
 function integerMethodDetail(name: string, type: string): string | null {

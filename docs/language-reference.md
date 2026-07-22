@@ -452,6 +452,26 @@ stored value through `Option<T>`; ignoring that result destroys it normally.
 `delete` destroys the stored value directly and returns whether it existed.
 `clear` destroys every stored value, while `has` and `.length` are read-only.
 
+Both collections support direct read-only iteration:
+
+```z
+for (const entry of users) {
+  console.log(`${entry.key}: ${entry.value.name}`);
+}
+
+for (const path of visited) {
+  console.log(path);
+}
+```
+
+A Map binding has the displayed type `Map.Entry<K, V>` and exposes borrowed
+`.key` and `.value` fields. A Set binding borrows its stored `T`. Neither can be
+moved out, and structural collection mutation is rejected until the loop ends;
+use `copy` explicitly when an independently owned copy is supported. Iteration
+order is unspecified. General object destructuring such as
+`for (const { key, value } of users)` is planned as part of reusable binding
+patterns, not as separate collection syntax.
+
 `Map` and `Set` use open-addressed hashed buckets for amortized O(1) lookup and
 membership. Owned entries remain in compact storage, while rehashing moves only
 bucket indices; it does not copy or duplicate user-owned values. Built-in

@@ -10,6 +10,8 @@ The model deliberately combines recently landed language features:
 - `Map.get` returns `Option<view FileRecord>` for allocation-free lookup;
 - `copy record` materializes an independent snapshot that survives mutation;
 - replacing a record destroys the previous owned strings exactly once;
+- borrowed Map-entry and Set-element iteration computes an index summary without
+  copying stored paths or records;
 - `move report` hands a whole owned report to its final consumer;
 - `IndexError` carries typed owned path/message values without requiring a
   universal error base type; and
