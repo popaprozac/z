@@ -422,6 +422,10 @@ function appendBindingResolution(
   else output.appendAscii(48);
   output.appendAscii(9);
   appendHexText(inout output, resolution.typeName);
+  output.appendAscii(9);
+  appendTarget(inout output, resolution.targetModuleIndex);
+  output.appendAscii(9);
+  appendTarget(inout output, resolution.targetSymbolIndex);
   output.appendAscii(10);
 }
 

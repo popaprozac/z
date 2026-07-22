@@ -155,8 +155,10 @@ The same native pass now exports settled types for unannotated initialized local
 bindings, keyed by the binding name's stable source location. The semantic
 bridge validates name, mutability, and type before using that native binding
 contract; materialized generic types use their source display names for the
-comparison. Qualified cross-module type spellings still defer until binding
-evidence carries resolved type identity rather than only source text.
+comparison. Direct aggregate bindings additionally carry their resolved module
+and symbol, so local, selective-import, and namespace-qualified spellings share
+one identity. Nested qualified types inside generic wrappers still defer until
+that identity becomes recursive.
 The reported native interval therefore does more semantic work than the
 graph-and-symbol-only stage-zero comparison.
 Repeated corpus measurements, broadening ordinary-command shadow coverage, and

@@ -145,6 +145,7 @@ export type SemanticBindingResolution = {
   readonly name: string;
   readonly mutable: boolean;
   readonly inferredType: string;
+  readonly declaration: StructDeclaration | EnumDeclaration | null;
 };
 
 export type SemanticObserver = {
@@ -1603,11 +1604,13 @@ function analyzeStatement(
       let initializerType = statement.initializer.kind === "closure"
         ? inferClosureExpression(statement.initializer, locals, globals, structs, enums, fileName, state, contextualFunction)
         : inferDirectValue(statement.initializer, owner, locals, globals, structs, enums, fileName, state);
+      const inferredBindingType = String(underlyingType(initializerType));
       const bindingResolution = statement.type ? null : {
         location: statement.nameLocation,
         name: statement.name,
         mutable: statement.mutable,
         inferredType: String(initializerType),
+        declaration: structs.get(inferredBindingType) ?? enums.get(inferredBindingType) ?? null,
       };
       let variableType = bindingResolution
         ? state.observer?.resolveBindingType?.(bindingResolution) ?? initializerType

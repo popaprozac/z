@@ -249,6 +249,7 @@ export function createNativeSemanticBridge(
     name: string,
     mutable: boolean,
     inferredType: string,
+    declaration: StructDeclaration | EnumDeclaration | null,
   ) => {
     const modulePath = canonicalModulePathBySourcePath.get(
       location.fileName ?? sourceBatch.entryFileName,
@@ -267,7 +268,19 @@ export function createNativeSemanticBridge(
         `native semantic bridge binding mismatch for ${JSON.stringify(name)} inferred at ${callSite(location, sourceBatch)}`,
       );
     }
-    if (!concreteNativeTypeMatches(resolution.typeName, linkedDisplayType)) return null;
+    if (concreteNativeTypeMatches(resolution.typeName, linkedDisplayType)) return resolution;
+    if (resolution.targetModule === null || resolution.targetSymbol === null || !declaration) return null;
+    const source = declaration.kind === "enum"
+      ? sourceEnum(sourceEnums, canonicalModulePathBySourcePath, declaration)
+      : sourceAggregate(sourceAggregates, canonicalModulePathBySourcePath, declaration);
+    const targetModule = index.graph.modules[resolution.targetModule];
+    const target = targetModule?.symbols[resolution.targetSymbol];
+    if (
+      !source
+      || targetModule?.path !== source.modulePath
+      || target?.name !== source.declaration.name
+      || target?.kind !== source.declaration.kind
+    ) return null;
     return resolution;
   };
   const observer: SemanticObserver = {
@@ -759,8 +772,8 @@ export function createNativeSemanticBridge(
         typeParameters: [],
       };
     },
-    resolveBindingType: ({ location, name, mutable, inferredType }) => {
-      const resolved = nativeBinding(location, name, mutable, inferredType);
+    resolveBindingType: ({ location, name, mutable, inferredType, declaration }) => {
+      const resolved = nativeBinding(location, name, mutable, inferredType, declaration);
       if (!resolved) return null;
       authoritativeBindings += 1;
       return inferredType;
@@ -793,8 +806,8 @@ export function createNativeSemanticBridge(
       if (!nativeType(location, declaration)) return;
       types += 1;
     },
-    onBindingResolution: ({ location, name, mutable, inferredType }) => {
-      if (!nativeBinding(location, name, mutable, inferredType)) return;
+    onBindingResolution: ({ location, name, mutable, inferredType, declaration }) => {
+      if (!nativeBinding(location, name, mutable, inferredType, declaration)) return;
       bindings += 1;
     },
   };

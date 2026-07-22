@@ -4847,6 +4847,7 @@ test("resolves a canonical module graph directly from native Z ASTs", () => {
     /main\.zs: native frontend hybrid matches 3 modules, 3 local edges, and 10 symbols/,
   );
   assert.match(ordinaryCheck.stdout, /native frontend hybrid compiler index matches \d+ binding\/signature queries/);
+  assert.match(ordinaryCheck.stdout, /native frontend hybrid exports 2 inferred local binding contracts/);
   assert.match(ordinaryCheck.stdout, /native frontend hybrid observes \d+ function, \d+ method, and \d+ constructor stage-0 Z resolutions/);
   assert.match(ordinaryCheck.stdout, /native frontend hybrid observes \d+ aggregate, \d+ field, and \d+ enum-variant stage-0 Z resolutions/);
   assert.match(ordinaryCheck.stdout, /native frontend hybrid observes \d+ explicit type-use stage-0 Z resolutions/);
@@ -4854,7 +4855,7 @@ test("resolves a canonical module graph directly from native Z ASTs", () => {
   assert.match(ordinaryCheck.stdout, /native frontend hybrid uses \d+ function, \d+ method, and \d+ constructor native-authoritative contracts/);
   assert.match(ordinaryCheck.stdout, /native frontend hybrid uses \d+ aggregate, \d+ field, and \d+ enum-variant native-authoritative contracts/);
   assert.match(ordinaryCheck.stdout, /native frontend hybrid uses \d+ explicit type-use native-authoritative contracts/);
-  assert.match(ordinaryCheck.stdout, /native frontend hybrid uses \d+ inferred local binding native-authoritative contracts/);
+  assert.match(ordinaryCheck.stdout, /native frontend hybrid uses 2 inferred local binding native-authoritative contracts/);
   assert.match(ordinaryCheck.stdout, /native frontend hybrid timing \(3 modules, cache hit\)/);
   assert.match(ordinaryCheck.stdout, /main\.zs: ok/);
 
@@ -6698,7 +6699,7 @@ test("resolves a canonical module graph directly from native Z ASTs", () => {
     + "symbol\t0000000000000000\tfunction\t6964656e74697479\t1\t-\t6964656e74697479\t0000000000000000\t0000000000000001\t0000000000000001\n"
     + "signature\t0000000000000000\t0000000000000000\t0\t54\t\t0000000000000001\t0000000000000001\t54\t76616c7565\t54\n"
     + "callResolution\t0000000000000000\t000000000000002a\t0000000000000002\t000000000000000a\t0000000000000000\t0000000000000000\t66756e6374696f6e\t6964656e74697479\t0\t\t693332\t\t0000000000000001\t0000000000000001\t54\t693332\t76616c7565\t693332\n"
-    + "bindingResolution\t0000000000000000\t000000000000001e\t0000000000000002\t0000000000000007\t76616c7565\t0\t693332\n"
+    + "bindingResolution\t0000000000000000\t000000000000001e\t0000000000000002\t0000000000000007\t76616c7565\t0\t693332\t-\t-\n"
     + "order\t0000000000000000\n",
   );
   assert.deepEqual(callEvidenceGraph.modules[0].callResolutions, [{
@@ -6725,6 +6726,8 @@ test("resolves a canonical module graph directly from native Z ASTs", () => {
     name: "value",
     mutableBinding: false,
     typeName: "i32",
+    targetModule: null,
+    targetSymbol: null,
   }]);
   assert.throws(() => decodeStage1ModuleGraphStream("order\n"), /did not contain an entry/);
   assert.throws(

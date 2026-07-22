@@ -80,6 +80,15 @@ export class NativeSemanticIndex {
         if (resolution.name.length === 0 || resolution.typeName.length === 0) {
           throw new Error(`native frontend returned an incomplete binding resolution at offset ${resolution.offset} in ${module.path}`);
         }
+        if ((resolution.targetModule === null) !== (resolution.targetSymbol === null)) {
+          throw new Error(`native frontend returned a partial binding type identity at offset ${resolution.offset} in ${module.path}`);
+        }
+        if (resolution.targetModule !== null && resolution.targetSymbol !== null) {
+          const target = graph.modules[resolution.targetModule]?.symbols[resolution.targetSymbol];
+          if (!target || (target.kind !== "struct" && target.kind !== "class" && target.kind !== "enum")) {
+            throw new Error(`native frontend returned an invalid binding type identity at offset ${resolution.offset} in ${module.path}`);
+          }
+        }
         resolutions.set(resolution.offset, resolution);
       }
       return resolutions;

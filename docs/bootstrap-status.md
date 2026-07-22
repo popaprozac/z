@@ -470,9 +470,11 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    type. The compiler indexes those records by binding-name offset and validates
    name, mutability, and source-level type before using them as authoritative
    local binding contracts. This includes materialized generic values such as
-   `Option<i32>` through the compiler's source display-name map. Qualified
-   cross-module type spellings deliberately retain the stage-zero fallback until
-   the evidence protocol carries resolved type identity in addition to text.
+   `Option<i32>` through the compiler's source display-name map. Direct aggregate
+   bindings also carry their resolved module and symbol, allowing local,
+   selective-import, and namespace-qualified spellings to prove the same type
+   identity without string heuristics. Nested qualified types inside generic
+   wrappers retain the stage-zero fallback until type identity becomes recursive.
    Successful non-generic Z function, method, and explicit class-constructor calls
    are now native-authoritative semantic results. Their parameter modes and types,
    async/error state, and result type come from the native signature; methods also

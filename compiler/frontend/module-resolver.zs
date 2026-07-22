@@ -170,6 +170,8 @@ export struct ModuleBindingResolution {
   name: String;
   mutableBinding: boolean;
   typeName: String;
+  targetModuleIndex: Option<usize>;
+  targetSymbolIndex: Option<usize>;
 }
 
 export struct ModuleCallResolution {
@@ -7073,6 +7075,15 @@ function inferStatement(
         match (in arena.nodes[index].expression) {
           some(expression) => {
             if (expression.offset >= arena.nodes[index].offset && stored.byteLength > 0) {
+              let targetModuleIndex = Option<usize>.none;
+              let targetSymbolIndex = Option<usize>.none;
+              match (typeSymbolLocation(modules, moduleIndex, stored)) {
+                some(location) => {
+                  targetModuleIndex = Option.some(location.moduleIndex);
+                  targetSymbolIndex = Option.some(location.symbolIndex);
+                }
+                none => {}
+              }
               evidence.bindingResolutions.push(ModuleBindingResolution({
                 offset: arena.nodes[index].nameOffset,
                 line: arena.nodes[index].nameLine,
@@ -7080,6 +7091,8 @@ function inferStatement(
                 name: arena.nodes[index].name.copyBytes(0, arena.nodes[index].name.byteLength),
                 mutableBinding: arena.nodes[index].mutableBinding,
                 typeName: stored.copyBytes(0, stored.byteLength),
+                targetModuleIndex,
+                targetSymbolIndex,
               }));
             }
           }

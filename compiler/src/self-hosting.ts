@@ -88,6 +88,8 @@ export type Stage1ModuleBindingResolution = {
   readonly name: string;
   readonly mutableBinding: boolean;
   readonly typeName: string;
+  readonly targetModule: number | null;
+  readonly targetSymbol: number | null;
 };
 
 export type Stage1ModuleCallResolution = {
@@ -303,7 +305,7 @@ export function decodeStage1ModuleGraphStream(output: string): Stage1ModuleGraph
       continue;
     }
     if (fields[0] === "bindingResolution") {
-      if (fields.length !== 8) throw new Error(`malformed stage-1 binding resolution line: ${line}`);
+      if (fields.length !== 10) throw new Error(`malformed stage-1 binding resolution line: ${line}`);
       const moduleIndex = parseProtocolHexInteger(fields[1], "binding resolution module");
       const module = modules[moduleIndex];
       if (!module) throw new Error("stage-1 binding resolution appeared before its module");
@@ -320,6 +322,8 @@ export function decodeStage1ModuleGraphStream(output: string): Stage1ModuleGraph
         name: Buffer.from(fields[5], "hex").toString("utf8"),
         mutableBinding: fields[6] === "1",
         typeName: Buffer.from(fields[7], "hex").toString("utf8"),
+        targetModule: fields[8] === "-" ? null : parseProtocolHexInteger(fields[8], "binding resolution target module"),
+        targetSymbol: fields[9] === "-" ? null : parseProtocolHexInteger(fields[9], "binding resolution target symbol"),
       });
       continue;
     }
