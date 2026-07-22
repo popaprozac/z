@@ -1,13 +1,25 @@
 import { canonicalTypeName } from "./canonical-type-name.ts";
+import type { FunctionDeclaration } from "./ast.ts";
 import type { SourceModuleBatch, SourceModuleBatchModule } from "./modules.ts";
 import { NativeSemanticIndex } from "./native-semantic-index.ts";
-import type { Stage1ModuleGraph, Stage1ModuleSymbol } from "./self-hosting.ts";
+import type { Stage1ModuleFunctionSignature, Stage1ModuleGraph, Stage1ModuleSymbol } from "./self-hosting.ts";
 
 export type NativeSemanticEvidence = {
   readonly stage0Graph: Stage1ModuleGraph;
   readonly index: NativeSemanticIndex;
   readonly queryCount: number;
 };
+
+export function stage0FunctionSignature(declaration: FunctionDeclaration): Stage1ModuleFunctionSignature {
+  return {
+    asynchronous: declaration.async ?? false,
+    typeParameters: declaration.typeParameters ?? [],
+    parameterModes: declaration.parameters.map((parameter) => parameter.mode),
+    parameterTypes: declaration.parameters.map((parameter) => canonicalTypeName(parameter.type.name)),
+    returnType: canonicalTypeName(declaration.returnType.name),
+    errorType: declaration.errorType ? canonicalTypeName(declaration.errorType.name) : null,
+  };
+}
 
 export function validateNativeFrontendSemantics(
   sourceBatch: SourceModuleBatch,
@@ -69,14 +81,7 @@ function stage0ModuleSymbols(
     exported: exported.has(`${declaration.kind}\0${declaration.name}`),
     targetModule: null,
     importedName: declaration.name,
-    functionSignature: declaration.kind === "function" ? {
-      asynchronous: declaration.async ?? false,
-      typeParameters: declaration.typeParameters ?? [],
-      parameterModes: declaration.parameters.map((parameter) => parameter.mode),
-      parameterTypes: declaration.parameters.map((parameter) => canonicalTypeName(parameter.type.name)),
-      returnType: canonicalTypeName(declaration.returnType.name),
-      errorType: declaration.errorType ? canonicalTypeName(declaration.errorType.name) : null,
-    } : null,
+    functionSignature: declaration.kind === "function" ? stage0FunctionSignature(declaration) : null,
     typeSignature: declaration.kind === "struct" || declaration.kind === "class" ? {
       typeParameters: declaration.typeParameters ?? [],
       fields: declaration.fields.map((field) => ({
@@ -280,7 +285,7 @@ function sameModuleTypeSignature(
     });
 }
 
-function sameModuleFunctionSignature(
+export function sameModuleFunctionSignature(
   left: Stage1ModuleSymbol["functionSignature"],
   right: Stage1ModuleSymbol["functionSignature"],
 ): boolean {

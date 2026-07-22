@@ -82,6 +82,7 @@ if (!command || !inputArgument || !["check", "emit", "run", "self-host-lex", "se
             "check-shadow",
             analysis.nativeFrontendParityMilliseconds ?? 0,
             analysis.nativeSemanticQueryCount,
+            analysis.nativeCallResolutionCount,
           );
         }
       }
@@ -161,6 +162,7 @@ function reportStage1Resolver(
   presentation: "self-host-command" | "check-shadow",
   parityMilliseconds: number,
   queryCount: number,
+  callResolutionCount: number | null,
 ): void {
   const edges = run.graph.modules.reduce((count, module) => count + module.dependencies.length, 0);
   const symbols = run.graph.modules.reduce((count, module) => count + module.symbols.length, 0);
@@ -170,6 +172,9 @@ function reportStage1Resolver(
   const subject = presentation === "check-shadow" ? "native frontend shadow" : "stage-1 resolver";
   console.log(`${run.entryPath}: ${subject} matches ${run.graph.modules.length} modules, ${edges} local ${edgeLabel}, and ${symbols} ${symbolLabel} (${order})`);
   console.log(`${subject} compiler index matches ${queryCount} binding/signature queries`);
+  if (callResolutionCount !== null) {
+    console.log(`${subject} observes ${callResolutionCount} successful stage-0 Z call resolutions`);
+  }
   if (timings) {
     const cacheState = run.boundary.cacheHit ? "cache hit" : "cache miss; stage-0 compile + native build included";
     console.log(`${subject} timing (${run.graph.modules.length} modules, ${cacheState})`);
@@ -187,7 +192,7 @@ function verifyStage1Resolver(inputPath: string, timings: boolean): void {
   const parityStarted = performance.now();
   const evidence = validateNativeFrontendSemantics(run.sourceBatch, run.graph);
   const parityMilliseconds = performance.now() - parityStarted;
-  reportStage1Resolver(run, timings, "self-host-command", parityMilliseconds, evidence.queryCount);
+  reportStage1Resolver(run, timings, "self-host-command", parityMilliseconds, evidence.queryCount, null);
 }
 
 function verifyStage1Parser(inputPaths: readonly string[], timings: boolean): void {

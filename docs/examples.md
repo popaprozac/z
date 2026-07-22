@@ -165,7 +165,9 @@ analyzer's canonical batch, invokes that resolver through the reusable
 in-process boundary, and retains the validated graph as compiler-analysis
 evidence. Compiler-owned parity then checks the graph and exercises indexed
 local, selective-alias, and namespace-member signature queries; the CLI only
-reports the result and timings.
+reports the result and timings. Ordinary semantic analysis also observes each
+successful direct Z call and verifies its native definition/signature, while
+buffering native failures behind authoritative stage-zero diagnostics.
 The frontend remains stage-zero-compiled, while the example directory is now a
 small educational consumer rather than the implementation home.
 

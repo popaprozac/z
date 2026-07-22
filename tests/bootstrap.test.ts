@@ -99,6 +99,7 @@ test("loads explicit Z exports through selective and namespace module imports", 
   assert.equal(analysis.nativeFrontendGraph, null);
   assert.equal(analysis.nativeSemanticIndex, null);
   assert.equal(analysis.nativeSemanticQueryCount, 0);
+  assert.equal(analysis.nativeCallResolutionCount, 0);
   assert.equal(analysis.nativeFrontendParityMilliseconds, null);
   assert.equal(analysis.sourceModuleBatch.entryFileName, example);
   assert.deepEqual(
@@ -138,6 +139,7 @@ test("attaches native frontend evidence after authoritative stage-0 analysis", (
   const total = analysis.nativeSemanticIndex?.resolveNamespaceMember(example, "geometry", "total");
   assert.equal(total?.declaration.functionSignature?.returnType, "i32");
   assert.ok(analysis.nativeSemanticQueryCount > (analysis.nativeFrontendGraph?.modules.length ?? 0));
+  assert.ok(analysis.nativeCallResolutionCount > 0);
   assert.ok((analysis.nativeFrontendParityMilliseconds ?? -1) >= 0);
 
   assert.throws(
@@ -155,12 +157,20 @@ test("attaches native frontend evidence after authoritative stage-0 analysis", (
     () => analyzeSource("function main(): i32 { return missing; }", "invalid-native-shadow.zs", {
       nativeFrontendResolver: () => {
         resolverCalled = true;
-        throw new Error("native frontend should not run");
+        throw new Error("buffered native failure");
       },
     }),
     /unknown name "missing"/,
   );
-  assert.equal(resolverCalled, false);
+  assert.equal(resolverCalled, true);
+  assert.throws(
+    () => analyzeSource(source, example, {
+      nativeFrontendResolver: () => {
+        throw new Error("native frontend failed after stage 0 succeeded");
+      },
+    }),
+    /native frontend failed after stage 0 succeeded/,
+  );
 });
 
 test("diagnoses missing Z exports, missing files, cycles, and module binding collisions", () => {
@@ -4672,6 +4682,7 @@ test("resolves a canonical module graph directly from native Z ASTs", () => {
     /main\.zs: native frontend shadow matches 3 modules, 3 local edges, and 10 symbols/,
   );
   assert.match(ordinaryCheck.stdout, /native frontend shadow compiler index matches \d+ binding\/signature queries/);
+  assert.match(ordinaryCheck.stdout, /native frontend shadow observes \d+ successful stage-0 Z call resolutions/);
   assert.match(ordinaryCheck.stdout, /native frontend shadow timing \(3 modules, cache hit\)/);
   assert.match(ordinaryCheck.stdout, /main\.zs: ok/);
 

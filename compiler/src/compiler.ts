@@ -18,6 +18,7 @@ import type { DiagnosticError } from "./diagnostics.ts";
 import type { Stage1ModuleGraph } from "./self-hosting.ts";
 import type { NativeSemanticIndex } from "./native-semantic-index.ts";
 import { validateNativeFrontendSemantics } from "./native-semantic-parity.ts";
+import { createNativeCallShadow } from "./native-call-shadow.ts";
 
 export type NativeLanguage = "c" | "objective-c" | "c++" | "objective-c++";
 
@@ -45,6 +46,7 @@ export type AnalyzedSource = {
   readonly nativeFrontendGraph: Stage1ModuleGraph | null;
   readonly nativeSemanticIndex: NativeSemanticIndex | null;
   readonly nativeSemanticQueryCount: number;
+  readonly nativeCallResolutionCount: number;
   readonly nativeFrontendParityMilliseconds: number | null;
 };
 
@@ -79,13 +81,33 @@ export function analyzeSource(source: string, fileName: string, options: Analysi
       `Result<${typeDisplayNames.get(success) ?? success}, ${typeDisplayNames.get(failure) ?? failure}>`,
     );
   }
-  const semanticInfo = analyze(program, fileName, foreignModules, typeDisplayNames, options.requireMain ?? true, projectBuild.deploymentTarget);
-  const nativeFrontendGraph = options.nativeFrontendResolver?.(linked.sourceBatch) ?? null;
-  const parityStarted = nativeFrontendGraph ? performance.now() : null;
-  const nativeEvidence = nativeFrontendGraph
-    ? validateNativeFrontendSemantics(linked.sourceBatch, nativeFrontendGraph)
+  let nativeFrontendGraph: Stage1ModuleGraph | null = null;
+  let nativeEvidence: ReturnType<typeof validateNativeFrontendSemantics> | null = null;
+  let nativeFrontendFailure: unknown = null;
+  let nativeFrontendParityMilliseconds: number | null = null;
+  if (options.nativeFrontendResolver) {
+    try {
+      nativeFrontendGraph = options.nativeFrontendResolver(linked.sourceBatch);
+      const parityStarted = performance.now();
+      nativeEvidence = validateNativeFrontendSemantics(linked.sourceBatch, nativeFrontendGraph);
+      nativeFrontendParityMilliseconds = performance.now() - parityStarted;
+    } catch (error) {
+      nativeFrontendFailure = error;
+    }
+  }
+  const nativeCallShadow = nativeEvidence
+    ? createNativeCallShadow(linked.sourceBatch, nativeEvidence.index)
     : null;
-  const nativeFrontendParityMilliseconds = parityStarted === null ? null : performance.now() - parityStarted;
+  const semanticInfo = analyze(
+    program,
+    fileName,
+    foreignModules,
+    typeDisplayNames,
+    options.requireMain ?? true,
+    projectBuild.deploymentTarget,
+    nativeCallShadow?.observer ?? null,
+  );
+  if (nativeFrontendFailure) throw nativeFrontendFailure;
   return {
     sourceProgram,
     program,
@@ -99,6 +121,7 @@ export function analyzeSource(source: string, fileName: string, options: Analysi
     nativeFrontendGraph,
     nativeSemanticIndex: nativeEvidence?.index ?? null,
     nativeSemanticQueryCount: nativeEvidence?.queryCount ?? 0,
+    nativeCallResolutionCount: nativeCallShadow?.count() ?? 0,
     nativeFrontendParityMilliseconds,
   };
 }

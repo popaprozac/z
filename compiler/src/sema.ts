@@ -100,6 +100,15 @@ export type ClosureInfo = {
   readonly storable: boolean;
 };
 
+export type SemanticFunctionCallResolution = {
+  readonly location: SourceLocation;
+  readonly declaration: FunctionDeclaration;
+};
+
+export type SemanticObserver = {
+  readonly onFunctionCall?: (resolution: SemanticFunctionCallResolution) => void;
+};
+
 type ValueType = string | "unknown" | "never";
 
 export type IntegerOperation = {
@@ -259,6 +268,7 @@ type AnalysisState = {
     cancellationCalls: number;
   }[];
   readonly placementErrorTypes: (TypeReference | null)[];
+  readonly observer: SemanticObserver | null;
   executorContext: "main" | null;
   nativeThreadBodyDepth: number;
   asyncScopeDepth: number;
@@ -325,6 +335,7 @@ export function analyze(
   typeDisplayNames: ReadonlyMap<string, string> = new Map(),
   requireMain = true,
   deploymentTarget: DeploymentTarget | null = null,
+  observer: SemanticObserver | null = null,
 ): SemanticInfo {
   const foreignTypes = new Map<string, ForeignPointerType>();
   const foreignNamedTypes = new Map<string, ForeignNamedType>();
@@ -445,6 +456,7 @@ export function analyze(
     asyncTaskBorrowSpawns: new Map(),
     asyncCallContexts: [],
     placementErrorTypes: [],
+    observer,
     executorContext: null,
     nativeThreadBodyDepth: 0,
     asyncScopeDepth: 0,
@@ -4872,6 +4884,7 @@ function inferExpressionInner(
       rejectLabeledArguments(expression.argumentLabels, expression.location, fileName);
       checkArguments(target.declaration, expression.arguments, locals, globals, structs, enums, fileName, expression.location, state);
       registerAsyncCall(target.declaration, expression.location, fileName, state);
+      state.observer?.onFunctionCall?.({ location: expression.location, declaration: target.declaration });
       if (target.declaration.errorType) {
         if (!allowThrowingCall) throw new DiagnosticError(fileName, expression.location, "throwing call requires `attempt` or `try`");
         return resultTypeName(target.declaration.returnType.name, target.declaration.errorType.name);

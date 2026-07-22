@@ -1513,7 +1513,12 @@ ported independently rather than translated as one monolith.
    module again. The compiler—not the CLI—then exercises every local binding,
    selective alias, and exported namespace-member lookup through that index and
    compares the resolved definition and signature. The CLI is reduced to native
-   preparation/invocation, timing capture, and presentation.
+   preparation/invocation, timing capture, and presentation. Native evidence is
+   now prepared before the main stage-zero semantic pass. An observer checks each
+   successfully resolved direct Z function call against the native defining
+   symbol and source signature. Native preparation/parity failures are buffered
+   until stage-zero semantics succeeds, preserving stage zero as diagnostic
+   authority while making the native index available to real semantic consumers.
    The graph now carries a first native semantic table: source-located Z
    declarations and namespace/selective import bindings with kinds, exports,
    aliases, and local module targets. Function symbols retain callable
