@@ -11,7 +11,7 @@ import { DiagnosticError, formatDiagnostic } from "./diagnostics.ts";
 import { parseFunctionType } from "./function-types.ts";
 import { parseGenericType } from "./generic-types.ts";
 import { lex, type Token } from "./lexer.ts";
-import { isLocalSourceModuleSpecifier, loadSourceModuleBatch, type SourceModuleBatch } from "./modules.ts";
+import { loadSourceModuleBatch, type SourceModuleBatch, type SourceModuleBatchModule } from "./modules.ts";
 import { parseWithNativeFrontendLibrary, resolveWithNativeFrontendLibrary } from "./native-frontend.ts";
 import { isNullableObjCTypeName, publicObjCTypeName } from "./objc-types.ts";
 import { parse } from "./parser.ts";
@@ -123,7 +123,7 @@ function verifyStage1Resolver(
   const stage1 = decodeStage1ModuleGraphStream(nativeStream);
   const decodeMilliseconds = performance.now() - decodeStarted;
   const stage0Started = performance.now();
-  const stage0 = stage0ModuleGraph(sources, entryPath);
+  const stage0 = stage0ModuleGraph(sourceBatch);
   const stage0Milliseconds = performance.now() - stage0Started;
   if (!sameModuleGraph(stage0, stage1)) {
     throw new Error(`stage-1 module graph mismatch: stage 0 produced ${JSON.stringify(stage0)}, stage 1 produced ${JSON.stringify(stage1)}`);
@@ -143,27 +143,27 @@ function verifyStage1Resolver(
     console.log(`  host batch framing: ${formatMilliseconds(batchMilliseconds)}`);
     console.log(`  native in-process (FFI + lex + parse + resolve + symbols + signatures + names + types + expressions + encode): ${formatMilliseconds(executionMilliseconds)}`);
     console.log(`  protocol decode: ${formatMilliseconds(decodeMilliseconds)}`);
-    console.log(`  stage-0 parity (lex + parse + graph + symbols): ${formatMilliseconds(stage0Milliseconds)}`);
+    console.log(`  stage-0 parity (reused AST + graph + symbols): ${formatMilliseconds(stage0Milliseconds)}`);
   }
   return stage1;
 }
 
-function stage0ModuleGraph(sources: readonly Stage1ModuleSource[], entryPath: string): Stage1ModuleGraph {
-  const indexByPath = new Map(sources.map((source, index) => [source.path, index] as const));
-  const modules = sources.map((source) => {
-    const program = parse(lex(source.source, source.path), source.path);
-    const dependencies = program.imports
-      .filter((declaration) => isLocalSourceModuleSpecifier(declaration.header))
-      .map((declaration) => {
-        const dependencyPath = realpathSync(resolve(dirname(source.path), declaration.header));
-        const dependency = indexByPath.get(dependencyPath);
-        if (dependency === undefined) throw new Error(`stage-0 parity batch is missing ${dependencyPath}`);
-        return dependency;
-      });
-    return { path: source.path, dependencies, symbols: stage0ModuleSymbols(program, source.path, indexByPath) };
+function stage0ModuleGraph(sourceBatch: SourceModuleBatch): Stage1ModuleGraph {
+  const indexByPath = new Map(sourceBatch.modules.map((module, index) => [module.fileName, index] as const));
+  const modules = sourceBatch.modules.map((module) => {
+    const dependencies = [...module.dependencies.values()].map((dependencyPath) => {
+      const dependency = indexByPath.get(dependencyPath);
+      if (dependency === undefined) throw new Error(`stage-0 parity batch is missing ${dependencyPath}`);
+      return dependency;
+    });
+    return {
+      path: module.fileName,
+      dependencies,
+      symbols: stage0ModuleSymbols(module, indexByPath),
+    };
   });
-  const entry = indexByPath.get(entryPath);
-  if (entry === undefined) throw new Error(`stage-0 parity batch is missing its entry ${entryPath}`);
+  const entry = indexByPath.get(sourceBatch.entryFileName);
+  if (entry === undefined) throw new Error(`stage-0 parity batch is missing its entry ${sourceBatch.entryFileName}`);
   const dependencyOrder: number[] = [];
   const visited = new Set<number>();
   const visit = (index: number): void => {
@@ -177,10 +177,10 @@ function stage0ModuleGraph(sources: readonly Stage1ModuleSource[], entryPath: st
 }
 
 function stage0ModuleSymbols(
-  program: Program,
-  fileName: string,
+  module: SourceModuleBatchModule,
   indexByPath: ReadonlyMap<string, number>,
 ): Stage1ModuleSymbol[] {
+  const { program } = module;
   const exported = new Set(program.exports.map((declaration) => `${declaration.declarationKind}\0${declaration.name}`));
   const symbols: Stage1ModuleSymbol[] = [
     ...program.traits,
@@ -255,9 +255,8 @@ function stage0ModuleSymbols(
     },
   })).sort((left, right) => left.location.offset - right.location.offset);
   for (const declaration of program.imports) {
-    const targetModule = isLocalSourceModuleSpecifier(declaration.header)
-      ? indexByPath.get(realpathSync(resolve(dirname(fileName), declaration.header))) ?? null
-      : null;
+    const dependencyPath = module.dependencies.get(declaration.location.offset);
+    const targetModule = dependencyPath ? indexByPath.get(dependencyPath) ?? null : null;
     if (declaration.bindings) {
       for (const binding of declaration.bindings) {
         symbols.push({

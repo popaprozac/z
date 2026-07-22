@@ -96,6 +96,7 @@ test("loads explicit Z exports through selective and namespace module imports", 
   const analysis = analyzeSource(source, example);
   assert.equal(analysis.sourceModules.size, 3);
   assert.equal(analysis.nativeFrontendGraph, null);
+  assert.equal(analysis.nativeSemanticIndex, null);
   assert.equal(analysis.sourceModuleBatch.entryFileName, example);
   assert.deepEqual(
     analysis.sourceModuleBatch.modules.map((module) => basename(module.fileName)),
@@ -122,10 +123,66 @@ test("attaches native frontend evidence after authoritative stage-0 analysis", (
       receivedModuleCount = sourceBatch.modules.length;
       const indexByPath = new Map(sourceBatch.modules.map((module, index) => [module.fileName, index] as const));
       return {
-        modules: sourceBatch.modules.map((module) => ({
+        modules: sourceBatch.modules.map((module, index) => ({
           path: module.fileName,
           dependencies: [...module.dependencies.values()].map((path) => indexByPath.get(path)!),
-          symbols: [],
+          symbols: index === 0 ? [
+            {
+              name: "geometry",
+              kind: "namespace",
+              exported: false,
+              targetModule: 1,
+              importedName: "./geometry.zs",
+              functionSignature: null,
+              typeSignature: null,
+              location: { offset: 0, line: 1, column: 1 },
+            },
+            {
+              name: "move",
+              kind: "imported",
+              exported: false,
+              targetModule: 1,
+              importedName: "translate",
+              functionSignature: null,
+              typeSignature: null,
+              location: { offset: 0, line: 1, column: 1 },
+            },
+          ] : index === 1 ? [
+            {
+              name: "translate",
+              kind: "function",
+              exported: true,
+              targetModule: null,
+              importedName: "translate",
+              functionSignature: {
+                asynchronous: false,
+                typeParameters: [],
+                parameterModes: ["in", "value", "value"],
+                parameterTypes: ["Point", "i32", "i32"],
+                returnType: "Point",
+                errorType: null,
+              },
+              typeSignature: null,
+              location: { offset: 0, line: 1, column: 1 },
+            },
+            {
+              name: "total",
+              kind: "function",
+              exported: true,
+              targetModule: null,
+              importedName: "total",
+              functionSignature: {
+                asynchronous: false,
+                typeParameters: [],
+                parameterModes: ["in"],
+                parameterTypes: ["Point"],
+                returnType: "i32",
+                errorType: null,
+              },
+              typeSignature: null,
+              location: { offset: 0, line: 1, column: 1 },
+            },
+          ] : [],
         })),
         dependencyOrder: [2, 1, 0],
         entry: indexByPath.get(sourceBatch.entryFileName)!,
@@ -136,6 +193,12 @@ test("attaches native frontend evidence after authoritative stage-0 analysis", (
   assert.equal(receivedModuleCount, 3);
   assert.equal(analysis.nativeFrontendGraph?.modules.length, 3);
   assert.equal(analysis.nativeFrontendGraph?.modules[analysis.nativeFrontendGraph.entry]?.path, example);
+  const moved = analysis.nativeSemanticIndex?.resolveSymbol(example, "move");
+  assert.equal(moved?.modulePath, analysis.sourceModuleBatch.modules[1].fileName);
+  assert.equal(moved?.binding.importedName, "translate");
+  assert.equal(moved?.declaration.functionSignature?.returnType, "Point");
+  const total = analysis.nativeSemanticIndex?.resolveNamespaceMember(example, "geometry", "total");
+  assert.equal(total?.declaration.functionSignature?.returnType, "i32");
 
   let resolverCalled = false;
   assert.throws(
@@ -4645,7 +4708,7 @@ test("resolves a canonical module graph directly from native Z ASTs", () => {
   assert.match(integrated.stdout, /stage-1 resolver matches 3 modules, 3 local edges, and 10 symbols \(math\.zs -> geometry\.zs -> main\.zs\)/);
   assert.match(integrated.stdout, /host discovery \(file I\/O \+ stage-0 import parse\): \d+\.\d{2} ms/);
   assert.match(integrated.stdout, /native in-process \(FFI \+ lex \+ parse \+ resolve \+ symbols \+ signatures \+ names \+ types \+ expressions \+ encode\): \d+\.\d{2} ms/);
-  assert.match(integrated.stdout, /stage-0 parity \(lex \+ parse \+ graph \+ symbols\): \d+\.\d{2} ms/);
+  assert.match(integrated.stdout, /stage-0 parity \(reused AST \+ graph \+ symbols\): \d+\.\d{2} ms/);
 
   const ordinaryCheck = spawnSync(
     process.execPath,

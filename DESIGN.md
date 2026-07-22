@@ -1505,7 +1505,12 @@ ported independently rather than translated as one monolith.
    prepared-library invocation service owns the Bun FFI mechanics without
    importing compilation, so the compiler core does not depend on the CLI and no
    circular bootstrap dependency is introduced. Stage zero remains diagnostic
-   authority while consumers migrate one semantic result at a time.
+   authority while consumers migrate one semantic result at a time. The first
+   such consumer is a compiler-owned semantic index that resolves local names,
+   selective aliases, and namespace members to their defining native symbols and
+   signatures. Exact parity now builds its stage-zero side from the canonical
+   batch's retained ASTs and dependency maps rather than lexing and parsing every
+   module again.
    The graph now carries a first native semantic table: source-located Z
    declarations and namespace/selective import bindings with kinds, exports,
    aliases, and local module targets. Function symbols retain callable

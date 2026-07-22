@@ -56,7 +56,7 @@ an inferred receiver-tied view.
 | Area | Status | Current boundary |
 | --- | --- | --- |
 | Z source modules | Partial | Explicit exports, namespace/selective imports, aliases, cycle diagnostics, and canonical native type identity across intermediate modules; ordinary lowering still uses stage 0 |
-| CLI | Implemented | `z check`, `z emit`, and `z run` through Bun; `check --native-frontend` reuses stage 0's canonical source batch, attaches a validated native semantic graph to the compiler analysis, and reports parity/timings; native run I/O streams live and arguments after `--` are forwarded |
+| CLI | Implemented | `z check`, `z emit`, and `z run` through Bun; `check --native-frontend` reuses stage 0's canonical source batch/ASTs, attaches an indexed native semantic graph to the compiler analysis, and reports parity/timings; native run I/O streams live and arguments after `--` are forwarded |
 | System standard APIs | Implemented foundation | Default `std/fs` and `std/process` modules; owned reads/arguments, borrowed writes/process argv, direct no-shell child launch, typed OS failures |
 | Native backends | Partial | Readable C, C++20, Objective-C ARC, and Objective-C++ source generation |
 | Foreign Interface IR | Implemented foundation | Raw declarations, API-note merge, normalized contracts, source locations, and availability metadata are separate; richer native hierarchies remain |
@@ -395,10 +395,15 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    diagnostics. The ordinary analyzer now supplies its already-discovered
    canonical `SourceModuleBatch` to a resolver callback after successful stage-0
    semantics, validates module identity on return, and retains the resulting
-   native graph on `AnalyzedSource`. Prepared-library invocation lives in a
+   native graph on `AnalyzedSource`. `NativeSemanticIndex` is the first
+   compiler-owned consumer: it resolves local symbols, selective aliases, and
+   namespace members to their defining native declaration and callable/type
+   signature. Prepared-library invocation lives in a
    reusable native-frontend service rather than the CLI. Native checks therefore
-   no longer repeat host import discovery, and later semantic consumers have an
-   explicit migration seam instead of reading a CLI-only side effect.
+   no longer repeat host import discovery or parity lexing/parsing—the comparison
+   graph is built from the canonical batch's existing ASTs and dependency maps.
+   Later semantic consumers have an explicit migration seam instead of reading a
+   CLI-only side effect.
    Complete
    contextual literal and return-driven inference, foreign/intrinsic method lookup,
    generic constraints/methods, async/foreign call effects, contextual untyped

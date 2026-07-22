@@ -67,7 +67,9 @@ a native GUI event loop.
 The native-frontend flag is deliberately a shadow mode. Stage 0 still produces
 the user-facing diagnostics first; after it succeeds, the native frontend
 receives the same canonical source-module batch, and its validated semantic
-graph must match before the check can succeed.
+graph must match before the check can succeed. The compiler indexes native local,
+selective-import, and namespace symbols from that graph; shadow parity reuses the
+batch's existing stage-0 ASTs rather than parsing each module again.
 
 ## Source modules
 
