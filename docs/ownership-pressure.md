@@ -76,6 +76,11 @@ for a cleanup-free aggregate. Cleanup-bearing and move-only targets do not
 qualify, so the conversion cannot manufacture ownership or bypass deterministic
 destruction.
 
+Concise and block-bodied `match`/`if` expression arms now apply that conversion
+before their result types are unified. This preserves the distinction between
+`select`, which supplies a local expression value, and `return`, which exits the
+enclosing function at any nesting depth.
+
 The follow-up [`arena.zs`](../examples/language/ownership/arena.zs) probe gives a
 region owner stable allocation addresses. Multiple direct views coexist across
 later allocation; `reset` and destruction are excluded until their last uses.

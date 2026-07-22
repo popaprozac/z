@@ -1924,7 +1924,7 @@ function analyzeStatement(
       const expected = statement.target.kind === "identifier"
         ? underlyingType(stored)
         : inferExpression(statement.target, locals, globals, structs, enums, fileName, state);
-      let actual = inferDirectValue(statement.expression, owner, locals, globals, structs, enums, fileName, state);
+      let actual = inferDirectValue(statement.expression, owner, locals, globals, structs, enums, fileName, state, expected);
       actual = contextualCStringLiteral(expected, statement.expression, state) ?? actual;
       actual = contextualObjCStringToZ(expected, actual, statement.expression, state) ?? actual;
       actual = contextualSwiftStringToZ(expected, actual, statement.expression, state) ?? actual;
@@ -1996,7 +1996,7 @@ function analyzeStatement(
         requireOutParametersInitialized(owner, locals, statement.location, fileName);
         return;
       }
-      let actual = inferDirectValue(statement.expression, owner, locals, globals, structs, enums, fileName, state);
+      let actual = inferDirectValue(statement.expression, owner, locals, globals, structs, enums, fileName, state, expected);
       actual = contextualCStringLiteral(expected, statement.expression, state) ?? actual;
       actual = contextualObjCStringToZ(expected, actual, statement.expression, state) ?? actual;
       actual = contextualSwiftStringToZ(expected, actual, statement.expression, state) ?? actual;
@@ -2246,15 +2246,16 @@ function inferDirectValue(
   enums: Map<string, EnumDeclaration>,
   fileName: string,
   state: AnalysisState,
+  expected: ValueType | null = null,
 ): ValueType {
   if (expression.kind === "try") {
     return inferTrySuccess(expression, owner, locals, globals, structs, enums, fileName, state);
   }
   if (expression.kind === "matchExpression") {
-    return inferMatchExpression(expression, owner, locals, globals, structs, enums, fileName, state);
+    return inferMatchExpression(expression, owner, locals, globals, structs, enums, fileName, state, expected);
   }
   if (expression.kind === "ifExpression") {
-    return inferIfExpression(expression, owner, locals, globals, structs, enums, fileName, state);
+    return inferIfExpression(expression, owner, locals, globals, structs, enums, fileName, state, expected);
   }
   if (expression.kind === "closure") {
     return inferClosureExpression(expression, locals, globals, structs, enums, fileName, state);
@@ -2556,7 +2557,17 @@ function inferClosureExpression(
       }
       returnType = syntheticBase.returnType.name;
     } else {
-      returnType = inferDirectValue(expression.body, syntheticBase, closureLocals, globals, structs, enums, fileName, state);
+      returnType = inferDirectValue(
+        expression.body,
+        syntheticBase,
+        closureLocals,
+        globals,
+        structs,
+        enums,
+        fileName,
+        state,
+        contextualReturn?.name ?? null,
+      );
       if (contextualReturn) {
         returnType = contextualCStringLiteral(contextualReturn.name, expression.body, state) ?? returnType;
         requireAssignable(contextualReturn.name, returnType, expression.body, fileName, structs, enums, state);
@@ -2834,6 +2845,7 @@ function inferIfExpression(
   enums: Map<string, EnumDeclaration>,
   fileName: string,
   state: AnalysisState,
+  expected: ValueType | null = null,
 ): ValueType {
   const conditionType = inferExpression(expression.condition, locals, globals, structs, enums, fileName, state);
   if (conditionType !== "boolean") {
@@ -2843,13 +2855,13 @@ function inferIfExpression(
   const original = new Map(locals);
   const continuing: Map<string, ValueType>[] = [];
   const thenLocals = narrowedConditionLocals(original, expression.condition, true, state);
-  const thenType = inferValueArm(expression.thenBranch, owner, thenLocals, globals, structs, enums, fileName, state);
+  const thenType = inferValueArm(expression.thenBranch, owner, thenLocals, globals, structs, enums, fileName, state, expected);
   if (thenType !== "never") continuing.push(thenLocals);
 
   const elseLocals = narrowedConditionLocals(original, expression.condition, false, state);
   const elseType = expression.elseBranch.kind === "ifExpression"
-    ? inferIfExpression(expression.elseBranch, owner, elseLocals, globals, structs, enums, fileName, state)
-    : inferValueArm(expression.elseBranch, owner, elseLocals, globals, structs, enums, fileName, state);
+    ? inferIfExpression(expression.elseBranch, owner, elseLocals, globals, structs, enums, fileName, state, expected)
+    : inferValueArm(expression.elseBranch, owner, elseLocals, globals, structs, enums, fileName, state, expected);
   if (elseType !== "never") continuing.push(elseLocals);
 
   const resultType = commonBranchType("if", thenType, elseType, expression.elseBranch.location, fileName);
@@ -2881,6 +2893,7 @@ function inferMatchExpression(
   enums: Map<string, EnumDeclaration>,
   fileName: string,
   state: AnalysisState,
+  expected: ValueType | null = null,
 ): ValueType {
   const subjectType = inferExpression(expression.expression, locals, globals, structs, enums, fileName, state);
   const declaration = enums.get(subjectType);
@@ -2984,7 +2997,18 @@ function inferMatchExpression(
           ? [arm.binding]
           : [],
       );
-      armType = inferValueArm(arm.body, owner, armLocals, globals, structs, enums, fileName, state, transientViews);
+      armType = inferValueArm(
+        arm.body,
+        owner,
+        armLocals,
+        globals,
+        structs,
+        enums,
+        fileName,
+        state,
+        expected,
+        transientViews,
+      );
     } finally {
       for (const name of patternNames) {
         const previousBorrow = previousBorrows.get(name);
@@ -3020,10 +3044,17 @@ function inferValueArm(
   enums: Map<string, EnumDeclaration>,
   fileName: string,
   state: AnalysisState,
+  expected: ValueType | null = null,
   transientViews: ReadonlySet<string> = new Set(),
 ): ValueType {
   if (statement.kind === "expressionStatement" || statement.kind === "select") {
-    const type = inferDirectValue(statement.expression, owner, locals, globals, structs, enums, fileName, state);
+    let type = inferDirectValue(statement.expression, owner, locals, globals, structs, enums, fileName, state, expected);
+    if (expected) {
+      requireAssignable(expected, type, statement.expression, fileName, structs, enums, state);
+      type = expected;
+    } else {
+      type = implicitlyLoadCopyableView(type, statement.expression, structs, enums, state);
+    }
     consumeOwnedValue(statement.expression, type, locals, structs, enums, fileName, state);
     return type;
   }
@@ -3057,7 +3088,18 @@ function inferValueArm(
     for (const name of transientViews) {
       if (!syntaxReferencesName(finalStatement, name)) unbindViewOrigin(name, state);
     }
-    const type = inferValueArm(finalStatement, owner, blockLocals, globals, structs, enums, fileName, state, transientViews);
+    const type = inferValueArm(
+      finalStatement,
+      owner,
+      blockLocals,
+      globals,
+      structs,
+      enums,
+      fileName,
+      state,
+      expected,
+      transientViews,
+    );
     propagateOuterOwnership(locals, blockLocals);
     return type;
   }
@@ -3071,6 +3113,7 @@ function inferValueArm(
       enums,
       fileName,
       state,
+      expected,
     );
   }
   throw new DiagnosticError(fileName, statement.location, "a value-producing block must produce a value with an expression or `select`");

@@ -5278,10 +5278,15 @@ function closureCaptureStorageName(closure: ClosureInfo, name: string): string {
 }
 
 function directValueType(expression: Expression, context: GenerationContext): string {
-  if (expression.kind === "try") return trySuccessType(expression, context);
-  if (expression.kind === "matchExpression") return matchExpressionType(expression, context);
-  if (expression.kind === "ifExpression") return ifExpressionType(expression, context);
-  return inferExpressionType(expression, context);
+  let type: string;
+  if (expression.kind === "try") type = trySuccessType(expression, context);
+  else if (expression.kind === "matchExpression") type = matchExpressionType(expression, context);
+  else if (expression.kind === "ifExpression") type = ifExpressionType(expression, context);
+  else type = inferExpressionType(expression, context);
+  if (context.semanticInfo.viewLoadExpressions.has(expression.location.offset)) {
+    return parseViewType(type)?.target ?? type;
+  }
+  return type;
 }
 
 function ifExpressionType(expression: Extract<Expression, { kind: "ifExpression" }>, context: GenerationContext): string {

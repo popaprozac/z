@@ -218,6 +218,29 @@ obtaining an owned copy of those values requires a type-specific operation.
 Binding a receiver projection without an owned type annotation still infers
 `view T`, so the borrow is not silently erased.
 
+Value-producing `match` and `if` arms are value contexts. A concise arm provides
+its expression directly; a block arm uses `select`, while `return` always exits
+the enclosing function:
+
+```z
+return match (in found) {
+  some(count) => count;
+  none => 0;
+};
+
+const adjusted = match (in found) {
+  some(count) => {
+    if (count < 0) return -1;
+    select count + 1;
+  }
+  none => 0;
+};
+```
+
+A cleanup-free view selected by either shape materializes as the arm's owned
+value. This contextualization happens before branch types are unified, so a
+`view i32` arm and an `i32` arm agree on `i32`.
+
 A lookup that may not find a value returns `Option<view T>` without copying the
 payload:
 

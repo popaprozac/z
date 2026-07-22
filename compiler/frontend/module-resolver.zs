@@ -4207,15 +4207,33 @@ function inferMatchArmStatementType(
           inout bindings,
           inout evidence
         );
+        let valueType = typeName.copyBytes(0, typeName.byteLength);
+        if (expectedType.byteLength > 0) {
+          try requireExpressionSyntaxType(
+            module,
+            modules,
+            moduleIndex,
+            expression,
+            expectedType,
+            typeName
+          );
+          valueType = expectedType.copyBytes(0, expectedType.byteLength);
+        } else if (stringStartsWith(typeName, "view ")) {
+          const target = typeName.copyBytes(5, typeName.byteLength);
+          let visiting = Array<String>();
+          if (!typeHasCleanup(modules, moduleIndex, target, visiting)) {
+            valueType = target;
+          }
+        }
         try consumeOwnedExpressionSyntax(
           module,
           modules,
           moduleIndex,
           expression,
-          typeName,
+          valueType,
           inout bindings
         );
-        return typeName;
+        return valueType;
       }
       none => "";
     };

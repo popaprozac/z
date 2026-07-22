@@ -8513,18 +8513,45 @@ test("owns Map keys and values with optional views and deterministic removal", (
       let values = Map<String, i32>();
       values.set("answer", 42);
       const found = values.get("answer");
-      return match (in found) {
-        some(value) => return value - 42;
-        none => return 1;
+      const answer = match (in found) {
+        some(value) => value;
+        none => 0;
       };
+      return answer - 42;
     }
   `;
   assert.deepEqual(diagnostics(copyableView, "map-copyable-view.zs"), []);
   const copyableGenerated = compileToC(copyableView, "map-copyable-view.zs");
-  assert.match(copyableGenerated, /z_checked_subtract_i32\([^\n]*\*\(value\)[^\n]*42\)/);
+  assert.match(copyableGenerated, /\*\(value\)/);
   writeFileSync(input, copyableView);
   const copyableResult = spawnSync(process.execPath, [cli, "run", input], { encoding: "utf8" });
   assert.equal(copyableResult.status, 0, copyableResult.stderr);
+
+  const selectedView = copyableView.replace(
+    "some(value) => value;",
+    "some(value) => { select value; }",
+  );
+  assert.deepEqual(diagnostics(selectedView, "map-selected-view.zs"), []);
+
+  const conditionalView = copyableView.replace(
+    "some(value) => value;",
+    "some(value) => (if (true) { select value; } else { select 0; });",
+  );
+  assert.deepEqual(diagnostics(conditionalView, "map-conditional-view.zs"), []);
+
+  const directReturnView = `
+    import { Map } from "std/collections";
+    function main(): i32 {
+      let values = Map<String, i32>();
+      values.set("answer", 42);
+      const found = values.get("answer");
+      return match (in found) {
+        some(value) => value;
+        none => 0;
+      };
+    }
+  `;
+  assert.deepEqual(diagnostics(directReturnView, "map-direct-return-view.zs"), []);
 
   const ownedView = `
     import { Map } from "std/collections";
@@ -8535,8 +8562,8 @@ test("owns Map keys and values with optional views and deterministic removal", (
     function take(in resources: Map<i32, Resource>): Resource {
       const found = resources.get(1);
       return match (in found) {
-        some(value) => return value;
-        none => return Resource({ id: 0 });
+        some(value) => value;
+        none => Resource({ id: 0 });
       };
     }
     function main(): i32 { return 0; }
