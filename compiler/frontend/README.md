@@ -148,6 +148,9 @@ and expression-`match` branches. Opaque expression spans, generic trait
 declarations, async/foreign call effects,
 escaping closure-environment validation, borrow last-use release, and complete
 recursive ownership lowering remain stage-zero work.
+Concrete generic call evidence retains source-level nested types such as
+`Option<i32>` and is rebased onto Stage 0's temporary materialized lowering
+types only after source-template substitution proves the contracts equivalent.
 The reported native interval therefore does more semantic work than the
 graph-and-symbol-only stage-zero comparison.
 Repeated corpus measurements, broadening ordinary-command shadow coverage, and

@@ -7632,6 +7632,7 @@ test("infers generic results from annotations, assignments, and returns", () => 
   const hybrid = spawnSync(process.execPath, [cli, "check", input, "--native-frontend"], { encoding: "utf8" });
   assert.equal(hybrid.status, 0, hybrid.stderr);
   assert.match(hybrid.stdout, /native frontend hybrid exports 29 concrete generic call contracts/);
+  assert.match(hybrid.stdout, /native frontend hybrid uses 22 function, 5 method, and 2 constructor native-authoritative contracts/);
 
   const invalid = source.replace("Option<Reading> = constrained()", "Option<i32> = constrained()");
   writeFileSync(input, invalid);

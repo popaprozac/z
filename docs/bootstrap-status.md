@@ -452,7 +452,9 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    types, async/error state, and result type. `NativeSemanticIndex` validates and
    indexes these records by canonical module plus call-expression offset. Direct
    generic Z functions are native-authoritative when the complete contract maps
-   cleanly onto the linked concrete declaration. Direct calls now infer missing
+   cleanly onto the linked concrete declaration. Source-template substitution
+   proves nested concrete contracts such as `Option<i32>` before rebasing them
+   onto Stage 0's temporary materialized lowering names. Direct calls now infer missing
    generic result parameters from local annotations, assignment targets, and
    enclosing function returns before exporting the same concrete evidence.
    Generic functions, static and instance methods, declared constructors, and

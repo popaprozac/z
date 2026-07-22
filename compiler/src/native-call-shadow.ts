@@ -273,10 +273,25 @@ export function createNativeSemanticBridge(
           || resolution.parameterTypes.length !== declaration.parameters.length
           || !resolution.parameterModes.every((mode, index) => mode === resolved.native.functionSignature!.parameterModes[index])
           || resolution.asynchronous !== resolved.native.functionSignature.asynchronous
-          || !resolution.parameterTypes.every((type, index) => concreteNativeTypeMatches(type, declaration.parameters[index].type.name))
-          || !concreteNativeTypeMatches(resolution.returnType, declaration.returnType.name)
+          || !resolution.parameterTypes.every((type, index) => concreteGenericTypeMatches(
+            resolved.source.declaration.parameters[index].type.name,
+            type,
+            resolution.typeParameters,
+            resolution.typeArguments,
+          ))
+          || !concreteGenericTypeMatches(
+            resolved.source.declaration.returnType.name,
+            resolution.returnType,
+            resolution.typeParameters,
+            resolution.typeArguments,
+          )
           || (resolution.errorType === null) !== (declaration.errorType === null)
-          || (resolution.errorType !== null && !concreteNativeTypeMatches(resolution.errorType, declaration.errorType!.name))
+          || (resolution.errorType !== null && !concreteGenericTypeMatches(
+            resolved.source.declaration.errorType!.name,
+            resolution.errorType,
+            resolution.typeParameters,
+            resolution.typeArguments,
+          ))
         ) return null;
         authoritativeFunctions += 1;
         return {
@@ -288,16 +303,34 @@ export function createNativeSemanticBridge(
             mode: resolution.parameterModes[index],
             type: {
               ...parameter.type,
-              name: rebaseConcreteNativeType(resolution.parameterTypes[index], parameter.type.name),
+              name: rebaseConcreteGenericType(
+                resolved.source.declaration.parameters[index].type.name,
+                resolution.parameterTypes[index],
+                parameter.type.name,
+                resolution.typeParameters,
+                resolution.typeArguments,
+              ),
             },
           })),
           returnType: {
             ...declaration.returnType,
-            name: rebaseConcreteNativeType(resolution.returnType, declaration.returnType.name),
+            name: rebaseConcreteGenericType(
+              resolved.source.declaration.returnType.name,
+              resolution.returnType,
+              declaration.returnType.name,
+              resolution.typeParameters,
+              resolution.typeArguments,
+            ),
           },
           errorType: resolution.errorType === null ? null : {
             ...declaration.errorType!,
-            name: rebaseConcreteNativeType(resolution.errorType, declaration.errorType!.name),
+            name: rebaseConcreteGenericType(
+              resolved.source.declaration.errorType!.name,
+              resolution.errorType,
+              declaration.errorType!.name,
+              resolution.typeParameters,
+              resolution.typeArguments,
+            ),
           },
         };
       }
