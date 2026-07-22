@@ -36,6 +36,7 @@ Status meanings:
 | Area | Status | Current boundary |
 | --- | --- | --- |
 | Moves and deterministic `deinit` | Implemented | Flow-sensitive cleanup across return, throw, loops, and matches |
+| Explicit `copy` / `move` expressions | Implemented foundation | Readable contextual prefix keywords; `copy` supports cleanup-free values, owned String, recursively copyable Z structs/enums/arrays, and `.zd`-proven native copies, while `move` transfers unique whole-binding owners and diagnoses later source use; custom copy hooks and direct container-element extraction remain separate design work |
 | `in` / `inout` / `out` | Implemented | Explicit declaration and mutable call-site capabilities |
 | Unified loan checker | Implemented foundation | Call-, task-, receiver-view-, and Arena-region lifetimes share one root/capability/lifetime representation and conflict matrix; cross-thread loans remain to integrate |
 | Fixed arrays | Implemented | Checked indexing and reverse element cleanup |

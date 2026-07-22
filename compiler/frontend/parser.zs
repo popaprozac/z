@@ -1604,6 +1604,26 @@ function parseUnaryTree(
       operator
     );
   }
+  if (
+    kind == TokenKind.identifier
+    && (tokens[current].text == "copy" || tokens[current].text == "move")
+    && current + 1 < end
+    && tokens[current + 1].kind != TokenKind.leftParen
+  ) {
+    const operator = snapshot(tokens[current]);
+    current = current + 1;
+    const operand = try parseUnaryTree(tokens, inout current, end, inout nodes, inout statementNodes);
+    let children = Array<usize>();
+    children.push(operand);
+    return pushExpressionNode(
+      inout nodes,
+      ExpressionKind.unaryExpression,
+      operator.text.copyBytes(0, operator.text.byteLength),
+      children,
+      Array<String>(),
+      operator
+    );
+  }
   return try parsePostfixTree(tokens, inout current, end, inout nodes, inout statementNodes);
 }
 

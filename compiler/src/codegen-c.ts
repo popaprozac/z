@@ -118,6 +118,7 @@ export function generateC(program: Program, sourceName: string, semanticInfo: Se
     }),
     ...setTypes.map((name) => dynamicArrayTypeName(parseSetType(name)!.elementType)),
   ])];
+  const explicitCopyTypes = collectExplicitCopyTypes(semanticInfo, structs, enums);
   const arenaCreateTypes = [...new Set(semanticInfo.arenaCreateCalls.values())];
   const usesArena = [...semanticInfo.standardTypeBindings.values()].includes("Arena");
   const functionTypes = collectFunctionTypes(program, semanticInfo);
@@ -307,6 +308,13 @@ export function generateC(program: Program, sourceName: string, semanticInfo: Se
   }
 
   lines.push(...generateAggregateDefinitions(program.structs, program.enums, arrayTypes, structs, enums, semanticInfo.foreignNamedTypes));
+  for (const type of explicitCopyTypes) {
+    lines.push(`${generateExplicitCopySignature(type, structs, enums, semanticInfo.foreignNamedTypes)};`);
+  }
+  if (explicitCopyTypes.length > 0) lines.push("");
+  for (const type of explicitCopyTypes) {
+    lines.push(generateExplicitCopy(type, structs, enums, semanticInfo.foreignNamedTypes), "");
+  }
   if (usesFileSystem || usesProcess) {
     lines.push(generateSystemStandardRuntime(usedStandardFunctions), "");
   }
@@ -393,6 +401,132 @@ export function generateC(program: Program, sourceName: string, semanticInfo: Se
     lines.push(generateFunction(declaration, structs, enums, functions, null, semanticInfo), "");
   }
   return `${lines.join("\n")}\n`;
+}
+
+function collectExplicitCopyTypes(
+  semanticInfo: SemanticInfo,
+  structs: Map<string, StructDeclaration>,
+  enums: Map<string, EnumDeclaration>,
+): string[] {
+  const collected = new Set<string>();
+  const visit = (type: string): void => {
+    const dynamic = parseDynamicArrayType(type);
+    const fixed = parseFixedArrayType(type);
+    const declaration = structs.get(type);
+    const enumeration = enums.get(type);
+    if (!dynamic && !fixed && declaration?.kind !== "struct" && !enumeration) return;
+    if (collected.has(type)) return;
+    collected.add(type);
+    if (dynamic) visit(dynamic.elementType);
+    else if (fixed) visit(fixed.elementType);
+    else if (declaration) for (const field of declaration.fields) visit(field.type.name);
+    else for (const variant of enumeration!.variants) if (variant.payload) visit(variant.payload.name);
+  };
+  for (const plan of semanticInfo.explicitCopies.values()) {
+    if (plan.kind === "aggregate") visit(plan.type);
+  }
+  return [...collected];
+}
+
+function explicitCopyName(type: string): string {
+  return `z_copy_${nativeSymbolPart(type)}`;
+}
+
+function generateExplicitCopySignature(
+  type: string,
+  structs: Map<string, StructDeclaration>,
+  enums: Map<string, EnumDeclaration>,
+  foreignNamedTypes: SemanticInfo["foreignNamedTypes"],
+): string {
+  const cType = mapType(type, structs, enums, foreignNamedTypes);
+  return `static ${cType} ${explicitCopyName(type)}(${cType} source)`;
+}
+
+function explicitCopyValue(
+  value: string,
+  type: string,
+  structs: Map<string, StructDeclaration>,
+  enums: Map<string, EnumDeclaration>,
+): string {
+  if (type === "String") return `z_string_copy(${value})`;
+  if (
+    parseDynamicArrayType(type)
+    || parseFixedArrayType(type)
+    || structs.get(type)?.kind === "struct"
+    || enums.has(type)
+  ) return `${explicitCopyName(type)}(${value})`;
+  return value;
+}
+
+function generateExplicitCopy(
+  type: string,
+  structs: Map<string, StructDeclaration>,
+  enums: Map<string, EnumDeclaration>,
+  foreignNamedTypes: SemanticInfo["foreignNamedTypes"],
+): string {
+  const signature = generateExplicitCopySignature(type, structs, enums, foreignNamedTypes);
+  const dynamic = parseDynamicArrayType(type);
+  if (dynamic) {
+    const cType = mapType(type, structs, enums, foreignNamedTypes);
+    const elementType = mapType(dynamic.elementType, structs, enums, foreignNamedTypes);
+    const copied = explicitCopyValue("source.data[index]", dynamic.elementType, structs, enums);
+    return `${signature} {
+  ${cType} result = { NULL, 0, 0 };
+  if (source.length == 0) return result;
+  if (source.length > SIZE_MAX / sizeof(${elementType})) abort();
+  result.data = (${elementType} *)malloc(sizeof(${elementType}) * source.length);
+  if (result.data == NULL) abort();
+  result.length = source.length;
+  result.capacity = source.length;
+  for (uintptr_t index = 0; index < source.length; index += 1) {
+    result.data[index] = ${copied};
+  }
+  return result;
+}`;
+  }
+  const fixed = parseFixedArrayType(type);
+  if (fixed) {
+    const cType = mapType(type, structs, enums, foreignNamedTypes);
+    const copied = explicitCopyValue("source.data[index]", fixed.elementType, structs, enums);
+    return `${signature} {
+  ${cType} result = { 0 };
+  for (uintptr_t index = 0; index < ${fixed.length}; index += 1) {
+    result.data[index] = ${copied};
+  }
+  return result;
+}`;
+  }
+  const declaration = structs.get(type);
+  if (declaration?.kind === "struct") {
+    if (declaration.fields.length === 0) return `${signature} { return source; }`;
+    const fields = declaration.fields.map((field) => (
+      `.${field.name} = ${explicitCopyValue(`source.${field.name}`, field.type.name, structs, enums)}`
+    ));
+    return `${signature} {
+  return (${mapType(type, structs, enums, foreignNamedTypes)}){ ${fields.join(", ")} };
+}`;
+  }
+  const enumeration = enums.get(type);
+  if (enumeration) {
+    if (nicheOptionPayload(enumeration, foreignNamedTypes)) return `${signature} { return source; }`;
+    const cType = mapType(type, structs, enums, foreignNamedTypes);
+    const cases = enumeration.variants.filter((variant) => variant.payload).map((variant) => (
+      `    case ${variantTag(enumeration.name, variant.name)}:\n`
+      + `      result.data.${variant.name} = ${explicitCopyValue(`source.data.${variant.name}`, variant.payload!.name, structs, enums)};\n`
+      + "      break;"
+    )).join("\n");
+    return `${signature} {
+  ${cType} result = { 0 };
+  result.tag = source.tag;
+  switch (source.tag) {
+${cases}
+    default:
+      break;
+  }
+  return result;
+}`;
+  }
+  throw new Error(`missing explicit copy lowering for ${type}`);
 }
 
 function generateStruct(
@@ -1184,6 +1318,10 @@ static Z_UNUSED_FUNCTION inline Z_String z_string_copy_bytes(Z_String value, uin
   const char *bytes = value.data != NULL ? value.data + start : "";
   z_string_append_bytes(&result, bytes, end - start);
   return result;
+}
+
+static Z_UNUSED_FUNCTION inline Z_String z_string_copy(Z_String value) {
+  return z_string_copy_bytes(value, 0, value.length);
 }
 
 static Z_UNUSED_FUNCTION inline void z_text_buffer_append(Z_String *self, Z_String value) {
@@ -3965,6 +4103,15 @@ function generateExpressionInner(expression: Expression, context: GenerationCont
       if (context.parameterModes.get(expression.name) === "inout" || context.parameterModes.get(expression.name) === "out") return cBindingName(expression.name);
       return `&(${cBindingName(expression.name)})`;
     case "unary": {
+      const explicitCopy = context.semanticInfo.explicitCopies.get(expression.location.offset);
+      if (explicitCopy) {
+        const source = generateExpression(expression.operand, context);
+        const value = explicitCopy.sourceIsView ? `(*(${source}))` : source;
+        if (explicitCopy.kind === "string") return `z_string_copy(${value})`;
+        if (explicitCopy.kind === "aggregate") return `${explicitCopyName(explicitCopy.type)}(${value})`;
+        return value;
+      }
+      if (expression.operator === "move") return generateExpression(expression.operand, context);
       const contextualType = context.semanticInfo.numericLiteralTypes.get(expression.location.offset);
       if (
         contextualType
@@ -5161,7 +5308,8 @@ function inferExpressionType(expression: Expression, context: GenerationContext)
     case "null":
       return expression.kind === "null" ? "null" : "boolean";
     case "unary":
-      return "boolean";
+      return context.semanticInfo.expressionTypes.get(expression.location.offset)
+        ?? (expression.operator === "!" ? "boolean" : inferExpressionType(expression.operand, context));
     case "binary":
       return ["+", "-", "*", "/", "%", "&", "|", "^", "<<", ">>"].includes(expression.operator) ? "i32" : "boolean";
     case "conditional":

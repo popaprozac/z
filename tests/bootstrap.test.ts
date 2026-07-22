@@ -8612,6 +8612,116 @@ test("owns Map keys and values with optional views and deterministic removal", (
   assert.match(diagnostics(missingImport, "map-import.zs")[0].message, /Map requires an explicit standard-library import/);
 });
 
+test("supports explicit copy and move ownership expressions", () => {
+  const source = `
+    struct Document {
+      title: String;
+    }
+
+    struct Library {
+      document: Document;
+
+      function current(): view Document {
+        return this.document;
+      }
+    }
+
+    function main(): i32 {
+      const library = Library({ document: Document({ title: "draft" }) });
+      const snapshot = copy library.current();
+      const transferred = move library;
+      if (snapshot.title.byteLength == 5 && transferred.document.title.byteLength == 5) return 0;
+      return 1;
+    }
+  `;
+  assert.deepEqual(diagnostics(source, "explicit-copy-move.zs"), []);
+  const generated = compileToC(source, "explicit-copy-move.zs");
+  assert.match(generated, /Z_Document snapshot = z_copy_Document\(/);
+  assert.match(generated, /z_string_copy\(source\.title\)/);
+  assert.match(generated, /_z_live_library_[0-9]+ = false/);
+  const directory = mkdtempSync("/tmp/z-explicit-copy-move-");
+  const input = resolve(directory, "main.zs");
+  writeFileSync(input, source);
+  const result = spawnSync(process.execPath, [cli, "run", input], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+
+  const copyKeepsSource = `
+    function main(): i32 {
+      const value = 21;
+      const snapshot = copy value;
+      return value + snapshot - 42;
+    }
+  `;
+  assert.deepEqual(diagnostics(copyKeepsSource, "explicit-trivial-copy.zs"), []);
+
+  const contextualKeywords = `
+    function copy(value: i32): i32 { return value + 1; }
+    function move(value: i32): i32 { return value + 1; }
+    function main(): i32 { return move(copy(40)) - 42; }
+  `;
+  assert.deepEqual(diagnostics(contextualKeywords, "contextual-copy-move.zs"), []);
+
+  const recursiveCopies = `
+    enum Label { present String, missing }
+    function main(): i32 {
+      let names = Array<String>();
+      names.push("first");
+      const copiedNames = copy names;
+      names.push("second");
+
+      const label = Label.present("draft");
+      const copiedLabel = copy label;
+      const firstLength: usize = match (in label) {
+        present(value) => value.byteLength;
+        missing => names.length;
+      };
+      const secondLength: usize = match (in copiedLabel) {
+        present(value) => value.byteLength;
+        missing => copiedNames.length;
+      };
+      if (names.length == 2 && copiedNames.length == 1 && firstLength == secondLength) return 0;
+      return 1;
+    }
+  `;
+  assert.deepEqual(diagnostics(recursiveCopies, "explicit-recursive-copy.zs"), []);
+  const recursiveInput = resolve(directory, "recursive.zs");
+  writeFileSync(recursiveInput, recursiveCopies);
+  const recursiveResult = spawnSync(process.execPath, [cli, "run", recursiveInput], { encoding: "utf8" });
+  assert.equal(recursiveResult.status, 0, recursiveResult.stderr);
+
+  const useAfterMove = source.replace(
+    "if (snapshot.title.byteLength == 5 && transferred.document.title.byteLength == 5) return 0;",
+    "if (library.document.title.byteLength == 5) return 0;",
+  );
+  const movedDiagnostic = diagnostics(useAfterMove, "explicit-use-after-move.zs")[0];
+  assert.equal(movedDiagnostic.code, "Z0201");
+  assert.match(movedDiagnostic.message, /use of moved value "library"/);
+
+  const meaninglessMove = diagnostics(`
+    function main(): i32 {
+      const value = 42;
+      const transferred = move value;
+      return transferred;
+    }
+  `, "explicit-scalar-move.zs")[0];
+  assert.equal(meaninglessMove.code, "Z0218");
+  assert.match(meaninglessMove.message, /has no unique ownership to move/);
+
+  const uncopyable = diagnostics(`
+    struct Resource {
+      id: i32;
+      deinit {}
+    }
+    function main(): i32 {
+      const resource = Resource({ id: 42 });
+      const duplicate = copy resource;
+      return duplicate.id;
+    }
+  `, "explicit-uncopyable.zs")[0];
+  assert.equal(uncopyable.code, "Z0217");
+  assert.match(uncopyable.message, /cannot be explicitly copied/);
+});
+
 test("exposes Map imports, members, and source-level types to editor services", () => {
   const source = `
     import { Map as Dictionary } from "std/collections";
@@ -10134,6 +10244,7 @@ test("editor grammar tracks keywords without reserving Result variants", () => {
   assert.match(keywordPattern, /on/);
   assert.match(keywordPattern, /yield/);
   assert.match(keywordPattern, /select/);
+  assert.match(keywordPattern, /copy/);
   assert.match(keywordPattern, /move/);
   assert.match(keywordPattern, /view/);
   assert.match(keywordPattern, /weak/);

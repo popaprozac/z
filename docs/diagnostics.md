@@ -46,6 +46,10 @@ Currently structured codes include:
 | `Z0212` | borrowed capturing closure cannot become a storable function value |
 | `Z0213` | environment-carrying function value cannot cross a context-free C callback boundary |
 | `Z0214` | an escaping C callback declaration is missing its caller-thread or release contract |
+| `Z0215` | closure parameter type cannot be inferred without a contextual function type |
+| `Z0216` | throwing closure cannot become a general stored function value |
+| `Z0217` | explicit copy requested for a type without an independent-copy capability |
+| `Z0218` | explicit move requested for a view, non-owning value, or type without move capability |
 | `Z0301` | invalid or missing `inout` capability |
 | `Z0302` | invalid or missing `out` capability |
 | `Z0303` | read before initialization |

@@ -3291,6 +3291,15 @@ function emitFrameExpressionInner(
       );
     case "unary":
       {
+        const explicitCopy = plan.types.semanticInfo.explicitCopies.get(expression.location.offset);
+        if (explicitCopy) {
+          const source = emitFrameExpression(expression.operand, plan, fileName);
+          const value = explicitCopy.sourceIsView ? `(*(${source}))` : source;
+          if (explicitCopy.kind === "string") return `z_string_copy(${value})`;
+          if (explicitCopy.kind === "aggregate") return `z_copy_${asyncNativeSymbolPart(explicitCopy.type)}(${value})`;
+          return value;
+        }
+        if (expression.operator === "move") return emitFrameExpression(expression.operand, plan, fileName);
         const contextualType = plan.types.semanticInfo.numericLiteralTypes.get(expression.location.offset);
         if (
           contextualType

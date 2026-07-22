@@ -209,6 +209,12 @@ export type ForeignCallArgumentPlan =
   | { readonly kind: "context"; readonly source: number; readonly callback: ForeignCallbackType; readonly functionType: string }
   | { readonly kind: "release"; readonly source: number; readonly callback: ForeignCallbackType; readonly functionType: string };
 
+export type ExplicitCopyPlan = {
+  readonly kind: "trivial" | "string" | "native" | "aggregate";
+  readonly type: string;
+  readonly sourceIsView: boolean;
+};
+
 export type SemanticInfo = {
   readonly warnings: readonly DiagnosticError[];
   readonly deploymentTarget: DeploymentTarget | null;
@@ -217,6 +223,7 @@ export type SemanticInfo = {
   readonly viewBindingOwners: ReadonlyMap<number, string>;
   readonly movedExpressions: ReadonlySet<number>;
   readonly managedCopies: ReadonlySet<number>;
+  readonly explicitCopies: ReadonlyMap<number, ExplicitCopyPlan>;
   readonly sliceConversions: ReadonlyMap<number, { readonly sourceType: string; readonly targetType: string }>;
   readonly foreignTypes: ReadonlyMap<string, ForeignPointerType>;
   readonly foreignCallTypes: ReadonlyMap<number, string>;
@@ -278,6 +285,7 @@ type AnalysisState = {
   readonly viewOrigins: Map<string, { readonly owner: string; readonly location: SourceLocation }>;
   readonly movedExpressions: Set<number>;
   readonly managedCopies: Set<number>;
+  readonly explicitCopies: Map<number, ExplicitCopyPlan>;
   readonly sliceConversions: Map<number, { readonly sourceType: string; readonly targetType: string }>;
   readonly foreignTypes: ReadonlyMap<string, ForeignPointerType>;
   readonly foreignCallTypes: Map<number, string>;
@@ -473,6 +481,7 @@ export function analyze(
     viewOrigins: new Map(),
     movedExpressions: new Set(),
     managedCopies: new Set(),
+    explicitCopies: new Map(),
     sliceConversions: new Map(),
     foreignTypes,
     foreignCallTypes: new Map(),
@@ -3538,6 +3547,59 @@ function inferExpressionInner(
         `${expression.access} is only valid for a classified imported C record-pointer parameter`,
       );
     case "unary": {
+      if (expression.operator === "copy") {
+        const sourceType = inferExpression(expression.operand, locals, globals, structs, enums, fileName, state);
+        if (sourceType === "unknown" || sourceType === "never") return sourceType;
+        const view = parseViewType(String(underlyingType(sourceType)));
+        const target = view?.target ?? String(underlyingType(sourceType));
+        const plan = explicitCopyPlanForType(target, structs, enums, state);
+        if (!plan) {
+          throw new DiagnosticError(fileName, expression.location, `type ${displayAssignableType(target)} cannot be explicitly copied`, {
+            code: "Z0217",
+            length: 4,
+            notes: [
+              "`copy value` must produce an independent owner while leaving the source available",
+              "the first explicit-copy tier supports ordinary cleanup-free values, String, and native values whose declaration proves copy construction",
+            ],
+            helps: [
+              "use a domain-specific clone or snapshot method for this type, or transfer its existing owner with `move value`",
+            ],
+          });
+        }
+        state.explicitCopies.set(expression.location.offset, { ...plan, type: target, sourceIsView: Boolean(view) });
+        return target;
+      }
+      if (expression.operator === "move") {
+        const sourceType = inferExpression(expression.operand, locals, globals, structs, enums, fileName, state);
+        if (sourceType === "unknown" || sourceType === "never") return sourceType;
+        const actual = String(underlyingType(sourceType));
+        if (parseViewType(actual)) {
+          throw new DiagnosticError(fileName, expression.location, "cannot move a view because it does not own the referenced value", {
+            code: "Z0218",
+            length: 4,
+            notes: ["a view is temporary read-only access tied to another owner"],
+            helps: ["use `copy value` when the viewed type is copyable, or remove/take the value through its owning container"],
+          });
+        }
+        const native = state.foreignNamedTypes.get(actual);
+        if (native?.kind === "value" && !native.lifecycle.move) {
+          throw new DiagnosticError(fileName, expression.location, `native type ${displayAssignableType(actual)} does not declare move construction`, {
+            code: "Z0218",
+            length: 4,
+            helps: ["use `copy value` if its `.zd` contract declares `copy`, or borrow it with `in`"],
+          });
+        }
+        if (native?.kind === "object" || !hasOwnershipType(actual, structs, enums, state)) {
+          throw new DiagnosticError(fileName, expression.location, `type ${displayAssignableType(actual)} has no unique ownership to move`, {
+            code: "Z0218",
+            length: 4,
+            notes: ["ordinary cleanup-free values already copy by value; `move` is reserved for transferring an existing owner"],
+            helps: ["use the value directly, or use `copy value` when explicit duplication improves clarity"],
+          });
+        }
+        consumeOwnedValue(expression.operand, sourceType, locals, structs, enums, fileName, state, true);
+        return actual;
+      }
       const operand = implicitlyLoadCopyableView(
         inferExpression(expression.operand, locals, globals, structs, enums, fileName, state),
         expression.operand,
@@ -5852,17 +5914,17 @@ function consumeOwnedValue(
   if (state.objcStringsToZ.has(expression.location.offset)) return;
   const actual = String(underlyingType(type));
   if (parseWeakType(actual)) {
-    if (expression.kind === "identifier" || expression.kind === "member" || expression.kind === "index") {
+    if (!force && (expression.kind === "identifier" || expression.kind === "member" || expression.kind === "index")) {
       state.managedCopies.add(expression.location.offset);
+      return;
     }
-    return;
   }
   const declaration = structs.get(actual);
   if (declaration?.kind === "class" || parseFunctionType(actual)) {
-    if (expression.kind === "identifier" || expression.kind === "member" || expression.kind === "index") {
+    if (!force && (expression.kind === "identifier" || expression.kind === "member" || expression.kind === "index")) {
       state.managedCopies.add(expression.location.offset);
+      return;
     }
-    return;
   }
   if (
     expression.kind === "member"
@@ -6655,6 +6717,65 @@ function hasOwnershipType(
 ): boolean {
   return hasCleanupType(type, structs, enums, state.foreignTypes)
     || hasMoveOnlyForeignType(type, structs, enums, state.foreignNamedTypes);
+}
+
+function explicitCopyPlanForType(
+  type: ValueType,
+  structs: Map<string, StructDeclaration>,
+  enums: Map<string, EnumDeclaration>,
+  state: AnalysisState,
+): Omit<ExplicitCopyPlan, "type" | "sourceIsView"> | null {
+  const actual = String(underlyingType(type));
+  if (actual === "String") return { kind: "string" };
+  if (actual === "TextBuffer" || actual === "Arena" || parseWeakType(actual) || parseFunctionType(actual)) return null;
+
+  const native = state.foreignNamedTypes.get(actual);
+  if (native?.kind === "value") return native.lifecycle.copy ? { kind: "native" } : null;
+  // ARC/Objective-C references copy identity through ordinary assignment. The
+  // explicit operator is reserved for creating an independent value.
+  if (native?.kind === "object") return null;
+
+  const declaration = structs.get(actual);
+  if (declaration?.kind === "class") return null;
+  if (
+    (Boolean(parseDynamicArrayType(actual)) || Boolean(parseFixedArrayType(actual)) || declaration?.kind === "struct" || enums.has(actual))
+    && explicitAggregateCopyable(actual, structs, enums, state)
+  ) return { kind: "aggregate" };
+  if (
+    !hasOwnershipType(actual, structs, enums, state)
+    && !containsForeignValueStorage(actual, structs, enums, state.foreignNamedTypes)
+  ) return { kind: "trivial" };
+  return null;
+}
+
+function explicitAggregateCopyable(
+  type: string,
+  structs: Map<string, StructDeclaration>,
+  enums: Map<string, EnumDeclaration>,
+  state: AnalysisState,
+  visiting = new Set<string>(),
+): boolean {
+  if (type === "String") return true;
+  if (type === "TextBuffer" || type === "Arena" || parseWeakType(type) || parseFunctionType(type)) return false;
+  const native = state.foreignNamedTypes.get(type);
+  if (native?.kind === "value") return native.lifecycle.copy;
+  if (native?.kind === "object") return false;
+  const dynamic = parseDynamicArrayType(type);
+  if (dynamic) return explicitAggregateCopyable(dynamic.elementType, structs, enums, state, visiting);
+  const fixed = parseFixedArrayType(type);
+  if (fixed) return explicitAggregateCopyable(fixed.elementType, structs, enums, state, visiting);
+  const declaration = structs.get(type);
+  const enumeration = enums.get(type);
+  if (!declaration && !enumeration) return !hasOwnershipType(type, structs, enums, state);
+  if (declaration?.kind === "class" || declaration?.deinitializer || visiting.has(type)) return false;
+  visiting.add(type);
+  const result = declaration
+    ? declaration.fields.every((field) => explicitAggregateCopyable(field.type.name, structs, enums, state, visiting))
+    : enumeration!.variants.every((variant) => (
+      !variant.payload || explicitAggregateCopyable(variant.payload.name, structs, enums, state, visiting)
+    ));
+  visiting.delete(type);
+  return result;
 }
 
 type ThreadTransferKind = "copy" | "move";

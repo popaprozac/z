@@ -31,6 +31,7 @@ bun run z run examples/language/control-flow/result.zs
 | Area | Examples |
 | --- | --- |
 | Borrow capabilities | [`borrowed-parameters.zs`](../examples/language/ownership/borrowed-parameters.zs), [`native-out.zs`](../examples/interop/c/native-out.zs) |
+| Explicit duplication and transfer | [`copy-move.zs`](../examples/language/ownership/copy-move.zs) |
 | Receiver-tied views and regions | [`optional-views.zs`](../examples/language/ownership/optional-views.zs), [`arena.zs`](../examples/language/ownership/arena.zs), [`ownership-views.zs`](../examples/interop/objc/desktop-ownership/ownership-views.zs) |
 | Deterministic cleanup | [`deinit.zs`](../examples/language/ownership/deinit.zs), [`replacement.zs`](../examples/language/ownership/replacement.zs), [`consuming-methods.zs`](../examples/language/ownership/consuming-methods.zs) |
 | ARC and weak references | [`classes.zs`](../examples/language/basics/classes.zs), [`weak-references.zs`](../examples/language/ownership/weak-references.zs) |

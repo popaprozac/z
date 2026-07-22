@@ -337,6 +337,34 @@ An expression arm may be concise or use a block with `select value`. `return`
 and `throw` always target the enclosing function. `yield` is reserved for
 generators rather than overloaded for match blocks.
 
+## Explicit copy and move
+
+Z uses readable prefix keywords when ownership intent should be visible:
+
+```z
+const snapshot = copy library.current();
+const transferred = move library;
+```
+
+`copy value` produces an independent owned value and leaves its source usable.
+The compiler currently synthesizes recursive copies for `String`, fixed and
+growable arrays, and Z structs/enums whose entire value graph is copyable.
+Cleanup-free values use their ordinary value copy. A `.zd` native value must
+explicitly declare `copy`; ARC classes and Objective-C identities do not use
+this operator because ordinary assignment already shares their identity.
+
+`move value` transfers an existing unique owner and makes the source binding
+unavailable. It applies to cleanup-bearing Z values, ARC owners, and native
+values whose contract proves move construction. It is rejected for ordinary
+scalars—where there is no unique ownership to transfer—and for `view T`, which
+never owns the referenced value. To extract an element from a container, use an
+owner operation such as `remove`; moving a field or indexed element directly
+would leave a hole in its containing owner.
+
+The keywords are contextual: the ownership forms require whitespace
+(`copy value`, `move value`), preserving an unambiguous imported call such as
+`move(value)` and the existing `move (...) =>` closure capture syntax.
+
 ## Control flow and expressions
 
 `if`, `while`, and `match` parenthesize their subject. Z supports ternaries and
@@ -396,6 +424,10 @@ destroys every entry. `has` and `.length` do not mutate storage.
 If `V` is cleanup-free and ordinarily copyable, using the matched payload where
 an owned `V` is required performs the same implicit by-value load described
 above. A cleanup-bearing `view V` never becomes owned implicitly.
+
+Use `copy viewValue` when a cleanup-bearing but recursively copyable value must
+become an independent owner. This is an explicit allocation/copy boundary; the
+view and its original owner are not consumed.
 
 `Set` uses the same explicit ownership vocabulary:
 

@@ -92,7 +92,7 @@ const sourceKeywordTokens = [
   "as", "async", "attempt", "await", "break", "class", "const", "constructor",
   "continue", "declare", "deinit", "else", "enum", "export", "for", "from",
   "function", "if", "implements", "import", "in", "inout", "let", "match", "module",
-  "move", "mut", "new", "of", "on", "out", "private", "public", "return", "scope", "select",
+  "copy", "move", "mut", "new", "of", "on", "out", "private", "public", "return", "scope", "select",
   "readonly", "spawn", "static", "struct", "throw", "throws", "trait", "try", "unsafe", "view",
   "weak", "while", "yield",
 ] as const;

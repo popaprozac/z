@@ -504,6 +504,17 @@ export function parse(tokens: Token[], fileName: string): Program {
       const token = previous();
       return { kind: "unary", operator: token.text, operand: parseUnary(), location: token.location };
     }
+    if (
+      at("identifier")
+      && (peek().text === "copy" || peek().text === "move")
+      // Keep `move(...)` available as an ordinary call/alias and preserve the
+      // existing `move (...) =>` closure spelling. Ownership operators use the
+      // intentionally readable, whitespace-separated form `move value`.
+      && tokens[current + 1]?.kind !== "leftParen"
+    ) {
+      const token = take();
+      return { kind: "unary", operator: token.text, operand: parseUnary(), location: token.location };
+    }
     return parsePostfix();
   };
 

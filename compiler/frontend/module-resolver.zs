@@ -2324,9 +2324,10 @@ function consumeOwnedExpressionNode(
   in tree: ExpressionTree,
   index: usize,
   in typeName: String,
+  force: boolean,
   inout bindings: Array<NativeValueBinding>
 ): void throws ModuleResolveError {
-  if (!typeMovesOnOwnedUse(modules, moduleIndex, typeName)) return;
+  if (!force && !typeMovesOnOwnedUse(modules, moduleIndex, typeName)) return;
   const kind = tree.nodes[index].kind;
   if (
     kind == ExpressionKind.memberExpression
@@ -2381,6 +2382,7 @@ function consumeOwnedExpressionSyntax(
         tree,
         root,
         typeName,
+        false,
         inout bindings
       );
     }
@@ -2564,6 +2566,15 @@ function requireExpressionType(
   if (expected == "cstring" && actual == "String" && tree.nodes[index].kind == ExpressionKind.stringExpression) return;
   if (actual == "null" && isNullableTypeName(expected)) return;
   if (compatibleSliceTypes(modules, moduleIndex, expected, actual)) return;
+  if (stringStartsWith(expected, "view ")) {
+    const target = expected.copyBytes(5, expected.byteLength);
+    const kind = tree.nodes[index].kind;
+    if (
+      equivalentTypes(modules, moduleIndex, target, actual)
+      && (kind == ExpressionKind.memberExpression || kind == ExpressionKind.indexExpression)
+      && expressionStorageRootName(tree, index) == "this"
+    ) return;
+  }
   if (stringStartsWith(actual, "view ")) {
     const target = actual.copyBytes(5, actual.byteLength);
     let visiting = Array<String>();
@@ -3477,6 +3488,121 @@ function typeMovesOnOwnedUse(
   }
   let visiting = Array<String>();
   return typeHasCleanup(modules, moduleIndex, typeName, visiting);
+}
+
+function typeSupportsExplicitCopy(
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
+  in typeName: String,
+  in visiting: Array<String>
+): boolean {
+  let actual = typeName.copyBytes(0, typeName.byteLength);
+  if (stringStartsWith(actual, "view ")) {
+    actual = actual.copyBytes(5, actual.byteLength);
+  }
+  if (actual == "String") return true;
+  if (
+    actual == "TextBuffer"
+    || actual == "Arena"
+    || stringStartsWith(actual, "Weak<")
+    || stringStartsWith(actual, "__z_native_function:")
+  ) return false;
+  match (fixedArrayShape(actual)) {
+    some(array) => return typeSupportsExplicitCopy(
+      modules,
+      moduleIndex,
+      array.elementType,
+      visiting
+    );
+    none => {}
+  }
+  let arguments = Array<String>();
+  match (genericTypeShape(actual)) {
+    some(generic) => {
+      if (generic.base == "Array" || generic.base == "Map" || generic.base == "Set") {
+        for (const argument of generic.arguments) {
+          if (!typeSupportsExplicitCopy(modules, moduleIndex, argument, visiting)) return false;
+        }
+        return true;
+      }
+      if (generic.base == "Option" || generic.base == "Result") {
+        for (const argument of generic.arguments) {
+          if (!typeSupportsExplicitCopy(modules, moduleIndex, argument, visiting)) return false;
+        }
+        return true;
+      }
+      for (const argument of generic.arguments) {
+        arguments.push(argument.copyBytes(0, argument.byteLength));
+      }
+    }
+    none => {}
+  }
+  match (typeSymbolLocation(modules, moduleIndex, actual)) {
+    some(location) => {
+      if (
+        modules[location.moduleIndex].symbols[location.symbolIndex].kind
+        == ModuleSymbolKind.classSymbol
+      ) return false;
+      const identity = semanticTypeIdentity(modules, moduleIndex, actual);
+      if (containsString(visiting, identity)) return false;
+      let nextVisiting = copyBindings(visiting);
+      nextVisiting.push(identity);
+      match (in modules[location.moduleIndex].symbols[location.symbolIndex].typeSignature) {
+        some(signature) => {
+          if (signature.customDeinit) return false;
+          let substitutions = Array<NativeValueBinding>();
+          let typeIndex: usize = 0;
+          while (
+            typeIndex < signature.typeParameters.length
+            && typeIndex < arguments.length
+          ) {
+            addValueBinding(
+              inout substitutions,
+              signature.typeParameters[typeIndex],
+              arguments[typeIndex]
+            );
+            typeIndex = typeIndex + 1;
+          }
+          for (const field of signature.fields) {
+            const localType = rebaseTypeName(
+              modules,
+              location.moduleIndex,
+              moduleIndex,
+              field.typeName
+            );
+            const fieldType = substituteGenericType(localType, substitutions);
+            if (!typeSupportsExplicitCopy(
+              modules,
+              moduleIndex,
+              fieldType,
+              nextVisiting
+            )) return false;
+          }
+          for (const variant of signature.variants) {
+            if (variant.payloadType.byteLength == 0) continue;
+            const localType = rebaseTypeName(
+              modules,
+              location.moduleIndex,
+              moduleIndex,
+              variant.payloadType
+            );
+            const payloadType = substituteGenericType(localType, substitutions);
+            if (!typeSupportsExplicitCopy(
+              modules,
+              moduleIndex,
+              payloadType,
+              nextVisiting
+            )) return false;
+          }
+          return true;
+        }
+        none => {}
+      }
+    }
+    none => {}
+  }
+  let cleanupVisiting = Array<String>();
+  return !typeHasCleanup(modules, moduleIndex, actual, cleanupVisiting);
 }
 
 function typeHasCustomConstructor(
@@ -4535,6 +4661,7 @@ function inferContextualObjectExpressionNode(
           tree,
           children[childIndex],
           concreteFieldType,
+          false,
           inout bindings
         );
       }
@@ -4697,6 +4824,7 @@ function inferMatchExpressionNodeType(
       tree,
       subjectIndex,
       subjectType,
+      false,
       inout bindings
     );
   }
@@ -5145,6 +5273,7 @@ function inferSignatureCallType(
           tree,
           nodeIndex,
           argumentType,
+          false,
           inout bindings
         );
       }
@@ -6040,6 +6169,7 @@ function inferExpressionNodeType(
               tree,
               children[1],
               expected,
+              false,
               inout bindings
             );
           }
@@ -6134,6 +6264,38 @@ function inferExpressionNodeType(
     const operand = try inferExpressionNodeType(module, modules, moduleIndex, arena, tree, children[0], inout bindings, inout evidence);
     try requireSettledExpressionType(module, tree, children[0], operand);
     if (operand.byteLength == 0) return "";
+    if (value == "copy") {
+      let copiedType = operand.copyBytes(0, operand.byteLength);
+      if (stringStartsWith(copiedType, "view ")) {
+        copiedType = copiedType.copyBytes(5, copiedType.byteLength);
+      }
+      let visiting = Array<String>();
+      const copyable = typeSupportsExplicitCopy(modules, moduleIndex, copiedType, visiting);
+      if (!copyable) {
+        throw invalidOperator(module, tree, index, `type ${copiedType} cannot be explicitly copied`);
+      }
+      return copiedType;
+    }
+    if (value == "move") {
+      if (stringStartsWith(operand, "view ")) {
+        throw invalidOperator(module, tree, index, "cannot move a view because it does not own the referenced value");
+      }
+      let visiting = Array<String>();
+      if (!typeHasCleanup(modules, moduleIndex, operand, visiting)) {
+        throw invalidOperator(module, tree, index, `type ${operand} has no unique ownership to move`);
+      }
+      try consumeOwnedExpressionNode(
+        module,
+        modules,
+        moduleIndex,
+        tree,
+        children[0],
+        operand,
+        true,
+        inout bindings
+      );
+      return copiedString(operand);
+    }
     if (value == "!" && operand == "boolean") return "boolean";
     if ((value == "+" || value == "-") && isNumericTypeName(operand)) return copiedString(operand);
     if (value == "~" && isIntegerTypeName(operand)) return copiedString(operand);
@@ -6341,6 +6503,7 @@ function inferExpressionNodeType(
         tree,
         children[1],
         thenType,
+        false,
         inout thenBindings
       );
       try consumeOwnedExpressionNode(
@@ -6350,6 +6513,7 @@ function inferExpressionNodeType(
         tree,
         children[2],
         elseType,
+        false,
         inout elseBindings
       );
       mergeBindingFlowStates(inout bindings, thenBindings, elseBindings);
@@ -6375,6 +6539,7 @@ function inferExpressionNodeType(
       tree,
       children[0],
       elementType,
+      false,
       inout bindings
     );
     let childIndex: usize = 1;
@@ -6390,6 +6555,7 @@ function inferExpressionNodeType(
         tree,
         children[childIndex],
         elementType,
+        false,
         inout bindings
       );
       childIndex = childIndex + 1;
@@ -6715,6 +6881,7 @@ function inferExpressionNodeType(
           tree,
           child,
           returnType,
+          false,
           inout closureBindings
         );
       }
@@ -6799,6 +6966,7 @@ function inferExpressionNodeType(
               tree,
               children[1],
               expected,
+              false,
               inout bindings
             );
             return enumType;
