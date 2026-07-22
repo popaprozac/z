@@ -4609,6 +4609,27 @@ test("resolves a canonical module graph directly from native Z ASTs", () => {
   assert.match(integrated.stdout, /native in-process \(FFI \+ lex \+ parse \+ resolve \+ symbols \+ signatures \+ names \+ types \+ expressions \+ encode\): \d+\.\d{2} ms/);
   assert.match(integrated.stdout, /stage-0 parity \(lex \+ parse \+ graph \+ symbols\): \d+\.\d{2} ms/);
 
+  const ordinaryCheck = spawnSync(
+    process.execPath,
+    [cli, "check", main, "--native-frontend", "--timings"],
+    { encoding: "utf8" },
+  );
+  assert.equal(ordinaryCheck.status, 0, ordinaryCheck.stderr);
+  assert.match(
+    ordinaryCheck.stdout,
+    /main\.zs: native frontend shadow matches 3 modules, 3 local edges, and 10 symbols/,
+  );
+  assert.match(ordinaryCheck.stdout, /native frontend shadow timing \(3 modules, cache hit\)/);
+  assert.match(ordinaryCheck.stdout, /main\.zs: ok/);
+
+  const timingsWithoutShadow = spawnSync(
+    process.execPath,
+    [cli, "check", main, "--timings"],
+    { encoding: "utf8" },
+  );
+  assert.equal(timingsWithoutShadow.status, 1);
+  assert.match(timingsWithoutShadow.stderr, /check --timings requires --native-frontend/);
+
   const invalidDirectory = mkdtempSync("/tmp/z-self-host-resolver-");
   const invalidMain = resolve(invalidDirectory, "main.zs");
   writeFileSync(invalidMain, `import { hidden } from "./values.zs"; function main(): i32 { return hidden(); }`);

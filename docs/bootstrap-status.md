@@ -56,7 +56,7 @@ an inferred receiver-tied view.
 | Area | Status | Current boundary |
 | --- | --- | --- |
 | Z source modules | Partial | Explicit exports, namespace/selective imports, aliases, cycle diagnostics, and canonical native type identity across intermediate modules; ordinary lowering still uses stage 0 |
-| CLI | Implemented | `z check`, `z emit`, and `z run` through Bun; native run I/O streams live and arguments after `--` are forwarded |
+| CLI | Implemented | `z check`, `z emit`, and `z run` through Bun; `check --native-frontend` adds the first opt-in native semantic shadow with parity/timings; native run I/O streams live and arguments after `--` are forwarded |
 | System standard APIs | Implemented foundation | Default `std/fs` and `std/process` modules; owned reads/arguments, borrowed writes/process argv, direct no-shell child launch, typed OS failures |
 | Native backends | Partial | Readable C, C++20, Objective-C ARC, and Objective-C++ source generation |
 | Foreign Interface IR | Implemented foundation | Raw declarations, API-note merge, normalized contracts, source locations, and availability metadata are separate; richer native hierarchies remain |
@@ -387,6 +387,12 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    result paths, the native resolver now analyzes the complete three-module
    frontend graph—lexer, parser, and resolver—with 335 symbols and exact
    stage-zero graph/symbol parity.
+   Ordinary `z check` can now opt into that same result through
+   `--native-frontend`; stage zero remains authoritative, then native analysis
+   gates success on exact parity. This is intentionally a shadow integration,
+   not yet a frontend-selection promise. It exposes equivalent-work timings and
+   lets application checks grow the native corpus without changing default
+   diagnostics.
    Complete
    contextual literal and return-driven inference, foreign/intrinsic method lookup,
    generic constraints/methods, async/foreign call effects, contextual untyped

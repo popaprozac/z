@@ -404,6 +404,15 @@ methods, while trait-typed storage, existential representation, generic traits,
 and dynamic dispatch remain later design work. Z-defined classes intentionally
 do not have inheritance.
 
+The keyword remains `trait`, not TypeScript's `interface`, deliberately. Z uses
+TypeScript-inspired surface syntax, but its behavior contracts are nominal and
+apply equally to value structs and ARC classes. `interface` would imply
+TypeScript's structural compatibility, object-shape typing, and declaration
+merging where Z provides none. The word remains available if a future,
+separately designed structural boundary type proves useful; foreign Objective-C,
+Swift, and C++ interface metadata continues to enter through FIIR rather than
+changing this source-level contract.
+
 ## Control flow
 
 Conditions are statically typed `boolean` expressions. `if`/`else` and `while`

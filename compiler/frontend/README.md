@@ -110,7 +110,15 @@ Run exact stage-zero parity with:
 bun run z self-host-lex compiler/frontend/lexer.zs
 bun run z self-host-parse compiler/frontend/lexer.zs compiler/frontend/parser.zs
 bun run z self-host-resolve examples/language/modules/main.zs --timings
+bun run z check examples/language/modules/main.zs --native-frontend --timings
 ```
+
+`check --native-frontend` is the first ordinary-command integration. Stage 0
+still performs authoritative checking; after it succeeds, the native frontend
+analyzes the same canonical module batch and gates command success on exact
+graph/symbol parity. The opt-in shadow keeps diagnostics stable while measuring
+equivalent work and finding semantic composition gaps before native results
+replace stage-zero decisions. `--timings` is available only with this shadow.
 
 The text protocol is a bootstrap boundary, not the intended final frontend API.
 The resolver intentionally receives host-canonicalized paths and source text in
@@ -131,5 +139,6 @@ borrow last-use release, and complete recursive ownership lowering remain
 stage-zero work.
 The reported native interval therefore does more semantic work than the
 graph-and-symbol-only stage-zero comparison.
-Repeated corpus measurements and incrementally
-feeding the native graph into ordinary compiler commands are the next layers.
+Repeated corpus measurements, broadening ordinary-command shadow coverage, and
+then replacing stage-zero semantic decisions with native results are the next
+layers.

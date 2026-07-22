@@ -57,6 +57,7 @@ usage: z <check|emit|run> <file.zs>
 | Command | Purpose |
 | --- | --- |
 | `bun run z check file.zs` | Parse, type-check, and validate ownership without producing a binary |
+| `bun run z check file.zs --native-frontend --timings` | Also run the opt-in native semantic shadow and report parity timings |
 | `bun run z emit file.zs` | Print the generated C-family source for inspection |
 | `bun run z run file.zs` | Generate, compile, link, and execute a native binary |
 

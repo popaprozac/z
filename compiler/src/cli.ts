@@ -55,8 +55,17 @@ if (!command || !inputArgument || !["check", "emit", "run", "self-host-lex", "se
       if (unexpected.length > 0) throw new Error("self-host-resolve discovers local modules from its entry; pass only one .zs path");
       verifyStage1Resolver(inputPath, timings);
     } else if (command === "check") {
+      const nativeFrontend = trailingArguments.includes("--native-frontend");
+      const timings = trailingArguments.includes("--timings");
+      const unexpected = trailingArguments.filter((argument) => argument !== "--native-frontend" && argument !== "--timings");
+      if (unexpected.length > 0) throw new Error(`unknown check option ${JSON.stringify(unexpected[0])}`);
+      if (timings && !nativeFrontend) throw new Error("check --timings requires --native-frontend");
+      if (nativeFrontend && !inputPath.endsWith(".zs")) {
+        throw new Error("check --native-frontend currently requires a .zs source module");
+      }
       const source = readFileSync(inputPath, "utf8");
       for (const warning of check(source, inputPath)) console.error(formatDiagnostic(warning, source));
+      if (nativeFrontend) verifyStage1Resolver(inputPath, timings, "check-shadow");
       console.log(`${inputPath}: ok`);
     } else {
       const source = readFileSync(inputPath, "utf8");
@@ -76,7 +85,11 @@ if (!command || !inputArgument || !["check", "emit", "run", "self-host-lex", "se
   }
 }
 
-function verifyStage1Resolver(inputPath: string, timings: boolean): void {
+function verifyStage1Resolver(
+  inputPath: string,
+  timings: boolean,
+  presentation: "self-host-command" | "check-shadow" = "self-host-command",
+): void {
   const projectRoot = resolve(dirname(new URL(import.meta.url).pathname), "../..");
   const entryPath = realpathSync(inputPath);
   const loadingStarted = performance.now();
@@ -110,10 +123,11 @@ function verifyStage1Resolver(inputPath: string, timings: boolean): void {
   const order = stage1.dependencyOrder.map((index) => basename(stage1.modules[index].path)).join(" -> ");
   const edgeLabel = edges === 1 ? "edge" : "edges";
   const symbolLabel = symbols === 1 ? "symbol" : "symbols";
-  console.log(`${entryPath}: stage-1 resolver matches ${stage1.modules.length} modules, ${edges} local ${edgeLabel}, and ${symbols} ${symbolLabel} (${order})`);
+  const subject = presentation === "check-shadow" ? "native frontend shadow" : "stage-1 resolver";
+  console.log(`${entryPath}: ${subject} matches ${stage1.modules.length} modules, ${edges} local ${edgeLabel}, and ${symbols} ${symbolLabel} (${order})`);
   if (timings) {
     const cacheState = boundary.cacheHit ? "cache hit" : "cache miss; stage-0 compile + native build included";
-    console.log(`stage-1 resolver timing (${stage1.modules.length} modules, ${cacheState})`);
+    console.log(`${subject} timing (${stage1.modules.length} modules, ${cacheState})`);
     console.log(`  boundary preparation: ${formatMilliseconds(boundary.prepareMilliseconds)}`);
     console.log(`  host discovery (file I/O + stage-0 import parse): ${formatMilliseconds(loadingMilliseconds)}`);
     console.log(`  host batch framing: ${formatMilliseconds(batchMilliseconds)}`);
@@ -1576,7 +1590,8 @@ function nativeLanguageFlags(language: NativeArtifact["language"]): string[] {
 }
 
 function usage(): void {
-  console.error("usage: z <check|emit|run> <file.zs> [-- program arguments]");
+  console.error("usage: z check <file.zs> [--native-frontend] [--timings]");
+  console.error("       z <emit|run> <file.zs> [-- program arguments]");
   console.error("       z self-host-lex <file.zs> [more.zs ...]");
   console.error("       z self-host-parse <file.zs> [more.zs ...] [--timings]");
   console.error("       z self-host-resolve <entry.zs> [--timings]");
