@@ -2574,7 +2574,7 @@ function inferClosureExpression(
     return resolvedParameter;
   });
 
-  const discovered = collectClosureCaptures(expression, locals, structs, parameterNames);
+  const discovered = collectClosureCaptures(expression, locals, structs, state.foreignNamedTypes, parameterNames);
   const captures: ClosureCaptureInfo[] = [];
   const closureLocals = new Map<string, ValueType>();
   for (const capture of discovered.values()) {
@@ -2588,7 +2588,8 @@ function inferClosureExpression(
     if (ownershipState(stored) !== "available") {
       throw movedValueError(fileName, { name: capture.name, location: capture.location }, state, false, "capture");
     }
-    if (capture.mutated && !isMutableBinding(stored)) {
+    const type = String(underlyingType(stored));
+    if (capture.mutated && !isMutableBinding(stored) && structs.get(type)?.kind !== "class") {
       throw new DiagnosticError(fileName, capture.location, `closure cannot mutate immutable capture ${JSON.stringify(capture.name)}`, {
         code: "Z0210",
         length: capture.name.length,
@@ -2596,7 +2597,6 @@ function inferClosureExpression(
         helps: [`declare ${JSON.stringify(capture.name)} with \`let\` if mutation is intended`],
       });
     }
-    const type = String(underlyingType(stored));
     if (containsViewType(type)) {
       if (!transientBorrow || expression.captureMode !== "borrow") {
         throw new DiagnosticError(fileName, capture.location, `view-bearing value ${JSON.stringify(capture.name)} can only be captured by a proven nonescaping closure`, {
@@ -2831,6 +2831,7 @@ function collectClosureCaptures(
   closure: Extract<Expression, { kind: "closure" }>,
   outerLocals: ReadonlyMap<string, ValueType>,
   structs: ReadonlyMap<string, StructDeclaration>,
+  foreignNamedTypes: ReadonlyMap<string, ForeignNamedType>,
   parameterNames: ReadonlySet<string>,
 ): Map<string, { readonly name: string; readonly location: SourceLocation; mutated: boolean }> {
   const outerNames = new Set(outerLocals.keys());
@@ -2886,14 +2887,25 @@ function collectClosureCaptures(
           const receiverType = outerLocals.get(expression.callee.object.name);
           const receiver = receiverType ? structs.get(String(underlyingType(receiverType))) : null;
           const method = receiver?.methods.find((candidate) => candidate.name === expression.callee.property);
-          walkExpression(expression.callee, localNames, method?.receiverMode === "inout");
+          if (method?.receiverMode === "inout") {
+            record(expression.callee.object.name, expression.callee.object.location, true, localNames);
+          } else {
+            walkExpression(expression.callee, localNames);
+          }
         } else {
           walkExpression(expression.callee, localNames);
         }
         for (const argument of expression.arguments) walkExpression(argument, localNames);
         return;
       case "member":
-        walkExpression(expression.object, localNames, mutated);
+        if (mutated && expression.object.kind === "identifier") {
+          const stored = outerLocals.get(expression.object.name);
+          const type = stored ? String(underlyingType(stored)) : null;
+          const foreignReferenceIdentity = type && foreignNamedTypes.get(type)?.kind === "object";
+          walkExpression(expression.object, localNames, !foreignReferenceIdentity);
+        } else {
+          walkExpression(expression.object, localNames, mutated);
+        }
         return;
       case "index":
         walkExpression(expression.object, localNames, mutated);

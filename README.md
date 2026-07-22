@@ -117,7 +117,8 @@ bun run z run examples/applications/z-notes/smoke.zs
 
 It combines AppKit, an ARC-managed Z notes model, optional selection, direct
 `sqlite3.h` import, an adjacent ownership contract for SQLite's `sqlite3 **`
-output, and explicit `target.link.libraries` configuration. The smoke entry
+output, explicit `target.link.libraries` configuration, and an interactive Add
+Note control through `std/objc` target/action. The smoke entry
 opens and deterministically closes an in-memory database without opening a GUI.
 Its deployment target is macOS 14 because it uses `NSApplication.activate()`;
 lower targets receive a Z-source availability diagnostic.

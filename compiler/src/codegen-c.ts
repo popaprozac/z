@@ -1043,7 +1043,7 @@ function generateClosureAdapter(
     const stored = `environment->${capture.name}`;
     if (!closure.owned) return stored;
     if (capture.mode === "value") return stored;
-    if (capture.mode === "in" && structs.get(capture.type)?.kind === "class") return stored;
+    if (capture.mode === "in" && closureCaptureHasReferenceIdentity(capture.type, structs, foreignNamedTypes)) return stored;
     return `&(${stored})`;
   });
   if (closure.captures.length > 0) {
@@ -1081,7 +1081,7 @@ function generateClosureEnvironmentDefinition(
     const type = mapType(capture.type, structs, enums, semanticInfo.foreignNamedTypes);
     const borrowedPointer = !closure.owned
       && capture.mode !== "value"
-      && !(capture.mode === "in" && structs.get(capture.type)?.kind === "class");
+      && !(capture.mode === "in" && closureCaptureHasReferenceIdentity(capture.type, structs, semanticInfo.foreignNamedTypes));
     if (borrowedPointer) {
       return `  ${capture.mode === "in" ? "const " : ""}${type} *${capture.name};`;
     }
@@ -3439,7 +3439,7 @@ function generateClosureValue(
       : generateExpression(captured, context);
     const borrowedPointer = !closure.owned
       && capture.mode !== "value"
-      && !(capture.mode === "in" && context.structs.get(capture.type)?.kind === "class");
+      && !(capture.mode === "in" && closureCaptureHasReferenceIdentity(capture.type, context.structs, context.semanticInfo.foreignNamedTypes));
     const target = closure.owned ? `${environment}->${capture.name}` : `${environment}.${capture.name}`;
     return `${target} = ${borrowedPointer ? `&(${value})` : value};`;
   });
@@ -4641,7 +4641,9 @@ function generateExpressionInner(expression: Expression, context: GenerationCont
         const emittedName = cBindingName(expression.name);
         const type = context.localTypes.get(expression.name);
         if (type && parseSliceType(type)) return emittedName;
-        const value = type && context.structs.get(type)?.kind === "class" && context.parameterModes.get(expression.name) === "in"
+        const value = type
+          && closureCaptureHasReferenceIdentity(type, context.structs, context.semanticInfo.foreignNamedTypes)
+          && context.parameterModes.get(expression.name) === "in"
           ? emittedName
           : `(*${emittedName})`;
         return maybeRetainClass(expression, value, context);
@@ -5092,7 +5094,7 @@ function generateExpressionInner(expression: Expression, context: GenerationCont
               ? closureCaptureStorageName(closure, capture.name)
               : generateStoredValue(capture.name, context);
             if (capture.mode === "value") return stored;
-            if (capture.mode === "in" && context.structs.get(capture.type)?.kind === "class") return stored;
+            if (capture.mode === "in" && closureCaptureHasReferenceIdentity(capture.type, context.structs, context.semanticInfo.foreignNamedTypes)) return stored;
             return `&(${stored})`;
           });
           const args = [...hidden, ...expression.arguments.map((argument) => generateCallArgument(argument, context))];
@@ -5112,6 +5114,14 @@ function generateExpressionInner(expression: Expression, context: GenerationCont
       return `${generateExpression(expression.callee, context)}(${expression.arguments.map((argument) => generateCallArgument(argument, context)).join(", ")})`;
     }
   }
+}
+
+function closureCaptureHasReferenceIdentity(
+  type: string,
+  structs: ReadonlyMap<string, StructDeclaration>,
+  foreignNamedTypes: SemanticInfo["foreignNamedTypes"],
+): boolean {
+  return structs.get(type)?.kind === "class" || foreignNamedTypes.get(type)?.kind === "object";
 }
 
 function generateViewPayload(expression: Expression, context: GenerationContext): string {

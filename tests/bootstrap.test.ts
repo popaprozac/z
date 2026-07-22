@@ -2556,19 +2556,32 @@ test("compiles a desktop ownership slice and preserves its current pressure wall
   assert.match(hover(source, example, windowFieldOffset)?.contents.value ?? "", /class NSWindow/);
 });
 
-test("builds the Z Notes AppKit and sqlite3 application skeleton", () => {
+test("builds the interactive Z Notes AppKit and sqlite3 application", () => {
   if (process.platform !== "darwin") return;
   const application = resolve(projectRoot, "examples/applications/z-notes/main.zs");
   const source = readFileSync(application, "utf8");
   const artifact = compileToNative(source, application);
   assert.equal(artifact.language, "objective-c");
-  assert.deepEqual(artifact.frameworks, ["AppKit"]);
+  assert.ok(artifact.frameworks.includes("AppKit"));
+  assert.ok(artifact.frameworks.includes("Foundation"));
   assert.ok(artifact.nativeLinkerArguments.includes("-lsqlite3"));
   assert.match(artifact.source, /sqlite3_libversion\(\)/);
   assert.match(artifact.source, /sqlite3_open\(":memory:", &\(database\)\)/);
   assert.match(artifact.source, /if \(_z_live_database_\d+ && database != NULL\) sqlite3_close\(database\)/);
   assert.match(artifact.source, /\[\[NSWindow alloc\] initWithContentRect/);
   assert.match(artifact.source, /Z_Option_usize_some/);
+  assert.match(artifact.source, /@interface ZObjCAction : NSObject/);
+  assert.match(artifact.source, /\[addButton setTarget:addNoteAction\]/);
+  assert.match(artifact.source, /\[addButton setAction:@selector\(z_invoke:\)\]/);
+  assert.match(artifact.source, /\[content addSubview:statusLabel\]/);
+  assert.match(artifact.source, /\[statusLabel setStringValue:z_nsstring_from_string/);
+
+  const compilation = spawnSync("xcrun", [
+    "clang", "-x", "objective-c", "-fobjc-arc", "-fblocks",
+    "-mmacosx-version-min=14.0",
+    "-Wall", "-Wextra", "-Werror", "-fsyntax-only", "-",
+  ], { input: artifact.source, encoding: "utf8" });
+  assert.equal(compilation.status, 0, compilation.stderr);
 
   const nativeCheck = spawnSync(
     process.execPath,

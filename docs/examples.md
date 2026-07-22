@@ -15,7 +15,7 @@ compile-only probes and `emit` to inspect generated native code.
 | Object destructuring | [`destructuring.zs`](../examples/language/basics/destructuring.zs) | Local field/alias patterns, explicit copy/move ownership, and borrowed Map-entry patterns |
 | Results | [`result.zs`](../examples/language/control-flow/result.zs) | `return`, `throw`, `attempt`, and exhaustive matching |
 | Options | [`option.zs`](../examples/language/types/option.zs) | `Option.some`, `Option.none`, and payload matching |
-| Native application skeleton | [`z-notes`](../examples/applications/z-notes) | AppKit, ARC application state, nullable selection, direct SQLite header import, and explicit native library linkage |
+| Native desktop application | [`z-notes`](../examples/applications/z-notes) | AppKit controls, `std/objc` target/action, ARC application state, nullable selection, direct SQLite import, and native library linkage |
 | Application walkthrough | [`document-workspace`](../examples/applications/document-workspace) | A native document model combining modules, errors, arrays, named enums, optional views, mutation, and deterministic cleanup |
 | Collection pressure test | [`project-index`](../examples/applications/project-index) | Borrowed Map lookups, owned snapshots, dirty-path Sets, typed IO errors, and an unchanged dense-to-hashed benchmark |
 | Self-hosting groundwork | [`source-stager`](../examples/applications/source-stager) | File IO, owned argv, typed OS failures, and direct no-shell child launch |
@@ -107,12 +107,14 @@ bun run z run examples/async/async-delay.zs
 ## Application-shaped probes
 
 [`z-notes`](../examples/applications/z-notes) is the native desktop composition
-probe. Its first skeleton opens an AppKit window, owns notes in an ARC-managed Z
-model, represents selection with `Option<usize>`, imports `sqlite3.h` directly,
-selects the SQLite system library in `z.json`, and uses an adjacent `.zd`
-contract to classify the owned nullable `sqlite3 **` output without a
-handwritten wrapper. Its smoke entry opens and deterministically closes an
-in-memory database.
+probe. It opens an AppKit window, owns notes in an ARC-managed Z model,
+represents selection with `Option<usize>`, and wires an interactive Add Note
+button through the explicit `std/objc` target/action adapter. The rest of the
+control and window surface comes directly from AppKit headers. It imports
+`sqlite3.h` directly, selects the SQLite system library in `z.json`, and uses
+an adjacent `.zd` contract to classify the owned nullable `sqlite3 **` output
+without a handwritten wrapper. Its smoke entry opens and deterministically
+closes an in-memory database.
 
 [`document-workspace`](../examples/applications/document-workspace) is the
 recommended non-GUI application walkthrough. It uses domain-oriented names to
