@@ -2339,6 +2339,34 @@ test("narrows nullable Objective-C references before member access", () => {
   const windowBinding = source.indexOf("window =") + 2;
   assert.match(hover(source, fileName, windowBinding)?.contents.value ?? "", /window: AppKit\.NSWindow \| null/);
 
+  const identityMap = `
+    import { Map } from "std/collections";
+    import AppKit from "AppKit/AppKit.h";
+    function main(): i32 {
+      let windows = Map<i32, AppKit.NSWindow>();
+      const window = AppKit.NSWindow.alloc();
+      windows.set(1, window);
+      const found = windows.get(1);
+      return match (in found) {
+        some(stored) => 0;
+        none => 1;
+      };
+    }
+  `;
+  const identityMapArtifact = compileToNative(identityMap, fileName);
+  assert.deepEqual(diagnostics(identityMap, fileName), []);
+  assert.doesNotMatch(identityMapArtifact.source, /Z_[A-Za-z0-9_]*AppKit\.NSWindow/);
+  assert.match(identityMapArtifact.source, /typedef NSWindow \*Z_Option_AppKit_2e_NSWindow/);
+  assert.match(identityMapArtifact.source, /Z_Option_AppKit_2e_NSWindow Z_Map_.*_get/);
+  assert.match(identityMapArtifact.source, /static void Z_.*MapEntry.*_deinit[\s\S]*?self->value = nil/);
+  const identityMapCompilation = spawnSync("clang", [
+    "-x", "objective-c",
+    "-fobjc-arc",
+    "-Wall", "-Wextra", "-Werror",
+    "-fsyntax-only", "-",
+  ], { input: identityMapArtifact.source, encoding: "utf8" });
+  assert.equal(identityMapCompilation.status, 0, identityMapCompilation.stderr);
+
   const unsafe = source.replace(
     `if (window != null) {\n        window.center();\n        return 1;\n      }`,
     `window.center();\n      return 1;`,
@@ -8803,12 +8831,36 @@ test("owns Map keys and values with optional views and deterministic removal", (
   `;
   assert.match(diagnostics(unsupportedKey, "map-float-key.zs")[0].message, /key type "f64" is not hashable/);
 
-  const identityValue = `
+  writeFileSync(input, `
     import { Map } from "std/collections";
-    class Session { id: i32; }
-    function main(): i32 { const values = Map<i32, Session>(); return 0; }
-  `;
-  assert.match(diagnostics(identityValue, "map-class-value.zs")[0].message, /needs a storage-specific lookup contract/);
+    import console from "std/console";
+    class Session {
+      id: i32;
+      deinit { console.log(\`drop=\${this.id}\`); }
+    }
+    function main(): i32 {
+      let values = Map<i32, Session>();
+      const first = new Session({ id: 1 });
+      values.set(1, first);
+      const found = values.get(1);
+      const observed = match (in found) {
+        some(session) => session.id;
+        none => 0;
+      };
+      if (observed != 1 || first.id != 1) return 1;
+      values.set(1, new Session({ id: 2 }));
+      const removed = values.remove(1);
+      const removedID = match (in removed) {
+        some(session) => session.id;
+        none => 0;
+      };
+      if (removedID != 2 || values.length != 0) return 1;
+      return 0;
+    }
+  `);
+  const identity = spawnSync(process.execPath, [cli, "run", input], { encoding: "utf8" });
+  assert.equal(identity.status, 0, identity.stderr);
+  assert.equal(identity.stdout, "drop=2\ndrop=1\n");
 
   const missingImport = `function main(): i32 { const values = Map<i32, i32>(); return 0; }`;
   assert.match(diagnostics(missingImport, "map-import.zs")[0].message, /Map requires an explicit standard-library import/);
@@ -9021,6 +9073,20 @@ test("exposes Map imports, members, and source-level types to editor services", 
   assert.match(hover(valid, "map-editor.zs", binding + 1)?.contents.value ?? "", /users: Map<String, i32>/);
   const method = valid.indexOf("set(\"answer") + 1;
   assert.match(hover(valid, "map-editor.zs", method)?.contents.value ?? "", /set\(key: String, value: i32\): void/);
+
+  const identitySource = `
+    import { Map } from "std/collections";
+    class Session { id: i32; }
+    function main(): i32 {
+      let sessions = Map<i32, Session>();
+      sessions.;
+      return 0;
+    }
+  `;
+  const identityOffset = identitySource.indexOf("sessions.;") + "sessions.".length;
+  const identityItems = completions(identitySource, "map-identity-editor.zs", identityOffset);
+  assert.match(identityItems.find((item) => item.label === "get")?.detail ?? "", /Option<Session>/);
+  assert.doesNotMatch(identityItems.find((item) => item.label === "get")?.detail ?? "", /view Session/);
 
   const iteration = `
     import { Map } from "std/collections";

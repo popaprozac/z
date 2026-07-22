@@ -21,6 +21,7 @@ export function materializeGenerics(
   program: Program,
   fileName: string,
   typeDisplayNames: Map<string, string> = new Map(),
+  foreignIdentityTypes: ReadonlySet<string> = new Set(),
 ): Program {
   const structTemplates = new Map(program.structs.filter((item) => item.typeParameters?.length).map((item) => [item.name, item]));
   const functionTemplates = new Map(program.functions.filter((item) => item.typeParameters?.length).map((item) => [item.name, item]));
@@ -284,7 +285,9 @@ export function materializeGenerics(
       ?? { offset: 0, line: 1, column: 1 };
     typeDisplayNames.set(name, `Map<${displayName(keyType)}, ${displayName(valueType)}>`);
     typeDisplayNames.set(entryName, `Map.Entry<${displayName(keyType)}, ${displayName(valueType)}>`);
-    instantiateStruct("Option", [viewTypeName(valueType)]);
+    const identityValue = program.structs.some((declaration) => declaration.name === valueType && declaration.kind === "class")
+      || foreignIdentityTypes.has(valueType);
+    if (!identityValue) instantiateStruct("Option", [viewTypeName(valueType)]);
     instantiateStruct("Option", [valueType]);
     structs.push({
       kind: "struct",

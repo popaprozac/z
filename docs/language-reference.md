@@ -431,12 +431,18 @@ const id = match (in found) {
 };
 ```
 
-`set` transfers cleanup-bearing keys and values into the map. Replacing an
-entry destroys its previous value. `get` returns `Option<view V>`, so lookup
-does not copy or transfer the stored value; structural mutation is rejected
-until that view's last use. `remove` returns owned `Option<V>`. `delete`
+`set` transfers unique cleanup-bearing keys and value types into the map.
+Replacing an entry destroys its previous value. For value types, `get` returns
+`Option<view V>`, so lookup does not copy or transfer the stored value;
+structural mutation is rejected until that view's last use. `remove` returns
+owned `Option<V>`. `delete`
 destroys the matching key and value and reports whether they existed, while
 `clear` destroys every entry. `has` and `.length` do not mutate storage.
+
+Z classes and Objective-C objects instead preserve their shared reference
+identity. `set` retains the identity while the caller remains free to use its
+own reference, and `get` returns `Option<V>` with an independently retained
+reference. `remove` transfers the map's retained reference into `Option<V>`.
 
 If `V` is cleanup-free and ordinarily copyable, using the matched payload where
 an owned `V` is required performs the same implicit by-value load described
@@ -523,10 +529,10 @@ hash production; implementations feed supported scalars, Strings, enums, or
 nested `Hashable` values through `add`. Requiring readonly value keys prevents
 mutation from making an inserted bucket unreachable.
 
-`Map` values currently use ordinary Z value storage; direct
-class/Objective-C identity, function/weak values, and native C++ RAII values
-wait for storage-specific lookup and construction rules. A Z value struct may
-provide an explicit owned wrapper where that is already safe.
+`Map` supports ordinary Z values plus shared Z-class and Objective-C identity.
+Function/weak values and native C++ RAII values still wait for their distinct
+storage and construction rules. A Z value struct may provide an explicit owned
+wrapper where that is already safe.
 
 ## Arena regions
 

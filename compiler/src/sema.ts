@@ -826,9 +826,7 @@ export function analyze(
         throw new DiagnosticError(fileName, declaration.location, `Map cannot own value type ${JSON.stringify(displayArrayType(map.valueType))} in the first collections tier`);
       }
       if (
-        structs.get(map.valueType)?.kind === "class"
-        || state.foreignNamedTypes.get(map.valueType)?.kind === "object"
-        || state.foreignNamedTypes.get(map.valueType)?.kind === "value"
+        state.foreignNamedTypes.get(map.valueType)?.kind === "value"
         || parseFunctionType(map.valueType)
         || parseWeakType(map.valueType)
       ) {
@@ -5079,6 +5077,9 @@ function inferExpressionInner(
           requireAssignable(map.keyType, actualKey, key, fileName, structs, enums, state);
           if (method === "has" || method === "delete") return "boolean";
           if (method === "get") {
+            if (mapValueHasReferenceIdentity(map.valueType, structs, state)) {
+              return optionTypeName(map.valueType);
+            }
             const ownerName = state.viewOrigins.get(root.name)?.owner ?? root.name;
             state.viewCallOrigins.set(expression.location.offset, { owner: ownerName, location: expression.callee.object.location });
             return optionTypeName(viewTypeName(map.valueType));
@@ -5643,6 +5644,14 @@ function inferExpressionInner(
       return callable.returnType.name;
     }
   }
+}
+
+function mapValueHasReferenceIdentity(
+  type: string,
+  structs: ReadonlyMap<string, StructDeclaration>,
+  state: AnalysisState,
+): boolean {
+  return structs.get(type)?.kind === "class" || state.foreignNamedTypes.get(type)?.kind === "object";
 }
 
 function inferContextualObjectExpression(

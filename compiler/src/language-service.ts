@@ -763,7 +763,13 @@ export function hover(source: string, fileName: string, offset: number): Hover |
       return markdownHover("add<T>(in value: T): void  // feeds a supported scalar, String, enum, or Hashable value", source, word.start, word.end);
     }
     if (resolved?.kind === "map") {
-      const detail = mapMemberDetail(word.text, resolved.keyType, resolved.valueType, context.typeDisplayNames);
+      const detail = mapMemberDetail(
+        word.text,
+        resolved.keyType,
+        resolved.valueType,
+        context.typeDisplayNames,
+        mapValueHasReferenceIdentity(context, resolved.valueType),
+      );
       if (detail) return markdownHover(detail, source, word.start, word.end);
     }
     if (resolved?.kind === "set") {
@@ -2309,7 +2315,12 @@ function memberCompletions(
     }], prefix, 1000);
   }
   if (directReceiver?.kind === "map") {
-    return filterCompletions(mapCompletions(directReceiver.keyType, directReceiver.valueType, importContext.typeDisplayNames), prefix, 1000);
+    return filterCompletions(mapCompletions(
+      directReceiver.keyType,
+      directReceiver.valueType,
+      importContext.typeDisplayNames,
+      mapValueHasReferenceIdentity(importContext, directReceiver.valueType),
+    ), prefix, 1000);
   }
   if (directReceiver?.kind === "set") {
     return filterCompletions(setCompletions(directReceiver.elementType, importContext.typeDisplayNames), prefix, 1000);
@@ -2336,7 +2347,12 @@ function memberCompletions(
   if (iterationContext && iterationBinding) {
     const map = parseMapType(iterationBinding.type);
     if (map) {
-      return filterCompletions(mapCompletions(map.keyType, map.valueType, iterationContext.typeDisplayNames), prefix, 1000);
+      return filterCompletions(mapCompletions(
+        map.keyType,
+        map.valueType,
+        iterationContext.typeDisplayNames,
+        mapValueHasReferenceIdentity(iterationContext, map.valueType),
+      ), prefix, 1000);
     }
     const set = parseSetType(iterationBinding.type);
     if (set) {
@@ -2527,7 +2543,12 @@ function memberCompletions(
     }], prefix, 1000);
   }
   if (resolved?.kind === "map") {
-    return filterCompletions(mapCompletions(resolved.keyType, resolved.valueType, context.typeDisplayNames), prefix, 1000);
+    return filterCompletions(mapCompletions(
+      resolved.keyType,
+      resolved.valueType,
+      context.typeDisplayNames,
+      mapValueHasReferenceIdentity(context, resolved.valueType),
+    ), prefix, 1000);
   }
   if (resolved?.kind === "set") {
     return filterCompletions(setCompletions(resolved.elementType, context.typeDisplayNames), prefix, 1000);
@@ -2805,6 +2826,11 @@ type ResolvedReceiver =
   | { readonly kind: "weak"; readonly target: string }
   | { readonly kind: "task"; readonly successType: string; readonly errorType: string | null };
 
+function mapValueHasReferenceIdentity(context: AnalyzedSource, type: string): boolean {
+  return context.program.structs.some((declaration) => declaration.name === type && declaration.kind === "class")
+    || context.semanticInfo.foreignNamedTypes.get(type)?.kind === "object";
+}
+
 function resolveReceiver(context: AnalyzedSource, text: string, offset: number): ResolvedReceiver | null {
   const nativeNamespace = resolveForeignModuleNamespace(context, text);
   if (nativeNamespace) return { kind: "module", ...nativeNamespace };
@@ -2888,14 +2914,15 @@ function mapMemberDetail(
   keyType: string,
   valueType: string,
   typeDisplayNames: ReadonlyMap<string, string>,
+  identityValue = false,
 ): string | null {
   const key = displayType(keyType, typeDisplayNames);
   const value = displayType(valueType, typeDisplayNames);
   const details: Readonly<Record<string, string>> = {
     length: "length: usize",
     has: `has(in key: ${key}): boolean`,
-    get: `get(in key: ${key}): Option<view ${value}>`,
-    set: `set(key: ${key}, value: ${value}): void  // transfers owned values`,
+    get: `get(in key: ${key}): Option<${identityValue ? value : `view ${value}`}>`,
+    set: `set(key: ${key}, value: ${value}): void  // ${identityValue ? "retains shared identity" : "transfers owned values"}`,
     remove: `remove(in key: ${key}): Option<${value}>  // transfers the removed value`,
     delete: `delete(in key: ${key}): boolean  // destroys the removed entry`,
     clear: "clear(): void  // destroys all entries",
@@ -2907,11 +2934,12 @@ function mapCompletions(
   keyType: string,
   valueType: string,
   typeDisplayNames: ReadonlyMap<string, string>,
+  identityValue = false,
 ): CompletionItem[] {
   return ["length", "has", "get", "set", "remove", "delete", "clear"].map((name) => ({
     label: name,
     kind: name === "length" ? completionKinds.property : completionKinds.method,
-    detail: mapMemberDetail(name, keyType, valueType, typeDisplayNames)!,
+    detail: mapMemberDetail(name, keyType, valueType, typeDisplayNames, identityValue)!,
     ...(name === "length" ? {} : { insertText: `${name}()` }),
   }));
 }

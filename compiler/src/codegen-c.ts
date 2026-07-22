@@ -334,7 +334,7 @@ export function generateC(program: Program, sourceName: string, semanticInfo: Se
   }
   for (const declaration of program.structs) {
     const moduleUnused = declaration.name.startsWith("__z_module_") ? "__attribute__((unused)) " : "";
-    if (hasCleanupType(declaration.name, structs, enums)) {
+    if (hasSemanticCleanupType(declaration.name, structs, enums, semanticInfo)) {
       lines.push(`static ${moduleUnused}void ${deinitName(declaration.name)}(${structName(declaration.name)} *self);`);
     }
     if (declaration.kind === "class") {
@@ -383,7 +383,7 @@ export function generateC(program: Program, sourceName: string, semanticInfo: Se
   }
 
   for (const declaration of program.structs) {
-    if (hasCleanupType(declaration.name, structs, enums)) {
+    if (hasSemanticCleanupType(declaration.name, structs, enums, semanticInfo)) {
       lines.push(generateDeinit(declaration, structs, enums, functions, semanticInfo), "");
     }
     if (declaration.kind === "class") {
@@ -1092,14 +1092,14 @@ function generateOwnedEnvironmentCleanup(
     if (requiresNativeMove(dynamic.elementType, structs, enums, semanticInfo.foreignNamedTypes)) {
       const index = `_z_environment_index_${counter.value++}`;
       const element = `(${value}).data[${index} - 1]`;
-      const managedCleanup = hasCleanupType(dynamic.elementType, structs, enums, semanticInfo.foreignTypes)
+      const managedCleanup = hasSemanticCleanupType(dynamic.elementType, structs, enums, semanticInfo)
         ? `${generateOwnedEnvironmentCleanup(element, dynamic.elementType, structs, enums, semanticInfo, counter)}\n`
         : "";
       lines.push(`for (uintptr_t ${index} = (${value}).length; ${index} > 0; ${index} -= 1) {\n${indent(`${managedCleanup}std::destroy_at(&${element});`, 2)}\n}`);
       lines.push(`::operator delete((${value}).data);`);
       return lines.join("\n");
     }
-    if (hasCleanupType(dynamic.elementType, structs, enums, semanticInfo.foreignTypes)) {
+    if (hasSemanticCleanupType(dynamic.elementType, structs, enums, semanticInfo)) {
       const index = `_z_environment_index_${counter.value++}`;
       const nested = generateOwnedEnvironmentCleanup(`(${value}).data[${index} - 1]`, dynamic.elementType, structs, enums, semanticInfo, counter);
       lines.push(`for (uintptr_t ${index} = (${value}).length; ${index} > 0; ${index} -= 1) {\n${indent(nested, 2)}\n}`);
@@ -1109,7 +1109,7 @@ function generateOwnedEnvironmentCleanup(
   }
   const array = parseFixedArrayType(type);
   if (array) {
-    if (!hasCleanupType(array.elementType, structs, enums, semanticInfo.foreignTypes)) return "";
+    if (!hasSemanticCleanupType(array.elementType, structs, enums, semanticInfo)) return "";
     const index = `_z_environment_index_${counter.value++}`;
     const nested = generateOwnedEnvironmentCleanup(`(${value}).data[${index} - 1]`, array.elementType, structs, enums, semanticInfo, counter);
     return `for (uintptr_t ${index} = ${array.length}; ${index} > 0; ${index} -= 1) {\n${indent(nested, 2)}\n}`;
@@ -1123,7 +1123,7 @@ function generateOwnedEnvironmentCleanup(
     }
     if (niche) return "";
     const cases = enumDeclaration.variants.flatMap((variant) => {
-      if (!variant.payload || !hasCleanupType(variant.payload.name, structs, enums, semanticInfo.foreignTypes)) return [];
+      if (!variant.payload || !hasSemanticCleanupType(variant.payload.name, structs, enums, semanticInfo)) return [];
       const payloadCleanup = generateOwnedEnvironmentCleanup(
         `(${value}).data.${variant.name}`,
         variant.payload.name,
@@ -1143,7 +1143,7 @@ function generateOwnedEnvironmentCleanup(
   if (semanticInfo.foreignNamedTypes.get(type)?.kind === "object") return `${value} = nil;`;
   const declaration = structs.get(type);
   if (declaration?.kind === "class") return `${releaseName(type)}(${value});`;
-  if (declaration && hasCleanupType(type, structs, enums, semanticInfo.foreignTypes)) return `${deinitName(type)}(&(${value}));`;
+  if (declaration && hasSemanticCleanupType(type, structs, enums, semanticInfo)) return `${deinitName(type)}(&(${value}));`;
   return "";
 }
 
@@ -1588,11 +1588,14 @@ function generateMapRuntime(
   const mappedEntry = mapType(entryName, structs, enums, semanticInfo.foreignNamedTypes);
   const mappedKey = mapType(map.keyType, structs, enums, semanticInfo.foreignNamedTypes);
   const mappedValue = mapType(map.valueType, structs, enums, semanticInfo.foreignNamedTypes);
-  const viewOption = optionTypeName(viewTypeName(map.valueType));
+  const identityValue = mapValueHasReferenceIdentity(map.valueType, structs, semanticInfo);
+  const lookupOption = optionTypeName(identityValue ? map.valueType : viewTypeName(map.valueType));
   const valueOption = optionTypeName(map.valueType);
-  const mappedViewOption = mapType(viewOption, structs, enums, semanticInfo.foreignNamedTypes);
+  const mappedLookupOption = mapType(lookupOption, structs, enums, semanticInfo.foreignNamedTypes);
   const mappedValueOption = mapType(valueOption, structs, enums, semanticInfo.foreignNamedTypes);
+  const lookupOptionDeclaration = enums.get(lookupOption)!;
   const valueOptionDeclaration = enums.get(valueOption)!;
+  const nicheLookup = nicheOptionPayload(lookupOptionDeclaration, semanticInfo.foreignNamedTypes);
   const nicheValue = nicheOptionPayload(valueOptionDeclaration, semanticInfo.foreignNamedTypes);
   const zKeyEnum = enums.get(map.keyType);
   const customKey = structs.get(map.keyType)?.implements.some((trait) => trait.name === "Hashable") ?? false;
@@ -1651,6 +1654,18 @@ function generateMapRuntime(
     : `(${mappedValueOption}){ .tag = ${variantTag(valueOption, "none")} }`;
   const cleanupLines = (source: string): string => source ? `${source}\n` : "";
 
+  const storedLookup = structs.get(map.valueType)?.kind === "class"
+    ? `${retainName(map.valueType)}(self->entries.data[stored - 1].value)`
+    : identityValue
+      ? "self->entries.data[stored - 1].value"
+      : "&self->entries.data[stored - 1].value";
+  const someLookup = nicheLookup
+    ? storedLookup
+    : `(${mappedLookupOption}){ .tag = ${variantTag(lookupOption, "some")}, .data.some = ${storedLookup} }`;
+  const noneLookup = nicheLookup
+    ? nicheOptionNull(nicheLookup)
+    : `(${mappedLookupOption}){ .tag = ${variantTag(lookupOption, "none")} }`;
+
   return `static inline __attribute__((unused)) bool ${mapEqualityName(name)}(${mappedKey} left, ${mappedKey} right) {
   return ${equals};
 }
@@ -1699,16 +1714,16 @@ static __attribute__((unused)) bool ${mapMethodName(name, "has")}(const ${mapped
   return false;
 }
 
-static __attribute__((unused)) ${mappedViewOption} ${mapMethodName(name, "get")}(const ${mappedMap} *self, ${mappedKey} key) {
-  if (self->buckets.length == 0) return NULL;
+static __attribute__((unused)) ${mappedLookupOption} ${mapMethodName(name, "get")}(const ${mappedMap} *self, ${mappedKey} key) {
+  if (self->buckets.length == 0) return ${noneLookup};
   uintptr_t slot = ${mapMethodName(name, "hash")}(key) & (self->buckets.length - 1);
   for (uintptr_t probe = 0; probe < self->buckets.length; probe += 1) {
     uintptr_t stored = self->buckets.data[slot];
-    if (stored == 0) return NULL;
-    if (stored != SIZE_MAX && ${mapEqualityName(name)}(self->entries.data[stored - 1].key, key)) return &self->entries.data[stored - 1].value;
+    if (stored == 0) return ${noneLookup};
+    if (stored != SIZE_MAX && ${mapEqualityName(name)}(self->entries.data[stored - 1].key, key)) return ${someLookup};
     slot = (slot + 1) & (self->buckets.length - 1);
   }
-  return NULL;
+  return ${noneLookup};
 }
 
 static __attribute__((unused)) void ${mapMethodName(name, "set")}(${mappedMap} *self, ${mappedKey} key, ${mappedValue} value) {
@@ -2460,8 +2475,7 @@ function generateDeinit(
   const localCleanup = generateCleanup(context.cleanupScopes, context);
   if (localCleanup) body.push(indent(localCleanup, 2));
   for (const field of [...declaration.fields].reverse()) {
-    if (hasCleanupType(field.type.name, structs, enums)
-      || semanticInfo.foreignNamedTypes.get(field.type.name)?.kind === "object") {
+    if (hasSemanticCleanupType(field.type.name, structs, enums, semanticInfo)) {
       body.push(indent(generateValueCleanup(`self->${field.name}`, field.type.name, null, context), 2));
     }
   }
@@ -3783,7 +3797,7 @@ function generateValueCleanup(
     if (requiresNativeMove(dynamic.elementType, context.structs, context.enums, context.semanticInfo.foreignNamedTypes)) {
       const index = `_z_cleanup_index_${context.cleanupCounter.value++}`;
       const element = `(${value}).data[${index} - 1]`;
-      const managedCleanup = hasCleanupType(dynamic.elementType, context.structs, context.enums, context.semanticInfo.foreignTypes)
+      const managedCleanup = hasSemanticCleanupType(dynamic.elementType, context.structs, context.enums, context.semanticInfo)
         ? `${generateValueCleanup(element, dynamic.elementType, null, context)}\n`
         : "";
       lines.push(`for (uintptr_t ${index} = (${value}).length; ${index} > 0; ${index} -= 1) {\n${indent(`${managedCleanup}std::destroy_at(&${element});`, 2)}\n}`);
@@ -3791,7 +3805,7 @@ function generateValueCleanup(
       const cleanup = lines.join("\n");
       return liveFlag ? `if (${liveFlag}) {\n${indent(cleanup, 2)}\n}` : cleanup;
     }
-    if (hasCleanupType(dynamic.elementType, context.structs, context.enums, context.semanticInfo.foreignTypes)) {
+    if (hasSemanticCleanupType(dynamic.elementType, context.structs, context.enums, context.semanticInfo)) {
       const index = `_z_cleanup_index_${context.cleanupCounter.value++}`;
       const element = `(${value}).data[${index} - 1]`;
       const elementCleanup = generateValueCleanup(element, dynamic.elementType, null, context);
@@ -3819,11 +3833,11 @@ function generateValueCleanup(
     }
     if (niche) return "";
     const cases = enumDeclaration.variants.flatMap((variant) => {
-      if (!variant.payload || !hasCleanupType(
+      if (!variant.payload || !hasSemanticCleanupType(
         variant.payload.name,
         context.structs,
         context.enums,
-        context.semanticInfo.foreignTypes,
+        context.semanticInfo,
       )) return [];
       const payloadCleanup = generateValueCleanup(`(${value}).data.${variant.name}`, variant.payload.name, null, context);
       return [`case ${variantTag(type, variant.name)}:\n${indent(payloadCleanup, 2)}\n  break;`];
@@ -5783,7 +5797,11 @@ function inferExpressionType(expression: Expression, context: GenerationContext)
         const map = parseMapType(receiverType);
         if (map) {
           if (expression.callee.property === "has") return "boolean";
-          if (expression.callee.property === "get") return optionTypeName(viewTypeName(map.valueType));
+          if (expression.callee.property === "get") {
+            return optionTypeName(mapValueHasReferenceIdentity(map.valueType, context.structs, context.semanticInfo)
+              ? map.valueType
+              : viewTypeName(map.valueType));
+          }
           if (expression.callee.property === "remove") return optionTypeName(map.valueType);
           return "void";
         }
@@ -5956,6 +5974,14 @@ function requiresNativeLifetime(
   return Boolean(result);
 }
 
+function mapValueHasReferenceIdentity(
+  type: string,
+  structs: ReadonlyMap<string, StructDeclaration>,
+  semanticInfo: Pick<SemanticInfo, "foreignNamedTypes">,
+): boolean {
+  return structs.get(type)?.kind === "class" || semanticInfo.foreignNamedTypes.get(type)?.kind === "object";
+}
+
 function generateObjCMessage(receiver: string, selector: string, args: string[]): string {
   if (args.length === 0) return `[${receiver} ${selector}]`;
   const parts = selector.split(":");
@@ -5972,7 +5998,7 @@ function variantTag(owner: string, variant: string): string {
 }
 
 function structName(name: string): string {
-  return `Z_${name}`;
+  return `Z_${nativeSymbolPart(name)}`;
 }
 
 function arrayName(name: string): string {
@@ -6088,4 +6114,31 @@ function hasCleanupType(
     ));
   visiting.delete(type);
   return result;
+}
+
+function hasSemanticCleanupType(
+  type: string,
+  structs: Map<string, StructDeclaration>,
+  enums: Map<string, EnumDeclaration>,
+  semanticInfo: Pick<SemanticInfo, "foreignTypes" | "foreignNamedTypes">,
+  visiting = new Set<string>(),
+): boolean {
+  if (visiting.has(type)) return false;
+  if (semanticInfo.foreignNamedTypes.get(type)?.kind === "object") return true;
+  if (hasCleanupType(type, structs, enums, semanticInfo.foreignTypes)) return true;
+  const dynamic = parseDynamicArrayType(type);
+  if (dynamic) return hasSemanticCleanupType(dynamic.elementType, structs, enums, semanticInfo, visiting);
+  const array = parseFixedArrayType(type);
+  if (array) return hasSemanticCleanupType(array.elementType, structs, enums, semanticInfo, visiting);
+  const declaration = structs.get(type);
+  const enumeration = enums.get(type);
+  if (!declaration && !enumeration) return false;
+  visiting.add(type);
+  const result = declaration
+    ? declaration.fields.some((field) => hasSemanticCleanupType(field.type.name, structs, enums, semanticInfo, visiting))
+    : enumeration!.variants.some((variant) => (
+      variant.payload && hasSemanticCleanupType(variant.payload.name, structs, enums, semanticInfo, visiting)
+    ));
+  visiting.delete(type);
+  return Boolean(result);
 }
