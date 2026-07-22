@@ -26,6 +26,14 @@ export class NoteStore {
     return this.notes.length;
   }
 
+  function nextNoteId(): i64 {
+    let next: i64 = 1;
+    for (const note of this.notes) {
+      if (note.id >= next) next = note.id + 1;
+    }
+    return next;
+  }
+
   function withSelected(in visit: (in note: Note) => void): boolean {
     return match (in this.selection) {
       some(index) => {

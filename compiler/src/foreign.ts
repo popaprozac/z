@@ -1198,6 +1198,38 @@ function mapForeignType(
     if (callback) return callback;
   }
   const normalized = normalizeCType(cName);
+  const stars = normalized.match(/\*/g)?.length ?? 0;
+  if (note?.nullOnly) {
+    return position === "parameter" && stars >= 1
+      ? { kind: "nullPointer", cName: normalized }
+      : { kind: "unsupported", cName };
+  }
+  if (note?.semanticType === "view-cstring") {
+    const pointee = normalized.replace(/\s*\*\s*$/, "").trim();
+    const characterPointer = stars === 1 && /^(?:const\s+)?(?:signed\s+|unsigned\s+)?char$/.test(pointee);
+    if (position !== "return" || !characterPointer || note.ownership !== "borrowed" || note.nullable === undefined) {
+      return { kind: "unsupported", cName };
+    }
+    const pointer: ForeignPointerType = {
+      kind: "pointer",
+      typeName: pointerTypeName(normalized, "borrowed", note.nullable),
+      cName: normalized,
+      identity: normalized,
+      ownership: "borrowed",
+      nullable: note.nullable,
+      release: null,
+      thread: { transfer: false, share: false, deinit: false },
+      stringView: true,
+    };
+    types.set(pointer.typeName, pointer);
+    const alternate: ForeignPointerType = {
+      ...pointer,
+      typeName: pointerTypeName(normalized, "borrowed", !note.nullable),
+      nullable: !note.nullable,
+    };
+    types.set(alternate.typeName, alternate);
+    return pointer;
+  }
   if (normalized === "const char *") {
     return { kind: "z", name: "cstring", cName };
   }
@@ -1227,7 +1259,6 @@ function mapForeignType(
     if (named.kind === "scalar") return { kind: "z", name: named.underlying, cName };
     return { kind: "named", type: named, cName };
   }
-  const stars = normalized.match(/\*/g)?.length ?? 0;
   if (
     stars === 2
     && position === "parameter"

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { basename, resolve } from "node:path";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { test } from "bun:test";
 import { analyzeSource, check, compileToC, compileToNative } from "../compiler/src/compiler.ts";
 import { DiagnosticError, formatDiagnostic } from "../compiler/src/diagnostics.ts";
@@ -2568,6 +2568,9 @@ test("builds the interactive Z Notes AppKit and sqlite3 application", () => {
   assert.match(artifact.source, /sqlite3_libversion\(\)/);
   assert.match(artifact.source, /sqlite3_open\(":memory:", &\(database\)\)/);
   assert.match(artifact.source, /if \(_z_live_database_\d+ && database != NULL\) sqlite3_close\(database\)/);
+  assert.match(artifact.source, /sqlite3_prepare_v2\(database, .*SELECT id, title, body FROM notes ORDER BY id/);
+  assert.match(artifact.source, /z_string_from_cstring\(\(const char \*\)\(titleBytes\)\)/);
+  assert.match(artifact.source, /if \(_z_live_queryStatement_\d+ && queryStatement != NULL\) sqlite3_finalize\(queryStatement\)/);
   assert.match(artifact.source, /\[\[NSWindow alloc\] initWithContentRect/);
   assert.match(artifact.source, /Z_Option_usize_some/);
   assert.match(artifact.source, /@interface ZObjCAction : NSObject/);
@@ -2589,12 +2592,20 @@ test("builds the interactive Z Notes AppKit and sqlite3 application", () => {
     { encoding: "utf8" },
   );
   assert.equal(nativeCheck.status, 0, nativeCheck.stderr);
-  assert.match(nativeCheck.stdout, /native frontend hybrid matches 3 modules, 2 local edges/);
+  assert.match(nativeCheck.stdout, /native frontend hybrid matches 3 modules, 3 local edges/);
 
   const smoke = resolve(projectRoot, "examples/applications/z-notes/smoke.zs");
   const result = spawnSync(process.execPath, [cli, "run", smoke], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /^z-notes sqlite=[0-9.]+, notes=1, database=true\n$/);
+
+  const persistenceSmoke = resolve(projectRoot, "examples/applications/z-notes/persistence-smoke.zs");
+  const persistenceDatabase = resolve(projectRoot, ".z-cache/z-notes-smoke.sqlite3");
+  rmSync(persistenceDatabase, { force: true });
+  const persistenceResult = spawnSync(process.execPath, [cli, "run", persistenceSmoke], { encoding: "utf8" });
+  assert.equal(persistenceResult.status, 0, persistenceResult.stderr);
+  assert.equal(persistenceResult.stdout, "persisted note 3, before=2, after=3\n");
+  rmSync(persistenceDatabase, { force: true });
 
   const selectionUse = source.indexOf("selectNote(0)") + 1;
   assert.match(hover(source, application, selectionUse)?.contents.value ?? "", /selectNote\(index: usize\): boolean/);
@@ -2603,6 +2614,27 @@ test("builds the interactive Z Notes AppKit and sqlite3 application", () => {
   const persistenceSource = readFileSync(persistence, "utf8");
   const databaseOffset = persistenceSource.indexOf("database;") + 2;
   assert.match(hover(persistenceSource, persistence, databaseOffset)?.contents.value ?? "", /database: sqlite3 \* \| null/);
+  const titleBytesOffset = persistenceSource.indexOf("titleBytes =") + 2;
+  assert.match(hover(persistenceSource, persistence, titleBytesOffset)?.contents.value ?? "", /titleBytes: view cstring \| null/);
+
+  const nullableCopy = persistenceSource.replace("    if (titleBytes == null) return notes;\n", "");
+  assert.match(
+    diagnostics(nullableCopy, persistence)[0]?.message ?? "",
+    /nullable native text must be checked before copying it into String/,
+  );
+  const nonNullTail = persistenceSource.replace("    out schemaStatement,\n    null", "    out schemaStatement,\n    database");
+  assert.match(
+    diagnostics(nonNullTail, persistence)[0]?.message ?? "",
+    /restricts native parameter 5 to null/,
+  );
+  const prematureFinalize = persistenceSource.replace(
+    "    const bodyBytes = sqlite.sqlite3_column_text(queryStatement, 2);",
+    "    sqlite.sqlite3_finalize(queryStatement);\n    const bodyBytes = sqlite.sqlite3_column_text(queryStatement, 2);",
+  );
+  assert.match(
+    diagnostics(prematureFinalize, persistence)[0]?.message ?? "",
+    /cannot move "queryStatement" while view "titleBytes" is live/,
+  );
 
   const declarationFile = resolve(projectRoot, "examples/applications/z-notes/sqlite3.h.zd");
   const declarationSource = readFileSync(declarationFile, "utf8");
@@ -2616,6 +2648,10 @@ test("builds the interactive Z Notes AppKit and sqlite3 application", () => {
   const closeOffset = declarationSource.indexOf("sqlite3_close", declarationSource.indexOf("deinit")) + 2;
   assert.match(hover(declarationSource, declarationFile, closeOffset)?.contents.value ?? "", /deinitializer for out ppDb/);
   assert.match(definition(declarationSource, `file://${declarationFile}`, closeOffset)?.uri ?? "", /sqlite3\.h$/);
+  const nullOnlyOffset = declarationSource.indexOf("pzTail: null") + "pzTail: ".length + 1;
+  assert.match(hover(declarationSource, declarationFile, nullOnlyOffset)?.contents.value ?? "", /only the native null pointer is exposed/);
+  const textViewOffset = declarationSource.indexOf("view cstring") + 2;
+  assert.match(hover(declarationSource, declarationFile, textViewOffset)?.contents.value ?? "", /borrowed native text tied to the input owner/);
 
   const availabilityDirectory = mkdtempSync("/tmp/z-appkit-availability-");
   const availabilityFile = resolve(availabilityDirectory, "main.zs");

@@ -277,9 +277,32 @@ parameter names must match Clang's raw interface. The module specifier is
 resolved relative to the declaration file, so one canonical header contract
 works whether importing Z code reaches the header through a local,
 parent-relative, or project-relative spelling. `.zd` facts conflict-check with
-built-in toolchain facts. Explicit ABI types remain a later declaration-file
-slice; callback lifetime, context, release, and caller-thread contracts are
-supported now.
+built-in toolchain facts. General explicit ABI types remain a later
+declaration-file slice. Two narrow semantic refinements are available now:
+`parameter: null` exposes only the null value of an otherwise unsupported
+native pointer parameter, while `view cstring | null` classifies a native
+character-pointer result as nullable borrowed NUL-terminated text tied to the
+function's single borrowed pointer input:
+
+```z
+declare module "sqlite3.h" {
+  export function sqlite3_prepare_v2(
+    in db: _, in zSql: _, nByte: _,
+    out ppStmt: _ | null { deinit sqlite3_finalize; },
+    pzTail: null
+  ): _;
+  export function sqlite3_column_text(
+    in pStmt: _, iCol: _
+  ): view cstring | null;
+}
+```
+
+The null-only form emits the native null pointer and rejects every non-null Z
+argument. A borrowed text result must be narrowed before `String.from` copies
+it, cannot outlive its native owner, and prevents that owner from being moved
+or finalized while the view is live. These are semantic safety contracts; the
+header remains the ABI authority. Callback lifetime, context, release, and
+caller-thread contracts are also supported now.
 
 An `out` parameter contract may carry its own block when a native `T **`
 function initializes an owned handle. `deinit vendor_close` then describes the

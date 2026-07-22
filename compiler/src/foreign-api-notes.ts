@@ -11,6 +11,8 @@ export type PointerNote = {
   readonly access?: "in" | "out" | "inout";
   readonly nullable?: boolean;
   readonly release?: string;
+  readonly nullOnly?: boolean;
+  readonly semanticType?: "view-cstring";
   readonly thread?: {
     readonly transfer?: boolean;
     readonly share?: boolean;
@@ -185,11 +187,13 @@ function parseApiNotes(value: unknown, source: string): ApiNotes {
 
 function validatePointerNote(value: unknown, source: string, path: string): void {
   const note = requireRecord(value, source, path);
-  requireKeys(note, ["ownership", "access", "nullable", "release", "thread", "callback"], source, path);
+  requireKeys(note, ["ownership", "access", "nullable", "release", "nullOnly", "semanticType", "thread", "callback"], source, path);
   requireEnum(note.ownership, ["owned", "borrowed", "consuming"], source, `${path}.ownership`);
   requireEnum(note.access, ["in", "out", "inout"], source, `${path}.access`);
   requireOptionalType(note.nullable, "boolean", source, `${path}.nullable`);
   requireOptionalType(note.release, "string", source, `${path}.release`);
+  requireOptionalType(note.nullOnly, "boolean", source, `${path}.nullOnly`);
+  requireEnum(note.semanticType, ["view-cstring"], source, `${path}.semanticType`);
   if (note.thread !== undefined) {
     const thread = requireRecord(note.thread, source, `${path}.thread`);
     requireKeys(thread, ["transfer", "share", "deinit"], source, `${path}.thread`);

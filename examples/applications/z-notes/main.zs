@@ -2,30 +2,17 @@ import console from "std/console";
 import objc from "std/objc";
 import AppKit from "AppKit/AppKit.h";
 import { Note, NoteStore } from "./model.zs";
-import { canOpenMemoryDatabase, sqliteVersion } from "./persistence.zs";
-
-function seed(store: NoteStore): void {
-  store.add(Note({
-    id: 1,
-    title: "Welcome to Z Notes",
-    body: "A native desktop application written primarily in Z.",
-  }));
-  store.add(Note({
-    id: 2,
-    title: "Interop",
-    body: "AppKit and sqlite3 arrive through their real native headers.",
-  }));
-  store.selectNote(0);
-}
+import { insertGeneratedNote, loadNotes, sqliteVersion } from "./persistence.zs";
 
 function main(): i32 {
+  const databasePath = ".z-cache/z-notes.sqlite3";
   const store = new NoteStore({
-    notes: Array<Note>(),
+    notes: loadNotes(databasePath),
     selection: Option<usize>.none,
   });
-  seed(store);
+  if (store.noteCount() > 0) store.selectNote(0);
 
-  console.log(`sqlite=${sqliteVersion()}, database=${canOpenMemoryDatabase()}, notes=${store.noteCount()}`);
+  console.log(`sqlite=${sqliteVersion()}, database=${databasePath}, notes=${store.noteCount()}`);
   store.withSelected((in note) => {
     console.log(`selected note ${note.id}: ${note.title}`);
   });
@@ -87,15 +74,22 @@ function main(): i32 {
   );
   addButton.title = "Add Note";
 
-  let nextId: i64 = 3;
+  let nextId = store.nextNoteId();
   const addNoteAction = objc.action(move (): void => {
     const noteId = nextId;
+    if (!insertGeneratedNote(databasePath, noteId)) {
+      statusLabel.stringValue = `Could not save note ${noteId}`;
+      console.error(`could not save note ${noteId}`);
+      return;
+    }
     nextId = nextId + 1;
     store.add(Note({
       id: noteId,
       title: `Untitled ${noteId}`,
       body: "Created from the native AppKit action.",
     }));
+    store.selectNote(store.noteCount() - 1);
+    selectedLabel.stringValue = `Selected: Untitled ${noteId}`;
     statusLabel.stringValue = `Added note ${noteId} — ${store.noteCount()} total`;
     window.title = `Z Notes — ${store.noteCount()} notes`;
     console.log(`added note ${noteId}, total=${store.noteCount()}`);

@@ -112,9 +112,12 @@ represents selection with `Option<usize>`, and wires an interactive Add Note
 button through the explicit `std/objc` target/action adapter. The rest of the
 control and window surface comes directly from AppKit headers. It imports
 `sqlite3.h` directly, selects the SQLite system library in `z.json`, and uses
-an adjacent `.zd` contract to classify the owned nullable `sqlite3 **` output
-without a handwritten wrapper. Its smoke entry opens and deterministically
-closes an in-memory database.
+an adjacent `.zd` contract to classify owned database and prepared-statement
+outputs without a handwritten wrapper. SQLite column text is a nullable
+`view cstring` tied to its statement, narrowed, and copied into owned Z
+`String` storage. The interactive action persists each generated note before
+updating the model and UI; a persistence smoke reloads the same database
+without opening a window.
 
 [`document-workspace`](../examples/applications/document-workspace) is the
 recommended non-GUI application walkthrough. It uses domain-oriented names to

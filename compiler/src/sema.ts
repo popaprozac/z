@@ -1885,7 +1885,8 @@ function analyzeStatement(
       }
       const view = parseViewType(String(variableType));
       const optionalView = parseOptionalViewType(String(variableType));
-      if (view || optionalView) {
+      const foreignStringView = foreignPointer(variableType, state)?.stringView === true;
+      if (view || optionalView || foreignStringView) {
         if (statement.mutable) {
           throw new DiagnosticError(fileName, statement.location, "a view binding must use const", { code: "Z0206" });
         }
@@ -4866,7 +4867,16 @@ function inferExpressionInner(
             throw new DiagnosticError(fileName, expression.location, `String.from expects 1 argument, received ${expression.arguments.length}`);
           }
           const actual = inferExpression(expression.arguments[0], locals, globals, structs, enums, fileName, state);
-          requireAssignable("cstring", actual, expression.arguments[0], fileName, structs, enums, state);
+          const nativeText = foreignPointer(actual, state);
+          if (nativeText?.stringView) {
+            if (nativeText.nullable) {
+              throw new DiagnosticError(fileName, expression.arguments[0].location, "nullable native text must be checked before copying it into String", {
+                helps: ["compare the view with `null`; the non-null branch narrows it automatically"],
+              });
+            }
+          } else {
+            requireAssignable("cstring", actual, expression.arguments[0], fileName, structs, enums, state);
+          }
           return "String";
         }
         if (expression.callee.object.kind === "identifier") {
@@ -7677,6 +7687,7 @@ function findObjCProperty(
 
 function foreignValueType(type: ForeignType): ValueType {
   if (type.kind === "z") return type.name;
+  if (type.kind === "nullPointer") return "null";
   if (type.kind === "selector") return objcSelectorTypeName;
   if (type.kind === "swiftString") return swiftStringTypeName;
   if (type.kind === "named") return type.type.typeName;
@@ -8272,6 +8283,17 @@ function checkForeignCall(
     } else {
       actual = inferExpression(argument, locals, globals, structs, enums, fileName, state);
     }
+    if (parameter?.type.kind === "nullPointer") {
+      if (actual !== "null") {
+        throw new DiagnosticError(
+          fileName,
+          argument.location,
+          `C function ${JSON.stringify(target.name)} restricts native parameter ${index + 1} to null`,
+          { notes: [`the adjacent .zd contract does not expose non-null ${parameter.type.cName} values to safe Z`] },
+        );
+      }
+      continue;
+    }
     if (parameter?.type.kind === "callback") {
       const expectedCallback = foreignValueType(parameter.type);
       requireAssignable(
@@ -8405,6 +8427,27 @@ function checkForeignCall(
     });
     for (let source = expected; source < args.length; source += 1) plan.push({ kind: "argument", source });
     state.foreignCallArgumentPlans.set(location.offset, plan);
+  }
+  if (target.returnType.kind === "pointer" && target.returnType.stringView) {
+    const origins = visibleParameters
+      .map(({ parameter }, source) => ({ parameter, source }))
+      .filter(({ parameter }) => parameter.type.kind === "pointer" && parameter.type.ownership === "borrowed");
+    if (origins.length !== 1) {
+      throw new DiagnosticError(fileName, location, `borrowed text result from ${JSON.stringify(target.name)} requires exactly one borrowed pointer input`, {
+        code: "Z0801",
+        notes: ["the input identifies the native owner whose lifetime bounds the returned text view"],
+      });
+    }
+    const argument = args[origins[0].source];
+    const root = storageRoot(argument);
+    if (!root || !locals.has(root.name)) {
+      throw new DiagnosticError(fileName, argument.location, "a borrowed native text result requires a named owner binding", {
+        code: "Z0206",
+        helps: ["bind the native owner before requesting its text view"],
+      });
+    }
+    const ownerName = state.viewOrigins.get(root.name)?.owner ?? root.name;
+    state.viewCallOrigins.set(location.offset, { owner: ownerName, location: argument.location });
   }
   const result = target.returnType.kind === "z"
     ? target.returnType.name

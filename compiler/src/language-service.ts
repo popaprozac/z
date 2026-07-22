@@ -1835,6 +1835,9 @@ function foreignDeclarationHover(source: string, fileName: string, offset: numbe
     }
     const parameterTypeIndex = contract.parameters.findIndex((parameter) => parameter.typeLocation.offset === word.start);
     if (parameterTypeIndex >= 0) {
+      if (contract.parameters[parameterTypeIndex].nullOnly) {
+        return markdownHover("null  // only the native null pointer is exposed to safe Z", source, word.start, word.end);
+      }
       const types = new Set(declaration?.overloads.map((overload) => overload.parameters[parameterTypeIndex]).filter(Boolean).map((native) => foreignTypeName(native.type)) ?? []);
       return markdownHover(`_: ${[...types].join(" | ") || "unknown"}  // inferred native parameter type`, source, word.start, word.end);
     }
@@ -1850,6 +1853,9 @@ function foreignDeclarationHover(source: string, fileName: string, offset: numbe
       }
     }
     if (contract.returnLocation.offset === word.start) {
+      if (contract.returnSemanticType === "view-cstring") {
+        return markdownHover(`view cstring${contract.returnNullable ? " | null" : ""}  // borrowed native text tied to the input owner`, source, word.start, word.end);
+      }
       const types = new Set(declaration?.overloads.map((overload) => foreignTypeName(overload.returnType)) ?? []);
       const lifecycle = contract.release ? `; deinit ${contract.release}` : "";
       return markdownHover(`_: ${[...types].join(" | ") || "unknown"}${lifecycle}  // inferred native return type`, source, word.start, word.end);
@@ -3621,12 +3627,15 @@ function formatTypeParameters(
 
 function foreignTypeName(type: ForeignType): string {
   if (type.kind === "z") return type.name;
+  if (type.kind === "nullPointer") return "null";
   if (type.kind === "selector") return "objc.Selector";
   if (type.kind === "swiftString") return "String";
   if (type.kind === "named") return type.type.typeName;
   if (type.kind === "reference") return type.type.kind === "scalar" ? type.type.underlying : type.type.typeName;
   if (type.kind === "object") return `${type.className ?? "id"}${type.nullable ? " | null" : ""}`;
-  if (type.kind === "pointer") return `${type.cName}${type.nullable ? " | null" : ""}`;
+  if (type.kind === "pointer") return type.stringView
+    ? `view cstring${type.nullable ? " | null" : ""}`
+    : `${type.cName}${type.nullable ? " | null" : ""}`;
   if (type.kind === "pointerOut") return `${type.pointer.cName}${type.pointer.nullable ? " | null" : ""}`;
   if (type.kind === "callback" || type.kind === "block") {
     const parameters = type.parameters.map((parameter, index) => `argument${index + 1}: ${foreignTypeName(parameter)}`);
@@ -3679,7 +3688,9 @@ function displayType(type: string, typeDisplayNames: ReadonlyMap<string, string>
 
 function displayServiceType(type: string, context: AnalyzedSource): string {
   const pointer = context.semanticInfo.foreignTypes.get(type);
-  if (pointer) return `${pointer.cName}${pointer.nullable ? " | null" : ""}`;
+  if (pointer) return pointer.stringView
+    ? `view cstring${pointer.nullable ? " | null" : ""}`
+    : `${pointer.cName}${pointer.nullable ? " | null" : ""}`;
   const displayNames = new Map(context.typeDisplayNames);
   for (const name of context.semanticInfo.foreignNamedTypes.keys()) {
     const visible = visibleSelectiveImportType(name, context);

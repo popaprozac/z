@@ -7,4 +7,19 @@ declare module "sqlite3.h" {
   ): _;
 
   export function sqlite3_close(move database: _): _;
+
+  export function sqlite3_prepare_v2(
+    in db: _,
+    in zSql: _,
+    nByte: _,
+    out ppStmt: _ | null {
+      deinit sqlite3_finalize;
+    },
+    pzTail: null
+  ): _;
+
+  export function sqlite3_step(in pStmt: _): _;
+  export function sqlite3_finalize(move pStmt: _): _;
+  export function sqlite3_column_int64(in pStmt: _, iCol: _): _;
+  export function sqlite3_column_text(in pStmt: _, iCol: _): view cstring | null;
 }

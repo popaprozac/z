@@ -12,6 +12,7 @@ export type ContractParameter = {
   readonly name: string;
   readonly mode: "value" | "in" | "inout" | "out" | "move";
   readonly nullable: boolean;
+  readonly nullOnly: boolean;
   readonly location: SourceLocation;
   readonly typeLocation: SourceLocation;
   readonly release: string | null;
@@ -22,6 +23,7 @@ export type ForeignFunctionContract = {
   readonly name: string;
   readonly parameters: readonly ContractParameter[];
   readonly returnNullable: boolean;
+  readonly returnSemanticType: "inferred" | "view-cstring";
   readonly release: string | null;
   readonly location: SourceLocation;
   readonly nameLocation: SourceLocation;
@@ -110,12 +112,32 @@ export function parseForeignDeclarationContracts(source: string, fileName: strin
     expectText("null");
     return { nullable: true, location: placeholder.location };
   };
+  const parseReturnType = (): {
+    readonly nullable: boolean;
+    readonly location: SourceLocation;
+    readonly semanticType: "inferred" | "view-cstring";
+  } => {
+    if (!at("view")) return { ...parseInferredType(), semanticType: "inferred" };
+    const view = take();
+    const target = expectIdentifier("`cstring` after `view`");
+    if (target.text !== "cstring") fail(target, "foreign borrowed text results currently require `view cstring`");
+    let nullable = false;
+    if (at("|")) {
+      take();
+      expectText("null");
+      nullable = true;
+    }
+    return { nullable, location: view.location, semanticType: "view-cstring" };
+  };
   const parseParameter = (): ContractParameter => {
     let mode: ContractParameter["mode"] = "value";
     if (["in", "inout", "out", "move"].includes(peek().text)) mode = take().text as ContractParameter["mode"];
     const name = expectIdentifier("a native parameter name");
     expectText(":");
-    const type = parseInferredType();
+    const nullOnly = at("null");
+    const type = nullOnly
+      ? { nullable: true, location: take().location }
+      : parseInferredType();
     let release: string | null = null;
     let releaseLocation: SourceLocation | null = null;
     if (at("{")) {
@@ -137,10 +159,17 @@ export function parseForeignDeclarationContracts(source: string, fileName: strin
     if (release && mode !== "out") {
       fail(name, "parameter-local deinit is only valid on an out parameter that produces ownership");
     }
+    if (nullOnly && mode !== "value") {
+      fail(name, "a null-only native parameter cannot also declare in, inout, out, or move");
+    }
+    if (nullOnly && release) {
+      fail(name, "a null-only native parameter cannot produce owned output");
+    }
     return {
       name: name.text,
       mode,
       nullable: type.nullable,
+      nullOnly,
       location: name.location,
       typeLocation: type.location,
       release,
@@ -271,7 +300,7 @@ export function parseForeignDeclarationContracts(source: string, fileName: strin
     }
     expectText(")");
     expectText(":");
-    const returnType = parseInferredType();
+    const returnType = parseReturnType();
     const returnNullable = returnType.nullable;
     let release: string | null = null;
     let releaseLocation: SourceLocation | null = null;
@@ -365,6 +394,7 @@ export function parseForeignDeclarationContracts(source: string, fileName: strin
       name,
       parameters,
       returnNullable,
+      returnSemanticType: returnType.semanticType,
       release,
       location: start.location,
       nameLocation: parsedName.location,
@@ -535,6 +565,7 @@ export function foreignDeclarationApiNotes(
     functions[contract.name] = {
       return: {
         nullable: contract.returnNullable,
+        ...(contract.returnSemanticType === "view-cstring" ? { ownership: "borrowed" as const, semanticType: "view-cstring" as const } : {}),
         ...(contract.release ? { ownership: "owned" as const, release: contract.release } : {}),
         ...(contract.thread.transfer || contract.thread.share || contract.thread.deinit
           ? { thread: contract.thread }
@@ -586,6 +617,7 @@ function inferCallbackContextPosition(
 }
 
 function parameterNote(parameter: ContractParameter): PointerNote {
+  if (parameter.nullOnly) return { nullable: true, nullOnly: true };
   if (parameter.mode === "in") {
     return {
       ownership: "borrowed",

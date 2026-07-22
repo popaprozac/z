@@ -74,7 +74,7 @@ an inferred receiver-tied view.
 | --- | --- | --- |
 | C functions and scalars | Implemented | Clang AST signatures, selective imports, aliases, variadics |
 | C records and enums | Implemented | Complete supported layouts, nested records, constants |
-| C pointers | Partial | Safe opaque handles and record borrows use adjacent `.zd` contracts; owned nullable `T *` results and `T **` outputs receive deterministic cleanup; nullable declared handles lift into niche-backed `Option`; owned handles with explicit transfer/destruction facts cross `thread.spawn`; internal toolchain notes remain |
+| C pointers | Partial | Safe opaque handles and record borrows use adjacent `.zd` contracts; owned nullable `T *` results and `T **` outputs receive deterministic cleanup; null-only parameters safely hide unsupported pointer values; nullable `view cstring` results borrow their single pointer input and copy into owned `String`; nullable declared handles lift into niche-backed `Option`; owned handles with explicit transfer/destruction facts cross `thread.spawn`; general pointer/view contracts and internal toolchain notes remain |
 | C callbacks | Partial | Call-only and caller-thread escaping callbacks use `.zd` with named context and exact release contracts; cross-thread callbacks remain unsupported |
 | Native availability | Implemented host slice | Explicit `z.json` platform/minimum target, introduced/obsoleted errors, deprecation warnings, native source locations, and matching Clang/Swift deployment flags; cross-compilation and runtime guards remain |
 | Native library linkage | Implemented host slice | Validated, deduplicated `target.link.libraries` names become host-native library arguments; raw linker flags and cross-platform library resolution remain outside the project contract |
@@ -127,9 +127,10 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
 
 ## Validation probes
 
-- [`examples/applications/z-notes`](../examples/applications/z-notes): AppKit application
-  shell, ARC-owned note model, optional selection, direct SQLite declaration
-  import, and explicit `sqlite3` project linkage.
+- [`examples/applications/z-notes`](../examples/applications/z-notes): persistent
+  AppKit application, ARC-owned note model, optional selection, direct SQLite
+  declaration import, owned database/statement cleanup, borrowed native text
+  views, explicit `sqlite3` linkage, and `std/objc` target/action.
 - [`examples/applications/document-workspace`](../examples/applications/document-workspace): cross-platform,
   multi-module document registration and saving with move-only native leases,
   cleanup-bearing errors, optional views, array growth, and zero live resources.

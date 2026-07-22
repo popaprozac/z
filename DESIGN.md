@@ -1464,6 +1464,12 @@ they do not introduce a general safe-code address-of operator.
 The toolchain may ship internal notes for platform headers. Project-authored
 contracts use adjacent `<header>.zd` Z declaration files with `declare module`;
 there is no second project-sidecar format to keep synchronized.
+The narrow `parameter: null` contract restricts an otherwise unsupported
+native pointer parameter to the null value in safe Z. A
+`view cstring | null` result classifies a native character pointer as nullable
+borrowed NUL-terminated text tied to the function's single borrowed pointer
+input. The result must be narrowed before copying and keeps its input owner
+loaned until last use. Neither form changes the header-defined ABI.
 Over time, Clang attributes, Apple's API notes, Windows SAL
 annotations, package metadata, and generated bindings should populate the same
 semantic model so the common case remains simply:

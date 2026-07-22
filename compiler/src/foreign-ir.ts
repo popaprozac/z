@@ -25,6 +25,7 @@ export type ForeignDeclarationMetadata = {
 
 export type ForeignType =
   | { readonly kind: "z"; readonly name: ForeignScalarTypeName | "cstring" | "void"; readonly cName: string }
+  | { readonly kind: "nullPointer"; readonly cName: string }
   | { readonly kind: "selector"; readonly cName: "SEL" }
   | { readonly kind: "swiftString"; readonly cName: "swift::String" }
   | { readonly kind: "named"; readonly type: ForeignNamedType; readonly cName: string }
@@ -181,6 +182,7 @@ export type ForeignPointerType = {
   readonly nullable: boolean;
   readonly release: string | null;
   readonly thread: ForeignThreadContract;
+  readonly stringView?: true;
 };
 
 export type ForeignOutPointerType = {

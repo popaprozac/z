@@ -4944,7 +4944,12 @@ function generateExpressionInner(expression: Expression, context: GenerationCont
         && expression.callee.object.name === "String"
         && expression.callee.property === "from"
       ) {
-        return `z_string_from_cstring(${generateExpression(expression.arguments[0], context)})`;
+        const argument = expression.arguments[0];
+        const value = generateExpression(argument, context);
+        const nativeText = context.semanticInfo.foreignTypes.get(inferExpressionType(argument, context));
+        return nativeText?.stringView
+          ? `z_string_from_cstring((const char *)(${value}))`
+          : `z_string_from_cstring(${value})`;
       }
       const objcCall = context.semanticInfo.objcCalls.get(expression.location.offset);
       if (objcCall && expression.callee.kind === "member") {
