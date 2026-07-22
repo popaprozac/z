@@ -112,10 +112,17 @@ export function createNativeSemanticBridge(
     const source = sourceAggregate(sourceAggregates, canonicalModulePathBySourcePath, aggregate);
     if (!source) return null;
     const native = index.symbol(source.modulePath, source.declaration.name);
-    const method = native?.typeSignature?.methods.find((candidate) => candidate.name === declaration.name);
     const sourceMethod = source.declaration.methods.find((candidate) =>
-      candidate.name === declaration.name && Boolean(candidate.static) === Boolean(declaration.static)
+      Boolean(candidate.static) === Boolean(declaration.static)
+      && (
+        candidate.name === declaration.name
+        || (
+          candidate.location.line === declaration.location.line
+          && candidate.location.column === declaration.location.column
+        )
+      )
     );
+    const method = native?.typeSignature?.methods.find((candidate) => candidate.name === sourceMethod?.name);
     if (!native || (native.kind !== "struct" && native.kind !== "class") || !method || !sourceMethod) {
       throw new Error(
         `native semantic bridge could not resolve method ${JSON.stringify(`${source.declaration.name}.${declaration.name}`)} in ${source.modulePath}`,
@@ -345,8 +352,7 @@ export function createNativeSemanticBridge(
       if (!resolved) return null;
       const ownerTypeParameters = resolved.source.declaration.typeParameters ?? [];
       const methodTypeParameters = resolved.sourceMethod.typeParameters ?? [];
-      if (methodTypeParameters.length > 0) return null;
-      const typeParameters = ownerTypeParameters;
+      const typeParameters = [...ownerTypeParameters, ...methodTypeParameters];
       if (typeParameters.length > 0) {
         const callPath = canonicalModulePathBySourcePath.get(
           location.fileName ?? sourceBatch.entryFileName,

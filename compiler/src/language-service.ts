@@ -662,7 +662,8 @@ export function hover(source: string, fileName: string, offset: number): Hover |
     if (resolved?.kind === "struct") {
       const field = resolved.declaration.fields.find((item) => item.name === word.text);
       if (field) return markdownHover(fieldDetail(field, context.typeDisplayNames), source, word.start, word.end);
-      const method = resolved.declaration.methods.find((item) => item.name === word.text);
+      const method = resolved.declaration.methods.find((item) => item.name === word.text)
+        ?? resolved.sourceDeclaration?.methods.find((item) => item.name === word.text);
       if (method) return markdownHover(methodDetail(method, context.typeDisplayNames), source, word.start, word.end);
     }
     if (resolved?.kind === "foreignValue") {
@@ -1214,6 +1215,12 @@ function declaredBindingType(source: string, name: string, offset: number): stri
   const annotations = [...before.matchAll(new RegExp(`\\b${escaped}\\s*:\\s*([A-Za-z_][A-Za-z0-9_.]*(?:<[^;=(){}]+>)?)`, "g"))];
   const annotated = annotations.at(-1)?.[1]?.trim();
   if (annotated) return annotated;
+  const constructions = [...before.matchAll(new RegExp(
+    `\\b(?:const|let)\\s+${escaped}\\s*=\\s*(?:new\\s+)?([A-Za-z_][A-Za-z0-9_.]*(?:<[^;=(){}]+>)?)\\s*\\(`,
+    "g",
+  ))];
+  const constructed = constructions.at(-1)?.[1]?.trim();
+  if (constructed) return constructed;
   const initializers = [...before.matchAll(new RegExp(`\\b(?:const|let)\\s+${escaped}\\s*=\\s*([A-Za-z_][A-Za-z0-9_.]*(?:<[^;=(){}]+>)?)\\.`, "g"))];
   return initializers.at(-1)?.[1]?.trim() ?? null;
 }
@@ -2201,12 +2208,41 @@ function memberCompletions(
       }
     }
   }
-  if (!context) return [];
+  if (!context) {
+    const declaredType = declaredBindingType(source, receiverText, receiverOffset);
+    if (declaredType) {
+      const imported = sourceAggregateForType(importContext, declaredType)?.declaration ?? null;
+      let local: StructDeclaration | null = null;
+      if (!imported) {
+        try {
+          const parsed = parse(lex(sanitized, fileName), fileName);
+          const generic = parseSourceGenericType(declaredType);
+          local = parsed.structs.find((declaration) => declaration.name === (generic?.base ?? declaredType)) ?? null;
+        } catch {
+          local = null;
+        }
+      }
+      const declaration = imported ?? local;
+      if (declaration) {
+        const includePrivate = insideAggregateBody(source, fileName, offset, declaration.name);
+        return filterCompletions(
+          structCompletions(declaration, importContext.typeDisplayNames, includePrivate, declaration),
+          prefix,
+          1000,
+        );
+      }
+    }
+    return [];
+  }
   const resolved = resolveReceiver(context, receiverText, resolvedOffset);
   if (resolved?.kind === "objc") return filterCompletions(objcCompletions(resolved.declaration, resolved.instance, context), prefix, 1000);
   if (resolved?.kind === "struct") {
     const includePrivate = insideAggregateBody(source, fileName, offset, resolved.declaration.name);
-    return filterCompletions(structCompletions(resolved.declaration, context.typeDisplayNames, includePrivate), prefix, 1000);
+    return filterCompletions(
+      structCompletions(resolved.declaration, context.typeDisplayNames, includePrivate, resolved.sourceDeclaration),
+      prefix,
+      1000,
+    );
   }
   if (resolved?.kind === "foreignValue") {
     return filterCompletions(resolved.declaration.methods.map((method) => ({
@@ -2537,7 +2573,11 @@ function safeAnalysis(source: string, fileName: string): AnalyzedSource | null {
 type ResolvedReceiver =
   | { readonly kind: "module"; readonly module: ForeignModule; readonly namespacePath: readonly string[] }
   | { readonly kind: "objc"; readonly declaration: ForeignObjCInterface; readonly instance: boolean }
-  | { readonly kind: "struct"; readonly declaration: StructDeclaration }
+  | {
+    readonly kind: "struct";
+    readonly declaration: StructDeclaration;
+    readonly sourceDeclaration: StructDeclaration | null;
+  }
   | { readonly kind: "foreignValue"; readonly declaration: Extract<ForeignNamedType, { kind: "value" }> }
   | { readonly kind: "integer"; readonly type: string }
   | { readonly kind: "array"; readonly type: string }
@@ -2575,7 +2615,11 @@ function resolveReceiver(context: AnalyzedSource, text: string, offset: number):
   const objc = context.semanticInfo.foreignInterfaces.get(interfaceName);
   if (objc) return { kind: "objc", declaration: objc, instance: true };
   const declaration = context.program.structs.find((item) => item.name === receiverType);
-  if (declaration) return { kind: "struct", declaration };
+  if (declaration) {
+    const sourceType = context.typeDisplayNames.get(receiverType) ?? receiverType;
+    const sourceDeclaration = sourceAggregateForType(context, sourceType)?.declaration ?? null;
+    return { kind: "struct", declaration, sourceDeclaration };
+  }
   const foreignValue = context.semanticInfo.foreignNamedTypes.get(receiverType);
   return foreignValue?.kind === "value" ? { kind: "foreignValue", declaration: foreignValue } : null;
 }
@@ -2702,7 +2746,14 @@ function structCompletions(
   declaration: StructDeclaration,
   typeDisplayNames: ReadonlyMap<string, string>,
   includePrivate: boolean,
+  sourceDeclaration: StructDeclaration | null = null,
 ): CompletionItem[] {
+  const methods = [
+    ...declaration.methods.filter((method) => !method.name.startsWith("__z_mono_")),
+    ...(sourceDeclaration && sourceDeclaration !== declaration
+      ? sourceDeclaration.methods.filter((method) => method.typeParameters?.length)
+      : []),
+  ];
   return [
     ...declaration.fields
       .filter((field) => field.visibility === "public" || includePrivate)
@@ -2711,7 +2762,7 @@ function structCompletions(
         kind: completionKinds.field,
         detail: `${field.visibility === "private" ? "private " : ""}${field.readonly ? "readonly " : ""}${displayType(field.type.name, typeDisplayNames)}`,
       })),
-    ...declaration.methods
+    ...methods
       .filter((method) => !method.static && ((method.visibility ?? "public") === "public" || includePrivate))
       .map((method) => ({
       label: method.name,

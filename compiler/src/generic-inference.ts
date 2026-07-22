@@ -45,6 +45,7 @@ export function inferGenericCalls(
   const structs = new Map(program.structs.map((item) => [item.name, item]));
   const enums = new Map(program.enums.map((item) => [item.name, item]));
   const traits = new Map(program.traits.map((item) => [item.name, item]));
+  const methodSpecializations = new Map<string, Map<string, string>>();
   let activeConstraints = new Map<string, string[]>();
   let activeTypeParameters = new Set<string>();
   const closureReturns = new Map<string, string | null>();
@@ -274,6 +275,91 @@ export function inferGenericCalls(
         unify(patternGeneric.arguments[index], actualGeneric.arguments[index], parameters, inferred, functionName, location);
       }
     }
+  };
+
+  const requestMethodSpecialization = (
+    owner: StructDeclaration,
+    method: FunctionDeclaration,
+    arguments_: readonly string[],
+  ): string => {
+    const name = genericTypeName(method.name, [...arguments_]);
+    let ownerRequests = methodSpecializations.get(owner.name);
+    if (!ownerRequests) {
+      ownerRequests = new Map();
+      methodSpecializations.set(owner.name, ownerRequests);
+    }
+    ownerRequests.set(name, method.name);
+    return name;
+  };
+
+  const inferMethodArguments = (
+    owner: StructDeclaration,
+    ownerSubstitutions: ReadonlyMap<string, string>,
+    method: FunctionDeclaration,
+    explicitArguments: readonly string[] | null,
+    arguments_: readonly RewrittenExpression[],
+    originalArguments: readonly Expression[],
+    expectedType: string | null,
+    location: Expression["location"],
+  ): { readonly name: string; readonly returnType: string } => {
+    const methodParameters = method.typeParameters ?? [];
+    const callName = `${owner.name}.${method.name}`;
+    if (explicitArguments && explicitArguments.length !== methodParameters.length) {
+      throw new DiagnosticError(
+        fileName,
+        location,
+        `${callName} expects ${methodParameters.length} type argument(s), received ${explicitArguments.length}`,
+      );
+    }
+    if (arguments_.length !== method.parameters.length) {
+      throw new DiagnosticError(
+        fileName,
+        location,
+        `${JSON.stringify(callName)} expects ${method.parameters.length} argument(s), received ${arguments_.length}`,
+      );
+    }
+    const inferred = new Map<string, string>();
+    if (explicitArguments) {
+      methodParameters.forEach((parameter, index) => inferred.set(parameter, explicitArguments[index]));
+    } else {
+      const parameters = new Set(methodParameters);
+      if (expectedType) {
+        unify(
+          substituteType(method.returnType.name, ownerSubstitutions),
+          expectedType,
+          parameters,
+          inferred,
+          callName,
+          location,
+        );
+      }
+      const contextualParameters = new Set(inferred.keys());
+      const valueParameters = new Set([...parameters].filter((parameter) => !contextualParameters.has(parameter)));
+      for (let index = 0; index < method.parameters.length; index += 1) {
+        unify(
+          substituteType(method.parameters[index].type.name, ownerSubstitutions),
+          arguments_[index].type,
+          valueParameters,
+          inferred,
+          callName,
+          originalArguments[index].location,
+        );
+      }
+    }
+    const missing = methodParameters.find((parameter) => !inferred.has(parameter));
+    if (missing) {
+      throw new DiagnosticError(
+        fileName,
+        location,
+        `cannot infer type parameter ${JSON.stringify(missing)} for ${JSON.stringify(callName)}; specify explicit type arguments`,
+      );
+    }
+    const methodArguments = methodParameters.map((parameter) => inferred.get(parameter)!);
+    const substitutions = new Map([...ownerSubstitutions, ...inferred]);
+    return {
+      name: requestMethodSpecialization(owner, method, methodArguments),
+      returnType: substituteType(method.returnType.name, substitutions),
+    };
   };
 
   const inferAggregateArguments = (
@@ -595,6 +681,26 @@ export function inferGenericCalls(
           const owner = structs.get(explicitOwner?.base ?? expression.callee.object.name);
           const methodName = explicitMethod?.base ?? expression.callee.property;
           const method = owner?.methods.find((candidate) => candidate.static && candidate.name === methodName);
+          if (owner && method?.typeParameters?.length && !owner.typeParameters?.length) {
+            const specialized = inferMethodArguments(
+              owner,
+              new Map(),
+              method,
+              explicitMethod?.arguments ?? null,
+              args,
+              expression.arguments,
+              expectedType,
+              expression.callee.location,
+            );
+            return {
+              expression: {
+                ...expression,
+                callee: { ...expression.callee, property: specialized.name },
+                arguments: args.map((item) => item.expression),
+              },
+              type: specialized.returnType,
+            };
+          }
           if (owner && method && owner.typeParameters?.length) {
             if (explicitOwner) {
               throw new DiagnosticError(
@@ -604,7 +710,12 @@ export function inferGenericCalls(
               );
             }
             if (method.typeParameters?.length) {
-              throw new DiagnosticError(fileName, method.location, "static methods with their own type parameters are not implemented yet");
+              throw new DiagnosticError(
+                fileName,
+                expression.callee.location,
+                `static method ${JSON.stringify(`${owner.name}.${method.name}`)} has independent owner and method type parameters; `
+                  + "their two-level specialization syntax is not designed yet",
+              );
             }
             const inferred = new Map<string, string>();
             const parameters = new Set(owner.typeParameters);
@@ -654,6 +765,33 @@ export function inferGenericCalls(
                 arguments: args.map((item) => item.expression),
               },
               type: substituteType(method.returnType.name, inferred),
+            };
+          }
+        }
+        if (expression.callee.kind === "member") {
+          const receiver = rewriteExpression(expression.callee.object, environment);
+          const owner = receiver.type ? aggregate(receiver.type) : null;
+          const explicitMethod = parseGenericType(expression.callee.property);
+          const methodName = explicitMethod?.base ?? expression.callee.property;
+          const method = owner?.declaration.methods.find((candidate) => !candidate.static && candidate.name === methodName);
+          if (owner && method?.typeParameters?.length) {
+            const specialized = inferMethodArguments(
+              owner.declaration,
+              owner.substitutions,
+              method,
+              explicitMethod?.arguments ?? null,
+              args,
+              expression.arguments,
+              expectedType,
+              expression.callee.location,
+            );
+            return {
+              expression: {
+                ...expression,
+                callee: { ...expression.callee, object: receiver.expression, property: specialized.name },
+                arguments: args.map((item) => item.expression),
+              },
+              type: specialized.returnType,
             };
           }
         }
@@ -1053,10 +1191,22 @@ export function inferGenericCalls(
     };
   });
 
+  const rewrittenFunctions = program.functions.map((declaration) => rewriteFunction(declaration));
+  const specializedStructs = rewrittenStructs.map((declaration) => {
+    const requests = methodSpecializations.get(declaration.name);
+    if (!requests?.size) return declaration;
+    const methods = [...declaration.methods];
+    for (const [name, methodName] of requests) {
+      const template = declaration.methods.find((method) => method.name === methodName);
+      if (template) methods.push({ ...template, name });
+    }
+    return { ...declaration, methods };
+  });
+
   return {
     ...program,
-    structs: rewrittenStructs,
-    functions: program.functions.map((declaration) => rewriteFunction(declaration)),
+    structs: specializedStructs,
+    functions: rewrittenFunctions,
   };
 }
 

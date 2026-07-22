@@ -464,10 +464,11 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    generation, so native `inout this` and `move this` feed the existing
    exclusivity and consumption checks rather than creating a parallel ownership
    path. Stage zero independently proves each contract equivalent before using
-   it. Direct generic functions, methods on generic owners, and inferred or
-   explicit generic-class constructors with complete native substitutions now
-   use the same authority path. Separately generic methods remain shadow-only until
-   stage zero and stage one share their full materialization surface. Ordinary
+   it. Direct generic functions, methods on generic owners, separately generic
+   instance methods, separately generic static methods on non-generic owners,
+   and inferred or explicit generic-class constructors with complete native
+   substitutions now use the same authority path. Static calls combining an
+   independently generic owner and method remain deferred pending syntax. Ordinary
    checks without `--native-frontend` retain the stage-zero path.
    Native-authority counts are reported separately for functions, methods, and
    constructors.

@@ -377,7 +377,17 @@ test("preserves generic inference and local shadowing across Z modules", () => {
   const library = resolve(directory, "library.zs");
   const main = resolve(directory, "main.zs");
   writeFileSync(library, `
-    export struct Pair<T> { first: T; second: T; }
+    export struct Pair<T> {
+      first: T;
+      second: T;
+      function choose<U>(left: U, right: U): U {
+        if (this.first > 0 && left == right) return left;
+        return right;
+      }
+    }
+    export struct Utility {
+      static function preserve<T>(value: T): T { return value; }
+    }
     class HiddenCounter { value: i32; }
     struct HiddenResource { value: i32; deinit {} }
     function helper(): i32 { return 0; }
@@ -386,14 +396,18 @@ test("preserves generic inference and local shadowing across Z modules", () => {
   `);
   const source = `
     import library from "./library.zs";
-    import { first } from "./library.zs";
+    import { first, Utility as Tools } from "./library.zs";
     function main(): i32 {
       const pair = library.Pair({ first: 20, second: 22 });
-      return library.first<i32>(pair) + first(pair) + library.shadowed() - 82;
+      const chosen = pair.choose(1, 2);
+      const preserved = Tools.preserve<i32>(1);
+      return library.first<i32>(pair) + first(pair) + library.shadowed() + chosen + preserved - 85;
     }
   `;
   const generated = compileToC(source, main);
   assert.match(generated, /__z_mono___z_module_\d+_Pair_i32/);
+  assert.match(generated, /__z_mono_choose_i32/);
+  assert.match(generated, /__z_mono_preserve_i32/);
   const sourcePath = resolve(directory, "main.zs");
   writeFileSync(sourcePath, source);
   const result = spawnSync(process.execPath, [cli, "run", sourcePath], { encoding: "utf8" });
@@ -4846,7 +4860,11 @@ test("resolves a canonical module graph directly from native Z ASTs", () => {
       + "export struct Record<T> {\n"
       + "  value: T;\n"
       + "  function get(): T { return this.value; }\n"
+      + "  function preserve<U>(candidate: U): U { return candidate; }\n"
       + "  static function echo(value: T): T { return value; }\n"
+      + "}\n"
+      + "export struct Utility {\n"
+      + "  static function preserve<U>(candidate: U): U { return candidate; }\n"
       + "}\n"
       + "export class Holder<T> {\n"
       + "  value: T;\n"
@@ -4862,17 +4880,19 @@ test("resolves a canonical module graph directly from native Z ASTs", () => {
   );
   writeFileSync(
     genericEvidenceMain,
-    "import { identity as keep, Record as Entry, Holder as Stored, Slot as Cell } from \"./generic-evidence-model.zs\";\n"
+    "import { identity as keep, Record as Entry, Holder as Stored, Slot as Cell, Utility } from \"./generic-evidence-model.zs\";\n"
       + "import model from \"./generic-evidence-model.zs\";\n"
       + "function main(): i32 {\n"
       + "  const label = \"é\";\n"
       + "  const record: Entry<i32> = Entry({ value: keep(20) });\n"
       + "  const echoed = Entry.echo(record.get());\n"
+      + "  const preserved = record.preserve(1);\n"
+      + "  const staticPreserved = Utility.preserve<i32>(1);\n"
       + "  const holder = new Stored(keep<i32>(22));\n"
       + "  const explicitHolder = new Stored<i32>(0);\n"
       + "  const namespacedHolder = new model.Holder(0);\n"
       + "  const cell = new Cell({ value: 0 });\n"
-      + "  return echoed + holder.get() + explicitHolder.get() + namespacedHolder.get() + cell.value;\n"
+      + "  return echoed + preserved + staticPreserved + holder.get() + explicitHolder.get() + namespacedHolder.get() + cell.value;\n"
       + "}\n",
   );
   const genericEvidence = spawnSync(
@@ -4881,8 +4901,8 @@ test("resolves a canonical module graph directly from native Z ASTs", () => {
     { encoding: "utf8" },
   );
   assert.equal(genericEvidence.status, 0, genericEvidence.stderr);
-  assert.match(genericEvidence.stdout, /native frontend hybrid exports 10 concrete generic call contracts/);
-  assert.match(genericEvidence.stdout, /native frontend hybrid uses 2 function, 5 method, and 3 constructor native-authoritative contracts/);
+  assert.match(genericEvidence.stdout, /native frontend hybrid exports 12 concrete generic call contracts/);
+  assert.match(genericEvidence.stdout, /native frontend hybrid uses 2 function, 7 method, and 3 constructor native-authoritative contracts/);
   assert.match(genericEvidence.stdout, /native frontend hybrid uses 2 aggregate, 7 field, and 0 enum-variant native-authoritative contracts/);
   assert.match(genericEvidence.stdout, /native frontend hybrid uses 1 explicit type-use native-authoritative contract/);
 
@@ -7495,6 +7515,82 @@ test("infers generic calls while preserving explicit instantiation", () => {
     function main(): i32 { return 0; }
   `;
   assert.throws(() => compileToC(duplicate, "generic-duplicate.zs"), /duplicate type parameter "T"/);
+});
+
+test("specializes separately generic instance and static methods", () => {
+  const source = `
+    struct Utility {
+      static function preserve<T>(value: T): T { return value; }
+    }
+    struct Record {
+      value: i32;
+      function choose<T>(left: T, right: T): T {
+        if (this.value > 0 && left == right) return left;
+        return right;
+      }
+    }
+    struct Holder<T> {
+      value: T;
+      function replace<U>(candidate: U): U {
+        if (this.value > 0) return candidate;
+        return candidate;
+      }
+    }
+    function main(): i32 {
+      const record = Record({ value: 1 });
+      const holder = Holder({ value: 20 });
+      const inferred = record.choose(20, 22);
+      const explicit = record.choose<i32>(20, 22);
+      return Utility.preserve(inferred) + Utility.preserve<i32>(explicit) + holder.replace(2) - 42;
+    }
+  `;
+  const generated = compileToC(source, "generic-methods.zs");
+  assert.match(generated, /Z_Utility___z_mono_preserve_i32/);
+  assert.match(generated, /Z_Record___z_mono_choose_i32/);
+  assert.match(generated, /Z___z_mono_Holder_i32___z_mono_replace_i32/);
+  assert.doesNotMatch(generated, /\bfunction preserve<T>|\bfunction choose<T>|\bfunction replace<U>/);
+  assert.deepEqual(diagnostics(source, "generic-methods.zs"), []);
+  const chooseOffset = source.indexOf("record.choose") + "record.".length + 1;
+  assert.match(hover(source, "generic-methods.zs", chooseOffset)?.contents.value ?? "", /function choose<T>\(left: T, right: T\): T/);
+  const completionSource = source.replace("record.choose(20, 22)", "record.ch");
+  const completionOffset = completionSource.indexOf("record.ch") + "record.ch".length;
+  const chooseCompletions = completions(completionSource, "generic-methods.zs", completionOffset)
+    .filter((item) => item.label === "choose");
+  assert.equal(chooseCompletions.length, 1);
+  const chooseCompletion = chooseCompletions[0];
+  assert.match(chooseCompletion.detail ?? "", /function choose<T>\(left: T, right: T\): T/);
+
+  const conflict = source.replace("record.choose(20, 22)", "record.choose(20, true)");
+  assert.throws(
+    () => compileToC(conflict, "generic-method-conflict.zs"),
+    /conflicting inferred types for T.*i32 and boolean/,
+  );
+
+  const ambiguous = `
+    struct Utility { static function make<T>(): T { return 1; } }
+    function main(): i32 { const value = Utility.make(); return 0; }
+  `;
+  assert.throws(
+    () => compileToC(ambiguous, "generic-method-ambiguous.zs"),
+    /cannot infer type parameter "T" for "Utility\.make"/,
+  );
+
+  const wrongArity = source.replace("record.choose<i32>(20, 22)", "record.choose<i32, boolean>(20, 22)");
+  assert.throws(
+    () => compileToC(wrongArity, "generic-method-arity.zs"),
+    /Record\.choose expects 1 type argument\(s\), received 2/,
+  );
+
+  const twoLevelStatic = `
+    struct Owner<T> {
+      static function preserve<U>(candidate: U): U { return candidate; }
+    }
+    function main(): i32 { return Owner.preserve(42); }
+  `;
+  assert.throws(
+    () => compileToC(twoLevelStatic, "generic-static-two-level.zs"),
+    /static method "Owner\.preserve" has independent owner and method type parameters/,
+  );
 });
 
 test("infers generic aggregate construction, class construction, and static factories", () => {

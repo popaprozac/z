@@ -366,6 +366,32 @@ Multiple nominal constraints use intersections:
 function describe<T: Measured & Named>(in value: T): String { ... }
 ```
 
+Methods may introduce type parameters independently of their owner. Arguments
+are inferred at the call site or supplied explicitly:
+
+```z
+struct Slot {
+  occupied: boolean;
+
+  function choose<T>(primary: T, fallback: T): T {
+    if (this.occupied) return primary;
+    return fallback;
+  }
+}
+
+struct Utility {
+  static function preserve<T>(value: T): T { return value; }
+}
+
+const inferred = slot.choose(20, 22);
+const explicit = Utility.preserve<i32>(42);
+```
+
+An instance of a generic owner may also call a separately generic instance
+method. A static method whose owner and method both introduce independent type
+parameters is deliberately deferred until that two-level specialization syntax
+is designed.
+
 `|` is reserved for union-like type composition; it is not the spelling for
 requiring multiple trait conformances.
 

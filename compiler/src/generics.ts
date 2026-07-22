@@ -88,6 +88,18 @@ export function materializeGenerics(
   const transform = (value: any, substitutions: Map<string, string>): any => {
     if (Array.isArray(value)) return value.map((item) => transform(item, substitutions));
     if (!value || typeof value !== "object") return value;
+    if (value.kind === "member") {
+      const genericMethod = parseGenericType(value.property);
+      if (genericMethod) {
+        return {
+          ...transformObject(value, substitutions),
+          property: monomorphizedName(
+            genericMethod.base,
+            genericMethod.arguments.map((argument) => substituteName(argument, substitutions)),
+          ),
+        };
+      }
+    }
     if (value.kind === "call" && value.callee?.kind === "identifier") {
       const generic = parseGenericType(value.callee.name);
       if (generic?.base === "Array") {
@@ -200,7 +212,10 @@ export function materializeGenerics(
     structInstances.set(key, name);
     typeDisplayNames.set(name, `${base}<${args.map(displayName).join(", ")}>`);
     const substitutions = new Map(template.typeParameters!.map((parameter, index) => [parameter, args[index]]));
-    const concrete = transform({ ...template, name, typeParameters: [], typeParameterConstraints: [] }, substitutions) as StructDeclaration;
+    const concrete = {
+      ...transform({ ...template, name, typeParameters: [], typeParameterConstraints: [], methods: [] }, substitutions),
+      methods: materializeMethods(template, substitutions),
+    } as StructDeclaration;
     structs.push(concrete);
     return name;
   }
@@ -240,8 +255,49 @@ export function materializeGenerics(
     }
   }
 
+  function materializeMethods(
+    declaration: StructDeclaration,
+    ownerSubstitutions: Map<string, string>,
+  ): FunctionDeclaration[] {
+    const templates = new Map(
+      declaration.methods
+        .filter((method) => method.typeParameters?.length && !parseGenericType(method.name))
+        .map((method) => [method.name, method]),
+    );
+    const methods = declaration.methods
+      .filter((method) => !method.typeParameters?.length)
+      .map((method) => transform(method, ownerSubstitutions) as FunctionDeclaration);
+    for (const request of declaration.methods) {
+      const generic = parseGenericType(request.name);
+      if (!generic) continue;
+      const template = templates.get(generic.base);
+      if (!template) continue;
+      const args = generic.arguments.map((argument) => substituteName(argument, ownerSubstitutions));
+      if (args.length !== template.typeParameters!.length) {
+        throw new DiagnosticError(
+          fileName,
+          request.location,
+          `${declaration.name}.${template.name} expects ${template.typeParameters!.length} type argument(s), received ${args.length}`,
+        );
+      }
+      validateConstraints(template, args);
+      const substitutions = new Map(ownerSubstitutions);
+      template.typeParameters!.forEach((parameter, index) => substitutions.set(parameter, args[index]));
+      methods.push(transform({
+        ...template,
+        name: monomorphizedName(template.name, args),
+        typeParameters: [],
+        typeParameterConstraints: [],
+      }, substitutions) as FunctionDeclaration);
+    }
+    return methods;
+  }
+
   for (const declaration of program.structs.filter((item) => !item.typeParameters?.length)) {
-    structs.push(transform(declaration, new Map()));
+    structs.push({
+      ...transform({ ...declaration, methods: [] }, new Map()),
+      methods: materializeMethods(declaration, new Map()),
+    });
   }
   for (const declaration of program.functions.filter((item) => !item.typeParameters?.length)) {
     functions.push(transform(declaration, new Map()));

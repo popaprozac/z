@@ -515,11 +515,17 @@ types rather than a parallel erased-generic runtime.
 
 The initial inference implementation is argument-directed. Type parameters that
 appear only in a return type require explicit arguments. Outer aggregate
-parameters are supported inside fields and methods. Constraints use nominal
-traits and are checked on every inferred or explicit instance. Generic traits,
-separately generic methods, specialization policy, and cross-module instance
-ownership remain future layers. Generated instance names are backend details and
-do not form part of Z's source or ABI contract.
+parameters are supported inside fields and methods. Instance methods may declare
+their own type parameters, including on a generic owner, and static methods may
+do so on a non-generic owner. Calls infer those method arguments or accept an
+explicit `value.method<T>()` / `Utility.method<T>()` specialization. A static
+method whose owner and method both introduce independent generic parameters is
+deferred until its source spelling is designed; Z does not guess how one angle
+list should be divided between them. Constraints use nominal traits and are
+checked on every inferred or explicit instance. Generic traits, specialization
+policy, and cross-module instance ownership remain future layers. Generated
+instance names are backend details and do not form part of Z's source or ABI
+contract.
 
 ## Numeric types
 
@@ -1530,10 +1536,11 @@ ported independently rather than translated as one monolith.
    validating its target and mapping every concrete type onto the linked
    declaration; it never reconstructs semantics from a mangled monomorph name.
    This includes direct generic functions, instance/static methods whose owner is
-   generic, and inferred or explicit construction of generic classes. Method
-   evidence also proves receiver capability; constructor evidence proves the
-   concrete owner result. Separately generic methods remain a later authority tier because the
-   two bootstrap frontends do not yet share their complete materialization path.
+   generic, separately generic instance methods, separately generic static
+   methods on non-generic owners, and inferred or explicit construction of
+   generic classes. Method evidence proves both receiver capability and the
+   ordered owner/method substitutions; constructor evidence proves the concrete
+   owner result.
    Generic aggregate construction, fields, and explicit type uses do not need a
    separate concrete-call record: the native template supplies structural
    metadata, and the already-linked concrete declaration supplies lowering
