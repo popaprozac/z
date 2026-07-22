@@ -99,6 +99,7 @@ test("loads explicit Z exports through selective and namespace module imports", 
   assert.equal(analysis.nativeFrontendGraph, null);
   assert.equal(analysis.nativeSemanticIndex, null);
   assert.equal(analysis.nativeSemanticQueryCount, 0);
+  assert.equal(analysis.nativeGenericCallEvidenceCount, 0);
   assert.equal(analysis.nativeCallResolutionCount, 0);
   assert.equal(analysis.nativeMethodResolutionCount, 0);
   assert.equal(analysis.nativeConstructorResolutionCount, 0);
@@ -152,6 +153,7 @@ test("attaches native frontend evidence after authoritative stage-0 analysis", (
   const total = analysis.nativeSemanticIndex?.resolveNamespaceMember(example, "geometry", "total");
   assert.equal(total?.declaration.functionSignature?.returnType, "i32");
   assert.ok(analysis.nativeSemanticQueryCount > (analysis.nativeFrontendGraph?.modules.length ?? 0));
+  assert.equal(analysis.nativeGenericCallEvidenceCount, 0);
   assert.ok(analysis.nativeCallResolutionCount > 0);
   assert.equal(analysis.nativeAuthoritativeFunctionResolutionCount, analysis.nativeCallResolutionCount);
   assert.equal(analysis.nativeAuthoritativeAggregateResolutionCount, analysis.nativeAggregateResolutionCount);
@@ -248,6 +250,7 @@ test("attaches native frontend evidence after authoritative stage-0 analysis", (
     nativeFrontendResolver: buildStage0ModuleGraph,
   });
   assert.equal(generic.nativeCallResolutionCount, 1);
+  assert.equal(generic.nativeGenericCallEvidenceCount, 0);
   assert.equal(generic.nativeMethodResolutionCount, 1);
   assert.equal(generic.nativeConstructorResolutionCount, 1);
   assert.equal(generic.nativeAuthoritativeFunctionResolutionCount, 0);
@@ -4835,6 +4838,46 @@ test("resolves a canonical module graph directly from native Z ASTs", () => {
   assert.match(timingsWithoutShadow.stderr, /check --timings requires --native-frontend/);
 
   const invalidDirectory = mkdtempSync("/tmp/z-self-host-resolver-");
+  const genericEvidenceMain = resolve(invalidDirectory, "generic-evidence-main.zs");
+  const genericEvidenceModel = resolve(invalidDirectory, "generic-evidence-model.zs");
+  writeFileSync(
+    genericEvidenceModel,
+    "export function identity<T>(value: T): T { return value; }\n",
+  );
+  writeFileSync(
+    genericEvidenceMain,
+    "import { identity as keep } from \"./generic-evidence-model.zs\";\n"
+      + "function main(): i32 {\n"
+      + "  const label = \"é\";\n"
+      + "  return keep(20) + keep<i32>(22);\n"
+      + "}\n",
+  );
+  const genericEvidence = spawnSync(
+    process.execPath,
+    [cli, "check", genericEvidenceMain, "--native-frontend"],
+    { encoding: "utf8" },
+  );
+  assert.equal(genericEvidence.status, 0, genericEvidence.stderr);
+  assert.match(genericEvidence.stdout, /native frontend hybrid exports 2 concrete generic call contracts/);
+  assert.match(genericEvidence.stdout, /native frontend hybrid uses 2 function, 0 method, and 0 constructor native-authoritative contracts/);
+
+  const genericErrorMain = resolve(invalidDirectory, "generic-error-main.zs");
+  writeFileSync(
+    genericErrorMain,
+    "struct Failure { code: i32; }\n"
+      + "function keep<T>(value: T): T throws Failure { return value; }\n"
+      + "function load(): i32 throws Failure { return try keep(42); }\n"
+      + "function main(): i32 { return 0; }\n",
+  );
+  const genericErrorEvidence = spawnSync(
+    process.execPath,
+    [cli, "check", genericErrorMain, "--native-frontend"],
+    { encoding: "utf8" },
+  );
+  assert.equal(genericErrorEvidence.status, 0, genericErrorEvidence.stderr);
+  assert.match(genericErrorEvidence.stdout, /native frontend hybrid exports 1 concrete generic call contract/);
+  assert.match(genericErrorEvidence.stdout, /native frontend hybrid uses 1 function, 0 method, and 0 constructor native-authoritative contracts/);
+
   const invalidMain = resolve(invalidDirectory, "main.zs");
   writeFileSync(invalidMain, `import { hidden } from "./values.zs"; function main(): i32 { return hidden(); }`);
   writeFileSync(resolve(invalidDirectory, "values.zs"), `function hidden(): i32 { return 42; }`);
@@ -6524,6 +6567,31 @@ test("resolves a canonical module graph directly from native Z ASTs", () => {
 
   const encoded = encodeStage1ModuleBatch([{ path: "/a.zs", source: "é" }]);
   assert.equal(encoded.byteLength, 32 + Buffer.byteLength("/a.zs") + Buffer.byteLength("é"));
+  const callEvidenceGraph = decodeStage1ModuleGraphStream(
+    "entry\t0000000000000000\n"
+    + "module\t2f612e7a73\n"
+    + "symbol\t0000000000000000\tfunction\t6964656e74697479\t1\t-\t6964656e74697479\t0000000000000000\t0000000000000001\t0000000000000001\n"
+    + "signature\t0000000000000000\t0000000000000000\t0\t54\t\t0000000000000001\t0000000000000001\t54\t76616c7565\t54\n"
+    + "callResolution\t0000000000000000\t000000000000002a\t0000000000000002\t000000000000000a\t0000000000000000\t0000000000000000\t66756e6374696f6e\t6964656e74697479\t0\t\t693332\t\t0000000000000001\t0000000000000001\t54\t693332\t76616c7565\t693332\n"
+    + "order\t0000000000000000\n",
+  );
+  assert.deepEqual(callEvidenceGraph.modules[0].callResolutions, [{
+    offset: 42,
+    line: 2,
+    column: 10,
+    targetModule: 0,
+    targetSymbol: 0,
+    kind: "function",
+    targetName: "identity",
+    asynchronous: false,
+    receiverMode: "",
+    returnType: "i32",
+    errorType: null,
+    typeParameters: ["T"],
+    typeArguments: ["i32"],
+    parameterModes: ["value"],
+    parameterTypes: ["i32"],
+  }]);
   assert.throws(() => decodeStage1ModuleGraphStream("order\n"), /did not contain an entry/);
   assert.throws(
     () => decodeStage1ModuleGraphStream("entry\t0000000000000001\nmodule\t2f612e7a73\norder\t0000000000000000\n"),

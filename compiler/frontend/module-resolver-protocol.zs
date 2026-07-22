@@ -4,6 +4,7 @@
 import { TextBuffer } from "std/text";
 import {
   ModuleResolveError,
+  ModuleCallResolution,
   ModuleSource,
   ModuleSymbol,
   moduleSymbolKindName,
@@ -297,6 +298,60 @@ function appendConstructorSignature(
   }
 }
 
+function appendCallResolution(
+  inout output: TextBuffer,
+  moduleIndex: usize,
+  in resolution: ModuleCallResolution
+): void {
+  output.append("callResolution");
+  output.appendAscii(9);
+  appendHexUsize(inout output, moduleIndex);
+  output.appendAscii(9);
+  appendHexUsize(inout output, resolution.offset);
+  output.appendAscii(9);
+  appendHexUsize(inout output, resolution.line);
+  output.appendAscii(9);
+  appendHexUsize(inout output, resolution.column);
+  output.appendAscii(9);
+  appendHexUsize(inout output, resolution.targetModuleIndex);
+  output.appendAscii(9);
+  appendHexUsize(inout output, resolution.targetSymbolIndex);
+  output.appendAscii(9);
+  appendHexText(inout output, resolution.kind);
+  output.appendAscii(9);
+  appendHexText(inout output, resolution.targetName);
+  output.appendAscii(9);
+  if (resolution.asynchronous) output.appendAscii(49);
+  else output.appendAscii(48);
+  output.appendAscii(9);
+  appendHexText(inout output, resolution.receiverMode);
+  output.appendAscii(9);
+  appendHexText(inout output, resolution.returnType);
+  output.appendAscii(9);
+  appendHexText(inout output, resolution.errorType);
+  output.appendAscii(9);
+  appendHexUsize(inout output, resolution.typeParameters.length);
+  output.appendAscii(9);
+  appendHexUsize(inout output, resolution.parameterTypes.length);
+  let typeIndex: usize = 0;
+  while (typeIndex < resolution.typeParameters.length) {
+    output.appendAscii(9);
+    appendHexText(inout output, resolution.typeParameters[typeIndex]);
+    output.appendAscii(9);
+    appendHexText(inout output, resolution.typeArguments[typeIndex]);
+    typeIndex = typeIndex + 1;
+  }
+  let parameterIndex: usize = 0;
+  while (parameterIndex < resolution.parameterTypes.length) {
+    output.appendAscii(9);
+    appendHexText(inout output, resolution.parameterModes[parameterIndex]);
+    output.appendAscii(9);
+    appendHexText(inout output, resolution.parameterTypes[parameterIndex]);
+    parameterIndex = parameterIndex + 1;
+  }
+  output.appendAscii(10);
+}
+
 export function renderModuleGraph(
   in entryPath: String,
   in batch: String
@@ -331,6 +386,9 @@ export function renderModuleGraph(
       appendConstructorSignature(inout output, moduleIndex, symbolIndex, symbol);
       appendMethodSignatures(inout output, moduleIndex, symbolIndex, symbol);
       symbolIndex = symbolIndex + 1;
+    }
+    for (const resolution of module.callResolutions) {
+      appendCallResolution(inout output, moduleIndex, resolution);
     }
     moduleIndex = moduleIndex + 1;
   }

@@ -77,6 +77,25 @@ export type Stage1ResolvedModule = {
   readonly path: string;
   readonly dependencies: readonly number[];
   readonly symbols: readonly Stage1ModuleSymbol[];
+  readonly callResolutions: readonly Stage1ModuleCallResolution[];
+};
+
+export type Stage1ModuleCallResolution = {
+  readonly offset: number;
+  readonly line: number;
+  readonly column: number;
+  readonly targetModule: number;
+  readonly targetSymbol: number;
+  readonly kind: "function" | "method" | "constructor";
+  readonly targetName: string;
+  readonly asynchronous: boolean;
+  readonly receiverMode: string;
+  readonly typeParameters: readonly string[];
+  readonly typeArguments: readonly string[];
+  readonly parameterModes: readonly ("value" | "in" | "inout" | "out")[];
+  readonly parameterTypes: readonly string[];
+  readonly returnType: string;
+  readonly errorType: string | null;
 };
 
 export type Stage1ModuleSymbolKind = "function" | "struct" | "class" | "trait" | "enum" | "namespace" | "imported";
@@ -175,6 +194,7 @@ export function decodeStage1ModuleGraphStream(output: string): Stage1ModuleGraph
         path: Buffer.from(fields[1], "hex").toString("utf8"),
         dependencies: fields.slice(2).map((field) => parseProtocolHexInteger(field, "module dependency")),
         symbols: [],
+        callResolutions: [],
       });
       continue;
     }
@@ -204,6 +224,62 @@ export function decodeStage1ModuleGraphStream(output: string): Stage1ModuleGraph
           line: parseProtocolHexInteger(lineText, "symbol line"),
           column: parseProtocolHexInteger(columnText, "symbol column"),
         },
+      });
+      continue;
+    }
+    if (fields[0] === "callResolution") {
+      if (fields.length < 15) throw new Error(`malformed stage-1 call resolution line: ${line}`);
+      const moduleIndex = parseProtocolHexInteger(fields[1], "call resolution module");
+      const module = modules[moduleIndex];
+      if (!module) throw new Error("stage-1 call resolution appeared before its module");
+      const kind = Buffer.from(fields[7], "hex").toString("utf8");
+      if (kind !== "function" && kind !== "method" && kind !== "constructor") {
+        throw new Error(`malformed stage-1 call resolution kind: ${kind}`);
+      }
+      if (fields[9] !== "0" && fields[9] !== "1") {
+        throw new Error(`malformed stage-1 call resolution async state: ${fields[9]}`);
+      }
+      const encodedText = [fields[7], fields[8], fields[10], fields[11], fields[12]];
+      if (encodedText.some((field) => !/^(?:[0-9a-f]{2})*$/.test(field))) {
+        throw new Error(`malformed stage-1 call resolution text: ${line}`);
+      }
+      const typeCount = parseProtocolHexInteger(fields[13], "call resolution type count");
+      const parameterCount = parseProtocolHexInteger(fields[14], "call resolution parameter count");
+      if (fields.length !== 15 + (typeCount * 2) + (parameterCount * 2)) {
+        throw new Error(`malformed stage-1 call resolution arity: ${line}`);
+      }
+      const encodedTypes = fields.slice(15, 15 + (typeCount * 2));
+      const encodedParameters = fields.slice(15 + (typeCount * 2));
+      if (
+        encodedTypes.some((field) => !/^(?:[0-9a-f]{2})*$/.test(field))
+        || encodedParameters.some((field) => !/^(?:[0-9a-f]{2})*$/.test(field))
+      ) {
+        throw new Error(`malformed stage-1 call resolution contract: ${line}`);
+      }
+      const parameterModes = encodedParameters.filter((_, index) => index % 2 === 0)
+        .map((field) => Buffer.from(field, "hex").toString("utf8"));
+      if (!parameterModes.every(isStage1ParameterMode)) {
+        throw new Error(`malformed stage-1 call resolution parameter mode: ${line}`);
+      }
+      (module.callResolutions as Stage1ModuleCallResolution[]).push({
+        offset: parseProtocolHexInteger(fields[2], "call resolution offset"),
+        line: parseProtocolHexInteger(fields[3], "call resolution line"),
+        column: parseProtocolHexInteger(fields[4], "call resolution column"),
+        targetModule: parseProtocolHexInteger(fields[5], "call resolution target module"),
+        targetSymbol: parseProtocolHexInteger(fields[6], "call resolution target symbol"),
+        kind,
+        targetName: Buffer.from(fields[8], "hex").toString("utf8"),
+        asynchronous: fields[9] === "1",
+        receiverMode: Buffer.from(fields[10], "hex").toString("utf8"),
+        returnType: Buffer.from(fields[11], "hex").toString("utf8"),
+        errorType: fields[12].length === 0 ? null : Buffer.from(fields[12], "hex").toString("utf8"),
+        typeParameters: encodedTypes.filter((_, index) => index % 2 === 0)
+          .map((field) => Buffer.from(field, "hex").toString("utf8")),
+        typeArguments: encodedTypes.filter((_, index) => index % 2 === 1)
+          .map((field) => Buffer.from(field, "hex").toString("utf8")),
+        parameterModes,
+        parameterTypes: encodedParameters.filter((_, index) => index % 2 === 1)
+          .map((field) => Buffer.from(field, "hex").toString("utf8")),
       });
       continue;
     }
@@ -439,6 +515,12 @@ export function decodeStage1ModuleGraphStream(output: string): Stage1ModuleGraph
     }
     if (module.symbols.some((symbol) => symbol.targetModule !== null && symbol.targetModule >= modules.length)) {
       throw new Error("stage-1 module symbol target is outside the module batch");
+    }
+    if (module.callResolutions.some((resolution) => (
+      resolution.targetModule >= modules.length
+      || resolution.targetSymbol >= (modules[resolution.targetModule]?.symbols.length ?? 0)
+    ))) {
+      throw new Error("stage-1 call resolution target is outside the module graph");
     }
     if (module.symbols.some((symbol) => (
       symbol.typeSignature?.customConstructor === true

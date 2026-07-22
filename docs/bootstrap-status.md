@@ -432,6 +432,16 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    type-use authority resolutions independently, while primitive, foreign,
    compiler-synthesized, and generic-substitution types remain on the stage-zero
    path.
+   The graph protocol now also exports source-located concrete generic-call
+   contracts after native inference settles. Each record identifies its defining
+   module and symbol and carries type substitutions, parameter capabilities and
+   types, async/error state, and result type. `NativeSemanticIndex` validates and
+   indexes these records by canonical module plus call-expression offset. Direct
+   generic Z functions are native-authoritative when the complete contract maps
+   cleanly onto the linked concrete declaration; unresolved contextual inference
+   and concrete names needing richer cross-module rebasing retain the stage-zero
+   fallback. Native checks report exported contracts separately from contracts
+   actually consumed by the semantic bridge.
    Successful non-generic Z function, method, and explicit class-constructor calls
    are now native-authoritative semantic results. Their parameter modes and types,
    async/error state, and result type come from the native signature; methods also
@@ -441,9 +451,10 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    generation, so native `inout this` and `move this` feed the existing
    exclusivity and consumption checks rather than creating a parallel ownership
    path. Stage zero independently proves each contract equivalent before using
-   it. Generic functions, generic methods, and methods or constructors on generic
-   owners intentionally remain shadow-only until native substitutions can cross
-   the compiler boundary; ordinary checks without `--native-frontend` retain the
+   it. Direct generic functions with complete native substitutions now use the
+   same authority path. Generic methods and methods or constructors on generic
+   owners remain shadow-only while concrete owner/member identity and type-name
+   rebasing are expanded. Ordinary checks without `--native-frontend` retain the
    stage-zero path. Native-authority counts are reported separately for functions,
    methods, and constructors.
    Native failures are buffered: a stage-zero error remains authoritative, and a

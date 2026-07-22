@@ -34,9 +34,20 @@ export function createNativeSemanticBridge(
   const sourceFunctions = new Map<string, { readonly modulePath: string; readonly declaration: FunctionDeclaration }>();
   const sourceAggregates = new Map<string, { readonly modulePath: string; readonly declaration: StructDeclaration }>();
   const sourceEnums = new Map<string, { readonly modulePath: string; readonly declaration: EnumDeclaration }>();
-  const modulePaths = new Set<string>();
+  const canonicalModulePathBySourcePath = new Map<string, string>();
   for (const module of sourceBatch.modules) {
-    modulePaths.add(module.fileName);
+    canonicalModulePathBySourcePath.set(module.fileName, module.fileName);
+    for (const declaration of [
+      ...module.program.imports,
+      ...module.program.traits,
+      ...module.program.structs,
+      ...module.program.enums,
+      ...module.program.functions,
+    ]) {
+      if (declaration.location.fileName) {
+        canonicalModulePathBySourcePath.set(declaration.location.fileName, module.fileName);
+      }
+    }
     for (const declaration of module.program.functions) {
       sourceFunctions.set(definitionKey(module.fileName, declaration), {
         modulePath: module.fileName,
@@ -73,8 +84,11 @@ export function createNativeSemanticBridge(
   let authoritativeTypes = 0;
   const nativeFunction = (location: FunctionDeclaration["location"], declaration: FunctionDeclaration) => {
     const definitionPath = declaration.location.fileName;
-    if (!definitionPath || !modulePaths.has(definitionPath)) return null;
-    const source = sourceFunctions.get(definitionKey(definitionPath, declaration));
+    const canonicalDefinitionPath = definitionPath
+      ? canonicalModulePathBySourcePath.get(definitionPath)
+      : null;
+    if (!canonicalDefinitionPath) return null;
+    const source = sourceFunctions.get(definitionKey(canonicalDefinitionPath, declaration));
     if (!source) return null;
     const native = index.symbol(source.modulePath, source.declaration.name);
     if (native?.kind !== "function" || !native.functionSignature) {
@@ -95,7 +109,7 @@ export function createNativeSemanticBridge(
     aggregate: StructDeclaration,
     declaration: FunctionDeclaration,
   ) => {
-    const source = sourceAggregate(sourceAggregates, modulePaths, aggregate);
+    const source = sourceAggregate(sourceAggregates, canonicalModulePathBySourcePath, aggregate);
     if (!source) return null;
     const native = index.symbol(source.modulePath, source.declaration.name);
     const method = native?.typeSignature?.methods.find((candidate) => candidate.name === declaration.name);
@@ -120,7 +134,7 @@ export function createNativeSemanticBridge(
     return { source, sourceMethod, method };
   };
   const nativeConstructor = (location: FunctionDeclaration["location"], aggregate: StructDeclaration) => {
-    const source = sourceAggregate(sourceAggregates, modulePaths, aggregate);
+    const source = sourceAggregate(sourceAggregates, canonicalModulePathBySourcePath, aggregate);
     if (!source) return null;
     const native = index.symbol(source.modulePath, source.declaration.name);
     const expected = stage0ConstructorSignature(source.declaration);
@@ -138,7 +152,7 @@ export function createNativeSemanticBridge(
     return { source, signature: native.typeSignature.constructorSignature! };
   };
   const nativeAggregate = (location: StructDeclaration["location"], declaration: StructDeclaration) => {
-    const source = sourceAggregate(sourceAggregates, modulePaths, declaration);
+    const source = sourceAggregate(sourceAggregates, canonicalModulePathBySourcePath, declaration);
     if (!source) return null;
     const native = index.symbol(source.modulePath, source.declaration.name);
     if (
@@ -160,7 +174,7 @@ export function createNativeSemanticBridge(
     aggregate: StructDeclaration,
     field: StructDeclaration["fields"][number],
   ) => {
-    const source = sourceAggregate(sourceAggregates, modulePaths, aggregate);
+    const source = sourceAggregate(sourceAggregates, canonicalModulePathBySourcePath, aggregate);
     if (!source) return null;
     const sourceField = source.declaration.fields.find((candidate) => candidate.name === field.name);
     const native = index.symbol(source.modulePath, source.declaration.name);
@@ -185,7 +199,7 @@ export function createNativeSemanticBridge(
     enumeration: EnumDeclaration,
     variant: EnumDeclaration["variants"][number],
   ) => {
-    const source = sourceEnum(sourceEnums, modulePaths, enumeration);
+    const source = sourceEnum(sourceEnums, canonicalModulePathBySourcePath, enumeration);
     if (!source) return null;
     const sourceVariant = source.declaration.variants.find((candidate) => candidate.name === variant.name);
     const native = index.symbol(source.modulePath, source.declaration.name);
@@ -207,8 +221,8 @@ export function createNativeSemanticBridge(
     declaration: StructDeclaration | EnumDeclaration,
   ) => {
     const source = declaration.kind === "enum"
-      ? sourceEnum(sourceEnums, modulePaths, declaration)
-      : sourceAggregate(sourceAggregates, modulePaths, declaration);
+      ? sourceEnum(sourceEnums, canonicalModulePathBySourcePath, declaration)
+      : sourceAggregate(sourceAggregates, canonicalModulePathBySourcePath, declaration);
     if (!source) return null;
     const native = index.symbol(source.modulePath, source.declaration.name);
     if (native?.kind !== source.declaration.kind || !native.typeSignature) {
@@ -221,7 +235,63 @@ export function createNativeSemanticBridge(
   const observer: SemanticObserver = {
     resolveFunctionCall: ({ location, declaration }) => {
       const resolved = nativeFunction(location, declaration);
-      if (!resolved || (resolved.source.declaration.typeParameters?.length ?? 0) > 0) return null;
+      if (!resolved) return null;
+      if ((resolved.source.declaration.typeParameters?.length ?? 0) > 0) {
+        const callPath = canonicalModulePathBySourcePath.get(
+          location.fileName ?? sourceBatch.entryFileName,
+        );
+        if (!callPath) return null;
+        const resolution = index.callResolution(
+          callPath,
+          location.offset,
+        );
+        if (!resolution) return null;
+        const targetModule = index.graph.modules[resolution.targetModule];
+        const target = targetModule?.symbols[resolution.targetSymbol];
+        const sourceTypeParameters = resolved.source.declaration.typeParameters ?? [];
+        if (
+          resolution.kind !== "function"
+          || targetModule?.path !== resolved.source.modulePath
+          || target?.kind !== "function"
+          || target.name !== resolved.source.declaration.name
+          || resolution.targetName !== resolved.source.declaration.name
+          || resolution.typeParameters.length !== sourceTypeParameters.length
+          || !resolution.typeParameters.every((parameter, index) => parameter === sourceTypeParameters[index])
+          || resolution.typeArguments.some((argument) => argument.length === 0)
+          || !sourceTypeParameters.every((parameter) => typeParameterAffectsCallableContract(
+            resolved.source.declaration,
+            parameter,
+          ))
+          || resolution.parameterModes.length !== declaration.parameters.length
+          || resolution.parameterTypes.length !== declaration.parameters.length
+          || !resolution.parameterTypes.every((type, index) => concreteNativeTypeMatches(type, declaration.parameters[index].type.name))
+          || !concreteNativeTypeMatches(resolution.returnType, declaration.returnType.name)
+          || (resolution.errorType === null) !== (declaration.errorType === null)
+          || (resolution.errorType !== null && !concreteNativeTypeMatches(resolution.errorType, declaration.errorType!.name))
+        ) return null;
+        authoritativeFunctions += 1;
+        return {
+          ...declaration,
+          async: resolution.asynchronous,
+          typeParameters: [],
+          parameters: declaration.parameters.map((parameter, index) => ({
+            ...parameter,
+            mode: resolution.parameterModes[index],
+            type: {
+              ...parameter.type,
+              name: rebaseConcreteNativeType(resolution.parameterTypes[index], parameter.type.name),
+            },
+          })),
+          returnType: {
+            ...declaration.returnType,
+            name: rebaseConcreteNativeType(resolution.returnType, declaration.returnType.name),
+          },
+          errorType: resolution.errorType === null ? null : {
+            ...declaration.errorType!,
+            name: rebaseConcreteNativeType(resolution.errorType, declaration.errorType!.name),
+          },
+        };
+      }
       const signature = resolved.native.functionSignature!;
       if (signature.parameterModes.length !== declaration.parameters.length) {
         throw new Error(
@@ -500,22 +570,30 @@ export function createNativeSemanticBridge(
 
 function sourceEnum(
   sourceEnums: ReadonlyMap<string, { readonly modulePath: string; readonly declaration: EnumDeclaration }>,
-  modulePaths: ReadonlySet<string>,
+  canonicalModulePathBySourcePath: ReadonlyMap<string, string>,
   declaration: EnumDeclaration,
 ): { readonly modulePath: string; readonly declaration: EnumDeclaration } | null {
   const definitionPath = declaration.location.fileName;
-  if (!definitionPath || !modulePaths.has(definitionPath)) return null;
-  return sourceEnums.get(definitionKey(definitionPath, declaration)) ?? null;
+  const canonicalDefinitionPath = definitionPath
+    ? canonicalModulePathBySourcePath.get(definitionPath)
+    : null;
+  return canonicalDefinitionPath
+    ? sourceEnums.get(definitionKey(canonicalDefinitionPath, declaration)) ?? null
+    : null;
 }
 
 function sourceAggregate(
   sourceAggregates: ReadonlyMap<string, { readonly modulePath: string; readonly declaration: StructDeclaration }>,
-  modulePaths: ReadonlySet<string>,
+  canonicalModulePathBySourcePath: ReadonlyMap<string, string>,
   declaration: StructDeclaration,
 ): { readonly modulePath: string; readonly declaration: StructDeclaration } | null {
   const definitionPath = declaration.location.fileName;
-  if (!definitionPath || !modulePaths.has(definitionPath)) return null;
-  return sourceAggregates.get(definitionKey(definitionPath, declaration)) ?? null;
+  const canonicalDefinitionPath = definitionPath
+    ? canonicalModulePathBySourcePath.get(definitionPath)
+    : null;
+  return canonicalDefinitionPath
+    ? sourceAggregates.get(definitionKey(canonicalDefinitionPath, declaration)) ?? null
+    : null;
 }
 
 function callSite(location: { readonly fileName?: string; readonly line: number; readonly column: number }, sourceBatch: SourceModuleBatch): string {
@@ -525,6 +603,28 @@ function callSite(location: { readonly fileName?: string; readonly line: number;
 function rebaseNativeType(nativeType: string, sourceType: string, linkedType: string): string {
   if (nativeType !== canonicalTypeName(sourceType)) {
     throw new Error(`native semantic bridge cannot rebase ${JSON.stringify(nativeType)} from ${JSON.stringify(sourceType)}`);
+  }
+  return linkedType;
+}
+
+function concreteNativeTypeMatches(nativeType: string, linkedType: string): boolean {
+  return nativeType === canonicalTypeName(linkedType);
+}
+
+function typeParameterAffectsCallableContract(declaration: FunctionDeclaration, parameter: string): boolean {
+  const contractTypes = [
+    ...declaration.parameters.map((item) => item.type.name),
+    declaration.returnType.name,
+    ...(declaration.errorType ? [declaration.errorType.name] : []),
+  ];
+  return contractTypes.some((typeName) => (
+    typeName.match(/[A-Za-z_][A-Za-z0-9_]*/g)?.includes(parameter) ?? false
+  ));
+}
+
+function rebaseConcreteNativeType(nativeType: string, linkedType: string): string {
+  if (!concreteNativeTypeMatches(nativeType, linkedType)) {
+    throw new Error(`native semantic bridge cannot rebase concrete ${JSON.stringify(nativeType)} onto ${JSON.stringify(linkedType)}`);
   }
   return linkedType;
 }

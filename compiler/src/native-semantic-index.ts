@@ -1,5 +1,5 @@
 import type { SourceModuleBatch } from "./modules.ts";
-import type { Stage1ModuleGraph, Stage1ModuleSymbol } from "./self-hosting.ts";
+import type { Stage1ModuleCallResolution, Stage1ModuleGraph, Stage1ModuleSymbol } from "./self-hosting.ts";
 
 export type NativeResolvedSymbol = {
   readonly modulePath: string;
@@ -13,6 +13,7 @@ export class NativeSemanticIndex {
 
   readonly #moduleIndexByPath: ReadonlyMap<string, number>;
   readonly #symbolsByModule: readonly ReadonlyMap<string, Stage1ModuleSymbol>[];
+  readonly #callResolutionsByModule: readonly ReadonlyMap<number, Stage1ModuleCallResolution>[];
 
   constructor(graph: Stage1ModuleGraph, sourceBatch: SourceModuleBatch) {
     validateGraphShape(graph, sourceBatch);
@@ -33,6 +34,36 @@ export class NativeSemanticIndex {
         symbols.set(symbol.name, symbol);
       }
       return symbols;
+    });
+    this.#callResolutionsByModule = graph.modules.map((module) => {
+      const resolutions = new Map<number, Stage1ModuleCallResolution>();
+      for (const resolution of module.callResolutions) {
+        if (resolutions.has(resolution.offset)) {
+          throw new Error(`native frontend returned duplicate call resolution at offset ${resolution.offset} in ${module.path}`);
+        }
+        if (resolution.typeParameters.length !== resolution.typeArguments.length) {
+          throw new Error(`native frontend returned an unbalanced generic substitution at offset ${resolution.offset} in ${module.path}`);
+        }
+        if (resolution.parameterModes.length !== resolution.parameterTypes.length) {
+          throw new Error(`native frontend returned an unbalanced parameter contract at offset ${resolution.offset} in ${module.path}`);
+        }
+        const target = graph.modules[resolution.targetModule]?.symbols[resolution.targetSymbol];
+        if (!target) {
+          throw new Error(`native frontend returned an invalid call target at offset ${resolution.offset} in ${module.path}`);
+        }
+        if (
+          (resolution.kind === "function" && target.kind !== "function")
+          || (resolution.kind === "method" && target.kind !== "struct" && target.kind !== "class")
+          || (resolution.kind === "constructor" && target.kind !== "class")
+        ) {
+          throw new Error(`native frontend returned a mismatched ${resolution.kind} target at offset ${resolution.offset} in ${module.path}`);
+        }
+        if (resolution.typeParameters.length === 0 || resolution.typeArguments.some((argument) => argument.length === 0)) {
+          throw new Error(`native frontend returned an incomplete generic call resolution at offset ${resolution.offset} in ${module.path}`);
+        }
+        resolutions.set(resolution.offset, resolution);
+      }
+      return resolutions;
     });
   }
 
@@ -70,6 +101,11 @@ export class NativeSemanticIndex {
       binding,
       declaration,
     };
+  }
+
+  callResolution(modulePath: string, offset: number): Stage1ModuleCallResolution | null {
+    const moduleIndex = this.#moduleIndexByPath.get(modulePath);
+    return moduleIndex === undefined ? null : this.#callResolutionsByModule[moduleIndex].get(offset) ?? null;
   }
 }
 

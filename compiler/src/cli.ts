@@ -195,9 +195,15 @@ function reportStage1Resolver(
   const order = run.graph.dependencyOrder.map((index) => basename(run.graph.modules[index].path)).join(" -> ");
   const edgeLabel = edges === 1 ? "edge" : "edges";
   const symbolLabel = symbols === 1 ? "symbol" : "symbols";
+  const genericCallContracts = run.graph.modules.reduce(
+    (count, module) => count + module.callResolutions.length,
+    0,
+  );
+  const genericCallContractLabel = genericCallContracts === 1 ? "contract" : "contracts";
   const subject = presentation === "check-hybrid" ? "native frontend hybrid" : "stage-1 resolver";
   console.log(`${run.entryPath}: ${subject} matches ${run.graph.modules.length} modules, ${edges} local ${edgeLabel}, and ${symbols} ${symbolLabel} (${order})`);
   console.log(`${subject} compiler index matches ${queryCount} binding/signature queries`);
+  console.log(`${subject} exports ${genericCallContracts} concrete generic call ${genericCallContractLabel}`);
   if (callResolutionCount !== null) {
     console.log(`${subject} observes ${callResolutionCount} function, ${methodResolutionCount} method, and ${constructorResolutionCount} constructor stage-0 Z resolutions`);
     console.log(`${subject} observes ${aggregateResolutionCount} aggregate, ${fieldResolutionCount} field, and ${enumVariantResolutionCount} enum-variant stage-0 Z resolutions`);

@@ -46,6 +46,7 @@ export type AnalyzedSource = {
   readonly nativeFrontendGraph: Stage1ModuleGraph | null;
   readonly nativeSemanticIndex: NativeSemanticIndex | null;
   readonly nativeSemanticQueryCount: number;
+  readonly nativeGenericCallEvidenceCount: number;
   readonly nativeCallResolutionCount: number;
   readonly nativeMethodResolutionCount: number;
   readonly nativeConstructorResolutionCount: number;
@@ -134,6 +135,10 @@ export function analyzeSource(source: string, fileName: string, options: Analysi
     nativeFrontendGraph,
     nativeSemanticIndex: nativeEvidence?.index ?? null,
     nativeSemanticQueryCount: nativeEvidence?.queryCount ?? 0,
+    nativeGenericCallEvidenceCount: nativeFrontendGraph?.modules.reduce(
+      (count, module) => count + module.callResolutions.length,
+      0,
+    ) ?? 0,
     nativeCallResolutionCount: nativeSemanticBridge?.functionCount() ?? 0,
     nativeMethodResolutionCount: nativeSemanticBridge?.methodCount() ?? 0,
     nativeConstructorResolutionCount: nativeSemanticBridge?.constructorCount() ?? 0,

@@ -167,7 +167,10 @@ evidence. Compiler-owned parity then checks the graph and exercises indexed
 local, selective-alias, and namespace-member signature queries; the CLI only
 reports the result and timings. Ordinary semantic analysis also observes each
 successful direct Z call and verifies its native definition/signature, while
-buffering native failures behind authoritative stage-zero diagnostics.
+buffering native failures behind authoritative stage-zero diagnostics. Generic
+function calls export their settled substitutions and concrete callable contract
+at the call site; `check --native-frontend` reports both exported and consumed
+native evidence.
 The frontend remains stage-zero-compiled, while the example directory is now a
 small educational consumer rather than the implementation home.
 

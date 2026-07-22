@@ -1523,7 +1523,15 @@ ported independently rather than translated as one monolith.
    declarations and namespace/selective import bindings with kinds, exports,
    aliases, and local module targets. Function symbols retain callable
    signatures across the graph boundary: async state, generic parameters,
-   parameter capabilities and types, return type, and error type. Type symbols
+   parameter capabilities and types, return type, and error type. Concrete
+   generic calls additionally export source-keyed resolution records containing
+   the defining symbol, settled substitutions, and the fully substituted callable
+   contract. The TypeScript bootstrap bridge may consume such a record only after
+   validating its target and mapping every concrete type onto the linked
+   declaration; it never reconstructs semantics from a mangled monomorph name.
+   This call evidence is a temporary bootstrap transport—the eventual native
+   driver will pass the same structural result directly between compiler phases.
+   Type symbols
    retain aggregate type parameters, field types/visibility/read-only state,
    custom-deinitializer/custom-constructor state, constructor signatures, and enum variants/payloads. Native match typing follows local,
    selective-imported, and namespace-imported enums through that graph,
