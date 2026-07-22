@@ -905,6 +905,12 @@ NUL-terminated native text tied to the function's single borrowed pointer
 input. It must be checked for null before `String.from` makes an owned copy;
 the owner cannot be consumed while the view remains live.
 
+A declaration parameter may also use `{ fixed NATIVE_CONSTANT; }`. The
+parameter remains part of the header-verified native ABI but is omitted from Z
+calls; code generation inserts the named header constant. This is intended for
+legacy conventions such as SQLite's `SQLITE_TRANSIENT`, where the C type alone
+does not express the safe ownership policy.
+
 ```z
 const bytes = sqlite.sqlite3_column_text(statement, 1);
 if (bytes == null) return "missing";

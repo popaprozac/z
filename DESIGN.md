@@ -1470,6 +1470,10 @@ native pointer parameter to the null value in safe Z. A
 borrowed NUL-terminated text tied to the function's single borrowed pointer
 input. The result must be narrowed before copying and keeps its input owner
 loaned until last use. Neither form changes the header-defined ABI.
+A parameter-local `{ fixed NATIVE_CONSTANT; }` contract likewise preserves its
+header-verified ABI position while omitting that policy parameter from Z calls;
+code generation supplies the named header constant. This is reserved for
+native semantic sentinels such as `SQLITE_TRANSIENT`, not arbitrary expressions.
 Over time, Clang attributes, Apple's API notes, Windows SAL
 annotations, package metadata, and generated bindings should populate the same
 semantic model so the common case remains simply:

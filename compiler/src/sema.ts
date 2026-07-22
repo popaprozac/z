@@ -210,6 +210,7 @@ export type IntegerOperation = {
 
 export type ForeignCallArgumentPlan =
   | { readonly kind: "argument"; readonly source: number }
+  | { readonly kind: "fixed"; readonly expression: string }
   | { readonly kind: "callback"; readonly source: number; readonly callback: ForeignCallbackType; readonly functionType: string }
   | { readonly kind: "context"; readonly source: number; readonly callback: ForeignCallbackType; readonly functionType: string }
   | { readonly kind: "release"; readonly source: number; readonly callback: ForeignCallbackType; readonly functionType: string };
@@ -7688,6 +7689,7 @@ function findObjCProperty(
 function foreignValueType(type: ForeignType): ValueType {
   if (type.kind === "z") return type.name;
   if (type.kind === "nullPointer") return "null";
+  if (type.kind === "fixedNative") return "unknown";
   if (type.kind === "selector") return objcSelectorTypeName;
   if (type.kind === "swiftString") return swiftStringTypeName;
   if (type.kind === "named") return type.type.typeName;
@@ -7798,7 +7800,9 @@ function contextualObjCStringToZ(
   const stringType = [...state.foreignObjectTypes.values()].find((candidate) => (
     candidate.className === "NSString" && !candidate.nullable
   ));
-  if (!actualObject || actualObject.nullable || !stringType || !isObjCSubclass(actualObject, stringType, state)) return null;
+  if (!actualObject || actualObject.nullable) return null;
+  if (actualObject.className !== "NSString"
+    && (!stringType || !isObjCSubclass(actualObject, stringType, state))) return null;
   state.objcStringsToZ.add(expression.location.offset);
   return "String";
 }
@@ -8025,7 +8029,9 @@ function foreignOverloadScore(
   state: AnalysisState,
 ): number {
   const parameters = target.parameters.filter((parameter) => (
-    parameter.type.kind !== "callbackContext" && parameter.type.kind !== "callbackRelease"
+    parameter.type.kind !== "callbackContext"
+    && parameter.type.kind !== "callbackRelease"
+    && parameter.type.kind !== "fixedNative"
   ));
   let score = target.variadic ? 0 : 2;
   for (let index = 0; index < args.length; index += 1) {
@@ -8070,7 +8076,11 @@ function checkForeignCall(
   }
   const visibleParameters = target.parameters
     .map((parameter, nativeIndex) => ({ parameter, nativeIndex }))
-    .filter(({ parameter }) => parameter.type.kind !== "callbackContext" && parameter.type.kind !== "callbackRelease");
+    .filter(({ parameter }) => (
+      parameter.type.kind !== "callbackContext"
+      && parameter.type.kind !== "callbackRelease"
+      && parameter.type.kind !== "fixedNative"
+    ));
   if (
     target.variadic
     && target.parameters.some((parameter) => parameter.type.kind === "callback" && parameter.type.lifetime === "escape")
@@ -8392,10 +8402,13 @@ function checkForeignCall(
     .filter((entry): entry is typeof entry & { readonly parameter: { readonly type: ForeignCallbackType } } => (
       entry.parameter.type.kind === "callback" && entry.parameter.type.context !== null
     ));
-  if (contextualCallbacks.length > 0) {
+  if (contextualCallbacks.length > 0 || target.parameters.some((parameter) => parameter.type.kind === "fixedNative")) {
     const callbacksByNativeIndex = new Map(contextualCallbacks.map((entry) => [entry.nativeIndex, entry]));
     const visibleByNativeIndex = new Map(visibleParameters.map((entry, source) => [entry.nativeIndex, source]));
     const plan: ForeignCallArgumentPlan[] = target.parameters.map((parameter, nativeIndex) => {
+      if (parameter.type.kind === "fixedNative") {
+        return { kind: "fixed", expression: parameter.type.expression };
+      }
       if (parameter.type.kind === "callbackContext") {
         const callback = callbacksByNativeIndex.get(parameter.type.callbackParameter)!;
         return {

@@ -2,7 +2,7 @@ import console from "std/console";
 import objc from "std/objc";
 import AppKit from "AppKit/AppKit.h";
 import { Note, NoteStore } from "./model.zs";
-import { insertGeneratedNote, loadNotes, sqliteVersion } from "./persistence.zs";
+import { insertNote, loadNotes, sqliteVersion } from "./persistence.zs";
 
 function main(): i32 {
   const databasePath = ".z-cache/z-notes.sqlite3";
@@ -59,6 +59,18 @@ function main(): i32 {
     selectedLabel.stringValue = `Selected: ${note.title}`;
   });
 
+  const titleField = AppKit.NSTextField.alloc().initWithFrame(
+    AppKit.NSMakeRect(24.0, 400.0, 768.0, 28.0)
+  );
+  titleField.placeholderString = "Note title";
+  content.addSubview(titleField);
+
+  const bodyField = AppKit.NSTextField.alloc().initWithFrame(
+    AppKit.NSMakeRect(24.0, 356.0, 768.0, 28.0)
+  );
+  bodyField.placeholderString = "Note body";
+  content.addSubview(bodyField);
+
   const statusLabel = AppKit.NSTextField.alloc().initWithFrame(
     AppKit.NSMakeRect(24.0, 24.0, 620.0, 24.0)
   );
@@ -77,21 +89,26 @@ function main(): i32 {
   let nextId = store.nextNoteId();
   const addNoteAction = objc.action(move (): void => {
     const noteId = nextId;
-    if (!insertGeneratedNote(databasePath, noteId)) {
+    const title = `${titleField.stringValue}`;
+    const body = `${bodyField.stringValue}`;
+    if (title.isEmpty) {
+      statusLabel.stringValue = "Enter a title before saving";
+      return;
+    }
+    const note = Note({ id: noteId, title, body });
+    if (!insertNote(databasePath, note)) {
       statusLabel.stringValue = `Could not save note ${noteId}`;
       console.error(`could not save note ${noteId}`);
       return;
     }
     nextId = nextId + 1;
-    store.add(Note({
-      id: noteId,
-      title: `Untitled ${noteId}`,
-      body: "Created from the native AppKit action.",
-    }));
+    selectedLabel.stringValue = `Selected: ${note.title}`;
+    store.add(note);
     store.selectNote(store.noteCount() - 1);
-    selectedLabel.stringValue = `Selected: Untitled ${noteId}`;
     statusLabel.stringValue = `Added note ${noteId} — ${store.noteCount()} total`;
     window.title = `Z Notes — ${store.noteCount()} notes`;
+    titleField.stringValue = "";
+    bodyField.stringValue = "";
     console.log(`added note ${noteId}, total=${store.noteCount()}`);
   });
   addButton.target = addNoteAction;

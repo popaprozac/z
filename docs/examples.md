@@ -115,9 +115,11 @@ control and window surface comes directly from AppKit headers. It imports
 an adjacent `.zd` contract to classify owned database and prepared-statement
 outputs without a handwritten wrapper. SQLite column text is a nullable
 `view cstring` tied to its statement, narrowed, and copied into owned Z
-`String` storage. The interactive action persists each generated note before
-updating the model and UI; a persistence smoke reloads the same database
-without opening a window.
+`String` storage. Editable AppKit title/body fields become owned Z strings and
+are persisted through placeholder binding; a declaration-only
+`fixed SQLITE_TRANSIENT` parameter safely supplies SQLite's hidden destructor
+sentinel at the C ABI boundary. A persistence smoke reloads quoted text from the
+same database without opening a window.
 
 [`document-workspace`](../examples/applications/document-workspace) is the
 recommended non-GUI application walkthrough. It uses domain-oriented names to

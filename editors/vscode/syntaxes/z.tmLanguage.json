@@ -72,6 +72,13 @@
           "2": { "name": "entity.name.function.destructor.z" }
         }
       }, {
+        "name": "meta.declaration.fixed-parameter.foreign.z",
+        "match": "\\b(fixed)\\s+([A-Za-z_][A-Za-z0-9_]*)(?=\\s*;)",
+        "captures": {
+          "1": { "name": "keyword.control.declaration.fixed.z" },
+          "2": { "name": "constant.other.native.z" }
+        }
+      }, {
         "name": "meta.type.inferred.z",
         "match": "(?<=:)\\s*(_)(?=\\s*(?:\\||[,;){}=]|$))",
         "captures": {

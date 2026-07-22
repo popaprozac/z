@@ -17,6 +17,9 @@ export type ContractParameter = {
   readonly typeLocation: SourceLocation;
   readonly release: string | null;
   readonly releaseLocation: SourceLocation | null;
+  readonly fixed: string | null;
+  readonly fixedLocation: SourceLocation | null;
+  readonly fixedValueLocation: SourceLocation | null;
 };
 
 export type ForeignFunctionContract = {
@@ -140,12 +143,25 @@ export function parseForeignDeclarationContracts(source: string, fileName: strin
       : parseInferredType();
     let release: string | null = null;
     let releaseLocation: SourceLocation | null = null;
+    let fixed: string | null = null;
+    let fixedLocation: SourceLocation | null = null;
+    let fixedValueLocation: SourceLocation | null = null;
     if (at("{")) {
       take();
       while (!at("}")) {
         const contract = peek();
+        if (at("fixed")) {
+          if (fixed) fail(contract, `foreign parameter ${JSON.stringify(name.text)} cannot declare more than one fixed native value`);
+          take();
+          const expression = expectIdentifier("a header-defined fixed native value");
+          fixed = expression.text;
+          fixedLocation = contract.location;
+          fixedValueLocation = expression.location;
+          expectText(";");
+          continue;
+        }
         if (!at("deinit")) {
-          fail(contract, `expected "deinit" in foreign output parameter contract, found ${JSON.stringify(contract.text)}`);
+          fail(contract, `expected "deinit" or "fixed" in foreign parameter contract, found ${JSON.stringify(contract.text)}`);
         }
         if (release) fail(contract, `foreign parameter ${JSON.stringify(name.text)} cannot declare more than one deinit contract`);
         take();
@@ -165,6 +181,9 @@ export function parseForeignDeclarationContracts(source: string, fileName: strin
     if (nullOnly && release) {
       fail(name, "a null-only native parameter cannot produce owned output");
     }
+    if (fixed && (mode !== "value" || nullOnly || release)) {
+      fail(name, "a fixed native parameter cannot also declare a capability, null-only type, or deinit");
+    }
     return {
       name: name.text,
       mode,
@@ -174,6 +193,9 @@ export function parseForeignDeclarationContracts(source: string, fileName: strin
       typeLocation: type.location,
       release,
       releaseLocation,
+      fixed,
+      fixedLocation,
+      fixedValueLocation,
     };
   };
   const emptyThreadContract = (): {
@@ -617,6 +639,7 @@ function inferCallbackContextPosition(
 }
 
 function parameterNote(parameter: ContractParameter): PointerNote {
+  if (parameter.fixed) return { fixed: parameter.fixed };
   if (parameter.nullOnly) return { nullable: true, nullOnly: true };
   if (parameter.mode === "in") {
     return {

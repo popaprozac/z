@@ -1199,6 +1199,11 @@ function mapForeignType(
   }
   const normalized = normalizeCType(cName);
   const stars = normalized.match(/\*/g)?.length ?? 0;
+  if (note?.fixed) {
+    return position === "parameter"
+      ? { kind: "fixedNative", cName: normalized, expression: note.fixed }
+      : { kind: "unsupported", cName };
+  }
   if (note?.nullOnly) {
     return position === "parameter" && stars >= 1
       ? { kind: "nullPointer", cName: normalized }

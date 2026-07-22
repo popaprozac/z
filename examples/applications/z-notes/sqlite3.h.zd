@@ -20,6 +20,16 @@ declare module "sqlite3.h" {
 
   export function sqlite3_step(in pStmt: _): _;
   export function sqlite3_finalize(move pStmt: _): _;
+  export function sqlite3_bind_int64(in pStmt: _, i: _, iValue: _): _;
+  export function sqlite3_bind_text(
+    in pStmt: _,
+    i: _,
+    in zData: _,
+    nData: _,
+    xDel: _ {
+      fixed SQLITE_TRANSIENT;
+    }
+  ): _;
   export function sqlite3_column_int64(in pStmt: _, iCol: _): _;
   export function sqlite3_column_text(in pStmt: _, iCol: _): view cstring | null;
 }

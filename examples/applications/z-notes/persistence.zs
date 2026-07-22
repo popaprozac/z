@@ -75,7 +75,7 @@ export function loadNotes(in path: String): Array<Note> {
   return notes;
 }
 
-export function insertGeneratedNote(in path: String, id: i64): boolean {
+export function insertNote(in path: String, in note: Note): boolean {
   let database;
   const opened = sqlite.sqlite3_open(path, out database);
   if (opened != 0) return false;
@@ -83,9 +83,12 @@ export function insertGeneratedNote(in path: String, id: i64): boolean {
   const doneStatus = 101;
 
   let statement;
-  const query = `INSERT INTO notes (id, title, body) VALUES (${id}, 'Untitled ${id}', 'Created from the native AppKit action.')`;
+  const query = "INSERT INTO notes (id, title, body) VALUES (?, ?, ?)";
   const prepared = sqlite.sqlite3_prepare_v2(database, query, -1, out statement, null);
   if (prepared != 0) return false;
   if (statement == null) return false;
+  if (sqlite.sqlite3_bind_int64(statement, 1, note.id) != 0) return false;
+  if (sqlite.sqlite3_bind_text(statement, 2, note.title, -1) != 0) return false;
+  if (sqlite.sqlite3_bind_text(statement, 3, note.body, -1) != 0) return false;
   return sqlite.sqlite3_step(statement) == doneStatus;
 }

@@ -26,6 +26,7 @@ export type ForeignDeclarationMetadata = {
 export type ForeignType =
   | { readonly kind: "z"; readonly name: ForeignScalarTypeName | "cstring" | "void"; readonly cName: string }
   | { readonly kind: "nullPointer"; readonly cName: string }
+  | { readonly kind: "fixedNative"; readonly cName: string; readonly expression: string }
   | { readonly kind: "selector"; readonly cName: "SEL" }
   | { readonly kind: "swiftString"; readonly cName: "swift::String" }
   | { readonly kind: "named"; readonly type: ForeignNamedType; readonly cName: string }

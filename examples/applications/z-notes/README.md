@@ -9,12 +9,12 @@ The application currently combines:
 - `Option<usize>` selection and borrowed callback inspection;
 - direct AppKit header import and an ARC-managed `NSWindow`;
 - direct `sqlite3.h` import with adjacent owned-output, null-only parameter,
-  and borrowed-text `.zd` contracts;
+  borrowed-text, and fixed-sentinel `.zd` contracts;
 - explicit `target.link.libraries` configuration for `sqlite3`.
 
 The application now uses the first `std/objc` target/action adapter for an
-interactive Add Note button. Startup loads notes from
-`.z-cache/z-notes.sqlite3`. Each click first persists a generated note, then
+interactive Add Note button plus editable title and body fields. Startup loads notes from
+`.z-cache/z-notes.sqlite3`. Each click first persists the entered note, then
 mutates the ARC-managed `NoteStore`, selects it, updates native AppKit labels
 and the window title, and logs the new note. The
 window, controls, methods, properties, strings, and layouts still come directly
@@ -66,9 +66,13 @@ prevents statement finalization while the view is live, and `String.from`
 copies the bytes into owned model storage. No C wrapper or generated binding
 file sits between Z and SQLite.
 
-The generated Add Note text is deliberately fixed and SQL-safe in this slice.
-Editable user text should arrive with a length-aware transient SQLite binding
-contract rather than interpolating arbitrary input into SQL.
+Editable title and body fields cross from `NSString` into owned Z `String`
+values. Inserts use SQLite placeholders rather than SQL interpolation. The
+`sqlite3_bind_text` declaration keeps its real five-parameter C ABI and marks
+the destructor parameter `{ fixed SQLITE_TRANSIENT; }`; Z calls supply four
+arguments while generated C inserts the sentinel so SQLite copies the bytes.
+Quotes and other ordinary user text therefore persist without an escaping
+wrapper or application-written native glue.
 
 Next, this application should drive Objective-C protocol
 conformance, table data-source/delegate methods, richer controls, escaping block

@@ -2569,6 +2569,9 @@ test("builds the interactive Z Notes AppKit and sqlite3 application", () => {
   assert.match(artifact.source, /sqlite3_open\(":memory:", &\(database\)\)/);
   assert.match(artifact.source, /if \(_z_live_database_\d+ && database != NULL\) sqlite3_close\(database\)/);
   assert.match(artifact.source, /sqlite3_prepare_v2\(database, .*SELECT id, title, body FROM notes ORDER BY id/);
+  assert.match(artifact.source, /sqlite3_bind_int64\(statement, 1, .*note.*id/);
+  assert.match(artifact.source, /sqlite3_bind_text\(statement, 2, [^\n]+title[^\n]+SQLITE_TRANSIENT\)/);
+  assert.match(artifact.source, /sqlite3_bind_text\(statement, 3, [^\n]+body[^\n]+SQLITE_TRANSIENT\)/);
   assert.match(artifact.source, /z_string_from_cstring\(\(const char \*\)\(titleBytes\)\)/);
   assert.match(artifact.source, /if \(_z_live_queryStatement_\d+ && queryStatement != NULL\) sqlite3_finalize\(queryStatement\)/);
   assert.match(artifact.source, /\[\[NSWindow alloc\] initWithContentRect/);
@@ -2652,6 +2655,28 @@ test("builds the interactive Z Notes AppKit and sqlite3 application", () => {
   assert.match(hover(declarationSource, declarationFile, nullOnlyOffset)?.contents.value ?? "", /only the native null pointer is exposed/);
   const textViewOffset = declarationSource.indexOf("view cstring") + 2;
   assert.match(hover(declarationSource, declarationFile, textViewOffset)?.contents.value ?? "", /borrowed native text tied to the input owner/);
+  const fixedKeywordOffset = declarationSource.indexOf("fixed SQLITE_TRANSIENT") + 1;
+  assert.match(hover(declarationSource, declarationFile, fixedKeywordOffset)?.contents.value ?? "", /compiler supplies this header-defined value/);
+  const fixedValueOffset = declarationSource.indexOf("SQLITE_TRANSIENT") + 2;
+  assert.match(hover(declarationSource, declarationFile, fixedValueOffset)?.contents.value ?? "", /fixed SQLITE_TRANSIENT/);
+  const bindTextOffset = declarationSource.indexOf("sqlite3_bind_text") + 2;
+  const bindTextHover = hover(declarationSource, declarationFile, bindTextOffset)?.contents.value ?? "";
+  assert.match(bindTextHover, /sqlite3_bind_text\(argument1: sqlite3_stmt \*, argument2: i32, argument3: cstring, argument4: i32\): i32/);
+  assert.doesNotMatch(bindTextHover, /argument5:/);
+  const partialFixed = declarationSource.replace("fixed SQLITE_TRANSIENT", "fix");
+  const partialFixedOffset = partialFixed.indexOf("fix", partialFixed.indexOf("xDel")) + 3;
+  assert.equal(
+    completions(partialFixed, declarationFile, partialFixedOffset).some((item) => item.label === "fixed"),
+    true,
+  );
+  const exposedFixedArgument = persistenceSource.replace(
+    "sqlite.sqlite3_bind_text(statement, 2, note.title, -1)",
+    "sqlite.sqlite3_bind_text(statement, 2, note.title, -1, null)",
+  );
+  assert.match(
+    diagnostics(exposedFixedArgument, persistence)[0]?.message ?? "",
+    /expects 4 argument\(s\), found 5/,
+  );
 
   const availabilityDirectory = mkdtempSync("/tmp/z-appkit-availability-");
   const availabilityFile = resolve(availabilityDirectory, "main.zs");
@@ -10795,12 +10820,14 @@ test("editor grammar tracks keywords without reserving Result variants", () => {
   assert.equal(foreignDeclarationPatterns[4].captures[1].name, "storage.modifier.capability.thread.z");
   assert.equal(foreignDeclarationPatterns[5].captures[2].name, "variable.parameter.z");
   assert.equal(foreignDeclarationPatterns[6].captures[2].name, "entity.name.function.destructor.z");
-  assert.equal(foreignDeclarationPatterns[7].captures[1].name, "storage.type.inferred.z");
-  assert.equal(foreignDeclarationPatterns[8].captures[1].name, "keyword.control.declaration.callback.z");
+  assert.equal(foreignDeclarationPatterns[7].captures[1].name, "keyword.control.declaration.fixed.z");
+  assert.equal(foreignDeclarationPatterns[7].captures[2].name, "constant.other.native.z");
+  assert.equal(foreignDeclarationPatterns[8].captures[1].name, "storage.type.inferred.z");
   assert.equal(foreignDeclarationPatterns[9].captures[1].name, "keyword.control.declaration.callback.z");
-  assert.equal(foreignDeclarationPatterns[9].captures[2].name, "variable.parameter.context.z");
   assert.equal(foreignDeclarationPatterns[10].captures[1].name, "keyword.control.declaration.callback.z");
-  assert.equal(foreignDeclarationPatterns[10].captures[2].name, "constant.language.callback-thread.z");
+  assert.equal(foreignDeclarationPatterns[10].captures[2].name, "variable.parameter.context.z");
+  assert.equal(foreignDeclarationPatterns[11].captures[1].name, "keyword.control.declaration.callback.z");
+  assert.equal(foreignDeclarationPatterns[11].captures[2].name, "constant.language.callback-thread.z");
   assert.match(selectiveImportPatterns, /\\bas\\b/);
   assert.doesNotMatch("move () =>", new RegExp(matchPattern));
   assert.match("some(value) =>", new RegExp(matchPattern));

@@ -106,7 +106,7 @@ const primitiveTypeTokens = [
 
 const declarationKeywordTokens = [
   "declare", "module", "export", "function", "type", "copy", "in", "inout", "out", "move", "deinit",
-  "callback", "context", "thread", "caller", "transfer", "share",
+  "callback", "context", "thread", "caller", "transfer", "share", "fixed",
 ] as const;
 
 export function diagnostics(source: string, fileName: string): ServiceDiagnostic[] {
@@ -1647,6 +1647,17 @@ function foreignDeclarationCompletions(source: string, fileName: string, offset:
     }
   }
 
+  const fixedContractPrefix = /:\s*_(?:\s*\|\s*null)?\s*\{[^{}]*\b([A-Za-z_]*)$/.exec(before)?.[1];
+  if (fixedContractPrefix !== undefined && "fixed".startsWith(fixedContractPrefix)) {
+    contextual.push({
+      label: "fixed",
+      kind: completionKinds.keyword,
+      detail: "compiler-supplied header constant for this native ABI parameter",
+      insertText: "fixed ",
+      sortText: "0-fixed",
+    });
+  }
+
   const deinitPrefix = /\bdeinit\s+([A-Za-z_][A-Za-z0-9_.]*)?$/.exec(before)?.[1];
   if (module && deinitPrefix !== undefined) {
     const returnTypes = new Set(owner?.overloads.map((overload) => foreignTypeName(overload.returnType).replace(/ \| null$/, "")) ?? []);
@@ -1851,6 +1862,19 @@ function foreignDeclarationHover(source: string, fileName: string, offset: numbe
       if (release) {
         return markdownHover(`${foreignFunctionDetail(release)}\n// deinitializer for out ${outputRelease.name}`, source, word.start, word.end);
       }
+    }
+    const fixedParameter = contract.parameters.find((parameter) => (
+      parameter.fixed
+      && (parameter.fixedLocation?.offset === word.start
+        || parameter.fixedValueLocation?.offset === word.start)
+    ));
+    if (fixedParameter?.fixed) {
+      return markdownHover(
+        `fixed ${fixedParameter.fixed}  // compiler supplies this header-defined value at the native ABI boundary`,
+        source,
+        word.start,
+        word.end,
+      );
     }
     if (contract.returnLocation.offset === word.start) {
       if (contract.returnSemanticType === "view-cstring") {
@@ -3400,7 +3424,9 @@ function foreignNamedTypeDetail(named: ForeignNamedType): string {
 function foreignFunctionDetail(declaration: ForeignFunction): string {
   return declaration.overloads.map((overload) => {
     const parameters = overload.parameters
-      .filter((parameter) => parameter.type.kind !== "callbackContext" && parameter.type.kind !== "callbackRelease")
+      .filter((parameter) => parameter.type.kind !== "callbackContext"
+        && parameter.type.kind !== "callbackRelease"
+        && parameter.type.kind !== "fixedNative")
       .map((parameter, index) => (
         foreignParameterDetail(parameter, index)
       ));
@@ -3628,6 +3654,7 @@ function formatTypeParameters(
 function foreignTypeName(type: ForeignType): string {
   if (type.kind === "z") return type.name;
   if (type.kind === "nullPointer") return "null";
+  if (type.kind === "fixedNative") return `fixed ${type.expression}`;
   if (type.kind === "selector") return "objc.Selector";
   if (type.kind === "swiftString") return "String";
   if (type.kind === "named") return type.type.typeName;

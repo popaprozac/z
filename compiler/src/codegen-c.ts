@@ -735,7 +735,9 @@ function collectFunctionTypes(program: Program, semanticInfo: SemanticInfo): Fun
   for (const type of semanticInfo.bindingTypes.values()) add(type);
   for (const plan of semanticInfo.foreignCallArgumentPlans.values()) {
     for (const argument of plan) {
-      if (argument.kind !== "argument") add(argument.functionType);
+      if (argument.kind === "callback" || argument.kind === "context" || argument.kind === "release") {
+        add(argument.functionType);
+      }
     }
   }
   return [...collected.values()].sort((left, right) => functionTypeCName(left).localeCompare(functionTypeCName(right)));
@@ -767,11 +769,11 @@ function collectForeignEscapeHelpers(
   return [...collected.values()];
 }
 
-function foreignCallbackBoxName(plan: Exclude<ForeignCallArgumentPlan, { kind: "argument" }>): string {
+function foreignCallbackBoxName(plan: Extract<ForeignCallArgumentPlan, { kind: "callback" | "context" | "release" }>): string {
   return `${functionTypeCName(parseFunctionType(plan.functionType)!)}_c_escape_box`;
 }
 
-function foreignCallbackBoxReleaseName(plan: Exclude<ForeignCallArgumentPlan, { kind: "argument" }>): string {
+function foreignCallbackBoxReleaseName(plan: Extract<ForeignCallArgumentPlan, { kind: "callback" | "context" | "release" }>): string {
   return `${foreignCallbackBoxName(plan)}_release`;
 }
 
@@ -3057,10 +3059,21 @@ function renderStringValue(
   if (context.semanticInfo.foreignTypes.has(type)) {
     return [`z_string_append_pointer(&${target}, (void *)(${value}));`];
   }
-  if (foreign?.kind === "object") {
-    return [`z_string_append_bytes(&${target}, "<Objective-C object>", 20);`];
-  }
-  if (type.startsWith("__z_objc:")) {
+  if (foreign?.kind === "object" || type.startsWith("__z_objc:")) {
+    if (isObjCStringType(type, context)) {
+      const length = `_z_string_nsstring_length_${context.valueCounter.value++}`;
+      const bytes = `_z_string_nsstring_bytes_${context.valueCounter.value++}`;
+      return [
+        `if ((${value}) == nil) {`,
+        `  z_string_append_bytes(&${target}, "null", 4);`,
+        `} else {`,
+        `  const NSUInteger ${length} = [(${value}) lengthOfBytesUsingEncoding:NSUTF8StringEncoding];`,
+        `  const char *${bytes} = [(${value}) UTF8String];`,
+        `  if (${bytes} == NULL && ${length} != 0) abort();`,
+        `  z_string_append_bytes(&${target}, ${bytes} != NULL ? ${bytes} : "", (uintptr_t)${length});`,
+        `}`,
+      ];
+    }
     return [`z_string_append_bytes(&${target}, "<Objective-C object>", 20);`];
   }
   if (type.startsWith("__z_objc_class:")) {
@@ -5172,6 +5185,7 @@ function generateForeignCallArgument(
   arguments_: readonly Expression[],
   context: GenerationContext,
 ): string {
+  if (plan.kind === "fixed") return plan.expression;
   const expression = arguments_[plan.source];
   if (plan.kind === "argument") return generateCallArgument(expression, context);
   if (plan.kind === "callback") return foreignCallbackAdapterName(plan);
