@@ -1534,6 +1534,11 @@ ported independently rather than translated as one monolith.
    proves receiver capability; constructor evidence proves the concrete owner
    result. Separately generic methods remain a later authority tier because the
    two bootstrap frontends do not yet share their complete materialization path.
+   Generic aggregate construction, fields, and explicit type uses do not need a
+   separate concrete-call record: the native template supplies structural
+   metadata, and the already-linked concrete declaration supplies lowering
+   identity. That rebase is keyed by source definition and member name, never by
+   decoding a stage-zero monomorph spelling.
    This call evidence is a temporary bootstrap transport—the eventual native
    driver will pass the same structural result directly between compiler phases.
    Type symbols

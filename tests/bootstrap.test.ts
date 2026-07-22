@@ -256,10 +256,10 @@ test("attaches native frontend evidence after authoritative stage-0 analysis", (
   assert.equal(generic.nativeAuthoritativeFunctionResolutionCount, 0);
   assert.equal(generic.nativeAuthoritativeMethodResolutionCount, 0);
   assert.equal(generic.nativeAuthoritativeConstructorResolutionCount, 0);
-  assert.equal(generic.nativeAuthoritativeAggregateResolutionCount, 0);
-  assert.equal(generic.nativeAuthoritativeFieldResolutionCount, 0);
+  assert.equal(generic.nativeAuthoritativeAggregateResolutionCount, generic.nativeAggregateResolutionCount);
+  assert.equal(generic.nativeAuthoritativeFieldResolutionCount, generic.nativeFieldResolutionCount);
   assert.equal(generic.nativeAuthoritativeEnumVariantResolutionCount, 0);
-  assert.equal(generic.nativeAuthoritativeTypeResolutionCount, 0);
+  assert.equal(generic.nativeAuthoritativeTypeResolutionCount, generic.nativeTypeResolutionCount);
 
   const nestedTypes = analyzeSource(`
     struct Item {
@@ -4859,7 +4859,7 @@ test("resolves a canonical module graph directly from native Z ASTs", () => {
     "import { identity as keep, Record as Entry, Holder } from \"./generic-evidence-model.zs\";\n"
       + "function main(): i32 {\n"
       + "  const label = \"é\";\n"
-      + "  const record = Entry<i32>({ value: keep(20) });\n"
+      + "  const record: Entry<i32> = Entry<i32>({ value: keep(20) });\n"
       + "  const echoed = Entry.echo(record.get());\n"
       + "  const holder = new Holder<i32>(keep<i32>(22));\n"
       + "  return echoed + holder.get();\n"
@@ -4873,6 +4873,8 @@ test("resolves a canonical module graph directly from native Z ASTs", () => {
   assert.equal(genericEvidence.status, 0, genericEvidence.stderr);
   assert.match(genericEvidence.stdout, /native frontend hybrid exports 6 concrete generic call contracts/);
   assert.match(genericEvidence.stdout, /native frontend hybrid uses 2 function, 3 method, and 1 constructor native-authoritative contracts/);
+  assert.match(genericEvidence.stdout, /native frontend hybrid uses 1 aggregate, 5 field, and 0 enum-variant native-authoritative contracts/);
+  assert.match(genericEvidence.stdout, /native frontend hybrid uses 1 explicit type-use native-authoritative contract/);
 
   const genericErrorMain = resolve(invalidDirectory, "generic-error-main.zs");
   writeFileSync(

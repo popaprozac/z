@@ -413,7 +413,7 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    measurable instead of disappearing inside whole-graph parity.
    Struct and synthesized-class aggregate construction, every Z field selected by
    construction or member access, and payload-bearing or payload-free source enum
-   variants are now native-authoritative for non-generic owners. Aggregate
+   variants are now native-authoritative. Aggregate
    contracts supply struct/class identity and field layout while preserving the
    validated stage-zero constructor/deinitializer bodies needed by lowering;
    field contracts supply source type, visibility, and readonly state; enum
@@ -423,17 +423,19 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    parallel checker. Match statements and expressions use native variants, and
    object patterns use the same native field contract for binding types and
    ownership. Separate aggregate, field, and enum-variant authority counts keep
-   this migration tier measurable. Construction, field, and explicit type-use
-   authority for generic aggregate owners remains shadow-only; generic-owner
-   call substitutions now cross the boundary for methods and constructors.
+   this migration tier measurable. Generic aggregate construction and field
+   resolution use the native template's structural metadata while retaining the
+   linked concrete declaration as lowering identity; the bridge keys that rebase
+   by source definition and field name and never decodes a monomorph name.
    Explicit local,
    closure, and executor-placement type uses now recursively rebuild Z types from
    native declarations nested in function values, `Weak`, `Task`, `Option`,
    arrays, slices, and views. The rebuilt names feed local storage, closure
-   signatures, and executor result/error contracts. Native checks report these
-   type-use authority resolutions independently, while primitive, foreign,
-   compiler-synthesized, and generic-substitution types remain on the stage-zero
-   path.
+   signatures, and executor result/error contracts. Explicit uses of linked
+   generic aggregate types now follow that same validated template-to-concrete
+   rebase. Native checks report these type-use authority resolutions
+   independently, while primitive, foreign, compiler-synthesized, and bare
+   generic-parameter types remain on the stage-zero path.
    The graph protocol now also exports source-located concrete generic-call
    contracts after native inference settles. Each record identifies its defining
    module and symbol and carries type substitutions, parameter capabilities and

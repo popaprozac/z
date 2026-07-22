@@ -615,7 +615,7 @@ export function createNativeSemanticBridge(
     },
     resolveAggregateConstruction: ({ location, declaration }) => {
       const resolved = nativeAggregate(location, declaration);
-      if (!resolved || (resolved.source.declaration.typeParameters?.length ?? 0) > 0) return null;
+      if (!resolved) return null;
       authoritativeAggregates += 1;
       return {
         ...declaration,
@@ -643,7 +643,7 @@ export function createNativeSemanticBridge(
     },
     resolveField: ({ location, aggregate, field }) => {
       const resolved = nativeField(location, aggregate, field);
-      if (!resolved || (resolved.source.declaration.typeParameters?.length ?? 0) > 0) return null;
+      if (!resolved) return null;
       authoritativeFields += 1;
       return {
         ...field,
@@ -678,9 +678,6 @@ export function createNativeSemanticBridge(
     resolveType: ({ location, declaration }) => {
       const resolved = nativeType(location, declaration);
       if (!resolved) return null;
-      if (declaration.kind !== "enum" && (resolved.source.declaration.typeParameters?.length ?? 0) > 0) {
-        return null;
-      }
       authoritativeTypes += 1;
       if (declaration.kind === "enum") return { ...declaration, kind: "enum" };
       return {

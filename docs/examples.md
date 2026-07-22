@@ -172,7 +172,8 @@ function calls export their settled substitutions and concrete callable contract
 at the call site. The same evidence now covers instance/static calls on generic
 owners and explicit generic-class construction without decoding stage-zero
 monomorph names; `check --native-frontend` reports both exported and consumed
-native evidence.
+native evidence. Generic aggregate literals, fields, and explicit type uses also
+consume their native template metadata through a source-keyed structural rebase.
 The frontend remains stage-zero-compiled, while the example directory is now a
 small educational consumer rather than the implementation home.
 
