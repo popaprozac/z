@@ -1106,6 +1106,62 @@ time without exposing C preprocessor text to ordinary Z source.
 Platform APIs continue to require explicit native imports; portable `std` APIs
 may provide common contracts over them without erasing platform differences.
 
+## Inline assembly direction
+
+Z intends to support inline assembly as an explicit, target-specific hardware
+boundary. The exact operand and constraint grammar is deliberately open, but
+the source surface should compose with the language's existing capability and
+definite-initialization model rather than hide reads and writes inside an
+opaque string. A representative, non-final shape is:
+
+```z
+let cycles: u64;
+
+unsafe {
+  asm(out cycles) {
+    // target instructions, operand constraints, clobbers, and options
+  }
+}
+
+return cycles;
+```
+
+`in`, `inout`, and `out` describe the Z storage contract: assembly may read an
+`in` operand, may read and replace an `inout` operand, and must initialize an
+`out` operand without depending on its prior value. A successful `out` block
+therefore participates in ordinary definite-initialization analysis. These
+capabilities are separate from machine constraints such as register, immediate,
+or memory operands. The constraint model must also represent clobbered
+registers and memory plus effects such as `volatile` and `noreturn` without
+pretending that an optimizer barrier is free.
+
+Inline assembly requires an explicit `unsafe` boundary because Z cannot prove
+instruction behavior, ABI preservation, pointer validity, or agreement between
+the declared operands and the instruction template. The first tier should be a
+statement form over primitive scalars, supported floating-point values, and
+explicitly unsafe pointers. ARC identities, owned strings and collections,
+closures, and arbitrary aggregates must not cross this boundary implicitly.
+Value-producing assembly can be considered after statement-form `out` operands
+provide implementation evidence; it should not introduce a second meaning for
+`select` merely to return a register value.
+
+Architecture-specific assembly is a motivating use case for the planned small
+`comptime` experiment and `std/target`. Inactive target branches must still
+parse as Z source, but they must be removed before architecture-specific
+instruction and register validation. This same phase boundary must eventually
+support conditional platform imports and declarations for cross compilation.
+Unsupported targets should receive a source-located compile-time diagnostic,
+not a downstream assembler failure.
+
+The first native implementation may lower explicitly backend-specific
+constraints through Clang extended assembly because Z currently emits C-family
+source. Those strings must be documented as a Clang/GNU backend tier rather
+than frozen prematurely as Z's portable assembly model. A future native backend
+must be able to preserve the operand, clobber, and effect contract without
+depending on generated C syntax. Inline assembly promises direct hardware
+access and no wrapper call; register moves, spills, barriers, and clobbers
+remain visible real costs.
+
 A `.hpp`, `.hh`, `.hxx`, or `.h++` import selects C++20 emission. The first C++
 tier preserves native namespace paths and full free-function overload sets.
 Unique leaf functions receive a convenient module-level alias, while qualified
