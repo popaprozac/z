@@ -388,9 +388,9 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    frontend graph—lexer, parser, and resolver—with 335 symbols and exact
    stage-zero graph/symbol parity.
    Ordinary `z check` can now opt into that same result through
-   `--native-frontend`; stage zero remains authoritative, then native analysis
-   gates success on exact parity. This is intentionally a shadow integration,
-   not yet a frontend-selection promise. It exposes equivalent-work timings and
+   `--native-frontend`; stage zero remains authoritative for diagnostics, then
+   native analysis gates success on exact parity. This is now a narrow hybrid
+   integration, not yet a frontend-selection promise. It exposes equivalent-work timings and
    lets application checks grow the native corpus without changing default
    diagnostics. The ordinary analyzer now supplies its already-discovered
    canonical `SourceModuleBatch` to a resolver callback after successful stage-0
@@ -427,6 +427,14 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    Native checks report these type-use resolutions independently, while primitive,
    foreign, and compiler-synthesized types remain outside this source-identity
    counter.
+   Successful non-generic direct Z function calls are the first native-authoritative
+   semantic result. Their parameter modes and types, async/error state, and result
+   type now come from the native signature; a checked rebasing step maps native
+   source-level type names onto the already-linked stage-zero declarations used by
+   ownership analysis and code generation. Stage zero independently proves the
+   contract equivalent before using it. Generic functions intentionally remain
+   shadow-only until native substitutions can cross the compiler boundary, and
+   ordinary checks without `--native-frontend` retain the stage-zero path.
    Native failures are buffered: a stage-zero error remains authoritative, and a
    native error surfaces only after stage zero succeeds. Prepared-library invocation lives in a
    reusable native-frontend service rather than the CLI. Native checks therefore

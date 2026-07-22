@@ -79,7 +79,7 @@ if (!command || !inputArgument || !["check", "emit", "run", "self-host-lex", "se
           reportStage1Resolver(
             nativeRun,
             timings,
-            "check-shadow",
+            "check-hybrid",
             analysis.nativeFrontendParityMilliseconds ?? 0,
             analysis.nativeSemanticQueryCount,
             analysis.nativeCallResolutionCount,
@@ -89,6 +89,7 @@ if (!command || !inputArgument || !["check", "emit", "run", "self-host-lex", "se
             analysis.nativeFieldResolutionCount,
             analysis.nativeEnumVariantResolutionCount,
             analysis.nativeTypeResolutionCount,
+            analysis.nativeAuthoritativeFunctionResolutionCount,
           );
         }
       }
@@ -165,7 +166,7 @@ function runStage1Resolver(
 function reportStage1Resolver(
   run: Stage1ResolverRun,
   timings: boolean,
-  presentation: "self-host-command" | "check-shadow",
+  presentation: "self-host-command" | "check-hybrid",
   parityMilliseconds: number,
   queryCount: number,
   callResolutionCount: number | null,
@@ -175,19 +176,21 @@ function reportStage1Resolver(
   fieldResolutionCount = 0,
   enumVariantResolutionCount = 0,
   typeResolutionCount = 0,
+  authoritativeFunctionResolutionCount = 0,
 ): void {
   const edges = run.graph.modules.reduce((count, module) => count + module.dependencies.length, 0);
   const symbols = run.graph.modules.reduce((count, module) => count + module.symbols.length, 0);
   const order = run.graph.dependencyOrder.map((index) => basename(run.graph.modules[index].path)).join(" -> ");
   const edgeLabel = edges === 1 ? "edge" : "edges";
   const symbolLabel = symbols === 1 ? "symbol" : "symbols";
-  const subject = presentation === "check-shadow" ? "native frontend shadow" : "stage-1 resolver";
+  const subject = presentation === "check-hybrid" ? "native frontend hybrid" : "stage-1 resolver";
   console.log(`${run.entryPath}: ${subject} matches ${run.graph.modules.length} modules, ${edges} local ${edgeLabel}, and ${symbols} ${symbolLabel} (${order})`);
   console.log(`${subject} compiler index matches ${queryCount} binding/signature queries`);
   if (callResolutionCount !== null) {
     console.log(`${subject} observes ${callResolutionCount} function, ${methodResolutionCount} method, and ${constructorResolutionCount} constructor stage-0 Z resolutions`);
     console.log(`${subject} observes ${aggregateResolutionCount} aggregate, ${fieldResolutionCount} field, and ${enumVariantResolutionCount} enum-variant stage-0 Z resolutions`);
     console.log(`${subject} observes ${typeResolutionCount} explicit type-use stage-0 Z resolutions`);
+    console.log(`${subject} uses ${authoritativeFunctionResolutionCount} native-authoritative direct function contracts`);
   }
   if (timings) {
     const cacheState = run.boundary.cacheHit ? "cache hit" : "cache miss; stage-0 compile + native build included";

@@ -57,24 +57,27 @@ usage: z <check|emit|run> <file.zs>
 | Command | Purpose |
 | --- | --- |
 | `bun run z check file.zs` | Parse, type-check, and validate ownership without producing a binary |
-| `bun run z check file.zs --native-frontend --timings` | Also run the opt-in native semantic shadow and report parity timings |
+| `bun run z check file.zs --native-frontend --timings` | Run the opt-in hybrid native frontend and report parity timings |
 | `bun run z emit file.zs` | Print the generated C-family source for inspection |
 | `bun run z run file.zs` | Generate, compile, link, and execute a native binary |
 
 `z run` streams stdout and stderr while the program is alive, including during
 a native GUI event loop.
 
-The native-frontend flag is deliberately a shadow mode. Stage 0 still produces
-the user-facing diagnostics first; after it succeeds, the native frontend
+The native-frontend flag enables a deliberately narrow hybrid mode. Stage 0
+still produces the user-facing diagnostics first; after it succeeds, the native frontend
 receives the same canonical source-module batch, and its validated semantic
 graph must match before the check can succeed. The compiler indexes native local,
-selective-import, and namespace symbols from that graph; shadow parity reuses the
+selective-import, and namespace symbols from that graph; parity reuses the
 batch's existing stage-0 ASTs rather than parsing each module again. It also
 executes and checks every indexed binding/signature query; `--timings` reports
 that compiler-owned parity separately from native execution. During stage-zero
-semantic analysis, successful direct Z calls are also checked against their
-native defining symbol/signature. Native failures are held until stage zero
-succeeds, so enabling the shadow does not displace the existing diagnostic.
+semantic analysis, successful non-generic direct Z calls use their native
+parameter capabilities/types, async/error state, and result type after those
+source-level names are rebased onto the linked lowering declarations. Stage zero
+independently verifies the same contract and still handles generic calls while
+native substitution remains incomplete. Native failures are held until stage
+zero succeeds, so enabling the hybrid does not displace the existing diagnostic.
 
 ## Source modules
 

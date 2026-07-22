@@ -9,7 +9,7 @@ import {
 } from "./native-semantic-parity.ts";
 import type { SemanticObserver } from "./sema.ts";
 
-export type NativeCallShadow = {
+export type NativeSemanticBridge = {
   readonly observer: SemanticObserver;
   readonly functionCount: () => number;
   readonly methodCount: () => number;
@@ -18,12 +18,13 @@ export type NativeCallShadow = {
   readonly fieldCount: () => number;
   readonly enumVariantCount: () => number;
   readonly typeCount: () => number;
+  readonly authoritativeFunctionCount: () => number;
 };
 
-export function createNativeCallShadow(
+export function createNativeSemanticBridge(
   sourceBatch: SourceModuleBatch,
   index: NativeSemanticIndex,
-): NativeCallShadow {
+): NativeSemanticBridge {
   const sourceFunctions = new Map<string, { readonly modulePath: string; readonly declaration: FunctionDeclaration }>();
   const sourceAggregates = new Map<string, { readonly modulePath: string; readonly declaration: StructDeclaration }>();
   const sourceEnums = new Map<string, { readonly modulePath: string; readonly declaration: EnumDeclaration }>();
@@ -57,24 +58,78 @@ export function createNativeCallShadow(
   let fields = 0;
   let enumVariants = 0;
   let types = 0;
+  let authoritativeFunctions = 0;
+  const nativeFunction = (location: FunctionDeclaration["location"], declaration: FunctionDeclaration) => {
+    const definitionPath = declaration.location.fileName;
+    if (!definitionPath || !modulePaths.has(definitionPath)) return null;
+    const source = sourceFunctions.get(definitionKey(definitionPath, declaration));
+    if (!source) return null;
+    const native = index.symbol(source.modulePath, source.declaration.name);
+    if (native?.kind !== "function" || !native.functionSignature) {
+      throw new Error(
+        `native semantic bridge could not resolve function ${JSON.stringify(source.declaration.name)} in ${source.modulePath}`,
+      );
+    }
+    const expected = stage0FunctionSignature(source.declaration);
+    if (!sameModuleFunctionSignature(expected, native.functionSignature)) {
+      throw new Error(
+        `native semantic bridge signature mismatch for ${JSON.stringify(source.declaration.name)} called at ${callSite(location, sourceBatch)}`,
+      );
+    }
+    return { source, native };
+  };
   const observer: SemanticObserver = {
+    resolveFunctionCall: ({ location, declaration }) => {
+      const resolved = nativeFunction(location, declaration);
+      if (!resolved || (resolved.source.declaration.typeParameters?.length ?? 0) > 0) return null;
+      const signature = resolved.native.functionSignature!;
+      if (signature.parameterModes.length !== declaration.parameters.length) {
+        throw new Error(
+          `native semantic bridge cannot lower ${JSON.stringify(resolved.source.declaration.name)} into its linked stage-0 declaration`,
+        );
+      }
+      if (signature.errorType !== null && !declaration.errorType) {
+        throw new Error(
+          `native semantic bridge cannot rebase the error type of ${JSON.stringify(resolved.source.declaration.name)}`,
+        );
+      }
+      authoritativeFunctions += 1;
+      return {
+        ...declaration,
+        async: signature.asynchronous,
+        typeParameters: [],
+        parameters: declaration.parameters.map((parameter, index) => ({
+          ...parameter,
+          mode: signature.parameterModes[index],
+          type: {
+            ...parameter.type,
+            name: rebaseNativeType(
+              signature.parameterTypes[index],
+              resolved.source.declaration.parameters[index].type.name,
+              parameter.type.name,
+            ),
+          },
+        })),
+        returnType: {
+          ...declaration.returnType,
+          name: rebaseNativeType(
+            signature.returnType,
+            resolved.source.declaration.returnType.name,
+            declaration.returnType.name,
+          ),
+        },
+        errorType: signature.errorType === null ? null : {
+          ...declaration.errorType!,
+          name: rebaseNativeType(
+            signature.errorType,
+            resolved.source.declaration.errorType!.name,
+            declaration.errorType!.name,
+          ),
+        },
+      };
+    },
     onFunctionCall: ({ location, declaration }) => {
-      const definitionPath = declaration.location.fileName;
-      if (!definitionPath || !modulePaths.has(definitionPath)) return;
-      const source = sourceFunctions.get(definitionKey(definitionPath, declaration));
-      if (!source) return;
-      const native = index.symbol(source.modulePath, source.declaration.name);
-      if (native?.kind !== "function" || !native.functionSignature) {
-        throw new Error(
-          `native call shadow could not resolve function ${JSON.stringify(source.declaration.name)} in ${source.modulePath}`,
-        );
-      }
-      const expected = stage0FunctionSignature(source.declaration);
-      if (!sameModuleFunctionSignature(expected, native.functionSignature)) {
-        throw new Error(
-          `native call shadow signature mismatch for ${JSON.stringify(source.declaration.name)} called at ${location.fileName ?? sourceBatch.entryFileName}:${location.line}:${location.column}`,
-        );
-      }
+      if (!nativeFunction(location, declaration)) return;
       functions += 1;
     },
     onMethodCall: ({ location, aggregate, declaration }) => {
@@ -199,6 +254,7 @@ export function createNativeCallShadow(
     fieldCount: () => fields,
     enumVariantCount: () => enumVariants,
     typeCount: () => types,
+    authoritativeFunctionCount: () => authoritativeFunctions,
   };
 }
 
@@ -224,6 +280,13 @@ function sourceAggregate(
 
 function callSite(location: { readonly fileName?: string; readonly line: number; readonly column: number }, sourceBatch: SourceModuleBatch): string {
   return `${location.fileName ?? sourceBatch.entryFileName}:${location.line}:${location.column}`;
+}
+
+function rebaseNativeType(nativeType: string, sourceType: string, linkedType: string): string {
+  if (nativeType !== canonicalTypeName(sourceType)) {
+    throw new Error(`native semantic bridge cannot rebase ${JSON.stringify(nativeType)} from ${JSON.stringify(sourceType)}`);
+  }
+  return linkedType;
 }
 
 function definitionKey(modulePath: string, declaration: FunctionDeclaration | StructDeclaration | EnumDeclaration): string {

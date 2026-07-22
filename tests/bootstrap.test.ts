@@ -106,6 +106,7 @@ test("loads explicit Z exports through selective and namespace module imports", 
   assert.equal(analysis.nativeFieldResolutionCount, 0);
   assert.equal(analysis.nativeEnumVariantResolutionCount, 0);
   assert.equal(analysis.nativeTypeResolutionCount, 0);
+  assert.equal(analysis.nativeAuthoritativeFunctionResolutionCount, 0);
   assert.equal(analysis.nativeFrontendParityMilliseconds, null);
   assert.equal(analysis.sourceModuleBatch.entryFileName, example);
   assert.deepEqual(
@@ -146,6 +147,7 @@ test("attaches native frontend evidence after authoritative stage-0 analysis", (
   assert.equal(total?.declaration.functionSignature?.returnType, "i32");
   assert.ok(analysis.nativeSemanticQueryCount > (analysis.nativeFrontendGraph?.modules.length ?? 0));
   assert.ok(analysis.nativeCallResolutionCount > 0);
+  assert.equal(analysis.nativeAuthoritativeFunctionResolutionCount, analysis.nativeCallResolutionCount);
   assert.ok((analysis.nativeFrontendParityMilliseconds ?? -1) >= 0);
 
   const callableFile = resolve(projectRoot, "native-callable-shadow.zs");
@@ -204,6 +206,20 @@ test("attaches native frontend evidence after authoritative stage-0 analysis", (
   assert.equal(callable.nativeFieldResolutionCount, 10);
   assert.equal(callable.nativeEnumVariantResolutionCount, 4);
   assert.equal(callable.nativeTypeResolutionCount, 4);
+
+  const generic = analyzeSource(`
+    function identity<T>(value: T): T {
+      return value;
+    }
+
+    function main(): i32 {
+      return identity(42);
+    }
+  `, resolve(projectRoot, "native-generic-call-shadow.zs"), {
+    nativeFrontendResolver: buildStage0ModuleGraph,
+  });
+  assert.equal(generic.nativeCallResolutionCount, 1);
+  assert.equal(generic.nativeAuthoritativeFunctionResolutionCount, 0);
 
   assert.throws(
     () => analyzeSource(source, example, {
@@ -4742,13 +4758,14 @@ test("resolves a canonical module graph directly from native Z ASTs", () => {
   assert.equal(ordinaryCheck.status, 0, ordinaryCheck.stderr);
   assert.match(
     ordinaryCheck.stdout,
-    /main\.zs: native frontend shadow matches 3 modules, 3 local edges, and 10 symbols/,
+    /main\.zs: native frontend hybrid matches 3 modules, 3 local edges, and 10 symbols/,
   );
-  assert.match(ordinaryCheck.stdout, /native frontend shadow compiler index matches \d+ binding\/signature queries/);
-  assert.match(ordinaryCheck.stdout, /native frontend shadow observes \d+ function, \d+ method, and \d+ constructor stage-0 Z resolutions/);
-  assert.match(ordinaryCheck.stdout, /native frontend shadow observes \d+ aggregate, \d+ field, and \d+ enum-variant stage-0 Z resolutions/);
-  assert.match(ordinaryCheck.stdout, /native frontend shadow observes \d+ explicit type-use stage-0 Z resolutions/);
-  assert.match(ordinaryCheck.stdout, /native frontend shadow timing \(3 modules, cache hit\)/);
+  assert.match(ordinaryCheck.stdout, /native frontend hybrid compiler index matches \d+ binding\/signature queries/);
+  assert.match(ordinaryCheck.stdout, /native frontend hybrid observes \d+ function, \d+ method, and \d+ constructor stage-0 Z resolutions/);
+  assert.match(ordinaryCheck.stdout, /native frontend hybrid observes \d+ aggregate, \d+ field, and \d+ enum-variant stage-0 Z resolutions/);
+  assert.match(ordinaryCheck.stdout, /native frontend hybrid observes \d+ explicit type-use stage-0 Z resolutions/);
+  assert.match(ordinaryCheck.stdout, /native frontend hybrid uses \d+ native-authoritative direct function contracts/);
+  assert.match(ordinaryCheck.stdout, /native frontend hybrid timing \(3 modules, cache hit\)/);
   assert.match(ordinaryCheck.stdout, /main\.zs: ok/);
 
   const timingsWithoutShadow = spawnSync(

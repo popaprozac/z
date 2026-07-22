@@ -18,7 +18,7 @@ import type { DiagnosticError } from "./diagnostics.ts";
 import type { Stage1ModuleGraph } from "./self-hosting.ts";
 import type { NativeSemanticIndex } from "./native-semantic-index.ts";
 import { validateNativeFrontendSemantics } from "./native-semantic-parity.ts";
-import { createNativeCallShadow } from "./native-call-shadow.ts";
+import { createNativeSemanticBridge } from "./native-call-shadow.ts";
 
 export type NativeLanguage = "c" | "objective-c" | "c++" | "objective-c++";
 
@@ -53,6 +53,7 @@ export type AnalyzedSource = {
   readonly nativeFieldResolutionCount: number;
   readonly nativeEnumVariantResolutionCount: number;
   readonly nativeTypeResolutionCount: number;
+  readonly nativeAuthoritativeFunctionResolutionCount: number;
   readonly nativeFrontendParityMilliseconds: number | null;
 };
 
@@ -101,8 +102,8 @@ export function analyzeSource(source: string, fileName: string, options: Analysi
       nativeFrontendFailure = error;
     }
   }
-  const nativeCallShadow = nativeEvidence
-    ? createNativeCallShadow(linked.sourceBatch, nativeEvidence.index)
+  const nativeSemanticBridge = nativeEvidence
+    ? createNativeSemanticBridge(linked.sourceBatch, nativeEvidence.index)
     : null;
   const semanticInfo = analyze(
     program,
@@ -111,7 +112,7 @@ export function analyzeSource(source: string, fileName: string, options: Analysi
     typeDisplayNames,
     options.requireMain ?? true,
     projectBuild.deploymentTarget,
-    nativeCallShadow?.observer ?? null,
+    nativeSemanticBridge?.observer ?? null,
   );
   if (nativeFrontendFailure) throw nativeFrontendFailure;
   return {
@@ -127,13 +128,14 @@ export function analyzeSource(source: string, fileName: string, options: Analysi
     nativeFrontendGraph,
     nativeSemanticIndex: nativeEvidence?.index ?? null,
     nativeSemanticQueryCount: nativeEvidence?.queryCount ?? 0,
-    nativeCallResolutionCount: nativeCallShadow?.functionCount() ?? 0,
-    nativeMethodResolutionCount: nativeCallShadow?.methodCount() ?? 0,
-    nativeConstructorResolutionCount: nativeCallShadow?.constructorCount() ?? 0,
-    nativeAggregateResolutionCount: nativeCallShadow?.aggregateCount() ?? 0,
-    nativeFieldResolutionCount: nativeCallShadow?.fieldCount() ?? 0,
-    nativeEnumVariantResolutionCount: nativeCallShadow?.enumVariantCount() ?? 0,
-    nativeTypeResolutionCount: nativeCallShadow?.typeCount() ?? 0,
+    nativeCallResolutionCount: nativeSemanticBridge?.functionCount() ?? 0,
+    nativeMethodResolutionCount: nativeSemanticBridge?.methodCount() ?? 0,
+    nativeConstructorResolutionCount: nativeSemanticBridge?.constructorCount() ?? 0,
+    nativeAggregateResolutionCount: nativeSemanticBridge?.aggregateCount() ?? 0,
+    nativeFieldResolutionCount: nativeSemanticBridge?.fieldCount() ?? 0,
+    nativeEnumVariantResolutionCount: nativeSemanticBridge?.enumVariantCount() ?? 0,
+    nativeTypeResolutionCount: nativeSemanticBridge?.typeCount() ?? 0,
+    nativeAuthoritativeFunctionResolutionCount: nativeSemanticBridge?.authoritativeFunctionCount() ?? 0,
     nativeFrontendParityMilliseconds,
   };
 }

@@ -139,6 +139,7 @@ export type SemanticTypeResolution = {
 };
 
 export type SemanticObserver = {
+  readonly resolveFunctionCall?: (resolution: SemanticFunctionCallResolution) => FunctionDeclaration | null;
   readonly onFunctionCall?: (resolution: SemanticFunctionCallResolution) => void;
   readonly onMethodCall?: (resolution: SemanticMethodCallResolution) => void;
   readonly onConstructorCall?: (resolution: SemanticConstructorCallResolution) => void;
@@ -4956,15 +4957,17 @@ function inferExpressionInner(
       if (target?.kind !== "function") {
         throw new DiagnosticError(fileName, expression.callee.location, `unknown function ${JSON.stringify(expression.callee.name)}`);
       }
+      const functionResolution = { location: expression.location, declaration: target.declaration };
+      const callable = state.observer?.resolveFunctionCall?.(functionResolution) ?? target.declaration;
       rejectLabeledArguments(expression.argumentLabels, expression.location, fileName);
-      checkArguments(target.declaration, expression.arguments, locals, globals, structs, enums, fileName, expression.location, state);
-      registerAsyncCall(target.declaration, expression.location, fileName, state);
-      state.observer?.onFunctionCall?.({ location: expression.location, declaration: target.declaration });
-      if (target.declaration.errorType) {
+      checkArguments(callable, expression.arguments, locals, globals, structs, enums, fileName, expression.location, state);
+      registerAsyncCall(callable, expression.location, fileName, state);
+      state.observer?.onFunctionCall?.(functionResolution);
+      if (callable.errorType) {
         if (!allowThrowingCall) throw new DiagnosticError(fileName, expression.location, "throwing call requires `attempt` or `try`");
-        return resultTypeName(target.declaration.returnType.name, target.declaration.errorType.name);
+        return resultTypeName(callable.returnType.name, callable.errorType.name);
       }
-      return target.declaration.returnType.name;
+      return callable.returnType.name;
     }
   }
 }
