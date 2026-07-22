@@ -585,3 +585,40 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    callbacks, UI-thread delivery, weak-reference and destruction-affinity
    protocols, and mutable shared-state isolation. Do not commit actors,
    channels, pools, or a multithreaded executor as settled language design yet.
+
+## Self-hosting resume point
+
+Self-hosting is intentionally paused at a stable semantic-authority checkpoint,
+not declared complete. Native Z owns lexing, structural parsing, module-graph
+resolution, a substantial semantic subset, structured diagnostics for that
+subset, and the evidence consumed by ordinary `check --native-frontend` runs.
+The representative corpus gate must remain green as language work continues.
+
+When focused self-hosting work resumes, use this order:
+
+1. Extend native semantics from demonstrated corpus gaps, prioritizing
+   user-defined generic-monomorph identities, foreign/intrinsic and async effect
+   boundaries, escaping closure environments, precise borrow last-use release,
+   receiver-path capabilities, and recursive ownership contexts. Do not port a
+   feature merely for nominal completeness; add a realistic corpus case first.
+2. Replace the temporary text protocol with a structural in-process phase
+   handoff. Preserve canonical module-local source locations and the guarded
+   Stage-0 fallback while doing so. Measure cold library preparation, warm native
+   work, protocol/handoff cost, and Stage-0 parity separately.
+3. Finish the native semantic subset required to compile the compiler itself.
+   Broader language features may continue to fall back to Stage 0 until their
+   native representation is justified by real programs.
+4. Port lowering and the C-family emitter for that compiler subset. Continue to
+   invoke Clang as an external tool; self-hosting does not require replacing it.
+5. Move module loading, project driving, files/paths/processes, diagnostics, and
+   command-line orchestration into the Z driver, then remove the corresponding
+   TypeScript/Bun paths only after parity.
+6. Build the compiler with Stage 0, use that native compiler to compile itself,
+   and compare consecutive generations plus the complete test/corpus results.
+
+The next self-hosting sprint should begin when duplicated Stage-0 semantics are
+slowing language work, a new feature exposes a native corpus gap worth closing,
+or the compiler subset has the collections and APIs needed for lowering. Direct
+Swift ABI support, actors/channels, complete async executors, and unrelated
+language breadth are not prerequisites. Until then, self-hosting proceeds
+incrementally alongside language design rather than ahead of it.

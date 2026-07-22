@@ -190,3 +190,5 @@ generic constraints, async ownership, and C++-backed resource fields. Every
 Stage-0 semantic resolution observed on that corpus has a validated native
 authority contract. Removing the temporary text protocol and migrating the
 remaining unsupported ownership/effect contexts are later self-hosting layers.
+The ordered continuation plan and resume criteria live in
+[`docs/bootstrap-status.md`](../../docs/bootstrap-status.md#self-hosting-resume-point).
