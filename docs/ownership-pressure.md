@@ -68,6 +68,12 @@ storage. ARC class owners remain excluded because an alias could mutate the same
 storage. Callers needing aliasing or survival across reallocation must use an
 owned snapshot or a future stable reference model.
 
+A later compiler-frontend pressure test established one deliberate exception to
+the “borrow stays borrowed” rule: when `T` is already cleanup-free and copyable,
+a value context may load an independent `T` from `view T`. The generated cost is
+one pointer load. Cleanup-bearing and move-only targets do not qualify, so the
+conversion cannot manufacture ownership or bypass deterministic destruction.
+
 The follow-up [`arena.zs`](../examples/language/ownership/arena.zs) probe gives a
 region owner stable allocation addresses. Multiple direct views coexist across
 later allocation; `reset` and destruction are excluded until their last uses.

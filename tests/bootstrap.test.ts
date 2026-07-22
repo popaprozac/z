@@ -8507,6 +8507,45 @@ test("owns Map keys and values with optional views and deterministic removal", (
   assert.equal(borrowDiagnostic.code, "Z0205");
   assert.match(borrowDiagnostic.message, /cannot set "values" while view/);
 
+  const copyableView = `
+    import { Map } from "std/collections";
+    function main(): i32 {
+      let values = Map<String, i32>();
+      values.set("answer", 42);
+      const found = values.get("answer");
+      return match (in found) {
+        some(value) => return value - 42;
+        none => return 1;
+      };
+    }
+  `;
+  assert.deepEqual(diagnostics(copyableView, "map-copyable-view.zs"), []);
+  const copyableGenerated = compileToC(copyableView, "map-copyable-view.zs");
+  assert.match(copyableGenerated, /z_checked_subtract_i32\([^\n]*\*\(value\)[^\n]*42\)/);
+  writeFileSync(input, copyableView);
+  const copyableResult = spawnSync(process.execPath, [cli, "run", input], { encoding: "utf8" });
+  assert.equal(copyableResult.status, 0, copyableResult.stderr);
+
+  const ownedView = `
+    import { Map } from "std/collections";
+    struct Resource {
+      id: i32;
+      deinit {}
+    }
+    function take(in resources: Map<i32, Resource>): Resource {
+      const found = resources.get(1);
+      return match (in found) {
+        some(value) => return value;
+        none => return Resource({ id: 0 });
+      };
+    }
+    function main(): i32 { return 0; }
+  `;
+  assert.match(
+    diagnostics(ownedView, "map-owned-view.zs")[0].message,
+    /expected Resource, found view Resource/,
+  );
+
   const immutable = `
     import { Map } from "std/collections";
     function main(): i32 {

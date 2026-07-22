@@ -213,6 +213,7 @@ export type SemanticInfo = {
   readonly warnings: readonly DiagnosticError[];
   readonly deploymentTarget: DeploymentTarget | null;
   readonly viewReturnExpressions: ReadonlySet<number>;
+  readonly viewLoadExpressions: ReadonlySet<number>;
   readonly viewBindingOwners: ReadonlyMap<number, string>;
   readonly movedExpressions: ReadonlySet<number>;
   readonly managedCopies: ReadonlySet<number>;
@@ -271,6 +272,7 @@ type AnalysisState = {
   readonly warningKeys: Set<string>;
   readonly deploymentTarget: DeploymentTarget | null;
   readonly viewReturnExpressions: Set<number>;
+  readonly viewLoadExpressions: Set<number>;
   readonly viewBindingOwners: Map<number, string>;
   readonly viewCallOrigins: Map<number, { readonly owner: string; readonly location: SourceLocation }>;
   readonly viewOrigins: Map<string, { readonly owner: string; readonly location: SourceLocation }>;
@@ -465,6 +467,7 @@ export function analyze(
     warningKeys: new Set(),
     deploymentTarget,
     viewReturnExpressions: new Set(),
+    viewLoadExpressions: new Set(),
     viewBindingOwners: new Map(),
     viewCallOrigins: new Map(),
     viewOrigins: new Map(),
@@ -1765,7 +1768,7 @@ function analyzeStatement(
             ?? contextualObjCStringToZ(variableType, initializerType, statement.initializer, state)
             ?? contextualSwiftStringToZ(variableType, initializerType, statement.initializer, state)
             ?? initializerType;
-          requireAssignable(variableType, initializerType, statement.initializer, fileName, state.foreignNamedTypes, state.numericLiteralTypes);
+          requireAssignable(variableType, initializerType, statement.initializer, fileName, structs, enums, state);
         }
       } else if (initializerType === "unknown") {
         throw new DiagnosticError(
@@ -1885,7 +1888,7 @@ function analyzeStatement(
             state.cstringConversions.add(statement.expression.location.offset);
             actual = "cstring";
           }
-          requireObjCAssignable(property.type, actual, statement.expression, fileName, state);
+          requireObjCAssignable(property.type, actual, statement.expression, structs, enums, fileName, state);
           return;
         }
       }
@@ -1925,7 +1928,7 @@ function analyzeStatement(
       actual = contextualCStringLiteral(expected, statement.expression, state) ?? actual;
       actual = contextualObjCStringToZ(expected, actual, statement.expression, state) ?? actual;
       actual = contextualSwiftStringToZ(expected, actual, statement.expression, state) ?? actual;
-      requireAssignable(expected, actual, statement.expression, fileName, state.foreignNamedTypes, state.numericLiteralTypes);
+      requireAssignable(expected, actual, statement.expression, fileName, structs, enums, state);
       if (
         hasCleanupType(expected, structs, enums, state.foreignTypes)
         && hasMoveOnlyForeignType(expected, structs, enums, state.foreignNamedTypes)
@@ -1982,7 +1985,7 @@ function analyzeStatement(
           });
         }
         const actual = inferExpression(statement.expression, locals, globals, structs, enums, fileName, state);
-        requireAssignable(view.target, actual, statement.expression, fileName, state.foreignNamedTypes, state.numericLiteralTypes);
+        requireAssignable(view.target, actual, statement.expression, fileName, structs, enums, state);
         state.viewReturnExpressions.add(statement.expression.location.offset);
         requireOutParametersInitialized(owner, locals, statement.location, fileName);
         return;
@@ -1997,7 +2000,7 @@ function analyzeStatement(
       actual = contextualCStringLiteral(expected, statement.expression, state) ?? actual;
       actual = contextualObjCStringToZ(expected, actual, statement.expression, state) ?? actual;
       actual = contextualSwiftStringToZ(expected, actual, statement.expression, state) ?? actual;
-      requireAssignable(expected, actual, statement.expression, fileName, state.foreignNamedTypes, state.numericLiteralTypes);
+      requireAssignable(expected, actual, statement.expression, fileName, structs, enums, state);
       consumeOwnedValue(statement.expression, expected, locals, structs, enums, fileName, state);
       requireOutParametersInitialized(owner, locals, statement.location, fileName);
       return;
@@ -2014,7 +2017,7 @@ function analyzeStatement(
       }
       let actual = inferExpression(statement.expression, locals, globals, structs, enums, fileName, state);
       actual = contextualCStringLiteral(errorType.name, statement.expression, state) ?? actual;
-      requireAssignable(errorType.name, actual, statement.expression, fileName, state.foreignNamedTypes, state.numericLiteralTypes);
+      requireAssignable(errorType.name, actual, statement.expression, fileName, structs, enums, state);
       consumeOwnedValue(statement.expression, errorType.name, locals, structs, enums, fileName, state);
       return;
     }
@@ -2067,7 +2070,7 @@ function analyzeStatement(
     case "if": {
       const conditionType = inferExpression(statement.condition, locals, globals, structs, enums, fileName, state);
       if (conditionType !== "boolean") {
-        requireAssignable("boolean", conditionType, statement.condition, fileName, state.foreignNamedTypes, state.numericLiteralTypes);
+        requireAssignable("boolean", conditionType, statement.condition, fileName, structs, enums, state);
       }
       analyzeIfBranches(statement, owner, locals, globals, structs, enums, fileName, state);
       return;
@@ -2556,7 +2559,7 @@ function inferClosureExpression(
       returnType = inferDirectValue(expression.body, syntheticBase, closureLocals, globals, structs, enums, fileName, state);
       if (contextualReturn) {
         returnType = contextualCStringLiteral(contextualReturn.name, expression.body, state) ?? returnType;
-        requireAssignable(contextualReturn.name, returnType, expression.body, fileName, state.foreignNamedTypes, state.numericLiteralTypes);
+        requireAssignable(contextualReturn.name, returnType, expression.body, fileName, structs, enums, state);
         returnType = contextualReturn.name;
       }
       consumeOwnedValue(expression.body, returnType, closureLocals, structs, enums, fileName, state);
@@ -2834,7 +2837,7 @@ function inferIfExpression(
 ): ValueType {
   const conditionType = inferExpression(expression.condition, locals, globals, structs, enums, fileName, state);
   if (conditionType !== "boolean") {
-    requireAssignable("boolean", conditionType, expression.condition, fileName, state.foreignNamedTypes, state.numericLiteralTypes);
+    requireAssignable("boolean", conditionType, expression.condition, fileName, structs, enums, state);
   }
 
   const original = new Map(locals);
@@ -3176,8 +3179,9 @@ function inferExecutorPlacement(
       successType,
       expression,
       fileName,
-      state.foreignNamedTypes,
-      state.numericLiteralTypes,
+      structs,
+      enums,
+      state,
     );
     successType = resolvedReturnType.name;
   }
@@ -3491,7 +3495,13 @@ function inferExpressionInner(
         `${expression.access} is only valid for a classified imported C record-pointer parameter`,
       );
     case "unary": {
-      const operand = inferExpression(expression.operand, locals, globals, structs, enums, fileName, state);
+      const operand = implicitlyLoadCopyableView(
+        inferExpression(expression.operand, locals, globals, structs, enums, fileName, state),
+        expression.operand,
+        structs,
+        enums,
+        state,
+      );
       const canonicalOperand = canonicalType(operand, state.foreignNamedTypes);
       if (expression.operator === "!" && canonicalOperand === "boolean") return "boolean";
       if (["+", "-"].includes(expression.operator) && isNumericType(canonicalOperand)) {
@@ -3606,8 +3616,20 @@ function inferExpressionInner(
       throw new DiagnosticError(fileName, expression.location, `unknown name ${JSON.stringify(expression.name)}`);
     }
     case "binary": {
-      const left = inferExpression(expression.left, locals, globals, structs, enums, fileName, state);
-      const right = inferExpression(expression.right, locals, globals, structs, enums, fileName, state);
+      const left = implicitlyLoadCopyableView(
+        inferExpression(expression.left, locals, globals, structs, enums, fileName, state),
+        expression.left,
+        structs,
+        enums,
+        state,
+      );
+      const right = implicitlyLoadCopyableView(
+        inferExpression(expression.right, locals, globals, structs, enums, fileName, state),
+        expression.right,
+        structs,
+        enums,
+        state,
+      );
       let canonicalLeft = canonicalType(left, state.foreignNamedTypes);
       let canonicalRight = canonicalType(right, state.foreignNamedTypes);
       if (expression.right.kind === "number" && isNumericType(canonicalLeft)) {
@@ -3696,7 +3718,7 @@ function inferExpressionInner(
     case "conditional": {
       const conditionType = inferExpression(expression.condition, locals, globals, structs, enums, fileName, state);
       if (conditionType !== "boolean") {
-        requireAssignable("boolean", conditionType, expression.condition, fileName, state.foreignNamedTypes, state.numericLiteralTypes);
+        requireAssignable("boolean", conditionType, expression.condition, fileName, structs, enums, state);
       }
       const original = new Map(locals);
       const thenLocals = narrowedConditionLocals(original, expression.condition, true, state);
@@ -3785,7 +3807,7 @@ function inferExpressionInner(
         const fieldType = "type" in field ? field.type.name : field.typeName;
         let actual = inferExpression(initializer.expression, locals, globals, structs, enums, fileName, state);
         actual = contextualCStringLiteral(fieldType, initializer.expression, state) ?? actual;
-        requireAssignable(fieldType, actual, initializer.expression, fileName, state.foreignNamedTypes, state.numericLiteralTypes);
+        requireAssignable(fieldType, actual, initializer.expression, fileName, structs, enums, state);
         consumeOwnedValue(initializer.expression, fieldType, locals, structs, enums, fileName, state);
       }
       const expectedFields = declaration?.fields ?? (foreignDeclaration?.kind === "record" ? foreignDeclaration.fields : []);
@@ -3812,7 +3834,7 @@ function inferExpressionInner(
       consumeOwnedValue(expression.elements[0], elementType, locals, structs, enums, fileName, state);
       for (const element of expression.elements.slice(1)) {
         const actual = inferExpression(element, locals, globals, structs, enums, fileName, state);
-        requireAssignable(elementType, actual, element, fileName, state.foreignNamedTypes, state.numericLiteralTypes);
+        requireAssignable(elementType, actual, element, fileName, structs, enums, state);
         consumeOwnedValue(element, elementType, locals, structs, enums, fileName, state);
       }
       return fixedArrayTypeName(String(elementType), expression.elements.length);
@@ -3866,7 +3888,7 @@ function inferExpressionInner(
         ? inferContextualObjectExpression(expression.payload, variant.payload.name, locals, globals, structs, enums, fileName, state)
         : inferExpression(expression.payload, locals, globals, structs, enums, fileName, state);
       actual = contextualCStringLiteral(variant.payload.name, expression.payload, state) ?? actual;
-      requireAssignable(variant.payload.name, actual, expression.payload, fileName, state.foreignNamedTypes, state.numericLiteralTypes);
+      requireAssignable(variant.payload.name, actual, expression.payload, fileName, structs, enums, state);
       consumeOwnedValue(expression.payload, variant.payload.name, locals, structs, enums, fileName, state);
       return declaration.name;
     }
@@ -4209,7 +4231,7 @@ function inferExpressionInner(
           }
           const capacity = options.fields[0].expression;
           const actual = inferExpression(capacity, locals, globals, structs, enums, fileName, state);
-          requireAssignable("usize", actual, capacity, fileName, state.foreignNamedTypes, state.numericLiteralTypes);
+          requireAssignable("usize", actual, capacity, fileName, structs, enums, state);
           return standardType.type;
         }
         const aggregate = structs.get(expression.callee.name);
@@ -4523,7 +4545,7 @@ function inferExpressionInner(
             throw new DiagnosticError(fileName, expression.location, `String.from expects 1 argument, received ${expression.arguments.length}`);
           }
           const actual = inferExpression(expression.arguments[0], locals, globals, structs, enums, fileName, state);
-          requireAssignable("cstring", actual, expression.arguments[0], fileName, state.foreignNamedTypes, state.numericLiteralTypes);
+          requireAssignable("cstring", actual, expression.arguments[0], fileName, structs, enums, state);
           return "String";
         }
         if (expression.callee.object.kind === "identifier") {
@@ -4623,7 +4645,7 @@ function inferExpressionInner(
               const actual = argument.kind === "objectExpression"
                 ? inferContextualObjectExpression(argument, variant.payload.name, locals, globals, structs, enums, fileName, state)
                 : inferExpression(argument, locals, globals, structs, enums, fileName, state);
-              requireAssignable(variant.payload.name, actual, expression.arguments[0], fileName, state.foreignNamedTypes, state.numericLiteralTypes);
+              requireAssignable(variant.payload.name, actual, expression.arguments[0], fileName, structs, enums, state);
               consumeOwnedValue(expression.arguments[0], variant.payload.name, locals, structs, enums, fileName, state);
             }
             return enumDeclaration.name;
@@ -4787,7 +4809,7 @@ function inferExpressionInner(
           }
           const key = expression.arguments[0];
           const actualKey = inferExpression(key, locals, globals, structs, enums, fileName, state);
-          requireAssignable(map.keyType, actualKey, key, fileName, state.foreignNamedTypes, state.numericLiteralTypes);
+          requireAssignable(map.keyType, actualKey, key, fileName, structs, enums, state);
           if (method === "has") return "boolean";
           if (method === "get") {
             const ownerName = state.viewOrigins.get(root.name)?.owner ?? root.name;
@@ -4797,7 +4819,7 @@ function inferExpressionInner(
           if (method === "set") {
             const value = expression.arguments[1];
             const actualValue = inferExpression(value, locals, globals, structs, enums, fileName, state);
-            requireAssignable(map.valueType, actualValue, value, fileName, state.foreignNamedTypes, state.numericLiteralTypes);
+            requireAssignable(map.valueType, actualValue, value, fileName, structs, enums, state);
             consumeOwnedValue(key, map.keyType, locals, structs, enums, fileName, state);
             consumeOwnedValue(value, map.valueType, locals, structs, enums, fileName, state);
             state.dynamicArrayPushTypes.add(dynamicArrayTypeName(mapEntryTypeName(map.keyType, map.valueType)));
@@ -4843,7 +4865,7 @@ function inferExpressionInner(
           }
           const value = expression.arguments[0];
           const actual = inferExpression(value, locals, globals, structs, enums, fileName, state);
-          requireAssignable(set.elementType, actual, value, fileName, state.foreignNamedTypes, state.numericLiteralTypes);
+          requireAssignable(set.elementType, actual, value, fileName, structs, enums, state);
           if (method === "add") {
             consumeOwnedValue(value, set.elementType, locals, structs, enums, fileName, state);
             state.dynamicArrayPushTypes.add(dynamicArrayTypeName(set.elementType));
@@ -4890,8 +4912,9 @@ function inferExpressionInner(
               actual,
               argument,
               fileName,
-              state.foreignNamedTypes,
-              state.numericLiteralTypes,
+              structs,
+              enums,
+              state,
             );
             if (signature.parameters[index] === "String") {
               state.nativeArgumentAccesses.set(argument.location.offset, "in");
@@ -4932,8 +4955,9 @@ function inferExpressionInner(
               actual,
               argument,
               fileName,
-              state.foreignNamedTypes,
-              state.numericLiteralTypes,
+              structs,
+              enums,
+              state,
             );
           }
           return signature.result;
@@ -5002,7 +5026,7 @@ function inferExpressionInner(
             throw new DiagnosticError(fileName, expression.callee.object.location, "Array.push requires addressable let storage");
           }
           const actual = inferExpression(expression.arguments[0], locals, globals, structs, enums, fileName, state);
-          requireAssignable(dynamic.elementType, actual, expression.arguments[0], fileName, state.foreignNamedTypes, state.numericLiteralTypes);
+          requireAssignable(dynamic.elementType, actual, expression.arguments[0], fileName, structs, enums, state);
           consumeOwnedValue(expression.arguments[0], dynamic.elementType, locals, structs, enums, fileName, state);
           state.dynamicArrayPushTypes.add(receiverValueType);
           return "void";
@@ -5476,8 +5500,9 @@ function checkArguments(
         underlyingType(stored),
         argument,
         fileName,
-        state.foreignNamedTypes,
-        state.numericLiteralTypes,
+        structs,
+        enums,
+        state,
       );
       locals.set(argument.name, initializedAvailableBinding(stored));
       state.moveOrigins.delete(argument.name);
@@ -5547,8 +5572,9 @@ function checkArguments(
           storedType,
           argument,
           fileName,
-          state.foreignNamedTypes,
-          state.numericLiteralTypes,
+          structs,
+          enums,
+          state,
         );
       }
       state.nativeArgumentAccesses.set(argument.location.offset, "inout");
@@ -5622,7 +5648,7 @@ function checkArguments(
       ) {
         throw new DiagnosticError(fileName, argument.location, "a cleanup-bearing borrowed temporary must be bound before the call");
       }
-      requireAssignable(parameter.type.name, borrowedActual, argument, fileName, state.foreignNamedTypes, state.numericLiteralTypes);
+      requireAssignable(parameter.type.name, borrowedActual, argument, fileName, structs, enums, state);
       state.nativeArgumentAccesses.set(argument.location.offset, "in");
       const asyncContext = state.asyncCallContexts.at(-1);
       if (target.async && asyncContext?.mode === "spawn") {
@@ -5656,7 +5682,7 @@ function checkArguments(
         }
         state.sliceConversions.set(argument.location.offset, { sourceType: String(actual), targetType: parameter.type.name });
       } else {
-        requireAssignable(parameter.type.name, actual, argument, fileName, state.foreignNamedTypes, state.numericLiteralTypes);
+        requireAssignable(parameter.type.name, actual, argument, fileName, structs, enums, state);
       }
       const asyncContext = state.asyncCallContexts.at(-1);
       if (target.async && asyncContext?.mode === "spawn") {
@@ -5678,7 +5704,7 @@ function checkArguments(
       }
       continue;
     }
-    requireAssignable(parameter.type.name, actual, argument, fileName, state.foreignNamedTypes, state.numericLiteralTypes);
+    requireAssignable(parameter.type.name, actual, argument, fileName, structs, enums, state);
     consumeOwnedValue(argument, parameter.type.name, locals, structs, enums, fileName, state);
   }
 }
@@ -6417,8 +6443,9 @@ function analyzeWhileLoop(
         conditionType,
         statement.condition,
         fileName,
-        state.foreignNamedTypes,
-        state.numericLiteralTypes,
+        structs,
+        enums,
+        state,
       );
     }
 
@@ -7189,7 +7216,7 @@ function checkObjCArguments(
       state.cstringConversions.add(argument.location.offset);
       actual = "cstring";
     }
-    requireObjCAssignable(parameter.type, actual, argument, fileName, state, target.selector);
+    requireObjCAssignable(parameter.type, actual, argument, structs, enums, fileName, state, target.selector);
   }
 }
 
@@ -7249,12 +7276,14 @@ function requireObjCAssignable(
   expected: ForeignType,
   actual: ValueType,
   expression: Expression,
+  structs: Map<string, StructDeclaration>,
+  enums: Map<string, EnumDeclaration>,
   fileName: string,
   state: AnalysisState,
   selector: string | null = null,
 ): void {
   if (expected.kind !== "object") {
-    requireAssignable(foreignValueType(expected), actual, expression, fileName, state.foreignNamedTypes, state.numericLiteralTypes);
+    requireAssignable(foreignValueType(expected), actual, expression, fileName, structs, enums, state);
     return;
   }
   const subject = selector ? `Objective-C selector ${JSON.stringify(selector)}` : "Objective-C property";
@@ -7543,8 +7572,9 @@ function checkForeignCall(
           underlyingType(stored),
           argument,
           fileName,
-          state.foreignNamedTypes,
-          state.numericLiteralTypes,
+          structs,
+          enums,
+          state,
         );
         state.foreignArgumentAccesses.set(argument.location.offset, "out");
         state.expressionTypes.set(argument.location.offset, parameter.type.pointer.typeName);
@@ -7577,8 +7607,9 @@ function checkForeignCall(
           underlyingType(stored),
           argument,
           fileName,
-          state.foreignNamedTypes,
-          state.numericLiteralTypes,
+          structs,
+          enums,
+          state,
         );
         rejectOwnerMutationWhileViewed(argument.name, argument.location, fileName, state);
         state.foreignCxxArgumentAccesses.set(argument.location.offset, "inout");
@@ -7624,8 +7655,9 @@ function checkForeignCall(
         underlyingType(stored),
         argument,
         fileName,
-        state.foreignNamedTypes,
-        state.numericLiteralTypes,
+        structs,
+        enums,
+        state,
       );
       state.foreignArgumentAccesses.set(argument.location.offset, argument.access);
       state.expressionTypes.set(argument.location.offset, String(underlyingType(stored)));
@@ -7664,8 +7696,9 @@ function checkForeignCall(
         actual,
         argument,
         fileName,
-        state.foreignNamedTypes,
-        state.numericLiteralTypes,
+        structs,
+        enums,
+        state,
       );
       state.foreignArgumentAccesses.set(argument.location.offset, "in");
       continue;
@@ -7680,7 +7713,7 @@ function checkForeignCall(
       }
       const actual = inferExpression(argument, locals, globals, structs, enums, fileName, state);
       const expectedReference = foreignValueType(parameter.type);
-      requireAssignable(expectedReference, actual, argument, fileName, state.foreignNamedTypes, state.numericLiteralTypes);
+      requireAssignable(expectedReference, actual, argument, fileName, structs, enums, state);
       state.foreignCxxArgumentAccesses.set(argument.location.offset, parameter.type.access);
       if (parameter.type.access === "move") {
         consumeOwnedValue(argument, actual, locals, structs, enums, fileName, state, true);
@@ -7715,8 +7748,9 @@ function checkForeignCall(
         actual,
         argument,
         fileName,
-        state.foreignNamedTypes,
-        state.numericLiteralTypes,
+        structs,
+        enums,
+        state,
       );
       if (!parameter.type.context) {
         const global = argument.kind === "identifier" ? globals.get(argument.name) : null;
@@ -7751,10 +7785,10 @@ function checkForeignCall(
       } else {
         rejectForeignOwnedMove(argument, actual, structs, enums, fileName, state);
       }
-      requireAssignable(parameter.type.name, actual, argument, fileName, state.foreignNamedTypes, state.numericLiteralTypes);
+      requireAssignable(parameter.type.name, actual, argument, fileName, structs, enums, state);
     }
     if (parameter?.type.kind === "named") {
-      requireAssignable(parameter.type.type.typeName, actual, argument, fileName, state.foreignNamedTypes, state.numericLiteralTypes);
+      requireAssignable(parameter.type.type.typeName, actual, argument, fileName, structs, enums, state);
     }
     if (parameter?.type.kind === "pointer") {
       if (actual === "null") {
@@ -8042,7 +8076,7 @@ function validateOptionalViewReturn(
     });
   }
   const actual = inferDirectValue(expression, owner, locals, globals, structs, enums, fileName, state);
-  requireAssignable(expected, actual, expression, fileName, state.foreignNamedTypes, state.numericLiteralTypes);
+  requireAssignable(expected, actual, expression, fileName, structs, enums, state);
 }
 
 function optionalViewReturnVariant(expression: Expression, expected: string): "some" | "none" | null {
@@ -8087,7 +8121,7 @@ function validateReceiverViewProjection(
     });
   }
   const actual = inferExpression(expression, locals, globals, structs, enums, fileName, state);
-  requireAssignable(target, actual, expression, fileName, state.foreignNamedTypes, state.numericLiteralTypes);
+  requireAssignable(target, actual, expression, fileName, structs, enums, state);
   state.viewReturnExpressions.add(expression.location.offset);
 }
 
@@ -8113,9 +8147,21 @@ function requireAssignable(
   actual: ValueType,
   expression: Expression,
   fileName: string,
-  foreignNamedTypes: ReadonlyMap<string, ForeignNamedType>,
-  numericLiteralTypes: Map<number, string>,
+  structs: Map<string, StructDeclaration>,
+  enums: Map<string, EnumDeclaration>,
+  state: AnalysisState,
 ): void {
+  const loaded = implicitlyLoadCopyableView(actual, expression, structs, enums, state);
+  if (
+    loaded !== actual
+    && canonicalType(expected, state.foreignNamedTypes) === canonicalType(loaded, state.foreignNamedTypes)
+  ) {
+    actual = loaded;
+  } else if (loaded !== actual) {
+    state.viewLoadExpressions.delete(expression.location.offset);
+  }
+  const foreignNamedTypes = state.foreignNamedTypes;
+  const numericLiteralTypes = state.numericLiteralTypes;
   const expectedType = canonicalType(expected, foreignNamedTypes);
   const expectedFunction = expectedType === "unknown" || expectedType === "never"
     ? null
@@ -8155,8 +8201,58 @@ function requireAssignable(
   }
 }
 
+function implicitlyLoadCopyableView(
+  type: ValueType,
+  expression: Expression,
+  structs: Map<string, StructDeclaration>,
+  enums: Map<string, EnumDeclaration>,
+  state: AnalysisState,
+): ValueType {
+  if (type === "unknown" || type === "never") return type;
+  const view = parseViewType(String(underlyingType(type)));
+  if (
+    !view
+    || hasOwnershipType(view.target, structs, enums, state)
+    || containsForeignValueStorage(view.target, structs, enums, state.foreignNamedTypes)
+  ) return type;
+  state.viewLoadExpressions.add(expression.location.offset);
+  return view.target;
+}
+
+function containsForeignValueStorage(
+  type: ValueType,
+  structs: Map<string, StructDeclaration>,
+  enums: Map<string, EnumDeclaration>,
+  foreignNamedTypes: ReadonlyMap<string, ForeignNamedType>,
+  visiting = new Set<string>(),
+): boolean {
+  const actual = String(underlyingType(type));
+  if (actual === "unknown" || actual === "never" || visiting.has(actual)) return false;
+  if (foreignNamedTypes.get(actual)?.kind === "value") return true;
+  const array = parseFixedArrayType(actual);
+  if (array) return containsForeignValueStorage(array.elementType, structs, enums, foreignNamedTypes, visiting);
+  const dynamic = parseDynamicArrayType(actual);
+  if (dynamic) return containsForeignValueStorage(dynamic.elementType, structs, enums, foreignNamedTypes, visiting);
+  const declaration = structs.get(actual);
+  const enumDeclaration = enums.get(actual);
+  if (!declaration && !enumDeclaration) return false;
+  visiting.add(actual);
+  const result = declaration
+    ? declaration.fields.some((field) => (
+      containsForeignValueStorage(field.type.name, structs, enums, foreignNamedTypes, visiting)
+    ))
+    : enumDeclaration!.variants.some((variant) => (
+      variant.payload
+      && containsForeignValueStorage(variant.payload.name, structs, enums, foreignNamedTypes, visiting)
+    ));
+  visiting.delete(actual);
+  return Boolean(result);
+}
+
 function displayAssignableType(type: ValueType): string {
   const name = String(underlyingType(type));
+  const view = parseViewType(name);
+  if (view) return `view ${displayAssignableType(view.target)}`;
   return isNullableObjCTypeName(name) ? `${publicObjCTypeName(name)} | null` : displayArrayType(name);
 }
 

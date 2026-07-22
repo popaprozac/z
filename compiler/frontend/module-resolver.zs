@@ -1,4 +1,5 @@
 import { TextBuffer } from "std/text";
+import { Map, Set } from "std/collections";
 import { tokenize } from "./lexer.zs";
 import {
   AggregateDeclaration,
@@ -155,6 +156,7 @@ export struct ResolvedModule {
   path: String;
   dependencies: Array<usize>;
   symbols: Array<ModuleSymbol>;
+  symbolIndices: Map<String, usize>;
   semanticEvidence: ModuleSemanticEvidence;
 }
 
@@ -794,26 +796,24 @@ function bindingName(in declaration: ImportDeclaration): String {
 }
 
 function requireAvailableBinding(
-  inout occupied: Array<String>,
+  inout occupied: Set<String>,
   in path: String,
   in name: String,
   line: usize,
   column: usize
 ): void throws ModuleResolveError {
-  for (const candidate of occupied) {
-    if (candidate == name) throw resolutionError(
-      ModuleResolveErrorKind.duplicateBinding,
-      path,
-      `duplicate module binding ${name}`,
-      line,
-      column
-    );
-  }
-  occupied.push(name.copyBytes(0, name.byteLength));
+  if (occupied.has(name)) throw resolutionError(
+    ModuleResolveErrorKind.duplicateBinding,
+    path,
+    `duplicate module binding ${name}`,
+    line,
+    column
+  );
+  occupied.add(name.copyBytes(0, name.byteLength));
 }
 
 function validateBindings(in module: ParsedModule): void throws ModuleResolveError {
-  let occupied = Array<String>();
+  let occupied = Set<String>();
   for (const declaration of module.program.declarations) {
     if (declaration.kind == DeclarationKind.importDeclaration) continue;
     const line = declaration.line;
@@ -851,6 +851,27 @@ function validateBindings(in module: ParsedModule): void throws ModuleResolveErr
         column
       );
     }
+  }
+}
+
+function buildSymbolIndices(in symbols: Array<ModuleSymbol>): Map<String, usize> {
+  let indices = Map<String, usize>();
+  let index: usize = 0;
+  while (index < symbols.length) {
+    indices.set(
+      symbols[index].name.copyBytes(0, symbols[index].name.byteLength),
+      index
+    );
+    index = index + 1;
+  }
+  return indices;
+}
+
+function moduleSymbolIndex(in module: ResolvedModule, in name: String): usize {
+  const found = module.symbolIndices.get(name);
+  match (in found) {
+    some(index) => return index;
+    none => return module.symbols.length;
   }
 }
 
@@ -1210,10 +1231,10 @@ function moduleHasExportedType(
   in module: ResolvedModule,
   in name: String
 ): boolean {
-  for (const symbol of module.symbols) {
-    if (symbol.name == name && symbol.exported && isTypeSymbolKind(symbol.kind)) return true;
-  }
-  return false;
+  const index = moduleSymbolIndex(module, name);
+  return index < module.symbols.length
+    && module.symbols[index].exported
+    && isTypeSymbolKind(module.symbols[index].kind);
 }
 
 function hasTypeName(
@@ -1279,8 +1300,12 @@ function intrinsicTypeArity(in name: String): Option<NativeTypeArity> {
     name == "Array"
     || name == "Slice"
     || name == "Option"
+    || name == "Set"
     || name == "Weak"
   ) return Option.some(NativeTypeArity({ minimum: 1, maximum: 1 }));
+  if (name == "Map") {
+    return Option.some(NativeTypeArity({ minimum: 2, maximum: 2 }));
+  }
   if (name == "Result") {
     return Option.some(NativeTypeArity({ minimum: 2, maximum: 2 }));
   }
@@ -2539,6 +2564,14 @@ function requireExpressionType(
   if (expected == "cstring" && actual == "String" && tree.nodes[index].kind == ExpressionKind.stringExpression) return;
   if (actual == "null" && isNullableTypeName(expected)) return;
   if (compatibleSliceTypes(modules, moduleIndex, expected, actual)) return;
+  if (stringStartsWith(actual, "view ")) {
+    const target = actual.copyBytes(5, actual.byteLength);
+    let visiting = Array<String>();
+    if (
+      equivalentTypes(modules, moduleIndex, expected, target)
+      && !typeHasCleanup(modules, moduleIndex, target, visiting)
+    ) return;
+  }
   throw resolutionError(
     ModuleResolveErrorKind.typeMismatch,
     module.path,
@@ -2996,15 +3029,12 @@ function exportedTypeLocation(
   moduleIndex: usize,
   in name: String
 ): Option<ModuleSymbolLocation> {
-  let symbolIndex: usize = 0;
-  while (symbolIndex < modules[moduleIndex].symbols.length) {
-    if (
-      modules[moduleIndex].symbols[symbolIndex].name == name
-      && modules[moduleIndex].symbols[symbolIndex].exported
-      && isTypeSymbolKind(modules[moduleIndex].symbols[symbolIndex].kind)
-    ) return Option.some(ModuleSymbolLocation({ moduleIndex, symbolIndex }));
-    symbolIndex = symbolIndex + 1;
-  }
+  const symbolIndex = moduleSymbolIndex(modules[moduleIndex], name);
+  if (
+    symbolIndex < modules[moduleIndex].symbols.length
+    && modules[moduleIndex].symbols[symbolIndex].exported
+    && isTypeSymbolKind(modules[moduleIndex].symbols[symbolIndex].kind)
+  ) return Option.some(ModuleSymbolLocation({ moduleIndex, symbolIndex }));
   return Option<ModuleSymbolLocation>.none;
 }
 
@@ -3020,12 +3050,8 @@ function typeSymbolLocation(
   }
   const base = qualifiedTypeBase(typeName);
   const member = qualifiedTypeMember(typeName);
-  let symbolIndex: usize = 0;
-  while (symbolIndex < modules[moduleIndex].symbols.length) {
-    if (modules[moduleIndex].symbols[symbolIndex].name != base) {
-      symbolIndex = symbolIndex + 1;
-      continue;
-    }
+  const symbolIndex = moduleSymbolIndex(modules[moduleIndex], base);
+  if (symbolIndex < modules[moduleIndex].symbols.length) {
     if (member.byteLength > 0) {
       if (modules[moduleIndex].symbols[symbolIndex].kind != ModuleSymbolKind.namespaceSymbol) {
         return Option<ModuleSymbolLocation>.none;
@@ -4775,15 +4801,12 @@ function exportedFunctionLocation(
   moduleIndex: usize,
   in name: String
 ): Option<ModuleSymbolLocation> {
-  let symbolIndex: usize = 0;
-  while (symbolIndex < modules[moduleIndex].symbols.length) {
-    if (
-      modules[moduleIndex].symbols[symbolIndex].name == name
-      && modules[moduleIndex].symbols[symbolIndex].exported
-      && modules[moduleIndex].symbols[symbolIndex].kind == ModuleSymbolKind.functionSymbol
-    ) return Option.some(ModuleSymbolLocation({ moduleIndex, symbolIndex }));
-    symbolIndex = symbolIndex + 1;
-  }
+  const symbolIndex = moduleSymbolIndex(modules[moduleIndex], name);
+  if (
+    symbolIndex < modules[moduleIndex].symbols.length
+    && modules[moduleIndex].symbols[symbolIndex].exported
+    && modules[moduleIndex].symbols[symbolIndex].kind == ModuleSymbolKind.functionSymbol
+  ) return Option.some(ModuleSymbolLocation({ moduleIndex, symbolIndex }));
   return Option<ModuleSymbolLocation>.none;
 }
 
@@ -4799,24 +4822,21 @@ function callableSymbolLocation(
       tree.nodes[calleeIndex].value.byteLength
     );
     const name = identifierLookupName(sourceName);
-    let symbolIndex: usize = 0;
-    while (symbolIndex < modules[moduleIndex].symbols.length) {
-      if (modules[moduleIndex].symbols[symbolIndex].name == name) {
-        if (modules[moduleIndex].symbols[symbolIndex].kind == ModuleSymbolKind.functionSymbol) {
-          return Option.some(ModuleSymbolLocation({ moduleIndex, symbolIndex }));
-        }
-        if (modules[moduleIndex].symbols[symbolIndex].kind == ModuleSymbolKind.importedSymbol) {
-          const importedName = modules[moduleIndex].symbols[symbolIndex].importedName.copyBytes(
-            0,
-            modules[moduleIndex].symbols[symbolIndex].importedName.byteLength
-          );
-          return match (in modules[moduleIndex].symbols[symbolIndex].targetModule) {
-            some(target) => exportedFunctionLocation(modules, target, importedName);
-            none => Option<ModuleSymbolLocation>.none;
-          };
-        }
+    const symbolIndex = moduleSymbolIndex(modules[moduleIndex], name);
+    if (symbolIndex < modules[moduleIndex].symbols.length) {
+      if (modules[moduleIndex].symbols[symbolIndex].kind == ModuleSymbolKind.functionSymbol) {
+        return Option.some(ModuleSymbolLocation({ moduleIndex, symbolIndex }));
       }
-      symbolIndex = symbolIndex + 1;
+      if (modules[moduleIndex].symbols[symbolIndex].kind == ModuleSymbolKind.importedSymbol) {
+        const importedName = modules[moduleIndex].symbols[symbolIndex].importedName.copyBytes(
+          0,
+          modules[moduleIndex].symbols[symbolIndex].importedName.byteLength
+        );
+        return match (in modules[moduleIndex].symbols[symbolIndex].targetModule) {
+          some(target) => exportedFunctionLocation(modules, target, importedName);
+          none => Option<ModuleSymbolLocation>.none;
+        };
+      }
     }
     return Option<ModuleSymbolLocation>.none;
   }
@@ -4837,18 +4857,15 @@ function callableSymbolLocation(
       tree.nodes[calleeIndex].value.byteLength
     );
     const memberName = identifierLookupName(member);
-    let symbolIndex: usize = 0;
-    while (symbolIndex < modules[moduleIndex].symbols.length) {
-      if (
-        modules[moduleIndex].symbols[symbolIndex].name == namespace
-        && modules[moduleIndex].symbols[symbolIndex].kind == ModuleSymbolKind.namespaceSymbol
-      ) {
-        return match (in modules[moduleIndex].symbols[symbolIndex].targetModule) {
-          some(target) => exportedFunctionLocation(modules, target, memberName);
-          none => Option<ModuleSymbolLocation>.none;
-        };
-      }
-      symbolIndex = symbolIndex + 1;
+    const symbolIndex = moduleSymbolIndex(modules[moduleIndex], namespace);
+    if (
+      symbolIndex < modules[moduleIndex].symbols.length
+      && modules[moduleIndex].symbols[symbolIndex].kind == ModuleSymbolKind.namespaceSymbol
+    ) {
+      return match (in modules[moduleIndex].symbols[symbolIndex].targetModule) {
+        some(target) => exportedFunctionLocation(modules, target, memberName);
+        none => Option<ModuleSymbolLocation>.none;
+      };
     }
   }
   return Option<ModuleSymbolLocation>.none;
@@ -5451,6 +5468,84 @@ function nativeFunctionSignature(in typeName: String): Option<ModuleFunctionSign
   }));
 }
 
+function collectionMethodSignature(
+  in ownerType: String,
+  in methodName: String
+): Option<ModuleFunctionSignature> {
+  const generic = match (genericTypeShape(ownerType)) {
+    some(generic) => generic;
+    none => return Option<ModuleFunctionSignature>.none;
+  };
+  let parameterModes = Array<String>();
+  let parameterTypes = Array<String>();
+  let returnType = "";
+  if (generic.base == "Map" && generic.arguments.length == 2) {
+    const keyType = generic.arguments[0].copyBytes(0, generic.arguments[0].byteLength);
+    const valueType = generic.arguments[1].copyBytes(0, generic.arguments[1].byteLength);
+    if (methodName == "has") {
+      parameterModes.push("in");
+      parameterTypes.push(keyType.copyBytes(0, keyType.byteLength));
+      returnType = "boolean";
+    } else if (methodName == "get") {
+      parameterModes.push("in");
+      parameterTypes.push(keyType.copyBytes(0, keyType.byteLength));
+      returnType = `Option<view ${valueType}>`;
+    } else if (methodName == "set") {
+      parameterModes.push("value");
+      parameterTypes.push(keyType.copyBytes(0, keyType.byteLength));
+      parameterModes.push("value");
+      parameterTypes.push(valueType.copyBytes(0, valueType.byteLength));
+      returnType = "void";
+    } else if (methodName == "remove") {
+      parameterModes.push("in");
+      parameterTypes.push(keyType.copyBytes(0, keyType.byteLength));
+      returnType = `Option<${valueType}>`;
+    } else if (methodName == "clear") {
+      returnType = "void";
+    }
+  } else if (generic.base == "Set" && generic.arguments.length == 1) {
+    const elementType = generic.arguments[0].copyBytes(0, generic.arguments[0].byteLength);
+    if (methodName == "has") {
+      parameterModes.push("in");
+      parameterTypes.push(elementType.copyBytes(0, elementType.byteLength));
+      returnType = "boolean";
+    } else if (methodName == "add") {
+      parameterModes.push("value");
+      parameterTypes.push(elementType.copyBytes(0, elementType.byteLength));
+      returnType = "boolean";
+    } else if (methodName == "remove") {
+      parameterModes.push("in");
+      parameterTypes.push(elementType.copyBytes(0, elementType.byteLength));
+      returnType = `Option<${elementType}>`;
+    } else if (methodName == "clear") {
+      returnType = "void";
+    }
+  }
+  if (returnType.byteLength == 0) return Option<ModuleFunctionSignature>.none;
+  return Option.some(ModuleFunctionSignature({
+    asynchronous: false,
+    typeParameters: Array<String>(),
+    typeParameterConstraints: Array<ModuleTypeParameterConstraint>(),
+    parameterModes,
+    parameterTypes,
+    returnType,
+    errorType: "",
+  }));
+}
+
+function collectionMethodMutates(
+  in ownerType: String,
+  in methodName: String
+): boolean {
+  return match (genericTypeShape(ownerType)) {
+    some(generic) => generic.base == "Map"
+      ? methodName == "set" || methodName == "remove" || methodName == "clear"
+      : generic.base == "Set"
+        && (methodName == "add" || methodName == "remove" || methodName == "clear");
+    none => false;
+  };
+}
+
 function nativeFunctionSignaturesCompatible(
   in modules: Array<ResolvedModule>,
   moduleIndex: usize,
@@ -5981,6 +6076,15 @@ function inferExpressionNodeType(
         none => {}
       }
       return "";
+    }
+    match (genericTypeShape(receiverType)) {
+      some(generic) => {
+        if (
+          memberName == "length"
+          && (generic.base == "Map" || generic.base == "Set")
+        ) return "usize";
+      }
+      none => {}
     }
     match (aggregateFieldShape(modules, moduleIndex, receiverType, memberName)) {
       some(field) => {
@@ -6790,7 +6894,7 @@ function inferExpressionNodeType(
         return "";
       }
       const base = identifierLookupName(callee);
-      if (base == "Array") {
+      if (base == "Array" || base == "Map" || base == "Set") {
         try inferUnclassifiedCallArguments(
           module,
           modules,
@@ -6897,6 +7001,51 @@ function inferExpressionNodeType(
       }
       if (ownerType.byteLength > 0) {
         const methodName = identifierLookupName(tree.nodes[calleeIndex].value);
+        match (collectionMethodSignature(ownerType, methodName)) {
+          some(signature) => {
+            let receiverRoot = "";
+            let receiverAccess = "";
+            if (collectionMethodMutates(ownerType, methodName)) {
+              receiverRoot = expressionStorageRootName(tree, receiverIndex);
+              if (
+                receiverRoot.byteLength == 0
+                || !valueBindingIsMutable(bindings, receiverRoot)
+              ) {
+                throw resolutionError(
+                  ModuleResolveErrorKind.typeMismatch,
+                  module.path,
+                  `mutable collection method "${methodName}" requires addressable let storage`,
+                  tree.nodes[receiverIndex].line,
+                  tree.nodes[receiverIndex].column
+                );
+              }
+              receiverAccess = "inout";
+            }
+            const substitutions = Array<NativeValueBinding>();
+            const argumentNodes = callArgumentNodes(children);
+            return try inferSignatureCallType(
+              module,
+              modules,
+              moduleIndex,
+              arena,
+              tree,
+              calleeIndex,
+              index,
+              argumentNodes,
+              inout bindings,
+              receiverRoot,
+              receiverAccess,
+              `${ownerType}.${methodName}`,
+              signature,
+              substitutions,
+              0,
+              0,
+              "value",
+              inout evidence
+            );
+          }
+          none => {}
+        }
         match (callableMethodCallShape(
           modules,
           moduleIndex,
@@ -7963,10 +8112,12 @@ export function resolveModules(
   while (index < parsed.length) {
     const dependencies = try resolveDependencies(parsed, parsed[index]);
     const symbols = buildSymbols(parsed, parsed[index]);
+    const symbolIndices = buildSymbolIndices(symbols);
     modules.push(ResolvedModule({
       path: parsed[index].path.copyBytes(0, parsed[index].path.byteLength),
       dependencies,
       symbols,
+      symbolIndices,
       semanticEvidence: ModuleSemanticEvidence({
         callResolutions: Array<ModuleCallResolution>(),
         bindingResolutions: Array<ModuleBindingResolution>(),

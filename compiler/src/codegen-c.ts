@@ -3922,7 +3922,10 @@ function statementListTerminates(statements: Statement[]): boolean {
 
 function generateExpression(expression: Expression, context: GenerationContext): string {
   const override = context.expressionOverrides.get(expression.location.offset);
-  const value = override ?? generateExpressionInner(expression, context);
+  let value = override ?? generateExpressionInner(expression, context);
+  if (context.semanticInfo.viewLoadExpressions.has(expression.location.offset)) {
+    value = `(*(${value}))`;
+  }
   if (context.semanticInfo.objcStringsToNative.has(expression.location.offset)) {
     return `z_nsstring_from_string(${value})`;
   }

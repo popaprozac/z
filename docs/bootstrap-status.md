@@ -43,7 +43,7 @@ Status meanings:
 | `Map<K, V>` | Implemented semantic tier | Explicit `std/collections` import; owned value-storage transfer, deterministic replacement/removal/clear, `Option<view V>` lookup tied into the unified loan checker, editor support, and primitive/String/payload-free-enum keys; dense O(n) bootstrap storage pending hashed buckets, custom-key contracts, and direct identity/native-RAII value storage |
 | `Set<T>` | Implemented semantic tier | Explicit `std/collections` import; owned unique-value transfer, insertion status, deterministic duplicate/removal/clear cleanup, owned `Option<T>` removal, editor support, and the same initial key contract as `Map`; dense O(n) bootstrap storage pending shared hashed buckets and custom-key contracts |
 | `Slice<T>` | Partial | Non-escaping parameters plus direct-awaited and scope-bounded spawned borrowing from fixed and growable owners, including cleanup-bearing Z and move-only C++ elements; returned/stored and cross-thread Slices remain |
-| Receiver-tied `view T` | Implemented narrow tier | Direct field/index projections and niche-backed `Option<view T>` lookups from synchronous value-struct methods; inferred const local, read-only, non-storable, synchronous `in T` forwarding and proven nonescaping inline capture, no class owners |
+| Receiver-tied `view T` | Implemented narrow tier | Direct field/index projections and niche-backed `Option<view T>` lookups from synchronous value-struct methods; inferred const local, read-only, non-storable, implicit one-load conversion when `T` is already cleanup-free and copyable, synchronous `in T` forwarding and proven nonescaping inline capture, no class owners |
 | `std/memory` `Arena` | Implemented narrow tier | Stable region allocation, inferred owner-tied views, reverse `deinit`/ARC/native RAII cleanup, shared-loan reset exclusion and proven nonescaping inline capture; synchronous and single-threaded |
 | General returned/stored borrows | Planned | Parameter provenance, class alias safety, retained views, and regions remain open |
 | ORC cycle collection | Planned | `Weak<T>` works now; arbitrary strong cycles are not collected |
@@ -395,10 +395,13 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    in Z.
    Enclosing return contracts now flow through statement match arms, and
    payload-free enum/`Option` constructors no longer resemble partial field
-   moves to ownership analysis. With explicit copies on alternate owned-String
-   result paths, the native resolver now analyzes the complete three-module
-   frontend graph—lexer, parser, and resolver—with 335 symbols and exact
-   stage-zero graph/symbol parity.
+   moves to ownership analysis. The resolver now uses its own owned `Set<String>`
+   for binding membership and `Map<String, usize>` indexes for symbol lookup;
+   copyable `Option<view usize>` payloads load into independent indexes while
+   cleanup-bearing views remain borrowed. With explicit copies on alternate
+   owned-String result paths, the native resolver analyzes the complete
+   three-module frontend graph—lexer, parser, and resolver—with 375 symbols and
+   exact stage-zero graph/symbol parity.
    Ordinary `z check` can now opt into that same result through
    `--native-frontend`; stage zero remains authoritative for diagnostics, then
    native analysis gates success on exact parity. This is now a narrow hybrid

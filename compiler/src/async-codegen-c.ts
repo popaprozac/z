@@ -3216,6 +3216,17 @@ function emitFrameExpression(
   plan: FrameExpressionContext,
   fileName: string,
 ): string {
+  const value = emitFrameExpressionInner(expression, plan, fileName);
+  return plan.types.semanticInfo.viewLoadExpressions.has(expression.location.offset)
+    ? `(*(${value}))`
+    : value;
+}
+
+function emitFrameExpressionInner(
+  expression: Expression,
+  plan: FrameExpressionContext,
+  fileName: string,
+): string {
   const suspension = plan.suspensions?.get(expression.location.offset);
   if (suspension) return frameSuspensionValue(suspension, plan.types);
   switch (expression.kind) {

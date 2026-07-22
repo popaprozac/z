@@ -200,14 +200,22 @@ store.open(next); // valid after document's last use
 
 The first tier is deliberately receiver-tied and zero-overhead: only a
 synchronous, non-throwing borrowed method on a value struct may return a direct
-field or indexed projection. The view cannot be annotated as storage, copied,
-stored, returned again, or held across `await`. It may be forwarded to a
-synchronous `in T` parameter or read through an inline closure passed to a
+field or indexed projection. The view itself cannot be annotated as storage,
+duplicated, stored, returned again, or held across `await`. It may be forwarded
+to a synchronous `in T` parameter or read through an inline closure passed to a
 synchronous `in` function parameter. The latter closure is compiler-proven
 nonescaping and copies only the view pointer into its stack environment; owned,
 stored, mutable, escaping, and async forwarding remain rejected. Its owner cannot
 mutate or move before the view's last use. ARC class owners are excluded because
 another alias could invalidate growable projected storage.
+
+When `T` already has ordinary cleanup-free copy semantics, a value context may
+load an independent `T` from `view T` implicitly. This is one pointer load—not a
+heap allocation, retain, or clone—and the resulting value may outlive the view.
+Cleanup-bearing and move-only targets remain views; obtaining an owned copy of
+those values requires a type-specific operation. Binding a receiver projection
+without an owned type annotation still infers `view T`, so the borrow is not
+silently erased.
 
 A lookup that may not find a value returns `Option<view T>` without copying the
 payload:
@@ -360,6 +368,10 @@ entry destroys its previous value. `get` returns `Option<view V>`, so lookup
 does not copy or transfer the stored value; structural mutation is rejected
 until that view's last use. `remove` returns owned `Option<V>`, while `clear`
 destroys every entry. `has` and `.length` do not mutate storage.
+
+If `V` is cleanup-free and ordinarily copyable, using the matched payload where
+an owned `V` is required performs the same implicit one-load copy described
+above. A cleanup-bearing `view V` never becomes owned implicitly.
 
 `Set` uses the same explicit ownership vocabulary:
 
