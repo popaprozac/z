@@ -411,17 +411,20 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    result, and error contract. The check report keeps function, method, and
    constructor resolution counts separate so this live migration surface remains
    measurable instead of disappearing inside whole-graph parity.
-   The same live shadow now resolves struct and synthesized-class aggregate
-   construction, every Z field selected by construction or member access, and
-   payload-bearing or payload-free enum variant construction. Aggregate checks
-   retain struct/class identity plus custom constructor/deinitializer state;
-   field checks retain source type, visibility, and readonly state; enum checks
-   retain exact payload type. Separate aggregate, field, and enum-variant counts
-   make this second expression-level migration tier visible in ordinary native
-   checks, including ownership-bearing enum payloads and ARC class fields.
-   Match statements and match expressions now shadow-resolve every arm variant;
-   object patterns additionally resolve each destructured field through the same
-   field contract used by construction, reads, and assignment targets. Explicit
+   Struct and synthesized-class aggregate construction, every Z field selected by
+   construction or member access, and payload-bearing or payload-free source enum
+   variants are now native-authoritative for non-generic owners. Aggregate
+   contracts supply struct/class identity and field layout while preserving the
+   validated stage-zero constructor/deinitializer bodies needed by lowering;
+   field contracts supply source type, visibility, and readonly state; enum
+   contracts supply exact payload type. The resolved field selected during a
+   member expression is retained for later assignment and mutable-method checks,
+   so native readonly metadata feeds the existing ownership path rather than a
+   parallel checker. Match statements and expressions use native variants, and
+   object patterns use the same native field contract for binding types and
+   ownership. Separate aggregate, field, and enum-variant authority counts keep
+   this migration tier measurable. Generic aggregate owners remain shadow-only
+   until native substitutions cross the compiler boundary. Explicit
    local, closure, and executor-placement type uses recursively observe Z types
    nested in function values, `Weak`, `Task`, `Option`, arrays, slices, and views.
    Native checks report these type-use resolutions independently, while primitive,

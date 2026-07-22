@@ -143,6 +143,9 @@ export type SemanticObserver = {
   readonly resolveFunctionCall?: (resolution: SemanticFunctionCallResolution) => FunctionDeclaration | null;
   readonly resolveMethodCall?: (resolution: SemanticMethodCallResolution) => FunctionDeclaration | null;
   readonly resolveConstructorCall?: (resolution: SemanticConstructorCallResolution) => FunctionDeclaration | null;
+  readonly resolveAggregateConstruction?: (resolution: SemanticAggregateConstructionResolution) => StructDeclaration | null;
+  readonly resolveField?: (resolution: SemanticFieldResolution) => StructDeclaration["fields"][number] | null;
+  readonly resolveEnumVariant?: (resolution: SemanticEnumVariantResolution) => EnumDeclaration["variants"][number] | null;
   readonly onFunctionCall?: (resolution: SemanticFunctionCallResolution) => void;
   readonly onMethodCall?: (resolution: SemanticMethodCallResolution) => void;
   readonly onConstructorCall?: (resolution: SemanticConstructorCallResolution) => void;
@@ -283,6 +286,7 @@ type AnalysisState = {
   readonly optionFromNullable: Set<number>;
   readonly expressionTypes: Map<number, string>;
   readonly bindingTypes: Map<number, string>;
+  readonly resolvedFields: Map<number, StructDeclaration["fields"][number]>;
   readonly borrowedMatches: Set<number>;
   readonly constructorFieldInitializations: Set<number>;
   readonly closures: Map<number, ClosureInfo>;
@@ -476,6 +480,7 @@ export function analyze(
     optionFromNullable: new Set(),
     expressionTypes: new Map(),
     bindingTypes: new Map(),
+    resolvedFields: new Map(),
     borrowedMatches: new Set(),
     constructorFieldInitializations: new Set(),
     closures: new Map(),
@@ -1978,8 +1983,9 @@ function analyzeStatement(
       const covered = new Set<string>();
       const continuing: Map<string, ValueType>[] = [];
       for (const arm of statement.arms) {
-        const variant = declaration.variants.find((candidate) => candidate.name === arm.variantName);
-        if (!variant) throw new DiagnosticError(fileName, arm.location, `unknown variant ${JSON.stringify(arm.variantName)}`);
+        const declaredVariant = declaration.variants.find((candidate) => candidate.name === arm.variantName);
+        if (!declaredVariant) throw new DiagnosticError(fileName, arm.location, `unknown variant ${JSON.stringify(arm.variantName)}`);
+        const variant = resolveSemanticEnumVariant(arm.location, declaration, declaredVariant, state);
         if (covered.has(variant.name)) throw new DiagnosticError(fileName, arm.location, `duplicate match arm ${JSON.stringify(variant.name)}`);
         covered.add(variant.name);
         const hasPattern = Boolean(arm.binding || arm.objectBindings);
@@ -1987,6 +1993,7 @@ function analyzeStatement(
           throw new DiagnosticError(fileName, arm.location, variant.payload ? "payload variant requires a binding" : "payloadless variant cannot bind a value");
         }
         if (arm.binding && arm.bindingLocation) validateUserName(arm.binding, arm.bindingLocation, fileName);
+        const resolvedObjectFields = new Map<string, StructDeclaration["fields"][number]>();
         if (arm.objectBindings) {
           const payloadDeclaration = variant.payload ? structs.get(variant.payload.name) : null;
           if (!payloadDeclaration) {
@@ -1996,18 +2003,18 @@ function analyzeStatement(
           for (const fieldBinding of arm.objectBindings) {
             if (seen.has(fieldBinding.fieldName)) throw new DiagnosticError(fileName, fieldBinding.fieldLocation, `duplicate object pattern field ${JSON.stringify(fieldBinding.fieldName)}`);
             seen.add(fieldBinding.fieldName);
-            const field = payloadDeclaration.fields.find((candidate) => candidate.name === fieldBinding.fieldName);
-            if (!field) {
+            const declaredField = payloadDeclaration.fields.find((candidate) => candidate.name === fieldBinding.fieldName);
+            if (!declaredField) {
               throw new DiagnosticError(fileName, fieldBinding.fieldLocation, `${payloadDeclaration.kind} ${JSON.stringify(payloadDeclaration.name)} has no field ${JSON.stringify(fieldBinding.fieldName)}`);
             }
+            const field = resolveSemanticField(fieldBinding.fieldLocation, payloadDeclaration, declaredField, state);
             if (field.visibility === "private" && state.activeReceiver !== payloadDeclaration.name) {
               throw new DiagnosticError(fileName, fieldBinding.fieldLocation, `field ${JSON.stringify(field.name)} is private to class ${JSON.stringify(payloadDeclaration.name)}`);
             }
-            state.observer?.onFieldResolution?.({ location: fieldBinding.fieldLocation, aggregate: payloadDeclaration, field });
+            resolvedObjectFields.set(fieldBinding.fieldName, field);
             validateUserName(fieldBinding.bindingName, fieldBinding.bindingLocation, fileName);
           }
         }
-        state.observer?.onEnumVariantResolution?.({ location: arm.location, enumeration: declaration, variant });
         const armLocals = new Map(locals);
         if (borrowedRoot && borrowedRootType) {
           armLocals.set(borrowedRoot.name, `${borrowedPrefix}${underlyingType(borrowedRootType)}`);
@@ -2017,9 +2024,8 @@ function analyzeStatement(
           armLocals.set(arm.binding, payloadBorrowed ? `${borrowedPrefix}${variant.payload.name}` : variant.payload.name);
           state.bindingTypes.set(arm.bindingLocation.offset, variant.payload.name);
         }
-        const payloadDeclaration = variant.payload ? structs.get(variant.payload.name) : null;
         for (const fieldBinding of arm.objectBindings ?? []) {
-          const field = payloadDeclaration!.fields.find((candidate) => candidate.name === fieldBinding.fieldName)!;
+          const field = resolvedObjectFields.get(fieldBinding.fieldName)!;
           const fieldBorrowed = hasOwnershipType(field.type.name, structs, enums, state);
           armLocals.set(fieldBinding.bindingName, fieldBorrowed ? `${borrowedPrefix}${field.type.name}` : field.type.name);
           state.bindingTypes.set(fieldBinding.bindingLocation.offset, field.type.name);
@@ -2036,7 +2042,7 @@ function analyzeStatement(
           state.borrowOrigins.set(arm.binding, { location: statement.location, kind: "match" });
         }
         for (const fieldBinding of arm.objectBindings ?? []) {
-          const field = payloadDeclaration!.fields.find((candidate) => candidate.name === fieldBinding.fieldName)!;
+          const field = resolvedObjectFields.get(fieldBinding.fieldName)!;
           if (hasOwnershipType(field.type.name, structs, enums, state)) {
             state.borrowOrigins.set(fieldBinding.bindingName, { location: statement.location, kind: "match" });
           }
@@ -2745,8 +2751,9 @@ function inferMatchExpression(
   const continuing: Map<string, ValueType>[] = [];
   let resultType: ValueType = "never";
   for (const arm of expression.arms) {
-    const variant = declaration.variants.find((candidate) => candidate.name === arm.variantName);
-    if (!variant) throw new DiagnosticError(fileName, arm.location, `unknown variant ${JSON.stringify(arm.variantName)}`);
+    const declaredVariant = declaration.variants.find((candidate) => candidate.name === arm.variantName);
+    if (!declaredVariant) throw new DiagnosticError(fileName, arm.location, `unknown variant ${JSON.stringify(arm.variantName)}`);
+    const variant = resolveSemanticEnumVariant(arm.location, declaration, declaredVariant, state);
     if (covered.has(variant.name)) throw new DiagnosticError(fileName, arm.location, `duplicate match arm ${JSON.stringify(variant.name)}`);
     covered.add(variant.name);
     const hasPattern = Boolean(arm.binding || arm.objectBindings);
@@ -2754,6 +2761,7 @@ function inferMatchExpression(
       throw new DiagnosticError(fileName, arm.location, variant.payload ? "payload variant requires a binding" : "payloadless variant cannot bind a value");
     }
     if (arm.binding && arm.bindingLocation) validateUserName(arm.binding, arm.bindingLocation, fileName);
+    const resolvedObjectFields = new Map<string, StructDeclaration["fields"][number]>();
     if (arm.objectBindings) {
       const payloadDeclaration = variant.payload ? structs.get(variant.payload.name) : null;
       if (!payloadDeclaration) throw new DiagnosticError(fileName, arm.location, "an object pattern requires a struct or class payload");
@@ -2761,18 +2769,18 @@ function inferMatchExpression(
       for (const fieldBinding of arm.objectBindings) {
         if (seen.has(fieldBinding.fieldName)) throw new DiagnosticError(fileName, fieldBinding.fieldLocation, `duplicate object pattern field ${JSON.stringify(fieldBinding.fieldName)}`);
         seen.add(fieldBinding.fieldName);
-        const field = payloadDeclaration.fields.find((candidate) => candidate.name === fieldBinding.fieldName);
-        if (!field) {
+        const declaredField = payloadDeclaration.fields.find((candidate) => candidate.name === fieldBinding.fieldName);
+        if (!declaredField) {
           throw new DiagnosticError(fileName, fieldBinding.fieldLocation, `${payloadDeclaration.kind} ${JSON.stringify(payloadDeclaration.name)} has no field ${JSON.stringify(fieldBinding.fieldName)}`);
         }
+        const field = resolveSemanticField(fieldBinding.fieldLocation, payloadDeclaration, declaredField, state);
         if (field.visibility === "private" && state.activeReceiver !== payloadDeclaration.name) {
           throw new DiagnosticError(fileName, fieldBinding.fieldLocation, `field ${JSON.stringify(field.name)} is private to class ${JSON.stringify(payloadDeclaration.name)}`);
         }
-        state.observer?.onFieldResolution?.({ location: fieldBinding.fieldLocation, aggregate: payloadDeclaration, field });
+        resolvedObjectFields.set(fieldBinding.fieldName, field);
         validateUserName(fieldBinding.bindingName, fieldBinding.bindingLocation, fileName);
       }
     }
-    state.observer?.onEnumVariantResolution?.({ location: arm.location, enumeration: declaration, variant });
     const armLocals = new Map(locals);
     if (borrowedRoot && borrowedRootType) {
       armLocals.set(borrowedRoot.name, `${borrowedPrefix}${underlyingType(borrowedRootType)}`);
@@ -2782,9 +2790,8 @@ function inferMatchExpression(
       armLocals.set(arm.binding, payloadBorrowed ? `${borrowedPrefix}${variant.payload.name}` : variant.payload.name);
       state.bindingTypes.set(arm.bindingLocation.offset, variant.payload.name);
     }
-    const payloadDeclaration = variant.payload ? structs.get(variant.payload.name) : null;
     for (const fieldBinding of arm.objectBindings ?? []) {
-      const field = payloadDeclaration!.fields.find((candidate) => candidate.name === fieldBinding.fieldName)!;
+      const field = resolvedObjectFields.get(fieldBinding.fieldName)!;
       const fieldBorrowed = hasOwnershipType(field.type.name, structs, enums, state);
       armLocals.set(fieldBinding.bindingName, fieldBorrowed ? `${borrowedPrefix}${field.type.name}` : field.type.name);
       state.bindingTypes.set(fieldBinding.bindingLocation.offset, field.type.name);
@@ -2801,7 +2808,7 @@ function inferMatchExpression(
       state.borrowOrigins.set(arm.binding, { location: expression.location, kind: "match" });
     }
     for (const fieldBinding of arm.objectBindings ?? []) {
-      const field = payloadDeclaration!.fields.find((candidate) => candidate.name === fieldBinding.fieldName)!;
+      const field = resolvedObjectFields.get(fieldBinding.fieldName)!;
       if (hasOwnershipType(field.type.name, structs, enums, state)) {
         state.borrowOrigins.set(fieldBinding.bindingName, { location: expression.location, kind: "match" });
       }
@@ -3192,10 +3199,36 @@ function readonlyFieldOnPath(
 ): StructDeclaration["fields"][number] | null {
   if (expression.kind === "index") return readonlyFieldOnPath(expression.object, structs, state);
   if (expression.kind !== "member") return null;
-  const ownerType = state.expressionTypes.get(expression.object.location.offset);
+  const resolved = state.resolvedFields.get(expression.location.offset);
+  const ownerType = resolved ? null : state.expressionTypes.get(expression.object.location.offset);
   const declaration = ownerType ? structs.get(String(underlyingType(ownerType))) : null;
-  const field = declaration?.fields.find((candidate) => candidate.name === expression.property);
+  const field = resolved ?? declaration?.fields.find((candidate) => candidate.name === expression.property);
   return field?.readonly ? field : readonlyFieldOnPath(expression.object, structs, state);
+}
+
+function resolveSemanticField(
+  location: SourceLocation,
+  aggregate: StructDeclaration,
+  field: StructDeclaration["fields"][number],
+  state: AnalysisState,
+): StructDeclaration["fields"][number] {
+  const resolution = { location, aggregate, field };
+  const resolved = state.observer?.resolveField?.(resolution) ?? field;
+  state.resolvedFields.set(location.offset, resolved);
+  state.observer?.onFieldResolution?.(resolution);
+  return resolved;
+}
+
+function resolveSemanticEnumVariant(
+  location: SourceLocation,
+  enumeration: EnumDeclaration,
+  variant: EnumDeclaration["variants"][number],
+  state: AnalysisState,
+): EnumDeclaration["variants"][number] {
+  const resolution = { location, enumeration, variant };
+  const resolved = state.observer?.resolveEnumVariant?.(resolution) ?? variant;
+  state.observer?.onEnumVariantResolution?.(resolution);
+  return resolved;
 }
 
 function registerAsyncCall(
@@ -3547,7 +3580,13 @@ function inferExpressionInner(
     case "closure":
       throw new DiagnosticError(fileName, expression.location, "a closure must directly initialize a const binding in the initial non-escaping tier");
     case "structExpression": {
-      const declaration = structs.get(expression.typeName);
+      const linkedDeclaration = structs.get(expression.typeName);
+      const aggregateResolution = linkedDeclaration
+        ? { location: expression.location, declaration: linkedDeclaration }
+        : null;
+      const declaration = aggregateResolution
+        ? state.observer?.resolveAggregateConstruction?.(aggregateResolution) ?? linkedDeclaration
+        : undefined;
       const foreignDeclaration = state.foreignNamedTypes.get(expression.typeName);
       if (!declaration && foreignDeclaration?.kind !== "record") {
         throw new DiagnosticError(fileName, expression.location, `unknown struct ${JSON.stringify(expression.typeName)}`);
@@ -3558,28 +3597,26 @@ function inferExpressionInner(
           throw new DiagnosticError(fileName, initializer.location, `duplicate field initializer ${JSON.stringify(initializer.name)}`);
         }
         provided.add(initializer.name);
-        const field = declaration?.fields.find((candidate) => candidate.name === initializer.name)
+        const declaredField = declaration?.fields.find((candidate) => candidate.name === initializer.name)
           ?? (foreignDeclaration?.kind === "record" ? foreignDeclaration.fields.find((candidate) => candidate.name === initializer.name) : null);
-        if (!field) {
+        if (!declaredField) {
           throw new DiagnosticError(fileName, initializer.location, `struct ${JSON.stringify(expression.typeName)} has no field ${JSON.stringify(initializer.name)}`);
         }
+        const field = declaration && "type" in declaredField
+          ? resolveSemanticField(initializer.location, declaration, declaredField, state)
+          : declaredField;
         const fieldType = "type" in field ? field.type.name : field.typeName;
         let actual = inferExpression(initializer.expression, locals, globals, structs, enums, fileName, state);
         actual = contextualCStringLiteral(fieldType, initializer.expression, state) ?? actual;
         requireAssignable(fieldType, actual, initializer.expression, fileName, state.foreignNamedTypes, state.numericLiteralTypes);
         consumeOwnedValue(initializer.expression, fieldType, locals, structs, enums, fileName, state);
-        if (declaration && "type" in field) {
-          state.observer?.onFieldResolution?.({ location: initializer.location, aggregate: declaration, field });
-        }
       }
       const expectedFields = declaration?.fields ?? (foreignDeclaration?.kind === "record" ? foreignDeclaration.fields : []);
       const missing = expectedFields.find((field) => !provided.has(field.name));
       if (missing) {
         throw new DiagnosticError(fileName, expression.location, `missing field ${JSON.stringify(missing.name)} when constructing ${JSON.stringify(expression.typeName)}`);
       }
-      if (declaration) {
-        state.observer?.onAggregateConstruction?.({ location: expression.location, declaration });
-      }
+      if (aggregateResolution) state.observer?.onAggregateConstruction?.(aggregateResolution);
       if (foreignDeclaration?.kind === "record") state.foreignExpressionTypes.set(expression.location.offset, expression.typeName);
       return expression.typeName;
     }
@@ -3635,17 +3672,17 @@ function inferExpressionInner(
     }
     case "variantExpression": {
       const declaration = enums.get(expression.enumName);
-      const variant = declaration?.variants.find((candidate) => candidate.name === expression.variantName);
-      if (!declaration || !variant) {
+      const declaredVariant = declaration?.variants.find((candidate) => candidate.name === expression.variantName);
+      if (!declaration || !declaredVariant) {
         throw new DiagnosticError(fileName, expression.location, `unknown enum variant ${expression.enumName}.${expression.variantName}`);
       }
+      const variant = resolveSemanticEnumVariant(expression.location, declaration, declaredVariant, state);
       if (!variant.payload) {
         throw new DiagnosticError(fileName, expression.location, "payloadless variant does not accept a value");
       }
       const payloadView = parseViewType(variant.payload.name);
       if (payloadView) {
         validateReceiverViewProjection(expression.payload, declaration.name, payloadView.target, locals, globals, structs, enums, fileName, state);
-        state.observer?.onEnumVariantResolution?.({ location: expression.location, enumeration: declaration, variant });
         return declaration.name;
       }
       let actual = expression.payload.kind === "objectExpression"
@@ -3654,7 +3691,6 @@ function inferExpressionInner(
       actual = contextualCStringLiteral(variant.payload.name, expression.payload, state) ?? actual;
       requireAssignable(variant.payload.name, actual, expression.payload, fileName, state.foreignNamedTypes, state.numericLiteralTypes);
       consumeOwnedValue(expression.payload, variant.payload.name, locals, structs, enums, fileName, state);
-      state.observer?.onEnumVariantResolution?.({ location: expression.location, enumeration: declaration, variant });
       return declaration.name;
     }
     case "executorPlacement":
@@ -3818,10 +3854,10 @@ function inferExpressionInner(
         }
         const enumDeclaration = enums.get(expression.object.name);
         if (enumDeclaration) {
-          const variant = enumDeclaration.variants.find((candidate) => candidate.name === expression.property);
-          if (!variant) throw new DiagnosticError(fileName, expression.location, `enum ${JSON.stringify(enumDeclaration.name)} has no variant ${JSON.stringify(expression.property)}`);
+          const declaredVariant = enumDeclaration.variants.find((candidate) => candidate.name === expression.property);
+          if (!declaredVariant) throw new DiagnosticError(fileName, expression.location, `enum ${JSON.stringify(enumDeclaration.name)} has no variant ${JSON.stringify(expression.property)}`);
+          const variant = resolveSemanticEnumVariant(expression.location, enumDeclaration, declaredVariant, state);
           if (variant.payload) throw new DiagnosticError(fileName, expression.location, "payload variant must be called with a value");
-          state.observer?.onEnumVariantResolution?.({ location: expression.location, enumeration: enumDeclaration, variant });
           return enumDeclaration.name;
         }
       }
@@ -3904,12 +3940,12 @@ function inferExpressionInner(
       if (!declaration) {
         throw new DiagnosticError(fileName, expression.location, `type ${JSON.stringify(receiverType)} has no members`);
       }
-      const field = declaration.fields.find((candidate) => candidate.name === expression.property);
-      if (field) {
+      const declaredField = declaration.fields.find((candidate) => candidate.name === expression.property);
+      if (declaredField) {
+        const field = resolveSemanticField(expression.location, declaration, declaredField, state);
         if (field.visibility === "private" && state.activeReceiver !== declaration.name) {
           throw new DiagnosticError(fileName, expression.location, `field ${JSON.stringify(field.name)} is private to class ${JSON.stringify(declaration.name)}`);
         }
-        state.observer?.onFieldResolution?.({ location: expression.location, aggregate: declaration, field });
         return field.type.name;
       }
       const method = declaration.methods.find((candidate) => candidate.name === expression.property);
@@ -4343,8 +4379,9 @@ function inferExpressionInner(
               state.optionFromNullable.add(expression.location.offset);
               return enumDeclaration.name;
             }
-            const variant = enumDeclaration.variants.find((candidate) => candidate.name === expression.callee.property);
-            if (!variant) throw new DiagnosticError(fileName, expression.callee.location, `enum ${JSON.stringify(enumDeclaration.name)} has no variant ${JSON.stringify(expression.callee.property)}`);
+            const declaredVariant = enumDeclaration.variants.find((candidate) => candidate.name === expression.callee.property);
+            if (!declaredVariant) throw new DiagnosticError(fileName, expression.callee.location, `enum ${JSON.stringify(enumDeclaration.name)} has no variant ${JSON.stringify(expression.callee.property)}`);
+            const variant = resolveSemanticEnumVariant(expression.location, enumDeclaration, declaredVariant, state);
             const expectedCount = variant.payload ? 1 : 0;
             if (expression.arguments.length !== expectedCount) throw new DiagnosticError(fileName, expression.location, `variant ${JSON.stringify(variant.name)} expects ${expectedCount} argument(s)`);
             if (variant.payload) {
@@ -4352,7 +4389,6 @@ function inferExpressionInner(
               const payloadView = parseViewType(variant.payload.name);
               if (payloadView) {
                 validateReceiverViewProjection(argument, enumDeclaration.name, payloadView.target, locals, globals, structs, enums, fileName, state);
-                state.observer?.onEnumVariantResolution?.({ location: expression.location, enumeration: enumDeclaration, variant });
                 return enumDeclaration.name;
               }
               const actual = argument.kind === "objectExpression"
@@ -4361,7 +4397,6 @@ function inferExpressionInner(
               requireAssignable(variant.payload.name, actual, expression.arguments[0], fileName, state.foreignNamedTypes, state.numericLiteralTypes);
               consumeOwnedValue(expression.arguments[0], variant.payload.name, locals, structs, enums, fileName, state);
             }
-            state.observer?.onEnumVariantResolution?.({ location: expression.location, enumeration: enumDeclaration, variant });
             return enumDeclaration.name;
           }
         }
@@ -4741,7 +4776,10 @@ function inferExpressionInner(
           return result;
         }
         const declaration = structs.get(receiverValueType);
-        const field = declaration?.fields.find((candidate) => candidate.name === expression.callee.property);
+        const declaredField = declaration?.fields.find((candidate) => candidate.name === expression.callee.property);
+        const field = declaration && declaredField
+          ? resolveSemanticField(expression.callee.location, declaration, declaredField, state)
+          : null;
         const fieldFunctionType = field ? parseFunctionType(field.type.name) : null;
         if (declaration && field && fieldFunctionType) {
           if (field.visibility === "private" && state.activeReceiver !== declaration.name) {

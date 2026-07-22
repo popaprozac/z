@@ -76,11 +76,13 @@ semantic analysis, successful non-generic Z function, method, and explicit class
 constructor calls use their native callable contracts after source-level names
 are rebased onto the linked lowering declarations. For methods, that includes
 static/instance identity, visibility, and the `in`/`inout`/`move this` receiver
-capability enforced by the ordinary ownership engine. Stage zero independently
-verifies each contract and still handles generic functions, generic methods, and
-generic owners while native substitution remains incomplete. Native failures are
-held until stage zero succeeds, so enabling the hybrid does not displace the
-existing diagnostic.
+capability enforced by the ordinary ownership engine. Non-generic aggregate
+construction, field access, and source enum variants likewise take their kind,
+field type/visibility/readonly state, and payload shape from native metadata.
+Stage zero independently verifies each contract and still handles generic
+functions, generic methods, and generic owners while native substitution remains
+incomplete. Native failures are held until stage zero succeeds, so enabling the
+hybrid does not displace the existing diagnostic.
 
 ## Source modules
 

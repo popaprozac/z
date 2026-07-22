@@ -21,6 +21,9 @@ export type NativeSemanticBridge = {
   readonly authoritativeFunctionCount: () => number;
   readonly authoritativeMethodCount: () => number;
   readonly authoritativeConstructorCount: () => number;
+  readonly authoritativeAggregateCount: () => number;
+  readonly authoritativeFieldCount: () => number;
+  readonly authoritativeEnumVariantCount: () => number;
 };
 
 export function createNativeSemanticBridge(
@@ -63,6 +66,9 @@ export function createNativeSemanticBridge(
   let authoritativeFunctions = 0;
   let authoritativeMethods = 0;
   let authoritativeConstructors = 0;
+  let authoritativeAggregates = 0;
+  let authoritativeFields = 0;
+  let authoritativeEnumVariants = 0;
   const nativeFunction = (location: FunctionDeclaration["location"], declaration: FunctionDeclaration) => {
     const definitionPath = declaration.location.fileName;
     if (!definitionPath || !modulePaths.has(definitionPath)) return null;
@@ -128,6 +134,71 @@ export function createNativeSemanticBridge(
       );
     }
     return { source, signature: native.typeSignature.constructorSignature! };
+  };
+  const nativeAggregate = (location: StructDeclaration["location"], declaration: StructDeclaration) => {
+    const source = sourceAggregate(sourceAggregates, modulePaths, declaration);
+    if (!source) return null;
+    const native = index.symbol(source.modulePath, source.declaration.name);
+    if (
+      !native
+      || (native.kind !== "struct" && native.kind !== "class")
+      || native.kind !== source.declaration.kind
+      || !native.typeSignature
+      || native.typeSignature.customConstructor !== Boolean(source.declaration.constructor)
+      || native.typeSignature.customDeinit !== Boolean(source.declaration.deinitializer)
+    ) {
+      throw new Error(
+        `native semantic bridge aggregate mismatch for ${JSON.stringify(source.declaration.name)} constructed at ${callSite(location, sourceBatch)}`,
+      );
+    }
+    return { source, native };
+  };
+  const nativeField = (
+    location: StructDeclaration["location"],
+    aggregate: StructDeclaration,
+    field: StructDeclaration["fields"][number],
+  ) => {
+    const source = sourceAggregate(sourceAggregates, modulePaths, aggregate);
+    if (!source) return null;
+    const sourceField = source.declaration.fields.find((candidate) => candidate.name === field.name);
+    const native = index.symbol(source.modulePath, source.declaration.name);
+    const nativeField = native?.typeSignature?.fields.find((candidate) => candidate.name === field.name);
+    if (
+      !native
+      || (native.kind !== "struct" && native.kind !== "class")
+      || !sourceField
+      || !nativeField
+      || nativeField.typeName !== canonicalTypeName(sourceField.type.name)
+      || nativeField.visibility !== sourceField.visibility
+      || nativeField.readonlyField !== sourceField.readonly
+    ) {
+      throw new Error(
+        `native semantic bridge field mismatch for ${JSON.stringify(`${source.declaration.name}.${field.name}`)} resolved at ${callSite(location, sourceBatch)}`,
+      );
+    }
+    return { source, sourceField, nativeField };
+  };
+  const nativeEnumVariant = (
+    location: EnumDeclaration["location"],
+    enumeration: EnumDeclaration,
+    variant: EnumDeclaration["variants"][number],
+  ) => {
+    const source = sourceEnum(sourceEnums, modulePaths, enumeration);
+    if (!source) return null;
+    const sourceVariant = source.declaration.variants.find((candidate) => candidate.name === variant.name);
+    const native = index.symbol(source.modulePath, source.declaration.name);
+    const nativeVariant = native?.typeSignature?.variants.find((candidate) => candidate.name === variant.name);
+    if (
+      native?.kind !== "enum"
+      || !sourceVariant
+      || !nativeVariant
+      || nativeVariant.payloadType !== (sourceVariant.payload ? canonicalTypeName(sourceVariant.payload.name) : null)
+    ) {
+      throw new Error(
+        `native semantic bridge enum variant mismatch for ${JSON.stringify(`${source.declaration.name}.${variant.name}`)} resolved at ${callSite(location, sourceBatch)}`,
+      );
+    }
+    return { source, sourceVariant, nativeVariant };
   };
   const observer: SemanticObserver = {
     resolveFunctionCall: ({ location, declaration }) => {
@@ -285,6 +356,68 @@ export function createNativeSemanticBridge(
         },
       };
     },
+    resolveAggregateConstruction: ({ location, declaration }) => {
+      const resolved = nativeAggregate(location, declaration);
+      if (!resolved || (resolved.source.declaration.typeParameters?.length ?? 0) > 0) return null;
+      authoritativeAggregates += 1;
+      return {
+        ...declaration,
+        kind: resolved.native.kind,
+        typeParameters: [],
+        fields: declaration.fields.map((field) => {
+          const sourceField = resolved.source.declaration.fields.find((candidate) => candidate.name === field.name);
+          const nativeField = resolved.native.typeSignature!.fields.find((candidate) => candidate.name === field.name);
+          if (!sourceField || !nativeField) {
+            throw new Error(
+              `native semantic bridge cannot lower field ${JSON.stringify(`${resolved.source.declaration.name}.${field.name}`)} into its linked stage-0 declaration`,
+            );
+          }
+          return {
+            ...field,
+            visibility: nativeField.visibility,
+            readonly: nativeField.readonlyField,
+            type: {
+              ...field.type,
+              name: rebaseNativeType(nativeField.typeName, sourceField.type.name, field.type.name),
+            },
+          };
+        }),
+      };
+    },
+    resolveField: ({ location, aggregate, field }) => {
+      const resolved = nativeField(location, aggregate, field);
+      if (!resolved || (resolved.source.declaration.typeParameters?.length ?? 0) > 0) return null;
+      authoritativeFields += 1;
+      return {
+        ...field,
+        visibility: resolved.nativeField.visibility,
+        readonly: resolved.nativeField.readonlyField,
+        type: {
+          ...field.type,
+          name: rebaseNativeType(
+            resolved.nativeField.typeName,
+            resolved.sourceField.type.name,
+            field.type.name,
+          ),
+        },
+      };
+    },
+    resolveEnumVariant: ({ location, enumeration, variant }) => {
+      const resolved = nativeEnumVariant(location, enumeration, variant);
+      if (!resolved) return null;
+      authoritativeEnumVariants += 1;
+      return {
+        ...variant,
+        payload: resolved.nativeVariant.payloadType === null ? null : {
+          ...variant.payload!,
+          name: rebaseNativeType(
+            resolved.nativeVariant.payloadType,
+            resolved.sourceVariant.payload!.name,
+            variant.payload!.name,
+          ),
+        },
+      };
+    },
     onFunctionCall: ({ location, declaration }) => {
       if (!nativeFunction(location, declaration)) return;
       functions += 1;
@@ -298,59 +431,15 @@ export function createNativeSemanticBridge(
       constructors += 1;
     },
     onAggregateConstruction: ({ location, declaration }) => {
-      const source = sourceAggregate(sourceAggregates, modulePaths, declaration);
-      if (!source) return;
-      const native = index.symbol(source.modulePath, source.declaration.name);
-      if (
-        !native
-        || native.kind !== source.declaration.kind
-        || !native.typeSignature
-        || native.typeSignature.customConstructor !== Boolean(source.declaration.constructor)
-        || native.typeSignature.customDeinit !== Boolean(source.declaration.deinitializer)
-      ) {
-        throw new Error(
-          `native semantic shadow aggregate mismatch for ${JSON.stringify(source.declaration.name)} constructed at ${callSite(location, sourceBatch)}`,
-        );
-      }
+      if (!nativeAggregate(location, declaration)) return;
       aggregates += 1;
     },
     onFieldResolution: ({ location, aggregate, field }) => {
-      const source = sourceAggregate(sourceAggregates, modulePaths, aggregate);
-      if (!source) return;
-      const sourceField = source.declaration.fields.find((candidate) => candidate.name === field.name);
-      const native = index.symbol(source.modulePath, source.declaration.name);
-      const nativeField = native?.typeSignature?.fields.find((candidate) => candidate.name === field.name);
-      if (
-        !native
-        || (native.kind !== "struct" && native.kind !== "class")
-        || !sourceField
-        || !nativeField
-        || nativeField.typeName !== canonicalTypeName(sourceField.type.name)
-        || nativeField.visibility !== sourceField.visibility
-        || nativeField.readonlyField !== sourceField.readonly
-      ) {
-        throw new Error(
-          `native semantic shadow field mismatch for ${JSON.stringify(`${source.declaration.name}.${field.name}`)} resolved at ${callSite(location, sourceBatch)}`,
-        );
-      }
+      if (!nativeField(location, aggregate, field)) return;
       fields += 1;
     },
     onEnumVariantResolution: ({ location, enumeration, variant }) => {
-      const source = sourceEnum(sourceEnums, modulePaths, enumeration);
-      if (!source) return;
-      const sourceVariant = source.declaration.variants.find((candidate) => candidate.name === variant.name);
-      const native = index.symbol(source.modulePath, source.declaration.name);
-      const nativeVariant = native?.typeSignature?.variants.find((candidate) => candidate.name === variant.name);
-      if (
-        native?.kind !== "enum"
-        || !sourceVariant
-        || !nativeVariant
-        || nativeVariant.payloadType !== (sourceVariant.payload ? canonicalTypeName(sourceVariant.payload.name) : null)
-      ) {
-        throw new Error(
-          `native semantic shadow enum variant mismatch for ${JSON.stringify(`${source.declaration.name}.${variant.name}`)} resolved at ${callSite(location, sourceBatch)}`,
-        );
-      }
+      if (!nativeEnumVariant(location, enumeration, variant)) return;
       enumVariants += 1;
     },
     onTypeResolution: ({ location, declaration }) => {
@@ -379,6 +468,9 @@ export function createNativeSemanticBridge(
     authoritativeFunctionCount: () => authoritativeFunctions,
     authoritativeMethodCount: () => authoritativeMethods,
     authoritativeConstructorCount: () => authoritativeConstructors,
+    authoritativeAggregateCount: () => authoritativeAggregates,
+    authoritativeFieldCount: () => authoritativeFields,
+    authoritativeEnumVariantCount: () => authoritativeEnumVariants,
   };
 }
 
