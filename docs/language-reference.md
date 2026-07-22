@@ -387,6 +387,24 @@ const inferred = slot.choose(20, 22);
 const explicit = Utility.preserve<i32>(42);
 ```
 
+When arguments do not mention every type parameter, a direct call may use its
+result contract as inference evidence. Local annotations, assignment targets,
+and enclosing function returns provide that context:
+
+```z
+function absent<T>(): Option<T> { return Option<T>.none; }
+
+const local: Option<i64> = absent();
+
+function load(): Option<i32> {
+  return absent();
+}
+```
+
+An unannotated `const local = absent();` remains ambiguous and requires either a
+destination type or explicit type arguments. Context narrows inference; it does
+not create a default generic argument.
+
 An instance of a generic owner may also call a separately generic instance
 method. A static method whose owner and method both introduce independent type
 parameters is deliberately deferred until that two-level specialization syntax

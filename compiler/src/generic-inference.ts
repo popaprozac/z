@@ -940,11 +940,23 @@ export function inferGenericCalls(
             }
             const inferred = new Map<string, string>();
             const parameters = new Set(template.typeParameters!);
+            if (expectedType) {
+              unify(
+                template.returnType.name,
+                expectedType,
+                parameters,
+                inferred,
+                template.name,
+                expression.location,
+              );
+            }
+            const contextualParameters = new Set(inferred.keys());
+            const valueParameters = new Set([...parameters].filter((parameter) => !contextualParameters.has(parameter)));
             for (let index = 0; index < template.parameters.length; index += 1) {
               unify(
                 template.parameters[index].type.name,
                 args[index].type,
-                parameters,
+                valueParameters,
                 inferred,
                 template.name,
                 args[index].expression.location,

@@ -451,8 +451,11 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    types, async/error state, and result type. `NativeSemanticIndex` validates and
    indexes these records by canonical module plus call-expression offset. Direct
    generic Z functions are native-authoritative when the complete contract maps
-   cleanly onto the linked concrete declaration; unresolved contextual inference
-   and concrete names needing richer cross-module rebasing retain the stage-zero
+   cleanly onto the linked concrete declaration. Direct calls now infer missing
+   generic result parameters from local annotations, assignment targets, and
+   enclosing function returns before exporting the same concrete evidence.
+   Context propagation through nested calls and value-producing branches, plus
+   concrete names needing richer cross-module rebasing, retain the stage-zero
    fallback. The same source-keyed evidence now makes instance/static methods on
    generic owners and inferred or explicit generic-class constructors
    authoritative after validating the owner symbol, ordered substitutions,
@@ -486,12 +489,12 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    Native signatures now retain generic trait constraints and nominal aggregate
    conformance. Native inference enforces those constraints for inferred and
    explicit function/method calls and aggregate construction; constrained generic
-   bodies may call only methods supplied by their declared traits. Complete
-   contextual literal and return-driven inference, foreign/intrinsic method lookup,
-   generic trait declarations, async/foreign call effects, contextual untyped
-   closure parameters, escaping closure-environment validation, precise closure
-   borrow last-use release, remaining receiver-path capability enforcement, and
-   full recursive ownership contexts remain stage-zero work.
+   bodies may call only methods supplied by their declared traits. Contextual
+   inference through nested calls and value-producing branches, foreign/intrinsic
+   method lookup, generic trait declarations, async/foreign call effects,
+   contextual untyped closure parameters, escaping closure-environment validation,
+   precise closure borrow last-use release, remaining receiver-path capability
+   enforcement, and full recursive ownership contexts remain stage-zero work.
    Template literals now
    retain ordered decoded-text leaves and ordinary embedded-expression roots,
    including nested templates, in the same flat arena. Expression-bodied

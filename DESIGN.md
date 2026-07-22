@@ -1550,7 +1550,10 @@ ported independently rather than translated as one monolith.
    struct literals, synthesized classes, and declared constructors across local,
    selective, and namespace type spellings. Constructor records keep the defining
    class as their target while allowing the concrete result type to retain a
-   caller-visible alias. Purely contextual inference remains a later native tier.
+   caller-visible alias. Direct generic calls now also accept result context from
+   annotations, assignment targets, and enclosing function returns. Propagating
+   that context through nested calls and value-producing branches remains a later
+   native tier.
    This call evidence is a temporary bootstrap transport—the eventual native
    driver will pass the same structural result directly between compiler phases.
    Type symbols
@@ -1651,8 +1654,10 @@ ported independently rather than translated as one monolith.
    ternaries, and direct Z calls. Calls resolve through local declarations, selective imports and
    aliases, and namespace imports, validating known argument types against the
    target module's signature. Generic calls infer or accept explicit type
-   arguments and structurally substitute nested parameter and return shapes;
-   unresolved contextual-only parameters continue to defer. Known initializers,
+   arguments and structurally substitute nested parameter and return shapes.
+   Local annotations, assignment targets, and enclosing function returns can
+   settle result-only parameters; context needed inside nested calls or branches
+   continues to defer. Known initializers,
    assignments, conditions, arguments, and returns are checked with native
    diagnostics. Local enums and the intrinsic `Option<T>`/`Result<T, E>` shapes
    now provide match payload bindings, local aggregate destructuring,

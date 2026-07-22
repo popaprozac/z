@@ -5004,7 +5004,7 @@ test("resolves a canonical module graph directly from native Z ASTs", () => {
   assert.equal(invalidGeneric.status, 1);
   assert.match(
     invalidGeneric.stderr,
-    /generic-main\.zs:3:29: conflicting inferred types for T in choose: i32 and boolean/,
+    /generic-main\.zs:3:29: expected i32, found boolean/,
   );
 
   const matchMain = resolve(invalidDirectory, "match-main.zs");
@@ -7498,9 +7498,21 @@ test("infers generic calls while preserving explicit instantiation", () => {
   `;
   assert.match(compileToC(explicit, "generic-explicit.zs"), /__z_mono_identity_i32\(42\)/);
 
-  const ambiguous = `
+  const contextualReturn = `
     function make<T>(): T { return 1; }
     function main(): i32 { return make(); }
+  `;
+  assert.match(compileToC(contextualReturn, "generic-contextual-return.zs"), /__z_mono_make_i32/);
+
+  const contextualBinding = `
+    function make<T>(): T { return 1; }
+    function main(): i32 { const value: i64 = make(); return 0; }
+  `;
+  assert.match(compileToC(contextualBinding, "generic-contextual-binding.zs"), /__z_mono_make_i64/);
+
+  const ambiguous = `
+    function make<T>(): T { return 1; }
+    function main(): i32 { const value = make(); return 0; }
   `;
   assert.throws(() => compileToC(ambiguous, "generic-ambiguous.zs"), /cannot infer type parameter "T" for "make"/);
 
@@ -7508,13 +7520,53 @@ test("infers generic calls while preserving explicit instantiation", () => {
     function choose<T>(left: T, right: T): T { return left; }
     function main(): i32 { return choose(1, true); }
   `;
-  assert.throws(() => compileToC(conflicting, "generic-conflict.zs"), /conflicting inferred types for T.*i32 and boolean/);
+  assert.throws(() => compileToC(conflicting, "generic-conflict.zs"), /expected i32, found boolean/);
 
   const duplicate = `
     struct Invalid<T, T> { value: T; }
     function main(): i32 { return 0; }
   `;
   assert.throws(() => compileToC(duplicate, "generic-duplicate.zs"), /duplicate type parameter "T"/);
+});
+
+test("infers generic results from annotations, assignments, and returns", () => {
+  const source = `
+    trait Measured { function measure(): i32; }
+    struct Reading implements Measured { function measure(): i32 { return 42; } }
+    function absent<T>(): Option<T> { return Option<T>.none; }
+    function constrained<T: Measured>(): Option<T> { return Option<T>.none; }
+    struct Utility {
+      static function absent<T>(): Option<T> { return Option<T>.none; }
+    }
+    function returned(): Option<i32> { return absent(); }
+    function main(): i32 {
+      const local: Option<i64> = absent();
+      let assigned: Option<i32> = Option<i32>.none;
+      assigned = absent();
+      const method: Option<i16> = Utility.absent();
+      const checked: Option<Reading> = constrained();
+      return 0;
+    }
+  `;
+  const generated = compileToC(source, "generic-result-context.zs");
+  assert.match(generated, /__z_mono_absent_i64/);
+  assert.match(generated, /__z_mono_absent_i32/);
+  assert.match(generated, /Z_Utility___z_mono_absent_i16/);
+  assert.match(generated, /__z_mono_constrained_Reading/);
+
+  const directory = mkdtempSync("/tmp/z-native-generic-result-context-");
+  const input = resolve(directory, "main.zs");
+  writeFileSync(input, source);
+  const native = spawnSync(process.execPath, [cli, "self-host-resolve", input], { encoding: "utf8" });
+  assert.equal(native.status, 0, native.stderr);
+  const hybrid = spawnSync(process.execPath, [cli, "check", input, "--native-frontend"], { encoding: "utf8" });
+  assert.equal(hybrid.status, 0, hybrid.stderr);
+
+  const invalid = source.replace("Option<Reading> = constrained()", "Option<i32> = constrained()");
+  writeFileSync(input, invalid);
+  const nativeConstraint = spawnSync(process.execPath, [cli, "self-host-resolve", input], { encoding: "utf8" });
+  assert.equal(nativeConstraint.status, 1);
+  assert.match(nativeConstraint.stderr, /i32 does not satisfy Measured for T in "constrained"/);
 });
 
 test("specializes separately generic instance and static methods", () => {

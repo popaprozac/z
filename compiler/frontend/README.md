@@ -137,11 +137,13 @@ generic construction, and trait-authorized calls inside constrained bodies enfor
 those contracts natively. Standalone Z and intrinsic generic type uses recursively
 validate arity and constraints through arrays, nullable/view wrappers, nested
 generics, and function signatures; bare generic names remain available only at
-constructor-inference sites. Opaque expression spans, contextual collection and
-return-driven generic inference, generic trait declarations, async/foreign call
-effects, contextual untyped closure parameters, escaping closure-environment
-validation, borrow last-use release, and complete recursive ownership lowering
-remain stage-zero work.
+constructor-inference sites. Direct generic function and method calls may infer
+otherwise-missing result parameters from a local annotation, assignment target,
+or enclosing function return contract. Opaque expression spans, contextual
+inference through nested calls and value-producing branches, generic trait
+declarations, async/foreign call effects, contextual untyped closure parameters,
+escaping closure-environment validation, borrow last-use release, and complete
+recursive ownership lowering remain stage-zero work.
 The reported native interval therefore does more semantic work than the
 graph-and-symbol-only stage-zero comparison.
 Repeated corpus measurements, broadening ordinary-command shadow coverage, and

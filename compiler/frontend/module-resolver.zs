@@ -1860,6 +1860,19 @@ function addValueBinding(
   }));
 }
 
+function contextualExpectedBindingName(offset: usize): String {
+  return `__z_native_contextual_expected:${offset}`;
+}
+
+function contextualExpectedType(
+  in bindings: Array<NativeValueBinding>,
+  in tree: ExpressionTree,
+  index: usize
+): String {
+  const bindingName = contextualExpectedBindingName(tree.nodes[index].offset);
+  return valueBindingType(bindings, bindingName);
+}
+
 function addMutableValueBinding(
   inout bindings: Array<NativeValueBinding>,
   in name: String,
@@ -4827,6 +4840,28 @@ function inferSignatureCallType(
       }
     }
     none => {
+      const expectedType = contextualExpectedType(bindings, tree, callIndex);
+      if (expectedType.byteLength > 0) {
+        try bindGenericType(
+          module,
+          modules,
+          moduleIndex,
+          tree,
+          calleeIndex,
+          functionName,
+          signature.returnType,
+          expectedType,
+          signature.typeParameters,
+          inout substitutions
+        );
+      }
+      let valueTypeParameters = Array<String>();
+      for (const typeParameter of signature.typeParameters) {
+        const substituted = valueBindingType(substitutions, typeParameter);
+        if (substituted.byteLength == 0) {
+          valueTypeParameters.push(typeParameter.copyBytes(0, typeParameter.byteLength));
+        }
+      }
       let parameterIndex: usize = 0;
       while (parameterIndex < argumentTypes.length) {
         try bindGenericType(
@@ -4838,7 +4873,7 @@ function inferSignatureCallType(
           functionName,
           signature.parameterTypes[parameterIndex],
           argumentTypes[parameterIndex],
-          signature.typeParameters,
+          valueTypeParameters,
           inout substitutions
         );
         parameterIndex = parameterIndex + 1;
@@ -6538,6 +6573,42 @@ function inferExpressionNodeType(
   return "";
 }
 
+function inferExpressionTypeExpected(
+  in module: ParsedModule,
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
+  in arena: StatementArena,
+  in expression: ExpressionSyntax,
+  in expectedType: String,
+  inout bindings: Array<NativeValueBinding>,
+  inout callResolutions: Array<ModuleCallResolution>
+): String throws ModuleResolveError {
+  return match (in expression.tree) {
+    some(tree) => {
+      const root = tree.root;
+      let expressionBindings = copyValueBindings(bindings);
+      if (expectedType.byteLength > 0) {
+        const bindingName = contextualExpectedBindingName(tree.nodes[root].offset);
+        addValueBinding(inout expressionBindings, bindingName, expectedType);
+      }
+      const inferred = try inferExpressionNodeType(
+        module,
+        modules,
+        moduleIndex,
+        arena,
+        tree,
+        root,
+        inout expressionBindings,
+        inout callResolutions
+      );
+      try requireSettledExpressionType(module, tree, root, inferred);
+      copyBindingFlowStates(inout bindings, expressionBindings);
+      select inferred;
+    }
+    none => "";
+  };
+}
+
 function inferExpressionType(
   in module: ParsedModule,
   in modules: Array<ResolvedModule>,
@@ -6547,24 +6618,16 @@ function inferExpressionType(
   inout bindings: Array<NativeValueBinding>,
   inout callResolutions: Array<ModuleCallResolution>
 ): String throws ModuleResolveError {
-  return match (in expression.tree) {
-    some(tree) => {
-      const root = tree.root;
-      const inferred = try inferExpressionNodeType(
-        module,
-        modules,
-        moduleIndex,
-        arena,
-        tree,
-        root,
-        inout bindings,
-        inout callResolutions
-      );
-      try requireSettledExpressionType(module, tree, root, inferred);
-      select inferred;
-    }
-    none => "";
-  };
+  return try inferExpressionTypeExpected(
+    module,
+    modules,
+    moduleIndex,
+    arena,
+    expression,
+    "",
+    inout bindings,
+    inout callResolutions
+  );
 }
 
 function requireExpressionSyntaxType(
@@ -6598,13 +6661,19 @@ function inferStatement(
   const statementChildren = copyIndices(arena.nodes[index].children);
   if (kind == StatementKind.variableStatement) {
     let inferred = "";
+    let contextualExpected = "";
+    match (in arena.nodes[index].typeAnnotation) {
+      some(type) => contextualExpected = type.name.copyBytes(0, type.name.byteLength);
+      none => {}
+    }
     match (in arena.nodes[index].expression) {
-      some(expression) => inferred = try inferExpressionType(
+      some(expression) => inferred = try inferExpressionTypeExpected(
         module,
         modules,
         moduleIndex,
         arena,
         expression,
+        contextualExpected,
         inout bindings,
         inout callResolutions
       );
@@ -6740,7 +6809,16 @@ function inferStatement(
     }
     match (in arena.nodes[index].secondExpression) {
       some(value) => {
-        const actual = try inferExpressionType(module, modules, moduleIndex, arena, value, inout bindings, inout callResolutions);
+        const actual = try inferExpressionTypeExpected(
+          module,
+          modules,
+          moduleIndex,
+          arena,
+          value,
+          expected,
+          inout bindings,
+          inout callResolutions
+        );
         if (expected.byteLength > 0) {
           try requireExpressionSyntaxType(
             module,
@@ -6821,12 +6899,13 @@ function inferStatement(
     }
     match (in arena.nodes[index].expression) {
       some(expression) => {
-        const actual = try inferExpressionType(
+        const actual = try inferExpressionTypeExpected(
           module,
           modules,
           moduleIndex,
           arena,
           expression,
+          expectedError,
           inout bindings,
           inout callResolutions
         );
@@ -6875,7 +6954,20 @@ function inferStatement(
   if (kind == StatementKind.returnStatement || kind == StatementKind.selectStatement) {
     match (in arena.nodes[index].expression) {
       some(expression) => {
-        const actual = try inferExpressionType(module, modules, moduleIndex, arena, expression, inout bindings, inout callResolutions);
+        let contextualExpected = "";
+        if (kind == StatementKind.returnStatement) {
+          contextualExpected = expectedReturn.copyBytes(0, expectedReturn.byteLength);
+        }
+        const actual = try inferExpressionTypeExpected(
+          module,
+          modules,
+          moduleIndex,
+          arena,
+          expression,
+          contextualExpected,
+          inout bindings,
+          inout callResolutions
+        );
         if (kind == StatementKind.returnStatement && expectedReturn.byteLength > 0) {
           try requireExpressionSyntaxType(
             module,
