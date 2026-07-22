@@ -1555,11 +1555,11 @@ ported independently rather than translated as one monolith.
    struct literals, synthesized classes, and declared constructors across local,
    selective, and namespace type spellings. Constructor records keep the defining
    class as their target while allowing the concrete result type to retain a
-   caller-visible alias. Direct generic calls now also accept result context from
-   annotations, assignment targets, and enclosing function returns, and propagate
-   settled parameter contracts through nested calls and ternary, value-producing
-   `if`, and expression-`match` branches. Generic method and constructor argument
-   contexts remain a later composition tier.
+   caller-visible alias. Generic functions, static and instance methods, declared
+   constructors, and synthesized aggregate construction accept result context
+   from annotations, assignment targets, and enclosing function returns. They
+   propagate settled parameter and field contracts through nested calls and
+   ternary, value-producing `if`, and expression-`match` branches.
    This call evidence is a temporary bootstrap transport—the eventual native
    driver will pass the same structural result directly between compiler phases.
    Type symbols
@@ -1666,9 +1666,9 @@ ported independently rather than translated as one monolith.
    target module's signature. Generic calls infer or accept explicit type
    arguments and structurally substitute nested parameter and return shapes.
    Local annotations, assignment targets, and enclosing function returns can
-   settle result-only parameters. Direct generic functions then carry those
-   contracts through nested arguments and value-producing conditional or match
-   branches. Generic method and constructor argument contexts continue to defer.
+   settle result-only parameters. Generic functions, methods, constructors, and
+   synthesized aggregate fields then carry those contracts through nested
+   arguments and value-producing conditional or match branches.
    Known initializers,
    assignments, conditions, arguments, and returns are checked with native
    diagnostics. Local enums and the intrinsic `Option<T>`/`Result<T, E>` shapes

@@ -141,12 +141,11 @@ validate arity and constraints through arrays, nullable/view wrappers, nested
 generics, and function signatures; bare generic names remain available only at
 constructor-inference sites. Direct generic function and method calls may infer
 otherwise-missing result parameters from a local annotation, assignment target,
-or enclosing function return contract. Direct generic functions propagate
+or enclosing function return contract. Generic functions, static and instance
+methods, declared constructors, and synthesized aggregate fields propagate
 settled parameter types through nested calls and ternary, value-producing `if`,
-and expression-`match` branches. Opaque expression spans, contextual generic
-method and constructor arguments, generic trait declarations, async/foreign call
-effects, contextual closure types whose generic
-parameters are not settled before argument inference,
+and expression-`match` branches. Opaque expression spans, generic trait
+declarations, async/foreign call effects,
 escaping closure-environment validation, borrow last-use release, and complete
 recursive ownership lowering remain stage-zero work.
 The reported native interval therefore does more semantic work than the

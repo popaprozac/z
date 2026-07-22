@@ -7575,6 +7575,19 @@ test("infers generic results from annotations, assignments, and returns", () => 
     function preserve<T>(value: T): T { return value; }
     function choose<T>(left: T, right: T): T { return left; }
     function constrained<T: Measured>(): Option<T> { return Option<T>.none; }
+    struct Factory {
+      static function preserve<T>(value: T): T { return value; }
+      function preserveInstance<T>(value: T): T { return value; }
+    }
+    struct Bundle<T> { value: T; }
+    struct Wrapper<T> {
+      value: T;
+      static function wrap(value: T): Wrapper<T> { return Wrapper({ value }); }
+    }
+    class Envelope<T> {
+      value: T;
+      constructor(value: T) { this.value = value; }
+    }
     struct Utility {
       static function absent<T>(): Option<T> { return Option<T>.none; }
     }
@@ -7593,6 +7606,15 @@ test("infers generic results from annotations, assignments, and returns", () => 
         some(value) => absent();
         none => absent();
       };
+      const factory = Factory({});
+      const staticNested: Option<i32> = Factory.preserve(absent());
+      const instanceNested: Option<i32> = factory.preserveInstance(absent());
+      const inferredEnvelope: Envelope<Option<i32>> = new Envelope(absent());
+      const explicitEnvelope = new Envelope<Option<i32>>(absent());
+      const inferredBundle: Bundle<Option<i32>> = Bundle({ value: absent() });
+      const explicitBundle = Bundle<Option<i32>>({ value: absent() });
+      const inferredWrapper: Wrapper<Option<i32>> = Wrapper.wrap(absent());
+      const explicitWrapper = Wrapper.wrap<Option<i32>>(absent());
       return 0;
     }
   `;
@@ -7609,7 +7631,7 @@ test("infers generic results from annotations, assignments, and returns", () => 
   assert.equal(native.status, 0, native.stderr);
   const hybrid = spawnSync(process.execPath, [cli, "check", input, "--native-frontend"], { encoding: "utf8" });
   assert.equal(hybrid.status, 0, hybrid.stderr);
-  assert.match(hybrid.stdout, /native frontend hybrid exports 15 concrete generic call contracts/);
+  assert.match(hybrid.stdout, /native frontend hybrid exports 29 concrete generic call contracts/);
 
   const invalid = source.replace("Option<Reading> = constrained()", "Option<i32> = constrained()");
   writeFileSync(input, invalid);

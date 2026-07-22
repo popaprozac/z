@@ -4307,13 +4307,19 @@ function inferContextualObjectExpressionNode(
           bindings,
           field
         );
-        const actual = try inferExpressionNodeType(
+        const contextualFieldType = settledContextualType(
+          field.typeName,
+          genericParameters,
+          substitutions
+        );
+        const actual = try inferExpressionNodeTypeExpected(
           module,
           modules,
           moduleIndex,
           arena,
           tree,
           children[childIndex],
+          contextualFieldType,
           inout bindings,
           inout callResolutions
         );
@@ -6555,6 +6561,35 @@ function inferExpressionNodeType(
           && tree.nodes[children[1]].kind == ExpressionKind.objectExpression
           && !typeHasCustomConstructor(modules, moduleIndex, constructionType)
         ) {
+          let expectedConstructionType = constructionType.copyBytes(
+            0,
+            constructionType.byteLength
+          );
+          const destinationType = contextualExpectedType(bindings, tree, index);
+          match (genericTypeShape(destinationType)) {
+            some(destination) => {
+              let constructionBase = constructionType.copyBytes(
+                0,
+                constructionType.byteLength
+              );
+              match (genericTypeShape(constructionType)) {
+                some(construction) => {
+                  constructionBase = construction.base.copyBytes(
+                    0,
+                    construction.base.byteLength
+                  );
+                }
+                none => {}
+              }
+              if (destination.base == constructionBase) {
+                expectedConstructionType = destinationType.copyBytes(
+                  0,
+                  destinationType.byteLength
+                );
+              }
+            }
+            none => {}
+          }
           const contextual = try inferContextualObjectExpressionNode(
             module,
             modules,
@@ -6562,7 +6597,7 @@ function inferExpressionNodeType(
             arena,
             tree,
             children[1],
-            constructionType,
+            expectedConstructionType,
             inout bindings,
             inout callResolutions
           );

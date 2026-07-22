@@ -29,6 +29,7 @@ Status meanings:
 | Integer safety | Implemented | Checked arithmetic plus explicit wrapping/saturating operations |
 | Generators | Planned | `yield` is reserved; no generator lowering |
 | `comptime` | Planned experiment | No compile-time execution model committed |
+| Inline assembly | Planned design | Explicit `unsafe` boundary with `in` / `inout` / `out` operands; statement-first lowering, machine constraints, clobbers, target pruning, and backend portability remain to be designed and tested |
 
 ## Ownership and collections
 
@@ -454,10 +455,10 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    cleanly onto the linked concrete declaration. Direct calls now infer missing
    generic result parameters from local annotations, assignment targets, and
    enclosing function returns before exporting the same concrete evidence.
-   Direct generic functions propagate settled parameter contracts through nested
-   calls and ternary, value-producing `if`, and expression-`match` branches.
-   Generic method/constructor argument contexts and concrete names needing richer
-   cross-module rebasing retain the stage-zero fallback. The same source-keyed evidence now makes instance/static methods on
+   Generic functions, static and instance methods, declared constructors, and
+   synthesized aggregate fields propagate settled contracts through nested calls
+   and ternary, value-producing `if`, and expression-`match` branches. Concrete
+   names needing richer cross-module rebasing retain the stage-zero fallback. The same source-keyed evidence now makes instance/static methods on
    generic owners and inferred or explicit generic-class constructors
    authoritative after validating the owner symbol, ordered substitutions,
    receiver contract, and fully concrete callable signature. Native checks report exported contracts
@@ -490,11 +491,9 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    Native signatures now retain generic trait constraints and nominal aggregate
    conformance. Native inference enforces those constraints for inferred and
    explicit function/method calls and aggregate construction; constrained generic
-   bodies may call only methods supplied by their declared traits. Contextual
-   inference into generic method and constructor arguments, foreign/intrinsic
+   bodies may call only methods supplied by their declared traits. Foreign/intrinsic
    method lookup, generic trait declarations, async/foreign call effects,
-   contextual closure types whose generic parameters are not settled before
-   argument inference, escaping closure-environment validation,
+   escaping closure-environment validation,
    precise closure borrow last-use release, remaining receiver-path capability
    enforcement, and full recursive ownership contexts remain stage-zero work.
    Template literals now
