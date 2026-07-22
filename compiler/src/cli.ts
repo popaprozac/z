@@ -85,6 +85,9 @@ if (!command || !inputArgument || !["check", "emit", "run", "self-host-lex", "se
             analysis.nativeCallResolutionCount,
             analysis.nativeMethodResolutionCount,
             analysis.nativeConstructorResolutionCount,
+            analysis.nativeAggregateResolutionCount,
+            analysis.nativeFieldResolutionCount,
+            analysis.nativeEnumVariantResolutionCount,
           );
         }
       }
@@ -167,6 +170,9 @@ function reportStage1Resolver(
   callResolutionCount: number | null,
   methodResolutionCount = 0,
   constructorResolutionCount = 0,
+  aggregateResolutionCount = 0,
+  fieldResolutionCount = 0,
+  enumVariantResolutionCount = 0,
 ): void {
   const edges = run.graph.modules.reduce((count, module) => count + module.dependencies.length, 0);
   const symbols = run.graph.modules.reduce((count, module) => count + module.symbols.length, 0);
@@ -178,6 +184,7 @@ function reportStage1Resolver(
   console.log(`${subject} compiler index matches ${queryCount} binding/signature queries`);
   if (callResolutionCount !== null) {
     console.log(`${subject} observes ${callResolutionCount} function, ${methodResolutionCount} method, and ${constructorResolutionCount} constructor stage-0 Z resolutions`);
+    console.log(`${subject} observes ${aggregateResolutionCount} aggregate, ${fieldResolutionCount} field, and ${enumVariantResolutionCount} enum-variant stage-0 Z resolutions`);
   }
   if (timings) {
     const cacheState = run.boundary.cacheHit ? "cache hit" : "cache miss; stage-0 compile + native build included";

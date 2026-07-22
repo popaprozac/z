@@ -102,6 +102,9 @@ test("loads explicit Z exports through selective and namespace module imports", 
   assert.equal(analysis.nativeCallResolutionCount, 0);
   assert.equal(analysis.nativeMethodResolutionCount, 0);
   assert.equal(analysis.nativeConstructorResolutionCount, 0);
+  assert.equal(analysis.nativeAggregateResolutionCount, 0);
+  assert.equal(analysis.nativeFieldResolutionCount, 0);
+  assert.equal(analysis.nativeEnumVariantResolutionCount, 0);
   assert.equal(analysis.nativeFrontendParityMilliseconds, null);
   assert.equal(analysis.sourceModuleBatch.entryFileName, example);
   assert.deepEqual(
@@ -170,9 +173,16 @@ test("attaches native frontend evidence after authoritative stage-0 analysis", (
       }
     }
 
+    enum CounterState {
+      active Counter,
+      empty,
+    }
+
     function main(): i32 {
       const counter = Counter.zero();
       const session = new Session(2);
+      const active = CounterState.active(Counter({ value: 1 }));
+      const empty = CounterState.empty;
       return counter.plus(40) + session.identifier();
     }
   `, callableFile, {
@@ -181,6 +191,9 @@ test("attaches native frontend evidence after authoritative stage-0 analysis", (
   assert.equal(callable.nativeCallResolutionCount, 0);
   assert.equal(callable.nativeMethodResolutionCount, 3);
   assert.equal(callable.nativeConstructorResolutionCount, 1);
+  assert.equal(callable.nativeAggregateResolutionCount, 2);
+  assert.equal(callable.nativeFieldResolutionCount, 6);
+  assert.equal(callable.nativeEnumVariantResolutionCount, 2);
 
   assert.throws(
     () => analyzeSource(source, example, {
@@ -4723,6 +4736,7 @@ test("resolves a canonical module graph directly from native Z ASTs", () => {
   );
   assert.match(ordinaryCheck.stdout, /native frontend shadow compiler index matches \d+ binding\/signature queries/);
   assert.match(ordinaryCheck.stdout, /native frontend shadow observes \d+ function, \d+ method, and \d+ constructor stage-0 Z resolutions/);
+  assert.match(ordinaryCheck.stdout, /native frontend shadow observes \d+ aggregate, \d+ field, and \d+ enum-variant stage-0 Z resolutions/);
   assert.match(ordinaryCheck.stdout, /native frontend shadow timing \(3 modules, cache hit\)/);
   assert.match(ordinaryCheck.stdout, /main\.zs: ok/);
 

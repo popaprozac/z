@@ -49,6 +49,9 @@ export type AnalyzedSource = {
   readonly nativeCallResolutionCount: number;
   readonly nativeMethodResolutionCount: number;
   readonly nativeConstructorResolutionCount: number;
+  readonly nativeAggregateResolutionCount: number;
+  readonly nativeFieldResolutionCount: number;
+  readonly nativeEnumVariantResolutionCount: number;
   readonly nativeFrontendParityMilliseconds: number | null;
 };
 
@@ -126,6 +129,9 @@ export function analyzeSource(source: string, fileName: string, options: Analysi
     nativeCallResolutionCount: nativeCallShadow?.functionCount() ?? 0,
     nativeMethodResolutionCount: nativeCallShadow?.methodCount() ?? 0,
     nativeConstructorResolutionCount: nativeCallShadow?.constructorCount() ?? 0,
+    nativeAggregateResolutionCount: nativeCallShadow?.aggregateCount() ?? 0,
+    nativeFieldResolutionCount: nativeCallShadow?.fieldCount() ?? 0,
+    nativeEnumVariantResolutionCount: nativeCallShadow?.enumVariantCount() ?? 0,
     nativeFrontendParityMilliseconds,
   };
 }

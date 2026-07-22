@@ -411,6 +411,14 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    result, and error contract. The check report keeps function, method, and
    constructor resolution counts separate so this live migration surface remains
    measurable instead of disappearing inside whole-graph parity.
+   The same live shadow now resolves struct and synthesized-class aggregate
+   construction, every Z field selected by construction or member access, and
+   payload-bearing or payload-free enum variant construction. Aggregate checks
+   retain struct/class identity plus custom constructor/deinitializer state;
+   field checks retain source type, visibility, and readonly state; enum checks
+   retain exact payload type. Separate aggregate, field, and enum-variant counts
+   make this second expression-level migration tier visible in ordinary native
+   checks, including ownership-bearing enum payloads and ARC class fields.
    Native failures are buffered: a stage-zero error remains authoritative, and a
    native error surfaces only after stage zero succeeds. Prepared-library invocation lives in a
    reusable native-frontend service rather than the CLI. Native checks therefore

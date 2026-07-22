@@ -116,10 +116,30 @@ export type SemanticConstructorCallResolution = {
   readonly aggregate: StructDeclaration;
 };
 
+export type SemanticAggregateConstructionResolution = {
+  readonly location: SourceLocation;
+  readonly declaration: StructDeclaration;
+};
+
+export type SemanticFieldResolution = {
+  readonly location: SourceLocation;
+  readonly aggregate: StructDeclaration;
+  readonly field: StructDeclaration["fields"][number];
+};
+
+export type SemanticEnumVariantResolution = {
+  readonly location: SourceLocation;
+  readonly enumeration: EnumDeclaration;
+  readonly variant: EnumDeclaration["variants"][number];
+};
+
 export type SemanticObserver = {
   readonly onFunctionCall?: (resolution: SemanticFunctionCallResolution) => void;
   readonly onMethodCall?: (resolution: SemanticMethodCallResolution) => void;
   readonly onConstructorCall?: (resolution: SemanticConstructorCallResolution) => void;
+  readonly onAggregateConstruction?: (resolution: SemanticAggregateConstructionResolution) => void;
+  readonly onFieldResolution?: (resolution: SemanticFieldResolution) => void;
+  readonly onEnumVariantResolution?: (resolution: SemanticEnumVariantResolution) => void;
 };
 
 type ValueType = string | "unknown" | "never";
@@ -3515,11 +3535,17 @@ function inferExpressionInner(
         actual = contextualCStringLiteral(fieldType, initializer.expression, state) ?? actual;
         requireAssignable(fieldType, actual, initializer.expression, fileName, state.foreignNamedTypes, state.numericLiteralTypes);
         consumeOwnedValue(initializer.expression, fieldType, locals, structs, enums, fileName, state);
+        if (declaration && "type" in field) {
+          state.observer?.onFieldResolution?.({ location: initializer.location, aggregate: declaration, field });
+        }
       }
       const expectedFields = declaration?.fields ?? (foreignDeclaration?.kind === "record" ? foreignDeclaration.fields : []);
       const missing = expectedFields.find((field) => !provided.has(field.name));
       if (missing) {
         throw new DiagnosticError(fileName, expression.location, `missing field ${JSON.stringify(missing.name)} when constructing ${JSON.stringify(expression.typeName)}`);
+      }
+      if (declaration) {
+        state.observer?.onAggregateConstruction?.({ location: expression.location, declaration });
       }
       if (foreignDeclaration?.kind === "record") state.foreignExpressionTypes.set(expression.location.offset, expression.typeName);
       return expression.typeName;
@@ -3586,6 +3612,7 @@ function inferExpressionInner(
       const payloadView = parseViewType(variant.payload.name);
       if (payloadView) {
         validateReceiverViewProjection(expression.payload, declaration.name, payloadView.target, locals, globals, structs, enums, fileName, state);
+        state.observer?.onEnumVariantResolution?.({ location: expression.location, enumeration: declaration, variant });
         return declaration.name;
       }
       let actual = expression.payload.kind === "objectExpression"
@@ -3594,6 +3621,7 @@ function inferExpressionInner(
       actual = contextualCStringLiteral(variant.payload.name, expression.payload, state) ?? actual;
       requireAssignable(variant.payload.name, actual, expression.payload, fileName, state.foreignNamedTypes, state.numericLiteralTypes);
       consumeOwnedValue(expression.payload, variant.payload.name, locals, structs, enums, fileName, state);
+      state.observer?.onEnumVariantResolution?.({ location: expression.location, enumeration: declaration, variant });
       return declaration.name;
     }
     case "executorPlacement":
@@ -3760,6 +3788,7 @@ function inferExpressionInner(
           const variant = enumDeclaration.variants.find((candidate) => candidate.name === expression.property);
           if (!variant) throw new DiagnosticError(fileName, expression.location, `enum ${JSON.stringify(enumDeclaration.name)} has no variant ${JSON.stringify(expression.property)}`);
           if (variant.payload) throw new DiagnosticError(fileName, expression.location, "payload variant must be called with a value");
+          state.observer?.onEnumVariantResolution?.({ location: expression.location, enumeration: enumDeclaration, variant });
           return enumDeclaration.name;
         }
       }
@@ -3847,6 +3876,7 @@ function inferExpressionInner(
         if (field.visibility === "private" && state.activeReceiver !== declaration.name) {
           throw new DiagnosticError(fileName, expression.location, `field ${JSON.stringify(field.name)} is private to class ${JSON.stringify(declaration.name)}`);
         }
+        state.observer?.onFieldResolution?.({ location: expression.location, aggregate: declaration, field });
         return field.type.name;
       }
       const method = declaration.methods.find((candidate) => candidate.name === expression.property);
@@ -4287,6 +4317,7 @@ function inferExpressionInner(
               const payloadView = parseViewType(variant.payload.name);
               if (payloadView) {
                 validateReceiverViewProjection(argument, enumDeclaration.name, payloadView.target, locals, globals, structs, enums, fileName, state);
+                state.observer?.onEnumVariantResolution?.({ location: expression.location, enumeration: enumDeclaration, variant });
                 return enumDeclaration.name;
               }
               const actual = argument.kind === "objectExpression"
@@ -4295,6 +4326,7 @@ function inferExpressionInner(
               requireAssignable(variant.payload.name, actual, expression.arguments[0], fileName, state.foreignNamedTypes, state.numericLiteralTypes);
               consumeOwnedValue(expression.arguments[0], variant.payload.name, locals, structs, enums, fileName, state);
             }
+            state.observer?.onEnumVariantResolution?.({ location: expression.location, enumeration: enumDeclaration, variant });
             return enumDeclaration.name;
           }
         }

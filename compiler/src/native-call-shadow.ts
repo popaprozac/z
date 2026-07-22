@@ -1,4 +1,5 @@
-import type { FunctionDeclaration, StructDeclaration } from "./ast.ts";
+import type { EnumDeclaration, FunctionDeclaration, StructDeclaration } from "./ast.ts";
+import { canonicalTypeName } from "./canonical-type-name.ts";
 import type { SourceModuleBatch } from "./modules.ts";
 import type { NativeSemanticIndex } from "./native-semantic-index.ts";
 import {
@@ -13,6 +14,9 @@ export type NativeCallShadow = {
   readonly functionCount: () => number;
   readonly methodCount: () => number;
   readonly constructorCount: () => number;
+  readonly aggregateCount: () => number;
+  readonly fieldCount: () => number;
+  readonly enumVariantCount: () => number;
 };
 
 export function createNativeCallShadow(
@@ -21,6 +25,7 @@ export function createNativeCallShadow(
 ): NativeCallShadow {
   const sourceFunctions = new Map<string, { readonly modulePath: string; readonly declaration: FunctionDeclaration }>();
   const sourceAggregates = new Map<string, { readonly modulePath: string; readonly declaration: StructDeclaration }>();
+  const sourceEnums = new Map<string, { readonly modulePath: string; readonly declaration: EnumDeclaration }>();
   const modulePaths = new Set<string>();
   for (const module of sourceBatch.modules) {
     modulePaths.add(module.fileName);
@@ -36,11 +41,20 @@ export function createNativeCallShadow(
         declaration,
       });
     }
+    for (const declaration of module.program.enums) {
+      sourceEnums.set(definitionKey(module.fileName, declaration), {
+        modulePath: module.fileName,
+        declaration,
+      });
+    }
   }
 
   let functions = 0;
   let methods = 0;
   let constructors = 0;
+  let aggregates = 0;
+  let fields = 0;
+  let enumVariants = 0;
   const observer: SemanticObserver = {
     onFunctionCall: ({ location, declaration }) => {
       const definitionPath = declaration.location.fileName;
@@ -104,13 +118,82 @@ export function createNativeCallShadow(
       }
       constructors += 1;
     },
+    onAggregateConstruction: ({ location, declaration }) => {
+      const source = sourceAggregate(sourceAggregates, modulePaths, declaration);
+      if (!source) return;
+      const native = index.symbol(source.modulePath, source.declaration.name);
+      if (
+        !native
+        || native.kind !== source.declaration.kind
+        || !native.typeSignature
+        || native.typeSignature.customConstructor !== Boolean(source.declaration.constructor)
+        || native.typeSignature.customDeinit !== Boolean(source.declaration.deinitializer)
+      ) {
+        throw new Error(
+          `native semantic shadow aggregate mismatch for ${JSON.stringify(source.declaration.name)} constructed at ${callSite(location, sourceBatch)}`,
+        );
+      }
+      aggregates += 1;
+    },
+    onFieldResolution: ({ location, aggregate, field }) => {
+      const source = sourceAggregate(sourceAggregates, modulePaths, aggregate);
+      if (!source) return;
+      const sourceField = source.declaration.fields.find((candidate) => candidate.name === field.name);
+      const native = index.symbol(source.modulePath, source.declaration.name);
+      const nativeField = native?.typeSignature?.fields.find((candidate) => candidate.name === field.name);
+      if (
+        !native
+        || (native.kind !== "struct" && native.kind !== "class")
+        || !sourceField
+        || !nativeField
+        || nativeField.typeName !== canonicalTypeName(sourceField.type.name)
+        || nativeField.visibility !== sourceField.visibility
+        || nativeField.readonlyField !== sourceField.readonly
+      ) {
+        throw new Error(
+          `native semantic shadow field mismatch for ${JSON.stringify(`${source.declaration.name}.${field.name}`)} resolved at ${callSite(location, sourceBatch)}`,
+        );
+      }
+      fields += 1;
+    },
+    onEnumVariantResolution: ({ location, enumeration, variant }) => {
+      const source = sourceEnum(sourceEnums, modulePaths, enumeration);
+      if (!source) return;
+      const sourceVariant = source.declaration.variants.find((candidate) => candidate.name === variant.name);
+      const native = index.symbol(source.modulePath, source.declaration.name);
+      const nativeVariant = native?.typeSignature?.variants.find((candidate) => candidate.name === variant.name);
+      if (
+        native?.kind !== "enum"
+        || !sourceVariant
+        || !nativeVariant
+        || nativeVariant.payloadType !== (sourceVariant.payload ? canonicalTypeName(sourceVariant.payload.name) : null)
+      ) {
+        throw new Error(
+          `native semantic shadow enum variant mismatch for ${JSON.stringify(`${source.declaration.name}.${variant.name}`)} resolved at ${callSite(location, sourceBatch)}`,
+        );
+      }
+      enumVariants += 1;
+    },
   };
   return {
     observer,
     functionCount: () => functions,
     methodCount: () => methods,
     constructorCount: () => constructors,
+    aggregateCount: () => aggregates,
+    fieldCount: () => fields,
+    enumVariantCount: () => enumVariants,
   };
+}
+
+function sourceEnum(
+  sourceEnums: ReadonlyMap<string, { readonly modulePath: string; readonly declaration: EnumDeclaration }>,
+  modulePaths: ReadonlySet<string>,
+  declaration: EnumDeclaration,
+): { readonly modulePath: string; readonly declaration: EnumDeclaration } | null {
+  const definitionPath = declaration.location.fileName;
+  if (!definitionPath || !modulePaths.has(definitionPath)) return null;
+  return sourceEnums.get(definitionKey(definitionPath, declaration)) ?? null;
 }
 
 function sourceAggregate(
@@ -127,6 +210,6 @@ function callSite(location: { readonly fileName?: string; readonly line: number;
   return `${location.fileName ?? sourceBatch.entryFileName}:${location.line}:${location.column}`;
 }
 
-function definitionKey(modulePath: string, declaration: FunctionDeclaration | StructDeclaration): string {
+function definitionKey(modulePath: string, declaration: FunctionDeclaration | StructDeclaration | EnumDeclaration): string {
   return `${modulePath}\0${declaration.location.line}\0${declaration.location.column}`;
 }
