@@ -4790,6 +4790,21 @@ function inferSignatureCallType(
           tree.nodes[nodeIndex].column
         );
       }
+      let argumentBindings = copyValueBindings(bindings);
+      if (signature.typeParameters.length == 0) {
+        const expectedArgumentType = substituteGenericType(
+          signature.parameterTypes[argumentIndex],
+          initialSubstitutions
+        );
+        const expectedBinding = contextualExpectedBindingName(
+          tree.nodes[nodeIndex].offset
+        );
+        addValueBinding(
+          inout argumentBindings,
+          expectedBinding,
+          expectedArgumentType
+        );
+      }
       const argumentType = try inferExpressionNodeType(
         module,
         modules,
@@ -4797,9 +4812,10 @@ function inferSignatureCallType(
         arena,
         tree,
         nodeIndex,
-        inout bindings,
+        inout argumentBindings,
         inout callResolutions
       );
+      copyBindingFlowStates(inout bindings, argumentBindings);
       if (
         mode == "value"
         && !stringStartsWith(signature.parameterTypes[argumentIndex], "Slice<")
@@ -4994,22 +5010,41 @@ function inferUnclassifiedCallArguments(
   let argumentTypes = Array<String>();
   let argumentIndex: usize = 1;
   while (argumentIndex < children.length) {
+    const nodeIndex = children[argumentIndex];
     const argumentType = try inferExpressionNodeType(
       module,
       modules,
       moduleIndex,
       arena,
       tree,
-      children[argumentIndex],
+      nodeIndex,
       inout bindings,
       inout callResolutions
     );
     try requireSettledExpressionType(
       module,
       tree,
-      children[argumentIndex],
+      nodeIndex,
       argumentType
     );
+    if (
+      tree.nodes[nodeIndex].kind == ExpressionKind.argumentReferenceExpression
+      && tree.nodes[nodeIndex].value == "out"
+      && tree.nodes[nodeIndex].children.length == 1
+    ) {
+      const bindingIndex = tree.nodes[nodeIndex].children[0];
+      const bindingName = identifierLookupName(tree.nodes[bindingIndex].value);
+      setValueBindingInitialization(
+        inout bindings,
+        bindingName,
+        NativeInitializationState.initialized
+      );
+      setValueBindingOwnership(
+        inout bindings,
+        bindingName,
+        NativeOwnershipState.available
+      );
+    }
     argumentTypes.push(argumentType);
     argumentIndex = argumentIndex + 1;
   }
@@ -5018,30 +5053,27 @@ function inferUnclassifiedCallArguments(
 function nativeClosureFunctionType(
   in tree: ExpressionTree,
   index: usize,
+  in parameterModes: Array<String>,
+  in parameterTypes: Array<String>,
   in returnType: String
 ): String {
   let output = TextBuffer();
   output.append("__z_native_function:");
   output.append("(");
   let first = true;
+  let parameterIndex: usize = 0;
   for (const child of tree.nodes[index].children) {
     if (tree.nodes[child].kind != ExpressionKind.closureParameterExpression) continue;
     if (!first) output.append(", ");
     first = false;
-    let mode = "value";
-    let typeName = "";
-    if (tree.nodes[child].labels.length > 0) {
-      mode = tree.nodes[child].labels[0].copyBytes(
-        0,
-        tree.nodes[child].labels[0].byteLength
-      );
-    }
-    if (tree.nodes[child].labels.length > 1) {
-      typeName = tree.nodes[child].labels[1].copyBytes(
-        0,
-        tree.nodes[child].labels[1].byteLength
-      );
-    }
+    const mode = parameterModes[parameterIndex].copyBytes(
+      0,
+      parameterModes[parameterIndex].byteLength
+    );
+    const typeName = parameterTypes[parameterIndex].copyBytes(
+      0,
+      parameterTypes[parameterIndex].byteLength
+    );
     if (mode != "value") {
       output.append(mode);
       output.append(" ");
@@ -5049,6 +5081,7 @@ function nativeClosureFunctionType(
     output.append(tree.nodes[child].value);
     output.append(": ");
     output.append(typeName);
+    parameterIndex = parameterIndex + 1;
   }
   output.append(") => ");
   output.append(returnType);
@@ -5944,8 +5977,51 @@ function inferExpressionNodeType(
         tree.nodes[index].column
       );
     }
+    let contextualParameterModes = Array<String>();
+    let contextualParameterTypes = Array<String>();
+    const contextualType = contextualExpectedType(bindings, tree, index);
+    match (nativeFunctionSignature(contextualType)) {
+      some(signature) => {
+        let closureParameterCount: usize = 0;
+        for (const child of children) {
+          if (tree.nodes[child].kind == ExpressionKind.closureParameterExpression) {
+            closureParameterCount = closureParameterCount + 1;
+          }
+        }
+        if (closureParameterCount != signature.parameterTypes.length) {
+          throw resolutionError(
+            ModuleResolveErrorKind.typeMismatch,
+            module.path,
+            `expected ${signature.parameterTypes.length} closure parameter(s), found ${closureParameterCount}`,
+            tree.nodes[index].line,
+            tree.nodes[index].column
+          );
+        }
+        for (const mode of signature.parameterModes) {
+          contextualParameterModes.push(mode.copyBytes(0, mode.byteLength));
+        }
+        for (const parameterType of signature.parameterTypes) {
+          contextualParameterTypes.push(parameterType.copyBytes(0, parameterType.byteLength));
+        }
+        if (returnType.byteLength == 0) {
+          returnType = signature.returnType.copyBytes(0, signature.returnType.byteLength);
+        } else if (!equivalentTypes(modules, moduleIndex, returnType, signature.returnType)) {
+          throw resolutionError(
+            ModuleResolveErrorKind.typeMismatch,
+            module.path,
+            `closure return type expects ${signature.returnType}, found ${returnType}`,
+            tree.nodes[index].line,
+            tree.nodes[index].column
+          );
+        }
+      }
+      none => {}
+    }
     let localNames = Array<String>();
     let parameterNames = Array<String>();
+    let resolvedParameterModes = Array<String>();
+    let resolvedParameterTypes = Array<String>();
+    let parameterIndex: usize = 0;
     for (const child of children) {
       if (tree.nodes[child].kind != ExpressionKind.closureParameterExpression) continue;
       const parameterName = tree.nodes[child].value.copyBytes(
@@ -5963,10 +6039,47 @@ function inferExpressionNodeType(
       }
       parameterNames.push(parameterName.copyBytes(0, parameterName.byteLength));
       localNames.push(parameterName.copyBytes(0, parameterName.byteLength));
-      if (
-        tree.nodes[child].labels.length < 2
-        || tree.nodes[child].labels[1].byteLength == 0
-      ) {
+      let mode = tree.nodes[child].labels[0].copyBytes(
+        0,
+        tree.nodes[child].labels[0].byteLength
+      );
+      let parameterType = tree.nodes[child].labels[1].copyBytes(
+        0,
+        tree.nodes[child].labels[1].byteLength
+      );
+      if (parameterIndex < contextualParameterModes.length) {
+        const expectedMode = contextualParameterModes[parameterIndex].copyBytes(
+          0,
+          contextualParameterModes[parameterIndex].byteLength
+        );
+        if (mode != expectedMode) {
+          let capability = `the "${expectedMode}" capability`;
+          if (expectedMode == "value") capability = "no capability";
+          throw resolutionError(
+            ModuleResolveErrorKind.typeMismatch,
+            module.path,
+            `closure parameter "${parameterName}" requires ${capability} from its destination function type`,
+            tree.nodes[child].line,
+            tree.nodes[child].column
+          );
+        }
+        const expectedParameterType = contextualParameterTypes[parameterIndex].copyBytes(
+          0,
+          contextualParameterTypes[parameterIndex].byteLength
+        );
+        if (parameterType.byteLength == 0) {
+          parameterType = expectedParameterType;
+        } else if (!equivalentTypes(modules, moduleIndex, parameterType, expectedParameterType)) {
+          throw resolutionError(
+            ModuleResolveErrorKind.typeMismatch,
+            module.path,
+            `closure parameter "${parameterName}" expects ${expectedParameterType}, found ${parameterType}`,
+            tree.nodes[child].line,
+            tree.nodes[child].column
+          );
+        }
+      }
+      if (parameterType.byteLength == 0) {
         throw resolutionError(
           ModuleResolveErrorKind.typeMismatch,
           module.path,
@@ -5975,6 +6088,9 @@ function inferExpressionNodeType(
           tree.nodes[child].column
         );
       }
+      resolvedParameterModes.push(mode);
+      resolvedParameterTypes.push(parameterType);
+      parameterIndex = parameterIndex + 1;
     }
     let captures = Array<String>();
     if (bodyKind == "block") {
@@ -6061,19 +6177,20 @@ function inferExpressionNodeType(
         }
       }
     }
+    parameterIndex = 0;
     for (const child of children) {
       if (tree.nodes[child].kind != ExpressionKind.closureParameterExpression) continue;
       const parameterName = tree.nodes[child].value.copyBytes(
         0,
         tree.nodes[child].value.byteLength
       );
-      const mode = tree.nodes[child].labels[0].copyBytes(
+      const mode = resolvedParameterModes[parameterIndex].copyBytes(
         0,
-        tree.nodes[child].labels[0].byteLength
+        resolvedParameterModes[parameterIndex].byteLength
       );
-      const parameterType = tree.nodes[child].labels[1].copyBytes(
+      const parameterType = resolvedParameterTypes[parameterIndex].copyBytes(
         0,
-        tree.nodes[child].labels[1].byteLength
+        resolvedParameterTypes[parameterIndex].byteLength
       );
       if (mode == "inout") {
         addBorrowedValueBinding(inout closureBindings, parameterName, parameterType, true);
@@ -6089,6 +6206,7 @@ function inferExpressionNodeType(
       } else {
         addValueBinding(inout closureBindings, parameterName, parameterType);
       }
+      parameterIndex = parameterIndex + 1;
     }
     addValueBinding(inout closureBindings, "__z_native_function_name", "closure");
     addValueBinding(inout closureBindings, "__z_native_return_type", returnType);
@@ -6141,7 +6259,13 @@ function inferExpressionNodeType(
         );
       }
     }
-    return nativeClosureFunctionType(tree, index, returnType);
+    return nativeClosureFunctionType(
+      tree,
+      index,
+      resolvedParameterModes,
+      resolvedParameterTypes,
+      returnType
+    );
   }
   if (kind == ExpressionKind.callExpression && children.length > 0) {
     const calleeIndex = children[0];

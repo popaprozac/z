@@ -2494,6 +2494,14 @@ test("builds the Z Notes AppKit and sqlite3 application skeleton", () => {
   assert.match(artifact.source, /\[\[NSWindow alloc\] initWithContentRect/);
   assert.match(artifact.source, /Z_Option_usize_some/);
 
+  const nativeCheck = spawnSync(
+    process.execPath,
+    [cli, "check", application, "--native-frontend"],
+    { encoding: "utf8" },
+  );
+  assert.equal(nativeCheck.status, 0, nativeCheck.stderr);
+  assert.match(nativeCheck.stdout, /native frontend hybrid matches 3 modules, 2 local edges/);
+
   const smoke = resolve(projectRoot, "examples/applications/z-notes/smoke.zs");
   const result = spawnSync(process.execPath, [cli, "run", smoke], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
@@ -4935,6 +4943,34 @@ test("resolves a canonical module graph directly from native Z ASTs", () => {
   assert.equal(genericErrorEvidence.status, 0, genericErrorEvidence.stderr);
   assert.match(genericErrorEvidence.stdout, /native frontend hybrid exports 1 concrete generic call contract/);
   assert.match(genericErrorEvidence.stdout, /native frontend hybrid uses 1 function, 0 method, and 0 constructor native-authoritative contracts/);
+
+  const contextualClosureMain = resolve(invalidDirectory, "contextual-closure-main.zs");
+  const contextualClosureModel = resolve(invalidDirectory, "contextual-closure-model.zs");
+  writeFileSync(
+    contextualClosureModel,
+    "export struct Note { id: i32; }\n"
+      + "export struct Store {\n"
+      + "  function visit(in operation: (in note: Note) => i32): i32 {\n"
+      + "    const note = Note({ id: 42 });\n"
+      + "    return operation(note);\n"
+      + "  }\n"
+      + "}\n",
+  );
+  writeFileSync(
+    contextualClosureMain,
+    "import { Store } from \"./contextual-closure-model.zs\";\n"
+      + "function main(): i32 {\n"
+      + "  const store = Store({});\n"
+      + "  return store.visit((in note) => { return note.id; });\n"
+      + "}\n",
+  );
+  const contextualClosure = spawnSync(
+    process.execPath,
+    [cli, "check", contextualClosureMain, "--native-frontend"],
+    { encoding: "utf8" },
+  );
+  assert.equal(contextualClosure.status, 0, contextualClosure.stderr);
+  assert.match(contextualClosure.stdout, /native frontend hybrid uses 0 function, 1 method, and 0 constructor native-authoritative contracts/);
 
   const invalidMain = resolve(invalidDirectory, "main.zs");
   writeFileSync(invalidMain, `import { hidden } from "./values.zs"; function main(): i32 { return hidden(); }`);

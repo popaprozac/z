@@ -39,7 +39,9 @@ semantic analysis and code generation; the frontend itself is native Z code.
   parameter capabilities/types, and result types. Local closures preserve
   explicit parameter capabilities/types and inferred or explicit result types,
   validate expression and block bodies in nested scopes, and route local calls
-  through the ordinary capability/type checker. Capture discovery distinguishes
+  through the ordinary capability/type checker. Settled local, imported, and
+  method parameter contracts contextually supply omitted closure parameter and
+  block-result types; capabilities remain explicit and must match. Capture discovery distinguishes
   parameters and closure locals from outer bindings: borrowed cleanup-bearing
   captures become conservative loans, while `move` consumes uniquely owned
   captures and copies ARC-managed identities. It also covers indexing,
@@ -141,7 +143,8 @@ constructor-inference sites. Direct generic function and method calls may infer
 otherwise-missing result parameters from a local annotation, assignment target,
 or enclosing function return contract. Opaque expression spans, contextual
 inference through nested calls and value-producing branches, generic trait
-declarations, async/foreign call effects, contextual untyped closure parameters,
+declarations, async/foreign call effects, contextual closure types whose generic
+parameters are not settled before argument inference,
 escaping closure-environment validation, borrow last-use release, and complete
 recursive ownership lowering remain stage-zero work.
 The reported native interval therefore does more semantic work than the

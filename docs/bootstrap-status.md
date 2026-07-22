@@ -492,7 +492,8 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    bodies may call only methods supplied by their declared traits. Contextual
    inference through nested calls and value-producing branches, foreign/intrinsic
    method lookup, generic trait declarations, async/foreign call effects,
-   contextual untyped closure parameters, escaping closure-environment validation,
+   contextual closure types whose generic parameters are not settled before
+   argument inference, escaping closure-environment validation,
    precise closure borrow last-use release, remaining receiver-path capability
    enforcement, and full recursive ownership contexts remain stage-zero work.
    Template literals now

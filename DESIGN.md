@@ -1615,8 +1615,12 @@ ported independently rather than translated as one monolith.
    Their calls reuse ordinary capability and argument checking. Native capture
    discovery applies conservative loans to borrowed cleanup-bearing values and
    consumes unique owners for `move`, while ARC identities retain copy
-   semantics. Contextual untyped parameters, escaping closure environments, and
-   precise last-use release of closure borrows remain later layers. Native direct/imported function
+   semantics. A settled destination function contract from a local, direct call,
+   imported call, or Z method now supplies omitted closure parameter types and
+   block result types while retaining explicit capability checking. Generic
+   destinations whose function shape is not settled before argument inference,
+   escaping closure environments, and precise last-use release of closure borrows
+   remain later layers. Native direct/imported function
    and Z-method calls now consume their graph-carried parameter modes: `out` and
    `inout` require matching explicit markers and mutable bindings, `inout`
    requires initialized storage, invalid explicit markers on value/`in`
