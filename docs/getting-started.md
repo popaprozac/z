@@ -69,7 +69,9 @@ the user-facing diagnostics first; after it succeeds, the native frontend
 receives the same canonical source-module batch, and its validated semantic
 graph must match before the check can succeed. The compiler indexes native local,
 selective-import, and namespace symbols from that graph; shadow parity reuses the
-batch's existing stage-0 ASTs rather than parsing each module again.
+batch's existing stage-0 ASTs rather than parsing each module again. It also
+executes and checks every indexed binding/signature query; `--timings` reports
+that compiler-owned parity separately from native execution.
 
 ## Source modules
 

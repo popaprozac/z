@@ -16,7 +16,8 @@ import { generateAsyncC } from "./async-codegen-c.ts";
 import { parseForeignDeclarationContracts } from "./foreign-declarations.ts";
 import type { DiagnosticError } from "./diagnostics.ts";
 import type { Stage1ModuleGraph } from "./self-hosting.ts";
-import { NativeSemanticIndex } from "./native-semantic-index.ts";
+import type { NativeSemanticIndex } from "./native-semantic-index.ts";
+import { validateNativeFrontendSemantics } from "./native-semantic-parity.ts";
 
 export type NativeLanguage = "c" | "objective-c" | "c++" | "objective-c++";
 
@@ -43,6 +44,8 @@ export type AnalyzedSource = {
   readonly moduleIncludeDirectories: readonly string[];
   readonly nativeFrontendGraph: Stage1ModuleGraph | null;
   readonly nativeSemanticIndex: NativeSemanticIndex | null;
+  readonly nativeSemanticQueryCount: number;
+  readonly nativeFrontendParityMilliseconds: number | null;
 };
 
 export type AnalysisOptions = {
@@ -78,9 +81,11 @@ export function analyzeSource(source: string, fileName: string, options: Analysi
   }
   const semanticInfo = analyze(program, fileName, foreignModules, typeDisplayNames, options.requireMain ?? true, projectBuild.deploymentTarget);
   const nativeFrontendGraph = options.nativeFrontendResolver?.(linked.sourceBatch) ?? null;
-  const nativeSemanticIndex = nativeFrontendGraph
-    ? new NativeSemanticIndex(nativeFrontendGraph, linked.sourceBatch)
+  const parityStarted = nativeFrontendGraph ? performance.now() : null;
+  const nativeEvidence = nativeFrontendGraph
+    ? validateNativeFrontendSemantics(linked.sourceBatch, nativeFrontendGraph)
     : null;
+  const nativeFrontendParityMilliseconds = parityStarted === null ? null : performance.now() - parityStarted;
   return {
     sourceProgram,
     program,
@@ -92,7 +97,9 @@ export function analyzeSource(source: string, fileName: string, options: Analysi
     sourceModuleBatch: linked.sourceBatch,
     moduleIncludeDirectories: linked.includeDirectories,
     nativeFrontendGraph,
-    nativeSemanticIndex,
+    nativeSemanticIndex: nativeEvidence?.index ?? null,
+    nativeSemanticQueryCount: nativeEvidence?.queryCount ?? 0,
+    nativeFrontendParityMilliseconds,
   };
 }
 

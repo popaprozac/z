@@ -8,6 +8,7 @@ import { DiagnosticError, formatDiagnostic } from "../compiler/src/diagnostics.t
 import { ApiNoteConflictError, mergeApiNotes } from "../compiler/src/foreign-api-notes.ts";
 import { normalizeForeignContracts } from "../compiler/src/foreign-contracts.ts";
 import type { ForeignFunctionDeclaration } from "../compiler/src/foreign-ir.ts";
+import { buildStage0ModuleGraph } from "../compiler/src/native-semantic-parity.ts";
 import {
   decodeStage1DeclarationStream,
   decodeStage1ModuleGraphStream,
@@ -97,6 +98,8 @@ test("loads explicit Z exports through selective and namespace module imports", 
   assert.equal(analysis.sourceModules.size, 3);
   assert.equal(analysis.nativeFrontendGraph, null);
   assert.equal(analysis.nativeSemanticIndex, null);
+  assert.equal(analysis.nativeSemanticQueryCount, 0);
+  assert.equal(analysis.nativeFrontendParityMilliseconds, null);
   assert.equal(analysis.sourceModuleBatch.entryFileName, example);
   assert.deepEqual(
     analysis.sourceModuleBatch.modules.map((module) => basename(module.fileName)),
@@ -121,72 +124,7 @@ test("attaches native frontend evidence after authoritative stage-0 analysis", (
   const analysis = analyzeSource(source, example, {
     nativeFrontendResolver: (sourceBatch) => {
       receivedModuleCount = sourceBatch.modules.length;
-      const indexByPath = new Map(sourceBatch.modules.map((module, index) => [module.fileName, index] as const));
-      return {
-        modules: sourceBatch.modules.map((module, index) => ({
-          path: module.fileName,
-          dependencies: [...module.dependencies.values()].map((path) => indexByPath.get(path)!),
-          symbols: index === 0 ? [
-            {
-              name: "geometry",
-              kind: "namespace",
-              exported: false,
-              targetModule: 1,
-              importedName: "./geometry.zs",
-              functionSignature: null,
-              typeSignature: null,
-              location: { offset: 0, line: 1, column: 1 },
-            },
-            {
-              name: "move",
-              kind: "imported",
-              exported: false,
-              targetModule: 1,
-              importedName: "translate",
-              functionSignature: null,
-              typeSignature: null,
-              location: { offset: 0, line: 1, column: 1 },
-            },
-          ] : index === 1 ? [
-            {
-              name: "translate",
-              kind: "function",
-              exported: true,
-              targetModule: null,
-              importedName: "translate",
-              functionSignature: {
-                asynchronous: false,
-                typeParameters: [],
-                parameterModes: ["in", "value", "value"],
-                parameterTypes: ["Point", "i32", "i32"],
-                returnType: "Point",
-                errorType: null,
-              },
-              typeSignature: null,
-              location: { offset: 0, line: 1, column: 1 },
-            },
-            {
-              name: "total",
-              kind: "function",
-              exported: true,
-              targetModule: null,
-              importedName: "total",
-              functionSignature: {
-                asynchronous: false,
-                typeParameters: [],
-                parameterModes: ["in"],
-                parameterTypes: ["Point"],
-                returnType: "i32",
-                errorType: null,
-              },
-              typeSignature: null,
-              location: { offset: 0, line: 1, column: 1 },
-            },
-          ] : [],
-        })),
-        dependencyOrder: [2, 1, 0],
-        entry: indexByPath.get(sourceBatch.entryFileName)!,
-      };
+      return buildStage0ModuleGraph(sourceBatch);
     },
   });
 
@@ -199,6 +137,18 @@ test("attaches native frontend evidence after authoritative stage-0 analysis", (
   assert.equal(moved?.declaration.functionSignature?.returnType, "Point");
   const total = analysis.nativeSemanticIndex?.resolveNamespaceMember(example, "geometry", "total");
   assert.equal(total?.declaration.functionSignature?.returnType, "i32");
+  assert.ok(analysis.nativeSemanticQueryCount > (analysis.nativeFrontendGraph?.modules.length ?? 0));
+  assert.ok((analysis.nativeFrontendParityMilliseconds ?? -1) >= 0);
+
+  assert.throws(
+    () => analyzeSource(source, example, {
+      nativeFrontendResolver: (sourceBatch) => ({
+        ...buildStage0ModuleGraph(sourceBatch),
+        dependencyOrder: [],
+      }),
+    }),
+    /native frontend module graph mismatch/,
+  );
 
   let resolverCalled = false;
   assert.throws(
@@ -4706,9 +4656,10 @@ test("resolves a canonical module graph directly from native Z ASTs", () => {
   );
   assert.equal(integrated.status, 0, integrated.stderr);
   assert.match(integrated.stdout, /stage-1 resolver matches 3 modules, 3 local edges, and 10 symbols \(math\.zs -> geometry\.zs -> main\.zs\)/);
+  assert.match(integrated.stdout, /stage-1 resolver compiler index matches \d+ binding\/signature queries/);
   assert.match(integrated.stdout, /host discovery \(file I\/O \+ stage-0 import parse\): \d+\.\d{2} ms/);
   assert.match(integrated.stdout, /native in-process \(FFI \+ lex \+ parse \+ resolve \+ symbols \+ signatures \+ names \+ types \+ expressions \+ encode\): \d+\.\d{2} ms/);
-  assert.match(integrated.stdout, /stage-0 parity \(reused AST \+ graph \+ symbols\): \d+\.\d{2} ms/);
+  assert.match(integrated.stdout, /compiler parity \+ semantic queries \(reused AST\): \d+\.\d{2} ms/);
 
   const ordinaryCheck = spawnSync(
     process.execPath,
@@ -4720,6 +4671,7 @@ test("resolves a canonical module graph directly from native Z ASTs", () => {
     ordinaryCheck.stdout,
     /main\.zs: native frontend shadow matches 3 modules, 3 local edges, and 10 symbols/,
   );
+  assert.match(ordinaryCheck.stdout, /native frontend shadow compiler index matches \d+ binding\/signature queries/);
   assert.match(ordinaryCheck.stdout, /native frontend shadow timing \(3 modules, cache hit\)/);
   assert.match(ordinaryCheck.stdout, /main\.zs: ok/);
 

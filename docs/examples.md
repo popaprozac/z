@@ -163,7 +163,9 @@ and cycles. Its first pressure fixture includes transitive `../` resolution and
 each failure shape. `z check --native-frontend` now reuses the ordinary
 analyzer's canonical batch, invokes that resolver through the reusable
 in-process boundary, and retains the validated graph as compiler-analysis
-evidence.
+evidence. Compiler-owned parity then checks the graph and exercises indexed
+local, selective-alias, and namespace-member signature queries; the CLI only
+reports the result and timings.
 The frontend remains stage-zero-compiled, while the example directory is now a
 small educational consumer rather than the implementation home.
 

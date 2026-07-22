@@ -5,15 +5,14 @@ import { basename, dirname, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import type { Expression, FunctionDeclaration, Program, SourceLocation, Statement } from "./ast.ts";
-import { parseDynamicArrayType, parseFixedArrayType, parseSliceType } from "./array-types.ts";
+import { canonicalTypeName } from "./canonical-type-name.ts";
 import { analyzeSource, check, compileToNative, type NativeArtifact } from "./compiler.ts";
 import { DiagnosticError, formatDiagnostic } from "./diagnostics.ts";
-import { parseFunctionType } from "./function-types.ts";
 import { parseGenericType } from "./generic-types.ts";
 import { lex, type Token } from "./lexer.ts";
-import { loadSourceModuleBatch, type SourceModuleBatch, type SourceModuleBatchModule } from "./modules.ts";
+import { loadSourceModuleBatch, type SourceModuleBatch } from "./modules.ts";
 import { parseWithNativeFrontendLibrary, resolveWithNativeFrontendLibrary } from "./native-frontend.ts";
-import { isNullableObjCTypeName, publicObjCTypeName } from "./objc-types.ts";
+import { validateNativeFrontendSemantics } from "./native-semantic-parity.ts";
 import { parse } from "./parser.ts";
 import { deploymentTargetFlags } from "./project.ts";
 import {
@@ -27,10 +26,8 @@ import {
   type Stage1ImportShape,
   type Stage1ModuleGraph,
   type Stage1ModuleSource,
-  type Stage1ModuleSymbol,
   type Stage1TypeShape,
 } from "./self-hosting.ts";
-import { parseViewType } from "./view-types.ts";
 
 const [command, inputArgument, ...trailingArguments] = process.argv.slice(2);
 const programArguments = trailingArguments[0] === "--" ? trailingArguments.slice(1) : trailingArguments;
@@ -64,15 +61,30 @@ if (!command || !inputArgument || !["check", "emit", "run", "self-host-lex", "se
         throw new Error("check --native-frontend currently requires a .zs source module");
       }
       const source = readFileSync(inputPath, "utf8");
-      const warnings = inputPath.endsWith(".zd")
-        ? check(source, inputPath)
-        : analyzeSource(source, inputPath, {
+      if (inputPath.endsWith(".zd")) {
+        for (const warning of check(source, inputPath)) console.error(formatDiagnostic(warning, source));
+      } else {
+        let nativeRun: Stage1ResolverRun | null = null;
+        const analysis = analyzeSource(source, inputPath, {
           requireMain: false,
           nativeFrontendResolver: nativeFrontend
-            ? (sourceBatch) => verifyStage1Resolver(inputPath, timings, "check-shadow", sourceBatch)
+            ? (sourceBatch) => {
+              nativeRun = runStage1Resolver(inputPath, sourceBatch);
+              return nativeRun.graph;
+            }
             : undefined,
-        }).semanticInfo.warnings;
-      for (const warning of warnings) console.error(formatDiagnostic(warning, source));
+        });
+        for (const warning of analysis.semanticInfo.warnings) console.error(formatDiagnostic(warning, source));
+        if (nativeRun) {
+          reportStage1Resolver(
+            nativeRun,
+            timings,
+            "check-shadow",
+            analysis.nativeFrontendParityMilliseconds ?? 0,
+            analysis.nativeSemanticQueryCount,
+          );
+        }
+      }
       console.log(`${inputPath}: ok`);
     } else {
       const source = readFileSync(inputPath, "utf8");
@@ -92,12 +104,21 @@ if (!command || !inputArgument || !["check", "emit", "run", "self-host-lex", "se
   }
 }
 
-function verifyStage1Resolver(
+type Stage1ResolverRun = {
+  readonly entryPath: string;
+  readonly sourceBatch: SourceModuleBatch;
+  readonly graph: Stage1ModuleGraph;
+  readonly boundary: PreparedStage1ParserLibrary;
+  readonly loadingMilliseconds: number;
+  readonly batchMilliseconds: number;
+  readonly executionMilliseconds: number;
+  readonly decodeMilliseconds: number;
+};
+
+function runStage1Resolver(
   inputPath: string,
-  timings: boolean,
-  presentation: "self-host-command" | "check-shadow" = "self-host-command",
   discoveredSourceBatch?: SourceModuleBatch,
-): Stage1ModuleGraph {
+): Stage1ResolverRun {
   const projectRoot = resolve(dirname(new URL(import.meta.url).pathname), "../..");
   const entryPath = realpathSync(inputPath);
   const loadingStarted = performance.now();
@@ -120,262 +141,53 @@ function verifyStage1Resolver(
   const nativeStream = resolveWithNativeFrontendLibrary(boundary.libraryPath, entryPath, batch);
   const executionMilliseconds = performance.now() - executionStarted;
   const decodeStarted = performance.now();
-  const stage1 = decodeStage1ModuleGraphStream(nativeStream);
+  const graph = decodeStage1ModuleGraphStream(nativeStream);
   const decodeMilliseconds = performance.now() - decodeStarted;
-  const stage0Started = performance.now();
-  const stage0 = stage0ModuleGraph(sourceBatch);
-  const stage0Milliseconds = performance.now() - stage0Started;
-  if (!sameModuleGraph(stage0, stage1)) {
-    throw new Error(`stage-1 module graph mismatch: stage 0 produced ${JSON.stringify(stage0)}, stage 1 produced ${JSON.stringify(stage1)}`);
-  }
-  const edges = stage1.modules.reduce((count, module) => count + module.dependencies.length, 0);
-  const symbols = stage1.modules.reduce((count, module) => count + module.symbols.length, 0);
-  const order = stage1.dependencyOrder.map((index) => basename(stage1.modules[index].path)).join(" -> ");
+  return {
+    entryPath,
+    sourceBatch,
+    graph,
+    boundary,
+    loadingMilliseconds,
+    batchMilliseconds,
+    executionMilliseconds,
+    decodeMilliseconds,
+  };
+}
+
+function reportStage1Resolver(
+  run: Stage1ResolverRun,
+  timings: boolean,
+  presentation: "self-host-command" | "check-shadow",
+  parityMilliseconds: number,
+  queryCount: number,
+): void {
+  const edges = run.graph.modules.reduce((count, module) => count + module.dependencies.length, 0);
+  const symbols = run.graph.modules.reduce((count, module) => count + module.symbols.length, 0);
+  const order = run.graph.dependencyOrder.map((index) => basename(run.graph.modules[index].path)).join(" -> ");
   const edgeLabel = edges === 1 ? "edge" : "edges";
   const symbolLabel = symbols === 1 ? "symbol" : "symbols";
   const subject = presentation === "check-shadow" ? "native frontend shadow" : "stage-1 resolver";
-  console.log(`${entryPath}: ${subject} matches ${stage1.modules.length} modules, ${edges} local ${edgeLabel}, and ${symbols} ${symbolLabel} (${order})`);
+  console.log(`${run.entryPath}: ${subject} matches ${run.graph.modules.length} modules, ${edges} local ${edgeLabel}, and ${symbols} ${symbolLabel} (${order})`);
+  console.log(`${subject} compiler index matches ${queryCount} binding/signature queries`);
   if (timings) {
-    const cacheState = boundary.cacheHit ? "cache hit" : "cache miss; stage-0 compile + native build included";
-    console.log(`${subject} timing (${stage1.modules.length} modules, ${cacheState})`);
-    console.log(`  boundary preparation: ${formatMilliseconds(boundary.prepareMilliseconds)}`);
-    console.log(`  host discovery (file I/O + stage-0 import parse): ${formatMilliseconds(loadingMilliseconds)}`);
-    console.log(`  host batch framing: ${formatMilliseconds(batchMilliseconds)}`);
-    console.log(`  native in-process (FFI + lex + parse + resolve + symbols + signatures + names + types + expressions + encode): ${formatMilliseconds(executionMilliseconds)}`);
-    console.log(`  protocol decode: ${formatMilliseconds(decodeMilliseconds)}`);
-    console.log(`  stage-0 parity (reused AST + graph + symbols): ${formatMilliseconds(stage0Milliseconds)}`);
+    const cacheState = run.boundary.cacheHit ? "cache hit" : "cache miss; stage-0 compile + native build included";
+    console.log(`${subject} timing (${run.graph.modules.length} modules, ${cacheState})`);
+    console.log(`  boundary preparation: ${formatMilliseconds(run.boundary.prepareMilliseconds)}`);
+    console.log(`  host discovery (file I/O + stage-0 import parse): ${formatMilliseconds(run.loadingMilliseconds)}`);
+    console.log(`  host batch framing: ${formatMilliseconds(run.batchMilliseconds)}`);
+    console.log(`  native in-process (FFI + lex + parse + resolve + symbols + signatures + names + types + expressions + encode): ${formatMilliseconds(run.executionMilliseconds)}`);
+    console.log(`  protocol decode: ${formatMilliseconds(run.decodeMilliseconds)}`);
+    console.log(`  compiler parity + semantic queries (reused AST): ${formatMilliseconds(parityMilliseconds)}`);
   }
-  return stage1;
 }
 
-function stage0ModuleGraph(sourceBatch: SourceModuleBatch): Stage1ModuleGraph {
-  const indexByPath = new Map(sourceBatch.modules.map((module, index) => [module.fileName, index] as const));
-  const modules = sourceBatch.modules.map((module) => {
-    const dependencies = [...module.dependencies.values()].map((dependencyPath) => {
-      const dependency = indexByPath.get(dependencyPath);
-      if (dependency === undefined) throw new Error(`stage-0 parity batch is missing ${dependencyPath}`);
-      return dependency;
-    });
-    return {
-      path: module.fileName,
-      dependencies,
-      symbols: stage0ModuleSymbols(module, indexByPath),
-    };
-  });
-  const entry = indexByPath.get(sourceBatch.entryFileName);
-  if (entry === undefined) throw new Error(`stage-0 parity batch is missing its entry ${sourceBatch.entryFileName}`);
-  const dependencyOrder: number[] = [];
-  const visited = new Set<number>();
-  const visit = (index: number): void => {
-    if (visited.has(index)) return;
-    visited.add(index);
-    for (const dependency of modules[index].dependencies) visit(dependency);
-    dependencyOrder.push(index);
-  };
-  visit(entry);
-  return { modules, dependencyOrder, entry };
-}
-
-function stage0ModuleSymbols(
-  module: SourceModuleBatchModule,
-  indexByPath: ReadonlyMap<string, number>,
-): Stage1ModuleSymbol[] {
-  const { program } = module;
-  const exported = new Set(program.exports.map((declaration) => `${declaration.declarationKind}\0${declaration.name}`));
-  const symbols: Stage1ModuleSymbol[] = [
-    ...program.traits,
-    ...program.structs,
-    ...program.enums,
-    ...program.functions,
-  ].map((declaration) => ({
-    name: declaration.name,
-    kind: declaration.kind,
-    exported: exported.has(`${declaration.kind}\0${declaration.name}`),
-    targetModule: null,
-    importedName: declaration.name,
-    functionSignature: declaration.kind === "function" ? {
-      asynchronous: declaration.async ?? false,
-      typeParameters: declaration.typeParameters ?? [],
-      parameterModes: declaration.parameters.map((parameter) => parameter.mode),
-      parameterTypes: declaration.parameters.map((parameter) => canonicalTypeName(parameter.type.name)),
-      returnType: canonicalTypeName(declaration.returnType.name),
-      errorType: declaration.errorType ? canonicalTypeName(declaration.errorType.name) : null,
-    } : null,
-    typeSignature: declaration.kind === "struct" || declaration.kind === "class" ? {
-      typeParameters: declaration.typeParameters ?? [],
-      fields: declaration.fields.map((field) => ({
-        name: field.name,
-        typeName: canonicalTypeName(field.type.name),
-        visibility: field.visibility,
-        readonlyField: field.readonly,
-      })),
-      methods: declaration.methods.map((method) => ({
-        name: method.name,
-        staticMethod: method.static ?? false,
-        visibility: method.visibility ?? "public",
-        receiverMode: method.receiverMode ?? "in",
-        signature: {
-          asynchronous: method.async ?? false,
-          typeParameters: method.typeParameters ?? [],
-          parameterModes: method.parameters.map((parameter) => parameter.mode),
-          parameterTypes: method.parameters.map((parameter) => canonicalTypeName(parameter.type.name)),
-          returnType: canonicalTypeName(method.returnType.name),
-          errorType: method.errorType ? canonicalTypeName(method.errorType.name) : null,
-        },
-      })),
-      variants: [],
-      customDeinit: Boolean(declaration.deinitializer),
-      customConstructor: Boolean(declaration.constructor),
-      constructorSignature: declaration.constructor ? {
-        asynchronous: false,
-        typeParameters: [],
-        parameterModes: declaration.constructor.parameters.map((parameter) => parameter.mode),
-        parameterTypes: declaration.constructor.parameters.map((parameter) => canonicalTypeName(parameter.type.name)),
-        returnType: declaration.name,
-        errorType: declaration.constructor.errorType
-          ? canonicalTypeName(declaration.constructor.errorType.name)
-          : null,
-      } : null,
-    } : declaration.kind === "enum" ? {
-      typeParameters: [],
-      fields: [],
-      methods: [],
-      variants: declaration.variants.map((variant) => ({
-        name: variant.name,
-        payloadType: variant.payload ? canonicalTypeName(variant.payload.name) : null,
-      })),
-      customDeinit: false,
-      customConstructor: false,
-      constructorSignature: null,
-    } : null,
-    location: {
-      offset: declaration.location.offset,
-      line: declaration.location.line,
-      column: declaration.location.column,
-    },
-  })).sort((left, right) => left.location.offset - right.location.offset);
-  for (const declaration of program.imports) {
-    const dependencyPath = module.dependencies.get(declaration.location.offset);
-    const targetModule = dependencyPath ? indexByPath.get(dependencyPath) ?? null : null;
-    if (declaration.bindings) {
-      for (const binding of declaration.bindings) {
-        symbols.push({
-          name: binding.localName,
-          kind: "imported",
-          exported: false,
-          targetModule,
-          importedName: binding.importedName,
-          functionSignature: null,
-          typeSignature: null,
-          location: {
-            offset: binding.location.offset,
-            line: binding.location.line,
-            column: binding.location.column,
-          },
-        });
-      }
-    } else {
-      symbols.push({
-        name: declaration.moduleName,
-        kind: "namespace",
-        exported: false,
-        targetModule,
-        importedName: declaration.header,
-        functionSignature: null,
-        typeSignature: null,
-        location: {
-          offset: declaration.location.offset,
-          line: declaration.location.line,
-          column: declaration.location.column,
-        },
-      });
-    }
-  }
-  return symbols;
-}
-
-function sameModuleGraph(left: Stage1ModuleGraph, right: Stage1ModuleGraph): boolean {
-  return left.entry === right.entry
-    && left.dependencyOrder.length === right.dependencyOrder.length
-    && left.dependencyOrder.every((value, index) => value === right.dependencyOrder[index])
-    && left.modules.length === right.modules.length
-    && left.modules.every((module, index) => {
-      const other = right.modules[index];
-      return other !== undefined
-        && module.path === other.path
-        && module.dependencies.length === other.dependencies.length
-        && module.dependencies.every((value, dependencyIndex) => value === other.dependencies[dependencyIndex])
-        && module.symbols.length === other.symbols.length
-        && module.symbols.every((symbol, symbolIndex) => sameModuleSymbol(symbol, other.symbols[symbolIndex]));
-    });
-}
-
-function sameModuleSymbol(left: Stage1ModuleSymbol, right: Stage1ModuleSymbol | undefined): boolean {
-  return right !== undefined
-    && left.name === right.name
-    && left.kind === right.kind
-    && left.exported === right.exported
-    && left.targetModule === right.targetModule
-    && left.importedName === right.importedName
-    && sameModuleFunctionSignature(left.functionSignature, right.functionSignature)
-    && sameModuleTypeSignature(left.typeSignature, right.typeSignature)
-    && left.location.offset === right.location.offset
-    && left.location.line === right.location.line
-    && left.location.column === right.location.column;
-}
-
-function sameModuleTypeSignature(
-  left: Stage1ModuleSymbol["typeSignature"],
-  right: Stage1ModuleSymbol["typeSignature"],
-): boolean {
-  if (left === null || right === null) return left === right;
-  return left.customDeinit === right.customDeinit
-    && left.customConstructor === right.customConstructor
-    && sameModuleFunctionSignature(left.constructorSignature, right.constructorSignature)
-    && left.typeParameters.length === right.typeParameters.length
-    && left.typeParameters.every((value, index) => value === right.typeParameters[index])
-    && left.fields.length === right.fields.length
-    && left.fields.every((field, index) => {
-      const other = right.fields[index];
-      return other !== undefined
-        && field.name === other.name
-        && field.typeName === other.typeName
-        && field.visibility === other.visibility
-        && field.readonlyField === other.readonlyField;
-    })
-    && left.methods.length === right.methods.length
-    && left.methods.every((method, index) => {
-      const other = right.methods[index];
-      return other !== undefined
-        && method.name === other.name
-        && method.staticMethod === other.staticMethod
-        && method.visibility === other.visibility
-        && method.receiverMode === other.receiverMode
-        && sameModuleFunctionSignature(method.signature, other.signature);
-    })
-    && left.variants.length === right.variants.length
-    && left.variants.every((variant, index) => {
-      const other = right.variants[index];
-      return other !== undefined
-        && variant.name === other.name
-        && variant.payloadType === other.payloadType;
-    });
-}
-
-function sameModuleFunctionSignature(
-  left: Stage1ModuleSymbol["functionSignature"],
-  right: Stage1ModuleSymbol["functionSignature"],
-): boolean {
-  if (left === null || right === null) return left === right;
-  return left.asynchronous === right.asynchronous
-    && left.returnType === right.returnType
-    && left.errorType === right.errorType
-    && left.typeParameters.length === right.typeParameters.length
-    && left.typeParameters.every((value, index) => value === right.typeParameters[index])
-    && left.parameterModes.length === right.parameterModes.length
-    && left.parameterModes.every((value, index) => value === right.parameterModes[index])
-    && left.parameterTypes.length === right.parameterTypes.length
-    && left.parameterTypes.every((value, index) => value === right.parameterTypes[index]);
+function verifyStage1Resolver(inputPath: string, timings: boolean): void {
+  const run = runStage1Resolver(inputPath);
+  const parityStarted = performance.now();
+  const evidence = validateNativeFrontendSemantics(run.sourceBatch, run.graph);
+  const parityMilliseconds = performance.now() - parityStarted;
+  reportStage1Resolver(run, timings, "self-host-command", parityMilliseconds, evidence.queryCount);
 }
 
 function verifyStage1Parser(inputPaths: readonly string[], timings: boolean): void {
@@ -1191,29 +1003,6 @@ function canonicalParameters(parameters: FunctionDeclaration["parameters"]): str
     const capability = parameter.mode === "value" ? "" : `${parameter.mode} `;
     return `${capability}${parameter.name}: ${canonicalTypeName(parameter.type.name)}`;
   }).join(", ");
-}
-
-function canonicalTypeName(name: string): string {
-  if (isNullableObjCTypeName(name)) return `${canonicalTypeName(publicObjCTypeName(name))} | null`;
-  const view = parseViewType(name);
-  if (view) return `view ${canonicalTypeName(view.target)}`;
-  const fixed = parseFixedArrayType(name);
-  if (fixed) return `${canonicalTypeName(fixed.elementType)}[${fixed.length}]`;
-  const slice = parseSliceType(name);
-  if (slice) return `Slice<${canonicalTypeName(slice.elementType)}>`;
-  const dynamic = parseDynamicArrayType(name);
-  if (dynamic) return `Array<${canonicalTypeName(dynamic.elementType)}>`;
-  const generic = parseGenericType(name);
-  if (generic) return `${generic.base}<${generic.arguments.map(canonicalTypeName).join(", ")}>`;
-  const functionType = parseFunctionType(name);
-  if (functionType) {
-    const parameters = functionType.parameters.map((parameter) => {
-      const capability = parameter.mode === "value" ? "" : `${parameter.mode} `;
-      return `${capability}${parameter.name}: ${canonicalTypeName(parameter.type)}`;
-    });
-    return `(${parameters.join(", ")}) => ${canonicalTypeName(functionType.returnType)}`;
-  }
-  return name;
 }
 
 function sameFunctionSignature(left: Stage1FunctionSignature | undefined, right: Stage1FunctionSignature | undefined): boolean {

@@ -1510,7 +1510,10 @@ ported independently rather than translated as one monolith.
    selective aliases, and namespace members to their defining native symbols and
    signatures. Exact parity now builds its stage-zero side from the canonical
    batch's retained ASTs and dependency maps rather than lexing and parsing every
-   module again.
+   module again. The compiler—not the CLI—then exercises every local binding,
+   selective alias, and exported namespace-member lookup through that index and
+   compares the resolved definition and signature. The CLI is reduced to native
+   preparation/invocation, timing capture, and presentation.
    The graph now carries a first native semantic table: source-located Z
    declarations and namespace/selective import bindings with kinds, exports,
    aliases, and local module targets. Function symbols retain callable
