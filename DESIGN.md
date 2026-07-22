@@ -1499,6 +1499,13 @@ ported independently rather than translated as one monolith.
    against stage zero while reporting boundary, framing, native execution,
    decode, and parity timings independently. A shared canonical batch loader now
    supplies both the current linker and native boundary from one entry path.
+   Ordinary compiler analysis exposes an optional resolver callback that runs
+   only after successful stage-zero semantics, receives that existing canonical
+   batch, and returns a graph retained on the analysis result. A reusable
+   prepared-library invocation service owns the Bun FFI mechanics without
+   importing compilation, so the compiler core does not depend on the CLI and no
+   circular bootstrap dependency is introduced. Stage zero remains diagnostic
+   authority while consumers migrate one semantic result at a time.
    The graph now carries a first native semantic table: source-located Z
    declarations and namespace/selective import bindings with kinds, exports,
    aliases, and local module targets. Function symbols retain callable

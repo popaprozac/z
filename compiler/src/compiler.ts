@@ -15,6 +15,7 @@ import { materializeWeakTypes } from "./weak-types.ts";
 import { generateAsyncC } from "./async-codegen-c.ts";
 import { parseForeignDeclarationContracts } from "./foreign-declarations.ts";
 import type { DiagnosticError } from "./diagnostics.ts";
+import type { Stage1ModuleGraph } from "./self-hosting.ts";
 
 export type NativeLanguage = "c" | "objective-c" | "c++" | "objective-c++";
 
@@ -39,10 +40,12 @@ export type AnalyzedSource = {
   readonly sourceModules: ReadonlyMap<string, SourceModuleInfo>;
   readonly sourceModuleBatch: SourceModuleBatch;
   readonly moduleIncludeDirectories: readonly string[];
+  readonly nativeFrontendGraph: Stage1ModuleGraph | null;
 };
 
 export type AnalysisOptions = {
   readonly requireMain?: boolean;
+  readonly nativeFrontendResolver?: (sourceBatch: SourceModuleBatch) => Stage1ModuleGraph;
 };
 
 export function analyzeSource(source: string, fileName: string, options: AnalysisOptions = {}): AnalyzedSource {
@@ -72,6 +75,8 @@ export function analyzeSource(source: string, fileName: string, options: Analysi
     );
   }
   const semanticInfo = analyze(program, fileName, foreignModules, typeDisplayNames, options.requireMain ?? true, projectBuild.deploymentTarget);
+  const nativeFrontendGraph = options.nativeFrontendResolver?.(linked.sourceBatch) ?? null;
+  if (nativeFrontendGraph) validateNativeFrontendGraph(nativeFrontendGraph, linked.sourceBatch);
   return {
     sourceProgram,
     program,
@@ -82,7 +87,33 @@ export function analyzeSource(source: string, fileName: string, options: Analysi
     sourceModules: linked.modules,
     sourceModuleBatch: linked.sourceBatch,
     moduleIncludeDirectories: linked.includeDirectories,
+    nativeFrontendGraph,
   };
+}
+
+function validateNativeFrontendGraph(graph: Stage1ModuleGraph, sourceBatch: SourceModuleBatch): void {
+  if (graph.modules.length !== sourceBatch.modules.length) {
+    throw new Error(
+      `native frontend returned ${graph.modules.length} modules for a ${sourceBatch.modules.length}-module source batch`,
+    );
+  }
+  if (graph.entry < 0 || graph.entry >= graph.modules.length) {
+    throw new Error(`native frontend returned invalid entry module index ${graph.entry}`);
+  }
+  for (let index = 0; index < sourceBatch.modules.length; index += 1) {
+    const expected = sourceBatch.modules[index].fileName;
+    const actual = graph.modules[index]?.path;
+    if (actual !== expected) {
+      throw new Error(
+        `native frontend module ${index} does not match its source batch: expected ${expected}, received ${actual ?? "no module"}`,
+      );
+    }
+  }
+  if (graph.modules[graph.entry]?.path !== sourceBatch.entryFileName) {
+    throw new Error(
+      `native frontend entry does not match its source batch: expected ${sourceBatch.entryFileName}, received ${graph.modules[graph.entry]?.path ?? "no module"}`,
+    );
+  }
 }
 
 export function compileToC(source: string, fileName: string): string {

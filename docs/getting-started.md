@@ -64,6 +64,11 @@ usage: z <check|emit|run> <file.zs>
 `z run` streams stdout and stderr while the program is alive, including during
 a native GUI event loop.
 
+The native-frontend flag is deliberately a shadow mode. Stage 0 still produces
+the user-facing diagnostics first; after it succeeds, the native frontend
+receives the same canonical source-module batch, and its validated semantic
+graph must match before the check can succeed.
+
 ## Source modules
 
 Declarations are private to a source file unless exported:

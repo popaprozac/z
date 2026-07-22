@@ -4,15 +4,15 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, writeFi
 import { basename, dirname, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { CString, dlopen, FFIType, ptr } from "bun:ffi";
 import type { Expression, FunctionDeclaration, Program, SourceLocation, Statement } from "./ast.ts";
 import { parseDynamicArrayType, parseFixedArrayType, parseSliceType } from "./array-types.ts";
-import { check, compileToNative, type NativeArtifact } from "./compiler.ts";
+import { analyzeSource, check, compileToNative, type NativeArtifact } from "./compiler.ts";
 import { DiagnosticError, formatDiagnostic } from "./diagnostics.ts";
 import { parseFunctionType } from "./function-types.ts";
 import { parseGenericType } from "./generic-types.ts";
 import { lex, type Token } from "./lexer.ts";
-import { isLocalSourceModuleSpecifier, loadSourceModuleBatch } from "./modules.ts";
+import { isLocalSourceModuleSpecifier, loadSourceModuleBatch, type SourceModuleBatch } from "./modules.ts";
+import { parseWithNativeFrontendLibrary, resolveWithNativeFrontendLibrary } from "./native-frontend.ts";
 import { isNullableObjCTypeName, publicObjCTypeName } from "./objc-types.ts";
 import { parse } from "./parser.ts";
 import { deploymentTargetFlags } from "./project.ts";
@@ -64,8 +64,15 @@ if (!command || !inputArgument || !["check", "emit", "run", "self-host-lex", "se
         throw new Error("check --native-frontend currently requires a .zs source module");
       }
       const source = readFileSync(inputPath, "utf8");
-      for (const warning of check(source, inputPath)) console.error(formatDiagnostic(warning, source));
-      if (nativeFrontend) verifyStage1Resolver(inputPath, timings, "check-shadow");
+      const warnings = inputPath.endsWith(".zd")
+        ? check(source, inputPath)
+        : analyzeSource(source, inputPath, {
+          requireMain: false,
+          nativeFrontendResolver: nativeFrontend
+            ? (sourceBatch) => verifyStage1Resolver(inputPath, timings, "check-shadow", sourceBatch)
+            : undefined,
+        }).semanticInfo.warnings;
+      for (const warning of warnings) console.error(formatDiagnostic(warning, source));
       console.log(`${inputPath}: ok`);
     } else {
       const source = readFileSync(inputPath, "utf8");
@@ -89,13 +96,16 @@ function verifyStage1Resolver(
   inputPath: string,
   timings: boolean,
   presentation: "self-host-command" | "check-shadow" = "self-host-command",
-): void {
+  discoveredSourceBatch?: SourceModuleBatch,
+): Stage1ModuleGraph {
   const projectRoot = resolve(dirname(new URL(import.meta.url).pathname), "../..");
   const entryPath = realpathSync(inputPath);
   const loadingStarted = performance.now();
-  const entrySource = readFileSync(entryPath, "utf8");
-  const entryProgram = parse(lex(entrySource, entryPath), entryPath);
-  const sourceBatch = loadSourceModuleBatch(entrySource, entryProgram, entryPath);
+  const sourceBatch = discoveredSourceBatch ?? (() => {
+    const entrySource = readFileSync(entryPath, "utf8");
+    const entryProgram = parse(lex(entrySource, entryPath), entryPath);
+    return loadSourceModuleBatch(entrySource, entryProgram, entryPath);
+  })();
   const loadingMilliseconds = performance.now() - loadingStarted;
   const sources: Stage1ModuleSource[] = sourceBatch.modules.map((module) => ({
     path: module.fileName,
@@ -107,7 +117,7 @@ function verifyStage1Resolver(
   const batch = encodeStage1ModuleBatch(sources);
   const batchMilliseconds = performance.now() - batchStarted;
   const executionStarted = performance.now();
-  const nativeStream = resolveWithStage1Library(boundary.libraryPath, entryPath, batch);
+  const nativeStream = resolveWithNativeFrontendLibrary(boundary.libraryPath, entryPath, batch);
   const executionMilliseconds = performance.now() - executionStarted;
   const decodeStarted = performance.now();
   const stage1 = decodeStage1ModuleGraphStream(nativeStream);
@@ -135,6 +145,7 @@ function verifyStage1Resolver(
     console.log(`  protocol decode: ${formatMilliseconds(decodeMilliseconds)}`);
     console.log(`  stage-0 parity (lex + parse + graph + symbols): ${formatMilliseconds(stage0Milliseconds)}`);
   }
+  return stage1;
 }
 
 function stage0ModuleGraph(sources: readonly Stage1ModuleSource[], entryPath: string): Stage1ModuleGraph {
@@ -373,7 +384,7 @@ function verifyStage1Parser(inputPaths: readonly string[], timings: boolean): vo
   const bridgePath = join(projectRoot, "compiler/frontend/parser-library.zs");
   const boundary = prepareStage1ParserLibrary(projectRoot, bridgePath);
   const executionStarted = performance.now();
-  const nativeStream = parseWithStage1Library(boundary.libraryPath, inputPaths);
+  const nativeStream = parseWithNativeFrontendLibrary(boundary.libraryPath, inputPaths);
   const executionMilliseconds = performance.now() - executionStarted;
   const decodeStarted = performance.now();
   const stage1Programs = decodeStage1ProgramBatchStream(nativeStream);
@@ -1338,81 +1349,6 @@ function prepareStage1ParserLibrary(projectRoot: string, bridgePath: string): Pr
   for (const warning of artifact.warnings) console.error(formatDiagnostic(warning, bridgeSource));
   const builtPath = buildNativeLibrary(bridgePath, artifact, outputStem);
   return { libraryPath: builtPath, cacheHit: false, prepareMilliseconds: performance.now() - started };
-}
-
-function parseWithStage1Library(libraryPath: string, inputPaths: readonly string[]): string {
-  const library = dlopen(libraryPath, {
-    z_stage1_parse: {
-      args: [FFIType.ptr, FFIType.u64, FFIType.ptr, FFIType.u64],
-      returns: FFIType.ptr,
-    },
-    z_stage1_free: {
-      args: [FFIType.ptr],
-      returns: FFIType.void,
-    },
-  });
-  try {
-    let stream = "";
-    for (const inputPath of inputPaths) {
-      const pathBytes = Buffer.from(inputPath, "utf8");
-      const sourceBytes = Buffer.from(readFileSync(inputPath, "utf8"), "utf8");
-      const pathStorage = pathBytes.byteLength > 0 ? pathBytes : Buffer.alloc(1);
-      const sourceStorage = sourceBytes.byteLength > 0 ? sourceBytes : Buffer.alloc(1);
-      const resultPointer = library.symbols.z_stage1_parse(
-        ptr(pathStorage),
-        pathBytes.byteLength,
-        ptr(sourceStorage),
-        sourceBytes.byteLength,
-      );
-      if (!resultPointer) throw new Error("the stage-1 parser library returned a null response");
-      try {
-        const response = new CString(resultPointer).toString();
-        if (response.startsWith("error\n")) throw new Error(response.slice("error\n".length));
-        if (!response.startsWith("ok\n")) throw new Error("the stage-1 parser library returned a malformed response");
-        stream += response.slice("ok\n".length);
-      } finally {
-        library.symbols.z_stage1_free(resultPointer);
-      }
-    }
-    return stream;
-  } finally {
-    library.close();
-  }
-}
-
-function resolveWithStage1Library(libraryPath: string, entryPath: string, batch: Buffer): string {
-  const library = dlopen(libraryPath, {
-    z_stage1_resolve: {
-      args: [FFIType.ptr, FFIType.u64, FFIType.ptr, FFIType.u64],
-      returns: FFIType.ptr,
-    },
-    z_stage1_free: {
-      args: [FFIType.ptr],
-      returns: FFIType.void,
-    },
-  });
-  try {
-    const entryBytes = Buffer.from(entryPath, "utf8");
-    const entryStorage = entryBytes.byteLength > 0 ? entryBytes : Buffer.alloc(1);
-    const batchStorage = batch.byteLength > 0 ? batch : Buffer.alloc(1);
-    const resultPointer = library.symbols.z_stage1_resolve(
-      ptr(entryStorage),
-      entryBytes.byteLength,
-      ptr(batchStorage),
-      batch.byteLength,
-    );
-    if (!resultPointer) throw new Error("the stage-1 resolver library returned a null response");
-    try {
-      const response = new CString(resultPointer).toString();
-      if (response.startsWith("error\n")) throw new Error(response.slice("error\n".length));
-      if (!response.startsWith("ok\n")) throw new Error("the stage-1 resolver library returned a malformed response");
-      return response.slice("ok\n".length);
-    } finally {
-      library.symbols.z_stage1_free(resultPointer);
-    }
-  } finally {
-    library.close();
-  }
 }
 
 function buildNativeLibrary(inputPath: string, artifact: NativeArtifact, outputStem: string): string {

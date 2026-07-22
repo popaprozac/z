@@ -95,6 +95,7 @@ test("loads explicit Z exports through selective and namespace module imports", 
 
   const analysis = analyzeSource(source, example);
   assert.equal(analysis.sourceModules.size, 3);
+  assert.equal(analysis.nativeFrontendGraph, null);
   assert.equal(analysis.sourceModuleBatch.entryFileName, example);
   assert.deepEqual(
     analysis.sourceModuleBatch.modules.map((module) => basename(module.fileName)),
@@ -110,6 +111,43 @@ test("loads explicit Z exports through selective and namespace module imports", 
   assert.match(generated, /__z_module_\d+_add/);
   assert.doesNotMatch(generated, /#include <\.\/geometry\.zs>/);
   assert.doesNotMatch(generated, /#include <\.\/math\.zs>/);
+});
+
+test("attaches native frontend evidence after authoritative stage-0 analysis", () => {
+  const example = resolve(projectRoot, "examples/language/modules/main.zs");
+  const source = readFileSync(example, "utf8");
+  let receivedModuleCount = 0;
+  const analysis = analyzeSource(source, example, {
+    nativeFrontendResolver: (sourceBatch) => {
+      receivedModuleCount = sourceBatch.modules.length;
+      const indexByPath = new Map(sourceBatch.modules.map((module, index) => [module.fileName, index] as const));
+      return {
+        modules: sourceBatch.modules.map((module) => ({
+          path: module.fileName,
+          dependencies: [...module.dependencies.values()].map((path) => indexByPath.get(path)!),
+          symbols: [],
+        })),
+        dependencyOrder: [2, 1, 0],
+        entry: indexByPath.get(sourceBatch.entryFileName)!,
+      };
+    },
+  });
+
+  assert.equal(receivedModuleCount, 3);
+  assert.equal(analysis.nativeFrontendGraph?.modules.length, 3);
+  assert.equal(analysis.nativeFrontendGraph?.modules[analysis.nativeFrontendGraph.entry]?.path, example);
+
+  let resolverCalled = false;
+  assert.throws(
+    () => analyzeSource("function main(): i32 { return missing; }", "invalid-native-shadow.zs", {
+      nativeFrontendResolver: () => {
+        resolverCalled = true;
+        throw new Error("native frontend should not run");
+      },
+    }),
+    /unknown name "missing"/,
+  );
+  assert.equal(resolverCalled, false);
 });
 
 test("diagnoses missing Z exports, missing files, cycles, and module binding collisions", () => {

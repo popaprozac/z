@@ -160,7 +160,10 @@ The native resolver takes a host-loaded batch of canonical paths and source
 strings, parses each module, and consumes the resulting ASTs directly to check
 local edges, dependency order, exports, aliases, collisions, missing modules,
 and cycles. Its first pressure fixture includes transitive `../` resolution and
-each failure shape; in-process batch wiring is the next boundary.
+each failure shape. `z check --native-frontend` now reuses the ordinary
+analyzer's canonical batch, invokes that resolver through the reusable
+in-process boundary, and retains the validated graph as compiler-analysis
+evidence.
 The frontend remains stage-zero-compiled, while the example directory is now a
 small educational consumer rather than the implementation home.
 
