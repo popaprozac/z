@@ -1233,7 +1233,15 @@ function hasTypeName(
   for (const symbol of modules[moduleIndex].symbols) {
     if (symbol.name != base) continue;
     if (member.byteLength > 0) {
-      if (symbol.kind != ModuleSymbolKind.namespaceSymbol) return false;
+      if (symbol.kind != ModuleSymbolKind.namespaceSymbol) {
+        if (symbol.kind == ModuleSymbolKind.importedSymbol) {
+          return match (in symbol.targetModule) {
+            some(target) => false;
+            none => true;
+          };
+        }
+        return false;
+      }
       return match (in symbol.targetModule) {
         some(target) => moduleHasExportedType(modules[target], member);
         none => true;

@@ -4895,12 +4895,12 @@ test("resolves a canonical module graph directly from native Z ASTs", () => {
   assert.match(ordinaryCheck.stdout, /native frontend hybrid observes \d+ aggregate, \d+ field, and \d+ enum-variant stage-0 Z resolutions/);
   assert.match(ordinaryCheck.stdout, /native frontend hybrid observes \d+ explicit type-use stage-0 Z resolutions/);
   assert.match(ordinaryCheck.stdout, /native frontend hybrid observes \d+ inferred local binding stage-0 Z resolutions/);
-  assert.match(ordinaryCheck.stdout, /native frontend hybrid observes 3 root expression stage-0 Z resolutions/);
+  assert.match(ordinaryCheck.stdout, /native frontend hybrid observes 7 root expression stage-0 Z resolutions/);
   assert.match(ordinaryCheck.stdout, /native frontend hybrid uses \d+ function, \d+ method, and \d+ constructor native-authoritative contracts/);
   assert.match(ordinaryCheck.stdout, /native frontend hybrid uses \d+ aggregate, \d+ field, and \d+ enum-variant native-authoritative contracts/);
   assert.match(ordinaryCheck.stdout, /native frontend hybrid uses \d+ explicit type-use native-authoritative contracts/);
   assert.match(ordinaryCheck.stdout, /native frontend hybrid uses 2 inferred local binding native-authoritative contracts/);
-  assert.match(ordinaryCheck.stdout, /native frontend hybrid uses 3 root expression native-authoritative contracts/);
+  assert.match(ordinaryCheck.stdout, /native frontend hybrid uses 7 root expression native-authoritative contracts/);
   assert.match(ordinaryCheck.stdout, /native frontend hybrid timing \(3 modules, cache hit\)/);
   assert.match(ordinaryCheck.stdout, /main\.zs: ok/);
 
@@ -6888,6 +6888,56 @@ test("resolves a canonical module graph directly from native Z ASTs", () => {
     /malformed stage-1 method receiver mode/,
   );
 }, 10_000);
+
+test("keeps native semantic authority composable across a representative Z corpus", () => {
+  const entries = [
+    "compiler/frontend/parser-library.zs",
+    "examples/applications/source-inspector/main.zs",
+    "examples/applications/document-workspace/main.zs",
+    "examples/language/control-flow/result.zs",
+    "examples/language/ownership/arena.zs",
+    "examples/language/ownership/owned-closures.zs",
+    "examples/language/types/generic-constraints.zs",
+    "examples/async/async-ownership.zs",
+  ];
+  const parityPatterns = [
+    [
+      /observes (\d+) function, (\d+) method, and (\d+) constructor stage-0 Z resolutions/,
+      /uses (\d+) function, (\d+) method, and (\d+) constructor native-authoritative contracts/,
+    ],
+    [
+      /observes (\d+) aggregate, (\d+) field, and (\d+) enum-variant stage-0 Z resolutions/,
+      /uses (\d+) aggregate, (\d+) field, and (\d+) enum-variant native-authoritative contracts/,
+    ],
+    [
+      /observes (\d+) explicit type-use stage-0 Z resolutions/,
+      /uses (\d+) explicit type-use native-authoritative contracts/,
+    ],
+    [
+      /observes (\d+) inferred local binding stage-0 Z resolutions/,
+      /uses (\d+) inferred local binding native-authoritative contracts/,
+    ],
+    [
+      /observes (\d+) root expression stage-0 Z resolutions/,
+      /uses (\d+) root expression native-authoritative contracts/,
+    ],
+  ] as const;
+
+  for (const entry of entries) {
+    const input = resolve(projectRoot, entry);
+    const result = spawnSync(process.execPath, [cli, "check", input, "--native-frontend"], {
+      encoding: "utf8",
+    });
+    assert.equal(result.status, 0, `${entry}\n${result.stderr}`);
+    assert.match(result.stdout, /exports [1-9]\d* root expression type contracts/);
+    for (const [observedPattern, authoritativePattern] of parityPatterns) {
+      const observed = result.stdout.match(observedPattern)?.slice(1);
+      const authoritative = result.stdout.match(authoritativePattern)?.slice(1);
+      assert.ok(observed, `${entry} did not report observed semantic counts`);
+      assert.deepEqual(authoritative, observed, `${entry} left an observed native semantic result on Stage 0`);
+    }
+  }
+}, 30_000);
 
 test("builds owned UTF-8 String values through explicit std/text TextBuffer", () => {
   const directory = mkdtempSync("/tmp/z-text-buffer-");

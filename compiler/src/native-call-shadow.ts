@@ -40,7 +40,9 @@ export function createNativeSemanticBridge(
   const sourceAggregates = new Map<string, { readonly modulePath: string; readonly declaration: StructDeclaration }>();
   const sourceEnums = new Map<string, { readonly modulePath: string; readonly declaration: EnumDeclaration }>();
   const canonicalModulePathBySourcePath = new Map<string, string>();
+  const sourceByModulePath = new Map<string, string>();
   for (const module of sourceBatch.modules) {
+    sourceByModulePath.set(module.fileName, module.source);
     canonicalModulePathBySourcePath.set(module.fileName, module.fileName);
     for (const declaration of [
       ...module.program.imports,
@@ -91,6 +93,25 @@ export function createNativeSemanticBridge(
   let authoritativeTypes = 0;
   let authoritativeBindings = 0;
   let authoritativeExpressions = 0;
+  const nativeSourceOffset = (
+    modulePath: string,
+    location: FunctionDeclaration["location"],
+  ): number | null => {
+    const source = sourceByModulePath.get(modulePath);
+    if (source === undefined || location.line < 1 || location.column < 1) return null;
+    let offset = 0;
+    let line = 1;
+    while (line < location.line) {
+      const newline = source.indexOf("\n", offset);
+      if (newline < 0) return null;
+      offset = newline + 1;
+      line += 1;
+    }
+    const newline = source.indexOf("\n", offset);
+    const lineEnd = newline < 0 ? source.length : newline;
+    const localOffset = offset + location.column - 1;
+    return localOffset <= lineEnd ? localOffset : null;
+  };
   const nativeFunction = (location: FunctionDeclaration["location"], declaration: FunctionDeclaration) => {
     const definitionPath = declaration.location.fileName;
     const canonicalDefinitionPath = definitionPath
@@ -259,7 +280,9 @@ export function createNativeSemanticBridge(
       location.fileName ?? sourceBatch.entryFileName,
     );
     if (!modulePath) return null;
-    const resolution = index.bindingResolution(modulePath, location.offset);
+    const offset = nativeSourceOffset(modulePath, location);
+    if (offset === null) return null;
+    const resolution = index.bindingResolution(modulePath, offset);
     if (!resolution) return null;
     if (
       resolution.name !== name
@@ -316,7 +339,9 @@ export function createNativeSemanticBridge(
       location.fileName ?? sourceBatch.entryFileName,
     );
     if (!modulePath) return null;
-    const resolution = index.expressionResolution(modulePath, location.offset);
+    const offset = nativeSourceOffset(modulePath, location);
+    if (offset === null) return null;
+    const resolution = index.expressionResolution(modulePath, offset);
     if (!resolution) return null;
     if (resolution.line !== location.line || resolution.column !== location.column) {
       throw new Error(
@@ -336,10 +361,9 @@ export function createNativeSemanticBridge(
           location.fileName ?? sourceBatch.entryFileName,
         );
         if (!callPath) return null;
-        const resolution = index.callResolution(
-          callPath,
-          location.offset,
-        );
+        const offset = nativeSourceOffset(callPath, location);
+        if (offset === null) return null;
+        const resolution = index.callResolution(callPath, offset);
         if (!resolution) return null;
         const targetModule = index.graph.modules[resolution.targetModule];
         const target = targetModule?.symbols[resolution.targetSymbol];
@@ -479,7 +503,9 @@ export function createNativeSemanticBridge(
           location.fileName ?? sourceBatch.entryFileName,
         );
         if (!callPath) return null;
-        const resolution = index.callResolution(callPath, location.offset);
+        const offset = nativeSourceOffset(callPath, location);
+        if (offset === null) return null;
+        const resolution = index.callResolution(callPath, offset);
         if (!resolution) return null;
         const targetModule = index.graph.modules[resolution.targetModule];
         const target = targetModule?.symbols[resolution.targetSymbol];
@@ -622,7 +648,9 @@ export function createNativeSemanticBridge(
           location.fileName ?? sourceBatch.entryFileName,
         );
         if (!callPath) return null;
-        const resolution = index.callResolution(callPath, location.offset);
+        const offset = nativeSourceOffset(callPath, location);
+        if (offset === null) return null;
+        const resolution = index.callResolution(callPath, offset);
         if (!resolution) return null;
         const targetModule = index.graph.modules[resolution.targetModule];
         const target = targetModule?.symbols[resolution.targetSymbol];

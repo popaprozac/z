@@ -487,6 +487,19 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    roots continue through the Stage-0 fallback. Ordinary native checks report
    expression contracts exported, observed, and used authoritatively as separate
    counts.
+   Native evidence lookups translate linked Stage-0 source locations back to
+   canonical module-local offsets before querying the semantic index. Imported
+   function bodies therefore no longer miss evidence—or collide with unrelated
+   local offsets—after Stage 0 rebases them into one linked program. Qualified
+   type names rooted in non-Z selective imports are treated as opaque foreign
+   types, so application-shaped C++ resources compose with native Z analysis
+   without the resolver pretending to understand the header.
+   A representative ordinary-check corpus now covers the six-module native
+   frontend itself, Source Inspector, Document Workspace, `Result`, arenas,
+   owned closures, generic constraints, and async ownership. On that corpus,
+   every function/method/constructor, aggregate/field/variant, explicit type,
+   inferred binding, and root-expression resolution observed by Stage 0 is
+   backed by a consumed native-authority contract.
    Successful non-generic Z function, method, and explicit class-constructor calls
    are now native-authoritative semantic results. Their parameter modes and types,
    async/error state, and result type come from the native signature; methods also

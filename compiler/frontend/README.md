@@ -176,8 +176,17 @@ invalid operators, and invalid matches are now authoritative native diagnostics
 when their file and location belong to the canonical source batch. Stage 0 still
 owns parser, loader, and unsupported-shape diagnostics; malformed, out-of-batch,
 or non-semantic native failures remain buffered until Stage 0 succeeds.
+Semantic evidence queries now translate linked Stage-0 locations back to their
+canonical module-local offsets before consulting the native index. This keeps
+imported function bodies authoritative even though Stage 0 rebases their offsets
+to make one linked program. Qualified names rooted in non-Z selective imports
+remain opaque foreign types, allowing the native pass to validate surrounding Z
+code without claiming C/C++ header semantics.
 The reported native interval therefore does more semantic work than the
 graph-and-symbol-only stage-zero comparison.
-Repeated corpus measurements, broadening ordinary-command shadow coverage, and
-then replacing stage-zero semantic decisions with native results are the next
-layers.
+A representative ordinary-check corpus now covers the native frontend itself,
+two application-shaped multi-module programs, `Result`, arenas, owned closures,
+generic constraints, async ownership, and C++-backed resource fields. Every
+Stage-0 semantic resolution observed on that corpus has a validated native
+authority contract. Removing the temporary text protocol and migrating the
+remaining unsupported ownership/effect contexts are later self-hosting layers.
