@@ -1720,6 +1720,26 @@ ${indent(cleanupLines(keyCleanup) + cleanupLines(storedValueCleanup), 6)}      s
   self->buckets.data[slot] = self->entries.length;
 }
 
+static __attribute__((unused)) void ${mapMethodName(name, "erase_at")}(${mappedMap} *self, uintptr_t slot, uintptr_t index) {
+  uintptr_t last = self->entries.length - 1;
+  self->buckets.data[slot] = SIZE_MAX;
+  self->tombstones += 1;
+  if (index != last) {
+    self->entries.data[index] = self->entries.data[last];
+    uintptr_t movedSlot = ${mapMethodName(name, "hash")}(self->entries.data[index].key) & (self->buckets.length - 1);
+    while (self->buckets.data[movedSlot] != last + 1) movedSlot = (movedSlot + 1) & (self->buckets.length - 1);
+    self->buckets.data[movedSlot] = index + 1;
+  }
+  self->entries.data[last] = (${mappedEntry}){ 0 };
+  self->entries.length = last;
+  if (self->entries.length == 0) {
+    for (uintptr_t cleared = 0; cleared < self->buckets.length; cleared += 1) self->buckets.data[cleared] = 0;
+    self->tombstones = 0;
+  } else if (self->tombstones > self->entries.length) {
+    ${mapMethodName(name, "rehash")}(self, self->buckets.length);
+  }
+}
+
 static __attribute__((unused)) ${mappedValueOption} ${mapMethodName(name, "remove")}(${mappedMap} *self, ${mappedKey} key) {
   if (self->buckets.length == 0) return ${noneValue};
   uintptr_t slot = ${mapMethodName(name, "hash")}(key) & (self->buckets.length - 1);
@@ -1731,27 +1751,31 @@ static __attribute__((unused)) ${mappedValueOption} ${mapMethodName(name, "remov
       continue;
     }
     uintptr_t index = stored - 1;
-    uintptr_t last = self->entries.length - 1;
     ${mappedValueOption} result = ${someValue};
-${indent(cleanupLines(storedKeyCleanup), 4)}    self->buckets.data[slot] = SIZE_MAX;
-    self->tombstones += 1;
-    if (index != last) {
-      self->entries.data[index] = self->entries.data[last];
-      uintptr_t movedSlot = ${mapMethodName(name, "hash")}(self->entries.data[index].key) & (self->buckets.length - 1);
-      while (self->buckets.data[movedSlot] != last + 1) movedSlot = (movedSlot + 1) & (self->buckets.length - 1);
-      self->buckets.data[movedSlot] = index + 1;
-    }
-    self->entries.data[last] = (${mappedEntry}){ 0 };
-    self->entries.length = last;
-    if (self->entries.length == 0) {
-      for (uintptr_t cleared = 0; cleared < self->buckets.length; cleared += 1) self->buckets.data[cleared] = 0;
-      self->tombstones = 0;
-    } else if (self->tombstones > self->entries.length) {
-      ${mapMethodName(name, "rehash")}(self, self->buckets.length);
-    }
+${indent(cleanupLines(storedKeyCleanup), 4)}    self->entries.data[index].key = ${mapZeroValue(map.keyType, structs, enums, semanticInfo.foreignNamedTypes)};
+    self->entries.data[index].value = ${mapZeroValue(map.valueType, structs, enums, semanticInfo.foreignNamedTypes)};
+    ${mapMethodName(name, "erase_at")}(self, slot, index);
     return result;
   }
   return ${noneValue};
+}
+
+static __attribute__((unused)) bool ${mapMethodName(name, "delete")}(${mappedMap} *self, ${mappedKey} key) {
+  if (self->buckets.length == 0) return false;
+  uintptr_t slot = ${mapMethodName(name, "hash")}(key) & (self->buckets.length - 1);
+  for (uintptr_t probe = 0; probe < self->buckets.length; probe += 1) {
+    uintptr_t stored = self->buckets.data[slot];
+    if (stored == 0) return false;
+    if (stored == SIZE_MAX || !${mapEqualityName(name)}(self->entries.data[stored - 1].key, key)) {
+      slot = (slot + 1) & (self->buckets.length - 1);
+      continue;
+    }
+    uintptr_t index = stored - 1;
+${indent(cleanupLines(storedValueCleanup) + cleanupLines(storedKeyCleanup), 4)}    self->entries.data[index] = (${mappedEntry}){ 0 };
+    ${mapMethodName(name, "erase_at")}(self, slot, index);
+    return true;
+  }
+  return false;
 }
 
 static __attribute__((unused)) void ${mapMethodName(name, "clear")}(${mappedMap} *self) {
@@ -1794,6 +1818,14 @@ function generateSetRuntime(
   hash ^= hash >> 33;`;
   const incomingCleanup = generateOwnedEnvironmentCleanup(
     "value",
+    set.elementType,
+    structs,
+    enums,
+    semanticInfo,
+    { value: 0 },
+  );
+  const storedElementCleanup = generateOwnedEnvironmentCleanup(
+    "self->values.data[index]",
     set.elementType,
     structs,
     enums,
@@ -1879,6 +1911,26 @@ ${duplicateCleanup}      return false;
   return true;
 }
 
+static __attribute__((unused)) void ${setMethodName(name, "erase_at")}(${mappedSet} *self, uintptr_t slot, uintptr_t index) {
+  uintptr_t last = self->values.length - 1;
+  self->buckets.data[slot] = SIZE_MAX;
+  self->tombstones += 1;
+  if (index != last) {
+    self->values.data[index] = self->values.data[last];
+    uintptr_t movedSlot = ${setMethodName(name, "hash")}(self->values.data[index]) & (self->buckets.length - 1);
+    while (self->buckets.data[movedSlot] != last + 1) movedSlot = (movedSlot + 1) & (self->buckets.length - 1);
+    self->buckets.data[movedSlot] = index + 1;
+  }
+  self->values.data[last] = ${mapZeroValue(set.elementType, structs, enums, semanticInfo.foreignNamedTypes)};
+  self->values.length = last;
+  if (self->values.length == 0) {
+    for (uintptr_t cleared = 0; cleared < self->buckets.length; cleared += 1) self->buckets.data[cleared] = 0;
+    self->tombstones = 0;
+  } else if (self->tombstones > self->values.length) {
+    ${setMethodName(name, "rehash")}(self, self->buckets.length);
+  }
+}
+
 static __attribute__((unused)) ${mappedValueOption} ${setMethodName(name, "remove")}(${mappedSet} *self, ${mappedElement} value) {
   if (self->buckets.length == 0) return ${noneValue};
   uintptr_t slot = ${setMethodName(name, "hash")}(value) & (self->buckets.length - 1);
@@ -1890,27 +1942,30 @@ static __attribute__((unused)) ${mappedValueOption} ${setMethodName(name, "remov
       continue;
     }
     uintptr_t index = stored - 1;
-    uintptr_t last = self->values.length - 1;
     ${mappedValueOption} result = ${someValue};
-    self->buckets.data[slot] = SIZE_MAX;
-    self->tombstones += 1;
-    if (index != last) {
-      self->values.data[index] = self->values.data[last];
-      uintptr_t movedSlot = ${setMethodName(name, "hash")}(self->values.data[index]) & (self->buckets.length - 1);
-      while (self->buckets.data[movedSlot] != last + 1) movedSlot = (movedSlot + 1) & (self->buckets.length - 1);
-      self->buckets.data[movedSlot] = index + 1;
-    }
-    self->values.data[last] = ${mapZeroValue(set.elementType, structs, enums, semanticInfo.foreignNamedTypes)};
-    self->values.length = last;
-    if (self->values.length == 0) {
-      for (uintptr_t cleared = 0; cleared < self->buckets.length; cleared += 1) self->buckets.data[cleared] = 0;
-      self->tombstones = 0;
-    } else if (self->tombstones > self->values.length) {
-      ${setMethodName(name, "rehash")}(self, self->buckets.length);
-    }
+    self->values.data[index] = ${mapZeroValue(set.elementType, structs, enums, semanticInfo.foreignNamedTypes)};
+    ${setMethodName(name, "erase_at")}(self, slot, index);
     return result;
   }
   return ${noneValue};
+}
+
+static __attribute__((unused)) bool ${setMethodName(name, "delete")}(${mappedSet} *self, ${mappedElement} value) {
+  if (self->buckets.length == 0) return false;
+  uintptr_t slot = ${setMethodName(name, "hash")}(value) & (self->buckets.length - 1);
+  for (uintptr_t probe = 0; probe < self->buckets.length; probe += 1) {
+    uintptr_t stored = self->buckets.data[slot];
+    if (stored == 0) return false;
+    if (stored == SIZE_MAX || !${setEqualityName(name)}(self->values.data[stored - 1], value)) {
+      slot = (slot + 1) & (self->buckets.length - 1);
+      continue;
+    }
+    uintptr_t index = stored - 1;
+${storedElementCleanup ? `${indent(storedElementCleanup, 4)}\n` : ""}    self->values.data[index] = ${mapZeroValue(set.elementType, structs, enums, semanticInfo.foreignNamedTypes)};
+    ${setMethodName(name, "erase_at")}(self, slot, index);
+    return true;
+  }
+  return false;
 }
 
 static __attribute__((unused)) void ${setMethodName(name, "clear")}(${mappedSet} *self) {

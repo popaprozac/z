@@ -2725,6 +2725,7 @@ function mapMemberDetail(
     get: `get(in key: ${key}): Option<view ${value}>`,
     set: `set(key: ${key}, value: ${value}): void  // transfers owned values`,
     remove: `remove(in key: ${key}): Option<${value}>  // transfers the removed value`,
+    delete: `delete(in key: ${key}): boolean  // destroys the removed entry`,
     clear: "clear(): void  // destroys all entries",
   };
   return details[name] ?? null;
@@ -2735,7 +2736,7 @@ function mapCompletions(
   valueType: string,
   typeDisplayNames: ReadonlyMap<string, string>,
 ): CompletionItem[] {
-  return ["length", "has", "get", "set", "remove", "clear"].map((name) => ({
+  return ["length", "has", "get", "set", "remove", "delete", "clear"].map((name) => ({
     label: name,
     kind: name === "length" ? completionKinds.property : completionKinds.method,
     detail: mapMemberDetail(name, keyType, valueType, typeDisplayNames)!,
@@ -2754,6 +2755,7 @@ function setMemberDetail(
     has: `has(in value: ${element}): boolean`,
     add: `add(value: ${element}): boolean  // transfers the owned value`,
     remove: `remove(in value: ${element}): Option<${element}>  // transfers the removed value`,
+    delete: `delete(in value: ${element}): boolean  // destroys the removed value`,
     clear: "clear(): void  // destroys all values",
   };
   return details[name] ?? null;
@@ -2763,7 +2765,7 @@ function setCompletions(
   elementType: string,
   typeDisplayNames: ReadonlyMap<string, string>,
 ): CompletionItem[] {
-  return ["length", "has", "add", "remove", "clear"].map((name) => ({
+  return ["length", "has", "add", "remove", "delete", "clear"].map((name) => ({
     label: name,
     kind: name === "length" ? completionKinds.property : completionKinds.method,
     detail: setMemberDetail(name, elementType, typeDisplayNames)!,

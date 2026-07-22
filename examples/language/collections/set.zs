@@ -15,6 +15,10 @@ function main(): i32 {
   };
   if (!closedKnownDocument || openDocuments.length != 1) return 5;
 
+  if (!openDocuments.delete("notes/ideas.md")) return 6;
+  if (openDocuments.delete("notes/ideas.md")) return 7;
+
+  openDocuments.add("notes/archive.md");
   openDocuments.clear();
-  return openDocuments.length == 0 ? 0 : 6;
+  return openDocuments.length == 0 ? 0 : 8;
 }

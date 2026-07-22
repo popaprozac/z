@@ -9,6 +9,8 @@ function main(): i32 {
   let users = Map<String, User>();
   users.set("ada", User({ id: 20, name: "Ada" }));
   users.set("grace", User({ id: 22, name: "Grace" }));
+  users.set("temporary", User({ id: 1, name: "Temporary" }));
+  if (!users.delete("temporary") || users.delete("temporary")) return 1;
 
   const found = users.get("ada");
   const observed = match (in found) {
@@ -20,6 +22,6 @@ function main(): i32 {
   const removed = users.remove("grace");
   return match (removed) {
     some(user) => observed + user.id - 42;
-    none => 1;
+    none => 2;
   };
 }

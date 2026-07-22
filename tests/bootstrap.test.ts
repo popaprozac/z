@@ -8488,6 +8488,7 @@ test("owns Map keys and values with optional views and deterministic removal", (
   assert.match(generated, /Map.*_rehash/);
   assert.match(generated, /self->buckets\.data\[slot\] = self->entries\.length/);
   assert.match(generated, /Map.*_remove/);
+  assert.match(generated, /Map.*_delete/);
   assert.match(generated, /MapEntry.*_deinit/);
 
   const directory = mkdtempSync("/tmp/z-map-cleanup-");
@@ -8506,12 +8507,15 @@ test("owns Map keys and values with optional views and deterministic removal", (
       if (!resources.has(1) || resources.length != 1) return 1;
       resources.clear();
       if (resources.length != 0) return 1;
+      resources.set(2, Resource({ id: 3 }));
+      if (!resources.delete(2)) return 1;
+      if (resources.delete(2)) return 1;
       return 0;
     }
   `);
   const cleanup = spawnSync(process.execPath, [cli, "run", input], { encoding: "utf8" });
   assert.equal(cleanup.status, 0, cleanup.stderr);
-  assert.equal(cleanup.stdout, "drop=1\ndrop=2\n");
+  assert.equal(cleanup.stdout, "drop=1\ndrop=2\ndrop=3\n");
 
   writeFileSync(input, `
     import { Map } from "std/collections";
@@ -8785,6 +8789,7 @@ test("exposes Map imports, members, and source-level types to editor services", 
   assert.equal(items.find((item) => item.label === "length")?.detail, "length: usize");
   assert.match(items.find((item) => item.label === "get")?.detail ?? "", /Option<view i32>/);
   assert.match(items.find((item) => item.label === "remove")?.detail ?? "", /Option<i32>/);
+  assert.match(items.find((item) => item.label === "delete")?.detail ?? "", /boolean.*destroys/);
 
   const valid = source.replace("      users.;", "      users.set(\"answer\", 42);");
   const binding = valid.indexOf("users =");
@@ -8803,6 +8808,7 @@ test("owns unique Set values with insertion status and deterministic removal", (
   assert.match(generated, /Set.*_add\(.*\*self, Z_String value\)/);
   assert.match(generated, /if \(\(value\)\.capacity > 0\) free/);
   assert.match(generated, /Set.*_remove/);
+  assert.match(generated, /Set.*_delete/);
   assert.match(generated, /Set.*_rehash/);
   assert.match(generated, /self->values\.data\[last\] = \(Z_String\)\{ 0 \}/);
 
@@ -8876,6 +8882,7 @@ test("exposes Set imports, members, and source-level types to editor services", 
   assert.equal(items.find((item) => item.label === "length")?.detail, "length: usize");
   assert.match(items.find((item) => item.label === "add")?.detail ?? "", /add\(value: String\): boolean/);
   assert.match(items.find((item) => item.label === "remove")?.detail ?? "", /Option<String>/);
+  assert.match(items.find((item) => item.label === "delete")?.detail ?? "", /boolean.*destroys/);
 
   const valid = source.replace("      values.;", "      values.add(\"ready\");");
   const binding = valid.indexOf("values =");

@@ -418,8 +418,9 @@ const id = match (in found) {
 `set` transfers cleanup-bearing keys and values into the map. Replacing an
 entry destroys its previous value. `get` returns `Option<view V>`, so lookup
 does not copy or transfer the stored value; structural mutation is rejected
-until that view's last use. `remove` returns owned `Option<V>`, while `clear`
-destroys every entry. `has` and `.length` do not mutate storage.
+until that view's last use. `remove` returns owned `Option<V>`. `delete`
+destroys the matching key and value and reports whether they existed, while
+`clear` destroys every entry. `has` and `.length` do not mutate storage.
 
 If `V` is cleanup-free and ordinarily copyable, using the matched payload where
 an owned `V` is required performs the same implicit by-value load described
@@ -438,6 +439,7 @@ let visited = Set<String>();
 const inserted = visited.add("settings");
 const present = visited.has("settings");
 const removed = visited.remove("settings");
+const deleted = visited.delete("obsolete");
 visited.clear();
 ```
 
@@ -445,6 +447,7 @@ visited.clear();
 value is already stored, the existing value remains and the incoming owned
 value is destroyed. `remove` borrows its lookup argument and transfers the
 stored value through `Option<T>`; ignoring that result destroys it normally.
+`delete` destroys the stored value directly and returns whether it existed.
 `clear` destroys every stored value, while `has` and `.length` are read-only.
 
 `Map` and `Set` use open-addressed hashed buckets for amortized O(1) lookup and

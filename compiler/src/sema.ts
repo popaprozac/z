@@ -4883,10 +4883,10 @@ function inferExpressionInner(
             throw new DiagnosticError(fileName, expression.callee.object.location, "Map methods require named storage");
           }
           const method = expression.callee.property;
-          if (!["has", "get", "set", "remove", "clear"].includes(method)) {
+          if (!["has", "get", "set", "remove", "delete", "clear"].includes(method)) {
             throw new DiagnosticError(fileName, expression.callee.location, `Map has no method ${JSON.stringify(method)}`);
           }
-          const mutable = method === "set" || method === "remove" || method === "clear";
+          const mutable = method === "set" || method === "remove" || method === "delete" || method === "clear";
           if (mutable) {
             const readonlyField = readonlyFieldOnPath(expression.callee.object, structs, state);
             if (readonlyField) {
@@ -4915,7 +4915,7 @@ function inferExpressionInner(
           const key = expression.arguments[0];
           const actualKey = inferExpression(key, locals, globals, structs, enums, fileName, state);
           requireAssignable(map.keyType, actualKey, key, fileName, structs, enums, state);
-          if (method === "has") return "boolean";
+          if (method === "has" || method === "delete") return "boolean";
           if (method === "get") {
             const ownerName = state.viewOrigins.get(root.name)?.owner ?? root.name;
             state.viewCallOrigins.set(expression.location.offset, { owner: ownerName, location: expression.callee.object.location });
@@ -4941,10 +4941,10 @@ function inferExpressionInner(
             throw new DiagnosticError(fileName, expression.callee.object.location, "Set methods require named storage");
           }
           const method = expression.callee.property;
-          if (!["has", "add", "remove", "clear"].includes(method)) {
+          if (!["has", "add", "remove", "delete", "clear"].includes(method)) {
             throw new DiagnosticError(fileName, expression.callee.location, `Set has no method ${JSON.stringify(method)}`);
           }
-          const mutable = method === "add" || method === "remove" || method === "clear";
+          const mutable = method === "add" || method === "remove" || method === "delete" || method === "clear";
           if (mutable) {
             const readonlyField = readonlyFieldOnPath(expression.callee.object, structs, state);
             if (readonlyField) {
@@ -4976,7 +4976,7 @@ function inferExpressionInner(
             state.dynamicArrayPushTypes.add(dynamicArrayTypeName(set.elementType));
             return "boolean";
           }
-          if (method === "has") return "boolean";
+          if (method === "has" || method === "delete") return "boolean";
           return optionTypeName(set.elementType);
         }
         if (receiverValueType === "TextBuffer") {

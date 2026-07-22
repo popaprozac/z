@@ -73,11 +73,7 @@ export struct ProjectIndex {
   }
 
   function markSaved(inout this, in path: String): boolean {
-    const removed = this.dirtyPaths.remove(path);
-    return match (removed) {
-      some(ownedPath) => true;
-      none => false;
-    };
+    return this.dirtyPaths.delete(path);
   }
 
   function count(): usize {
