@@ -8649,6 +8649,66 @@ test("owns Map keys and values with optional views and deterministic removal", (
   assert.match(diagnostics(missingImport, "map-import.zs")[0].message, /Map requires an explicit standard-library import/);
 });
 
+test("hashes readonly nominal keys through the standard Hashable contract", () => {
+  const example = resolve(projectRoot, "examples/language/collections/custom-hash.zs");
+  const source = readFileSync(example, "utf8");
+  assert.deepEqual(diagnostics(source, example), []);
+
+  const generated = compileToC(source, example);
+  assert.match(generated, /typedef struct \{\n  uint64_t state;\n\} Z_Hasher/);
+  assert.match(generated, /Z_ProjectKey_equals\(&left, &right\)/);
+  assert.match(generated, /Z_ProjectKey_hash\(&value, &hasher\)/);
+  assert.match(generated, /z_hasher_add_string/);
+
+  const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+
+  const moduleDirectory = mkdtempSync("/tmp/z-hashable-module-");
+  writeFileSync(resolve(moduleDirectory, "key.zs"), `
+    import { Hashable, Hasher } from "std/hash";
+    export readonly struct ProjectKey implements Hashable {
+      id: i32;
+      function equals(in other: ProjectKey): boolean { return this.id == other.id; }
+      function hash(inout hasher: Hasher): void { hasher.add(this.id); }
+    }
+  `);
+  const moduleMain = resolve(moduleDirectory, "main.zs");
+  writeFileSync(moduleMain, `
+    import { Map } from "std/collections";
+    import { ProjectKey } from "./key.zs";
+    function main(): i32 {
+      let values = Map<ProjectKey, i32>();
+      values.set(ProjectKey({ id: 7 }), 42);
+      const found = values.get(ProjectKey({ id: 7 }));
+      return match (in found) { some(value) => value - 42; none => 1; };
+    }
+  `);
+  const moduleResult = spawnSync(process.execPath, [cli, "run", moduleMain], { encoding: "utf8" });
+  assert.equal(moduleResult.status, 0, moduleResult.stderr);
+
+  const mutable = source.replace("readonly struct ProjectKey", "struct ProjectKey");
+  const mutableDiagnostic = diagnostics(mutable, "mutable-hash-key.zs")[0];
+  assert.equal(mutableDiagnostic.code, "Z0401");
+  assert.match(mutableDiagnostic.message, /must be readonly to preserve its stored hash/);
+
+  const missingMethod = source.replace(
+    "  function hash(inout hasher: Hasher): void {\n    hasher.add(this.workspace);\n    hasher.add(this.path);\n  }\n",
+    "",
+  );
+  assert.match(diagnostics(missingMethod, "incomplete-hashable.zs")[0].message, /does not implement Hashable\.hash/);
+
+  const invalidFeed = source.replace("hasher.add(this.path);", "hasher.add(1.5);");
+  assert.match(diagnostics(invalidFeed, "invalid-hash-feed.zs")[0].message, /Hasher\.add cannot hash "f64"/);
+
+  const partialImport = source.replace("Hashable, Hasher", "Hash, Hasher");
+  const importOffset = partialImport.indexOf("Hash, Hasher") + "Hash".length;
+  assert.equal(completions(partialImport, example, importOffset).find((item) => item.label === "Hashable")?.kind, 8);
+
+  const addOffset = source.indexOf("hasher.add(this.workspace)") + "hasher.".length;
+  assert.match(completions(source, example, addOffset).find((item) => item.label === "add")?.detail ?? "", /one hash component/);
+  assert.match(hover(source, example, source.indexOf("add(this.workspace)") + 1)?.contents.value ?? "", /feeds a supported scalar/);
+});
+
 test("supports explicit copy and move ownership expressions", () => {
   const source = `
     struct Document {

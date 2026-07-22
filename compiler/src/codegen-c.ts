@@ -95,6 +95,7 @@ const primitiveTypeNames: Record<string, string> = {
   String: "Z_String",
   TextBuffer: "Z_String",
   Arena: "Z_Arena",
+  Hasher: "Z_Hasher",
 };
 
 export function generateC(program: Program, sourceName: string, semanticInfo: SemanticInfo): string {
@@ -121,6 +122,12 @@ export function generateC(program: Program, sourceName: string, semanticInfo: Se
   const explicitCopyTypes = collectExplicitCopyTypes(semanticInfo, structs, enums);
   const arenaCreateTypes = [...new Set(semanticInfo.arenaCreateCalls.values())];
   const usesArena = [...semanticInfo.standardTypeBindings.values()].includes("Arena");
+  const usesHasher = semanticInfo.hasherAddTypes.size > 0
+    || [...semanticInfo.standardTypeBindings.values()].includes("Hasher")
+    || [...mapTypes, ...setTypes].some((type) => {
+      const key = parseMapType(type)?.keyType ?? parseSetType(type)?.elementType;
+      return Boolean(key && structs.get(key)?.implements.some((trait) => trait.name === "Hashable"));
+    });
   const functionTypes = collectFunctionTypes(program, semanticInfo);
   const foreignCallbackAdapters = collectForeignCallbackAdapters(semanticInfo);
   const foreignEscapeHelpers = collectForeignEscapeHelpers(foreignCallbackAdapters);
@@ -254,6 +261,7 @@ export function generateC(program: Program, sourceName: string, semanticInfo: Se
   }
   if (usesSleep) lines.push(generateSleepRuntime(), "");
   if (usesArena) lines.push(generateArenaRuntime(), "");
+  if (usesHasher) lines.push(generateHasherRuntime(usesString), "");
 
   for (const declaration of program.structs) {
     lines.push(`typedef struct ${structName(declaration.name)} ${structName(declaration.name)};`);
@@ -1587,12 +1595,19 @@ function generateMapRuntime(
   const valueOptionDeclaration = enums.get(valueOption)!;
   const nicheValue = nicheOptionPayload(valueOptionDeclaration, semanticInfo.foreignNamedTypes);
   const zKeyEnum = enums.get(map.keyType);
-  const equals = map.keyType === "String"
+  const customKey = structs.get(map.keyType)?.implements.some((trait) => trait.name === "Hashable") ?? false;
+  const equals = customKey
+    ? `${methodName(map.keyType, "equals")}(&left, &right)`
+    : map.keyType === "String"
     ? "z_string_equal(left, right)"
     : zKeyEnum?.variants.every((variant) => variant.payload === null)
       ? "left.tag == right.tag"
       : "left == right";
-  const hashBody = map.keyType === "String"
+  const hashBody = customKey
+    ? `Z_Hasher hasher = z_hasher_new();
+  ${methodName(map.keyType, "hash")}(&value, &hasher);
+  return z_hasher_finish(hasher);`
+    : map.keyType === "String"
     ? `uint64_t hash = UINT64_C(14695981039346656037);
   for (uintptr_t index = 0; index < value.length; index += 1) {
     hash ^= (unsigned char)value.data[index];
@@ -1642,7 +1657,7 @@ function generateMapRuntime(
 
 static inline __attribute__((unused)) uintptr_t ${mapMethodName(name, "hash")}(${mappedKey} value) {
   ${hashBody}
-  return (uintptr_t)hash;
+${customKey ? "" : "  return (uintptr_t)hash;"}
 }
 
 static __attribute__((unused)) void ${mapMethodName(name, "rehash")}(${mappedMap} *self, uintptr_t capacity) {
@@ -1799,12 +1814,19 @@ function generateSetRuntime(
   const valueOptionDeclaration = enums.get(valueOption)!;
   const nicheValue = nicheOptionPayload(valueOptionDeclaration, semanticInfo.foreignNamedTypes);
   const zElementEnum = enums.get(set.elementType);
-  const equals = set.elementType === "String"
+  const customElement = structs.get(set.elementType)?.implements.some((trait) => trait.name === "Hashable") ?? false;
+  const equals = customElement
+    ? `${methodName(set.elementType, "equals")}(&left, &right)`
+    : set.elementType === "String"
     ? "z_string_equal(left, right)"
     : zElementEnum?.variants.every((variant) => variant.payload === null)
       ? "left.tag == right.tag"
       : "left == right";
-  const hashBody = set.elementType === "String"
+  const hashBody = customElement
+    ? `Z_Hasher hasher = z_hasher_new();
+  ${methodName(set.elementType, "hash")}(&value, &hasher);
+  return z_hasher_finish(hasher);`
+    : set.elementType === "String"
     ? `uint64_t hash = UINT64_C(14695981039346656037);
   for (uintptr_t index = 0; index < value.length; index += 1) {
     hash ^= (unsigned char)value.data[index];
@@ -1846,7 +1868,7 @@ function generateSetRuntime(
 
 static inline __attribute__((unused)) uintptr_t ${setMethodName(name, "hash")}(${mappedElement} value) {
   ${hashBody}
-  return (uintptr_t)hash;
+${customElement ? "" : "  return (uintptr_t)hash;"}
 }
 
 static __attribute__((unused)) void ${setMethodName(name, "rehash")}(${mappedSet} *self, uintptr_t capacity) {
@@ -4637,6 +4659,20 @@ function generateExpressionInner(expression: Expression, context: GenerationCont
         ));
         return `${signature.cName}(${arguments_.join(", ")})`;
       }
+      const hasherAddType = context.semanticInfo.hasherAddTypes.get(expression.location.offset);
+      if (hasherAddType && expression.callee.kind === "member") {
+        const receiver = generateExpression(expression.callee.object, context);
+        const argument = generateExpression(expression.arguments[0], context);
+        if (hasherAddType === "String") return `z_hasher_add_string(&(${receiver}), ${argument})`;
+        const zEnum = context.enums.get(hasherAddType);
+        if (zEnum?.variants.every((variant) => variant.payload === null)) {
+          return `z_hasher_add_u64(&(${receiver}), (uint64_t)((${argument}).tag))`;
+        }
+        if (context.structs.get(hasherAddType)?.implements.some((trait) => trait.name === "Hashable")) {
+          return `${methodName(hasherAddType, "hash")}(&(${argument}), &(${receiver}))`;
+        }
+        return `z_hasher_add_u64(&(${receiver}), (uint64_t)(${argument}))`;
+      }
       if (expression.callee.kind === "identifier") {
         const map = parseMapType(expression.callee.name);
         if (map) {
@@ -5069,6 +5105,45 @@ static void z_arena_reset(Z_Arena *arena) {
   }
   arena->cleanups = NULL;
   arena->pages = NULL;
+}`;
+}
+
+function generateHasherRuntime(includeString: boolean): string {
+  return `typedef struct {
+  uint64_t state;
+} Z_Hasher;
+
+static inline __attribute__((unused)) Z_Hasher z_hasher_new(void) {
+  return (Z_Hasher){ .state = UINT64_C(14695981039346656037) };
+}
+
+static inline __attribute__((unused)) void z_hasher_add_bytes(Z_Hasher *self, const char *bytes, uintptr_t length) {
+  for (uintptr_t index = 0; index < length; index += 1) {
+    self->state ^= (unsigned char)bytes[index];
+    self->state *= UINT64_C(1099511628211);
+  }
+}
+
+static inline __attribute__((unused)) void z_hasher_add_u64(Z_Hasher *self, uint64_t value) {
+  unsigned char bytes[8];
+  for (uintptr_t index = 0; index < 8; index += 1) bytes[index] = (unsigned char)(value >> (index * 8));
+  z_hasher_add_bytes(self, (const char *)bytes, 8);
+}
+
+${includeString ? `static inline __attribute__((unused)) void z_hasher_add_string(Z_Hasher *self, Z_String value) {
+  z_hasher_add_u64(self, (uint64_t)value.length);
+  z_hasher_add_bytes(self, value.data != NULL ? value.data : "", value.length);
+}
+` : ""}
+
+static inline __attribute__((unused)) uintptr_t z_hasher_finish(Z_Hasher self) {
+  uint64_t hash = self.state;
+  hash ^= hash >> 33;
+  hash *= UINT64_C(0xff51afd7ed558ccd);
+  hash ^= hash >> 33;
+  hash *= UINT64_C(0xc4ceb9fe1a85ec53);
+  hash ^= hash >> 33;
+  return (uintptr_t)hash;
 }`;
 }
 

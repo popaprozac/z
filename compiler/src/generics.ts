@@ -15,6 +15,7 @@ import { setTypeName } from "./set-types.ts";
 import { weakTypeName } from "./weak-types.ts";
 import { optionTypeName } from "./option-types.ts";
 import { parseViewType, viewTypeName } from "./view-types.ts";
+import { hashableTraitDeclaration } from "./hash-types.ts";
 
 export function materializeGenerics(
   program: Program,
@@ -24,6 +25,10 @@ export function materializeGenerics(
   const structTemplates = new Map(program.structs.filter((item) => item.typeParameters?.length).map((item) => [item.name, item]));
   const functionTemplates = new Map(program.functions.filter((item) => item.typeParameters?.length).map((item) => [item.name, item]));
   const traits = new Map(program.traits.map((item) => [item.name, item]));
+  const hashableImport = program.imports
+    .flatMap((declaration) => declaration.header === "std/hash" ? declaration.bindings ?? [] : [])
+    .find((binding) => binding.importedName === "Hashable");
+  if (hashableImport) traits.set("Hashable", hashableTraitDeclaration(hashableImport.location));
   const structs: StructDeclaration[] = [];
   const functions: FunctionDeclaration[] = [];
   const structInstances = new Map<string, string>();

@@ -83,6 +83,8 @@ text value.
 | Weak identity | `Weak<T>` | Non-owning reference to an ARC-managed class, recovered through `upgrade()` |
 | Text construction | `TextBuffer` | Move-only mutable UTF-8 builder imported from `std/text` |
 | Region owner | `Arena` | Move-only region allocator imported from `std/memory` |
+| Hash composition | `Hasher` | Compiler-supplied mutable state passed to `Hashable.hash`, imported from `std/hash` |
+| Hash contract | `Hashable` | Nominal equality and hashing trait for readonly collection keys, imported from `std/hash` |
 | Function value | `(in value: T) => U throws E` | Closure/callback signature; parameter capabilities are part of the type |
 | Read-only projection | `view T` | Inferred non-storable borrow tied to owner storage, not a general reference type |
 | Native types | Imported nominal names and `T | null` | ABI-exact C, Objective-C, C++, or Swift-generated types; nullability is limited to nullable native references/handles |
@@ -452,10 +454,42 @@ stored value through `Option<T>`; ignoring that result destroys it normally.
 
 `Map` and `Set` use open-addressed hashed buckets for amortized O(1) lookup and
 membership. Owned entries remain in compact storage, while rehashing moves only
-bucket indices; it does not copy or duplicate user-owned values. Supported
-keys/elements are integers, `boolean`, `String`, and payload-free Z or native
-enums. Floating-point and custom keys remain excluded until a nominal
-hashing/equality contract is designed. `Map` values currently use ordinary Z value storage; direct
+bucket indices; it does not copy or duplicate user-owned values. Built-in
+keys/elements include integers, `boolean`, `String`, and payload-free Z or
+native enums. Floating-point keys remain excluded because `NaN` does not supply
+the required equivalence relation.
+
+Readonly value structs can opt into nominal custom hashing:
+
+```z
+import { Map } from "std/collections";
+import { Hashable, Hasher } from "std/hash";
+
+readonly struct ProjectKey implements Hashable {
+  workspace: String;
+  path: String;
+
+  function equals(in other: ProjectKey): boolean {
+    return this.workspace == other.workspace && this.path == other.path;
+  }
+
+  function hash(inout hasher: Hasher): void {
+    hasher.add(this.workspace);
+    hasher.add(this.path);
+  }
+}
+
+let projects = Map<ProjectKey, i32>();
+```
+
+The standard `Hashable` requirement conceptually uses
+`equals(in other: this)` and `hash(inout hasher: Hasher)`. Equal values must
+feed identical components in identical order. `Hasher` owns mixing and final
+hash production; implementations feed supported scalars, Strings, enums, or
+nested `Hashable` values through `add`. Requiring readonly value keys prevents
+mutation from making an inserted bucket unreachable.
+
+`Map` values currently use ordinary Z value storage; direct
 class/Objective-C identity, function/weak values, and native C++ RAII values
 wait for storage-specific lookup and construction rules. A Z value struct may
 provide an explicit owned wrapper where that is already safe.

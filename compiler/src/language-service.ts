@@ -593,6 +593,12 @@ export function hover(source: string, fileName: string, offset: number): Hover |
   if (context.semanticInfo.standardTypeBindings.get(word.text) === "Set") {
     return markdownHover("Set<T>(): Set<T>  // owned unique-value storage", source, word.start, word.end);
   }
+  if (context.semanticInfo.standardTypeBindings.get(word.text) === "Hashable") {
+    return markdownHover("trait Hashable  // equals(in other: this) and hash(inout hasher: Hasher)", source, word.start, word.end);
+  }
+  if (context.semanticInfo.standardTypeBindings.get(word.text) === "Hasher") {
+    return markdownHover("standard Hasher  // mutable hash-composition state", source, word.start, word.end);
+  }
 
   const chainedSelector = objectiveCSelectorAt(context, word.start);
   if (chainedSelector) {
@@ -752,6 +758,9 @@ export function hover(source: string, fileName: string, offset: number): Hover |
       if (word.text === "reset") {
         return markdownHover("reset(): void  // destroys allocations newest-first; requires no live views", source, word.start, word.end);
       }
+    }
+    if (resolved?.kind === "hasher" && word.text === "add") {
+      return markdownHover("add<T>(in value: T): void  // feeds a supported scalar, String, enum, or Hashable value", source, word.start, word.end);
     }
     if (resolved?.kind === "map") {
       const detail = mapMemberDetail(word.text, resolved.keyType, resolved.valueType, context.typeDisplayNames);
@@ -976,6 +985,20 @@ function selectiveImportCandidates(specifier: string, fileName: string): Complet
         label: "Set",
         kind: completionKinds.struct,
         detail: "Set<T>()  // owned unique-value storage",
+      },
+    ];
+  }
+  if (specifier === "std/hash") {
+    return [
+      {
+        label: "Hashable",
+        kind: completionKinds.interface,
+        detail: "trait Hashable  // nominal equality and hash contract",
+      },
+      {
+        label: "Hasher",
+        kind: completionKinds.struct,
+        detail: "mutable hash-composition state",
       },
     ];
   }
@@ -1280,22 +1303,26 @@ function symbolCompletions(source: string, fileName: string, offset: number): Co
   try {
     const parsed = parse(lex(source, fileName), fileName);
     for (const declaration of parsed.imports) {
-      if (declaration.header !== "std/text" && declaration.header !== "std/memory" && declaration.header !== "std/collections") continue;
+      if (declaration.header !== "std/text" && declaration.header !== "std/memory" && declaration.header !== "std/collections" && declaration.header !== "std/hash") continue;
       for (const binding of declaration.bindings ?? []) {
-        if (binding.importedName !== "TextBuffer" && binding.importedName !== "Arena" && binding.importedName !== "Map" && binding.importedName !== "Set") continue;
+        if (binding.importedName !== "TextBuffer" && binding.importedName !== "Arena" && binding.importedName !== "Map" && binding.importedName !== "Set" && binding.importedName !== "Hashable" && binding.importedName !== "Hasher") continue;
         const detail = binding.importedName === "TextBuffer"
           ? "move-only UTF-8 construction storage"
           : binding.importedName === "Arena"
             ? "move-only growable region storage"
             : binding.importedName === "Map"
               ? "owned associative storage"
-              : "owned unique-value storage";
+              : binding.importedName === "Set"
+                ? "owned unique-value storage"
+                : binding.importedName === "Hashable"
+                  ? "nominal equality and hash contract"
+                  : "mutable hash-composition state";
         builtIns.push({
           label: binding.localName,
-          kind: completionKinds.struct,
+          kind: binding.importedName === "Hashable" ? completionKinds.interface : completionKinds.struct,
           detail: binding.localName === binding.importedName
-            ? `${binding.importedName}()  // ${detail}`
-            : `${binding.importedName}()  // imported as ${binding.localName}`,
+            ? `${binding.importedName}${binding.importedName === "Hashable" ? "" : "()"}  // ${detail}`
+            : `${binding.importedName}  // imported as ${binding.localName}`,
           sortText: `0-${binding.localName}`,
         });
       }
@@ -1414,14 +1441,18 @@ function symbolCompletions(source: string, fileName: string, offset: number): Co
   for (const [name, standardType] of context.semanticInfo.standardTypeBindings) {
     items.push({
       label: name,
-      kind: completionKinds.struct,
+      kind: standardType === "Hashable" ? completionKinds.interface : completionKinds.struct,
       detail: standardType === "TextBuffer"
         ? `${standardType}()  // move-only UTF-8 construction storage`
         : standardType === "Arena"
           ? `${standardType}(options?: { initialCapacity: usize })  // move-only growable region storage`
           : standardType === "Map"
             ? `${standardType}<K, V>()  // owned associative storage`
-            : `${standardType}<T>()  // owned unique-value storage`,
+            : standardType === "Set"
+              ? `${standardType}<T>()  // owned unique-value storage`
+              : standardType === "Hashable"
+                ? "trait Hashable  // equals and hash contract"
+                : "Hasher  // mutable hash-composition state",
       sortText: `0-${name}`,
     });
   }
@@ -2181,6 +2212,14 @@ function memberCompletions(
       },
     ], prefix, 1000);
   }
+  if (directReceiver?.kind === "hasher") {
+    return filterCompletions([{
+      label: "add",
+      kind: completionKinds.method,
+      detail: "add<T>(in value: T): void  // feeds one hash component",
+      insertText: "add()",
+    }], prefix, 1000);
+  }
   if (directReceiver?.kind === "map") {
     return filterCompletions(mapCompletions(directReceiver.keyType, directReceiver.valueType, importContext.typeDisplayNames), prefix, 1000);
   }
@@ -2374,6 +2413,14 @@ function memberCompletions(
         insertText: "reset()",
       },
     ], prefix, 1000);
+  }
+  if (resolved?.kind === "hasher") {
+    return filterCompletions([{
+      label: "add",
+      kind: completionKinds.method,
+      detail: "add<T>(in value: T): void  // feeds one hash component",
+      insertText: "add()",
+    }], prefix, 1000);
   }
   if (resolved?.kind === "map") {
     return filterCompletions(mapCompletions(resolved.keyType, resolved.valueType, context.typeDisplayNames), prefix, 1000);
@@ -2648,6 +2695,7 @@ type ResolvedReceiver =
   | { readonly kind: "string" }
   | { readonly kind: "textBuffer" }
   | { readonly kind: "arena" }
+  | { readonly kind: "hasher" }
   | { readonly kind: "map"; readonly keyType: string; readonly valueType: string }
   | { readonly kind: "set"; readonly elementType: string }
   | { readonly kind: "weak"; readonly target: string }
@@ -2670,6 +2718,7 @@ function resolveReceiver(context: AnalyzedSource, text: string, offset: number):
   const receiverType = view?.target ?? type;
   if (receiverType === "TextBuffer") return { kind: "textBuffer" };
   if (receiverType === "Arena") return { kind: "arena" };
+  if (receiverType === "Hasher") return { kind: "hasher" };
   if (receiverType === "String") return { kind: "string" };
   const map = parseMapType(receiverType);
   if (map) return { kind: "map", ...map };

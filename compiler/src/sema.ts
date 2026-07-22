@@ -75,6 +75,7 @@ import { optionTypeName, parseOptionType } from "./option-types.ts";
 import { mapEntryTypeName, parseMapType } from "./map-types.ts";
 import { parseSetType } from "./set-types.ts";
 import { parseOptionalViewType, parseReceiverViewReturnType, parseViewType, viewTypeName } from "./view-types.ts";
+import { hashableSelfTypeName, hashableTraitDeclaration } from "./hash-types.ts";
 
 export type ObjCCallInfo = {
   readonly selector: string;
@@ -267,7 +268,8 @@ export type SemanticInfo = {
   readonly standardFunctionReferences: ReadonlyMap<number, StandardFunctionName>;
   readonly standardFunctionBindings: ReadonlyMap<string, StandardFunctionName>;
   readonly standardModuleBindings: ReadonlyMap<string, StandardModuleName>;
-  readonly standardTypeBindings: ReadonlyMap<string, "TextBuffer" | "Arena" | "Map" | "Set">;
+  readonly standardTypeBindings: ReadonlyMap<string, "TextBuffer" | "Arena" | "Map" | "Set" | "Hashable" | "Hasher">;
+  readonly hasherAddTypes: ReadonlyMap<number, string>;
   readonly typeDisplayNames: ReadonlyMap<string, string>;
   readonly objectiveC: boolean;
   readonly cPlusPlus: boolean;
@@ -332,7 +334,8 @@ type AnalysisState = {
   readonly standardFunctionReferences: Map<number, StandardFunctionName>;
   readonly standardFunctionBindings: Map<string, StandardFunctionName>;
   readonly standardModuleBindings: Map<string, StandardModuleName>;
-  readonly standardTypeBindings: Map<string, "TextBuffer" | "Arena" | "Map" | "Set">;
+  readonly standardTypeBindings: Map<string, "TextBuffer" | "Arena" | "Map" | "Set" | "Hashable" | "Hasher">;
+  readonly hasherAddTypes: Map<number, string>;
   readonly inferredOutBindingLocations: Map<string, SourceLocation>;
   readonly typeDisplayNames: ReadonlyMap<string, string>;
   readonly objectiveC: boolean;
@@ -395,14 +398,14 @@ type SymbolValue =
   | { readonly kind: "console" }
   | { readonly kind: "standardModule"; readonly module: StandardModuleName }
   | { readonly kind: "standardFunction"; readonly name: StandardFunctionName; readonly declaration: FunctionDeclaration }
-  | { readonly kind: "standardType"; readonly type: "TextBuffer" | "Arena" | "Map" | "Set" }
+  | { readonly kind: "standardType"; readonly type: "TextBuffer" | "Arena" | "Map" | "Set" | "Hasher" }
   | { readonly kind: "struct"; readonly declaration: StructDeclaration }
   | { readonly kind: "trait"; readonly declaration: TraitDeclaration }
   | { readonly kind: "enum"; readonly declaration: EnumDeclaration };
 
 const integerTypes = new Set(["i8", "u8", "i16", "u16", "i32", "u32", "i64", "u64", "isize", "usize"]);
 const floatTypes = new Set(["f32", "f64"]);
-const primitiveTypes = new Set([...integerTypes, ...floatTypes, "void", "boolean", "cstring", "String", "TextBuffer", "Arena"]);
+const primitiveTypes = new Set([...integerTypes, ...floatTypes, "void", "boolean", "cstring", "String", "TextBuffer", "Arena", "Hasher"]);
 const movedPrefix = "__z_moved:";
 const maybeMovedPrefix = "__z_maybe_moved:";
 const uninitializedPrefix = "__z_uninitialized:";
@@ -529,6 +532,7 @@ export function analyze(
     standardFunctionBindings: new Map(),
     standardModuleBindings: new Map(),
     standardTypeBindings: new Map(),
+    hasherAddTypes: new Map(),
     inferredOutBindingLocations: new Map(),
     typeDisplayNames,
     objectiveC,
@@ -677,6 +681,32 @@ export function analyze(
         }
         continue;
       }
+      if (declaration.header === "std/hash") {
+        if (!declaration.bindings) {
+          throw new DiagnosticError(fileName, declaration.location, "std/hash requires a selective import", {
+            code: "Z0501",
+            helps: ["use `import { Hashable, Hasher } from \"std/hash\";`"],
+          });
+        }
+        for (const binding of declaration.bindings) {
+          if (binding.importedName !== "Hashable" && binding.importedName !== "Hasher") {
+            throw new DiagnosticError(fileName, binding.location, `std/hash has no export ${JSON.stringify(binding.importedName)}`, {
+              code: "Z0501",
+              helps: ["std/hash exports `Hashable` and `Hasher`"],
+            });
+          }
+          validateUserName(binding.localName, binding.location, fileName);
+          if (binding.importedName === "Hashable") {
+            const trait = hashableTraitDeclaration(binding.location);
+            declareGlobal(globals, binding.localName, { kind: "trait", declaration: trait }, binding.location, fileName);
+            traits.set("Hashable", trait);
+          } else {
+            declareGlobal(globals, binding.localName, { kind: "standardType", type: "Hasher" }, binding.location, fileName);
+          }
+          state.standardTypeBindings.set(binding.localName, binding.importedName);
+        }
+        continue;
+      }
       if (declaration.header === "std/thread") {
         if (!declaration.bindings) {
           throw new DiagnosticError(fileName, declaration.location, "std/thread requires a selective import", {
@@ -712,7 +742,7 @@ export function analyze(
       }
       throw new DiagnosticError(fileName, declaration.location, `unknown standard module ${JSON.stringify(declaration.header)}`, {
         code: "Z0501",
-        helps: ["the bootstrap standard library currently provides `std`, `std/console`, `std/time`, `std/text`, `std/memory`, `std/collections`, `std/thread`, `std/fs`, and `std/process`"],
+        helps: ["the bootstrap standard library currently provides `std`, `std/console`, `std/time`, `std/text`, `std/memory`, `std/collections`, `std/hash`, `std/thread`, `std/fs`, and `std/process`"],
       });
     }
     const module = foreignModules.get(declaration.moduleName);
@@ -789,7 +819,7 @@ export function analyze(
   for (const declaration of program.structs) {
     const map = parseMapType(declaration.name);
     if (map) {
-      validateCollectionKeyType("Map key", map.keyType, enums, state, declaration.location, fileName);
+      validateCollectionKeyType("Map key", map.keyType, structs, enums, state, declaration.location, fileName);
       if (map.valueType === "void" || containsViewType(map.valueType) || containsSliceType(map.valueType) || map.valueType === "Arena" || parseTaskType(map.valueType)) {
         throw new DiagnosticError(fileName, declaration.location, `Map cannot own value type ${JSON.stringify(displayArrayType(map.valueType))} in the first collections tier`);
       }
@@ -818,7 +848,7 @@ export function analyze(
       continue;
     }
     const set = parseSetType(declaration.name);
-    if (set) validateCollectionKeyType("Set element", set.elementType, enums, state, declaration.location, fileName);
+    if (set) validateCollectionKeyType("Set element", set.elementType, structs, enums, state, declaration.location, fileName);
   }
 
   for (const declaration of program.structs) {
@@ -1061,7 +1091,7 @@ function validateTraitConformance(
           `${declaration.kind} ${JSON.stringify(declaration.name)} does not implement ${reference.name}.${requirement.name}`,
         );
       }
-      if (!sameMethodSignature(method, requirement)) {
+      if (!sameMethodSignature(method, requirement, declaration.name)) {
         throw new DiagnosticError(
           fileName,
           method.location,
@@ -1072,7 +1102,7 @@ function validateTraitConformance(
   }
 }
 
-function sameMethodSignature(actual: FunctionDeclaration, required: FunctionDeclaration): boolean {
+function sameMethodSignature(actual: FunctionDeclaration, required: FunctionDeclaration, ownerType?: string): boolean {
   return Boolean(actual.async) === Boolean(required.async)
     && actual.receiverMode === required.receiverMode
     && actual.returnType.name === required.returnType.name
@@ -1080,7 +1110,9 @@ function sameMethodSignature(actual: FunctionDeclaration, required: FunctionDecl
     && actual.parameters.length === required.parameters.length
     && actual.parameters.every((parameter, index) => (
       parameter.mode === required.parameters[index].mode
-      && parameter.type.name === required.parameters[index].type.name
+      && parameter.type.name === (required.parameters[index].type.name === hashableSelfTypeName
+        ? ownerType
+        : required.parameters[index].type.name)
     ));
 }
 
@@ -4282,7 +4314,7 @@ function inferExpressionInner(
           if (expression.arguments.length !== 0) {
             throw new DiagnosticError(fileName, expression.location, "Map<K, V>() expects no values");
           }
-          validateCollectionKeyType("Map key", map.keyType, enums, state, expression.callee.location, fileName);
+          validateCollectionKeyType("Map key", map.keyType, structs, enums, state, expression.callee.location, fileName);
           if (map.valueType === "void" || containsViewType(map.valueType) || containsSliceType(map.valueType) || map.valueType === "Arena" || parseTaskType(map.valueType)) {
             throw new DiagnosticError(fileName, expression.callee.location, `Map cannot own value type ${JSON.stringify(displayArrayType(map.valueType))} in the first collections tier`);
           }
@@ -4309,7 +4341,7 @@ function inferExpressionInner(
           if (expression.arguments.length !== 0) {
             throw new DiagnosticError(fileName, expression.location, "Set<T>() expects no values");
           }
-          validateCollectionKeyType("Set element", set.elementType, enums, state, expression.callee.location, fileName);
+          validateCollectionKeyType("Set element", set.elementType, structs, enums, state, expression.callee.location, fileName);
           return expression.callee.name;
         }
         const standardType = globals.get(expression.callee.name);
@@ -4873,6 +4905,42 @@ function inferExpressionInner(
           state.arenaCreateCalls.set(expression.location.offset, actual);
           state.viewCallOrigins.set(expression.location.offset, { owner: root.name, location: expression.callee.object.location });
           return viewTypeName(actual);
+        }
+        if (receiverValueType === "Hasher") {
+          rejectLabeledArguments(expression.argumentLabels, expression.location, fileName);
+          if (expression.callee.property !== "add") {
+            throw new DiagnosticError(fileName, expression.callee.location, `Hasher has no method ${JSON.stringify(expression.callee.property)}`);
+          }
+          const root = storageRoot(expression.callee.object);
+          const stored = root ? locals.get(root.name) : null;
+          if (!root || !stored || !isMutableBinding(stored)) {
+            throw new DiagnosticError(fileName, expression.callee.object.location, "Hasher.add requires mutable hasher storage", {
+              code: "Z0205",
+              helps: ["receive the hasher as `inout hasher: Hasher`"],
+            });
+          }
+          if (expression.arguments.length !== 1) {
+            throw new DiagnosticError(fileName, expression.location, `"add" expects 1 argument, received ${expression.arguments.length}`);
+          }
+          const argument = expression.arguments[0];
+          const actual = String(underlyingType(inferExpression(argument, locals, globals, structs, enums, fileName, state)));
+          const payloadFreeEnum = enums.get(actual)?.variants.every((variant) => variant.payload === null) ?? false;
+          const nativeEnum = state.foreignNamedTypes.get(actual)?.kind === "enum";
+          const customHashable = structs.get(actual)?.implements.some((trait) => trait.name === "Hashable") ?? false;
+          if (!integerTypes.has(actual) && actual !== "boolean" && actual !== "String" && !payloadFreeEnum && !nativeEnum && !customHashable) {
+            throw new DiagnosticError(fileName, argument.location, `Hasher.add cannot hash ${JSON.stringify(displayArrayType(actual))}`, {
+              code: "Z0401",
+              helps: ["add a supported scalar, String, enum, or another Hashable value"],
+            });
+          }
+          if (customHashable && !storageRoot(argument) && argument.kind !== "structExpression") {
+            throw new DiagnosticError(fileName, argument.location, "Hasher.add requires addressable storage for a nested Hashable value in the first tier", {
+              code: "Z0401",
+              helps: ["bind the nested value before feeding it into the hasher"],
+            });
+          }
+          state.hasherAddTypes.set(expression.location.offset, actual);
+          return "void";
         }
         const map = parseMapType(receiverValueType);
         if (map) {
@@ -8070,6 +8138,7 @@ function describeValueType(type: ValueType, state: AnalysisState): string {
 function validateCollectionKeyType(
   role: "Map key" | "Set element",
   type: string,
+  structs: ReadonlyMap<string, StructDeclaration>,
   enums: ReadonlyMap<string, EnumDeclaration>,
   state: AnalysisState,
   location: SourceLocation,
@@ -8079,6 +8148,18 @@ function validateCollectionKeyType(
   const payloadFreeEnum = zEnum?.variants.every((variant) => variant.payload === null) ?? false;
   const nativeEnum = state.foreignNamedTypes.get(type)?.kind === "enum";
   if (integerTypes.has(type) || type === "boolean" || type === "String" || payloadFreeEnum || nativeEnum) return;
+  const aggregate = structs.get(type);
+  if (aggregate?.kind === "struct" && aggregate.implements.some((trait) => trait.name === "Hashable")) {
+    const mutableField = aggregate.fields.find((field) => !field.readonly);
+    if (mutableField) {
+      throw new DiagnosticError(fileName, mutableField.location, `${role} type ${JSON.stringify(displayArrayType(type))} must be readonly to preserve its stored hash`, {
+        code: "Z0401",
+        notes: ["a key changing after insertion would make its hashed bucket unreachable"],
+        helps: [`declare \`readonly struct ${displayArrayType(type)} implements Hashable\``],
+      });
+    }
+    return;
+  }
   throw new DiagnosticError(fileName, location, `${role} type ${JSON.stringify(displayArrayType(type))} is not hashable in the first collections tier`, {
     code: "Z0401",
     notes: ["collection keys currently support integers, boolean, String, and payload-free Z or native enums"],
