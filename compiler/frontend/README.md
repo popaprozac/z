@@ -170,6 +170,12 @@ and every nominal identity agree. Expressions absent from the native tree, or
 whose linked representation cannot yet be proven equivalent, stay on the
 Stage-0 path. The check report separately shows exported, observed, and
 native-authoritative root-expression counts.
+Native resolver failures cross the bootstrap boundary as structured diagnostic
+records rather than display text. Unknown names/types/members, type mismatches,
+invalid operators, and invalid matches are now authoritative native diagnostics
+when their file and location belong to the canonical source batch. Stage 0 still
+owns parser, loader, and unsupported-shape diagnostics; malformed, out-of-batch,
+or non-semantic native failures remain buffered until Stage 0 succeeds.
 The reported native interval therefore does more semantic work than the
 graph-and-symbol-only stage-zero comparison.
 Repeated corpus measurements, broadening ordinary-command shadow coverage, and

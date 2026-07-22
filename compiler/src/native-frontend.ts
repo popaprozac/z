@@ -1,5 +1,9 @@
 import { readFileSync } from "node:fs";
 import { CString, dlopen, FFIType, ptr } from "bun:ffi";
+import {
+  isNativeFrontendDiagnosticKind,
+  NativeFrontendDiagnosticError,
+} from "./native-frontend-diagnostics.ts";
 
 export function parseWithNativeFrontendLibrary(libraryPath: string, inputPaths: readonly string[]): string {
   const library = dlopen(libraryPath, {
@@ -65,7 +69,9 @@ export function resolveWithNativeFrontendLibrary(libraryPath: string, entryPath:
     if (!resultPointer) throw new Error("the native frontend library returned a null resolver response");
     try {
       const response = new CString(resultPointer).toString();
-      if (response.startsWith("error\n")) throw new Error(response.slice("error\n".length));
+      if (response.startsWith("error\n")) {
+        throw decodeNativeResolverError(response.slice("error\n".length));
+      }
       if (!response.startsWith("ok\n")) throw new Error("the native frontend library returned a malformed resolver response");
       return response.slice("ok\n".length);
     } finally {
@@ -74,4 +80,31 @@ export function resolveWithNativeFrontendLibrary(libraryPath: string, entryPath:
   } finally {
     library.close();
   }
+}
+
+function decodeNativeResolverError(payload: string): Error {
+  const fields = payload.split("\t");
+  if (
+    fields.length !== 6
+    || fields[0] !== "diagnostic"
+    || !isNativeFrontendDiagnosticKind(fields[1])
+    || !/^(?:[0-9a-f]{2})+$/.test(fields[2])
+    || !/^[0-9a-f]{16}$/.test(fields[3])
+    || !/^[0-9a-f]{16}$/.test(fields[4])
+    || !/^(?:[0-9a-f]{2})+$/.test(fields[5])
+  ) {
+    return new Error(payload);
+  }
+  const line = Number.parseInt(fields[3], 16);
+  const column = Number.parseInt(fields[4], 16);
+  if (!Number.isSafeInteger(line) || line < 1 || !Number.isSafeInteger(column) || column < 1) {
+    return new Error(payload);
+  }
+  return new NativeFrontendDiagnosticError(
+    fields[1],
+    Buffer.from(fields[2], "hex").toString("utf8"),
+    line,
+    column,
+    Buffer.from(fields[5], "hex").toString("utf8"),
+  );
 }

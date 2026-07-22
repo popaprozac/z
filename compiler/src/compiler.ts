@@ -14,11 +14,15 @@ import { linkSourceModules, type SourceModuleBatch, type SourceModuleInfo } from
 import { materializeWeakTypes } from "./weak-types.ts";
 import { generateAsyncC } from "./async-codegen-c.ts";
 import { parseForeignDeclarationContracts } from "./foreign-declarations.ts";
-import type { DiagnosticError } from "./diagnostics.ts";
+import { DiagnosticError } from "./diagnostics.ts";
 import type { Stage1ModuleGraph } from "./self-hosting.ts";
 import type { NativeSemanticIndex } from "./native-semantic-index.ts";
 import { validateNativeFrontendSemantics } from "./native-semantic-parity.ts";
 import { createNativeSemanticBridge } from "./native-call-shadow.ts";
+import {
+  NativeFrontendDiagnosticError,
+  type NativeFrontendDiagnosticKind,
+} from "./native-frontend-diagnostics.ts";
 
 export type NativeLanguage = "c" | "objective-c" | "c++" | "objective-c++";
 
@@ -115,6 +119,8 @@ export function analyzeSource(source: string, fileName: string, options: Analysi
       nativeFrontendFailure = error;
     }
   }
+  const nativeDiagnostic = authoritativeNativeDiagnostic(nativeFrontendFailure, linked.sourceBatch);
+  if (nativeDiagnostic) throw nativeDiagnostic;
   const nativeSemanticBridge = nativeEvidence
     ? createNativeSemanticBridge(linked.sourceBatch, nativeEvidence.index, typeDisplayNames)
     : null;
@@ -177,6 +183,50 @@ export function analyzeSource(source: string, fileName: string, options: Analysi
 
 export function compileToC(source: string, fileName: string): string {
   return compileToNative(source, fileName).source;
+}
+
+const authoritativeNativeDiagnosticKinds = new Set<NativeFrontendDiagnosticKind>([
+  "unknownName",
+  "unknownType",
+  "unknownMember",
+  "typeMismatch",
+  "invalidOperator",
+  "invalidMatch",
+]);
+
+function authoritativeNativeDiagnostic(
+  error: unknown,
+  sourceBatch: SourceModuleBatch,
+): DiagnosticError | null {
+  if (!(error instanceof NativeFrontendDiagnosticError)) return null;
+  if (!authoritativeNativeDiagnosticKinds.has(error.kind)) return null;
+  const sourceModule = sourceBatch.modules.find((module) => module.fileName === error.fileName);
+  if (!sourceModule) return null;
+  const lines = sourceModule.source.split(/\r?\n/);
+  const line = lines[error.line - 1];
+  if (line === undefined || error.column > line.length + 1) return null;
+  return new DiagnosticError(
+    error.fileName,
+    {
+      offset: sourceOffset(sourceModule.source, error.line, error.column),
+      line: error.line,
+      column: error.column,
+      fileName: error.fileName,
+    },
+    error.summary,
+  );
+}
+
+function sourceOffset(source: string, targetLine: number, targetColumn: number): number {
+  let offset = 0;
+  let line = 1;
+  while (line < targetLine) {
+    const newline = source.indexOf("\n", offset);
+    if (newline < 0) return 0;
+    offset = newline + 1;
+    line += 1;
+  }
+  return offset + targetColumn - 1;
 }
 
 export function compileToNative(source: string, fileName: string): NativeArtifact {

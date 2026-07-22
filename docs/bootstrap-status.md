@@ -504,8 +504,14 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    checks without `--native-frontend` retain the stage-zero path.
    Native-authority counts are reported separately for functions, methods, and
    constructors.
-   Native failures are buffered: a stage-zero error remains authoritative, and a
-   native error surfaces only after stage zero succeeds. Prepared-library invocation lives in a
+   Native resolver failures now cross the bootstrap boundary as structured kind,
+   file, line, column, and message records. Unknown-name, unknown-type,
+   unknown-member, type-mismatch, invalid-operator, and invalid-match failures
+   become authoritative native diagnostics when their location belongs to the
+   canonical source batch. Stage zero still owns parser, module-loading, and
+   unsupported-shape diagnostics; malformed, out-of-batch, and non-semantic
+   native failures remain buffered, so a Stage-0 error wins in those cases.
+   Prepared-library invocation lives in a
    reusable native-frontend service rather than the CLI. Native checks therefore
    no longer repeat host import discovery or parity lexing/parsing—the comparison
    graph is built from the canonical batch's existing ASTs and dependency maps.

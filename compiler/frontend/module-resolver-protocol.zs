@@ -4,6 +4,7 @@
 import { TextBuffer } from "std/text";
 import {
   ModuleResolveError,
+  ModuleResolveErrorKind,
   ModuleBindingResolution,
   ModuleCallResolution,
   ModuleExpressionResolution,
@@ -66,8 +67,38 @@ function decodeModuleSources(in batch: String): Array<ModuleSource> throws Strin
   return sources;
 }
 
+function resolverErrorKindName(kind: ModuleResolveErrorKind): String {
+  return match (kind) {
+    lexer => "lexer";
+    parser => "parser";
+    missingModule => "missingModule";
+    circularImport => "circularImport";
+    missingExport => "missingExport";
+    duplicateBinding => "duplicateBinding";
+    unknownName => "unknownName";
+    unknownType => "unknownType";
+    unknownMember => "unknownMember";
+    typeMismatch => "typeMismatch";
+    invalidOperator => "invalidOperator";
+    invalidMatch => "invalidMatch";
+  };
+}
+
 function resolverMessage(in error: ModuleResolveError): String {
-  return `${error.path}:${error.line}:${error.column}: ${error.message}`;
+  let output = TextBuffer();
+  output.append("diagnostic");
+  output.appendAscii(9);
+  const kind = resolverErrorKindName(error.kind);
+  output.append(kind);
+  output.appendAscii(9);
+  appendHexText(inout output, error.path);
+  output.appendAscii(9);
+  appendHexUsize(inout output, error.line);
+  output.appendAscii(9);
+  appendHexUsize(inout output, error.column);
+  output.appendAscii(9);
+  appendHexText(inout output, error.message);
+  return output.finish();
 }
 
 function appendTarget(inout output: TextBuffer, in target: Option<usize>): void {

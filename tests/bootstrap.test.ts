@@ -9,6 +9,7 @@ import { ApiNoteConflictError, mergeApiNotes } from "../compiler/src/foreign-api
 import { normalizeForeignContracts } from "../compiler/src/foreign-contracts.ts";
 import type { ForeignFunctionDeclaration } from "../compiler/src/foreign-ir.ts";
 import { buildStage0ModuleGraph } from "../compiler/src/native-semantic-parity.ts";
+import { NativeFrontendDiagnosticError } from "../compiler/src/native-frontend-diagnostics.ts";
 import {
   decodeStage1DeclarationStream,
   decodeStage1ModuleGraphStream,
@@ -312,6 +313,41 @@ test("attaches native frontend evidence after authoritative stage-0 analysis", (
     /unknown name "missing"/,
   );
   assert.equal(resolverCalled, true);
+  const nativeDiagnosticFile = resolve(projectRoot, "native-owned-diagnostic.zs");
+  assert.throws(
+    () => analyzeSource("function main(): i32 { return 0; }", nativeDiagnosticFile, {
+      nativeFrontendResolver: () => {
+        throw new NativeFrontendDiagnosticError(
+          "unknownName",
+          nativeDiagnosticFile,
+          1,
+          1,
+          "native-owned diagnostic",
+        );
+      },
+    }),
+    (error: unknown) => {
+      assert.ok(error instanceof DiagnosticError);
+      assert.equal(error.fileName, nativeDiagnosticFile);
+      assert.equal(error.summary, "native-owned diagnostic");
+      return true;
+    },
+  );
+  const deferredNativeDiagnosticFile = resolve(projectRoot, "deferred-native-diagnostic.zs");
+  assert.throws(
+    () => analyzeSource("function main(): i32 { return missing; }", deferredNativeDiagnosticFile, {
+      nativeFrontendResolver: () => {
+        throw new NativeFrontendDiagnosticError(
+          "parser",
+          deferredNativeDiagnosticFile,
+          1,
+          1,
+          "native parser diagnostic should defer",
+        );
+      },
+    }),
+    /unknown name "missing"/,
+  );
   assert.throws(
     () => analyzeSource(source, example, {
       nativeFrontendResolver: () => {
@@ -5058,6 +5094,14 @@ test("resolves a canonical module graph directly from native Z ASTs", () => {
   const unknown = spawnSync(process.execPath, [cli, "self-host-resolve", unknownMain], { encoding: "utf8" });
   assert.equal(unknown.status, 1);
   assert.match(unknown.stderr, /unknown\.zs:3:18: unknown name missing/);
+  const authoritativeUnknown = spawnSync(
+    process.execPath,
+    [cli, "check", unknownMain, "--native-frontend"],
+    { encoding: "utf8" },
+  );
+  assert.equal(authoritativeUnknown.status, 1);
+  assert.match(authoritativeUnknown.stderr, /unknown\.zs:3:18: error: unknown name missing/);
+  assert.match(authoritativeUnknown.stderr, /return known \+ missing;/);
 
   const unknownTypeMain = resolve(invalidDirectory, "unknown-type.zs");
   writeFileSync(unknownTypeMain, "function load(value: Option<Missing>): void {\n  return;\n}\n");
