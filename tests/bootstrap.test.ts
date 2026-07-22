@@ -9107,6 +9107,57 @@ test("exposes Map imports, members, and source-level types to editor services", 
   assert.match(hover(validIteration, "map-iteration-editor.zs", entryBinding + 1)?.contents.value ?? "", /entry: Map\.Entry<String, i32>/);
 });
 
+test("moves native C++ values through Map storage and owned removal", () => {
+  const example = resolve(projectRoot, "examples/language/collections/map-native-values.zs");
+  const source = readFileSync(example, "utf8");
+  const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+
+  const generated = compileToNative(source, example).source;
+  assert.match(generated, /std::construct_at\(&self->entries\.data\[index\]\.value, std::move\(value\)\)/);
+  assert.match(generated, /::make_some\(std::move\(self->entries\.data\[index\]\.value\)\)/);
+  assert.match(generated, /std::destroy_at\(&self->entries\.data\[last\]\)/);
+  assert.match(generated, /return &self->entries\.data\[stored - 1\]\.value/);
+
+  const getOffset = source.indexOf("get(\"primary") + 1;
+  assert.match(hover(source, example, getOffset)?.contents.value ?? "", /Option<view native\.zcpp\.UniqueValue>/);
+
+  const moved = `
+    import { Map } from "std/collections";
+    import native from "../../../tests/fixtures/move-only.hpp";
+    function main(): i32 {
+      let values = Map<String, native.zcpp.UniqueValue>();
+      const resource = native.zcpp.UniqueValue(42);
+      values.set("answer", resource);
+      return resource.value();
+    }
+  `;
+  assert.equal(diagnostics(moved, example)[0]?.code, "Z0201");
+
+  const borrowed = `
+    import { Map } from "std/collections";
+    import native from "../../../tests/fixtures/move-only.hpp";
+    function main(): i32 {
+      let values = Map<String, native.zcpp.UniqueValue>();
+      values.set("answer", native.zcpp.UniqueValue(42));
+      const found = values.get("answer");
+      values.delete("answer");
+      return match (in found) { some(resource) => resource.value(); none => 0; };
+    }
+  `;
+  assert.equal(diagnostics(borrowed, example)[0]?.code, "Z0205");
+
+  const copyOnly = `
+    import { Map } from "std/collections";
+    import native from "../../../tests/fixtures/foreign-values.hpp";
+    function main(): i32 {
+      const values = Map<i32, native.zcpp.ManagedValue>();
+      return 0;
+    }
+  `;
+  assert.match(diagnostics(copyOnly, example)[0]?.message ?? "", /must provide move construction/);
+});
+
 test("owns unique Set values with insertion status and deterministic removal", () => {
   const example = resolve(projectRoot, "examples/language/collections/set.zs");
   const source = readFileSync(example, "utf8");

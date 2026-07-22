@@ -34,7 +34,7 @@ import {
 } from "./weak-types.ts";
 import { optionTypeName, parseOptionType } from "./option-types.ts";
 import { parseOptionalViewType, parseViewType, viewTypeName } from "./view-types.ts";
-import { mapEntryTypeName, parseMapType } from "./map-types.ts";
+import { mapEntryTypeName, parseMapEntryType, parseMapType } from "./map-types.ts";
 import { parseSetType } from "./set-types.ts";
 
 type GenerationContext = {
@@ -1528,6 +1528,37 @@ function generateDynamicArrayPush(
   const dynamic = parseDynamicArrayType(name)!;
   const arrayType = dynamicArrayName(name);
   const elementType = mapType(dynamic.elementType, structs, enums, foreignNamedTypes);
+  const mapEntry = parseMapEntryType(dynamic.elementType);
+  if (mapEntry && requiresNativeMove(mapEntry.valueType, structs, enums, foreignNamedTypes)) {
+    const keyType = mapType(mapEntry.keyType, structs, enums, foreignNamedTypes);
+    return `static void ${dynamicArrayPushName(name)}(${arrayType} *self, ${elementType} value) {
+  if (self->length == self->capacity) {
+    uintptr_t next;
+    if (self->capacity == 0) {
+      next = 4;
+    } else {
+      if (self->capacity > SIZE_MAX / 2) abort();
+      next = self->capacity * 2;
+    }
+    if (next > SIZE_MAX / sizeof(${elementType})) abort();
+    ${elementType} *storage = static_cast<${elementType} *>(::operator new(next * sizeof(${elementType}), std::nothrow));
+    if (storage == NULL) abort();
+    for (uintptr_t index = 0; index < self->length; index += 1) {
+      std::construct_at(&storage[index], ${elementType}{
+        .key = self->data[index].key,
+        .value = std::move(self->data[index].value),
+      });
+      self->data[index].key = ${keyType}{};
+      std::destroy_at(&self->data[index]);
+    }
+    ::operator delete(self->data);
+    self->data = storage;
+    self->capacity = next;
+  }
+  std::construct_at(&self->data[self->length], std::move(value));
+  self->length += 1;
+}`;
+  }
   if (requiresNativeMove(dynamic.elementType, structs, enums, foreignNamedTypes)) {
     return `static void ${dynamicArrayPushName(name)}(${arrayType} *self, ${elementType} value) {
   if (self->length == self->capacity) {
@@ -1597,6 +1628,8 @@ function generateMapRuntime(
   const valueOptionDeclaration = enums.get(valueOption)!;
   const nicheLookup = nicheOptionPayload(lookupOptionDeclaration, semanticInfo.foreignNamedTypes);
   const nicheValue = nicheOptionPayload(valueOptionDeclaration, semanticInfo.foreignNamedTypes);
+  const nativeMoveValue = requiresNativeMove(map.valueType, structs, enums, semanticInfo.foreignNamedTypes);
+  const nativeMoveEntry = requiresNativeMove(entryName, structs, enums, semanticInfo.foreignNamedTypes);
   const zKeyEnum = enums.get(map.keyType);
   const customKey = structs.get(map.keyType)?.implements.some((trait) => trait.name === "Hashable") ?? false;
   const equals = customKey
@@ -1646,13 +1679,46 @@ function generateMapRuntime(
     semanticInfo,
     { value: 0 },
   );
-  const someValue = nicheValue
+  const someValue = nativeMoveValue
+    ? `${enumName(valueOption)}::make_some(std::move(self->entries.data[index].value))`
+    : nicheValue
     ? "self->entries.data[index].value"
     : `(${mappedValueOption}){ .tag = ${variantTag(valueOption, "some")}, .data.some = self->entries.data[index].value }`;
-  const noneValue = nicheValue
+  const noneValue = nativeMoveValue
+    ? `${enumName(valueOption)}::make_none()`
+    : nicheValue
     ? nicheOptionNull(nicheValue)
     : `(${mappedValueOption}){ .tag = ${variantTag(valueOption, "none")} }`;
   const cleanupLines = (source: string): string => source ? `${source}\n` : "";
+  const replaceStoredValue = nativeMoveValue
+    ? `std::destroy_at(&self->entries.data[index].value);\n      std::construct_at(&self->entries.data[index].value, std::move(value));`
+    : "self->entries.data[index].value = value;";
+  const insertedValue = nativeMoveValue ? "std::move(value)" : "value";
+  const zeroKey = nativeMoveEntry
+    ? `${mappedKey}{}`
+    : mapZeroValue(map.keyType, structs, enums, semanticInfo.foreignNamedTypes);
+  const resetStoredValue = nativeMoveValue
+    ? ""
+    : `    self->entries.data[index].value = ${mapZeroValue(map.valueType, structs, enums, semanticInfo.foreignNamedTypes)};\n`;
+  const resetStoredEntry = nativeMoveEntry ? "" : `    self->entries.data[index] = (${mappedEntry}){ 0 };\n`;
+  const eraseEntry = nativeMoveEntry
+    ? `  if (index != last) {
+    std::destroy_at(&self->entries.data[index]);
+    std::construct_at(&self->entries.data[index], std::move(self->entries.data[last]));
+    std::destroy_at(&self->entries.data[last]);
+    uintptr_t movedSlot = ${mapMethodName(name, "hash")}(self->entries.data[index].key) & (self->buckets.length - 1);
+    while (self->buckets.data[movedSlot] != last + 1) movedSlot = (movedSlot + 1) & (self->buckets.length - 1);
+    self->buckets.data[movedSlot] = index + 1;
+  } else {
+    std::destroy_at(&self->entries.data[last]);
+  }`
+    : `  if (index != last) {
+    self->entries.data[index] = self->entries.data[last];
+    uintptr_t movedSlot = ${mapMethodName(name, "hash")}(self->entries.data[index].key) & (self->buckets.length - 1);
+    while (self->buckets.data[movedSlot] != last + 1) movedSlot = (movedSlot + 1) & (self->buckets.length - 1);
+    self->buckets.data[movedSlot] = index + 1;
+  }
+  self->entries.data[last] = (${mappedEntry}){ 0 };`;
 
   const storedLookup = structs.get(map.valueType)?.kind === "class"
     ? `${retainName(map.valueType)}(self->entries.data[stored - 1].value)`
@@ -1737,7 +1803,7 @@ static __attribute__((unused)) void ${mapMethodName(name, "set")}(${mappedMap} *
       if (available == SIZE_MAX) available = slot;
     } else if (${mapEqualityName(name)}(self->entries.data[stored - 1].key, key)) {
       uintptr_t index = stored - 1;
-${indent(cleanupLines(keyCleanup) + cleanupLines(storedValueCleanup), 6)}      self->entries.data[index].value = value;
+${indent(cleanupLines(keyCleanup) + cleanupLines(storedValueCleanup), 6)}      ${replaceStoredValue}
       return;
     }
     slot = (slot + 1) & (self->buckets.length - 1);
@@ -1746,7 +1812,7 @@ ${indent(cleanupLines(keyCleanup) + cleanupLines(storedValueCleanup), 6)}      s
     slot = available;
     self->tombstones -= 1;
   }
-  ${dynamicArrayPushName(entriesType)}(&self->entries, (${mappedEntry}){ .key = key, .value = value });
+  ${dynamicArrayPushName(entriesType)}(&self->entries, (${mappedEntry}){ .key = key, .value = ${insertedValue} });
   self->buckets.data[slot] = self->entries.length;
 }
 
@@ -1754,13 +1820,7 @@ static __attribute__((unused)) void ${mapMethodName(name, "erase_at")}(${mappedM
   uintptr_t last = self->entries.length - 1;
   self->buckets.data[slot] = SIZE_MAX;
   self->tombstones += 1;
-  if (index != last) {
-    self->entries.data[index] = self->entries.data[last];
-    uintptr_t movedSlot = ${mapMethodName(name, "hash")}(self->entries.data[index].key) & (self->buckets.length - 1);
-    while (self->buckets.data[movedSlot] != last + 1) movedSlot = (movedSlot + 1) & (self->buckets.length - 1);
-    self->buckets.data[movedSlot] = index + 1;
-  }
-  self->entries.data[last] = (${mappedEntry}){ 0 };
+${eraseEntry}
   self->entries.length = last;
   if (self->entries.length == 0) {
     for (uintptr_t cleared = 0; cleared < self->buckets.length; cleared += 1) self->buckets.data[cleared] = 0;
@@ -1782,9 +1842,8 @@ static __attribute__((unused)) ${mappedValueOption} ${mapMethodName(name, "remov
     }
     uintptr_t index = stored - 1;
     ${mappedValueOption} result = ${someValue};
-${indent(cleanupLines(storedKeyCleanup), 4)}    self->entries.data[index].key = ${mapZeroValue(map.keyType, structs, enums, semanticInfo.foreignNamedTypes)};
-    self->entries.data[index].value = ${mapZeroValue(map.valueType, structs, enums, semanticInfo.foreignNamedTypes)};
-    ${mapMethodName(name, "erase_at")}(self, slot, index);
+${indent(cleanupLines(storedKeyCleanup), 4)}    self->entries.data[index].key = ${zeroKey};
+${resetStoredValue}    ${mapMethodName(name, "erase_at")}(self, slot, index);
     return result;
   }
   return ${noneValue};
@@ -1801,8 +1860,8 @@ static __attribute__((unused)) bool ${mapMethodName(name, "delete")}(${mappedMap
       continue;
     }
     uintptr_t index = stored - 1;
-${indent(cleanupLines(storedValueCleanup) + cleanupLines(storedKeyCleanup), 4)}    self->entries.data[index] = (${mappedEntry}){ 0 };
-    ${mapMethodName(name, "erase_at")}(self, slot, index);
+${indent(cleanupLines(storedValueCleanup) + cleanupLines(storedKeyCleanup), 4)}    self->entries.data[index].key = ${zeroKey};
+${resetStoredEntry}    ${mapMethodName(name, "erase_at")}(self, slot, index);
     return true;
   }
   return false;
@@ -1810,7 +1869,7 @@ ${indent(cleanupLines(storedValueCleanup) + cleanupLines(storedKeyCleanup), 4)} 
 
 static __attribute__((unused)) void ${mapMethodName(name, "clear")}(${mappedMap} *self) {
   ${deinitName(name)}(self);
-  *self = (${mappedMap}){ 0 };
+  *self = ${nativeMoveEntry ? `${mappedMap}{}` : `(${mappedMap}){ 0 }`};
 }`;
 }
 
@@ -4775,7 +4834,13 @@ function generateExpressionInner(expression: Expression, context: GenerationCont
       if (expression.callee.kind === "identifier") {
         const map = parseMapType(expression.callee.name);
         if (map) {
-          return `(${mapType(expression.callee.name, context.structs, context.enums, context.semanticInfo.foreignNamedTypes)}){ 0 }`;
+          const mapped = mapType(expression.callee.name, context.structs, context.enums, context.semanticInfo.foreignNamedTypes);
+          return requiresNativeMove(
+            expression.callee.name,
+            context.structs,
+            context.enums,
+            context.semanticInfo.foreignNamedTypes,
+          ) ? `${mapped}{}` : `(${mapped}){ 0 }`;
         }
         const set = parseSetType(expression.callee.name);
         if (set) {

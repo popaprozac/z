@@ -825,24 +825,30 @@ export function analyze(
       if (map.valueType === "void" || containsViewType(map.valueType) || containsSliceType(map.valueType) || map.valueType === "Arena" || parseTaskType(map.valueType)) {
         throw new DiagnosticError(fileName, declaration.location, `Map cannot own value type ${JSON.stringify(displayArrayType(map.valueType))} in the first collections tier`);
       }
+      const nativeMapValue = state.foreignNamedTypes.get(map.valueType);
+      if (nativeMapValue?.kind === "value" && !nativeMapValue.lifecycle.move) {
+        throw new DiagnosticError(fileName, declaration.location, `Map native value type ${JSON.stringify(displayArrayType(map.valueType))} must provide move construction in the current storage tier`, {
+          code: "Z0240",
+          notes: ["Map growth and removal relocate stored native values without copying them"],
+          helps: ["declare `move;` in the adjacent .zd contract when the C++ type is genuinely movable"],
+        });
+      }
       if (
-        state.foreignNamedTypes.get(map.valueType)?.kind === "value"
-        || parseFunctionType(map.valueType)
+        parseFunctionType(map.valueType)
         || parseWeakType(map.valueType)
       ) {
         throw new DiagnosticError(fileName, declaration.location, `Map value type ${JSON.stringify(displayArrayType(map.valueType))} needs a storage-specific lookup contract`, {
           code: "Z0206",
-          notes: ["the first Map.get tier returns Option<view V>; direct reference identity, function values, weak references, and native RAII values need distinct retention or construction rules"],
+          notes: ["function values and weak references need distinct retention rules inside collection storage"],
           helps: ["store the identity or native value inside an ordinary Z value struct, or keep it outside Map until that storage tier lands"],
         });
       }
       if (
         hasMoveOnlyForeignType(map.keyType, structs, enums, state.foreignNamedTypes)
-        || hasMoveOnlyForeignType(map.valueType, structs, enums, state.foreignNamedTypes)
       ) {
-        throw new DiagnosticError(fileName, declaration.location, "Map storage for move-only native C++ values is not implemented yet", {
+        throw new DiagnosticError(fileName, declaration.location, "Map keys cannot be move-only native C++ values", {
           code: "Z0240",
-          helps: ["store a Z-owned identifier or value snapshot and keep the native owner outside the map"],
+          helps: ["use a stable Z-owned identifier or readonly Hashable value as the key"],
         });
       }
       continue;
@@ -4411,11 +4417,10 @@ function inferExpressionInner(
           }
           if (
             hasMoveOnlyForeignType(map.keyType, structs, enums, state.foreignNamedTypes)
-            || hasMoveOnlyForeignType(map.valueType, structs, enums, state.foreignNamedTypes)
           ) {
-            throw new DiagnosticError(fileName, expression.callee.location, "Map storage for move-only native C++ values is not implemented yet", {
+            throw new DiagnosticError(fileName, expression.callee.location, "Map keys cannot be move-only native C++ values", {
               code: "Z0240",
-              helps: ["store a Z-owned identifier or value snapshot and keep the native owner outside the map"],
+              helps: ["use a stable Z-owned identifier or readonly Hashable value as the key"],
             });
           }
           return expression.callee.name;

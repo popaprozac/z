@@ -444,6 +444,12 @@ identity. `set` retains the identity while the caller remains free to use its
 own reference, and `get` returns `Option<V>` with an independently retained
 reference. `remove` transfers the map's retained reference into `Option<V>`.
 
+Move-only native C++ values use the value contract again: `set` transfers the
+owner, `get` returns `Option<view V>`, `remove` move-constructs an owned
+`Option<V>`, and replacement, deletion, clearing, growth, and final map cleanup
+run the required native moves and destructors. Native keys and copy-only native
+values are not supported in the current map tier.
+
 If `V` is cleanup-free and ordinarily copyable, using the matched payload where
 an owned `V` is required performs the same implicit by-value load described
 above. A cleanup-bearing `view V` never becomes owned implicitly.
@@ -529,10 +535,10 @@ hash production; implementations feed supported scalars, Strings, enums, or
 nested `Hashable` values through `add`. Requiring readonly value keys prevents
 mutation from making an inserted bucket unreachable.
 
-`Map` supports ordinary Z values plus shared Z-class and Objective-C identity.
-Function/weak values and native C++ RAII values still wait for their distinct
-storage and construction rules. A Z value struct may provide an explicit owned
-wrapper where that is already safe.
+`Map` supports ordinary Z values, shared Z-class and Objective-C identity, and
+move-only native C++ values. Function/weak values, native keys, and copy-only
+native C++ values still wait for their distinct storage rules. A Z value struct
+may provide an explicit owned wrapper where that is already safe.
 
 ## Arena regions
 
