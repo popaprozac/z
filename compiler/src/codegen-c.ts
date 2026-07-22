@@ -364,6 +364,16 @@ export function generateC(program: Program, sourceName: string, semanticInfo: Se
     lines.push(generateArenaCreate(type, structs, enums, semanticInfo), "");
   }
 
+  // Collection helpers must precede user method bodies. A collection stored in
+  // one Z module may be called by that module's renamed methods before the
+  // entry-point module reaches the generated standard runtime definitions.
+  for (const type of mapTypes) {
+    lines.push(generateMapRuntime(type, structs, enums, semanticInfo), "");
+  }
+  for (const type of setTypes) {
+    lines.push(generateSetRuntime(type, structs, enums, semanticInfo), "");
+  }
+
   for (const declaration of program.structs) {
     if (hasCleanupType(declaration.name, structs, enums)) {
       lines.push(generateDeinit(declaration, structs, enums, functions, semanticInfo), "");
@@ -374,12 +384,6 @@ export function generateC(program: Program, sourceName: string, semanticInfo: Se
     for (const method of declaration.methods) {
       lines.push(generateFunction(method, structs, enums, functions, declaration, semanticInfo), "");
     }
-  }
-  for (const type of mapTypes) {
-    lines.push(generateMapRuntime(type, structs, enums, semanticInfo), "");
-  }
-  for (const type of setTypes) {
-    lines.push(generateSetRuntime(type, structs, enums, semanticInfo), "");
   }
   for (const closure of closures.filter((candidate) => candidate.owned)) {
     lines.push(generateClosureEnvironmentLifecycle(closure, structs, enums, semanticInfo), "");

@@ -133,6 +133,9 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
 - [`examples/applications/document-workspace`](../examples/applications/document-workspace): cross-platform,
   multi-module document registration and saving with move-only native leases,
   cleanup-bearing errors, optional views, array growth, and zero live resources.
+- [`examples/applications/project-index`](../examples/applications/project-index): multi-module Map/Set
+  pressure test with borrowed String-key lookups, owned record snapshots, typed
+  filesystem errors, and a fixed dense-to-hashed benchmark.
 - [`examples/applications/source-stager`](../examples/applications/source-stager): reads a requested Z
   source file, writes a staged copy, observes native argv, and launches Clang
   directly through the first self-hosting standard APIs.

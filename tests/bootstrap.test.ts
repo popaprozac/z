@@ -2614,6 +2614,33 @@ test("runs an application-shaped document workspace across ownership and interop
   );
 });
 
+test("runs the project index across borrowed lookups, owned snapshots, and collection modules", () => {
+  const smoke = resolve(projectRoot, "examples/applications/project-index/smoke.zs");
+  const source = readFileSync(smoke, "utf8");
+  const generated = compileToC(source, smoke);
+  assert.deepEqual(diagnostics(source, smoke), []);
+
+  const mapRuntime = generated.indexOf("Z_Map_");
+  const projectUpsert = generated.lastIndexOf("ProjectIndex_upsert(");
+  assert.notEqual(mapRuntime, -1);
+  assert.notEqual(projectUpsert, -1);
+  assert.ok(mapRuntime < projectUpsert, "Map runtime helpers must precede imported ProjectIndex method bodies");
+  assert.match(generated, /z_copy_[A-Za-z0-9_]*FileRecord/);
+  assert.match(generated, /z_string_copy/);
+
+  const smokeResult = spawnSync(process.execPath, [cli, "run", smoke], { encoding: "utf8" });
+  assert.equal(smokeResult.status, 0, smokeResult.stderr);
+
+  const application = resolve(projectRoot, "examples/applications/project-index/main.zs");
+  const lexer = resolve(projectRoot, "compiler/frontend/lexer.zs");
+  const parser = resolve(projectRoot, "compiler/frontend/parser.zs");
+  const result = spawnSync(process.execPath, [cli, "run", application, "--", lexer, parser], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /recorded .*lexer\.zs at revision 1/);
+  assert.match(result.stdout, /recorded .*parser\.zs at revision 1/);
+  assert.match(result.stdout, /revision 1, files 2, dirty=true/);
+});
+
 test("compares scoped document borrows with independently owned snapshots", () => {
   const example = resolve(projectRoot, "examples/interop/objc/desktop-ownership/ownership-views.zs");
   const source = readFileSync(example, "utf8");

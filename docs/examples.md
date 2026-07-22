@@ -16,6 +16,7 @@ compile-only probes and `emit` to inspect generated native code.
 | Options | [`option.zs`](../examples/language/types/option.zs) | `Option.some`, `Option.none`, and payload matching |
 | Native application skeleton | [`z-notes`](../examples/applications/z-notes) | AppKit, ARC application state, nullable selection, direct SQLite header import, and explicit native library linkage |
 | Application walkthrough | [`document-workspace`](../examples/applications/document-workspace) | A native document model combining modules, errors, arrays, named enums, optional views, mutation, and deterministic cleanup |
+| Collection pressure test | [`project-index`](../examples/applications/project-index) | Borrowed Map lookups, owned snapshots, dirty-path Sets, typed IO errors, and an unchanged dense-to-hashed benchmark |
 | Self-hosting groundwork | [`source-stager`](../examples/applications/source-stager) | File IO, owned argv, typed OS failures, and direct no-shell child launch |
 | Stage-1 Z frontend | [`compiler/frontend`](../compiler/frontend) | Checked UTF-8 tokens, owned flat AST shapes, native module graphs, self-parsing, and exact stage-0 parity |
 | Frontend client | [`source-inspector`](../examples/applications/source-inspector) | Readable scanner, smoke tests, and standalone protocol clients |
@@ -119,6 +120,12 @@ and `Option<view DocumentSession>`. Its deterministic run ends with three saved
 documents and zero live native leases. Read its adjacent
 [`README.md`](../examples/applications/document-workspace/README.md) for the
 scenario and an ownership-by-ownership explanation.
+
+[`project-index`](../examples/applications/project-index) pressure-tests Map and
+Set in an application-shaped module. File records are borrowed for ordinary
+lookups, explicitly copied for durable reports, and moved into their final
+consumer. Its deterministic smoke test and fixed benchmark are the regression
+baseline for replacing dense storage with hashed buckets unchanged.
 
 [`source-stager`](../examples/applications/source-stager) is the first
 self-hosting-groundwork tool. It reads a source path from `process.args()`,
