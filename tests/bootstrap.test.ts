@@ -107,6 +107,8 @@ test("loads explicit Z exports through selective and namespace module imports", 
   assert.equal(analysis.nativeEnumVariantResolutionCount, 0);
   assert.equal(analysis.nativeTypeResolutionCount, 0);
   assert.equal(analysis.nativeAuthoritativeFunctionResolutionCount, 0);
+  assert.equal(analysis.nativeAuthoritativeMethodResolutionCount, 0);
+  assert.equal(analysis.nativeAuthoritativeConstructorResolutionCount, 0);
   assert.equal(analysis.nativeFrontendParityMilliseconds, null);
   assert.equal(analysis.sourceModuleBatch.entryFileName, example);
   assert.deepEqual(
@@ -206,20 +208,39 @@ test("attaches native frontend evidence after authoritative stage-0 analysis", (
   assert.equal(callable.nativeFieldResolutionCount, 10);
   assert.equal(callable.nativeEnumVariantResolutionCount, 4);
   assert.equal(callable.nativeTypeResolutionCount, 4);
+  assert.equal(callable.nativeAuthoritativeMethodResolutionCount, 3);
+  assert.equal(callable.nativeAuthoritativeConstructorResolutionCount, 1);
 
   const generic = analyzeSource(`
     function identity<T>(value: T): T {
       return value;
     }
 
+    class Envelope<T> {
+      private value: T;
+
+      constructor(value: T) {
+        this.value = value;
+      }
+
+      function get(): T {
+        return this.value;
+      }
+    }
+
     function main(): i32 {
-      return identity(42);
+      const envelope = new Envelope(42);
+      return identity(envelope.get());
     }
   `, resolve(projectRoot, "native-generic-call-shadow.zs"), {
     nativeFrontendResolver: buildStage0ModuleGraph,
   });
   assert.equal(generic.nativeCallResolutionCount, 1);
+  assert.equal(generic.nativeMethodResolutionCount, 1);
+  assert.equal(generic.nativeConstructorResolutionCount, 1);
   assert.equal(generic.nativeAuthoritativeFunctionResolutionCount, 0);
+  assert.equal(generic.nativeAuthoritativeMethodResolutionCount, 0);
+  assert.equal(generic.nativeAuthoritativeConstructorResolutionCount, 0);
 
   assert.throws(
     () => analyzeSource(source, example, {
@@ -4764,7 +4785,7 @@ test("resolves a canonical module graph directly from native Z ASTs", () => {
   assert.match(ordinaryCheck.stdout, /native frontend hybrid observes \d+ function, \d+ method, and \d+ constructor stage-0 Z resolutions/);
   assert.match(ordinaryCheck.stdout, /native frontend hybrid observes \d+ aggregate, \d+ field, and \d+ enum-variant stage-0 Z resolutions/);
   assert.match(ordinaryCheck.stdout, /native frontend hybrid observes \d+ explicit type-use stage-0 Z resolutions/);
-  assert.match(ordinaryCheck.stdout, /native frontend hybrid uses \d+ native-authoritative direct function contracts/);
+  assert.match(ordinaryCheck.stdout, /native frontend hybrid uses \d+ function, \d+ method, and \d+ constructor native-authoritative contracts/);
   assert.match(ordinaryCheck.stdout, /native frontend hybrid timing \(3 modules, cache hit\)/);
   assert.match(ordinaryCheck.stdout, /main\.zs: ok/);
 

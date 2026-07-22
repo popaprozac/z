@@ -54,6 +54,8 @@ export type AnalyzedSource = {
   readonly nativeEnumVariantResolutionCount: number;
   readonly nativeTypeResolutionCount: number;
   readonly nativeAuthoritativeFunctionResolutionCount: number;
+  readonly nativeAuthoritativeMethodResolutionCount: number;
+  readonly nativeAuthoritativeConstructorResolutionCount: number;
   readonly nativeFrontendParityMilliseconds: number | null;
 };
 
@@ -136,6 +138,8 @@ export function analyzeSource(source: string, fileName: string, options: Analysi
     nativeEnumVariantResolutionCount: nativeSemanticBridge?.enumVariantCount() ?? 0,
     nativeTypeResolutionCount: nativeSemanticBridge?.typeCount() ?? 0,
     nativeAuthoritativeFunctionResolutionCount: nativeSemanticBridge?.authoritativeFunctionCount() ?? 0,
+    nativeAuthoritativeMethodResolutionCount: nativeSemanticBridge?.authoritativeMethodCount() ?? 0,
+    nativeAuthoritativeConstructorResolutionCount: nativeSemanticBridge?.authoritativeConstructorCount() ?? 0,
     nativeFrontendParityMilliseconds,
   };
 }

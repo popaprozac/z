@@ -114,6 +114,7 @@ export type SemanticMethodCallResolution = {
 export type SemanticConstructorCallResolution = {
   readonly location: SourceLocation;
   readonly aggregate: StructDeclaration;
+  readonly declaration: FunctionDeclaration;
 };
 
 export type SemanticAggregateConstructionResolution = {
@@ -140,6 +141,8 @@ export type SemanticTypeResolution = {
 
 export type SemanticObserver = {
   readonly resolveFunctionCall?: (resolution: SemanticFunctionCallResolution) => FunctionDeclaration | null;
+  readonly resolveMethodCall?: (resolution: SemanticMethodCallResolution) => FunctionDeclaration | null;
+  readonly resolveConstructorCall?: (resolution: SemanticConstructorCallResolution) => FunctionDeclaration | null;
   readonly onFunctionCall?: (resolution: SemanticFunctionCallResolution) => void;
   readonly onMethodCall?: (resolution: SemanticMethodCallResolution) => void;
   readonly onConstructorCall?: (resolution: SemanticConstructorCallResolution) => void;
@@ -3506,13 +3509,15 @@ function inferExpressionInner(
       rejectLabeledArguments(expression.argumentLabels, expression.location, fileName);
       if (declaration.constructor) {
         const target = constructorFunction(declaration);
-        checkArguments(target, expression.arguments, locals, globals, structs, enums, fileName, expression.location, state);
-        state.observer?.onConstructorCall?.({ location: expression.location, aggregate: declaration });
-        if (target.errorType) {
+        const resolution = { location: expression.location, aggregate: declaration, declaration: target };
+        const callable = state.observer?.resolveConstructorCall?.(resolution) ?? target;
+        checkArguments(callable, expression.arguments, locals, globals, structs, enums, fileName, expression.location, state);
+        state.observer?.onConstructorCall?.(resolution);
+        if (callable.errorType) {
           if (!allowThrowingCall) {
             throw new DiagnosticError(fileName, expression.location, "throwing constructor requires `attempt` or `try`");
           }
-          return resultTypeName(declaration.name, target.errorType.name);
+          return resultTypeName(declaration.name, callable.errorType.name);
         }
         return expression.typeName;
       }
@@ -4288,21 +4293,23 @@ function inferExpressionInner(
             if (!method) {
               throw new DiagnosticError(fileName, expression.callee.location, `${aggregate.kind} ${JSON.stringify(aggregate.name)} has no static method ${JSON.stringify(expression.callee.property)}`);
             }
-            if (!method.static) {
-              throw new DiagnosticError(fileName, expression.callee.location, `instance method ${JSON.stringify(method.name)} must be called through a ${aggregate.name} value`);
+            const resolution = { location: expression.location, aggregate, declaration: method };
+            const callable = state.observer?.resolveMethodCall?.(resolution) ?? method;
+            if (!callable.static) {
+              throw new DiagnosticError(fileName, expression.callee.location, `instance method ${JSON.stringify(callable.name)} must be called through a ${aggregate.name} value`);
             }
-            if (method.visibility === "private" && state.activeReceiver !== aggregate.name) {
-              throw new DiagnosticError(fileName, expression.callee.location, `static method ${JSON.stringify(method.name)} is private to ${aggregate.kind} ${JSON.stringify(aggregate.name)}`);
+            if (callable.visibility === "private" && state.activeReceiver !== aggregate.name) {
+              throw new DiagnosticError(fileName, expression.callee.location, `static method ${JSON.stringify(callable.name)} is private to ${aggregate.kind} ${JSON.stringify(aggregate.name)}`);
             }
             rejectLabeledArguments(expression.argumentLabels, expression.location, fileName);
-            checkArguments(method, expression.arguments, locals, globals, structs, enums, fileName, expression.location, state);
-            registerAsyncCall(method, expression.location, fileName, state);
-            state.observer?.onMethodCall?.({ location: expression.location, aggregate, declaration: method });
-            if (method.errorType) {
+            checkArguments(callable, expression.arguments, locals, globals, structs, enums, fileName, expression.location, state);
+            registerAsyncCall(callable, expression.location, fileName, state);
+            state.observer?.onMethodCall?.(resolution);
+            if (callable.errorType) {
               if (!allowThrowingCall) throw new DiagnosticError(fileName, expression.location, "throwing call requires `attempt` or `try`");
-              return resultTypeName(method.returnType.name, method.errorType.name);
+              return resultTypeName(callable.returnType.name, callable.errorType.name);
             }
-            return method.returnType.name;
+            return callable.returnType.name;
           }
           const enumDeclaration = enums.get(expression.callee.object.name);
           if (enumDeclaration) {
@@ -4762,36 +4769,38 @@ function inferExpressionInner(
         if (!declaration || !method) {
           throw new DiagnosticError(fileName, expression.callee.location, `type ${JSON.stringify(receiverType)} has no method ${JSON.stringify(expression.callee.property)}`);
         }
-        if (method.static) {
-          throw new DiagnosticError(fileName, expression.callee.location, `static method ${JSON.stringify(method.name)} must be called as ${declaration.name}.${method.name}()`);
+        const resolution = { location: expression.location, aggregate: declaration, declaration: method };
+        const callable = state.observer?.resolveMethodCall?.(resolution) ?? method;
+        if (callable.static) {
+          throw new DiagnosticError(fileName, expression.callee.location, `static method ${JSON.stringify(callable.name)} must be called as ${declaration.name}.${callable.name}()`);
         }
-        if (receiverView && (method.receiverMode === "inout" || method.receiverMode === "move")) {
+        if (receiverView && (callable.receiverMode === "inout" || callable.receiverMode === "move")) {
           throw new DiagnosticError(fileName, expression.callee.object.location, `view ${JSON.stringify(receiverView.target)} is read-only`, {
             code: "Z0205",
             helps: ["call the mutating or consuming method on the owner after the view's last use"],
           });
         }
-        if (method.visibility === "private" && state.activeReceiver !== declaration.name) {
-          throw new DiagnosticError(fileName, expression.callee.location, `method ${JSON.stringify(method.name)} is private to ${declaration.kind} ${JSON.stringify(declaration.name)}`);
+        if (callable.visibility === "private" && state.activeReceiver !== declaration.name) {
+          throw new DiagnosticError(fileName, expression.callee.location, `method ${JSON.stringify(callable.name)} is private to ${declaration.kind} ${JSON.stringify(declaration.name)}`);
         }
         rejectLabeledArguments(expression.argumentLabels, expression.location, fileName);
         if (
-          method.receiverMode !== "move"
+          callable.receiverMode !== "move"
           && hasOwnershipType(receiverType, structs, enums, state)
           && !isNamedStorageExpression(expression.callee.object)
         ) {
           throw new DiagnosticError(fileName, expression.callee.object.location, "a cleanup-bearing temporary must be bound before borrowing it for a method call");
         }
-        const mutableReceiverRoot = method.receiverMode === "inout"
+        const mutableReceiverRoot = callable.receiverMode === "inout"
           ? storageRoot(expression.callee.object)
           : null;
-        const consumingReceiverRoot = method.receiverMode === "move"
+        const consumingReceiverRoot = callable.receiverMode === "move"
           ? storageRoot(expression.callee.object)
           : null;
-        if (method.receiverMode === "inout") {
+        if (callable.receiverMode === "inout") {
           const readonlyField = readonlyFieldOnPath(expression.callee.object, structs, state);
           if (readonlyField) {
-            throw new DiagnosticError(fileName, expression.callee.object.location, `mutable method ${JSON.stringify(method.name)} cannot be called through readonly field ${JSON.stringify(readonlyField.name)}`, {
+            throw new DiagnosticError(fileName, expression.callee.object.location, `mutable method ${JSON.stringify(callable.name)} cannot be called through readonly field ${JSON.stringify(readonlyField.name)}`, {
               code: "Z0214",
             });
           }
@@ -4800,8 +4809,8 @@ function inferExpressionInner(
               fileName,
               expression.callee.object.location,
               declaration.kind === "class"
-                ? `mutable method ${JSON.stringify(method.name)} requires an addressable class reference`
-                : `mutable method ${JSON.stringify(method.name)} requires addressable let storage`,
+                ? `mutable method ${JSON.stringify(callable.name)} requires an addressable class reference`
+                : `mutable method ${JSON.stringify(callable.name)} requires addressable let storage`,
             );
           }
           const storedReceiver = locals.get(mutableReceiverRoot.name);
@@ -4818,12 +4827,12 @@ function inferExpressionInner(
             throw new DiagnosticError(
               fileName,
               expression.callee.object.location,
-              `mutable method ${JSON.stringify(method.name)} cannot be called through immutable binding ${JSON.stringify(mutableReceiverRoot.name)}`,
+              `mutable method ${JSON.stringify(callable.name)} cannot be called through immutable binding ${JSON.stringify(mutableReceiverRoot.name)}`,
             );
           }
         }
         checkArguments(
-          method,
+          callable,
           expression.arguments,
           locals,
           globals,
@@ -4838,7 +4847,7 @@ function inferExpressionInner(
               ? { name: consumingReceiverRoot.name, mode: "move" }
               : null,
         );
-        registerAsyncCall(method, expression.location, fileName, state);
+        registerAsyncCall(callable, expression.location, fileName, state);
         if (mutableReceiverRoot) {
           const receiverAfterArguments = locals.get(mutableReceiverRoot.name);
           if (receiverAfterArguments && ownershipState(receiverAfterArguments) !== "available") {
@@ -4849,16 +4858,16 @@ function inferExpressionInner(
             );
           }
         }
-        if (method.receiverMode === "move") {
+        if (callable.receiverMode === "move") {
           if (consumingReceiverRoot) rejectOwnerMutationWhileViewed(consumingReceiverRoot.name, expression.callee.object.location, fileName, state);
           consumeOwnedValue(expression.callee.object, receiverType, locals, structs, enums, fileName, state);
         }
-        state.observer?.onMethodCall?.({ location: expression.location, aggregate: declaration, declaration: method });
-        if (method.errorType) {
+        state.observer?.onMethodCall?.(resolution);
+        if (callable.errorType) {
           if (!allowThrowingCall) throw new DiagnosticError(fileName, expression.location, "throwing call requires `attempt` or `try`");
-          return resultTypeName(method.returnType.name, method.errorType.name);
+          return resultTypeName(callable.returnType.name, callable.errorType.name);
         }
-        const returnedView = parseReceiverViewReturnType(method.returnType.name);
+        const returnedView = parseReceiverViewReturnType(callable.returnType.name);
         if (returnedView) {
           const root = storageRoot(expression.callee.object);
           if (!root || !locals.has(root.name)) {
@@ -4870,7 +4879,7 @@ function inferExpressionInner(
           const ownerName = state.viewOrigins.get(root.name)?.owner ?? root.name;
           state.viewCallOrigins.set(expression.location.offset, { owner: ownerName, location: expression.callee.object.location });
         }
-        return method.returnType.name;
+        return callable.returnType.name;
       }
       if (expression.callee.kind !== "identifier") {
         throw new DiagnosticError(fileName, expression.callee.location, "this expression is not callable");

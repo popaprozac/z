@@ -19,6 +19,8 @@ export type NativeSemanticBridge = {
   readonly enumVariantCount: () => number;
   readonly typeCount: () => number;
   readonly authoritativeFunctionCount: () => number;
+  readonly authoritativeMethodCount: () => number;
+  readonly authoritativeConstructorCount: () => number;
 };
 
 export function createNativeSemanticBridge(
@@ -59,6 +61,8 @@ export function createNativeSemanticBridge(
   let enumVariants = 0;
   let types = 0;
   let authoritativeFunctions = 0;
+  let authoritativeMethods = 0;
+  let authoritativeConstructors = 0;
   const nativeFunction = (location: FunctionDeclaration["location"], declaration: FunctionDeclaration) => {
     const definitionPath = declaration.location.fileName;
     if (!definitionPath || !modulePaths.has(definitionPath)) return null;
@@ -77,6 +81,53 @@ export function createNativeSemanticBridge(
       );
     }
     return { source, native };
+  };
+  const nativeMethod = (
+    location: FunctionDeclaration["location"],
+    aggregate: StructDeclaration,
+    declaration: FunctionDeclaration,
+  ) => {
+    const source = sourceAggregate(sourceAggregates, modulePaths, aggregate);
+    if (!source) return null;
+    const native = index.symbol(source.modulePath, source.declaration.name);
+    const method = native?.typeSignature?.methods.find((candidate) => candidate.name === declaration.name);
+    const sourceMethod = source.declaration.methods.find((candidate) =>
+      candidate.name === declaration.name && Boolean(candidate.static) === Boolean(declaration.static)
+    );
+    if (!native || (native.kind !== "struct" && native.kind !== "class") || !method || !sourceMethod) {
+      throw new Error(
+        `native semantic bridge could not resolve method ${JSON.stringify(`${source.declaration.name}.${declaration.name}`)} in ${source.modulePath}`,
+      );
+    }
+    if (
+      method.staticMethod !== Boolean(sourceMethod.static)
+      || method.visibility !== (sourceMethod.visibility ?? "public")
+      || method.receiverMode !== (sourceMethod.receiverMode ?? "in")
+      || !sameModuleFunctionSignature(stage0FunctionSignature(sourceMethod), method.signature)
+    ) {
+      throw new Error(
+        `native semantic bridge signature mismatch for ${JSON.stringify(`${source.declaration.name}.${declaration.name}`)} called at ${callSite(location, sourceBatch)}`,
+      );
+    }
+    return { source, sourceMethod, method };
+  };
+  const nativeConstructor = (location: FunctionDeclaration["location"], aggregate: StructDeclaration) => {
+    const source = sourceAggregate(sourceAggregates, modulePaths, aggregate);
+    if (!source) return null;
+    const native = index.symbol(source.modulePath, source.declaration.name);
+    const expected = stage0ConstructorSignature(source.declaration);
+    if (
+      !native
+      || native.kind !== "class"
+      || !native.typeSignature
+      || !expected
+      || !sameModuleFunctionSignature(expected, native.typeSignature.constructorSignature)
+    ) {
+      throw new Error(
+        `native semantic bridge constructor mismatch for ${JSON.stringify(source.declaration.name)} called at ${callSite(location, sourceBatch)}`,
+      );
+    }
+    return { source, signature: native.typeSignature.constructorSignature! };
   };
   const observer: SemanticObserver = {
     resolveFunctionCall: ({ location, declaration }) => {
@@ -128,51 +179,122 @@ export function createNativeSemanticBridge(
         },
       };
     },
+    resolveMethodCall: ({ location, aggregate, declaration }) => {
+      const resolved = nativeMethod(location, aggregate, declaration);
+      if (
+        !resolved
+        || (resolved.source.declaration.typeParameters?.length ?? 0) > 0
+        || (resolved.sourceMethod.typeParameters?.length ?? 0) > 0
+      ) return null;
+      const signature = resolved.method.signature;
+      if (signature.parameterModes.length !== declaration.parameters.length) {
+        throw new Error(
+          `native semantic bridge cannot lower ${JSON.stringify(`${resolved.source.declaration.name}.${resolved.sourceMethod.name}`)} into its linked stage-0 declaration`,
+        );
+      }
+      if (signature.errorType !== null && !declaration.errorType) {
+        throw new Error(
+          `native semantic bridge cannot rebase the error type of ${JSON.stringify(`${resolved.source.declaration.name}.${resolved.sourceMethod.name}`)}`,
+        );
+      }
+      authoritativeMethods += 1;
+      return {
+        ...declaration,
+        async: signature.asynchronous,
+        static: resolved.method.staticMethod,
+        visibility: resolved.method.visibility,
+        receiverMode: resolved.method.receiverMode === "in" ? null : resolved.method.receiverMode,
+        typeParameters: [],
+        parameters: declaration.parameters.map((parameter, index) => ({
+          ...parameter,
+          mode: signature.parameterModes[index],
+          type: {
+            ...parameter.type,
+            name: rebaseNativeType(
+              signature.parameterTypes[index],
+              resolved.sourceMethod.parameters[index].type.name,
+              parameter.type.name,
+            ),
+          },
+        })),
+        returnType: {
+          ...declaration.returnType,
+          name: rebaseNativeType(
+            signature.returnType,
+            resolved.sourceMethod.returnType.name,
+            declaration.returnType.name,
+          ),
+        },
+        errorType: signature.errorType === null ? null : {
+          ...declaration.errorType!,
+          name: rebaseNativeType(
+            signature.errorType,
+            resolved.sourceMethod.errorType!.name,
+            declaration.errorType!.name,
+          ),
+        },
+      };
+    },
+    resolveConstructorCall: ({ location, aggregate, declaration }) => {
+      const resolved = nativeConstructor(location, aggregate);
+      if (!resolved || (resolved.source.declaration.typeParameters?.length ?? 0) > 0) return null;
+      const sourceConstructor = resolved.source.declaration.constructor!;
+      const signature = resolved.signature;
+      if (signature.parameterModes.length !== declaration.parameters.length) {
+        throw new Error(
+          `native semantic bridge cannot lower the constructor for ${JSON.stringify(resolved.source.declaration.name)} into its linked stage-0 declaration`,
+        );
+      }
+      if (signature.errorType !== null && !declaration.errorType) {
+        throw new Error(
+          `native semantic bridge cannot rebase the constructor error type of ${JSON.stringify(resolved.source.declaration.name)}`,
+        );
+      }
+      authoritativeConstructors += 1;
+      return {
+        ...declaration,
+        async: signature.asynchronous,
+        typeParameters: [],
+        parameters: declaration.parameters.map((parameter, index) => ({
+          ...parameter,
+          mode: signature.parameterModes[index],
+          type: {
+            ...parameter.type,
+            name: rebaseNativeType(
+              signature.parameterTypes[index],
+              sourceConstructor.parameters[index].type.name,
+              parameter.type.name,
+            ),
+          },
+        })),
+        returnType: {
+          ...declaration.returnType,
+          name: rebaseNativeType(
+            signature.returnType,
+            resolved.source.declaration.name,
+            declaration.returnType.name,
+          ),
+        },
+        errorType: signature.errorType === null ? null : {
+          ...declaration.errorType!,
+          name: rebaseNativeType(
+            signature.errorType,
+            sourceConstructor.errorType!.name,
+            declaration.errorType!.name,
+          ),
+        },
+      };
+    },
     onFunctionCall: ({ location, declaration }) => {
       if (!nativeFunction(location, declaration)) return;
       functions += 1;
     },
     onMethodCall: ({ location, aggregate, declaration }) => {
-      const source = sourceAggregate(sourceAggregates, modulePaths, aggregate);
-      if (!source) return;
-      const native = index.symbol(source.modulePath, source.declaration.name);
-      const nativeMethod = native?.typeSignature?.methods.find((candidate) => candidate.name === declaration.name);
-      const sourceMethod = source.declaration.methods.find((candidate) =>
-        candidate.name === declaration.name && Boolean(candidate.static) === Boolean(declaration.static)
-      );
-      if (!native || (native.kind !== "struct" && native.kind !== "class") || !nativeMethod || !sourceMethod) {
-        throw new Error(
-          `native call shadow could not resolve method ${JSON.stringify(`${source.declaration.name}.${declaration.name}`)} in ${source.modulePath}`,
-        );
-      }
-      if (
-        nativeMethod.staticMethod !== Boolean(sourceMethod.static)
-        || nativeMethod.visibility !== (sourceMethod.visibility ?? "public")
-        || nativeMethod.receiverMode !== (sourceMethod.receiverMode ?? "in")
-        || !sameModuleFunctionSignature(stage0FunctionSignature(sourceMethod), nativeMethod.signature)
-      ) {
-        throw new Error(
-          `native call shadow signature mismatch for ${JSON.stringify(`${source.declaration.name}.${declaration.name}`)} called at ${callSite(location, sourceBatch)}`,
-        );
-      }
+      if (!nativeMethod(location, aggregate, declaration)) return;
       methods += 1;
     },
     onConstructorCall: ({ location, aggregate }) => {
-      const source = sourceAggregate(sourceAggregates, modulePaths, aggregate);
-      if (!source) return;
-      const native = index.symbol(source.modulePath, source.declaration.name);
-      const expected = stage0ConstructorSignature(source.declaration);
-      if (
-        !native
-        || native.kind !== "class"
-        || !native.typeSignature
-        || !expected
-        || !sameModuleFunctionSignature(expected, native.typeSignature.constructorSignature)
-      ) {
-        throw new Error(
-          `native call shadow constructor mismatch for ${JSON.stringify(source.declaration.name)} called at ${callSite(location, sourceBatch)}`,
-        );
-      }
+      if (!nativeConstructor(location, aggregate)) return;
       constructors += 1;
     },
     onAggregateConstruction: ({ location, declaration }) => {
@@ -255,6 +377,8 @@ export function createNativeSemanticBridge(
     enumVariantCount: () => enumVariants,
     typeCount: () => types,
     authoritativeFunctionCount: () => authoritativeFunctions,
+    authoritativeMethodCount: () => authoritativeMethods,
+    authoritativeConstructorCount: () => authoritativeConstructors,
   };
 }
 

@@ -427,14 +427,20 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    Native checks report these type-use resolutions independently, while primitive,
    foreign, and compiler-synthesized types remain outside this source-identity
    counter.
-   Successful non-generic direct Z function calls are the first native-authoritative
-   semantic result. Their parameter modes and types, async/error state, and result
-   type now come from the native signature; a checked rebasing step maps native
-   source-level type names onto the already-linked stage-zero declarations used by
-   ownership analysis and code generation. Stage zero independently proves the
-   contract equivalent before using it. Generic functions intentionally remain
-   shadow-only until native substitutions can cross the compiler boundary, and
-   ordinary checks without `--native-frontend` retain the stage-zero path.
+   Successful non-generic Z function, method, and explicit class-constructor calls
+   are now native-authoritative semantic results. Their parameter modes and types,
+   async/error state, and result type come from the native signature; methods also
+   take static/instance identity, visibility, and receiver capability from native
+   metadata. A checked rebasing step maps native source-level type names onto the
+   already-linked stage-zero declarations used by ownership analysis and code
+   generation, so native `inout this` and `move this` feed the existing
+   exclusivity and consumption checks rather than creating a parallel ownership
+   path. Stage zero independently proves each contract equivalent before using
+   it. Generic functions, generic methods, and methods or constructors on generic
+   owners intentionally remain shadow-only until native substitutions can cross
+   the compiler boundary; ordinary checks without `--native-frontend` retain the
+   stage-zero path. Native-authority counts are reported separately for functions,
+   methods, and constructors.
    Native failures are buffered: a stage-zero error remains authoritative, and a
    native error surfaces only after stage zero succeeds. Prepared-library invocation lives in a
    reusable native-frontend service rather than the CLI. Native checks therefore

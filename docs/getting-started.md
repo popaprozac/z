@@ -72,12 +72,15 @@ selective-import, and namespace symbols from that graph; parity reuses the
 batch's existing stage-0 ASTs rather than parsing each module again. It also
 executes and checks every indexed binding/signature query; `--timings` reports
 that compiler-owned parity separately from native execution. During stage-zero
-semantic analysis, successful non-generic direct Z calls use their native
-parameter capabilities/types, async/error state, and result type after those
-source-level names are rebased onto the linked lowering declarations. Stage zero
-independently verifies the same contract and still handles generic calls while
-native substitution remains incomplete. Native failures are held until stage
-zero succeeds, so enabling the hybrid does not displace the existing diagnostic.
+semantic analysis, successful non-generic Z function, method, and explicit class
+constructor calls use their native callable contracts after source-level names
+are rebased onto the linked lowering declarations. For methods, that includes
+static/instance identity, visibility, and the `in`/`inout`/`move this` receiver
+capability enforced by the ordinary ownership engine. Stage zero independently
+verifies each contract and still handles generic functions, generic methods, and
+generic owners while native substitution remains incomplete. Native failures are
+held until stage zero succeeds, so enabling the hybrid does not displace the
+existing diagnostic.
 
 ## Source modules
 
