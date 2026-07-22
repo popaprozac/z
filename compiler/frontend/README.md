@@ -116,11 +116,12 @@ bun run z check examples/language/modules/main.zs --native-frontend --timings
 ```
 
 `check --native-frontend` is the first ordinary-command integration. Stage 0
-still performs authoritative checking; after it succeeds, the native frontend
-analyzes the same canonical module batch and gates command success on exact
-graph/symbol parity. The opt-in shadow keeps diagnostics stable while measuring
-equivalent work and finding semantic composition gaps before native results
-replace stage-zero decisions. `--timings` is available only with this shadow.
+still owns diagnostics and unsupported semantic shapes; the native frontend
+analyzes the same canonical module batch, gates command success on exact
+graph/symbol parity, and supplies validated authoritative results for the
+supported semantic subset. The opt-in bridge keeps diagnostics stable while
+measuring equivalent work and finding semantic composition gaps.
+`--timings` is available only with this bridge.
 
 The text protocol is a bootstrap boundary, not the intended final frontend API.
 The resolver intentionally receives host-canonicalized paths and source text in
@@ -161,6 +162,14 @@ one identity. Identity paths now recurse through compiler-known wrappers such as
 `Option`, arrays and slices, views, `Weak`, tasks, function signatures, and
 materialized `Result` payloads. Arguments of user-defined generic monomorphs
 still defer because Stage 0 does not retain their source substitutions directly.
+Settled root expressions now form a third source-located evidence stream. Each
+record carries its source type and the same recursive declaration identities as
+binding evidence. The compiler indexes these records by canonical module and
+expression offset; Stage 0 consumes a record only when location, concrete type,
+and every nominal identity agree. Expressions absent from the native tree, or
+whose linked representation cannot yet be proven equivalent, stay on the
+Stage-0 path. The check report separately shows exported, observed, and
+native-authoritative root-expression counts.
 The reported native interval therefore does more semantic work than the
 graph-and-symbol-only stage-zero comparison.
 Repeated corpus measurements, broadening ordinary-command shadow coverage, and

@@ -19,6 +19,7 @@ export type NativeSemanticBridge = {
   readonly enumVariantCount: () => number;
   readonly typeCount: () => number;
   readonly bindingCount: () => number;
+  readonly expressionCount: () => number;
   readonly authoritativeFunctionCount: () => number;
   readonly authoritativeMethodCount: () => number;
   readonly authoritativeConstructorCount: () => number;
@@ -27,6 +28,7 @@ export type NativeSemanticBridge = {
   readonly authoritativeEnumVariantCount: () => number;
   readonly authoritativeTypeCount: () => number;
   readonly authoritativeBindingCount: () => number;
+  readonly authoritativeExpressionCount: () => number;
 };
 
 export function createNativeSemanticBridge(
@@ -79,6 +81,7 @@ export function createNativeSemanticBridge(
   let enumVariants = 0;
   let types = 0;
   let bindings = 0;
+  let expressions = 0;
   let authoritativeFunctions = 0;
   let authoritativeMethods = 0;
   let authoritativeConstructors = 0;
@@ -87,6 +90,7 @@ export function createNativeSemanticBridge(
   let authoritativeEnumVariants = 0;
   let authoritativeTypes = 0;
   let authoritativeBindings = 0;
+  let authoritativeExpressions = 0;
   const nativeFunction = (location: FunctionDeclaration["location"], declaration: FunctionDeclaration) => {
     const definitionPath = declaration.location.fileName;
     const canonicalDefinitionPath = definitionPath
@@ -257,7 +261,6 @@ export function createNativeSemanticBridge(
     if (!modulePath) return null;
     const resolution = index.bindingResolution(modulePath, location.offset);
     if (!resolution) return null;
-    const linkedDisplayType = typeDisplayNames.get(inferredType) ?? inferredType;
     if (
       resolution.name !== name
       || resolution.mutableBinding !== mutable
@@ -268,11 +271,25 @@ export function createNativeSemanticBridge(
         `native semantic bridge binding mismatch for ${JSON.stringify(name)} inferred at ${callSite(location, sourceBatch)}`,
       );
     }
-    if (concreteNativeTypeMatches(resolution.typeName, linkedDisplayType)) return resolution;
-    if (resolution.typeIdentities.length !== typeIdentities.length) return null;
-    for (const nativeIdentity of resolution.typeIdentities) {
-      const linkedIdentity = typeIdentities.find((candidate) => candidate.path === nativeIdentity.path);
-      if (!linkedIdentity) return null;
+    return nativeTypeContractMatches(resolution.typeName, resolution.typeIdentities, inferredType, typeIdentities)
+      ? resolution
+      : null;
+  };
+  const nativeTypeContractMatches = (
+    nativeType: string,
+    nativeIdentities: readonly { readonly path: string; readonly targetModule: number; readonly targetSymbol: number }[],
+    linkedType: string,
+    linkedIdentities: readonly SemanticTypeIdentity[],
+  ): boolean => {
+    const linkedDisplayType = typeDisplayNames.get(linkedType) ?? linkedType;
+    if (concreteNativeTypeMatches(nativeType, linkedDisplayType)) return true;
+    if (nativeIdentities.length === 0) return false;
+    if (nativeIdentities.length !== linkedIdentities.length) return false;
+    const nativeNames: string[] = [];
+    const linkedNames: string[] = [];
+    for (const nativeIdentity of nativeIdentities) {
+      const linkedIdentity = linkedIdentities.find((candidate) => candidate.path === nativeIdentity.path);
+      if (!linkedIdentity) return false;
       const source = linkedIdentity.declaration.kind === "enum"
         ? sourceEnum(sourceEnums, canonicalModulePathBySourcePath, linkedIdentity.declaration)
         : sourceAggregate(sourceAggregates, canonicalModulePathBySourcePath, linkedIdentity.declaration);
@@ -283,9 +300,32 @@ export function createNativeSemanticBridge(
         || targetModule?.path !== source.modulePath
         || target?.name !== source.declaration.name
         || target?.kind !== source.declaration.kind
-      ) return null;
+      ) return false;
+      nativeNames.push(target.name);
+      linkedNames.push(source.declaration.name);
     }
-    return resolution;
+    return erasedNominalTypeShape(nativeType, nativeNames)
+      === erasedNominalTypeShape(linkedDisplayType, linkedNames);
+  };
+  const nativeExpression = (
+    location: FunctionDeclaration["location"],
+    inferredType: string,
+    typeIdentities: readonly SemanticTypeIdentity[],
+  ) => {
+    const modulePath = canonicalModulePathBySourcePath.get(
+      location.fileName ?? sourceBatch.entryFileName,
+    );
+    if (!modulePath) return null;
+    const resolution = index.expressionResolution(modulePath, location.offset);
+    if (!resolution) return null;
+    if (resolution.line !== location.line || resolution.column !== location.column) {
+      throw new Error(
+        `native semantic bridge expression mismatch inferred at ${callSite(location, sourceBatch)}`,
+      );
+    }
+    return nativeTypeContractMatches(resolution.typeName, resolution.typeIdentities, inferredType, typeIdentities)
+      ? resolution
+      : null;
   };
   const observer: SemanticObserver = {
     resolveFunctionCall: ({ location, declaration }) => {
@@ -782,6 +822,12 @@ export function createNativeSemanticBridge(
       authoritativeBindings += 1;
       return inferredType;
     },
+    resolveExpressionType: ({ location, inferredType, typeIdentities }) => {
+      const resolved = nativeExpression(location, inferredType, typeIdentities);
+      if (!resolved) return null;
+      authoritativeExpressions += 1;
+      return inferredType;
+    },
     onFunctionCall: ({ location, declaration }) => {
       if (!nativeFunction(location, declaration)) return;
       functions += 1;
@@ -814,6 +860,10 @@ export function createNativeSemanticBridge(
       if (!nativeBinding(location, name, mutable, inferredType, typeIdentities)) return;
       bindings += 1;
     },
+    onExpressionResolution: ({ location, inferredType, typeIdentities }) => {
+      if (!nativeExpression(location, inferredType, typeIdentities)) return;
+      expressions += 1;
+    },
   };
   return {
     observer,
@@ -825,6 +875,7 @@ export function createNativeSemanticBridge(
     enumVariantCount: () => enumVariants,
     typeCount: () => types,
     bindingCount: () => bindings,
+    expressionCount: () => expressions,
     authoritativeFunctionCount: () => authoritativeFunctions,
     authoritativeMethodCount: () => authoritativeMethods,
     authoritativeConstructorCount: () => authoritativeConstructors,
@@ -833,6 +884,7 @@ export function createNativeSemanticBridge(
     authoritativeEnumVariantCount: () => authoritativeEnumVariants,
     authoritativeTypeCount: () => authoritativeTypes,
     authoritativeBindingCount: () => authoritativeBindings,
+    authoritativeExpressionCount: () => authoritativeExpressions,
   };
 }
 
@@ -877,6 +929,17 @@ function rebaseNativeType(nativeType: string, sourceType: string, linkedType: st
 
 function concreteNativeTypeMatches(nativeType: string, linkedType: string): boolean {
   return normalizeNativeType(nativeType) === normalizeNativeType(canonicalTypeName(linkedType));
+}
+
+function erasedNominalTypeShape(typeName: string, nominalNames: readonly string[]): string {
+  let shape = normalizeNativeType(canonicalTypeName(typeName));
+  for (const name of new Set(nominalNames)) {
+    shape = shape.replace(
+      new RegExp(`\\b(?:[A-Za-z_][A-Za-z0-9_]*\\.)*${escapeRegExp(name)}\\b`, "g"),
+      "#",
+    );
+  }
+  return shape;
 }
 
 function typeParameterAffectsCallableContract(declaration: FunctionDeclaration, parameter: string): boolean {

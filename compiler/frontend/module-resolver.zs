@@ -161,6 +161,15 @@ export struct ResolvedModule {
 export struct ModuleSemanticEvidence {
   callResolutions: Array<ModuleCallResolution>;
   bindingResolutions: Array<ModuleBindingResolution>;
+  expressionResolutions: Array<ModuleExpressionResolution>;
+}
+
+export struct ModuleExpressionResolution {
+  offset: usize;
+  line: usize;
+  column: usize;
+  typeName: String;
+  typeIdentities: Array<ModuleTypeIdentity>;
 }
 
 export struct ModuleBindingResolution {
@@ -7070,6 +7079,25 @@ function inferExpressionTypeExpected(
         inout evidence
       );
       try requireSettledExpressionType(module, tree, root, inferred);
+      let existingIndex: usize = 0;
+      let recorded = false;
+      while (existingIndex < evidence.expressionResolutions.length) {
+        if (evidence.expressionResolutions[existingIndex].offset == tree.nodes[root].offset) {
+          recorded = true;
+        }
+        existingIndex = existingIndex + 1;
+      }
+      if (!recorded && inferred.byteLength > 0 && inferred != "__z_never") {
+        let typeIdentities = Array<ModuleTypeIdentity>();
+        collectTypeIdentities(modules, moduleIndex, inferred, "", inout typeIdentities);
+        evidence.expressionResolutions.push(ModuleExpressionResolution({
+          offset: tree.nodes[root].offset,
+          line: tree.nodes[root].line,
+          column: tree.nodes[root].column,
+          typeName: inferred.copyBytes(0, inferred.byteLength),
+          typeIdentities,
+        }));
+      }
       copyBindingFlowStates(inout bindings, expressionBindings);
       select inferred;
     }
@@ -7745,6 +7773,7 @@ function validateExpressionTypesAndLocals(
   let evidence = ModuleSemanticEvidence({
     callResolutions: Array<ModuleCallResolution>(),
     bindingResolutions: Array<ModuleBindingResolution>(),
+    expressionResolutions: Array<ModuleExpressionResolution>(),
   });
   const noTypeParameters = Array<TypeParameter>();
   for (const declaration of module.program.functions) {
@@ -7927,6 +7956,7 @@ export function resolveModules(
       semanticEvidence: ModuleSemanticEvidence({
         callResolutions: Array<ModuleCallResolution>(),
         bindingResolutions: Array<ModuleBindingResolution>(),
+        expressionResolutions: Array<ModuleExpressionResolution>(),
       }),
     }));
     index = index + 1;

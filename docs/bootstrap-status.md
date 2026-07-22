@@ -478,6 +478,15 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    tasks, function signatures, and materialized `Result` payloads. Arguments of
    user-defined generic monomorphs retain the stage-zero fallback because their
    source substitutions are not preserved directly after materialization.
+   Settled root expressions now export their own source-located evidence stream.
+   Each record carries the inferred source type plus recursive nominal identity
+   paths, and `NativeSemanticIndex` keys it by canonical module and expression
+   offset. The semantic bridge accepts a native expression result only when its
+   location, concrete type, and every declaration identity match the linked
+   Stage-0 expression. Generated, opaque, foreign, async, and otherwise absent
+   roots continue through the Stage-0 fallback. Ordinary native checks report
+   expression contracts exported, observed, and used authoritatively as separate
+   counts.
    Successful non-generic Z function, method, and explicit class-constructor calls
    are now native-authoritative semantic results. Their parameter modes and types,
    async/error state, and result type come from the native signature; methods also

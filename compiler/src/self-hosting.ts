@@ -79,6 +79,15 @@ export type Stage1ResolvedModule = {
   readonly symbols: readonly Stage1ModuleSymbol[];
   readonly callResolutions: readonly Stage1ModuleCallResolution[];
   readonly bindingResolutions: readonly Stage1ModuleBindingResolution[];
+  readonly expressionResolutions: readonly Stage1ModuleExpressionResolution[];
+};
+
+export type Stage1ModuleExpressionResolution = {
+  readonly offset: number;
+  readonly line: number;
+  readonly column: number;
+  readonly typeName: string;
+  readonly typeIdentities: readonly Stage1ModuleTypeIdentity[];
 };
 
 export type Stage1ModuleBindingResolution = {
@@ -221,6 +230,7 @@ export function decodeStage1ModuleGraphStream(output: string): Stage1ModuleGraph
         symbols: [],
         callResolutions: [],
         bindingResolutions: [],
+        expressionResolutions: [],
       });
       continue;
     }
@@ -343,6 +353,39 @@ export function decodeStage1ModuleGraphStream(output: string): Stage1ModuleGraph
         name: Buffer.from(fields[5], "hex").toString("utf8"),
         mutableBinding: fields[6] === "1",
         typeName: Buffer.from(fields[7], "hex").toString("utf8"),
+        typeIdentities,
+      });
+      continue;
+    }
+    if (fields[0] === "expressionResolution") {
+      if (fields.length < 7) throw new Error(`malformed stage-1 expression resolution line: ${line}`);
+      const moduleIndex = parseProtocolHexInteger(fields[1], "expression resolution module");
+      const module = modules[moduleIndex];
+      if (!module) throw new Error("stage-1 expression resolution appeared before its module");
+      if (!/^(?:[0-9a-f]{2})*$/.test(fields[5])) {
+        throw new Error(`malformed stage-1 expression resolution text: ${line}`);
+      }
+      const identityCount = parseProtocolHexInteger(fields[6], "expression resolution identity count");
+      if (fields.length !== 7 + (identityCount * 3)) {
+        throw new Error(`malformed stage-1 expression resolution identity arity: ${line}`);
+      }
+      const encodedIdentities = fields.slice(7);
+      const typeIdentities: Stage1ModuleTypeIdentity[] = [];
+      for (let index = 0; index < encodedIdentities.length; index += 3) {
+        if (!/^(?:[0-9a-f]{2})*$/.test(encodedIdentities[index])) {
+          throw new Error(`malformed stage-1 expression resolution identity path: ${line}`);
+        }
+        typeIdentities.push({
+          path: Buffer.from(encodedIdentities[index], "hex").toString("utf8"),
+          targetModule: parseProtocolHexInteger(encodedIdentities[index + 1], "expression resolution identity module"),
+          targetSymbol: parseProtocolHexInteger(encodedIdentities[index + 2], "expression resolution identity symbol"),
+        });
+      }
+      (module.expressionResolutions as Stage1ModuleExpressionResolution[]).push({
+        offset: parseProtocolHexInteger(fields[2], "expression resolution offset"),
+        line: parseProtocolHexInteger(fields[3], "expression resolution line"),
+        column: parseProtocolHexInteger(fields[4], "expression resolution column"),
+        typeName: Buffer.from(fields[5], "hex").toString("utf8"),
         typeIdentities,
       });
       continue;

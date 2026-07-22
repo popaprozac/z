@@ -6,6 +6,7 @@ import {
   ModuleResolveError,
   ModuleBindingResolution,
   ModuleCallResolution,
+  ModuleExpressionResolution,
   ModuleSource,
   ModuleSymbol,
   moduleSymbolKindName,
@@ -435,6 +436,35 @@ function appendBindingResolution(
   output.appendAscii(10);
 }
 
+function appendExpressionResolution(
+  inout output: TextBuffer,
+  moduleIndex: usize,
+  in resolution: ModuleExpressionResolution
+): void {
+  output.append("expressionResolution");
+  output.appendAscii(9);
+  appendHexUsize(inout output, moduleIndex);
+  output.appendAscii(9);
+  appendHexUsize(inout output, resolution.offset);
+  output.appendAscii(9);
+  appendHexUsize(inout output, resolution.line);
+  output.appendAscii(9);
+  appendHexUsize(inout output, resolution.column);
+  output.appendAscii(9);
+  appendHexText(inout output, resolution.typeName);
+  output.appendAscii(9);
+  appendHexUsize(inout output, resolution.typeIdentities.length);
+  for (const identity of resolution.typeIdentities) {
+    output.appendAscii(9);
+    appendHexText(inout output, identity.path);
+    output.appendAscii(9);
+    appendHexUsize(inout output, identity.targetModuleIndex);
+    output.appendAscii(9);
+    appendHexUsize(inout output, identity.targetSymbolIndex);
+  }
+  output.appendAscii(10);
+}
+
 export function renderModuleGraph(
   in entryPath: String,
   in batch: String
@@ -475,6 +505,9 @@ export function renderModuleGraph(
     }
     for (const resolution of module.semanticEvidence.bindingResolutions) {
       appendBindingResolution(inout output, moduleIndex, resolution);
+    }
+    for (const resolution of module.semanticEvidence.expressionResolutions) {
+      appendExpressionResolution(inout output, moduleIndex, resolution);
     }
     moduleIndex = moduleIndex + 1;
   }

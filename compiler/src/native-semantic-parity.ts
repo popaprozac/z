@@ -71,6 +71,7 @@ export function buildStage0ModuleGraph(sourceBatch: SourceModuleBatch): Stage1Mo
       symbols: stage0ModuleSymbols(module, indexByPath),
       callResolutions: [],
       bindingResolutions: [],
+      expressionResolutions: [],
     };
   });
   const entry = indexByPath.get(sourceBatch.entryFileName);

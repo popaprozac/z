@@ -2,6 +2,7 @@ import type { SourceModuleBatch } from "./modules.ts";
 import type {
   Stage1ModuleBindingResolution,
   Stage1ModuleCallResolution,
+  Stage1ModuleExpressionResolution,
   Stage1ModuleGraph,
   Stage1ModuleSymbol,
 } from "./self-hosting.ts";
@@ -20,6 +21,7 @@ export class NativeSemanticIndex {
   readonly #symbolsByModule: readonly ReadonlyMap<string, Stage1ModuleSymbol>[];
   readonly #callResolutionsByModule: readonly ReadonlyMap<number, Stage1ModuleCallResolution>[];
   readonly #bindingResolutionsByModule: readonly ReadonlyMap<number, Stage1ModuleBindingResolution>[];
+  readonly #expressionResolutionsByModule: readonly ReadonlyMap<number, Stage1ModuleExpressionResolution>[];
 
   constructor(graph: Stage1ModuleGraph, sourceBatch: SourceModuleBatch) {
     validateGraphShape(graph, sourceBatch);
@@ -95,6 +97,30 @@ export class NativeSemanticIndex {
       }
       return resolutions;
     });
+    this.#expressionResolutionsByModule = graph.modules.map((module) => {
+      const resolutions = new Map<number, Stage1ModuleExpressionResolution>();
+      for (const resolution of module.expressionResolutions) {
+        if (resolutions.has(resolution.offset)) {
+          throw new Error(`native frontend returned duplicate expression resolution at offset ${resolution.offset} in ${module.path}`);
+        }
+        if (resolution.typeName.length === 0) {
+          throw new Error(`native frontend returned an incomplete expression resolution at offset ${resolution.offset} in ${module.path}`);
+        }
+        const identityPaths = new Set<string>();
+        for (const identity of resolution.typeIdentities) {
+          if (identityPaths.has(identity.path)) {
+            throw new Error(`native frontend returned a duplicate expression type identity path at offset ${resolution.offset} in ${module.path}`);
+          }
+          identityPaths.add(identity.path);
+          const target = graph.modules[identity.targetModule]?.symbols[identity.targetSymbol];
+          if (!target || (target.kind !== "struct" && target.kind !== "class" && target.kind !== "enum")) {
+            throw new Error(`native frontend returned an invalid expression type identity at offset ${resolution.offset} in ${module.path}`);
+          }
+        }
+        resolutions.set(resolution.offset, resolution);
+      }
+      return resolutions;
+    });
   }
 
   symbol(modulePath: string, name: string): Stage1ModuleSymbol | null {
@@ -141,6 +167,11 @@ export class NativeSemanticIndex {
   bindingResolution(modulePath: string, offset: number): Stage1ModuleBindingResolution | null {
     const moduleIndex = this.#moduleIndexByPath.get(modulePath);
     return moduleIndex === undefined ? null : this.#bindingResolutionsByModule[moduleIndex].get(offset) ?? null;
+  }
+
+  expressionResolution(modulePath: string, offset: number): Stage1ModuleExpressionResolution | null {
+    const moduleIndex = this.#moduleIndexByPath.get(modulePath);
+    return moduleIndex === undefined ? null : this.#expressionResolutionsByModule[moduleIndex].get(offset) ?? null;
   }
 }
 

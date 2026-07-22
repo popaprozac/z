@@ -148,6 +148,12 @@ export type SemanticBindingResolution = {
   readonly typeIdentities: readonly SemanticTypeIdentity[];
 };
 
+export type SemanticExpressionResolution = {
+  readonly location: SourceLocation;
+  readonly inferredType: string;
+  readonly typeIdentities: readonly SemanticTypeIdentity[];
+};
+
 export type SemanticTypeIdentity = {
   readonly path: string;
   readonly declaration: StructDeclaration | EnumDeclaration;
@@ -162,6 +168,7 @@ export type SemanticObserver = {
   readonly resolveEnumVariant?: (resolution: SemanticEnumVariantResolution) => EnumDeclaration["variants"][number] | null;
   readonly resolveType?: (resolution: SemanticTypeResolution) => StructDeclaration | EnumDeclaration | null;
   readonly resolveBindingType?: (resolution: SemanticBindingResolution) => string | null;
+  readonly resolveExpressionType?: (resolution: SemanticExpressionResolution) => string | null;
   readonly onFunctionCall?: (resolution: SemanticFunctionCallResolution) => void;
   readonly onMethodCall?: (resolution: SemanticMethodCallResolution) => void;
   readonly onConstructorCall?: (resolution: SemanticConstructorCallResolution) => void;
@@ -170,6 +177,7 @@ export type SemanticObserver = {
   readonly onEnumVariantResolution?: (resolution: SemanticEnumVariantResolution) => void;
   readonly onTypeResolution?: (resolution: SemanticTypeResolution) => void;
   readonly onBindingResolution?: (resolution: SemanticBindingResolution) => void;
+  readonly onExpressionResolution?: (resolution: SemanticExpressionResolution) => void;
 };
 
 type ValueType = string | "unknown" | "never";
@@ -3282,7 +3290,7 @@ function inferExpression(
   state: AnalysisState,
   allowThrowingCall = false,
 ): ValueType {
-  const type = inferExpressionInner(
+  const inferred = inferExpressionInner(
     expression,
     locals,
     globals,
@@ -3292,8 +3300,16 @@ function inferExpression(
     state,
     allowThrowingCall,
   );
+  const inferredType = String(underlyingType(inferred));
+  const resolution: SemanticExpressionResolution = {
+    location: expression.location,
+    inferredType,
+    typeIdentities: collectSemanticTypeIdentities(inferredType, "", structs, enums),
+  };
+  const type = state.observer?.resolveExpressionType?.(resolution) ?? inferred;
+  state.observer?.onExpressionResolution?.(resolution);
   state.expressionTypes.set(expression.location.offset, String(type));
-  return type;
+  return type as ValueType;
 }
 
 function readonlyFieldOnPath(

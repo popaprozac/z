@@ -101,6 +101,7 @@ test("loads explicit Z exports through selective and namespace module imports", 
   assert.equal(analysis.nativeSemanticQueryCount, 0);
   assert.equal(analysis.nativeGenericCallEvidenceCount, 0);
   assert.equal(analysis.nativeBindingEvidenceCount, 0);
+  assert.equal(analysis.nativeExpressionEvidenceCount, 0);
   assert.equal(analysis.nativeCallResolutionCount, 0);
   assert.equal(analysis.nativeMethodResolutionCount, 0);
   assert.equal(analysis.nativeConstructorResolutionCount, 0);
@@ -109,6 +110,7 @@ test("loads explicit Z exports through selective and namespace module imports", 
   assert.equal(analysis.nativeEnumVariantResolutionCount, 0);
   assert.equal(analysis.nativeTypeResolutionCount, 0);
   assert.equal(analysis.nativeBindingResolutionCount, 0);
+  assert.equal(analysis.nativeExpressionResolutionCount, 0);
   assert.equal(analysis.nativeAuthoritativeFunctionResolutionCount, 0);
   assert.equal(analysis.nativeAuthoritativeMethodResolutionCount, 0);
   assert.equal(analysis.nativeAuthoritativeConstructorResolutionCount, 0);
@@ -117,6 +119,7 @@ test("loads explicit Z exports through selective and namespace module imports", 
   assert.equal(analysis.nativeAuthoritativeEnumVariantResolutionCount, 0);
   assert.equal(analysis.nativeAuthoritativeTypeResolutionCount, 0);
   assert.equal(analysis.nativeAuthoritativeBindingResolutionCount, 0);
+  assert.equal(analysis.nativeAuthoritativeExpressionResolutionCount, 0);
   assert.equal(analysis.nativeFrontendParityMilliseconds, null);
   assert.equal(analysis.sourceModuleBatch.entryFileName, example);
   assert.deepEqual(
@@ -158,6 +161,7 @@ test("attaches native frontend evidence after authoritative stage-0 analysis", (
   assert.ok(analysis.nativeSemanticQueryCount > (analysis.nativeFrontendGraph?.modules.length ?? 0));
   assert.equal(analysis.nativeGenericCallEvidenceCount, 0);
   assert.equal(analysis.nativeBindingEvidenceCount, 0);
+  assert.equal(analysis.nativeExpressionEvidenceCount, 0);
   assert.ok(analysis.nativeCallResolutionCount > 0);
   assert.equal(analysis.nativeAuthoritativeFunctionResolutionCount, analysis.nativeCallResolutionCount);
   assert.equal(analysis.nativeAuthoritativeAggregateResolutionCount, analysis.nativeAggregateResolutionCount);
@@ -165,6 +169,8 @@ test("attaches native frontend evidence after authoritative stage-0 analysis", (
   assert.equal(analysis.nativeAuthoritativeEnumVariantResolutionCount, analysis.nativeEnumVariantResolutionCount);
   assert.equal(analysis.nativeAuthoritativeTypeResolutionCount, analysis.nativeTypeResolutionCount);
   assert.equal(analysis.nativeAuthoritativeBindingResolutionCount, 0);
+  assert.equal(analysis.nativeExpressionResolutionCount, 0);
+  assert.equal(analysis.nativeAuthoritativeExpressionResolutionCount, 0);
   assert.ok((analysis.nativeFrontendParityMilliseconds ?? -1) >= 0);
 
   const callableFile = resolve(projectRoot, "native-callable-shadow.zs");
@@ -4848,14 +4854,17 @@ test("resolves a canonical module graph directly from native Z ASTs", () => {
   );
   assert.match(ordinaryCheck.stdout, /native frontend hybrid compiler index matches \d+ binding\/signature queries/);
   assert.match(ordinaryCheck.stdout, /native frontend hybrid exports 2 inferred local binding contracts/);
+  assert.match(ordinaryCheck.stdout, /native frontend hybrid exports 7 root expression type contracts/);
   assert.match(ordinaryCheck.stdout, /native frontend hybrid observes \d+ function, \d+ method, and \d+ constructor stage-0 Z resolutions/);
   assert.match(ordinaryCheck.stdout, /native frontend hybrid observes \d+ aggregate, \d+ field, and \d+ enum-variant stage-0 Z resolutions/);
   assert.match(ordinaryCheck.stdout, /native frontend hybrid observes \d+ explicit type-use stage-0 Z resolutions/);
   assert.match(ordinaryCheck.stdout, /native frontend hybrid observes \d+ inferred local binding stage-0 Z resolutions/);
+  assert.match(ordinaryCheck.stdout, /native frontend hybrid observes 3 root expression stage-0 Z resolutions/);
   assert.match(ordinaryCheck.stdout, /native frontend hybrid uses \d+ function, \d+ method, and \d+ constructor native-authoritative contracts/);
   assert.match(ordinaryCheck.stdout, /native frontend hybrid uses \d+ aggregate, \d+ field, and \d+ enum-variant native-authoritative contracts/);
   assert.match(ordinaryCheck.stdout, /native frontend hybrid uses \d+ explicit type-use native-authoritative contracts/);
   assert.match(ordinaryCheck.stdout, /native frontend hybrid uses 2 inferred local binding native-authoritative contracts/);
+  assert.match(ordinaryCheck.stdout, /native frontend hybrid uses 3 root expression native-authoritative contracts/);
   assert.match(ordinaryCheck.stdout, /native frontend hybrid timing \(3 modules, cache hit\)/);
   assert.match(ordinaryCheck.stdout, /main\.zs: ok/);
 
@@ -4889,6 +4898,9 @@ test("resolves a canonical module graph directly from native Z ASTs", () => {
   assert.match(inferredBindingEvidence.stdout, /exports 3 inferred local binding contracts/);
   assert.match(inferredBindingEvidence.stdout, /observes 3 inferred local binding stage-0 Z resolutions/);
   assert.match(inferredBindingEvidence.stdout, /uses 3 inferred local binding native-authoritative contracts/);
+  assert.match(inferredBindingEvidence.stdout, /exports 8 root expression type contracts/);
+  assert.match(inferredBindingEvidence.stdout, /observes 6 root expression stage-0 Z resolutions/);
+  assert.match(inferredBindingEvidence.stdout, /uses 6 root expression native-authoritative contracts/);
 
   const wrappedBindingMain = resolve(invalidDirectory, "wrapped-binding-main.zs");
   const wrappedBindingModel = resolve(invalidDirectory, "wrapped-binding-model.zs");
@@ -4916,6 +4928,9 @@ test("resolves a canonical module graph directly from native Z ASTs", () => {
   assert.match(wrappedBindingEvidence.stdout, /exports 1 inferred local binding contract/);
   assert.match(wrappedBindingEvidence.stdout, /observes 1 inferred local binding stage-0 Z resolutions/);
   assert.match(wrappedBindingEvidence.stdout, /uses 1 inferred local binding native-authoritative contracts/);
+  assert.match(wrappedBindingEvidence.stdout, /exports 4 root expression type contracts/);
+  assert.match(wrappedBindingEvidence.stdout, /observes 3 root expression stage-0 Z resolutions/);
+  assert.match(wrappedBindingEvidence.stdout, /uses 3 root expression native-authoritative contracts/);
 
   const genericEvidenceMain = resolve(invalidDirectory, "generic-evidence-main.zs");
   const genericEvidenceModel = resolve(invalidDirectory, "generic-evidence-model.zs");
@@ -6727,6 +6742,7 @@ test("resolves a canonical module graph directly from native Z ASTs", () => {
     + "signature\t0000000000000000\t0000000000000000\t0\t54\t\t0000000000000001\t0000000000000001\t54\t76616c7565\t54\n"
     + "callResolution\t0000000000000000\t000000000000002a\t0000000000000002\t000000000000000a\t0000000000000000\t0000000000000000\t66756e6374696f6e\t6964656e74697479\t0\t\t693332\t\t0000000000000001\t0000000000000001\t54\t693332\t76616c7565\t693332\n"
     + "bindingResolution\t0000000000000000\t000000000000001e\t0000000000000002\t0000000000000007\t76616c7565\t0\t693332\t0000000000000000\n"
+    + "expressionResolution\t0000000000000000\t000000000000002a\t0000000000000002\t000000000000000a\t693332\t0000000000000000\n"
     + "order\t0000000000000000\n",
   );
   assert.deepEqual(callEvidenceGraph.modules[0].callResolutions, [{
@@ -6752,6 +6768,13 @@ test("resolves a canonical module graph directly from native Z ASTs", () => {
     column: 7,
     name: "value",
     mutableBinding: false,
+    typeName: "i32",
+    typeIdentities: [],
+  }]);
+  assert.deepEqual(callEvidenceGraph.modules[0].expressionResolutions, [{
+    offset: 42,
+    line: 2,
+    column: 10,
     typeName: "i32",
     typeIdentities: [],
   }]);
