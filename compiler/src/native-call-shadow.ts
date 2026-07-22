@@ -783,7 +783,7 @@ function rebaseNativeType(nativeType: string, sourceType: string, linkedType: st
 }
 
 function concreteNativeTypeMatches(nativeType: string, linkedType: string): boolean {
-  return nativeType === canonicalTypeName(linkedType);
+  return normalizeNativeType(nativeType) === normalizeNativeType(canonicalTypeName(linkedType));
 }
 
 function typeParameterAffectsCallableContract(declaration: FunctionDeclaration, parameter: string): boolean {
@@ -845,7 +845,10 @@ function substituteCanonicalType(
 }
 
 function normalizeNativeType(typeName: string): string {
-  return typeName.replace(/\s+/g, "");
+  return typeName
+    .replace(/\b(inout|out|in)\s+[A-Za-z_][A-Za-z0-9_]*\s*:/g, "$1:")
+    .replace(/\b[A-Za-z_][A-Za-z0-9_]*\s*:/g, ":")
+    .replace(/\s+/g, "");
 }
 
 function normalizeRecordedReceiverMode(mode: string): "in" | "inout" | "move" | string {

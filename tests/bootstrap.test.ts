@@ -4949,6 +4949,7 @@ test("resolves a canonical module graph directly from native Z ASTs", () => {
   writeFileSync(
     contextualClosureModel,
     "export struct Note { id: i32; }\n"
+      + "export function apply<T>(in operation: (value: T) => T, value: T): T { return operation(value); }\n"
       + "export struct Store {\n"
       + "  function visit(in operation: (in note: Note) => i32): i32 {\n"
       + "    const note = Note({ id: 42 });\n"
@@ -4958,10 +4959,11 @@ test("resolves a canonical module graph directly from native Z ASTs", () => {
   );
   writeFileSync(
     contextualClosureMain,
-    "import { Store } from \"./contextual-closure-model.zs\";\n"
+    "import { apply, Store } from \"./contextual-closure-model.zs\";\n"
       + "function main(): i32 {\n"
       + "  const store = Store({});\n"
-      + "  return store.visit((in note) => { return note.id; });\n"
+      + "  const applied = apply<i32>((value) => value + 1, 41);\n"
+      + "  return store.visit((in note) => { return note.id; }) + applied - 42;\n"
       + "}\n",
   );
   const contextualClosure = spawnSync(
@@ -4970,7 +4972,7 @@ test("resolves a canonical module graph directly from native Z ASTs", () => {
     { encoding: "utf8" },
   );
   assert.equal(contextualClosure.status, 0, contextualClosure.stderr);
-  assert.match(contextualClosure.stdout, /native frontend hybrid uses 0 function, 1 method, and 0 constructor native-authoritative contracts/);
+  assert.match(contextualClosure.stdout, /native frontend hybrid uses 1 function, 1 method, and 0 constructor native-authoritative contracts/);
 
   const invalidMain = resolve(invalidDirectory, "main.zs");
   writeFileSync(invalidMain, `import { hidden } from "./values.zs"; function main(): i32 { return hidden(); }`);
@@ -7570,6 +7572,8 @@ test("infers generic results from annotations, assignments, and returns", () => 
     trait Measured { function measure(): i32; }
     struct Reading implements Measured { function measure(): i32 { return 42; } }
     function absent<T>(): Option<T> { return Option<T>.none; }
+    function preserve<T>(value: T): T { return value; }
+    function choose<T>(left: T, right: T): T { return left; }
     function constrained<T: Measured>(): Option<T> { return Option<T>.none; }
     struct Utility {
       static function absent<T>(): Option<T> { return Option<T>.none; }
@@ -7581,6 +7585,14 @@ test("infers generic results from annotations, assignments, and returns", () => 
       assigned = absent();
       const method: Option<i16> = Utility.absent();
       const checked: Option<Reading> = constrained();
+      const nested: Option<i32> = preserve(absent());
+      const conditional: Option<i32> = true ? absent() : absent();
+      const sequential = choose(Option<i32>.none, absent());
+      const branch: Option<i32> = if (true) { select absent(); } else { select absent(); };
+      const matched: Option<i32> = match (Option<boolean>.none) {
+        some(value) => absent();
+        none => absent();
+      };
       return 0;
     }
   `;
@@ -7597,6 +7609,7 @@ test("infers generic results from annotations, assignments, and returns", () => 
   assert.equal(native.status, 0, native.stderr);
   const hybrid = spawnSync(process.execPath, [cli, "check", input, "--native-frontend"], { encoding: "utf8" });
   assert.equal(hybrid.status, 0, hybrid.stderr);
+  assert.match(hybrid.stdout, /native frontend hybrid exports 15 concrete generic call contracts/);
 
   const invalid = source.replace("Option<Reading> = constrained()", "Option<i32> = constrained()");
   writeFileSync(input, invalid);

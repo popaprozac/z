@@ -83,6 +83,11 @@ as in `Container.wrap<i32>(42)`, while `Container<i32>` remains type-position
 syntax. This keeps type namespaces TypeScript-shaped rather than requiring a
 specialized type expression before the member access.
 
+Expected types also flow inward through direct generic function arguments and
+through ternary, value-producing `if`, and expression-`match` branches. This
+lets `const value: Option<i32> = preserve(absent());` infer both calls without
+explicit type arguments while retaining left-to-right argument checking.
+
 Function parameters, exported return types, struct and class fields, FFI
 boundaries, empty collections, and uninitialized storage remain explicit.
 Capabilities describe ownership and access rather than ordinary value types,
@@ -1551,9 +1556,10 @@ ported independently rather than translated as one monolith.
    selective, and namespace type spellings. Constructor records keep the defining
    class as their target while allowing the concrete result type to retain a
    caller-visible alias. Direct generic calls now also accept result context from
-   annotations, assignment targets, and enclosing function returns. Propagating
-   that context through nested calls and value-producing branches remains a later
-   native tier.
+   annotations, assignment targets, and enclosing function returns, and propagate
+   settled parameter contracts through nested calls and ternary, value-producing
+   `if`, and expression-`match` branches. Generic method and constructor argument
+   contexts remain a later composition tier.
    This call evidence is a temporary bootstrap transport—the eventual native
    driver will pass the same structural result directly between compiler phases.
    Type symbols
@@ -1660,8 +1666,10 @@ ported independently rather than translated as one monolith.
    target module's signature. Generic calls infer or accept explicit type
    arguments and structurally substitute nested parameter and return shapes.
    Local annotations, assignment targets, and enclosing function returns can
-   settle result-only parameters; context needed inside nested calls or branches
-   continues to defer. Known initializers,
+   settle result-only parameters. Direct generic functions then carry those
+   contracts through nested arguments and value-producing conditional or match
+   branches. Generic method and constructor argument contexts continue to defer.
+   Known initializers,
    assignments, conditions, arguments, and returns are checked with native
    diagnostics. Local enums and the intrinsic `Option<T>`/`Result<T, E>` shapes
    now provide match payload bindings, local aggregate destructuring,

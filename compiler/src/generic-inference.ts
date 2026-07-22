@@ -207,6 +207,31 @@ export function inferGenericCalls(
       : type;
   };
 
+  const typeMentionsParameter = (type: string, parameter: string): boolean => {
+    if (type === parameter) return true;
+    const functionType = parseFunctionType(type);
+    if (functionType) {
+      return functionType.parameters.some((item) => typeMentionsParameter(item.type, parameter))
+        || typeMentionsParameter(functionType.returnType, parameter);
+    }
+    const array = parseFixedArrayType(type);
+    if (array) return typeMentionsParameter(array.elementType, parameter);
+    const slice = parseSliceType(type);
+    if (slice) return typeMentionsParameter(slice.elementType, parameter);
+    const dynamic = parseDynamicArrayType(type);
+    if (dynamic) return typeMentionsParameter(dynamic.elementType, parameter);
+    const generic = parseGenericType(type);
+    return generic?.arguments.some((argument) => typeMentionsParameter(argument, parameter)) ?? false;
+  };
+
+  const settledType = (
+    pattern: string,
+    parameters: readonly string[],
+    substitutions: ReadonlyMap<string, string>,
+  ): string | null => parameters.some((parameter) => (
+    !substitutions.has(parameter) && typeMentionsParameter(pattern, parameter)
+  )) ? null : substituteType(pattern, substitutions);
+
   const aggregate = (type: string): { declaration: StructDeclaration; substitutions: Map<string, string> } | null => {
     const generic = parseGenericType(type);
     const declaration = structs.get(generic?.base ?? type);
@@ -459,8 +484,8 @@ export function inferGenericCalls(
       }
       case "conditional": {
         const condition = rewriteExpression(expression.condition, environment);
-        const thenExpression = rewriteExpression(expression.thenExpression, new Map(environment));
-        const elseExpression = rewriteExpression(expression.elseExpression, new Map(environment));
+        const thenExpression = rewriteExpression(expression.thenExpression, new Map(environment), expectedType);
+        const elseExpression = rewriteExpression(expression.elseExpression, new Map(environment), expectedType);
         return {
           expression: {
             ...expression,
@@ -654,15 +679,20 @@ export function inferGenericCalls(
       }
       case "matchExpression": {
         const matched = rewriteExpression(expression.expression, environment);
-        const arms = expression.arms.map((arm) => rewriteArm(arm, environment, matched.type));
+        const arms = expression.arms.map((arm) => rewriteArm(arm, environment, matched.type, null, expectedType));
         return { expression: { ...expression, expression: matched.expression, arms }, type: armValueType(arms, environment) };
       }
       case "ifExpression": {
         const condition = rewriteExpression(expression.condition, environment);
-        const thenBranch = rewriteStatement(expression.thenBranch, new Map(environment)) as typeof expression.thenBranch;
+        const thenBranch = rewriteStatement(
+          expression.thenBranch,
+          new Map(environment),
+          null,
+          expectedType,
+        ) as typeof expression.thenBranch;
         const elseBranch = expression.elseBranch.kind === "ifExpression"
-          ? rewriteExpression(expression.elseBranch, new Map(environment)).expression as typeof expression.elseBranch
-          : rewriteStatement(expression.elseBranch, new Map(environment)) as typeof expression.elseBranch;
+          ? rewriteExpression(expression.elseBranch, new Map(environment), expectedType).expression as typeof expression.elseBranch
+          : rewriteStatement(expression.elseBranch, new Map(environment), null, expectedType) as typeof expression.elseBranch;
         return {
           expression: { ...expression, condition: condition.expression, thenBranch, elseBranch },
           type: armValueType([{
@@ -674,6 +704,75 @@ export function inferGenericCalls(
         };
       }
       case "call": {
+        if (expression.callee.kind === "identifier") {
+          const explicit = parseGenericType(expression.callee.name);
+          const template = genericFunctions.get(explicit?.base ?? expression.callee.name);
+          if (template) {
+            if (template.parameters.length !== expression.arguments.length) {
+              throw new DiagnosticError(
+                fileName,
+                expression.location,
+                `${JSON.stringify(template.name)} expects ${template.parameters.length} argument(s), received ${expression.arguments.length}`,
+              );
+            }
+            if (explicit && explicit.arguments.length !== template.typeParameters!.length) {
+              throw new DiagnosticError(
+                fileName,
+                expression.callee.location,
+                `${template.name} expects ${template.typeParameters!.length} type argument(s), received ${explicit.arguments.length}`,
+              );
+            }
+            const parameters = template.typeParameters!;
+            const inferred = new Map<string, string>();
+            if (explicit) {
+              parameters.forEach((parameter, index) => inferred.set(parameter, explicit.arguments[index]));
+            } else if (expectedType) {
+              unify(
+                template.returnType.name,
+                expectedType,
+                new Set(parameters),
+                inferred,
+                template.name,
+                expression.location,
+              );
+            }
+            const valueParameters = new Set(parameters.filter((parameter) => !inferred.has(parameter)));
+            const args: RewrittenExpression[] = [];
+            for (let index = 0; index < expression.arguments.length; index += 1) {
+              const contextual = settledType(template.parameters[index].type.name, parameters, inferred);
+              const argument = rewriteExpression(expression.arguments[index], environment, contextual);
+              args.push(argument);
+              if (!explicit) {
+                unify(
+                  template.parameters[index].type.name,
+                  argument.type,
+                  valueParameters,
+                  inferred,
+                  template.name,
+                  expression.arguments[index].location,
+                );
+              }
+            }
+            const missing = parameters.find((parameter) => !inferred.has(parameter));
+            if (missing) {
+              throw new DiagnosticError(
+                fileName,
+                expression.callee.location,
+                `cannot infer type parameter ${JSON.stringify(missing)} for ${JSON.stringify(template.name)}; `
+                  + "specify explicit type arguments",
+              );
+            }
+            const arguments_ = parameters.map((parameter) => inferred.get(parameter)!);
+            return {
+              expression: {
+                ...expression,
+                callee: { ...expression.callee, name: genericTypeName(template.name, arguments_) },
+                arguments: args.map((item) => item.expression),
+              },
+              type: substituteType(template.returnType.name, inferred),
+            };
+          }
+        }
         const args = expression.arguments.map((item) => rewriteExpression(item, environment));
         if (expression.callee.kind === "member" && expression.callee.object.kind === "identifier") {
           const explicitOwner = parseGenericType(expression.callee.object.name);
@@ -921,59 +1020,11 @@ export function inferGenericCalls(
             };
           }
           const explicit = parseGenericType(rewrittenCallee.name);
-          const template = genericFunctions.get(explicit?.base ?? rewrittenCallee.name);
-          if (explicit && template) {
-            const substitutions = new Map(template.typeParameters!.map((parameter, index) => [parameter, explicit.arguments[index]]));
-            returnType = substituteType(template.returnType.name, substitutions);
-          } else if (explicit?.base === "Array") {
+          if (explicit?.base === "Array") {
             if (explicit.arguments.length !== 1 || args.length !== 0) {
               throw new DiagnosticError(fileName, expression.location, "Array<T>() expects one type argument and no values");
             }
             returnType = dynamicArrayTypeName(explicit.arguments[0]);
-          } else if (!explicit && template) {
-            if (template.parameters.length !== args.length) {
-              throw new DiagnosticError(
-                fileName,
-                expression.location,
-                `${JSON.stringify(template.name)} expects ${template.parameters.length} argument(s), received ${args.length}`,
-              );
-            }
-            const inferred = new Map<string, string>();
-            const parameters = new Set(template.typeParameters!);
-            if (expectedType) {
-              unify(
-                template.returnType.name,
-                expectedType,
-                parameters,
-                inferred,
-                template.name,
-                expression.location,
-              );
-            }
-            const contextualParameters = new Set(inferred.keys());
-            const valueParameters = new Set([...parameters].filter((parameter) => !contextualParameters.has(parameter)));
-            for (let index = 0; index < template.parameters.length; index += 1) {
-              unify(
-                template.parameters[index].type.name,
-                args[index].type,
-                valueParameters,
-                inferred,
-                template.name,
-                args[index].expression.location,
-              );
-            }
-            const missing = template.typeParameters!.find((parameter) => !inferred.has(parameter));
-            if (missing) {
-              throw new DiagnosticError(
-                fileName,
-                rewrittenCallee.location,
-                `cannot infer type parameter ${JSON.stringify(missing)} for ${JSON.stringify(template.name)}; `
-                  + "specify explicit type arguments",
-              );
-            }
-            const arguments_ = template.typeParameters!.map((parameter) => inferred.get(parameter)!);
-            rewrittenCallee = { ...rewrittenCallee, name: genericTypeName(template.name, arguments_) };
-            returnType = substituteType(template.returnType.name, inferred);
           } else if (callee.type && closureReturns.has(callee.type)) {
             returnType = closureReturns.get(callee.type) ?? returnType;
           } else {
@@ -995,6 +1046,7 @@ export function inferGenericCalls(
     environment: Environment,
     matchedType: string | null,
     returnType: string | null = null,
+    selectedType: string | null = null,
   ): MatchArm => {
     const armEnvironment = new Map(environment);
     if (arm.binding && matchedType) {
@@ -1011,13 +1063,14 @@ export function inferGenericCalls(
         if (field) armEnvironment.set(fieldBinding.bindingName, field.type.name);
       }
     }
-    return { ...arm, body: rewriteStatement(arm.body, armEnvironment, returnType) };
+    return { ...arm, body: rewriteStatement(arm.body, armEnvironment, returnType, selectedType) };
   };
 
   const rewriteStatement = (
     statement: Statement,
     environment: Environment,
     returnType: string | null = null,
+    selectedType: string | null = null,
   ): Statement => {
     switch (statement.kind) {
       case "variable": {
@@ -1053,17 +1106,23 @@ export function inferGenericCalls(
         return statement.expression
           ? { ...statement, expression: rewriteExpression(statement.expression, environment, returnType).expression }
           : statement;
-      case "throw":
       case "select":
+        return { ...statement, expression: rewriteExpression(statement.expression, environment, selectedType).expression };
+      case "throw":
       case "expressionStatement":
-        return { ...statement, expression: rewriteExpression(statement.expression, environment).expression };
+        return { ...statement, expression: rewriteExpression(statement.expression, environment, selectedType).expression };
       case "block":
-        return { ...statement, statements: rewriteStatements(statement.statements, new Map(environment), returnType) };
+        return { ...statement, statements: rewriteStatements(statement.statements, new Map(environment), returnType, selectedType) };
       case "if": {
         const condition = rewriteExpression(statement.condition, environment);
-        const thenBranch = rewriteStatement(statement.thenBranch, new Map(environment), returnType) as typeof statement.thenBranch;
+        const thenBranch = rewriteStatement(
+          statement.thenBranch,
+          new Map(environment),
+          returnType,
+          selectedType,
+        ) as typeof statement.thenBranch;
         const elseBranch = statement.elseBranch
-          ? rewriteStatement(statement.elseBranch, new Map(environment), returnType) as typeof statement.elseBranch
+          ? rewriteStatement(statement.elseBranch, new Map(environment), returnType, selectedType) as typeof statement.elseBranch
           : null;
         return { ...statement, condition: condition.expression, thenBranch, elseBranch };
       }
@@ -1087,7 +1146,7 @@ export function inferGenericCalls(
         return {
           ...statement,
           expression: matched.expression,
-          arms: statement.arms.map((arm) => rewriteArm(arm, environment, matched.type, returnType)),
+          arms: statement.arms.map((arm) => rewriteArm(arm, environment, matched.type, returnType, selectedType)),
         };
       }
       case "asyncScope":
@@ -1105,8 +1164,14 @@ export function inferGenericCalls(
     statements: readonly Statement[],
     environment: Environment,
     returnType: string | null = null,
+    selectedType: string | null = null,
   ): Statement[] => (
-    statements.map((statement) => rewriteStatement(statement, environment, returnType))
+    statements.map((statement, index) => rewriteStatement(
+      statement,
+      environment,
+      returnType,
+      index + 1 === statements.length ? selectedType : null,
+    ))
   );
 
   const armValueType = (arms: readonly MatchArm[], environment: Environment): string | null => {

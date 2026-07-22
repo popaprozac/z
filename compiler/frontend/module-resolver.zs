@@ -2651,6 +2651,27 @@ function substituteGenericType(
 ): String {
   const direct = valueBindingType(substitutions, name);
   if (direct.byteLength > 0) return direct;
+  match (nativeFunctionSignature(name)) {
+    some(signature) => {
+      let output = TextBuffer();
+      output.append("(");
+      let index: usize = 0;
+      while (index < signature.parameterTypes.length) {
+        if (index > 0) output.append(", ");
+        if (signature.parameterModes[index] != "value") {
+          output.append(signature.parameterModes[index]);
+          output.append(" ");
+        }
+        output.append(`value${index}: `);
+        output.append(substituteGenericType(signature.parameterTypes[index], substitutions));
+        index = index + 1;
+      }
+      output.append(") => ");
+      output.append(substituteGenericType(signature.returnType, substitutions));
+      return output.finish();
+    }
+    none => {}
+  }
   const nullableTarget = nullableTargetType(name);
   if (nullableTarget.byteLength > 0) {
     const substituted = substituteGenericType(nullableTarget, substitutions);
@@ -2685,6 +2706,55 @@ function substituteGenericType(
     }
     none => name.copyBytes(0, name.byteLength);
   };
+}
+
+function typeMentionsParameter(in name: String, in parameter: String): boolean {
+  if (name == parameter) return true;
+  const nullableTarget = nullableTargetType(name);
+  if (nullableTarget.byteLength > 0) {
+    return typeMentionsParameter(nullableTarget, parameter);
+  }
+  if (stringStartsWith(name, "view ")) {
+    const target = name.copyBytes(5, name.byteLength);
+    return typeMentionsParameter(target, parameter);
+  }
+  match (fixedArrayShape(name)) {
+    some(array) => return typeMentionsParameter(array.elementType, parameter);
+    none => {}
+  }
+  match (nativeFunctionSignature(name)) {
+    some(signature) => {
+      for (const parameterType of signature.parameterTypes) {
+        if (typeMentionsParameter(parameterType, parameter)) return true;
+      }
+      return typeMentionsParameter(signature.returnType, parameter);
+    }
+    none => {}
+  }
+  match (genericTypeShape(name)) {
+    some(generic) => {
+      for (const argument of generic.arguments) {
+        if (typeMentionsParameter(argument, parameter)) return true;
+      }
+    }
+    none => {}
+  }
+  return false;
+}
+
+function settledContextualType(
+  in pattern: String,
+  in typeParameters: Array<String>,
+  in substitutions: Array<NativeValueBinding>
+): String {
+  for (const parameter of typeParameters) {
+    const substitution = valueBindingType(substitutions, parameter);
+    if (
+      substitution.byteLength == 0
+      && typeMentionsParameter(pattern, parameter)
+    ) return "";
+  }
+  return substituteGenericType(pattern, substitutions);
 }
 
 function parameterizedTypeName(
@@ -3954,6 +4024,7 @@ function inferMatchArmStatementType(
   in arena: StatementArena,
   in tree: ExpressionTree,
   statementIndex: usize,
+  in expectedType: String,
   inout bindings: Array<NativeValueBinding>,
   inout callResolutions: Array<ModuleCallResolution>
 ): String throws ModuleResolveError {
@@ -3966,12 +4037,13 @@ function inferMatchArmStatementType(
   ) {
     return match (in arena.nodes[statementIndex].expression) {
       some(expression) => {
-        const typeName = try inferExpressionType(
+        const typeName = try inferExpressionTypeExpected(
           module,
           modules,
           moduleIndex,
           arena,
           expression,
+          expectedType,
           inout bindings,
           inout callResolutions
         );
@@ -4027,6 +4099,7 @@ function inferMatchArmStatementType(
       arena,
       tree,
       children[children.length - 1],
+      expectedType,
       inout bindings,
       inout callResolutions
     );
@@ -4460,6 +4533,7 @@ function inferMatchExpressionNodeType(
     return "";
   }
   let covered = Array<String>();
+  const expectedType = contextualExpectedType(bindings, tree, index);
   let resultType = "";
   let unresolvedArm = false;
   let hasContinuingArm = false;
@@ -4504,6 +4578,7 @@ function inferMatchExpressionNodeType(
         arena,
         tree,
         statements[0],
+        expectedType,
         inout armBindings,
         inout callResolutions
       );
@@ -4649,6 +4724,36 @@ function callArgumentNodes(in children: Array<usize>): Array<usize> {
   return arguments;
 }
 
+function inferExpressionNodeTypeExpected(
+  in module: ParsedModule,
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
+  in arena: StatementArena,
+  in tree: ExpressionTree,
+  index: usize,
+  in expectedType: String,
+  inout bindings: Array<NativeValueBinding>,
+  inout callResolutions: Array<ModuleCallResolution>
+): String throws ModuleResolveError {
+  let expressionBindings = copyValueBindings(bindings);
+  if (expectedType.byteLength > 0) {
+    const bindingName = contextualExpectedBindingName(tree.nodes[index].offset);
+    addValueBinding(inout expressionBindings, bindingName, expectedType);
+  }
+  const inferred = try inferExpressionNodeType(
+    module,
+    modules,
+    moduleIndex,
+    arena,
+    tree,
+    index,
+    inout expressionBindings,
+    inout callResolutions
+  );
+  copyBindingFlowStates(inout bindings, expressionBindings);
+  return inferred;
+}
+
 function inferSignatureCallType(
   in module: ParsedModule,
   in modules: Array<ResolvedModule>,
@@ -4710,6 +4815,54 @@ function inferSignatureCallType(
       capability
     );
     accessIndex = accessIndex + 1;
+  }
+  let substitutions = copyValueBindings(initialSubstitutions);
+  let explicitTypeArguments = false;
+  match (explicitCallTypeArguments(tree, calleeIndex)) {
+    some(explicit) => {
+      explicitTypeArguments = true;
+      if (explicit.arguments.length != signature.typeParameters.length) {
+        throw genericCallError(
+          module,
+          tree,
+          calleeIndex,
+          `${functionName} expects ${signature.typeParameters.length} type argument(s), received ${explicit.arguments.length}`
+        );
+      }
+      let typeIndex: usize = 0;
+      while (typeIndex < signature.typeParameters.length) {
+        addValueBinding(
+          inout substitutions,
+          signature.typeParameters[typeIndex],
+          explicit.arguments[typeIndex]
+        );
+        typeIndex = typeIndex + 1;
+      }
+    }
+    none => {
+      const expectedType = contextualExpectedType(bindings, tree, callIndex);
+      if (expectedType.byteLength > 0) {
+        try bindGenericType(
+          module,
+          modules,
+          moduleIndex,
+          tree,
+          calleeIndex,
+          functionName,
+          signature.returnType,
+          expectedType,
+          signature.typeParameters,
+          inout substitutions
+        );
+      }
+    }
+  }
+  let valueTypeParameters = Array<String>();
+  for (const typeParameter of signature.typeParameters) {
+    const substituted = valueBindingType(substitutions, typeParameter);
+    if (substituted.byteLength == 0) {
+      valueTypeParameters.push(typeParameter.copyBytes(0, typeParameter.byteLength));
+    }
   }
   let argumentTypes = Array<String>();
   let argumentIndex: usize = 0;
@@ -4790,32 +4943,22 @@ function inferSignatureCallType(
           tree.nodes[nodeIndex].column
         );
       }
-      let argumentBindings = copyValueBindings(bindings);
-      if (signature.typeParameters.length == 0) {
-        const expectedArgumentType = substituteGenericType(
-          signature.parameterTypes[argumentIndex],
-          initialSubstitutions
-        );
-        const expectedBinding = contextualExpectedBindingName(
-          tree.nodes[nodeIndex].offset
-        );
-        addValueBinding(
-          inout argumentBindings,
-          expectedBinding,
-          expectedArgumentType
-        );
-      }
-      const argumentType = try inferExpressionNodeType(
+      const expectedArgumentType = settledContextualType(
+        signature.parameterTypes[argumentIndex],
+        signature.typeParameters,
+        substitutions
+      );
+      const argumentType = try inferExpressionNodeTypeExpected(
         module,
         modules,
         moduleIndex,
         arena,
         tree,
         nodeIndex,
-        inout argumentBindings,
+        expectedArgumentType,
+        inout bindings,
         inout callResolutions
       );
-      copyBindingFlowStates(inout bindings, argumentBindings);
       if (
         mode == "value"
         && !stringStartsWith(signature.parameterTypes[argumentIndex], "Slice<")
@@ -4832,69 +4975,21 @@ function inferSignatureCallType(
       }
       argumentTypes.push(argumentType);
     }
+    if (!explicitTypeArguments) {
+      try bindGenericType(
+        module,
+        modules,
+        moduleIndex,
+        tree,
+        nodeIndex,
+        functionName,
+        signature.parameterTypes[argumentIndex],
+        argumentTypes[argumentIndex],
+        valueTypeParameters,
+        inout substitutions
+      );
+    }
     argumentIndex = argumentIndex + 1;
-  }
-  let substitutions = copyValueBindings(initialSubstitutions);
-  match (explicitCallTypeArguments(tree, calleeIndex)) {
-    some(explicit) => {
-      if (explicit.arguments.length != signature.typeParameters.length) {
-        throw genericCallError(
-          module,
-          tree,
-          calleeIndex,
-          `${functionName} expects ${signature.typeParameters.length} type argument(s), received ${explicit.arguments.length}`
-        );
-      }
-      let typeIndex: usize = 0;
-      while (typeIndex < signature.typeParameters.length) {
-        addValueBinding(
-          inout substitutions,
-          signature.typeParameters[typeIndex],
-          explicit.arguments[typeIndex]
-        );
-        typeIndex = typeIndex + 1;
-      }
-    }
-    none => {
-      const expectedType = contextualExpectedType(bindings, tree, callIndex);
-      if (expectedType.byteLength > 0) {
-        try bindGenericType(
-          module,
-          modules,
-          moduleIndex,
-          tree,
-          calleeIndex,
-          functionName,
-          signature.returnType,
-          expectedType,
-          signature.typeParameters,
-          inout substitutions
-        );
-      }
-      let valueTypeParameters = Array<String>();
-      for (const typeParameter of signature.typeParameters) {
-        const substituted = valueBindingType(substitutions, typeParameter);
-        if (substituted.byteLength == 0) {
-          valueTypeParameters.push(typeParameter.copyBytes(0, typeParameter.byteLength));
-        }
-      }
-      let parameterIndex: usize = 0;
-      while (parameterIndex < argumentTypes.length) {
-        try bindGenericType(
-          module,
-          modules,
-          moduleIndex,
-          tree,
-          argumentNodes[parameterIndex],
-          functionName,
-          signature.parameterTypes[parameterIndex],
-          argumentTypes[parameterIndex],
-          valueTypeParameters,
-          inout substitutions
-        );
-        parameterIndex = parameterIndex + 1;
-      }
-    }
   }
   for (const typeParameter of signature.typeParameters) {
     const substituted = valueBindingType(substitutions, typeParameter);
@@ -5839,6 +5934,106 @@ function inferExpressionNodeType(
     }
     return "";
   }
+  if (kind == ExpressionKind.valueBlockExpression) {
+    const statements = copyIndices(tree.nodes[index].statements);
+    if (statements.length == 0) return "";
+    let blockBindings = copyValueBindings(bindings);
+    const expectedReturn = valueBindingType(bindings, "__z_native_return_type");
+    let statementIndex: usize = 0;
+    while (statementIndex + 1 < statements.length) {
+      const continues = try inferStatement(
+        module,
+        modules,
+        moduleIndex,
+        arena,
+        statements[statementIndex],
+        inout blockBindings,
+        inout callResolutions,
+        expectedReturn
+      );
+      if (!continues) return "__z_never";
+      statementIndex = statementIndex + 1;
+    }
+    const expectedType = contextualExpectedType(bindings, tree, index);
+    const result = try inferMatchArmStatementType(
+      module,
+      modules,
+      moduleIndex,
+      arena,
+      tree,
+      statements[statements.length - 1],
+      expectedType,
+      inout blockBindings,
+      inout callResolutions
+    );
+    copyBindingFlowStates(inout bindings, blockBindings);
+    return result;
+  }
+  if (kind == ExpressionKind.ifExpression && children.length == 3) {
+    const condition = try inferExpressionNodeType(
+      module,
+      modules,
+      moduleIndex,
+      arena,
+      tree,
+      children[0],
+      inout bindings,
+      inout callResolutions
+    );
+    try requireSettledExpressionType(module, tree, children[0], condition);
+    if (condition.byteLength > 0) {
+      try requireExpressionType(
+        module,
+        modules,
+        moduleIndex,
+        tree,
+        children[0],
+        "boolean",
+        condition
+      );
+    }
+    const expectedType = contextualExpectedType(bindings, tree, index);
+    let thenBindings = copyValueBindings(bindings);
+    let elseBindings = copyValueBindings(bindings);
+    const thenType = try inferExpressionNodeTypeExpected(
+      module,
+      modules,
+      moduleIndex,
+      arena,
+      tree,
+      children[1],
+      expectedType,
+      inout thenBindings,
+      inout callResolutions
+    );
+    const elseType = try inferExpressionNodeTypeExpected(
+      module,
+      modules,
+      moduleIndex,
+      arena,
+      tree,
+      children[2],
+      expectedType,
+      inout elseBindings,
+      inout callResolutions
+    );
+    try requireSettledExpressionType(module, tree, children[1], thenType);
+    try requireSettledExpressionType(module, tree, children[2], elseType);
+    mergeBindingFlowStates(inout bindings, thenBindings, elseBindings);
+    if (thenType == "__z_never") return elseType;
+    if (elseType == "__z_never") return thenType;
+    if (thenType.byteLength == 0 || elseType.byteLength == 0) return "";
+    if (equivalentTypes(modules, moduleIndex, thenType, elseType)) {
+      return thenType.copyBytes(0, thenType.byteLength);
+    }
+    throw resolutionError(
+      ModuleResolveErrorKind.typeMismatch,
+      module.path,
+      `if-expression branches produce ${thenType} and ${elseType}`,
+      tree.nodes[children[2]].line,
+      tree.nodes[children[2]].column
+    );
+  }
   if (kind == ExpressionKind.conditionalExpression && children.length == 3) {
     const condition = try inferExpressionNodeType(module, modules, moduleIndex, arena, tree, children[0], inout bindings, inout callResolutions);
     try requireSettledExpressionType(module, tree, children[0], condition);
@@ -5847,23 +6042,26 @@ function inferExpressionNodeType(
     }
     let thenBindings = copyValueBindings(bindings);
     let elseBindings = copyValueBindings(bindings);
-    const thenType = try inferExpressionNodeType(
+    const expectedType = contextualExpectedType(bindings, tree, index);
+    const thenType = try inferExpressionNodeTypeExpected(
       module,
       modules,
       moduleIndex,
       arena,
       tree,
       children[1],
+      expectedType,
       inout thenBindings,
       inout callResolutions
     );
-    const elseType = try inferExpressionNodeType(
+    const elseType = try inferExpressionNodeTypeExpected(
       module,
       modules,
       moduleIndex,
       arena,
       tree,
       children[2],
+      expectedType,
       inout elseBindings,
       inout callResolutions
     );
