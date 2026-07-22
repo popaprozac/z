@@ -210,12 +210,13 @@ mutate or move before the view's last use. ARC class owners are excluded because
 another alias could invalidate growable projected storage.
 
 When `T` already has ordinary cleanup-free copy semantics, a value context may
-load an independent `T` from `view T` implicitly. This is one pointer load—not a
-heap allocation, retain, or clone—and the resulting value may outlive the view.
-Cleanup-bearing and move-only targets remain views; obtaining an owned copy of
-those values requires a type-specific operation. Binding a receiver projection
-without an owned type annotation still infers `view T`, so the borrow is not
-silently erased.
+load an independent `T` from `view T` implicitly. This is an ordinary by-value
+load from the referenced storage—not a heap allocation, retain, or clone. A
+scalar is one load; a cleanup-free aggregate has its normal value-copy cost. The
+result may outlive the view. Cleanup-bearing and move-only targets remain views;
+obtaining an owned copy of those values requires a type-specific operation.
+Binding a receiver projection without an owned type annotation still infers
+`view T`, so the borrow is not silently erased.
 
 A lookup that may not find a value returns `Option<view T>` without copying the
 payload:
@@ -370,7 +371,7 @@ until that view's last use. `remove` returns owned `Option<V>`, while `clear`
 destroys every entry. `has` and `.length` do not mutate storage.
 
 If `V` is cleanup-free and ordinarily copyable, using the matched payload where
-an owned `V` is required performs the same implicit one-load copy described
+an owned `V` is required performs the same implicit by-value load described
 above. A cleanup-bearing `view V` never becomes owned implicitly.
 
 `Set` uses the same explicit ownership vocabulary:
