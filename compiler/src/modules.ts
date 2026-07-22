@@ -64,7 +64,7 @@ type ModuleNode = {
 type ModuleScope = {
   readonly globals: Map<string, string>;
   readonly namespaces: Map<string, ModuleNode>;
-  readonly standardTypes: Map<string, "TextBuffer" | "Arena">;
+  readonly standardTypes: Map<string, "TextBuffer" | "Arena" | "Map">;
 };
 
 export function isLocalSourceModuleSpecifier(specifier: string): boolean {
@@ -291,7 +291,7 @@ function collectOwnNames(node: ModuleNode, entry: boolean): void {
 function buildScope(node: ModuleNode): ModuleScope {
   const globals = new Map(node.ownNames);
   const namespaces = new Map<string, ModuleNode>();
-  const standardTypes = new Map<string, "TextBuffer" | "Arena">();
+  const standardTypes = new Map<string, "TextBuffer" | "Arena" | "Map">();
   const occupied = new Map<string, SourceLocation>();
   for (const declaration of [
     ...node.program.traits,
@@ -339,6 +339,8 @@ function buildScope(node: ModuleNode): ModuleScope {
           standardTypes.set(binding.localName, "TextBuffer");
         } else if (declaration.header === "std/memory" && binding.importedName === "Arena") {
           standardTypes.set(binding.localName, "Arena");
+        } else if (declaration.header === "std/collections" && binding.importedName === "Map") {
+          standardTypes.set(binding.localName, "Map");
         }
         bind(binding.localName, linkedImportName(node, binding.localName), binding.location);
       }
@@ -757,7 +759,7 @@ function renameExpressionName(name: string, scope: ModuleScope, typeParameters: 
   const generic = parseGenericType(name);
   if (!generic) return scope.globals.get(name) ?? name;
   return genericTypeName(
-    scope.globals.get(generic.base) ?? generic.base,
+    scope.standardTypes.get(generic.base) ?? scope.globals.get(generic.base) ?? generic.base,
     generic.arguments.map((argument) => renameTypeName(argument, scope, typeParameters)),
   );
 }

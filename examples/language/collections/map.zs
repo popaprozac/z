@@ -1,0 +1,25 @@
+import { Map } from "std/collections";
+
+struct User {
+  id: i32;
+  name: String;
+}
+
+function main(): i32 {
+  let users = Map<String, User>();
+  users.set("ada", User({ id: 20, name: "Ada" }));
+  users.set("grace", User({ id: 22, name: "Grace" }));
+
+  const found = users.get("ada");
+  const observed = match (in found) {
+    some(user) => user.id;
+    none => 0;
+  };
+
+  // The view's last use has ended, so structural mutation is legal again.
+  const removed = users.remove("grace");
+  return match (removed) {
+    some(user) => observed + user.id - 42;
+    none => 1;
+  };
+}

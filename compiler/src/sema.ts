@@ -72,6 +72,7 @@ import {
   publicObjCTypeName,
 } from "./objc-types.ts";
 import { optionTypeName, parseOptionType } from "./option-types.ts";
+import { mapEntryTypeName, parseMapType } from "./map-types.ts";
 import { parseOptionalViewType, parseReceiverViewReturnType, parseViewType, viewTypeName } from "./view-types.ts";
 
 export type ObjCCallInfo = {
@@ -257,7 +258,7 @@ export type SemanticInfo = {
   readonly standardFunctionReferences: ReadonlyMap<number, StandardFunctionName>;
   readonly standardFunctionBindings: ReadonlyMap<string, StandardFunctionName>;
   readonly standardModuleBindings: ReadonlyMap<string, StandardModuleName>;
-  readonly standardTypeBindings: ReadonlyMap<string, "TextBuffer" | "Arena">;
+  readonly standardTypeBindings: ReadonlyMap<string, "TextBuffer" | "Arena" | "Map">;
   readonly typeDisplayNames: ReadonlyMap<string, string>;
   readonly objectiveC: boolean;
   readonly cPlusPlus: boolean;
@@ -320,7 +321,7 @@ type AnalysisState = {
   readonly standardFunctionReferences: Map<number, StandardFunctionName>;
   readonly standardFunctionBindings: Map<string, StandardFunctionName>;
   readonly standardModuleBindings: Map<string, StandardModuleName>;
-  readonly standardTypeBindings: Map<string, "TextBuffer" | "Arena">;
+  readonly standardTypeBindings: Map<string, "TextBuffer" | "Arena" | "Map">;
   readonly inferredOutBindingLocations: Map<string, SourceLocation>;
   readonly typeDisplayNames: ReadonlyMap<string, string>;
   readonly objectiveC: boolean;
@@ -383,7 +384,7 @@ type SymbolValue =
   | { readonly kind: "console" }
   | { readonly kind: "standardModule"; readonly module: StandardModuleName }
   | { readonly kind: "standardFunction"; readonly name: StandardFunctionName; readonly declaration: FunctionDeclaration }
-  | { readonly kind: "standardType"; readonly type: "TextBuffer" | "Arena" }
+  | { readonly kind: "standardType"; readonly type: "TextBuffer" | "Arena" | "Map" }
   | { readonly kind: "struct"; readonly declaration: StructDeclaration }
   | { readonly kind: "trait"; readonly declaration: TraitDeclaration }
   | { readonly kind: "enum"; readonly declaration: EnumDeclaration };
@@ -643,6 +644,26 @@ export function analyze(
         }
         continue;
       }
+      if (declaration.header === "std/collections") {
+        if (!declaration.bindings) {
+          throw new DiagnosticError(fileName, declaration.location, "std/collections requires a selective import", {
+            code: "Z0501",
+            helps: ["use `import { Map } from \"std/collections\";`"],
+          });
+        }
+        for (const binding of declaration.bindings) {
+          if (binding.importedName !== "Map") {
+            throw new DiagnosticError(fileName, binding.location, `std/collections has no export ${JSON.stringify(binding.importedName)}`, {
+              code: "Z0501",
+              helps: ["the first std/collections tier exports `Map`; Set follows after Map ownership is proven"],
+            });
+          }
+          validateUserName(binding.localName, binding.location, fileName);
+          declareGlobal(globals, binding.localName, { kind: "standardType", type: "Map" }, binding.location, fileName);
+          state.standardTypeBindings.set(binding.localName, "Map");
+        }
+        continue;
+      }
       if (declaration.header === "std/thread") {
         if (!declaration.bindings) {
           throw new DiagnosticError(fileName, declaration.location, "std/thread requires a selective import", {
@@ -678,7 +699,7 @@ export function analyze(
       }
       throw new DiagnosticError(fileName, declaration.location, `unknown standard module ${JSON.stringify(declaration.header)}`, {
         code: "Z0501",
-        helps: ["the bootstrap standard library currently provides `std`, `std/console`, `std/time`, `std/text`, `std/memory`, `std/thread`, `std/fs`, and `std/process`"],
+        helps: ["the bootstrap standard library currently provides `std`, `std/console`, `std/time`, `std/text`, `std/memory`, `std/collections`, `std/thread`, `std/fs`, and `std/process`"],
       });
     }
     const module = foreignModules.get(declaration.moduleName);
@@ -750,6 +771,37 @@ export function analyze(
 
   for (const declaration of program.functions) {
     declareGlobal(globals, declaration.name, { kind: "function", declaration }, declaration.location, fileName);
+  }
+
+  for (const declaration of program.structs) {
+    const map = parseMapType(declaration.name);
+    if (!map) continue;
+    validateMapKeyType(map.keyType, enums, state, declaration.location, fileName);
+    if (map.valueType === "void" || containsViewType(map.valueType) || containsSliceType(map.valueType) || map.valueType === "Arena" || parseTaskType(map.valueType)) {
+      throw new DiagnosticError(fileName, declaration.location, `Map cannot own value type ${JSON.stringify(displayArrayType(map.valueType))} in the first collections tier`);
+    }
+    if (
+      structs.get(map.valueType)?.kind === "class"
+      || state.foreignNamedTypes.get(map.valueType)?.kind === "object"
+      || state.foreignNamedTypes.get(map.valueType)?.kind === "value"
+      || parseFunctionType(map.valueType)
+      || parseWeakType(map.valueType)
+    ) {
+      throw new DiagnosticError(fileName, declaration.location, `Map value type ${JSON.stringify(displayArrayType(map.valueType))} needs a storage-specific lookup contract`, {
+        code: "Z0206",
+        notes: ["the first Map.get tier returns Option<view V>; direct reference identity, function values, weak references, and native RAII values need distinct retention or construction rules"],
+        helps: ["store the identity or native value inside an ordinary Z value struct, or keep it outside Map until that storage tier lands"],
+      });
+    }
+    if (
+      hasMoveOnlyForeignType(map.keyType, structs, enums, state.foreignNamedTypes)
+      || hasMoveOnlyForeignType(map.valueType, structs, enums, state.foreignNamedTypes)
+    ) {
+      throw new DiagnosticError(fileName, declaration.location, "Map storage for move-only native C++ values is not implemented yet", {
+        code: "Z0240",
+        helps: ["store a Z-owned identifier or value snapshot and keep the native owner outside the map"],
+      });
+    }
   }
 
   for (const declaration of program.structs) {
@@ -3990,6 +4042,11 @@ function inferExpressionInner(
         });
       }
       const receiverValueType = receiverView?.target ?? String(receiverType);
+      const map = parseMapType(receiverValueType);
+      if (map) {
+        if (expression.property === "length") return "usize";
+        throw new DiagnosticError(fileName, expression.location, `Map has no property ${JSON.stringify(expression.property)}`);
+      }
       if (receiverValueType === "Arena") {
         throw new DiagnosticError(fileName, expression.location, `Arena has no property ${JSON.stringify(expression.property)}; call create or reset instead`);
       }
@@ -4076,6 +4133,33 @@ function inferExpressionInner(
     }
     case "call": {
       if (expression.callee.kind === "identifier") {
+        const map = parseMapType(expression.callee.name);
+        if (map) {
+          if (![...state.standardTypeBindings.values()].includes("Map")) {
+            throw new DiagnosticError(fileName, expression.callee.location, "Map requires an explicit standard-library import", {
+              code: "Z0501",
+              helps: ["add `import { Map } from \"std/collections\";`"],
+            });
+          }
+          rejectLabeledArguments(expression.argumentLabels, expression.location, fileName);
+          if (expression.arguments.length !== 0) {
+            throw new DiagnosticError(fileName, expression.location, "Map<K, V>() expects no values");
+          }
+          validateMapKeyType(map.keyType, enums, state, expression.callee.location, fileName);
+          if (map.valueType === "void" || containsViewType(map.valueType) || containsSliceType(map.valueType) || map.valueType === "Arena" || parseTaskType(map.valueType)) {
+            throw new DiagnosticError(fileName, expression.callee.location, `Map cannot own value type ${JSON.stringify(displayArrayType(map.valueType))} in the first collections tier`);
+          }
+          if (
+            hasMoveOnlyForeignType(map.keyType, structs, enums, state.foreignNamedTypes)
+            || hasMoveOnlyForeignType(map.valueType, structs, enums, state.foreignNamedTypes)
+          ) {
+            throw new DiagnosticError(fileName, expression.callee.location, "Map storage for move-only native C++ values is not implemented yet", {
+              code: "Z0240",
+              helps: ["store a Z-owned identifier or value snapshot and keep the native owner outside the map"],
+            });
+          }
+          return expression.callee.name;
+        }
         const standardType = globals.get(expression.callee.name);
         if (standardType?.kind === "standardType") {
           rejectLabeledArguments(expression.argumentLabels, expression.location, fileName);
@@ -4637,6 +4721,64 @@ function inferExpressionInner(
           state.arenaCreateCalls.set(expression.location.offset, actual);
           state.viewCallOrigins.set(expression.location.offset, { owner: root.name, location: expression.callee.object.location });
           return viewTypeName(actual);
+        }
+        const map = parseMapType(receiverValueType);
+        if (map) {
+          rejectLabeledArguments(expression.argumentLabels, expression.location, fileName);
+          const root = storageRoot(expression.callee.object);
+          const stored = root ? locals.get(root.name) : null;
+          if (!root || !stored) {
+            throw new DiagnosticError(fileName, expression.callee.object.location, "Map methods require named storage");
+          }
+          const method = expression.callee.property;
+          if (!["has", "get", "set", "remove", "clear"].includes(method)) {
+            throw new DiagnosticError(fileName, expression.callee.location, `Map has no method ${JSON.stringify(method)}`);
+          }
+          const mutable = method === "set" || method === "remove" || method === "clear";
+          if (mutable) {
+            const readonlyField = readonlyFieldOnPath(expression.callee.object, structs, state);
+            if (readonlyField) {
+              throw new DiagnosticError(fileName, expression.callee.object.location, `cannot mutate Map through readonly field ${JSON.stringify(readonlyField.name)}`, {
+                code: "Z0214",
+              });
+            }
+            if (!isMutableBinding(stored)) {
+              throw new DiagnosticError(fileName, expression.callee.object.location, `Map.${method} requires addressable let storage`, {
+                code: "Z0205",
+                helps: ["bind the Map with `let`"],
+              });
+            }
+            rejectOwnerMutationWhileViewed(root.name, expression.callee.object.location, fileName, state, method);
+          }
+          if (method === "clear") {
+            if (expression.arguments.length !== 0) {
+              throw new DiagnosticError(fileName, expression.location, `"clear" expects 0 arguments, received ${expression.arguments.length}`);
+            }
+            return "void";
+          }
+          const expectedArguments = method === "set" ? 2 : 1;
+          if (expression.arguments.length !== expectedArguments) {
+            throw new DiagnosticError(fileName, expression.location, `${JSON.stringify(method)} expects ${expectedArguments} argument(s), received ${expression.arguments.length}`);
+          }
+          const key = expression.arguments[0];
+          const actualKey = inferExpression(key, locals, globals, structs, enums, fileName, state);
+          requireAssignable(map.keyType, actualKey, key, fileName, state.foreignNamedTypes, state.numericLiteralTypes);
+          if (method === "has") return "boolean";
+          if (method === "get") {
+            const ownerName = state.viewOrigins.get(root.name)?.owner ?? root.name;
+            state.viewCallOrigins.set(expression.location.offset, { owner: ownerName, location: expression.callee.object.location });
+            return optionTypeName(viewTypeName(map.valueType));
+          }
+          if (method === "set") {
+            const value = expression.arguments[1];
+            const actualValue = inferExpression(value, locals, globals, structs, enums, fileName, state);
+            requireAssignable(map.valueType, actualValue, value, fileName, state.foreignNamedTypes, state.numericLiteralTypes);
+            consumeOwnedValue(key, map.keyType, locals, structs, enums, fileName, state);
+            consumeOwnedValue(value, map.valueType, locals, structs, enums, fileName, state);
+            state.dynamicArrayPushTypes.add(dynamicArrayTypeName(mapEntryTypeName(map.keyType, map.valueType)));
+            return "void";
+          }
+          return optionTypeName(map.valueType);
         }
         if (receiverValueType === "TextBuffer") {
           rejectLabeledArguments(expression.argumentLabels, expression.location, fileName);
@@ -7653,6 +7795,24 @@ function describeValueType(type: ValueType, state: AnalysisState): string {
   const name = String(underlyingType(type));
   if (isNullableObjCTypeName(name)) return `${publicObjCTypeName(name)} | null`;
   return displayFunctionType(name, displayArrayType) ?? displayArrayType(name);
+}
+
+function validateMapKeyType(
+  type: string,
+  enums: ReadonlyMap<string, EnumDeclaration>,
+  state: AnalysisState,
+  location: SourceLocation,
+  fileName: string,
+): void {
+  const zEnum = enums.get(type);
+  const payloadFreeEnum = zEnum?.variants.every((variant) => variant.payload === null) ?? false;
+  const nativeEnum = state.foreignNamedTypes.get(type)?.kind === "enum";
+  if (integerTypes.has(type) || type === "boolean" || type === "String" || payloadFreeEnum || nativeEnum) return;
+  throw new DiagnosticError(fileName, location, `Map key type ${JSON.stringify(displayArrayType(type))} is not hashable in the first collections tier`, {
+    code: "Z0401",
+    notes: ["Map keys currently support integers, boolean, String, and payload-free Z or native enums"],
+    helps: ["use a supported stable key; custom nominal hashing and equality contracts are planned"],
+  });
 }
 
 function validateType(

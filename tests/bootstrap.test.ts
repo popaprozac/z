@@ -8445,6 +8445,136 @@ test("exposes Array members and source-level types to editor services", () => {
   assert.match(hover(valid, "dynamic-array-editor.zs", push + 1)?.contents.value ?? "", /push\(value: i32\): void/);
 });
 
+test("owns Map keys and values with optional views and deterministic removal", () => {
+  const example = resolve(projectRoot, "examples/language/collections/map.zs");
+  const source = readFileSync(example, "utf8");
+  const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+
+  const generated = compileToC(source, example);
+  assert.match(generated, /Map.*_get\(const .*\*self, Z_String key\)/);
+  assert.match(generated, /return &self->entries\.data\[index\]\.value/);
+  assert.match(generated, /Map.*_remove/);
+  assert.match(generated, /MapEntry.*_deinit/);
+
+  const directory = mkdtempSync("/tmp/z-map-cleanup-");
+  const input = resolve(directory, "main.zs");
+  writeFileSync(input, `
+    import { Map } from "std/collections";
+    import console from "std/console";
+    struct Resource {
+      id: i32;
+      deinit { console.log(\`drop=\${this.id}\`); }
+    }
+    function main(): i32 {
+      let resources = Map<i32, Resource>();
+      resources.set(1, Resource({ id: 1 }));
+      resources.set(1, Resource({ id: 2 }));
+      if (!resources.has(1) || resources.length != 1) return 1;
+      resources.clear();
+      if (resources.length != 0) return 1;
+      return 0;
+    }
+  `);
+  const cleanup = spawnSync(process.execPath, [cli, "run", input], { encoding: "utf8" });
+  assert.equal(cleanup.status, 0, cleanup.stderr);
+  assert.equal(cleanup.stdout, "drop=1\ndrop=2\n");
+
+  writeFileSync(input, `
+    import { Map } from "std/collections";
+    enum Key { first, second }
+    function main(): i32 {
+      let flags = Map<Key, boolean>();
+      flags.set(Key.first, true);
+      if (flags.has(Key.first) && !flags.has(Key.second)) return 0;
+      return 1;
+    }
+  `);
+  const enumKey = spawnSync(process.execPath, [cli, "run", input], { encoding: "utf8" });
+  assert.equal(enumKey.status, 0, enumKey.stderr);
+
+  const borrowed = `
+    import { Map } from "std/collections";
+    function main(): i32 {
+      let values = Map<String, i32>();
+      values.set("answer", 42);
+      const found = values.get("answer");
+      values.set("other", 1);
+      return match (in found) { some(value) => value; none => 0; };
+    }
+  `;
+  const borrowDiagnostic = diagnostics(borrowed, "map-view-mutation.zs")[0];
+  assert.equal(borrowDiagnostic.code, "Z0205");
+  assert.match(borrowDiagnostic.message, /cannot set "values" while view/);
+
+  const immutable = `
+    import { Map } from "std/collections";
+    function main(): i32 {
+      const values = Map<i32, i32>();
+      values.set(1, 2);
+      return 0;
+    }
+  `;
+  assert.match(diagnostics(immutable, "map-const.zs")[0].message, /Map\.set requires addressable let storage/);
+
+  const movedKey = `
+    import { Map } from "std/collections";
+    function key(): String { return \`owned key\`; }
+    function main(): i32 {
+      let values = Map<String, i32>();
+      const name = key();
+      values.set(name, 42);
+      return name.byteLength;
+    }
+  `;
+  assert.match(diagnostics(movedKey, "map-moved-key.zs")[0].message, /use of moved value "name"/);
+
+  const unsupportedKey = `
+    import { Map } from "std/collections";
+    function main(): i32 { const values = Map<f64, i32>(); return 0; }
+  `;
+  assert.match(diagnostics(unsupportedKey, "map-float-key.zs")[0].message, /key type "f64" is not hashable/);
+
+  const identityValue = `
+    import { Map } from "std/collections";
+    class Session { id: i32; }
+    function main(): i32 { const values = Map<i32, Session>(); return 0; }
+  `;
+  assert.match(diagnostics(identityValue, "map-class-value.zs")[0].message, /needs a storage-specific lookup contract/);
+
+  const missingImport = `function main(): i32 { const values = Map<i32, i32>(); return 0; }`;
+  assert.match(diagnostics(missingImport, "map-import.zs")[0].message, /Map requires an explicit standard-library import/);
+});
+
+test("exposes Map imports, members, and source-level types to editor services", () => {
+  const source = `
+    import { Map as Dictionary } from "std/collections";
+    function main(): i32 {
+      let users = Dictionary<String, i32>();
+      users.;
+      return 0;
+    }
+  `;
+  const importItems = completions(
+    source.replace("Map as Dictionary", "Ma"),
+    "map-editor.zs",
+    source.indexOf("Map as Dictionary") + 2,
+  );
+  assert.equal(importItems.find((item) => item.label === "Map")?.kind, 22);
+
+  const offset = source.indexOf("users.;") + "users.".length;
+  const items = completions(source, "map-editor.zs", offset);
+  assert.equal(items.find((item) => item.label === "length")?.detail, "length: usize");
+  assert.match(items.find((item) => item.label === "get")?.detail ?? "", /Option<view i32>/);
+  assert.match(items.find((item) => item.label === "remove")?.detail ?? "", /Option<i32>/);
+
+  const valid = source.replace("      users.;", "      users.set(\"answer\", 42);");
+  const binding = valid.indexOf("users =");
+  assert.match(hover(valid, "map-editor.zs", binding + 1)?.contents.value ?? "", /users: Map<String, i32>/);
+  const method = valid.indexOf("set(\"answer") + 1;
+  assert.match(hover(valid, "map-editor.zs", method)?.contents.value ?? "", /set\(key: String, value: i32\): void/);
+});
+
 test("checks logical operand types", () => {
   const source = `
     function main(): i32 {

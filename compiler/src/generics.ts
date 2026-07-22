@@ -10,6 +10,7 @@ import {
 } from "./array-types.ts";
 import { monomorphizedName, parseGenericType } from "./generic-types.ts";
 import { functionTypeName, parseFunctionType } from "./function-types.ts";
+import { mapEntryTypeName, mapTypeName } from "./map-types.ts";
 import { weakTypeName } from "./weak-types.ts";
 import { optionTypeName } from "./option-types.ts";
 import { parseViewType, viewTypeName } from "./view-types.ts";
@@ -27,11 +28,17 @@ export function materializeGenerics(
   const structInstances = new Map<string, string>();
   const functionInstances = new Map<string, string>();
   const optionInstances = new Map<string, EnumDeclaration>();
+  const mapInstances = new Set<string>();
 
   if (program.structs.some((item) => item.name === "Option") || program.enums.some((item) => item.name === "Option")) {
     const declaration = program.structs.find((item) => item.name === "Option")
       ?? program.enums.find((item) => item.name === "Option")!;
     throw new DiagnosticError(fileName, declaration.location, "Option is a compiler-provided type and cannot be redeclared");
+  }
+  if (program.structs.some((item) => item.name === "Map") || program.enums.some((item) => item.name === "Map")) {
+    const declaration = program.structs.find((item) => item.name === "Map")
+      ?? program.enums.find((item) => item.name === "Map")!;
+    throw new DiagnosticError(fileName, declaration.location, "Map is a standard-library type and cannot be redeclared");
   }
 
   for (const template of [...structTemplates.values(), ...functionTemplates.values()]) {
@@ -55,6 +62,10 @@ export function materializeGenerics(
     if (slice) return `Slice<${displayName(slice.elementType)}>`;
     const dynamic = parseDynamicArrayType(name);
     if (dynamic) return `Array<${displayName(dynamic.elementType)}>`;
+    if (name.startsWith("__z_Map_")) {
+      const display = typeDisplayNames.get(name);
+      if (display) return display;
+    }
     const generic = parseGenericType(name);
     return generic ? `${generic.base}<${generic.arguments.map(displayName).join(", ")}>` : name;
   };
@@ -82,6 +93,7 @@ export function materializeGenerics(
     const generic = parseGenericType(name);
     if (!generic) return name;
     const args = generic.arguments.map((argument) => substituteName(argument, substitutions));
+    if (generic.base === "Map") return instantiateMap(args);
     return instantiateStruct(generic.base, args);
   };
 
@@ -110,6 +122,17 @@ export function materializeGenerics(
           kind: "dynamicArrayExpression",
           elementType: substituteName(generic.arguments[0], substitutions),
           location: value.location,
+        };
+      }
+      if (generic?.base === "Map") {
+        if (generic.arguments.length !== 2 || value.arguments.length !== 0) {
+          throw new DiagnosticError(fileName, value.location, "Map<K, V>() expects two type arguments and no values");
+        }
+        const name = instantiateMap(generic.arguments.map((argument) => substituteName(argument, substitutions)));
+        return {
+          ...value,
+          callee: { ...value.callee, name },
+          arguments: [],
         };
       }
       if (generic && structTemplates.has(generic.base)) {
@@ -217,6 +240,57 @@ export function materializeGenerics(
       methods: materializeMethods(template, substitutions),
     } as StructDeclaration;
     structs.push(concrete);
+    return name;
+  }
+
+  function instantiateMap(args: string[]): string {
+    if (args.length !== 2) {
+      throw new DiagnosticError(fileName, { offset: 0, line: 1, column: 1 }, `Map expects 2 type arguments, received ${args.length}`);
+    }
+    const [keyType, valueType] = args;
+    const name = mapTypeName(keyType, valueType);
+    if (mapInstances.has(name)) return name;
+    mapInstances.add(name);
+    const entryName = mapEntryTypeName(keyType, valueType);
+    const location = program.functions[0]?.location ?? program.structs[0]?.location ?? program.enums[0]?.location
+      ?? { offset: 0, line: 1, column: 1 };
+    typeDisplayNames.set(name, `Map<${displayName(keyType)}, ${displayName(valueType)}>`);
+    typeDisplayNames.set(entryName, `Map.Entry<${displayName(keyType)}, ${displayName(valueType)}>`);
+    instantiateStruct("Option", [viewTypeName(valueType)]);
+    instantiateStruct("Option", [valueType]);
+    structs.push({
+      kind: "struct",
+      name: entryName,
+      typeParameters: [],
+      typeParameterConstraints: [],
+      implements: [],
+      fields: [
+        { name: "key", type: { name: keyType, location }, visibility: "public", readonly: false, location },
+        { name: "value", type: { name: valueType, location }, visibility: "public", readonly: false, location },
+      ],
+      constructor: null,
+      methods: [],
+      deinitializer: null,
+      location,
+    });
+    structs.push({
+      kind: "struct",
+      name,
+      typeParameters: [],
+      typeParameterConstraints: [],
+      implements: [],
+      fields: [{
+        name: "entries",
+        type: { name: dynamicArrayTypeName(entryName), location },
+        visibility: "private",
+        readonly: false,
+        location,
+      }],
+      constructor: null,
+      methods: [],
+      deinitializer: null,
+      location,
+    });
     return name;
   }
 

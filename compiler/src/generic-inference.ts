@@ -27,6 +27,7 @@ import {
 import { genericTypeName, parseGenericType } from "./generic-types.ts";
 import { functionTypeName, parseFunctionType } from "./function-types.ts";
 import { isNullableObjCTypeName, publicObjCTypeName } from "./objc-types.ts";
+import { parseMapType } from "./map-types.ts";
 import { parseWeakType, weakResultTypeName, weakTypeName } from "./weak-types.ts";
 import { parseViewType, viewTypeName } from "./view-types.ts";
 
@@ -54,9 +55,13 @@ export function inferGenericCalls(
   const selectiveValues = new Map<string, string>();
   const standardTypeConstructors = new Map(
     program.imports
-      .filter((declaration) => (declaration.header === "std/text" || declaration.header === "std/memory") && declaration.bindings)
+      .filter((declaration) => (
+        declaration.header === "std/text"
+        || declaration.header === "std/memory"
+        || declaration.header === "std/collections"
+      ) && declaration.bindings)
       .flatMap((declaration) => declaration.bindings!
-        .filter((binding) => binding.importedName === "TextBuffer" || binding.importedName === "Arena")
+        .filter((binding) => binding.importedName === "TextBuffer" || binding.importedName === "Arena" || binding.importedName === "Map")
         .map((binding) => [binding.localName, binding.importedName] as const)),
   );
   const selectiveNamespaces = new Map<string, { readonly module: ForeignModule; readonly namespacePath: readonly string[] }>();
@@ -509,11 +514,12 @@ export function inferGenericCalls(
       case "null":
         return { expression, type: "null" };
       case "identifier":
+        const genericIdentifier = parseGenericType(expression.name);
         return {
           expression,
           type: environment.get(expression.name)
             ?? selectiveValues.get(expression.name)
-            ?? standardTypeConstructors.get(expression.name)
+            ?? standardTypeConstructors.get(genericIdentifier?.base ?? expression.name)
             ?? null,
         };
       case "argumentReference":
@@ -691,6 +697,16 @@ export function inferGenericCalls(
         }
         if (dynamicArray && expression.property === "push") {
           return { expression: { ...expression, object: object.expression }, type: "void" };
+        }
+        const map = object.type ? parseMapType(object.type) : null;
+        if (map) {
+          const type = expression.property === "length" ? "usize"
+            : expression.property === "has" ? "boolean"
+            : expression.property === "get" ? genericTypeName("Option", [viewTypeName(map.valueType)])
+            : expression.property === "remove" ? genericTypeName("Option", [map.valueType])
+            : expression.property === "set" || expression.property === "clear" ? "void"
+            : null;
+          return { expression: { ...expression, object: object.expression }, type };
         }
         if (object.type === "TextBuffer") {
           const type = expression.property === "byteLength" ? "usize"
@@ -1107,11 +1123,26 @@ export function inferGenericCalls(
           returnType = imported ? foreignCallReturnType(imported, args) : returnType;
         }
         if (rewrittenCallee.kind === "identifier") {
-          const standardType = standardTypeConstructors.get(rewrittenCallee.name);
+          const explicitStandard = parseGenericType(rewrittenCallee.name);
+          const standardType = standardTypeConstructors.get(explicitStandard?.base ?? rewrittenCallee.name);
           if (standardType === "TextBuffer" || standardType === "Arena") {
             return {
               expression: { ...expression, callee: rewrittenCallee, arguments: args.map((item) => item.expression) },
               type: standardType,
+            };
+          }
+          if (standardType === "Map") {
+            if (!explicitStandard || explicitStandard.arguments.length !== 2 || args.length !== 0) {
+              throw new DiagnosticError(fileName, expression.location, "Map<K, V>() expects two type arguments and no values");
+            }
+            const type = genericTypeName("Map", explicitStandard.arguments);
+            return {
+              expression: {
+                ...expression,
+                callee: { ...rewrittenCallee, name: type },
+                arguments: [],
+              },
+              type,
             };
           }
           const aggregateConstructor = aggregate(rewrittenCallee.name);

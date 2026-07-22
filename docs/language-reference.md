@@ -74,6 +74,7 @@ text value.
 | Borrowed C text | `cstring` | Non-owning NUL-terminated native string view; not an owned `String` alias |
 | Fixed collection | `T[N]` | Inline fixed-size owned array |
 | Growable collection | `Array<T>` | Move-owned growable contiguous buffer |
+| Associative collection | `Map<K, V>` | Move-owned key/value storage from `std/collections` |
 | Borrowed collection | `Slice<T>` | Non-escaping pointer/length view over contiguous storage |
 | Optional value | `Option<T>` | Built-in `some`/`none` tagged value, niche-backed where representation permits |
 | Typed outcome | `Result<T, E>` | Built-in `success`/`failure` tagged value produced by `attempt` |
@@ -321,6 +322,7 @@ saturating operations.
 
 - `T[N]` is a fixed-size owned array.
 - `Array<T>` is a growable owned buffer.
+- `Map<K, V>` is owned associative storage imported from `std/collections`.
 - `Slice<T>` is a non-owning contiguous view.
 - `view T` is a non-storable read-only projection returned from value-struct
   storage and tied to the receiver's inferred lifetime.
@@ -335,6 +337,37 @@ element into the buffer. Growth allocates native storage, move-constructs each
 live element into the new allocation, destroys the old elements, and releases
 the old allocation. An indexed element is borrowed rather than extractable;
 moving the whole array transfers its buffer without relocating its elements.
+
+The first `Map` API makes ownership visible without exposing its storage:
+
+```z
+import { Map } from "std/collections";
+
+let users = Map<String, User>();
+users.set("ada", User({ id: 1 }));
+
+const found = users.get("ada");
+const id = match (in found) {
+  some(user) => user.id;
+  none => 0;
+};
+```
+
+`set` transfers cleanup-bearing keys and values into the map. Replacing an
+entry destroys its previous value. `get` returns `Option<view V>`, so lookup
+does not copy or transfer the stored value; structural mutation is rejected
+until that view's last use. `remove` returns owned `Option<V>`, while `clear`
+destroys every entry. `has` and `.length` do not mutate storage.
+
+The current bootstrap representation is a dense entry table with O(n) lookup.
+This validates ownership, views, diagnostics, and editor behavior before the
+runtime changes to hashed buckets. Supported keys are integers, `boolean`,
+`String`, and payload-free Z or native enums. Floating-point and custom keys
+remain excluded until a nominal hashing/equality contract is designed. Values
+currently use ordinary Z value storage; direct class/Objective-C identity,
+function/weak values, and native C++ RAII values wait for storage-specific
+lookup and construction rules. A Z value struct may provide an explicit owned
+wrapper where that is already safe.
 
 ## Arena regions
 

@@ -32,8 +32,9 @@ import {
   weakExpiredType,
   weakResultTypeName,
 } from "./weak-types.ts";
-import { parseOptionType } from "./option-types.ts";
-import { parseOptionalViewType, parseViewType } from "./view-types.ts";
+import { optionTypeName, parseOptionType } from "./option-types.ts";
+import { parseOptionalViewType, parseViewType, viewTypeName } from "./view-types.ts";
+import { mapEntryTypeName, parseMapType } from "./map-types.ts";
 
 type GenerationContext = {
   readonly structs: Map<string, StructDeclaration>;
@@ -106,7 +107,14 @@ export function generateC(program: Program, sourceName: string, semanticInfo: Se
   const arrayTypes = collectFixedArrayTypes(program, semanticInfo);
   const sliceTypes = collectSliceTypes(program, semanticInfo);
   const dynamicArrayTypes = collectDynamicArrayTypes(program, semanticInfo);
-  const dynamicArrayPushTypes = collectDynamicArrayPushTypes(program, semanticInfo);
+  const mapTypes = program.structs.map((declaration) => declaration.name).filter((name) => parseMapType(name));
+  const dynamicArrayPushTypes = [...new Set([
+    ...collectDynamicArrayPushTypes(program, semanticInfo),
+    ...mapTypes.map((name) => {
+      const map = parseMapType(name)!;
+      return dynamicArrayTypeName(mapEntryTypeName(map.keyType, map.valueType));
+    }),
+  ])];
   const arenaCreateTypes = [...new Set(semanticInfo.arenaCreateCalls.values())];
   const usesArena = [...semanticInfo.standardTypeBindings.values()].includes("Arena");
   const functionTypes = collectFunctionTypes(program, semanticInfo);
@@ -355,6 +363,9 @@ export function generateC(program: Program, sourceName: string, semanticInfo: Se
     for (const method of declaration.methods) {
       lines.push(generateFunction(method, structs, enums, functions, declaration, semanticInfo), "");
     }
+  }
+  for (const type of mapTypes) {
+    lines.push(generateMapRuntime(type, structs, enums, semanticInfo), "");
   }
   for (const closure of closures.filter((candidate) => candidate.owned)) {
     lines.push(generateClosureEnvironmentLifecycle(closure, structs, enums, semanticInfo), "");
@@ -1406,6 +1417,124 @@ function generateDynamicArrayPush(
   self->data[self->length] = value;
   self->length += 1;
 }`;
+}
+
+function generateMapRuntime(
+  name: string,
+  structs: Map<string, StructDeclaration>,
+  enums: Map<string, EnumDeclaration>,
+  semanticInfo: SemanticInfo,
+): string {
+  const map = parseMapType(name)!;
+  const entryName = mapEntryTypeName(map.keyType, map.valueType);
+  const entriesType = dynamicArrayTypeName(entryName);
+  const mappedMap = mapType(name, structs, enums, semanticInfo.foreignNamedTypes);
+  const mappedEntry = mapType(entryName, structs, enums, semanticInfo.foreignNamedTypes);
+  const mappedKey = mapType(map.keyType, structs, enums, semanticInfo.foreignNamedTypes);
+  const mappedValue = mapType(map.valueType, structs, enums, semanticInfo.foreignNamedTypes);
+  const viewOption = optionTypeName(viewTypeName(map.valueType));
+  const valueOption = optionTypeName(map.valueType);
+  const mappedViewOption = mapType(viewOption, structs, enums, semanticInfo.foreignNamedTypes);
+  const mappedValueOption = mapType(valueOption, structs, enums, semanticInfo.foreignNamedTypes);
+  const valueOptionDeclaration = enums.get(valueOption)!;
+  const nicheValue = nicheOptionPayload(valueOptionDeclaration, semanticInfo.foreignNamedTypes);
+  const zKeyEnum = enums.get(map.keyType);
+  const equals = map.keyType === "String"
+    ? "z_string_equal(left, right)"
+    : zKeyEnum?.variants.every((variant) => variant.payload === null)
+      ? "left.tag == right.tag"
+      : "left == right";
+  const keyCleanup = generateOwnedEnvironmentCleanup(
+    "key",
+    map.keyType,
+    structs,
+    enums,
+    semanticInfo,
+    { value: 0 },
+  );
+  const storedValueCleanup = generateOwnedEnvironmentCleanup(
+    "self->entries.data[index].value",
+    map.valueType,
+    structs,
+    enums,
+    semanticInfo,
+    { value: 0 },
+  );
+  const storedKeyCleanup = generateOwnedEnvironmentCleanup(
+    "self->entries.data[index].key",
+    map.keyType,
+    structs,
+    enums,
+    semanticInfo,
+    { value: 0 },
+  );
+  const someValue = nicheValue
+    ? "self->entries.data[index].value"
+    : `(${mappedValueOption}){ .tag = ${variantTag(valueOption, "some")}, .data.some = self->entries.data[index].value }`;
+  const noneValue = nicheValue
+    ? nicheOptionNull(nicheValue)
+    : `(${mappedValueOption}){ .tag = ${variantTag(valueOption, "none")} }`;
+  const cleanupLines = (source: string): string => source ? `${source}\n` : "";
+
+  return `static inline __attribute__((unused)) bool ${mapEqualityName(name)}(${mappedKey} left, ${mappedKey} right) {
+  return ${equals};
+}
+
+static __attribute__((unused)) bool ${mapMethodName(name, "has")}(const ${mappedMap} *self, ${mappedKey} key) {
+  for (uintptr_t index = 0; index < self->entries.length; index += 1) {
+    if (${mapEqualityName(name)}(self->entries.data[index].key, key)) return true;
+  }
+  return false;
+}
+
+static __attribute__((unused)) ${mappedViewOption} ${mapMethodName(name, "get")}(const ${mappedMap} *self, ${mappedKey} key) {
+  for (uintptr_t index = 0; index < self->entries.length; index += 1) {
+    if (${mapEqualityName(name)}(self->entries.data[index].key, key)) return &self->entries.data[index].value;
+  }
+  return NULL;
+}
+
+static __attribute__((unused)) void ${mapMethodName(name, "set")}(${mappedMap} *self, ${mappedKey} key, ${mappedValue} value) {
+  for (uintptr_t index = 0; index < self->entries.length; index += 1) {
+    if (!${mapEqualityName(name)}(self->entries.data[index].key, key)) continue;
+${indent(cleanupLines(keyCleanup) + cleanupLines(storedValueCleanup), 4)}    self->entries.data[index].value = value;
+    return;
+  }
+  ${dynamicArrayPushName(entriesType)}(&self->entries, (${mappedEntry}){ .key = key, .value = value });
+}
+
+static __attribute__((unused)) ${mappedValueOption} ${mapMethodName(name, "remove")}(${mappedMap} *self, ${mappedKey} key) {
+  for (uintptr_t index = 0; index < self->entries.length; index += 1) {
+    if (!${mapEqualityName(name)}(self->entries.data[index].key, key)) continue;
+    ${mappedValueOption} result = ${someValue};
+${indent(cleanupLines(storedKeyCleanup), 4)}    self->entries.data[index].key = ${mapZeroValue(map.keyType, structs, enums, semanticInfo.foreignNamedTypes)};
+    self->entries.data[index].value = ${mapZeroValue(map.valueType, structs, enums, semanticInfo.foreignNamedTypes)};
+    for (uintptr_t shifted = index + 1; shifted < self->entries.length; shifted += 1) {
+      self->entries.data[shifted - 1] = self->entries.data[shifted];
+    }
+    self->entries.data[self->entries.length - 1] = (${mappedEntry}){ 0 };
+    self->entries.length -= 1;
+    return result;
+  }
+  return ${noneValue};
+}
+
+static __attribute__((unused)) void ${mapMethodName(name, "clear")}(${mappedMap} *self) {
+  ${deinitName(name)}(self);
+  self->entries = (${mapType(entriesType, structs, enums, semanticInfo.foreignNamedTypes)}){ 0 };
+}`;
+}
+
+function mapZeroValue(
+  type: string,
+  structs: Map<string, StructDeclaration>,
+  enums: Map<string, EnumDeclaration>,
+  foreignNamedTypes: SemanticInfo["foreignNamedTypes"],
+): string {
+  const mapped = mapType(type, structs, enums, foreignNamedTypes);
+  if (mapped.endsWith("*") || mapped === "id") return "NULL";
+  if (["bool", "int8_t", "uint8_t", "int16_t", "uint16_t", "int32_t", "uint32_t", "int64_t", "uint64_t", "intptr_t", "uintptr_t", "float", "double"].includes(mapped)) return "0";
+  return `(${mapped}){ 0 }`;
 }
 
 function generateClassConstructorSignature(
@@ -3968,6 +4097,7 @@ function generateExpressionInner(expression: Expression, context: GenerationCont
       const array = parseFixedArrayType(ownerValueType);
       const slice = parseSliceType(ownerValueType);
       const dynamic = parseDynamicArrayType(ownerValueType);
+      const map = parseMapType(ownerValueType);
       if (ownerValueType === "TextBuffer") {
         const owner = generateExpression(expression.object, context);
         const value = ownerView ? `(*(${owner}))` : `(${owner})`;
@@ -3988,6 +4118,10 @@ function generateExpressionInner(expression: Expression, context: GenerationCont
         }
         if (slice) return `${value}.length`;
         return `((void)(${owner}), (uintptr_t)${array.length})`;
+      }
+      if (map && expression.property === "length") {
+        const owner = generateExpression(expression.object, context);
+        return `((${owner}).entries.length)`;
       }
       const objcClassName = context.semanticInfo.objcClassNames.get(expression.location.offset);
       if (objcClassName) return objcClassName;
@@ -4038,6 +4172,10 @@ function generateExpressionInner(expression: Expression, context: GenerationCont
         return `${signature.cName}(${arguments_.join(", ")})`;
       }
       if (expression.callee.kind === "identifier") {
+        const map = parseMapType(expression.callee.name);
+        if (map) {
+          return `(${mapType(expression.callee.name, context.structs, context.enums, context.semanticInfo.foreignNamedTypes)}){ 0 }`;
+        }
         const standardType = context.semanticInfo.standardTypeBindings.get(expression.callee.name);
         if (standardType === "TextBuffer") return "z_string_new()";
         if (standardType === "Arena") {
@@ -4128,6 +4266,12 @@ function generateExpressionInner(expression: Expression, context: GenerationCont
         const receiverType = inferExpressionType(expression.callee.object, context);
         const receiverView = parseViewType(receiverType);
         const receiverValueType = receiverView?.target ?? receiverType;
+        const map = parseMapType(receiverValueType);
+        if (map) {
+          const receiver = generateExpression(expression.callee.object, context);
+          const args = expression.arguments.map((argument) => generateCallArgument(argument, context));
+          return `${mapMethodName(receiverValueType, expression.callee.property)}(&(${receiver})${args.length ? `, ${args.join(", ")}` : ""})`;
+        }
         if (receiverValueType === "Arena") {
           const receiver = generateExpression(expression.callee.object, context);
           if (context.semanticInfo.arenaResetCalls.has(expression.location.offset)) {
@@ -4959,6 +5103,7 @@ function inferExpressionType(expression: Expression, context: GenerationContext)
     case "member": {
       const ownerType = inferExpressionType(expression.object, context);
       const ownerValueType = parseViewType(ownerType)?.target ?? ownerType;
+      if (parseMapType(ownerValueType)) return "usize";
       if (parseFixedArrayType(ownerValueType) || parseSliceType(ownerValueType) || parseDynamicArrayType(ownerValueType)) return "usize";
       if (expression.object.kind === "identifier" && context.enums.has(expression.object.name)) {
         return expression.object.name;
@@ -4998,6 +5143,13 @@ function inferExpressionType(expression: Expression, context: GenerationContext)
           return expression.callee.object.name;
         }
         const receiverType = inferExpressionType(expression.callee.object, context);
+        const map = parseMapType(receiverType);
+        if (map) {
+          if (expression.callee.property === "has") return "boolean";
+          if (expression.callee.property === "get") return optionTypeName(viewTypeName(map.valueType));
+          if (expression.callee.property === "remove") return optionTypeName(map.valueType);
+          return "void";
+        }
         if (parseDynamicArrayType(receiverType)) return "void";
         const weak = parseWeakType(receiverType);
         if (weak && expression.callee.property === "upgrade") return weakResultTypeName(weak.target);
@@ -5189,6 +5341,14 @@ function dynamicArrayName(name: string): string {
 
 function dynamicArrayPushName(name: string): string {
   return `${dynamicArrayName(name)}_push`;
+}
+
+function mapMethodName(name: string, method: string): string {
+  return `Z_Map_${nativeSymbolPart(name)}_${method}`;
+}
+
+function mapEqualityName(name: string): string {
+  return `Z_Map_${nativeSymbolPart(name)}_key_equal`;
 }
 
 function nativeSymbolPart(name: string): string {
