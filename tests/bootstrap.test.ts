@@ -8575,6 +8575,96 @@ test("exposes Map imports, members, and source-level types to editor services", 
   assert.match(hover(valid, "map-editor.zs", method)?.contents.value ?? "", /set\(key: String, value: i32\): void/);
 });
 
+test("owns unique Set values with insertion status and deterministic removal", () => {
+  const example = resolve(projectRoot, "examples/language/collections/set.zs");
+  const source = readFileSync(example, "utf8");
+  const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+
+  const generated = compileToC(source, example);
+  assert.match(generated, /Set.*_add\(.*\*self, Z_String value\)/);
+  assert.match(generated, /if \(\(value\)\.capacity > 0\) free/);
+  assert.match(generated, /Set.*_remove/);
+  assert.match(generated, /self->values\.data\[index\] = \(Z_String\)\{ 0 \}/);
+
+  const directory = mkdtempSync("/tmp/z-set-runtime-");
+  const input = resolve(directory, "main.zs");
+  writeFileSync(input, `
+    import { Set } from "std/collections";
+    enum Permission { read, write }
+    function main(): i32 {
+      let permissions = Set<Permission>();
+      if (!permissions.add(Permission.read)) return 1;
+      if (permissions.add(Permission.read)) return 2;
+      if (!permissions.has(Permission.read) || permissions.has(Permission.write)) return 3;
+      const removed = permissions.remove(Permission.read);
+      return match (removed) { some(value) => value == Permission.read ? 0 : 4; none => 5; };
+    }
+  `);
+  const enumElement = spawnSync(process.execPath, [cli, "run", input], { encoding: "utf8" });
+  assert.equal(enumElement.status, 0, enumElement.stderr);
+
+  const immutable = `
+    import { Set } from "std/collections";
+    function main(): i32 {
+      const values = Set<i32>();
+      values.add(1);
+      return 0;
+    }
+  `;
+  assert.match(diagnostics(immutable, "set-const.zs")[0].message, /Set\.add requires addressable let storage/);
+
+  const movedValue = `
+    import { Set } from "std/collections";
+    function name(): String { return \`owned value\`; }
+    function main(): i32 {
+      let values = Set<String>();
+      const item = name();
+      values.add(item);
+      return item.byteLength;
+    }
+  `;
+  assert.match(diagnostics(movedValue, "set-moved-value.zs")[0].message, /use of moved value "item"/);
+
+  const unsupportedElement = `
+    import { Set } from "std/collections";
+    function main(): i32 { const values = Set<f64>(); return 0; }
+  `;
+  assert.match(diagnostics(unsupportedElement, "set-float-element.zs")[0].message, /element type "f64" is not hashable/);
+
+  const missingImport = `function main(): i32 { const values = Set<i32>(); return 0; }`;
+  assert.match(diagnostics(missingImport, "set-import.zs")[0].message, /Set requires an explicit standard-library import/);
+});
+
+test("exposes Set imports, members, and source-level types to editor services", () => {
+  const source = `
+    import { Set as UniqueValues } from "std/collections";
+    function main(): i32 {
+      let values = UniqueValues<String>();
+      values.;
+      return 0;
+    }
+  `;
+  const importItems = completions(
+    source.replace("Set as UniqueValues", "Se"),
+    "set-editor.zs",
+    source.indexOf("Set as UniqueValues") + 2,
+  );
+  assert.equal(importItems.find((item) => item.label === "Set")?.kind, 22);
+
+  const offset = source.indexOf("values.;") + "values.".length;
+  const items = completions(source, "set-editor.zs", offset);
+  assert.equal(items.find((item) => item.label === "length")?.detail, "length: usize");
+  assert.match(items.find((item) => item.label === "add")?.detail ?? "", /add\(value: String\): boolean/);
+  assert.match(items.find((item) => item.label === "remove")?.detail ?? "", /Option<String>/);
+
+  const valid = source.replace("      values.;", "      values.add(\"ready\");");
+  const binding = valid.indexOf("values =");
+  assert.match(hover(valid, "set-editor.zs", binding + 1)?.contents.value ?? "", /values: Set<String>/);
+  const method = valid.indexOf("add(\"ready") + 1;
+  assert.match(hover(valid, "set-editor.zs", method)?.contents.value ?? "", /add\(value: String\): boolean/);
+});
+
 test("checks logical operand types", () => {
   const source = `
     function main(): i32 {

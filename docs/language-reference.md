@@ -75,6 +75,7 @@ text value.
 | Fixed collection | `T[N]` | Inline fixed-size owned array |
 | Growable collection | `Array<T>` | Move-owned growable contiguous buffer |
 | Associative collection | `Map<K, V>` | Move-owned key/value storage from `std/collections` |
+| Unique collection | `Set<T>` | Move-owned unique-value storage from `std/collections` |
 | Borrowed collection | `Slice<T>` | Non-escaping pointer/length view over contiguous storage |
 | Optional value | `Option<T>` | Built-in `some`/`none` tagged value, niche-backed where representation permits |
 | Typed outcome | `Result<T, E>` | Built-in `success`/`failure` tagged value produced by `attempt` |
@@ -321,8 +322,9 @@ saturating operations.
 ## Collections and views
 
 - `T[N]` is a fixed-size owned array.
-- `Array<T>` is a growable owned buffer.
+- `Array<T>` is an intrinsic growable owned buffer and requires no import.
 - `Map<K, V>` is owned associative storage imported from `std/collections`.
+- `Set<T>` is owned unique-value storage imported from `std/collections`.
 - `Slice<T>` is a non-owning contiguous view.
 - `view T` is a non-storable read-only projection returned from value-struct
   storage and tied to the receiver's inferred lifetime.
@@ -359,15 +361,33 @@ does not copy or transfer the stored value; structural mutation is rejected
 until that view's last use. `remove` returns owned `Option<V>`, while `clear`
 destroys every entry. `has` and `.length` do not mutate storage.
 
-The current bootstrap representation is a dense entry table with O(n) lookup.
+`Set` uses the same explicit ownership vocabulary:
+
+```z
+import { Set } from "std/collections";
+
+let visited = Set<String>();
+const inserted = visited.add("settings");
+const present = visited.has("settings");
+const removed = visited.remove("settings");
+visited.clear();
+```
+
+`add` transfers the value and reports whether it was inserted. If an equal
+value is already stored, the existing value remains and the incoming owned
+value is destroyed. `remove` borrows its lookup argument and transfers the
+stored value through `Option<T>`; ignoring that result destroys it normally.
+`clear` destroys every stored value, while `has` and `.length` are read-only.
+
+The current `Map` and `Set` bootstrap representations use dense O(n) storage.
 This validates ownership, views, diagnostics, and editor behavior before the
-runtime changes to hashed buckets. Supported keys are integers, `boolean`,
-`String`, and payload-free Z or native enums. Floating-point and custom keys
-remain excluded until a nominal hashing/equality contract is designed. Values
-currently use ordinary Z value storage; direct class/Objective-C identity,
-function/weak values, and native C++ RAII values wait for storage-specific
-lookup and construction rules. A Z value struct may provide an explicit owned
-wrapper where that is already safe.
+runtime changes to shared hashed buckets. Supported keys/elements are integers,
+`boolean`, `String`, and payload-free Z or native enums. Floating-point and
+custom keys remain excluded until a nominal hashing/equality contract is
+designed. `Map` values currently use ordinary Z value storage; direct
+class/Objective-C identity, function/weak values, and native C++ RAII values
+wait for storage-specific lookup and construction rules. A Z value struct may
+provide an explicit owned wrapper where that is already safe.
 
 ## Arena regions
 

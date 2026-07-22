@@ -11,6 +11,7 @@ import {
 import { monomorphizedName, parseGenericType } from "./generic-types.ts";
 import { functionTypeName, parseFunctionType } from "./function-types.ts";
 import { mapEntryTypeName, mapTypeName } from "./map-types.ts";
+import { setTypeName } from "./set-types.ts";
 import { weakTypeName } from "./weak-types.ts";
 import { optionTypeName } from "./option-types.ts";
 import { parseViewType, viewTypeName } from "./view-types.ts";
@@ -29,6 +30,7 @@ export function materializeGenerics(
   const functionInstances = new Map<string, string>();
   const optionInstances = new Map<string, EnumDeclaration>();
   const mapInstances = new Set<string>();
+  const setInstances = new Set<string>();
 
   if (program.structs.some((item) => item.name === "Option") || program.enums.some((item) => item.name === "Option")) {
     const declaration = program.structs.find((item) => item.name === "Option")
@@ -39,6 +41,11 @@ export function materializeGenerics(
     const declaration = program.structs.find((item) => item.name === "Map")
       ?? program.enums.find((item) => item.name === "Map")!;
     throw new DiagnosticError(fileName, declaration.location, "Map is a standard-library type and cannot be redeclared");
+  }
+  if (program.structs.some((item) => item.name === "Set") || program.enums.some((item) => item.name === "Set")) {
+    const declaration = program.structs.find((item) => item.name === "Set")
+      ?? program.enums.find((item) => item.name === "Set")!;
+    throw new DiagnosticError(fileName, declaration.location, "Set is a standard-library type and cannot be redeclared");
   }
 
   for (const template of [...structTemplates.values(), ...functionTemplates.values()]) {
@@ -63,6 +70,10 @@ export function materializeGenerics(
     const dynamic = parseDynamicArrayType(name);
     if (dynamic) return `Array<${displayName(dynamic.elementType)}>`;
     if (name.startsWith("__z_Map_")) {
+      const display = typeDisplayNames.get(name);
+      if (display) return display;
+    }
+    if (name.startsWith("__z_Set_")) {
       const display = typeDisplayNames.get(name);
       if (display) return display;
     }
@@ -94,6 +105,7 @@ export function materializeGenerics(
     if (!generic) return name;
     const args = generic.arguments.map((argument) => substituteName(argument, substitutions));
     if (generic.base === "Map") return instantiateMap(args);
+    if (generic.base === "Set") return instantiateSet(args);
     return instantiateStruct(generic.base, args);
   };
 
@@ -129,6 +141,17 @@ export function materializeGenerics(
           throw new DiagnosticError(fileName, value.location, "Map<K, V>() expects two type arguments and no values");
         }
         const name = instantiateMap(generic.arguments.map((argument) => substituteName(argument, substitutions)));
+        return {
+          ...value,
+          callee: { ...value.callee, name },
+          arguments: [],
+        };
+      }
+      if (generic?.base === "Set") {
+        if (generic.arguments.length !== 1 || value.arguments.length !== 0) {
+          throw new DiagnosticError(fileName, value.location, "Set<T>() expects one type argument and no values");
+        }
+        const name = instantiateSet(generic.arguments.map((argument) => substituteName(argument, substitutions)));
         return {
           ...value,
           callee: { ...value.callee, name },
@@ -282,6 +305,39 @@ export function materializeGenerics(
       fields: [{
         name: "entries",
         type: { name: dynamicArrayTypeName(entryName), location },
+        visibility: "private",
+        readonly: false,
+        location,
+      }],
+      constructor: null,
+      methods: [],
+      deinitializer: null,
+      location,
+    });
+    return name;
+  }
+
+  function instantiateSet(args: string[]): string {
+    if (args.length !== 1) {
+      throw new DiagnosticError(fileName, { offset: 0, line: 1, column: 1 }, `Set expects 1 type argument, received ${args.length}`);
+    }
+    const [elementType] = args;
+    const name = setTypeName(elementType);
+    if (setInstances.has(name)) return name;
+    setInstances.add(name);
+    const location = program.functions[0]?.location ?? program.structs[0]?.location ?? program.enums[0]?.location
+      ?? { offset: 0, line: 1, column: 1 };
+    typeDisplayNames.set(name, `Set<${displayName(elementType)}>`);
+    instantiateStruct("Option", [elementType]);
+    structs.push({
+      kind: "struct",
+      name,
+      typeParameters: [],
+      typeParameterConstraints: [],
+      implements: [],
+      fields: [{
+        name: "values",
+        type: { name: dynamicArrayTypeName(elementType), location },
         visibility: "private",
         readonly: false,
         location,

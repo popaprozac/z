@@ -28,6 +28,7 @@ import { genericTypeName, parseGenericType } from "./generic-types.ts";
 import { functionTypeName, parseFunctionType } from "./function-types.ts";
 import { isNullableObjCTypeName, publicObjCTypeName } from "./objc-types.ts";
 import { parseMapType } from "./map-types.ts";
+import { parseSetType } from "./set-types.ts";
 import { parseWeakType, weakResultTypeName, weakTypeName } from "./weak-types.ts";
 import { parseViewType, viewTypeName } from "./view-types.ts";
 
@@ -61,7 +62,7 @@ export function inferGenericCalls(
         || declaration.header === "std/collections"
       ) && declaration.bindings)
       .flatMap((declaration) => declaration.bindings!
-        .filter((binding) => binding.importedName === "TextBuffer" || binding.importedName === "Arena" || binding.importedName === "Map")
+        .filter((binding) => binding.importedName === "TextBuffer" || binding.importedName === "Arena" || binding.importedName === "Map" || binding.importedName === "Set")
         .map((binding) => [binding.localName, binding.importedName] as const)),
   );
   const selectiveNamespaces = new Map<string, { readonly module: ForeignModule; readonly namespacePath: readonly string[] }>();
@@ -708,6 +709,15 @@ export function inferGenericCalls(
             : null;
           return { expression: { ...expression, object: object.expression }, type };
         }
+        const set = object.type ? parseSetType(object.type) : null;
+        if (set) {
+          const type = expression.property === "length" ? "usize"
+            : expression.property === "has" || expression.property === "add" ? "boolean"
+            : expression.property === "remove" ? genericTypeName("Option", [set.elementType])
+            : expression.property === "clear" ? "void"
+            : null;
+          return { expression: { ...expression, object: object.expression }, type };
+        }
         if (object.type === "TextBuffer") {
           const type = expression.property === "byteLength" ? "usize"
             : expression.property === "isEmpty" ? "boolean"
@@ -1136,6 +1146,20 @@ export function inferGenericCalls(
               throw new DiagnosticError(fileName, expression.location, "Map<K, V>() expects two type arguments and no values");
             }
             const type = genericTypeName("Map", explicitStandard.arguments);
+            return {
+              expression: {
+                ...expression,
+                callee: { ...rewrittenCallee, name: type },
+                arguments: [],
+              },
+              type,
+            };
+          }
+          if (standardType === "Set") {
+            if (!explicitStandard || explicitStandard.arguments.length !== 1 || args.length !== 0) {
+              throw new DiagnosticError(fileName, expression.location, "Set<T>() expects one type argument and no values");
+            }
+            const type = genericTypeName("Set", explicitStandard.arguments);
             return {
               expression: {
                 ...expression,

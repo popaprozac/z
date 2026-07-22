@@ -3340,7 +3340,13 @@ function typeHasCleanup(
   let arguments = Array<String>();
   match (genericTypeShape(typeName)) {
     some(generic) => {
-      if (generic.base == "Array" || generic.base == "Task" || generic.base == "Weak") {
+      if (
+        generic.base == "Array"
+        || generic.base == "Map"
+        || generic.base == "Set"
+        || generic.base == "Task"
+        || generic.base == "Weak"
+      ) {
         return true;
       }
       if (generic.base == "Option" || generic.base == "Result") {

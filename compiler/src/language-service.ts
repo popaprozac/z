@@ -35,6 +35,7 @@ import { displayTaskType, parseTaskType } from "./async-types.ts";
 import { parseWeakType } from "./weak-types.ts";
 import { parseViewType } from "./view-types.ts";
 import { parseMapType } from "./map-types.ts";
+import { parseSetType } from "./set-types.ts";
 import {
   parseForeignDeclarationContracts,
   type ForeignDeclarationContracts,
@@ -575,6 +576,9 @@ export function hover(source: string, fileName: string, offset: number): Hover |
   if (context.semanticInfo.standardTypeBindings.get(word.text) === "Map") {
     return markdownHover("Map<K, V>(): Map<K, V>  // owned associative storage", source, word.start, word.end);
   }
+  if (context.semanticInfo.standardTypeBindings.get(word.text) === "Set") {
+    return markdownHover("Set<T>(): Set<T>  // owned unique-value storage", source, word.start, word.end);
+  }
 
   const chainedSelector = objectiveCSelectorAt(context, word.start);
   if (chainedSelector) {
@@ -737,6 +741,10 @@ export function hover(source: string, fileName: string, offset: number): Hover |
     }
     if (resolved?.kind === "map") {
       const detail = mapMemberDetail(word.text, resolved.keyType, resolved.valueType, context.typeDisplayNames);
+      if (detail) return markdownHover(detail, source, word.start, word.end);
+    }
+    if (resolved?.kind === "set") {
+      const detail = setMemberDetail(word.text, resolved.elementType, context.typeDisplayNames);
       if (detail) return markdownHover(detail, source, word.start, word.end);
     }
   }
@@ -944,11 +952,18 @@ function selectiveImportCandidates(specifier: string, fileName: string): Complet
     }];
   }
   if (specifier === "std/collections") {
-    return [{
-      label: "Map",
-      kind: completionKinds.struct,
-      detail: "Map<K, V>()  // owned associative storage",
-    }];
+    return [
+      {
+        label: "Map",
+        kind: completionKinds.struct,
+        detail: "Map<K, V>()  // owned associative storage",
+      },
+      {
+        label: "Set",
+        kind: completionKinds.struct,
+        detail: "Set<T>()  // owned unique-value storage",
+      },
+    ];
   }
   if (specifier === "std/thread") {
     return [{
@@ -1253,12 +1268,14 @@ function symbolCompletions(source: string, fileName: string, offset: number): Co
     for (const declaration of parsed.imports) {
       if (declaration.header !== "std/text" && declaration.header !== "std/memory" && declaration.header !== "std/collections") continue;
       for (const binding of declaration.bindings ?? []) {
-        if (binding.importedName !== "TextBuffer" && binding.importedName !== "Arena" && binding.importedName !== "Map") continue;
+        if (binding.importedName !== "TextBuffer" && binding.importedName !== "Arena" && binding.importedName !== "Map" && binding.importedName !== "Set") continue;
         const detail = binding.importedName === "TextBuffer"
           ? "move-only UTF-8 construction storage"
           : binding.importedName === "Arena"
             ? "move-only growable region storage"
-            : "owned associative storage";
+            : binding.importedName === "Map"
+              ? "owned associative storage"
+              : "owned unique-value storage";
         builtIns.push({
           label: binding.localName,
           kind: completionKinds.struct,
@@ -1386,7 +1403,11 @@ function symbolCompletions(source: string, fileName: string, offset: number): Co
       kind: completionKinds.struct,
       detail: standardType === "TextBuffer"
         ? `${standardType}()  // move-only UTF-8 construction storage`
-        : `${standardType}(options?: { initialCapacity: usize })  // move-only growable region storage`,
+        : standardType === "Arena"
+          ? `${standardType}(options?: { initialCapacity: usize })  // move-only growable region storage`
+          : standardType === "Map"
+            ? `${standardType}<K, V>()  // owned associative storage`
+            : `${standardType}<T>()  // owned unique-value storage`,
       sortText: `0-${name}`,
     });
   }
@@ -2149,6 +2170,9 @@ function memberCompletions(
   if (directReceiver?.kind === "map") {
     return filterCompletions(mapCompletions(directReceiver.keyType, directReceiver.valueType, importContext.typeDisplayNames), prefix, 1000);
   }
+  if (directReceiver?.kind === "set") {
+    return filterCompletions(setCompletions(directReceiver.elementType, importContext.typeDisplayNames), prefix, 1000);
+  }
   const dotOffset = receiverOffset + receiverText.length;
   const tailOffset = completionTailOffset(source, offset);
   const sanitized = source.slice(0, dotOffset) + source.slice(tailOffset);
@@ -2339,6 +2363,9 @@ function memberCompletions(
   }
   if (resolved?.kind === "map") {
     return filterCompletions(mapCompletions(resolved.keyType, resolved.valueType, context.typeDisplayNames), prefix, 1000);
+  }
+  if (resolved?.kind === "set") {
+    return filterCompletions(setCompletions(resolved.elementType, context.typeDisplayNames), prefix, 1000);
   }
   if (resolved?.kind === "integer") {
     return filterCompletions(integerCompletions(resolved.type), prefix, 1000);
@@ -2608,6 +2635,7 @@ type ResolvedReceiver =
   | { readonly kind: "textBuffer" }
   | { readonly kind: "arena" }
   | { readonly kind: "map"; readonly keyType: string; readonly valueType: string }
+  | { readonly kind: "set"; readonly elementType: string }
   | { readonly kind: "weak"; readonly target: string }
   | { readonly kind: "task"; readonly successType: string; readonly errorType: string | null };
 
@@ -2631,6 +2659,8 @@ function resolveReceiver(context: AnalyzedSource, text: string, offset: number):
   if (receiverType === "String") return { kind: "string" };
   const map = parseMapType(receiverType);
   if (map) return { kind: "map", ...map };
+  const set = parseSetType(receiverType);
+  if (set) return { kind: "set", ...set };
   if (parseFixedArrayType(receiverType) || parseSliceType(receiverType) || parseDynamicArrayType(receiverType)) return { kind: "array", type: receiverType };
   const weak = parseWeakType(receiverType);
   if (weak) return { kind: "weak", target: weak.target };
@@ -2695,6 +2725,34 @@ function mapCompletions(
     label: name,
     kind: name === "length" ? completionKinds.property : completionKinds.method,
     detail: mapMemberDetail(name, keyType, valueType, typeDisplayNames)!,
+    ...(name === "length" ? {} : { insertText: `${name}()` }),
+  }));
+}
+
+function setMemberDetail(
+  name: string,
+  elementType: string,
+  typeDisplayNames: ReadonlyMap<string, string>,
+): string | null {
+  const element = displayType(elementType, typeDisplayNames);
+  const details: Readonly<Record<string, string>> = {
+    length: "length: usize",
+    has: `has(in value: ${element}): boolean`,
+    add: `add(value: ${element}): boolean  // transfers the owned value`,
+    remove: `remove(in value: ${element}): Option<${element}>  // transfers the removed value`,
+    clear: "clear(): void  // destroys all values",
+  };
+  return details[name] ?? null;
+}
+
+function setCompletions(
+  elementType: string,
+  typeDisplayNames: ReadonlyMap<string, string>,
+): CompletionItem[] {
+  return ["length", "has", "add", "remove", "clear"].map((name) => ({
+    label: name,
+    kind: name === "length" ? completionKinds.property : completionKinds.method,
+    detail: setMemberDetail(name, elementType, typeDisplayNames)!,
     ...(name === "length" ? {} : { insertText: `${name}()` }),
   }));
 }

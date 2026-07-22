@@ -35,6 +35,7 @@ import {
 import { optionTypeName, parseOptionType } from "./option-types.ts";
 import { parseOptionalViewType, parseViewType, viewTypeName } from "./view-types.ts";
 import { mapEntryTypeName, parseMapType } from "./map-types.ts";
+import { parseSetType } from "./set-types.ts";
 
 type GenerationContext = {
   readonly structs: Map<string, StructDeclaration>;
@@ -108,12 +109,14 @@ export function generateC(program: Program, sourceName: string, semanticInfo: Se
   const sliceTypes = collectSliceTypes(program, semanticInfo);
   const dynamicArrayTypes = collectDynamicArrayTypes(program, semanticInfo);
   const mapTypes = program.structs.map((declaration) => declaration.name).filter((name) => parseMapType(name));
+  const setTypes = program.structs.map((declaration) => declaration.name).filter((name) => parseSetType(name));
   const dynamicArrayPushTypes = [...new Set([
     ...collectDynamicArrayPushTypes(program, semanticInfo),
     ...mapTypes.map((name) => {
       const map = parseMapType(name)!;
       return dynamicArrayTypeName(mapEntryTypeName(map.keyType, map.valueType));
     }),
+    ...setTypes.map((name) => dynamicArrayTypeName(parseSetType(name)!.elementType)),
   ])];
   const arenaCreateTypes = [...new Set(semanticInfo.arenaCreateCalls.values())];
   const usesArena = [...semanticInfo.standardTypeBindings.values()].includes("Arena");
@@ -366,6 +369,9 @@ export function generateC(program: Program, sourceName: string, semanticInfo: Se
   }
   for (const type of mapTypes) {
     lines.push(generateMapRuntime(type, structs, enums, semanticInfo), "");
+  }
+  for (const type of setTypes) {
+    lines.push(generateSetRuntime(type, structs, enums, semanticInfo), "");
   }
   for (const closure of closures.filter((candidate) => candidate.owned)) {
     lines.push(generateClosureEnvironmentLifecycle(closure, structs, enums, semanticInfo), "");
@@ -1522,6 +1528,83 @@ ${indent(cleanupLines(storedKeyCleanup), 4)}    self->entries.data[index].key = 
 static __attribute__((unused)) void ${mapMethodName(name, "clear")}(${mappedMap} *self) {
   ${deinitName(name)}(self);
   self->entries = (${mapType(entriesType, structs, enums, semanticInfo.foreignNamedTypes)}){ 0 };
+}`;
+}
+
+function generateSetRuntime(
+  name: string,
+  structs: Map<string, StructDeclaration>,
+  enums: Map<string, EnumDeclaration>,
+  semanticInfo: SemanticInfo,
+): string {
+  const set = parseSetType(name)!;
+  const valuesType = dynamicArrayTypeName(set.elementType);
+  const mappedSet = mapType(name, structs, enums, semanticInfo.foreignNamedTypes);
+  const mappedElement = mapType(set.elementType, structs, enums, semanticInfo.foreignNamedTypes);
+  const valueOption = optionTypeName(set.elementType);
+  const mappedValueOption = mapType(valueOption, structs, enums, semanticInfo.foreignNamedTypes);
+  const valueOptionDeclaration = enums.get(valueOption)!;
+  const nicheValue = nicheOptionPayload(valueOptionDeclaration, semanticInfo.foreignNamedTypes);
+  const zElementEnum = enums.get(set.elementType);
+  const equals = set.elementType === "String"
+    ? "z_string_equal(left, right)"
+    : zElementEnum?.variants.every((variant) => variant.payload === null)
+      ? "left.tag == right.tag"
+      : "left == right";
+  const incomingCleanup = generateOwnedEnvironmentCleanup(
+    "value",
+    set.elementType,
+    structs,
+    enums,
+    semanticInfo,
+    { value: 0 },
+  );
+  const someValue = nicheValue
+    ? "self->values.data[index]"
+    : `(${mappedValueOption}){ .tag = ${variantTag(valueOption, "some")}, .data.some = self->values.data[index] }`;
+  const noneValue = nicheValue
+    ? nicheOptionNull(nicheValue)
+    : `(${mappedValueOption}){ .tag = ${variantTag(valueOption, "none")} }`;
+  const duplicateCleanup = incomingCleanup ? `${indent(incomingCleanup, 4)}\n` : "";
+
+  return `static inline __attribute__((unused)) bool ${setEqualityName(name)}(${mappedElement} left, ${mappedElement} right) {
+  return ${equals};
+}
+
+static __attribute__((unused)) bool ${setMethodName(name, "has")}(const ${mappedSet} *self, ${mappedElement} value) {
+  for (uintptr_t index = 0; index < self->values.length; index += 1) {
+    if (${setEqualityName(name)}(self->values.data[index], value)) return true;
+  }
+  return false;
+}
+
+static __attribute__((unused)) bool ${setMethodName(name, "add")}(${mappedSet} *self, ${mappedElement} value) {
+  for (uintptr_t index = 0; index < self->values.length; index += 1) {
+    if (!${setEqualityName(name)}(self->values.data[index], value)) continue;
+${duplicateCleanup}    return false;
+  }
+  ${dynamicArrayPushName(valuesType)}(&self->values, value);
+  return true;
+}
+
+static __attribute__((unused)) ${mappedValueOption} ${setMethodName(name, "remove")}(${mappedSet} *self, ${mappedElement} value) {
+  for (uintptr_t index = 0; index < self->values.length; index += 1) {
+    if (!${setEqualityName(name)}(self->values.data[index], value)) continue;
+    ${mappedValueOption} result = ${someValue};
+    self->values.data[index] = ${mapZeroValue(set.elementType, structs, enums, semanticInfo.foreignNamedTypes)};
+    for (uintptr_t shifted = index + 1; shifted < self->values.length; shifted += 1) {
+      self->values.data[shifted - 1] = self->values.data[shifted];
+    }
+    self->values.data[self->values.length - 1] = ${mapZeroValue(set.elementType, structs, enums, semanticInfo.foreignNamedTypes)};
+    self->values.length -= 1;
+    return result;
+  }
+  return ${noneValue};
+}
+
+static __attribute__((unused)) void ${setMethodName(name, "clear")}(${mappedSet} *self) {
+  ${deinitName(name)}(self);
+  self->values = (${mapType(valuesType, structs, enums, semanticInfo.foreignNamedTypes)}){ 0 };
 }`;
 }
 
@@ -4098,6 +4181,7 @@ function generateExpressionInner(expression: Expression, context: GenerationCont
       const slice = parseSliceType(ownerValueType);
       const dynamic = parseDynamicArrayType(ownerValueType);
       const map = parseMapType(ownerValueType);
+      const set = parseSetType(ownerValueType);
       if (ownerValueType === "TextBuffer") {
         const owner = generateExpression(expression.object, context);
         const value = ownerView ? `(*(${owner}))` : `(${owner})`;
@@ -4122,6 +4206,10 @@ function generateExpressionInner(expression: Expression, context: GenerationCont
       if (map && expression.property === "length") {
         const owner = generateExpression(expression.object, context);
         return `((${owner}).entries.length)`;
+      }
+      if (set && expression.property === "length") {
+        const owner = generateExpression(expression.object, context);
+        return `((${owner}).values.length)`;
       }
       const objcClassName = context.semanticInfo.objcClassNames.get(expression.location.offset);
       if (objcClassName) return objcClassName;
@@ -4174,6 +4262,10 @@ function generateExpressionInner(expression: Expression, context: GenerationCont
       if (expression.callee.kind === "identifier") {
         const map = parseMapType(expression.callee.name);
         if (map) {
+          return `(${mapType(expression.callee.name, context.structs, context.enums, context.semanticInfo.foreignNamedTypes)}){ 0 }`;
+        }
+        const set = parseSetType(expression.callee.name);
+        if (set) {
           return `(${mapType(expression.callee.name, context.structs, context.enums, context.semanticInfo.foreignNamedTypes)}){ 0 }`;
         }
         const standardType = context.semanticInfo.standardTypeBindings.get(expression.callee.name);
@@ -4271,6 +4363,12 @@ function generateExpressionInner(expression: Expression, context: GenerationCont
           const receiver = generateExpression(expression.callee.object, context);
           const args = expression.arguments.map((argument) => generateCallArgument(argument, context));
           return `${mapMethodName(receiverValueType, expression.callee.property)}(&(${receiver})${args.length ? `, ${args.join(", ")}` : ""})`;
+        }
+        const set = parseSetType(receiverValueType);
+        if (set) {
+          const receiver = generateExpression(expression.callee.object, context);
+          const args = expression.arguments.map((argument) => generateCallArgument(argument, context));
+          return `${setMethodName(receiverValueType, expression.callee.property)}(&(${receiver})${args.length ? `, ${args.join(", ")}` : ""})`;
         }
         if (receiverValueType === "Arena") {
           const receiver = generateExpression(expression.callee.object, context);
@@ -5103,7 +5201,7 @@ function inferExpressionType(expression: Expression, context: GenerationContext)
     case "member": {
       const ownerType = inferExpressionType(expression.object, context);
       const ownerValueType = parseViewType(ownerType)?.target ?? ownerType;
-      if (parseMapType(ownerValueType)) return "usize";
+      if (parseMapType(ownerValueType) || parseSetType(ownerValueType)) return "usize";
       if (parseFixedArrayType(ownerValueType) || parseSliceType(ownerValueType) || parseDynamicArrayType(ownerValueType)) return "usize";
       if (expression.object.kind === "identifier" && context.enums.has(expression.object.name)) {
         return expression.object.name;
@@ -5148,6 +5246,12 @@ function inferExpressionType(expression: Expression, context: GenerationContext)
           if (expression.callee.property === "has") return "boolean";
           if (expression.callee.property === "get") return optionTypeName(viewTypeName(map.valueType));
           if (expression.callee.property === "remove") return optionTypeName(map.valueType);
+          return "void";
+        }
+        const set = parseSetType(receiverType);
+        if (set) {
+          if (expression.callee.property === "has" || expression.callee.property === "add") return "boolean";
+          if (expression.callee.property === "remove") return optionTypeName(set.elementType);
           return "void";
         }
         if (parseDynamicArrayType(receiverType)) return "void";
@@ -5349,6 +5453,14 @@ function mapMethodName(name: string, method: string): string {
 
 function mapEqualityName(name: string): string {
   return `Z_Map_${nativeSymbolPart(name)}_key_equal`;
+}
+
+function setMethodName(name: string, method: string): string {
+  return `Z_Set_${nativeSymbolPart(name)}_${method}`;
+}
+
+function setEqualityName(name: string): string {
+  return `Z_Set_${nativeSymbolPart(name)}_element_equal`;
 }
 
 function nativeSymbolPart(name: string): string {

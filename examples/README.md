@@ -32,7 +32,7 @@ inspect the generated C-family source. The broader guided index lives in
 ### Types and collections
 
 - [`aggregate-enums.zs`](language/types/aggregate-enums.zs), [`option.zs`](language/types/option.zs), [`generics.zs`](language/types/generics.zs), and [`generic-constraints.zs`](language/types/generic-constraints.zs)
-- [`arrays.zs`](language/collections/arrays.zs), [`slices.zs`](language/collections/slices.zs), [`dynamic-arrays.zs`](language/collections/dynamic-arrays.zs), [`dynamic-array-cleanup.zs`](language/collections/dynamic-array-cleanup.zs), and [`map.zs`](language/collections/map.zs)
+- [`arrays.zs`](language/collections/arrays.zs), [`slices.zs`](language/collections/slices.zs), [`dynamic-arrays.zs`](language/collections/dynamic-arrays.zs), [`dynamic-array-cleanup.zs`](language/collections/dynamic-array-cleanup.zs), [`map.zs`](language/collections/map.zs), and [`set.zs`](language/collections/set.zs)
 - [`modules/main.zs`](language/modules/main.zs): multi-file exports and imports
 
 ### Ownership
