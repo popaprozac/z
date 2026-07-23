@@ -61,7 +61,7 @@ bun run z run examples/language/control-flow/result.zs
 | AppKit window | [`nswindow.zs`](../examples/interop/objc/nswindow.zs) | Direct Objective-C ARC calls |
 | Objective-C nullability | [`objc-nullability.zs`](../examples/interop/objc/objc-nullability.zs) | `T | null`, narrowing, and `Option.fromNullable` |
 | Persistent AppKit events | [`appkit-events.zs`](../examples/interop/objc/appkit-events.zs) | Native blocks, weak capture, observer tokens |
-| AppKit target/action | [`target-action.zs`](../examples/interop/objc/target-action.zs) | `std/objc` adapter owns a Z closure and supplies a typed selector |
+| AppKit target/action | [`target-action.zs`](../examples/interop/objc/target-action.zs) | `std/objc` connection owns the control and Z closure for an explicit safe lifetime |
 | Swift class | [`swift-interop`](../examples/interop/swift/swift-interop) | Generated Objective-C compatibility header |
 | Swift value | [`swift-value-interop`](../examples/interop/swift/swift-value-interop) | Generated C++ methods, owned aggregate storage, and exact explicit `String` return copies |
 | Swift enum | [`swift-enum-interop`](../examples/interop/swift/swift-enum-interop) | Direct generated associated-value case factories, owned copies, methods, and cleanup |

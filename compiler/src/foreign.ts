@@ -56,6 +56,12 @@ type ClangNode = {
   readonly variadic?: boolean;
   readonly instance?: boolean;
   readonly readonly?: boolean;
+  readonly weak?: boolean;
+  readonly strong?: boolean;
+  readonly retain?: boolean;
+  readonly copy?: boolean;
+  readonly assign?: boolean;
+  readonly unsafe_unretained?: boolean;
   readonly class?: boolean;
   readonly getter?: { readonly name?: string };
   readonly setter?: { readonly name?: string };
@@ -831,6 +837,17 @@ function collectObjCInterfaces(
           : property.setter?.name ?? `set${property.name![0].toUpperCase()}${property.name!.slice(1)}:`,
         classProperty: property.class === true,
         readonly: property.readonly === true,
+        ownership: property.weak === true
+          ? "weak"
+          : property.copy === true
+          ? "copy"
+          : property.strong === true || property.retain === true
+          ? "strong"
+          : property.unsafe_unretained === true
+          ? "unsafeUnretained"
+          : property.assign === true
+          ? "assign"
+          : "unspecified",
         type: mapObjCType(property.type!, className, "return", namedTypes, typeNames, objectType),
         metadata: foreignDeclarationMetadata(property),
       }));

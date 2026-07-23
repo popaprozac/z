@@ -18,7 +18,7 @@ import type { ClosureInfo, ForeignCallArgumentPlan, IntegerOperation, SemanticIn
 import { parsePointerTypeName, type ForeignBlockType } from "./foreign.ts";
 import {
   isStandardModuleSpecifier,
-  objcActionTypeName,
+  objcConnectionTypeName,
   objcSelectorTypeName,
   standardFunctionSignature,
   type StandardFunctionName,
@@ -235,7 +235,7 @@ export function generateC(program: Program, sourceName: string, semanticInfo: Se
     includedHeaders.add("string.h");
   }
 
-  if (semanticInfo.objcActionCalls.size > 0) {
+  if (semanticInfo.objcConnectionCalls.size > 0) {
     lines.push("#import <Foundation/Foundation.h>");
     includedHeaders.add("Foundation/Foundation.h");
   }
@@ -299,8 +299,8 @@ export function generateC(program: Program, sourceName: string, semanticInfo: Se
     lines.push(generateFunctionTypeDefinition(functionType, structs, enums, semanticInfo.foreignNamedTypes));
   }
   if (functionTypes.length > 0) lines.push("");
-  if (semanticInfo.objcActionCalls.size > 0) {
-    lines.push(generateObjCActionRuntime(), "");
+  if (semanticInfo.objcConnectionCalls.size > 0) {
+    lines.push(generateObjCConnectionRuntime(), "");
   }
   for (const helper of foreignEscapeHelpers) {
     lines.push(generateForeignEscapeHelpers(helper), "");
@@ -854,22 +854,28 @@ static inline __attribute__((unused)) void ${functionTypeReleaseName(functionTyp
 }`;
 }
 
-function generateObjCActionRuntime(): string {
+function generateObjCConnectionRuntime(): string {
   const functionType: FunctionType = { parameters: [], returnType: "void" };
   const functionName = functionTypeCName(functionType);
   const releaseName = functionTypeReleaseName(functionType);
-  return `@interface ZObjCAction : NSObject {
+  return `@interface ZObjCConnection : NSObject {
 @public
   ${functionName} _z_operation;
+  id _z_control;
 }
-- (instancetype)initWithOperation:(${functionName})operation;
+- (instancetype)initWithControl:(id)control operation:(${functionName})operation;
 - (void)z_invoke:(id)sender;
 @end
 
-@implementation ZObjCAction
-- (instancetype)initWithOperation:(${functionName})operation {
+@implementation ZObjCConnection
+- (instancetype)initWithControl:(id)control operation:(${functionName})operation {
   self = [super init];
-  if (self != nil) _z_operation = operation;
+  if (self != nil) {
+    _z_operation = operation;
+    _z_control = control;
+    [_z_control setTarget:self];
+    [_z_control setAction:@selector(z_invoke:)];
+  }
   return self;
 }
 
@@ -879,12 +885,16 @@ function generateObjCActionRuntime(): string {
 }
 
 - (void)dealloc {
+  if ([_z_control target] == self) {
+    [_z_control setTarget:nil];
+    [_z_control setAction:NULL];
+  }
   ${releaseName}(_z_operation);
 }
 @end
 
-static inline __attribute__((unused)) ZObjCAction *z_objc_action(${functionName} operation) {
-  return [[ZObjCAction alloc] initWithOperation:operation];
+static inline __attribute__((unused)) ZObjCConnection *z_objc_connect(id control, ${functionName} operation) {
+  return [[ZObjCConnection alloc] initWithControl:control operation:operation];
 }`;
 }
 
@@ -4116,6 +4126,11 @@ function generateLocalDeclaration(
   foreignNamedTypes: SemanticInfo["foreignNamedTypes"],
 ): string {
   name = cBindingName(name);
+  if (type === objcConnectionTypeName) {
+    const cType = mapType(type, structs, enums, foreignNamedTypes);
+    const declaration = mutable ? `${cType}${name}` : `${cType} const ${name}`;
+    return `__attribute__((objc_precise_lifetime, unused)) ${declaration}`;
+  }
   if (type === "cstring") {
     return mutable ? `const char *${name}` : `const char * const ${name}`;
   }
@@ -4810,9 +4825,7 @@ function generateExpressionInner(expression: Expression, context: GenerationCont
       const ownerType = inferExpressionType(expression.object, context);
       const ownerView = parseViewType(ownerType);
       const ownerValueType = ownerView?.target ?? ownerType;
-      if (ownerValueType === objcActionTypeName && expression.property === "selector") {
-        return "@selector(z_invoke:)";
-      }
+      if (ownerValueType === objcConnectionTypeName) throw new Error("objc.Connection has no source-level members");
       const array = parseFixedArrayType(ownerValueType);
       const slice = parseSliceType(ownerValueType);
       const dynamic = parseDynamicArrayType(ownerValueType);
@@ -4881,8 +4894,8 @@ function generateExpressionInner(expression: Expression, context: GenerationCont
       if (context.semanticInfo.optionFromNullable.has(expression.location.offset)) {
         return generateExpression(expression.arguments[0], context);
       }
-      if (context.semanticInfo.objcActionCalls.has(expression.location.offset)) {
-        return `z_objc_action(${generateExpression(expression.arguments[0], context)})`;
+      if (context.semanticInfo.objcConnectionCalls.has(expression.location.offset)) {
+        return `z_objc_connect(${generateExpression(expression.arguments[0], context)}, ${generateExpression(expression.arguments[1], context)})`;
       }
       const integerOperation = context.semanticInfo.integerOperations.get(expression.location.offset);
       if (integerOperation && expression.callee.kind === "member") {

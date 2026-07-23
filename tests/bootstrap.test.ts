@@ -2576,9 +2576,10 @@ test("builds the interactive Z Notes AppKit and sqlite3 application", () => {
   assert.match(artifact.source, /if \(_z_live_queryStatement_\d+ && queryStatement != NULL\) sqlite3_finalize\(queryStatement\)/);
   assert.match(artifact.source, /\[\[NSWindow alloc\] initWithContentRect/);
   assert.match(artifact.source, /Z_Option_usize_some/);
-  assert.match(artifact.source, /@interface ZObjCAction : NSObject/);
-  assert.match(artifact.source, /\[addButton setTarget:addNoteAction\]/);
-  assert.match(artifact.source, /\[addButton setAction:@selector\(z_invoke:\)\]/);
+  assert.match(artifact.source, /@interface ZObjCConnection : NSObject/);
+  assert.match(artifact.source, /\[_z_control setTarget:self\]/);
+  assert.match(artifact.source, /\[_z_control setAction:@selector\(z_invoke:\)\]/);
+  assert.match(artifact.source, /ZObjCConnection \* const addNoteConnection = z_objc_connect\(/);
   assert.match(artifact.source, /\[content addSubview:statusLabel\]/);
   assert.match(artifact.source, /\[statusLabel setStringValue:z_nsstring_from_string/);
   assert.match(artifact.source, /\[\[NSTextView alloc\] initWithFrame/);
@@ -3212,7 +3213,7 @@ test("retains owned Z closure environments across Objective-C blocks", () => {
   );
 }, 10_000);
 
-test("bridges owned Z closures to Objective-C target/action through std/objc", () => {
+test("bridges owned Z closures to Objective-C target/action through an explicit connection", () => {
   if (process.platform !== "darwin") return;
   const example = resolve(projectRoot, "examples/interop/objc/target-action.zs");
   const source = readFileSync(example, "utf8");
@@ -3221,31 +3222,40 @@ test("bridges owned Z closures to Objective-C target/action through std/objc", (
   assert.equal(artifact.language, "objective-c");
   assert.ok(artifact.frameworks.includes("Foundation"));
   assert.ok(artifact.frameworks.includes("AppKit"));
-  assert.match(artifact.source, /@interface ZObjCAction : NSObject/);
+  assert.match(artifact.source, /@interface ZObjCConnection : NSObject/);
   assert.match(artifact.source, /Z_ActionState_retain\(state\)/);
   assert.doesNotMatch(artifact.source, /Z_ActionState_retain\(state\)\)->value/);
-  assert.match(artifact.source, /\[button setTarget:action\]/);
-  assert.match(artifact.source, /\[button setAction:@selector\(z_invoke:\)\]/);
+  assert.match(artifact.source, /ZObjCConnection \* const connection = z_objc_connect\(/);
+  assert.match(artifact.source, /\[_z_control setTarget:self\]/);
+  assert.match(artifact.source, /\[_z_control setAction:@selector\(z_invoke:\)\]/);
+  assert.match(artifact.source, /if \(\[_z_control target\] == self\)/);
+  assert.match(artifact.source, /\[_z_control setTarget:nil\]/);
   assert.match(artifact.source, /Z_Function_[a-f0-9]+_release\(_z_operation\)/);
 
   const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stdout, "button action value=42\n");
 
-  const borrowed = source.replace("objc.action(move ()", "objc.action(()");
+  const borrowed = source.replace("objc.connect(button, move ()", "objc.connect(button, ()");
   assert.match(
     diagnostics(borrowed, example)[0]?.message ?? "",
     /borrowed capturing closure cannot become a function value/,
   );
 
-  const actionCompletionSource = source.replace("objc.action", "objc.ac");
-  const actionCompletionOffset = actionCompletionSource.indexOf("objc.ac") + "objc.ac".length;
-  assert.ok(completions(actionCompletionSource, example, actionCompletionOffset).some((item) => item.label === "action"));
-  const selectorCompletionSource = source.replace("action.selector", "action.sel");
-  const selectorCompletionOffset = selectorCompletionSource.indexOf("action.sel") + "action.sel".length;
-  assert.ok(completions(selectorCompletionSource, example, selectorCompletionOffset).some((item) => item.label === "selector"));
-  const selectorOffset = source.indexOf("action.selector") + "action.".length + 2;
-  assert.match(hover(source, example, selectorOffset)?.contents.value ?? "", /selector: objc\.Selector/);
+  const connectionCompletionSource = source.replace("objc.connect", "objc.con");
+  const connectionCompletionOffset = connectionCompletionSource.indexOf("objc.con") + "objc.con".length;
+  assert.ok(completions(connectionCompletionSource, example, connectionCompletionOffset).some((item) => item.label === "connect"));
+  const connectOffset = source.indexOf("objc.connect") + "objc.".length + 2;
+  assert.match(hover(source, example, connectOffset)?.contents.value ?? "", /objc\.Connection/);
+  const connectionOffset = source.indexOf("connection =") + 2;
+  assert.match(hover(source, example, connectionOffset)?.contents.value ?? "", /connection: objc\.Connection/);
+
+  const discarded = source.replace("const connection = ", "");
+  assert.match(diagnostics(discarded, example)[0]?.message ?? "", /objc\.Connection must be bound/);
+
+  const propertySource = source.replace("  app.finishLaunching();", "  const currentTarget = button.target;\n  app.finishLaunching();");
+  const targetOffset = propertySource.indexOf("button.target") + "button.".length + 2;
+  assert.match(hover(propertySource, example, targetOffset)?.contents.value ?? "", /weak target: /);
 }, 10_000);
 
 test("registers persistent Objective-C event callbacks with explicit token cleanup", () => {
@@ -3643,7 +3653,7 @@ test("provides compiler-backed AppKit completion, labels, hover, diagnostics, an
   assert.ok(labels.some((item) => item.label === "styleMask:" && item.detail === "AppKit.NSWindowStyleMask"));
 
   const titleOffset = source.indexOf("title") + 2;
-  assert.match(hover(source, example, titleOffset)?.contents.value ?? "", /title: NSString/);
+  assert.match(hover(source, example, titleOffset)?.contents.value ?? "", /copy title: NSString/);
 
   const chainedMethod = source.indexOf("initWithContentRect") + 4;
   const chainedHover = hover(source, example, chainedMethod)?.contents.value ?? "";

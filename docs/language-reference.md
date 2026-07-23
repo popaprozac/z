@@ -893,10 +893,11 @@ creating that owned copy.
 Runtime conventions that cannot be represented as an ordinary imported call
 use explicit standard-library adapters. `import objc from "std/objc";` is not
 needed for normal classes, methods, properties, constants, nullability, or
-blocks. Its first adapter, `objc.action(move () => { ... })`, owns a Z closure
-as an Objective-C target object and exposes its typed `.selector` for a native
-target/action property pair. The returned action must remain owned while the
-native target property may invoke it.
+blocks. Its first adapter, `objc.connect(control, move () => { ... })`, owns the
+native target/action control and Z closure, installs the target plus selector,
+and returns an `objc.Connection`. The connection must remain bound while the
+callback is desired; its precise scope lifetime and teardown prevent a weak
+target from silently disappearing after a helper returns.
 
 Adjacent `.zd` contracts can safely restrict native pointer surfaces without
 introducing a raw pointer into Z. `parameter: null` permits only the native null

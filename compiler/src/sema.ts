@@ -57,7 +57,7 @@ import {
 } from "./foreign.ts";
 import {
   isStandardModuleSpecifier,
-  objcActionTypeName,
+  objcConnectionTypeName,
   objcSelectorTypeName,
   standardFunctionSignature,
   standardModuleFunction,
@@ -88,6 +88,7 @@ export type ObjCCallInfo = {
 export type ObjCPropertyInfo = {
   readonly getter: string;
   readonly setter: string | null;
+  readonly ownership: ForeignObjCProperty["ownership"];
   readonly type: ForeignType;
 };
 
@@ -263,7 +264,7 @@ export type SemanticInfo = {
   readonly swiftStringsToZ: ReadonlySet<number>;
   readonly cstringConversions: ReadonlySet<number>;
   readonly optionFromNullable: ReadonlySet<number>;
-  readonly objcActionCalls: ReadonlySet<number>;
+  readonly objcConnectionCalls: ReadonlySet<number>;
   readonly expressionTypes: ReadonlyMap<number, string>;
   readonly bindingTypes: ReadonlyMap<number, string>;
   readonly borrowedMatches: ReadonlySet<number>;
@@ -329,7 +330,7 @@ type AnalysisState = {
   readonly swiftStringsToZ: Set<number>;
   readonly cstringConversions: Set<number>;
   readonly optionFromNullable: Set<number>;
-  readonly objcActionCalls: Set<number>;
+  readonly objcConnectionCalls: Set<number>;
   readonly expressionTypes: Map<number, string>;
   readonly bindingTypes: Map<number, string>;
   readonly resolvedFields: Map<number, StructDeclaration["fields"][number]>;
@@ -484,27 +485,27 @@ export function analyze(
     objectiveC = true;
     frameworks.add("Foundation");
     const metadata: ForeignDeclarationMetadata = { source: null, availability: [] };
-    const action: ForeignNamedType = {
+    const connection: ForeignNamedType = {
       kind: "object",
-      exportName: "Action",
+      exportName: "Connection",
       namespacePath: ["objc"],
-      qualifiedName: "objc.Action",
-      typeName: objcActionTypeName,
-      cName: "ZObjCAction *",
-      className: "ZObjCAction",
+      qualifiedName: "objc.Connection",
+      typeName: objcConnectionTypeName,
+      cName: "ZObjCConnection *",
+      className: "ZObjCConnection",
       metadata,
     };
-    foreignNamedTypes.set(objcActionTypeName, action);
-    foreignObjectTypes.set(objcActionTypeName, {
+    foreignNamedTypes.set(objcConnectionTypeName, connection);
+    foreignObjectTypes.set(objcConnectionTypeName, {
       kind: "object",
-      typeName: objcActionTypeName,
-      cName: action.cName,
-      className: action.className,
+      typeName: objcConnectionTypeName,
+      cName: connection.cName,
+      className: connection.className,
       nullable: false,
     });
     typeDisplayNames = new Map([
       ...typeDisplayNames,
-      [objcActionTypeName, "objc.Action"],
+      [objcConnectionTypeName, "objc.Connection"],
       [objcSelectorTypeName, "objc.Selector"],
     ]);
   }
@@ -555,7 +556,7 @@ export function analyze(
     swiftStringsToZ: new Set(),
     cstringConversions: new Set(),
     optionFromNullable: new Set(),
-    objcActionCalls: new Set(),
+    objcConnectionCalls: new Set(),
     expressionTypes: new Map(),
     bindingTypes: new Map(),
     resolvedFields: new Map(),
@@ -2266,6 +2267,13 @@ function analyzeStatement(
           throw new DiagnosticError(fileName, statement.expression.location, `integer literal ${statement.expression.value} does not fit default i32`);
         }
         const type = inferDirectValue(statement.expression, owner, locals, globals, structs, enums, fileName, state);
+        if (type === objcConnectionTypeName) {
+          throw new DiagnosticError(fileName, statement.expression.location, "objc.Connection must be bound so its callback lifetime is explicit", {
+            code: "Z0804",
+            notes: ["the connection owns the native control and callback until the binding leaves scope"],
+            helps: ["use `const connection = objc.connect(control, move () => operation());`"],
+          });
+        }
         if (hasOwnershipType(type, structs, enums, state)) {
           throw new DiagnosticError(fileName, statement.expression.location, "an ownership-bearing value must be bound or transferred; it cannot be discarded");
         }
@@ -4358,9 +4366,8 @@ function inferExpressionInner(
         });
       }
       const receiverValueType = receiverView?.target ?? String(receiverType);
-      if (receiverValueType === objcActionTypeName) {
-        if (expression.property === "selector") return objcSelectorTypeName;
-        throw new DiagnosticError(fileName, expression.location, `objc.Action has no property ${JSON.stringify(expression.property)}`);
+      if (receiverValueType === objcConnectionTypeName) {
+        throw new DiagnosticError(fileName, expression.location, `objc.Connection has no property ${JSON.stringify(expression.property)}`);
       }
       const map = parseMapType(receiverValueType);
       if (map) {
@@ -4416,6 +4423,7 @@ function inferExpressionInner(
         state.objcProperties.set(expression.location.offset, {
           getter: property.getter,
           setter: property.setter,
+          ownership: property.ownership,
           type: property.type,
         });
         state.foreignExpressionTypes.set(expression.location.offset, String(propertyType));
@@ -4686,19 +4694,31 @@ function inferExpressionInner(
           const owner = globals.get(localModuleName);
           if (owner?.kind === "standardModule") {
             if (owner.module === "objc") {
-              if (expression.callee.property !== "action") {
+              if (expression.callee.property !== "connect") {
                 throw new DiagnosticError(fileName, expression.callee.location, `objc has no method ${JSON.stringify(expression.callee.property)}`, {
-                  helps: [`use ${localModuleName}.action(move () => operation())`],
+                  helps: [`use ${localModuleName}.connect(control, move () => operation())`],
                 });
               }
               rejectLabeledArguments(expression.argumentLabels, expression.location, fileName);
-              if (expression.arguments.length !== 1 || expression.arguments[0].kind !== "closure") {
-                throw new DiagnosticError(fileName, expression.location, "objc.action expects one synchronous closure", {
+              if (expression.arguments.length !== 2 || expression.arguments[1].kind !== "closure") {
+                throw new DiagnosticError(fileName, expression.location, "objc.connect expects an Objective-C target/action object and one synchronous closure", {
                   code: "Z0804",
-                  helps: [`use \`${localModuleName}.action(move () => operation())\``],
+                  helps: [`use \`${localModuleName}.connect(control, move () => operation())\``],
                 });
               }
-              const operation = expression.arguments[0];
+              const control = expression.arguments[0];
+              const controlType = inferExpression(control, locals, globals, structs, enums, fileName, state);
+              rejectNullableObjCReceiver(controlType, control.location, fileName, state);
+              const receiver = objcReceiver(controlType, state);
+              if (!receiver?.instance
+                || !findObjCProperty(receiver, "target", state)?.setter
+                || !findObjCProperty(receiver, "action", state)?.setter) {
+                throw new DiagnosticError(fileName, control.location, "objc.connect requires a non-null Objective-C object with writable target and action properties", {
+                  code: "Z0804",
+                  notes: ["the returned objc.Connection owns the object and operation while callbacks are active"],
+                });
+              }
+              const operation = expression.arguments[1];
               const expectedFunction: FunctionType = { parameters: [], returnType: "void" };
               const expectedType = functionTypeName([], "void");
               inferClosureExpression(operation, locals, globals, structs, enums, fileName, state, expectedFunction);
@@ -4712,9 +4732,9 @@ function inferExpressionInner(
                 fileName,
                 state,
               );
-              state.objcActionCalls.add(expression.location.offset);
-              state.expressionTypes.set(expression.location.offset, objcActionTypeName);
-              return objcActionTypeName;
+              state.objcConnectionCalls.add(expression.location.offset);
+              state.expressionTypes.set(expression.location.offset, objcConnectionTypeName);
+              return objcConnectionTypeName;
             }
             if (owner.module === "thread") {
               if (expression.callee.property !== "spawn") {

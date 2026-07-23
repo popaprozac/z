@@ -72,7 +72,7 @@ requiring lifetime syntax throughout ordinary application code.
 | Control flow | Checked arithmetic, loops, ternaries, value `if`, exhaustive `match` |
 | Async | Stackless tasks, FIFO executor, spawn/join scopes, cancellation, delay, and nonblocking `thread.spawn` joins with Copy snapshots, unique-owner moves, atomic-ARC readonly sharing, and owned typed worker errors on one native thread |
 | C | Header imports, functions, records, enums, constants, pointers with `.zd` contracts, callbacks, target-aware availability |
-| Objective-C | ARC objects, nullability, selectors, blocks, persistent observers, explicit target/action closure adapters, AppKit |
+| Objective-C | ARC objects, nullability, selectors, blocks, persistent observers, imported property ownership, lifetime-safe target/action connections, AppKit |
 | C++ | Hierarchical functions/types, overload selection, records, `.zd`-contracted copyable and move-only RAII values, constructors, methods, named-value references, and receiver qualifiers |
 | Swift | Generated Objective-C compatibility headers plus generated C++ values, associated-value enum cases, methods, copying, cleanup, and exact owned `String` returns |
 | Editor | VS Code/Cursor highlighting, diagnostics, hover, completion, and definitions |

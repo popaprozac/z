@@ -154,12 +154,21 @@ export type ForeignObjCMethod = {
   readonly metadata: ForeignDeclarationMetadata;
 };
 
+export type ForeignObjCPropertyOwnership =
+  | "strong"
+  | "copy"
+  | "weak"
+  | "assign"
+  | "unsafeUnretained"
+  | "unspecified";
+
 export type ForeignObjCProperty = {
   readonly name: string;
   readonly getter: string;
   readonly setter: string | null;
   readonly classProperty: boolean;
   readonly readonly: boolean;
+  readonly ownership: ForeignObjCPropertyOwnership;
   readonly type: ForeignType;
   readonly metadata: ForeignDeclarationMetadata;
 };

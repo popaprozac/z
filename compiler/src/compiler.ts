@@ -147,7 +147,7 @@ export function analyzeSource(source: string, fileName: string, options: Analysi
     program,
     foreignModules,
     semanticInfo,
-    typeDisplayNames,
+    typeDisplayNames: semanticInfo.typeDisplayNames,
     projectBuild,
     sourceModules: linked.modules,
     sourceModuleBatch: linked.sourceBatch,

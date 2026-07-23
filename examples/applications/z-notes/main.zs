@@ -101,7 +101,7 @@ function main(): i32 {
   addButton.title = "Add Note";
 
   let nextId = store.nextNoteId();
-  const addNoteAction = objc.action(move (): void => {
+  const addNoteConnection = objc.connect(addButton, move (): void => {
     const noteId = nextId;
     const title = `${titleField.stringValue}`;
     const body = `${bodyField.stringValue}`;
@@ -126,8 +126,6 @@ function main(): i32 {
     bodyField.stringValue = "";
     console.log(`added note ${noteId}, total=${store.noteCount()}`);
   });
-  addButton.target = addNoteAction;
-  addButton.action = addNoteAction.selector;
   content.addSubview(addButton);
 
   window.center();

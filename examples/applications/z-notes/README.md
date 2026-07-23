@@ -13,8 +13,10 @@ The application currently combines:
   borrowed-text, and fixed-sentinel `.zd` contracts;
 - explicit `target.link.libraries` configuration for `sqlite3`.
 
-The application now uses the first `std/objc` target/action adapter for an
-interactive Add Note button plus editable title and body fields. Startup loads
+The application now uses the first `std/objc` target/action connection for an
+interactive Add Note button plus editable title and body fields. The bound
+connection owns the button and callback, so AppKit's weak target cannot silently
+expire while the application is running. Startup loads
 notes from `.z-cache/z-notes.sqlite3` and renders their titles and bodies into a
 native scrollable view. Each click first persists the entered note, then
 mutates the ARC-managed `NoteStore`, selects it, updates native AppKit labels

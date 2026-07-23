@@ -42,7 +42,7 @@ import {
   type ForeignDeclarationContracts,
 } from "./foreign-declarations.ts";
 import {
-  objcActionTypeName,
+  objcConnectionTypeName,
   standardFunctionSignature,
   standardModuleFunction,
   standardModuleMemberNames,
@@ -642,9 +642,9 @@ export function hover(source: string, fileName: string, offset: number): Hover |
     if (standardOwner === "thread" && word.text === "main") {
       return markdownHover("thread.main: Executor  // main-thread execution target", source, word.start, word.end);
     }
-    if (standardOwner === "objc" && word.text === "action") {
+    if (standardOwner === "objc" && word.text === "connect") {
       return markdownHover(
-        "action(operation: () => void): objc.Action  // owns a Z closure as an Objective-C target/action adapter",
+        "connect(control: Objective-C target/action object, operation: move () => void): objc.Connection  // owns the control and callback lifetime",
         source,
         word.start,
         word.end,
@@ -692,7 +692,7 @@ export function hover(source: string, fileName: string, offset: number): Hover |
     }
     if (resolved?.kind === "objc") {
       const property = collectObjCProperties(resolved.declaration, resolved.instance, context).find((item) => item.name === word.text);
-      if (property) return markdownHover(`${property.name}: ${foreignTypeName(property.type)}${foreignAvailabilityDetail(property.metadata)}`, source, word.start, word.end);
+      if (property) return markdownHover(`${objcPropertyDetail(property)}${foreignAvailabilityDetail(property.metadata)}`, source, word.start, word.end);
       const methods = collectObjCMethods(resolved.declaration, resolved.instance, context).filter((item) => item.baseName === word.text);
       if (methods.length) return markdownHover(methods.map(objCMethodDetail).join("\n"), source, word.start, word.end);
     }
@@ -717,9 +717,6 @@ export function hover(source: string, fileName: string, offset: number): Hover |
         word.start,
         word.end,
       );
-    }
-    if (resolved?.kind === "objcAction" && word.text === "selector") {
-      return markdownHover("selector: objc.Selector  // invokes the owned Z operation", source, word.start, word.end);
     }
     if (resolved?.kind === "integer") {
       const detail = integerMethodDetail(word.text, resolved.type);
@@ -2293,8 +2290,8 @@ function memberCompletions(
         kind: completionKinds.method,
         detail: standardModule === "thread" && member === "spawn"
           ? "spawn<T, E?>(operation: () => T throws E?): Task<T, E?>  // starts one native thread"
-          : standardModule === "objc" && member === "action"
-            ? "action(operation: () => void): objc.Action  // bridges target/action"
+          : standardModule === "objc" && member === "connect"
+            ? "connect(control: Objective-C target/action object, operation: move () => void): objc.Connection"
             : standardFunctionDetail(member, name!),
         insertText: `${member}()`,
       };
@@ -2368,13 +2365,6 @@ function memberCompletions(
   }
   if (directReceiver?.kind === "set") {
     return filterCompletions(setCompletions(directReceiver.elementType, importContext.typeDisplayNames), prefix, 1000);
-  }
-  if (directReceiver?.kind === "objcAction") {
-    return filterCompletions([{
-      label: "selector",
-      kind: completionKinds.property,
-      detail: "objc.Selector  // invokes the owned Z operation",
-    }], prefix, 1000);
   }
   const dotOffset = receiverOffset + receiverText.length;
   const tailOffset = completionTailOffset(source, offset);
@@ -2625,13 +2615,6 @@ function memberCompletions(
       kind: completionKinds.method,
       detail: "async cancel(): void  // consumes the Task; requests cancellation and joins cleanup",
       insertText: "cancel()",
-    }], prefix, 1000);
-  }
-  if (resolved?.kind === "objcAction") {
-    return filterCompletions([{
-      label: "selector",
-      kind: completionKinds.property,
-      detail: "objc.Selector  // invokes the owned Z operation",
     }], prefix, 1000);
   }
   return [];
@@ -2887,7 +2870,7 @@ type ResolvedReceiver =
   | { readonly kind: "set"; readonly elementType: string }
   | { readonly kind: "weak"; readonly target: string }
   | { readonly kind: "task"; readonly successType: string; readonly errorType: string | null }
-  | { readonly kind: "objcAction" };
+  | { readonly kind: "objcConnection" };
 
 function mapValueHasReferenceIdentity(context: AnalyzedSource, type: string): boolean {
   return context.program.structs.some((declaration) => declaration.name === type && declaration.kind === "class")
@@ -2909,7 +2892,7 @@ function resolveReceiver(context: AnalyzedSource, text: string, offset: number):
   if (!type) return null;
   const view = parseViewType(type);
   const receiverType = view?.target ?? type;
-  if (receiverType === objcActionTypeName) return { kind: "objcAction" };
+  if (receiverType === objcConnectionTypeName) return { kind: "objcConnection" };
   if (receiverType === "TextBuffer") return { kind: "textBuffer" };
   if (receiverType === "Arena") return { kind: "arena" };
   if (receiverType === "Hasher") return { kind: "hasher" };
@@ -3123,7 +3106,7 @@ function objcCompletions(declaration: ForeignObjCInterface, instance: boolean, c
   const items: CompletionItem[] = properties.map((property) => ({
     label: property.name,
     kind: completionKinds.property,
-    detail: `${property.readonly ? "readonly " : ""}${foreignTypeName(property.type)}`,
+    detail: objcPropertyDetail(property),
   }));
   for (const method of collectObjCMethods(declaration, instance, context)) {
     if (accessors.has(method.selector)) continue;
@@ -3290,6 +3273,15 @@ function collectObjCProperties(declaration: ForeignObjCInterface, instance: bool
     current = context.semanticInfo.foreignInterfaces.get(`${moduleName}.${current.superName}`);
   }
   return properties;
+}
+
+function objcPropertyDetail(property: ForeignObjCProperty): string {
+  const referenceOwnership = property.type.kind === "object" || property.type.kind === "block";
+  const qualifiers = [
+    property.readonly ? "readonly" : null,
+    !referenceOwnership || property.ownership === "unspecified" ? null : property.ownership,
+  ].filter((value): value is string => value !== null);
+  return `${qualifiers.length > 0 ? `${qualifiers.join(" ")} ` : ""}${property.name}: ${foreignTypeName(property.type)}`;
 }
 
 function objCMethodSnippet(method: ForeignObjCMethod): string {

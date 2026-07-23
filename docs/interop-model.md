@@ -216,7 +216,7 @@ boundary**, not a claim that every bridge operation is free:
 | C scalar or function call | Native ABI call; no wrapper or allocation |
 | C record by value or scoped borrow | Native layout and calling convention; no wrapper allocation |
 | Objective-C method or property | Ordinary `objc_msgSend`-family dispatch under Clang ARC |
-| `objc.action` target/action bridge | One ARC adapter allocation, indirect closure call, and an owned environment allocation only when the closure captures |
+| `objc.connect` target/action bridge | One ARC connection allocation, indirect closure call, and an owned environment allocation only when the closure captures; the connection retains the native control |
 | Plain C++/Swift-C++ value or method | Native construction, copy, destruction, and member-call rules; no Z wrapper dispatch |
 | Non-capturing call-only callback | Function pointer or small adapter indirection; no environment allocation |
 | Escaping capturing closure / Objective-C block | Owned closure environment plus a native lifetime adapter, retains/releases, and indirect invocation |
@@ -476,27 +476,32 @@ wants an owned closure with a clear lifetime.
 import objc from "std/objc";
 import AppKit from "AppKit/AppKit.h";
 
-const saveAction = objc.action(move () => {
+const saveConnection = objc.connect(button, move () => {
   saveDocument();
 });
-
-button.target = saveAction;
-button.action = saveAction.selector;
 ```
 
-`objc.action` allocates one ARC-managed adapter object. A capturing `move`
+`objc.connect` allocates one ARC-managed connection object, retains the native
+control, and installs itself as the control's weak target. A capturing `move`
 closure also owns its normal Z closure environment; non-capturing operations do
-not allocate a separate environment. The adapter releases that environment
-when Objective-C releases the target. Source must keep the returned
-`objc.Action` alive for as long as the native control may invoke it, because
-AppKit's target property is weak.
+not allocate a separate environment. The generated connection binding uses
+Objective-C precise lifetime, so it remains alive through the end of its Z
+scope. On destruction it clears target/action if still installed, then releases
+the closure and control. Source must keep the returned `objc.Connection` bound
+for as long as callbacks are desired; discarding it is a compile error.
+
+The Clang importer preserves Objective-C property ownership such as `weak`,
+`strong`, `copy`, and `assign`, and editor hover/completion displays it. General
+escape analysis for arbitrary weak or unsafe-unretained property assignments is
+still a future safety layer; `objc.connect` closes the common target/action
+lifetime hole without requiring implicit native associations or retain cycles.
 
 | Native surface | Ordinary header import | `std/objc` bridge |
 | --- | --- | --- |
 | `NSApplication.sharedApplication`, `NSWindow.alloc()`, methods/properties | Yes | No |
 | Objective-C object nullability and `Option.fromNullable` | Yes | No |
 | Typed block parameters and observer tokens | Yes | No |
-| Target object plus selector pair | Header exposes the raw convention | `objc.action` owns a Z closure and supplies `.selector` |
+| Target object plus selector pair | Header exposes the raw convention | `objc.connect` owns the control and closure, installs target/action, and returns an explicit lifetime token |
 | Future protocol/delegate synthesis or runtime-only adaptation | Declaration remains visible | Adapter required only when Z must synthesize native runtime behavior |
 
 This module is not a prerequisite for Objective-C interop and is not a generic
