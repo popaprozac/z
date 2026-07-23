@@ -9,7 +9,10 @@ function main(): i32 {
   });
   store.add(Note({ id: 1, title: "Smoke Test", body: "Z Notes model" }));
   store.selectNote(0);
+  const rendered = store.renderText();
   const databaseReady = canOpenMemoryDatabase();
   console.log(`z-notes sqlite=${sqliteVersion()}, notes=${store.noteCount()}, database=${databaseReady}`);
-  return store.noteCount() == 1 && databaseReady ? 0 : 1;
+  return store.noteCount() == 1
+    && rendered == "# Smoke Test\nZ Notes model\n\n"
+    && databaseReady ? 0 : 1;
 }

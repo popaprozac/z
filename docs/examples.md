@@ -118,8 +118,10 @@ outputs without a handwritten wrapper. SQLite column text is a nullable
 `String` storage. Editable AppKit title/body fields become owned Z strings and
 are persisted through placeholder binding; a declaration-only
 `fixed SQLITE_TRANSIENT` parameter safely supplies SQLite's hidden destructor
-sentinel at the C ABI boundary. A persistence smoke reloads quoted text from the
-same database without opening a window.
+sentinel at the C ABI boundary. Loaded and newly inserted notes render through
+directly imported `NSScrollView`/`NSTextView` controls, with `TextBuffer` joining
+borrowed `Array<Note>` contents into owned display text. A persistence smoke
+reloads quoted text from the same database without opening a window.
 
 [`document-workspace`](../examples/applications/document-workspace) is the
 recommended non-GUI application walkthrough. It uses domain-oriented names to

@@ -7,16 +7,18 @@ The application currently combines:
 
 - an ARC-managed Z application model containing owned `Array<Note>` storage;
 - `Option<usize>` selection and borrowed callback inspection;
-- direct AppKit header import and an ARC-managed `NSWindow`;
+- direct AppKit header import, an ARC-managed `NSWindow`, and a native
+  `NSScrollView`/`NSTextView` note browser;
 - direct `sqlite3.h` import with adjacent owned-output, null-only parameter,
   borrowed-text, and fixed-sentinel `.zd` contracts;
 - explicit `target.link.libraries` configuration for `sqlite3`.
 
 The application now uses the first `std/objc` target/action adapter for an
-interactive Add Note button plus editable title and body fields. Startup loads notes from
-`.z-cache/z-notes.sqlite3`. Each click first persists the entered note, then
+interactive Add Note button plus editable title and body fields. Startup loads
+notes from `.z-cache/z-notes.sqlite3` and renders their titles and bodies into a
+native scrollable view. Each click first persists the entered note, then
 mutates the ARC-managed `NoteStore`, selects it, updates native AppKit labels
-and the window title, and logs the new note. The
+and the window title, refreshes the browser, and logs the new note. The
 window, controls, methods, properties, strings, and layouts still come directly
 from `AppKit/AppKit.h`; `std/objc` appears only where AppKit requires a target
 object plus selector instead of a typed block or ordinary method call.
@@ -73,6 +75,13 @@ the destructor parameter `{ fixed SQLITE_TRANSIENT; }`; Z calls supply four
 arguments while generated C inserts the sentinel so SQLite copies the bytes.
 Quotes and other ordinary user text therefore persist without an escaping
 wrapper or application-written native glue.
+
+`NoteStore.renderText()` borrows the store, iterates its owned `Array<Note>`
+without moving any note, builds one owned UTF-8 value through `TextBuffer`, and
+assigns it directly to `NSTextView.string`. The view is embedded in an imported
+`NSScrollView` with no native wrapper. This intentionally remains a simple
+read-only browser; replacing it with `NSTableView` should be the focused probe
+for Z-defined Objective-C data-source and delegate conformance.
 
 Next, this application should drive Objective-C protocol
 conformance, table data-source/delegate methods, richer controls, escaping block

@@ -20,7 +20,7 @@ function main(): i32 {
   const app = AppKit.NSApplication.sharedApplication;
   app.setActivationPolicy(AppKit.NSApplicationActivationPolicyRegular);
 
-  const frame = AppKit.NSMakeRect(0.0, 0.0, 820.0, 560.0);
+  const frame = AppKit.NSMakeRect(0.0, 0.0, 820.0, 640.0);
   const style = AppKit.NSWindowStyleMaskTitled
     | AppKit.NSWindowStyleMaskClosable
     | AppKit.NSWindowStyleMaskMiniaturizable
@@ -37,7 +37,7 @@ function main(): i32 {
   if (content == null) return 1;
 
   const heading = AppKit.NSTextField.alloc().initWithFrame(
-    AppKit.NSMakeRect(24.0, 500.0, 500.0, 32.0)
+    AppKit.NSMakeRect(24.0, 580.0, 500.0, 32.0)
   );
   heading.stringValue = "Z Notes";
   heading.bezeled = false;
@@ -47,7 +47,7 @@ function main(): i32 {
   content.addSubview(heading);
 
   const selectedLabel = AppKit.NSTextField.alloc().initWithFrame(
-    AppKit.NSMakeRect(24.0, 456.0, 620.0, 24.0)
+    AppKit.NSMakeRect(24.0, 536.0, 620.0, 24.0)
   );
   selectedLabel.stringValue = "No note selected";
   selectedLabel.bezeled = false;
@@ -60,16 +60,30 @@ function main(): i32 {
   });
 
   const titleField = AppKit.NSTextField.alloc().initWithFrame(
-    AppKit.NSMakeRect(24.0, 400.0, 768.0, 28.0)
+    AppKit.NSMakeRect(24.0, 488.0, 768.0, 28.0)
   );
   titleField.placeholderString = "Note title";
   content.addSubview(titleField);
 
   const bodyField = AppKit.NSTextField.alloc().initWithFrame(
-    AppKit.NSMakeRect(24.0, 356.0, 768.0, 28.0)
+    AppKit.NSMakeRect(24.0, 444.0, 768.0, 28.0)
   );
   bodyField.placeholderString = "Note body";
   content.addSubview(bodyField);
+
+  const notesView = AppKit.NSTextView.alloc().initWithFrame(
+    AppKit.NSMakeRect(0.0, 0.0, 744.0, 332.0)
+  );
+  notesView.editable = false;
+  notesView.selectable = true;
+  notesView.string = store.renderText();
+
+  const notesScroll = AppKit.NSScrollView.alloc().initWithFrame(
+    AppKit.NSMakeRect(24.0, 76.0, 768.0, 344.0)
+  );
+  notesScroll.hasVerticalScroller = true;
+  notesScroll.documentView = notesView;
+  content.addSubview(notesScroll);
 
   const statusLabel = AppKit.NSTextField.alloc().initWithFrame(
     AppKit.NSMakeRect(24.0, 24.0, 620.0, 24.0)
@@ -105,6 +119,7 @@ function main(): i32 {
     selectedLabel.stringValue = `Selected: ${note.title}`;
     store.add(note);
     store.selectNote(store.noteCount() - 1);
+    notesView.string = store.renderText();
     statusLabel.stringValue = `Added note ${noteId} — ${store.noteCount()} total`;
     window.title = `Z Notes — ${store.noteCount()} notes`;
     titleField.stringValue = "";

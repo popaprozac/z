@@ -1,3 +1,5 @@
+import { TextBuffer } from "std/text";
+
 export struct Note {
   id: i64;
   title: String;
@@ -32,6 +34,14 @@ export class NoteStore {
       if (note.id >= next) next = note.id + 1;
     }
     return next;
+  }
+
+  function renderText(): String {
+    let output = TextBuffer();
+    for (const note of this.notes) {
+      output.append(`# ${note.title}\n${note.body}\n\n`);
+    }
+    return output.finish();
   }
 
   function withSelected(in visit: (in note: Note) => void): boolean {

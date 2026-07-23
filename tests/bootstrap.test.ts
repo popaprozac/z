@@ -2581,6 +2581,12 @@ test("builds the interactive Z Notes AppKit and sqlite3 application", () => {
   assert.match(artifact.source, /\[addButton setAction:@selector\(z_invoke:\)\]/);
   assert.match(artifact.source, /\[content addSubview:statusLabel\]/);
   assert.match(artifact.source, /\[statusLabel setStringValue:z_nsstring_from_string/);
+  assert.match(artifact.source, /\[\[NSTextView alloc\] initWithFrame/);
+  assert.match(artifact.source, /\[\[NSScrollView alloc\] initWithFrame/);
+  assert.match(artifact.source, /\[notesScroll setHasVerticalScroller:true\]/);
+  assert.match(artifact.source, /\[notesScroll setDocumentView:notesView\]/);
+  assert.match(artifact.source, /\[notesView setString:z_nsstring_from_string/);
+  assert.match(artifact.source, /NoteStore_renderText/);
 
   const compilation = spawnSync("xcrun", [
     "clang", "-x", "objective-c", "-fobjc-arc", "-fblocks",
@@ -2612,6 +2618,8 @@ test("builds the interactive Z Notes AppKit and sqlite3 application", () => {
 
   const selectionUse = source.indexOf("selectNote(0)") + 1;
   assert.match(hover(source, application, selectionUse)?.contents.value ?? "", /selectNote\(index: usize\): boolean/);
+  const renderUse = source.indexOf("renderText()") + 1;
+  assert.match(hover(source, application, renderUse)?.contents.value ?? "", /renderText\(\): String/);
 
   const persistence = resolve(projectRoot, "examples/applications/z-notes/persistence.zs");
   const persistenceSource = readFileSync(persistence, "utf8");
