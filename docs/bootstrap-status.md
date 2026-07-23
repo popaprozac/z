@@ -24,7 +24,7 @@ Status meanings:
 | Traits | Partial | Nominal static conformance and generic constraints; no trait values/dynamic dispatch |
 | Enums and `Option`/`Result` | Implemented | Payloads, nesting, exhaustive statement/expression matches, and tag equality for payload-free Z enums |
 | Errors | Implemented | Typed `throws`, `throw`, `try`, and `attempt`, including synchronous cleanup-bearing error values |
-| Closures | Implemented | Borrowed and owned ARC environments; weak captures |
+| Closures | Partial | Borrowed and owned ARC environments plus weak captures; mutation of ordinary captured bindings works, while preserving addressable move-only resource capabilities such as `TextBuffer` through a borrowed closure remains |
 | Strings and console | Implemented | Owned UTF-8 strings, exact byte equality, templates, typed formatting, checked `byteAt`/`copyBytes`, `byteLength`, `isEmpty`, and explicit move-only `std/text` `TextBuffer`; grapheme-aware `length` remains planned |
 | Integer safety | Implemented | Checked arithmetic plus explicit wrapping/saturating operations |
 | Generators | Planned | `yield` is reserved; no generator lowering |
