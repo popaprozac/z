@@ -1151,6 +1151,71 @@ test("discovers owned-handle contracts from adjacent Z declaration files", () =>
   );
 });
 
+test("projects native integer statuses into typed throws and preserves out cleanup", () => {
+  const example = resolve(projectRoot, "tests/fixtures/status-api.zs");
+  const source = readFileSync(example, "utf8");
+  const generated = compileToC(source, example);
+
+  assert.match(generated, /const int32_t _z_native_status_\d+ = z_status_open\(7, &\(handle\)\);/);
+  assert.match(generated, /_z_live_handle_\d+ = true;/);
+  assert.match(generated, /_z_native_status_\d+ == 0/);
+  assert.match(generated, /_z_native_status_\d+ == 0 \|\| _z_native_status_\d+ == 2/);
+  assert.match(generated, /Z_Result_void_i32_failure/);
+  assert.match(generated, /z_status_close\(handle\);/);
+
+  const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+
+  const declarationFile = resolve(projectRoot, "tests/fixtures/status-api.h.zd");
+  const declarationSource = readFileSync(declarationFile, "utf8");
+  assert.deepEqual(diagnostics(declarationSource, declarationFile), []);
+
+  const functionOffset = declarationSource.indexOf("z_status_open") + 2;
+  assert.match(
+    hover(declarationSource, declarationFile, functionOffset)?.contents.value ?? "",
+    /z_status_open\(status: i32, out handle: ZStatusHandle \* \| null\): void throws i32/,
+  );
+  const voidOffset = declarationSource.indexOf("void throws");
+  assert.match(
+    hover(declarationSource, declarationFile, voidOffset)?.contents.value ?? "",
+    /void throws i32.*native integer status/,
+  );
+  const throwsOffset = declarationSource.indexOf("throws") + 2;
+  assert.match(
+    hover(declarationSource, declarationFile, throwsOffset)?.contents.value ?? "",
+    /throws i32.*inferred from the native integer status/,
+  );
+  const successOffset = declarationSource.indexOf("success") + 2;
+  assert.match(
+    hover(declarationSource, declarationFile, successOffset)?.contents.value ?? "",
+    /success 0.*successful void completion/,
+  );
+  const completionSource = declarationSource.replace("success 0;", "suc");
+  const completionOffset = completionSource.indexOf("suc") + 3;
+  assert.equal(
+    completions(completionSource, declarationFile, completionOffset)
+      .find((item) => item.label === "success")?.insertText,
+    "success ",
+  );
+  const resultBindingOffset = source.indexOf("plainSuccess =") + 2;
+  assert.match(
+    hover(source, example, resultBindingOffset)?.contents.value ?? "",
+    /plainSuccess: Result<void, i32>/,
+  );
+
+  assert.throws(
+    () => compileToC(
+      `import native from "tests/fixtures/status-api.h";
+       function main(): i32 {
+         native.z_status_plain(0);
+         return 0;
+       }`,
+      resolve(projectRoot, "unhandled-native-status.zs"),
+    ),
+    /throwing native call requires `attempt` or `try`/,
+  );
+});
+
 test("diagnoses malformed and mismatched Z declaration contracts", () => {
   const malformed = `
     declare module "contract.h" {
@@ -1170,7 +1235,7 @@ test("diagnoses malformed and mismatched Z declaration contracts", () => {
   `;
   const executableDiagnostic = diagnostics(executableContract, "/tmp/contract.h.zd")[0];
   assert.equal(executableDiagnostic.code, "Z0801");
-  assert.match(executableDiagnostic.message, /expected "deinit", "thread", or "callback" in foreign function contract/);
+  assert.match(executableDiagnostic.message, /expected "deinit", "thread", "callback", or "success" in foreign function contract/);
 
   const threadWithoutOwner = `
     declare module "contract.h" {
@@ -2567,6 +2632,8 @@ test("builds the interactive Z Notes AppKit and sqlite3 application", () => {
   assert.ok(artifact.nativeLinkerArguments.includes("-lsqlite3"));
   assert.match(artifact.source, /sqlite3_libversion\(\)/);
   assert.match(artifact.source, /sqlite3_open\(":memory:", &\(database\)\)/);
+  assert.match(artifact.source, /Z_Result_void_i32/);
+  assert.match(artifact.source, /_z_native_status_\d+ == 0/);
   assert.match(artifact.source, /if \(_z_live_database_\d+ && database != NULL\) sqlite3_close\(database\)/);
   assert.match(artifact.source, /sqlite3_prepare_v2\(database, .*SELECT id, title, body FROM notes ORDER BY id/);
   assert.match(artifact.source, /sqlite3_bind_int64\(statement, 1, .*note.*id/);
@@ -2629,7 +2696,7 @@ test("builds the interactive Z Notes AppKit and sqlite3 application", () => {
   const titleBytesOffset = persistenceSource.indexOf("titleBytes =") + 2;
   assert.match(hover(persistenceSource, persistence, titleBytesOffset)?.contents.value ?? "", /titleBytes: view cstring \| null/);
 
-  const nullableCopy = persistenceSource.replace("    if (titleBytes == null) return notes;\n", "");
+  const nullableCopy = persistenceSource.replace("    if (titleBytes == null) throw -1;\n", "");
   assert.match(
     diagnostics(nullableCopy, persistence)[0]?.message ?? "",
     /nullable native text must be checked before copying it into String/,
@@ -2670,7 +2737,7 @@ test("builds the interactive Z Notes AppKit and sqlite3 application", () => {
   assert.match(hover(declarationSource, declarationFile, fixedValueOffset)?.contents.value ?? "", /fixed SQLITE_TRANSIENT/);
   const bindTextOffset = declarationSource.indexOf("sqlite3_bind_text") + 2;
   const bindTextHover = hover(declarationSource, declarationFile, bindTextOffset)?.contents.value ?? "";
-  assert.match(bindTextHover, /sqlite3_bind_text\(argument1: sqlite3_stmt \*, argument2: i32, argument3: cstring, argument4: i32\): i32/);
+  assert.match(bindTextHover, /sqlite3_bind_text\(argument1: sqlite3_stmt \*, argument2: i32, argument3: cstring, argument4: i32\): void throws i32/);
   assert.doesNotMatch(bindTextHover, /argument5:/);
   const partialFixed = declarationSource.replace("fixed SQLITE_TRANSIENT", "fix");
   const partialFixedOffset = partialFixed.indexOf("fix", partialFixed.indexOf("xDel")) + 3;
@@ -10840,12 +10907,16 @@ test("editor grammar tracks keywords without reserving Result variants", () => {
   assert.equal(foreignDeclarationPatterns[6].captures[2].name, "entity.name.function.destructor.z");
   assert.equal(foreignDeclarationPatterns[7].captures[1].name, "keyword.control.declaration.fixed.z");
   assert.equal(foreignDeclarationPatterns[7].captures[2].name, "constant.other.native.z");
-  assert.equal(foreignDeclarationPatterns[8].captures[1].name, "storage.type.inferred.z");
-  assert.equal(foreignDeclarationPatterns[9].captures[1].name, "keyword.control.declaration.callback.z");
-  assert.equal(foreignDeclarationPatterns[10].captures[1].name, "keyword.control.declaration.callback.z");
-  assert.equal(foreignDeclarationPatterns[10].captures[2].name, "variable.parameter.context.z");
+  assert.equal(foreignDeclarationPatterns[8].captures[2].name, "keyword.control.declaration.z");
+  assert.equal(foreignDeclarationPatterns[8].captures[3].name, "storage.type.inferred.z");
+  assert.equal(foreignDeclarationPatterns[9].captures[1].name, "keyword.control.declaration.status.z");
+  assert.equal(foreignDeclarationPatterns[9].captures[2].name, "constant.numeric.integer.status.z");
+  assert.equal(foreignDeclarationPatterns[10].captures[1].name, "storage.type.inferred.z");
   assert.equal(foreignDeclarationPatterns[11].captures[1].name, "keyword.control.declaration.callback.z");
-  assert.equal(foreignDeclarationPatterns[11].captures[2].name, "constant.language.callback-thread.z");
+  assert.equal(foreignDeclarationPatterns[12].captures[1].name, "keyword.control.declaration.callback.z");
+  assert.equal(foreignDeclarationPatterns[12].captures[2].name, "variable.parameter.context.z");
+  assert.equal(foreignDeclarationPatterns[13].captures[1].name, "keyword.control.declaration.callback.z");
+  assert.equal(foreignDeclarationPatterns[13].captures[2].name, "constant.language.callback-thread.z");
   assert.match(selectiveImportPatterns, /\\bas\\b/);
   assert.doesNotMatch("move () =>", new RegExp(matchPattern));
   assert.match("some(value) =>", new RegExp(matchPattern));

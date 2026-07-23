@@ -33,10 +33,17 @@ export type PointerNote = {
   };
 };
 
+export type StatusNote = {
+  readonly success: readonly number[];
+  readonly result: "void";
+  readonly error: "return";
+};
+
 export type ApiNotes = {
   readonly functions?: Readonly<Record<string, {
     readonly return?: PointerNote;
     readonly parameters?: Readonly<Record<string, PointerNote>>;
+    readonly status?: StatusNote;
   }>>;
 };
 
@@ -49,12 +56,26 @@ export class ApiNoteConflictError extends Error {
 export function mergeApiNotes(
   sources: readonly { readonly name: string; readonly notes: ApiNotes }[],
 ): ApiNotes {
-  const merged: Record<string, { return?: PointerNote; parameters?: Record<string, PointerNote> }> = {};
+  const merged: Record<string, {
+    return?: PointerNote;
+    parameters?: Record<string, PointerNote>;
+    status?: StatusNote;
+  }> = {};
   const owners = new Map<string, string>();
   for (const source of sources) {
     for (const [functionName, note] of Object.entries(source.notes.functions ?? {})) {
       const target = merged[functionName] ??= {};
       if (note.return) target.return = mergePointerNote(target.return, note.return, `functions.${functionName}.return`, source.name, owners);
+      if (note.status) {
+        const path = `functions.${functionName}.status`;
+        if (target.status && JSON.stringify(target.status) !== JSON.stringify(note.status)) {
+          throw new ApiNoteConflictError(path, owners.get(path) ?? "an earlier source", source.name);
+        }
+        if (!target.status) {
+          target.status = note.status;
+          owners.set(path, source.name);
+        }
+      }
       for (const [index, parameter] of Object.entries(note.parameters ?? {})) {
         const parameters = target.parameters ??= {};
         parameters[index] = mergePointerNote(
@@ -174,8 +195,9 @@ function parseApiNotes(value: unknown, source: string): ApiNotes {
   const functions = requireRecord(root.functions, source, "functions");
   for (const [name, rawFunction] of Object.entries(functions)) {
     const functionNote = requireRecord(rawFunction, source, `functions.${name}`);
-    requireKeys(functionNote, ["return", "parameters"], source, `functions.${name}`);
+    requireKeys(functionNote, ["return", "parameters", "status"], source, `functions.${name}`);
     if (functionNote.return !== undefined) validatePointerNote(functionNote.return, source, `functions.${name}.return`);
+    if (functionNote.status !== undefined) validateStatusNote(functionNote.status, source, `functions.${name}.status`);
     if (functionNote.parameters !== undefined) {
       const parameters = requireRecord(functionNote.parameters, source, `functions.${name}.parameters`);
       for (const [index, parameter] of Object.entries(parameters)) {
@@ -184,6 +206,18 @@ function parseApiNotes(value: unknown, source: string): ApiNotes {
     }
   }
   return root as ApiNotes;
+}
+
+function validateStatusNote(value: unknown, source: string, path: string): void {
+  const note = requireRecord(value, source, path);
+  requireKeys(note, ["success", "result", "error"], source, path);
+  if (!Array.isArray(note.success)
+    || note.success.length === 0
+    || note.success.some((item) => !Number.isSafeInteger(item))) {
+    throw new Error(`invalid API notes ${JSON.stringify(source)}: ${path}.success must be a non-empty array of safe integers`);
+  }
+  requireEnum(note.result, ["void"], source, `${path}.result`);
+  requireEnum(note.error, ["return"], source, `${path}.error`);
 }
 
 function validatePointerNote(value: unknown, source: string, path: string): void {

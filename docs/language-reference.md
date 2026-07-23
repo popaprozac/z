@@ -188,7 +188,7 @@ use is a typed native `out` call:
 
 ```z
 let database;
-const status = sqlite.sqlite3_open(":memory:", out database);
+try sqlite.sqlite3_open(":memory:", out database);
 ```
 
 The imported `T **` contract determines the binding's `T *` type. If no such
@@ -331,6 +331,26 @@ construction and destruction.
 
 `Result<T, E>` is a built-in tagged union with `success` and `failure` variants;
 those names are variants, not global functions or reserved keywords.
+
+A `.zd` contract may project a conventional native integer status into this
+same error model without changing the ABI:
+
+```z
+declare module "vendor.h" {
+  export function vendor_open(
+    out handle: _ | null { deinit vendor_close; }
+  ): void throws _ {
+    success 0;
+  }
+}
+```
+
+The native return type becomes the inferred error type. A listed status
+completes as `void`; any other status is preserved as the failure value.
+`try vendor.vendor_open(out handle)` propagates it and `attempt` materializes
+`Result<void, NativeStatus>`. This is a tag-only stack value, not an allocated
+exception. Owned `out` storage becomes cleanup-active immediately after the
+native call and is therefore destroyed even if that call returns failure.
 
 ## Enums and matching
 

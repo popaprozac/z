@@ -118,7 +118,9 @@ outputs without a handwritten wrapper. SQLite column text is a nullable
 `String` storage. Editable AppKit title/body fields become owned Z strings and
 are persisted through placeholder binding; a declaration-only
 `fixed SQLITE_TRANSIENT` parameter safely supplies SQLite's hidden destructor
-sentinel at the C ABI boundary. Loaded and newly inserted notes render through
+sentinel at the C ABI boundary. SQLite zero-success status calls project into
+`void throws i32`, while `sqlite3_step` remains raw for its ROW/DONE outcomes.
+Loaded and newly inserted notes render through
 directly imported `NSScrollView`/`NSTextView` controls, with `TextBuffer` joining
 borrowed `Array<Note>` contents into owned display text. A persistence smoke
 reloads quoted text from the same database without opening a window.

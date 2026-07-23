@@ -96,12 +96,15 @@ export function analyzeSource(source: string, fileName: string, options: Analysi
   const foreignIdentityTypes = new Set(
     [...foreignModules.values()].flatMap((module) => [...module.interfaces.values()].map((type) => type.typeName)),
   );
-  const program = materializeResultTypes(materializeWeakTypes(materializeGenerics(
-    inferredProgram,
-    fileName,
-    typeDisplayNames,
-    foreignIdentityTypes,
-  )));
+  const program = materializeResultTypes(
+    materializeWeakTypes(materializeGenerics(
+      inferredProgram,
+      fileName,
+      typeDisplayNames,
+      foreignIdentityTypes,
+    )),
+    foreignModules,
+  );
   for (const declaration of program.enums) {
     if (!declaration.name.startsWith("__z_Result_")) continue;
     const successVariant = declaration.variants.find((variant) => variant.name === "success");

@@ -106,7 +106,7 @@ const primitiveTypeTokens = [
 
 const declarationKeywordTokens = [
   "declare", "module", "export", "function", "type", "copy", "in", "inout", "out", "move", "deinit",
-  "callback", "context", "thread", "caller", "transfer", "share", "fixed",
+  "callback", "context", "thread", "caller", "transfer", "share", "fixed", "throws", "success",
 ] as const;
 
 export function diagnostics(source: string, fileName: string): ServiceDiagnostic[] {
@@ -1655,6 +1655,17 @@ function foreignDeclarationCompletions(source: string, fileName: string, offset:
     });
   }
 
+  const statusContractPrefix = /:\s*void\s+throws\s+_\s*\{[^{}]*\b([A-Za-z_]*)$/.exec(before)?.[1];
+  if (statusContractPrefix !== undefined && "success".startsWith(statusContractPrefix)) {
+    contextual.push({
+      label: "success",
+      kind: completionKinds.keyword,
+      detail: "native integer status treated as successful void completion",
+      insertText: "success ",
+      sortText: "0-success",
+    });
+  }
+
   const deinitPrefix = /\bdeinit\s+([A-Za-z_][A-Za-z0-9_.]*)?$/.exec(before)?.[1];
   if (module && deinitPrefix !== undefined) {
     const returnTypes = new Set(owner?.overloads.map((overload) => foreignTypeName(overload.returnType).replace(/ \| null$/, "")) ?? []);
@@ -1877,9 +1888,36 @@ function foreignDeclarationHover(source: string, fileName: string, offset: numbe
       if (contract.returnSemanticType === "view-cstring") {
         return markdownHover(`view cstring${contract.returnNullable ? " | null" : ""}  // borrowed native text tied to the input owner`, source, word.start, word.end);
       }
+      if (contract.returnSemanticType === "status-void") {
+        const types = new Set(declaration?.overloads.map((overload) => foreignTypeName(overload.returnType)) ?? []);
+        return markdownHover(
+          `void throws ${[...types].join(" | ") || "_"}  // native integer status; success returns void and failure preserves the status`,
+          source,
+          word.start,
+          word.end,
+        );
+      }
       const types = new Set(declaration?.overloads.map((overload) => foreignTypeName(overload.returnType)) ?? []);
       const lifecycle = contract.release ? `; deinit ${contract.release}` : "";
       return markdownHover(`_: ${[...types].join(" | ") || "unknown"}${lifecycle}  // inferred native return type`, source, word.start, word.end);
+    }
+    if (contract.throwsLocation?.offset === word.start) {
+      const types = new Set(declaration?.overloads.map((overload) => foreignTypeName(overload.returnType)) ?? []);
+      return markdownHover(
+        `throws ${[...types].join(" | ") || "_"}  // error type inferred from the native integer status`,
+        source,
+        word.start,
+        word.end,
+      );
+    }
+    const successIndex = contract.statusSuccessLocations.findIndex((location) => location.offset === word.start);
+    if (successIndex >= 0) {
+      return markdownHover(
+        `success ${contract.statusSuccessValues[successIndex]}  // this native status becomes successful void completion`,
+        source,
+        word.start,
+        word.end,
+      );
     }
     if (contract.release && contract.releaseLocation
       && containsDeclarationName(contract.releaseLocation.offset, contract.release, word.start)) {
@@ -3423,7 +3461,10 @@ function foreignFunctionDetail(declaration: ForeignFunction): string {
         foreignParameterDetail(parameter, index)
       ));
     if (overload.variadic) parameters.push("...arguments");
-    return `${declaration.name}(${parameters.join(", ")}): ${foreignTypeName(overload.returnType)}  // C: ${overload.cSignature}${foreignAvailabilityDetail(overload.metadata)}`;
+    const result = overload.status
+      ? `void throws ${foreignTypeName(overload.returnType)}`
+      : foreignTypeName(overload.returnType);
+    return `${declaration.name}(${parameters.join(", ")}): ${result}  // C: ${overload.cSignature}${foreignAvailabilityDetail(overload.metadata)}`;
   }).join("\n");
 }
 

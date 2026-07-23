@@ -6,8 +6,16 @@ import { insertNote, loadNotes, sqliteVersion } from "./persistence.zs";
 
 function main(): i32 {
   const databasePath = ".z-cache/z-notes.sqlite3";
+  const loaded = attempt loadNotes(databasePath);
+  const initialNotes = match (loaded) {
+    success(notes) => notes;
+    failure(status) => {
+      console.error(`could not load notes: sqlite status ${status}`);
+      select Array<Note>();
+    }
+  };
   const store = new NoteStore({
-    notes: loadNotes(databasePath),
+    notes: initialNotes,
     selection: Option<usize>.none,
   });
   if (store.noteCount() > 0) store.selectNote(0);
@@ -110,21 +118,25 @@ function main(): i32 {
       return;
     }
     const note = Note({ id: noteId, title, body });
-    if (!insertNote(databasePath, note)) {
-      statusLabel.stringValue = `Could not save note ${noteId}`;
-      console.error(`could not save note ${noteId}`);
-      return;
+    const inserted = attempt insertNote(databasePath, note);
+    match (inserted) {
+      success => {
+        nextId = nextId + 1;
+        selectedLabel.stringValue = `Selected: ${note.title}`;
+        store.add(note);
+        store.selectNote(store.noteCount() - 1);
+        notesView.string = store.renderText();
+        statusLabel.stringValue = `Added note ${noteId} — ${store.noteCount()} total`;
+        window.title = `Z Notes — ${store.noteCount()} notes`;
+        titleField.stringValue = "";
+        bodyField.stringValue = "";
+        console.log(`added note ${noteId}, total=${store.noteCount()}`);
+      }
+      failure(status) => {
+        statusLabel.stringValue = `Could not save note ${noteId}`;
+        console.error(`could not save note ${noteId}: sqlite status ${status}`);
+      }
     }
-    nextId = nextId + 1;
-    selectedLabel.stringValue = `Selected: ${note.title}`;
-    store.add(note);
-    store.selectNote(store.noteCount() - 1);
-    notesView.string = store.renderText();
-    statusLabel.stringValue = `Added note ${noteId} — ${store.noteCount()} total`;
-    window.title = `Z Notes — ${store.noteCount()} notes`;
-    titleField.stringValue = "";
-    bodyField.stringValue = "";
-    console.log(`added note ${noteId}, total=${store.noteCount()}`);
   });
   content.addSubview(addButton);
 

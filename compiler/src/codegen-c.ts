@@ -14,7 +14,13 @@ import {
   parseSliceType,
   sliceTypeName,
 } from "./array-types.ts";
-import type { ClosureInfo, ForeignCallArgumentPlan, IntegerOperation, SemanticInfo } from "./sema.ts";
+import type {
+  ClosureInfo,
+  ForeignCallArgumentPlan,
+  ForeignStatusCallInfo,
+  IntegerOperation,
+  SemanticInfo,
+} from "./sema.ts";
 import { parsePointerTypeName, type ForeignBlockType } from "./foreign.ts";
 import {
   isStandardModuleSpecifier,
@@ -3374,6 +3380,9 @@ function generateDirectValue(
   if (expression.kind === "call" && hasNativeOutArguments(expression, context)) {
     return generateNativeOutCall(expression, context, consumeValue);
   }
+  if (expression.kind === "call" && context.semanticInfo.foreignStatusCalls.has(expression.location.offset)) {
+    return generateForeignStatusCall(expression, context, consumeValue);
+  }
   if (expression.kind === "try") return generateTry(expression, context, consumeValue);
   if (expression.kind === "matchExpression") {
     return generateMatchExpression(expression, context, (value, valueContext) => (
@@ -3410,7 +3419,8 @@ function requiresStatementValue(expression: Expression, context: GenerationConte
   }
   if (expression.kind === "new") return expression.arguments.some((argument) => requiresStatementValue(argument, context));
   if (expression.kind === "call") {
-    return expression.arguments.some((argument) => requiresStatementValue(argument, context));
+    return context.semanticInfo.foreignStatusCalls.has(expression.location.offset)
+      || expression.arguments.some((argument) => requiresStatementValue(argument, context));
   }
   if (expression.kind === "structExpression" || expression.kind === "objectExpression") {
     return expression.fields.some((field) => requiresStatementValue(field.expression, context));
@@ -3747,6 +3757,24 @@ function generateNativeOutCall(
   }
 
   const call = generateExpression(expression, context);
+  const status = context.semanticInfo.foreignStatusCalls.get(expression.location.offset);
+  if (status) {
+    const nativeStatus = `_z_native_status_${context.valueCounter.value++}`;
+    const declaration = generateLocalDeclaration(
+      status.errorType,
+      nativeStatus,
+      false,
+      context.structs,
+      context.enums,
+      context.semanticInfo.foreignNamedTypes,
+    );
+    return [
+      ...before,
+      `${declaration} = ${call};`,
+      ...after,
+      consumeValue(foreignStatusResultValue(nativeStatus, status, context), context),
+    ].join("\n");
+  }
   const returnType = inferExpressionType(expression, context);
   if (returnType === "void") return [...before, `${call};`, ...after].join("\n");
 
@@ -3758,6 +3786,39 @@ function generateNativeOutCall(
     ...after,
     consumeValue(temporary, context),
   ].join("\n");
+}
+
+function generateForeignStatusCall(
+  expression: Extract<Expression, { kind: "call" }>,
+  context: GenerationContext,
+  consumeValue: (value: string, context: GenerationContext) => string,
+): string {
+  const status = context.semanticInfo.foreignStatusCalls.get(expression.location.offset)!;
+  const nativeStatus = `_z_native_status_${context.valueCounter.value++}`;
+  const declaration = generateLocalDeclaration(
+    status.errorType,
+    nativeStatus,
+    false,
+    context.structs,
+    context.enums,
+    context.semanticInfo.foreignNamedTypes,
+  );
+  return `${declaration} = ${generateExpression(expression, context)};\n`
+    + consumeValue(foreignStatusResultValue(nativeStatus, status, context), context);
+}
+
+function foreignStatusResultValue(
+  nativeStatus: string,
+  status: ForeignStatusCallInfo,
+  context: GenerationContext,
+): string {
+  const result = resultTypeName("void", status.errorType);
+  const success = status.success
+    .map((value) => `${nativeStatus} == ${value}`)
+    .join(" || ");
+  return `((${success})`
+    + ` ? ${generateCompilerVariantConstruction(result, "success", null, context)}`
+    + ` : ${generateCompilerVariantConstruction(result, "failure", nativeStatus, context)})`;
 }
 
 function generateStoredValue(name: string, context: GenerationContext): string {
@@ -4082,6 +4143,10 @@ function trySuccessType(expression: Extract<Expression, { kind: "try" }>, contex
 }
 
 function throwingCallResultType(expression: Expression, context: GenerationContext): string {
+  if (expression.kind === "call") {
+    const status = context.semanticInfo.foreignStatusCalls.get(expression.location.offset);
+    if (status) return resultTypeName("void", status.errorType);
+  }
   if (expression.kind === "new") {
     const constructor = context.structs.get(expression.typeName)?.constructor;
     if (!constructor?.errorType) throw new Error("try lowering expected a throwing constructor");

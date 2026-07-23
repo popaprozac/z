@@ -264,7 +264,9 @@ declare module "vendor.h" {
     out handle: _ | null {
       deinit vendor_close;
     }
-  ): _;
+  ): void throws _ {
+    success 0;
+  }
 }
 ```
 
@@ -292,7 +294,9 @@ declare module "sqlite3.h" {
     in db: _, in zSql: _, nByte: _,
     out ppStmt: _ | null { deinit sqlite3_finalize; },
     pzTail: null
-  ): _;
+  ): void throws _ {
+    success 0;
+  }
   export function sqlite3_column_text(
     in pStmt: _, iCol: _
   ): view cstring | null;
@@ -312,6 +316,16 @@ must match Clang, and Z callers cannot override it. These are semantic safety co
 header remains the ABI authority. Callback lifetime, context, release, and
 caller-thread contracts are also supported now.
 
+`void throws _` is the narrow status-code projection. It is valid only when
+Clang proves an integer native return. Each `success N;` lists one successful
+native status; every other value becomes the original integer error. No wrapper
+function, heap exception, or ABI conversion is emitted. Z calls must acknowledge
+the fallibility with `try` or `attempt`. When the same native call initializes
+an owned `out` parameter, that output is marked live before the status is
+propagated, so failure cleanup cannot leak a produced native owner. APIs such as
+`sqlite3_step`, whose nonzero statuses are useful outcomes rather than ordinary
+failures, remain raw integer calls.
+
 Application authors should not normally write one `.zd` per import. The common
 case remains header-only import. Platform metadata, package-shipped contracts,
 Clang attributes, Apple API notes, and Windows SAL should populate the same
@@ -326,8 +340,8 @@ produced `T *`, not the pointer-to-pointer ABI parameter. At a call site,
 
 ```z
 let handle;
-const status = vendor.vendor_create(out handle);
-if (status != 0 || handle == null) return 1;
+try vendor.vendor_create(out handle);
+if (handle == null) return 1;
 vendor.vendor_use(handle);
 // vendor_close(handle) is emitted on exit.
 ```
@@ -341,7 +355,8 @@ The language server reads the same header while editing a `.zd` file. It can
 complete native function and parameter names, filter result and out-parameter
 `deinit` candidates by the produced native type, and show the Clang-resolved
 signature behind each `_` on hover. It also explains compiler-supplied `fixed`
-parameters without exposing them as Z call arguments. These are authored contracts with native
+parameters and inferred status-error types without exposing them as Z call
+arguments. These are authored contracts with native
 context rather than a second, manually synchronized copy of the header surface.
 
 Imported nullable references use the same one-pointer representation as their

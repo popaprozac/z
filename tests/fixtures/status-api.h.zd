@@ -1,0 +1,18 @@
+declare module "status-api.h" {
+  export function z_status_open(
+    status: _,
+    out handle: _ | null {
+      deinit z_status_close;
+    }
+  ): void throws _ {
+    success 0;
+  }
+
+  export function z_status_close(move handle: _): _;
+  export function z_status_destroyed(): _;
+
+  export function z_status_plain(status: _): void throws _ {
+    success 0;
+    success 2;
+  }
+}

@@ -24,7 +24,8 @@ const environment = try await webview.createEnvironment();
 
 Header imports are progressively parsed through Clang into cached, typed foreign
 modules. Adjacent `.zd` declarations supply ownership, lifetime, nullability,
-callback, and async semantics that are absent from the header itself.
+callback, native-status error projection, and async semantics that are absent
+from the header itself.
 
 ## Core semantics
 
@@ -1474,6 +1475,12 @@ A parameter-local `{ fixed NATIVE_CONSTANT; }` contract likewise preserves its
 header-verified ABI position while omitting that policy parameter from Z calls;
 code generation supplies the named header constant. This is reserved for
 native semantic sentinels such as `SQLITE_TRANSIENT`, not arbitrary expressions.
+An integer-returning native function may additionally declare
+`void throws _ { success N; }`: listed statuses become successful `void`,
+every other native status is preserved as the inferred integer error, and
+owned `out` values become cleanup-active before failure propagation. This
+changes only the safe Z surface, not the native ABI, and introduces no heap
+exception or wrapper call.
 Over time, Clang attributes, Apple's API notes, Windows SAL
 annotations, package metadata, and generated bindings should populate the same
 semantic model so the common case remains simply:

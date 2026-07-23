@@ -92,6 +92,11 @@ export type ObjCPropertyInfo = {
   readonly type: ForeignType;
 };
 
+export type ForeignStatusCallInfo = {
+  readonly errorType: string;
+  readonly success: readonly number[];
+};
+
 export type ClosureCaptureInfo = {
   readonly name: string;
   readonly type: string;
@@ -234,6 +239,7 @@ export type SemanticInfo = {
   readonly sliceConversions: ReadonlyMap<number, { readonly sourceType: string; readonly targetType: string }>;
   readonly foreignTypes: ReadonlyMap<string, ForeignPointerType>;
   readonly foreignCallTypes: ReadonlyMap<number, string>;
+  readonly foreignStatusCalls: ReadonlyMap<number, ForeignStatusCallInfo>;
   readonly foreignNamedTypes: ReadonlyMap<string, ForeignNamedType>;
   readonly foreignExpressionTypes: ReadonlyMap<number, string>;
   readonly numericLiteralTypes: ReadonlyMap<number, string>;
@@ -298,6 +304,7 @@ type AnalysisState = {
   readonly sliceConversions: Map<number, { readonly sourceType: string; readonly targetType: string }>;
   readonly foreignTypes: ReadonlyMap<string, ForeignPointerType>;
   readonly foreignCallTypes: Map<number, string>;
+  readonly foreignStatusCalls: Map<number, ForeignStatusCallInfo>;
   readonly foreignNamedTypes: ReadonlyMap<string, ForeignNamedType>;
   readonly foreignExpressionTypes: Map<number, string>;
   readonly numericLiteralTypes: Map<number, string>;
@@ -524,6 +531,7 @@ export function analyze(
     sliceConversions: new Map(),
     foreignTypes,
     foreignCallTypes: new Map(),
+    foreignStatusCalls: new Map(),
     foreignNamedTypes,
     foreignExpressionTypes: new Map(),
     numericLiteralTypes: new Map(),
@@ -5018,6 +5026,7 @@ function inferExpressionInner(
               expression.location,
               expression.callee.location.offset,
               state,
+              allowThrowingCall,
             );
           }
           const target = foreignMemberTarget(expression.callee, globals);
@@ -5494,6 +5503,7 @@ function inferExpressionInner(
             expression.location,
             expression.callee.location.offset,
             state,
+            allowThrowingCall,
             (overload) => { selected = overload as ForeignCxxMethodOverload; },
             "native method",
           );
@@ -5750,6 +5760,7 @@ function inferExpressionInner(
           expression.location,
           expression.callee.location.offset,
           state,
+          allowThrowingCall,
         );
       }
       if (target?.kind !== "function") {
@@ -7897,6 +7908,7 @@ function checkForeignFunctionCall(
   location: SourceLocation,
   calleeOffset: number,
   state: AnalysisState,
+  allowThrowingCall = false,
   onSelected?: (overload: ForeignFunctionOverload) => void,
   subject = "foreign function",
 ): ValueType {
@@ -7906,7 +7918,14 @@ function checkForeignFunctionCall(
     state.foreignFunctionNames.set(calleeOffset, selected.cName);
     state.foreignFunctionDefinitions.set(calleeOffset, selected.metadata);
     onSelected?.(selected);
-    return checkForeignCall(selected, args, locals, globals, structs, enums, fileName, location, state);
+    const result = checkForeignCall(selected, args, locals, globals, structs, enums, fileName, location, state);
+    if (selected.status && !allowThrowingCall) {
+      throw new DiagnosticError(fileName, location, "throwing native call requires `attempt` or `try`", {
+        code: "Z0805",
+        helps: ["use `try` to propagate the native status or `attempt` to inspect Result<void, E>"],
+      });
+    }
+    return result;
   }
   const matches: { readonly overload: ForeignFunctionOverload; readonly score: number }[] = [];
   for (const overload of target.overloads) {
@@ -7958,7 +7977,14 @@ function checkForeignFunctionCall(
   state.foreignFunctionNames.set(calleeOffset, selected.cName);
   state.foreignFunctionDefinitions.set(calleeOffset, selected.metadata);
   onSelected?.(selected);
-  return checkForeignCall(selected, args, locals, globals, structs, enums, fileName, location, state);
+  const result = checkForeignCall(selected, args, locals, globals, structs, enums, fileName, location, state);
+  if (selected.status && !allowThrowingCall) {
+    throw new DiagnosticError(fileName, location, "throwing native call requires `attempt` or `try`", {
+      code: "Z0805",
+      helps: ["use `try` to propagate the native status or `attempt` to inspect Result<void, E>"],
+    });
+  }
+  return result;
 }
 
 function checkForeignCxxConstructorCall(
@@ -7996,6 +8022,7 @@ function checkForeignCxxConstructorCall(
     location,
     calleeOffset,
     state,
+    false,
     undefined,
     "native constructor",
   );
@@ -8030,6 +8057,7 @@ function checkForeignCxxStaticMethodCall(
     location,
     calleeOffset,
     state,
+    false,
     undefined,
     "native static method",
   );
@@ -8482,7 +8510,7 @@ function checkForeignCall(
     const ownerName = state.viewOrigins.get(root.name)?.owner ?? root.name;
     state.viewCallOrigins.set(location.offset, { owner: ownerName, location: argument.location });
   }
-  const result = target.returnType.kind === "z"
+  let result = target.returnType.kind === "z"
     ? target.returnType.name
     : target.returnType.kind === "swiftString"
       ? swiftStringTypeName
@@ -8493,6 +8521,17 @@ function checkForeignCall(
     : target.returnType.kind === "callback" || target.returnType.kind === "block"
       ? foreignValueType(target.returnType)
       : "unknown";
+  if (target.status) {
+    if (target.returnType.kind !== "z") {
+      throw new DiagnosticError(fileName, location, `native status contract for ${JSON.stringify(target.name)} has no supported error type`);
+    }
+    const errorType = target.returnType.name;
+    state.foreignStatusCalls.set(location.offset, {
+      errorType,
+      success: target.status.success,
+    });
+    result = resultTypeName("void", errorType);
+  }
   state.foreignCallTypes.set(location.offset, result);
   return result;
 }

@@ -79,6 +79,21 @@
           "2": { "name": "constant.other.native.z" }
         }
       }, {
+        "name": "meta.declaration.status-result.foreign.z",
+        "match": "\\b(void)\\s+(throws)\\s+(_)",
+        "captures": {
+          "1": { "name": "storage.type.primitive.z" },
+          "2": { "name": "keyword.control.declaration.z" },
+          "3": { "name": "storage.type.inferred.z" }
+        }
+      }, {
+        "name": "meta.declaration.status-success.foreign.z",
+        "match": "\\b(success)\\s+([+-]?[0-9]+)(?=\\s*;)",
+        "captures": {
+          "1": { "name": "keyword.control.declaration.status.z" },
+          "2": { "name": "constant.numeric.integer.status.z" }
+        }
+      }, {
         "name": "meta.type.inferred.z",
         "match": "(?<=:)\\s*(_)(?=\\s*(?:\\||[,;){}=]|$))",
         "captures": {

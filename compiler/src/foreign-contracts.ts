@@ -138,10 +138,28 @@ function normalizeOverload(
         }
       }
     }
+    const returnType = mapper.mapType(
+      declaration.returnType,
+      functionNotes?.return,
+      "return",
+      pointerTypes,
+      namedTypes,
+    );
+    if (functionNotes?.status) {
+      const statusType = returnType.kind === "z" ? returnType.name : null;
+      if (!statusType || !["i8", "u8", "i16", "u16", "i32", "u32", "i64", "u64", "isize", "usize"].includes(statusType)) {
+        throw contractError(
+          fileName,
+          location,
+          `status projection for ${JSON.stringify(declaration.name)} requires an integer native return type`,
+        );
+      }
+    }
     return {
       name: declaration.name,
       cName: declaration.nativeName,
-      returnType: mapper.mapType(declaration.returnType, functionNotes?.return, "return", pointerTypes, namedTypes),
+      returnType,
+      status: functionNotes?.status ?? null,
       parameters,
       variadic: declaration.variadic,
       cSignature: declaration.nativeSignature,

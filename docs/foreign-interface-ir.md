@@ -77,7 +77,8 @@ pointer ownership, callback escape, record access, or release behavior.
 
 Headers often omit semantic facts required for memory safety. API notes enrich
 the declaration result with ownership, nullability, record access, callback
-escape, release, and threading. Multiple sources may contribute disjoint facts,
+escape, release, threading, and integer-status error projection. Multiple
+sources may contribute disjoint facts,
 but contradictory safety facts are rejected rather than resolved by source
 order. Unknown fields, functions, and parameter indices are also rejected before
 FIIR reaches sema. Project contracts use adjacent `<header>.zd` Z declaration
@@ -119,6 +120,9 @@ facts are coherent:
    to the native declaration. An explicit project deployment target also makes
    introduced/obsoleted versions errors and applicable deprecations warnings;
    without one, FIIR retains the versions without guessing a target.
+11. a status projection targets an integer native return, declares at least one
+    success value, preserves every other status as that exact integer error, and
+    activates owned outputs before failure cleanup.
 
 ## Self-hosting shape
 

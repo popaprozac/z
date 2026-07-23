@@ -7,62 +7,61 @@ export function sqliteVersion(): cstring {
 
 export function canOpenMemoryDatabase(): boolean {
   let database;
-  const status = sqlite.sqlite3_open(":memory:", out database);
-  if (status != 0) return false;
-  if (database == null) return false;
-  return true;
+  const opened = attempt sqlite.sqlite3_open(":memory:", out database);
+  return match (opened) {
+    success => database != null;
+    failure(status) => false;
+  };
 }
 
-export function loadNotes(in path: String): Array<Note> {
+export function loadNotes(in path: String): Array<Note> throws i32 {
   let notes = Array<Note>();
   let database;
-  const opened = sqlite.sqlite3_open(path, out database);
-  if (opened != 0) return notes;
-  if (database == null) return notes;
+  try sqlite.sqlite3_open(path, out database);
+  if (database == null) throw -1;
   const rowStatus = 100;
   const doneStatus = 101;
 
   let schemaStatement;
-  const schemaStatus = sqlite.sqlite3_prepare_v2(
+  try sqlite.sqlite3_prepare_v2(
     database,
     "CREATE TABLE IF NOT EXISTS notes (id INTEGER PRIMARY KEY, title TEXT NOT NULL, body TEXT NOT NULL)",
     -1,
     out schemaStatement,
     null
   );
-  if (schemaStatus != 0) return notes;
-  if (schemaStatement == null) return notes;
-  if (sqlite.sqlite3_step(schemaStatement) != doneStatus) return notes;
+  if (schemaStatement == null) throw -1;
+  const schemaStatus = sqlite.sqlite3_step(schemaStatement);
+  if (schemaStatus != doneStatus) throw schemaStatus;
 
   let seedStatement;
-  const seedStatus = sqlite.sqlite3_prepare_v2(
+  try sqlite.sqlite3_prepare_v2(
     database,
     "INSERT OR IGNORE INTO notes (id, title, body) VALUES (1, 'Welcome to Z Notes', 'A native desktop application written primarily in Z.'), (2, 'Interop', 'AppKit and sqlite3 arrive through their real native headers.')",
     -1,
     out seedStatement,
     null
   );
-  if (seedStatus != 0) return notes;
-  if (seedStatement == null) return notes;
-  if (sqlite.sqlite3_step(seedStatement) != doneStatus) return notes;
+  if (seedStatement == null) throw -1;
+  const seedStatus = sqlite.sqlite3_step(seedStatement);
+  if (seedStatus != doneStatus) throw seedStatus;
 
   let queryStatement;
-  const queryStatus = sqlite.sqlite3_prepare_v2(
+  try sqlite.sqlite3_prepare_v2(
     database,
     "SELECT id, title, body FROM notes ORDER BY id",
     -1,
     out queryStatement,
     null
   );
-  if (queryStatus != 0) return notes;
-  if (queryStatement == null) return notes;
+  if (queryStatement == null) throw -1;
 
   let stepStatus = sqlite.sqlite3_step(queryStatement);
   while (stepStatus == rowStatus) {
     const titleBytes = sqlite.sqlite3_column_text(queryStatement, 1);
-    if (titleBytes == null) return notes;
+    if (titleBytes == null) throw -1;
     const bodyBytes = sqlite.sqlite3_column_text(queryStatement, 2);
-    if (bodyBytes == null) return notes;
+    if (bodyBytes == null) throw -1;
     const title = String.from(titleBytes);
     const body = String.from(bodyBytes);
     notes.push(Note({
@@ -72,23 +71,23 @@ export function loadNotes(in path: String): Array<Note> {
     }));
     stepStatus = sqlite.sqlite3_step(queryStatement);
   }
+  if (stepStatus != doneStatus) throw stepStatus;
   return notes;
 }
 
-export function insertNote(in path: String, in note: Note): boolean {
+export function insertNote(in path: String, in note: Note): void throws i32 {
   let database;
-  const opened = sqlite.sqlite3_open(path, out database);
-  if (opened != 0) return false;
-  if (database == null) return false;
+  try sqlite.sqlite3_open(path, out database);
+  if (database == null) throw -1;
   const doneStatus = 101;
 
   let statement;
   const query = "INSERT INTO notes (id, title, body) VALUES (?, ?, ?)";
-  const prepared = sqlite.sqlite3_prepare_v2(database, query, -1, out statement, null);
-  if (prepared != 0) return false;
-  if (statement == null) return false;
-  if (sqlite.sqlite3_bind_int64(statement, 1, note.id) != 0) return false;
-  if (sqlite.sqlite3_bind_text(statement, 2, note.title, -1) != 0) return false;
-  if (sqlite.sqlite3_bind_text(statement, 3, note.body, -1) != 0) return false;
-  return sqlite.sqlite3_step(statement) == doneStatus;
+  try sqlite.sqlite3_prepare_v2(database, query, -1, out statement, null);
+  if (statement == null) throw -1;
+  try sqlite.sqlite3_bind_int64(statement, 1, note.id);
+  try sqlite.sqlite3_bind_text(statement, 2, note.title, -1);
+  try sqlite.sqlite3_bind_text(statement, 3, note.body, -1);
+  const status = sqlite.sqlite3_step(statement);
+  if (status != doneStatus) throw status;
 }

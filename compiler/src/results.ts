@@ -8,12 +8,16 @@ import type {
   TypeReference,
 } from "./ast.ts";
 import { importedStandardFunctions, standardFunctionSignature } from "./standard-library.ts";
+import type { ForeignModule } from "./foreign.ts";
 
 export function resultTypeName(successType: string, errorType: string): string {
   return `__z_Result_${successType}_${errorType}`;
 }
 
-export function materializeResultTypes(program: Program): Program {
+export function materializeResultTypes(
+  program: Program,
+  foreignModules: ReadonlyMap<string, ForeignModule> = new Map(),
+): Program {
   const generated = new Map<string, EnumDeclaration>();
   const existing = new Set(program.enums.map((declaration) => declaration.name));
   const addResult = (success: TypeReference, error: TypeReference, location: SourceLocation): void => {
@@ -62,6 +66,19 @@ export function materializeResultTypes(program: Program): Program {
       body: [],
       location: program.imports[0]?.location ?? { offset: 0, line: 1, column: 1 },
     });
+  }
+
+  for (const module of foreignModules.values()) {
+    for (const declaration of module.functions.values()) {
+      for (const overload of declaration.overloads) {
+        if (!overload.status || overload.returnType.kind !== "z") continue;
+        addResult(
+          { name: "void", location: module.declaration.location },
+          { name: overload.returnType.name, location: module.declaration.location },
+          module.declaration.location,
+        );
+      }
+    }
   }
 
   for (const declaration of functions) {

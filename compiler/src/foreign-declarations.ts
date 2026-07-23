@@ -2,7 +2,7 @@ import { existsSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import type { SourceLocation } from "./ast.ts";
 import { DiagnosticError } from "./diagnostics.ts";
-import type { ApiNotes, PointerNote } from "./foreign-api-notes.ts";
+import type { ApiNotes, PointerNote, StatusNote } from "./foreign-api-notes.ts";
 import type { ForeignFunctionDeclaration } from "./foreign-ir.ts";
 import type { ForeignThreadContract } from "./foreign-ir.ts";
 import { callbackParameterSpellings, normalizeCallbackContextType } from "./foreign-type-spelling.ts";
@@ -26,7 +26,10 @@ export type ForeignFunctionContract = {
   readonly name: string;
   readonly parameters: readonly ContractParameter[];
   readonly returnNullable: boolean;
-  readonly returnSemanticType: "inferred" | "view-cstring";
+  readonly returnSemanticType: "inferred" | "view-cstring" | "status-void";
+  readonly statusSuccessValues: readonly number[];
+  readonly statusSuccessLocations: readonly SourceLocation[];
+  readonly throwsLocation: SourceLocation | null;
   readonly release: string | null;
   readonly location: SourceLocation;
   readonly nameLocation: SourceLocation;
@@ -118,9 +121,26 @@ export function parseForeignDeclarationContracts(source: string, fileName: strin
   const parseReturnType = (): {
     readonly nullable: boolean;
     readonly location: SourceLocation;
-    readonly semanticType: "inferred" | "view-cstring";
+    readonly semanticType: "inferred" | "view-cstring" | "status-void";
+    readonly throwsLocation: SourceLocation | null;
   } => {
-    if (!at("view")) return { ...parseInferredType(), semanticType: "inferred" };
+    if (at("void")) {
+      const result = take();
+      const throws = expectText("throws");
+      const error = parseInferredType();
+      if (error.nullable) fail(throws, "a native status error type cannot be nullable");
+      return {
+        nullable: false,
+        location: result.location,
+        semanticType: "status-void",
+        throwsLocation: throws.location,
+      };
+    }
+    if (!at("view")) return {
+      ...parseInferredType(),
+      semanticType: "inferred",
+      throwsLocation: null,
+    };
     const view = take();
     const target = expectIdentifier("`cstring` after `view`");
     if (target.text !== "cstring") fail(target, "foreign borrowed text results currently require `view cstring`");
@@ -130,7 +150,29 @@ export function parseForeignDeclarationContracts(source: string, fileName: strin
       expectText("null");
       nullable = true;
     }
-    return { nullable, location: view.location, semanticType: "view-cstring" };
+    return {
+      nullable,
+      location: view.location,
+      semanticType: "view-cstring",
+      throwsLocation: null,
+    };
+  };
+  const parseStatusValue = (): { readonly value: number; readonly location: SourceLocation } => {
+    let sign = 1;
+    if (at("-")) {
+      take();
+      sign = -1;
+    } else if (at("+")) {
+      take();
+    }
+    const literal = peek();
+    if (literal.kind !== "number" || !/^[0-9]+$/.test(literal.text)) {
+      fail(literal, "native status success values currently require an integer literal");
+    }
+    take();
+    const value = sign * Number(literal.text);
+    if (!Number.isSafeInteger(value)) fail(literal, "native status success value must be a safe integer");
+    return { value, location: literal.location };
   };
   const parseParameter = (): ContractParameter => {
     let mode: ContractParameter["mode"] = "value";
@@ -324,6 +366,8 @@ export function parseForeignDeclarationContracts(source: string, fileName: strin
     expectText(":");
     const returnType = parseReturnType();
     const returnNullable = returnType.nullable;
+    const statusSuccessValues: number[] = [];
+    const statusSuccessLocations: SourceLocation[] = [];
     let release: string | null = null;
     let releaseLocation: SourceLocation | null = null;
     let threadContract = emptyThreadContract();
@@ -395,8 +439,22 @@ export function parseForeignDeclarationContracts(source: string, fileName: strin
           });
           continue;
         }
+        if (at("success")) {
+          if (returnType.semanticType !== "status-void") {
+            fail(contract, "success is only valid on a `void throws _` native status projection");
+          }
+          take();
+          const parsed = parseStatusValue();
+          if (statusSuccessValues.includes(parsed.value)) {
+            fail(contract, `foreign function ${JSON.stringify(name)} cannot declare success status ${parsed.value} more than once`);
+          }
+          statusSuccessValues.push(parsed.value);
+          statusSuccessLocations.push(contract.location);
+          expectText(";");
+          continue;
+        }
         if (!at("deinit")) {
-          fail(contract, `expected "deinit", "thread", or "callback" in foreign function contract, found ${JSON.stringify(contract.text)}`);
+          fail(contract, `expected "deinit", "thread", "callback", or "success" in foreign function contract, found ${JSON.stringify(contract.text)}`);
         }
         if (release) fail(contract, `foreign function ${JSON.stringify(name)} cannot declare more than one deinit contract`);
         take();
@@ -412,11 +470,22 @@ export function parseForeignDeclarationContracts(source: string, fileName: strin
     if (threadContract.locations.location && !release) {
       throw new DiagnosticError(fileName, threadContract.locations.location, `result thread contract on ${JSON.stringify(name)} requires an owned return with deinit`, { code: "Z0801" });
     }
+    if (returnType.semanticType === "status-void") {
+      if (statusSuccessValues.length === 0) {
+        fail(start, `native status projection ${JSON.stringify(name)} requires at least one success value`);
+      }
+      if (release || threadContract.locations.location) {
+        fail(start, `native status projection ${JSON.stringify(name)} cannot declare result deinit or thread ownership`);
+      }
+    }
     functions.push({
       name,
       parameters,
       returnNullable,
       returnSemanticType: returnType.semanticType,
+      statusSuccessValues,
+      statusSuccessLocations,
+      throwsLocation: returnType.throwsLocation,
       release,
       location: start.location,
       nameLocation: parsedName.location,
@@ -450,7 +519,11 @@ export function foreignDeclarationApiNotes(
       { code: "Z0801" },
     );
   }
-  const functions: Record<string, { return?: PointerNote; parameters?: Record<string, PointerNote> }> = {};
+  const functions: Record<string, {
+    return?: PointerNote;
+    parameters?: Record<string, PointerNote>;
+    status?: StatusNote;
+  }> = {};
   for (const contract of contracts.functions) {
     const declaration = declarations.get(contract.name);
     if (!declaration) {
@@ -594,6 +667,15 @@ export function foreignDeclarationApiNotes(
           : {}),
       },
       ...(Object.keys(parameters).length ? { parameters } : {}),
+      ...(contract.returnSemanticType === "status-void"
+        ? {
+          status: {
+            success: contract.statusSuccessValues,
+            result: "void" as const,
+            error: "return" as const,
+          },
+        }
+        : {}),
     };
   }
   return Object.keys(functions).length ? { functions } : {};

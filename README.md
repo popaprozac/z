@@ -71,7 +71,7 @@ requiring lifetime syntax throughout ordinary application code.
 | Errors | Typed `throws`, `try` propagation, `attempt`, `Result<T, E>` |
 | Control flow | Checked arithmetic, loops, ternaries, value `if`, exhaustive `match` |
 | Async | Stackless tasks, FIFO executor, spawn/join scopes, cancellation, delay, and nonblocking `thread.spawn` joins with Copy snapshots, unique-owner moves, atomic-ARC readonly sharing, and owned typed worker errors on one native thread |
-| C | Header imports, functions, records, enums, constants, pointers with `.zd` contracts, callbacks, target-aware availability |
+| C | Header imports, functions, records, enums, constants, pointers and typed status errors with `.zd` contracts, callbacks, target-aware availability |
 | Objective-C | ARC objects, nullability, selectors, blocks, persistent observers, imported property ownership, lifetime-safe target/action connections, AppKit |
 | C++ | Hierarchical functions/types, overload selection, records, `.zd`-contracted copyable and move-only RAII values, constructors, methods, named-value references, and receiver qualifiers |
 | Swift | Generated Objective-C compatibility headers plus generated C++ values, associated-value enum cases, methods, copying, cleanup, and exact owned `String` returns |
@@ -118,7 +118,8 @@ bun run z run examples/applications/z-notes/persistence-smoke.zs
 
 It combines AppKit, an ARC-managed Z notes model, optional selection, direct
 `sqlite3.h` import, adjacent ownership contracts for SQLite databases and
-prepared statements, borrowed nullable SQLite text views, explicit
+prepared statements, zero-allocation projection of native status codes into
+typed errors, borrowed nullable SQLite text views, explicit
 `target.link.libraries` configuration, and an interactive Add Note control
 through `std/objc` target/action. Notes load from
 `.z-cache/z-notes.sqlite3`, and each added note is persisted before the model

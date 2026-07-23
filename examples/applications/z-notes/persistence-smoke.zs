@@ -4,8 +4,13 @@ import { insertNote, loadNotes } from "./persistence.zs";
 
 function main(): i32 {
   const path = ".z-cache/z-notes-smoke.sqlite3";
+  const loadedBefore = attempt loadNotes(path);
+  const beforeNotes = match (loadedBefore) {
+    success(notes) => notes;
+    failure(status) => return status;
+  };
   const before = new NoteStore({
-    notes: loadNotes(path),
+    notes: beforeNotes,
     selection: Option<usize>.none,
   });
   const noteId = before.nextNoteId();
@@ -14,10 +19,19 @@ function main(): i32 {
     title: "Ada's native note",
     body: "Bound text keeps quotes like ' safe.",
   });
-  if (!insertNote(path, note)) return 1;
+  const inserted = attempt insertNote(path, note);
+  match (inserted) {
+    success => {}
+    failure(status) => return status;
+  }
 
+  const loadedAfter = attempt loadNotes(path);
+  const afterNotes = match (loadedAfter) {
+    success(notes) => notes;
+    failure(status) => return status;
+  };
   const after = new NoteStore({
-    notes: loadNotes(path),
+    notes: afterNotes,
     selection: Option<usize>.none,
   });
   let preserved = false;

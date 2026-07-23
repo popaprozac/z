@@ -254,6 +254,11 @@ export type ForeignFunctionOverload = {
   readonly name: string;
   readonly cName: string;
   readonly returnType: ForeignType;
+  readonly status: {
+    readonly success: readonly number[];
+    readonly result: "void";
+    readonly error: "return";
+  } | null;
   readonly parameters: readonly ForeignParameter[];
   readonly variadic: boolean;
   readonly cSignature: string;

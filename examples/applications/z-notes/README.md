@@ -10,7 +10,7 @@ The application currently combines:
 - direct AppKit header import, an ARC-managed `NSWindow`, and a native
   `NSScrollView`/`NSTextView` note browser;
 - direct `sqlite3.h` import with adjacent owned-output, null-only parameter,
-  borrowed-text, and fixed-sentinel `.zd` contracts;
+  borrowed-text, fixed-sentinel, and typed native-status `.zd` contracts;
 - explicit `target.link.libraries` configuration for `sqlite3`.
 
 The application now uses the first `std/objc` target/action connection for an
@@ -61,6 +61,15 @@ handwritten C wrapper. `sqlite3_open` produces an owned handle through
 therefore acquires its native type from the call, becomes initialized after the
 call, and is closed deterministically on every later exit. Prepared statements
 use the same owned `out` shape with `sqlite3_finalize`.
+
+The same declaration file projects SQLite's conventional zero-success integer
+statuses into `void throws i32`. Application code uses `try sqlite3_open(...)`
+and `try sqlite3_prepare_v2(...)`; a nonzero native return preserves the exact
+SQLite status as the error value. An owned `out` handle becomes cleanup-active
+immediately after the native call, before a failure is propagated, so a C API
+that produces a handle alongside an error cannot leak it. `sqlite3_step`
+deliberately remains a raw integer call because `SQLITE_ROW` and `SQLITE_DONE`
+are useful non-error outcomes.
 
 `sqlite3_prepare_v2` also has an optional `const char **` tail that this app
 does not use. Its `pzTail: null` contract exposes only the native null value
