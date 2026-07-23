@@ -1498,17 +1498,21 @@ import { sqlite3 as Database } from "sqlite3.h";
 ```
 
 This binds only those C declarations. Functions, supported typedef-named
-records, enums, scalar typedefs, and enum constants can share the same import
-list and can each be aliased. Aliases affect only Z source: generated C uses the
-original declaration spelling, and aliases preserve C type identity across
-selective and namespace imports. Namespace imports remain useful when
-provenance and breadth matter.
+records, enums, scalar typedefs, enum constants, and supported object-like
+integer macros can share the same import list and can each be aliased. Aliases
+affect only Z source: generated C uses the original declaration spelling, and
+aliases preserve C type identity across selective and namespace imports.
+Namespace imports remain useful when provenance and breadth matter.
 
 Imported C data follows Z expression syntax whether it is namespaced or
 selective: typedef-named records can appear in signatures, are built with
-checked struct literals, and expose imported fields; C enum constants become
-typed values. The native compiler still includes the original header, so it
-does not redeclare layouts or guess padding and calling conventions. A future
+checked struct literals, and expose imported fields; C enum constants and
+active object-like integer-literal macros become typed values. Macro types
+follow target C integer-literal rules, editor definitions point to `#define`,
+and generated source preserves the native token. Function-like, string, alias,
+and expression macros remain deferred rather than being textually expanded by
+Z. The native compiler still includes the original header, so it does not
+redeclare layouts or guess padding and calling conventions. A future
 explicit contract uses a TypeScript-shaped ambient declaration:
 
 ```z
@@ -1551,7 +1555,7 @@ Completed slices and precise unsupported boundaries are tracked in
 - inheritance for Z-defined types (foreign superclass metadata is imported);
 - production async scheduling, cancellation, I/O reactors, and CPU-parallel execution;
 - ORC cycle collection;
-- macros and compile-time execution;
+- function-like and general expression macros, plus compile-time execution;
 - direct LLVM or machine-code generation;
 - a package registry;
 - complete C++ template support;

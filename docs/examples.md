@@ -120,6 +120,8 @@ are persisted through placeholder binding; a declaration-only
 `fixed SQLITE_TRANSIENT` parameter safely supplies SQLite's hidden destructor
 sentinel at the C ABI boundary. SQLite zero-success status calls project into
 `void throws i32`, while `sqlite3_step` remains raw for its ROW/DONE outcomes.
+Those outcomes use typed `SQLITE_ROW` and `SQLITE_DONE` macros imported directly
+from the system header rather than application-owned numeric copies.
 Loaded and newly inserted notes render through
 directly imported `NSScrollView`/`NSTextView` controls, with `TextBuffer` joining
 borrowed `Array<Note>` contents into owned display text. A persistence smoke

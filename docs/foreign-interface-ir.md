@@ -39,6 +39,8 @@ FIIR describes facts the rest of the compiler needs:
   unambiguous short aliases, and full callable overload sets;
 - native source locations and platform availability on functions, types,
   constants, Objective-C interfaces, methods, and properties;
+- constant provenance distinguishing enum members, native variables, and
+  object-like integer macros while retaining the original native token;
 - nullability and owned, borrowed, or consuming pointer contracts;
 - non-escaping record access (`in`, `out`, `inout`);
 - callback and Objective-C block lifetime, context, release, and threading

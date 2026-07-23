@@ -69,7 +69,9 @@ SQLite status as the error value. An owned `out` handle becomes cleanup-active
 immediately after the native call, before a failure is propagated, so a C API
 that produces a handle alongside an error cannot leak it. `sqlite3_step`
 deliberately remains a raw integer call because `SQLITE_ROW` and `SQLITE_DONE`
-are useful non-error outcomes.
+are useful non-error outcomes. Those object-like integer macros are imported
+directly from `sqlite3.h` as typed `i32` constants rather than repeated as
+application-owned magic numbers.
 
 `sqlite3_prepare_v2` also has an optional `const char **` tail that this app
 does not use. Its `pzTail: null` contract exposes only the native null value

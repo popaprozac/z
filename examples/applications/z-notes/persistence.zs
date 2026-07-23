@@ -19,8 +19,8 @@ export function loadNotes(in path: String): Array<Note> throws i32 {
   let database;
   try sqlite.sqlite3_open(path, out database);
   if (database == null) throw -1;
-  const rowStatus = 100;
-  const doneStatus = 101;
+  const rowStatus = sqlite.SQLITE_ROW;
+  const doneStatus = sqlite.SQLITE_DONE;
 
   let schemaStatement;
   try sqlite.sqlite3_prepare_v2(
@@ -79,7 +79,7 @@ export function insertNote(in path: String, in note: Note): void throws i32 {
   let database;
   try sqlite.sqlite3_open(path, out database);
   if (database == null) throw -1;
-  const doneStatus = 101;
+  const doneStatus = sqlite.SQLITE_DONE;
 
   let statement;
   const query = "INSERT INTO notes (id, title, body) VALUES (?, ?, ?)";

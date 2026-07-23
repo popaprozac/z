@@ -89,6 +89,8 @@ FFI declarations:
 import sqlite from "sqlite3.h";
 import { sqlite3_open, sqlite3_close as closeDatabase } from "sqlite3.h";
 import AppKit from "AppKit/AppKit.h";
+
+const rowStatus: i32 = sqlite.SQLITE_ROW;
 ```
 
 Supported calls lower to their native ABI. Z adds ownership, pointer, callback,
@@ -119,9 +121,9 @@ bun run z run examples/applications/z-notes/persistence-smoke.zs
 It combines AppKit, an ARC-managed Z notes model, optional selection, direct
 `sqlite3.h` import, adjacent ownership contracts for SQLite databases and
 prepared statements, zero-allocation projection of native status codes into
-typed errors, borrowed nullable SQLite text views, explicit
-`target.link.libraries` configuration, and an interactive Add Note control
-through `std/objc` target/action. Notes load from
+typed errors, typed SQLite integer macros, borrowed nullable SQLite text views,
+explicit `target.link.libraries` configuration, and an interactive Add Note
+control through `std/objc` target/action. Notes load from
 `.z-cache/z-notes.sqlite3`, and each added note is persisted before the model
 and AppKit UI are updated. The smoke entries run without opening a GUI.
 Its deployment target is macOS 14 because it uses `NSApplication.activate()`;

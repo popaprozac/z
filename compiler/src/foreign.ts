@@ -12,6 +12,7 @@ import {
 } from "./foreign-type-spelling.ts";
 import { isStandardModuleSpecifier } from "./standard-library.ts";
 import { deploymentTargetFlags, type DeploymentTarget } from "./project.ts";
+import { collectIntegerMacroConstants } from "./foreign-macros.ts";
 import type {
   ForeignCallbackType,
   ForeignAvailability,
@@ -142,12 +143,15 @@ function readHeader(
 ): HeaderInfo {
   const clangLanguage = objectiveC ? cPlusPlus ? "objective-c++" : "objective-c" : cPlusPlus ? "c++" : "c";
   const swiftCxxNamespace = cPlusPlus ? swiftCompatibilityNamespace(declaration.header) : null;
-  const clangArguments = [
+  const clangBaseArguments = [
     "-x", clangLanguage,
     ...(cPlusPlus ? ["-std=c++20"] : []),
     ...(objectiveC ? ["-fobjc-arc"] : []),
     ...deploymentTargetFlags(deploymentTarget),
     ...includeDirectories.flatMap((directory) => ["-I", directory]),
+  ];
+  const clangArguments = [
+    ...clangBaseArguments,
     "-include", declaration.header,
     "-Xclang", "-ast-dump=json",
     "-fsyntax-only",
@@ -186,6 +190,15 @@ function readHeader(
   const interfaces = objectiveC
     ? collectObjCInterfaces(root, declaration.moduleName, imported.byCName, objectTypes, constants)
     : new Map<string, ForeignObjCInterface>();
+  for (const [name, constant] of collectIntegerMacroConstants(
+    declaration,
+    clangBaseArguments,
+    headerDirectory,
+    objectiveC,
+    targetIntegerWidths().long,
+  )) {
+    if (!constants.has(name)) constants.set(name, constant);
+  }
   const functionDeclarations = new Map<string, ForeignFunctionDeclaration>();
   visitWithNamespaces(root, (node, namespaces) => {
     if (node.kind !== "FunctionDecl" || !node.name || !node.type?.qualType) return;
@@ -523,7 +536,13 @@ function collectNamedTypes(
     const declaration = seeds.get(named.qualifiedName)?.declaration;
     for (const constant of declaration?.inner ?? []) {
       if (constant.kind !== "EnumConstantDecl" || !constant.name) continue;
-      constants.set(constant.name, { name: constant.name, cName: constant.name, typeName: named.typeName, metadata: foreignDeclarationMetadata(constant) });
+      constants.set(constant.name, {
+        name: constant.name,
+        cName: constant.name,
+        typeName: named.typeName,
+        sourceKind: "enum",
+        metadata: foreignDeclarationMetadata(constant),
+      });
     }
   }
   const namespaces = new Set<string>();
@@ -869,7 +888,13 @@ function collectObjCInterfaces(
     if (node.kind !== "VarDecl" || node.storageClass !== "extern" || !node.name || !node.type?.qualType) return;
     const type = mapObjCType(node.type, "", "return", namedTypes, typeNames, objectType);
     if (type.kind !== "object") return;
-    constants.set(node.name, { name: node.name, cName: node.name, typeName: type.typeName, metadata: foreignDeclarationMetadata(node) });
+    constants.set(node.name, {
+      name: node.name,
+      cName: node.name,
+      typeName: type.typeName,
+      sourceKind: "variable",
+      metadata: foreignDeclarationMetadata(node),
+    });
   });
   return interfaces;
 }

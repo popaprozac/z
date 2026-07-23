@@ -673,6 +673,65 @@ test("selectively imports C types and constants with the same aliases used by fu
   assert.equal(translateDefinition?.range.start.line, 31);
 });
 
+test("imports typed object-like integer macros without textual substitution", () => {
+  const example = resolve(projectRoot, "tests/fixtures/macro-constants.zs");
+  const source = readFileSync(example, "utf8");
+  const generated = compileToC(source, example);
+  assert.match(generated, /z_checked_subtract_i32\(z_checked_add_i32\(Z_MACRO_ANSWER, Z_MACRO_NEGATIVE\), 35\)/);
+
+  const module = analyzeSource(source, example).foreignModules.get("macros");
+  assert.equal(module?.constants.get("Z_MACRO_ANSWER")?.typeName, "i32");
+  assert.equal(module?.constants.get("Z_MACRO_NEGATIVE")?.typeName, "i32");
+  assert.equal(module?.constants.get("Z_MACRO_UNSIGNED")?.typeName, "u32");
+  assert.equal(module?.constants.get("Z_MACRO_WIDE")?.typeName, "u64");
+  assert.equal(module?.constants.get("Z_MACRO_MASK")?.typeName, "u32");
+  assert.equal(module?.constants.get("Z_MACRO_LARGE_DECIMAL")?.typeName, "i64");
+  assert.equal(module?.constants.get("Z_MACRO_ANSWER")?.sourceKind, "macro");
+  assert.equal(module?.constants.has("Z_MACRO_ALIAS"), false);
+  assert.equal(module?.constants.has("Z_MACRO_EXPRESSION"), false);
+  assert.equal(module?.constants.has("Z_MACRO_TEXT"), false);
+  assert.equal(module?.constants.has("Z_MACRO_FUNCTION"), false);
+
+  const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+
+  const answerOffset = source.indexOf("Z_MACRO_ANSWER") + 2;
+  assert.match(
+    hover(source, example, answerOffset)?.contents.value ?? "",
+    /Z_MACRO_ANSWER: i32.*C object-like macro/,
+  );
+  const answerDefinition = definition(source, `file://${example}`, answerOffset);
+  assert.match(answerDefinition?.uri ?? "", /tests\/fixtures\/macro-constants\.h$/);
+  assert.equal(answerDefinition?.range.start.line, 3);
+
+  const completionSource = source.replace("macros.Z_MACRO_ANSWER", "macros.Z_MACRO_A");
+  const completionOffset = completionSource.indexOf("macros.Z_MACRO_A") + "macros.Z_MACRO_A".length;
+  assert.match(
+    completions(completionSource, example, completionOffset)
+      .find((item) => item.label === "Z_MACRO_ANSWER")?.detail ?? "",
+    /Z_MACRO_ANSWER: i32.*C object-like macro/,
+  );
+  const importCompletionSource = `
+    import { Z_MACRO_A } from "tests/fixtures/macro-constants.h";
+    function main(): i32 { return 0; }
+  `;
+  const importCompletionOffset = importCompletionSource.indexOf("Z_MACRO_A") + "Z_MACRO_A".length;
+  assert.match(
+    completions(importCompletionSource, resolve(projectRoot, "macro-import-completion.zs"), importCompletionOffset)
+      .find((item) => item.label === "Z_MACRO_ANSWER")?.detail ?? "",
+    /Z_MACRO_ANSWER: i32.*C object-like macro/,
+  );
+
+  const selective = `
+    import { Z_MACRO_ANSWER as answer } from "tests/fixtures/macro-constants.h";
+    function main(): i32 { return answer - 42; }
+  `;
+  assert.match(
+    compileToC(selective, resolve(projectRoot, "selective-macro.zs")),
+    /return z_checked_subtract_i32\(Z_MACRO_ANSWER, 42\);/,
+  );
+});
+
 test("keeps unselected C types and constants out of scope", () => {
   const missingType = `
     import { z_score } from "tests/fixtures/geometry.h";
@@ -2631,6 +2690,8 @@ test("builds the interactive Z Notes AppKit and sqlite3 application", () => {
   assert.ok(artifact.frameworks.includes("Foundation"));
   assert.ok(artifact.nativeLinkerArguments.includes("-lsqlite3"));
   assert.match(artifact.source, /sqlite3_libversion\(\)/);
+  assert.match(artifact.source, /const int32_t rowStatus = SQLITE_ROW;/);
+  assert.match(artifact.source, /const int32_t doneStatus = SQLITE_DONE;/);
   assert.match(artifact.source, /sqlite3_open\(":memory:", &\(database\)\)/);
   assert.match(artifact.source, /Z_Result_void_i32/);
   assert.match(artifact.source, /_z_native_status_\d+ == 0/);
@@ -2695,6 +2756,15 @@ test("builds the interactive Z Notes AppKit and sqlite3 application", () => {
   assert.match(hover(persistenceSource, persistence, databaseOffset)?.contents.value ?? "", /database: sqlite3 \* \| null/);
   const titleBytesOffset = persistenceSource.indexOf("titleBytes =") + 2;
   assert.match(hover(persistenceSource, persistence, titleBytesOffset)?.contents.value ?? "", /titleBytes: view cstring \| null/);
+  const rowStatusOffset = persistenceSource.indexOf("SQLITE_ROW") + 2;
+  assert.match(
+    hover(persistenceSource, persistence, rowStatusOffset)?.contents.value ?? "",
+    /SQLITE_ROW: i32.*C object-like macro/,
+  );
+  assert.match(
+    definition(persistenceSource, `file://${persistence}`, rowStatusOffset)?.uri ?? "",
+    /sqlite3\.h$/,
+  );
 
   const nullableCopy = persistenceSource.replace("    if (titleBytes == null) throw -1;\n", "");
   assert.match(

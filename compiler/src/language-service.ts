@@ -13,6 +13,7 @@ import { DiagnosticError } from "./diagnostics.ts";
 import type {
   ForeignCxxMethod,
   ForeignCxxStaticMethod,
+  ForeignConstant,
   ForeignDeclarationMetadata,
   ForeignFunction,
   ForeignModule,
@@ -3086,7 +3087,11 @@ function moduleCompletions(
       items.push({ label: declaration.exportName, kind: completionKinds.class, detail: `Objective-C class ${declaration.className}` });
     }
     for (const declaration of module.constants.values()) {
-      items.push({ label: declaration.name, kind: completionKinds.constant, detail: declaration.typeName });
+      items.push({
+        label: declaration.name,
+        kind: completionKinds.constant,
+        detail: foreignConstantDetail(declaration),
+      });
     }
   }
   const namespaceName = namespacePath.join(".");
@@ -3428,9 +3433,18 @@ function describeModuleMember(module: ForeignModule, namespacePath: readonly str
   if (module.namespaces.has(namespaceName)) return `native namespace ${namespaceName}`;
   if (namespacePath.length > 0) return null;
   const constant = module.constants.get(name);
-  if (constant) return `${constant.name}: ${constant.typeName}${foreignAvailabilityDetail(constant.metadata)}`;
+  if (constant) return `${foreignConstantDetail(constant)}${foreignAvailabilityDetail(constant.metadata)}`;
   const objc = module.interfaces.get(name);
   return objc ? `Objective-C class ${objc.className}${foreignAvailabilityDetail(objc.metadata)}` : null;
+}
+
+function foreignConstantDetail(constant: ForeignConstant): string {
+  const source = constant.sourceKind === "macro"
+    ? "C object-like macro"
+    : constant.sourceKind === "enum"
+      ? "native enum constant"
+      : "native global constant";
+  return `${constant.name}: ${constant.typeName}  // ${source}`;
 }
 
 function foreignNamedTypeDetail(named: ForeignNamedType): string {

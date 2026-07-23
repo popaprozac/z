@@ -42,6 +42,25 @@ native compilation, and local Swift compilation. With no explicit target, the
 bootstrap preserves version metadata but does not invent a deployment target.
 Runtime availability guards are not yet synthesized.
 
+The Clang producer also runs the preprocessor in declaration-preserving mode for
+the requested header. Active object-like integer-literal macros defined directly
+by that header become typed constants:
+
+```z
+import sqlite from "sqlite3.h";
+import { SQLITE_DONE as done } from "sqlite3.h";
+
+const row: i32 = sqlite.SQLITE_ROW;
+if (status == done) { ... }
+```
+
+Their Z type follows the target's C integer-literal rules, generated source uses
+`SQLITE_ROW` or `SQLITE_DONE` directly, and editor definitions return to the
+`#define`. This tier intentionally excludes function-like macros, string
+macros, aliases, and general expressions. Those require separate decisions
+about evaluation, safety, and whether they should appear as constants,
+functions, or `comptime` facilities.
+
 C++ namespace paths also survive normalization. A uniquely named function can
 use its short module alias, while the native hierarchy is available explicitly:
 

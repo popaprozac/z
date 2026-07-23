@@ -124,6 +124,7 @@ export type ForeignConstant = {
   readonly name: string;
   readonly cName: string;
   readonly typeName: string;
+  readonly sourceKind: "enum" | "variable" | "macro";
   readonly metadata: ForeignDeclarationMetadata;
 };
 

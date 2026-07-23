@@ -1,0 +1,16 @@
+#ifndef Z_TEST_MACRO_CONSTANTS_H
+#define Z_TEST_MACRO_CONSTANTS_H
+
+#define Z_MACRO_ANSWER 42
+#define Z_MACRO_NEGATIVE (-7)
+#define Z_MACRO_UNSIGNED 42U
+#define Z_MACRO_WIDE 42ULL
+#define Z_MACRO_MASK 0xFFFFFFFF
+#define Z_MACRO_LARGE_DECIMAL 2147483648
+
+#define Z_MACRO_ALIAS Z_MACRO_ANSWER
+#define Z_MACRO_EXPRESSION (40 + 2)
+#define Z_MACRO_TEXT "forty-two"
+#define Z_MACRO_FUNCTION(value) ((value) + 1)
+
+#endif
