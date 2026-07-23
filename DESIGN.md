@@ -703,9 +703,18 @@ rejects a nonthrowing stream as unnecessary. Terminal-returning streams retain
 explicit `.next()` consumption so no terminal result is silently discarded.
 Local recovery likewise remains explicit `attempt await stream.next()`.
 Cancelling a caller awaiting an advancement cancels and joins it before
-destroying the stream frame. Object-pattern async iteration, consuming
-statement matches, value-producing suspending matches, async generator
-methods, and borrowed inputs/yields remain following layers.
+destroying the stream frame.
+
+`for await (const { field, other: local } of stream)` consumes each yielded
+value struct and transfers selected fields into frame-backed pattern bindings.
+Selected owned fields are cleared in the hidden aggregate; unselected fields
+remain there, so pattern bindings and the remainder each clean up exactly once
+on every exit. Moving a selected binding in the body clears only that binding's
+live state. Structs with custom `deinit`, native RAII value fields, or opaque
+foreign cleanup remain whole-value-only because their partial destruction
+contract is not compiler-derivable. Consuming statement matches,
+value-producing suspending matches, async generator methods, richer async
+patterns, and borrowed inputs/yields remain following layers.
 
 The source-inspector pressure test uses this complete synchronous protocol to
 tokenize real Z source on first advancement, yield owned `Token` values, return

@@ -826,16 +826,32 @@ Nonthrowing streams reject the unnecessary `try`. Local recovery remains
 explicit `attempt await stream.next()` so its control flow and partial progress
 are visible.
 
+Async iteration also supports object patterns for yielded value structs:
+
+```zs
+for await (const { topic: selectedTopic, value } of events()) {
+  await record(selectedTopic, value);
+}
+```
+
+The yielded aggregate is consumed by the loop. Selected owned fields move into
+their pattern bindings; unselected fields remain in hidden iteration storage.
+Both sets are cleaned exactly once on normal advance, `continue`, `break`,
+`return`, propagation, or cancellation. Moving a selected binding again inside
+the body transfers that field normally. A yielded struct with custom `deinit`,
+native RAII value storage, or opaque foreign cleanup must instead be bound and
+moved as a complete value because partial destruction would violate its
+contract.
+
 The executable tier supports persistent `if` and `while`, `break` and
 `continue`, built-in `Array`/fixed-array/`Slice`/`Map`/`Set` `for...of`
 cursors, and borrowed `match (in value)` statement payloads across both
 `yield` and ordinary awaits such as `delay`. It also supports typed terminal
 return, typed advancement errors, exact-once suspended-local cleanup,
 caller-cancellation propagation, editor details, and native-frontend parity.
-Concurrent `.next()` calls are rejected. `for await...of` currently requires a
-named element binding; ownership-aware object-pattern extraction, consuming or
-value-producing suspending matches, async generator methods, and borrowed
-parameters/yields remain explicit follow-up layers.
+Concurrent `.next()` calls are rejected. Consuming or value-producing
+suspending matches, async generator methods, async patterns beyond value-struct
+object fields, and borrowed parameters/yields remain explicit follow-up layers.
 
 `Map` and `Set` use open-addressed hashed buckets for amortized O(1) lookup and
 membership. Owned entries remain in compact storage, while rehashing moves only

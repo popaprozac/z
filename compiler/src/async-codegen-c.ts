@@ -55,6 +55,7 @@ type AsyncForSite = {
   readonly generatorType: string;
   readonly handleBinding: string | null;
   readonly resultBinding: string;
+  readonly elementBinding: string;
 };
 
 type PlacementTarget = {
@@ -492,18 +493,10 @@ function planFunction(
                 : "for await requires a nonthrowing AsyncGenerator<T> without a terminal return",
             );
           }
-          if (statement.objectBindings) {
-            unsupported(
-              fileName,
-              statement.location,
-              "for await object destructuring needs ownership-aware payload field transfer",
-              "bind the yielded value by name and destructure it inside the loop for now",
-            );
+          if (!statement.binding && !statement.objectBindings) {
+            unsupported(fileName, statement.location, "for await requires an iteration binding");
           }
-          if (!statement.binding || !statement.bindingLocation) {
-            unsupported(fileName, statement.location, "for await requires a named iteration binding");
-          }
-          requireFrameType(asyncGenerator.elementType, statement.bindingLocation, fileName, "for await element", types);
+          requireFrameType(asyncGenerator.elementType, statement.bindingLocation ?? statement.location, fileName, "for await element", types);
           const resultType = optionTypeName(asyncGenerator.elementType);
           requireFrameType(resultType, statement.iterable.location, fileName, "for await advancement", types);
           const stored = statement.iterable.kind === "identifier"
@@ -511,17 +504,35 @@ function planFunction(
             || statement.iterable.kind === "index";
           const handleBinding = stored ? null : `__z_async_for_handle_${statement.location.offset}`;
           const resultBinding = `__z_async_for_result_${statement.location.offset}`;
+          const elementBinding = statement.binding ?? `__z_async_for_element_${statement.location.offset}`;
           if (handleBinding) locals.set(handleBinding, generatorType);
           locals.set(resultBinding, resultType);
-          registerAsyncFrameBinding(
-            statement.binding,
+          if (!statement.binding) {
+            registerAsyncFrameBinding(
+              elementBinding,
+              asyncGenerator.elementType,
+              false,
+              statement.location,
+              locals,
+              borrowedLocals,
+              fileName,
+            );
+          }
+          registerAsyncForBindings(
+            statement,
             asyncGenerator.elementType,
             false,
-            statement.bindingLocation,
             locals,
             borrowedLocals,
+            types,
+            semanticInfo,
             fileName,
           );
+          for (const binding of statement.objectBindings ?? []) {
+            const fieldType = semanticInfo.bindingTypes.get(binding.bindingLocation.offset);
+            if (!fieldType) unsupported(fileName, binding.bindingLocation, "could not determine for await field binding type");
+            requireFrameType(fieldType!, binding.bindingLocation, fileName, "for await field", types);
+          }
           validateFrameExpression(statement.iterable, locals, fileName, types, suspensions);
           const site: AsyncForSite = {
             index: nextChild.value++,
@@ -530,6 +541,7 @@ function planFunction(
             generatorType,
             handleBinding,
             resultBinding,
+            elementBinding,
           };
           asyncForSites.push(site);
           const conditionLabel = nextLabel.value++;
@@ -3101,6 +3113,20 @@ function asyncOptionNicheNull(payloadType: string, types: AsyncTypeContext): "ni
   return types.semanticInfo.foreignNamedTypes.get(payloadType)?.kind === "object" ? "nil" : "NULL";
 }
 
+function asyncFrameZeroValue(type: string, types: AsyncTypeContext): string {
+  if (
+    types.structs.get(type)?.kind === "class"
+    || types.semanticInfo.foreignTypes.has(type)
+    || parseTaskType(type)
+  ) return "NULL";
+  if (
+    types.semanticInfo.foreignObjectTypes.has(type)
+    || types.semanticInfo.foreignNamedTypes.get(type)?.kind === "object"
+  ) return "nil";
+  if (scalarTypes.has(type)) return type === "boolean" ? "false" : "0";
+  return `(${cFrameType(type, types)}){ 0 }`;
+}
+
 function emitAsyncForInitialize(
   site: AsyncForSite,
   plan: AsyncFunctionPlan,
@@ -3144,7 +3170,7 @@ function emitAsyncForComplete(
   const resultPointer = requiresNativeFramePlacement(resultType, plan.types)
     ? `frame->${frameField(site.resultBinding)}`
     : `&(${result})`;
-  const binding = frameStoredValue(site.statement.binding!, site.generator.elementType, plan.types);
+  const element = frameStoredValue(site.elementBinding, site.generator.elementType, plan.types);
   const niche = asyncOptionNichePayload(resultType, plan.types);
   const present = niche
     ? `${result} != ${asyncOptionNicheNull(niche, plan.types)}`
@@ -3190,7 +3216,7 @@ function emitAsyncForComplete(
     "}",
   );
   if (requiresNativeFramePlacement(site.generator.elementType, plan.types)) {
-    lines.push(`new (frame->${frameField(site.statement.binding!)}) ${cFrameType(site.generator.elementType, plan.types)}(std::move(${payload}));`);
+    lines.push(`new (frame->${frameField(site.elementBinding)}) ${cFrameType(site.generator.elementType, plan.types)}(std::move(${payload}));`);
     if (hasFrameCleanup(resultType, plan.types)) {
       lines.push(
         frameCleanup(result, resultType, plan.types),
@@ -3198,13 +3224,30 @@ function emitAsyncForComplete(
       );
     }
   } else {
-    lines.push(`${binding} = ${payload};`);
+    lines.push(`${element} = ${payload};`);
     if (hasFrameCleanup(site.generator.elementType, plan.types) && hasFrameCleanup(resultType, plan.types)) {
       lines.push(`frame->${frameLiveField(site.resultBinding)} = false;`);
     }
   }
   if (hasFrameCleanup(site.generator.elementType, plan.types)) {
-    lines.push(`frame->${frameLiveField(site.statement.binding!)} = true;`);
+    lines.push(`frame->${frameLiveField(site.elementBinding)} = true;`);
+  }
+  const elementDeclaration = plan.types.structs.get(site.generator.elementType);
+  for (const binding of site.statement.objectBindings ?? []) {
+    const field = elementDeclaration!.fields.find((candidate) => candidate.name === binding.fieldName)!;
+    const destination = frameStoredValue(binding.bindingName, field.type.name, plan.types);
+    const source = `((${element}).${field.name})`;
+    if (requiresNativeFramePlacement(field.type.name, plan.types)) {
+      lines.push(`new (frame->${frameField(binding.bindingName)}) ${cFrameType(field.type.name, plan.types)}(std::move(${source}));`);
+    } else {
+      lines.push(`${destination} = ${source};`);
+    }
+    if (hasFrameCleanup(field.type.name, plan.types)) {
+      lines.push(
+        `${source} = ${asyncFrameZeroValue(field.type.name, plan.types)};`,
+        `frame->${frameLiveField(binding.bindingName)} = true;`,
+      );
+    }
   }
   lines.push(
     `frame->state = ${asyncLabelMarker(operation.bodyLabel)};`,
@@ -3220,12 +3263,24 @@ function emitAsyncForCleanup(
 ): string[] {
   const { site } = operation;
   const lines: string[] = [];
-  if (hasFrameCleanup(site.generator.elementType, plan.types)) {
-    const binding = frameStoredValue(site.statement.binding!, site.generator.elementType, plan.types);
+  const elementDeclaration = plan.types.structs.get(site.generator.elementType);
+  for (const binding of [...(site.statement.objectBindings ?? [])].reverse()) {
+    const field = elementDeclaration!.fields.find((candidate) => candidate.name === binding.fieldName)!;
+    if (!hasFrameCleanup(field.type.name, plan.types)) continue;
+    const value = frameStoredValue(binding.bindingName, field.type.name, plan.types);
     lines.push(
-      `if (frame->${frameLiveField(site.statement.binding!)}) {`,
+      `if (frame->${frameLiveField(binding.bindingName)}) {`,
+      `  ${frameCleanup(value, field.type.name, plan.types)}`,
+      `  frame->${frameLiveField(binding.bindingName)} = false;`,
+      "}",
+    );
+  }
+  if (hasFrameCleanup(site.generator.elementType, plan.types)) {
+    const binding = frameStoredValue(site.elementBinding, site.generator.elementType, plan.types);
+    lines.push(
+      `if (frame->${frameLiveField(site.elementBinding)}) {`,
       `  ${frameCleanup(binding, site.generator.elementType, plan.types)}`,
-      `  frame->${frameLiveField(site.statement.binding!)} = false;`,
+      `  frame->${frameLiveField(site.elementBinding)} = false;`,
       "}",
     );
   }

@@ -11188,6 +11188,60 @@ test("runs cold async generators through reusable awaited advancement tasks", ()
     "observed 42\nreleased 42\nreleased 99\n",
   );
 
+  const forAwaitDestructuringExample = resolve(
+    projectRoot,
+    "examples/language/control-flow/async-for-await-destructuring.zs",
+  );
+  const forAwaitDestructuringSource = readFileSync(forAwaitDestructuringExample, "utf8");
+  const forAwaitDestructuringResult = spawnSync(
+    process.execPath,
+    [cli, "run", forAwaitDestructuringExample],
+    { encoding: "utf8" },
+  );
+  assert.equal(forAwaitDestructuringResult.status, 0, forAwaitDestructuringResult.stderr);
+  assert.equal(
+    forAwaitDestructuringResult.stdout,
+    "event 1 = 20\n"
+      + "released label 1\n"
+      + "released label 101\n"
+      + "event 2 = 22\n"
+      + "released label 2\n"
+      + "released label 102\n",
+  );
+  const selectedTopicUse = forAwaitDestructuringSource.indexOf("selectedTopic.id");
+  assert.match(
+    hover(
+      forAwaitDestructuringSource,
+      forAwaitDestructuringExample,
+      selectedTopicUse + 1,
+    )?.contents.value ?? "",
+    /selectedTopic: Label/,
+  );
+  const forAwaitDestructuringNative = spawnSync(
+    process.execPath,
+    [cli, "check", forAwaitDestructuringExample, "--native-frontend"],
+    { encoding: "utf8" },
+  );
+  assert.equal(forAwaitDestructuringNative.status, 0, forAwaitDestructuringNative.stderr);
+
+  assert.throws(
+    () => compileToC(`
+      import { AsyncGenerator } from "std/iteration";
+      struct Resource {
+        id: i32;
+        deinit {}
+      }
+      async function resources(): AsyncGenerator<Resource> {
+        yield Resource({ id: 42 });
+      }
+      async function main(): i32 {
+        for await (const { id } of resources()) {}
+        return 0;
+      }
+    `, "for-await-deinit-destructure.zs"),
+    /cannot destructure yielded Resource because it defines deinit/,
+  );
+
   assert.throws(
     () => compileToC(`
       import { AsyncGenerator } from "std/iteration";

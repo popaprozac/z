@@ -8358,10 +8358,36 @@ function analyzeIteratorForLoop(
     });
   }
   if (statement.objectBindings && hasOwnershipType(elementType, structs, enums, state)) {
-    throw new DiagnosticError(fileName, statement.location, "destructuring ownership-bearing Iterator elements is deferred in the first iterator tier", {
-      code: "Z0311",
-      helps: ["bind the element by name, then destructure or move its fields explicitly inside the loop"],
-    });
+    const asyncIterator = Boolean(parseAsyncGeneratorType(iteratorType));
+    if (!asyncIterator) {
+      throw new DiagnosticError(fileName, statement.location, "destructuring ownership-bearing Iterator elements is deferred in the synchronous iterator tier", {
+        code: "Z0311",
+        helps: ["bind the element by name, then destructure or move its fields explicitly inside the loop"],
+      });
+    }
+  }
+  if (statement.objectBindings && parseAsyncGeneratorType(iteratorType)) {
+    if (elementDeclaration!.deinitializer) {
+      throw new DiagnosticError(fileName, statement.location, `cannot destructure yielded ${elementDeclaration!.name} because it defines deinit`, {
+        code: "Z0220",
+        notes: ["moving selected fields would leave the custom destructor with an incomplete value"],
+        helps: ["bind the yielded value by name and use a type-specific extraction method"],
+      });
+    }
+    if (containsForeignValueStorage(elementType, structs, enums, state.foreignNamedTypes)) {
+      throw new DiagnosticError(fileName, statement.location, `cannot destructure yielded ${elementDeclaration!.name} while it contains native value storage`, {
+        code: "Z0240",
+        notes: ["partial relocation of native RAII fields requires a separate explicit contract"],
+        helps: ["bind and move the complete yielded value instead"],
+      });
+    }
+    if (containsOpaqueCleanupStorage(elementType, structs, enums, state.foreignTypes)) {
+      throw new DiagnosticError(fileName, statement.location, `cannot destructure yielded ${elementDeclaration!.name} while it contains custom or foreign cleanup storage`, {
+        code: "Z0220",
+        notes: ["the compiler cannot suppress cleanup safely for only the transferred opaque fields"],
+        helps: ["bind and move the complete yielded value instead"],
+      });
+    }
   }
   if (hasMoveOnlyForeignType(elementType, structs, enums, state.foreignNamedTypes)) {
     throw new DiagnosticError(fileName, statement.location, "Iterator cannot yield move-only native C++ values in the first iterator tier", {

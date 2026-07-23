@@ -24,6 +24,7 @@ compile-only probes and `emit` to inspect generated native code.
 | Async generators | [`async-generators.zs`](../examples/language/control-flow/async-generators.zs) | Cold `AsyncGenerator<Yield, Return>` construction, awaited `.next()`, suspension between yields, and terminal return |
 | Async iteration | [`async-for-await.zs`](../examples/language/control-flow/async-for-await.zs) | Sequential `for await...of`, temporary-stream ownership, early break, and stored-handle resumption |
 | Throwing async iteration | [`async-for-await-errors.zs`](../examples/language/control-flow/async-for-await-errors.zs) | Explicit `try for await`, typed advancement-error propagation, and stream cleanup |
+| Async iteration patterns | [`async-for-await-destructuring.zs`](../examples/language/control-flow/async-for-await-destructuring.zs) | Owned field transfer, aliases, suspension, explicit moves, and cleanup of unselected fields |
 | Async event stream | [`async-event-stream.zs`](../examples/language/control-flow/async-event-stream.zs) | Owned input records, persistent connection/collection loops, borrowed enum matching, typed errors, yielded events, and terminal summary |
 | Options | [`option.zs`](../examples/language/types/option.zs) | `Option.some`, `Option.none`, and payload matching |
 | Native desktop application | [`z-notes`](../examples/applications/z-notes) | AppKit controls, `std/objc` target/action, ARC application state, nullable selection, direct SQLite import, and native library linkage |
