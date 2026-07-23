@@ -8544,6 +8544,44 @@ function statementContainsYield(
   for (const child of arena.nodes[index].children) {
     if (statementContainsYield(arena, child)) return true;
   }
+  match (in arena.nodes[index].expression) {
+    some(expression) => {
+      match (in expression.tree) {
+        some(tree) => {
+          const root = tree.root;
+          if (expressionNodeContainsYield(arena, tree, root)) return true;
+        }
+        none => {}
+      }
+    }
+    none => {}
+  }
+  match (in arena.nodes[index].secondExpression) {
+    some(expression) => {
+      match (in expression.tree) {
+        some(tree) => {
+          const root = tree.root;
+          if (expressionNodeContainsYield(arena, tree, root)) return true;
+        }
+        none => {}
+      }
+    }
+    none => {}
+  }
+  return false;
+}
+
+function expressionNodeContainsYield(
+  in arena: StatementArena,
+  in tree: ExpressionTree,
+  index: usize
+): boolean {
+  for (const statement of tree.nodes[index].statements) {
+    if (statementContainsYield(arena, statement)) return true;
+  }
+  for (const child of tree.nodes[index].children) {
+    if (expressionNodeContainsYield(arena, tree, child)) return true;
+  }
   return false;
 }
 
@@ -8582,7 +8620,10 @@ function inferFunctionExpressions(
               generator.arguments[0]
             );
           }
-          if (generator.arguments.length == 2) {
+          if (
+            generator.arguments.length >= 2
+            && generator.arguments[1] != "void"
+          ) {
             bodyReturnType = generator.arguments[1].copyBytes(
               0,
               generator.arguments[1].byteLength

@@ -11053,6 +11053,108 @@ test("runs cold async generators through reusable awaited advancement tasks", ()
   const cleanupResult = spawnSync(process.execPath, [cli, "run", cleanupFile], { encoding: "utf8" });
   assert.equal(cleanupResult.status, 0, cleanupResult.stderr);
   assert.equal(cleanupResult.stdout, "released 42\n");
+
+  const streamExample = resolve(projectRoot, "examples/language/control-flow/async-event-stream.zs");
+  const streamResult = spawnSync(process.execPath, [cli, "run", streamExample], { encoding: "utf8" });
+  assert.equal(streamResult.status, 0, streamResult.stderr);
+  assert.equal(streamResult.stdout, "streamed 20, 22; summary=3\n");
+  const streamNative = spawnSync(
+    process.execPath,
+    [cli, "check", streamExample, "--native-frontend"],
+    { encoding: "utf8" },
+  );
+  assert.equal(streamNative.status, 0, streamNative.stderr);
+
+  const controlFlowFile = resolve(throwingDirectory, "control-flow.zs");
+  writeFileSync(controlFlowFile, `
+    import { AsyncGenerator } from "std/iteration";
+    import { Map, Set } from "std/collections";
+    function makeCounts(): Map<i32, i32> {
+      let counts = Map<i32, i32>();
+      counts.set(20, 21);
+      return counts;
+    }
+    function makeValues(): Set<i32> {
+      let values = Set<i32>();
+      values.add(19);
+      return values;
+    }
+    async function selected(
+      counts: Map<i32, i32>,
+      values: Set<i32>
+    ): AsyncGenerator<i32> {
+      let current = 0;
+      while (current < 5) {
+        current = current + 1;
+        if (current == 2) continue;
+        if (current == 4) break;
+        yield current;
+      }
+      for (const { value } of counts) {
+        yield value;
+      }
+      for (const value of values) {
+        yield value;
+      }
+    }
+    async function main(): i32 {
+      const values = selected(makeCounts(), makeValues());
+      const first = await values.next();
+      const second = await values.next();
+      const third = await values.next();
+      const fourth = await values.next();
+      const a = match (first) { some(value) => value; none => 0; };
+      const b = match (second) { some(value) => value; none => 0; };
+      const c = match (third) { some(value) => value; none => 0; };
+      const d = match (fourth) { some(value) => value; none => 0; };
+      return a + b + c + d - 44;
+    }
+  `);
+  const controlFlowResult = spawnSync(process.execPath, [cli, "run", controlFlowFile], { encoding: "utf8" });
+  assert.equal(controlFlowResult.status, 0, controlFlowResult.stderr);
+
+  const cancellationFile = resolve(throwingDirectory, "cancellation.zs");
+  writeFileSync(cancellationFile, `
+    import console from "std/console";
+    import { AsyncGenerator } from "std/iteration";
+    import { delay } from "std/time";
+    struct Lease {
+      id: i32;
+      deinit { console.log(\`released \${this.id}\`); }
+    }
+    async function values(): AsyncGenerator<i32> {
+      const lease = Lease({ id: 42 });
+      await delay(1000);
+      yield lease.id;
+    }
+    async function consume(): i32 {
+      const values = values();
+      const next = await values.next();
+      return 1;
+    }
+    async function main(): i32 {
+      const task = spawn consume();
+      await delay(1);
+      await task.cancel();
+      return 0;
+    }
+  `);
+  const cancellationResult = spawnSync(process.execPath, [cli, "run", cancellationFile], { encoding: "utf8" });
+  assert.equal(cancellationResult.status, 0, cancellationResult.stderr);
+  assert.equal(cancellationResult.stdout, "released 42\n");
+
+  assert.throws(
+    () => compileToC(`
+      import { AsyncGenerator } from "std/iteration";
+      async function values(): AsyncGenerator<i32> { yield 42; }
+      async function main(): i32 {
+        const values = values();
+        const task = spawn values.next();
+        return 0;
+      }
+    `, "async-generator-overlap.zs"),
+    /spawning AsyncGenerator.next is deferred until concurrent advancement is statically excluded/,
+  );
 });
 
 test("returns explicit terminal values from typed generators", () => {

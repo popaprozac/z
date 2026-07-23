@@ -22,6 +22,7 @@ compile-only probes and `emit` to inspect generated native code.
 | Generator completion | [`generator-return.zs`](../examples/language/control-flow/generator-return.zs) | Explicit terminal `return`, `GeneratorStep<Yield, Return>`, and lossless manual advancement |
 | Throwing generators | [`generator-throws.zs`](../examples/language/control-flow/generator-throws.zs) | Cold non-throwing construction with explicit fallible advancement and cleanup |
 | Async generators | [`async-generators.zs`](../examples/language/control-flow/async-generators.zs) | Cold `AsyncGenerator<Yield, Return>` construction, awaited `.next()`, suspension between yields, and terminal return |
+| Async event stream | [`async-event-stream.zs`](../examples/language/control-flow/async-event-stream.zs) | Owned input records, persistent connection/collection loops, borrowed enum matching, typed errors, yielded events, and terminal summary |
 | Options | [`option.zs`](../examples/language/types/option.zs) | `Option.some`, `Option.none`, and payload matching |
 | Native desktop application | [`z-notes`](../examples/applications/z-notes) | AppKit controls, `std/objc` target/action, ARC application state, nullable selection, direct SQLite import, and native library linkage |
 | Application walkthrough | [`document-workspace`](../examples/applications/document-workspace) | A native document model combining modules, errors, arrays, named enums, optional views, mutation, and deterministic cleanup |

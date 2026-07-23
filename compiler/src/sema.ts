@@ -2990,7 +2990,13 @@ function analyzeStatement(
         }
         const patternNames = [arm.binding, ...(arm.objectBindings ?? []).map((field) => field.bindingName)].filter((name): name is string => Boolean(name));
         const previousBorrows = new Map(patternNames.map((name) => [name, state.borrowOrigins.get(name)]));
+        const previousBorrowedRootOrigin = borrowedRoot
+          ? state.borrowOrigins.get(borrowedRoot.name)
+          : null;
         const previousPatternViews = new Map(patternNames.map((name) => [name, state.viewOrigins.get(name)]));
+        if (borrowedRoot) {
+          state.borrowOrigins.set(borrowedRoot.name, { location: statement.location, kind: "match" });
+        }
         if (optionalViewOrigin && candidateRoot) unbindViewOrigin(candidateRoot.name, state);
         if (optionalViewOrigin && arm.binding && variant.payload && parseViewType(variant.payload.name)) {
           bindViewOrigin(arm.binding, optionalViewOrigin, fileName, state);
@@ -3026,6 +3032,10 @@ function analyzeStatement(
             const previousView = previousPatternViews.get(name);
             if (previousView) bindViewOrigin(name, previousView, fileName, state);
             else unbindViewOrigin(name, state);
+          }
+          if (borrowedRoot) {
+            if (previousBorrowedRootOrigin) state.borrowOrigins.set(borrowedRoot.name, previousBorrowedRootOrigin);
+            else state.borrowOrigins.delete(borrowedRoot.name);
           }
           if (optionalViewOrigin && candidateRoot) bindViewOrigin(candidateRoot.name, optionalViewOrigin, fileName, state);
         }
@@ -4499,6 +4509,7 @@ function firstLiveBorrow(
   locals: ReadonlyMap<string, ValueType>,
   activeFunction: FunctionDeclaration | null,
   borrowOrigins: ReadonlyMap<string, { readonly location: SourceLocation; readonly kind: "closure" | "iteration" | "match" }>,
+  iterationBorrowOrigins: ReadonlyMap<string, SourceLocation>,
 ): string | null {
   const asyncParameters = new Set(
     activeFunction?.async
@@ -4512,11 +4523,23 @@ function firstLiveBorrow(
         .map((parameter) => parameter.name)
       : [],
   );
+  const persistentGenerator = Boolean(activeFunction && isAsyncGeneratorFunction(activeFunction));
   for (const [name, type] of locals) {
     if (isBorrowedBinding(type)
       && initializationState(type) === "initialized"
       && ownershipState(type) === "available"
-      && (!asyncParameters.has(name) || borrowOrigins.has(name))) return name;
+      && (!asyncParameters.has(name) || borrowOrigins.has(name))) {
+      const origin = borrowOrigins.get(name);
+      if (
+        persistentGenerator
+        && (
+          origin?.kind === "iteration"
+          || origin?.kind === "match"
+          || iterationBorrowOrigins.has(name)
+        )
+      ) continue;
+      return name;
+    }
   }
   return null;
 }
@@ -5029,7 +5052,12 @@ function inferExpressionInner(
           helps: ["use `await operation()` for sequential work, or bind `spawn operation()` and await the Task later"],
         });
       }
-      const borrowed = firstLiveBorrow(locals, state.activeFunction, state.borrowOrigins);
+      const borrowed = firstLiveBorrow(
+        locals,
+        state.activeFunction,
+        state.borrowOrigins,
+        state.iterationBorrowOrigins,
+      );
       if (borrowed) {
         throw new DiagnosticError(fileName, expression.location, `cannot await while borrowed storage ${JSON.stringify(borrowed)} is live`, {
           code: "Z0704",

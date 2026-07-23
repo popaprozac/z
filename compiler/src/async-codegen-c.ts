@@ -12,8 +12,10 @@ import { DiagnosticError } from "./diagnostics.ts";
 import { parseTaskType } from "./async-types.ts";
 import { dynamicArrayTypeName, parseDynamicArrayType, parseFixedArrayType, parseSliceType } from "./array-types.ts";
 import { generatorStepTypeName, parseAsyncGeneratorType } from "./generator-types.ts";
+import { mapEntryTypeName, parseMapType } from "./map-types.ts";
 import { optionTypeName } from "./option-types.ts";
 import { resultTypeName } from "./results.ts";
+import { parseSetType } from "./set-types.ts";
 import { standardFunctionSignature } from "./standard-library.ts";
 import type { IntegerOperation, SemanticInfo } from "./sema.ts";
 
@@ -66,6 +68,24 @@ type AsyncOperation =
   | { readonly kind: "statement"; readonly statement: Statement }
   | { readonly kind: "scopeExit"; readonly scope: number }
   | { readonly kind: "branch"; readonly condition: Expression; readonly thenLabel: number; readonly elseLabel: number }
+  | {
+    readonly kind: "forBranch";
+    readonly statement: Extract<Statement, { kind: "for" }>;
+    readonly indexBinding: string;
+    readonly bodyLabel: number;
+    readonly elseLabel: number;
+  }
+  | { readonly kind: "forIncrement"; readonly indexBinding: string }
+  | {
+    readonly kind: "matchDispatch";
+    readonly statement: Extract<Statement, { kind: "match" }>;
+    readonly armLabels: readonly number[];
+  }
+  | {
+    readonly kind: "matchBind";
+    readonly statement: Extract<Statement, { kind: "match" }>;
+    readonly armIndex: number;
+  }
   | { readonly kind: "jump"; readonly label: number }
   | { readonly kind: "label"; readonly label: number };
 
@@ -322,6 +342,7 @@ function planFunction(
   const nextScope = { value: 1 };
   const nextLabel = { value: 0 };
   const operations: AsyncOperation[] = [];
+  const loopTargets: { readonly breakLabel: number; readonly continueLabel: number }[] = [];
   const recordAwait = (
     mode: AwaitSite["mode"],
     expression: Extract<Expression, { kind: "await" | "executorPlacement" }>,
@@ -414,6 +435,130 @@ function planFunction(
           for (const index of incomingJoins) joinedSpawns.add(index);
         }
         operations.push({ kind: "label", label: endLabel });
+        continue;
+      }
+      if (statement.kind === "while") {
+        const conditionLabel = nextLabel.value++;
+        const bodyLabel = nextLabel.value++;
+        const endLabel = nextLabel.value++;
+        operations.push({ kind: "label", label: conditionLabel });
+        recordNestedAwaits(statement.condition);
+        validateFrameExpression(statement.condition, locals, fileName, types, suspensions);
+        operations.push({ kind: "branch", condition: statement.condition, thenLabel: bodyLabel, elseLabel: endLabel });
+        operations.push({ kind: "label", label: bodyLabel });
+        loopTargets.push({ breakLabel: endLabel, continueLabel: conditionLabel });
+        planStatements(statement.body.statements, scope, controlDepth + 1);
+        loopTargets.pop();
+        operations.push({ kind: "jump", label: conditionLabel });
+        operations.push({ kind: "label", label: endLabel });
+        continue;
+      }
+      if (statement.kind === "for") {
+        if (statement.mode === "inout") {
+          unsupported(fileName, statement.location, "async frame for...of does not support mutable element iteration");
+        }
+        const iterableType = semanticInfo.expressionTypes.get(statement.iterable.location.offset);
+        const collection = iterableType ? asyncCollectionShape(iterableType, types) : null;
+        if (!iterableType || !collection) {
+          unsupported(
+            fileName,
+            statement.iterable.location,
+            "persistent async for...of currently requires Array, fixed array, Slice, Map, or Set storage",
+          );
+        }
+        if (
+          statement.iterable.kind !== "identifier"
+          && statement.iterable.kind !== "member"
+          && statement.iterable.kind !== "index"
+        ) {
+          unsupported(
+            fileName,
+            statement.iterable.location,
+            "persistent async for...of requires stored iterable storage",
+            "bind the collection before entering the loop",
+          );
+        }
+        const indexBinding = `__z_async_for_index_${statement.location.offset}`;
+        locals.set(indexBinding, "usize");
+        registerAsyncForBindings(
+          statement,
+          collection.elementType,
+          collection.borrowedElement,
+          locals,
+          borrowedLocals,
+          types,
+          semanticInfo,
+          fileName,
+        );
+        validateFrameExpression(statement.iterable, locals, fileName, types, suspensions);
+        const conditionLabel = nextLabel.value++;
+        const bodyLabel = nextLabel.value++;
+        const incrementLabel = nextLabel.value++;
+        const endLabel = nextLabel.value++;
+        operations.push({
+          kind: "statement",
+          statement: {
+            kind: "assignment",
+            target: { kind: "identifier", name: indexBinding, location: statement.location },
+            expression: { kind: "number", value: "0", location: statement.location },
+            location: statement.location,
+          },
+        });
+        operations.push({ kind: "label", label: conditionLabel });
+        operations.push({ kind: "forBranch", statement, indexBinding, bodyLabel, elseLabel: endLabel });
+        operations.push({ kind: "label", label: bodyLabel });
+        loopTargets.push({ breakLabel: endLabel, continueLabel: incrementLabel });
+        planStatements(statement.body.statements, scope, controlDepth + 1);
+        loopTargets.pop();
+        operations.push({ kind: "label", label: incrementLabel });
+        operations.push({ kind: "forIncrement", indexBinding });
+        operations.push({ kind: "jump", label: conditionLabel });
+        operations.push({ kind: "label", label: endLabel });
+        continue;
+      }
+      if (statement.kind === "match") {
+        if (statement.mode !== "in") {
+          unsupported(
+            fileName,
+            statement.location,
+            "suspending async statement match currently requires `match (in value)`",
+            "borrow the subject explicitly while consuming payload cleanup states are added",
+          );
+        }
+        recordNestedAwaits(statement.expression);
+        validateFrameExpression(statement.expression, locals, fileName, types, suspensions);
+        const armLabels = statement.arms.map(() => nextLabel.value++);
+        const endLabel = nextLabel.value++;
+        operations.push({ kind: "matchDispatch", statement, armLabels });
+        statement.arms.forEach((arm, armIndex) => {
+          operations.push({ kind: "label", label: armLabels[armIndex] });
+          registerAsyncMatchBindings(
+            statement,
+            armIndex,
+            locals,
+            borrowedLocals,
+            types,
+            semanticInfo,
+            fileName,
+          );
+          operations.push({ kind: "matchBind", statement, armIndex });
+          planStatements(
+            arm.body.kind === "block" ? arm.body.statements : [arm.body],
+            scope,
+            controlDepth + 1,
+          );
+          if (!asyncStatementStopsFlow(arm.body)) operations.push({ kind: "jump", label: endLabel });
+        });
+        operations.push({ kind: "label", label: endLabel });
+        continue;
+      }
+      if (statement.kind === "break" || statement.kind === "continue") {
+        const loop = loopTargets.at(-1);
+        if (!loop) unsupported(fileName, statement.location, `${statement.kind} requires an enclosing async loop`);
+        operations.push({
+          kind: "jump",
+          label: statement.kind === "break" ? loop.breakLabel : loop.continueLabel,
+        });
         continue;
       }
       operations.push({ kind: "statement", statement });
@@ -664,6 +809,167 @@ function planFunction(
     children,
     types,
   };
+}
+
+function asyncCollectionShape(
+  type: string,
+  types: AsyncTypeContext,
+): {
+  readonly elementType: string;
+  readonly fixedLength: number | null;
+  readonly storageMember: "entries" | "values" | null;
+  readonly borrowedElement: boolean;
+} | null {
+  const fixed = parseFixedArrayType(type);
+  if (fixed) {
+    return {
+      elementType: fixed.elementType,
+      fixedLength: fixed.length,
+      storageMember: null,
+      borrowedElement: hasFrameCleanup(fixed.elementType, types),
+    };
+  }
+  const dynamic = parseDynamicArrayType(type);
+  if (dynamic) {
+    return {
+      elementType: dynamic.elementType,
+      fixedLength: null,
+      storageMember: null,
+      borrowedElement: hasFrameCleanup(dynamic.elementType, types),
+    };
+  }
+  const slice = parseSliceType(type);
+  if (slice) {
+    return {
+      elementType: slice.elementType,
+      fixedLength: null,
+      storageMember: null,
+      borrowedElement: hasFrameCleanup(slice.elementType, types),
+    };
+  }
+  const map = parseMapType(type);
+  if (map) {
+    return {
+      elementType: mapEntryTypeName(map.keyType, map.valueType),
+      fixedLength: null,
+      storageMember: "entries",
+      borrowedElement: true,
+    };
+  }
+  const set = parseSetType(type);
+  if (set) {
+    return {
+      elementType: set.elementType,
+      fixedLength: null,
+      storageMember: "values",
+      borrowedElement: true,
+    };
+  }
+  return null;
+}
+
+function registerAsyncFrameBinding(
+  name: string,
+  type: string,
+  borrowed: boolean,
+  location: SourceLocation,
+  locals: Map<string, string>,
+  borrowedLocals: Set<string>,
+  fileName: string,
+): void {
+  const existing = locals.get(name);
+  if (existing && existing !== type) {
+    unsupported(
+      fileName,
+      location,
+      `persistent async control flow cannot reuse binding ${JSON.stringify(name)} with both ${JSON.stringify(existing)} and ${JSON.stringify(type)}`,
+      "use distinct binding names in suspending branches",
+    );
+  }
+  locals.set(name, type);
+  if (borrowed) borrowedLocals.add(name);
+}
+
+function registerAsyncForBindings(
+  statement: Extract<Statement, { kind: "for" }>,
+  elementType: string,
+  borrowedElement: boolean,
+  locals: Map<string, string>,
+  borrowedLocals: Set<string>,
+  types: AsyncTypeContext,
+  semanticInfo: SemanticInfo,
+  fileName: string,
+): void {
+  if (statement.binding && statement.bindingLocation) {
+    registerAsyncFrameBinding(
+      statement.binding,
+      elementType,
+      borrowedElement,
+      statement.bindingLocation,
+      locals,
+      borrowedLocals,
+      fileName,
+    );
+  }
+  const aggregate = types.structs.get(elementType);
+  for (const binding of statement.objectBindings ?? []) {
+    const type = semanticInfo.bindingTypes.get(binding.bindingLocation.offset)
+      ?? aggregate?.fields.find((field) => field.name === binding.fieldName)?.type.name;
+    if (!type) unsupported(fileName, binding.bindingLocation, "could not determine persistent for...of binding type");
+    registerAsyncFrameBinding(
+      binding.bindingName,
+      type!,
+      borrowedElement && hasFrameCleanup(type!, types),
+      binding.bindingLocation,
+      locals,
+      borrowedLocals,
+      fileName,
+    );
+  }
+}
+
+function registerAsyncMatchBindings(
+  statement: Extract<Statement, { kind: "match" }>,
+  armIndex: number,
+  locals: Map<string, string>,
+  borrowedLocals: Set<string>,
+  types: AsyncTypeContext,
+  semanticInfo: SemanticInfo,
+  fileName: string,
+): void {
+  const subjectType = semanticInfo.expressionTypes.get(statement.expression.location.offset);
+  const declaration = subjectType ? types.enums.get(subjectType) : null;
+  const arm = statement.arms[armIndex];
+  const variant = declaration?.variants.find((candidate) => candidate.name === arm.variantName);
+  if (!subjectType || !declaration || !variant) {
+    unsupported(fileName, statement.location, "persistent async match requires a materialized enum subject");
+  }
+  if (arm.binding && arm.bindingLocation && variant!.payload) {
+    registerAsyncFrameBinding(
+      arm.binding,
+      variant!.payload.name,
+      true,
+      arm.bindingLocation,
+      locals,
+      borrowedLocals,
+      fileName,
+    );
+  }
+  const payload = variant!.payload ? types.structs.get(variant!.payload.name) : null;
+  for (const binding of arm.objectBindings ?? []) {
+    const type = semanticInfo.bindingTypes.get(binding.bindingLocation.offset)
+      ?? payload?.fields.find((field) => field.name === binding.fieldName)?.type.name;
+    if (!type) unsupported(fileName, binding.bindingLocation, "could not determine persistent match binding type");
+    registerAsyncFrameBinding(
+      binding.bindingName,
+      type!,
+      true,
+      binding.bindingLocation,
+      locals,
+      borrowedLocals,
+      fileName,
+    );
+  }
 }
 
 function awaitSite(
@@ -2609,6 +2915,108 @@ function beginAwait(
   ];
 }
 
+function assignPersistentBorrowedBinding(
+  name: string,
+  type: string,
+  value: string,
+  plan: AsyncFunctionPlan,
+): string {
+  return plan.borrowedLocals.has(name)
+    ? plan.types.structs.get(type)?.kind === "class"
+      ? `frame->${frameField(name)} = ${value};`
+      : `frame->${frameField(name)} = &(${value});`
+    : `frame->${frameField(name)} = ${value};`;
+}
+
+function emitAsyncForBranch(
+  operation: Extract<AsyncOperation, { kind: "forBranch" }>,
+  plan: AsyncFunctionPlan,
+  fileName: string,
+): string[] {
+  const iterableType = frameExpressionType(operation.statement.iterable, plan);
+  const collection = asyncCollectionShape(iterableType, plan.types);
+  if (!collection) unsupported(fileName, operation.statement.location, "missing persistent async collection shape");
+  const iterable = emitFrameExpression(operation.statement.iterable, plan, fileName);
+  const storage = collection!.storageMember ? `((${iterable}).${collection!.storageMember})` : `(${iterable})`;
+  const index = frameStoredValue(operation.indexBinding, "usize", plan.types);
+  const length = collection!.fixedLength === null
+    ? `((${storage}).length)`
+    : String(collection!.fixedLength);
+  const item = `((${storage}).data[${index}])`;
+  const lines = [
+    `if (${index} >= ${length}) {`,
+    `  frame->state = ${asyncLabelMarker(operation.elseLabel)};`,
+    "  continue;",
+    "}",
+  ];
+  if (operation.statement.binding) {
+    const type = plan.locals.get(operation.statement.binding)!;
+    lines.push(assignPersistentBorrowedBinding(operation.statement.binding, type, item, plan));
+  }
+  const aggregate = plan.types.structs.get(collection!.elementType);
+  for (const binding of operation.statement.objectBindings ?? []) {
+    const field = aggregate!.fields.find((candidate) => candidate.name === binding.fieldName)!;
+    lines.push(assignPersistentBorrowedBinding(
+      binding.bindingName,
+      field.type.name,
+      `((${item}).${field.name})`,
+      plan,
+    ));
+  }
+  lines.push(`frame->state = ${asyncLabelMarker(operation.bodyLabel)};`, "continue;");
+  return lines;
+}
+
+function emitAsyncMatchDispatch(
+  operation: Extract<AsyncOperation, { kind: "matchDispatch" }>,
+  plan: AsyncFunctionPlan,
+  fileName: string,
+): string[] {
+  const subjectType = frameExpressionType(operation.statement.expression, plan);
+  const declaration = plan.types.enums.get(subjectType);
+  if (!declaration) unsupported(fileName, operation.statement.location, "missing persistent async match enum");
+  const subject = emitFrameExpression(operation.statement.expression, plan, fileName);
+  return [
+    `switch ((${subject}).tag) {`,
+    ...operation.statement.arms.map((arm, index) => (
+      `  case ${resultTag(subjectType, arm.variantName)}: frame->state = ${asyncLabelMarker(operation.armLabels[index])}; break;`
+    )),
+    "  default: abort();",
+    "}",
+    "continue;",
+  ];
+}
+
+function emitAsyncMatchBinding(
+  operation: Extract<AsyncOperation, { kind: "matchBind" }>,
+  plan: AsyncFunctionPlan,
+  fileName: string,
+): string[] {
+  const subjectType = frameExpressionType(operation.statement.expression, plan);
+  const declaration = plan.types.enums.get(subjectType);
+  const arm = operation.statement.arms[operation.armIndex];
+  const variant = declaration?.variants.find((candidate) => candidate.name === arm.variantName);
+  if (!declaration || !variant) unsupported(fileName, operation.statement.location, "missing persistent async match variant");
+  const subject = emitFrameExpression(operation.statement.expression, plan, fileName);
+  const payload = `((${subject}).data.${variant!.name})`;
+  const lines: string[] = [];
+  if (arm.binding && variant!.payload) {
+    lines.push(assignPersistentBorrowedBinding(arm.binding, variant!.payload.name, payload, plan));
+  }
+  const aggregate = variant!.payload ? plan.types.structs.get(variant!.payload.name) : null;
+  const access = aggregate?.kind === "class" ? "->" : ".";
+  for (const binding of arm.objectBindings ?? []) {
+    const field = aggregate!.fields.find((candidate) => candidate.name === binding.fieldName)!;
+    lines.push(assignPersistentBorrowedBinding(
+      binding.bindingName,
+      field.type.name,
+      `((${payload})${access}${field.name})`,
+      plan,
+    ));
+  }
+  return lines;
+}
+
 function generatePoll(
   plan: AsyncFunctionPlan,
   planByKey: ReadonlyMap<string, AsyncFunctionPlan>,
@@ -2656,6 +3064,36 @@ function generatePoll(
       const condition = emitFrameExpression(operation.condition, plan, fileName);
       cases.push(caseBlock(state, [
         `frame->state = (${condition}) ? ${asyncLabelMarker(operation.thenLabel)} : ${asyncLabelMarker(operation.elseLabel)};`,
+        "continue;",
+      ]));
+      state += 1;
+      continue;
+    }
+    if (operation.kind === "forBranch") {
+      cases.push(caseBlock(state, emitAsyncForBranch(operation, plan, fileName)));
+      state += 1;
+      continue;
+    }
+    if (operation.kind === "forIncrement") {
+      const index = frameStoredValue(operation.indexBinding, "usize", plan.types);
+      cases.push(caseBlock(state, [
+        `${index} += 1;`,
+        `frame->state = ${state + 1};`,
+        "continue;",
+      ]));
+      state += 1;
+      continue;
+    }
+    if (operation.kind === "matchDispatch") {
+      emitNestedAwaits(operation.statement.expression);
+      cases.push(caseBlock(state, emitAsyncMatchDispatch(operation, plan, fileName)));
+      state += 1;
+      continue;
+    }
+    if (operation.kind === "matchBind") {
+      cases.push(caseBlock(state, [
+        ...emitAsyncMatchBinding(operation, plan, fileName),
+        `frame->state = ${state + 1};`,
         "continue;",
       ]));
       state += 1;
@@ -3005,6 +3443,20 @@ function generatePoll(
     state += 1;
   }
   const finalizeState = state;
+  for (const site of plan.awaits.values()) {
+    if (!site.generator) continue;
+    const child = `frame->child_${site.index}`;
+    cases.push(caseBlock(state, [
+      `if (${child} != NULL) {`,
+      `  if (frame->cancel_children) z_async_cancel(${child});`,
+      `  if (!z_async_wait(&frame->task, ${child})) return;`,
+      `  frame->child_${site.index} = NULL;`,
+      "}",
+      `frame->state = ${state + 1};`,
+      "continue;",
+    ]));
+    state += 1;
+  }
   for (const [index, childTarget] of plan.children) {
     const target = planByKey.get(targetKey(childTarget))!;
     const site = [...plan.spawns.values()].find((candidate) => candidate.index === index);
