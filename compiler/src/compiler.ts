@@ -6,6 +6,10 @@ import { materializeResultTypes } from "./results.ts";
 import { materializeGenerics } from "./generics.ts";
 import { inferGenericCalls } from "./generic-inference.ts";
 import { resolveForeignModules } from "./foreign.ts";
+import {
+  collectForeignHandleTypeAliases,
+  resolveForeignHandleTypeAnnotations,
+} from "./foreign-handle-types.ts";
 import type { Program } from "./ast.ts";
 import type { ForeignModule } from "./foreign.ts";
 import type { SemanticInfo } from "./sema.ts";
@@ -86,13 +90,21 @@ export function analyzeSource(source: string, fileName: string, options: Analysi
   const projectBuild = prepareProject(fileName);
   const includeDirectories = [...new Set([...projectBuild.includeDirectories, ...linked.includeDirectories])];
   const foreignModules = resolveForeignModules(linked.program.imports, fileName, includeDirectories, projectBuild.deploymentTarget);
+  const foreignHandleTypes = collectForeignHandleTypeAliases(foreignModules);
   const typeDisplayNames = new Map(linked.typeDisplayNames);
   for (const module of foreignModules.values()) {
     for (const type of module.types.values()) {
       typeDisplayNames.set(type.typeName, `${type.cName}${type.nullable ? " | null" : ""}`);
     }
   }
-  const inferredProgram = inferGenericCalls(linked.program, fileName, foreignModules);
+  for (const [canonical, display] of foreignHandleTypes.displayByCanonicalName) {
+    typeDisplayNames.set(canonical, display);
+  }
+  const resolvedProgram = resolveForeignHandleTypeAnnotations(
+    linked.program,
+    foreignHandleTypes.canonicalBySourceName,
+  );
+  const inferredProgram = inferGenericCalls(resolvedProgram, fileName, foreignModules);
   const foreignIdentityTypes = new Set(
     [...foreignModules.values()].flatMap((module) => [...module.interfaces.values()].map((type) => type.typeName)),
   );

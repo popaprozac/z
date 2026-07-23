@@ -1075,9 +1075,9 @@ test("narrows, borrows, consumes, and cleans up owned C handles", () => {
   const declarationOffset = exampleSource.indexOf("file =") + 1;
   const guardOffset = exampleSource.indexOf("file == null") + 1;
   const narrowedOffset = exampleSource.indexOf("file);", exampleSource.indexOf("fputs")) + 1;
-  assert.match(hover(exampleSource, example, declarationOffset)?.contents.value ?? "", /file: FILE \* \| null/);
-  assert.match(hover(exampleSource, example, guardOffset)?.contents.value ?? "", /file: FILE \* \| null/);
-  assert.match(hover(exampleSource, example, narrowedOffset)?.contents.value ?? "", /file: FILE \*(?! \| null)/);
+  assert.match(hover(exampleSource, example, declarationOffset)?.contents.value ?? "", /file: stdio\.FILE \| null/);
+  assert.match(hover(exampleSource, example, guardOffset)?.contents.value ?? "", /file: stdio\.FILE \| null/);
+  assert.match(hover(exampleSource, example, narrowedOffset)?.contents.value ?? "", /file: stdio\.FILE(?! \| null)/);
 
   const source = `
     import stdio from "stdio.h";
@@ -1122,7 +1122,7 @@ test("discovers owned-handle contracts from adjacent Z declaration files", () =>
   assert.match(outputGenerated, /z_test_create\(&\(handle\)\)/);
   assert.match(outputGenerated, /if \(_z_live_handle_\d+ && handle != NULL\) z_test_created_close\(handle\);/);
   const outputBindingOffset = outputSource.indexOf("handle;") + 2;
-  assert.match(hover(outputSource, resolve(projectRoot, "foreign-output-handle.zs"), outputBindingOffset)?.contents.value ?? "", /handle: ZCreatedHandle \* \| null/);
+  assert.match(hover(outputSource, resolve(projectRoot, "foreign-output-handle.zs"), outputBindingOffset)?.contents.value ?? "", /handle: handles\.ZCreatedHandle \| null/);
   assert.match(
     diagnostics("function main(): i32 { let unresolved; return 0; }", "unresolved-out.zs")[0]?.message ?? "",
     /cannot infer type of uninitialized let "unresolved"/,
@@ -1194,9 +1194,9 @@ test("discovers owned-handle contracts from adjacent Z declaration files", () =>
   assert.doesNotMatch(exampleC, /struct Z_Option/);
 
   const optionBinding = exampleSource.indexOf("handle = Option") + 2;
-  assert.match(hover(exampleSource, example, optionBinding)?.contents.value ?? "", /handle: Option<ZDeclaredHandle \*>/);
+  assert.match(hover(exampleSource, example, optionBinding)?.contents.value ?? "", /handle: Option<native\.ZDeclaredHandle>/);
   const payloadBinding = exampleSource.indexOf("value)", exampleSource.indexOf("some(")) + 2;
-  assert.match(hover(exampleSource, example, payloadBinding)?.contents.value ?? "", /value: ZDeclaredHandle \*/);
+  assert.match(hover(exampleSource, example, payloadBinding)?.contents.value ?? "", /value: native\.ZDeclaredHandle/);
 
   const narrowedSource = exampleSource.replace(
     "const handle = Option.fromNullable(native.z_declared_open(value));",
@@ -1206,8 +1206,59 @@ test("discovers owned-handle contracts from adjacent Z declaration files", () =>
   );
   assert.throws(
     () => compileToC(narrowedSource, example),
-    /Option\.fromNullable requires ZDeclaredHandle \* \| null, found owned ZDeclaredHandle \*/,
+    /Option\.fromNullable requires native\.ZDeclaredHandle \| null, found owned native\.ZDeclaredHandle/,
   );
+
+  const storedOwnerSource = `
+    import handles from "tests/fixtures/foreign-handles.h";
+    class HandleOwner {
+      private handle: handles.ZTestHandle;
+
+      constructor() throws i32 {
+        const handle = handles.z_test_open();
+        if (handle == null) throw 1;
+        this.handle = move handle;
+      }
+
+      function read(): i32 {
+        return handles.z_test_use(this.handle);
+      }
+    }
+
+    function inspectMaybe(handle: handles.ZTestHandle | null): i32 {
+      if (handle == null) return 0;
+      return handles.z_test_use(handle);
+    }
+
+    function lift(handle: handles.ZTestHandle | null): Option<handles.ZTestHandle> {
+      return Option.fromNullable(handle);
+    }
+
+    function main(): i32 {
+      const opened = attempt new HandleOwner();
+      return match (opened) {
+        success(owner) => owner.read();
+        failure(status) => status;
+      };
+    }
+  `;
+  const storedOwnerFile = resolve(projectRoot, "foreign-stored-handle.zs");
+  const storedOwnerGenerated = compileToC(storedOwnerSource, storedOwnerFile);
+  assert.match(storedOwnerGenerated, /ZTestHandle \* handle;/);
+  assert.match(storedOwnerGenerated, /z_test_close\(self->handle\);/);
+  const storedTypeOffset = storedOwnerSource.indexOf("handles.ZTestHandle") + "handles.".length + 2;
+  assert.match(
+    hover(storedOwnerSource, storedOwnerFile, storedTypeOffset)?.contents.value ?? "",
+    /handles\.ZTestHandle/,
+  );
+  const partialStoredOwner = storedOwnerSource.replace("handles.ZTestHandle", "handles.ZTestH");
+  const partialStoredOwnerOffset = partialStoredOwner.indexOf("handles.ZTestH") + "handles.ZTestH".length;
+  const handleCompletion = completions(
+    partialStoredOwner,
+    storedOwnerFile,
+    partialStoredOwnerOffset,
+  ).find((item) => item.label === "ZTestHandle");
+  assert.match(handleCompletion?.detail ?? "", /owned opaque native handle ZTestHandle \*; deinit z_test_close/);
 });
 
 test("projects native integer statuses into typed throws and preserves out cleanup", () => {
@@ -2696,7 +2747,10 @@ test("builds the interactive Z Notes AppKit and sqlite3 application", () => {
   assert.match(artifact.source, /Z_Result_void_i32/);
   assert.match(artifact.source, /_z_native_status_\d+ == 0/);
   assert.match(artifact.source, /if \(_z_live_database_\d+ && database != NULL\) sqlite3_close\(database\)/);
-  assert.match(artifact.source, /sqlite3_prepare_v2\(database, .*SELECT id, title, body FROM notes ORDER BY id/);
+  assert.match(artifact.source, /sqlite3 \* database;/);
+  assert.match(artifact.source, /NoteDatabase_deinit\([^)]+\) \{\n\s+\(void\)self;\n\s+sqlite3_close\(self->database\);/);
+  assert.equal(artifact.source.match(/sqlite3_open\(/g)?.length, 2);
+  assert.match(artifact.source, /sqlite3_prepare_v2\(self->database, .*SELECT id, title, body FROM notes ORDER BY id/);
   assert.match(artifact.source, /sqlite3_bind_int64\(statement, 1, .*note.*id/);
   assert.match(artifact.source, /sqlite3_bind_text\(statement, 2, [^\n]+title[^\n]+SQLITE_TRANSIENT\)/);
   assert.match(artifact.source, /sqlite3_bind_text\(statement, 3, [^\n]+body[^\n]+SQLITE_TRANSIENT\)/);
@@ -2752,8 +2806,13 @@ test("builds the interactive Z Notes AppKit and sqlite3 application", () => {
 
   const persistence = resolve(projectRoot, "examples/applications/z-notes/persistence.zs");
   const persistenceSource = readFileSync(persistence, "utf8");
-  const databaseOffset = persistenceSource.indexOf("database;") + 2;
-  assert.match(hover(persistenceSource, persistence, databaseOffset)?.contents.value ?? "", /database: sqlite3 \* \| null/);
+  const databaseTypeOffset = persistenceSource.indexOf(
+    "sqlite.sqlite3",
+    persistenceSource.indexOf("class NoteDatabase"),
+  ) + "sqlite.".length + 2;
+  assert.match(hover(persistenceSource, persistence, databaseTypeOffset)?.contents.value ?? "", /sqlite\.sqlite3/);
+  const databaseFieldOffset = persistenceSource.indexOf("database:", persistenceSource.indexOf("class NoteDatabase")) + 2;
+  assert.match(hover(persistenceSource, persistence, databaseFieldOffset)?.contents.value ?? "", /private database: sqlite\.sqlite3/);
   const titleBytesOffset = persistenceSource.indexOf("titleBytes =") + 2;
   assert.match(hover(persistenceSource, persistence, titleBytesOffset)?.contents.value ?? "", /titleBytes: view cstring \| null/);
   const rowStatusOffset = persistenceSource.indexOf("SQLITE_ROW") + 2;
@@ -2766,12 +2825,15 @@ test("builds the interactive Z Notes AppKit and sqlite3 application", () => {
     /sqlite3\.h$/,
   );
 
-  const nullableCopy = persistenceSource.replace("    if (titleBytes == null) throw -1;\n", "");
+  const nullableCopy = persistenceSource.replace("      if (titleBytes == null) throw -1;\n", "");
   assert.match(
     diagnostics(nullableCopy, persistence)[0]?.message ?? "",
     /nullable native text must be checked before copying it into String/,
   );
-  const nonNullTail = persistenceSource.replace("    out schemaStatement,\n    null", "    out schemaStatement,\n    database");
+  const nonNullTail = persistenceSource.replace(
+    "      out schemaStatement,\n      null",
+    "      out schemaStatement,\n      this.database",
+  );
   assert.match(
     diagnostics(nonNullTail, persistence)[0]?.message ?? "",
     /restricts native parameter 5 to null/,

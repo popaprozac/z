@@ -4980,7 +4980,11 @@ function inferExpressionInner(
                 && pointer.ownership === optionPointer.ownership;
               if (!contextualNull && !compatibleObject && !compatiblePointer) {
                 const expectedPointer = state.foreignTypes.get(option.target);
-                const expected = expectedPointer ? `${expectedPointer.cName} | null` : `${option.target} | null`;
+                const expectedDisplay = expectedPointer
+                  ? state.typeDisplayNames.get(pointerTypeName(expectedPointer.identity, expectedPointer.ownership, true))
+                  : null;
+                const expected = expectedDisplay
+                  ?? (expectedPointer ? `${expectedPointer.cName} | null` : `${option.target} | null`);
                 throw new DiagnosticError(
                   fileName,
                   argument.location,
@@ -8536,14 +8540,15 @@ function checkForeignCall(
   return result;
 }
 
-function describePointer(type: ForeignPointerType): string {
+function describePointer(type: ForeignPointerType, state?: AnalysisState): string {
   const ownership = type.ownership === "consuming" ? "owned" : type.ownership;
-  return `${ownership} ${type.nullable ? "nullable " : ""}${type.cName}`;
+  const display = state?.typeDisplayNames.get(type.typeName);
+  return `${ownership} ${display ?? `${type.nullable ? "nullable " : ""}${type.cName}`}`;
 }
 
 function describeValueType(type: ValueType, state: AnalysisState): string {
   const pointer = foreignPointer(type, state);
-  if (pointer) return describePointer(pointer);
+  if (pointer) return describePointer(pointer, state);
   const name = String(underlyingType(type));
   if (isNullableObjCTypeName(name)) return `${publicObjCTypeName(name)} | null`;
   return displayFunctionType(name, displayArrayType) ?? displayArrayType(name);

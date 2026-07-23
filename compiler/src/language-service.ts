@@ -38,6 +38,7 @@ import { parseViewType } from "./view-types.ts";
 import { parseMapType } from "./map-types.ts";
 import { parseSetType } from "./set-types.ts";
 import type { ExplicitCopyPlan } from "./sema.ts";
+import { collectForeignHandleTypeAliases } from "./foreign-handle-types.ts";
 import {
   parseForeignDeclarationContracts,
   type ForeignDeclarationContracts,
@@ -434,6 +435,9 @@ export function semanticTokens(source: string, fileName: string): { readonly dat
       const memberName = memberPath.at(-1) ?? "";
       const named = module ? resolveModuleNamedType(module, namespacePath, memberName) : null;
       const fn = module ? resolveModuleFunction(module, namespacePath, memberName) : null;
+      const handle = module && namespacePath.length === 0
+        ? resolveModuleHandleType(module, memberName)
+        : null;
       if (module?.namespaces.has(memberPath.join("."))) {
         classifications.set(token.location.offset, { type: semanticTokenTypes.indexOf("namespace"), modifiers: 4 });
       } else if (namespacePath.length === 0 && module?.interfaces.has(memberName)) {
@@ -441,6 +445,11 @@ export function semanticTokens(source: string, fileName: string): { readonly dat
       } else if (named) {
         classifications.set(token.location.offset, {
           type: semanticTokenTypes.indexOf(named.kind === "enum" ? "enum" : "type"),
+          modifiers: 4,
+        });
+      } else if (handle) {
+        classifications.set(token.location.offset, {
+          type: semanticTokenTypes.indexOf("type"),
           modifiers: 4,
         });
       } else if (fn) {
@@ -675,6 +684,16 @@ export function hover(source: string, fileName: string, offset: number): Hover |
           word.end,
         );
       }
+    }
+    const handleModule = context.foreignModules.get(memberPrefix[1]);
+    const handleType = handleModule ? resolveModuleHandleType(handleModule, word.text) : null;
+    if (handleType) {
+      return markdownHover(
+        `${memberPrefix[1]}.${word.text}  // owned opaque native handle; deinit ${handleType.release}`,
+        source,
+        word.start,
+        word.end,
+      );
     }
     const sourceImport = context.sourceProgram.imports.find((declaration) => (
       isLocalSourceModuleSpecifier(declaration.header)
@@ -3083,6 +3102,18 @@ function moduleCompletions(
 ): CompletionItem[] {
   const items: CompletionItem[] = [];
   if (namespacePath.length === 0) {
+    const aliases = collectForeignHandleTypeAliases(new Map([[module.declaration.moduleName, module]]));
+    const prefix = `${module.declaration.moduleName}.`;
+    for (const [sourceName, canonical] of aliases.canonicalBySourceName) {
+      if (!sourceName.startsWith(prefix)) continue;
+      const pointer = module.types.get(canonical);
+      if (!pointer || pointer.nullable) continue;
+      items.push({
+        label: sourceName.slice(prefix.length),
+        kind: completionKinds.struct,
+        detail: `owned opaque native handle ${pointer.cName}; deinit ${pointer.release}`,
+      });
+    }
     for (const declaration of module.interfaces.values()) {
       items.push({ label: declaration.exportName, kind: completionKinds.class, detail: `Objective-C class ${declaration.className}` });
     }
@@ -3141,6 +3172,15 @@ function moduleCompletions(
     || ((item.kind === completionKinds.struct || item.kind === completionKinds.enum) && /^(?:NS|CG)/.test(item.label))
     || (item.kind === completionKinds.function && /^(?:NS|CG)/.test(item.label))
   )).slice(0, 2500);
+}
+
+function resolveModuleHandleType(
+  module: ForeignModule,
+  name: string,
+) {
+  const aliases = collectForeignHandleTypeAliases(new Map([[module.declaration.moduleName, module]]));
+  const canonical = aliases.canonicalBySourceName.get(`${module.declaration.moduleName}.${name}`);
+  return canonical ? module.types.get(canonical) ?? null : null;
 }
 
 function objcCompletions(declaration: ForeignObjCInterface, instance: boolean, context: AnalyzedSource): CompletionItem[] {
@@ -3762,9 +3802,12 @@ function displayType(type: string, typeDisplayNames: ReadonlyMap<string, string>
 
 function displayServiceType(type: string, context: AnalyzedSource): string {
   const pointer = context.semanticInfo.foreignTypes.get(type);
-  if (pointer) return pointer.stringView
-    ? `view cstring${pointer.nullable ? " | null" : ""}`
-    : `${pointer.cName}${pointer.nullable ? " | null" : ""}`;
+  if (pointer) {
+    if (pointer.stringView) return `view cstring${pointer.nullable ? " | null" : ""}`;
+    const named = context.typeDisplayNames.get(type);
+    if (named) return named;
+    return `${pointer.cName}${pointer.nullable ? " | null" : ""}`;
+  }
   const displayNames = new Map(context.typeDisplayNames);
   for (const name of context.semanticInfo.foreignNamedTypes.keys()) {
     const visible = visibleSelectiveImportType(name, context);

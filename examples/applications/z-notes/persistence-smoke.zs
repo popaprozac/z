@@ -1,10 +1,15 @@
 import console from "std/console";
 import { Note, NoteStore } from "./model.zs";
-import { insertNote, loadNotes } from "./persistence.zs";
+import { NoteDatabase } from "./persistence.zs";
 
 function main(): i32 {
   const path = ".z-cache/z-notes-smoke.sqlite3";
-  const loadedBefore = attempt loadNotes(path);
+  const opened = attempt new NoteDatabase(path);
+  const database = match (opened) {
+    success(database) => database;
+    failure(status) => return status;
+  };
+  const loadedBefore = attempt database.loadNotes();
   const beforeNotes = match (loadedBefore) {
     success(notes) => notes;
     failure(status) => return status;
@@ -19,13 +24,13 @@ function main(): i32 {
     title: "Ada's native note",
     body: "Bound text keeps quotes like ' safe.",
   });
-  const inserted = attempt insertNote(path, note);
+  const inserted = attempt database.insertNote(note);
   match (inserted) {
     success => {}
     failure(status) => return status;
   }
 
-  const loadedAfter = attempt loadNotes(path);
+  const loadedAfter = attempt database.loadNotes();
   const afterNotes = match (loadedAfter) {
     success(notes) => notes;
     failure(status) => return status;

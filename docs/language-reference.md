@@ -910,6 +910,25 @@ when the destination is explicitly `String`; nullable values must be narrowed
 first. Console formatting can inspect a non-null `NSString` directly without
 creating that owned copy.
 
+An owned opaque C handle with a complete `.zd` release contract is nameable
+through its import namespace:
+
+```zs
+import sqlite from "sqlite3.h";
+
+class Database {
+  private handle: sqlite.sqlite3;
+}
+```
+
+`sqlite.sqlite3` is the non-null owned handle and
+`sqlite.sqlite3 | null` is its nullable form. The namespace name is a safe Z
+spelling for the header's native identity, not a wrapper or a copy of the
+pointer ABI. Fields and ordinary value parameters own it, `in` borrows it, and
+`move` consumes or transfers it. If stored in an ARC class, the contracted
+native deinitializer runs exactly once when the final class reference is
+released.
+
 Runtime conventions that cannot be represented as an ordinary imported call
 use explicit standard-library adapters. `import objc from "std/objc";` is not
 needed for normal classes, methods, properties, constants, nullability, or

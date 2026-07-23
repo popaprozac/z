@@ -113,7 +113,9 @@ button through the explicit `std/objc` target/action adapter. The rest of the
 control and window surface comes directly from AppKit headers. It imports
 `sqlite3.h` directly, selects the SQLite system library in `z.json`, and uses
 an adjacent `.zd` contract to classify owned database and prepared-statement
-outputs without a handwritten wrapper. SQLite column text is a nullable
+outputs without a handwritten wrapper. One ARC-managed `NoteDatabase` stores
+the source-nameable `sqlite.sqlite3` owner, reuses the connection for loading
+and insertion, and closes it at final release. SQLite column text is a nullable
 `view cstring` tied to its statement, narrowed, and copied into owned Z
 `String` storage. Editable AppKit title/body fields become owned Z strings and
 are persisted through placeholder binding; a declaration-only

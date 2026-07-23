@@ -1446,6 +1446,15 @@ conditional on both ownership liveness and non-nullness. Borrowed returns remain
 unsupported until their lifetime can be tied to static storage or an input
 owner.
 
+Once a contract establishes an owned opaque C pointer and its release operation,
+the native typedef is also a source-nameable Z type. The import namespace keeps
+the header identity visible: an owned non-null `sqlite3 *` is written
+`sqlite.sqlite3`, while its nullable form is `sqlite.sqlite3 | null`. Storage is
+owned by default; `in` borrows it and `move` transfers it. The readable spelling
+does not erase the internal pointer identity, nullability, release operation, or
+live-state tracking. An ARC class may therefore store the handle and release it
+exactly once when the class dies.
+
 Pointers to complete imported records use a separate, non-escaping call
 contract. API notes classify `const T *` as `in` and writable `T *` as `out` or
 `inout`. An `in` call implicitly borrows a stored Z value. Writable calls require

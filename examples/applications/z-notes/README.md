@@ -6,6 +6,8 @@ application rather than a collection of isolated compiler probes.
 The application currently combines:
 
 - an ARC-managed Z application model containing owned `Array<Note>` storage;
+- an ARC-managed `NoteDatabase` containing one persistent
+  `sqlite.sqlite3` native owner;
 - `Option<usize>` selection and borrowed callback inspection;
 - direct AppKit header import, an ARC-managed `NSWindow`, and a native
   `NSScrollView`/`NSTextView` note browser;
@@ -16,8 +18,9 @@ The application currently combines:
 The application now uses the first `std/objc` target/action connection for an
 interactive Add Note button plus editable title and body fields. The bound
 connection owns the button and callback, so AppKit's weak target cannot silently
-expire while the application is running. Startup loads
-notes from `.z-cache/z-notes.sqlite3` and renders their titles and bodies into a
+expire while the application is running. Startup opens
+`.z-cache/z-notes.sqlite3` once, stores the handle in `NoteDatabase`, loads
+notes through that owner, and renders their titles and bodies into a
 native scrollable view. Each click first persists the entered note, then
 mutates the ARC-managed `NoteStore`, selects it, updates native AppKit labels
 and the window title, refreshes the browser, and logs the new note. The
@@ -59,8 +62,11 @@ handwritten C wrapper. `sqlite3_open` produces an owned handle through
 `sqlite3 **`; `sqlite3.h.zd` classifies that parameter as an owned nullable
 `out` value whose deinitializer is `sqlite3_close`. A local `let database;`
 therefore acquires its native type from the call, becomes initialized after the
-call, and is closed deterministically on every later exit. Prepared statements
-use the same owned `out` shape with `sqlite3_finalize`.
+call, narrows to non-null, and moves into the
+`private database: sqlite.sqlite3` field. The ARC-managed `NoteDatabase`
+reuses that handle for schema creation, loading, and every insert. Its final
+release calls `sqlite3_close` exactly once. Prepared statements remain
+operation-local owners and use the same `out` shape with `sqlite3_finalize`.
 
 The same declaration file projects SQLite's conventional zero-success integer
 statuses into `void throws i32`. Application code uses `try sqlite3_open(...)`

@@ -365,6 +365,28 @@ vendor.vendor_use(handle);
 // vendor_close(handle) is emitted on exit.
 ```
 
+The same contract makes an opaque C typedef source-nameable through the import
+namespace. If the produced native value is `VendorHandle *`, its non-null type
+is `vendor.VendorHandle`; `vendor.VendorHandle | null` is the nullable form.
+This permits persistent ownership without exposing raw pointer syntax:
+
+```zs
+class Client {
+  private handle: vendor.VendorHandle;
+
+  constructor() throws i32 {
+    let handle;
+    try vendor.vendor_create(out handle);
+    if (handle == null) throw -1;
+    this.handle = move handle;
+  }
+}
+```
+
+ARC teardown of `Client` invokes the handle's declared release operation.
+Native pointer identity and ownership remain compiler facts behind the readable
+type name.
+
 The enclosing `declare module "vendor.h"` already establishes the native
 authoring scope. No import is needed inside the `.zd` file to complete, hover,
 or navigate `vendor_close`; imports are reserved for a future need to reuse Z

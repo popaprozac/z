@@ -2,11 +2,19 @@ import console from "std/console";
 import objc from "std/objc";
 import AppKit from "AppKit/AppKit.h";
 import { Note, NoteStore } from "./model.zs";
-import { insertNote, loadNotes, sqliteVersion } from "./persistence.zs";
+import { NoteDatabase, sqliteVersion } from "./persistence.zs";
 
 function main(): i32 {
   const databasePath = ".z-cache/z-notes.sqlite3";
-  const loaded = attempt loadNotes(databasePath);
+  const openedDatabase = attempt new NoteDatabase(databasePath);
+  const database = match (openedDatabase) {
+    success(database) => database;
+    failure(status) => {
+      console.error(`could not open notes database: sqlite status ${status}`);
+      return status;
+    }
+  };
+  const loaded = attempt database.loadNotes();
   const initialNotes = match (loaded) {
     success(notes) => notes;
     failure(status) => {
@@ -118,7 +126,7 @@ function main(): i32 {
       return;
     }
     const note = Note({ id: noteId, title, body });
-    const inserted = attempt insertNote(databasePath, note);
+    const inserted = attempt database.insertNote(note);
     match (inserted) {
       success => {
         nextId = nextId + 1;
