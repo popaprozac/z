@@ -96,7 +96,7 @@ function main(): i32 {
   notesColumn.width = 720.0;
   notesView.addTableColumn(notesColumn);
   notesView.rowHeight = 44.0;
-  const tableController = new NotesTableController(store);
+  const tableController = new NotesTableController(store, notesView, selectedLabel);
   const tableBinding = objc.bind(notesView, {
     dataSource: tableController,
     delegate: tableController,

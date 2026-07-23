@@ -136,7 +136,8 @@ import { sqlite3_open, sqlite3_close as closeDatabase } from "sqlite3.h";
 Namespace and selective imports do not introduce wrapper calls. Project-authored
 pointer ownership and callback lifetime/context/release/threading contracts use
 adjacent `<header>.zd` Z declaration files. See
-[the interop model](interop-model.md).
+[the Z declaration reference](z-declarations.md) for the current grammar and
+[the interop model](interop-model.md) for its lowering and cost model.
 
 For native projects, `z.json` can declare one explicit host deployment target
 and the system libraries the final binary must link:

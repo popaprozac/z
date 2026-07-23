@@ -18,6 +18,7 @@ import type {
   ClosureInfo,
   ForeignCallArgumentPlan,
   ForeignStatusCallInfo,
+  IntegerConversion,
   IntegerOperation,
   ObjCBindingPlan,
   ObjCProtocolConformance,
@@ -262,7 +263,11 @@ export function generateC(program: Program, sourceName: string, semanticInfo: Se
   if (semanticInfo.objcBlockArguments.size > 0) {
     lines.push("", generateObjCBlockRuntime());
   }
-  const integerRuntime = generateIntegerRuntime(semanticInfo.integerOperations, semanticInfo.numericLiteralTypes);
+  const integerRuntime = generateIntegerRuntime(
+    semanticInfo.integerOperations,
+    semanticInfo.integerConversions,
+    semanticInfo.numericLiteralTypes,
+  );
   if (integerRuntime.length > 0) lines.push("", ...integerRuntime);
   if (programUsesIndex(program)) {
     lines.push(
@@ -5107,6 +5112,15 @@ function generateExpressionInner(expression: Expression, context: GenerationCont
       );
     }
     case "call": {
+      const integerConversion = context.semanticInfo.integerConversions.get(expression.location.offset);
+      if (integerConversion) {
+        const value = generateExpression(expression.arguments[0], context);
+        const targetType = primitiveTypeNames[integerConversion.targetType];
+        if (!targetType) throw new Error(`unsupported integer conversion target ${JSON.stringify(integerConversion.targetType)}`);
+        return integerConversion.checked
+          ? `${integerConversionName(integerConversion)}(${value})`
+          : `((${targetType})(${value}))`;
+      }
       if (context.semanticInfo.optionFromNullable.has(expression.location.offset)) {
         return generateExpression(expression.arguments[0], context);
       }
@@ -5919,16 +5933,95 @@ static void z_process_set_arguments(int argc, char **argv) {
 
 function generateIntegerRuntime(
   operations: ReadonlyMap<number, IntegerOperation>,
+  conversions: ReadonlyMap<number, IntegerConversion>,
   contextualLiterals: ReadonlyMap<number, string>,
 ): string[] {
-  const unique = new Map<string, IntegerOperation>();
+  const uniqueOperations = new Map<string, IntegerOperation>();
   for (const [offset, operation] of operations) {
     if (contextualLiterals.has(offset)) continue;
-    unique.set(`${operation.kind}:${operation.type}`, operation);
+    uniqueOperations.set(`${operation.kind}:${operation.type}`, operation);
   }
-  return [...unique.values()]
+  const generatedOperations = [...uniqueOperations.values()]
     .sort((left, right) => integerOperationName(left).localeCompare(integerOperationName(right)))
     .flatMap((operation) => [generateIntegerOperation(operation), ""]);
+  const uniqueConversions = new Map<string, IntegerConversion>();
+  for (const conversion of conversions.values()) {
+    if (!conversion.checked) continue;
+    uniqueConversions.set(`${conversion.sourceType}:${conversion.targetType}`, conversion);
+  }
+  const generatedConversions = [...uniqueConversions.values()]
+    .sort((left, right) => integerConversionName(left).localeCompare(integerConversionName(right)))
+    .flatMap((conversion) => [generateIntegerConversion(conversion), ""]);
+  return [...generatedOperations, ...generatedConversions];
+}
+
+function integerConversionName(conversion: IntegerConversion): string {
+  return `z_checked_convert_${conversion.sourceType}_to_${conversion.targetType}`;
+}
+
+function generateIntegerConversion(conversion: IntegerConversion): string {
+  const sourceCType = primitiveTypeNames[conversion.sourceType];
+  const targetCType = primitiveTypeNames[conversion.targetType];
+  if (!sourceCType || !targetCType) {
+    throw new Error(`unsupported integer conversion ${conversion.sourceType} to ${conversion.targetType}`);
+  }
+  const limits: Readonly<Record<string, { readonly minimum?: string; readonly maximum: string }>> = {
+    i8: { minimum: "INT8_MIN", maximum: "INT8_MAX" },
+    u8: { maximum: "UINT8_MAX" },
+    i16: { minimum: "INT16_MIN", maximum: "INT16_MAX" },
+    u16: { maximum: "UINT16_MAX" },
+    i32: { minimum: "INT32_MIN", maximum: "INT32_MAX" },
+    u32: { maximum: "UINT32_MAX" },
+    i64: { minimum: "INT64_MIN", maximum: "INT64_MAX" },
+    u64: { maximum: "UINT64_MAX" },
+    isize: { minimum: "INTPTR_MIN", maximum: "INTPTR_MAX" },
+    usize: { maximum: "UINTPTR_MAX" },
+  };
+  const source = limits[conversion.sourceType]!;
+  const target = limits[conversion.targetType]!;
+  const sourceSigned = Boolean(source.minimum);
+  const targetSigned = Boolean(target.minimum);
+  const sourceBounds = integerRuntimeBounds(conversion.sourceType);
+  const targetBounds = integerRuntimeBounds(conversion.targetType);
+  const checks: string[] = [];
+  if (sourceSigned && !targetSigned) checks.push("value < 0");
+  if (targetBounds.maximum < sourceBounds.maximum) {
+    checks.push(`value > (${sourceCType})${target.maximum}`);
+  }
+  if (sourceSigned && targetSigned && targetBounds.minimum > sourceBounds.minimum) {
+    checks.push(`value < (${sourceCType})${target.minimum}`);
+  }
+  if (checks.length === 0) {
+    throw new Error(`checked integer conversion ${conversion.sourceType} to ${conversion.targetType} has no range check`);
+  }
+  return [
+    `static inline ${targetCType} ${integerConversionName(conversion)}(${sourceCType} value) {`,
+    `  if (${checks.join(" || ")}) abort();`,
+    `  return (${targetCType})value;`,
+    "}",
+  ].join("\n");
+}
+
+function integerRuntimeBounds(type: string): { readonly minimum: bigint; readonly maximum: bigint } {
+  const widths: Readonly<Record<string, number>> = {
+    i8: 8,
+    u8: 8,
+    i16: 16,
+    u16: 16,
+    i32: 32,
+    u32: 32,
+    i64: 64,
+    u64: 64,
+    isize: process.arch.includes("64") ? 64 : 32,
+    usize: process.arch.includes("64") ? 64 : 32,
+  };
+  const width = widths[type];
+  if (!width) throw new Error(`unknown integer type ${JSON.stringify(type)}`);
+  const unsigned = type.startsWith("u");
+  return {
+    minimum: unsigned ? 0n : -(1n << BigInt(width - 1)),
+    maximum: unsigned ? (1n << BigInt(width)) - 1n : (1n << BigInt(width - 1)) - 1n,
+  };
 }
 
 function integerOperationName(operation: IntegerOperation): string {

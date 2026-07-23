@@ -113,6 +113,21 @@ to `(inout value: Counter) => void` must still spell `(inout value) => ...`.
 An untyped closure without a destination contract receives a diagnostic asking
 for either `parameter: Type` or an explicit function value type.
 
+Integer value conversion uses target-type construction rather than assertion
+syntax:
+
+```z
+const nativeCount = isize(values.length);
+```
+
+This is an executable conversion, analogous to JavaScript's `Number(value)`,
+not TypeScript's erased `value as number` assertion. Non-literal integer widths
+do not convert implicitly. Construction preserves the mathematical value or
+traps; a source range wholly contained by the target lowers to a direct cast,
+while narrowing and signedness-risk conversions receive a runtime range check.
+Intentional truncation/saturation and floating-point conversion remain separate
+operations so neither bit loss nor rounding hides behind the ordinary form.
+
 Function and imported callback parameters are contextual destinations too, so
 closures may be written inline:
 

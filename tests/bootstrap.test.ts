@@ -1829,6 +1829,83 @@ test("checks integer arithmetic and provides explicit wrapping and saturation", 
   assert.notEqual(trapped.status, 0);
 });
 
+test("constructs integer values with explicit checked conversions", () => {
+  const source = `
+    function widen(value: u8): i32 {
+      return i32(value);
+    }
+
+    function narrow(value: i32): u8 {
+      return u8(value);
+    }
+
+    function nativeCount(value: usize): isize {
+      return isize(value);
+    }
+
+    function main(): i32 {
+      const small: u8 = 42;
+      const count: usize = 44;
+      if (widen(small) != 42) return 1;
+      if (narrow(43) != 43) return 2;
+      if (nativeCount(count) != 44) return 3;
+      return 0;
+    }
+  `;
+  const generated = compileToC(source, "integer-conversions.zs");
+  assert.match(generated, /return \(\(int32_t\)\(value\)\);/);
+  assert.match(generated, /z_checked_convert_i32_to_u8/);
+  assert.match(generated, /z_checked_convert_usize_to_isize/);
+
+  const conversionOffset = source.indexOf("isize(value)") + 1;
+  const conversionHover = hover(source, "integer-conversions.zs", conversionOffset)?.contents.value ?? "";
+  assert.match(conversionHover, /isize\(value: usize\): isize/);
+  assert.match(conversionHover, /runtime range check/);
+
+  assert.throws(
+    () => compileToC("function main(): i32 { const value = u8(256); return i32(value); }", "constant-conversion.zs"),
+    /integer literal 256 does not fit u8/,
+  );
+  assert.throws(
+    () => compileToC("function main(): i32 { const value: usize = 1; const native: isize = value; return 0; }", "implicit-conversion.zs"),
+    /expected isize, found usize/,
+  );
+  assert.throws(
+    () => compileToC("function main(): i32 { const value = f64(1); return 0; }", "float-conversion.zs"),
+    /not available in the integer-only conversion tier/,
+  );
+
+  const directory = mkdtempSync("/tmp/z-integer-conversion-");
+  const successFile = resolve(directory, "success.zs");
+  writeFileSync(successFile, source);
+  const success = spawnSync(process.execPath, [cli, "run", successFile], { encoding: "utf8" });
+  assert.equal(success.status, 0, success.stderr);
+
+  const trapFile = resolve(directory, "trap.zs");
+  writeFileSync(trapFile, `
+    function narrow(value: i32): u8 { return u8(value); }
+    function main(): i32 {
+      const value = narrow(-1);
+      return i32(value);
+    }
+  `);
+  const trapped = spawnSync(process.execPath, [cli, "run", trapFile], { encoding: "utf8" });
+  assert.notEqual(trapped.status, 0);
+
+  const asyncFile = resolve(directory, "async.zs");
+  writeFileSync(asyncFile, `
+    async function convert(value: usize): isize {
+      return isize(value);
+    }
+    async function main(): i32 {
+      const converted = await convert(42);
+      return i32(converted) - 42;
+    }
+  `);
+  const asyncResult = spawnSync(process.execPath, [cli, "run", asyncFile], { encoding: "utf8" });
+  assert.equal(asyncResult.status, 0, asyncResult.stderr);
+});
+
 test("runs floating-point values and typed bitwise option masks", () => {
   const example = resolve(projectRoot, "examples/interop/c/apple-groundwork.zs");
   const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
@@ -2774,6 +2851,9 @@ test("builds the interactive Z Notes AppKit and sqlite3 application", () => {
   assert.match(artifact.source, /\[object setDataSource:_z_adapter_0\]/);
   assert.match(artifact.source, /\[object setDelegate:_z_adapter_0\]/);
   assert.match(artifact.source, /ZObjCBinding \* const tableBinding = z_objc_bind_/);
+  assert.match(artifact.source, /z_checked_convert_usize_to_isize/);
+  assert.match(artifact.source, /z_checked_convert_isize_to_usize/);
+  assert.match(artifact.source, /tableViewSelectionDidChange:/);
 
   const compilation = spawnSync("xcrun", [
     "clang", "-x", "objective-c", "-fobjc-arc", "-fblocks",
@@ -2809,6 +2889,18 @@ test("builds the interactive Z Notes AppKit and sqlite3 application", () => {
   const tableControllerSource = readFileSync(tableController, "utf8");
   const rowCountUse = tableControllerSource.indexOf("tableRowCount()") + 1;
   assert.match(hover(tableControllerSource, tableController, rowCountUse)?.contents.value ?? "", /tableRowCount\(\): isize/);
+  const selectionMethod = tableControllerSource.indexOf("selectionDidChange") + 1;
+  assert.match(
+    hover(tableControllerSource, tableController, selectionMethod)?.contents.value ?? "",
+    /tableViewSelectionDidChange:/,
+  );
+  const model = resolve(projectRoot, "examples/applications/z-notes/model.zs");
+  const modelSource = readFileSync(model, "utf8");
+  const countConversion = modelSource.indexOf("isize(this.notes.length)") + 1;
+  assert.match(
+    hover(modelSource, model, countConversion)?.contents.value ?? "",
+    /runtime range check/,
+  );
 
   const persistence = resolve(projectRoot, "examples/applications/z-notes/persistence.zs");
   const persistenceSource = readFileSync(persistence, "utf8");

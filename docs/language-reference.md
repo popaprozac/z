@@ -436,6 +436,24 @@ truthiness.
 Integer arithmetic is checked. Intentional overflow uses explicit wrapping or
 saturating operations.
 
+Non-literal integer widths never convert implicitly. Calling the target integer
+type constructs a value with the same mathematical value:
+
+```z
+const byte: u8 = 42;
+const widened = i32(byte);
+const nativeCount = isize(values.length);
+const narrowed = u8(widened);
+```
+
+When the source type's complete range fits the target, this lowers to a direct
+native cast. Otherwise Z emits a range check and traps if the runtime value is
+not representable. Integer literals remain contextually typed and receive a
+compile-time diagnostic when they do not fit. Boolean conversion, implicit
+widening, intentional truncation, and integer/floating-point conversion are not
+part of this first tier; floating-point conversion remains deferred until its
+rounding, precision-loss, infinity, and NaN policy is explicit.
+
 ## Collections and views
 
 - `T[N]` is a fixed-size owned array.

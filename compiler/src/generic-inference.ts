@@ -34,6 +34,9 @@ import { parseViewType, viewTypeName } from "./view-types.ts";
 
 type Environment = Map<string, string>;
 type RewrittenExpression = { readonly expression: Expression; readonly type: string | null };
+const numericTypeConstructors = new Set([
+  "i8", "u8", "i16", "u16", "i32", "u32", "i64", "u64", "isize", "usize", "f32", "f64",
+]);
 
 export function inferGenericCalls(
   program: Program,
@@ -818,6 +821,18 @@ export function inferGenericCalls(
         };
       }
       case "call": {
+        if (
+          expression.callee.kind === "identifier"
+          && numericTypeConstructors.has(expression.callee.name)
+        ) {
+          return {
+            expression: {
+              ...expression,
+              arguments: expression.arguments.map((argument) => rewriteExpression(argument, environment).expression),
+            },
+            type: expression.callee.name,
+          };
+        }
         if (expression.callee.kind === "identifier") {
           const explicit = parseGenericType(expression.callee.name);
           const template = genericFunctions.get(explicit?.base ?? expression.callee.name);

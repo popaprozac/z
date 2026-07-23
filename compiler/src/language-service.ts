@@ -39,7 +39,7 @@ import { parseWeakType } from "./weak-types.ts";
 import { parseViewType } from "./view-types.ts";
 import { parseMapType } from "./map-types.ts";
 import { parseSetType } from "./set-types.ts";
-import type { ExplicitCopyPlan } from "./sema.ts";
+import type { ExplicitCopyPlan, IntegerConversion } from "./sema.ts";
 import { collectForeignHandleTypeAliases } from "./foreign-handle-types.ts";
 import {
   parseForeignDeclarationContracts,
@@ -493,6 +493,13 @@ export function hover(source: string, fileName: string, offset: number): Hover |
   if (!context) return declarationHover(source, null, word.text, word.start, word.end);
   if (word.text === "Option") {
     return markdownHover("compiler-provided enum Option<T>", source, word.start, word.end);
+  }
+  const conversionSuffix = source.slice(word.end).match(/^\s*\(/)?.[0];
+  const integerConversion = conversionSuffix
+    ? context.semanticInfo.integerConversions.get(word.end + conversionSuffix.lastIndexOf("("))
+    : undefined;
+  if (integerConversion) {
+    return markdownHover(integerConversionHover(integerConversion), source, word.start, word.end);
   }
   const directWordType = context.semanticInfo.bindingTypes.get(word.start)
     ?? context.semanticInfo.numericLiteralTypes.get(word.start)
@@ -4052,6 +4059,13 @@ function explicitMoveHover(typeName: string, context: AnalyzedSource): string {
         ? "constant-time owned-storage transfer; no allocation"
         : "whole-value ownership transfer; owned fields are not cloned";
   return `move ${type} -> ${type}\n// transfers unique ownership; a named source becomes unavailable\n// cost: ${cost}`;
+}
+
+function integerConversionHover(conversion: IntegerConversion): string {
+  const behavior = conversion.checked
+    ? "runtime range check; traps if the source value is not representable"
+    : "source range is fully representable; lowers to a direct value-preserving cast";
+  return `${conversion.targetType}(value: ${conversion.sourceType}): ${conversion.targetType}\n// explicit integer conversion\n// ${behavior}`;
 }
 
 function aggregateCopyMayAllocate(

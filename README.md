@@ -168,6 +168,7 @@ Each document has one job:
 | [Bootstrap status](docs/bootstrap-status.md) | What the stage-0 implementation supports now |
 | [Async model](docs/async-model.md) | Structured concurrency semantics and lowering phases |
 | [Interop model](docs/interop-model.md) | Native boundary contracts and cost model |
+| [Z declaration files](docs/z-declarations.md) | `.zd` grammar, capability dictionary, and C/C++/Objective-C mapping |
 | [Foreign Interface IR](docs/foreign-interface-ir.md) | Backend-neutral foreign declaration model |
 | [Diagnostics](docs/diagnostics.md) | Diagnostic structure and authoring conventions |
 | [Ownership pressure log](docs/ownership-pressure.md) | Evidence from application-shaped ownership probes |

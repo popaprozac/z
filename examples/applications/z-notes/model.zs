@@ -29,12 +29,7 @@ export class NoteStore {
   }
 
   function tableRowCount(): isize {
-    let count: isize = 0;
-    for (const note of this.notes) {
-      if (note.id < 0) return 0;
-      count = count + 1;
-    }
-    return count;
+    return isize(this.notes.length);
   }
 
   function nextNoteId(): i64 {

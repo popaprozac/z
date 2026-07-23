@@ -109,6 +109,12 @@ The returned `objc.Binding` strongly owns the table, adapter, and Z controller;
 keeping the token across `app.run()` prevents a helper-function refactor from
 creating a dangling delegate.
 
-Next, this application should drive richer controls, selection callbacks,
-escaping block lifetime, background search through `thread.spawn`,
-cancellation, and main-thread UI delivery.
+The controller implements both row rendering and
+`tableViewSelectionDidChange:`. Selecting a native table row converts AppKit's
+signed `NSInteger` index into Z's `usize` with explicit checked
+`usize(row)` construction, updates `Option<usize>` application state, and
+refreshes the selected-note label.
+
+Next, this application should drive richer controls, escaping block lifetime,
+background search through `thread.spawn`, cancellation, and main-thread UI
+delivery.

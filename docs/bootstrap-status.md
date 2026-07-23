@@ -1,6 +1,6 @@
 # Bootstrap implementation status
 
-Last reviewed: 2026-07-22.
+Last reviewed: 2026-07-23.
 
 This document answers “what does the Bun/TypeScript stage-0 compiler implement
 today?” It is not the language specification. Accepted source semantics live in
@@ -26,7 +26,7 @@ Status meanings:
 | Errors | Implemented | Typed `throws`, `throw`, `try`, and `attempt`, including synchronous cleanup-bearing error values |
 | Closures | Partial | Borrowed and owned ARC environments plus weak captures; mutation of ordinary captured bindings works, while preserving addressable move-only resource capabilities such as `TextBuffer` through a borrowed closure remains |
 | Strings and console | Implemented | Owned UTF-8 strings, exact byte equality, templates, typed formatting, checked `byteAt`/`copyBytes`, `byteLength`, `isEmpty`, and explicit move-only `std/text` `TextBuffer`; grapheme-aware `length` remains planned |
-| Integer safety | Implemented | Checked arithmetic plus explicit wrapping/saturating operations |
+| Integer safety | Implemented | Checked arithmetic, explicit wrapping/saturating operations, and `TargetInteger(value)` construction that lowers range-contained pairs directly and checks narrowing/signedness-risk pairs; lossy and floating-point conversions remain |
 | Generators | Planned | `yield` is reserved; no generator lowering |
 | `comptime` | Planned experiment | No compile-time execution model committed |
 | Inline assembly | Planned design | Explicit `unsafe` boundary with `in` / `inout` / `out` operands; statement-first lowering, machine constraints, clobbers, target pruning, and backend portability remain to be designed and tested |

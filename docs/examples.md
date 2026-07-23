@@ -10,6 +10,7 @@ compile-only probes and `emit` to inspect generated native code.
 | --- | --- | --- |
 | First native program | [`first.zs`](../examples/language/basics/first.zs) | Functions, inference, direct C import |
 | Console and strings | [`console.zs`](../examples/language/basics/console.zs) | Explicit standard import, interpolation, typed formatting |
+| Numeric conversion | [`numeric-conversions.zs`](../examples/language/basics/numeric-conversions.zs) | Explicit target-type construction, check-free widening, and checked narrowing/native-width adaptation |
 | Modules | [`modules/main.zs`](../examples/language/modules/main.zs) | Exports, namespace imports, selective aliases |
 | Construction | [`construction.zs`](../examples/language/basics/construction.zs) | Struct object construction and class-only `new` |
 | Object destructuring | [`destructuring.zs`](../examples/language/basics/destructuring.zs) | Local field/alias patterns, explicit copy/move ownership, and borrowed Map-entry patterns |

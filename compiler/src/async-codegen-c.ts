@@ -3411,6 +3411,14 @@ function emitFrameExpressionInner(
         plan.types,
       );
     case "call": {
+      const integerConversion = plan.types.semanticInfo.integerConversions.get(expression.location.offset);
+      if (integerConversion) {
+        const value = emitFrameExpression(expression.arguments[0], plan, fileName);
+        const targetType = cFrameType(integerConversion.targetType, plan.types);
+        return integerConversion.checked
+          ? `z_checked_convert_${integerConversion.sourceType}_to_${integerConversion.targetType}(${value})`
+          : `((${targetType})(${value}))`;
+      }
       const standard = plan.types.semanticInfo.standardFunctionReferences.get(expression.callee.location.offset);
       if (standard) {
         const signature = standardFunctionSignature(standard);

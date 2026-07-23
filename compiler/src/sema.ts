@@ -217,6 +217,12 @@ export type IntegerOperation = {
   readonly type: string;
 };
 
+export type IntegerConversion = {
+  readonly sourceType: string;
+  readonly targetType: string;
+  readonly checked: boolean;
+};
+
 export type ForeignCallArgumentPlan =
   | { readonly kind: "argument"; readonly source: number }
   | { readonly kind: "fixed"; readonly expression: string }
@@ -262,6 +268,7 @@ export type SemanticInfo = {
   readonly foreignExpressionTypes: ReadonlyMap<number, string>;
   readonly numericLiteralTypes: ReadonlyMap<number, string>;
   readonly integerOperations: ReadonlyMap<number, IntegerOperation>;
+  readonly integerConversions: ReadonlyMap<number, IntegerConversion>;
   readonly dynamicArrayPushTypes: ReadonlySet<string>;
   readonly arenaCreateCalls: ReadonlyMap<number, string>;
   readonly arenaResetCalls: ReadonlySet<number>;
@@ -330,6 +337,7 @@ type AnalysisState = {
   readonly foreignExpressionTypes: Map<number, string>;
   readonly numericLiteralTypes: Map<number, string>;
   readonly integerOperations: Map<number, IntegerOperation>;
+  readonly integerConversions: Map<number, IntegerConversion>;
   readonly dynamicArrayPushTypes: Set<string>;
   readonly arenaCreateCalls: Map<number, string>;
   readonly arenaResetCalls: Set<number>;
@@ -583,6 +591,7 @@ export function analyze(
     foreignExpressionTypes: new Map(),
     numericLiteralTypes: new Map(),
     integerOperations: new Map(),
+    integerConversions: new Map(),
     dynamicArrayPushTypes: new Set(),
     arenaCreateCalls: new Map(),
     arenaResetCalls: new Set(),
@@ -4684,6 +4693,83 @@ function inferExpressionInner(
     }
     case "call": {
       if (expression.callee.kind === "identifier") {
+        if (integerTypes.has(expression.callee.name)) {
+          rejectLabeledArguments(expression.argumentLabels, expression.location, fileName);
+          if (expression.arguments.length !== 1) {
+            throw new DiagnosticError(
+              fileName,
+              expression.location,
+              `${expression.callee.name} numeric construction expects exactly one integer value, received ${expression.arguments.length}`,
+              {
+                code: "Z0104",
+                helps: [`use ${expression.callee.name}(value)`],
+              },
+            );
+          }
+          const targetType = expression.callee.name;
+          const argument = expression.arguments[0];
+          if (requireContextualSignedLiteral(argument, targetType, fileName, state.numericLiteralTypes)) {
+            state.integerConversions.set(expression.location.offset, {
+              sourceType: targetType,
+              targetType,
+              checked: false,
+            });
+            return targetType;
+          }
+          if (argument.kind === "number") {
+            requireNumericLiteralFits(argument, targetType, fileName, state.numericLiteralTypes);
+            state.integerConversions.set(expression.location.offset, {
+              sourceType: targetType,
+              targetType,
+              checked: false,
+            });
+            return targetType;
+          }
+          const actual = inferExpression(argument, locals, globals, structs, enums, fileName, state);
+          const sourceType = canonicalType(actual, state.foreignNamedTypes);
+          if (!isIntegerType(sourceType)) {
+            throw new DiagnosticError(
+              fileName,
+              argument.location,
+              `${targetType} numeric construction requires an integer value, found ${displayAssignableType(actual)}`,
+              {
+                code: "Z0104",
+                notes: ["integer-to-floating and floating-to-integer conversion require a separate rounding and precision policy"],
+              },
+            );
+          }
+          const constant = constantIntegerValue(argument);
+          const bounds = integerBounds(targetType)!;
+          if (constant !== null && (constant < bounds.minimum || constant > bounds.maximum)) {
+            throw new DiagnosticError(
+              fileName,
+              argument.location,
+              `constant integer value ${constant} cannot convert to ${targetType}`,
+              {
+                code: "Z0104",
+                notes: [`${targetType} represents values from ${bounds.minimum} through ${bounds.maximum}`],
+                helps: ["choose a wider target type or use a value within the target range"],
+              },
+            );
+          }
+          state.integerConversions.set(expression.location.offset, {
+            sourceType,
+            targetType,
+            checked: !integerRangeContains(targetType, sourceType),
+          });
+          return targetType;
+        }
+        if (floatTypes.has(expression.callee.name)) {
+          throw new DiagnosticError(
+            fileName,
+            expression.location,
+            `${expression.callee.name}(value) numeric conversion is not available in the integer-only conversion tier`,
+            {
+              code: "Z0104",
+              notes: ["floating-point conversion needs explicit rounding, precision-loss, infinity, and NaN rules"],
+            },
+          );
+        }
         const map = parseMapType(expression.callee.name);
         if (map) {
           if (![...state.standardTypeBindings.values()].includes("Map")) {
@@ -9350,6 +9436,17 @@ function integerBounds(type: string): { readonly minimum: bigint; readonly maxim
     maximum: unsigned ? (1n << BigInt(width)) - 1n : (1n << BigInt(width - 1)) - 1n,
     width,
   };
+}
+
+function integerRangeContains(targetType: string, sourceType: string): boolean {
+  const target = integerBounds(targetType);
+  const source = integerBounds(sourceType);
+  return Boolean(
+    target
+    && source
+    && target.minimum <= source.minimum
+    && target.maximum >= source.maximum
+  );
 }
 
 function constantIntegerValue(expression: Expression): bigint | null {

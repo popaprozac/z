@@ -910,7 +910,8 @@ function isIntrinsicName(in name: String): boolean {
     || name == "Option"
     || name == "Result"
     || name == "Weak"
-    || name == "String";
+    || name == "String"
+    || isNumericTypeName(name);
 }
 
 function hasName(
@@ -7141,6 +7142,19 @@ function inferExpressionNodeType(
         return "";
       }
       const base = identifierLookupName(callee);
+      if (isNumericTypeName(base)) {
+        try inferUnclassifiedCallArguments(
+          module,
+          modules,
+          moduleIndex,
+          arena,
+          tree,
+          children,
+          inout bindings,
+          inout evidence
+        );
+        return copiedString(base);
+      }
       if (base == "Array" || base == "Map" || base == "Set") {
         try inferUnclassifiedCallArguments(
           module,

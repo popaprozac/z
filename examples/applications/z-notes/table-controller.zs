@@ -6,9 +6,17 @@ export class NotesTableController implements
   AppKit.NSTableViewDelegate
 {
   private store: NoteStore;
+  private tableView: AppKit.NSTableView;
+  private selectedLabel: AppKit.NSTextField;
 
-  constructor(store: NoteStore) {
+  constructor(
+    store: NoteStore,
+    tableView: AppKit.NSTableView,
+    selectedLabel: AppKit.NSTextField
+  ) {
     this.store = store;
+    this.tableView = tableView;
+    this.selectedLabel = selectedLabel;
   }
 
   function rowCount(
@@ -34,5 +42,25 @@ export class NotesTableController implements
     });
     if (!found) label.stringValue = "Missing note";
     return label;
+  }
+
+  function selectionDidChange(
+    inout this,
+    in notification: AppKit.NSNotification
+  ): void as "tableViewSelectionDidChange:" {
+    const row = this.tableView.selectedRow;
+    if (row < 0) {
+      this.store.clearSelection();
+      this.selectedLabel.stringValue = "No note selected";
+      return;
+    }
+    if (!this.store.selectNote(usize(row))) {
+      this.selectedLabel.stringValue = "No note selected";
+      return;
+    }
+    const label = this.selectedLabel;
+    this.store.withSelected((in note) => {
+      label.stringValue = `Selected: ${note.title}`;
+    });
   }
 }
