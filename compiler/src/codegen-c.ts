@@ -3790,6 +3790,9 @@ function generateObjectDestructure(
 }
 
 function generateFor(statement: Extract<Statement, { kind: "for" }>, context: GenerationContext): string {
+  if (statement.asynchronous) {
+    throw new Error("for await must be lowered by the async backend");
+  }
   const index = context.loopCounter.value++;
   const iterableType = inferExpressionType(statement.iterable, context);
   const iteratorElement = context.semanticInfo.iteratorElementTypes.get(iterableType);
@@ -5542,6 +5545,7 @@ function generateLoopExpression(
         }, context)
       : generateFor({
           kind: "for",
+          asynchronous: false,
           mode: expression.mode,
           binding: expression.binding,
           bindingLocation: expression.bindingLocation,

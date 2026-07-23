@@ -3833,6 +3833,7 @@ function inferForExpression(
     analyzeForLoop(
       {
         kind: "for",
+        asynchronous: false,
         mode: expression.mode,
         binding: expression.binding,
         bindingLocation: expression.bindingLocation,
@@ -8046,6 +8047,70 @@ function analyzeForLoop(
   const iterableName = String(underlyingType(iterableType));
   const root = storageRoot(statement.iterable);
   const generator = parseGeneratorType(iterableName);
+  const asyncGenerator = parseAsyncGeneratorType(iterableName);
+  if (statement.asynchronous) {
+    if (!owner.async) {
+      throw new DiagnosticError(fileName, statement.location, "for await requires an enclosing async function", {
+        code: "Z0702",
+        helps: ["add `async` before the enclosing function"],
+      });
+    }
+    if (statement.mode === "inout") {
+      throw new DiagnosticError(fileName, statement.iterable.location, "for await advances its stream handle internally and does not accept inout", {
+        code: "Z0311",
+        helps: ["remove `inout` from the iterable"],
+      });
+    }
+    if (!asyncGenerator) {
+      throw new DiagnosticError(fileName, statement.iterable.location, `for await requires AsyncGenerator<T>, found ${displayArrayType(iterableName)}`, {
+        code: "Z0311",
+        helps: ["iterate an AsyncGenerator<T>, or remove `await` for a synchronous collection"],
+      });
+    }
+    if (asyncGenerator.returnType) {
+      throw new DiagnosticError(
+        fileName,
+        statement.iterable.location,
+        `for await...of cannot discard the terminal ${displayArrayType(asyncGenerator.returnType)} value from ${displayArrayType(iterableName)}`,
+        {
+          code: "Z0311",
+          helps: ["advance the async generator with `.next()` and match `yielded(value)` or `complete(result)`"],
+        },
+      );
+    }
+    if (asyncGenerator.errorType) {
+      throw new DiagnosticError(
+        fileName,
+        statement.iterable.location,
+        `for await...of cannot implicitly propagate ${displayArrayType(asyncGenerator.errorType)} from a throwing async generator`,
+        {
+          code: "Z0311",
+          notes: ["a future explicit throwing-loop form will make propagation visible at the loop boundary"],
+          helps: ["advance the async generator with `try await generator.next()` or `attempt await generator.next()`"],
+        },
+      );
+    }
+    analyzeIteratorForLoop(
+      statement,
+      asyncGenerator.elementType,
+      iterableName,
+      root,
+      owner,
+      locals,
+      globals,
+      structs,
+      enums,
+      fileName,
+      state,
+    );
+    return;
+  }
+  if (asyncGenerator) {
+    throw new DiagnosticError(fileName, statement.iterable.location, `AsyncGenerator<T> requires asynchronous iteration`, {
+      code: "Z0311",
+      helps: ["write `for await (const value of stream) { ... }` inside an async function"],
+    });
+  }
   if (generator?.returnType) {
     throw new DiagnosticError(
       fileName,
@@ -8233,7 +8298,7 @@ function analyzeIteratorForLoop(
     ? state.valueLoopStack.at(-1)!
     : null;
   if (root) {
-    const generator = parseGeneratorType(iteratorType);
+    const generator = parseGeneratorType(iteratorType) ?? parseAsyncGeneratorType(iteratorType);
     if (!generator && statement.mode !== "inout") {
       throw new DiagnosticError(fileName, statement.iterable.location, `stored iterator ${JSON.stringify(root.name)} requires explicit inout iteration`, {
         code: "Z0311",

@@ -790,15 +790,33 @@ const rows = rows();
 const observed = attempt await rows.next();
 ```
 
+One-argument, nonthrowing async generators have a natural sequential loop:
+
+```zs
+for await (const event of events()) {
+  await record(event);
+  if (event.complete) break;
+}
+```
+
+The loop awaits one `.next()` advancement at a time. `continue`, `break`,
+`return`, and suspension in the body preserve exact-once yielded-value cleanup.
+A temporary stream such as `events()` is owned and destroyed by the loop. A
+stored handle remains usable after an early `break`. Async generators with a
+terminal return remain explicit `.next()` consumers so the terminal value
+cannot be discarded; throwing async generators likewise remain explicit until
+the throwing-loop boundary has a settled spelling.
+
 The executable tier supports persistent `if` and `while`, `break` and
 `continue`, built-in `Array`/fixed-array/`Slice`/`Map`/`Set` `for...of`
 cursors, and borrowed `match (in value)` statement payloads across both
 `yield` and ordinary awaits such as `delay`. It also supports typed terminal
 return, typed advancement errors, exact-once suspended-local cleanup,
 caller-cancellation propagation, editor details, and native-frontend parity.
-Concurrent `.next()` calls are rejected. `for await...of` sugar, consuming or
-value-producing suspending matches, async generator methods, and borrowed
-parameters/yields remain explicit follow-up layers.
+Concurrent `.next()` calls are rejected. `for await...of` currently requires a
+named element binding; ownership-aware object-pattern extraction, throwing
+loops, consuming or value-producing suspending matches, async generator
+methods, and borrowed parameters/yields remain explicit follow-up layers.
 
 `Map` and `Set` use open-addressed hashed buckets for amortized O(1) lookup and
 membership. Owned entries remain in compact storage, while rehashing moves only

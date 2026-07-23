@@ -69,7 +69,7 @@ requiring lifetime syntax throughout ordinary application code.
 | Standard library | Explicit console/time/text/memory/collections plus initial `std/fs`, `std/process`, `std/objc`, owned program arguments, move-only `TextBuffer`, `Arena` region storage, and ownership-aware `Map<K, V>` / `Set<T>` semantic tiers |
 | Ownership | Lexical borrows, moves, deterministic cleanup, ARC, `Weak<T>`, field-level and whole-aggregate `readonly`, inferred shareable classes, receiver-tied views, and synchronous arena regions |
 | Errors | Typed `throws`, `try` propagation, `attempt`, `Result<T, E>` |
-| Control flow | Checked arithmetic, loops, ternaries, value `if`, exhaustive `match`, custom iterators, cold synchronous `Generator<Yield, Return?, Error?>`, and cold awaited `AsyncGenerator<Yield, Return?, Error?>` frames |
+| Control flow | Checked arithmetic, loops, ternaries, value `if`, exhaustive `match`, custom iterators, cold synchronous `Generator<Yield, Return?, Error?>`, cold awaited `AsyncGenerator<Yield, Return?, Error?>` frames, and sequential `for await...of` |
 | Async | Stackless tasks, FIFO executor, spawn/join scopes, cancellation, delay, reusable async-generator advancement, and nonblocking `thread.spawn` joins with Copy snapshots, unique-owner moves, atomic-ARC readonly sharing, and owned typed worker errors on one native thread |
 | C | Header imports, functions, records, enums, constants, pointers and typed status errors with `.zd` contracts, callbacks, target-aware availability |
 | Objective-C | ARC objects, nullability, selectors, blocks, persistent observers, imported property ownership, lifetime-safe target/action connections, checked Z-class protocol adapters and weak-property bindings, AppKit |

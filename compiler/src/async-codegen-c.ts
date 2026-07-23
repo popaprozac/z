@@ -13,7 +13,8 @@ import { parseTaskType } from "./async-types.ts";
 import { dynamicArrayTypeName, parseDynamicArrayType, parseFixedArrayType, parseSliceType } from "./array-types.ts";
 import { generatorStepTypeName, parseAsyncGeneratorType } from "./generator-types.ts";
 import { mapEntryTypeName, parseMapType } from "./map-types.ts";
-import { optionTypeName } from "./option-types.ts";
+import { optionTypeName, parseOptionType } from "./option-types.ts";
+import { parsePointerTypeName } from "./foreign.ts";
 import { resultTypeName } from "./results.ts";
 import { parseSetType } from "./set-types.ts";
 import { standardFunctionSignature } from "./standard-library.ts";
@@ -47,6 +48,15 @@ type SpawnSite = {
   readonly placement: "main" | null;
 };
 
+type AsyncForSite = {
+  readonly index: number;
+  readonly statement: Extract<Statement, { kind: "for" }>;
+  readonly generator: NonNullable<ReturnType<typeof parseAsyncGeneratorType>>;
+  readonly generatorType: string;
+  readonly handleBinding: string | null;
+  readonly resultBinding: string;
+};
+
 type PlacementTarget = {
   readonly target: AsyncTarget;
   readonly captures: readonly {
@@ -76,6 +86,15 @@ type AsyncOperation =
     readonly elseLabel: number;
   }
   | { readonly kind: "forIncrement"; readonly indexBinding: string }
+  | { readonly kind: "asyncForInitialize"; readonly site: AsyncForSite }
+  | { readonly kind: "asyncForBegin"; readonly site: AsyncForSite }
+  | {
+    readonly kind: "asyncForComplete";
+    readonly site: AsyncForSite;
+    readonly bodyLabel: number;
+    readonly exhaustedLabel: number;
+  }
+  | { readonly kind: "asyncForCleanup"; readonly site: AsyncForSite; readonly destroyHandle: boolean }
   | {
     readonly kind: "matchDispatch";
     readonly statement: Extract<Statement, { kind: "match" }>;
@@ -111,6 +130,7 @@ type AsyncFunctionPlan = {
   readonly nestedAwaits: ReadonlyMap<number, readonly NestedAwaitSite[]>;
   readonly suspensions: ReadonlyMap<number, NestedAwaitSite>;
   readonly spawns: ReadonlyMap<number, SpawnSite>;
+  readonly asyncForSites: readonly AsyncForSite[];
   readonly children: ReadonlyMap<number, AsyncTarget>;
   readonly types: AsyncTypeContext;
 };
@@ -335,6 +355,7 @@ function planFunction(
   const nestedAwaits = new Map<number, readonly NestedAwaitSite[]>();
   const suspensions = new Map<number, NestedAwaitSite>();
   const spawns = new Map<number, SpawnSite>();
+  const asyncForSites: AsyncForSite[] = [];
   const spawnBindings = new Map<string, SpawnSite>();
   const children = new Map<number, AsyncTarget>();
   const joinedSpawns = new Set<number>();
@@ -454,6 +475,79 @@ function planFunction(
         continue;
       }
       if (statement.kind === "for") {
+        if (statement.asynchronous) {
+          const generatorType = semanticInfo.expressionTypes.get(statement.iterable.location.offset);
+          const asyncGenerator = generatorType ? parseAsyncGeneratorType(generatorType) : null;
+          if (!generatorType || !asyncGenerator || asyncGenerator.returnType || asyncGenerator.errorType) {
+            unsupported(fileName, statement.iterable.location, "for await requires a nonthrowing AsyncGenerator<T> without a terminal return");
+          }
+          if (statement.objectBindings) {
+            unsupported(
+              fileName,
+              statement.location,
+              "for await object destructuring needs ownership-aware payload field transfer",
+              "bind the yielded value by name and destructure it inside the loop for now",
+            );
+          }
+          if (!statement.binding || !statement.bindingLocation) {
+            unsupported(fileName, statement.location, "for await requires a named iteration binding");
+          }
+          requireFrameType(asyncGenerator.elementType, statement.bindingLocation, fileName, "for await element", types);
+          const resultType = optionTypeName(asyncGenerator.elementType);
+          requireFrameType(resultType, statement.iterable.location, fileName, "for await advancement", types);
+          const stored = statement.iterable.kind === "identifier"
+            || statement.iterable.kind === "member"
+            || statement.iterable.kind === "index";
+          const handleBinding = stored ? null : `__z_async_for_handle_${statement.location.offset}`;
+          const resultBinding = `__z_async_for_result_${statement.location.offset}`;
+          if (handleBinding) locals.set(handleBinding, generatorType);
+          locals.set(resultBinding, resultType);
+          registerAsyncFrameBinding(
+            statement.binding,
+            asyncGenerator.elementType,
+            false,
+            statement.bindingLocation,
+            locals,
+            borrowedLocals,
+            fileName,
+          );
+          validateFrameExpression(statement.iterable, locals, fileName, types, suspensions);
+          const site: AsyncForSite = {
+            index: nextChild.value++,
+            statement,
+            generator: asyncGenerator,
+            generatorType,
+            handleBinding,
+            resultBinding,
+          };
+          asyncForSites.push(site);
+          const conditionLabel = nextLabel.value++;
+          const bodyLabel = nextLabel.value++;
+          const continueCleanupLabel = nextLabel.value++;
+          const breakCleanupLabel = nextLabel.value++;
+          const endLabel = nextLabel.value++;
+          if (handleBinding) operations.push({ kind: "asyncForInitialize", site });
+          operations.push({ kind: "label", label: conditionLabel });
+          operations.push({ kind: "asyncForBegin", site });
+          operations.push({
+            kind: "asyncForComplete",
+            site,
+            bodyLabel,
+            exhaustedLabel: breakCleanupLabel,
+          });
+          operations.push({ kind: "label", label: bodyLabel });
+          loopTargets.push({ breakLabel: breakCleanupLabel, continueLabel: continueCleanupLabel });
+          planStatements(statement.body.statements, scope, controlDepth + 1);
+          loopTargets.pop();
+          operations.push({ kind: "label", label: continueCleanupLabel });
+          operations.push({ kind: "asyncForCleanup", site, destroyHandle: false });
+          operations.push({ kind: "jump", label: conditionLabel });
+          operations.push({ kind: "label", label: breakCleanupLabel });
+          operations.push({ kind: "asyncForCleanup", site, destroyHandle: Boolean(handleBinding) });
+          operations.push({ kind: "jump", label: endLabel });
+          operations.push({ kind: "label", label: endLabel });
+          continue;
+        }
         if (statement.mode === "inout") {
           unsupported(fileName, statement.location, "async frame for...of does not support mutable element iteration");
         }
@@ -806,6 +900,7 @@ function planFunction(
     nestedAwaits,
     suspensions,
     spawns,
+    asyncForSites,
     children,
     types,
   };
@@ -2528,6 +2623,9 @@ function generateFrame(
   for (const site of plan.awaits.values()) {
     if (site.generator) lines.push(`  Z_AsyncTask *child_${site.index};`);
   }
+  for (const site of plan.asyncForSites) {
+    lines.push(`  Z_AsyncTask *child_${site.index};`);
+  }
   lines.push("};");
   return lines.join("\n");
 }
@@ -2967,6 +3065,163 @@ function emitAsyncForBranch(
   return lines;
 }
 
+function asyncForHandle(
+  site: AsyncForSite,
+  plan: AsyncFunctionPlan,
+  fileName: string,
+): string {
+  return site.handleBinding
+    ? frameStoredValue(site.handleBinding, site.generatorType, plan.types)
+    : emitFrameExpression(site.statement.iterable, plan, fileName);
+}
+
+function asyncOptionNichePayload(
+  optionType: string,
+  types: AsyncTypeContext,
+): string | null {
+  const option = parseOptionType(optionType);
+  if (!option) return null;
+  if (types.semanticInfo.foreignNamedTypes.get(option.target)?.kind === "object") return option.target;
+  const pointer = parsePointerTypeName(option.target);
+  return pointer && !pointer.nullable ? option.target : null;
+}
+
+function asyncOptionNicheNull(payloadType: string, types: AsyncTypeContext): "nil" | "NULL" {
+  return types.semanticInfo.foreignNamedTypes.get(payloadType)?.kind === "object" ? "nil" : "NULL";
+}
+
+function emitAsyncForInitialize(
+  site: AsyncForSite,
+  plan: AsyncFunctionPlan,
+  fileName: string,
+  nextState: number,
+): string[] {
+  const value = emitFrameExpression(site.statement.iterable, plan, fileName);
+  const destination = frameStoredValue(site.handleBinding!, site.generatorType, plan.types);
+  return [
+    `${destination} = ${value};`,
+    `frame->${frameLiveField(site.handleBinding!)} = true;`,
+    `frame->state = ${nextState};`,
+    "continue;",
+  ];
+}
+
+function emitAsyncForBegin(
+  site: AsyncForSite,
+  plan: AsyncFunctionPlan,
+  fileName: string,
+  nextState: number,
+): string[] {
+  const handle = asyncForHandle(site, plan, fileName);
+  return [
+    `frame->child_${site.index} = (${handle}).next((${handle}).context, frame->task.executor);`,
+    `z_async_enqueue(frame->task.executor, frame->child_${site.index});`,
+    `frame->state = ${nextState};`,
+    "continue;",
+  ];
+}
+
+function emitAsyncForComplete(
+  operation: Extract<AsyncOperation, { kind: "asyncForComplete" }>,
+  plan: AsyncFunctionPlan,
+  fileName: string,
+): string[] {
+  const { site } = operation;
+  const handle = asyncForHandle(site, plan, fileName);
+  const resultType = optionTypeName(site.generator.elementType);
+  const result = frameStoredValue(site.resultBinding, resultType, plan.types);
+  const resultPointer = requiresNativeFramePlacement(resultType, plan.types)
+    ? `frame->${frameField(site.resultBinding)}`
+    : `&(${result})`;
+  const binding = frameStoredValue(site.statement.binding!, site.generator.elementType, plan.types);
+  const niche = asyncOptionNichePayload(resultType, plan.types);
+  const present = niche
+    ? `${result} != ${asyncOptionNicheNull(niche, plan.types)}`
+    : `(${result}).tag == ${resultTag(resultType, "some")}`;
+  const payload = niche ? result : `((${result}).data.some)`;
+  const lines = [
+    `if (!z_async_wait(&frame->task, frame->child_${site.index})) return;`,
+    `(${handle}).take_result((${handle}).context, ${resultPointer});`,
+    `frame->child_${site.index} = NULL;`,
+    ...(hasFrameCleanup(resultType, plan.types)
+      ? [`frame->${frameLiveField(site.resultBinding)} = true;`]
+      : []),
+    `if (!(${present})) {`,
+  ];
+  if (hasFrameCleanup(resultType, plan.types)) {
+    lines.push(
+      `  ${frameCleanup(result, resultType, plan.types)}`,
+      `  frame->${frameLiveField(site.resultBinding)} = false;`,
+    );
+  }
+  lines.push(
+    `  frame->state = ${asyncLabelMarker(operation.exhaustedLabel)};`,
+    "  continue;",
+    "}",
+  );
+  if (requiresNativeFramePlacement(site.generator.elementType, plan.types)) {
+    lines.push(`new (frame->${frameField(site.statement.binding!)}) ${cFrameType(site.generator.elementType, plan.types)}(std::move(${payload}));`);
+    if (hasFrameCleanup(resultType, plan.types)) {
+      lines.push(
+        frameCleanup(result, resultType, plan.types),
+        `frame->${frameLiveField(site.resultBinding)} = false;`,
+      );
+    }
+  } else {
+    lines.push(`${binding} = ${payload};`);
+    if (hasFrameCleanup(site.generator.elementType, plan.types) && hasFrameCleanup(resultType, plan.types)) {
+      lines.push(`frame->${frameLiveField(site.resultBinding)} = false;`);
+    }
+  }
+  if (hasFrameCleanup(site.generator.elementType, plan.types)) {
+    lines.push(`frame->${frameLiveField(site.statement.binding!)} = true;`);
+  }
+  lines.push(
+    `frame->state = ${asyncLabelMarker(operation.bodyLabel)};`,
+    "continue;",
+  );
+  return lines;
+}
+
+function emitAsyncForCleanup(
+  operation: Extract<AsyncOperation, { kind: "asyncForCleanup" }>,
+  plan: AsyncFunctionPlan,
+  nextState: number,
+): string[] {
+  const { site } = operation;
+  const lines: string[] = [];
+  if (hasFrameCleanup(site.generator.elementType, plan.types)) {
+    const binding = frameStoredValue(site.statement.binding!, site.generator.elementType, plan.types);
+    lines.push(
+      `if (frame->${frameLiveField(site.statement.binding!)}) {`,
+      `  ${frameCleanup(binding, site.generator.elementType, plan.types)}`,
+      `  frame->${frameLiveField(site.statement.binding!)} = false;`,
+      "}",
+    );
+  }
+  const resultType = optionTypeName(site.generator.elementType);
+  if (hasFrameCleanup(resultType, plan.types)) {
+    const result = frameStoredValue(site.resultBinding, resultType, plan.types);
+    lines.push(
+      `if (frame->${frameLiveField(site.resultBinding)}) {`,
+      `  ${frameCleanup(result, resultType, plan.types)}`,
+      `  frame->${frameLiveField(site.resultBinding)} = false;`,
+      "}",
+    );
+  }
+  if (operation.destroyHandle && site.handleBinding) {
+    const handle = frameStoredValue(site.handleBinding, site.generatorType, plan.types);
+    lines.push(
+      `if (frame->${frameLiveField(site.handleBinding)}) {`,
+      `  ${frameCleanup(handle, site.generatorType, plan.types)}`,
+      `  frame->${frameLiveField(site.handleBinding)} = false;`,
+      "}",
+    );
+  }
+  lines.push(`frame->state = ${nextState};`, "continue;");
+  return lines;
+}
+
 function emitAsyncMatchDispatch(
   operation: Extract<AsyncOperation, { kind: "matchDispatch" }>,
   plan: AsyncFunctionPlan,
@@ -3081,6 +3336,26 @@ function generatePoll(
         `frame->state = ${state + 1};`,
         "continue;",
       ]));
+      state += 1;
+      continue;
+    }
+    if (operation.kind === "asyncForInitialize") {
+      cases.push(caseBlock(state, emitAsyncForInitialize(operation.site, plan, fileName, state + 1)));
+      state += 1;
+      continue;
+    }
+    if (operation.kind === "asyncForBegin") {
+      cases.push(caseBlock(state, emitAsyncForBegin(operation.site, plan, fileName, state + 1)));
+      state += 1;
+      continue;
+    }
+    if (operation.kind === "asyncForComplete") {
+      cases.push(caseBlock(state, emitAsyncForComplete(operation, plan, fileName)));
+      state += 1;
+      continue;
+    }
+    if (operation.kind === "asyncForCleanup") {
+      cases.push(caseBlock(state, emitAsyncForCleanup(operation, plan, state + 1)));
       state += 1;
       continue;
     }
@@ -3445,6 +3720,19 @@ function generatePoll(
   const finalizeState = state;
   for (const site of plan.awaits.values()) {
     if (!site.generator) continue;
+    const child = `frame->child_${site.index}`;
+    cases.push(caseBlock(state, [
+      `if (${child} != NULL) {`,
+      `  if (frame->cancel_children) z_async_cancel(${child});`,
+      `  if (!z_async_wait(&frame->task, ${child})) return;`,
+      `  frame->child_${site.index} = NULL;`,
+      "}",
+      `frame->state = ${state + 1};`,
+      "continue;",
+    ]));
+    state += 1;
+  }
+  for (const site of plan.asyncForSites) {
     const child = `frame->child_${site.index}`;
     cases.push(caseBlock(state, [
       `if (${child} != NULL) {`,
@@ -4734,6 +5022,8 @@ function frameCleanup(value: string, type: string, types: AsyncTypeContext): str
   if (aggregate?.kind === "struct") return `Z_${type}_deinit(&(${value}));`;
   const enumeration = types.enums.get(type);
   if (enumeration) {
+    const niche = asyncOptionNichePayload(type, types);
+    if (niche) return frameCleanup(value, niche, types);
     const cases = enumeration.variants.flatMap((variant) => {
       if (!variant.payload || !hasFrameCleanup(variant.payload.name, types)) return [];
       const cleanup = frameCleanup(`(${value}).data.${variant.name}`, variant.payload.name, types);
@@ -4772,6 +5062,8 @@ function frameManagedCleanup(value: string, type: string, types: AsyncTypeContex
   if (aggregate?.kind === "struct") return hasManagedFrameCleanup(type, types) ? `Z_${type}_deinit(&(${value}));` : "";
   const enumeration = types.enums.get(type);
   if (!enumeration) return "";
+  const niche = asyncOptionNichePayload(type, types);
+  if (niche) return frameManagedCleanup(value, niche, types);
   const cases = enumeration.variants.flatMap((variant) => {
     if (!variant.payload) return [];
     const cleanup = frameManagedCleanup(`(${value}).data.${variant.name}`, variant.payload.name, types);

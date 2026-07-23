@@ -26,6 +26,7 @@ import {
 } from "./foreign.ts";
 import { genericTypeName, parseGenericType } from "./generic-types.ts";
 import { functionTypeName, parseFunctionType } from "./function-types.ts";
+import { parseAsyncGeneratorType } from "./generator-types.ts";
 import { isNullableObjCTypeName, publicObjCTypeName } from "./objc-types.ts";
 import { iteratorTraitDeclaration } from "./iterator-types.ts";
 import { mapEntryTypeName, parseMapType } from "./map-types.ts";
@@ -868,12 +869,14 @@ export function inferGenericCalls(
         const iterable = rewriteExpression(expression.iterable, environment);
         const map = iterable.type ? parseMapType(iterable.type) : null;
         const set = iterable.type ? parseSetType(iterable.type) : null;
+        const asyncGenerator = iterable.type ? parseAsyncGeneratorType(iterable.type) : null;
         const collection = iterable.type
           ? parseFixedArrayType(iterable.type)
             ?? parseSliceType(iterable.type)
             ?? parseDynamicArrayType(iterable.type)
             ?? (map ? { elementType: mapEntryTypeName(map.keyType, map.valueType) } : null)
             ?? (set ? { elementType: set.elementType } : null)
+            ?? (asyncGenerator ? { elementType: asyncGenerator.elementType } : null)
           : null;
         const bodyEnvironment = new Map(environment);
         if (collection && expression.binding) bodyEnvironment.set(expression.binding, collection.elementType);

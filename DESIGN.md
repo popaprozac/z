@@ -688,13 +688,19 @@ Awaiting the task resumes the persistent sequence frame until `yield`, terminal
 that authorizes `await`, while the return type states whether the declaration
 is a task or a stream.
 
-The current lowering prohibits concurrent advancement and keeps explicit
-`.next()` consumption. Persistent `if`/`while`, `break`/`continue`, built-in
-collection `for...of`, and borrowed statement-match payloads survive across
-`yield` and `await`. Cancelling a caller that is awaiting `.next()` cancels and
-joins that advancement before destroying the stream frame. `for await...of`,
-consuming statement matches, value-producing suspending matches, async
-generator methods, and borrowed inputs/yields remain following layers.
+The current lowering prohibits concurrent advancement. Persistent
+`if`/`while`, `break`/`continue`, built-in collection `for...of`, and borrowed
+statement-match payloads survive across `yield` and `await`. A nonthrowing
+`AsyncGenerator<Y>` without a terminal value supports sequential
+`for await (const value of stream)`: each iteration awaits exactly one
+advancement, temporary handles are loop-owned, stored handles survive early
+`break`, and all exits preserve exact-once cleanup. Terminal-returning and
+throwing streams retain explicit `.next()` consumption so no terminal result
+or error is silently discarded. Cancelling a caller awaiting an advancement
+cancels and joins it before destroying the stream frame. Object-pattern async
+iteration, an explicit throwing-loop form, consuming statement matches,
+value-producing suspending matches, async generator methods, and borrowed
+inputs/yields remain following layers.
 
 The source-inspector pressure test uses this complete synchronous protocol to
 tokenize real Z source on first advancement, yield owned `Token` values, return

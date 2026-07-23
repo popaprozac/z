@@ -247,6 +247,7 @@ export type WhileStatement = {
 
 export type ForStatement = {
   readonly kind: "for";
+  readonly asynchronous: boolean;
   readonly mode: "auto" | "inout";
   readonly binding: string | null;
   readonly bindingLocation: SourceLocation | null;

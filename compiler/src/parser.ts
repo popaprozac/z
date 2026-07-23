@@ -657,6 +657,7 @@ export function parse(tokens: Token[], fileName: string): Program {
     }
     if (match("for")) {
       const forToken = previous();
+      const asynchronous = match("await");
       expect("leftParen", "`(`");
       expect("const", "`const` in a read-only `for...of` binding");
       const objectBindings = match("leftBrace") ? parseObjectBindings() : null;
@@ -668,6 +669,7 @@ export function parse(tokens: Token[], fileName: string): Program {
       const body = parseRequiredBlock("a `for...of` body");
       return {
         kind: "for",
+        asynchronous,
         mode,
         binding: binding?.text ?? null,
         bindingLocation: binding?.location ?? null,

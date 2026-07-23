@@ -11065,6 +11065,118 @@ test("runs cold async generators through reusable awaited advancement tasks", ()
   );
   assert.equal(streamNative.status, 0, streamNative.stderr);
 
+  const forAwaitExample = resolve(projectRoot, "examples/language/control-flow/async-for-await.zs");
+  const forAwaitSource = readFileSync(forAwaitExample, "utf8");
+  const forAwaitResult = spawnSync(process.execPath, [cli, "run", forAwaitExample], { encoding: "utf8" });
+  assert.equal(forAwaitResult.status, 0, forAwaitResult.stderr);
+  assert.equal(forAwaitResult.stdout, "for await total=62, resumed=0\n");
+  const forAwaitGenerated = compileToC(forAwaitSource, forAwaitExample);
+  assert.match(forAwaitGenerated, /\.next\(.*\.context, frame->task\.executor\)/s);
+  assert.match(forAwaitGenerated, /\.take_result\(.*\.context,/s);
+  const readingUse = forAwaitSource.indexOf("reading == 0");
+  assert.match(hover(forAwaitSource, forAwaitExample, readingUse + 1)?.contents.value ?? "", /reading: i32/);
+  const forAwaitTokens = decodeSemanticTokens(semanticTokens(forAwaitSource, forAwaitExample).data);
+  const bindingOffset = forAwaitSource.indexOf("reading of");
+  const bindingPosition = positionForOffset(forAwaitSource, bindingOffset);
+  assert.ok(forAwaitTokens.some((token) => (
+    token.line === bindingPosition.line
+    && token.character === bindingPosition.character
+  )));
+  const forAwaitNative = spawnSync(
+    process.execPath,
+    [cli, "check", forAwaitExample, "--native-frontend"],
+    { encoding: "utf8" },
+  );
+  assert.equal(forAwaitNative.status, 0, forAwaitNative.stderr);
+
+  const forAwaitCleanupFile = resolve(throwingDirectory, "for-await-cleanup.zs");
+  writeFileSync(forAwaitCleanupFile, `
+    import console from "std/console";
+    import { AsyncGenerator } from "std/iteration";
+    struct Lease {
+      id: i32;
+      deinit { console.log(\`released \${this.id}\`); }
+    }
+    async function leases(): AsyncGenerator<Lease> {
+      yield Lease({ id: 42 });
+      yield Lease({ id: 99 });
+    }
+    async function main(): i32 {
+      for await (const lease of leases()) {
+        if (lease.id == 42) break;
+      }
+      return 0;
+    }
+  `);
+  const forAwaitCleanupResult = spawnSync(
+    process.execPath,
+    [cli, "run", forAwaitCleanupFile],
+    { encoding: "utf8" },
+  );
+  assert.equal(forAwaitCleanupResult.status, 0, forAwaitCleanupResult.stderr);
+  assert.equal(forAwaitCleanupResult.stdout, "released 42\n");
+
+  assert.throws(
+    () => compileToC(`
+      import { AsyncGenerator } from "std/iteration";
+      async function values(): AsyncGenerator<i32> { yield 42; }
+      function main(): i32 {
+        for await (const value of values()) {}
+        return 0;
+      }
+    `, "for-await-sync-parent.zs"),
+    /for await requires an enclosing async function/,
+  );
+  assert.throws(
+    () => compileToC(`
+      import { AsyncGenerator } from "std/iteration";
+      async function values(): AsyncGenerator<i32, i32> {
+        yield 42;
+        return 1;
+      }
+      async function main(): i32 {
+        for await (const value of values()) {}
+        return 0;
+      }
+    `, "for-await-terminal.zs"),
+    /for await\.\.\.of cannot discard the terminal i32 value/,
+  );
+  assert.throws(
+    () => compileToC(`
+      import { AsyncGenerator } from "std/iteration";
+      struct ReadError { code: i32; }
+      async function values(): AsyncGenerator<i32, void, ReadError> throws ReadError {
+        yield 42;
+      }
+      async function main(): i32 {
+        for await (const value of values()) {}
+        return 0;
+      }
+    `, "for-await-throwing.zs"),
+    /for await\.\.\.of cannot implicitly propagate ReadError/,
+  );
+  assert.throws(
+    () => compileToC(`
+      import { AsyncGenerator } from "std/iteration";
+      async function values(): AsyncGenerator<i32> { yield 42; }
+      async function main(): i32 {
+        for (const value of values()) {}
+        return 0;
+      }
+    `, "async-generator-sync-loop.zs"),
+    /AsyncGenerator<T> requires asynchronous iteration/,
+  );
+  assert.throws(
+    () => compileToC(`
+      async function main(): i32 {
+        const values = [20, 22];
+        for await (const value of values) {}
+        return 0;
+      }
+    `, "for-await-collection.zs"),
+    /for await requires AsyncGenerator<T>/,
+  );
+
   const controlFlowFile = resolve(throwingDirectory, "control-flow.zs");
   writeFileSync(controlFlowFile, `
     import { AsyncGenerator } from "std/iteration";

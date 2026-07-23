@@ -84,6 +84,7 @@ export enum StatementKind {
   ifStatement,
   whileStatement,
   forStatement,
+  forAwaitStatement,
   matchStatement,
   asyncScopeStatement,
   breakStatement,
@@ -2414,6 +2415,7 @@ function parseProjectedStatement(
   if (kind == TokenKind.forKeyword) {
     const start = snapshot(tokens[current]);
     current = current + 1;
+    const asynchronous = takeIf(tokens, inout current, TokenKind.awaitKeyword);
     try expectKind(tokens, inout current, TokenKind.leftParen, "`(` after `for`");
     try expectKind(tokens, inout current, TokenKind.constKeyword, "`const` in a read-only `for...of` binding");
     let bindingName = "";
@@ -2440,9 +2442,11 @@ function parseProjectedStatement(
     const bodyStatements = try parseProjectedBlock(tokens, inout current, "a `for...of` body", inout nodes);
     let children = Array<usize>();
     children.push(pushProjectedBlock(inout nodes, bodyStatements, bodyStart));
+    let statementKind = StatementKind.forStatement;
+    if (asynchronous) statementKind = StatementKind.forAwaitStatement;
     const index = nodes.length;
     nodes.push(Statement({
-      kind: StatementKind.forStatement,
+      kind: statementKind,
       mutableBinding: mutableIterator,
       name: bindingName,
       nameOffset: bindingOffset,
@@ -3295,6 +3299,7 @@ function renderStatementText(in arena: StatementArena, in statement: Statement):
   else if (statement.kind == StatementKind.expressionStatement) output.append("expression@");
   else if (statement.kind == StatementKind.ifStatement) output.append("if@");
   else if (statement.kind == StatementKind.whileStatement) output.append("while@");
+  else if (statement.kind == StatementKind.forAwaitStatement) output.append("for-await@");
   else if (statement.kind == StatementKind.forStatement) output.append("for@");
   else if (statement.kind == StatementKind.matchStatement) output.append("match@");
   else if (statement.kind == StatementKind.asyncScopeStatement) output.append("asyncScope@");
@@ -3350,7 +3355,10 @@ function renderStatementText(in arena: StatementArena, in statement: Statement):
       }
       none => {}
     }
-  } else if (statement.kind == StatementKind.forStatement) {
+  } else if (
+    statement.kind == StatementKind.forStatement
+    || statement.kind == StatementKind.forAwaitStatement
+  ) {
     output.append("const:");
     if (statement.name.byteLength > 0) {
       output.append(statement.name);
@@ -3393,6 +3401,7 @@ function renderStatementText(in arena: StatementArena, in statement: Statement):
   } else if (
     statement.kind == StatementKind.whileStatement
     || statement.kind == StatementKind.forStatement
+    || statement.kind == StatementKind.forAwaitStatement
     || statement.kind == StatementKind.asyncScopeStatement
   ) {
     if (statement.children.length > 0) {

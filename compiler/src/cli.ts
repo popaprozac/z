@@ -565,7 +565,7 @@ function canonicalStatementText(statement: Statement, tokens: readonly Token[]):
       : `{${(statement.objectBindings ?? []).map((field) => (
         `${field.fieldName}@${canonicalLocation(field.fieldLocation)}:${field.bindingName}@${canonicalLocation(field.bindingLocation)}`
       )).join(",")}}`;
-    return `for@${location}(const:${binding}`
+    return `for${statement.asynchronous ? "-await" : ""}@${location}(const:${binding}`
       + `${statement.mode === "inout" ? "inout:" : ""}iterable=${iterable}`
       + `body=${canonicalStatementText(statement.body, tokens)})`;
   }

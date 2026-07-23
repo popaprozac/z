@@ -1140,7 +1140,10 @@ function resolveStatement(
     }
     return;
   }
-  if (arena.nodes[index].kind == StatementKind.forStatement) {
+  if (
+    arena.nodes[index].kind == StatementKind.forStatement
+    || arena.nodes[index].kind == StatementKind.forAwaitStatement
+  ) {
     let loopBindings = copyBindings(bindings);
     if (arena.nodes[index].name.byteLength > 0) {
       loopBindings.push(arena.nodes[index].name.copyBytes(0, arena.nodes[index].name.byteLength));
@@ -2707,7 +2710,14 @@ function iterationElementType(in name: String): String {
   match (genericTypeShape(name)) {
     some(generic) => {
       if (
-        (generic.base == "Array" || generic.base == "Slice" || generic.base == "Set")
+        (
+          generic.base == "Array"
+          || generic.base == "Slice"
+          || generic.base == "Set"
+          || generic.base == "Iterator"
+          || generic.base == "Generator"
+          || generic.base == "AsyncGenerator"
+        )
         && generic.arguments.length == 1
       ) return generic.arguments[0].copyBytes(0, generic.arguments[0].byteLength);
       if (generic.base == "Map" && generic.arguments.length == 2) {
@@ -6054,7 +6064,10 @@ function collectClosureStatementCaptures(
       continue;
     }
     let nestedNames = copyBindings(localNames);
-    if (arena.nodes[statementIndex].kind == StatementKind.forStatement) {
+    if (
+      arena.nodes[statementIndex].kind == StatementKind.forStatement
+      || arena.nodes[statementIndex].kind == StatementKind.forAwaitStatement
+    ) {
       if (arena.nodes[statementIndex].name.byteLength > 0) {
         addUniqueString(inout nestedNames, arena.nodes[statementIndex].name);
       }
@@ -8419,7 +8432,7 @@ function inferStatement(
     }
     return true;
   }
-  if (kind == StatementKind.forStatement) {
+  if (kind == StatementKind.forStatement || kind == StatementKind.forAwaitStatement) {
     const beforeLoop = copyValueBindings(bindings);
     let loopBindings = copyValueBindings(bindings);
     let elementType = "";
