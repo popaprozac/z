@@ -85,7 +85,14 @@ import { parseSetType } from "./set-types.ts";
 import { parseOptionalViewType, parseReceiverViewReturnType, parseViewType, viewTypeName } from "./view-types.ts";
 import { hashableSelfTypeName, hashableTraitDeclaration } from "./hash-types.ts";
 import { iteratorTraitDeclaration } from "./iterator-types.ts";
-import { generatorStepTypeName, isGeneratorFunction, parseGeneratorType } from "./generator-types.ts";
+import {
+  asyncGeneratorTypeName,
+  generatorStepTypeName,
+  isAsyncGeneratorFunction,
+  isGeneratorFunction,
+  parseAsyncGeneratorType,
+  parseGeneratorType,
+} from "./generator-types.ts";
 
 export type ObjCCallInfo = {
   readonly selector: string;
@@ -312,7 +319,7 @@ export type SemanticInfo = {
   readonly standardFunctionReferences: ReadonlyMap<number, StandardFunctionName>;
   readonly standardFunctionBindings: ReadonlyMap<string, StandardFunctionName>;
   readonly standardModuleBindings: ReadonlyMap<string, StandardModuleName>;
-  readonly standardTypeBindings: ReadonlyMap<string, "TextBuffer" | "Arena" | "Map" | "Set" | "Hashable" | "Hasher" | "Iterator" | "Generator">;
+  readonly standardTypeBindings: ReadonlyMap<string, "TextBuffer" | "Arena" | "Map" | "Set" | "Hashable" | "Hasher" | "Iterator" | "Generator" | "AsyncGenerator">;
   readonly iteratorElementTypes: ReadonlyMap<string, string>;
   readonly hasherAddTypes: ReadonlyMap<number, string>;
   readonly typeDisplayNames: ReadonlyMap<string, string>;
@@ -385,7 +392,7 @@ type AnalysisState = {
   readonly standardFunctionReferences: Map<number, StandardFunctionName>;
   readonly standardFunctionBindings: Map<string, StandardFunctionName>;
   readonly standardModuleBindings: Map<string, StandardModuleName>;
-  readonly standardTypeBindings: Map<string, "TextBuffer" | "Arena" | "Map" | "Set" | "Hashable" | "Hasher" | "Iterator" | "Generator">;
+  readonly standardTypeBindings: Map<string, "TextBuffer" | "Arena" | "Map" | "Set" | "Hashable" | "Hasher" | "Iterator" | "Generator" | "AsyncGenerator">;
   readonly iteratorElementTypes: Map<string, string>;
   readonly hasherAddTypes: Map<number, string>;
   readonly inferredOutBindingLocations: Map<string, SourceLocation>;
@@ -833,14 +840,18 @@ export function analyze(
         if (!declaration.bindings) {
           throw new DiagnosticError(fileName, declaration.location, "std/iteration requires a selective import", {
             code: "Z0501",
-            helps: ["use `import { Iterator, Generator } from \"std/iteration\";`"],
+            helps: ["use `import { Iterator, Generator, AsyncGenerator } from \"std/iteration\";`"],
           });
         }
         for (const binding of declaration.bindings) {
-          if (binding.importedName !== "Iterator" && binding.importedName !== "Generator") {
+          if (
+            binding.importedName !== "Iterator"
+            && binding.importedName !== "Generator"
+            && binding.importedName !== "AsyncGenerator"
+          ) {
             throw new DiagnosticError(fileName, binding.location, `std/iteration has no export ${JSON.stringify(binding.importedName)}`, {
               code: "Z0501",
-              helps: ["std/iteration exports `Iterator` and `Generator`"],
+              helps: ["std/iteration exports `Iterator`, `Generator`, and `AsyncGenerator`"],
             });
           }
           validateUserName(binding.localName, binding.location, fileName);
@@ -849,8 +860,8 @@ export function analyze(
             declareGlobal(globals, binding.localName, { kind: "trait", declaration: trait }, binding.location, fileName);
             state.standardTypeBindings.set(binding.localName, "Iterator");
           } else {
-            declareGlobal(globals, binding.localName, { kind: "standardType", type: "Generator" }, binding.location, fileName);
-            state.standardTypeBindings.set(binding.localName, "Generator");
+            declareGlobal(globals, binding.localName, { kind: "standardType", type: binding.importedName }, binding.location, fileName);
+            state.standardTypeBindings.set(binding.localName, binding.importedName);
           }
         }
         continue;
@@ -1192,6 +1203,12 @@ function analyzeStructDeclaration(
         helps: ["pass the needed owned state to a module function returning Generator<T>"],
       });
     }
+    if (isAsyncGeneratorFunction(method)) {
+      throw new DiagnosticError(fileName, method.returnType.location, "async generator methods are deferred beyond the first module-function tier", {
+        notes: ["the reusable stream frame needs an explicit retained or consuming receiver contract"],
+        helps: ["pass owned state to a module async function returning AsyncGenerator<T>"],
+      });
+    }
     validateFunctionSignature(method, structs, enums, foreignNamedTypes, foreignTypes, fileName);
     const view = parseReceiverViewReturnType(method.returnType.name);
     if (view) {
@@ -1498,9 +1515,9 @@ function validateFunctionSignature(
 ): void {
   validateType(declaration.returnType, structs, enums, foreignNamedTypes, fileName, true);
   if (declaration.async && parseGeneratorType(declaration.returnType.name)) {
-    throw new DiagnosticError(fileName, declaration.returnType.location, "async functions cannot return Generator<T> handles in the first generator tier", {
+    throw new DiagnosticError(fileName, declaration.returnType.location, "an async generator must return AsyncGenerator<T>, not Generator<T>", {
       code: "Z0704",
-      notes: ["generator ownership has not yet been added to async task-frame results"],
+      helps: ["import AsyncGenerator from std/iteration and update the declared return type"],
     });
   }
   const generator = isGeneratorFunction(declaration) ? parseGeneratorType(declaration.returnType.name) : null;
@@ -1546,6 +1563,47 @@ function validateFunctionSignature(
       }
       if (containsForeignValueStorage(parameter.type.name, structs, enums, foreignNamedTypes)) {
         throw new DiagnosticError(fileName, parameter.location, "cold generator frames cannot retain native C++ value parameters yet");
+      }
+    }
+  }
+  const asyncGenerator = parseAsyncGeneratorType(declaration.returnType.name);
+  if (asyncGenerator) {
+    if (!declaration.async) {
+      throw new DiagnosticError(fileName, declaration.location, "AsyncGenerator<T> requires an async function", {
+        code: "Z0701",
+        helps: ["add `async` before `function`"],
+      });
+    }
+    if (!isAsyncGeneratorFunction(declaration)) {
+      throw new DiagnosticError(fileName, declaration.location, "an async generator body must contain yield", {
+        helps: ["yield at least one value, or return an ordinary Task result from the async function"],
+      });
+    }
+    if (asyncGenerator.errorType !== (declaration.errorType?.name ?? null)) {
+      throw new DiagnosticError(
+        fileName,
+        declaration.returnType.location,
+        asyncGenerator.errorType
+          ? `async generator error capability ${displayArrayType(asyncGenerator.errorType)} requires a matching throws declaration`
+          : "a throwing async generator must carry its declared error capability",
+      );
+    }
+    if (containsViewType(asyncGenerator.elementType) || containsSliceType(asyncGenerator.elementType)) {
+      throw new DiagnosticError(fileName, declaration.returnType.location, "AsyncGenerator<T> cannot yield borrowed storage", {
+        code: "Z0206",
+        helps: ["yield an owned value or cleanup-free copy"],
+      });
+    }
+    for (const parameter of declaration.parameters) {
+      if (
+        parameter.mode !== "value"
+        || containsViewType(parameter.type.name)
+        || containsSliceType(parameter.type.name)
+      ) {
+        throw new DiagnosticError(fileName, parameter.location, "a cold async generator cannot retain borrowed parameter storage", {
+          code: "Z0206",
+          helps: ["pass an owned value parameter"],
+        });
       }
     }
   }
@@ -1745,12 +1803,19 @@ function analyzeFunction(
     state.bindingTypes.set(parameter.location.offset, parameter.type.name);
   }
 
-  const generator = isGeneratorFunction(declaration) ? parseGeneratorType(declaration.returnType.name) : null;
-  if (generator && !generator.returnType && !generator.errorType) {
-    state.iteratorElementTypes.set(declaration.returnType.name, generator.elementType);
+  const synchronousGenerator = isGeneratorFunction(declaration)
+    ? parseGeneratorType(declaration.returnType.name)
+    : null;
+  const generator = synchronousGenerator ?? (
+    isAsyncGeneratorFunction(declaration)
+      ? parseAsyncGeneratorType(declaration.returnType.name)
+      : null
+  );
+  if (synchronousGenerator && !synchronousGenerator.returnType && !synchronousGenerator.errorType) {
+    state.iteratorElementTypes.set(declaration.returnType.name, synchronousGenerator.elementType);
   }
   const returns = analyzeStatements(declaration.body, declaration, locals, globals, structs, enums, fileName, state);
-  if (generator) {
+  if (synchronousGenerator) {
     validateGeneratorBodyShape(declaration, fileName, state);
   }
   const unresolvedOutBinding = state.inferredOutBindingLocations.entries().next().value as [string, SourceLocation] | undefined;
@@ -2591,7 +2656,11 @@ function analyzeStatement(
       return;
     }
     case "return": {
-      const generator = isGeneratorFunction(owner) ? parseGeneratorType(owner.returnType.name) : null;
+      const generator = isGeneratorFunction(owner)
+        ? parseGeneratorType(owner.returnType.name)
+        : isAsyncGeneratorFunction(owner)
+          ? parseAsyncGeneratorType(owner.returnType.name)
+          : null;
       if (generator) {
         if (!generator.returnType && statement.expression) {
           throw new DiagnosticError(fileName, statement.location, "a generator finishes with `return;` and cannot return a value", {
@@ -2662,10 +2731,11 @@ function analyzeStatement(
       return;
     }
     case "yield": {
-      const generator = parseGeneratorType(owner.returnType.name);
+      const generator = parseGeneratorType(owner.returnType.name)
+        ?? parseAsyncGeneratorType(owner.returnType.name);
       if (!generator) {
-        throw new DiagnosticError(fileName, statement.location, "yield requires a function returning Generator<T>", {
-          helps: ["import { Generator } from \"std/iteration\" and declare the function return type"],
+        throw new DiagnosticError(fileName, statement.location, "yield requires a function returning Generator<T> or AsyncGenerator<T>", {
+          helps: ["import Generator or AsyncGenerator from \"std/iteration\" and declare the function return type"],
         });
       }
       if (state.asyncScopeDepth > 0) {
@@ -4407,6 +4477,7 @@ function registerAsyncCall(
   state: AnalysisState,
 ): void {
   if (!declaration.async) return;
+  if (isAsyncGeneratorFunction(declaration)) return;
   const context = state.asyncCallContexts.at(-1);
   if (!context) {
     throw new DiagnosticError(fileName, location, `async call to ${JSON.stringify(declaration.name)} requires \`await\` or \`spawn\``, {
@@ -5968,6 +6039,38 @@ function inferExpressionInner(
           releaseAsyncTaskBorrows(expression.callee.object.name, state);
           return "void";
         }
+        const asyncGenerator = parseAsyncGeneratorType(receiverValueType);
+        if (asyncGenerator) {
+          rejectLabeledArguments(expression.argumentLabels, expression.location, fileName);
+          if (expression.callee.property !== "next") {
+            throw new DiagnosticError(fileName, expression.callee.location, `AsyncGenerator has no method ${JSON.stringify(expression.callee.property)}`);
+          }
+          if (expression.arguments.length !== 0) {
+            throw new DiagnosticError(fileName, expression.location, `"next" expects 0 arguments, received ${expression.arguments.length}`);
+          }
+          const root = storageRoot(expression.callee.object);
+          if (!root || !locals.has(root.name)) {
+            throw new DiagnosticError(fileName, expression.callee.object.location, "AsyncGenerator.next requires a named generator handle");
+          }
+          const context = state.asyncCallContexts.at(-1);
+          if (!state.activeFunction?.async || !context) {
+            throw new DiagnosticError(fileName, expression.location, "AsyncGenerator.next requires direct await", {
+              code: "Z0702",
+              helps: ["write `await generator.next()` inside an async function"],
+            });
+          }
+          if (context.mode === "spawn") {
+            throw new DiagnosticError(fileName, expression.location, "spawning AsyncGenerator.next is deferred until concurrent advancement is statically excluded", {
+              code: "Z0703",
+              helps: ["advance the stream with direct `await generator.next()`"],
+            });
+          }
+          context.calls += 1;
+          const success = asyncGenerator.returnType
+            ? generatorStepTypeName(asyncGenerator.elementType, asyncGenerator.returnType)
+            : optionTypeName(asyncGenerator.elementType);
+          return taskTypeName(success, asyncGenerator.errorType);
+        }
         const generator = parseGeneratorType(receiverValueType);
         if (generator) {
           rejectLabeledArguments(expression.argumentLabels, expression.location, fileName);
@@ -6696,7 +6799,11 @@ function inferExpressionInner(
       checkArguments(callable, expression.arguments, locals, globals, structs, enums, fileName, expression.location, state);
       registerAsyncCall(callable, expression.location, fileName, state);
       state.observer?.onFunctionCall?.(functionResolution);
-      if (callable.errorType && !isGeneratorFunction(callable)) {
+      if (
+        callable.errorType
+        && !isGeneratorFunction(callable)
+        && !isAsyncGeneratorFunction(callable)
+      ) {
         if (!allowThrowingCall) throw new DiagnosticError(fileName, expression.location, "throwing call requires `attempt` or `try`");
         return resultTypeName(callable.returnType.name, callable.errorType.name);
       }
@@ -8226,7 +8333,7 @@ function hasCleanupType(
   const actual = underlyingType(type);
   if (actual === "unknown" || actual === "never" || visiting.has(actual)) return false;
   if (actual === "String" || actual === "TextBuffer" || actual === "Arena") return true;
-  if (parseGeneratorType(actual)) return true;
+  if (parseGeneratorType(actual) || parseAsyncGeneratorType(actual)) return true;
   if (parseWeakType(actual)) return true;
   if (parseFunctionType(String(actual))) return true;
   if (foreignTypes.get(actual)?.ownership === "owned") return true;
@@ -8266,7 +8373,13 @@ function explicitCopyPlanForType(
 ): Omit<ExplicitCopyPlan, "type" | "sourceIsView"> | null {
   const actual = String(underlyingType(type));
   if (actual === "String") return { kind: "string" };
-  if (actual === "TextBuffer" || actual === "Arena" || parseWeakType(actual) || parseFunctionType(actual)) return null;
+  if (
+    actual === "TextBuffer"
+    || actual === "Arena"
+    || parseAsyncGeneratorType(actual)
+    || parseWeakType(actual)
+    || parseFunctionType(actual)
+  ) return null;
 
   const native = state.foreignNamedTypes.get(actual);
   if (native?.kind === "value") return native.lifecycle.copy ? { kind: "native" } : null;
@@ -8295,7 +8408,13 @@ function explicitAggregateCopyable(
   visiting = new Set<string>(),
 ): boolean {
   if (type === "String") return true;
-  if (type === "TextBuffer" || type === "Arena" || parseWeakType(type) || parseFunctionType(type)) return false;
+  if (
+    type === "TextBuffer"
+    || type === "Arena"
+    || parseAsyncGeneratorType(type)
+    || parseWeakType(type)
+    || parseFunctionType(type)
+  ) return false;
   const native = state.foreignNamedTypes.get(type);
   if (native?.kind === "value") return native.lifecycle.copy;
   if (native?.kind === "object") return false;
@@ -9732,6 +9851,17 @@ function validateType(
     }
     return;
   }
+  const asyncGenerator = parseAsyncGeneratorType(type.name);
+  if (asyncGenerator) {
+    validateType({ name: asyncGenerator.elementType, location: type.location }, structs, enums, foreignNamedTypes, fileName, false);
+    if (asyncGenerator.returnType) {
+      validateType({ name: asyncGenerator.returnType, location: type.location }, structs, enums, foreignNamedTypes, fileName, false);
+    }
+    if (asyncGenerator.errorType) {
+      validateType({ name: asyncGenerator.errorType, location: type.location }, structs, enums, foreignNamedTypes, fileName, false);
+    }
+    return;
+  }
   const view = parseViewType(type.name);
   if (view) {
     if (parseViewType(view.target)) {
@@ -9828,6 +9958,14 @@ function resolveSemanticTypeName(
       return taskTypeName(
         resolveName(task.successType),
         task.errorType ? resolveName(task.errorType) : null,
+      );
+    }
+    const asyncGenerator = parseAsyncGeneratorType(name);
+    if (asyncGenerator) {
+      return asyncGeneratorTypeName(
+        resolveName(asyncGenerator.elementType),
+        asyncGenerator.returnType ? resolveName(asyncGenerator.returnType) : null,
+        asyncGenerator.errorType ? resolveName(asyncGenerator.errorType) : null,
       );
     }
     const option = parseOptionType(name);

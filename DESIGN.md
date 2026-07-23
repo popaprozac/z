@@ -660,8 +660,38 @@ element projection across suspension, and statement `match` persists tagged or
 niche-encoded payload bindings with exact-once cleanup. Custom iterators that
 suspend inside their loop body and value-producing match expressions remain
 deferred because their owned iterator/selection temporaries also need explicit
-frame slots. Borrowed inputs, generator methods, borrowed yielded values, async
-generators, and values sent back into a suspension remain later work.
+frame slots. Borrowed inputs, generator methods, borrowed yielded values, and
+values sent back into a suspension remain later work.
+
+Asynchronous generators retain that protocol and add suspension authority
+explicitly:
+
+```zs
+async function events(): AsyncGenerator<Event, Summary> throws StreamError {
+  const batch = try await fetchEvents();
+  yield batch.first;
+  return Summary({ count: 1 });
+}
+```
+
+The two declarations have deliberately different call protocols:
+
+- `async function operation(): T` constructs a one-shot `Task<T>`.
+- `async function sequence(): AsyncGenerator<Y, R>` constructs a cold,
+  reusable asynchronous sequence handle.
+
+`AsyncGenerator` construction does not execute the body and does not throw.
+Its `.next()` returns a one-shot `Task<Option<Y>>` or
+`Task<GeneratorStep<Y, R>>`; an error parameter adds `E` to that task.
+Awaiting the task resumes the persistent sequence frame until `yield`, terminal
+`return`, or `throw`. This keeps `async` concise and consistent as the marker
+that authorizes `await`, while the return type states whether the declaration
+is a task or a stream.
+
+The first lowering tier prohibits concurrent advancement and keeps explicit
+`.next()` consumption. `for await...of`, complete suspending loop/match
+lowering, async generator methods, borrowed inputs/yields, and richer
+cancellation interaction remain following layers.
 
 The source-inspector pressure test uses this complete synchronous protocol to
 tokenize real Z source on first advancement, yield owned `Token` values, return

@@ -40,7 +40,7 @@ import { parseWeakType } from "./weak-types.ts";
 import { parseViewType } from "./view-types.ts";
 import { parseMapType } from "./map-types.ts";
 import { parseSetType } from "./set-types.ts";
-import { parseGeneratorType } from "./generator-types.ts";
+import { parseAsyncGeneratorType, parseGeneratorType } from "./generator-types.ts";
 import type { ExplicitCopyPlan, IntegerConversion } from "./sema.ts";
 import { collectForeignHandleTypeAliases } from "./foreign-handle-types.ts";
 import {
@@ -663,15 +663,27 @@ export function hover(source: string, fileName: string, offset: number): Hover |
   if (context.semanticInfo.standardTypeBindings.get(word.text) === "Generator") {
     return markdownHover("Generator<Yield, Return?, Error?>  // cold, move-only synchronous sequence with deterministic cleanup", source, word.start, word.end);
   }
+  if (context.semanticInfo.standardTypeBindings.get(word.text) === "AsyncGenerator") {
+    return markdownHover("AsyncGenerator<Yield, Return?, Error?>  // cold, move-only asynchronous sequence with awaited advancement", source, word.start, word.end);
+  }
   if (word.text === "next") {
     const receiver = source.slice(0, word.start).match(/([A-Za-z_][A-Za-z0-9_]*)\.$/)?.[1];
     const binding = receiver
       ? collectBindings(context).filter((candidate) => candidate.name === receiver && candidate.offset < word.start).at(-1)
       : null;
     const generator = binding ? parseGeneratorType(binding.type) : null;
+    const asyncGenerator = binding ? parseAsyncGeneratorType(binding.type) : null;
     if (generator) {
       return markdownHover(
         `next(): ${generatorNextDisplayType(generator, context.typeDisplayNames)}  // advances the suspended generator frame`,
+        source,
+        word.start,
+        word.end,
+      );
+    }
+    if (asyncGenerator) {
+      return markdownHover(
+        `async next(): ${asyncGeneratorNextDisplayType(asyncGenerator, context.typeDisplayNames)}  // resumes the persistent frame until yield or return`,
         source,
         word.start,
         word.end,
@@ -1151,6 +1163,11 @@ function selectiveImportCandidates(specifier: string, fileName: string): Complet
         kind: completionKinds.struct,
         detail: "Generator<Yield, Return?, Error?>  // cold, move-only synchronous sequence",
       },
+      {
+        label: "AsyncGenerator",
+        kind: completionKinds.struct,
+        detail: "AsyncGenerator<Yield, Return?, Error?>  // cold, move-only asynchronous sequence",
+      },
     ];
   }
   if (specifier === "std/thread") {
@@ -1522,7 +1539,7 @@ function symbolCompletions(source: string, fileName: string, offset: number): Co
     for (const declaration of parsed.imports) {
       if (declaration.header !== "std/text" && declaration.header !== "std/memory" && declaration.header !== "std/collections" && declaration.header !== "std/hash" && declaration.header !== "std/iteration") continue;
       for (const binding of declaration.bindings ?? []) {
-        if (binding.importedName !== "TextBuffer" && binding.importedName !== "Arena" && binding.importedName !== "Map" && binding.importedName !== "Set" && binding.importedName !== "Hashable" && binding.importedName !== "Hasher" && binding.importedName !== "Iterator" && binding.importedName !== "Generator") continue;
+        if (binding.importedName !== "TextBuffer" && binding.importedName !== "Arena" && binding.importedName !== "Map" && binding.importedName !== "Set" && binding.importedName !== "Hashable" && binding.importedName !== "Hasher" && binding.importedName !== "Iterator" && binding.importedName !== "Generator" && binding.importedName !== "AsyncGenerator") continue;
         const detail = binding.importedName === "TextBuffer"
           ? "move-only UTF-8 construction storage"
           : binding.importedName === "Arena"
@@ -1537,12 +1554,14 @@ function symbolCompletions(source: string, fileName: string, offset: number): Co
                     ? "stateful iteration contract"
                     : binding.importedName === "Generator"
                       ? "cold move-only synchronous sequence"
+                      : binding.importedName === "AsyncGenerator"
+                        ? "cold move-only asynchronous sequence"
                     : "mutable hash-composition state";
         builtIns.push({
           label: binding.localName,
           kind: binding.importedName === "Hashable" || binding.importedName === "Iterator" ? completionKinds.interface : completionKinds.struct,
           detail: binding.localName === binding.importedName
-            ? `${binding.importedName}${binding.importedName === "Hashable" || binding.importedName === "Iterator" || binding.importedName === "Generator" ? "" : "()"}  // ${detail}`
+            ? `${binding.importedName}${binding.importedName === "Hashable" || binding.importedName === "Iterator" || binding.importedName === "Generator" || binding.importedName === "AsyncGenerator" ? "" : "()"}  // ${detail}`
             : `${binding.importedName}  // imported as ${binding.localName}`,
           sortText: `0-${binding.localName}`,
         });
@@ -1699,6 +1718,8 @@ function symbolCompletions(source: string, fileName: string, offset: number): Co
                   ? "trait Iterator<T>  // next(inout this): Option<T>"
                   : standardType === "Generator"
                     ? "Generator<Yield, Return?, Error?>  // cold, move-only synchronous sequence"
+                  : standardType === "AsyncGenerator"
+                    ? "AsyncGenerator<Yield, Return?, Error?>  // cold, move-only asynchronous sequence"
                   : "Hasher  // mutable hash-composition state",
       sortText: `0-${name}`,
     });
@@ -2768,6 +2789,14 @@ function memberCompletions(
       insertText: "next()",
     }], prefix, 1000);
   }
+  if (directReceiver?.kind === "asyncGenerator") {
+    return filterCompletions([{
+      label: "next",
+      kind: completionKinds.method,
+      detail: `async next(): ${asyncGeneratorNextDisplayType(directReceiver, importContext.typeDisplayNames)}  // resumes until yield or return`,
+      insertText: "next()",
+    }], prefix, 1000);
+  }
   const dotOffset = receiverOffset + receiverText.length;
   const tailOffset = completionTailOffset(source, offset);
   const sanitized = source.slice(0, dotOffset) + source.slice(tailOffset);
@@ -2809,6 +2838,15 @@ function memberCompletions(
         label: "next",
         kind: completionKinds.method,
         detail: `next(): ${generatorNextDisplayType(generator, iterationContext.typeDisplayNames)}  // advances the suspended frame`,
+        insertText: "next()",
+      }], prefix, 1000);
+    }
+    const asyncGenerator = parseAsyncGeneratorType(iterationBinding.type);
+    if (asyncGenerator) {
+      return filterCompletions([{
+        label: "next",
+        kind: completionKinds.method,
+        detail: `async next(): ${asyncGeneratorNextDisplayType(asyncGenerator, iterationContext.typeDisplayNames)}  // resumes until yield or return`,
         insertText: "next()",
       }], prefix, 1000);
     }
@@ -3018,6 +3056,14 @@ function memberCompletions(
       label: "next",
       kind: completionKinds.method,
       detail: `next(): ${generatorNextDisplayType(resolved, context.typeDisplayNames)}  // advances the suspended frame`,
+      insertText: "next()",
+    }], prefix, 1000);
+  }
+  if (resolved?.kind === "asyncGenerator") {
+    return filterCompletions([{
+      label: "next",
+      kind: completionKinds.method,
+      detail: `async next(): ${asyncGeneratorNextDisplayType(resolved, context.typeDisplayNames)}  // resumes until yield or return`,
       insertText: "next()",
     }], prefix, 1000);
   }
@@ -3310,6 +3356,12 @@ type ResolvedReceiver =
     readonly returnType: string | null;
     readonly errorType: string | null;
   }
+  | {
+    readonly kind: "asyncGenerator";
+    readonly elementType: string;
+    readonly returnType: string | null;
+    readonly errorType: string | null;
+  }
   | { readonly kind: "weak"; readonly target: string }
   | { readonly kind: "task"; readonly successType: string; readonly errorType: string | null }
   | { readonly kind: "objcConnection" };
@@ -3345,6 +3397,8 @@ function resolveReceiver(context: AnalyzedSource, text: string, offset: number):
   if (set) return { kind: "set", ...set };
   const generator = parseGeneratorType(receiverType);
   if (generator) return { kind: "generator", ...generator };
+  const asyncGenerator = parseAsyncGeneratorType(receiverType);
+  if (asyncGenerator) return { kind: "asyncGenerator", ...asyncGenerator };
   if (parseFixedArrayType(receiverType) || parseSliceType(receiverType) || parseDynamicArrayType(receiverType)) return { kind: "array", type: receiverType };
   const weak = parseWeakType(receiverType);
   if (weak) return { kind: "weak", target: weak.target };
@@ -4206,6 +4260,23 @@ function generatorNextDisplayType(
   return generator.errorType
     ? `Result<${success}, ${displayType(generator.errorType, typeDisplayNames)}>`
     : success;
+}
+
+function asyncGeneratorNextDisplayType(
+  generator: {
+    readonly elementType: string;
+    readonly returnType: string | null;
+    readonly errorType: string | null;
+  },
+  typeDisplayNames: ReadonlyMap<string, string>,
+): string {
+  const element = displayType(generator.elementType, typeDisplayNames);
+  const success = generator.returnType
+    ? `GeneratorStep<${element}, ${displayType(generator.returnType, typeDisplayNames)}>`
+    : `Option<${element}>`;
+  return generator.errorType
+    ? `Task<${success}, ${displayType(generator.errorType, typeDisplayNames)}>`
+    : `Task<${success}>`;
 }
 
 function displayType(type: string, typeDisplayNames: ReadonlyMap<string, string> = new Map()): string {

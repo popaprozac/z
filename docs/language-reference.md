@@ -103,6 +103,7 @@ text value.
 | Generator sequence | `Generator<T>` | Cold move-only compiler frame imported from `std/iteration`; `.next()` returns `Option<T>` |
 | Generator with completion | `Generator<Yield, Return>` | Cold frame whose `.next()` returns `GeneratorStep<Yield, Return>` with `yielded` or `complete` |
 | Throwing generator handle | `Generator<Yield, Return, Error>` | Explicit storage spelling for a fallible generator; declarations normally use `Generator<...> throws Error` |
+| Async generator | `AsyncGenerator<Yield, Return?, Error?>` | Cold move-only async frame imported from `std/iteration`; `.next()` returns an awaited `Task` |
 | Function value | `(in value: T) => U throws E` | Closure/callback signature; parameter capabilities are part of the type |
 | Read-only projection | `view T` | Inferred non-storable borrow tied to owner storage, not a general reference type |
 | Native types | Imported nominal names and `T | null` | ABI-exact C, Objective-C, C++, or Swift-generated types; nullability is limited to nullable native references/handles |
@@ -743,7 +744,58 @@ borrowed element projection are stored in the generator frame. Statement
 `match` may also suspend; payload bindings remain live in the frame and retain
 their normal exact-once cleanup semantics. Suspending custom-iterator loops,
 value-producing match expressions, generator methods, borrowed parameters or
-yielded views, async generators, and bidirectional sent values are deferred.
+yielded views, and bidirectional sent values are deferred.
+
+Async generators use the same yield/terminal-result protocol while explicitly
+authorizing suspension with `async`:
+
+```zs
+import { AsyncGenerator } from "std/iteration";
+import { delay } from "std/time";
+
+async function values(): AsyncGenerator<i32, i32> {
+  yield 20;
+  await delay(1);
+  yield 22;
+  return 42;
+}
+
+async function consume(): i32 {
+  const values = values();             // cold: no body execution yet
+  const first = await values.next();   // Task<GeneratorStep<i32, i32>>
+  const second = await values.next();
+  const terminal = await values.next();
+  return 0;
+}
+```
+
+`async` determines which operations are legal in the body; the declared return
+shape determines the calling protocol. An ordinary `async function ...: T`
+produces a one-shot `Task<T>`. An `async function ...:
+AsyncGenerator<Yield, Return>` produces a reusable cold stream handle instead.
+Each `.next()` creates one awaited advancement task and resumes the same
+persistent frame until the next `yield`, terminal `return`, or `throw`.
+
+Fallible async generators keep cold construction non-throwing and attach the
+error to advancement:
+
+```zs
+async function rows():
+  AsyncGenerator<Row, void, DatabaseError> throws DatabaseError {
+  yield row;
+  throw error;
+}
+
+const rows = rows();
+const observed = attempt await rows.next();
+```
+
+The initial executable tier supports straight-line yields, ordinary synchronous
+work, direct awaits such as `delay`, typed terminal return, typed advancement
+errors, exact-once suspended-local cleanup, editor details, and native-frontend
+parity. Concurrent `.next()` calls, `for await...of` sugar, async generator
+methods, borrowed parameters/yields, and the full async control-flow surface
+remain explicit follow-up layers.
 
 `Map` and `Set` use open-addressed hashed buckets for amortized O(1) lookup and
 membership. Owned entries remain in compact storage, while rehashing moves only

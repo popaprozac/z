@@ -9,7 +9,13 @@ import type {
 } from "./ast.ts";
 import { importedStandardFunctions, standardFunctionSignature } from "./standard-library.ts";
 import type { ForeignModule } from "./foreign.ts";
-import { generatorStepTypeName, isGeneratorFunction, parseGeneratorType } from "./generator-types.ts";
+import {
+  generatorStepTypeName,
+  isAsyncGeneratorFunction,
+  isGeneratorFunction,
+  parseAsyncGeneratorType,
+  parseGeneratorType,
+} from "./generator-types.ts";
 import { optionTypeName } from "./option-types.ts";
 
 export function resultTypeName(successType: string, errorType: string): string {
@@ -103,7 +109,9 @@ export function materializeResultTypes(
     if (declaration.errorType) {
       const generator = isGeneratorFunction(declaration)
         ? parseGeneratorType(declaration.returnType.name)
-        : null;
+        : isAsyncGeneratorFunction(declaration)
+          ? parseAsyncGeneratorType(declaration.returnType.name)
+          : null;
       if (generator) {
         const advanceType = generator.returnType
           ? generatorStepTypeName(generator.elementType, generator.returnType)

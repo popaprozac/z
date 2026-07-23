@@ -11,6 +11,8 @@ import type {
 import { DiagnosticError } from "./diagnostics.ts";
 import { parseTaskType } from "./async-types.ts";
 import { dynamicArrayTypeName, parseDynamicArrayType, parseFixedArrayType, parseSliceType } from "./array-types.ts";
+import { generatorStepTypeName, parseAsyncGeneratorType } from "./generator-types.ts";
+import { optionTypeName } from "./option-types.ts";
 import { resultTypeName } from "./results.ts";
 import { standardFunctionSignature } from "./standard-library.ts";
 import type { IntegerOperation, SemanticInfo } from "./sema.ts";
@@ -25,6 +27,10 @@ type AwaitSite = {
   readonly receiver: Expression | null;
   readonly spawn: SpawnSite | null;
   readonly placement: "sync" | "await" | null;
+  readonly generator: {
+    readonly type: string;
+    readonly receiver: Expression;
+  } | null;
 };
 
 type SpawnSite = {
@@ -72,6 +78,7 @@ type AsyncFunctionPlan = {
   readonly declaration: FunctionDeclaration;
   readonly owner: StructDeclaration | null;
   readonly nativeThread: boolean;
+  readonly generator: ReturnType<typeof parseAsyncGeneratorType>;
   readonly frameName: string;
   readonly pollName: string;
   readonly startName: string;
@@ -87,6 +94,18 @@ type AsyncFunctionPlan = {
   readonly children: ReadonlyMap<number, AsyncTarget>;
   readonly types: AsyncTypeContext;
 };
+
+function asyncGeneratorAdvanceType(generator: NonNullable<ReturnType<typeof parseAsyncGeneratorType>>): string {
+  return generator.returnType
+    ? generatorStepTypeName(generator.elementType, generator.returnType)
+    : optionTypeName(generator.elementType);
+}
+
+function planSuccessType(plan: Pick<AsyncFunctionPlan, "declaration" | "generator">): string {
+  return plan.generator
+    ? asyncGeneratorAdvanceType(plan.generator)
+    : plan.declaration.returnType.name;
+}
 
 type AsyncTypeContext = {
   readonly structs: ReadonlyMap<string, StructDeclaration>;
@@ -256,7 +275,14 @@ function planFunction(
 ): AsyncFunctionPlan {
   const { declaration, owner } = target;
   const nativeThread = [...threadTargets.values()].includes(target);
-  requireFrameType(declaration.returnType.name, declaration.returnType.location, fileName, "async return", types);
+  const generator = parseAsyncGeneratorType(declaration.returnType.name);
+  requireFrameType(
+    generator ? asyncGeneratorAdvanceType(generator) : declaration.returnType.name,
+    declaration.returnType.location,
+    fileName,
+    generator ? "async generator advancement" : "async return",
+    types,
+  );
   if (declaration.errorType) {
     requireFrameType(declaration.errorType.name, declaration.errorType.location, fileName, "async error", types);
   }
@@ -314,7 +340,7 @@ function planFunction(
       nativeThread,
     );
     awaits.set(expression.location.offset, site);
-    if (!site.intrinsic) children.set(site.index, site.target);
+    if (!site.intrinsic && !site.generator) children.set(site.index, site.target);
     return site;
   };
   const recordNestedAwaits = (expression: Expression, group: Expression = expression): void => {
@@ -532,6 +558,14 @@ function planFunction(
         validateFrameExpression(statement.expression, locals, fileName, types, suspensions);
         continue;
       }
+      if (statement.kind === "yield") {
+        if (!generator) {
+          unsupported(fileName, statement.location, "`yield` requires an AsyncGenerator return type in an async frame");
+        }
+        recordNestedAwaits(statement.expression);
+        validateFrameExpression(statement.expression, locals, fileName, types, suspensions);
+        continue;
+      }
       if (statement.kind === "expressionStatement") {
         if (
           statement.expression.kind === "spawn"
@@ -614,6 +648,7 @@ function planFunction(
     declaration,
     owner,
     nativeThread,
+    generator,
     frameName: `Z_AsyncFrame_${part}`,
     pollName: `z_async_poll_${part}`,
     startName: `z_async_start_${part}`,
@@ -660,6 +695,7 @@ function awaitSite(
       receiver: null,
       spawn: null,
       placement: expression.mode,
+      generator: null,
     };
   }
   if (expression.expression.kind === "identifier" && parseTaskType(locals.get(expression.expression.name) ?? "")) {
@@ -681,6 +717,7 @@ function awaitSite(
       receiver: null,
       spawn,
       placement: null,
+      generator: null,
     };
   }
   if (expression.expression.kind !== "call") {
@@ -715,6 +752,7 @@ function awaitSite(
       receiver: null,
       spawn,
       placement: null,
+      generator: null,
     };
   }
   if (types.semanticInfo.standardFunctionReferences.get(call.callee.location.offset) === "delay") {
@@ -728,7 +766,28 @@ function awaitSite(
       receiver: null,
       spawn: null,
       placement: null,
+      generator: null,
     };
+  }
+  if (call.callee.kind === "member" && call.callee.property === "next") {
+    const receiverType = types.semanticInfo.expressionTypes.get(call.callee.object.location.offset)
+      ?? (call.callee.object.kind === "identifier" ? locals.get(call.callee.object.name) : null);
+    const generator = receiverType ? parseAsyncGeneratorType(receiverType) : null;
+    if (generator) {
+      const target = asyncGeneratorNextTarget(generator, call.location);
+      return {
+        index: nextChild.value++,
+        mode,
+        intrinsic: null,
+        expression,
+        call,
+        target,
+        receiver: call.callee.object,
+        spawn: null,
+        placement: null,
+        generator: { type: receiverType!, receiver: call.callee.object },
+      };
+    }
   }
   const resolved = resolveAsyncCall(call, functions, fileName, locals, types);
   return {
@@ -741,6 +800,27 @@ function awaitSite(
     receiver: resolved.receiver,
     spawn: null,
     placement: null,
+    generator: null,
+  };
+}
+
+function asyncGeneratorNextTarget(
+  generator: NonNullable<ReturnType<typeof parseAsyncGeneratorType>>,
+  location: SourceLocation,
+): AsyncTarget {
+  return {
+    owner: null,
+    declaration: {
+      kind: "function",
+      name: "__z_async_generator_next",
+      async: true,
+      receiverMode: null,
+      parameters: [],
+      returnType: { name: asyncGeneratorAdvanceType(generator), location },
+      errorType: generator.errorType ? { name: generator.errorType, location } : null,
+      body: [],
+      location,
+    },
   };
 }
 
@@ -1443,7 +1523,7 @@ function generateRuntime(
   ));
   const usesDarwinMainLoop = usesThreads && usesMainPlacement;
   const usesNativeFrameStorage = plans.some((plan) => (
-    requiresNativeFramePlacement(plan.declaration.returnType.name, plan.types)
+    requiresNativeFramePlacement(planSuccessType(plan), plan.types)
     || Boolean(plan.declaration.errorType && requiresNativeFramePlacement(plan.declaration.errorType.name, plan.types))
     || [...plan.locals].some(([name, type]) => (
       !plan.borrowedLocals.has(name) && requiresNativeFramePlacement(type, plan.types)
@@ -2005,15 +2085,42 @@ function generateRuntime(
     "",
   ];
 
+  const asyncGeneratorTypes = new Set<string>();
+  for (const plan of plans) {
+    if (plan.generator) asyncGeneratorTypes.add(plan.declaration.returnType.name);
+    for (const type of plan.locals.values()) {
+      if (parseAsyncGeneratorType(type)) asyncGeneratorTypes.add(type);
+    }
+  }
+  for (const type of asyncGeneratorTypes) {
+    lines.push(
+      `typedef struct ${asyncGeneratorCName(type)} {`,
+      "  void *context;",
+      "  Z_AsyncTask *(*next)(void *context, Z_AsyncExecutor *executor);",
+      "  void (*destroy)(void *context);",
+      "  bool (*failed)(void *context);",
+      "  void (*take_result)(void *context, void *destination);",
+      "  void (*take_error)(void *context, void *destination);",
+      `} ${asyncGeneratorCName(type)};`,
+      "",
+    );
+  }
+
   for (const plan of plans) lines.push(`typedef struct ${plan.frameName} ${plan.frameName};`);
   if (plans.length > 0) lines.push("");
   for (const plan of plans) lines.push(generateFrame(plan, planByKey), "");
   for (const plan of plans) lines.push(`static void ${plan.pollName}(Z_AsyncTask *task);`);
   for (const plan of plans) lines.push(`static void ${plan.destroyName}(${plan.frameName} *frame);`);
   for (const plan of plans) lines.push(`${generateStartSignature(plan)};`);
+  for (const plan of plans) {
+    if (plan.generator) lines.push(`${generateAsyncGeneratorFactorySignature(plan)};`);
+  }
   if (plans.length > 0) lines.push("");
   for (const plan of plans) lines.push(generateDestroy(plan, planByKey), "");
   for (const plan of plans) lines.push(generateStart(plan), "");
+  for (const plan of plans) {
+    if (plan.generator) lines.push(generateAsyncGeneratorAdapters(plan), "");
+  }
   for (const plan of plans) lines.push(generatePoll(plan, planByKey, fileName), "");
 
   if (main) {
@@ -2060,14 +2167,18 @@ function generateFrame(
     "  uint32_t state;",
     "  bool cancel_children;",
   ];
-  if (plan.declaration.returnType.name !== "void") {
-    const type = cFrameType(plan.declaration.returnType.name, plan.types);
-    if (requiresNativeFramePlacement(plan.declaration.returnType.name, plan.types)) {
+  if (plan.generator) {
+    lines.push("  bool generator_active;", "  bool generator_finished;");
+  }
+  const successType = planSuccessType(plan);
+  if (successType !== "void") {
+    const type = cFrameType(successType, plan.types);
+    if (requiresNativeFramePlacement(successType, plan.types)) {
       lines.push(`  alignas(${type}) unsigned char result[sizeof(${type})];`);
     } else {
-      lines.push(`  ${cFrameType(plan.declaration.returnType.name, plan.types)} result;`);
+      lines.push(`  ${cFrameType(successType, plan.types)} result;`);
     }
-    if (hasFrameCleanup(plan.declaration.returnType.name, plan.types)) {
+    if (hasFrameCleanup(successType, plan.types)) {
       lines.push("  bool live_result;");
     }
   }
@@ -2108,6 +2219,9 @@ function generateFrame(
   for (const [index, target] of plan.children) {
     lines.push(`  ${planByKey.get(targetKey(target))!.frameName} *child_${index};`);
   }
+  for (const site of plan.awaits.values()) {
+    if (site.generator) lines.push(`  Z_AsyncTask *child_${site.index};`);
+  }
   lines.push("};");
   return lines.join("\n");
 }
@@ -2130,13 +2244,11 @@ function generateDestroy(
       "  }",
     );
   }
-  if (
-    plan.declaration.returnType.name !== "void"
-    && hasFrameCleanup(plan.declaration.returnType.name, plan.types)
-  ) {
+  const successType = planSuccessType(plan);
+  if (successType !== "void" && hasFrameCleanup(successType, plan.types)) {
     lines.push(
       "  if (frame->live_result) {",
-      `    ${frameCleanup(frameResultValue("frame", plan.declaration.returnType.name, plan.types), plan.declaration.returnType.name, plan.types)}`,
+      `    ${frameCleanup(frameResultValue("frame", successType, plan.types), successType, plan.types)}`,
       "    frame->live_result = false;",
       "  }",
     );
@@ -2210,10 +2322,12 @@ function generateStart(plan: AsyncFunctionPlan): string {
     lines.push("  frame->failed = false;");
     if (hasFrameCleanup(plan.declaration.errorType.name, plan.types)) lines.push("  frame->live_error = false;");
   }
-  if (
-    plan.declaration.returnType.name !== "void"
-    && hasFrameCleanup(plan.declaration.returnType.name, plan.types)
-  ) lines.push("  frame->live_result = false;");
+  const successType = planSuccessType(plan);
+  if (successType !== "void" && hasFrameCleanup(successType, plan.types)) lines.push("  frame->live_result = false;");
+  if (plan.generator) {
+    lines.push("  frame->generator_active = false;");
+    lines.push("  frame->generator_finished = false;");
+  }
   const parameters = new Set(
     frameInputs(plan).filter((input) => input.mode === "value").map((input) => input.name),
   );
@@ -2236,7 +2350,132 @@ function generateStart(plan: AsyncFunctionPlan): string {
     }
   }
   for (const index of plan.children.keys()) lines.push(`  frame->child_${index} = NULL;`);
+  for (const site of plan.awaits.values()) {
+    if (site.generator) lines.push(`  frame->child_${site.index} = NULL;`);
+  }
   lines.push("  return frame;", "}");
+  return lines.join("\n");
+}
+
+function asyncGeneratorFactoryName(plan: Pick<AsyncFunctionPlan, "declaration" | "owner">): string {
+  return `z_async_generator_make_${targetPart(plan)}`;
+}
+
+function asyncGeneratorFactoryParameters(plan: AsyncFunctionPlan): string[] {
+  return frameInputs(plan).map((input) => {
+    if (input.mode !== "value") {
+      return `${borrowedFrameType(input.type, plan.types, input.mode !== "in")} ${frameField(input.name)}`;
+    }
+    return `${cFrameType(input.type, plan.types)} ${frameField(input.name)}`;
+  });
+}
+
+function generateAsyncGeneratorFactorySignature(plan: AsyncFunctionPlan): string {
+  return `static __attribute__((unused)) ${cFrameType(plan.declaration.returnType.name, plan.types)} ${asyncGeneratorFactoryName(plan)}(${asyncGeneratorFactoryParameters(plan).join(", ")})`;
+}
+
+function generateAsyncGeneratorAdapters(plan: AsyncFunctionPlan): string {
+  const generator = plan.generator!;
+  const successType = asyncGeneratorAdvanceType(generator);
+  const handleType = cFrameType(plan.declaration.returnType.name, plan.types);
+  const adapterPart = targetPart(plan);
+  const nextName = `z_async_generator_next_${adapterPart}`;
+  const destroyName = `z_async_generator_drop_${adapterPart}`;
+  const failedName = `z_async_generator_failed_${adapterPart}`;
+  const takeResultName = `z_async_generator_take_result_${adapterPart}`;
+  const takeErrorName = `z_async_generator_take_error_${adapterPart}`;
+  const resultType = cFrameType(successType, plan.types);
+  const lines = [
+    `static Z_AsyncTask *${nextName}(void *context, Z_AsyncExecutor *executor) {`,
+    `  ${plan.frameName} *frame = (${plan.frameName} *)context;`,
+    "  if (frame == NULL || frame->generator_active || frame->generator_finished) abort();",
+    ...(hasFrameCleanup(successType, plan.types)
+      ? ["  if (frame->live_result) abort();"]
+      : []),
+    "  frame->generator_active = true;",
+    "  frame->task.completed = false;",
+    "  frame->task.queued = false;",
+    "  frame->task.suspended = false;",
+    "  frame->task.cancellation_requested = false;",
+    "  frame->task.cancelled = false;",
+    "  frame->task.timer_scheduled = false;",
+    "  frame->task.waiter = NULL;",
+    "  frame->task.next = NULL;",
+    "  frame->task.timer_next = NULL;",
+    "  frame->task.executor = executor;",
+    ...(plan.declaration.errorType
+      ? [
+          "  frame->failed = false;",
+          ...(hasFrameCleanup(plan.declaration.errorType.name, plan.types)
+            ? ["  if (frame->live_error) abort();"]
+            : []),
+        ]
+      : []),
+    "  return &frame->task;",
+    "}",
+    "",
+    `static void ${destroyName}(void *context) {`,
+    `  ${plan.frameName} *frame = (${plan.frameName} *)context;`,
+    "  if (frame == NULL) return;",
+    "  if (frame->generator_active) abort();",
+    `  ${plan.destroyName}(frame);`,
+    "  free(frame);",
+    "}",
+    "",
+    `static bool ${failedName}(void *context) {`,
+    `  ${plan.frameName} *frame = (${plan.frameName} *)context;`,
+    ...(plan.declaration.errorType ? ["  return frame->failed;"] : ["  (void)frame;", "  return false;"]),
+    "}",
+    "",
+    `static void ${takeResultName}(void *context, void *destination) {`,
+    `  ${plan.frameName} *frame = (${plan.frameName} *)context;`,
+    "  if (frame->generator_active || !frame->task.completed) abort();",
+    ...(requiresNativeFramePlacement(successType, plan.types)
+      ? [`  new (destination) ${resultType}(${frameTakeExpression(frameResultValue("frame", successType, plan.types), "frame->live_result")});`]
+      : [
+          `  *(((${resultType} *)destination)) = ${frameResultValue("frame", successType, plan.types)};`,
+          ...(hasFrameCleanup(successType, plan.types) ? ["  frame->live_result = false;"] : []),
+        ]),
+    "}",
+    "",
+    `static void ${takeErrorName}(void *context, void *destination) {`,
+    `  ${plan.frameName} *frame = (${plan.frameName} *)context;`,
+    ...(plan.declaration.errorType
+      ? (() => {
+          const errorType = plan.declaration.errorType.name;
+          const cErrorType = cFrameType(errorType, plan.types);
+          return [
+            "  if (frame->generator_active || !frame->task.completed || !frame->failed) abort();",
+            ...(requiresNativeFramePlacement(errorType, plan.types)
+              ? [`  new (destination) ${cErrorType}(${frameTakeExpression(frameErrorValue("frame", errorType, plan.types), "frame->live_error")});`]
+              : [
+                  `  *(((${cErrorType} *)destination)) = ${frameErrorValue("frame", errorType, plan.types)};`,
+                  ...(hasFrameCleanup(errorType, plan.types) ? ["  frame->live_error = false;"] : []),
+                ]),
+          ];
+        })()
+      : ["  (void)frame;", "  (void)destination;", "  abort();"]),
+    "}",
+    "",
+    `${generateAsyncGeneratorFactorySignature(plan)} {`,
+    `  ${plan.frameName} *frame = ${plan.startName}(${[
+      "NULL",
+      ...frameInputs(plan).map((input) => (
+        input.mode === "value" && requiresNativeFramePlacement(input.type, plan.types)
+          ? `std::move(${frameField(input.name)})`
+          : frameField(input.name)
+      )),
+    ].join(", ")});`,
+    `  return (${handleType}){`,
+    "    .context = frame,",
+    `    .next = ${nextName},`,
+    `    .destroy = ${destroyName},`,
+    `    .failed = ${failedName},`,
+    `    .take_result = ${takeResultName},`,
+    `    .take_error = ${takeErrorName},`,
+    "  };",
+    "}",
+  ];
   return lines.join("\n");
 }
 
@@ -2344,6 +2583,32 @@ function schedulePlacedChild(
   return [`z_async_enqueue(frame->task.executor, &${child}->task);`];
 }
 
+function beginAwait(
+  site: AwaitSite,
+  parent: AsyncFunctionPlan,
+  planByKey: ReadonlyMap<string, AsyncFunctionPlan>,
+  fileName: string,
+  nextState: number,
+): string[] {
+  if (site.generator) {
+    const handle = emitFrameExpression(site.generator.receiver, parent, fileName);
+    return [
+      `frame->child_${site.index} = (${handle}).next((${handle}).context, frame->task.executor);`,
+      `z_async_enqueue(frame->task.executor, frame->child_${site.index});`,
+      `frame->state = ${nextState};`,
+      "continue;",
+    ];
+  }
+  const target = planByKey.get(targetKey(site.target))!;
+  const arguments_ = emitAwaitArguments(site, parent, fileName);
+  return [
+    `frame->child_${site.index} = ${target.startName}(${["frame->task.executor", ...arguments_].join(", ")});`,
+    ...schedulePlacedChild(site, parent, `frame->child_${site.index}`),
+    `frame->state = ${nextState};`,
+    "continue;",
+  ];
+}
+
 function generatePoll(
   plan: AsyncFunctionPlan,
   planByKey: ReadonlyMap<string, AsyncFunctionPlan>,
@@ -2359,14 +2624,7 @@ function generatePoll(
         unsupported(fileName, nested.expression.location, "a void delay cannot be embedded in a value expression");
       }
       if (!site.spawn) {
-        const target = planByKey.get(targetKey(site.target))!;
-        const arguments_ = emitAwaitArguments(site, plan, fileName);
-        cases.push(caseBlock(state, [
-          `frame->child_${site.index} = ${target.startName}(${["frame->task.executor", ...arguments_].join(", ")});`,
-          ...schedulePlacedChild(site, plan, `frame->child_${site.index}`),
-          `frame->state = ${state + 1};`,
-          "continue;",
-        ]));
+        cases.push(caseBlock(state, beginAwait(site, plan, planByKey, fileName, state + 1)));
         state += 1;
       }
       cases.push(caseBlock(state, awaitCompletion(
@@ -2470,16 +2728,7 @@ function generatePoll(
           unsupported(fileName, statement.location, `the void ${site.intrinsic} operation cannot initialize a binding`);
         }
         if (!site.spawn) {
-          const target = planByKey.get(targetKey(site.target))!;
-          const arguments_ = emitAwaitArguments(site, plan, fileName);
-          cases.push(
-            caseBlock(state, [
-              `frame->child_${site.index} = ${target.startName}(${["frame->task.executor", ...arguments_].join(", ")});`,
-              ...schedulePlacedChild(site, plan, `frame->child_${site.index}`),
-              `frame->state = ${state + 1};`,
-              "continue;",
-            ]),
-          );
+          cases.push(caseBlock(state, beginAwait(site, plan, planByKey, fileName, state + 1)));
           state += 1;
         }
         cases.push(
@@ -2554,7 +2803,53 @@ function generatePoll(
       state += 1;
       continue;
     }
+    if (statement.kind === "yield") {
+      const generator = plan.generator!;
+      const successType = asyncGeneratorAdvanceType(generator);
+      const value = emitAsyncEnumVariant(
+        successType,
+        generator.returnType ? "yielded" : "some",
+        emitFrameExpression(statement.expression, plan, fileName),
+        plan.types,
+      );
+      const initialize = requiresNativeFramePlacement(successType, plan.types)
+        ? `new (frame->result) ${cFrameType(successType, plan.types)}(${value});`
+        : `frame->result = ${value};`;
+      cases.push(caseBlock(state, [
+        initialize,
+        ...(hasFrameCleanup(successType, plan.types) ? ["frame->live_result = true;"] : []),
+        ...(plan.declaration.errorType ? ["frame->failed = false;"] : []),
+        `frame->state = ${state + 1};`,
+        "frame->generator_active = false;",
+        "z_async_complete_task(&frame->task);",
+        "return;",
+      ]));
+      state += 1;
+      continue;
+    }
     if (statement.kind === "return") {
+      if (plan.generator) {
+        const successType = asyncGeneratorAdvanceType(plan.generator);
+        const value = emitAsyncEnumVariant(
+          successType,
+          plan.generator.returnType ? "complete" : "none",
+          statement.expression ? emitFrameExpression(statement.expression, plan, fileName) : null,
+          plan.types,
+        );
+        const initialize = requiresNativeFramePlacement(successType, plan.types)
+          ? `new (frame->result) ${cFrameType(successType, plan.types)}(${value});`
+          : `frame->result = ${value};`;
+        cases.push(caseBlock(state, [
+          initialize,
+          ...(hasFrameCleanup(successType, plan.types) ? ["frame->live_result = true;"] : []),
+          ...(plan.declaration.errorType ? ["frame->failed = false;"] : []),
+          "frame->generator_finished = true;",
+          `frame->state = ${finalizeStateMarker};`,
+          "continue;",
+        ]));
+        state += 1;
+        continue;
+      }
       const operation = statement.expression ? awaitOperation(statement.expression) : null;
       if (operation) {
         const site = plan.awaits.get(operation.expression.location.offset)!;
@@ -2570,14 +2865,7 @@ function generatePoll(
           continue;
         }
         if (!site.spawn) {
-          const target = planByKey.get(targetKey(site.target))!;
-          const arguments_ = emitAwaitArguments(site, plan, fileName);
-          cases.push(caseBlock(state, [
-            `frame->child_${site.index} = ${target.startName}(${["frame->task.executor", ...arguments_].join(", ")});`,
-            ...schedulePlacedChild(site, plan, `frame->child_${site.index}`),
-            `frame->state = ${state + 1};`,
-            "continue;",
-          ]));
+          cases.push(caseBlock(state, beginAwait(site, plan, planByKey, fileName, state + 1)));
           state += 1;
         }
         cases.push(caseBlock(state, awaitCompletion(
@@ -2632,6 +2920,7 @@ function generatePoll(
         ...(hasFrameCleanup(errorType, plan.types) ? ["frame->live_error = true;"] : []),
         "frame->failed = true;",
         "frame->cancel_children = true;",
+        ...(plan.generator ? ["frame->generator_finished = true;"] : []),
         `frame->state = ${finalizeStateMarker};`,
         "continue;",
       ]));
@@ -2686,21 +2975,28 @@ function generatePoll(
         continue;
       }
       if (!site.spawn) {
-        const target = planByKey.get(targetKey(site.target))!;
-        const arguments_ = emitAwaitArguments(site, plan, fileName);
-        cases.push(caseBlock(state, [
-          `frame->child_${site.index} = ${target.startName}(${["frame->task.executor", ...arguments_].join(", ")});`,
-          ...schedulePlacedChild(site, plan, `frame->child_${site.index}`),
-          `frame->state = ${state + 1};`,
-          "continue;",
-        ]));
+        cases.push(caseBlock(state, beginAwait(site, plan, planByKey, fileName, state + 1)));
         state += 1;
       }
       cases.push(caseBlock(state, awaitCompletion(site, plan, null, null, false, state + 1)));
       state += 1;
     }
   }
-  if (plan.declaration.returnType.name === "void" && !endsWithTermination(plan.declaration.body)) {
+  if (plan.generator && !plan.generator.returnType && !endsWithTermination(plan.declaration.body)) {
+    const successType = asyncGeneratorAdvanceType(plan.generator);
+    const value = emitAsyncEnumVariant(successType, "none", null, plan.types);
+    cases.push(caseBlock(state, [
+      requiresNativeFramePlacement(successType, plan.types)
+        ? `new (frame->result) ${cFrameType(successType, plan.types)}(${value});`
+        : `frame->result = ${value};`,
+      ...(hasFrameCleanup(successType, plan.types) ? ["frame->live_result = true;"] : []),
+      ...(plan.declaration.errorType ? ["frame->failed = false;"] : []),
+      "frame->generator_finished = true;",
+      `frame->state = ${finalizeStateMarker};`,
+      "continue;",
+    ]));
+    state += 1;
+  } else if (!plan.generator && plan.declaration.returnType.name === "void" && !endsWithTermination(plan.declaration.body)) {
     cases.push(caseBlock(state, [
       ...(plan.declaration.errorType ? ["frame->failed = false;"] : []),
       `frame->state = ${finalizeStateMarker};`,
@@ -2754,6 +3050,7 @@ function generatePoll(
   cases.push(caseBlock(state, [
     ...nativeThreadCleanup,
     "frame->task.cancelled = z_async_is_cancellation_requested(&frame->task);",
+    ...(plan.generator ? ["frame->generator_active = false;", "frame->generator_finished = true;"] : []),
     "z_async_complete_task(&frame->task);",
     "return;",
   ]));
@@ -2802,6 +3099,9 @@ function awaitCompletion(
   terminal: boolean,
   nextState: number,
 ): string[] {
+  if (site.generator) {
+    return awaitAsyncGeneratorCompletion(site, parent, destination, destinationType, terminal, nextState);
+  }
   const child = `frame->child_${site.index}`;
   if (site.intrinsic === "cancel") {
     const lines = [
@@ -2915,6 +3215,92 @@ function awaitCompletion(
     `frame->child_${site.index} = NULL;`,
   );
   if (site.spawn?.binding) lines.push(`frame->${frameField(site.spawn.binding)} = NULL;`);
+  if (terminal) {
+    if (parent.declaration.errorType) lines.push("frame->failed = false;");
+    lines.push(`frame->state = ${finalizeStateMarker};`, "continue;");
+  } else {
+    lines.push(`frame->state = ${nextState};`, "continue;");
+  }
+  return lines;
+}
+
+function awaitAsyncGeneratorCompletion(
+  site: AwaitSite,
+  parent: AsyncFunctionPlan,
+  destination: string | null,
+  destinationType: string | null,
+  terminal: boolean,
+  nextState: number,
+): string[] {
+  const child = `frame->child_${site.index}`;
+  const handle = emitFrameExpression(site.generator!.receiver, parent, "<async-generator>");
+  const successType = site.target.declaration.returnType.name;
+  const errorType = site.target.declaration.errorType?.name ?? null;
+  const lines = [`if (!z_async_wait(&frame->task, ${child})) return;`];
+
+  if (site.mode === "try" && errorType) {
+    lines.push(`if ((${handle}).failed((${handle}).context)) {`);
+    if (requiresNativeFramePlacement(errorType, parent.types)) {
+      lines.push(`  (${handle}).take_error((${handle}).context, frame->error);`);
+    } else {
+      lines.push(`  (${handle}).take_error((${handle}).context, &frame->error);`);
+    }
+    if (hasFrameCleanup(errorType, parent.types)) lines.push("  frame->live_error = true;");
+    lines.push(
+      `  frame->child_${site.index} = NULL;`,
+      "  frame->failed = true;",
+      "  frame->cancel_children = true;",
+      `  frame->state = ${finalizeStateMarker};`,
+      "  continue;",
+      "}",
+    );
+  }
+
+  if (site.mode === "attempt" && destination && errorType) {
+    const resultType = resultTypeName(successType, errorType);
+    const cResult = resultCName(resultType);
+    const placedResult = requiresNativeFramePlacement(resultType, parent.types);
+    const emitPayloadVariant = (variant: "success" | "failure", payloadType: string): string[] => {
+      if (placedResult) {
+        const cPayload = cFrameType(payloadType, parent.types);
+        const storage = `_z_async_generator_payload_${site.index}_${variant}`;
+        return [
+          `alignas(${cPayload}) unsigned char ${storage}[sizeof(${cPayload})];`,
+          `(${handle}).take_${variant === "success" ? "result" : "error"}((${handle}).context, ${storage});`,
+          `new (${destination}) ${cResult}(${cResult}::make_${variant}(std::move(*std::launder(reinterpret_cast<${cPayload} *>(${storage})))));`,
+        ];
+      }
+      return [
+        `${destination} = (${cResult}){ .tag = ${resultTag(resultType, variant)} };`,
+        `(${handle}).take_${variant === "success" ? "result" : "error"}((${handle}).context, &(${destination}.data.${variant}));`,
+      ];
+    };
+    lines.push(
+      `if ((${handle}).failed((${handle}).context)) {`,
+      ...emitPayloadVariant("failure", errorType).map((line) => `  ${line}`),
+      "} else {",
+      ...emitPayloadVariant("success", successType).map((line) => `  ${line}`),
+      "}",
+    );
+  } else if (destination && destinationType) {
+    const destinationPointer = requiresNativeFramePlacement(destinationType, parent.types)
+      ? destination
+      : `&(${destination})`;
+    lines.push(`(${handle}).take_result((${handle}).context, ${destinationPointer});`);
+  } else {
+    const cSuccess = cFrameType(successType, parent.types);
+    const temporary = `_z_async_generator_discard_${site.index}`;
+    lines.push(`${cSuccess} ${temporary};`);
+    lines.push(`(${handle}).take_result((${handle}).context, &${temporary});`);
+    if (hasFrameCleanup(successType, parent.types)) {
+      lines.push(frameCleanup(temporary, successType, parent.types));
+    }
+  }
+
+  if (destination && destinationType && hasFrameCleanup(destinationType, parent.types)) {
+    lines.push(`${destinationLiveFlag(destination, parent)} = true;`);
+  }
+  lines.push(`frame->child_${site.index} = NULL;`);
   if (terminal) {
     if (parent.declaration.errorType) lines.push("frame->failed = false;");
     lines.push(`frame->state = ${finalizeStateMarker};`, "continue;");
@@ -3524,6 +3910,9 @@ function emitFrameExpressionInner(
       }
       if (expression.callee.kind === "identifier") {
         const declaration = plan.types.functions.get(expression.callee.name);
+        if (declaration && parseAsyncGeneratorType(declaration.returnType.name)) {
+          return `${asyncGeneratorFactoryName({ declaration, owner: null })}(${emitSyncCallArguments(expression, plan, fileName).join(", ")})`;
+        }
         if (declaration && !declaration.async) {
           return `${declaration.name}(${emitSyncCallArguments(expression, plan, fileName).join(", ")})`;
         }
@@ -3736,6 +4125,7 @@ function cScalar(type: string): string {
 
 function cFrameType(type: string, types: AsyncTypeContext): string {
   if (parseTaskType(type)) return "Z_AsyncTask *";
+  if (parseAsyncGeneratorType(type)) return asyncGeneratorCName(type);
   if (scalarTypes.has(type)) return cScalar(type);
   if (type === "String" || type === "TextBuffer") return "Z_String";
   if (parseFixedArrayType(type)) return `Z_Array_${asyncNativeSymbolPart(type)}`;
@@ -3757,6 +4147,10 @@ function asyncNativeSymbolPart(name: string): string {
   )).join("");
 }
 
+function asyncGeneratorCName(type: string): string {
+  return `Z_AsyncGenerator_${asyncNativeSymbolPart(type)}`;
+}
+
 function borrowedFrameType(type: string, types: AsyncTypeContext, mutable = false): string {
   const cType = cFrameType(type, types);
   return types.structs.get(type)?.kind === "class" ? cType : `${mutable ? "" : "const "}${cType} *`;
@@ -3769,6 +4163,7 @@ function borrowedFrameValue(name: string, type: string, types: AsyncTypeContext)
 
 function isSupportedFrameType(type: string, types: AsyncTypeContext, visiting = new Set<string>()): boolean {
   if (parseTaskType(type)) return true;
+  if (parseAsyncGeneratorType(type)) return true;
   if (scalarTypes.has(type)) return true;
   if (type === "String" || type === "TextBuffer") return true;
   const fixedArray = parseFixedArrayType(type);
@@ -3807,6 +4202,7 @@ function isSupportedFrameType(type: string, types: AsyncTypeContext, visiting = 
 
 function hasFrameCleanup(type: string, types: AsyncTypeContext, visiting = new Set<string>()): boolean {
   if (visiting.has(type)) return false;
+  if (parseAsyncGeneratorType(type)) return true;
   if (type === "String" || type === "TextBuffer") return true;
   if (
     types.semanticInfo.foreignObjectTypes.has(type)
@@ -3835,6 +4231,9 @@ function hasFrameCleanup(type: string, types: AsyncTypeContext, visiting = new S
 }
 
 function frameCleanup(value: string, type: string, types: AsyncTypeContext): string {
+  if (parseAsyncGeneratorType(type)) {
+    return `if ((${value}).context != NULL) { (${value}).destroy((${value}).context); (${value}).context = NULL; }`;
+  }
   if (requiresNativeFramePlacement(type, types)) {
     const managed = frameManagedCleanup(value, type, types);
     const native = `std::destroy_at(&(${value}));`;

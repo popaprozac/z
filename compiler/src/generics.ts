@@ -17,7 +17,15 @@ import { optionTypeName } from "./option-types.ts";
 import { parseViewType, viewTypeName } from "./view-types.ts";
 import { hashableTraitDeclaration } from "./hash-types.ts";
 import { iteratorTraitDeclaration } from "./iterator-types.ts";
-import { generatorStepTypeName, generatorTypeName, isGeneratorFunction, parseGeneratorType } from "./generator-types.ts";
+import {
+  asyncGeneratorTypeName,
+  generatorStepTypeName,
+  generatorTypeName,
+  isAsyncGeneratorFunction,
+  isGeneratorFunction,
+  parseAsyncGeneratorType,
+  parseGeneratorType,
+} from "./generator-types.ts";
 
 export function materializeGenerics(
   program: Program,
@@ -35,6 +43,12 @@ export function materializeGenerics(
     program.imports
       .flatMap((declaration) => declaration.header === "std/iteration" ? declaration.bindings ?? [] : [])
       .filter((binding) => binding.importedName === "Generator")
+      .map((binding) => binding.localName),
+  );
+  const asyncGeneratorBindings = new Set(
+    program.imports
+      .flatMap((declaration) => declaration.header === "std/iteration" ? declaration.bindings ?? [] : [])
+      .filter((binding) => binding.importedName === "AsyncGenerator")
       .map((binding) => binding.localName),
   );
   const hashableImport = program.imports
@@ -79,6 +93,11 @@ export function materializeGenerics(
     const declaration = program.structs.find((item) => item.name === "Generator")
       ?? program.enums.find((item) => item.name === "Generator")!;
     throw new DiagnosticError(fileName, declaration.location, "Generator is a compiler-supported standard type and cannot be redeclared");
+  }
+  if (program.structs.some((item) => item.name === "AsyncGenerator") || program.enums.some((item) => item.name === "AsyncGenerator")) {
+    const declaration = program.structs.find((item) => item.name === "AsyncGenerator")
+      ?? program.enums.find((item) => item.name === "AsyncGenerator")!;
+    throw new DiagnosticError(fileName, declaration.location, "AsyncGenerator is a compiler-supported standard type and cannot be redeclared");
   }
 
   for (const template of new Set([
@@ -170,6 +189,34 @@ export function materializeGenerics(
         instantiateStruct("Option", [args[0]]);
       }
       typeDisplayNames.set(name, `Generator<${args.map(displayName).join(", ")}>`);
+      return name;
+    }
+    if (generic.base === "AsyncGenerator" || asyncGeneratorBindings.has(generic.base)) {
+      if (args.length < 1 || args.length > 3) {
+        throw new DiagnosticError(fileName, { offset: 0, line: 1, column: 1 }, `AsyncGenerator expects 1, 2, or 3 type arguments, received ${args.length}`);
+      }
+      const returnType = args[1] && args[1] !== "void" ? args[1] : null;
+      const name = asyncGeneratorTypeName(args[0], returnType, args[2] ?? null);
+      if (returnType) {
+        const step = generatorStepTypeName(args[0], returnType);
+        typeDisplayNames.set(step, `GeneratorStep<${displayName(args[0])}, ${displayName(returnType)}>`);
+        if (!generatorStepInstances.has(step)) {
+          const location = program.functions[0]?.location ?? program.structs[0]?.location ?? program.enums[0]?.location
+            ?? { offset: 0, line: 1, column: 1 };
+          generatorStepInstances.set(step, {
+            kind: "enum",
+            name: step,
+            location,
+            variants: [
+              { name: "yielded", payload: { name: args[0], location }, location },
+              { name: "complete", payload: { name: returnType, location }, location },
+            ],
+          });
+        }
+      } else {
+        instantiateStruct("Option", [args[0]]);
+      }
+      typeDisplayNames.set(name, `AsyncGenerator<${args.map(displayName).join(", ")}>`);
       return name;
     }
     if (generic.base === "Map") return instantiateMap(args);
@@ -565,13 +612,21 @@ export function materializeGenerics(
   }
 
   function attachGeneratorError(declaration: FunctionDeclaration): FunctionDeclaration {
-    if (!declaration.errorType || !isGeneratorFunction(declaration)) return declaration;
-    const generator = parseGeneratorType(declaration.returnType.name)!;
-    if (generator.errorType) return declaration;
-    const name = generatorTypeName(generator.elementType, generator.returnType, declaration.errorType.name);
+    if (!declaration.errorType) return declaration;
+    const generator = isGeneratorFunction(declaration)
+      ? parseGeneratorType(declaration.returnType.name)
+      : isAsyncGeneratorFunction(declaration)
+        ? parseAsyncGeneratorType(declaration.returnType.name)
+        : null;
+    if (!generator || generator.errorType) return declaration;
+    const asynchronous = isAsyncGeneratorFunction(declaration);
+    const name = asynchronous
+      ? asyncGeneratorTypeName(generator.elementType, generator.returnType, declaration.errorType.name)
+      : generatorTypeName(generator.elementType, generator.returnType, declaration.errorType.name);
+    const typeName = asynchronous ? "AsyncGenerator" : "Generator";
     const baseDisplay = generator.returnType
-      ? `Generator<${displayName(generator.elementType)}, ${displayName(generator.returnType)}>`
-      : `Generator<${displayName(generator.elementType)}>`;
+      ? `${typeName}<${displayName(generator.elementType)}, ${displayName(generator.returnType)}>`
+      : `${typeName}<${displayName(generator.elementType)}>`;
     typeDisplayNames.set(name, `${baseDisplay} throws ${displayName(declaration.errorType.name)}`);
     return {
       ...declaration,

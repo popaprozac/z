@@ -2968,7 +2968,10 @@ function throwingGeneratorHandleType(
 ): Option<String> {
   return match (genericTypeShape(returnType)) {
     some(generator) => {
-      if (generator.base != "Generator") return Option<String>.none;
+      if (
+        generator.base != "Generator"
+        && generator.base != "AsyncGenerator"
+      ) return Option<String>.none;
       let arguments = Array<String>();
       for (const argument of generator.arguments) {
         arguments.push(argument.copyBytes(0, argument.byteLength));
@@ -2977,7 +2980,7 @@ function throwingGeneratorHandleType(
       if (arguments.length == 2) {
         arguments.push(errorType.copyBytes(0, errorType.byteLength));
       }
-      return Option.some(parameterizedTypeName("Generator", arguments));
+      return Option.some(parameterizedTypeName(generator.base, arguments));
     }
     none => Option<String>.none;
   };
@@ -5813,7 +5816,10 @@ function collectionMethodSignature(
       returnType = "void";
     }
   } else if (
-    generic.base == "Generator"
+    (
+      generic.base == "Generator"
+      || generic.base == "AsyncGenerator"
+    )
     && (
       generic.arguments.length == 1
       || generic.arguments.length == 2
@@ -5839,7 +5845,7 @@ function collectionMethodSignature(
     }
     if (returnType.byteLength == 0) return Option<ModuleFunctionSignature>.none;
     return Option.some(ModuleFunctionSignature({
-      asynchronous: false,
+      asynchronous: generic.base == "AsyncGenerator",
       typeParameters: Array<String>(),
       typeParameterConstraints: Array<ModuleTypeParameterConstraint>(),
       parameterModes,
@@ -8565,7 +8571,10 @@ function inferFunctionExpressions(
   if (statementArenaContainsYield(declaration.body)) {
     match (genericTypeShape(declaration.returnType.name)) {
       some(generator) => {
-        if (generator.base == "Generator") {
+        if (
+          generator.base == "Generator"
+          || generator.base == "AsyncGenerator"
+        ) {
           if (generator.arguments.length > 0) {
             addValueBinding(
               inout bindings,

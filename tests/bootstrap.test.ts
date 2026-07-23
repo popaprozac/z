@@ -10945,6 +10945,116 @@ test("runs cold synchronous generators with deterministic suspended-frame cleanu
   );
 });
 
+test("runs cold async generators through reusable awaited advancement tasks", () => {
+  const example = resolve(projectRoot, "examples/language/control-flow/async-generators.zs");
+  const source = readFileSync(example, "utf8");
+  const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, "async generator 20 22 complete=42\n");
+
+  const generated = compileToC(source, example);
+  assert.match(generated, /Z_AsyncGenerator_/);
+  assert.match(generated, /z_async_generator_make_values/);
+  assert.match(generated, /z_async_generator_next_values/);
+  assert.match(generated, /frame->generator_active = false;/);
+  assert.match(generated, /frame->generator_finished = true;/);
+
+  const asyncGeneratorOffset = source.indexOf("AsyncGenerator<i32");
+  assert.match(
+    hover(source, example, asyncGeneratorOffset + 1)?.contents.value ?? "",
+    /AsyncGenerator<Yield, Return\?, Error\?>.*cold, move-only asynchronous sequence/s,
+  );
+  const sequenceOffset = source.indexOf("sequence =");
+  assert.match(
+    hover(source, example, sequenceOffset + 1)?.contents.value ?? "",
+    /sequence: AsyncGenerator<i32, i32>/,
+  );
+  const nextOffset = source.indexOf("next()");
+  assert.match(
+    hover(source, example, nextOffset + 1)?.contents.value ?? "",
+    /async next\(\): Task<GeneratorStep<i32, i32>>/,
+  );
+  const memberSource = source.replace("sequence.next()", "sequence.ne");
+  const memberOffset = memberSource.indexOf("sequence.ne") + "sequence.ne".length;
+  assert.match(
+    completions(memberSource, example, memberOffset).find((item) => item.label === "next")?.detail ?? "",
+    /async next\(\): Task<GeneratorStep<i32, i32>>/,
+  );
+  const native = spawnSync(process.execPath, [cli, "check", example, "--native-frontend"], { encoding: "utf8" });
+  assert.equal(native.status, 0, native.stderr);
+  assert.match(native.stdout, /native frontend hybrid/);
+
+  assert.throws(
+    () => compileToC(`
+      import { AsyncGenerator } from "std/iteration";
+      function values(): AsyncGenerator<i32> { yield 42; }
+      function main(): i32 { return 0; }
+    `, "async-generator-marker.zs"),
+    /AsyncGenerator<T> requires an async function/,
+  );
+  assert.throws(
+    () => compileToC(`
+      import { Generator } from "std/iteration";
+      async function values(): Generator<i32> { yield 42; }
+      function main(): i32 { return 0; }
+    `, "async-generator-shape.zs"),
+    /an async generator must return AsyncGenerator<T>, not Generator<T>/,
+  );
+
+  const throwingDirectory = mkdtempSync("/tmp/z-async-generator-throwing-");
+  const throwingFile = resolve(throwingDirectory, "main.zs");
+  writeFileSync(throwingFile, `
+    import { AsyncGenerator } from "std/iteration";
+    import { delay } from "std/time";
+    struct ReadError { code: i32; }
+    async function values(): AsyncGenerator<i32, void, ReadError> throws ReadError {
+      yield 20;
+      await delay(1);
+      throw ReadError({ code: 7 });
+    }
+    async function consume(): i32 throws ReadError {
+      const sequence = values();
+      const first = try await sequence.next();
+      const second = try await sequence.next();
+      return 1;
+    }
+    async function main(): i32 {
+      return match (attempt await consume()) {
+        success(value) => 1;
+        failure(error) => error.code - 7;
+      };
+    }
+  `);
+  const throwingResult = spawnSync(process.execPath, [cli, "run", throwingFile], { encoding: "utf8" });
+  assert.equal(throwingResult.status, 0, throwingResult.stderr);
+
+  const cleanupFile = resolve(throwingDirectory, "cleanup.zs");
+  writeFileSync(cleanupFile, `
+    import console from "std/console";
+    import { AsyncGenerator } from "std/iteration";
+    struct Lease {
+      id: i32;
+      deinit { console.log(\`released \${this.id}\`); }
+    }
+    async function values(): AsyncGenerator<i32> {
+      const lease = Lease({ id: 42 });
+      yield lease.id;
+      yield lease.id;
+    }
+    async function main(): i32 {
+      const sequence = values();
+      const first = await sequence.next();
+      return match (first) {
+        some(value) => value - 42;
+        none => 1;
+      };
+    }
+  `);
+  const cleanupResult = spawnSync(process.execPath, [cli, "run", cleanupFile], { encoding: "utf8" });
+  assert.equal(cleanupResult.status, 0, cleanupResult.stderr);
+  assert.equal(cleanupResult.stdout, "released 42\n");
+});
+
 test("returns explicit terminal values from typed generators", () => {
   const example = resolve(projectRoot, "examples/language/control-flow/generator-return.zs");
   const source = readFileSync(example, "utf8");
