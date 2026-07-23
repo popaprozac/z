@@ -17,6 +17,7 @@ import { optionTypeName } from "./option-types.ts";
 import { parseViewType, viewTypeName } from "./view-types.ts";
 import { hashableTraitDeclaration } from "./hash-types.ts";
 import { iteratorTraitDeclaration } from "./iterator-types.ts";
+import { generatorTypeName, parseGeneratorType } from "./generator-types.ts";
 
 export function materializeGenerics(
   program: Program,
@@ -30,6 +31,12 @@ export function materializeGenerics(
     program.traits.filter((item) => item.typeParameters?.length).map((item) => [item.name, item]),
   );
   const traits = new Map(program.traits.map((item) => [item.name, item]));
+  const generatorBindings = new Set(
+    program.imports
+      .flatMap((declaration) => declaration.header === "std/iteration" ? declaration.bindings ?? [] : [])
+      .filter((binding) => binding.importedName === "Generator")
+      .map((binding) => binding.localName),
+  );
   const hashableImport = program.imports
     .flatMap((declaration) => declaration.header === "std/hash" ? declaration.bindings ?? [] : [])
     .find((binding) => binding.importedName === "Hashable");
@@ -66,6 +73,11 @@ export function materializeGenerics(
     const declaration = program.structs.find((item) => item.name === "Set")
       ?? program.enums.find((item) => item.name === "Set")!;
     throw new DiagnosticError(fileName, declaration.location, "Set is a standard-library type and cannot be redeclared");
+  }
+  if (program.structs.some((item) => item.name === "Generator") || program.enums.some((item) => item.name === "Generator")) {
+    const declaration = program.structs.find((item) => item.name === "Generator")
+      ?? program.enums.find((item) => item.name === "Generator")!;
+    throw new DiagnosticError(fileName, declaration.location, "Generator is a compiler-supported standard type and cannot be redeclared");
   }
 
   for (const template of new Set([
@@ -129,6 +141,15 @@ export function materializeGenerics(
     const generic = parseGenericType(name);
     if (!generic) return name;
     const args = generic.arguments.map((argument) => substituteName(argument, substitutions));
+    if (generic.base === "Generator" || generatorBindings.has(generic.base)) {
+      if (args.length !== 1) {
+        throw new DiagnosticError(fileName, { offset: 0, line: 1, column: 1 }, `Generator expects 1 type argument, received ${args.length}`);
+      }
+      const name = generatorTypeName(args[0]);
+      instantiateStruct("Option", [args[0]]);
+      typeDisplayNames.set(name, `Generator<${displayName(args[0])}>`);
+      return name;
+    }
     if (generic.base === "Map") return instantiateMap(args);
     if (generic.base === "Set") return instantiateSet(args);
     if (traitTemplates.has(generic.base)) return instantiateTrait(generic.base, args);
@@ -458,7 +479,19 @@ export function materializeGenerics(
       const declaration = [...structs, ...program.structs].find((item) => item.name === argument);
       for (const trait of constraint.traits) {
         const required = substituteName(trait.name, argumentsByParameter);
-        if (!declaration?.implements.some((reference) => reference.name === required || reference.name === trait.name)) {
+        const generator = parseGeneratorType(argument);
+        const iteratorTemplate = generator
+          ? [...traitTemplates.values()].find((candidate) => candidate.intrinsic === "iterator")
+          : null;
+        const intrinsicGeneratorConformance = Boolean(
+          generator
+          && iteratorTemplate
+          && required === instantiateTrait(iteratorTemplate.name, [generator.elementType]),
+        );
+        if (
+          !intrinsicGeneratorConformance
+          && !declaration?.implements.some((reference) => reference.name === required || reference.name === trait.name)
+        ) {
           throw new DiagnosticError(
             fileName,
             trait.location,

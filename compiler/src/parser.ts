@@ -746,7 +746,10 @@ export function parse(tokens: Token[], fileName: string): Program {
       return { kind: "select", expression, location: selectToken.location };
     }
     if (match("yield")) {
-      throw new DiagnosticError(fileName, previous().location, "yield is reserved for generators, which are not implemented yet");
+      const yieldToken = previous();
+      const expression = parseExpression();
+      expect("semicolon", "`;`");
+      return { kind: "yield", expression, location: yieldToken.location };
     }
     const expression = parseExpression();
     if (match("equal")) {

@@ -503,6 +503,7 @@ function transformStatement(
     case "return":
       return { ...statement, expression: statement.expression ? transformExpression(statement.expression, scope, locals, typeParameters) : null };
     case "throw":
+    case "yield":
     case "select":
     case "expressionStatement":
       return { ...statement, expression: transformExpression(statement.expression, scope, locals, typeParameters) };

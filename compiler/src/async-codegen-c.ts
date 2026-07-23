@@ -983,7 +983,7 @@ function collectPlacementCaptures(
       case "variable": if (value.initializer) expression(value.initializer, localNames); localNames.add(value.name); return;
       case "assignment": expression(value.target, localNames, true); expression(value.expression, localNames); return;
       case "return": if (value.expression) expression(value.expression, localNames); return;
-      case "throw": case "select": case "expressionStatement": expression(value.expression, localNames); return;
+      case "throw": case "yield": case "select": case "expressionStatement": expression(value.expression, localNames); return;
       case "block": statements(value.statements, new Set(localNames)); return;
       case "if": expression(value.condition, localNames); statement(value.thenBranch, new Set(localNames)); if (value.elseBranch) statement(value.elseBranch, new Set(localNames)); return;
       case "while": expression(value.condition, localNames); statement(value.body, new Set(localNames)); return;
@@ -1041,7 +1041,7 @@ function placementContainsAsyncWork(statement: Statement): boolean {
     case "variable": return Boolean(statement.initializer && expressionHasSpawn(statement.initializer));
     case "assignment": return expressionHasSpawn(statement.target) || expressionHasSpawn(statement.expression);
     case "return": return Boolean(statement.expression && expressionHasSpawn(statement.expression));
-    case "throw": case "select": case "expressionStatement": return expressionHasSpawn(statement.expression);
+    case "throw": case "yield": case "select": case "expressionStatement": return expressionHasSpawn(statement.expression);
     case "block": return statement.statements.some(placementContainsAsyncWork);
     case "if": return expressionHasSpawn(statement.condition) || placementContainsAsyncWork(statement.thenBranch)
       || Boolean(statement.elseBranch && placementContainsAsyncWork(statement.elseBranch));
@@ -1382,6 +1382,7 @@ function statementContainsAwait(statement: Statement): boolean {
     case "assignment": return containsAwait(statement.target) || containsAwait(statement.expression);
     case "return": return Boolean(statement.expression && containsAwait(statement.expression));
     case "throw":
+    case "yield":
     case "select":
     case "expressionStatement": return containsAwait(statement.expression);
     case "block": return statement.statements.some(statementContainsAwait);

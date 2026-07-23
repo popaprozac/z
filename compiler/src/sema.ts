@@ -85,6 +85,7 @@ import { parseSetType } from "./set-types.ts";
 import { parseOptionalViewType, parseReceiverViewReturnType, parseViewType, viewTypeName } from "./view-types.ts";
 import { hashableSelfTypeName, hashableTraitDeclaration } from "./hash-types.ts";
 import { iteratorTraitDeclaration } from "./iterator-types.ts";
+import { isGeneratorFunction, parseGeneratorType } from "./generator-types.ts";
 
 export type ObjCCallInfo = {
   readonly selector: string;
@@ -311,7 +312,7 @@ export type SemanticInfo = {
   readonly standardFunctionReferences: ReadonlyMap<number, StandardFunctionName>;
   readonly standardFunctionBindings: ReadonlyMap<string, StandardFunctionName>;
   readonly standardModuleBindings: ReadonlyMap<string, StandardModuleName>;
-  readonly standardTypeBindings: ReadonlyMap<string, "TextBuffer" | "Arena" | "Map" | "Set" | "Hashable" | "Hasher" | "Iterator">;
+  readonly standardTypeBindings: ReadonlyMap<string, "TextBuffer" | "Arena" | "Map" | "Set" | "Hashable" | "Hasher" | "Iterator" | "Generator">;
   readonly iteratorElementTypes: ReadonlyMap<string, string>;
   readonly hasherAddTypes: ReadonlyMap<number, string>;
   readonly typeDisplayNames: ReadonlyMap<string, string>;
@@ -384,7 +385,7 @@ type AnalysisState = {
   readonly standardFunctionReferences: Map<number, StandardFunctionName>;
   readonly standardFunctionBindings: Map<string, StandardFunctionName>;
   readonly standardModuleBindings: Map<string, StandardModuleName>;
-  readonly standardTypeBindings: Map<string, "TextBuffer" | "Arena" | "Map" | "Set" | "Hashable" | "Hasher" | "Iterator">;
+  readonly standardTypeBindings: Map<string, "TextBuffer" | "Arena" | "Map" | "Set" | "Hashable" | "Hasher" | "Iterator" | "Generator">;
   readonly iteratorElementTypes: Map<string, string>;
   readonly hasherAddTypes: Map<number, string>;
   readonly inferredOutBindingLocations: Map<string, SourceLocation>;
@@ -832,20 +833,25 @@ export function analyze(
         if (!declaration.bindings) {
           throw new DiagnosticError(fileName, declaration.location, "std/iteration requires a selective import", {
             code: "Z0501",
-            helps: ["use `import { Iterator } from \"std/iteration\";`"],
+            helps: ["use `import { Iterator, Generator } from \"std/iteration\";`"],
           });
         }
         for (const binding of declaration.bindings) {
-          if (binding.importedName !== "Iterator") {
+          if (binding.importedName !== "Iterator" && binding.importedName !== "Generator") {
             throw new DiagnosticError(fileName, binding.location, `std/iteration has no export ${JSON.stringify(binding.importedName)}`, {
               code: "Z0501",
-              helps: ["std/iteration currently exports `Iterator`"],
+              helps: ["std/iteration exports `Iterator` and `Generator`"],
             });
           }
           validateUserName(binding.localName, binding.location, fileName);
-          const trait = iteratorTraitDeclaration(binding.localName, binding.location);
-          declareGlobal(globals, binding.localName, { kind: "trait", declaration: trait }, binding.location, fileName);
-          state.standardTypeBindings.set(binding.localName, "Iterator");
+          if (binding.importedName === "Iterator") {
+            const trait = iteratorTraitDeclaration(binding.localName, binding.location);
+            declareGlobal(globals, binding.localName, { kind: "trait", declaration: trait }, binding.location, fileName);
+            state.standardTypeBindings.set(binding.localName, "Iterator");
+          } else {
+            declareGlobal(globals, binding.localName, { kind: "standardType", type: "Generator" }, binding.location, fileName);
+            state.standardTypeBindings.set(binding.localName, "Generator");
+          }
         }
         continue;
       }
@@ -1052,6 +1058,11 @@ export function analyze(
     throw new DiagnosticError(fileName, main.declaration.location, "`main` cannot throw in the bootstrap runtime");
   }
 
+  for (const declaration of program.functions) {
+    const generator = parseGeneratorType(declaration.returnType.name);
+    if (generator) state.iteratorElementTypes.set(declaration.returnType.name, generator.elementType);
+  }
+
   for (const declaration of program.structs) {
     if (declaration.constructor) {
       analyzeConstructorInitialization(declaration, fileName, state);
@@ -1171,6 +1182,12 @@ function analyzeStructDeclaration(
         code: "Z0704",
         notes: ["a borrowed struct receiver cannot remain live in a suspended task frame"],
         helps: ["use `move this`, make the operation synchronous, or move shared identity into a class"],
+      });
+    }
+    if (isGeneratorFunction(method)) {
+      throw new DiagnosticError(fileName, method.returnType.location, "generator methods are deferred beyond the first generator tier", {
+        notes: ["retaining or consuming `this` in a cold suspended frame needs an explicit receiver-ownership rule"],
+        helps: ["pass the needed owned state to a module function returning Generator<T>"],
       });
     }
     validateFunctionSignature(method, structs, enums, foreignNamedTypes, foreignTypes, fileName);
@@ -1478,6 +1495,52 @@ function validateFunctionSignature(
   fileName: string,
 ): void {
   validateType(declaration.returnType, structs, enums, foreignNamedTypes, fileName, true);
+  if (declaration.async && parseGeneratorType(declaration.returnType.name)) {
+    throw new DiagnosticError(fileName, declaration.returnType.location, "async functions cannot return Generator<T> handles in the first generator tier", {
+      code: "Z0704",
+      notes: ["generator ownership has not yet been added to async task-frame results"],
+    });
+  }
+  const generator = isGeneratorFunction(declaration) ? parseGeneratorType(declaration.returnType.name) : null;
+  if (generator) {
+    if (declaration.async) {
+      throw new DiagnosticError(fileName, declaration.location, "a synchronous Generator<T> function cannot be async", {
+        notes: ["async generators require a separate scheduling and cancellation contract"],
+      });
+    }
+    if (declaration.errorType) {
+      throw new DiagnosticError(fileName, declaration.errorType.location, "throwing generators are deferred beyond the first generator tier");
+    }
+    if (containsViewType(generator.elementType) || containsSliceType(generator.elementType)) {
+      throw new DiagnosticError(fileName, declaration.returnType.location, "Generator<T> cannot yield borrowed storage in the first generator tier", {
+        code: "Z0206",
+        helps: ["yield an owned value or cleanup-free copy"],
+      });
+    }
+    if (hasMoveOnlyForeignType(generator.elementType, structs, enums, foreignNamedTypes)) {
+      throw new DiagnosticError(fileName, declaration.returnType.location, "Generator<T> cannot store move-only native C++ payloads in the first generator tier");
+    }
+    if (containsForeignValueStorage(generator.elementType, structs, enums, foreignNamedTypes)) {
+      throw new DiagnosticError(fileName, declaration.returnType.location, "Generator<T> native value payloads require frame-aware C++ construction and are deferred");
+    }
+    for (const parameter of declaration.parameters) {
+      if (parameter.mode !== "value") {
+        throw new DiagnosticError(fileName, parameter.location, "a cold generator cannot retain borrowed parameter storage", {
+          code: "Z0206",
+          helps: ["pass an owned value parameter; borrowed generator inputs require an explicit lifetime contract"],
+        });
+      }
+      if (containsViewType(parameter.type.name) || containsSliceType(parameter.type.name)) {
+        throw new DiagnosticError(fileName, parameter.location, "a cold generator cannot retain borrowed parameter storage", {
+          code: "Z0206",
+          helps: ["pass an owned value parameter"],
+        });
+      }
+      if (containsForeignValueStorage(parameter.type.name, structs, enums, foreignNamedTypes)) {
+        throw new DiagnosticError(fileName, parameter.location, "cold generator frames cannot retain native C++ value parameters yet");
+      }
+    }
+  }
   const directNativeReturn = foreignNamedTypes.get(declaration.returnType.name);
   const aggregateNativeReturn = structs.get(declaration.returnType.name)?.kind === "struct"
     || enums.has(declaration.returnType.name);
@@ -1509,6 +1572,9 @@ function validateFunctionSignature(
     }
     validateUserName(parameter.name, parameter.location, fileName);
     validateType(parameter.type, structs, enums, foreignNamedTypes, fileName, false);
+    if (declaration.async && parseGeneratorType(parameter.type.name)) {
+      throw new DiagnosticError(fileName, parameter.location, "async task frames cannot store Generator<T> parameters yet", { code: "Z0704" });
+    }
     if (containsViewType(parameter.type.name)) {
       throw new DiagnosticError(fileName, parameter.type.location, "view is a receiver-tied return capability, not a parameter type", { code: "Z0206" });
     }
@@ -1671,6 +1737,11 @@ function analyzeFunction(
     state.bindingTypes.set(parameter.location.offset, parameter.type.name);
   }
 
+  if (isGeneratorFunction(declaration)) {
+    validateGeneratorBodyShape(declaration, fileName);
+  }
+  const generator = isGeneratorFunction(declaration) ? parseGeneratorType(declaration.returnType.name) : null;
+  if (generator) state.iteratorElementTypes.set(declaration.returnType.name, generator.elementType);
   const returns = analyzeStatements(declaration.body, declaration, locals, globals, structs, enums, fileName, state);
   const unresolvedOutBinding = state.inferredOutBindingLocations.entries().next().value as [string, SourceLocation] | undefined;
   if (unresolvedOutBinding) {
@@ -1680,12 +1751,61 @@ function analyzeFunction(
     });
   }
   if (!returns) requireOutParametersInitialized(declaration, locals, declaration.location, fileName);
-  if (declaration.returnType.name !== "void" && !returns) {
+  if (!generator && declaration.returnType.name !== "void" && !returns) {
     throw new DiagnosticError(fileName, declaration.location, `function ${JSON.stringify(declaration.name)} must end with a return value`);
   }
   state.activeReceiver = previousReceiver;
   state.activeFunction = previousFunction;
   state.executorContext = previousExecutorContext;
+}
+
+function validateGeneratorBodyShape(declaration: FunctionDeclaration, fileName: string): void {
+  const names = new Set(declaration.parameters.map((parameter) => parameter.name));
+  const containsYield = (value: unknown): boolean => {
+    if (!value || typeof value !== "object") return false;
+    if ((value as { readonly kind?: string }).kind === "yield") return true;
+    if ((value as { readonly kind?: string }).kind === "closure") return false;
+    if (Array.isArray(value)) return value.some(containsYield);
+    return Object.entries(value as Record<string, unknown>)
+      .some(([key, child]) => key !== "location" && containsYield(child));
+  };
+  const visit = (statement: Statement): void => {
+    if (statement.kind === "variable") {
+      if (names.has(statement.name)) {
+        throw new DiagnosticError(fileName, statement.nameLocation, `generator frame binding ${JSON.stringify(statement.name)} shadows another stored binding`, {
+          notes: ["suspended locals have stable frame storage for the generator's complete lifetime"],
+          helps: ["rename the inner binding"],
+        });
+      }
+      names.add(statement.name);
+      if (statement.initializer?.kind === "closure") {
+        throw new DiagnosticError(fileName, statement.initializer.location, "closures inside generator frames are deferred beyond the first generator tier");
+      }
+      return;
+    }
+    if (statement.kind === "destructure") {
+      throw new DiagnosticError(fileName, statement.location, "destructuring locals inside generators is deferred beyond the first frame tier");
+    }
+    if ((statement.kind === "for" || statement.kind === "match") && containsYield(statement)) {
+      throw new DiagnosticError(fileName, statement.location, `yield inside ${statement.kind === "for" ? "for...of" : "match"} is deferred beyond the first generator tier`, {
+        notes: ["the generated iterator or match payload must become persistent frame state before this can suspend safely"],
+        helps: ["use a while loop or move the yield after the construct"],
+      });
+    }
+    if (statement.kind === "block") {
+      statement.statements.forEach(visit);
+    } else if (statement.kind === "if") {
+      visit(statement.thenBranch);
+      if (statement.elseBranch) visit(statement.elseBranch);
+    } else if (statement.kind === "while") {
+      visit(statement.body);
+    } else if (statement.kind === "for") {
+      visit(statement.body);
+    } else if (statement.kind === "match") {
+      for (const arm of statement.arms) visit(arm.body);
+    }
+  };
+  declaration.body.forEach(visit);
 }
 
 function constructorFunction(declaration: StructDeclaration): FunctionDeclaration {
@@ -1855,7 +1975,7 @@ function analyzeConstructorInitialization(
       } else if (statement.kind === "assignment") {
         checkExpression(statement.target, initialized);
         checkExpression(statement.expression, initialized);
-      } else if (statement.kind === "throw" || statement.kind === "select" || statement.kind === "expressionStatement") {
+      } else if (statement.kind === "throw" || statement.kind === "yield" || statement.kind === "select" || statement.kind === "expressionStatement") {
         checkExpression(statement.expression, initialized);
       } else if (statement.kind === "block") {
         const result = analyzeConstructorStatements(statement.statements, initialized);
@@ -2190,6 +2310,21 @@ function analyzeStatement(
         return;
       }
       const directForeignValue = state.foreignNamedTypes.get(String(underlyingType(variableType)));
+      if (state.activeFunction?.async && parseGeneratorType(String(underlyingType(variableType)))) {
+        throw new DiagnosticError(fileName, statement.location, "async task frames cannot store Generator<T> locals yet", {
+          code: "Z0704",
+          helps: ["consume the generator synchronously before or after the async operation"],
+        });
+      }
+      if (
+        state.activeFunction
+        && isGeneratorFunction(state.activeFunction)
+        && containsForeignValueStorage(String(underlyingType(variableType)), structs, enums, state.foreignNamedTypes)
+      ) {
+        throw new DiagnosticError(fileName, statement.location, "generator frame locals cannot contain native C++ value storage in the first tier", {
+          code: "Z0240",
+        });
+      }
       const supportedAsyncNativeContainer = structs.get(String(underlyingType(variableType)))?.kind === "struct"
         || enums.has(String(underlyingType(variableType)))
         || Boolean(parseFixedArrayType(String(underlyingType(variableType))))
@@ -2419,6 +2554,15 @@ function analyzeStatement(
       return;
     }
     case "return": {
+      const generator = isGeneratorFunction(owner) ? parseGeneratorType(owner.returnType.name) : null;
+      if (generator) {
+        if (statement.expression) {
+          throw new DiagnosticError(fileName, statement.location, "a generator finishes with `return;` and cannot return a value", {
+            notes: [`this generator yields ${displayArrayType(generator.elementType)} values`],
+          });
+        }
+        return;
+      }
       const expected = owner.returnType.name;
       if (!statement.expression) {
         if (expected !== "void") {
@@ -2458,6 +2602,48 @@ function analyzeStatement(
       requireAssignable(expected, actual, statement.expression, fileName, structs, enums, state);
       consumeOwnedValue(statement.expression, expected, locals, structs, enums, fileName, state);
       requireOutParametersInitialized(owner, locals, statement.location, fileName);
+      return;
+    }
+    case "yield": {
+      const generator = parseGeneratorType(owner.returnType.name);
+      if (!generator) {
+        throw new DiagnosticError(fileName, statement.location, "yield requires a function returning Generator<T>", {
+          helps: ["import { Generator } from \"std/iteration\" and declare the function return type"],
+        });
+      }
+      if (state.asyncScopeDepth > 0) {
+        throw new DiagnosticError(fileName, statement.location, "yield cannot suspend through an async scope");
+      }
+      const liveView = state.viewOrigins.entries().next().value as [string, { readonly owner: string }] | undefined;
+      if (liveView) {
+        throw new DiagnosticError(fileName, statement.location, `generator cannot suspend while view ${JSON.stringify(liveView[0])} is live`, {
+          code: "Z0206",
+          notes: [`the view borrows storage owned by ${JSON.stringify(liveView[1].owner)}`],
+          helps: ["copy the needed value before yield or end the view's last use before suspension"],
+        });
+      }
+      const actual = inferDirectValue(
+        statement.expression,
+        owner,
+        locals,
+        globals,
+        structs,
+        enums,
+        fileName,
+        state,
+        generator.elementType,
+      );
+      requireAssignable(generator.elementType, actual, statement.expression, fileName, structs, enums, state);
+      if (containsViewType(String(actual)) || containsSliceType(String(actual))) {
+        throw new DiagnosticError(fileName, statement.expression.location, "a generator cannot yield borrowed storage in the first generator tier", {
+          code: "Z0206",
+          helps: ["yield an owned value or a cleanup-free copy"],
+        });
+      }
+      if (hasMoveOnlyForeignType(actual, structs, enums, state.foreignNamedTypes)) {
+        throw new DiagnosticError(fileName, statement.expression.location, "generators cannot yield move-only native values in the first C++ tier");
+      }
+      consumeOwnedValue(statement.expression, generator.elementType, locals, structs, enums, fileName, state);
       return;
     }
     case "throw": {
@@ -3326,6 +3512,7 @@ function collectClosureCaptures(
         if (statement.expression) walkExpression(statement.expression, localNames);
         return;
       case "throw":
+      case "yield":
       case "select":
       case "expressionStatement":
         walkExpression(statement.expression, localNames);
@@ -5724,6 +5911,21 @@ function inferExpressionInner(
           releaseAsyncTaskBorrows(expression.callee.object.name, state);
           return "void";
         }
+        const generator = parseGeneratorType(receiverValueType);
+        if (generator) {
+          rejectLabeledArguments(expression.argumentLabels, expression.location, fileName);
+          if (expression.callee.property !== "next") {
+            throw new DiagnosticError(fileName, expression.callee.location, `Generator has no method ${JSON.stringify(expression.callee.property)}`);
+          }
+          if (expression.arguments.length !== 0) {
+            throw new DiagnosticError(fileName, expression.location, `"next" expects 0 arguments, received ${expression.arguments.length}`);
+          }
+          const root = storageRoot(expression.callee.object);
+          if (!root || !locals.has(root.name)) {
+            throw new DiagnosticError(fileName, expression.callee.object.location, "Generator.next requires a named generator handle");
+          }
+          return optionTypeName(generator.elementType);
+        }
         if (receiverValueType === "Arena") {
           rejectLabeledArguments(expression.argumentLabels, expression.location, fileName);
           if (state.activeFunction?.async) {
@@ -6777,7 +6979,7 @@ function checkArguments(
 
 function validateDeinitControlFlow(statements: Statement[], fileName: string): void {
   for (const statement of statements) {
-    if (statement.kind === "return" || statement.kind === "throw" || statement.kind === "select") {
+    if (statement.kind === "return" || statement.kind === "throw" || statement.kind === "yield" || statement.kind === "select") {
       throw new DiagnosticError(fileName, statement.location, `deinit cannot contain ${JSON.stringify(statement.kind)}`);
     }
     if (statement.kind === "block") validateDeinitControlFlow(statement.statements, fileName);
@@ -7805,7 +8007,8 @@ function analyzeIteratorForLoop(
     ? state.valueLoopStack.at(-1)!
     : null;
   if (root) {
-    if (statement.mode !== "inout") {
+    const generator = parseGeneratorType(iteratorType);
+    if (!generator && statement.mode !== "inout") {
       throw new DiagnosticError(fileName, statement.iterable.location, `stored iterator ${JSON.stringify(root.name)} requires explicit inout iteration`, {
         code: "Z0311",
         notes: ["Iterator.next mutates the iterator's traversal state"],
@@ -7814,7 +8017,7 @@ function analyzeIteratorForLoop(
     }
     const stored = locals.get(root.name);
     const iterator = structs.get(iteratorType);
-    if (!stored || (iterator?.kind !== "class" && !isMutableBinding(stored))) {
+    if (!stored || (!generator && iterator?.kind !== "class" && !isMutableBinding(stored))) {
       throw new DiagnosticError(fileName, statement.iterable.location, `iterator ${JSON.stringify(root.name)} requires mutable let storage`, {
         code: "Z0311",
         helps: [`declare \`let ${root.name} = ...\` before iterating it`],
@@ -7932,6 +8135,7 @@ function hasCleanupType(
   const actual = underlyingType(type);
   if (actual === "unknown" || actual === "never" || visiting.has(actual)) return false;
   if (actual === "String" || actual === "TextBuffer" || actual === "Arena") return true;
+  if (parseGeneratorType(actual)) return true;
   if (parseWeakType(actual)) return true;
   if (parseFunctionType(String(actual))) return true;
   if (foreignTypes.get(actual)?.ownership === "owned") return true;
@@ -9426,6 +9630,11 @@ function validateType(
   fileName: string,
   allowVoid: boolean,
 ): void {
+  const generator = parseGeneratorType(type.name);
+  if (generator) {
+    validateType({ name: generator.elementType, location: type.location }, structs, enums, foreignNamedTypes, fileName, false);
+    return;
+  }
   const view = parseViewType(type.name);
   if (view) {
     if (parseViewType(view.target)) {

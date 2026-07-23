@@ -52,6 +52,7 @@ import { optionTypeName, parseOptionType } from "./option-types.ts";
 import { parseOptionalViewType, parseViewType, viewTypeName } from "./view-types.ts";
 import { mapEntryTypeName, parseMapEntryType, parseMapType } from "./map-types.ts";
 import { parseSetType } from "./set-types.ts";
+import { isGeneratorFunction, parseGeneratorType } from "./generator-types.ts";
 
 type GenerationContext = {
   readonly structs: Map<string, StructDeclaration>;
@@ -76,6 +77,10 @@ type GenerationContext = {
   readonly semanticInfo: SemanticInfo;
   readonly constructorSelf?: string;
   readonly constructorFieldFlags?: ReadonlyMap<string, string>;
+  readonly generatorFrame?: {
+    readonly storage: ReadonlyMap<string, string>;
+    readonly stateCounter: { value: number };
+  };
 };
 
 type CleanupLocal = {
@@ -136,6 +141,9 @@ export function generateC(program: Program, sourceName: string, semanticInfo: Se
   const dynamicArrayTypes = collectDynamicArrayTypes(program, semanticInfo);
   const mapTypes = program.structs.map((declaration) => declaration.name).filter((name) => parseMapType(name));
   const setTypes = program.structs.map((declaration) => declaration.name).filter((name) => parseSetType(name));
+  const generatorTypes = [...new Set(
+    [...semanticInfo.iteratorElementTypes.keys()].filter((name) => parseGeneratorType(name)),
+  )];
   const dynamicArrayPushTypes = [...new Set([
     ...collectDynamicArrayPushTypes(program, semanticInfo),
     ...mapTypes.map((name) => {
@@ -309,12 +317,16 @@ export function generateC(program: Program, sourceName: string, semanticInfo: Se
       ? `typedef ${mapType(niche, structs, enums, semanticInfo.foreignNamedTypes)}${enumName(declaration.name)};`
       : `typedef struct ${enumName(declaration.name)} ${enumName(declaration.name)};`);
   }
+  for (const type of generatorTypes) {
+    lines.push(`typedef struct ${generatorCName(type)} ${generatorCName(type)};`);
+  }
   if (
     program.structs.length > 0
     || program.enums.length > 0
     || arrayTypes.length > 0
     || sliceTypes.length > 0
     || dynamicArrayTypes.length > 0
+    || generatorTypes.length > 0
   ) lines.push("");
 
   if (program.structs.some((declaration) => declaration.kind === "class")) {
@@ -356,6 +368,9 @@ export function generateC(program: Program, sourceName: string, semanticInfo: Se
   }
 
   lines.push(...generateAggregateDefinitions(program.structs, program.enums, arrayTypes, structs, enums, semanticInfo.foreignNamedTypes));
+  for (const type of generatorTypes) {
+    lines.push(generateGeneratorRuntime(type, structs, enums, semanticInfo.foreignNamedTypes), "");
+  }
   for (const type of explicitCopyTypes) {
     lines.push(`${generateExplicitCopySignature(type, structs, enums, semanticInfo.foreignNamedTypes)};`);
   }
@@ -1305,6 +1320,7 @@ function generateOwnedEnvironmentCleanup(
   semanticInfo: SemanticInfo,
   counter: { value: number },
 ): string {
+  if (parseGeneratorType(type)) return `${generatorDeinitName(type)}(&(${value}));`;
   if (type === "String" || type === "TextBuffer") return `if ((${value}).capacity > 0) free((void *)(${value}).data);`;
   if (type === "Arena") return `z_arena_reset(&(${value}));`;
   if (parseWeakType(type)) return `z_weak_release(${value});`;
@@ -2624,6 +2640,202 @@ function nicheOptionNull(payloadType: string): "nil" | "NULL" {
   return parseViewType(payloadType) || parsePointerTypeName(payloadType) ? "NULL" : "nil";
 }
 
+function generateGeneratorRuntime(
+  type: string,
+  structs: Map<string, StructDeclaration>,
+  enums: Map<string, EnumDeclaration>,
+  foreignNamedTypes: SemanticInfo["foreignNamedTypes"],
+): string {
+  const generator = parseGeneratorType(type)!;
+  const option = optionTypeName(generator.elementType);
+  const generatorName = generatorCName(type);
+  const optionName = mapType(option, structs, enums, foreignNamedTypes);
+  const none = `(${optionName}){ .tag = ${variantTag(option, "none")} }`;
+  return `struct ${generatorName} {
+  void *context;
+  ${optionName} (*advance)(void *context);
+  void (*destroy)(void *context);
+};
+
+static __attribute__((unused)) ${optionName} ${generatorNextName(type)}(${generatorName} *self) {
+  if (self->context == NULL) return ${none};
+  return self->advance(self->context);
+}
+
+static __attribute__((unused)) void ${generatorDeinitName(type)}(${generatorName} *self) {
+  if (self->context == NULL) return;
+  self->destroy(self->context);
+  self->context = NULL;
+  self->advance = NULL;
+  self->destroy = NULL;
+}`;
+}
+
+type GeneratorFrameField = {
+  readonly name: string;
+  readonly type: string;
+  readonly parameter: boolean;
+};
+
+function collectGeneratorFrameFields(
+  declaration: FunctionDeclaration,
+  semanticInfo: SemanticInfo,
+): GeneratorFrameField[] {
+  const fields: GeneratorFrameField[] = declaration.parameters.map((parameter) => ({
+    name: parameter.name,
+    type: parameter.type.name,
+    parameter: true,
+  }));
+  const names = new Set(fields.map((field) => field.name));
+  const visit = (statement: Statement): void => {
+    if (statement.kind === "variable") {
+      if (names.has(statement.name)) {
+        throw new Error(`generator frame cannot represent shadowed binding ${JSON.stringify(statement.name)}`);
+      }
+      names.add(statement.name);
+      const type = statement.type?.name ?? semanticInfo.bindingTypes.get(statement.nameLocation.offset);
+      if (!type) throw new Error(`missing generator frame type for ${JSON.stringify(statement.name)}`);
+      fields.push({ name: statement.name, type, parameter: false });
+      return;
+    }
+    if (statement.kind === "block") {
+      statement.statements.forEach(visit);
+      return;
+    }
+    if (statement.kind === "if") {
+      visit(statement.thenBranch);
+      if (statement.elseBranch) visit(statement.elseBranch);
+      return;
+    }
+    if (statement.kind === "while") {
+      visit(statement.body);
+    }
+  };
+  declaration.body.forEach(visit);
+  return fields;
+}
+
+function generatorFrameName(declaration: FunctionDeclaration): string {
+  return `Z_GeneratorFrame_${nativeSymbolPart(declaration.name)}`;
+}
+
+function generatorAdvanceName(declaration: FunctionDeclaration): string {
+  return `${generatorFrameName(declaration)}_advance`;
+}
+
+function generatorDestroyName(declaration: FunctionDeclaration): string {
+  return `${generatorFrameName(declaration)}_destroy`;
+}
+
+function generateGeneratorFunction(
+  declaration: FunctionDeclaration,
+  structs: Map<string, StructDeclaration>,
+  enums: Map<string, EnumDeclaration>,
+  functions: Map<string, FunctionDeclaration>,
+  semanticInfo: SemanticInfo,
+): string {
+  const generator = parseGeneratorType(declaration.returnType.name)!;
+  const option = optionTypeName(generator.elementType);
+  const frameName = generatorFrameName(declaration);
+  const fields = collectGeneratorFrameFields(declaration, semanticInfo);
+  const storage = new Map(fields.map((field) => [field.name, `frame->${cBindingName(field.name)}`]));
+  const liveFlags = new Map<string, string>();
+  for (const field of fields) {
+    if (hasSemanticCleanupType(field.type, structs, enums, semanticInfo)) {
+      liveFlags.set(field.name, `frame->${cBindingName(field.name)}_live`);
+    }
+  }
+  const parameterCleanup: CleanupLocal[] = declaration.parameters.flatMap((parameter) => {
+    const liveFlag = liveFlags.get(parameter.name);
+    return liveFlag ? [{ name: parameter.name, type: parameter.type.name, liveFlag }] : [];
+  });
+  const context: GenerationContext = {
+    structs,
+    enums,
+    functions,
+    localTypes: new Map(declaration.parameters.map((parameter) => [parameter.name, parameter.type.name])),
+    parameterModes: new Map(declaration.parameters.map((parameter) => [parameter.name, parameter.mode])),
+    receiver: null,
+    owner: declaration,
+    matchCounter: { value: 0 },
+    tryCounter: { value: 0 },
+    valueCounter: { value: 0 },
+    returnCounter: { value: 0 },
+    loopCounter: { value: 0 },
+    loopStack: [],
+    valueSelectionStack: [],
+    cleanupCounter: { value: 0 },
+    cleanupScopes: [parameterCleanup],
+    liveFlags,
+    liveFlagCounter: { value: 0 },
+    expressionOverrides: new Map(),
+    semanticInfo,
+    generatorFrame: { storage, stateCounter: { value: 1 } },
+  };
+  const body = declaration.body.map((statement) => {
+    const generated = generateStatement(statement, context);
+    recordVariableType(statement, context);
+    return indent(generated, 6);
+  });
+  const completionCleanup = generateCleanup(context.cleanupScopes, context);
+  const none = generateCompilerVariantConstruction(option, "none", null, context);
+  body.push(indent(`${completionCleanup ? `${completionCleanup}\n` : ""}frame->state = -1;\nreturn ${none};`, 6));
+
+  const frameFields = fields.flatMap((field) => {
+    const lines = [`  ${mapType(field.type, structs, enums, semanticInfo.foreignNamedTypes)} ${cBindingName(field.name)};`];
+    if (liveFlags.has(field.name)) lines.push(`  bool ${cBindingName(field.name)}_live;`);
+    return lines;
+  });
+  const destroyCleanup = [...fields].reverse().flatMap((field) => {
+    const liveFlag = liveFlags.get(field.name);
+    if (!liveFlag) return [];
+    return [indent(generateValueCleanup(`frame->${cBindingName(field.name)}`, field.type, liveFlag, context), 2)];
+  });
+  const factoryInitializers = declaration.parameters.flatMap((parameter) => {
+    const field = `frame->${cBindingName(parameter.name)}`;
+    const parameterName = cBindingName(parameter.name);
+    return [
+      `  ${field} = ${requiresNativeMove(parameter.type.name, structs, enums, semanticInfo.foreignNamedTypes) ? `std::move(${parameterName})` : parameterName};`,
+      ...(liveFlags.has(parameter.name) ? [`  frame->${cBindingName(parameter.name)}_live = true;`] : []),
+    ];
+  });
+  const signature = generateFunctionSignature(declaration, structs, enums, null, semanticInfo.foreignNamedTypes);
+  return `typedef struct ${frameName} {
+  int32_t state;
+${frameFields.join("\n")}
+} ${frameName};
+
+static ${mapType(option, structs, enums, semanticInfo.foreignNamedTypes)} ${generatorAdvanceName(declaration)}(void *context) {
+  ${frameName} *frame = (${frameName} *)context;
+  switch (frame->state) {
+    case -1:
+      return ${none};
+    case 0: ;
+${body.join("\n")}
+    default:
+      abort();
+  }
+}
+
+static void ${generatorDestroyName(declaration)}(void *context) {
+  ${frameName} *frame = (${frameName} *)context;
+${destroyCleanup.join("\n")}
+  free(frame);
+}
+
+${signature} {
+  ${frameName} *frame = (${frameName} *)calloc(1, sizeof(${frameName}));
+  if (frame == NULL) abort();
+  frame->state = 0;
+${factoryInitializers.join("\n")}
+  return (${generatorCName(declaration.returnType.name)}){
+    .context = frame,
+    .advance = ${generatorAdvanceName(declaration)},
+    .destroy = ${generatorDestroyName(declaration)}
+  };
+}`;
+}
+
 function generateFunction(
   declaration: FunctionDeclaration,
   structs: Map<string, StructDeclaration>,
@@ -2632,6 +2844,9 @@ function generateFunction(
   receiver: StructDeclaration | null,
   semanticInfo: SemanticInfo,
 ): string {
+  if (!receiver && isGeneratorFunction(declaration)) {
+    return generateGeneratorFunction(declaration, structs, enums, functions, semanticInfo);
+  }
   const instanceReceiver = receiver && !declaration.static ? receiver : null;
   const localTypes = new Map(declaration.parameters.map((parameter) => [parameter.name, parameter.type.name]));
   if (instanceReceiver) localTypes.set("this", instanceReceiver.name);
@@ -2828,6 +3043,15 @@ function generateStatement(statement: Statement, context: GenerationContext): st
           ? directValueType(statement.initializer, context)
           : context.semanticInfo.bindingTypes.get(statement.nameLocation.offset));
       if (!zType) throw new Error(`missing inferred type for uninitialized binding ${JSON.stringify(statement.name)}`);
+      if (context.generatorFrame) {
+        const target = generateStoredValue(statement.name, context);
+        if (!statement.initializer) return "(void)0;";
+        const initialized = generateDirectValue(statement.initializer, context, (value) => `${target} = ${value};`);
+        const liveFlag = hasCleanupType(zType, context.structs, context.enums, context.semanticInfo.foreignTypes)
+          ? context.liveFlags.get(statement.name)
+          : null;
+        return `${initialized}\n(void)${target};${liveFlag ? `\n${liveFlag} = true;` : ""}`;
+      }
       if (statement.initializer?.kind === "closure") {
         const closure = context.semanticInfo.closures.get(statement.initializer.location.offset)!;
         if (statement.type && parseFunctionType(statement.type.name)) {
@@ -2947,6 +3171,14 @@ bool ${liveFlag} = true;`;
       );
     }
     case "return":
+      if (context.generatorFrame) {
+        if (statement.expression) throw new Error("generator return values must be rejected by semantic analysis");
+        const cleanup = generateCleanup(context.cleanupScopes, context);
+        const generator = parseGeneratorType(context.owner.returnType.name)!;
+        const option = optionTypeName(generator.elementType);
+        const none = generateCompilerVariantConstruction(option, "none", null, context);
+        return `${cleanup ? `${cleanup}\n` : ""}frame->state = -1;\nreturn ${none};`;
+      }
       if (!statement.expression) {
         const cleanup = generateCleanup(context.cleanupScopes, context);
         if (context.owner.errorType) {
@@ -2992,6 +3224,17 @@ bool ${liveFlag} = true;`;
         const returned = generateCompilerVariantConstruction(result, "failure", failureValue, valueContext);
         return `${declaration} = ${value};\n${cleanup ? `${cleanup}\n` : ""}${releaseSelf}return ${returned};`;
       }, true);
+    }
+    case "yield": {
+      if (!context.generatorFrame) throw new Error("yield lowering requires a generator frame");
+      const generator = parseGeneratorType(context.owner.returnType.name)!;
+      const option = optionTypeName(generator.elementType);
+      const resume = context.generatorFrame.stateCounter.value++;
+      return generateDirectValue(statement.expression, context, (value) => (
+        `frame->state = ${resume};\n`
+        + `return ${generateCompilerVariantConstruction(option, "some", value, context)};\n`
+        + `case ${resume}: ;`
+      ), true);
     }
     case "select": {
       const selection = context.valueSelectionStack.at(-1);
@@ -3502,13 +3745,20 @@ function generateIteratorFor(
   index: number,
   context: GenerationContext,
 ): string {
-  const iteratorDeclaration = context.structs.get(iteratorType)!;
-  const temporaryIterator = statement.mode === "auto";
+  const generator = parseGeneratorType(iteratorType);
+  const iteratorDeclaration = context.structs.get(iteratorType);
+  const storedGenerator = Boolean(
+    generator
+    && (statement.iterable.kind === "identifier"
+      || statement.iterable.kind === "member"
+      || statement.iterable.kind === "index"),
+  );
+  const temporaryIterator = statement.mode === "auto" && !storedGenerator;
   const iteratorName = `_z_iterator_${index}`;
   const iteratorStorage = temporaryIterator
     ? iteratorName
     : generateAssignmentTarget(statement.iterable, context);
-  const iteratorArgument = iteratorDeclaration.kind === "class"
+  const iteratorArgument = iteratorDeclaration?.kind === "class"
     ? iteratorStorage
     : `&(${iteratorStorage})`;
   const prefix: string[] = [];
@@ -3544,7 +3794,9 @@ function generateIteratorFor(
   const niche = nicheOptionPayload(optionDeclaration, context.semanticInfo.foreignNamedTypes);
   const nextName = `_z_iterator_next_${index}`;
   const nextType = mapType(optionType, context.structs, context.enums, context.semanticInfo.foreignNamedTypes);
-  const nextCall = `${methodName(iteratorType, "next")}(${iteratorArgument})`;
+  const nextCall = generator
+    ? `${generatorNextName(iteratorType)}(${iteratorArgument})`
+    : `${methodName(iteratorType, "next")}(${iteratorArgument})`;
   const exhausted = niche
     ? `${nextName} == ${nicheOptionNull(niche)}`
     : `${nextName}.tag == ${variantTag(optionType, "none")}`;
@@ -4137,6 +4389,8 @@ function generateStoredValue(name: string, context: GenerationContext): string {
     if (context.receiver?.kind === "class") return "self";
     return context.owner.receiverMode === "move" ? "self" : "(*self)";
   }
+  const generatorStorage = context.generatorFrame?.storage.get(name);
+  if (generatorStorage) return generatorStorage;
   const emittedName = cBindingName(name);
   const type = context.localTypes.get(name);
   if (type && parseSliceType(type)) return emittedName;
@@ -4206,7 +4460,8 @@ function generateCleanup(scopes: CleanupLocal[][], context: GenerationContext): 
   const calls: string[] = [];
   for (const scope of [...scopes].reverse()) {
     for (const local of [...scope].reverse()) {
-      calls.push(generateValueCleanup(local.value ?? cBindingName(local.name), local.type, local.liveFlag, context));
+      const cleanup = generateValueCleanup(local.value ?? generateStoredValue(local.name, context), local.type, local.liveFlag, context);
+      calls.push(context.generatorFrame ? `${cleanup}\n${local.liveFlag} = false;` : cleanup);
     }
   }
   return calls.join("\n");
@@ -4283,6 +4538,10 @@ function generateValueCleanup(
   liveFlag: string | null,
   context: GenerationContext,
 ): string {
+  if (parseGeneratorType(type)) {
+    const release = `${generatorDeinitName(type)}(&(${value}));`;
+    return liveFlag ? `if (${liveFlag}) ${release}` : release;
+  }
   const functionType = parseFunctionType(type);
   if (functionType) {
     const release = `${functionTypeReleaseName(functionType)}(${value});`;
@@ -5018,7 +5277,7 @@ function generateExpressionInner(expression: Expression, context: GenerationCont
       if (expression.name === "this") return context.owner.receiverMode === "move" ? "&(self)" : "self";
       if (parseSliceType(context.localTypes.get(expression.name) ?? "")) return cBindingName(expression.name);
       if (context.parameterModes.get(expression.name) === "inout" || context.parameterModes.get(expression.name) === "out") return cBindingName(expression.name);
-      return `&(${cBindingName(expression.name)})`;
+      return `&(${generateStoredValue(expression.name, context)})`;
     case "unary": {
       const explicitCopy = context.semanticInfo.explicitCopies.get(expression.location.offset);
       if (explicitCopy) {
@@ -5100,17 +5359,17 @@ function generateExpressionInner(expression: Expression, context: GenerationCont
       if (context.semanticInfo.movedExpressions.has(expression.location.offset)) {
         const type = context.localTypes.get(expression.name);
         if (type && requiresNativeMove(type, context.structs, context.enums, context.semanticInfo.foreignNamedTypes)) {
-          const moved = `std::move(${cBindingName(expression.name)})`;
+          const moved = `std::move(${generateStoredValue(expression.name, context)})`;
           const nativeLiveFlag = context.liveFlags.get(expression.name);
           return nativeLiveFlag ? `(${nativeLiveFlag} = false, ${moved})` : moved;
         }
         const liveFlag = context.liveFlags.get(expression.name);
         if (!liveFlag) throw new Error(`missing ownership flag for moved value ${JSON.stringify(expression.name)}`);
-        return `(${liveFlag} = false, ${cBindingName(expression.name)})`;
+        return `(${liveFlag} = false, ${generateStoredValue(expression.name, context)})`;
       }
       return maybeRetainClass(
         expression,
-        context.localTypes.has(expression.name) ? cBindingName(expression.name) : expression.name,
+        context.localTypes.has(expression.name) ? generateStoredValue(expression.name, context) : expression.name,
         context,
       );
     case "binary": {
@@ -5482,6 +5741,11 @@ function generateExpressionInner(expression: Expression, context: GenerationCont
         const receiverType = inferExpressionType(expression.callee.object, context);
         const receiverView = parseViewType(receiverType);
         const receiverValueType = receiverView?.target ?? receiverType;
+        const generator = parseGeneratorType(receiverValueType);
+        if (generator) {
+          const receiver = generateExpression(expression.callee.object, context);
+          return `${generatorNextName(receiverValueType)}(&(${receiver}))`;
+        }
         const map = parseMapType(receiverValueType);
         if (map) {
           const receiver = generateExpression(expression.callee.object, context);
@@ -6613,6 +6877,7 @@ function mapType(
   const functionType = parseFunctionType(name);
   if (functionType) return functionTypeCName(functionType);
   if (parseWeakType(name)) return "Z_Weak";
+  if (parseGeneratorType(name)) return generatorCName(name);
   const primitive = primitiveTypeNames[name];
   if (primitive) return primitive;
   if (parseFixedArrayType(name)) return arrayName(name);
@@ -6727,6 +6992,18 @@ function dynamicArrayName(name: string): string {
   return `Z_DynamicArray_${nativeSymbolPart(name)}`;
 }
 
+function generatorCName(name: string): string {
+  return `Z_Generator_${nativeSymbolPart(name)}`;
+}
+
+function generatorNextName(name: string): string {
+  return `${generatorCName(name)}_next`;
+}
+
+function generatorDeinitName(name: string): string {
+  return `${generatorCName(name)}_deinit`;
+}
+
 function dynamicArrayPushName(name: string): string {
   return `${dynamicArrayName(name)}_push`;
 }
@@ -6809,6 +7086,7 @@ function hasCleanupType(
 ): boolean {
   if (visiting.has(type)) return false;
   if (type === "String" || type === "TextBuffer" || type === "Arena") return true;
+  if (parseGeneratorType(type)) return true;
   if (parseWeakType(type)) return true;
   if (parseFunctionType(type)) return true;
   if (foreignTypes.get(type)?.ownership === "owned") return true;
@@ -6838,6 +7116,7 @@ function hasSemanticCleanupType(
   visiting = new Set<string>(),
 ): boolean {
   if (visiting.has(type)) return false;
+  if (parseGeneratorType(type)) return true;
   if (semanticInfo.foreignNamedTypes.get(type)?.kind === "object") return true;
   if (hasCleanupType(type, structs, enums, semanticInfo.foreignTypes)) return true;
   const dynamic = parseDynamicArrayType(type);

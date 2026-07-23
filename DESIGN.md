@@ -568,6 +568,45 @@ usable after the loop. Built-in collections retain their borrowed-element
 semantics and do not accept `of inout`; they are not retrofitted through a
 mutable user-visible cursor merely to share syntax.
 
+Compiler-lowered generators expose the same pull-based iteration shape without
+requiring a user-written cursor struct:
+
+```zs
+import { Generator } from "std/iteration";
+
+function identifiers(count: i32): Generator<i32> {
+  let current = 1;
+  while (current <= count) {
+    yield current;
+    current = current + 1;
+  }
+}
+
+const values = identifiers(3);
+for (const value of values) {
+  console.log(value);
+}
+```
+
+`Generator<T>` is the real return type. Calling the function allocates and
+returns a cold, uniquely owned suspended frame; the body starts on `next()` or
+the first `for...of` advance. It satisfies `Iterator<T>` for generic iterator
+algorithms. Unlike an ordinary stored value iterator, its
+cursor is hidden behind the generator handle, so a stored `const` generator
+uses ordinary `of values` syntax rather than `of inout values`. The handle
+cannot be copied. Exhaustion or explicit `return;` destroys initialized frame
+locals, and dropping the generator early runs the same cleanup before releasing
+the frame.
+
+The presence of `yield` selects frame lowering. A function with the same
+`Generator<T>` return type but no `yield` is an ordinary function and may
+forward an existing generator with `return otherGenerator();`.
+
+The first tier is synchronous and non-throwing. Parameters transfer owned
+values into the cold frame; borrowed inputs, generator methods, yields inside
+`for...of` or `match`, borrowed yielded values, async generators, and values
+sent back into a suspension remain later work.
+
 Mutable element iteration, consuming iterators, cleanup-bearing object
 destructuring, move-only foreign iterator elements, array and tuple patterns,
 and async iteration remain later layers.
@@ -772,8 +811,8 @@ const name: String = match (result) {
 
 `return` and `throw` still exit the enclosing function. They have the bottom
 type, so an arm that exits does not need to agree with the other arms' value
-type. `select` belongs to local value-producing control flow; `yield` is
-reserved for producing values from a future generator.
+type. `select` belongs to local value-producing control flow; `yield` suspends
+the enclosing synchronous `Generator<T>` and transfers one `T` to its consumer.
 
 `if` is also an expression. Its statement blocks use the same explicit
 `select` operation, while conventional ternaries remain available for small

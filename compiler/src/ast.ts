@@ -150,6 +150,7 @@ export type Statement =
   | AssignmentStatement
   | ReturnStatement
   | ThrowStatement
+  | YieldStatement
   | SelectStatement
   | ExpressionStatement
   | BlockStatement
@@ -201,6 +202,12 @@ export type ReturnStatement = {
 
 export type ThrowStatement = {
   readonly kind: "throw";
+  readonly expression: Expression;
+  readonly location: SourceLocation;
+};
+
+export type YieldStatement = {
+  readonly kind: "yield";
   readonly expression: Expression;
   readonly location: SourceLocation;
 };

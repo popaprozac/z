@@ -481,7 +481,7 @@ function canonicalStatementText(statement: Statement, tokens: readonly Token[]):
       : "";
     return `return@${location}(${expression})`;
   }
-  if (statement.kind === "throw" || statement.kind === "select") {
+  if (statement.kind === "throw" || statement.kind === "yield" || statement.kind === "select") {
     const expressionStart = lexicalFollowingToken(tokens, statement.location.offset);
     const expression = `=${canonicalLocation(expressionStart.location)}:${canonicalExpressionTokens(
       tokens,

@@ -100,6 +100,7 @@ text value.
 | Hash composition | `Hasher` | Compiler-supplied mutable state passed to `Hashable.hash`, imported from `std/hash` |
 | Hash contract | `Hashable` | Nominal equality and hashing trait for readonly collection keys, imported from `std/hash` |
 | Iteration contract | `Iterator<T>` | Nominal mutable-cursor trait imported from `std/iteration` |
+| Generator sequence | `Generator<T>` | Cold move-only compiler frame imported from `std/iteration`; `.next()` returns `Option<T>` |
 | Function value | `(in value: T) => U throws E` | Closure/callback signature; parameter capabilities are part of the type |
 | Read-only projection | `view T` | Inferred non-storable borrow tied to owner storage, not a general reference type |
 | Native types | Imported nominal names and `T | null` | ABI-exact C, Objective-C, C++, or Swift-generated types; nullability is limited to nullable native references/handles |
@@ -625,6 +626,43 @@ Built-in arrays, slices, maps, and sets keep the borrowed collection semantics
 described above and reject `of inout`. Consuming iteration, mutable element
 access, cleanup-bearing object-pattern extraction, move-only foreign iterator
 elements, and async iteration are not in this tier.
+
+Synchronous generators provide compiler-managed iterator state:
+
+```zs
+import { Generator } from "std/iteration";
+
+function noteIdentifiers(count: i32): Generator<i32> {
+  let identifier = 1;
+  while (identifier <= count) {
+    yield identifier;
+    identifier = identifier + 1;
+  }
+}
+
+const identifiers = noteIdentifiers(3);
+for (const identifier of identifiers) {
+  console.log(identifier);
+}
+```
+
+The function call returns a cold, move-only `Generator<i32>`; its body starts
+when `.next()` or `for...of` first advances it. `.next()` returns `Option<T>`,
+and `Generator<T>` satisfies `Iterator<T>` when passed to generic iterator
+algorithms.
+Stored generators deliberately hide cursor mutation, so a `const` handle uses
+plain `of identifiers` rather than the `inout` required by a user-defined value
+iterator. Exhaustion, `return;`, and early handle destruction clean every live
+suspended local exactly once.
+
+`yield` is what selects suspended-frame lowering. A function returning
+`Generator<T>` without `yield` remains an ordinary function and may return or
+forward an existing generator value.
+
+The initial lowering supports ordinary statements, `if`, `while`, multiple
+`yield` points, owned parameters, and owned yielded values. Generator methods,
+borrowed parameters or yielded views, suspending through `for...of` or `match`,
+`throws`, async generators, and bidirectional sent values are deferred.
 
 `Map` and `Set` use open-addressed hashed buckets for amortized O(1) lookup and
 membership. Owned entries remain in compact storage, while rehashing moves only

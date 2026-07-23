@@ -122,6 +122,7 @@ function collectClosureResults(
           if (statement.expression) visitExpression(statement.expression);
           break;
         case "throw":
+        case "yield":
         case "select":
         case "expressionStatement":
           visitExpression(statement.expression);

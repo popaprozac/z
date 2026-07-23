@@ -27,6 +27,7 @@ import {
 import { genericTypeName, parseGenericType } from "./generic-types.ts";
 import { functionTypeName, parseFunctionType } from "./function-types.ts";
 import { isNullableObjCTypeName, publicObjCTypeName } from "./objc-types.ts";
+import { iteratorTraitDeclaration } from "./iterator-types.ts";
 import { mapEntryTypeName, parseMapType } from "./map-types.ts";
 import { parseSetType } from "./set-types.ts";
 import { parseWeakType, weakResultTypeName, weakTypeName } from "./weak-types.ts";
@@ -50,6 +51,12 @@ export function inferGenericCalls(
   const structs = new Map(program.structs.map((item) => [item.name, item]));
   const enums = new Map(program.enums.map((item) => [item.name, item]));
   const traits = new Map(program.traits.map((item) => [item.name, item]));
+  for (const declaration of program.imports.filter((item) => item.header === "std/iteration")) {
+    for (const binding of declaration.bindings ?? []) {
+      if (binding.importedName !== "Iterator") continue;
+      traits.set(binding.localName, iteratorTraitDeclaration(binding.localName, binding.location));
+    }
+  }
   const methodSpecializations = new Map<string, Map<string, string>>();
   let activeConstraints = new Map<string, string[]>();
   let activeTypeParameters = new Set<string>();
@@ -1389,6 +1396,8 @@ export function inferGenericCalls(
           : statement;
       case "select":
         return { ...statement, expression: rewriteExpression(statement.expression, environment, selectedType).expression };
+      case "yield":
+        return { ...statement, expression: rewriteExpression(statement.expression, environment).expression };
       case "throw":
       case "expressionStatement":
         return { ...statement, expression: rewriteExpression(statement.expression, environment, selectedType).expression };

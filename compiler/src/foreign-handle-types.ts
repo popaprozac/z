@@ -223,6 +223,7 @@ export function transformProgramTypeNames(
       case "return":
         return { ...value, expression: value.expression ? expression(value.expression) : null } as T;
       case "throw":
+      case "yield":
       case "select":
       case "expressionStatement":
         return { ...value, expression: expression(value.expression) } as T;

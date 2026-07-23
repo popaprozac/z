@@ -77,6 +77,7 @@ export enum StatementKind {
   assignmentStatement,
   returnStatement,
   throwStatement,
+  yieldStatement,
   selectStatement,
   expressionStatement,
   blockStatement,
@@ -2541,10 +2542,16 @@ function parseProjectedStatement(
     }));
     return Option.some(index);
   }
-  if (kind == TokenKind.throwKeyword || kind == TokenKind.selectKeyword) {
+  if (
+    kind == TokenKind.throwKeyword
+    || kind == TokenKind.yieldKeyword
+    || kind == TokenKind.selectKeyword
+  ) {
     const start = snapshot(tokens[current]);
     current = current + 1;
-    const description = kind == TokenKind.throwKeyword ? "a thrown value" : "a selected value";
+    const description = kind == TokenKind.throwKeyword
+      ? "a thrown value"
+      : kind == TokenKind.yieldKeyword ? "a yielded value" : "a selected value";
     const expression = try scanExpression(
       tokens,
       inout current,
@@ -2555,7 +2562,9 @@ function parseProjectedStatement(
     nodes.push(Statement({
       kind: kind == TokenKind.throwKeyword
         ? StatementKind.throwStatement
-        : StatementKind.selectStatement,
+        : kind == TokenKind.yieldKeyword
+          ? StatementKind.yieldStatement
+          : StatementKind.selectStatement,
       mutableBinding: false,
       name: "",
       nameOffset: 0,
@@ -3281,6 +3290,7 @@ function renderStatementText(in arena: StatementArena, in statement: Statement):
   else if (statement.kind == StatementKind.assignmentStatement) output.append("assignment@");
   else if (statement.kind == StatementKind.returnStatement) output.append("return@");
   else if (statement.kind == StatementKind.throwStatement) output.append("throw@");
+  else if (statement.kind == StatementKind.yieldStatement) output.append("yield@");
   else if (statement.kind == StatementKind.selectStatement) output.append("select@");
   else if (statement.kind == StatementKind.expressionStatement) output.append("expression@");
   else if (statement.kind == StatementKind.ifStatement) output.append("if@");

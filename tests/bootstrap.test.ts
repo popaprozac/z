@@ -10691,16 +10691,140 @@ test("requires select to target a value-producing block", () => {
   );
 });
 
-test("reserves yield for generators", () => {
-  const source = `
+test("runs cold synchronous generators with deterministic suspended-frame cleanup", () => {
+  const example = resolve(projectRoot, "examples/language/control-flow/generators.zs");
+  const source = readFileSync(example, "utf8");
+  const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, "generator created\ngenerator started\nnote 1\nnote 2\nnote 3\n");
+
+  const generated = compileToC(source, example);
+  assert.match(generated, /Z_GeneratorFrame_noteIdentifiers/);
+  assert.match(generated, /switch \(frame->state\)/);
+  assert.match(generated, /case 1: ;/);
+  assert.match(generated, /_Generator_.*_next\(&\(identifiers\)\)/);
+  assert.doesNotMatch(generated, /_z_iterator_0 = identifiers/);
+
+  const cleanupDirectory = mkdtempSync("/tmp/z-generator-cleanup-");
+  const cleanupFile = resolve(cleanupDirectory, "cleanup.zs");
+  const cleanupSource = `
+    import console from "std/console";
+    import { Generator } from "std/iteration";
+    struct CursorLease {
+      id: i32;
+      deinit { console.log(\`released \${this.id}\`); }
+    }
+    function values(): Generator<i32> {
+      const lease = CursorLease({ id: 42 });
+      yield 20;
+      yield 22;
+    }
+    function unstarted(lease: CursorLease): Generator<i32> {
+      yield lease.id;
+    }
     function main(): i32 {
-      yield 42;
-      return 0;
+      {
+        const abandoned = unstarted(CursorLease({ id: 7 }));
+      }
+      const sequence = values();
+      const first = sequence.next();
+      for (const value of sequence) {
+        console.log(value);
+        break;
+      }
+      return match (first) {
+        some(value) => value - 20;
+        none => 1;
+      };
     }
   `;
+  writeFileSync(cleanupFile, cleanupSource);
+  const cleanupResult = spawnSync(process.execPath, [cli, "run", cleanupFile], { encoding: "utf8" });
+  assert.equal(cleanupResult.status, 0, cleanupResult.stderr);
+  assert.equal(cleanupResult.stdout, "released 7\n22\nreleased 42\n");
+
+  const exhaustionFile = resolve(cleanupDirectory, "exhaustion.zs");
+  const exhaustionSource = cleanupSource.replace("        break;\n", "");
+  writeFileSync(exhaustionFile, exhaustionSource);
+  const exhaustionResult = spawnSync(process.execPath, [cli, "run", exhaustionFile], { encoding: "utf8" });
+  assert.equal(exhaustionResult.status, 0, exhaustionResult.stderr);
+  assert.equal(exhaustionResult.stdout, "released 7\n22\nreleased 42\n");
+
+  const native = spawnSync(process.execPath, [cli, "check", example, "--native-frontend"], { encoding: "utf8" });
+  assert.equal(native.status, 0, native.stderr);
+  assert.match(native.stdout, /native frontend hybrid/);
+
+  const generatorOffset = source.indexOf("Generator<i32>");
+  assert.match(hover(source, example, generatorOffset + 1)?.contents.value ?? "", /Generator<T>.*cold, move-only/s);
+  const yieldOffset = source.indexOf("yield identifier");
+  assert.match(hover(source, example, yieldOffset + 1)?.contents.value ?? "", /suspends the current Generator<T>/);
+  const identifiersOffset = source.indexOf("identifiers =");
+  assert.match(hover(source, example, identifiersOffset + 1)?.contents.value ?? "", /identifiers: Generator<i32>/);
+
+  const importSource = `import { Gen } from "std/iteration"; function main(): i32 { return 0; }`;
+  const importOffset = importSource.indexOf("Gen") + 3;
+  assert.equal(
+    completions(importSource, "generator-import-completion.zs", importOffset).find((item) => item.label === "Generator")?.kind,
+    22,
+  );
+  const memberSource = cleanupSource.replace("sequence.next()", "sequence.ne");
+  const memberOffset = memberSource.indexOf("sequence.ne") + "sequence.ne".length;
+  assert.equal(
+    completions(memberSource, cleanupFile, memberOffset).find((item) => item.label === "next")?.detail,
+    "next(): Option<i32>  // advances the suspended frame",
+  );
+  const nextOffset = cleanupSource.indexOf("next()");
+  assert.match(hover(cleanupSource, cleanupFile, nextOffset + 1)?.contents.value ?? "", /next\(\): Option<i32>/);
+
+  const forwarding = compileToC(`
+    import { Generator } from "std/iteration";
+    function values(): Generator<i32> { yield 42; }
+    function forwarded(): Generator<i32> { return values(); }
+    function main(): i32 {
+      for (const value of forwarded()) { return value - 42; }
+      return 1;
+    }
+  `, "generator-forwarding.zs");
+  assert.match(forwarding, /Z_GeneratorFrame_values/);
+  assert.doesNotMatch(forwarding, /Z_GeneratorFrame_forwarded/);
+
+  const genericIteratorFile = resolve(cleanupDirectory, "generic-iterator.zs");
+  writeFileSync(genericIteratorFile, `
+    import { Generator, Iterator } from "std/iteration";
+    function values(): Generator<i32> { yield 42; }
+    function first<I: Iterator<i32>>(inout iterator: I): i32 {
+      return match (iterator.next()) {
+        some(value) => value;
+        none => 0;
+      };
+    }
+    function main(): i32 {
+      let sequence = values();
+      return first(inout sequence) - 42;
+    }
+  `);
+  const genericIteratorResult = spawnSync(process.execPath, [cli, "run", genericIteratorFile], { encoding: "utf8" });
+  assert.equal(genericIteratorResult.status, 0, genericIteratorResult.stderr);
+
   assert.throws(
-    () => compileToC(source, "future-generator.zs"),
-    /future-generator\.zs:3:7: error: yield is reserved for generators, which are not implemented yet/,
+    () => compileToC(`function main(): i32 { yield 42; return 0; }`, "yield-outside-generator.zs"),
+    /yield requires a function returning Generator<T>/,
+  );
+  assert.throws(
+    () => compileToC(`
+      import { Generator } from "std/iteration";
+      function values(): Generator<i32> { yield 1; return 42; }
+      function main(): i32 { return 0; }
+    `, "generator-return-value.zs"),
+    /a generator finishes with `return;` and cannot return a value/,
+  );
+  assert.throws(
+    () => compileToC(`
+      import { Generator } from "std/iteration";
+      function values(in source: i32): Generator<i32> { yield source; }
+      function main(): i32 { return 0; }
+    `, "generator-borrowed-input.zs"),
+    /a cold generator cannot retain borrowed parameter storage/,
   );
 });
 
