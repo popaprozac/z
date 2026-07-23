@@ -99,6 +99,7 @@ text value.
 | Region owner | `Arena` | Move-only region allocator imported from `std/memory` |
 | Hash composition | `Hasher` | Compiler-supplied mutable state passed to `Hashable.hash`, imported from `std/hash` |
 | Hash contract | `Hashable` | Nominal equality and hashing trait for readonly collection keys, imported from `std/hash` |
+| Iteration contract | `Iterator<T>` | Nominal mutable-cursor trait imported from `std/iteration` |
 | Function value | `(in value: T) => U throws E` | Closure/callback signature; parameter capabilities are part of the type |
 | Read-only projection | `view T` | Inferred non-storable borrow tied to owner storage, not a general reference type |
 | Native types | Imported nominal names and `T | null` | ABI-exact C, Objective-C, C++, or Swift-generated types; nullability is limited to nullable native references/handles |
@@ -557,6 +558,45 @@ Neither whole elements nor borrowed fields can be moved out, and structural
 collection mutation is rejected until the loop ends; use `copy` explicitly when
 an independently owned copy is supported. Iteration order is unspecified.
 
+User-defined synchronous iterators implement `Iterator<T>`:
+
+```z
+import { Iterator } from "std/iteration";
+
+struct Countdown implements Iterator<i32> {
+  current: i32;
+
+  function next(inout this): Option<i32> {
+    if (this.current == 0) return Option.none;
+    const value = this.current;
+    this.current = this.current - 1;
+    return Option.some(value);
+  }
+}
+
+let countdown = Countdown({ current: 3 });
+for (const value of inout countdown) {
+  console.log(value);
+}
+
+for (const value of Countdown({ current: 2 })) {
+  console.log(value);
+}
+```
+
+The explicit `inout` is required for a stored iterator because `next` mutates
+its traversal state. A stored value iterator must therefore use `let`; a class
+iterator may keep a `const` identity while lending its mutable receiver.
+Temporary iterators already have unique compiler-owned storage, so their loop
+syntax omits `inout`. Each `some` payload becomes an owned immutable loop
+binding and receives normal end-of-iteration cleanup. The stored iterator
+survives the loop.
+
+Built-in arrays, slices, maps, and sets keep the borrowed collection semantics
+described above and reject `of inout`. Consuming iteration, mutable element
+access, cleanup-bearing object-pattern extraction, move-only foreign iterator
+elements, and async iteration are not in this tier.
+
 `Map` and `Set` use open-addressed hashed buckets for amortized O(1) lookup and
 membership. Owned entries remain in compact storage, while rehashing moves only
 bucket indices; it does not copy or duplicate user-owned values. Built-in
@@ -648,6 +688,26 @@ Multiple nominal constraints use intersections:
 ```z
 function describe<T: Measured & Named>(in value: T): String { ... }
 ```
+
+Traits may also be generic. `trait Source<T>` describes a family of nominal
+contracts, and `implements Source<i32>` is checked against that concrete
+specialization. A constraint may name the same specialization:
+
+```z
+trait Source<T> {
+  function next(inout this): Option<T>;
+}
+
+function inspect<T: Source<i32>>(inout source: T): i32 {
+  return match (source.next()) {
+    some(value) => value;
+    none => 0;
+  };
+}
+```
+
+Generic traits remain statically dispatched; Z does not yet provide
+trait-typed storage or existential/dynamic dispatch.
 
 Methods may introduce type parameters independently of their owner. Arguments
 are inferred at the call site or supplied explicitly:

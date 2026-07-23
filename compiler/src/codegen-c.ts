@@ -3397,6 +3397,10 @@ function generateObjectDestructure(
 function generateFor(statement: Extract<Statement, { kind: "for" }>, context: GenerationContext): string {
   const index = context.loopCounter.value++;
   const iterableType = inferExpressionType(statement.iterable, context);
+  const iteratorElement = context.semanticInfo.iteratorElementTypes.get(iterableType);
+  if (iteratorElement) {
+    return generateIteratorFor(statement, iterableType, iteratorElement, index, context);
+  }
   const map = parseMapType(iterableType);
   const set = parseSetType(iterableType);
   const collection = parseFixedArrayType(iterableType)
@@ -3465,6 +3469,123 @@ function generateFor(statement: Extract<Statement, { kind: "for" }>, context: Ge
   if (frame.usedContinue) body = body.replace(/\n}$/, `\n  ${frame.continueLabel}: ;\n}`);
   const breakLabel = frame.usedBreak ? `\n${frame.breakLabel}: ;` : "";
   return `for (uintptr_t _z_for_index_${index} = 0; _z_for_index_${index} < ${length}; _z_for_index_${index} += 1) ${body}${breakLabel}`;
+}
+
+function generateIteratorFor(
+  statement: Extract<Statement, { kind: "for" }>,
+  iteratorType: string,
+  elementType: string,
+  index: number,
+  context: GenerationContext,
+): string {
+  const iteratorDeclaration = context.structs.get(iteratorType)!;
+  const temporaryIterator = statement.mode === "auto";
+  const iteratorName = `_z_iterator_${index}`;
+  const iteratorStorage = temporaryIterator
+    ? iteratorName
+    : generateAssignmentTarget(statement.iterable, context);
+  const iteratorArgument = iteratorDeclaration.kind === "class"
+    ? iteratorStorage
+    : `&(${iteratorStorage})`;
+  const prefix: string[] = [];
+  let iteratorContext = context;
+  let iteratorCleanup = "";
+  if (temporaryIterator) {
+    const declaration = generateLocalDeclaration(
+      iteratorType,
+      iteratorName,
+      true,
+      context.structs,
+      context.enums,
+      context.semanticInfo.foreignNamedTypes,
+    );
+    prefix.push(`${declaration} = ${generateExpression(statement.iterable, context)};`);
+    if (hasCleanupType(iteratorType, context.structs, context.enums, context.semanticInfo.foreignTypes)) {
+      const liveFlag = nextLiveFlag(iteratorName, context.liveFlagCounter);
+      prefix.push(`bool ${liveFlag} = true;`);
+      iteratorContext = {
+        ...context,
+        liveFlags: new Map(context.liveFlags).set(iteratorName, liveFlag),
+        cleanupScopes: [
+          ...context.cleanupScopes,
+          [{ name: iteratorName, type: iteratorType, liveFlag, value: iteratorName }],
+        ],
+      };
+      iteratorCleanup = generateValueCleanup(iteratorName, iteratorType, liveFlag, iteratorContext);
+    }
+  }
+
+  const optionType = optionTypeName(elementType);
+  const optionDeclaration = context.enums.get(optionType)!;
+  const niche = nicheOptionPayload(optionDeclaration, context.semanticInfo.foreignNamedTypes);
+  const nextName = `_z_iterator_next_${index}`;
+  const nextType = mapType(optionType, context.structs, context.enums, context.semanticInfo.foreignNamedTypes);
+  const nextCall = `${methodName(iteratorType, "next")}(${iteratorArgument})`;
+  const exhausted = niche
+    ? `${nextName} == ${nicheOptionNull(niche)}`
+    : `${nextName}.tag == ${variantTag(optionType, "none")}`;
+  const payload = niche ? nextName : `${nextName}.data.some`;
+
+  const loopTypes = new Map(iteratorContext.localTypes);
+  const loopModes = new Map(iteratorContext.parameterModes);
+  const bindingScope: CleanupLocal[] = [];
+  const bindingContext: GenerationContext = {
+    ...iteratorContext,
+    localTypes: loopTypes,
+    parameterModes: loopModes,
+    liveFlags: new Map(iteratorContext.liveFlags),
+    cleanupScopes: [...iteratorContext.cleanupScopes, bindingScope],
+  };
+  const bindingDeclarations: string[] = [];
+  if (statement.binding) {
+    loopTypes.set(statement.binding, elementType);
+    bindingDeclarations.push(
+      `${generateLocalDeclaration(elementType, statement.binding, false, context.structs, context.enums, context.semanticInfo.foreignNamedTypes)} = ${payload};`,
+      `(void)${cBindingName(statement.binding)};`,
+    );
+    if (hasCleanupType(elementType, context.structs, context.enums, context.semanticInfo.foreignTypes)) {
+      const liveFlag = ensureLiveFlag(statement.binding, bindingContext);
+      bindingDeclarations.push(`bool ${liveFlag} = true;`);
+      bindingScope.push({ name: statement.binding, type: elementType, liveFlag });
+    }
+  } else {
+    const elementOwner = context.structs.get(elementType)!;
+    const hidden = `_z_iterator_value_${index}`;
+    bindingDeclarations.push(
+      `${generateLocalDeclaration(elementType, hidden, false, context.structs, context.enums, context.semanticInfo.foreignNamedTypes)} = ${payload};`,
+    );
+    for (const binding of statement.objectBindings ?? []) {
+      const field = elementOwner.fields.find((candidate) => candidate.name === binding.fieldName)!;
+      loopTypes.set(binding.bindingName, field.type.name);
+      bindingDeclarations.push(
+        `${generateLocalDeclaration(field.type.name, binding.bindingName, false, context.structs, context.enums, context.semanticInfo.foreignNamedTypes)} = ${hidden}.${field.name};`,
+        `(void)${cBindingName(binding.bindingName)};`,
+      );
+    }
+  }
+  if (!niche) bindingDeclarations.push(`${nextName}.tag = ${variantTag(optionType, "none")};`);
+
+  const frame: LoopGenerationFrame = {
+    breakLabel: `_z_loop_break_${index}`,
+    continueLabel: `_z_loop_continue_${index}`,
+    cleanupDepth: iteratorContext.cleanupScopes.length,
+    usedBreak: false,
+    usedContinue: false,
+  };
+  context.loopStack.push(frame);
+  let body: string;
+  try {
+    body = generateBlock(statement.body.statements, bindingContext);
+  } finally {
+    context.loopStack.pop();
+  }
+  const normalBindingCleanup = generateCleanup([bindingScope], bindingContext);
+  body = body.replace("{\n", `{\n${bindingDeclarations.map((line) => `  ${line}`).join("\n")}\n`);
+  if (normalBindingCleanup) body = body.replace(/\n}$/, `\n${indent(normalBindingCleanup, 2)}\n}`);
+  if (frame.usedContinue) body = body.replace(/\n}$/, `\n  ${frame.continueLabel}: ;\n}`);
+  const breakLabel = frame.usedBreak ? `\n${frame.breakLabel}: ;` : "";
+  const loop = `while (true) {\n  ${nextType} ${nextName} = ${nextCall};\n  if (${exhausted}) break;\n${indent(body, 2)}\n}${breakLabel}`;
+  return [...prefix, loop, iteratorCleanup].filter(Boolean).join("\n");
 }
 
 function generateLoopTransfer(kind: "break" | "continue", context: GenerationContext): string {

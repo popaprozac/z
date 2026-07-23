@@ -517,6 +517,17 @@ export function hover(source: string, fileName: string, offset: number): Hover |
     const type = context.semanticInfo.expressionTypes.get(word.start)!;
     return markdownHover(explicitMoveHover(type, context), source, word.start, word.end);
   }
+  if (
+    word.text === "inout"
+    && /\bof\s+$/.test(source.slice(Math.max(0, word.start - 12), word.start))
+  ) {
+    return markdownHover(
+      "inout iterator  // Iterator.next mutates traversal state; the iterator remains usable after the loop",
+      source,
+      word.start,
+      word.end,
+    );
+  }
 
   const declaredField = context.sourceProgram.structs
     .flatMap((declaration) => declaration.fields)
@@ -628,6 +639,9 @@ export function hover(source: string, fileName: string, offset: number): Hover |
   }
   if (context.semanticInfo.standardTypeBindings.get(word.text) === "Hasher") {
     return markdownHover("standard Hasher  // mutable hash-composition state", source, word.start, word.end);
+  }
+  if (context.semanticInfo.standardTypeBindings.get(word.text) === "Iterator") {
+    return markdownHover("trait Iterator<T>  // next(inout this): Option<T>", source, word.start, word.end);
   }
 
   const chainedSelector = objectiveCSelectorAt(context, word.start);
@@ -1080,6 +1094,13 @@ function selectiveImportCandidates(specifier: string, fileName: string): Complet
       },
     ];
   }
+  if (specifier === "std/iteration") {
+    return [{
+      label: "Iterator",
+      kind: completionKinds.interface,
+      detail: "trait Iterator<T>  // stateful next(inout this): Option<T>",
+    }];
+  }
   if (specifier === "std/thread") {
     return [{
       label: "thread",
@@ -1138,7 +1159,7 @@ function objectFieldCompletions(
       );
       if (prefix) used.delete(prefix);
       let fields: ObjectFieldShape[] | null = null;
-      const iteration = tail.match(/^\}\s+of\s+([A-Za-z_][A-Za-z0-9_]*)/);
+      const iteration = tail.match(/^\}\s+of\s+(?:inout\s+)?([A-Za-z_][A-Za-z0-9_]*)/);
       if (iteration) {
         const iterableType = declaredBindingType(source, iteration[1], offset);
         const compactIterableType = iterableType?.replace(/\s+/g, "") ?? null;
@@ -1155,10 +1176,12 @@ function objectFieldCompletions(
             { name: "value", type: map.valueType, visibility: "public" },
           ];
         } else if (compactIterableType) {
+          const analysis = safeAnalysis(source, fileName);
           const element = parseFixedArrayType(compactIterableType)?.elementType
             ?? parseSliceType(compactIterableType)?.elementType
             ?? parseDynamicArrayType(compactIterableType)?.elementType
             ?? parseSetType(compactIterableType)?.elementType
+            ?? analysis?.semanticInfo.iteratorElementTypes.get(compactIterableType)
             ?? (sourceGeneric && ["Array", "Slice", "Set"].includes(sourceGeneric.base)
               ? sourceGeneric.arguments[0]
               : /^(.+)\[[0-9]+\]$/.exec(compactIterableType)?.[1]);
@@ -1445,9 +1468,9 @@ function symbolCompletions(source: string, fileName: string, offset: number): Co
   try {
     const parsed = parse(lex(source, fileName), fileName);
     for (const declaration of parsed.imports) {
-      if (declaration.header !== "std/text" && declaration.header !== "std/memory" && declaration.header !== "std/collections" && declaration.header !== "std/hash") continue;
+      if (declaration.header !== "std/text" && declaration.header !== "std/memory" && declaration.header !== "std/collections" && declaration.header !== "std/hash" && declaration.header !== "std/iteration") continue;
       for (const binding of declaration.bindings ?? []) {
-        if (binding.importedName !== "TextBuffer" && binding.importedName !== "Arena" && binding.importedName !== "Map" && binding.importedName !== "Set" && binding.importedName !== "Hashable" && binding.importedName !== "Hasher") continue;
+        if (binding.importedName !== "TextBuffer" && binding.importedName !== "Arena" && binding.importedName !== "Map" && binding.importedName !== "Set" && binding.importedName !== "Hashable" && binding.importedName !== "Hasher" && binding.importedName !== "Iterator") continue;
         const detail = binding.importedName === "TextBuffer"
           ? "move-only UTF-8 construction storage"
           : binding.importedName === "Arena"
@@ -1458,12 +1481,14 @@ function symbolCompletions(source: string, fileName: string, offset: number): Co
                 ? "owned unique-value storage"
                 : binding.importedName === "Hashable"
                   ? "nominal equality and hash contract"
-                  : "mutable hash-composition state";
+                  : binding.importedName === "Iterator"
+                    ? "stateful iteration contract"
+                    : "mutable hash-composition state";
         builtIns.push({
           label: binding.localName,
-          kind: binding.importedName === "Hashable" ? completionKinds.interface : completionKinds.struct,
+          kind: binding.importedName === "Hashable" || binding.importedName === "Iterator" ? completionKinds.interface : completionKinds.struct,
           detail: binding.localName === binding.importedName
-            ? `${binding.importedName}${binding.importedName === "Hashable" ? "" : "()"}  // ${detail}`
+            ? `${binding.importedName}${binding.importedName === "Hashable" || binding.importedName === "Iterator" ? "" : "()"}  // ${detail}`
             : `${binding.importedName}  // imported as ${binding.localName}`,
           sortText: `0-${binding.localName}`,
         });
@@ -1521,8 +1546,16 @@ function symbolCompletions(source: string, fileName: string, offset: number): Co
     items.push({ label: match[2], kind, detail: `${match[1]} ${match[2]}<${match[3].trim()}>` });
   }
   for (const declaration of context.program.traits) {
-    if (declaration.name.startsWith("__z_module_")) continue;
-    items.push({ label: declaration.name, kind: completionKinds.interface, detail: `trait ${declaration.name}` });
+    if (declaration.name.startsWith("__z_module_") || declaration.name.startsWith("__z_mono_")) continue;
+    items.push({
+      label: declaration.name,
+      kind: completionKinds.interface,
+      detail: `trait ${declaration.name}${formatTypeParameters(
+        declaration.typeParameters ?? [],
+        declaration.typeParameterConstraints ?? [],
+        context.typeDisplayNames,
+      )}`,
+    });
   }
   for (const declaration of context.program.enums) {
     if (declaration.name.startsWith("__z_module_") || declaration.name.startsWith("__z_Result_") || declaration.name.startsWith("__z_Option_")) continue;
@@ -1583,7 +1616,7 @@ function symbolCompletions(source: string, fileName: string, offset: number): Co
   for (const [name, standardType] of context.semanticInfo.standardTypeBindings) {
     items.push({
       label: name,
-      kind: standardType === "Hashable" ? completionKinds.interface : completionKinds.struct,
+      kind: standardType === "Hashable" || standardType === "Iterator" ? completionKinds.interface : completionKinds.struct,
       detail: standardType === "TextBuffer"
         ? `${standardType}()  // move-only UTF-8 construction storage`
         : standardType === "Arena"
@@ -1594,7 +1627,9 @@ function symbolCompletions(source: string, fileName: string, offset: number): Co
               ? `${standardType}<T>()  // owned unique-value storage`
               : standardType === "Hashable"
                 ? "trait Hashable  // equals and hash contract"
-                : "Hasher  // mutable hash-composition state",
+                : standardType === "Iterator"
+                  ? "trait Iterator<T>  // next(inout this): Option<T>"
+                  : "Hasher  // mutable hash-composition state",
       sortText: `0-${name}`,
     });
   }
@@ -2988,6 +3023,13 @@ function sourceExportDetail(
       typeDisplayNames,
     )}`;
   }
+  if (declaration.kind === "trait") {
+    return `trait ${displayName}${formatTypeParameters(
+      declaration.typeParameters ?? [],
+      declaration.typeParameterConstraints ?? [],
+      typeDisplayNames,
+    )}`;
+  }
   return `${declaration.kind} ${displayName}`;
 }
 
@@ -3841,11 +3883,22 @@ function declarationHover(
       return markdownHover(`${struct.kind} ${struct.name}${parameters}`, source, start, end);
     }
     const trait = program.traits.find((item) => item.name === name);
-    if (trait) return markdownHover(`trait ${trait.name}`, source, start, end);
+    if (trait) {
+      return markdownHover(
+        `trait ${trait.name}${formatTypeParameters(
+          trait.typeParameters ?? [],
+          trait.typeParameterConstraints ?? [],
+          typeDisplayNames,
+        )}`,
+        source,
+        start,
+        end,
+      );
+    }
     const enumeration = program.enums.find((item) => item.name === name);
     if (enumeration) return markdownHover(`enum ${enumeration.name}`, source, start, end);
   }
-  const generic = new RegExp(`\\b(function|struct|class)\\s+${name}\\s*<([^>]+)>`).exec(source);
+  const generic = new RegExp(`\\b(function|struct|class|trait)\\s+${name}\\s*<([^>]+)>`).exec(source);
   if (generic) return markdownHover(`${generic[1]} ${name}<${generic[2].trim()}>`, source, start, end);
   return null;
 }

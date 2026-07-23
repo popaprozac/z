@@ -146,15 +146,20 @@ function stage0ModuleSymbols(
       customConstructor: Boolean(declaration.constructor),
       constructorSignature: stage0ConstructorSignature(declaration),
     } : declaration.kind === "trait" ? {
-      typeParameters: [],
-      typeParameterConstraints: [],
+      typeParameters: declaration.typeParameters ?? [],
+      typeParameterConstraints: (declaration.typeParameterConstraints ?? []).flatMap((constraint) => (
+        constraint.traits.map((trait) => ({
+          parameter: constraint.parameter,
+          traitName: canonicalTypeName(trait.name),
+        }))
+      )),
       implementedTraits: [],
       fields: [],
       methods: declaration.methods.map((method) => ({
         name: method.name,
         staticMethod: false,
         visibility: "public",
-        receiverMode: "in",
+        receiverMode: method.receiverMode ?? "in",
         signature: stage0FunctionSignature(method),
       })),
       variants: [],

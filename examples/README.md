@@ -25,7 +25,7 @@ inspect the generated C-family source. The broader guided index lives in
 
 ### Control flow and errors
 
-- [`control-flow.zs`](language/control-flow/control-flow.zs), [`conditional-expressions.zs`](language/control-flow/conditional-expressions.zs), [`loops.zs`](language/control-flow/loops.zs), and [`iteration.zs`](language/control-flow/iteration.zs)
+- [`control-flow.zs`](language/control-flow/control-flow.zs), [`conditional-expressions.zs`](language/control-flow/conditional-expressions.zs), [`loops.zs`](language/control-flow/loops.zs), [`iteration.zs`](language/control-flow/iteration.zs), and [`custom-iterator.zs`](language/control-flow/custom-iterator.zs)
 - [`match.zs`](language/control-flow/match.zs), [`match-expression.zs`](language/control-flow/match-expression.zs), and [`enum-patterns.zs`](language/control-flow/enum-patterns.zs)
 - [`result.zs`](language/control-flow/result.zs) and [`try.zs`](language/control-flow/try.zs)
 

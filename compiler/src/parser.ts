@@ -228,11 +228,11 @@ export function parse(tokens: Token[], fileName: string): Program {
       if (match("colon")) {
         const traits = [];
         do {
-          const trait = expect("identifier", "a trait constraint");
-          if (traits.some((item) => item.name === trait.text)) {
-            throw new DiagnosticError(fileName, trait.location, `duplicate constraint ${JSON.stringify(trait.text)} for ${JSON.stringify(parameter.text)}`);
+          const trait = parseType();
+          if (traits.some((item) => item.name === trait.name)) {
+            throw new DiagnosticError(fileName, trait.location, `duplicate constraint ${JSON.stringify(trait.name)} for ${JSON.stringify(parameter.text)}`);
           }
-          traits.push({ name: trait.text, location: trait.location });
+          traits.push(trait);
         } while (match("bitAnd"));
         constraints.push({ parameter: parameter.text, traits, location: parameter.location });
       }
@@ -626,11 +626,13 @@ export function parse(tokens: Token[], fileName: string): Program {
       const objectBindings = match("leftBrace") ? parseObjectBindings() : null;
       const binding = objectBindings ? null : expect("identifier", "an iteration binding");
       expect("of", "`of`");
+      const mode = match("inout") ? "inout" : "auto";
       const iterable = parseExpression();
       expect("rightParen", "`)`");
       const body = parseRequiredBlock("a `for...of` body");
       return {
         kind: "for",
+        mode,
         binding: binding?.text ?? null,
         bindingLocation: binding?.location ?? null,
         objectBindings,
@@ -874,6 +876,7 @@ export function parse(tokens: Token[], fileName: string): Program {
   const parseTrait = (): TraitDeclaration => {
     const start = expect("trait", "`trait`").location;
     const name = expect("identifier", "a trait name").text;
+    const generic = parseTypeParameters();
     expect("leftBrace", "`{`");
     const methods: FunctionDeclaration[] = [];
     while (!at("rightBrace") && !at("eof")) {
@@ -881,7 +884,14 @@ export function parse(tokens: Token[], fileName: string): Program {
       methods.push(parseFunction(true, isAsync));
     }
     expect("rightBrace", "`}`");
-    return { kind: "trait", name, methods, location: start };
+    return {
+      kind: "trait",
+      name,
+      typeParameters: generic.names,
+      typeParameterConstraints: generic.constraints,
+      methods,
+      location: start,
+    };
   };
 
   const parseEnum = (): EnumDeclaration => {

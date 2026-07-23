@@ -436,10 +436,11 @@ parameter capability, return type, and error type. `struct T implements X` and
 `class T implements X` are checked explicitly and nominally. Generic parameters
 may require this conformance with `T: X` or multiple constraints such as
 `T: X & Y`; every concrete specialization is checked before monomorphization.
-This remains static conformance only: concrete values call their concrete
-methods, while trait-typed storage, existential representation, generic traits,
-and dynamic dispatch remain later design work. Z-defined classes intentionally
-do not have inheritance.
+Traits may introduce type parameters, such as `Iterator<T>`, and concrete
+conformance is checked against the specialized contract. This remains static
+conformance only: concrete values call their concrete methods, while trait-typed
+storage, existential representation, and dynamic dispatch remain later design
+work. Z-defined classes intentionally do not have inheritance.
 
 The keyword remains `trait`, not TypeScript's `interface`, deliberately. Z uses
 TypeScript-inspired surface syntax, but its behavior contracts are nominal and
@@ -467,8 +468,8 @@ that may move during one iteration cannot be reused during a later iteration
 unless every continuing path restores ownership. State after a loop merges the
 zero-iteration path with every reachable `break` path.
 
-The first collection iteration tier uses TypeScript-style `for...of` over fixed
-arrays, `Array<T>`, `Slice<T>`, `Map<K, V>`, and `Set<T>`:
+Collection iteration uses TypeScript-style `for...of` over fixed arrays,
+`Array<T>`, `Slice<T>`, `Map<K, V>`, and `Set<T>`:
 
 ```z
 for (const value of values) {
@@ -503,10 +504,52 @@ for (const { key, value } of records) {
 The loop pattern inherits the collection's access: cleanup-free fields load by
 value, while cleanup-bearing fields remain borrowed and cannot move out. This
 preserves the same copy-versus-borrow decision as a whole-element binding and
-never silently transfers a stored owner. Mutable element iteration, custom
-iteration traits, consuming iterators, array and tuple patterns, and async
-iteration remain later layers. The built-in lowering must be expressible through
-that eventual trait model rather than contradict it.
+never silently transfers a stored owner.
+
+Custom synchronous iteration uses the nominal generic trait imported from
+`std/iteration`:
+
+```z
+import { Iterator } from "std/iteration";
+
+struct Countdown implements Iterator<i32> {
+  current: i32;
+
+  function next(inout this): Option<i32> {
+    if (this.current == 0) return Option.none;
+    const value = this.current;
+    this.current = this.current - 1;
+    return Option.some(value);
+  }
+}
+
+let countdown = Countdown({ current: 3 });
+for (const value of inout countdown) {
+  use(value);
+}
+```
+
+`Iterator<T>.next(inout this)` makes traversal-state mutation part of the
+contract. A stored value iterator therefore requires `let` storage and explicit
+`of inout iterator`; this visually exposes the mutable loan and prevents moving
+or mutating that iterator during the loop. A temporary iterator has unique
+compiler-owned storage and omits `inout`:
+
+```z
+for (const value of Countdown({ current: 3 })) {
+  use(value);
+}
+```
+
+Each `some` payload transfers into an owned immutable loop binding and is
+destroyed at the end of that iteration when necessary. The iterator remains
+usable after the loop. Built-in collections retain their borrowed-element
+semantics and do not accept `of inout`; they are not retrofitted through a
+mutable user-visible cursor merely to share syntax.
+
+Mutable element iteration, consuming iterators, cleanup-bearing object
+destructuring, move-only foreign iterator elements, array and tuple patterns,
+and async iteration remain later layers.
 
 ## Arrays and views
 
@@ -582,10 +625,20 @@ explicit `value.method<T>()` / `Utility.method<T>()` specialization. A static
 method whose owner and method both introduce independent generic parameters is
 deferred until its source spelling is designed; Z does not guess how one angle
 list should be divided between them. Constraints use nominal traits and are
-checked on every inferred or explicit instance. Generic traits, specialization
-policy, and cross-module instance ownership remain future layers. Generated
-instance names are backend details and do not form part of Z's source or ABI
-contract.
+checked on every inferred or explicit instance. Generic traits are
+monomorphized at each referenced specialization; specialization policy and
+cross-module instance ownership remain future layers. Generated instance names
+are backend details and do not form part of Z's source or ABI contract.
+
+The next type-surface slice is a transparent named alias:
+
+```z
+type Transform = (value: i32) => i32;
+```
+
+Aliases improve public signatures—especially capability- and error-bearing
+function values—without adding runtime representation, nominal identity, or an
+implicit conversion. They remain distinct from future opaque/newtype design.
 
 ## Numeric types
 

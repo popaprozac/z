@@ -83,6 +83,7 @@ import { mapEntryTypeName, parseMapType } from "./map-types.ts";
 import { parseSetType } from "./set-types.ts";
 import { parseOptionalViewType, parseReceiverViewReturnType, parseViewType, viewTypeName } from "./view-types.ts";
 import { hashableSelfTypeName, hashableTraitDeclaration } from "./hash-types.ts";
+import { iteratorTraitDeclaration } from "./iterator-types.ts";
 
 export type ObjCCallInfo = {
   readonly selector: string;
@@ -309,7 +310,8 @@ export type SemanticInfo = {
   readonly standardFunctionReferences: ReadonlyMap<number, StandardFunctionName>;
   readonly standardFunctionBindings: ReadonlyMap<string, StandardFunctionName>;
   readonly standardModuleBindings: ReadonlyMap<string, StandardModuleName>;
-  readonly standardTypeBindings: ReadonlyMap<string, "TextBuffer" | "Arena" | "Map" | "Set" | "Hashable" | "Hasher">;
+  readonly standardTypeBindings: ReadonlyMap<string, "TextBuffer" | "Arena" | "Map" | "Set" | "Hashable" | "Hasher" | "Iterator">;
+  readonly iteratorElementTypes: ReadonlyMap<string, string>;
   readonly hasherAddTypes: ReadonlyMap<number, string>;
   readonly typeDisplayNames: ReadonlyMap<string, string>;
   readonly objectiveC: boolean;
@@ -381,7 +383,8 @@ type AnalysisState = {
   readonly standardFunctionReferences: Map<number, StandardFunctionName>;
   readonly standardFunctionBindings: Map<string, StandardFunctionName>;
   readonly standardModuleBindings: Map<string, StandardModuleName>;
-  readonly standardTypeBindings: Map<string, "TextBuffer" | "Arena" | "Map" | "Set" | "Hashable" | "Hasher">;
+  readonly standardTypeBindings: Map<string, "TextBuffer" | "Arena" | "Map" | "Set" | "Hashable" | "Hasher" | "Iterator">;
+  readonly iteratorElementTypes: Map<string, string>;
   readonly hasherAddTypes: Map<number, string>;
   readonly inferredOutBindingLocations: Map<string, SourceLocation>;
   readonly typeDisplayNames: ReadonlyMap<string, string>;
@@ -636,6 +639,7 @@ export function analyze(
     standardFunctionBindings: new Map(),
     standardModuleBindings: new Map(),
     standardTypeBindings: new Map(),
+    iteratorElementTypes: new Map(),
     hasherAddTypes: new Map(),
     inferredOutBindingLocations: new Map(),
     typeDisplayNames,
@@ -811,6 +815,27 @@ export function analyze(
         }
         continue;
       }
+      if (declaration.header === "std/iteration") {
+        if (!declaration.bindings) {
+          throw new DiagnosticError(fileName, declaration.location, "std/iteration requires a selective import", {
+            code: "Z0501",
+            helps: ["use `import { Iterator } from \"std/iteration\";`"],
+          });
+        }
+        for (const binding of declaration.bindings) {
+          if (binding.importedName !== "Iterator") {
+            throw new DiagnosticError(fileName, binding.location, `std/iteration has no export ${JSON.stringify(binding.importedName)}`, {
+              code: "Z0501",
+              helps: ["std/iteration currently exports `Iterator`"],
+            });
+          }
+          validateUserName(binding.localName, binding.location, fileName);
+          const trait = iteratorTraitDeclaration(binding.localName, binding.location);
+          declareGlobal(globals, binding.localName, { kind: "trait", declaration: trait }, binding.location, fileName);
+          state.standardTypeBindings.set(binding.localName, "Iterator");
+        }
+        continue;
+      }
       if (declaration.header === "std/thread") {
         if (!declaration.bindings) {
           throw new DiagnosticError(fileName, declaration.location, "std/thread requires a selective import", {
@@ -848,7 +873,7 @@ export function analyze(
       }
       throw new DiagnosticError(fileName, declaration.location, `unknown standard module ${JSON.stringify(declaration.header)}`, {
         code: "Z0501",
-        helps: ["the bootstrap standard library currently provides `std`, `std/console`, `std/time`, `std/text`, `std/memory`, `std/collections`, `std/hash`, `std/thread`, `std/fs`, `std/process`, and `std/objc`"],
+        helps: ["the bootstrap standard library currently provides `std`, `std/console`, `std/time`, `std/text`, `std/memory`, `std/collections`, `std/hash`, `std/iteration`, `std/thread`, `std/fs`, `std/process`, and `std/objc`"],
       });
     }
     const module = foreignModules.get(declaration.moduleName);
@@ -1223,6 +1248,14 @@ function validateTraitConformance(
           `method ${declaration.name}.${method.name} does not match trait requirement ${reference.name}.${requirement.name}`,
         );
       }
+    }
+    if (trait.intrinsic === "iterator") {
+      const next = trait.methods.find((method) => method.name === "next");
+      const option = next ? parseOptionType(next.returnType.name) : null;
+      if (!option) {
+        throw new DiagnosticError(fileName, reference.location, "Iterator<T>.next must return Option<T>");
+      }
+      state.iteratorElementTypes.set(declaration.name, option.target);
     }
   }
   if (protocols.length === 0) {
@@ -7339,15 +7372,39 @@ function analyzeForLoop(
       throw new DiagnosticError(fileName, statement.bindingLocation, `duplicate local ${JSON.stringify(statement.binding)}`);
     }
   }
+  const iterableType = inferExpression(statement.iterable, locals, globals, structs, enums, fileName, state);
+  const iterableName = String(underlyingType(iterableType));
   const root = storageRoot(statement.iterable);
+  const iteratorElement = state.iteratorElementTypes.get(iterableName);
+  if (iteratorElement) {
+    analyzeIteratorForLoop(
+      statement,
+      iteratorElement,
+      iterableName,
+      root,
+      owner,
+      locals,
+      globals,
+      structs,
+      enums,
+      fileName,
+      state,
+    );
+    return;
+  }
+  if (statement.mode === "inout") {
+    throw new DiagnosticError(fileName, statement.iterable.location, `for...of inout requires an Iterator<T>, found ${iterableType}`, {
+      code: "Z0311",
+      notes: ["arrays, Slice, Map, and Set use borrowed collection iteration without mutating iterator state"],
+      helps: ["remove `inout` when iterating a built-in collection"],
+    });
+  }
   if (!root) {
     throw new DiagnosticError(fileName, statement.iterable.location, "for...of requires stored collection storage in the initial iteration tier", {
       code: "Z0310",
       helps: ["bind the collection to a const or let before iterating it"],
     });
   }
-  const iterableType = inferExpression(statement.iterable, locals, globals, structs, enums, fileName, state);
-  const iterableName = String(underlyingType(iterableType));
   const map = parseMapType(iterableName);
   const set = parseSetType(iterableName);
   const collection = parseFixedArrayType(iterableName)
@@ -7452,6 +7509,118 @@ function analyzeForLoop(
     header = nextHeader;
   }
 
+  mergeOwnershipStates(locals, [header, ...finalFrame.breaks], state);
+}
+
+function analyzeIteratorForLoop(
+  statement: Extract<Statement, { kind: "for" }>,
+  elementType: string,
+  iteratorType: string,
+  root: ReturnType<typeof storageRoot>,
+  owner: FunctionDeclaration,
+  locals: Map<string, ValueType>,
+  globals: Map<string, SymbolValue>,
+  structs: Map<string, StructDeclaration>,
+  enums: Map<string, EnumDeclaration>,
+  fileName: string,
+  state: AnalysisState,
+): void {
+  if (root) {
+    if (statement.mode !== "inout") {
+      throw new DiagnosticError(fileName, statement.iterable.location, `stored iterator ${JSON.stringify(root.name)} requires explicit inout iteration`, {
+        code: "Z0311",
+        notes: ["Iterator.next mutates the iterator's traversal state"],
+        helps: [`use \`for (const value of inout ${root.name})\``],
+      });
+    }
+    const stored = locals.get(root.name);
+    const iterator = structs.get(iteratorType);
+    if (!stored || (iterator?.kind !== "class" && !isMutableBinding(stored))) {
+      throw new DiagnosticError(fileName, statement.iterable.location, `iterator ${JSON.stringify(root.name)} requires mutable let storage`, {
+        code: "Z0311",
+        helps: [`declare \`let ${root.name} = ...\` before iterating it`],
+      });
+    }
+    rejectOwnerMutationWhileViewed(root.name, statement.iterable.location, fileName, state);
+  } else if (statement.mode === "inout") {
+    throw new DiagnosticError(fileName, statement.iterable.location, "inout iteration requires named iterator storage", {
+      code: "Z0311",
+      helps: ["bind the iterator to let first, or omit `inout` when iterating a temporary"],
+    });
+  }
+
+  const elementDeclaration = statement.objectBindings ? structs.get(elementType) : null;
+  if (statement.objectBindings && (!elementDeclaration || elementDeclaration.kind !== "struct")) {
+    throw new DiagnosticError(fileName, statement.location, `object iteration pattern requires struct elements, found ${displayArrayType(elementType)}`, {
+      code: "Z0220",
+    });
+  }
+  if (statement.objectBindings && hasOwnershipType(elementType, structs, enums, state)) {
+    throw new DiagnosticError(fileName, statement.location, "destructuring ownership-bearing Iterator elements is deferred in the first iterator tier", {
+      code: "Z0311",
+      helps: ["bind the element by name, then destructure or move its fields explicitly inside the loop"],
+    });
+  }
+  if (hasMoveOnlyForeignType(elementType, structs, enums, state.foreignNamedTypes)) {
+    throw new DiagnosticError(fileName, statement.location, "Iterator cannot yield move-only native C++ values in the first iterator tier", {
+      code: "Z0311",
+      notes: ["the C++ union payload needs explicit move construction during Option<T> extraction"],
+      helps: ["yield a Z-owned handle or stable identifier while native move extraction is expanded"],
+    });
+  }
+  const objectFields = statement.objectBindings && elementDeclaration
+    ? resolveObjectBindingFields(statement.objectBindings, elementDeclaration, locals, fileName, state.activeReceiver)
+    : [];
+  if (statement.binding && statement.bindingLocation) {
+    state.bindingTypes.set(statement.bindingLocation.offset, elementType);
+  }
+  for (const { binding, field } of objectFields) {
+    state.bindingTypes.set(binding.bindingLocation.offset, field.type.name);
+  }
+
+  const entry = new Map(locals);
+  let header = new Map(entry);
+  let finalFrame: LoopAnalysisFrame = { breaks: [], continues: [] };
+  const normalize = (candidate: Map<string, ValueType>): Map<string, ValueType> => {
+    const normalized = new Map(candidate);
+    if (statement.binding) normalized.delete(statement.binding);
+    for (const { binding } of objectFields) normalized.delete(binding.bindingName);
+    if (root) {
+      const rootType = header.get(root.name);
+      if (rootType) normalized.set(root.name, rootType);
+    }
+    return normalized;
+  };
+
+  for (let iteration = 0; iteration < 8; iteration += 1) {
+    const bodyLocals = new Map(header);
+    if (root) {
+      const rootType = bodyLocals.get(root.name);
+      if (rootType) bodyLocals.set(root.name, `${borrowedPrefix}${isMutableBinding(rootType) ? mutablePrefix : ""}${underlyingType(rootType)}`);
+    }
+    if (statement.binding) bodyLocals.set(statement.binding, elementType);
+    for (const { binding, field } of objectFields) bodyLocals.set(binding.bindingName, field.type.name);
+    const frame: LoopAnalysisFrame = { breaks: [], continues: [] };
+    state.loopStack.push(frame);
+    try {
+      analyzeStatement(statement.body, owner, bodyLocals, globals, structs, enums, fileName, state);
+    } finally {
+      state.loopStack.pop();
+    }
+    const backEdges = frame.continues.map(normalize);
+    if (!statementStopsFlow(statement.body)) backEdges.push(normalize(bodyLocals));
+    const nextHeader = new Map(entry);
+    mergeOwnershipStates(nextHeader, [entry, ...backEdges], state);
+    finalFrame = {
+      breaks: frame.breaks.map(normalize),
+      continues: frame.continues.map(normalize),
+    };
+    if (sameLocalStates(header, nextHeader)) {
+      header = nextHeader;
+      break;
+    }
+    header = nextHeader;
+  }
   mergeOwnershipStates(locals, [header, ...finalFrame.breaks], state);
 }
 

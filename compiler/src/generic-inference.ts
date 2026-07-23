@@ -750,9 +750,19 @@ export function inferGenericCalls(
         const field = owner?.declaration.fields.find((item) => item.name === expression.property);
         const method = owner?.declaration.methods.find((item) => item.name === expression.property);
         const constrainedMethod = object.type
-          ? (activeConstraints.get(object.type) ?? [])
-            .flatMap((trait) => traits.get(trait)?.methods ?? [])
-            .find((item) => item.name === expression.property)
+          ? (activeConstraints.get(object.type) ?? []).flatMap((traitName) => {
+            const generic = parseGenericType(traitName);
+            const trait = traits.get(generic?.base ?? traitName);
+            const method = trait?.methods.find((item) => item.name === expression.property);
+            if (!trait || !method) return [];
+            const substitutions = new Map(
+              (trait.typeParameters ?? []).map((parameter, index) => [
+                parameter,
+                generic?.arguments[index] ?? parameter,
+              ]),
+            );
+            return [{ method, substitutions }];
+          }).at(0) ?? null
           : null;
         if (object.type && activeTypeParameters.has(object.type) && !constrainedMethod) {
           throw new DiagnosticError(
@@ -763,7 +773,10 @@ export function inferGenericCalls(
         }
         const type = field
           ? substituteType(field.type.name, owner!.substitutions)
-          : method ? substituteType(method.returnType.name, owner!.substitutions) : constrainedMethod?.returnType.name ?? null;
+          : method ? substituteType(method.returnType.name, owner!.substitutions)
+          : constrainedMethod
+            ? substituteType(constrainedMethod.method.returnType.name, constrainedMethod.substitutions)
+            : null;
         return { expression: { ...expression, object: object.expression }, type };
       }
       case "index": {

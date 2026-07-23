@@ -4989,6 +4989,142 @@ test("iterates fixed arrays, Array values, Slices, and borrowed owned elements",
   assert.match(generated, /const Z_Resource \*resource = &\(/);
 });
 
+test("supports generic Iterator<T> traits and explicit inout iteration", () => {
+  const example = resolve(projectRoot, "examples/language/control-flow/custom-iterator.zs");
+  const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, "countdown: 3\ncountdown: 2\ncountdown: 1\n");
+
+  const generated = compileToC(readFileSync(example, "utf8"), example);
+  assert.match(generated, /Z_Countdown_next\(&\(countdown\)\)/);
+  assert.match(generated, /while \(true\)/);
+  assert.match(generated, /_z_iterator_1/);
+
+  const ownedDirectory = mkdtempSync("/tmp/z-owned-iterator-");
+  const ownedFile = resolve(ownedDirectory, "owned-iterator.zs");
+  const ownedSource = `
+    import console from "std/console";
+    import { Iterator } from "std/iteration";
+    struct Resource {
+      id: i32;
+      deinit { console.log(\`drop=\${this.id}\`); }
+    }
+    struct Resources implements Iterator<Resource> {
+      current: i32;
+      function next(inout this): Option<Resource> {
+        if (this.current == 0) return Option.none;
+        const value = this.current;
+        this.current = this.current - 1;
+        return Option.some(Resource({ id: value }));
+      }
+    }
+    function main(): i32 {
+      let resources = Resources({ current: 2 });
+      let total = 0;
+      for (const resource of inout resources) {
+        total = total + resource.id;
+      }
+      return total == 3 ? 0 : 1;
+    }
+  `;
+  writeFileSync(ownedFile, ownedSource);
+  const ownedResult = spawnSync(process.execPath, [cli, "run", ownedFile], { encoding: "utf8" });
+  assert.equal(ownedResult.status, 0, ownedResult.stderr);
+  assert.equal(ownedResult.stdout, "drop=2\ndrop=1\n");
+  const ownedGenerated = compileToC(ownedSource, ownedFile);
+  assert.match(ownedGenerated, /Z_Resource_deinit\(&\(resource\)\)/);
+  assert.match(ownedGenerated, /\.tag = Z_Option_Resource_none/);
+
+  const source = readFileSync(example, "utf8");
+  const iteratorImport = source.indexOf("Iterator");
+  assert.match(hover(source, example, iteratorImport + 1)?.contents.value ?? "", /trait Iterator<T>/);
+  const inoutOffset = source.indexOf("inout countdown");
+  assert.match(hover(source, example, inoutOffset + 1)?.contents.value ?? "", /Iterator\.next mutates traversal state/);
+  const valueUse = source.indexOf("${value}") + 3;
+  assert.match(hover(source, example, valueUse)?.contents.value ?? "", /value: i32/);
+  const importSource = `import { Iter } from "std/iteration"; function main(): i32 { return 0; }`;
+  const importOffset = importSource.indexOf("Iter") + 4;
+  assert.equal(
+    completions(importSource, "iterator-import-completion.zs", importOffset).find((item) => item.label === "Iterator")?.kind,
+    8,
+  );
+
+  const implicitStored = `
+    import { Iterator } from "std/iteration";
+    struct Counter implements Iterator<i32> {
+      value: i32;
+      function next(inout this): Option<i32> { return Option.none; }
+    }
+    function main(): i32 {
+      let counter = Counter({ value: 0 });
+      for (const value of counter) {}
+      return 0;
+    }
+  `;
+  assert.throws(
+    () => compileToC(implicitStored, "iterator-explicit-inout.zs"),
+    /stored iterator "counter" requires explicit inout iteration/,
+  );
+
+  const immutableStored = implicitStored.replace(
+    "let counter =",
+    "const counter =",
+  ).replace(
+    "of counter",
+    "of inout counter",
+  );
+  assert.throws(
+    () => compileToC(immutableStored, "iterator-let-storage.zs"),
+    /iterator "counter" requires mutable let storage/,
+  );
+
+  const collectionCapability = `
+    function main(): i32 {
+      let values = Array<i32>();
+      for (const value of inout values) {}
+      return 0;
+    }
+  `;
+  assert.throws(
+    () => compileToC(collectionCapability, "collection-inout-iteration.zs"),
+    /for\.\.\.of inout requires an Iterator<T>/,
+  );
+});
+
+test("materializes user-defined generic traits and generic trait constraints", () => {
+  const source = `
+    trait Source<T> {
+      function next(inout this): Option<T>;
+    }
+    struct Counter implements Source<i32> {
+      value: i32;
+      function next(inout this): Option<i32> {
+        if (this.value == 0) return Option.none;
+        const value = this.value;
+        this.value = this.value - 1;
+        return Option.some(value);
+      }
+    }
+    function inspect<T: Source<i32>>(inout source: T): i32 {
+      return match (source.next()) {
+        some(value) => value;
+        none => 0;
+      };
+    }
+    function main(): i32 {
+      let counter = Counter({ value: 42 });
+      return inspect(inout counter) == 42 ? 0 : 1;
+    }
+  `;
+  const generated = compileToC(source, "generic-trait.zs");
+  assert.match(generated, /__z_mono_inspect_Counter/);
+  const analyzed = analyzeSource(source, "generic-trait.zs");
+  assert.equal(analyzed.program.traits.length, 1);
+  assert.equal(analyzed.typeDisplayNames.get(analyzed.program.traits[0].name), "Source<i32>");
+  const traitOffset = source.indexOf("Source<T>");
+  assert.match(hover(source, "generic-trait.zs", traitOffset + 1)?.contents.value ?? "", /trait Source<T>/);
+});
+
 test("keeps for-of iteration storage stable and owned elements borrowed", () => {
   const structuralMutation = `
     function main(): i32 {

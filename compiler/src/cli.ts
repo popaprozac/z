@@ -543,8 +543,13 @@ function canonicalStatementText(statement: Statement, tokens: readonly Token[]):
     if (ofIndex < 0 || ofIndex + 1 >= rightParenIndex) {
       throw new Error(`could not locate for-of iterable at source offset ${statement.location.offset}`);
     }
-    const iterableStart = tokens[ofIndex + 1];
-    const iterableTokens = canonicalExpressionTokenRange(tokens, ofIndex + 1, rightParenIndex);
+    const iterableLocation = lexicalExpressionLocation(statement.iterable);
+    const iterableIndex = tokens.findIndex((token) => token.location.offset === iterableLocation.offset);
+    if (iterableIndex < 0 || iterableIndex >= rightParenIndex) {
+      throw new Error(`could not locate for-of iterable expression at source offset ${statement.location.offset}`);
+    }
+    const iterableStart = tokens[iterableIndex];
+    const iterableTokens = canonicalExpressionTokenRange(tokens, iterableIndex, rightParenIndex);
     const iterable = `${canonicalLocation(iterableStart.location)}:${iterableTokens}#${
       canonicalExpressionTree(statement.iterable, tokens) ?? "opaque"
     }`;
@@ -554,7 +559,8 @@ function canonicalStatementText(statement: Statement, tokens: readonly Token[]):
         `${field.fieldName}@${canonicalLocation(field.fieldLocation)}:${field.bindingName}@${canonicalLocation(field.bindingLocation)}`
       )).join(",")}}`;
     return `for@${location}(const:${binding}`
-      + `iterable=${iterable}body=${canonicalStatementText(statement.body, tokens)})`;
+      + `${statement.mode === "inout" ? "inout:" : ""}iterable=${iterable}`
+      + `body=${canonicalStatementText(statement.body, tokens)})`;
   }
   if (statement.kind === "match") {
     const statementIndex = tokens.findIndex((token) => token.location.offset === statement.location.offset);
@@ -1068,7 +1074,10 @@ function stage0TypeShapes(program: Program, fileName: string): readonly Stage1Ty
     }),
     ...program.traits.map((declaration): Stage1TypeShape => ({
       kind: "trait",
-      text: `trait ${declaration.name} {${declaration.methods.length
+      text: `trait ${declaration.name}${canonicalTypeParameters(
+        declaration.typeParameters,
+        declaration.typeParameterConstraints,
+      )} {${declaration.methods.length
         ? ` ${declaration.methods.map((method) => `${canonicalFunctionText(method)};`).join(" ")}`
         : ""} }`,
       location: { ...declaration.location, fileName },

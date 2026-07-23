@@ -243,6 +243,7 @@ export struct AggregateDeclaration {
 
 export struct TraitDeclaration {
   name: String;
+  typeParameters: Array<TypeParameter>;
   methods: Array<FunctionDeclaration>;
   offset: usize;
   line: usize;
@@ -2257,6 +2258,7 @@ function parseProjectedStatement(
       bindingColumn = binding.column;
     }
     try expectKind(tokens, inout current, TokenKind.ofKeyword, "`of` after an iteration binding");
+    const mutableIterator = takeIf(tokens, inout current, TokenKind.inoutKeyword);
     const iterableStart = current;
     const iterableEnd = try parenthesizedExpressionEnd(tokens, current, "a for-of iterable");
     const iterable = try projectExpressionRange(tokens, iterableStart, iterableEnd, inout nodes);
@@ -2268,7 +2270,7 @@ function parseProjectedStatement(
     const index = nodes.length;
     nodes.push(Statement({
       kind: StatementKind.forStatement,
-      mutableBinding: false,
+      mutableBinding: mutableIterator,
       name: bindingName,
       nameOffset: bindingOffset,
       nameLine: bindingLine,
@@ -2732,8 +2734,10 @@ function parseTraitDeclaration(
   in tokens: Array<Token>,
   inout current: usize
 ): TraitDeclaration throws ParserError {
+  let pendingGreater: usize = 0;
   const start = try expect(tokens, inout current, TokenKind.traitKeyword, "a trait declaration");
   const name = try expect(tokens, inout current, TokenKind.identifier, "a trait name");
+  const typeParameters = try parseTypeParameters(tokens, inout current, inout pendingGreater);
   try expectKind(tokens, inout current, TokenKind.leftBrace, `the body of ${name.text}`);
   let methods = Array<FunctionDeclaration>();
   while (tokens[current].kind != TokenKind.rightBrace && tokens[current].kind != TokenKind.eof) {
@@ -2751,6 +2755,7 @@ function parseTraitDeclaration(
   try expectKind(tokens, inout current, TokenKind.rightBrace, "`}` after a trait declaration");
   return TraitDeclaration({
     name: name.text.copyBytes(0, name.text.byteLength),
+    typeParameters,
     methods,
     offset: start.offset,
     line: start.line,
@@ -3136,6 +3141,7 @@ function renderStatementText(in arena: StatementArena, in statement: Statement):
       const pattern = objectBindingsText(statement.objectBindings);
       output.append(pattern);
     }
+    if (statement.mutableBinding) output.append("inout:");
     match (in statement.expression) {
       some(expression) => {
         output.append("iterable=");
@@ -3348,6 +3354,25 @@ export function traitShapeText(in declaration: TraitDeclaration): String {
   let output = TextBuffer();
   output.append("trait ");
   output.append(declaration.name);
+  if (declaration.typeParameters.length > 0) {
+    output.append("<");
+    let firstTypeParameter = true;
+    for (const typeParameter of declaration.typeParameters) {
+      if (!firstTypeParameter) output.append(", ");
+      firstTypeParameter = false;
+      output.append(typeParameter.name);
+      if (typeParameter.constraints.length > 0) {
+        output.append(": ");
+        let firstConstraint = true;
+        for (const constraint of typeParameter.constraints) {
+          if (!firstConstraint) output.append(" & ");
+          firstConstraint = false;
+          output.append(constraint.name);
+        }
+      }
+    }
+    output.append(">");
+  }
   output.append(" {");
   for (const method of declaration.methods) {
     output.append(" ");

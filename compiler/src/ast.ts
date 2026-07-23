@@ -51,6 +51,9 @@ export type StructDeclaration = {
 export type TraitDeclaration = {
   readonly kind: "trait";
   readonly name: string;
+  readonly typeParameters?: string[];
+  readonly typeParameterConstraints?: TypeParameterConstraint[];
+  readonly intrinsic?: "iterator";
   readonly methods: FunctionDeclaration[];
   readonly location: SourceLocation;
 };
@@ -229,6 +232,7 @@ export type WhileStatement = {
 
 export type ForStatement = {
   readonly kind: "for";
+  readonly mode: "auto" | "inout";
   readonly binding: string | null;
   readonly bindingLocation: SourceLocation | null;
   readonly objectBindings: MatchObjectBinding[] | null;

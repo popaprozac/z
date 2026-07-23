@@ -1,4 +1,4 @@
-import type { EnumDeclaration, FunctionDeclaration, Program, StructDeclaration } from "./ast.ts";
+import type { EnumDeclaration, FunctionDeclaration, Program, StructDeclaration, TraitDeclaration } from "./ast.ts";
 import { DiagnosticError } from "./diagnostics.ts";
 import {
   dynamicArrayTypeName,
@@ -16,6 +16,7 @@ import { weakTypeName } from "./weak-types.ts";
 import { optionTypeName } from "./option-types.ts";
 import { parseViewType, viewTypeName } from "./view-types.ts";
 import { hashableTraitDeclaration } from "./hash-types.ts";
+import { iteratorTraitDeclaration } from "./iterator-types.ts";
 
 export function materializeGenerics(
   program: Program,
@@ -25,15 +26,28 @@ export function materializeGenerics(
 ): Program {
   const structTemplates = new Map(program.structs.filter((item) => item.typeParameters?.length).map((item) => [item.name, item]));
   const functionTemplates = new Map(program.functions.filter((item) => item.typeParameters?.length).map((item) => [item.name, item]));
+  const traitTemplates = new Map(
+    program.traits.filter((item) => item.typeParameters?.length).map((item) => [item.name, item]),
+  );
   const traits = new Map(program.traits.map((item) => [item.name, item]));
   const hashableImport = program.imports
     .flatMap((declaration) => declaration.header === "std/hash" ? declaration.bindings ?? [] : [])
     .find((binding) => binding.importedName === "Hashable");
   if (hashableImport) traits.set("Hashable", hashableTraitDeclaration(hashableImport.location));
+  for (const declaration of program.imports.filter((item) => item.header === "std/iteration")) {
+    for (const binding of declaration.bindings ?? []) {
+      if (binding.importedName !== "Iterator") continue;
+      const template = iteratorTraitDeclaration(binding.localName, binding.location);
+      traits.set(binding.localName, template);
+      traitTemplates.set(binding.localName, template);
+    }
+  }
   const structs: StructDeclaration[] = [];
   const functions: FunctionDeclaration[] = [];
+  const materializedTraits: TraitDeclaration[] = [];
   const structInstances = new Map<string, string>();
   const functionInstances = new Map<string, string>();
+  const traitInstances = new Map<string, string>();
   const optionInstances = new Map<string, EnumDeclaration>();
   const mapInstances = new Set<string>();
   const setInstances = new Set<string>();
@@ -54,10 +68,15 @@ export function materializeGenerics(
     throw new DiagnosticError(fileName, declaration.location, "Set is a standard-library type and cannot be redeclared");
   }
 
-  for (const template of [...structTemplates.values(), ...functionTemplates.values()]) {
+  for (const template of new Set([
+    ...structTemplates.values(),
+    ...functionTemplates.values(),
+    ...traitTemplates.values(),
+  ])) {
     for (const constraint of template.typeParameterConstraints ?? []) {
       for (const reference of constraint.traits) {
-        if (!traits.has(reference.name)) {
+        const generic = parseGenericType(reference.name);
+        if (!traits.has(generic?.base ?? reference.name)) {
           throw new DiagnosticError(fileName, reference.location, `unknown trait constraint ${JSON.stringify(reference.name)}`);
         }
       }
@@ -112,6 +131,7 @@ export function materializeGenerics(
     const args = generic.arguments.map((argument) => substituteName(argument, substitutions));
     if (generic.base === "Map") return instantiateMap(args);
     if (generic.base === "Set") return instantiateSet(args);
+    if (traitTemplates.has(generic.base)) return instantiateTrait(generic.base, args);
     return instantiateStruct(generic.base, args);
   };
 
@@ -272,6 +292,29 @@ export function materializeGenerics(
     return name;
   }
 
+  function instantiateTrait(base: string, args: string[]): string {
+    const template = traitTemplates.get(base);
+    if (!template) return monomorphizedName(base, args);
+    if (args.length !== template.typeParameters!.length) {
+      throw new DiagnosticError(fileName, template.location, `${base} expects ${template.typeParameters!.length} type argument(s), received ${args.length}`);
+    }
+    validateConstraints(template, args);
+    const key = `${base}\0${args.join("\0")}`;
+    const existing = traitInstances.get(key);
+    if (existing) return existing;
+    const name = monomorphizedName(base, args);
+    traitInstances.set(key, name);
+    typeDisplayNames.set(name, `${base}<${args.map(displayName).join(", ")}>`);
+    const substitutions = new Map(template.typeParameters!.map((parameter, index) => [parameter, args[index]]));
+    materializedTraits.push(transform({
+      ...template,
+      name,
+      typeParameters: [],
+      typeParameterConstraints: [],
+    }, substitutions) as TraitDeclaration);
+    return name;
+  }
+
   function instantiateMap(args: string[]): string {
     if (args.length !== 2) {
       throw new DiagnosticError(fileName, { offset: 0, line: 1, column: 1 }, `Map expects 2 type arguments, received ${args.length}`);
@@ -408,17 +451,18 @@ export function materializeGenerics(
     return name;
   }
 
-  function validateConstraints(template: StructDeclaration | FunctionDeclaration, args: string[]): void {
+  function validateConstraints(template: StructDeclaration | FunctionDeclaration | TraitDeclaration, args: string[]): void {
     const argumentsByParameter = new Map(template.typeParameters!.map((parameter, index) => [parameter, args[index]]));
     for (const constraint of template.typeParameterConstraints ?? []) {
       const argument = argumentsByParameter.get(constraint.parameter)!;
       const declaration = [...structs, ...program.structs].find((item) => item.name === argument);
       for (const trait of constraint.traits) {
-        if (!declaration?.implements.some((reference) => reference.name === trait.name)) {
+        const required = substituteName(trait.name, argumentsByParameter);
+        if (!declaration?.implements.some((reference) => reference.name === required || reference.name === trait.name)) {
           throw new DiagnosticError(
             fileName,
             trait.location,
-            `${displayName(argument)} does not satisfy ${trait.name} for ${constraint.parameter} in ${JSON.stringify(template.name)}`,
+            `${displayName(argument)} does not satisfy ${displayName(required)} for ${constraint.parameter} in ${JSON.stringify(template.name)}`,
           );
         }
       }
@@ -473,11 +517,15 @@ export function materializeGenerics(
     functions.push(transform(declaration, new Map()));
   }
   const enums = transform(program.enums, new Map()) as EnumDeclaration[];
+  const traits_ = transform(
+    program.traits.filter((item) => !item.typeParameters?.length),
+    new Map(),
+  ) as TraitDeclaration[];
   return {
     ...program,
     structs,
     functions,
     enums: [...enums, ...optionInstances.values()],
-    traits: transform(program.traits, new Map()),
+    traits: [...traits_, ...materializedTraits],
   };
 }
