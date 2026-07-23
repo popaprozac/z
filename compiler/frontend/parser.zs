@@ -85,6 +85,7 @@ export enum StatementKind {
   whileStatement,
   forStatement,
   forAwaitStatement,
+  forTryAwaitStatement,
   matchStatement,
   asyncScopeStatement,
   breakStatement,
@@ -2412,10 +2413,26 @@ function parseProjectedStatement(
     }));
     return Option.some(index);
   }
-  if (kind == TokenKind.forKeyword) {
+  if (
+    kind == TokenKind.forKeyword
+    || (
+      kind == TokenKind.tryKeyword
+      && tokens[current + 1].kind == TokenKind.forKeyword
+    )
+  ) {
     const start = snapshot(tokens[current]);
-    current = current + 1;
-    const asynchronous = takeIf(tokens, inout current, TokenKind.awaitKeyword);
+    const propagating = kind == TokenKind.tryKeyword;
+    if (propagating) {
+      current = current + 1;
+      try expectKind(tokens, inout current, TokenKind.forKeyword, "`for` after `try`");
+    } else {
+      current = current + 1;
+    }
+    let asynchronous = takeIf(tokens, inout current, TokenKind.awaitKeyword);
+    if (propagating && !asynchronous) {
+      try expectKind(tokens, inout current, TokenKind.awaitKeyword, "`await` after `try for`");
+      asynchronous = true;
+    }
     try expectKind(tokens, inout current, TokenKind.leftParen, "`(` after `for`");
     try expectKind(tokens, inout current, TokenKind.constKeyword, "`const` in a read-only `for...of` binding");
     let bindingName = "";
@@ -2444,6 +2461,7 @@ function parseProjectedStatement(
     children.push(pushProjectedBlock(inout nodes, bodyStatements, bodyStart));
     let statementKind = StatementKind.forStatement;
     if (asynchronous) statementKind = StatementKind.forAwaitStatement;
+    if (propagating) statementKind = StatementKind.forTryAwaitStatement;
     const index = nodes.length;
     nodes.push(Statement({
       kind: statementKind,
@@ -3300,6 +3318,7 @@ function renderStatementText(in arena: StatementArena, in statement: Statement):
   else if (statement.kind == StatementKind.ifStatement) output.append("if@");
   else if (statement.kind == StatementKind.whileStatement) output.append("while@");
   else if (statement.kind == StatementKind.forAwaitStatement) output.append("for-await@");
+  else if (statement.kind == StatementKind.forTryAwaitStatement) output.append("try-for-await@");
   else if (statement.kind == StatementKind.forStatement) output.append("for@");
   else if (statement.kind == StatementKind.matchStatement) output.append("match@");
   else if (statement.kind == StatementKind.asyncScopeStatement) output.append("asyncScope@");
@@ -3358,6 +3377,7 @@ function renderStatementText(in arena: StatementArena, in statement: Statement):
   } else if (
     statement.kind == StatementKind.forStatement
     || statement.kind == StatementKind.forAwaitStatement
+    || statement.kind == StatementKind.forTryAwaitStatement
   ) {
     output.append("const:");
     if (statement.name.byteLength > 0) {
@@ -3402,6 +3422,7 @@ function renderStatementText(in arena: StatementArena, in statement: Statement):
     statement.kind == StatementKind.whileStatement
     || statement.kind == StatementKind.forStatement
     || statement.kind == StatementKind.forAwaitStatement
+    || statement.kind == StatementKind.forTryAwaitStatement
     || statement.kind == StatementKind.asyncScopeStatement
   ) {
     if (statement.children.length > 0) {

@@ -3834,6 +3834,7 @@ function inferForExpression(
       {
         kind: "for",
         asynchronous: false,
+        errorMode: "none",
         mode: expression.mode,
         binding: expression.binding,
         bindingLocation: expression.bindingLocation,
@@ -8078,15 +8079,37 @@ function analyzeForLoop(
         },
       );
     }
-    if (asyncGenerator.errorType) {
+    if (statement.errorMode === "try") {
+      if (!asyncGenerator.errorType) {
+        throw new DiagnosticError(fileName, statement.location, "try for await requires a throwing async generator", {
+          code: "Z0311",
+          helps: ["remove `try` when iterating a nonthrowing AsyncGenerator<T>"],
+        });
+      }
+      if (!owner.errorType) {
+        throw new DiagnosticError(fileName, statement.location, "try for await requires an enclosing throwing function", {
+          code: "Z0311",
+          helps: [`add \`throws ${displayArrayType(asyncGenerator.errorType)}\` to the enclosing async function`],
+        });
+      }
+      if (owner.errorType.name !== asyncGenerator.errorType) {
+        throw new DiagnosticError(
+          fileName,
+          statement.location,
+          `cannot propagate ${displayArrayType(asyncGenerator.errorType)} from a function throwing ${displayArrayType(owner.errorType.name)}`,
+          { code: "Z0311" },
+        );
+      }
+    }
+    if (asyncGenerator.errorType && statement.errorMode !== "try") {
       throw new DiagnosticError(
         fileName,
         statement.iterable.location,
         `for await...of cannot implicitly propagate ${displayArrayType(asyncGenerator.errorType)} from a throwing async generator`,
         {
           code: "Z0311",
-          notes: ["a future explicit throwing-loop form will make propagation visible at the loop boundary"],
-          helps: ["advance the async generator with `try await generator.next()` or `attempt await generator.next()`"],
+          notes: ["throwing iteration requires an explicit propagation boundary"],
+          helps: ["write `try for await (const value of stream) { ... }`, or advance explicitly with `attempt await stream.next()`"],
         },
       );
     }
@@ -8104,6 +8127,12 @@ function analyzeForLoop(
       state,
     );
     return;
+  }
+  if (statement.errorMode !== "none") {
+    throw new DiagnosticError(fileName, statement.location, "try for await requires asynchronous iteration", {
+      code: "Z0311",
+      helps: ["write `try for await (...)`, or remove `try` from a synchronous for...of loop"],
+    });
   }
   if (asyncGenerator) {
     throw new DiagnosticError(fileName, statement.iterable.location, `AsyncGenerator<T> requires asynchronous iteration`, {

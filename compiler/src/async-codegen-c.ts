@@ -478,8 +478,19 @@ function planFunction(
         if (statement.asynchronous) {
           const generatorType = semanticInfo.expressionTypes.get(statement.iterable.location.offset);
           const asyncGenerator = generatorType ? parseAsyncGeneratorType(generatorType) : null;
-          if (!generatorType || !asyncGenerator || asyncGenerator.returnType || asyncGenerator.errorType) {
-            unsupported(fileName, statement.iterable.location, "for await requires a nonthrowing AsyncGenerator<T> without a terminal return");
+          if (
+            !generatorType
+            || !asyncGenerator
+            || asyncGenerator.returnType
+            || Boolean(asyncGenerator.errorType) !== (statement.errorMode === "try")
+          ) {
+            unsupported(
+              fileName,
+              statement.iterable.location,
+              statement.errorMode === "try"
+                ? "try for await requires a throwing AsyncGenerator<T, void, E> without a terminal return"
+                : "for await requires a nonthrowing AsyncGenerator<T> without a terminal return",
+            );
           }
           if (statement.objectBindings) {
             unsupported(
@@ -3141,13 +3152,32 @@ function emitAsyncForComplete(
   const payload = niche ? result : `((${result}).data.some)`;
   const lines = [
     `if (!z_async_wait(&frame->task, frame->child_${site.index})) return;`,
+  ];
+  if (site.generator.errorType) {
+    const errorType = site.generator.errorType;
+    const errorPointer = requiresNativeFramePlacement(errorType, plan.types)
+      ? "frame->error"
+      : "&frame->error";
+    lines.push(
+      `if ((${handle}).failed((${handle}).context)) {`,
+      `  (${handle}).take_error((${handle}).context, ${errorPointer});`,
+      ...(hasFrameCleanup(errorType, plan.types) ? ["  frame->live_error = true;"] : []),
+      `  frame->child_${site.index} = NULL;`,
+      "  frame->failed = true;",
+      "  frame->cancel_children = true;",
+      `  frame->state = ${finalizeStateMarker};`,
+      "  continue;",
+      "}",
+    );
+  }
+  lines.push(
     `(${handle}).take_result((${handle}).context, ${resultPointer});`,
     `frame->child_${site.index} = NULL;`,
     ...(hasFrameCleanup(resultType, plan.types)
       ? [`frame->${frameLiveField(site.resultBinding)} = true;`]
       : []),
     `if (!(${present})) {`,
-  ];
+  );
   if (hasFrameCleanup(resultType, plan.types)) {
     lines.push(
       `  ${frameCleanup(result, resultType, plan.types)}`,

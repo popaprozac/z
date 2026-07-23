@@ -655,9 +655,16 @@ export function parse(tokens: Token[], fileName: string): Program {
       const body = parseRequiredBlock("a `while` body");
       return { kind: "while", condition, body, location: whileToken.location };
     }
+    const tryForToken = at("try") && tokens[current + 1]?.kind === "for" ? take() : null;
     if (match("for")) {
       const forToken = previous();
-      const asynchronous = match("await");
+      let asynchronous = false;
+      if (tryForToken) {
+        expect("await", "`await` after `try for`");
+        asynchronous = true;
+      } else {
+        asynchronous = match("await");
+      }
       expect("leftParen", "`(`");
       expect("const", "`const` in a read-only `for...of` binding");
       const objectBindings = match("leftBrace") ? parseObjectBindings() : null;
@@ -670,13 +677,14 @@ export function parse(tokens: Token[], fileName: string): Program {
       return {
         kind: "for",
         asynchronous,
+        errorMode: tryForToken ? "try" : "none",
         mode,
         binding: binding?.text ?? null,
         bindingLocation: binding?.location ?? null,
         objectBindings,
         iterable,
         body,
-        location: forToken.location,
+        location: tryForToken?.location ?? forToken.location,
       };
     }
     if (match("break")) {

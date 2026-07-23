@@ -804,8 +804,27 @@ The loop awaits one `.next()` advancement at a time. `continue`, `break`,
 A temporary stream such as `events()` is owned and destroyed by the loop. A
 stored handle remains usable after an early `break`. Async generators with a
 terminal return remain explicit `.next()` consumers so the terminal value
-cannot be discarded; throwing async generators likewise remain explicit until
-the throwing-loop boundary has a settled spelling.
+cannot be discarded.
+
+A throwing async sequence makes propagation visible on the complete loop:
+
+```zs
+async function loadRows(): i32 throws DatabaseError {
+  let count = 0;
+  try for await (const row of rows()) {
+    count = count + 1;
+  }
+  return count;
+}
+```
+
+`try for await` accepts `AsyncGenerator<Y, void, E>` and requires the enclosing
+async function to declare the same `throws E`. It is the loop equivalent of
+`try await stream.next()`: an advancement error ends the loop, cleans the
+active yielded value and stream frame exactly once, and propagates `E`.
+Nonthrowing streams reject the unnecessary `try`. Local recovery remains
+explicit `attempt await stream.next()` so its control flow and partial progress
+are visible.
 
 The executable tier supports persistent `if` and `while`, `break` and
 `continue`, built-in `Array`/fixed-array/`Slice`/`Map`/`Set` `for...of`
@@ -814,9 +833,9 @@ cursors, and borrowed `match (in value)` statement payloads across both
 return, typed advancement errors, exact-once suspended-local cleanup,
 caller-cancellation propagation, editor details, and native-frontend parity.
 Concurrent `.next()` calls are rejected. `for await...of` currently requires a
-named element binding; ownership-aware object-pattern extraction, throwing
-loops, consuming or value-producing suspending matches, async generator
-methods, and borrowed parameters/yields remain explicit follow-up layers.
+named element binding; ownership-aware object-pattern extraction, consuming or
+value-producing suspending matches, async generator methods, and borrowed
+parameters/yields remain explicit follow-up layers.
 
 `Map` and `Set` use open-addressed hashed buckets for amortized O(1) lookup and
 membership. Owned entries remain in compact storage, while rehashing moves only

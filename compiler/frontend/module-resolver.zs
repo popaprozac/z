@@ -1143,6 +1143,7 @@ function resolveStatement(
   if (
     arena.nodes[index].kind == StatementKind.forStatement
     || arena.nodes[index].kind == StatementKind.forAwaitStatement
+    || arena.nodes[index].kind == StatementKind.forTryAwaitStatement
   ) {
     let loopBindings = copyBindings(bindings);
     if (arena.nodes[index].name.byteLength > 0) {
@@ -6067,6 +6068,7 @@ function collectClosureStatementCaptures(
     if (
       arena.nodes[statementIndex].kind == StatementKind.forStatement
       || arena.nodes[statementIndex].kind == StatementKind.forAwaitStatement
+      || arena.nodes[statementIndex].kind == StatementKind.forTryAwaitStatement
     ) {
       if (arena.nodes[statementIndex].name.byteLength > 0) {
         addUniqueString(inout nestedNames, arena.nodes[statementIndex].name);
@@ -8432,7 +8434,11 @@ function inferStatement(
     }
     return true;
   }
-  if (kind == StatementKind.forStatement || kind == StatementKind.forAwaitStatement) {
+  if (
+    kind == StatementKind.forStatement
+    || kind == StatementKind.forAwaitStatement
+    || kind == StatementKind.forTryAwaitStatement
+  ) {
     const beforeLoop = copyValueBindings(bindings);
     let loopBindings = copyValueBindings(bindings);
     let elementType = "";

@@ -11089,6 +11089,40 @@ test("runs cold async generators through reusable awaited advancement tasks", ()
   );
   assert.equal(forAwaitNative.status, 0, forAwaitNative.stderr);
 
+  const throwingForAwaitExample = resolve(
+    projectRoot,
+    "examples/language/control-flow/async-for-await-errors.zs",
+  );
+  const throwingForAwaitSource = readFileSync(throwingForAwaitExample, "utf8");
+  const throwingForAwaitResult = spawnSync(
+    process.execPath,
+    [cli, "run", throwingForAwaitExample],
+    { encoding: "utf8" },
+  );
+  assert.equal(throwingForAwaitResult.status, 0, throwingForAwaitResult.stderr);
+  assert.equal(
+    throwingForAwaitResult.stdout,
+    "received 20\nreceived 22\nreceived 20\n",
+  );
+  const throwingForAwaitNative = spawnSync(
+    process.execPath,
+    [cli, "check", throwingForAwaitExample, "--native-frontend"],
+    { encoding: "utf8" },
+  );
+  assert.equal(throwingForAwaitNative.status, 0, throwingForAwaitNative.stderr);
+  const throwingReadingUse = throwingForAwaitSource.indexOf("reading}`");
+  assert.match(
+    hover(throwingForAwaitSource, throwingForAwaitExample, throwingReadingUse + 1)?.contents.value ?? "",
+    /reading: i32/,
+  );
+  const incompleteThrowingLoop = throwingForAwaitSource.replace("try for await", "try for aw");
+  const incompleteAwaitOffset = incompleteThrowingLoop.indexOf("try for aw") + "try for aw".length;
+  assert.equal(
+    completions(incompleteThrowingLoop, throwingForAwaitExample, incompleteAwaitOffset)
+      .find((item) => item.label === "await")?.detail,
+    "Z keyword",
+  );
+
   const forAwaitCleanupFile = resolve(throwingDirectory, "for-await-cleanup.zs");
   writeFileSync(forAwaitCleanupFile, `
     import console from "std/console";
@@ -11115,6 +11149,44 @@ test("runs cold async generators through reusable awaited advancement tasks", ()
   );
   assert.equal(forAwaitCleanupResult.status, 0, forAwaitCleanupResult.stderr);
   assert.equal(forAwaitCleanupResult.stdout, "released 42\n");
+
+  const throwingForAwaitCleanupFile = resolve(throwingDirectory, "try-for-await-cleanup.zs");
+  writeFileSync(throwingForAwaitCleanupFile, `
+    import console from "std/console";
+    import { AsyncGenerator } from "std/iteration";
+    struct ReadError { code: i32; }
+    struct Lease {
+      id: i32;
+      deinit { console.log(\`released \${this.id}\`); }
+    }
+    async function leases(): AsyncGenerator<Lease, void, ReadError> throws ReadError {
+      const suspended = Lease({ id: 99 });
+      yield Lease({ id: 42 });
+      throw ReadError({ code: suspended.id });
+    }
+    async function consume(): i32 throws ReadError {
+      try for await (const lease of leases()) {
+        console.log(\`observed \${lease.id}\`);
+      }
+      return 1;
+    }
+    async function main(): i32 {
+      return match (attempt await consume()) {
+        success(value) => value;
+        failure(error) => error.code - 99;
+      };
+    }
+  `);
+  const throwingForAwaitCleanupResult = spawnSync(
+    process.execPath,
+    [cli, "run", throwingForAwaitCleanupFile],
+    { encoding: "utf8" },
+  );
+  assert.equal(throwingForAwaitCleanupResult.status, 0, throwingForAwaitCleanupResult.stderr);
+  assert.equal(
+    throwingForAwaitCleanupResult.stdout,
+    "observed 42\nreleased 42\nreleased 99\n",
+  );
 
   assert.throws(
     () => compileToC(`
@@ -11154,6 +11226,47 @@ test("runs cold async generators through reusable awaited advancement tasks", ()
       }
     `, "for-await-throwing.zs"),
     /for await\.\.\.of cannot implicitly propagate ReadError/,
+  );
+  assert.throws(
+    () => compileToC(`
+      import { AsyncGenerator } from "std/iteration";
+      async function values(): AsyncGenerator<i32> { yield 42; }
+      async function main(): i32 {
+        try for await (const value of values()) {}
+        return 0;
+      }
+    `, "try-for-await-nonthrowing.zs"),
+    /try for await requires a throwing async generator/,
+  );
+  assert.throws(
+    () => compileToC(`
+      import { AsyncGenerator } from "std/iteration";
+      struct ReadError { code: i32; }
+      async function values(): AsyncGenerator<i32, void, ReadError> throws ReadError {
+        yield 42;
+      }
+      async function main(): i32 {
+        try for await (const value of values()) {}
+        return 0;
+      }
+    `, "try-for-await-parent.zs"),
+    /try for await requires an enclosing throwing function/,
+  );
+  assert.throws(
+    () => compileToC(`
+      import { AsyncGenerator } from "std/iteration";
+      struct ReadError { code: i32; }
+      struct StoreError { code: i32; }
+      async function values(): AsyncGenerator<i32, void, ReadError> throws ReadError {
+        yield 42;
+      }
+      async function consume(): i32 throws StoreError {
+        try for await (const value of values()) {}
+        return 0;
+      }
+      async function main(): i32 { return 0; }
+    `, "try-for-await-error-mismatch.zs"),
+    /cannot propagate ReadError from a function throwing StoreError/,
   );
   assert.throws(
     () => compileToC(`

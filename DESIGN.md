@@ -694,13 +694,18 @@ statement-match payloads survive across `yield` and `await`. A nonthrowing
 `AsyncGenerator<Y>` without a terminal value supports sequential
 `for await (const value of stream)`: each iteration awaits exactly one
 advancement, temporary handles are loop-owned, stored handles survive early
-`break`, and all exits preserve exact-once cleanup. Terminal-returning and
-throwing streams retain explicit `.next()` consumption so no terminal result
-or error is silently discarded. Cancelling a caller awaiting an advancement
-cancels and joins it before destroying the stream frame. Object-pattern async
-iteration, an explicit throwing-loop form, consuming statement matches,
-value-producing suspending matches, async generator methods, and borrowed
-inputs/yields remain following layers.
+`break`, and all exits preserve exact-once cleanup. A throwing
+`AsyncGenerator<Y, void, E>` uses
+`try for await (const value of stream)`, requires an enclosing `throws E`, and
+propagates an advancement error after exact-once yielded-value and stream-frame
+cleanup. A plain `for await` never propagates implicitly, while `try for await`
+rejects a nonthrowing stream as unnecessary. Terminal-returning streams retain
+explicit `.next()` consumption so no terminal result is silently discarded.
+Local recovery likewise remains explicit `attempt await stream.next()`.
+Cancelling a caller awaiting an advancement cancels and joins it before
+destroying the stream frame. Object-pattern async iteration, consuming
+statement matches, value-producing suspending matches, async generator
+methods, and borrowed inputs/yields remain following layers.
 
 The source-inspector pressure test uses this complete synchronous protocol to
 tokenize real Z source on first advancement, yield owned `Token` values, return
@@ -711,7 +716,7 @@ token` makes the transfer to the caller explicit.
 
 Mutable element iteration, consuming iterators, cleanup-bearing object
 destructuring, move-only foreign iterator elements, array and tuple patterns,
-and async iteration remain later layers.
+and async iteration over non-generator iterator shapes remain later layers.
 
 ## Arrays and views
 
