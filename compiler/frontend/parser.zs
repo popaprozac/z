@@ -7,6 +7,7 @@ export enum DeclarationKind {
   structDeclaration,
   classDeclaration,
   traitDeclaration,
+  typeAliasDeclaration,
   enumDeclaration,
 }
 
@@ -253,6 +254,14 @@ export struct TraitDeclaration {
   column: usize;
 }
 
+export struct TypeAliasDeclaration {
+  name: String;
+  target: TypeReference;
+  offset: usize;
+  line: usize;
+  column: usize;
+}
+
 export struct EnumVariant {
   name: String;
   payload: Option<TypeReference>;
@@ -290,6 +299,7 @@ export struct ImportDeclaration {
 export struct Program {
   declarations: Array<Declaration>;
   imports: Array<ImportDeclaration>;
+  typeAliases: Array<TypeAliasDeclaration>;
   functions: Array<FunctionDeclaration>;
   aggregates: Array<AggregateDeclaration>;
   traits: Array<TraitDeclaration>;
@@ -2925,6 +2935,25 @@ function parseTraitDeclaration(
   });
 }
 
+function parseTypeAliasDeclaration(
+  in tokens: Array<Token>,
+  inout current: usize
+): TypeAliasDeclaration throws ParserError {
+  let pendingGreater: usize = 0;
+  const start = try expect(tokens, inout current, TokenKind.identifier, "`type`");
+  const name = try expect(tokens, inout current, TokenKind.identifier, "a type alias name");
+  try expectKind(tokens, inout current, TokenKind.equal, "`=` after a type alias name");
+  const target = try parseType(tokens, inout current, inout pendingGreater);
+  try expectKind(tokens, inout current, TokenKind.semicolon, "`;` after a type alias");
+  return TypeAliasDeclaration({
+    name: name.text.copyBytes(0, name.text.byteLength),
+    target,
+    offset: start.offset,
+    line: start.line,
+    column: start.column,
+  });
+}
+
 function parseEnumDeclaration(
   in tokens: Array<Token>,
   inout current: usize
@@ -2963,6 +2992,7 @@ function parseEnumDeclaration(
 export function parseProgram(in tokens: Array<Token>): Program throws ParserError {
   let declarations = Array<Declaration>();
   let imports = Array<ImportDeclaration>();
+  let typeAliases = Array<TypeAliasDeclaration>();
   let functions = Array<FunctionDeclaration>();
   let aggregates = Array<AggregateDeclaration>();
   let traits = Array<TraitDeclaration>();
@@ -3004,6 +3034,20 @@ export function parseProgram(in tokens: Array<Token>): Program throws ParserErro
       });
       declarations.push(declaration);
       imports.push(importDeclaration);
+    } else if (kind == TokenKind.identifier && tokens[current].text == "type") {
+      if (aggregateReadonly) throw fail(tokens[current], "`readonly` can only modify a struct or class declaration");
+      if (asynchronous) throw fail(tokens[current], "a type alias cannot be async");
+      const alias = try parseTypeAliasDeclaration(tokens, inout current);
+      declarations.push(Declaration({
+        kind: DeclarationKind.typeAliasDeclaration,
+        name: alias.name.copyBytes(0, alias.name.byteLength),
+        exported,
+        asynchronous: false,
+        offset: alias.offset,
+        line: alias.line,
+        column: alias.column,
+      }));
+      typeAliases.push(alias);
     } else if (kind == TokenKind.functionKeyword) {
       if (aggregateReadonly) throw fail(tokens[current], "`readonly` can only modify a struct or class declaration");
       const functionDeclaration = try parseFunctionDeclaration(
@@ -3099,10 +3143,10 @@ export function parseProgram(in tokens: Array<Token>): Program throws ParserErro
       enums.push(enumDeclaration);
     } else {
       if (aggregateReadonly) throw fail(tokens[current], "`readonly` can only modify a struct or class declaration");
-      throw fail(tokens[current], "expected an import, function, struct, class, trait, or enum declaration");
+      throw fail(tokens[current], "expected an import, type, function, struct, class, trait, or enum declaration");
     }
   }
-  return Program({ declarations, imports, functions, aggregates, traits, enums });
+  return Program({ declarations, imports, typeAliases, functions, aggregates, traits, enums });
 }
 
 function expressionKindName(kind: ExpressionKind): String {
@@ -3577,8 +3621,13 @@ export function declarationKindName(kind: DeclarationKind): String {
     structDeclaration => "struct";
     classDeclaration => "class";
     traitDeclaration => "trait";
+    typeAliasDeclaration => "type";
     enumDeclaration => "enum";
   };
+}
+
+export function typeAliasShapeText(in declaration: TypeAliasDeclaration): String {
+  return `type ${declaration.name} = ${declaration.target.name}`;
 }
 
 export function importShapeText(in declaration: ImportDeclaration): String {

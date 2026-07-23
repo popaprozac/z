@@ -651,7 +651,7 @@ monomorphized at each referenced specialization; specialization policy and
 cross-module instance ownership remain future layers. Generated instance names
 are backend details and do not form part of Z's source or ABI contract.
 
-The next type-surface slice is a transparent named alias:
+Transparent named aliases give an existing type a readable source name:
 
 ```z
 type Transform = (value: i32) => i32;
@@ -659,7 +659,11 @@ type Transform = (value: i32) => i32;
 
 Aliases improve public signatures—especially capability- and error-bearing
 function values—without adding runtime representation, nominal identity, or an
-implicit conversion. They remain distinct from future opaque/newtype design.
+implicit conversion. They work locally and through selective or namespace
+module imports, preserve nested collection and function capabilities, and may
+name structs/classes for construction and static lookup. Recursive alias graphs
+are rejected. Generic alias parameters remain a later extension; aliases remain
+distinct from future opaque/newtype design.
 
 ## Numeric types
 

@@ -180,6 +180,7 @@ export function linkSourceModules(entrySource: string, entryProgram: Program, en
   visit(entry);
 
   const imports: ImportDeclaration[] = [];
+  const typeAliases: Program["typeAliases"] = [];
   const traits: Program["traits"] = [];
   const structs: Program["structs"] = [];
   const enums: Program["enums"] = [];
@@ -189,6 +190,11 @@ export function linkSourceModules(entrySource: string, entryProgram: Program, en
     imports.push(...node.program.imports
       .filter((declaration) => !isLocalSourceModuleSpecifier(declaration.header))
       .map((declaration) => rewriteNativeImport(declaration, node, scope)));
+    typeAliases.push(...node.program.typeAliases.map((declaration) => ({
+      ...declaration,
+      name: node.ownNames.get(declaration.name)!,
+      target: renameTypeReference(declaration.target, scope, new Set()),
+    })));
     traits.push(...node.program.traits.map((declaration) => transformTrait(declaration, node, scope)));
     structs.push(...node.program.structs.map((declaration) => transformStruct(declaration, node, scope)));
     enums.push(...node.program.enums.map((declaration) => ({
@@ -206,6 +212,7 @@ export function linkSourceModules(entrySource: string, entryProgram: Program, en
     kind: "program",
     imports,
     exports: entry.program.exports,
+    typeAliases,
     traits,
     structs,
     enums,
@@ -222,6 +229,7 @@ export function linkSourceModules(entrySource: string, entryProgram: Program, en
     }])),
     includeDirectories: [...new Set(ordered.filter((node) => node !== entry).map((node) => dirname(node.fileName)))],
     typeDisplayNames: new Map(ordered.flatMap((node) => [
+      ...node.program.typeAliases,
       ...node.program.traits,
       ...node.program.structs,
       ...node.program.enums,
@@ -273,6 +281,7 @@ function rebaseLinkedLocations<T>(value: T, bases: ReadonlyMap<string, number>):
 
 function collectOwnNames(node: ModuleNode, entry: boolean): void {
   const declarations = [
+    ...node.program.typeAliases,
     ...node.program.traits,
     ...node.program.structs,
     ...node.program.enums,
@@ -284,7 +293,12 @@ function collectOwnNames(node: ModuleNode, entry: boolean): void {
         code: "Z0603",
       });
     }
-    node.ownNames.set(declaration.name, entry ? declaration.name : `__z_module_${node.id}_${declaration.name}`);
+    const linkedName = declaration.kind === "type"
+      ? `__z_alias_${node.id}_${declaration.name}`
+      : entry
+        ? declaration.name
+        : `__z_module_${node.id}_${declaration.name}`;
+    node.ownNames.set(declaration.name, linkedName);
   }
 }
 
@@ -294,6 +308,7 @@ function buildScope(node: ModuleNode): ModuleScope {
   const standardTypes = new Map<string, "TextBuffer" | "Arena" | "Map" | "Set" | "Hashable" | "Hasher">();
   const occupied = new Map<string, SourceLocation>();
   for (const declaration of [
+    ...node.program.typeAliases,
     ...node.program.traits,
     ...node.program.structs,
     ...node.program.enums,

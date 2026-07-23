@@ -9,6 +9,7 @@ export type Program = {
   readonly kind: "program";
   readonly imports: ImportDeclaration[];
   readonly exports: ExportDeclaration[];
+  readonly typeAliases: TypeAliasDeclaration[];
   readonly traits: TraitDeclaration[];
   readonly structs: StructDeclaration[];
   readonly enums: EnumDeclaration[];
@@ -17,7 +18,14 @@ export type Program = {
 
 export type ExportDeclaration = {
   readonly name: string;
-  readonly declarationKind: "function" | "struct" | "class" | "trait" | "enum";
+  readonly declarationKind: "function" | "struct" | "class" | "trait" | "enum" | "type";
+  readonly location: SourceLocation;
+};
+
+export type TypeAliasDeclaration = {
+  readonly kind: "type";
+  readonly name: string;
+  readonly target: TypeReference;
   readonly location: SourceLocation;
 };
 

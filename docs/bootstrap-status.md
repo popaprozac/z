@@ -28,7 +28,7 @@ Status meanings:
 | Closures | Partial | Borrowed and owned ARC environments plus weak captures; mutation of ordinary captured bindings works, while preserving addressable move-only resource capabilities such as `TextBuffer` through a borrowed closure remains |
 | Strings and console | Implemented | Owned UTF-8 strings, exact byte equality, templates, typed formatting, checked `byteAt`/`copyBytes`, `byteLength`, `isEmpty`, and explicit move-only `std/text` `TextBuffer`; grapheme-aware `length` remains planned |
 | Integer safety | Implemented | Checked arithmetic, explicit wrapping/saturating operations, and `TargetInteger(value)` construction that lowers range-contained pairs directly and checks narrowing/signedness-risk pairs; lossy and floating-point conversions remain |
-| Transparent type aliases | Planned next | `type Transform = (value: i32) => i32` will name existing types without changing representation or nominal identity; parsing, module exports, editor support, and recursive-alias diagnostics remain |
+| Transparent type aliases | Implemented foundation | `type Transform = (value: i32) => i32` names existing function, aggregate, collection, nullable, view, and nested types without changing representation or nominal identity; local/exported/selective/namespace use, construction/static lookup, recursive-chain diagnostics, editor support, and native parser/module parity work; generic alias parameters and opaque/newtype identity remain |
 | Generators | Planned | `yield` is reserved; no generator lowering |
 | `comptime` | Planned experiment | No compile-time execution model committed |
 | Inline assembly | Planned design | Explicit `unsafe` boundary with `in` / `inout` / `out` operands; statement-first lowering, machine constraints, clobbers, target pruning, and backend portability remain to be designed and tested |
@@ -240,7 +240,7 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    one native write.
    A linear Z parser now consumes the native token array and retains an owned,
    source-located top-level declaration skeleton for imports, functions, structs,
-   classes, traits, and enums. `z self-host-parse` checks exact declaration kind,
+   classes, traits, transparent type aliases, and enums. `z self-host-parse` checks exact declaration kind,
    name, export/async state, order, and location parity against stage 0 across an
    adversarial fixture plus the lexer and parser sources themselves. Complete
    import nodes retain default namespace bindings or selective imported/local
@@ -250,7 +250,7 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    parameter capabilities, nested canonical types, return types, and `throws`.
    Structs/classes now retain generic constraints, implemented traits, visible
    and readonly fields, throwing constructors, static/async/receiver methods,
-   and `deinit`; trait methods and enum payload variants are structural too.
+   and `deinit`; trait methods, alias targets, and enum payload variants are structural too.
    Canonical type-shape parity covers the complete declaration layer. Top-level
    function bodies now retain owned `const`/`let`, `return`, expression-statement,
    and recursively nested block nodes. Primary and postfix expressions are now

@@ -14,6 +14,7 @@ compile-only probes and `emit` to inspect generated native code.
 | Modules | [`modules/main.zs`](../examples/language/modules/main.zs) | Exports, namespace imports, selective aliases |
 | Construction | [`construction.zs`](../examples/language/basics/construction.zs) | Struct object construction and class-only `new` |
 | Object destructuring | [`destructuring.zs`](../examples/language/basics/destructuring.zs) | Local field/alias patterns, explicit copy/move ownership, and borrowed Map-entry patterns |
+| Transparent type aliases | [`type-aliases/main.zs`](../examples/language/types/type-aliases/main.zs) | Exported callback alias, selective import, unchanged native function-value representation, and editor navigation |
 | Results | [`result.zs`](../examples/language/control-flow/result.zs) | `return`, `throw`, `attempt`, and exhaustive matching |
 | Value-producing loops | [`loop-expressions.zs`](../examples/language/control-flow/loop-expressions.zs) | `select` from `for...of` and `while`, required exhaustion `else`, and expression typing |
 | Custom iteration | [`custom-iterator.zs`](../examples/language/control-flow/custom-iterator.zs) | Generic `Iterator<T>`, explicit stored-iterator mutation, owned yielded values, and temporary iterators |
@@ -42,7 +43,7 @@ bun run z run examples/language/control-flow/result.zs
 | ARC and weak references | [`classes.zs`](../examples/language/basics/classes.zs), [`weak-references.zs`](../examples/language/ownership/weak-references.zs) |
 | Closures | [`closures.zs`](../examples/language/basics/closures.zs), [`owned-closures.zs`](../examples/language/ownership/owned-closures.zs), [`function-values.zs`](../examples/language/basics/function-values.zs) |
 | Collections | [`arrays.zs`](../examples/language/collections/arrays.zs), [`slices.zs`](../examples/language/collections/slices.zs), [`dynamic-arrays.zs`](../examples/language/collections/dynamic-arrays.zs), [`map.zs`](../examples/language/collections/map.zs), [`set.zs`](../examples/language/collections/set.zs), [`custom-hash.zs`](../examples/language/collections/custom-hash.zs), [`destructuring.zs`](../examples/language/basics/destructuring.zs) |
-| Generics and traits | [`generics.zs`](../examples/language/types/generics.zs), [`generic-constraints.zs`](../examples/language/types/generic-constraints.zs), [`custom-iterator.zs`](../examples/language/control-flow/custom-iterator.zs) |
+| Generics, traits, and aliases | [`generics.zs`](../examples/language/types/generics.zs), [`generic-constraints.zs`](../examples/language/types/generic-constraints.zs), [`type-aliases/main.zs`](../examples/language/types/type-aliases/main.zs), [`custom-iterator.zs`](../examples/language/control-flow/custom-iterator.zs) |
 | Enums and matching | [`enum-patterns.zs`](../examples/language/control-flow/enum-patterns.zs), [`match-expression.zs`](../examples/language/control-flow/match-expression.zs), [`owned-enums.zs`](../examples/language/ownership/owned-enums.zs) |
 
 ## Native interop

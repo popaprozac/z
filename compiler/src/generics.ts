@@ -517,12 +517,14 @@ export function materializeGenerics(
     functions.push(transform(declaration, new Map()));
   }
   const enums = transform(program.enums, new Map()) as EnumDeclaration[];
+  const typeAliases = transform(program.typeAliases, new Map()) as Program["typeAliases"];
   const traits_ = transform(
     program.traits.filter((item) => !item.typeParameters?.length),
     new Map(),
   ) as TraitDeclaration[];
   return {
     ...program,
+    typeAliases,
     structs,
     functions,
     enums: [...enums, ...optionInstances.values()],

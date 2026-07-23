@@ -379,6 +379,13 @@ function stage0Declarations(program: Program, fileName: string): readonly Stage1
       asynchronous: Boolean(item.async),
       location: { ...item.location, fileName },
     })),
+    ...program.typeAliases.map((item): Stage1Declaration => ({
+      kind: "type",
+      name: item.name,
+      exported: exported.has(`type\0${item.name}`),
+      asynchronous: false,
+      location: { ...item.location, fileName },
+    })),
     ...program.structs.map((item): Stage1Declaration => ({
       kind: item.kind,
       name: item.name,
@@ -1116,6 +1123,11 @@ function canonicalTypeParameters(
 
 function stage0TypeShapes(program: Program, fileName: string): readonly Stage1TypeShape[] {
   return [
+    ...program.typeAliases.map((declaration): Stage1TypeShape => ({
+      kind: "type",
+      text: `type ${declaration.name} = ${canonicalTypeName(declaration.target.name)}`,
+      location: { ...declaration.location, fileName },
+    })),
     ...program.structs.map((declaration): Stage1TypeShape => {
       const implemented = declaration.implements.length
         ? ` implements ${declaration.implements.map((trait) => canonicalTypeName(trait.name)).join(", ")}`

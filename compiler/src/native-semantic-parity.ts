@@ -95,6 +95,7 @@ function stage0ModuleSymbols(
   const { program } = module;
   const exported = new Set(program.exports.map((declaration) => `${declaration.declarationKind}\0${declaration.name}`));
   const symbols: Stage1ModuleSymbol[] = [
+    ...program.typeAliases,
     ...program.traits,
     ...program.structs,
     ...program.enums,
@@ -104,7 +105,7 @@ function stage0ModuleSymbols(
     kind: declaration.kind,
     exported: exported.has(`${declaration.kind}\0${declaration.name}`),
     targetModule: null,
-    importedName: declaration.name,
+    importedName: declaration.kind === "type" ? canonicalTypeName(declaration.target.name) : declaration.name,
     functionSignature: declaration.kind === "function" ? stage0FunctionSignature(declaration) : null,
     typeSignature: declaration.kind === "struct" || declaration.kind === "class" ? {
       typeParameters: declaration.typeParameters ?? [],

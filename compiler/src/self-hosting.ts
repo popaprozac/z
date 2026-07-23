@@ -1,6 +1,6 @@
 import type { Token, TokenKind } from "./lexer.ts";
 
-export type Stage1DeclarationKind = "import" | "function" | "struct" | "class" | "trait" | "enum";
+export type Stage1DeclarationKind = "import" | "function" | "struct" | "class" | "trait" | "type" | "enum";
 
 export type Stage1Declaration = {
   readonly kind: Stage1DeclarationKind;
@@ -45,7 +45,7 @@ export type Stage1ImportShape = {
   };
 };
 
-export type Stage1TypeShapeKind = "struct" | "class" | "trait" | "enum";
+export type Stage1TypeShapeKind = "struct" | "class" | "trait" | "type" | "enum";
 
 export type Stage1TypeShape = {
   readonly kind: Stage1TypeShapeKind;
@@ -124,7 +124,7 @@ export type Stage1ModuleCallResolution = {
   readonly errorType: string | null;
 };
 
-export type Stage1ModuleSymbolKind = "function" | "struct" | "class" | "trait" | "enum" | "namespace" | "imported";
+export type Stage1ModuleSymbolKind = "function" | "struct" | "class" | "trait" | "type" | "enum" | "namespace" | "imported";
 
 export type Stage1ModuleSymbol = {
   readonly name: string;
@@ -711,6 +711,7 @@ function isStage1ModuleSymbolKind(value: string): value is Stage1ModuleSymbolKin
     || value === "struct"
     || value === "class"
     || value === "trait"
+    || value === "type"
     || value === "enum"
     || value === "namespace"
     || value === "imported";
@@ -881,7 +882,7 @@ export function decodeStage1ProgramBatchStream(output: string): Stage1ProgramBat
 }
 
 function isStage1TypeShapeKind(value: string): value is Stage1TypeShapeKind {
-  return value === "struct" || value === "class" || value === "trait" || value === "enum";
+  return value === "struct" || value === "class" || value === "trait" || value === "type" || value === "enum";
 }
 
 function isStage1DeclarationKind(value: string): value is Stage1DeclarationKind {
@@ -890,6 +891,7 @@ function isStage1DeclarationKind(value: string): value is Stage1DeclarationKind 
     || value === "struct"
     || value === "class"
     || value === "trait"
+    || value === "type"
     || value === "enum";
 }
 

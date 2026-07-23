@@ -213,6 +213,7 @@ export enum ModuleSymbolKind {
   structSymbol,
   classSymbol,
   traitSymbol,
+  typeAliasSymbol,
   enumSymbol,
   namespaceSymbol,
   importedSymbol,
@@ -464,6 +465,7 @@ function declarationSymbolKind(kind: DeclarationKind): ModuleSymbolKind {
   if (kind == DeclarationKind.structDeclaration) return ModuleSymbolKind.structSymbol;
   if (kind == DeclarationKind.classDeclaration) return ModuleSymbolKind.classSymbol;
   if (kind == DeclarationKind.traitDeclaration) return ModuleSymbolKind.traitSymbol;
+  if (kind == DeclarationKind.typeAliasDeclaration) return ModuleSymbolKind.typeAliasSymbol;
   return ModuleSymbolKind.enumSymbol;
 }
 
@@ -689,12 +691,19 @@ function moduleTypeSignature(
 }
 
 function ownSymbol(in module: ParsedModule, in declaration: Declaration): ModuleSymbol {
+  let importedName = declaration.name.copyBytes(0, declaration.name.byteLength);
+  if (declaration.kind == DeclarationKind.typeAliasDeclaration) {
+    for (const alias of module.program.typeAliases) {
+      if (alias.name != declaration.name) continue;
+      importedName = alias.target.name.copyBytes(0, alias.target.name.byteLength);
+    }
+  }
   return ModuleSymbol({
     name: declaration.name.copyBytes(0, declaration.name.byteLength),
     kind: declarationSymbolKind(declaration.kind),
     exported: declaration.exported,
     targetModule: Option<usize>.none,
-    importedName: declaration.name.copyBytes(0, declaration.name.byteLength),
+    importedName,
     functionSignature: moduleFunctionSignature(module, declaration),
     typeSignature: moduleTypeSignature(module, declaration),
     offset: declaration.offset,
@@ -786,6 +795,7 @@ export function moduleSymbolKindName(kind: ModuleSymbolKind): String {
   if (kind == ModuleSymbolKind.structSymbol) return "struct";
   if (kind == ModuleSymbolKind.classSymbol) return "class";
   if (kind == ModuleSymbolKind.traitSymbol) return "trait";
+  if (kind == ModuleSymbolKind.typeAliasSymbol) return "type";
   if (kind == ModuleSymbolKind.enumSymbol) return "enum";
   if (kind == ModuleSymbolKind.namespaceSymbol) return "namespace";
   return "imported";
@@ -1230,6 +1240,7 @@ function isTypeSymbolKind(kind: ModuleSymbolKind): boolean {
   return kind == ModuleSymbolKind.structSymbol
     || kind == ModuleSymbolKind.classSymbol
     || kind == ModuleSymbolKind.traitSymbol
+    || kind == ModuleSymbolKind.typeAliasSymbol
     || kind == ModuleSymbolKind.enumSymbol;
 }
 

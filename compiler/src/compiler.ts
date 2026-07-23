@@ -10,6 +10,7 @@ import {
   collectForeignHandleTypeAliases,
   resolveForeignHandleTypeAnnotations,
 } from "./foreign-handle-types.ts";
+import { resolveTypeAliases } from "./type-aliases.ts";
 import type { Program } from "./ast.ts";
 import type { ForeignModule } from "./foreign.ts";
 import type { SemanticInfo } from "./sema.ts";
@@ -87,9 +88,10 @@ export function analyzeSource(source: string, fileName: string, options: Analysi
   const tokens = lex(source, fileName);
   const sourceProgram = parse(tokens, fileName);
   const linked = linkSourceModules(source, sourceProgram, fileName);
+  const typeAliases = resolveTypeAliases(linked.program, fileName, linked.typeDisplayNames);
   const projectBuild = prepareProject(fileName);
   const includeDirectories = [...new Set([...projectBuild.includeDirectories, ...linked.includeDirectories])];
-  const foreignModules = resolveForeignModules(linked.program.imports, fileName, includeDirectories, projectBuild.deploymentTarget);
+  const foreignModules = resolveForeignModules(typeAliases.program.imports, fileName, includeDirectories, projectBuild.deploymentTarget);
   const foreignHandleTypes = collectForeignHandleTypeAliases(foreignModules);
   const typeDisplayNames = new Map(linked.typeDisplayNames);
   for (const module of foreignModules.values()) {
@@ -101,7 +103,7 @@ export function analyzeSource(source: string, fileName: string, options: Analysi
     typeDisplayNames.set(canonical, display);
   }
   const resolvedProgram = resolveForeignHandleTypeAnnotations(
-    linked.program,
+    typeAliases.program,
     foreignHandleTypes.canonicalBySourceName,
   );
   const inferredProgram = inferGenericCalls(resolvedProgram, fileName, foreignModules);

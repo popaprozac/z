@@ -738,6 +738,25 @@ function inspect<T: Source<i32>>(inout source: T): i32 {
 Generic traits remain statically dispatched; Z does not yet provide
 trait-typed storage or existential/dynamic dispatch.
 
+Transparent aliases name an existing type without changing representation,
+ownership, ABI, or assignability:
+
+```zs
+export type Operation = (left: i32, right: i32) => i32;
+type Values = Array<i32>;
+
+function apply(operation: Operation, left: i32, right: i32): i32 {
+  return operation(left, right);
+}
+```
+
+Aliases may be exported and imported selectively or through a namespace.
+Construction and static lookup through an aggregate alias resolve directly to
+the underlying aggregate. Alias chains are supported, while recursive cycles
+are compile-time errors. Generic alias declarations such as `type Lookup<T> =
+Map<String, T>` remain deferred. An alias is not an opaque type or newtype and
+therefore adds no conversion or runtime boundary.
+
 Methods may introduce type parameters independently of their owner. Arguments
 are inferred at the call site or supplied explicitly:
 

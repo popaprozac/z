@@ -10,6 +10,7 @@ import type {
   Statement,
   StructDeclaration,
   TraitDeclaration,
+  TypeAliasDeclaration,
   TypeReference,
 } from "./ast.ts";
 import { DiagnosticError } from "./diagnostics.ts";
@@ -929,6 +930,19 @@ export function parse(tokens: Token[], fileName: string): Program {
     };
   };
 
+  const parseTypeAlias = (): TypeAliasDeclaration => {
+    const keyword = expect("identifier", "`type`");
+    if (keyword.text !== "type") {
+      throw new DiagnosticError(fileName, keyword.location, `expected \`type\`, found ${tokenDescription(keyword)}`);
+    }
+    const start = keyword.location;
+    const name = expect("identifier", "a type alias name").text;
+    expect("equal", "`=` after a type alias name");
+    const target = parseType();
+    expect("semicolon", "`;` after a type alias");
+    return { kind: "type", name, target, location: start };
+  };
+
   const parseEnum = (): EnumDeclaration => {
     const start = expect("enum", "`enum`").location;
     const name = expect("identifier", "an enum name").text;
@@ -946,6 +960,7 @@ export function parse(tokens: Token[], fileName: string): Program {
 
   const imports: ImportDeclaration[] = [];
   const exports: Program["exports"] = [];
+  const typeAliases: TypeAliasDeclaration[] = [];
   const traits: TraitDeclaration[] = [];
   const structs: StructDeclaration[] = [];
   const enums: EnumDeclaration[] = [];
@@ -957,6 +972,11 @@ export function parse(tokens: Token[], fileName: string): Program {
       if (readonlyToken) throw new DiagnosticError(fileName, readonlyToken.location, "`readonly` can only modify a struct or class declaration");
       if (exportToken) throw new DiagnosticError(fileName, exportToken.location, "imports cannot be exported; export declarations from their defining module");
       imports.push(parseImport());
+    } else if (at("identifier") && peek().text === "type") {
+      if (readonlyToken) throw new DiagnosticError(fileName, readonlyToken.location, "`readonly` can only modify a struct or class declaration");
+      const declaration = parseTypeAlias();
+      typeAliases.push(declaration);
+      if (exportToken) exports.push({ name: declaration.name, declarationKind: "type", location: exportToken.location });
     } else if (at("trait")) {
       if (readonlyToken) throw new DiagnosticError(fileName, readonlyToken.location, "`readonly` can only modify a struct or class declaration");
       const declaration = parseTrait();
@@ -979,10 +999,10 @@ export function parse(tokens: Token[], fileName: string): Program {
       if (exportToken) exports.push({ name: declaration.name, declarationKind: "function", location: exportToken.location });
     } else {
       if (readonlyToken) throw new DiagnosticError(fileName, readonlyToken.location, "`readonly` can only modify a struct or class declaration");
-      throw new DiagnosticError(fileName, peek().location, "expected an import, export, trait, struct, class, enum, or function declaration");
+      throw new DiagnosticError(fileName, peek().location, "expected an import, export, type, trait, struct, class, enum, or function declaration");
     }
   }
-  return { kind: "program", imports, exports, traits, structs, enums, functions };
+  return { kind: "program", imports, exports, typeAliases, traits, structs, enums, functions };
 }
 
 function startsPrimary(kind: TokenKind | undefined): boolean {

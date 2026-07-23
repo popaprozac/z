@@ -4739,6 +4739,93 @@ test("stores and calls explicitly typed non-capturing function values", () => {
   );
 });
 
+test("names existing types through transparent aliases", () => {
+  const example = resolve(projectRoot, "examples/language/types/type-aliases/main.zs");
+  const operations = resolve(projectRoot, "examples/language/types/type-aliases/operations.zs");
+  const source = readFileSync(example, "utf8");
+  const operationSource = readFileSync(operations, "utf8");
+
+  const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, "aliased callback answer=42\n");
+
+  const generated = compileToC(source, example);
+  assert.match(generated, /__z_function_adapter___z_module_[0-9]+_add/);
+  assert.doesNotMatch(generated, /\bOperation\b/);
+
+  const aliasDeclaration = operationSource.indexOf("Operation");
+  assert.match(
+    hover(operationSource, operations, aliasDeclaration + 1)?.contents.value ?? "",
+    /type Operation = \(left: i32, right: i32\) => i32/,
+  );
+  const aliasUse = source.indexOf("Operation");
+  assert.match(
+    hover(source, example, aliasUse + 1)?.contents.value ?? "",
+    /type Operation = \(left: i32, right: i32\) => i32/,
+  );
+  const operationUse = source.indexOf("operation, 20");
+  assert.match(hover(source, example, operationUse + 1)?.contents.value ?? "", /operation: Operation/);
+  assert.equal(definition(source, `file://${example}`, aliasUse + 1)?.uri, `file://${operations}`);
+
+  const aliasToken = decodeSemanticTokens(semanticTokens(operationSource, operations).data)
+    .find((token) => token.character === aliasDeclaration);
+  assert.equal(aliasToken?.type, semanticTokenTypes.indexOf("type"));
+  assert.equal(aliasToken?.modifiers, 1);
+
+  const completionSource = source.replace("const operation: Operation", "const operation: Oper");
+  const completionOffset = completionSource.indexOf("const operation: Oper") + "const operation: Oper".length;
+  assert.match(
+    completions(completionSource, example, completionOffset).find((item) => item.label === "Operation")?.detail ?? "",
+    /type Operation = \(left: i32, right: i32\) => i32/,
+  );
+
+  const aggregateAlias = `
+    struct Point {
+      x: i32;
+      static function origin(): Point { return Point({ x: 0 }); }
+    }
+    type Coordinate = Point;
+    function main(): i32 {
+      const point = Coordinate({ x: 42 });
+      return point.x + Coordinate.origin().x - 42;
+    }
+  `;
+  assert.doesNotMatch(compileToC(aggregateAlias, "aggregate-alias.zs"), /\bCoordinate\b/);
+
+  const capabilityAlias = `
+    type Mutator = (inout value: i32) => void;
+    function increment(inout value: i32): void { value = value + 1; }
+    function apply(operation: Mutator, inout value: i32): void { operation(inout value); }
+    function main(): i32 {
+      let value = 41;
+      apply(increment, inout value);
+      return value - 42;
+    }
+  `;
+  assert.match(compileToC(capabilityAlias, "capability-alias.zs"), /int32_t \*value/);
+
+  const cycle = `
+    type First = Second;
+    type Second = Array<First>;
+    function main(): i32 { return 0; }
+  `;
+  assert.throws(
+    () => compileToC(cycle, "alias-cycle.zs"),
+    /circular type alias: First -> Second -> First/,
+  );
+  assert.throws(
+    () => compileToC("type UnknownAlias = Missing; function main(): i32 { return 0; }", "alias-unknown.zs"),
+    /unknown type "Missing"/,
+  );
+
+  const parser = spawnSync(process.execPath, [cli, "self-host-parse", operations, example], { encoding: "utf8" });
+  assert.equal(parser.status, 0, parser.stderr);
+  assert.match(parser.stdout, /operations\.zs: stage-1 parser matches 3 declarations/);
+  const native = spawnSync(process.execPath, [cli, "check", example, "--native-frontend"], { encoding: "utf8" });
+  assert.equal(native.status, 0, native.stderr);
+  assert.match(native.stdout, /native frontend hybrid matches 2 modules/);
+});
+
 test("renders structured ownership diagnostics in the CLI and language server", () => {
   const fixture = resolve(projectRoot, "tests/fixtures/ownership-diagnostic.zs");
   const source = readFileSync(fixture, "utf8");
@@ -11419,6 +11506,7 @@ test("editor grammar tracks keywords without reserving Result variants", () => {
   assert.match(keywordPattern, /view/);
   assert.match(keywordPattern, /weak/);
   assert.match(keywordPattern, /readonly/);
+  assert.match(keywordPattern, /type/);
   assert.match(keywordPattern, /new/);
   assert.match(keywordPattern, /constructor/);
   assert.match(keywordPattern, /deinit/);
@@ -11459,6 +11547,7 @@ test("editor grammar tracks keywords without reserving Result variants", () => {
   assert.match(keywordPattern, /break/);
   assert.match(keywordPattern, /continue/);
   assert.match(grammar.repository.declarations.patterns.map((pattern: { match: string }) => pattern.match).join(" "), /trait\|class/);
+  assert.match(grammar.repository.declarations.patterns.map((pattern: { match: string }) => pattern.match).join(" "), /\\b\(type\)/);
   assert.match(constantPattern, /true\|false/);
   assert.match(typePattern, /boolean/);
   assert.match(typePattern, /Result/);

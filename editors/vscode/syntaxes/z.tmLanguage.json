@@ -197,6 +197,14 @@
           "captures": { "1": { "name": "storage.type.z" }, "2": { "name": "entity.name.type.z" } }
         },
         {
+          "match": "\\b(type)\\s+([A-Za-z_][A-Za-z0-9_]*)\\s*(=)",
+          "captures": {
+            "1": { "name": "storage.type.z" },
+            "2": { "name": "entity.name.type.z" },
+            "3": { "name": "keyword.operator.assignment.z" }
+          }
+        },
+        {
           "name": "entity.name.function.constructor.z",
           "match": "\\bconstructor(?=\\s*\\()"
         }
@@ -232,7 +240,7 @@
         "match": "\\bmove(?=\\s+this\\b)"
       }, {
         "name": "keyword.control.z",
-        "match": "\\b(?:return|throws|throw|select|yield|try|attempt|match|if|else|while|for|of|break|continue|async|await|spawn|on|scope|deinit|constructor|unsafe|in|out|inout|copy|move|view|weak|new|as|implements|module)\\b"
+        "match": "\\b(?:return|throws|throw|select|yield|try|attempt|match|if|else|while|for|of|break|continue|async|await|spawn|on|scope|deinit|constructor|unsafe|in|out|inout|copy|move|view|weak|new|as|implements|module|type)\\b"
       }, {
         "name": "storage.modifier.z",
         "match": "\\b(?:const|let|mut|weak|readonly|static|private|public)\\b"

@@ -69,9 +69,16 @@ export function resolveForeignHandleTypeAnnotations(
   aliases: ReadonlyMap<string, string>,
 ): Program {
   if (aliases.size === 0) return program;
+  return transformProgramTypeNames(program, (name) => resolveForeignTypeName(name, aliases));
+}
+
+export function transformProgramTypeNames(
+  program: Program,
+  transformName: (name: string) => string,
+): Program {
   const type = (reference: TypeReference): TypeReference => ({
     ...reference,
-    name: resolveTypeName(reference.name, aliases),
+    name: transformName(reference.name),
   });
   const constraints = (
     values: readonly TypeParameterConstraint[] | undefined,
@@ -108,7 +115,7 @@ export function resolveForeignHandleTypeAnnotations(
       case "new":
         return {
           ...value,
-          typeName: resolveTypeName(value.typeName, aliases),
+          typeName: transformName(value.typeName),
           arguments: value.arguments.map(expression),
         };
       case "closure":
@@ -131,11 +138,11 @@ export function resolveForeignHandleTypeAnnotations(
       case "arrayExpression":
         return { ...value, elements: value.elements.map(expression) };
       case "dynamicArrayExpression":
-        return { ...value, elementType: resolveTypeName(value.elementType, aliases) };
+        return { ...value, elementType: transformName(value.elementType) };
       case "structExpression":
         return {
           ...value,
-          typeName: resolveTypeName(value.typeName, aliases),
+          typeName: transformName(value.typeName),
           fields: value.fields.map((field) => ({ ...field, expression: expression(field.expression) })),
         };
       case "objectExpression":
@@ -146,7 +153,7 @@ export function resolveForeignHandleTypeAnnotations(
       case "variantExpression":
         return {
           ...value,
-          enumName: resolveTypeName(value.enumName, aliases),
+          enumName: transformName(value.enumName),
           payload: expression(value.payload),
         };
       case "executorPlacement":
@@ -186,9 +193,10 @@ export function resolveForeignHandleTypeAnnotations(
       case "string":
       case "boolean":
       case "null":
-      case "identifier":
       case "argumentReference":
         return value;
+      case "identifier":
+        return { ...value, name: transformName(value.name) };
     }
   };
   const arm = (value: MatchArm): MatchArm => ({ ...value, body: statement(value.body) });
@@ -266,6 +274,10 @@ export function resolveForeignHandleTypeAnnotations(
   });
   return {
     ...program,
+    typeAliases: program.typeAliases.map((declaration) => ({
+      ...declaration,
+      target: type(declaration.target),
+    })),
     traits: program.traits.map((declaration) => ({ ...declaration, methods: declaration.methods.map(fn) })),
     structs: program.structs.map(aggregate),
     enums: program.enums.map((declaration) => ({
@@ -279,11 +291,11 @@ export function resolveForeignHandleTypeAnnotations(
   };
 }
 
-function resolveTypeName(name: string, aliases: ReadonlyMap<string, string>): string {
+function resolveForeignTypeName(name: string, aliases: ReadonlyMap<string, string>): string {
   const direct = aliases.get(name);
   if (direct) return direct;
   if (isNullableObjCTypeName(name)) {
-    const target = resolveTypeName(publicObjCTypeName(name), aliases);
+    const target = resolveForeignTypeName(publicObjCTypeName(name), aliases);
     return aliases.get(nullableObjCTypeName(publicObjCTypeName(name)))
       ?? (target === publicObjCTypeName(name) ? name : nullableObjCTypeName(target));
   }
@@ -292,22 +304,22 @@ function resolveTypeName(name: string, aliases: ReadonlyMap<string, string>): st
     return functionTypeName(
       functionType.parameters.map((parameter) => ({
         ...parameter,
-        type: resolveTypeName(parameter.type, aliases),
+        type: resolveForeignTypeName(parameter.type, aliases),
       })),
-      resolveTypeName(functionType.returnType, aliases),
+      resolveForeignTypeName(functionType.returnType, aliases),
     );
   }
   const view = parseViewType(name);
-  if (view) return viewTypeName(resolveTypeName(view.target, aliases));
+  if (view) return viewTypeName(resolveForeignTypeName(view.target, aliases));
   const array = parseFixedArrayType(name);
-  if (array) return fixedArrayTypeName(resolveTypeName(array.elementType, aliases), array.length);
+  if (array) return fixedArrayTypeName(resolveForeignTypeName(array.elementType, aliases), array.length);
   const slice = parseSliceType(name);
-  if (slice) return sliceTypeName(resolveTypeName(slice.elementType, aliases));
+  if (slice) return sliceTypeName(resolveForeignTypeName(slice.elementType, aliases));
   const dynamic = parseDynamicArrayType(name);
-  if (dynamic) return dynamicArrayTypeName(resolveTypeName(dynamic.elementType, aliases));
+  if (dynamic) return dynamicArrayTypeName(resolveForeignTypeName(dynamic.elementType, aliases));
   const generic = parseGenericType(name);
   return generic
-    ? genericTypeName(generic.base, generic.arguments.map((argument) => resolveTypeName(argument, aliases)))
+    ? genericTypeName(generic.base, generic.arguments.map((argument) => resolveForeignTypeName(argument, aliases)))
     : name;
 }
 

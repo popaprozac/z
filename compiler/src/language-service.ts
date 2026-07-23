@@ -6,6 +6,7 @@ import type {
   Statement,
   StructDeclaration,
   StructExpression,
+  TypeReference,
   TypeParameterConstraint,
 } from "./ast.ts";
 import { analyzeSource, type AnalyzedSource } from "./compiler.ts";
@@ -90,6 +91,7 @@ const completionKinds = {
   enumMember: 20,
   constant: 21,
   struct: 22,
+  typeParameter: 25,
   interface: 8,
   keyword: 14,
 } as const;
@@ -99,7 +101,7 @@ const sourceKeywordTokens = [
   "continue", "declare", "deinit", "else", "enum", "export", "for", "from",
   "function", "if", "implements", "import", "in", "inout", "let", "match", "module",
   "copy", "move", "mut", "new", "of", "on", "out", "private", "public", "return", "scope", "select",
-  "readonly", "spawn", "static", "struct", "throw", "throws", "trait", "try", "unsafe", "view",
+  "readonly", "spawn", "static", "struct", "throw", "throws", "trait", "type", "try", "unsafe", "view",
   "weak", "while", "yield",
 ] as const;
 
@@ -239,6 +241,10 @@ export function semanticTokens(source: string, fileName: string): { readonly dat
   );
   const fieldInitializers = new Set(collectStructLiteralFields(context.sourceProgram).map((item) => item.location.offset));
   const traitNames = new Set(context.program.traits.map((item) => item.name));
+  const typeAliasNames = new Set([
+    ...context.program.typeAliases,
+    ...context.sourceProgram.typeAliases,
+  ].map((item) => item.name));
   const enumNames = new Set(context.program.enums.map((item) => item.name));
   const enumVariantDeclarations = new Set(
     context.sourceProgram.enums.flatMap((declaration) => declaration.variants.map((variant) => variant.location.offset)),
@@ -385,6 +391,13 @@ export function semanticTokens(source: string, fileName: string): { readonly dat
       classifications.set(token.location.offset, {
         type: semanticTokenTypes.indexOf(previous.kind === "class" ? "class" : "type"),
         modifiers: 1,
+      });
+      continue;
+    }
+    if (typeAliasNames.has(token.text)) {
+      classifications.set(token.location.offset, {
+        type: semanticTokenTypes.indexOf("type"),
+        modifiers: previous?.text === "type" ? 1 : 0,
       });
       continue;
     }
@@ -855,7 +868,14 @@ export function hover(source: string, fileName: string, offset: number): Hover |
       .at(-1);
     const owner = context.semanticInfo.viewBindingOwners.get(binding?.offset ?? word.start);
     const provenance = owner ? `  // view of ${owner}` : "";
-    return markdownHover(`${word.text}: ${displayServiceType(type, context)}${provenance}`, source, word.start, word.end);
+    const sourceType = binding ? sourceBindingTypeName(context.sourceProgram, binding.offset) : null;
+    const aliasType = sourceType ? sourceAliasDisplayType(context, sourceType) : null;
+    return markdownHover(
+      `${word.text}: ${aliasType ?? displayServiceType(type, context)}${provenance}`,
+      source,
+      word.start,
+      word.end,
+    );
   }
   return declarationHover(source, context.sourceProgram, word.text, word.start, word.end, context.typeDisplayNames);
 }
@@ -899,7 +919,10 @@ export function definition(source: string, uri: string, offset: number): Locatio
     if (token.text !== word.text) continue;
     const previous = tokens[index - 1];
     const next = tokens[index + 1];
-    const declarationKeyword = previous && ["function", "struct", "class", "trait", "enum", "const", "let"].includes(previous.kind);
+    const declarationKeyword = previous && (
+      ["function", "struct", "class", "trait", "enum", "const", "let"].includes(previous.kind)
+      || previous.text === "type"
+    );
     const namedSlot = next?.kind === "colon";
     const importSlot = previous?.kind === "import" || previous?.kind === "leftBrace" || previous?.kind === "comma" || previous?.kind === "as";
     if (declarationKeyword || namedSlot || importSlot) candidates.push(token.location);
@@ -1512,7 +1535,14 @@ function symbolCompletions(source: string, fileName: string, offset: number): Co
     items.push({
       label: binding.name,
       kind: completionKinds.variable,
-      detail: `${binding.parameter ? "parameter" : binding.readonly ? "const" : "let"} ${binding.name}: ${displayServiceType(binding.type, context)}`,
+      detail: `${binding.parameter ? "parameter" : binding.readonly ? "const" : "let"} ${binding.name}: ${
+        (() => {
+          const sourceType = sourceBindingTypeName(context.sourceProgram, binding.offset);
+          return sourceType
+            ? sourceAliasDisplayType(context, sourceType) ?? displayServiceType(binding.type, context)
+            : displayServiceType(binding.type, context);
+        })()
+      }`,
       sortText: `0-${binding.name}`,
     });
   }
@@ -1539,6 +1569,13 @@ function symbolCompletions(source: string, fileName: string, offset: number): Co
       label: declaration.name,
       kind: declaration.kind === "class" ? completionKinds.class : completionKinds.struct,
       detail: `${declaration.kind} ${declaration.name}`,
+    });
+  }
+  for (const declaration of context.sourceProgram.typeAliases) {
+    items.push({
+      label: declaration.name,
+      kind: completionKinds.typeParameter,
+      detail: `type ${declaration.name} = ${displayType(declaration.target.name, context.typeDisplayNames)}`,
     });
   }
   for (const match of source.matchAll(/\b(function|struct|class)\s+([A-Za-z_][A-Za-z0-9_]*)\s*<([^>]+)>/g)) {
@@ -2284,6 +2321,55 @@ type Binding = {
   readonly fileName?: string;
 };
 
+function sourceBindingTypeName(program: Program, offset: number): string | null {
+  let result: string | null = null;
+  const visit = (value: unknown): void => {
+    if (result || !value || typeof value !== "object") return;
+    if (Array.isArray(value)) {
+      for (const item of value) visit(item);
+      return;
+    }
+    const record = value as {
+      readonly nameLocation?: SourceLocation;
+      readonly location?: SourceLocation;
+      readonly name?: string;
+      readonly type?: TypeReference | null;
+    };
+    if (
+      record.type
+      && (
+        record.nameLocation?.offset === offset
+        || (record.name !== undefined && record.location?.offset === offset)
+      )
+    ) {
+      result = record.type.name;
+      return;
+    }
+    for (const child of Object.values(value as Record<string, unknown>)) visit(child);
+  };
+  visit(program);
+  return result;
+}
+
+function sourceAliasDisplayType(context: AnalyzedSource, typeName: string): string | null {
+  if (context.sourceProgram.typeAliases.some((declaration) => declaration.name === typeName)) return typeName;
+  const selective = localSourceBinding(context, typeName);
+  if (selective && sourceExportDeclaration(selective.module, selective.importedName)?.kind === "type") {
+    return typeName;
+  }
+  const separator = typeName.indexOf(".");
+  if (separator < 0) return null;
+  const namespace = typeName.slice(0, separator);
+  const member = typeName.slice(separator + 1);
+  const declaration = context.sourceProgram.imports.find((candidate) => (
+    isLocalSourceModuleSpecifier(candidate.header)
+    && !candidate.bindings
+    && candidate.moduleName === namespace
+  ));
+  const module = declaration ? localSourceModule(context, declaration) : null;
+  return module && sourceExportDeclaration(module, member)?.kind === "type" ? typeName : null;
+}
+
 function collectBindings(context: AnalyzedSource): Binding[] {
   const bindings: Binding[] = [];
   const seenClosures = new Set<number>();
@@ -2988,11 +3074,13 @@ function sourceExportDeclaration(module: SourceModuleInfo, name: string):
   | Program["structs"][number]
   | Program["traits"][number]
   | Program["enums"][number]
+  | Program["typeAliases"][number]
   | null {
   return module.program.functions.find((item) => item.name === name)
     ?? module.program.structs.find((item) => item.name === name)
     ?? module.program.traits.find((item) => item.name === name)
     ?? module.program.enums.find((item) => item.name === name)
+    ?? module.program.typeAliases.find((item) => item.name === name)
     ?? null;
 }
 
@@ -3030,6 +3118,9 @@ function sourceExportDetail(
       typeDisplayNames,
     )}`;
   }
+  if (declaration.kind === "type") {
+    return `type ${displayName} = ${displayType(declaration.target.name, typeDisplayNames)}`;
+  }
   return `${declaration.kind} ${displayName}`;
 }
 
@@ -3065,6 +3156,7 @@ function sourceExportCompletionKind(module: SourceModuleInfo, name: string): num
   if (declaration?.kind === "class") return completionKinds.class;
   if (declaration?.kind === "trait") return completionKinds.interface;
   if (declaration?.kind === "enum") return completionKinds.enum;
+  if (declaration?.kind === "type") return completionKinds.typeParameter;
   return completionKinds.struct;
 }
 
@@ -3895,9 +3987,20 @@ function declarationHover(
         end,
       );
     }
+    const alias = program.typeAliases.find((item) => item.name === name);
+    if (alias) {
+      return markdownHover(
+        `type ${alias.name} = ${displayType(alias.target.name, typeDisplayNames)}`,
+        source,
+        start,
+        end,
+      );
+    }
     const enumeration = program.enums.find((item) => item.name === name);
     if (enumeration) return markdownHover(`enum ${enumeration.name}`, source, start, end);
   }
+  const alias = new RegExp(`\\btype\\s+${name}\\s*=\\s*([^;]+);`).exec(source);
+  if (alias) return markdownHover(`type ${name} = ${alias[1].trim()}`, source, start, end);
   const generic = new RegExp(`\\b(function|struct|class|trait)\\s+${name}\\s*<([^>]+)>`).exec(source);
   if (generic) return markdownHover(`${generic[1]} ${name}<${generic[2].trim()}>`, source, start, end);
   return null;

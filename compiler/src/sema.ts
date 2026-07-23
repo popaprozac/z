@@ -960,6 +960,10 @@ export function analyze(
     declareGlobal(globals, declaration.name, { kind: "function", declaration }, declaration.location, fileName);
   }
 
+  for (const declaration of program.typeAliases) {
+    validateType(declaration.target, structs, enums, foreignNamedTypes, fileName, true);
+  }
+
   for (const declaration of program.structs) {
     const map = parseMapType(declaration.name);
     if (map) {

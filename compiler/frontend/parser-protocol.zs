@@ -11,6 +11,7 @@ import {
   importShapeText,
   parseProgram,
   traitShapeText,
+  typeAliasShapeText,
 } from "./parser.zs";
 
 function hexDigit(value: u8): u8 {
@@ -164,6 +165,10 @@ export function renderProgram(in path: String, in source: String): String throws
     output.appendAscii(9);
     appendHexText(inout output, body);
     output.appendAscii(10);
+  }
+  for (const alias of program.typeAliases) {
+    const shape = typeAliasShapeText(alias);
+    appendShape(inout output, "type", alias.offset, alias.line, alias.column, shape);
   }
   for (const aggregate of program.aggregates) {
     const shape = aggregateShapeText(aggregate);
