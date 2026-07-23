@@ -26,20 +26,16 @@ export function streamSource(
     byteOffset = byteOffset + 1;
   }
 
-  let index: usize = 0;
   let tokenCount: usize = 0;
   let identifierCount: usize = 0;
 
-  while (index < tokens.length) {
-    const token = copy tokens[index];
-    index = index + 1;
-
+  for (const token of tokens) {
     if (token.kind != TokenKind.eof) tokenCount = tokenCount + 1;
     if (token.kind == TokenKind.identifier) {
       identifierCount = identifierCount + 1;
     }
 
-    yield token;
+    yield copy token;
   }
 
   return GeneratorScanSummary({

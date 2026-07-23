@@ -27,7 +27,7 @@ compile-only probes and `emit` to inspect generated native code.
 | Collection pressure test | [`project-index`](../examples/applications/project-index) | Borrowed Map lookups, owned snapshots, dirty-path Sets, typed IO errors, and an unchanged dense-to-hashed benchmark |
 | Self-hosting groundwork | [`source-stager`](../examples/applications/source-stager) | File IO, owned argv, typed OS failures, and direct no-shell child launch |
 | Stage-1 Z frontend | [`compiler/frontend`](../compiler/frontend) | Checked UTF-8 tokens, owned flat AST shapes, native module graphs, self-parsing, and exact stage-0 parity |
-| Frontend client | [`source-inspector`](../examples/applications/source-inspector) | Readable scanner, fallible generator token stream with terminal summary, smoke tests, and standalone protocol clients |
+| Frontend client | [`source-inspector`](../examples/applications/source-inspector) | Readable scanner, natural yielding `for...of`, fallible generator token stream with terminal summary, smoke tests, and standalone protocol clients |
 
 ```sh
 bun run z run examples/language/basics/first.zs

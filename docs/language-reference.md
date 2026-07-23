@@ -736,10 +736,14 @@ Direct `for...of` over a throwing generator is rejected until an explicit
 propagation form is designed. This keeps generator errors consistent with Z's
 rule that throwing work always appears beneath `try` or `attempt`.
 
-The initial lowering supports ordinary statements, `if`, `while`, multiple
-`yield` points, owned parameters, and owned yielded values. Generator methods,
-borrowed parameters or yielded views, suspending through `for...of` or `match`,
-async generators, and bidirectional sent values are deferred.
+The synchronous lowering supports ordinary statements, `if`, `while`, multiple
+`yield` points, owned parameters, and owned yielded values. A `for...of` over
+`Array`, fixed arrays, `Slice`, `Map`, or `Set` may suspend: its cursor and
+borrowed element projection are stored in the generator frame. Statement
+`match` may also suspend; payload bindings remain live in the frame and retain
+their normal exact-once cleanup semantics. Suspending custom-iterator loops,
+value-producing match expressions, generator methods, borrowed parameters or
+yielded views, async generators, and bidirectional sent values are deferred.
 
 `Map` and `Set` use open-addressed hashed buckets for amortized O(1) lookup and
 membership. Owned entries remain in compact storage, while rehashing moves only

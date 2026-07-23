@@ -655,17 +655,20 @@ implement `Iterator` and direct `for...of` remains rejected until an explicit
 propagation syntax is chosen.
 
 The first tier is synchronous. Parameters transfer owned values into the cold
-frame; borrowed inputs, generator methods, yields inside `for...of` or `match`,
-borrowed yielded values, async generators, and values sent back into a
-suspension remain later work.
+frame. Built-in collection `for...of` loops persist their cursor and borrowed
+element projection across suspension, and statement `match` persists tagged or
+niche-encoded payload bindings with exact-once cleanup. Custom iterators that
+suspend inside their loop body and value-producing match expressions remain
+deferred because their owned iterator/selection temporaries also need explicit
+frame slots. Borrowed inputs, generator methods, borrowed yielded values, async
+generators, and values sent back into a suspension remain later work.
 
 The source-inspector pressure test uses this complete synchronous protocol to
 tokenize real Z source on first advancement, yield owned `Token` values, return
-a `GeneratorScanSummary`, and propagate `LexerError`. It currently uses an
-indexed `while` over the lexer's owned token array. A natural yielding
-`for...of` requires the loop cursor and borrowed element binding to become
-explicit suspended-frame state; that is a recorded composition seam rather
-than a partially lowered special case.
+a `GeneratorScanSummary`, and propagate `LexerError`. It iterates the lexer's
+owned token array with natural `for...of`; the compiler-owned cursor and
+borrowed `Token` projection live in the generator frame, while `yield copy
+token` makes the transfer to the caller explicit.
 
 Mutable element iteration, consuming iterators, cleanup-bearing object
 destructuring, move-only foreign iterator elements, array and tuple patterns,

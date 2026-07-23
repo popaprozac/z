@@ -1745,14 +1745,14 @@ function analyzeFunction(
     state.bindingTypes.set(parameter.location.offset, parameter.type.name);
   }
 
-  if (isGeneratorFunction(declaration)) {
-    validateGeneratorBodyShape(declaration, fileName);
-  }
   const generator = isGeneratorFunction(declaration) ? parseGeneratorType(declaration.returnType.name) : null;
   if (generator && !generator.returnType && !generator.errorType) {
     state.iteratorElementTypes.set(declaration.returnType.name, generator.elementType);
   }
   const returns = analyzeStatements(declaration.body, declaration, locals, globals, structs, enums, fileName, state);
+  if (generator) {
+    validateGeneratorBodyShape(declaration, fileName, state);
+  }
   const unresolvedOutBinding = state.inferredOutBindingLocations.entries().next().value as [string, SourceLocation] | undefined;
   if (unresolvedOutBinding) {
     throw new DiagnosticError(fileName, unresolvedOutBinding[1], `cannot infer type of uninitialized let ${JSON.stringify(unresolvedOutBinding[0])}`, {
@@ -1769,7 +1769,11 @@ function analyzeFunction(
   state.executorContext = previousExecutorContext;
 }
 
-function validateGeneratorBodyShape(declaration: FunctionDeclaration, fileName: string): void {
+function validateGeneratorBodyShape(
+  declaration: FunctionDeclaration,
+  fileName: string,
+  state: AnalysisState,
+): void {
   const names = new Set(declaration.parameters.map((parameter) => parameter.name));
   const containsYield = (value: unknown): boolean => {
     if (!value || typeof value !== "object") return false;
@@ -1779,7 +1783,24 @@ function validateGeneratorBodyShape(declaration: FunctionDeclaration, fileName: 
     return Object.entries(value as Record<string, unknown>)
       .some(([key, child]) => key !== "location" && containsYield(child));
   };
+  const containsYieldingMatchExpression = (value: unknown): boolean => {
+    if (!value || typeof value !== "object") return false;
+    if (
+      (value as { readonly kind?: string }).kind === "matchExpression"
+      && containsYield(value)
+    ) return true;
+    if ((value as { readonly kind?: string }).kind === "closure") return false;
+    if (Array.isArray(value)) return value.some(containsYieldingMatchExpression);
+    return Object.entries(value as Record<string, unknown>)
+      .some(([key, child]) => key !== "location" && containsYieldingMatchExpression(child));
+  };
   const visit = (statement: Statement): void => {
+    if (containsYieldingMatchExpression(statement)) {
+      throw new DiagnosticError(fileName, statement.location, "yield inside a value-producing match expression is deferred beyond the persistent match-statement tier", {
+        notes: ["the selected expression result must also become persistent suspension state"],
+        helps: ["use a match statement around the yielding work"],
+      });
+    }
     if (statement.kind === "variable") {
       if (names.has(statement.name)) {
         throw new DiagnosticError(fileName, statement.nameLocation, `generator frame binding ${JSON.stringify(statement.name)} shadows another stored binding`, {
@@ -1796,11 +1817,17 @@ function validateGeneratorBodyShape(declaration: FunctionDeclaration, fileName: 
     if (statement.kind === "destructure") {
       throw new DiagnosticError(fileName, statement.location, "destructuring locals inside generators is deferred beyond the first frame tier");
     }
-    if ((statement.kind === "for" || statement.kind === "match") && containsYield(statement)) {
-      throw new DiagnosticError(fileName, statement.location, `yield inside ${statement.kind === "for" ? "for...of" : "match"} is deferred beyond the first generator tier`, {
-        notes: ["the generated iterator or match payload must become persistent frame state before this can suspend safely"],
-        helps: ["use a while loop or move the yield after the construct"],
-      });
+    if (statement.kind === "for" && containsYield(statement)) {
+      const iterableType = state.expressionTypes.get(statement.iterable.location.offset);
+      if (iterableType && !state.iteratorElementTypes.has(iterableType)) {
+        // Built-in collections use a stable owner plus a persistent frame cursor,
+        // so their borrowed element bindings remain valid across suspension.
+      } else {
+        throw new DiagnosticError(fileName, statement.location, "yield inside custom Iterator for...of is deferred beyond the persistent collection-loop tier", {
+          notes: ["an owned iterator and its current Option payload must both become persistent frame state"],
+          helps: ["iterate an Array, Slice, Map, or Set, or advance the iterator explicitly"],
+        });
+      }
     }
     if (statement.kind === "block") {
       statement.statements.forEach(visit);

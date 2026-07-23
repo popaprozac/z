@@ -78,7 +78,9 @@ type GenerationContext = {
   readonly constructorSelf?: string;
   readonly constructorFieldFlags?: ReadonlyMap<string, string>;
   readonly generatorFrame?: {
-    readonly storage: ReadonlyMap<string, string>;
+    readonly storage: Map<string, string>;
+    readonly fields: GeneratorFrameField[];
+    readonly liveFlags: Map<string, string>;
     readonly stateCounter: { value: number };
   };
 };
@@ -2697,7 +2699,8 @@ static __attribute__((unused)) void ${generatorDeinitName(type)}(${generatorName
 
 type GeneratorFrameField = {
   readonly name: string;
-  readonly type: string;
+  readonly type: string | null;
+  readonly rawCType?: string;
   readonly parameter: boolean;
 };
 
@@ -2731,8 +2734,12 @@ function collectGeneratorFrameFields(
       if (statement.elseBranch) visit(statement.elseBranch);
       return;
     }
-    if (statement.kind === "while") {
+    if (statement.kind === "while" || statement.kind === "for") {
       visit(statement.body);
+      return;
+    }
+    if (statement.kind === "match") {
+      statement.arms.forEach((arm) => visit(arm.body));
     }
   };
   declaration.body.forEach(visit);
@@ -2749,6 +2756,38 @@ function generatorAdvanceName(declaration: FunctionDeclaration): string {
 
 function generatorDestroyName(declaration: FunctionDeclaration): string {
   return `${generatorFrameName(declaration)}_destroy`;
+}
+
+function generatorResumeLabel(state: number): string {
+  return `_z_generator_resume_${state}`;
+}
+
+function registerGeneratorFrameField(
+  context: GenerationContext,
+  field: GeneratorFrameField,
+): string {
+  const generatorFrame = context.generatorFrame;
+  if (!generatorFrame) throw new Error("persistent generator storage requires a generator frame");
+  if (!generatorFrame.fields.some((candidate) => candidate.name === field.name)) {
+    generatorFrame.fields.push(field);
+  }
+  return `frame->${cBindingName(field.name)}`;
+}
+
+function withGeneratorStorage(
+  context: GenerationContext,
+  bindings: ReadonlyMap<string, string>,
+): GenerationContext {
+  if (!context.generatorFrame) return context;
+  const storage = new Map(context.generatorFrame.storage);
+  for (const [name, value] of bindings) storage.set(name, value);
+  return {
+    ...context,
+    generatorFrame: {
+      ...context.generatorFrame,
+      storage,
+    },
+  };
 }
 
 function generateGeneratorFunction(
@@ -2770,7 +2809,7 @@ function generateGeneratorFunction(
   const storage = new Map(fields.map((field) => [field.name, `frame->${cBindingName(field.name)}`]));
   const liveFlags = new Map<string, string>();
   for (const field of fields) {
-    if (hasSemanticCleanupType(field.type, structs, enums, semanticInfo)) {
+    if (field.type && hasSemanticCleanupType(field.type, structs, enums, semanticInfo)) {
       liveFlags.set(field.name, `frame->${cBindingName(field.name)}_live`);
     }
   }
@@ -2799,7 +2838,7 @@ function generateGeneratorFunction(
     liveFlagCounter: { value: 0 },
     expressionOverrides: new Map(),
     semanticInfo,
-    generatorFrame: { storage, stateCounter: { value: 1 } },
+    generatorFrame: { storage, fields, liveFlags, stateCounter: { value: 1 } },
   };
   const body = declaration.body.map((statement) => {
     const generated = generateStatement(statement, context);
@@ -2819,13 +2858,14 @@ function generateGeneratorFunction(
   body.push(indent(`${completionCleanup ? `${completionCleanup}\n` : ""}frame->state = -1;\n${exhausted}`, 6));
 
   const frameFields = fields.flatMap((field) => {
-    const lines = [`  ${mapType(field.type, structs, enums, semanticInfo.foreignNamedTypes)} ${cBindingName(field.name)};`];
+    const mapped = field.rawCType ?? mapType(field.type!, structs, enums, semanticInfo.foreignNamedTypes);
+    const lines = [`  ${mapped} ${cBindingName(field.name)};`];
     if (liveFlags.has(field.name)) lines.push(`  bool ${cBindingName(field.name)}_live;`);
     return lines;
   });
   const destroyCleanup = [...fields].reverse().flatMap((field) => {
     const liveFlag = liveFlags.get(field.name);
-    if (!liveFlag) return [];
+    if (!liveFlag || !field.type) return [];
     return [indent(generateValueCleanup(`frame->${cBindingName(field.name)}`, field.type, liveFlag, context), 2)];
   });
   const factoryInitializers = declaration.parameters.flatMap((parameter) => {
@@ -2836,6 +2876,10 @@ function generateGeneratorFunction(
       ...(liveFlags.has(parameter.name) ? [`  frame->${cBindingName(parameter.name)}_live = true;`] : []),
     ];
   });
+  const resumeDispatch = Array.from(
+    { length: context.generatorFrame.stateCounter.value - 1 },
+    (_, index) => `    case ${index + 1}: goto ${generatorResumeLabel(index + 1)};`,
+  );
   const signature = generateFunctionSignature(declaration, structs, enums, null, semanticInfo.foreignNamedTypes);
   return `typedef struct ${frameName} {
   int32_t state;
@@ -2847,11 +2891,13 @@ static ${mapType(advanceType, structs, enums, semanticInfo.foreignNamedTypes)} $
   switch (frame->state) {
     case -1:
       ${exhausted}
-    case 0: ;
-${body.join("\n")}
+    case 0: goto _z_generator_start;
+${resumeDispatch.join("\n")}
     default:
       abort();
   }
+_z_generator_start: ;
+${body.join("\n")}
 }
 
 static void ${generatorDestroyName(declaration)}(void *context) {
@@ -3315,7 +3361,7 @@ bool ${liveFlag} = true;`;
               context,
             )
           : yielded;
-        return `frame->state = ${resume};\nreturn ${returned};\ncase ${resume}: ;`;
+        return `frame->state = ${resume};\nreturn ${returned};\n${generatorResumeLabel(resume)}: ;`;
       }, true);
     }
     case "select": {
@@ -3761,7 +3807,7 @@ function generateFor(statement: Extract<Statement, { kind: "for" }>, context: Ge
   const iterable = generateExpression(statement.iterable, context);
   const storage = map ? `(${iterable}).entries` : set ? `(${iterable}).values` : `(${iterable})`;
   const length = "length" in collection ? String(collection.length) : `${storage}.length`;
-  const item = `((${storage}.data[_z_for_index_${index}]))`;
+  let item = `((${storage}.data[_z_for_index_${index}]))`;
   const borrowedElement = Boolean(map || set)
     || hasCleanupType(collection.elementType, context.structs, context.enums, context.semanticInfo.foreignTypes);
   const loopTypes = new Map(context.localTypes);
@@ -3778,7 +3824,78 @@ function generateFor(statement: Extract<Statement, { kind: "for" }>, context: Ge
       loopModes.set(binding.bindingName, "in");
     }
   }
-  const loopContext = { ...context, localTypes: loopTypes, parameterModes: loopModes };
+  let loopContext: GenerationContext = { ...context, localTypes: loopTypes, parameterModes: loopModes };
+  let persistentIndex: string | null = null;
+  const persistentBindings: string[] = [];
+  if (context.generatorFrame) {
+    persistentIndex = registerGeneratorFrameField(context, {
+      name: `_z_for_index_${index}`,
+      type: null,
+      rawCType: "uintptr_t",
+      parameter: false,
+    });
+    item = `((${storage}.data[${persistentIndex}]))`;
+    const storageOverrides = new Map<string, string>();
+    if (statement.binding && statement.bindingLocation) {
+      const fieldName = `_z_for_binding_${statement.bindingLocation.offset}`;
+      if (borrowedElement && context.structs.get(collection.elementType)?.kind !== "class") {
+        const elementType = mapType(
+          collection.elementType,
+          context.structs,
+          context.enums,
+          context.semanticInfo.foreignNamedTypes,
+        );
+        const field = registerGeneratorFrameField(context, {
+          name: fieldName,
+          type: null,
+          rawCType: `const ${elementType} *`,
+          parameter: false,
+        });
+        storageOverrides.set(statement.binding, `(*${field})`);
+        persistentBindings.push(`${field} = &(${item});`);
+      } else {
+        const field = registerGeneratorFrameField(context, {
+          name: fieldName,
+          type: collection.elementType,
+          parameter: false,
+        });
+        storageOverrides.set(statement.binding, field);
+        persistentBindings.push(`${field} = ${item};`);
+      }
+    }
+    for (const binding of statement.objectBindings ?? []) {
+      const field = elementOwner!.fields.find((candidate) => candidate.name === binding.fieldName)!;
+      const fieldValue = `((${item}).${field.name})`;
+      const borrowedField = borrowedElement
+        && hasCleanupType(field.type.name, context.structs, context.enums, context.semanticInfo.foreignTypes);
+      const frameFieldName = `_z_for_binding_${binding.bindingLocation.offset}`;
+      if (borrowedField && context.structs.get(field.type.name)?.kind !== "class") {
+        const fieldType = mapType(
+          field.type.name,
+          context.structs,
+          context.enums,
+          context.semanticInfo.foreignNamedTypes,
+        );
+        const frameField = registerGeneratorFrameField(context, {
+          name: frameFieldName,
+          type: null,
+          rawCType: `const ${fieldType} *`,
+          parameter: false,
+        });
+        storageOverrides.set(binding.bindingName, `(*${frameField})`);
+        persistentBindings.push(`${frameField} = &(${fieldValue});`);
+      } else {
+        const frameField = registerGeneratorFrameField(context, {
+          name: frameFieldName,
+          type: field.type.name,
+          parameter: false,
+        });
+        storageOverrides.set(binding.bindingName, frameField);
+        persistentBindings.push(`${frameField} = ${fieldValue};`);
+      }
+    }
+    loopContext = withGeneratorStorage(loopContext, storageOverrides);
+  }
   const frame: LoopGenerationFrame = {
     breakLabel: `_z_loop_break_${index}`,
     continueLabel: `_z_loop_continue_${index}`,
@@ -3794,7 +3911,7 @@ function generateFor(statement: Extract<Statement, { kind: "for" }>, context: Ge
     context.loopStack.pop();
   }
   const bindingDeclarations: string[] = [];
-  if (statement.binding) {
+  if (statement.binding && !context.generatorFrame) {
     const elementType = mapType(collection.elementType, context.structs, context.enums, context.semanticInfo.foreignNamedTypes);
     bindingDeclarations.push(borrowedElement
       ? context.structs.get(collection.elementType)?.kind === "class"
@@ -3802,7 +3919,7 @@ function generateFor(statement: Extract<Statement, { kind: "for" }>, context: Ge
         : `const ${elementType} *${statement.binding} = &(${item});`
       : `${generateLocalDeclaration(collection.elementType, statement.binding, false, context.structs, context.enums, context.semanticInfo.foreignNamedTypes)} = ${item};`);
   }
-  for (const binding of statement.objectBindings ?? []) {
+  for (const binding of context.generatorFrame ? [] : statement.objectBindings ?? []) {
     const field = elementOwner!.fields.find((candidate) => candidate.name === binding.fieldName)!;
     const fieldType = mapType(field.type.name, context.structs, context.enums, context.semanticInfo.foreignNamedTypes);
     const fieldValue = `((${item}).${field.name})`;
@@ -3814,10 +3931,16 @@ function generateFor(statement: Extract<Statement, { kind: "for" }>, context: Ge
         : `const ${fieldType} *${binding.bindingName} = &(${fieldValue});`
       : `${generateLocalDeclaration(field.type.name, binding.bindingName, false, context.structs, context.enums, context.semanticInfo.foreignNamedTypes)} = ${fieldValue};`);
   }
-  body = body.replace("{\n", `{\n${bindingDeclarations.map((line) => `  ${line}`).join("\n")}\n`);
+  const bindings = context.generatorFrame ? persistentBindings : bindingDeclarations;
+  body = body.replace("{\n", `{\n${bindings.map((line) => `  ${line}`).join("\n")}\n`);
   if (frame.usedContinue) body = body.replace(/\n}$/, `\n  ${frame.continueLabel}: ;\n}`);
+  if (persistentIndex) {
+    body = body.replace(/\n}$/, `\n  ${persistentIndex} += 1;\n}`);
+  }
   const breakLabel = frame.usedBreak ? `\n${frame.breakLabel}: ;` : "";
-  return `for (uintptr_t _z_for_index_${index} = 0; _z_for_index_${index} < ${length}; _z_for_index_${index} += 1) ${body}${breakLabel}`;
+  return persistentIndex
+    ? `${persistentIndex} = 0;\nwhile (${persistentIndex} < ${length}) ${body}${breakLabel}`
+    : `for (uintptr_t _z_for_index_${index} = 0; _z_for_index_${index} < ${length}; _z_for_index_${index} += 1) ${body}${breakLabel}`;
 }
 
 function generateIteratorFor(
@@ -4906,7 +5029,26 @@ function generateMatch(statement: Extract<Statement, { kind: "match" }>, context
   const temporary = `_z_match_${context.matchCounter.value++}`;
   const subject = generateExpression(statement.expression, context);
   const borrowed = context.semanticInfo.borrowedMatches.has(statement.location.offset);
-  const access = borrowed ? `${temporary}->` : `${temporary}.`;
+  let access = borrowed ? `${temporary}->` : `${temporary}.`;
+  let subjectStorage: string;
+  if (context.generatorFrame) {
+    if (borrowed) {
+      access = `(&(${subject}))->`;
+      subjectStorage = "";
+    } else {
+      const persistentSubject = registerGeneratorFrameField(context, {
+        name: `_z_match_subject_${statement.location.offset}`,
+        type,
+        parameter: false,
+      });
+      access = `${persistentSubject}.`;
+      subjectStorage = `${persistentSubject} = ${subject};`;
+    }
+  } else {
+    subjectStorage = borrowed
+      ? `const ${enumName(type)} *${temporary} = &(${subject});`
+      : `${requiresNativeMove(type, context.structs, context.enums, context.semanticInfo.foreignNamedTypes) ? "" : "const "}${enumName(type)} ${temporary} = ${subject};`;
+  }
   const arms = statement.arms.map((arm) => {
     const variant = declaration.variants.find((candidate) => candidate.name === arm.variantName)!;
     const armTypes = new Map(context.localTypes);
@@ -4925,36 +5067,100 @@ function generateMatch(statement: Extract<Statement, { kind: "match" }>, context
       || requiresNativeMove(variant.payload.name, context.structs, context.enums, context.semanticInfo.foreignNamedTypes)
     ));
     if (borrowedPayload && arm.binding) armModes.set(arm.binding, "in");
-    const armContext = {
+    let armContext: GenerationContext = {
       ...context,
       localTypes: armTypes,
       parameterModes: armModes,
       liveFlags: new Map(context.liveFlags),
       cleanupScopes: [...context.cleanupScopes, []],
     };
-    let binding = variant.payload && arm.binding
-      ? `\n    ${generateMatchBinding(variant.payload.name, arm.binding, `${access}data.${variant.name}`, borrowedPayload, context)}\n    (void)${cBindingName(arm.binding)};`
-      : "";
-    if (!borrowed && variant.payload && arm.binding && hasCleanupType(variant.payload.name, context.structs, context.enums, context.semanticInfo.foreignTypes)) {
-      const liveFlag = ensureLiveFlag(arm.binding, armContext);
-      armContext.cleanupScopes.at(-1)!.push({ name: arm.binding, type: variant.payload.name, liveFlag });
-      binding += `\n    bool ${liveFlag} = true;`;
-    }
-    if (variant.payload && arm.objectBindings) {
-      const hidden = `${temporary}_${variant.name}_payload`;
-      binding += `\n    ${generateMatchBinding(variant.payload.name, hidden, `${access}data.${variant.name}`, borrowedPayload, context)}`;
-      const hiddenAccess = payloadDeclaration?.kind === "class" || borrowedPayload ? `${hidden}->` : `${hidden}.`;
-      for (const fieldBinding of arm.objectBindings) {
-        const field = payloadDeclaration!.fields.find((candidate) => candidate.name === fieldBinding.fieldName)!;
-        const fieldBorrowed = hasCleanupType(field.type.name, context.structs, context.enums, context.semanticInfo.foreignTypes)
-          || requiresNativeMove(field.type.name, context.structs, context.enums, context.semanticInfo.foreignNamedTypes);
-        binding += `\n    ${generateMatchBinding(field.type.name, fieldBinding.bindingName, `${hiddenAccess}${field.name}`, fieldBorrowed, context)}`;
-        binding += `\n    (void)${cBindingName(fieldBinding.bindingName)};`;
+    let binding = "";
+    if (context.generatorFrame) {
+      const storageOverrides = new Map<string, string>();
+      const bindingLines: string[] = [];
+      if (variant.payload && arm.binding && arm.bindingLocation) {
+        const persistent = registerPersistentGeneratorBinding(
+          context,
+          `_z_match_binding_${arm.bindingLocation.offset}`,
+          variant.payload.name,
+          `${access}data.${variant.name}`,
+          borrowedPayload,
+        );
+        storageOverrides.set(arm.binding, persistent.storage);
+        bindingLines.push(persistent.initialization, `(void)${persistent.storage};`);
+        if (persistent.liveFlag) {
+          armContext.liveFlags.set(arm.binding, persistent.liveFlag);
+          armContext.cleanupScopes.at(-1)!.push({
+            name: arm.binding,
+            type: variant.payload.name,
+            liveFlag: persistent.liveFlag,
+            value: persistent.storage,
+          });
+        }
       }
-      if (!borrowedPayload && hasCleanupType(variant.payload.name, context.structs, context.enums, context.semanticInfo.foreignTypes)) {
-        const liveFlag = ensureLiveFlag(hidden, armContext);
-        armContext.cleanupScopes.at(-1)!.push({ name: hidden, type: variant.payload.name, liveFlag });
+      if (variant.payload && arm.objectBindings) {
+        const hiddenName = `_z_match_payload_${arm.location.offset}`;
+        const hidden = registerPersistentGeneratorBinding(
+          context,
+          hiddenName,
+          variant.payload.name,
+          `${access}data.${variant.name}`,
+          borrowedPayload,
+        );
+        bindingLines.push(hidden.initialization);
+        const hiddenAccess = payloadDeclaration?.kind === "class"
+          ? `${hidden.storage}->`
+          : `(${hidden.storage}).`;
+        for (const fieldBinding of arm.objectBindings) {
+          const field = payloadDeclaration!.fields.find((candidate) => candidate.name === fieldBinding.fieldName)!;
+          const fieldBorrowed = hasCleanupType(field.type.name, context.structs, context.enums, context.semanticInfo.foreignTypes)
+            || requiresNativeMove(field.type.name, context.structs, context.enums, context.semanticInfo.foreignNamedTypes);
+          const persistent = registerPersistentGeneratorBinding(
+            context,
+            `_z_match_binding_${fieldBinding.bindingLocation.offset}`,
+            field.type.name,
+            `${hiddenAccess}${field.name}`,
+            fieldBorrowed,
+          );
+          storageOverrides.set(fieldBinding.bindingName, persistent.storage);
+          bindingLines.push(persistent.initialization, `(void)${persistent.storage};`);
+        }
+        if (hidden.liveFlag) {
+          armContext.cleanupScopes.at(-1)!.push({
+            name: hiddenName,
+            type: variant.payload.name,
+            liveFlag: hidden.liveFlag,
+            value: hidden.storage,
+          });
+        }
+      }
+      armContext = withGeneratorStorage(armContext, storageOverrides);
+      if (bindingLines.length > 0) binding = `\n    ${bindingLines.join("\n    ")}`;
+    } else {
+      binding = variant.payload && arm.binding
+        ? `\n    ${generateMatchBinding(variant.payload.name, arm.binding, `${access}data.${variant.name}`, borrowedPayload, context)}\n    (void)${cBindingName(arm.binding)};`
+        : "";
+      if (!borrowed && variant.payload && arm.binding && hasCleanupType(variant.payload.name, context.structs, context.enums, context.semanticInfo.foreignTypes)) {
+        const liveFlag = ensureLiveFlag(arm.binding, armContext);
+        armContext.cleanupScopes.at(-1)!.push({ name: arm.binding, type: variant.payload.name, liveFlag });
         binding += `\n    bool ${liveFlag} = true;`;
+      }
+      if (variant.payload && arm.objectBindings) {
+        const hidden = `${temporary}_${variant.name}_payload`;
+        binding += `\n    ${generateMatchBinding(variant.payload.name, hidden, `${access}data.${variant.name}`, borrowedPayload, context)}`;
+        const hiddenAccess = payloadDeclaration?.kind === "class" || borrowedPayload ? `${hidden}->` : `${hidden}.`;
+        for (const fieldBinding of arm.objectBindings) {
+          const field = payloadDeclaration!.fields.find((candidate) => candidate.name === fieldBinding.fieldName)!;
+          const fieldBorrowed = hasCleanupType(field.type.name, context.structs, context.enums, context.semanticInfo.foreignTypes)
+            || requiresNativeMove(field.type.name, context.structs, context.enums, context.semanticInfo.foreignNamedTypes);
+          binding += `\n    ${generateMatchBinding(field.type.name, fieldBinding.bindingName, `${hiddenAccess}${field.name}`, fieldBorrowed, context)}`;
+          binding += `\n    (void)${cBindingName(fieldBinding.bindingName)};`;
+        }
+        if (!borrowedPayload && hasCleanupType(variant.payload.name, context.structs, context.enums, context.semanticInfo.foreignTypes)) {
+          const liveFlag = ensureLiveFlag(hidden, armContext);
+          armContext.cleanupScopes.at(-1)!.push({ name: hidden, type: variant.payload.name, liveFlag });
+          binding += `\n    bool ${liveFlag} = true;`;
+        }
       }
     }
     const body = generateStatement(arm.body, armContext);
@@ -4965,13 +5171,10 @@ function generateMatch(statement: Extract<Statement, { kind: "match" }>, context
     const lines = [body, cleanup, statementTerminates(arm.body) ? "" : "break;"].filter(Boolean).join("\n");
     return `  case ${variantTag(type, variant.name)}: {${binding}\n${indent(lines, 4)}\n  }`;
   }).join("\n");
-  const storage = borrowed
-    ? `const ${enumName(type)} *${temporary} = &(${subject});`
-    : `${requiresNativeMove(type, context.structs, context.enums, context.semanticInfo.foreignNamedTypes) ? "" : "const "}${enumName(type)} ${temporary} = ${subject};`;
   const invalid = requiresNativeMove(type, context.structs, context.enums, context.semanticInfo.foreignNamedTypes)
     ? "\n  default:\n    abort();"
     : "";
-  return `${storage}\nswitch (${access}tag) {\n${arms}${invalid}\n}`;
+  return `${subjectStorage ? `${subjectStorage}\n` : ""}switch (${access}tag) {\n${arms}${invalid}\n}`;
 }
 
 function generateMatchExpression(
@@ -5083,9 +5286,22 @@ function generateNicheOptionMatch(
     context.enums,
     context.semanticInfo.foreignNamedTypes,
   );
-  const storage = requiresStatementValue(statement.expression, context)
-    ? `${localDeclaration};\n${generateDirectValue(statement.expression, context, (value) => `${temporary} = ${value};`)}`
-    : `${localDeclaration} = ${generateExpression(statement.expression, context)};`;
+  let matchValue = temporary;
+  let storage: string;
+  if (context.generatorFrame) {
+    matchValue = registerGeneratorFrameField(context, {
+      name: `_z_match_subject_${statement.location.offset}`,
+      type,
+      parameter: false,
+    });
+    storage = requiresStatementValue(statement.expression, context)
+      ? generateDirectValue(statement.expression, context, (value) => `${matchValue} = ${value};`)
+      : `${matchValue} = ${generateExpression(statement.expression, context)};`;
+  } else {
+    storage = requiresStatementValue(statement.expression, context)
+      ? `${localDeclaration};\n${generateDirectValue(statement.expression, context, (value) => `${temporary} = ${value};`)}`
+      : `${localDeclaration} = ${generateExpression(statement.expression, context)};`;
+  }
   const some = statement.arms.find((arm) => arm.variantName === "some")!;
   const none = statement.arms.find((arm) => arm.variantName === "none")!;
   const renderArm = (arm: typeof some, present: boolean): string => {
@@ -5094,20 +5310,45 @@ function generateNicheOptionMatch(
     if (present && arm.binding) localTypes.set(arm.binding, payloadType);
     const payloadBorrowed = borrowed && cleanupBearing;
     if (present && arm.binding && payloadBorrowed) parameterModes.set(arm.binding, "in");
-    const armContext = {
+    let armContext: GenerationContext = {
       ...context,
       localTypes,
       parameterModes,
       liveFlags: new Map(context.liveFlags),
       cleanupScopes: [...context.cleanupScopes, []],
     };
-    let binding = present && arm.binding
-      ? `${generateMatchBinding(payloadType, arm.binding, temporary, payloadBorrowed, context)}\n(void)${cBindingName(arm.binding)};`
-      : "";
-    if (present && arm.binding && !borrowed && cleanupBearing) {
-      const liveFlag = ensureLiveFlag(arm.binding, armContext);
-      armContext.cleanupScopes.at(-1)!.push({ name: arm.binding, type: payloadType, liveFlag });
-      binding += `\nbool ${liveFlag} = true;`;
+    let binding = "";
+    if (present && arm.binding && arm.bindingLocation && context.generatorFrame) {
+      const persistent = registerPersistentGeneratorBinding(
+        context,
+        `_z_match_binding_${arm.bindingLocation.offset}`,
+        payloadType,
+        matchValue,
+        payloadBorrowed,
+      );
+      armContext = withGeneratorStorage(
+        armContext,
+        new Map([[arm.binding, persistent.storage]]),
+      );
+      binding = `${persistent.initialization}\n(void)${persistent.storage};`;
+      if (persistent.liveFlag) {
+        armContext.liveFlags.set(arm.binding, persistent.liveFlag);
+        armContext.cleanupScopes.at(-1)!.push({
+          name: arm.binding,
+          type: payloadType,
+          liveFlag: persistent.liveFlag,
+          value: persistent.storage,
+        });
+      }
+    } else {
+      binding = present && arm.binding
+        ? `${generateMatchBinding(payloadType, arm.binding, temporary, payloadBorrowed, context)}\n(void)${cBindingName(arm.binding)};`
+        : "";
+      if (present && arm.binding && !borrowed && cleanupBearing) {
+        const liveFlag = ensureLiveFlag(arm.binding, armContext);
+        armContext.cleanupScopes.at(-1)!.push({ name: arm.binding, type: payloadType, liveFlag });
+        binding += `\nbool ${liveFlag} = true;`;
+      }
     }
     const body = generateStatement(arm.body, armContext);
     recordVariableType(arm.body, armContext);
@@ -5116,7 +5357,7 @@ function generateNicheOptionMatch(
       : generateCleanup([armContext.cleanupScopes.at(-1)!], armContext);
     return `{\n${indent([binding, body, cleanup].filter(Boolean).join("\n"), 2)}\n}`;
   };
-  return `${storage}\nif (${temporary} != ${nicheOptionNull(payloadType)}) ${renderArm(some, true)} else ${renderArm(none, false)}`;
+  return `${storage}\nif (${matchValue} != ${nicheOptionNull(payloadType)}) ${renderArm(some, true)} else ${renderArm(none, false)}`;
 }
 
 function generateNicheOptionMatchExpression(
@@ -5178,6 +5419,64 @@ function generateNicheOptionMatchExpression(
     return `{\n${indent([binding, body, cleanup].filter(Boolean).join("\n"), 2)}\n}`;
   };
   return `${storage}\nif (${temporary} != ${nicheOptionNull(payloadType)}) ${renderArm(some, true)} else ${renderArm(none, false)}`;
+}
+
+type PersistentGeneratorBinding = {
+  readonly storage: string;
+  readonly initialization: string;
+  readonly liveFlag: string | null;
+};
+
+function registerPersistentGeneratorBinding(
+  context: GenerationContext,
+  fieldName: string,
+  type: string,
+  payload: string,
+  borrowed: boolean,
+): PersistentGeneratorBinding {
+  if (!context.generatorFrame) throw new Error("persistent pattern binding requires a generator frame");
+  const borrowedReferenceIdentity = borrowed && (
+    closureCaptureHasReferenceIdentity(type, context.structs, context.semanticInfo.foreignNamedTypes)
+    || Boolean(parsePointerTypeName(type))
+    || Boolean(parseViewType(type))
+  );
+  if (borrowed && !borrowedReferenceIdentity) {
+    const mapped = mapType(type, context.structs, context.enums, context.semanticInfo.foreignNamedTypes);
+    const field = registerGeneratorFrameField(context, {
+      name: fieldName,
+      type: null,
+      rawCType: `const ${mapped} *`,
+      parameter: false,
+    });
+    return {
+      storage: `(*${field})`,
+      initialization: `${field} = &(${payload});`,
+      liveFlag: null,
+    };
+  }
+
+  const field = registerGeneratorFrameField(context, {
+    name: fieldName,
+    type,
+    parameter: false,
+  });
+  const value = !borrowed && requiresNativeMove(
+    type,
+    context.structs,
+    context.enums,
+    context.semanticInfo.foreignNamedTypes,
+  )
+    ? `std::move(${payload})`
+    : payload;
+  const cleanupBearing = !borrowed
+    && hasCleanupType(type, context.structs, context.enums, context.semanticInfo.foreignTypes);
+  const liveFlag = cleanupBearing ? `frame->${cBindingName(fieldName)}_live` : null;
+  if (liveFlag) context.generatorFrame.liveFlags.set(fieldName, liveFlag);
+  return {
+    storage: field,
+    initialization: `${field} = ${value};${liveFlag ? `\n    ${liveFlag} = true;` : ""}`,
+    liveFlag,
+  };
 }
 
 function generateMatchBinding(
@@ -5439,6 +5738,26 @@ function generateExpressionInner(expression: Expression, context: GenerationCont
         const liveFlag = context.liveFlags.get("this");
         if (!liveFlag) throw new Error("missing ownership flag for moved receiver `this`");
         return `(${liveFlag} = false, ${value})`;
+      }
+      const generatorStorage = context.generatorFrame?.storage.get(expression.name);
+      if (generatorStorage) {
+        if (context.semanticInfo.movedExpressions.has(expression.location.offset)) {
+          const type = context.localTypes.get(expression.name);
+          if (type && requiresNativeMove(
+            type,
+            context.structs,
+            context.enums,
+            context.semanticInfo.foreignNamedTypes,
+          )) {
+            const moved = `std::move(${generatorStorage})`;
+            const nativeLiveFlag = context.liveFlags.get(expression.name);
+            return nativeLiveFlag ? `(${nativeLiveFlag} = false, ${moved})` : moved;
+          }
+          const liveFlag = context.liveFlags.get(expression.name);
+          if (!liveFlag) throw new Error(`missing ownership flag for moved value ${JSON.stringify(expression.name)}`);
+          return `(${liveFlag} = false, ${generatorStorage})`;
+        }
+        return maybeRetainClass(expression, generatorStorage, context);
       }
       if (
         context.parameterModes.get(expression.name) === "in"

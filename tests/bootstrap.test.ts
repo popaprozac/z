@@ -10717,7 +10717,8 @@ test("runs cold synchronous generators with deterministic suspended-frame cleanu
   const generated = compileToC(source, example);
   assert.match(generated, /Z_GeneratorFrame_noteIdentifiers/);
   assert.match(generated, /switch \(frame->state\)/);
-  assert.match(generated, /case 1: ;/);
+  assert.match(generated, /case 1: goto _z_generator_resume_1;/);
+  assert.match(generated, /_z_generator_resume_1: ;/);
   assert.match(generated, /_Generator_.*_next\(&\(identifiers\)\)/);
   assert.doesNotMatch(generated, /_z_iterator_0 = identifiers/);
 
@@ -10765,6 +10766,80 @@ test("runs cold synchronous generators with deterministic suspended-frame cleanu
   const exhaustionResult = spawnSync(process.execPath, [cli, "run", exhaustionFile], { encoding: "utf8" });
   assert.equal(exhaustionResult.status, 0, exhaustionResult.stderr);
   assert.equal(exhaustionResult.stdout, "released 7\n22\nreleased 42\n");
+
+  const persistentControlFlowFile = resolve(cleanupDirectory, "persistent-control-flow.zs");
+  writeFileSync(persistentControlFlowFile, `
+    import console from "std/console";
+    import { Generator } from "std/iteration";
+    struct Lease {
+      id: i32;
+      deinit { console.log(\`released \${this.id}\`); }
+    }
+    enum Choice {
+      item Lease,
+      empty,
+    }
+    class Session {
+      id: i32;
+    }
+    function repeated(choice: Choice): Generator<i32> {
+      match (choice) {
+        item(lease) => {
+          yield lease.id;
+          yield lease.id;
+        }
+        empty => {}
+      }
+    }
+    function indexed(values: Array<i32>): Generator<i32> {
+      for (const value of values) {
+        yield value;
+        yield value + 1;
+      }
+    }
+    function optional(value: Option<Session>): Generator<i32> {
+      match (in value) {
+        some(session) => {
+          yield session.id;
+          yield session.id;
+        }
+        none => {}
+      }
+    }
+    function main(): i32 {
+      const matched = repeated(Choice.item(Lease({ id: 20 })));
+      const first = matched.next();
+      const second = matched.next();
+      let values = Array<i32>();
+      values.push(21);
+      const looped = indexed(move values);
+      const third = looped.next();
+      const fourth = looped.next();
+      const optionalValues = optional(Option.some(new Session({ id: 21 })));
+      const fifth = optionalValues.next();
+      const sixth = optionalValues.next();
+      const firstValue = match (first) { some(value) => value; none => 0; };
+      const secondValue = match (second) { some(value) => value; none => 0; };
+      const thirdValue = match (third) { some(value) => value; none => 0; };
+      const fourthValue = match (fourth) { some(value) => value; none => 0; };
+      const fifthValue = match (fifth) { some(value) => value; none => 0; };
+      const sixthValue = match (sixth) { some(value) => value; none => 0; };
+      return firstValue + secondValue + thirdValue + fourthValue + fifthValue + sixthValue - 125;
+    }
+  `);
+  const persistentControlFlow = spawnSync(
+    process.execPath,
+    [cli, "run", persistentControlFlowFile],
+    { encoding: "utf8" },
+  );
+  assert.equal(persistentControlFlow.status, 0, persistentControlFlow.stderr);
+  assert.equal(persistentControlFlow.stdout, "released 20\n");
+  const persistentGenerated = compileToC(
+    readFileSync(persistentControlFlowFile, "utf8"),
+    persistentControlFlowFile,
+  );
+  assert.match(persistentGenerated, /uintptr_t _z_for_index_/);
+  assert.match(persistentGenerated, /_z_match_binding_.*_live/);
 
   const native = spawnSync(process.execPath, [cli, "check", example, "--native-frontend"], { encoding: "utf8" });
   assert.equal(native.status, 0, native.stderr);
@@ -10841,6 +10916,32 @@ test("runs cold synchronous generators with deterministic suspended-frame cleanu
       function main(): i32 { return 0; }
     `, "generator-borrowed-input.zs"),
     /a cold generator cannot retain borrowed parameter storage/,
+  );
+  assert.throws(
+    () => compileToC(`
+      import { Generator } from "std/iteration";
+      function inner(): Generator<i32> { yield 42; }
+      function outer(): Generator<i32> {
+        for (const value of inner()) { yield value; }
+      }
+      function main(): i32 { return 0; }
+    `, "generator-custom-iterator-suspension.zs"),
+    /yield inside custom Iterator for\.\.\.of is deferred/,
+  );
+  assert.throws(
+    () => compileToC(`
+      import { Generator } from "std/iteration";
+      enum Choice { value i32, empty, }
+      function values(choice: Choice): Generator<i32> {
+        const selected = match (choice) {
+          value(number) => { yield number; select number; }
+          empty => 0;
+        };
+        yield selected;
+      }
+      function main(): i32 { return 0; }
+    `, "generator-match-expression-suspension.zs"),
+    /yield inside a value-producing match expression is deferred/,
   );
 });
 
