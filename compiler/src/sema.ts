@@ -85,7 +85,7 @@ import { parseSetType } from "./set-types.ts";
 import { parseOptionalViewType, parseReceiverViewReturnType, parseViewType, viewTypeName } from "./view-types.ts";
 import { hashableSelfTypeName, hashableTraitDeclaration } from "./hash-types.ts";
 import { iteratorTraitDeclaration } from "./iterator-types.ts";
-import { isGeneratorFunction, parseGeneratorType } from "./generator-types.ts";
+import { generatorStepTypeName, isGeneratorFunction, parseGeneratorType } from "./generator-types.ts";
 
 export type ObjCCallInfo = {
   readonly selector: string;
@@ -1060,7 +1060,9 @@ export function analyze(
 
   for (const declaration of program.functions) {
     const generator = parseGeneratorType(declaration.returnType.name);
-    if (generator) state.iteratorElementTypes.set(declaration.returnType.name, generator.elementType);
+    if (generator && !generator.returnType) {
+      state.iteratorElementTypes.set(declaration.returnType.name, generator.elementType);
+    }
   }
 
   for (const declaration of program.structs) {
@@ -1741,7 +1743,9 @@ function analyzeFunction(
     validateGeneratorBodyShape(declaration, fileName);
   }
   const generator = isGeneratorFunction(declaration) ? parseGeneratorType(declaration.returnType.name) : null;
-  if (generator) state.iteratorElementTypes.set(declaration.returnType.name, generator.elementType);
+  if (generator && !generator.returnType) {
+    state.iteratorElementTypes.set(declaration.returnType.name, generator.elementType);
+  }
   const returns = analyzeStatements(declaration.body, declaration, locals, globals, structs, enums, fileName, state);
   const unresolvedOutBinding = state.inferredOutBindingLocations.entries().next().value as [string, SourceLocation] | undefined;
   if (unresolvedOutBinding) {
@@ -1751,7 +1755,7 @@ function analyzeFunction(
     });
   }
   if (!returns) requireOutParametersInitialized(declaration, locals, declaration.location, fileName);
-  if (!generator && declaration.returnType.name !== "void" && !returns) {
+  if ((!generator && declaration.returnType.name !== "void" || generator?.returnType) && !returns) {
     throw new DiagnosticError(fileName, declaration.location, `function ${JSON.stringify(declaration.name)} must end with a return value`);
   }
   state.activeReceiver = previousReceiver;
@@ -2556,11 +2560,31 @@ function analyzeStatement(
     case "return": {
       const generator = isGeneratorFunction(owner) ? parseGeneratorType(owner.returnType.name) : null;
       if (generator) {
-        if (statement.expression) {
+        if (!generator.returnType && statement.expression) {
           throw new DiagnosticError(fileName, statement.location, "a generator finishes with `return;` and cannot return a value", {
             notes: [`this generator yields ${displayArrayType(generator.elementType)} values`],
+            helps: [`declare Generator<${displayArrayType(generator.elementType)}, ReturnType> to carry a terminal value`],
           });
         }
+        if (generator.returnType && !statement.expression) {
+          throw new DiagnosticError(fileName, statement.location, `Generator<${displayArrayType(generator.elementType)}, ${displayArrayType(generator.returnType)}> must return a terminal value`);
+        }
+        if (generator.returnType && statement.expression) {
+          const actual = inferDirectValue(
+            statement.expression,
+            owner,
+            locals,
+            globals,
+            structs,
+            enums,
+            fileName,
+            state,
+            generator.returnType,
+          );
+          requireAssignable(generator.returnType, actual, statement.expression, fileName, structs, enums, state);
+          consumeOwnedValue(statement.expression, generator.returnType, locals, structs, enums, fileName, state);
+        }
+        requireOutParametersInitialized(owner, locals, statement.location, fileName);
         return;
       }
       const expected = owner.returnType.name;
@@ -5924,7 +5948,9 @@ function inferExpressionInner(
           if (!root || !locals.has(root.name)) {
             throw new DiagnosticError(fileName, expression.callee.object.location, "Generator.next requires a named generator handle");
           }
-          return optionTypeName(generator.elementType);
+          return generator.returnType
+            ? generatorStepTypeName(generator.elementType, generator.returnType)
+            : optionTypeName(generator.elementType);
         }
         if (receiverValueType === "Arena") {
           rejectLabeledArguments(expression.argumentLabels, expression.location, fileName);
@@ -7842,6 +7868,18 @@ function analyzeForLoop(
   const iterableType = inferExpression(statement.iterable, locals, globals, structs, enums, fileName, state);
   const iterableName = String(underlyingType(iterableType));
   const root = storageRoot(statement.iterable);
+  const generator = parseGeneratorType(iterableName);
+  if (generator?.returnType) {
+    throw new DiagnosticError(
+      fileName,
+      statement.iterable.location,
+      `for...of cannot discard the terminal ${displayArrayType(generator.returnType)} value from ${displayArrayType(iterableName)}`,
+      {
+        code: "Z0311",
+        helps: ["advance the generator with `.next()` and match `yielded(value)` or `complete(result)`"],
+      },
+    );
+  }
   const iteratorElement = state.iteratorElementTypes.get(iterableName);
   if (iteratorElement) {
     analyzeIteratorForLoop(
@@ -9633,6 +9671,9 @@ function validateType(
   const generator = parseGeneratorType(type.name);
   if (generator) {
     validateType({ name: generator.elementType, location: type.location }, structs, enums, foreignNamedTypes, fileName, false);
+    if (generator.returnType) {
+      validateType({ name: generator.returnType, location: type.location }, structs, enums, foreignNamedTypes, fileName, false);
+    }
     return;
   }
   const view = parseViewType(type.name);

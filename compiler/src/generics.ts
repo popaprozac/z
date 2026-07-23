@@ -17,7 +17,7 @@ import { optionTypeName } from "./option-types.ts";
 import { parseViewType, viewTypeName } from "./view-types.ts";
 import { hashableTraitDeclaration } from "./hash-types.ts";
 import { iteratorTraitDeclaration } from "./iterator-types.ts";
-import { generatorTypeName, parseGeneratorType } from "./generator-types.ts";
+import { generatorStepTypeName, generatorTypeName, parseGeneratorType } from "./generator-types.ts";
 
 export function materializeGenerics(
   program: Program,
@@ -56,6 +56,7 @@ export function materializeGenerics(
   const functionInstances = new Map<string, string>();
   const traitInstances = new Map<string, string>();
   const optionInstances = new Map<string, EnumDeclaration>();
+  const generatorStepInstances = new Map<string, EnumDeclaration>();
   const mapInstances = new Set<string>();
   const setInstances = new Set<string>();
 
@@ -142,12 +143,30 @@ export function materializeGenerics(
     if (!generic) return name;
     const args = generic.arguments.map((argument) => substituteName(argument, substitutions));
     if (generic.base === "Generator" || generatorBindings.has(generic.base)) {
-      if (args.length !== 1) {
-        throw new DiagnosticError(fileName, { offset: 0, line: 1, column: 1 }, `Generator expects 1 type argument, received ${args.length}`);
+      if (args.length !== 1 && args.length !== 2) {
+        throw new DiagnosticError(fileName, { offset: 0, line: 1, column: 1 }, `Generator expects 1 or 2 type arguments, received ${args.length}`);
       }
-      const name = generatorTypeName(args[0]);
-      instantiateStruct("Option", [args[0]]);
-      typeDisplayNames.set(name, `Generator<${displayName(args[0])}>`);
+      const name = generatorTypeName(args[0], args[1] ?? null);
+      if (args.length === 1) {
+        instantiateStruct("Option", [args[0]]);
+      } else {
+        const step = generatorStepTypeName(args[0], args[1]);
+        typeDisplayNames.set(step, `GeneratorStep<${displayName(args[0])}, ${displayName(args[1])}>`);
+        if (!generatorStepInstances.has(step)) {
+          const location = program.functions[0]?.location ?? program.structs[0]?.location ?? program.enums[0]?.location
+            ?? { offset: 0, line: 1, column: 1 };
+          generatorStepInstances.set(step, {
+            kind: "enum",
+            name: step,
+            location,
+            variants: [
+              { name: "yielded", payload: { name: args[0], location }, location },
+              { name: "complete", payload: { name: args[1], location }, location },
+            ],
+          });
+        }
+      }
+      typeDisplayNames.set(name, `Generator<${args.map(displayName).join(", ")}>`);
       return name;
     }
     if (generic.base === "Map") return instantiateMap(args);
@@ -485,6 +504,7 @@ export function materializeGenerics(
           : null;
         const intrinsicGeneratorConformance = Boolean(
           generator
+          && !generator.returnType
           && iteratorTemplate
           && required === instantiateTrait(iteratorTemplate.name, [generator.elementType]),
         );
@@ -560,7 +580,7 @@ export function materializeGenerics(
     typeAliases,
     structs,
     functions,
-    enums: [...enums, ...optionInstances.values()],
+    enums: [...enums, ...optionInstances.values(), ...generatorStepInstances.values()],
     traits: [...traits_, ...materializedTraits],
   };
 }

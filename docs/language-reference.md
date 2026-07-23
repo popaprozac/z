@@ -101,6 +101,7 @@ text value.
 | Hash contract | `Hashable` | Nominal equality and hashing trait for readonly collection keys, imported from `std/hash` |
 | Iteration contract | `Iterator<T>` | Nominal mutable-cursor trait imported from `std/iteration` |
 | Generator sequence | `Generator<T>` | Cold move-only compiler frame imported from `std/iteration`; `.next()` returns `Option<T>` |
+| Generator with completion | `Generator<Yield, Return>` | Cold frame whose `.next()` returns `GeneratorStep<Yield, Return>` with `yielded` or `complete` |
 | Function value | `(in value: T) => U throws E` | Closure/callback signature; parameter capabilities are part of the type |
 | Read-only projection | `view T` | Inferred non-storable borrow tied to owner storage, not a general reference type |
 | Native types | Imported nominal names and `T | null` | ABI-exact C, Objective-C, C++, or Swift-generated types; nullability is limited to nullable native references/handles |
@@ -658,6 +659,45 @@ suspended local exactly once.
 `yield` is what selects suspended-frame lowering. A function returning
 `Generator<T>` without `yield` remains an ordinary function and may return or
 forward an existing generator value.
+
+Generators may explicitly carry a terminal value with a second type argument:
+
+```zs
+struct ScanSummary {
+  values: i32;
+  total: i32;
+}
+
+function scanValues(count: i32): Generator<i32, ScanSummary> {
+  let current = 1;
+  let total = 0;
+  while (current <= count) {
+    total = total + current;
+    yield current;
+    current = current + 1;
+  }
+  return ScanSummary({ values: count, total });
+}
+
+const scanner = scanValues(3);
+match (scanner.next()) {
+  yielded(value) => consume(value);
+  complete(summary) => consumeSummary(summary);
+}
+```
+
+Here `.next()` returns the compiler-provided
+`GeneratorStep<i32, ScanSummary>` enum. `yielded(value)` carries one stream
+element and `complete(summary)` carries the terminal return exactly once.
+Every reachable path in a two-argument generator must `return` its declared
+terminal type. Calling `.next()` again after consuming `complete` is a runtime
+contract violation.
+
+`Generator<Yield, Return>` deliberately does not satisfy `Iterator<Yield>` and
+cannot be used directly with `for...of`: ordinary iteration would silently
+discard `Return`. Advance it explicitly and match both outcomes. The
+one-argument `Generator<T>` remains the ergonomic sequence form and continues
+to satisfy `Iterator<T>`.
 
 The initial lowering supports ordinary statements, `if`, `while`, multiple
 `yield` points, owned parameters, and owned yielded values. Generator methods,

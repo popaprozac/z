@@ -3756,6 +3756,15 @@ function matchShape(
           variants,
         }));
       }
+      if (generic.base == "GeneratorStep" && generic.arguments.length == 2) {
+        let variants = Array<NativeMatchVariant>();
+        variants.push(matchVariant("yielded", generic.arguments[0], moduleIndex));
+        variants.push(matchVariant("complete", generic.arguments[1], moduleIndex));
+        return Option.some(NativeMatchShape({
+          name: subjectType.copyBytes(0, subjectType.byteLength),
+          variants,
+        }));
+      }
     }
     none => {}
   }
@@ -5771,6 +5780,20 @@ function collectionMethodSignature(
       returnType = `Option<${elementType}>`;
     } else if (methodName == "clear") {
       returnType = "void";
+    }
+  } else if (
+    generic.base == "Generator"
+    && (generic.arguments.length == 1 || generic.arguments.length == 2)
+    && methodName == "next"
+  ) {
+    const elementType = generic.arguments[0].copyBytes(
+      0,
+      generic.arguments[0].byteLength
+    );
+    if (generic.arguments.length == 1) {
+      returnType = `Option<${elementType}>`;
+    } else {
+      returnType = `GeneratorStep<${elementType}, ${generic.arguments[1]}>`;
     }
   }
   if (returnType.byteLength == 0) return Option<ModuleFunctionSignature>.none;
@@ -8128,6 +8151,43 @@ function inferStatement(
     }
     return false;
   }
+  if (kind == StatementKind.yieldStatement) {
+    const expectedYield = valueBindingType(bindings, "__z_native_yield_type");
+    match (in arena.nodes[index].expression) {
+      some(expression) => {
+        const actual = try inferExpressionTypeExpected(
+          module,
+          modules,
+          moduleIndex,
+          arena,
+          expression,
+          expectedYield,
+          inout bindings,
+          inout evidence
+        );
+        if (expectedYield.byteLength > 0) {
+          try requireExpressionSyntaxType(
+            module,
+            modules,
+            moduleIndex,
+            expression,
+            expectedYield,
+            actual
+          );
+        }
+        try consumeOwnedExpressionSyntax(
+          module,
+          modules,
+          moduleIndex,
+          expression,
+          expectedYield,
+          inout bindings
+        );
+      }
+      none => {}
+    }
+    return true;
+  }
   if (
     kind == StatementKind.expressionStatement
     || kind == StatementKind.matchStatement
@@ -8418,6 +8478,24 @@ function functionValueBindings(in parameters: Array<Parameter>): Array<NativeVal
   return bindings;
 }
 
+function statementContainsYield(
+  in arena: StatementArena,
+  index: usize
+): boolean {
+  if (arena.nodes[index].kind == StatementKind.yieldStatement) return true;
+  for (const child of arena.nodes[index].children) {
+    if (statementContainsYield(arena, child)) return true;
+  }
+  return false;
+}
+
+function statementArenaContainsYield(in arena: StatementArena): boolean {
+  for (const root of arena.roots) {
+    if (statementContainsYield(arena, root)) return true;
+  }
+  return false;
+}
+
 function inferFunctionExpressions(
   in module: ParsedModule,
   in modules: Array<ResolvedModule>,
@@ -8428,6 +8506,34 @@ function inferFunctionExpressions(
   inout evidence: ModuleSemanticEvidence
 ): void throws ModuleResolveError {
   let bindings = functionValueBindings(declaration.parameters);
+  let bodyReturnType = declaration.returnType.name.copyBytes(
+    0,
+    declaration.returnType.name.byteLength
+  );
+  if (statementArenaContainsYield(declaration.body)) {
+    match (genericTypeShape(declaration.returnType.name)) {
+      some(generator) => {
+        if (generator.base == "Generator") {
+          if (generator.arguments.length > 0) {
+            addValueBinding(
+              inout bindings,
+              "__z_native_yield_type",
+              generator.arguments[0]
+            );
+          }
+          if (generator.arguments.length == 2) {
+            bodyReturnType = generator.arguments[1].copyBytes(
+              0,
+              generator.arguments[1].byteLength
+            );
+          } else {
+            bodyReturnType = "void";
+          }
+        }
+      }
+      none => {}
+    }
+  }
   addTypeParameterBindings(inout bindings, inheritedTypeParameters);
   addTypeParameterBindings(inout bindings, declaration.typeParameters);
   addValueBinding(inout bindings, "__z_native_function_name", declaration.name);
@@ -8456,7 +8562,7 @@ function inferFunctionExpressions(
     declaration.body.roots,
     inout bindings,
     inout evidence,
-    declaration.returnType.name
+    bodyReturnType
   );
   try requireInitializedOutputParameters(
     module,

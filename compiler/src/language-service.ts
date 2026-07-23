@@ -509,7 +509,7 @@ export function hover(source: string, fileName: string, offset: number): Hover |
     return markdownHover("compiler-provided enum Option<T>", source, word.start, word.end);
   }
   if (word.text === "yield") {
-    return markdownHover("yield value  // suspends the current Generator<T> and transfers one T to its consumer", source, word.start, word.end);
+    return markdownHover("yield value  // suspends the current Generator and transfers one yielded value to its consumer", source, word.start, word.end);
   }
   const conversionSuffix = source.slice(word.end).match(/^\s*\(/)?.[0];
   const integerConversion = conversionSuffix
@@ -661,7 +661,7 @@ export function hover(source: string, fileName: string, offset: number): Hover |
     return markdownHover("trait Iterator<T>  // next(inout this): Option<T>", source, word.start, word.end);
   }
   if (context.semanticInfo.standardTypeBindings.get(word.text) === "Generator") {
-    return markdownHover("Generator<T>  // cold, move-only synchronous sequence with deterministic cleanup", source, word.start, word.end);
+    return markdownHover("Generator<Yield, Return?>  // cold, move-only synchronous sequence with deterministic cleanup", source, word.start, word.end);
   }
   if (word.text === "next") {
     const receiver = source.slice(0, word.start).match(/([A-Za-z_][A-Za-z0-9_]*)\.$/)?.[1];
@@ -671,7 +671,7 @@ export function hover(source: string, fileName: string, offset: number): Hover |
     const generator = binding ? parseGeneratorType(binding.type) : null;
     if (generator) {
       return markdownHover(
-        `next(): Option<${displayType(generator.elementType, context.typeDisplayNames)}>  // advances the suspended generator frame`,
+        `next(): ${generatorNextDisplayType(generator, context.typeDisplayNames)}  // advances the suspended generator frame`,
         source,
         word.start,
         word.end,
@@ -1149,7 +1149,7 @@ function selectiveImportCandidates(specifier: string, fileName: string): Complet
       {
         label: "Generator",
         kind: completionKinds.struct,
-        detail: "Generator<T>  // cold, move-only synchronous sequence",
+        detail: "Generator<Yield, Return?>  // cold, move-only synchronous sequence",
       },
     ];
   }
@@ -1698,7 +1698,7 @@ function symbolCompletions(source: string, fileName: string, offset: number): Co
                 : standardType === "Iterator"
                   ? "trait Iterator<T>  // next(inout this): Option<T>"
                   : standardType === "Generator"
-                    ? "Generator<T>  // cold, move-only synchronous sequence"
+                    ? "Generator<Yield, Return?>  // cold, move-only synchronous sequence"
                   : "Hasher  // mutable hash-composition state",
       sortText: `0-${name}`,
     });
@@ -2764,7 +2764,7 @@ function memberCompletions(
     return filterCompletions([{
       label: "next",
       kind: completionKinds.method,
-      detail: `next(): Option<${displayType(directReceiver.elementType, importContext.typeDisplayNames)}>  // advances the suspended frame`,
+      detail: `next(): ${generatorNextDisplayType(directReceiver, importContext.typeDisplayNames)}  // advances the suspended frame`,
       insertText: "next()",
     }], prefix, 1000);
   }
@@ -2808,7 +2808,7 @@ function memberCompletions(
       return filterCompletions([{
         label: "next",
         kind: completionKinds.method,
-        detail: `next(): Option<${displayType(generator.elementType, iterationContext.typeDisplayNames)}>  // advances the suspended frame`,
+        detail: `next(): ${generatorNextDisplayType(generator, iterationContext.typeDisplayNames)}  // advances the suspended frame`,
         insertText: "next()",
       }], prefix, 1000);
     }
@@ -3017,7 +3017,7 @@ function memberCompletions(
     return filterCompletions([{
       label: "next",
       kind: completionKinds.method,
-      detail: `next(): Option<${displayType(resolved.elementType, context.typeDisplayNames)}>  // advances the suspended frame`,
+      detail: `next(): ${generatorNextDisplayType(resolved, context.typeDisplayNames)}  // advances the suspended frame`,
       insertText: "next()",
     }], prefix, 1000);
   }
@@ -3304,7 +3304,7 @@ type ResolvedReceiver =
   | { readonly kind: "hasher" }
   | { readonly kind: "map"; readonly keyType: string; readonly valueType: string }
   | { readonly kind: "set"; readonly elementType: string }
-  | { readonly kind: "generator"; readonly elementType: string }
+  | { readonly kind: "generator"; readonly elementType: string; readonly returnType: string | null }
   | { readonly kind: "weak"; readonly target: string }
   | { readonly kind: "task"; readonly successType: string; readonly errorType: string | null }
   | { readonly kind: "objcConnection" };
@@ -4184,6 +4184,16 @@ function normalizeNativeSpelling(value: string): string {
 
 function normalizeOutputPointerSpelling(value: string): string {
   return normalizeNativeSpelling(value).replace(/\s*\*$/, "").trim();
+}
+
+function generatorNextDisplayType(
+  generator: { readonly elementType: string; readonly returnType: string | null },
+  typeDisplayNames: ReadonlyMap<string, string>,
+): string {
+  const element = displayType(generator.elementType, typeDisplayNames);
+  return generator.returnType
+    ? `GeneratorStep<${element}, ${displayType(generator.returnType, typeDisplayNames)}>`
+    : `Option<${element}>`;
 }
 
 function displayType(type: string, typeDisplayNames: ReadonlyMap<string, string> = new Map()): string {

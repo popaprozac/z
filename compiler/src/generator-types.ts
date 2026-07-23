@@ -1,14 +1,23 @@
 import { genericTypeName, parseGenericType } from "./generic-types.ts";
 import type { FunctionDeclaration } from "./ast.ts";
 
-export function generatorTypeName(elementType: string): string {
-  return genericTypeName("Generator", [elementType]);
+export function generatorTypeName(elementType: string, returnType: string | null = null): string {
+  return genericTypeName("Generator", returnType ? [elementType, returnType] : [elementType]);
 }
 
-export function parseGeneratorType(name: string): { readonly elementType: string } | null {
+export function generatorStepTypeName(elementType: string, returnType: string): string {
+  return genericTypeName("GeneratorStep", [elementType, returnType]);
+}
+
+export function parseGeneratorType(
+  name: string,
+): { readonly elementType: string; readonly returnType: string | null } | null {
   const generic = parseGenericType(name);
-  if (!generic || generic.base !== "Generator" || generic.arguments.length !== 1) return null;
-  return { elementType: generic.arguments[0] };
+  if (!generic || generic.base !== "Generator" || (generic.arguments.length !== 1 && generic.arguments.length !== 2)) return null;
+  return {
+    elementType: generic.arguments[0],
+    returnType: generic.arguments[1] ?? null,
+  };
 }
 
 export function isGeneratorFunction(declaration: FunctionDeclaration): boolean {

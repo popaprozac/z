@@ -10755,9 +10755,9 @@ test("runs cold synchronous generators with deterministic suspended-frame cleanu
   assert.match(native.stdout, /native frontend hybrid/);
 
   const generatorOffset = source.indexOf("Generator<i32>");
-  assert.match(hover(source, example, generatorOffset + 1)?.contents.value ?? "", /Generator<T>.*cold, move-only/s);
+  assert.match(hover(source, example, generatorOffset + 1)?.contents.value ?? "", /Generator<Yield, Return\?>.*cold, move-only/s);
   const yieldOffset = source.indexOf("yield identifier");
-  assert.match(hover(source, example, yieldOffset + 1)?.contents.value ?? "", /suspends the current Generator<T>/);
+  assert.match(hover(source, example, yieldOffset + 1)?.contents.value ?? "", /suspends the current Generator/);
   const identifiersOffset = source.indexOf("identifiers =");
   assert.match(hover(source, example, identifiersOffset + 1)?.contents.value ?? "", /identifiers: Generator<i32>/);
 
@@ -10825,6 +10825,97 @@ test("runs cold synchronous generators with deterministic suspended-frame cleanu
       function main(): i32 { return 0; }
     `, "generator-borrowed-input.zs"),
     /a cold generator cannot retain borrowed parameter storage/,
+  );
+});
+
+test("returns explicit terminal values from typed generators", () => {
+  const example = resolve(projectRoot, "examples/language/control-flow/generator-return.zs");
+  const source = readFileSync(example, "utf8");
+  const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, "value 1\nvalue 2\nvalue 3\ncomplete count=3 total=6\n");
+  const native = spawnSync(process.execPath, [cli, "check", example, "--native-frontend"], { encoding: "utf8" });
+  assert.equal(native.status, 0, native.stderr);
+  assert.match(native.stdout, /native frontend hybrid/);
+
+  const generated = compileToC(source, example);
+  assert.match(generated, /GeneratorStep/);
+  assert.match(generated, /\.data\.yielded/);
+  assert.match(generated, /\.data\.complete/);
+
+  const stepOffset = source.indexOf("step =");
+  assert.match(
+    hover(source, example, stepOffset + 1)?.contents.value ?? "",
+    /step: GeneratorStep<i32, ScanSummary>/,
+  );
+  const nextOffset = source.indexOf("next()");
+  assert.match(
+    hover(source, example, nextOffset + 1)?.contents.value ?? "",
+    /next\(\): GeneratorStep<i32, ScanSummary>/,
+  );
+
+  const cleanupDirectory = mkdtempSync("/tmp/z-generator-return-");
+  const cleanupFile = resolve(cleanupDirectory, "cleanup.zs");
+  writeFileSync(cleanupFile, `
+    import console from "std/console";
+    import { Generator } from "std/iteration";
+    struct Completion {
+      id: i32;
+      deinit { console.log(\`released \${this.id}\`); }
+    }
+    function values(): Generator<i32, Completion> {
+      const result = Completion({ id: 42 });
+      yield 1;
+      return result;
+    }
+    function main(): i32 {
+      const sequence = values();
+      const first = sequence.next();
+      match (first) {
+        yielded(value) => {}
+        complete(result) => return 1;
+      }
+      const terminal = sequence.next();
+      return match (terminal) {
+        yielded(value) => 1;
+        complete(result) => result.id - 42;
+      };
+    }
+  `);
+  const cleanupResult = spawnSync(process.execPath, [cli, "run", cleanupFile], { encoding: "utf8" });
+  assert.equal(cleanupResult.status, 0, cleanupResult.stderr);
+  assert.equal(cleanupResult.stdout, "released 42\n");
+
+  assert.throws(
+    () => compileToC(`
+      import { Generator } from "std/iteration";
+      function values(): Generator<i32, i32> { yield 1; return 2; }
+      function main(): i32 {
+        const sequence = values();
+        for (const value of sequence) {}
+        return 0;
+      }
+    `, "generator-return-for.zs"),
+    /for\.\.\.of cannot discard the terminal i32 value/,
+  );
+  assert.throws(
+    () => compileToC(`
+      import { Generator } from "std/iteration";
+      function values(flag: boolean): Generator<i32, i32> {
+        yield 1;
+        if (flag) return 2;
+      }
+      function main(): i32 { return 0; }
+    `, "generator-return-path.zs"),
+    /function "values" must end with a return value/,
+  );
+  assert.throws(
+    () => compileToC(`
+      import { Generator } from "std/iteration";
+      function values(): Generator<i32, i32> { yield 1; return; }
+      function main(): i32 { return 0; }
+    `, "generator-return-missing.zs"),
+    /must return a terminal value/,
   );
 });
 

@@ -602,6 +602,34 @@ The presence of `yield` selects frame lowering. A function with the same
 `Generator<T>` return type but no `yield` is an ordinary function and may
 forward an existing generator with `return otherGenerator();`.
 
+Generators that need a terminal result state it as a second type argument:
+
+```zs
+function tokenize(source: String): Generator<Token, ParseSummary> {
+  while (...) {
+    yield token;
+  }
+  return summary;
+}
+```
+
+Their `.next()` operation returns the compiler-provided
+`GeneratorStep<Yield, Return>` enum:
+
+```zs
+match (tokens.next()) {
+  yielded(token) => consume(token);
+  complete(summary) => finish(summary);
+}
+```
+
+`yielded` and `complete` are enum variants, not keywords. The terminal value is
+transferred exactly once, and all reachable paths must return it.
+`Generator<Yield, Return>` does not implement `Iterator<Yield>` and direct
+`for...of` is rejected because that would silently discard the completion
+value. The one-argument `Generator<T>` remains the sequence-oriented
+`Iterator<T>` form with `next(): Option<T>`.
+
 The first tier is synchronous and non-throwing. Parameters transfer owned
 values into the cold frame; borrowed inputs, generator methods, yields inside
 `for...of` or `match`, borrowed yielded values, async generators, and values
@@ -812,7 +840,9 @@ const name: String = match (result) {
 `return` and `throw` still exit the enclosing function. They have the bottom
 type, so an arm that exits does not need to agree with the other arms' value
 type. `select` belongs to local value-producing control flow; `yield` suspends
-the enclosing synchronous `Generator<T>` and transfers one `T` to its consumer.
+the enclosing synchronous generator and transfers one yielded value to its
+consumer. In `Generator<Yield, Return>`, `return expression;` separately
+transfers the terminal completion value.
 
 `if` is also an expression. Its statement blocks use the same explicit
 `select` operation, while conventional ternaries remain available for small

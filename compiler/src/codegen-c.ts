@@ -52,7 +52,7 @@ import { optionTypeName, parseOptionType } from "./option-types.ts";
 import { parseOptionalViewType, parseViewType, viewTypeName } from "./view-types.ts";
 import { mapEntryTypeName, parseMapEntryType, parseMapType } from "./map-types.ts";
 import { parseSetType } from "./set-types.ts";
-import { isGeneratorFunction, parseGeneratorType } from "./generator-types.ts";
+import { generatorStepTypeName, isGeneratorFunction, parseGeneratorType } from "./generator-types.ts";
 
 type GenerationContext = {
   readonly structs: Map<string, StructDeclaration>;
@@ -142,7 +142,11 @@ export function generateC(program: Program, sourceName: string, semanticInfo: Se
   const mapTypes = program.structs.map((declaration) => declaration.name).filter((name) => parseMapType(name));
   const setTypes = program.structs.map((declaration) => declaration.name).filter((name) => parseSetType(name));
   const generatorTypes = [...new Set(
-    [...semanticInfo.iteratorElementTypes.keys()].filter((name) => parseGeneratorType(name)),
+    [
+      ...semanticInfo.iteratorElementTypes.keys(),
+      ...program.functions.map((declaration) => declaration.returnType.name),
+      ...program.structs.flatMap((declaration) => declaration.methods.map((method) => method.returnType.name)),
+    ].filter((name) => parseGeneratorType(name)),
   )];
   const dynamicArrayPushTypes = [...new Set([
     ...collectDynamicArrayPushTypes(program, semanticInfo),
@@ -2647,18 +2651,22 @@ function generateGeneratorRuntime(
   foreignNamedTypes: SemanticInfo["foreignNamedTypes"],
 ): string {
   const generator = parseGeneratorType(type)!;
-  const option = optionTypeName(generator.elementType);
+  const advanceType = generator.returnType
+    ? generatorStepTypeName(generator.elementType, generator.returnType)
+    : optionTypeName(generator.elementType);
   const generatorName = generatorCName(type);
-  const optionName = mapType(option, structs, enums, foreignNamedTypes);
-  const none = `(${optionName}){ .tag = ${variantTag(option, "none")} }`;
+  const advanceName = mapType(advanceType, structs, enums, foreignNamedTypes);
+  const exhausted = generator.returnType
+    ? "abort();"
+    : `return (${advanceName}){ .tag = ${variantTag(advanceType, "none")} };`;
   return `struct ${generatorName} {
   void *context;
-  ${optionName} (*advance)(void *context);
+  ${advanceName} (*advance)(void *context);
   void (*destroy)(void *context);
 };
 
-static __attribute__((unused)) ${optionName} ${generatorNextName(type)}(${generatorName} *self) {
-  if (self->context == NULL) return ${none};
+static __attribute__((unused)) ${advanceName} ${generatorNextName(type)}(${generatorName} *self) {
+  if (self->context == NULL) ${exhausted}
   return self->advance(self->context);
 }
 
@@ -2735,7 +2743,9 @@ function generateGeneratorFunction(
   semanticInfo: SemanticInfo,
 ): string {
   const generator = parseGeneratorType(declaration.returnType.name)!;
-  const option = optionTypeName(generator.elementType);
+  const advanceType = generator.returnType
+    ? generatorStepTypeName(generator.elementType, generator.returnType)
+    : optionTypeName(generator.elementType);
   const frameName = generatorFrameName(declaration);
   const fields = collectGeneratorFrameFields(declaration, semanticInfo);
   const storage = new Map(fields.map((field) => [field.name, `frame->${cBindingName(field.name)}`]));
@@ -2778,8 +2788,10 @@ function generateGeneratorFunction(
     return indent(generated, 6);
   });
   const completionCleanup = generateCleanup(context.cleanupScopes, context);
-  const none = generateCompilerVariantConstruction(option, "none", null, context);
-  body.push(indent(`${completionCleanup ? `${completionCleanup}\n` : ""}frame->state = -1;\nreturn ${none};`, 6));
+  const exhausted = generator.returnType
+    ? "abort();"
+    : `return ${generateCompilerVariantConstruction(advanceType, "none", null, context)};`;
+  body.push(indent(`${completionCleanup ? `${completionCleanup}\n` : ""}frame->state = -1;\n${exhausted}`, 6));
 
   const frameFields = fields.flatMap((field) => {
     const lines = [`  ${mapType(field.type, structs, enums, semanticInfo.foreignNamedTypes)} ${cBindingName(field.name)};`];
@@ -2805,11 +2817,11 @@ function generateGeneratorFunction(
 ${frameFields.join("\n")}
 } ${frameName};
 
-static ${mapType(option, structs, enums, semanticInfo.foreignNamedTypes)} ${generatorAdvanceName(declaration)}(void *context) {
+static ${mapType(advanceType, structs, enums, semanticInfo.foreignNamedTypes)} ${generatorAdvanceName(declaration)}(void *context) {
   ${frameName} *frame = (${frameName} *)context;
   switch (frame->state) {
     case -1:
-      return ${none};
+      ${exhausted}
     case 0: ;
 ${body.join("\n")}
     default:
@@ -3172,12 +3184,30 @@ bool ${liveFlag} = true;`;
     }
     case "return":
       if (context.generatorFrame) {
-        if (statement.expression) throw new Error("generator return values must be rejected by semantic analysis");
-        const cleanup = generateCleanup(context.cleanupScopes, context);
         const generator = parseGeneratorType(context.owner.returnType.name)!;
-        const option = optionTypeName(generator.elementType);
-        const none = generateCompilerVariantConstruction(option, "none", null, context);
-        return `${cleanup ? `${cleanup}\n` : ""}frame->state = -1;\nreturn ${none};`;
+        if (!generator.returnType) {
+          if (statement.expression) throw new Error("simple generator return values must be rejected by semantic analysis");
+          const cleanup = generateCleanup(context.cleanupScopes, context);
+          const option = optionTypeName(generator.elementType);
+          const none = generateCompilerVariantConstruction(option, "none", null, context);
+          return `${cleanup ? `${cleanup}\n` : ""}frame->state = -1;\nreturn ${none};`;
+        }
+        if (!statement.expression) throw new Error("terminal generator return requires a value");
+        return generateDirectValue(statement.expression, context, (value, valueContext) => {
+          const temporary = `_z_generator_return_${valueContext.returnCounter.value++}`;
+          const declaration = generateLocalDeclaration(
+            generator.returnType!,
+            temporary,
+            false,
+            valueContext.structs,
+            valueContext.enums,
+            valueContext.semanticInfo.foreignNamedTypes,
+          );
+          const cleanup = generateCleanup(valueContext.cleanupScopes, valueContext);
+          const step = generatorStepTypeName(generator.elementType, generator.returnType!);
+          const returned = generateCompilerVariantConstruction(step, "complete", temporary, valueContext);
+          return `${declaration} = ${value};\n${cleanup ? `${cleanup}\n` : ""}frame->state = -1;\nreturn ${returned};`;
+        }, true);
       }
       if (!statement.expression) {
         const cleanup = generateCleanup(context.cleanupScopes, context);
@@ -3228,11 +3258,14 @@ bool ${liveFlag} = true;`;
     case "yield": {
       if (!context.generatorFrame) throw new Error("yield lowering requires a generator frame");
       const generator = parseGeneratorType(context.owner.returnType.name)!;
-      const option = optionTypeName(generator.elementType);
+      const advanceType = generator.returnType
+        ? generatorStepTypeName(generator.elementType, generator.returnType)
+        : optionTypeName(generator.elementType);
+      const variant = generator.returnType ? "yielded" : "some";
       const resume = context.generatorFrame.stateCounter.value++;
       return generateDirectValue(statement.expression, context, (value) => (
         `frame->state = ${resume};\n`
-        + `return ${generateCompilerVariantConstruction(option, "some", value, context)};\n`
+        + `return ${generateCompilerVariantConstruction(advanceType, variant, value, context)};\n`
         + `case ${resume}: ;`
       ), true);
     }
