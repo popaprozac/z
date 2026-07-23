@@ -5800,6 +5800,22 @@ test("tokenizes real Z source with checked UTF-8 operations and TextBuffer", () 
   const smoke = resolve(projectRoot, "examples/applications/source-inspector/lexer-smoke.zs");
   const smokeResult = spawnSync(process.execPath, [cli, "run", smoke], { encoding: "utf8" });
   assert.equal(smokeResult.status, 0, smokeResult.stderr);
+  const generatorSmoke = resolve(projectRoot, "examples/applications/source-inspector/generator-smoke.zs");
+  const generatorResult = spawnSync(process.execPath, [cli, "run", generatorSmoke], { encoding: "utf8" });
+  assert.equal(generatorResult.status, 0, generatorResult.stderr);
+  assert.equal(
+    generatorResult.stdout,
+    "identifier answer\nidentifier value\n"
+      + "summary bytes=27 lines=2 tokens=7 identifiers=2\n"
+      + "error 1:1 unexpected source byte 64\n",
+  );
+  const nativeGenerator = spawnSync(
+    process.execPath,
+    [cli, "check", generatorSmoke, "--native-frontend"],
+    { encoding: "utf8" },
+  );
+  assert.equal(nativeGenerator.status, 0, nativeGenerator.stderr);
+  assert.match(nativeGenerator.stdout, /native frontend hybrid/);
   const result = spawnSync(process.execPath, [cli, "run", application, "--", lexer], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /lexer\.zs: \d+ lines, \d+ UTF-8 bytes/);

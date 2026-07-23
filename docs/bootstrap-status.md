@@ -146,8 +146,9 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
   directly through the first self-hosting standard APIs.
 - [`compiler/frontend`](../compiler/frontend): reusable native Z lexer/parser,
   owned flat AST arenas, and the in-process parser-library bridge to stage 0.
-- [`examples/applications/source-inspector`](../examples/applications/source-inspector): readable clients and smoke tests for the native frontend, including the
-  standalone lexer/parser protocol executables.
+- [`examples/applications/source-inspector`](../examples/applications/source-inspector): readable clients and smoke tests for the native frontend, including a
+  fallible owned-token generator with a terminal scan summary and the standalone
+  lexer/parser protocol executables.
 - [`examples/interop/objc/nswindow.zs`](../examples/interop/objc/nswindow.zs): direct AppKit window.
 - [`examples/interop/objc/objc-nullability.zs`](../examples/interop/objc/objc-nullability.zs): explicit
   `T | null` AppKit guard narrowing alongside `Option.fromNullable` and

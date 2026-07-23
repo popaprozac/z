@@ -61,8 +61,10 @@ support or producing language-server diagnostics from hypothetical imports.
 - [`source-inspector`](applications/source-inspector): a multi-module source tool
   that tokenizes real Z code with checked UTF-8 byte offsets, owned token copies,
   exact parser-facing kinds, template interpolation, decimal/exponent numbers,
-  typed lexer errors, and `TextBuffer` escape decoding. Its native token-stream
-  bridge is compared directly with the stage-0 TypeScript lexer.
+  typed lexer errors, and `TextBuffer` escape decoding. Its generator scanner
+  yields owned tokens, returns a typed scan summary, and fails during explicit
+  advancement. The native token-stream bridge is compared directly with the
+  stage-0 TypeScript lexer.
 
 ## Async
 

@@ -723,7 +723,7 @@ boundary; `void` occupies the terminal slot when there is no terminal value:
 
 ```zs
 function consume(
-  values: Generator<i32, void, ReadError>,
+  values: Generator<i32, void, ReadError>
 ): i32 throws ReadError {
   return match (try values.next()) {
     some(value) => value;

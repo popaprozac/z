@@ -659,6 +659,14 @@ frame; borrowed inputs, generator methods, yields inside `for...of` or `match`,
 borrowed yielded values, async generators, and values sent back into a
 suspension remain later work.
 
+The source-inspector pressure test uses this complete synchronous protocol to
+tokenize real Z source on first advancement, yield owned `Token` values, return
+a `GeneratorScanSummary`, and propagate `LexerError`. It currently uses an
+indexed `while` over the lexer's owned token array. A natural yielding
+`for...of` requires the loop cursor and borrowed element binding to become
+explicit suspended-frame state; that is a recorded composition seam rather
+than a partially lowered special case.
+
 Mutable element iteration, consuming iterators, cleanup-bearing object
 destructuring, move-only foreign iterator elements, array and tuple patterns,
 and async iteration remain later layers.
