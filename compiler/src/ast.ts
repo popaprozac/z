@@ -102,6 +102,8 @@ export type FunctionDeclaration = {
   readonly parameters: Parameter[];
   readonly returnType: TypeReference;
   readonly errorType: TypeReference | null;
+  /** Objective-C selector exported by a protocol-conforming class method. */
+  readonly nativeSelector?: string | null;
   readonly body: Statement[];
   readonly location: SourceLocation;
 };

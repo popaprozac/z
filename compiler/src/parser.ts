@@ -762,6 +762,9 @@ export function parse(tokens: Token[], fileName: string): Program {
     expect("colon", "`:`");
     const returnType = parseType();
     const errorType = match("throws") ? parseType() : null;
+    const nativeSelector = match("as")
+      ? expect("string", "an Objective-C selector string after `as`").text
+      : null;
     const body: Statement[] = [];
     if (signatureOnly) {
       expect("semicolon", "`;`");
@@ -780,6 +783,7 @@ export function parse(tokens: Token[], fileName: string): Program {
       parameters,
       returnType,
       errorType,
+      nativeSelector,
       body,
       location: start,
     };

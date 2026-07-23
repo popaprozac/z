@@ -236,6 +236,8 @@ boundary**, not a claim that every bridge operation is free:
 | C record by value or scoped borrow | Native layout and calling convention; no wrapper allocation |
 | Objective-C method or property | Ordinary `objc_msgSend`-family dispatch under Clang ARC |
 | `objc.connect` target/action bridge | One ARC connection allocation, indirect closure call, and an owned environment allocation only when the closure captures; the connection retains the native control |
+| Z-defined Objective-C protocol conformance | One ARC adapter allocation per distinct bound Z controller; selector dispatch forwards directly to generated Z method functions |
+| `objc.bind` weak protocol properties | One ARC binding token plus adapter array; retains the native object, adapters, and Z controllers for the token lifetime |
 | Plain C++/Swift-C++ value or method | Native construction, copy, destruction, and member-call rules; no Z wrapper dispatch |
 | Non-capturing call-only callback | Function pointer or small adapter indirection; no environment allocation |
 | Escaping capturing closure / Objective-C block | Owned closure environment plus a native lifetime adapter, retains/releases, and indirect invocation |
@@ -552,13 +554,25 @@ escape analysis for arbitrary weak or unsafe-unretained property assignments is
 still a future safety layer; `objc.connect` closes the common target/action
 lifetime hole without requiring implicit native associations or retain cycles.
 
+Z-defined classes can implement imported Objective-C protocols. A method's
+`as "selector:"` clause is checked against the Clang-imported requirement and
+lowered into a generated `NSObject<Protocol>` adapter. The Z class itself
+remains a Z ARC allocation; it is not silently changed into an Objective-C
+class.
+
+Protocol properties such as `NSTableView.dataSource` and `.delegate` are weak.
+`objc.bind(object, { property: controller })` installs generated adapters and
+returns an owned `objc.Binding` token that keeps the native object, adapters,
+and Z controllers alive. This closes the common delegate/data-source lifetime
+seam without forcing ordinary Objective-C calls through `std/objc`.
+
 | Native surface | Ordinary header import | `std/objc` bridge |
 | --- | --- | --- |
 | `NSApplication.sharedApplication`, `NSWindow.alloc()`, methods/properties | Yes | No |
 | Objective-C object nullability and `Option.fromNullable` | Yes | No |
 | Typed block parameters and observer tokens | Yes | No |
 | Target object plus selector pair | Header exposes the raw convention | `objc.connect` owns the control and closure, installs target/action, and returns an explicit lifetime token |
-| Future protocol/delegate synthesis or runtime-only adaptation | Declaration remains visible | Adapter required only when Z must synthesize native runtime behavior |
+| Protocol/delegate synthesis | Protocol and weak property declarations remain visible | `implements`, `as "selector:"`, and `objc.bind` generate and own the native adapter |
 
 This module is not a prerequisite for Objective-C interop and is not a generic
 escape hatch for message sending. If Clang can import a declaration with enough

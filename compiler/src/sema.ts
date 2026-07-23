@@ -51,12 +51,15 @@ import {
   type ForeignObjCInterface,
   type ForeignObjCMethod,
   type ForeignObjCProperty,
+  type ForeignObjCProtocol,
+  type ForeignObjCProtocolMethod,
   type ForeignObjectType,
   type ForeignPointerType,
   type ForeignType,
 } from "./foreign.ts";
 import {
   isStandardModuleSpecifier,
+  objcBindingTypeName,
   objcConnectionTypeName,
   objcSelectorTypeName,
   standardFunctionSignature,
@@ -227,6 +230,21 @@ export type ExplicitCopyPlan = {
   readonly sourceIsView: boolean;
 };
 
+export type ObjCProtocolConformance = {
+  readonly declaration: StructDeclaration;
+  readonly protocols: readonly ForeignObjCProtocol[];
+  readonly methods: ReadonlyMap<number, ForeignObjCProtocolMethod>;
+};
+
+export type ObjCBindingPlan = {
+  readonly objectType: string;
+  readonly bindings: readonly {
+    readonly property: ForeignObjCProperty;
+    readonly ownerType: string;
+    readonly ownerExpression: Expression;
+  }[];
+};
+
 export type SemanticInfo = {
   readonly warnings: readonly DiagnosticError[];
   readonly deploymentTarget: DeploymentTarget | null;
@@ -260,6 +278,9 @@ export type SemanticInfo = {
   readonly nativeArgumentAccesses: ReadonlyMap<number, "in" | "inout" | "out">;
   readonly foreignObjectTypes: ReadonlyMap<string, ForeignObjectType>;
   readonly foreignInterfaces: ReadonlyMap<string, ForeignObjCInterface>;
+  readonly foreignProtocols: ReadonlyMap<string, ForeignObjCProtocol>;
+  readonly objcProtocolConformances: ReadonlyMap<string, ObjCProtocolConformance>;
+  readonly objcBindingCalls: ReadonlyMap<number, ObjCBindingPlan>;
   readonly objcClassNames: ReadonlyMap<number, string>;
   readonly objcProperties: ReadonlyMap<number, ObjCPropertyInfo>;
   readonly objcCalls: ReadonlyMap<number, ObjCCallInfo>;
@@ -327,6 +348,9 @@ type AnalysisState = {
   readonly nativeArgumentAccesses: Map<number, "in" | "inout" | "out">;
   readonly foreignObjectTypes: ReadonlyMap<string, ForeignObjectType>;
   readonly foreignInterfaces: ReadonlyMap<string, ForeignObjCInterface>;
+  readonly foreignProtocols: ReadonlyMap<string, ForeignObjCProtocol>;
+  readonly objcProtocolConformances: Map<string, ObjCProtocolConformance>;
+  readonly objcBindingCalls: Map<number, ObjCBindingPlan>;
   readonly objcClassNames: Map<number, string>;
   readonly objcProperties: Map<number, ObjCPropertyInfo>;
   readonly objcCalls: Map<number, ObjCCallInfo>;
@@ -443,6 +467,7 @@ export function analyze(
   const foreignNamedTypes = new Map<string, ForeignNamedType>();
   const foreignObjectTypes = new Map<string, ForeignObjectType>();
   const foreignInterfaces = new Map<string, ForeignObjCInterface>();
+  const foreignProtocols = new Map<string, ForeignObjCProtocol>();
   const frameworks = new Set<string>();
   let objectiveC = false;
   let cPlusPlus = false;
@@ -484,6 +509,9 @@ export function analyze(
         nullable: true,
       });
     }
+    for (const protocol of module.protocols.values()) {
+      foreignProtocols.set(protocol.typeName, protocol);
+    }
     if (module.framework) frameworks.add(module.framework);
     if (module.objectiveC) objectiveC = true;
     if (module.cPlusPlus) cPlusPlus = true;
@@ -510,9 +538,28 @@ export function analyze(
       className: connection.className,
       nullable: false,
     });
+    const binding: ForeignNamedType = {
+      kind: "object",
+      exportName: "Binding",
+      namespacePath: ["objc"],
+      qualifiedName: "objc.Binding",
+      typeName: objcBindingTypeName,
+      cName: "ZObjCBinding *",
+      className: "ZObjCBinding",
+      metadata,
+    };
+    foreignNamedTypes.set(objcBindingTypeName, binding);
+    foreignObjectTypes.set(objcBindingTypeName, {
+      kind: "object",
+      typeName: objcBindingTypeName,
+      cName: binding.cName,
+      className: binding.className,
+      nullable: false,
+    });
     typeDisplayNames = new Map([
       ...typeDisplayNames,
       [objcConnectionTypeName, "objc.Connection"],
+      [objcBindingTypeName, "objc.Binding"],
       [objcSelectorTypeName, "objc.Selector"],
     ]);
   }
@@ -554,6 +601,9 @@ export function analyze(
     nativeArgumentAccesses: new Map(),
     foreignObjectTypes,
     foreignInterfaces,
+    foreignProtocols,
+    objcProtocolConformances: new Map(),
+    objcBindingCalls: new Map(),
     objcClassNames: new Map(),
     objcProperties: new Map(),
     objcCalls: new Map(),
@@ -909,7 +959,7 @@ export function analyze(
     analyzeTraitDeclaration(declaration, structs, enums, foreignNamedTypes, foreignTypes, fileName);
   }
   for (const declaration of program.structs) {
-    validateTraitConformance(declaration, traits, fileName);
+    validateTraitConformance(declaration, traits, foreignProtocols, fileName, state);
   }
   for (const declaration of program.enums) {
     analyzeEnumDeclaration(declaration, structs, enums, foreignNamedTypes, fileName);
@@ -1123,14 +1173,29 @@ function analyzeTraitDeclaration(
 function validateTraitConformance(
   declaration: StructDeclaration,
   traits: Map<string, TraitDeclaration>,
+  foreignProtocols: ReadonlyMap<string, ForeignObjCProtocol>,
   fileName: string,
+  state: AnalysisState,
 ): void {
   const implemented = new Set<string>();
+  const protocols: ForeignObjCProtocol[] = [];
+  const protocolMethods = new Map<number, ForeignObjCProtocolMethod>();
   for (const reference of declaration.implements) {
     if (implemented.has(reference.name)) {
-      throw new DiagnosticError(fileName, reference.location, `${declaration.kind} ${JSON.stringify(declaration.name)} repeats trait ${JSON.stringify(reference.name)}`);
+      throw new DiagnosticError(fileName, reference.location, `${declaration.kind} ${JSON.stringify(declaration.name)} repeats interface ${JSON.stringify(reference.name)}`);
     }
     implemented.add(reference.name);
+    const protocol = foreignProtocols.get(reference.name);
+    if (protocol) {
+      if (declaration.kind !== "class") {
+        throw new DiagnosticError(fileName, reference.location, `Objective-C protocol ${JSON.stringify(reference.name)} can only be implemented by a Z class`, {
+          code: "Z0810",
+          notes: ["Z generates an Objective-C adapter that retains and forwards to the ARC class instance"],
+        });
+      }
+      protocols.push(protocol);
+      continue;
+    }
     const trait = traits.get(reference.name);
     if (!trait) throw new DiagnosticError(fileName, reference.location, `unknown trait ${JSON.stringify(reference.name)}`);
     for (const requirement of trait.methods) {
@@ -1151,6 +1216,151 @@ function validateTraitConformance(
       }
     }
   }
+  if (protocols.length === 0) {
+    const exported = declaration.methods.find((method) => method.nativeSelector);
+    if (exported) {
+      throw new DiagnosticError(fileName, exported.location, "an Objective-C selector export requires an implemented Objective-C protocol", {
+        code: "Z0810",
+        helps: ["add the imported protocol after `implements`, or remove the `as \"selector:\"` clause"],
+      });
+    }
+    return;
+  }
+
+  const allRequirements = protocols.flatMap((protocol) => objcProtocolRequirements(protocol, foreignProtocols));
+  const selectors = new Set<string>();
+  for (const method of declaration.methods) {
+    if (!method.nativeSelector) continue;
+    if (method.static || method.async || method.errorType) {
+      throw new DiagnosticError(fileName, method.location, "an Objective-C protocol method must be a synchronous, non-throwing instance method", {
+        code: "Z0810",
+      });
+    }
+    if (selectors.has(method.nativeSelector)) {
+      throw new DiagnosticError(fileName, method.location, `duplicate Objective-C selector export ${JSON.stringify(method.nativeSelector)}`, {
+        code: "Z0810",
+      });
+    }
+    selectors.add(method.nativeSelector);
+    const candidates = allRequirements.filter((requirement) => (
+      requirement.instance && requirement.selector === method.nativeSelector
+    ));
+    if (candidates.length === 0) {
+      throw new DiagnosticError(
+        fileName,
+        method.location,
+        `selector ${JSON.stringify(method.nativeSelector)} is not declared by an implemented Objective-C protocol`,
+        {
+          code: "Z0810",
+          notes: protocols.map((protocol) => `implemented protocol: ${protocol.typeName}`),
+        },
+      );
+    }
+    const requirement = candidates[0];
+    validateObjCProtocolMethodSignature(declaration, method, requirement, fileName, state);
+    protocolMethods.set(method.location.offset, requirement);
+  }
+  for (const requirement of allRequirements) {
+    if (!requirement.required || !requirement.instance || selectors.has(requirement.selector)) continue;
+    throw new DiagnosticError(
+      fileName,
+      declaration.location,
+      `class ${JSON.stringify(declaration.name)} does not implement required Objective-C selector ${JSON.stringify(requirement.selector)}`,
+      {
+        code: "Z0810",
+        labels: requirement.metadata.source ? [{
+          location: {
+            offset: 0,
+            line: requirement.metadata.source.line,
+            column: requirement.metadata.source.column,
+            fileName: requirement.metadata.source.fileName,
+          },
+          message: "required protocol method is declared here",
+          length: requirement.metadata.source.length,
+        }] : [],
+        helps: ["use protocol-aware completion inside the class body to insert the method scaffold"],
+      },
+    );
+  }
+  state.objcProtocolConformances.set(declaration.name, {
+    declaration,
+    protocols,
+    methods: protocolMethods,
+  });
+}
+
+function objcProtocolRequirements(
+  protocol: ForeignObjCProtocol,
+  protocols: ReadonlyMap<string, ForeignObjCProtocol>,
+  seen = new Set<string>(),
+): ForeignObjCProtocolMethod[] {
+  if (seen.has(protocol.typeName)) return [];
+  seen.add(protocol.typeName);
+  const separator = protocol.typeName.lastIndexOf(".");
+  const moduleName = separator < 0 ? "" : protocol.typeName.slice(0, separator);
+  return [
+    ...protocol.methods,
+    ...protocol.inherited.flatMap((name) => {
+      // Generated protocol adapters inherit NSObject and therefore already
+      // satisfy the root NSObject protocol without forwarding those selectors
+      // into the Z controller.
+      if (name === "NSObject") return [];
+      const inherited = protocols.get(moduleName ? `${moduleName}.${name}` : name);
+      return inherited ? objcProtocolRequirements(inherited, protocols, seen) : [];
+    }),
+  ];
+}
+
+function validateObjCProtocolMethodSignature(
+  owner: StructDeclaration,
+  method: FunctionDeclaration,
+  requirement: ForeignObjCProtocolMethod,
+  fileName: string,
+  state: AnalysisState,
+): void {
+  const expectedReturn = String(foreignValueType(requirement.returnType));
+  if (method.returnType.name !== expectedReturn) {
+    throw new DiagnosticError(
+      fileName,
+      method.returnType.location,
+      `Objective-C selector ${JSON.stringify(requirement.selector)} returns ${describeValueType(expectedReturn, state)}, but ${owner.name}.${method.name} returns ${describeValueType(method.returnType.name, state)}`,
+      { code: "Z0810" },
+    );
+  }
+  if (method.parameters.length !== requirement.parameters.length) {
+    throw new DiagnosticError(
+      fileName,
+      method.location,
+      `Objective-C selector ${JSON.stringify(requirement.selector)} expects ${requirement.parameters.length} parameter(s), but ${owner.name}.${method.name} declares ${method.parameters.length}`,
+      { code: "Z0810" },
+    );
+  }
+  method.parameters.forEach((parameter, index) => {
+    const expected = String(foreignValueType(requirement.parameters[index].type));
+    if (parameter.type.name !== expected) {
+      throw new DiagnosticError(
+        fileName,
+        parameter.location,
+        `Objective-C selector ${JSON.stringify(requirement.selector)} parameter ${index + 1} expects ${describeValueType(expected, state)}, found ${describeValueType(parameter.type.name, state)}`,
+        { code: "Z0810" },
+      );
+    }
+    const object = requirement.parameters[index].type.kind === "object";
+    const expectedMode = object ? "in" : "value";
+    if (parameter.mode !== expectedMode) {
+      throw new DiagnosticError(
+        fileName,
+        parameter.location,
+        `Objective-C selector ${JSON.stringify(requirement.selector)} parameter ${JSON.stringify(parameter.name)} must use ${expectedMode === "in" ? "`in`" : "value"} passing`,
+        {
+          code: "Z0810",
+          notes: [object
+            ? "Objective-C references are borrowed for the duration of the callback"
+            : "Objective-C scalar arguments are passed by value"],
+        },
+      );
+    }
+  });
 }
 
 function sameMethodSignature(actual: FunctionDeclaration, required: FunctionDeclaration, ownerType?: string): boolean {
@@ -4702,9 +4912,86 @@ function inferExpressionInner(
           const owner = globals.get(localModuleName);
           if (owner?.kind === "standardModule") {
             if (owner.module === "objc") {
+              if (expression.callee.property === "bind") {
+                rejectLabeledArguments(expression.argumentLabels, expression.location, fileName);
+                if (expression.arguments.length !== 2 || expression.arguments[1].kind !== "objectExpression") {
+                  throw new DiagnosticError(fileName, expression.location, "objc.bind expects an Objective-C object and a protocol-binding object literal", {
+                    code: "Z0810",
+                    helps: [`use \`${localModuleName}.bind(tableView, { dataSource: controller, delegate: controller })\``],
+                  });
+                }
+                const object = expression.arguments[0];
+                const objectType = inferExpression(object, locals, globals, structs, enums, fileName, state);
+                rejectNullableObjCReceiver(objectType, object.location, fileName, state);
+                const receiver = objcReceiver(objectType, state);
+                if (!receiver?.instance) {
+                  throw new DiagnosticError(fileName, object.location, "objc.bind requires a non-null Objective-C instance", {
+                    code: "Z0810",
+                  });
+                }
+                const provided = new Set<string>();
+                const bindings: ObjCBindingPlan["bindings"][number][] = [];
+                for (const field of expression.arguments[1].fields) {
+                  if (provided.has(field.name)) {
+                    throw new DiagnosticError(fileName, field.location, `duplicate Objective-C protocol binding ${JSON.stringify(field.name)}`, {
+                      code: "Z0810",
+                    });
+                  }
+                  provided.add(field.name);
+                  const property = findObjCProperty(receiver, field.name, state);
+                  if (!property?.setter || property.protocols.length === 0) {
+                    throw new DiagnosticError(fileName, field.location, `Objective-C ${receiver.declaration.className} property ${JSON.stringify(field.name)} is not a writable protocol property`, {
+                      code: "Z0810",
+                    });
+                  }
+                  if (property.ownership !== "weak" && property.ownership !== "assign" && property.ownership !== "unsafeUnretained") {
+                    throw new DiagnosticError(fileName, field.location, `objc.bind is for non-owning protocol properties; ${receiver.declaration.className}.${field.name} is ${property.ownership}`, {
+                      code: "Z0810",
+                    });
+                  }
+                  if (field.expression.kind !== "identifier") {
+                    throw new DiagnosticError(fileName, field.expression.location, "objc.bind protocol owners must be stored Z class bindings", {
+                      code: "Z0810",
+                      notes: ["the returned objc.Binding retains the controller and generated adapter for the native object's lifetime contract"],
+                      helps: ["bind the class instance to const or let before calling objc.bind"],
+                    });
+                  }
+                  const ownerType = inferExpression(field.expression, locals, globals, structs, enums, fileName, state);
+                  const ownerClass = structs.get(String(underlyingType(ownerType)));
+                  const conformance = ownerClass?.kind === "class"
+                    ? state.objcProtocolConformances.get(ownerClass.name)
+                    : null;
+                  if (!ownerClass || ownerClass.kind !== "class" || !conformance) {
+                    throw new DiagnosticError(fileName, field.expression.location, `${JSON.stringify(field.name)} requires a Z class implementing ${property.protocols.join(" & ")}`, {
+                      code: "Z0810",
+                    });
+                  }
+                  const missing = property.protocols.find((protocolName) => (
+                    !conformance.protocols.some((protocol) => protocol.protocolName === protocolName)
+                  ));
+                  if (missing) {
+                    throw new DiagnosticError(fileName, field.expression.location, `${ownerClass.name} does not implement Objective-C protocol ${missing}`, {
+                      code: "Z0810",
+                      helps: [`add \`${receiver.declaration.typeName.slice(0, receiver.declaration.typeName.lastIndexOf("."))}.${missing}\` to the class implements list`],
+                    });
+                  }
+                  bindings.push({ property, ownerType: ownerClass.name, ownerExpression: field.expression });
+                }
+                if (bindings.length === 0) {
+                  throw new DiagnosticError(fileName, expression.arguments[1].location, "objc.bind requires at least one protocol property", {
+                    code: "Z0810",
+                  });
+                }
+                state.objcBindingCalls.set(expression.location.offset, {
+                  objectType: String(underlyingType(objectType)),
+                  bindings,
+                });
+                state.expressionTypes.set(expression.location.offset, objcBindingTypeName);
+                return objcBindingTypeName;
+              }
               if (expression.callee.property !== "connect") {
                 throw new DiagnosticError(fileName, expression.callee.location, `objc has no method ${JSON.stringify(expression.callee.property)}`, {
-                  helps: [`use ${localModuleName}.connect(control, move () => operation())`],
+                  helps: [`use ${localModuleName}.connect(control, move () => operation()) or ${localModuleName}.bind(object, { delegate: controller })`],
                 });
               }
               rejectLabeledArguments(expression.argumentLabels, expression.location, fileName);
@@ -8851,6 +9138,16 @@ function requireAssignable(
   if (actual === "null" && isNullableForeignTypeName(String(underlyingType(expected)))) {
     return;
   }
+  const expectedObject = state.foreignObjectTypes.get(String(underlyingType(expected)));
+  const actualObject = actual === "unknown" || actual === "never"
+    ? null
+    : state.foreignObjectTypes.get(String(underlyingType(actual)));
+  if (
+    expectedObject
+    && actualObject
+    && (!actualObject.nullable || expectedObject.nullable)
+    && isObjCSubclass(actualObject, expectedObject, state)
+  ) return;
   if (
     actual !== "unknown"
     && actual !== "never"

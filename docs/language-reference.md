@@ -132,6 +132,27 @@ are public unless marked `private`. A user class constructor may establish
 invariants and may throw. `trait` is a nominal behavior contract; a struct or
 class opts in with `implements`. Traits do not imply inheritance or storage.
 
+Imported Objective-C protocols use the same nominal `implements` list. A
+protocol method keeps an ordinary Z-local name and attaches its native selector
+after the result:
+
+```zs
+class TableController implements AppKit.NSTableViewDataSource {
+  function rowCount(
+    in tableView: AppKit.NSTableView
+  ): isize as "numberOfRowsInTableView:" {
+    return 0;
+  }
+}
+```
+
+The selector is declaration evidence, not a stringly typed runtime lookup. The
+compiler verifies that it belongs to an implemented protocol and checks its
+parameters and result against Clang's SDK declaration. Protocol callbacks are
+synchronous and non-throwing in the first tier. The editor offers
+unimplemented selectors as complete method scaffolds and identifies required
+versus optional requirements.
+
 A field marked `readonly` is initialized during construction and cannot be
 assigned or mutated afterward:
 
@@ -937,6 +958,20 @@ native target/action control and Z closure, installs the target plus selector,
 and returns an `objc.Connection`. The connection must remain bound while the
 callback is desired; its precise scope lifetime and teardown prevent a weak
 target from silently disappearing after a helper returns.
+
+Weak Objective-C delegate and data-source properties use `objc.bind`:
+
+```zs
+const binding = objc.bind(tableView, {
+  dataSource: controller,
+  delegate: controller,
+});
+```
+
+The object literal names real imported writable protocol properties. Each value
+must be a stored Z class implementing the property's protocol. The returned
+`objc.Binding` retains the native object, generated `NSObject` adapter, and Z
+controller, so the native weak property cannot dangle while the token is live.
 
 Adjacent `.zd` contracts can safely restrict native pointer surfaces without
 introducing a raw pointer into Z. `parameter: null` permits only the native null

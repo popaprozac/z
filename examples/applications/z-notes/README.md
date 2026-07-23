@@ -10,7 +10,9 @@ The application currently combines:
   `sqlite.sqlite3` native owner;
 - `Option<usize>` selection and borrowed callback inspection;
 - direct AppKit header import, an ARC-managed `NSWindow`, and a native
-  `NSScrollView`/`NSTextView` note browser;
+  `NSScrollView`/`NSTableView` note browser;
+- Z-defined `NSTableViewDataSource` and `NSTableViewDelegate` conformance,
+  lowered through an Objective-C adapter owned by `objc.Binding`;
 - direct `sqlite3.h` import with adjacent owned-output, null-only parameter,
   borrowed-text, fixed-sentinel, and typed native-status `.zd` contracts;
 - explicit `target.link.libraries` configuration for `sqlite3`.
@@ -20,8 +22,8 @@ interactive Add Note button plus editable title and body fields. The bound
 connection owns the button and callback, so AppKit's weak target cannot silently
 expire while the application is running. Startup opens
 `.z-cache/z-notes.sqlite3` once, stores the handle in `NoteDatabase`, loads
-notes through that owner, and renders their titles and bodies into a
-native scrollable view. Each click first persists the entered note, then
+notes through that owner, and renders their titles and bodies as native table
+rows. Each click first persists the entered note, then
 mutates the ARC-managed `NoteStore`, selects it, updates native AppKit labels
 and the window title, refreshes the browser, and logs the new note. The
 window, controls, methods, properties, strings, and layouts still come directly
@@ -95,14 +97,18 @@ arguments while generated C inserts the sentinel so SQLite copies the bytes.
 Quotes and other ordinary user text therefore persist without an escaping
 wrapper or application-written native glue.
 
-`NoteStore.renderText()` borrows the store, iterates its owned `Array<Note>`
-without moving any note, builds one owned UTF-8 value through `TextBuffer`, and
-assigns it directly to `NSTextView.string`. The view is embedded in an imported
-`NSScrollView` with no native wrapper. This intentionally remains a simple
-read-only browser; replacing it with `NSTableView` should be the focused probe
-for Z-defined Objective-C data-source and delegate conformance.
+`NotesTableController` is an ordinary ARC-managed Z class that names imported
+AppKit protocols after `implements`. Its methods use `as "selector:"` to expose
+native protocol selectors while retaining readable Z-local names. The compiler
+validates each parameter and result against the SDK declaration, then emits an
+`NSObject` adapter forwarding those selectors into the Z class.
 
-Next, this application should drive Objective-C protocol
-conformance, table data-source/delegate methods, richer controls, escaping block
-lifetime, background search through `thread.spawn`, cancellation, and
-main-thread UI delivery.
+`objc.bind(notesView, { dataSource: tableController, delegate:
+tableController })` installs the adapter into AppKit's weak protocol properties.
+The returned `objc.Binding` strongly owns the table, adapter, and Z controller;
+keeping the token across `app.run()` prevents a helper-function refactor from
+creating a dangling delegate.
+
+Next, this application should drive richer controls, selection callbacks,
+escaping block lifetime, background search through `thread.spawn`,
+cancellation, and main-thread UI delivery.

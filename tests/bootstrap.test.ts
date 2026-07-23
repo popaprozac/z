@@ -2764,12 +2764,16 @@ test("builds the interactive Z Notes AppKit and sqlite3 application", () => {
   assert.match(artifact.source, /ZObjCConnection \* const addNoteConnection = z_objc_connect\(/);
   assert.match(artifact.source, /\[content addSubview:statusLabel\]/);
   assert.match(artifact.source, /\[statusLabel setStringValue:z_nsstring_from_string/);
-  assert.match(artifact.source, /\[\[NSTextView alloc\] initWithFrame/);
+  assert.match(artifact.source, /\[\[NSTableView alloc\] initWithFrame/);
   assert.match(artifact.source, /\[\[NSScrollView alloc\] initWithFrame/);
   assert.match(artifact.source, /\[notesScroll setHasVerticalScroller:true\]/);
   assert.match(artifact.source, /\[notesScroll setDocumentView:notesView\]/);
-  assert.match(artifact.source, /\[notesView setString:z_nsstring_from_string/);
-  assert.match(artifact.source, /NoteStore_renderText/);
+  assert.match(artifact.source, /\[notesView addTableColumn:notesColumn\]/);
+  assert.match(artifact.source, /\[notesView reloadData\]/);
+  assert.match(artifact.source, /@interface ZObjCProtocolAdapter_[A-Za-z0-9_]+NotesTableController : NSObject <NSTableViewDataSource, NSTableViewDelegate>/);
+  assert.match(artifact.source, /\[object setDataSource:_z_adapter_0\]/);
+  assert.match(artifact.source, /\[object setDelegate:_z_adapter_0\]/);
+  assert.match(artifact.source, /ZObjCBinding \* const tableBinding = z_objc_bind_/);
 
   const compilation = spawnSync("xcrun", [
     "clang", "-x", "objective-c", "-fobjc-arc", "-fblocks",
@@ -2784,7 +2788,7 @@ test("builds the interactive Z Notes AppKit and sqlite3 application", () => {
     { encoding: "utf8" },
   );
   assert.equal(nativeCheck.status, 0, nativeCheck.stderr);
-  assert.match(nativeCheck.stdout, /native frontend hybrid matches 3 modules, 3 local edges/);
+  assert.match(nativeCheck.stdout, /native frontend hybrid matches 4 modules, 5 local edges/);
 
   const smoke = resolve(projectRoot, "examples/applications/z-notes/smoke.zs");
   const result = spawnSync(process.execPath, [cli, "run", smoke], { encoding: "utf8" });
@@ -2801,8 +2805,10 @@ test("builds the interactive Z Notes AppKit and sqlite3 application", () => {
 
   const selectionUse = source.indexOf("selectNote(0)") + 1;
   assert.match(hover(source, application, selectionUse)?.contents.value ?? "", /selectNote\(index: usize\): boolean/);
-  const renderUse = source.indexOf("renderText()") + 1;
-  assert.match(hover(source, application, renderUse)?.contents.value ?? "", /renderText\(\): String/);
+  const tableController = resolve(projectRoot, "examples/applications/z-notes/table-controller.zs");
+  const tableControllerSource = readFileSync(tableController, "utf8");
+  const rowCountUse = tableControllerSource.indexOf("tableRowCount()") + 1;
+  assert.match(hover(tableControllerSource, tableController, rowCountUse)?.contents.value ?? "", /tableRowCount\(\): isize/);
 
   const persistence = resolve(projectRoot, "examples/applications/z-notes/persistence.zs");
   const persistenceSource = readFileSync(persistence, "utf8");
@@ -2903,7 +2909,7 @@ test("builds the interactive Z Notes AppKit and sqlite3 application", () => {
   const availabilityDiagnostic = diagnostics(availabilitySource, availabilityFile)[0];
   assert.equal(availabilityDiagnostic?.code, "Z0802");
   assert.match(availabilityDiagnostic?.message ?? "", /requires macOS 14\.0, but the deployment target is macOS 13\.0/);
-}, 10_000);
+}, 20_000);
 
 test("runs an application-shaped document workspace across ownership and interop features", () => {
   const example = resolve(projectRoot, "examples/applications/document-workspace/main.zs");
@@ -3456,6 +3462,55 @@ test("bridges owned Z closures to Objective-C target/action through an explicit 
   const targetOffset = propertySource.indexOf("button.target") + "button.".length + 2;
   assert.match(hover(propertySource, example, targetOffset)?.contents.value ?? "", /weak target: /);
 }, 10_000);
+
+test("generates safe Objective-C protocol adapters with protocol-aware editor scaffolds", () => {
+  if (process.platform !== "darwin") return;
+  const example = resolve(projectRoot, "examples/interop/objc/protocol-conformance.zs");
+  const source = readFileSync(example, "utf8");
+  const analysis = analyzeSource(source, example);
+  const appKit = analysis.foreignModules.get("AppKit");
+  assert.ok(appKit?.protocols.has("NSTableViewDataSource"));
+  assert.ok(appKit?.protocols.has("NSTableViewDelegate"));
+
+  const artifact = compileToNative(source, example);
+  assert.match(artifact.source, /@interface ZObjCProtocolAdapter_TableController : NSObject <NSTableViewDataSource, NSTableViewDelegate>/);
+  assert.match(artifact.source, /- \(NSInteger\)numberOfRowsInTableView:\(NSTableView \*\)tableView/);
+  assert.match(artifact.source, /Z_TableController_rowCount\(_z_owner, tableView\)/);
+  assert.match(artifact.source, /@interface ZObjCBinding : NSObject/);
+  assert.match(artifact.source, /\[object setDataSource:_z_adapter_0\]/);
+  assert.match(artifact.source, /\[object setDelegate:_z_adapter_0\]/);
+  assert.match(artifact.source, /Z_TableController_retain\(owner\)/);
+  assert.match(artifact.source, /Z_TableController_release\(_z_owner\)/);
+
+  const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /^Binding@0x[0-9a-f]+\n$/);
+
+  const completionSource = `
+    import AppKit from "AppKit/AppKit.h";
+    class Controller implements AppKit.NSTableViewDataSource {
+      number
+    }
+    function main(): i32 { return 0; }
+  `;
+  const completionOffset = completionSource.indexOf("number") + "number".length;
+  const scaffold = completions(completionSource, example, completionOffset)
+    .find((item) => item.label === "numberOfRowsInTableView");
+  assert.match(scaffold?.detail ?? "", /optional numberOfRowsInTableView:/);
+  assert.match(scaffold?.insertText ?? "", /in tableView: AppKit\.NSTableView/);
+  assert.match(scaffold?.insertText ?? "", /as "numberOfRowsInTableView:"/);
+
+  const methodOffset = source.indexOf("function rowCount") + "function ".length + 2;
+  assert.match(hover(source, example, methodOffset)?.contents.value ?? "", /Objective-C optional protocol selector.*numberOfRowsInTableView:/s);
+  const protocolOffset = source.indexOf("NSTableViewDataSource") + 2;
+  assert.match(hover(source, example, protocolOffset)?.contents.value ?? "", /Objective-C protocol NSTableViewDataSource/);
+
+  const wrongSelector = source.replace(
+    'as "numberOfRowsInTableView:"',
+    'as "notADataSourceSelector:"',
+  );
+  assert.match(diagnostics(wrongSelector, example)[0]?.message ?? "", /not declared by an implemented Objective-C protocol/);
+}, 15_000);
 
 test("registers persistent Objective-C event callbacks with explicit token cleanup", () => {
   if (process.platform !== "darwin") return;

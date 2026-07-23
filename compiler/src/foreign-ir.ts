@@ -155,6 +155,19 @@ export type ForeignObjCMethod = {
   readonly metadata: ForeignDeclarationMetadata;
 };
 
+export type ForeignObjCProtocolMethod = ForeignObjCMethod & {
+  readonly required: boolean;
+};
+
+export type ForeignObjCProtocol = {
+  readonly exportName: string;
+  readonly typeName: string;
+  readonly protocolName: string;
+  readonly inherited: readonly string[];
+  readonly methods: readonly ForeignObjCProtocolMethod[];
+  readonly metadata: ForeignDeclarationMetadata;
+};
+
 export type ForeignObjCPropertyOwnership =
   | "strong"
   | "copy"
@@ -170,6 +183,8 @@ export type ForeignObjCProperty = {
   readonly classProperty: boolean;
   readonly readonly: boolean;
   readonly ownership: ForeignObjCPropertyOwnership;
+  /** Protocol qualifiers carried by an `id<...>` property. */
+  readonly protocols: readonly string[];
   readonly type: ForeignType;
   readonly metadata: ForeignDeclarationMetadata;
 };
@@ -313,6 +328,7 @@ export type ForeignModuleDeclarations = {
   readonly constants: ReadonlyMap<string, ForeignConstant>;
   readonly objectTypes: ReadonlyMap<string, ForeignObjectType>;
   readonly interfaces: ReadonlyMap<string, ForeignObjCInterface>;
+  readonly protocols: ReadonlyMap<string, ForeignObjCProtocol>;
   readonly framework: string | null;
   readonly objectiveC: boolean;
   readonly cPlusPlus: boolean;
@@ -329,6 +345,7 @@ export type ForeignModuleIR = {
   readonly constants: ReadonlyMap<string, ForeignConstant>;
   readonly objectTypes: ReadonlyMap<string, ForeignObjectType>;
   readonly interfaces: ReadonlyMap<string, ForeignObjCInterface>;
+  readonly protocols: ReadonlyMap<string, ForeignObjCProtocol>;
   readonly framework: string | null;
   readonly objectiveC: boolean;
   readonly cPlusPlus: boolean;

@@ -2558,6 +2558,12 @@ function parseFunctionDeclaration(
     const error = try parseType(tokens, inout current, inout pendingGreater);
     errorType = Option.some(error);
   }
+  // Stage 1 does not consume Objective-C selector evidence semantically yet,
+  // but it must accept the authoritative source grammar so the native frontend
+  // remains usable while protocol conformance is lowered by the bootstrap.
+  if (takeIf(tokens, inout current, TokenKind.asKeyword)) {
+    try expectKind(tokens, inout current, TokenKind.string, "an Objective-C selector string after `as`");
+  }
   let body = StatementArena({ nodes: Array<Statement>(), roots: Array<usize>() });
   if (signatureOnly) {
     try expectKind(tokens, inout current, TokenKind.semicolon, "`;` after a function signature");

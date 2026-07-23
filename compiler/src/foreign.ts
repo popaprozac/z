@@ -31,6 +31,8 @@ import type {
   ForeignObjCInterface,
   ForeignObjCMethod,
   ForeignObjCProperty,
+  ForeignObjCProtocol,
+  ForeignObjCProtocolMethod,
   ForeignObjectType,
   ForeignPointerType,
   ForeignRecordPointerType,
@@ -72,6 +74,7 @@ type ClangNode = {
   readonly explicitlyDeleted?: boolean;
   readonly returnType?: { readonly qualType?: string; readonly desugaredQualType?: string };
   readonly super?: { readonly name?: string };
+  readonly protocols?: readonly { readonly name?: string }[];
   readonly fixedUnderlyingType?: { readonly qualType?: string; readonly desugaredQualType?: string };
   readonly loc?: ClangLocation;
   readonly range?: { readonly begin?: ClangLocation; readonly end?: ClangLocation };
@@ -190,6 +193,9 @@ function readHeader(
   const interfaces = objectiveC
     ? collectObjCInterfaces(root, declaration.moduleName, imported.byCName, objectTypes, constants)
     : new Map<string, ForeignObjCInterface>();
+  const protocols = objectiveC
+    ? collectObjCProtocols(root, declaration.moduleName, imported.byCName, objectTypes)
+    : new Map<string, ForeignObjCProtocol>();
   for (const [name, constant] of collectIntegerMacroConstants(
     declaration,
     clangBaseArguments,
@@ -254,6 +260,7 @@ function readHeader(
     constants,
     objectTypes,
     interfaces,
+    protocols,
     framework,
     objectiveC,
     cPlusPlus,
@@ -289,6 +296,7 @@ function readHeader(
     constants: produced.constants,
     objectTypes: produced.objectTypes,
     interfaces: produced.interfaces,
+    protocols: produced.protocols,
     framework: produced.framework,
     objectiveC: produced.objectiveC,
     cPlusPlus: produced.cPlusPlus,
@@ -869,6 +877,7 @@ function collectObjCInterfaces(
           : property.assign === true
           ? "assign"
           : "unspecified",
+        protocols: objcProtocolQualifiers(property.type!.qualType ?? ""),
         type: mapObjCType(property.type!, className, "return", namedTypes, typeNames, objectType),
         metadata: foreignDeclarationMetadata(property),
       }));
@@ -897,6 +906,94 @@ function collectObjCInterfaces(
     });
   });
   return interfaces;
+}
+
+function objcProtocolQualifiers(type: string): string[] {
+  const match = /\bid\s*<([^>]+)>/.exec(type);
+  if (!match) return [];
+  return match[1]
+    .split(",")
+    .map((name) => name.trim())
+    .filter((name) => /^[A-Za-z_]\w*$/.test(name));
+}
+
+function collectObjCProtocols(
+  root: ClangNode,
+  moduleName: string,
+  namedTypes: ReadonlyMap<string, ForeignNamedType>,
+  objectTypes: Map<string, ForeignObjectType>,
+): Map<string, ForeignObjCProtocol> {
+  const declarations = new Map<string, ClangNode>();
+  const interfaceNames = new Set<string>();
+  visit(root, (node) => {
+    if (node.kind === "ObjCInterfaceDecl" && node.name) interfaceNames.add(node.name);
+    if (node.kind !== "ObjCProtocolDecl" || !node.name) return;
+    const existing = declarations.get(node.name);
+    if (!existing || (node.inner?.length ?? 0) > (existing.inner?.length ?? 0)) declarations.set(node.name, node);
+  });
+  const typeNames = new Map([...interfaceNames].map((name) => [name, `${moduleName}.${name}`]));
+  const objectType = (className: string | null, nullable: boolean): ForeignObjectType => {
+    const baseName = className ? typeNames.get(className) ?? `${moduleName}.${className}` : "id";
+    const typeName = nullable || !className ? `__z_objc:${nullable ? "nullable" : "nonnull"}:${baseName}` : baseName;
+    const existing = objectTypes.get(typeName);
+    if (existing) return existing;
+    const created: ForeignObjectType = {
+      kind: "object",
+      typeName,
+      cName: className ? `${className} *` : "id",
+      className,
+      nullable,
+    };
+    objectTypes.set(typeName, created);
+    return created;
+  };
+  const protocols = new Map<string, ForeignObjCProtocol>();
+  for (const [protocolName, declaration] of declarations) {
+    const methods = (declaration.inner ?? [])
+      .filter((child) => child.kind === "ObjCMethodDecl" && child.name && child.returnType?.qualType)
+      .map((method): ForeignObjCProtocolMethod => ({
+        selector: method.name!,
+        baseName: method.name!.split(":")[0],
+        instance: method.instance === true,
+        returnsInstanceType: /\binstancetype\b/.test(method.returnType!.qualType ?? ""),
+        returnType: mapObjCType(method.returnType!, "", "return", namedTypes, typeNames, objectType),
+        parameters: (method.inner ?? [])
+          .filter((child) => child.kind === "ParmVarDecl" && child.type?.qualType)
+          .map((parameter) => ({
+            name: parameter.name ?? null,
+            type: mapObjCType(parameter.type!, "", "parameter", namedTypes, typeNames, objectType),
+          })),
+        required: objcProtocolMethodRequired(declaration, method),
+        metadata: foreignDeclarationMetadata(method),
+      }));
+    protocols.set(protocolName, {
+      exportName: protocolName,
+      typeName: `${moduleName}.${protocolName}`,
+      protocolName,
+      inherited: (declaration.protocols ?? []).flatMap((protocol) => protocol.name ? [protocol.name] : []),
+      methods,
+      metadata: foreignDeclarationMetadata(declaration),
+    });
+  }
+  return protocols;
+}
+
+function objcProtocolMethodRequired(protocol: ClangNode, method: ClangNode): boolean {
+  const protocolSource = foreignDeclarationMetadata(protocol).source;
+  const methodSource = foreignDeclarationMetadata(method).source;
+  if (
+    !protocolSource
+    || !methodSource
+    || protocolSource.fileName !== methodSource.fileName
+    || !existsSync(protocolSource.fileName)
+  ) return true;
+  const source = foreignSourceText(protocolSource.fileName);
+  const protocolOffset = protocol.loc?.offset;
+  const methodOffset = method.loc?.offset;
+  if (protocolOffset === undefined || methodOffset === undefined || methodOffset < protocolOffset) return true;
+  const prefix = source.slice(protocolOffset, methodOffset);
+  const controls = [...prefix.matchAll(/@(required|optional)\b/g)];
+  return controls.at(-1)?.[1] !== "optional";
 }
 
 function mapObjCType(

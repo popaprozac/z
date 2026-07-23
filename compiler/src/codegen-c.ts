@@ -19,9 +19,16 @@ import type {
   ForeignCallArgumentPlan,
   ForeignStatusCallInfo,
   IntegerOperation,
+  ObjCBindingPlan,
+  ObjCProtocolConformance,
   SemanticInfo,
 } from "./sema.ts";
-import { parsePointerTypeName, type ForeignBlockType } from "./foreign.ts";
+import {
+  parsePointerTypeName,
+  type ForeignBlockType,
+  type ForeignObjCProtocolMethod,
+  type ForeignType,
+} from "./foreign.ts";
 import {
   isStandardModuleSpecifier,
   objcConnectionTypeName,
@@ -241,7 +248,7 @@ export function generateC(program: Program, sourceName: string, semanticInfo: Se
     includedHeaders.add("string.h");
   }
 
-  if (semanticInfo.objcConnectionCalls.size > 0) {
+  if (semanticInfo.objcConnectionCalls.size > 0 || semanticInfo.objcBindingCalls.size > 0) {
     lines.push("#import <Foundation/Foundation.h>");
     includedHeaders.add("Foundation/Foundation.h");
   }
@@ -307,6 +314,9 @@ export function generateC(program: Program, sourceName: string, semanticInfo: Se
   if (functionTypes.length > 0) lines.push("");
   if (semanticInfo.objcConnectionCalls.size > 0) {
     lines.push(generateObjCConnectionRuntime(), "");
+  }
+  if (semanticInfo.objcBindingCalls.size > 0) {
+    lines.push(generateObjCBindingRuntime(), "");
   }
   for (const helper of foreignEscapeHelpers) {
     lines.push(generateForeignEscapeHelpers(helper), "");
@@ -410,6 +420,12 @@ export function generateC(program: Program, sourceName: string, semanticInfo: Se
       lines.push(generateFunction(method, structs, enums, functions, declaration, semanticInfo), "");
     }
   }
+  for (const conformance of semanticInfo.objcProtocolConformances.values()) {
+    lines.push(generateObjCProtocolAdapter(conformance), "");
+  }
+  for (const [offset, plan] of semanticInfo.objcBindingCalls) {
+    lines.push(generateObjCBindingHelper(offset, plan, semanticInfo), "");
+  }
   for (const closure of closures.filter((candidate) => candidate.owned)) {
     lines.push(generateClosureEnvironmentLifecycle(closure, structs, enums, semanticInfo), "");
   }
@@ -430,6 +446,75 @@ export function generateC(program: Program, sourceName: string, semanticInfo: Se
     lines.push(generateFunction(declaration, structs, enums, functions, null, semanticInfo), "");
   }
   return `${lines.join("\n")}\n`;
+}
+
+function objcProtocolAdapterName(owner: string): string {
+  return `ZObjCProtocolAdapter_${nativeSymbolPart(owner)}`;
+}
+
+function foreignCType(type: ForeignType): string {
+  return type.cName;
+}
+
+function generateObjCProtocolMethodDeclaration(
+  requirement: ForeignObjCProtocolMethod,
+  argumentNames: readonly string[],
+): string {
+  const result = foreignCType(requirement.returnType);
+  if (requirement.parameters.length === 0) return `- (${result})${requirement.selector}`;
+  const labels = requirement.selector.split(":").slice(0, -1);
+  return `- (${result})${labels.map((label, index) => (
+    `${label}:(${foreignCType(requirement.parameters[index].type)})${argumentNames[index]}`
+  )).join(" ")}`;
+}
+
+function generateObjCProtocolAdapter(
+  conformance: ObjCProtocolConformance,
+): string {
+  const owner = conformance.declaration;
+  const adapter = objcProtocolAdapterName(owner.name);
+  const ownerType = structName(owner.name);
+  const protocols = conformance.protocols.map((protocol) => protocol.protocolName).join(", ");
+  const exported = owner.methods.flatMap((method) => {
+    const requirement = conformance.methods.get(method.location.offset);
+    return requirement ? [{ method, requirement }] : [];
+  });
+  const declarations = exported.map(({ requirement }) => {
+    const arguments_ = requirement.parameters.map((parameter, index) => cBindingName(parameter.name ?? `argument${index + 1}`));
+    return `${generateObjCProtocolMethodDeclaration(requirement, arguments_)};`;
+  }).join("\n");
+  const implementations = exported.map(({ method, requirement }) => {
+    const arguments_ = requirement.parameters.map((parameter, index) => cBindingName(parameter.name ?? `argument${index + 1}`));
+    const declaration = generateObjCProtocolMethodDeclaration(requirement, arguments_);
+    const call = `${methodName(owner.name, method.name)}(_z_owner${arguments_.length ? `, ${arguments_.join(", ")}` : ""})`;
+    const body = method.returnType.name === "void" ? `${call};\n  return;` : `return ${call};`;
+    return `${declaration} {
+  ${body}
+}`;
+  }).join("\n\n");
+  return `@interface ${adapter} : NSObject <${protocols}> {
+@public
+  ${ownerType} *_z_owner;
+}
+- (instancetype)initWithOwner:(${ownerType} *)owner;
+${declarations}
+@end
+
+@implementation ${adapter}
+- (instancetype)initWithOwner:(${ownerType} *)owner {
+  self = [super init];
+  if (self != nil) {
+    _z_owner = ${retainName(owner.name)}(owner);
+  }
+  return self;
+}
+
+${implementations}
+
+- (void)dealloc {
+  ${releaseName(owner.name)}(_z_owner);
+}
+@end`;
 }
 
 function collectExplicitCopyTypes(
@@ -901,6 +986,69 @@ function generateObjCConnectionRuntime(): string {
 
 static inline __attribute__((unused)) ZObjCConnection *z_objc_connect(id control, ${functionName} operation) {
   return [[ZObjCConnection alloc] initWithControl:control operation:operation];
+}`;
+}
+
+function generateObjCBindingRuntime(): string {
+  return `@interface ZObjCBinding : NSObject {
+@public
+  id _z_object;
+  NSArray *_z_adapters;
+}
+- (instancetype)initWithObject:(id)object adapters:(NSArray *)adapters;
+@end
+
+@implementation ZObjCBinding
+- (instancetype)initWithObject:(id)object adapters:(NSArray *)adapters {
+  self = [super init];
+  if (self != nil) {
+    _z_object = object;
+    _z_adapters = adapters;
+  }
+  return self;
+}
+@end`;
+}
+
+function objcBindingHelperName(offset: number): string {
+  return `z_objc_bind_${offset}`;
+}
+
+function generateObjCBindingHelper(
+  offset: number,
+  plan: ObjCBindingPlan,
+  semanticInfo: SemanticInfo,
+): string {
+  const object = semanticInfo.foreignObjectTypes.get(plan.objectType);
+  if (!object) throw new Error(`missing Objective-C object type ${JSON.stringify(plan.objectType)} for objc.bind`);
+  const owners = new Map<string, { readonly type: string; readonly name: string }>();
+  for (const binding of plan.bindings) {
+    if (binding.ownerExpression.kind !== "identifier") throw new Error("objc.bind owner must be an identifier");
+    owners.set(`${binding.ownerType}:${binding.ownerExpression.name}`, {
+      type: binding.ownerType,
+      name: binding.ownerExpression.name,
+    });
+  }
+  const parameters = [
+    `${object.cName} object`,
+    ...[...owners.values()].map((owner) => `${structName(owner.type)} *${cBindingName(owner.name)}`),
+  ];
+  const adapters = new Map<string, string>();
+  const lines: string[] = [];
+  for (const owner of owners.values()) {
+    const key = `${owner.type}:${owner.name}`;
+    const adapter = `_z_adapter_${adapters.size}`;
+    adapters.set(key, adapter);
+    lines.push(`${objcProtocolAdapterName(owner.type)} *${adapter} = [[${objcProtocolAdapterName(owner.type)} alloc] initWithOwner:${cBindingName(owner.name)}];`);
+  }
+  for (const binding of plan.bindings) {
+    if (binding.ownerExpression.kind !== "identifier") continue;
+    const adapter = adapters.get(`${binding.ownerType}:${binding.ownerExpression.name}`)!;
+    lines.push(`[object ${binding.property.setter}${adapter}];`);
+  }
+  lines.push(`return [[ZObjCBinding alloc] initWithObject:object adapters:@[${[...adapters.values()].join(", ")}]];`);
+  return `static ZObjCBinding *${objcBindingHelperName(offset)}(${parameters.join(", ")}) {
+${indent(lines.join("\n"), 2)}
 }`;
 }
 
@@ -2526,6 +2674,8 @@ function generateFunction(
             : []),
         ]
       : []),
+    ...(instanceReceiver ? ["(void)self;"] : []),
+    ...declaration.parameters.map((parameter) => `(void)${cBindingName(parameter.name)};`),
     ...parameterCleanup.map((parameter) => indent(`bool ${parameter.liveFlag} = true;`, 2)),
     ...outParameterFlags.map((liveFlag) => indent(`bool ${liveFlag} = false;`, 2)),
   ];
@@ -2731,6 +2881,7 @@ bool ${liveFlag} = true;`;
       } else {
         initialized = generateDirectValue(statement.initializer, context, (value) => `${declaration} = ${value};`);
       }
+      initialized = `${initialized}\n(void)${cBindingName(statement.name)};`;
       if (!hasCleanupType(zType, context.structs, context.enums, context.semanticInfo.foreignTypes)) return initialized;
       const liveFlag = ensureLiveFlag(statement.name, context);
       return `${initialized}\nbool ${liveFlag} = true;`;
@@ -4961,6 +5112,19 @@ function generateExpressionInner(expression: Expression, context: GenerationCont
       }
       if (context.semanticInfo.objcConnectionCalls.has(expression.location.offset)) {
         return `z_objc_connect(${generateExpression(expression.arguments[0], context)}, ${generateExpression(expression.arguments[1], context)})`;
+      }
+      const objcBinding = context.semanticInfo.objcBindingCalls.get(expression.location.offset);
+      if (objcBinding) {
+        const owners = new Map<string, Expression>();
+        for (const binding of objcBinding.bindings) {
+          const expression = binding.ownerExpression;
+          if (expression.kind !== "identifier") throw new Error("objc.bind owner must be an identifier");
+          owners.set(`${binding.ownerType}:${expression.name}`, expression);
+        }
+        return `${objcBindingHelperName(expression.location.offset)}(${[
+          generateExpression(expression.arguments[0], context),
+          ...[...owners.values()].map((owner) => generateExpression(owner, context)),
+        ].join(", ")})`;
       }
       const integerOperation = context.semanticInfo.integerOperations.get(expression.location.offset);
       if (integerOperation && expression.callee.kind === "member") {

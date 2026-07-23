@@ -60,6 +60,7 @@ bun run z run examples/language/control-flow/result.zs
 | C++ references | [`cpp-references.zs`](../examples/interop/cpp/cpp-references.zs) | `const T&`, `T&`, move-only `T&&`, and receiver-qualified methods mapped onto existing Z capabilities with no wrapper overhead |
 | AppKit window | [`nswindow.zs`](../examples/interop/objc/nswindow.zs) | Direct Objective-C ARC calls |
 | Objective-C nullability | [`objc-nullability.zs`](../examples/interop/objc/objc-nullability.zs) | `T | null`, narrowing, and `Option.fromNullable` |
+| Objective-C protocols | [`protocol-conformance.zs`](../examples/interop/objc/protocol-conformance.zs) | Z class conformance, checked selectors, generated adapter, and `objc.bind` lifetime |
 | Persistent AppKit events | [`appkit-events.zs`](../examples/interop/objc/appkit-events.zs) | Native blocks, weak capture, observer tokens |
 | AppKit target/action | [`target-action.zs`](../examples/interop/objc/target-action.zs) | `std/objc` connection owns the control and Z closure for an explicit safe lifetime |
 | Swift class | [`swift-interop`](../examples/interop/swift/swift-interop) | Generated Objective-C compatibility header |

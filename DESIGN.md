@@ -1331,6 +1331,23 @@ parameter or property accepts `NSString` (or a compatible supertype). Otherwise
 the literal is a Z `String`; raw Objective-C/C `cstring` parameters receive the
 same call-scoped byte borrow used by C interop.
 
+Imported Objective-C protocols participate in Z's nominal `implements` list
+without turning a Z ARC class into an Objective-C allocation. A synchronous,
+non-throwing instance method may attach `as "selector:"` after its return type.
+That selector must belong to an implemented protocol, and the compiler checks
+the complete parameter capabilities/types and result against the imported SDK
+declaration. Code generation emits an `NSObject<Protocol>` adapter that retains
+the Z owner and forwards only explicitly implemented selectors.
+
+Weak protocol properties require an explicit lifetime token. The first bridge
+is `objc.bind(object, { dataSource: controller, delegate: controller })`. Field
+names must resolve to imported writable non-owning protocol properties and each
+stored controller must implement the property's protocol. The returned
+`objc.Binding` owns the native object, generated adapters, and Z controllers.
+This makes delegate/data-source lifetime visible in Z source and prevents
+refactoring a controller into a helper scope from producing a dangling native
+reference.
+
 The first application-shaped ownership probe combines an ARC Z `Workspace`, an
 owned growable array of move-only documents and strings, and a native AppKit
 window. Its ongoing findings live in

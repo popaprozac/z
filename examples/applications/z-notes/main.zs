@@ -3,6 +3,7 @@ import objc from "std/objc";
 import AppKit from "AppKit/AppKit.h";
 import { Note, NoteStore } from "./model.zs";
 import { NoteDatabase, sqliteVersion } from "./persistence.zs";
+import { NotesTableController } from "./table-controller.zs";
 
 function main(): i32 {
   const databasePath = ".z-cache/z-notes.sqlite3";
@@ -87,12 +88,19 @@ function main(): i32 {
   bodyField.placeholderString = "Note body";
   content.addSubview(bodyField);
 
-  const notesView = AppKit.NSTextView.alloc().initWithFrame(
+  const notesView = AppKit.NSTableView.alloc().initWithFrame(
     AppKit.NSMakeRect(0.0, 0.0, 744.0, 332.0)
   );
-  notesView.editable = false;
-  notesView.selectable = true;
-  notesView.string = store.renderText();
+  const notesColumn = AppKit.NSTableColumn.alloc().initWithIdentifier("notes");
+  notesColumn.title = "Notes";
+  notesColumn.width = 720.0;
+  notesView.addTableColumn(notesColumn);
+  notesView.rowHeight = 44.0;
+  const tableController = new NotesTableController(store);
+  const tableBinding = objc.bind(notesView, {
+    dataSource: tableController,
+    delegate: tableController,
+  });
 
   const notesScroll = AppKit.NSScrollView.alloc().initWithFrame(
     AppKit.NSMakeRect(24.0, 76.0, 768.0, 344.0)
@@ -133,7 +141,7 @@ function main(): i32 {
         selectedLabel.stringValue = `Selected: ${note.title}`;
         store.add(note);
         store.selectNote(store.noteCount() - 1);
-        notesView.string = store.renderText();
+        notesView.reloadData();
         statusLabel.stringValue = `Added note ${noteId} — ${store.noteCount()} total`;
         window.title = `Z Notes — ${store.noteCount()} notes`;
         titleField.stringValue = "";

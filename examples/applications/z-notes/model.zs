@@ -28,6 +28,15 @@ export class NoteStore {
     return this.notes.length;
   }
 
+  function tableRowCount(): isize {
+    let count: isize = 0;
+    for (const note of this.notes) {
+      if (note.id < 0) return 0;
+      count = count + 1;
+    }
+    return count;
+  }
+
   function nextNoteId(): i64 {
     let next: i64 = 1;
     for (const note of this.notes) {
@@ -52,5 +61,18 @@ export class NoteStore {
       }
       none => false;
     };
+  }
+
+  function withRow(row: isize, in visit: (in note: Note) => void): boolean {
+    if (row < 0) return false;
+    let current: isize = 0;
+    for (const note of this.notes) {
+      if (current == row) {
+        visit(note);
+        return true;
+      }
+      current = current + 1;
+    }
+    return false;
   }
 }

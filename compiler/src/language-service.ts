@@ -20,6 +20,8 @@ import type {
   ForeignObjCInterface,
   ForeignObjCMethod,
   ForeignObjCProperty,
+  ForeignObjCProtocol,
+  ForeignObjCProtocolMethod,
   ForeignType,
   ForeignNamedType,
 } from "./foreign.ts";
@@ -180,6 +182,8 @@ export function completions(source: string, fileName: string, offset: number): C
   if (member) return memberCompletions(source, fileName, offset, member[1], member[2] ?? "");
   const objectFields = objectFieldCompletions(source, fileName, offset);
   if (objectFields) return objectFields;
+  const protocolMethods = objcProtocolMethodCompletions(source, fileName, offset);
+  if (protocolMethods) return protocolMethods;
   const labels = labelCompletions(source, fileName, offset);
   return labels.length > 0 ? labels : symbolCompletions(source, fileName, offset);
 }
@@ -442,6 +446,8 @@ export function semanticTokens(source: string, fileName: string): { readonly dat
         classifications.set(token.location.offset, { type: semanticTokenTypes.indexOf("namespace"), modifiers: 4 });
       } else if (namespacePath.length === 0 && module?.interfaces.has(memberName)) {
         classifications.set(token.location.offset, { type: semanticTokenTypes.indexOf("class"), modifiers: 4 });
+      } else if (namespacePath.length === 0 && module?.protocols.has(memberName)) {
+        classifications.set(token.location.offset, { type: semanticTokenTypes.indexOf("interface"), modifiers: 4 });
       } else if (named) {
         classifications.set(token.location.offset, {
           type: semanticTokenTypes.indexOf(named.kind === "enum" ? "enum" : "type"),
@@ -519,7 +525,13 @@ export function hover(source: string, fileName: string, offset: number): Hover |
       && new RegExp(`^function\\s+${word.text}$`).test(source.slice(method.location.offset, word.end))
     ));
   if (declaredMethod) {
-    return markdownHover(methodDetail(declaredMethod, context.typeDisplayNames), source, word.start, word.end);
+    const nativeRequirement = [...context.semanticInfo.objcProtocolConformances.values()]
+      .map((conformance) => conformance.methods.get(declaredMethod.location.offset))
+      .find((requirement) => requirement);
+    const nativeDetail = nativeRequirement
+      ? `\n\nObjective-C ${nativeRequirement.required ? "required" : "optional"} protocol selector: \`${nativeRequirement.selector}\`${foreignAvailabilityDetail(nativeRequirement.metadata)}`
+      : "";
+    return markdownHover(`${methodDetail(declaredMethod, context.typeDisplayNames)}${nativeDetail}`, source, word.start, word.end);
   }
 
   const literalField = structLiteralFieldHover(context, word.start);
@@ -655,6 +667,14 @@ export function hover(source: string, fileName: string, offset: number): Hover |
     if (standardOwner === "objc" && word.text === "connect") {
       return markdownHover(
         "connect(control: Objective-C target/action object, operation: move () => void): objc.Connection  // owns the control and callback lifetime",
+        source,
+        word.start,
+        word.end,
+      );
+    }
+    if (standardOwner === "objc" && word.text === "bind") {
+      return markdownHover(
+        "bind(object: Objective-C object, protocols: { property: ZController }): objc.Binding  // owns the native object, generated protocol adapters, and Z controllers",
         source,
         word.start,
         word.end,
@@ -879,6 +899,20 @@ function nativeDefinition(
   const selectedForeign = context.semanticInfo.foreignFunctionDefinitions.get(word.start);
   const selectedLocation = foreignMetadataLocation(selectedForeign);
   if (selectedLocation) return selectedLocation;
+  const nativeMethod = context.sourceProgram.structs
+    .flatMap((declaration) => declaration.methods)
+    .find((method) => (
+      method.name === word.text
+      && method.location.offset <= word.start
+      && new RegExp(`^function\\s+${word.text}$`).test(source.slice(method.location.offset, word.end))
+    ));
+  if (nativeMethod) {
+    for (const conformance of context.semanticInfo.objcProtocolConformances.values()) {
+      const requirement = conformance.methods.get(nativeMethod.location.offset);
+      const target = foreignMetadataLocation(requirement?.metadata);
+      if (target) return target;
+    }
+  }
   const chainedSelector = objectiveCSelectorAt(context, word.start);
   if (chainedSelector) {
     for (const declaration of context.semanticInfo.foreignInterfaces.values()) {
@@ -901,7 +935,8 @@ function nativeDefinition(
       const declaration = resolveModuleFunction(resolved.module, resolved.namespacePath, word.text)
         ?? resolved.module.constants.get(word.text)
         ?? resolveModuleNamedType(resolved.module, resolved.namespacePath, word.text)
-        ?? resolved.module.interfaces.get(word.text);
+        ?? resolved.module.interfaces.get(word.text)
+        ?? resolved.module.protocols.get(word.text);
       const metadata = declaration && "overloads" in declaration
         ? declaration.overloads[0]?.metadata
         : declaration?.metadata;
@@ -926,7 +961,8 @@ function nativeDefinition(
     const target = module ? resolveModuleFunction(module, [], binding.importedName)
       ?? module?.constants.get(binding.importedName)
       ?? resolveModuleNamedType(module, [], binding.importedName)
-      ?? module?.interfaces.get(binding.importedName) : null;
+      ?? module?.interfaces.get(binding.importedName)
+      ?? module?.protocols.get(binding.importedName) : null;
     const metadata = target && "overloads" in target ? target.overloads[0]?.metadata : target?.metadata;
     const location = foreignMetadataLocation(metadata);
     if (location) return location;
@@ -1558,6 +1594,143 @@ function symbolCompletions(source: string, fileName: string, offset: number): Co
   const semanticLabels = new Set(items.map((item) => item.label));
   items.push(...tokenItems.filter((item) => !semanticLabels.has(item.label)));
   return filterCompletions(uniqueCompletions(items), prefix, 500);
+}
+
+function objcProtocolMethodCompletions(
+  source: string,
+  fileName: string,
+  offset: number,
+): CompletionItem[] | null {
+  const prefix = source.slice(0, offset).match(/([A-Za-z_][A-Za-z0-9_]*)$/)?.[1] ?? "";
+  const start = offset - prefix.length;
+  const sanitized = source.slice(0, start) + source.slice(offset);
+  const context = safeAnalysis(sanitized, fileName);
+  if (!context) return null;
+  const owner = enclosingAggregateAt(sanitized, fileName, start, context.sourceProgram);
+  if (!owner || owner.kind !== "class" || owner.implements.length === 0) return null;
+  const protocols = owner.implements.flatMap((reference) => {
+    const protocol = context.semanticInfo.foreignProtocols.get(reference.name);
+    return protocol ? [protocol] : [];
+  });
+  if (protocols.length === 0) return null;
+  const implemented = new Set(owner.methods.flatMap((method) => method.nativeSelector ? [method.nativeSelector] : []));
+  const requirements = uniqueObjCProtocolRequirements(protocols, context.semanticInfo.foreignProtocols)
+    .filter((method) => method.instance && !implemented.has(method.selector));
+  if (requirements.length === 0) return [];
+  const lineStart = source.lastIndexOf("\n", start - 1) + 1;
+  const indentation = source.slice(lineStart, start).match(/^\s*/)?.[0] ?? "";
+  const items = requirements.map((method): CompletionItem => {
+    const localName = objcProtocolLocalMethodName(method);
+    return {
+      label: localName,
+      kind: completionKinds.method,
+      detail: `${method.required ? "required" : "optional"} ${objCProtocolMethodDetail(method)}`,
+      insertText: objcProtocolMethodScaffold(method, localName, indentation),
+      insertTextFormat: 2,
+      sortText: `${method.required ? "0" : "1"}-${localName}`,
+    };
+  });
+  return filterCompletions(uniqueCompletions(items), prefix, 2500);
+}
+
+function enclosingAggregateAt(
+  source: string,
+  fileName: string,
+  offset: number,
+  program: Program,
+): StructDeclaration | null {
+  let tokens;
+  try {
+    tokens = lex(source, fileName);
+  } catch {
+    return null;
+  }
+  for (const declaration of program.structs) {
+    const declarationIndex = tokens.findIndex((token, index) => (
+      token.location.offset === declaration.location.offset
+      && (token.kind === "class" || token.kind === "struct")
+      && tokens[index + 1]?.text === declaration.name
+    ));
+    if (declarationIndex < 0) continue;
+    let brace = declarationIndex + 2;
+    while (brace < tokens.length && tokens[brace].kind !== "leftBrace") brace += 1;
+    if (brace >= tokens.length || tokens[brace].location.offset >= offset) continue;
+    let depth = 0;
+    for (let cursor = brace; cursor < tokens.length; cursor += 1) {
+      const token = tokens[cursor];
+      if (token.location.offset >= offset) return depth === 1 ? declaration : null;
+      if (token.kind === "leftBrace") depth += 1;
+      if (token.kind === "rightBrace") depth -= 1;
+      if (depth === 0) break;
+    }
+  }
+  return null;
+}
+
+function uniqueObjCProtocolRequirements(
+  roots: readonly ForeignObjCProtocol[],
+  protocols: ReadonlyMap<string, ForeignObjCProtocol>,
+): ForeignObjCProtocolMethod[] {
+  const methods = new Map<string, ForeignObjCProtocolMethod>();
+  const visited = new Set<string>();
+  const visit = (protocol: ForeignObjCProtocol): void => {
+    if (visited.has(protocol.typeName)) return;
+    visited.add(protocol.typeName);
+    for (const method of protocol.methods) {
+      if (!methods.has(method.selector)) methods.set(method.selector, method);
+    }
+    const separator = protocol.typeName.lastIndexOf(".");
+    const moduleName = separator < 0 ? "" : protocol.typeName.slice(0, separator);
+    for (const inheritedName of protocol.inherited) {
+      if (inheritedName === "NSObject") continue;
+      const inherited = protocols.get(moduleName ? `${moduleName}.${inheritedName}` : inheritedName);
+      if (inherited) visit(inherited);
+    }
+  };
+  roots.forEach(visit);
+  return [...methods.values()];
+}
+
+function objcProtocolLocalMethodName(method: ForeignObjCProtocolMethod): string {
+  const labels = selectorParts(method.selector);
+  if (labels.length < 2) return method.baseName;
+  if (/^(?:tableView|outlineView|collectionView|control)$/.test(labels[0])) {
+    let name = labels[1];
+    name = name.replace(/For(?:TableColumn|Item|IndexPath)$/, "");
+    if (labels.includes("row") && !/Row$/.test(name)) name += "Row";
+    if (labels.includes("item") && !/Item$/.test(name)) name += "Item";
+    return name;
+  }
+  return method.baseName;
+}
+
+function objCProtocolMethodDetail(method: ForeignObjCProtocolMethod): string {
+  const parameters = method.parameters.map((parameter, index) => (
+    `${parameter.type.kind === "object" ? "in " : ""}${parameter.name ?? `argument${index + 1}`}: ${foreignProtocolTypeName(parameter.type)}`
+  ));
+  return `${method.selector} — (${parameters.join(", ")}): ${foreignProtocolTypeName(method.returnType)}`;
+}
+
+function objcProtocolMethodScaffold(
+  method: ForeignObjCProtocolMethod,
+  localName: string,
+  indentation: string,
+): string {
+  const parameters = method.parameters.map((parameter, index) => (
+    `${parameter.type.kind === "object" ? "in " : ""}${parameter.name ?? `argument${index + 1}`}: ${foreignProtocolTypeName(parameter.type)}`
+  ));
+  const parameterBlock = parameters.length === 0
+    ? "()"
+    : `(\n${parameters.map((parameter) => `${indentation}  ${parameter}`).join(`,\n`)}\n${indentation})`;
+  const result = foreignProtocolTypeName(method.returnType);
+  const placeholder = result === "void" ? "" : `\n${indentation}  \${1:// TODO: return ${result}}`;
+  return `function ${localName}${parameterBlock}: ${result} as ${JSON.stringify(method.selector)} {${placeholder}\n${indentation}}`;
+}
+
+function foreignProtocolTypeName(type: ForeignType): string {
+  if (type.kind !== "object") return foreignTypeName(type);
+  const publicName = type.typeName.replace(/^__z_objc:(?:nullable|nonnull):/, "");
+  return `${publicName}${type.nullable ? " | null" : ""}`;
 }
 
 function languageTokenCompletions(fileName: string): CompletionItem[] {
@@ -2350,6 +2523,8 @@ function memberCompletions(
           ? "spawn<T, E?>(operation: () => T throws E?): Task<T, E?>  // starts one native thread"
           : standardModule === "objc" && member === "connect"
             ? "connect(control: Objective-C target/action object, operation: move () => void): objc.Connection"
+            : standardModule === "objc" && member === "bind"
+              ? "bind(object: Objective-C object, protocols: { property: ZController }): objc.Binding"
             : standardFunctionDetail(member, name!),
         insertText: `${member}()`,
       };
@@ -3117,6 +3292,13 @@ function moduleCompletions(
     for (const declaration of module.interfaces.values()) {
       items.push({ label: declaration.exportName, kind: completionKinds.class, detail: `Objective-C class ${declaration.className}` });
     }
+    for (const declaration of module.protocols.values()) {
+      items.push({
+        label: declaration.exportName,
+        kind: completionKinds.interface,
+        detail: `Objective-C protocol ${declaration.protocolName}`,
+      });
+    }
     for (const declaration of module.constants.values()) {
       items.push({
         label: declaration.name,
@@ -3475,7 +3657,9 @@ function describeModuleMember(module: ForeignModule, namespacePath: readonly str
   const constant = module.constants.get(name);
   if (constant) return `${foreignConstantDetail(constant)}${foreignAvailabilityDetail(constant.metadata)}`;
   const objc = module.interfaces.get(name);
-  return objc ? `Objective-C class ${objc.className}${foreignAvailabilityDetail(objc.metadata)}` : null;
+  if (objc) return `Objective-C class ${objc.className}${foreignAvailabilityDetail(objc.metadata)}`;
+  const protocol = module.protocols.get(name);
+  return protocol ? `Objective-C protocol ${protocol.protocolName}${foreignAvailabilityDetail(protocol.metadata)}` : null;
 }
 
 function foreignConstantDetail(constant: ForeignConstant): string {
