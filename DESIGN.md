@@ -463,6 +463,27 @@ Statement `if` and `else` bodies may be either blocks or one statement. `else`
 binds to the nearest unmatched `if`, following TypeScript. Value-producing `if`
 expressions continue to require blocks and explicit `select` values.
 
+`while` and `for...of` also have value-producing forms. Their required `else`
+block supplies the natural-exhaustion value, while `select` exits the loop
+expression with a value:
+
+```z
+const firstEven: Option<i32> = for (const value of values) {
+  if (value % 2 == 0) {
+    select Option.some(value);
+  }
+} else {
+  select Option.none;
+};
+```
+
+Every reachable `select` and the exhaustion block must agree on one result
+type. `continue` starts the next iteration. A plain `break` is rejected in a
+value-producing loop because it would not supply a value; `return` and `throw`
+retain their function-level meanings. The initial executable tier is
+synchronous. Async iteration and suspension inside a value-producing loop
+remain separate design work.
+
 Ownership analysis computes a fixed state across loop back-edges. An owned value
 that may move during one iteration cannot be reused during a later iteration
 unless every continuing path restores ownership. State after a loop merges the

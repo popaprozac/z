@@ -24,6 +24,7 @@ Status meanings:
 | Traits | Partial | Nominal static conformance, generic declarations/specializations, and generic constraints; no trait values/dynamic dispatch |
 | Enums and `Option`/`Result` | Implemented | Payloads, nesting, exhaustive statement/expression matches, and tag equality for payload-free Z enums |
 | Errors | Implemented | Typed `throws`, `throw`, `try`, and `attempt`, including synchronous cleanup-bearing error values |
+| Control flow expressions | Implemented synchronous tier | Ternary, `if`, `match`, `while`, and `for...of` produce values through explicit `select`; loop expressions require an exhaustion `else`, retain cleanup and ownership analysis, allow `continue`, and reject valueless `break`; async loop expressions remain |
 | Closures | Partial | Borrowed and owned ARC environments plus weak captures; mutation of ordinary captured bindings works, while preserving addressable move-only resource capabilities such as `TextBuffer` through a borrowed closure remains |
 | Strings and console | Implemented | Owned UTF-8 strings, exact byte equality, templates, typed formatting, checked `byteAt`/`copyBytes`, `byteLength`, `isEmpty`, and explicit move-only `std/text` `TextBuffer`; grapheme-aware `length` remains planned |
 | Integer safety | Implemented | Checked arithmetic, explicit wrapping/saturating operations, and `TargetInteger(value)` construction that lowers range-contained pairs directly and checks narrowing/signedness-risk pairs; lossy and floating-point conversions remain |
@@ -574,6 +575,9 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    `for...of` statements retain the immutable binding and its location, iterable
    expression root, and required block edge. Existing `break` and `continue`
    nodes therefore compose inside a complete structural loop tree.
+   Value-producing `while` and `for...of` expressions retain the same condition,
+   binding, iterable, and body edges plus a required exhaustion-value block.
+   Their explicit `select` statements share the ordinary statement arena.
    Statement and expression `match` forms share a flat match-expression tree.
    Subject and arm edges, `in` mode, payload bindings, object-field destructuring,
    aliases, source locations, and each arm's statement body are structural.

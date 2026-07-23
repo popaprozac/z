@@ -168,6 +168,20 @@ export function resolveForeignHandleTypeAnnotations(
             ? expression(value.elseBranch) as typeof value.elseBranch
             : statement(value.elseBranch),
         };
+      case "whileExpression":
+        return {
+          ...value,
+          condition: expression(value.condition),
+          body: statement(value.body),
+          elseBranch: statement(value.elseBranch),
+        };
+      case "forExpression":
+        return {
+          ...value,
+          iterable: expression(value.iterable),
+          body: statement(value.body),
+          elseBranch: statement(value.elseBranch),
+        };
       case "number":
       case "string":
       case "boolean":

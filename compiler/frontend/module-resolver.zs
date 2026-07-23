@@ -1029,10 +1029,49 @@ function resolveExpressionNode(
     }
     return;
   }
+  if (kind == ExpressionKind.whileExpression && children.length == 3) {
+    try resolveExpressionNode(module, symbols, arena, tree, children[0], bindings);
+    try resolveStatementSequence(
+      module,
+      symbols,
+      arena,
+      tree.nodes[children[1]].statements,
+      bindings
+    );
+    try resolveStatementSequence(
+      module,
+      symbols,
+      arena,
+      tree.nodes[children[2]].statements,
+      bindings
+    );
+    return;
+  }
+  if (kind == ExpressionKind.forExpression && children.length == 4) {
+    try resolveExpressionNode(module, symbols, arena, tree, children[1], bindings);
+    let loopBindings = copyBindings(bindings);
+    addMatchBindings(tree, children[0], inout loopBindings);
+    try resolveStatementSequence(
+      module,
+      symbols,
+      arena,
+      tree.nodes[children[2]].statements,
+      loopBindings
+    );
+    try resolveStatementSequence(
+      module,
+      symbols,
+      arena,
+      tree.nodes[children[3]].statements,
+      bindings
+    );
+    return;
+  }
   if (
     kind == ExpressionKind.matchArmExpression
     || kind == ExpressionKind.matchBindingExpression
     || kind == ExpressionKind.matchObjectFieldExpression
+    || kind == ExpressionKind.forBindingExpression
     || kind == ExpressionKind.closureParameterExpression
     || kind == ExpressionKind.variantMarkerExpression
   ) return;
@@ -1937,6 +1976,10 @@ function addValueBinding(
 
 function contextualExpectedBindingName(offset: usize): String {
   return `__z_native_contextual_expected:${offset}`;
+}
+
+function loopSelectTypeBindingName(): String {
+  return "__z_native_loop_select_type";
 }
 
 function contextualExpectedType(
@@ -6520,6 +6563,144 @@ function inferExpressionNodeType(
       tree.nodes[children[2]].column
     );
   }
+  if (kind == ExpressionKind.whileExpression && children.length == 3) {
+    const condition = try inferExpressionNodeType(
+      module,
+      modules,
+      moduleIndex,
+      arena,
+      tree,
+      children[0],
+      inout bindings,
+      inout evidence
+    );
+    try requireSettledExpressionType(module, tree, children[0], condition);
+    if (condition.byteLength > 0) {
+      try requireExpressionType(
+        module,
+        modules,
+        moduleIndex,
+        tree,
+        children[0],
+        "boolean",
+        condition
+      );
+    }
+    const expectedType = contextualExpectedType(bindings, tree, index);
+    let elseBindings = copyValueBindings(bindings);
+    const elseType = try inferExpressionNodeTypeExpected(
+      module,
+      modules,
+      moduleIndex,
+      arena,
+      tree,
+      children[2],
+      expectedType,
+      inout elseBindings,
+      inout evidence
+    );
+    try requireSettledExpressionType(module, tree, children[2], elseType);
+    let bodyBindings = copyValueBindings(bindings);
+    let selectedType = elseType.copyBytes(0, elseType.byteLength);
+    if (expectedType.byteLength > 0) {
+      selectedType = expectedType.copyBytes(0, expectedType.byteLength);
+    }
+    const selectBinding = loopSelectTypeBindingName();
+    addValueBinding(inout bodyBindings, selectBinding, selectedType);
+    const bodyStatements = copyIndices(tree.nodes[children[1]].statements);
+    const expectedReturn = valueBindingType(bindings, "__z_native_return_type");
+    const bodyContinues = try inferStatementSequence(
+      module,
+      modules,
+      moduleIndex,
+      arena,
+      bodyStatements,
+      inout bodyBindings,
+      inout evidence,
+      expectedReturn
+    );
+    if (bodyContinues) {
+      mergeBindingFlowStates(inout bindings, bodyBindings, elseBindings);
+    } else {
+      copyBindingFlowStates(inout bindings, elseBindings);
+    }
+    return elseType;
+  }
+  if (kind == ExpressionKind.forExpression && children.length == 4) {
+    const iterableType = try inferExpressionNodeType(
+      module,
+      modules,
+      moduleIndex,
+      arena,
+      tree,
+      children[1],
+      inout bindings,
+      inout evidence
+    );
+    try requireSettledExpressionType(module, tree, children[1], iterableType);
+    const elementType = iterationElementType(iterableType);
+    const expectedType = contextualExpectedType(bindings, tree, index);
+    let elseBindings = copyValueBindings(bindings);
+    const elseType = try inferExpressionNodeTypeExpected(
+      module,
+      modules,
+      moduleIndex,
+      arena,
+      tree,
+      children[3],
+      expectedType,
+      inout elseBindings,
+      inout evidence
+    );
+    try requireSettledExpressionType(module, tree, children[3], elseType);
+
+    let bodyBindings = copyValueBindings(bindings);
+    const patternChildren = copyIndices(tree.nodes[children[0]].children);
+    for (const pattern of patternChildren) {
+      if (tree.nodes[pattern].kind == ExpressionKind.matchBindingExpression) {
+        addValueBinding(inout bodyBindings, tree.nodes[pattern].value, elementType);
+      } else if (tree.nodes[pattern].kind == ExpressionKind.matchObjectFieldExpression) {
+        const fieldType = iterationObjectFieldType(
+          modules,
+          moduleIndex,
+          iterableType,
+          tree.nodes[pattern].value
+        );
+        const fieldChildren = copyIndices(tree.nodes[pattern].children);
+        if (fieldChildren.length > 0) {
+          addValueBinding(
+            inout bodyBindings,
+            tree.nodes[fieldChildren[0]].value,
+            fieldType
+          );
+        }
+      }
+    }
+    let selectedType = elseType.copyBytes(0, elseType.byteLength);
+    if (expectedType.byteLength > 0) {
+      selectedType = expectedType.copyBytes(0, expectedType.byteLength);
+    }
+    const selectBinding = loopSelectTypeBindingName();
+    addValueBinding(inout bodyBindings, selectBinding, selectedType);
+    const bodyStatements = copyIndices(tree.nodes[children[2]].statements);
+    const expectedReturn = valueBindingType(bindings, "__z_native_return_type");
+    const bodyContinues = try inferStatementSequence(
+      module,
+      modules,
+      moduleIndex,
+      arena,
+      bodyStatements,
+      inout bodyBindings,
+      inout evidence,
+      expectedReturn
+    );
+    if (bodyContinues) {
+      mergeBindingFlowStates(inout bindings, bodyBindings, elseBindings);
+    } else {
+      copyBindingFlowStates(inout bindings, elseBindings);
+    }
+    return elseType;
+  }
   if (kind == ExpressionKind.conditionalExpression && children.length == 3) {
     const condition = try inferExpressionNodeType(module, modules, moduleIndex, arena, tree, children[0], inout bindings, inout evidence);
     try requireSettledExpressionType(module, tree, children[0], condition);
@@ -7963,6 +8144,9 @@ function inferStatement(
         let contextualExpected = "";
         if (kind == StatementKind.returnStatement) {
           contextualExpected = expectedReturn.copyBytes(0, expectedReturn.byteLength);
+        } else {
+          const selectBinding = loopSelectTypeBindingName();
+          contextualExpected = valueBindingType(bindings, selectBinding);
         }
         const actual = try inferExpressionTypeExpected(
           module,
@@ -7974,19 +8158,22 @@ function inferStatement(
           inout bindings,
           inout evidence
         );
-        if (kind == StatementKind.returnStatement && expectedReturn.byteLength > 0) {
+        if (
+          (kind == StatementKind.returnStatement && expectedReturn.byteLength > 0)
+          || (kind == StatementKind.selectStatement && contextualExpected.byteLength > 0)
+        ) {
           try requireExpressionSyntaxType(
             module,
             modules,
             moduleIndex,
             expression,
-            expectedReturn,
+            contextualExpected,
             actual
           );
         }
         let consumedType = actual.copyBytes(0, actual.byteLength);
-        if (kind == StatementKind.returnStatement && expectedReturn.byteLength > 0) {
-          consumedType = expectedReturn.copyBytes(0, expectedReturn.byteLength);
+        if (contextualExpected.byteLength > 0) {
+          consumedType = contextualExpected.copyBytes(0, contextualExpected.byteLength);
         }
         try consumeOwnedExpressionSyntax(
           module,

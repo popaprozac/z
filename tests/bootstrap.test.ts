@@ -4979,6 +4979,125 @@ test("runs while loops with cleanup-aware break and continue", () => {
   assert.match(generated, /_z_loop_continue_0: ;\n\s+}\n\s+_z_loop_break_0: ;/);
 });
 
+test("produces values from for and while expressions through select and else", () => {
+  const example = resolve(projectRoot, "examples/language/control-flow/loop-expressions.zs");
+  const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, "ready: 4\n");
+
+  const generated = compileToC(readFileSync(example, "utf8"), example);
+  assert.match(generated, /goto _z_loop_value_[0-9]+;/);
+  assert.match(generated, /_z_loop_value_[0-9]+: ;/);
+  const source = readFileSync(example, "utf8");
+  const firstEvenUse = source.indexOf("firstEven", source.indexOf("match"));
+  assert.match(hover(source, example, firstEvenUse + 1)?.contents.value ?? "", /firstEven: Option<i32>/);
+  const native = spawnSync(process.execPath, [cli, "self-host-parse", example], { encoding: "utf8" });
+  assert.equal(native.status, 0, native.stderr);
+  assert.match(native.stdout, /stage-1 parser matches/);
+
+  const cleanupDirectory = mkdtempSync("/tmp/z-loop-expression-cleanup-");
+  const cleanupFile = resolve(cleanupDirectory, "main.zs");
+  const cleanupSource = `
+    import console from "std/console";
+    struct Resource {
+      id: i32;
+      deinit { console.log(\`drop=\${this.id}\`); }
+    }
+    function main(): i32 {
+      const values = [1, 2, 3];
+      const selected = for (const value of values) {
+        const resource = Resource({ id: value });
+        if (value == 2) {
+          select resource.id;
+        }
+      } else {
+        select 0;
+      };
+      return selected - 2;
+    }
+  `;
+  writeFileSync(cleanupFile, cleanupSource);
+  const cleanupResult = spawnSync(process.execPath, [cli, "run", cleanupFile], { encoding: "utf8" });
+  assert.equal(cleanupResult.status, 0, cleanupResult.stderr);
+  assert.equal(cleanupResult.stdout, "drop=1\ndrop=2\n");
+  const cleanupGenerated = compileToC(cleanupSource, cleanupFile);
+  assert.match(cleanupGenerated, /Z_Resource_deinit\(&\(resource\)\);\n\s+goto _z_loop_value_/);
+
+  const iteratorFile = resolve(cleanupDirectory, "iterator.zs");
+  const iteratorSource = `
+    import { Iterator } from "std/iteration";
+    struct Countdown implements Iterator<i32> {
+      current: i32;
+      function next(inout this): Option<i32> {
+        if (this.current == 0) return Option.none;
+        const value = this.current;
+        this.current = this.current - 1;
+        return Option.some(value);
+      }
+    }
+    function main(): i32 {
+      let countdown = Countdown({ current: 3 });
+      const selected = for (const value of inout countdown) {
+        if (value == 2) select value;
+      } else {
+        select 0;
+      };
+      const remaining = match (countdown.next()) {
+        some(value) => value;
+        none => 0;
+      };
+      return selected + remaining - 3;
+    }
+  `;
+  writeFileSync(iteratorFile, iteratorSource);
+  const iteratorResult = spawnSync(process.execPath, [cli, "run", iteratorFile], { encoding: "utf8" });
+  assert.equal(iteratorResult.status, 0, iteratorResult.stderr);
+
+  const missingElse = `
+    function main(): i32 {
+      const values = [1];
+      const found = for (const value of values) { select value; };
+      return found;
+    }
+  `;
+  assert.throws(
+    () => compileToC(missingElse, "loop-expression-else.zs"),
+    /expected `else` in a value-producing `for\.\.\.of`/,
+  );
+
+  const mismatched = `
+    function main(): i32 {
+      const values = [1];
+      const found = for (const value of values) {
+        select value;
+      } else {
+        select "missing";
+      };
+      return 0;
+    }
+  `;
+  assert.throws(
+    () => compileToC(mismatched, "loop-expression-type.zs"),
+    /for expression branch produces i32, but the other branch produces String/,
+  );
+
+  const valuelessBreak = `
+    function main(): i32 {
+      const values = [1];
+      const found = for (const value of values) {
+        break;
+      } else {
+        select 0;
+      };
+      return found;
+    }
+  `;
+  assert.throws(
+    () => compileToC(valuelessBreak, "loop-expression-break.zs"),
+    /break cannot exit a value-producing loop without a value/,
+  );
+});
+
 test("iterates fixed arrays, Array values, Slices, and borrowed owned elements", () => {
   const example = resolve(projectRoot, "examples/language/control-flow/iteration.zs");
   const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });

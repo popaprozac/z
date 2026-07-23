@@ -303,6 +303,8 @@ export type Expression =
   | ExecutorPlacementExpression
   | MatchExpression
   | IfExpression
+  | WhileExpression
+  | ForExpression
   | ArgumentReferenceExpression;
 
 export type NumberExpression = {
@@ -500,6 +502,26 @@ export type IfExpression = {
   readonly condition: Expression;
   readonly thenBranch: BlockStatement;
   readonly elseBranch: BlockStatement | IfExpression;
+  readonly location: SourceLocation;
+};
+
+export type WhileExpression = {
+  readonly kind: "whileExpression";
+  readonly condition: Expression;
+  readonly body: BlockStatement;
+  readonly elseBranch: BlockStatement;
+  readonly location: SourceLocation;
+};
+
+export type ForExpression = {
+  readonly kind: "forExpression";
+  readonly mode: "auto" | "inout";
+  readonly binding: string | null;
+  readonly bindingLocation: SourceLocation | null;
+  readonly objectBindings: MatchObjectBinding[] | null;
+  readonly iterable: Expression;
+  readonly body: BlockStatement;
+  readonly elseBranch: BlockStatement;
   readonly location: SourceLocation;
 };
 

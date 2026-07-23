@@ -67,6 +67,7 @@ type GenerationContext = {
   readonly returnCounter: { value: number };
   readonly loopCounter: { value: number };
   readonly loopStack: LoopGenerationFrame[];
+  readonly valueSelectionStack: ValueSelectionGenerationFrame[];
   readonly cleanupCounter: { value: number };
   readonly cleanupScopes: CleanupLocal[][];
   readonly liveFlags: Map<string, string>;
@@ -90,6 +91,13 @@ type LoopGenerationFrame = {
   readonly cleanupDepth: number;
   usedBreak: boolean;
   usedContinue: boolean;
+};
+
+type ValueSelectionGenerationFrame = {
+  readonly label: string;
+  readonly cleanupDepth: number;
+  readonly consumeValue: (value: string, context: GenerationContext) => string;
+  readonly consumeTerminates: boolean;
 };
 
 const primitiveTypeNames: Record<string, string> = {
@@ -2465,6 +2473,7 @@ function generateUserClassConstructor(
     returnCounter: { value: 0 },
     loopCounter: { value: 0 },
     loopStack: [],
+    valueSelectionStack: [],
     cleanupCounter: { value: 0 },
     cleanupScopes: [fieldCleanup, parameterCleanup],
     liveFlags,
@@ -2662,6 +2671,7 @@ function generateFunction(
     returnCounter: { value: 0 },
     loopCounter: { value: 0 },
     loopStack: [],
+    valueSelectionStack: [],
     cleanupCounter: { value: 0 },
     cleanupScopes: [parameterCleanup],
     liveFlags,
@@ -2737,6 +2747,7 @@ function generateDeinit(
     returnCounter: { value: 0 },
     loopCounter: { value: 0 },
     loopStack: [],
+    valueSelectionStack: [],
     cleanupCounter: { value: 0 },
     cleanupScopes: [[]],
     liveFlags: new Map(),
@@ -2878,6 +2889,8 @@ bool ${liveFlag} = true;`;
       if (
         statement.initializer.kind === "matchExpression"
         || statement.initializer.kind === "ifExpression"
+        || statement.initializer.kind === "whileExpression"
+        || statement.initializer.kind === "forExpression"
         || (statement.initializer.kind === "conditional" && requiresStatementValue(statement.initializer, context))
       ) {
         const temporary = `_z_value_${context.valueCounter.value++}`;
@@ -2980,8 +2993,19 @@ bool ${liveFlag} = true;`;
         return `${declaration} = ${value};\n${cleanup ? `${cleanup}\n` : ""}${releaseSelf}return ${returned};`;
       }, true);
     }
-    case "select":
-      throw new Error("select must be lowered by its enclosing value-producing block");
+    case "select": {
+      const selection = context.valueSelectionStack.at(-1);
+      if (!selection) throw new Error("select must be lowered by its enclosing value-producing block");
+      return generateDirectValue(statement.expression, context, (value, valueContext) => {
+        const selected = selection.consumeValue(value, valueContext);
+        if (selection.consumeTerminates) return selected;
+        const cleanup = generateCleanup(
+          valueContext.cleanupScopes.slice(selection.cleanupDepth),
+          valueContext,
+        );
+        return [selected, cleanup, `goto ${selection.label};`].filter(Boolean).join("\n");
+      }, selection.consumeTerminates);
+    }
     case "break":
       return generateLoopTransfer("break", context);
     case "continue":
@@ -3671,6 +3695,16 @@ function generateDirectValue(
       consumeValue(generateBridgedStringValue(expression, value, valueContext), valueContext)
     ), consumeTerminates);
   }
+  if (expression.kind === "whileExpression" || expression.kind === "forExpression") {
+    return generateLoopExpression(
+      expression,
+      context,
+      (value, valueContext) => (
+        consumeValue(generateBridgedStringValue(expression, value, valueContext), valueContext)
+      ),
+      consumeTerminates,
+    );
+  }
   if (expression.kind === "executorPlacement") {
     if (expression.mode !== "sync") {
       throw new Error("asynchronous executor placement must be lowered through task frames");
@@ -3689,7 +3723,7 @@ function generateBridgedStringValue(expression: Expression, value: string, conte
 
 function requiresStatementValue(expression: Expression, context: GenerationContext): boolean {
   if (context.expressionOverrides.has(expression.location.offset)) return false;
-  if (["template", "try", "matchExpression", "ifExpression"].includes(expression.kind)) return true;
+  if (["template", "try", "matchExpression", "ifExpression", "whileExpression", "forExpression"].includes(expression.kind)) return true;
   if (expression.kind === "conditional") {
     return requiresStatementValue(expression.thenExpression, context)
       || requiresStatementValue(expression.elseExpression, context);
@@ -4826,6 +4860,51 @@ function generateIfExpression(
   }`;
 }
 
+function generateLoopExpression(
+  expression: Extract<Expression, { kind: "whileExpression" | "forExpression" }>,
+  context: GenerationContext,
+  consumeValue: (value: string, context: GenerationContext) => string,
+  consumeTerminates: boolean,
+): string {
+  const label = `_z_loop_value_${context.valueCounter.value++}`;
+  const selection: ValueSelectionGenerationFrame = {
+    label,
+    cleanupDepth: context.cleanupScopes.length,
+    consumeValue,
+    consumeTerminates,
+  };
+  context.valueSelectionStack.push(selection);
+  let loop: string;
+  try {
+    loop = expression.kind === "whileExpression"
+      ? generateWhile({
+          kind: "while",
+          condition: expression.condition,
+          body: expression.body,
+          location: expression.location,
+        }, context)
+      : generateFor({
+          kind: "for",
+          mode: expression.mode,
+          binding: expression.binding,
+          bindingLocation: expression.bindingLocation,
+          objectBindings: expression.objectBindings,
+          iterable: expression.iterable,
+          body: expression.body,
+          location: expression.location,
+        }, context);
+  } finally {
+    context.valueSelectionStack.pop();
+  }
+  const exhausted = generateValueArm(
+    expression.elseBranch,
+    context,
+    consumeValue,
+    consumeTerminates,
+  );
+  return `${loop}\n${exhausted}\n${label}: ;`;
+}
+
 function generateValueArm(
   statement: Statement,
   context: GenerationContext,
@@ -5159,6 +5238,10 @@ function generateExpressionInner(expression: Expression, context: GenerationCont
       throw new Error("match must be lowered from its containing statement");
     case "ifExpression":
       throw new Error("if must be lowered from its containing statement");
+    case "whileExpression":
+      throw new Error("while must be lowered from its containing statement");
+    case "forExpression":
+      throw new Error("for must be lowered from its containing statement");
     case "member": {
       const foreignFunctionName = context.semanticInfo.foreignFunctionNames.get(expression.location.offset);
       if (foreignFunctionName) return foreignFunctionName;
@@ -6367,6 +6450,9 @@ function inferExpressionType(expression: Expression, context: GenerationContext)
       return matchExpressionType(expression, context);
     case "ifExpression":
       return ifExpressionType(expression, context);
+    case "whileExpression":
+    case "forExpression":
+      return loopExpressionType(expression, context);
     case "member": {
       const ownerType = inferExpressionType(expression.object, context);
       const ownerValueType = parseViewType(ownerType)?.target ?? ownerType;
@@ -6452,6 +6538,9 @@ function directValueType(expression: Expression, context: GenerationContext): st
   if (expression.kind === "try") type = trySuccessType(expression, context);
   else if (expression.kind === "matchExpression") type = matchExpressionType(expression, context);
   else if (expression.kind === "ifExpression") type = ifExpressionType(expression, context);
+  else if (expression.kind === "whileExpression" || expression.kind === "forExpression") {
+    type = loopExpressionType(expression, context);
+  }
   else type = inferExpressionType(expression, context);
   if (context.semanticInfo.viewLoadExpressions.has(expression.location.offset)) {
     return parseViewType(type)?.target ?? type;
@@ -6483,6 +6572,15 @@ function matchExpressionType(expression: Extract<Expression, { kind: "matchExpre
     if (type) return type;
   }
   return "i32";
+}
+
+function loopExpressionType(
+  expression: Extract<Expression, { kind: "whileExpression" | "forExpression" }>,
+  context: GenerationContext,
+): string {
+  return context.semanticInfo.expressionTypes.get(expression.location.offset)
+    ?? valueArmType(expression.elseBranch, context)
+    ?? "i32";
 }
 
 function valueArmType(statement: Statement, context: GenerationContext): string | null {

@@ -360,6 +360,41 @@ export function parse(tokens: Token[], fileName: string): Program {
       }
       return { kind: "ifExpression", condition, thenBranch, elseBranch, location: token.location };
     }
+    if (match("while")) {
+      const token = previous();
+      expect("leftParen", "`(` after `while`");
+      const condition = parseExpression();
+      expect("rightParen", "`)` after a `while` expression condition");
+      const body = parseRequiredBlock("a `while` expression body");
+      expect("else", "`else` in a value-producing `while`");
+      const elseBranch = parseRequiredBlock("a `while` exhaustion body");
+      return { kind: "whileExpression", condition, body, elseBranch, location: token.location };
+    }
+    if (match("for")) {
+      const token = previous();
+      expect("leftParen", "`(` after `for`");
+      expect("const", "`const` in a read-only `for...of` binding");
+      const objectBindings = match("leftBrace") ? parseObjectBindings() : null;
+      const binding = objectBindings ? null : expect("identifier", "an iteration binding");
+      expect("of", "`of`");
+      const mode = match("inout") ? "inout" : "auto";
+      const iterable = parseExpression();
+      expect("rightParen", "`)` after a `for...of` expression header");
+      const body = parseRequiredBlock("a `for...of` expression body");
+      expect("else", "`else` in a value-producing `for...of`");
+      const elseBranch = parseRequiredBlock("a `for...of` exhaustion body");
+      return {
+        kind: "forExpression",
+        mode,
+        binding: binding?.text ?? null,
+        bindingLocation: binding?.location ?? null,
+        objectBindings,
+        iterable,
+        body,
+        elseBranch,
+        location: token.location,
+      };
+    }
     if (match("match")) {
       const token = previous();
       expect("leftParen", "`(` after `match`");

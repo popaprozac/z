@@ -15,6 +15,7 @@ compile-only probes and `emit` to inspect generated native code.
 | Construction | [`construction.zs`](../examples/language/basics/construction.zs) | Struct object construction and class-only `new` |
 | Object destructuring | [`destructuring.zs`](../examples/language/basics/destructuring.zs) | Local field/alias patterns, explicit copy/move ownership, and borrowed Map-entry patterns |
 | Results | [`result.zs`](../examples/language/control-flow/result.zs) | `return`, `throw`, `attempt`, and exhaustive matching |
+| Value-producing loops | [`loop-expressions.zs`](../examples/language/control-flow/loop-expressions.zs) | `select` from `for...of` and `while`, required exhaustion `else`, and expression typing |
 | Custom iteration | [`custom-iterator.zs`](../examples/language/control-flow/custom-iterator.zs) | Generic `Iterator<T>`, explicit stored-iterator mutation, owned yielded values, and temporary iterators |
 | Options | [`option.zs`](../examples/language/types/option.zs) | `Option.some`, `Option.none`, and payload matching |
 | Native desktop application | [`z-notes`](../examples/applications/z-notes) | AppKit controls, `std/objc` target/action, ARC application state, nullable selection, direct SQLite import, and native library linkage |

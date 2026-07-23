@@ -132,6 +132,9 @@ export enum ExpressionKind {
   matchBindingExpression,
   matchObjectFieldExpression,
   ifExpression,
+  whileExpression,
+  forExpression,
+  forBindingExpression,
   valueBlockExpression,
   executorPlacementExpression,
   executorOnExpression,
@@ -970,6 +973,159 @@ function parseIfExpressionTree(
   );
 }
 
+function parseWhileExpressionTree(
+  in tokens: Array<Token>,
+  inout current: usize,
+  end: usize,
+  inout nodes: Array<ExpressionNode>,
+  inout statementNodes: Array<Statement>
+): usize throws ParserError {
+  const start = snapshot(tokens[current]);
+  try expectKind(tokens, inout current, TokenKind.whileKeyword, "`while`");
+  try expectKind(tokens, inout current, TokenKind.leftParen, "`(` after `while`");
+  let children = Array<usize>();
+  const condition = try parseConditionalTree(tokens, inout current, end, inout nodes, inout statementNodes);
+  children.push(condition);
+  try expectKind(tokens, inout current, TokenKind.rightParen, "`)` after a while-expression condition");
+  const body = try parseValueBlockTree(
+    tokens,
+    inout current,
+    "a `while` expression body",
+    inout nodes,
+    inout statementNodes
+  );
+  children.push(body);
+  try expectKind(tokens, inout current, TokenKind.elseKeyword, "`else` in a value-producing `while`");
+  const elseBranch = try parseValueBlockTree(
+    tokens,
+    inout current,
+    "a `while` exhaustion body",
+    inout nodes,
+    inout statementNodes
+  );
+  children.push(elseBranch);
+  return pushExpressionNode(
+    inout nodes,
+    ExpressionKind.whileExpression,
+    "",
+    children,
+    Array<String>(),
+    start
+  );
+}
+
+function parseForExpressionTree(
+  in tokens: Array<Token>,
+  inout current: usize,
+  end: usize,
+  inout nodes: Array<ExpressionNode>,
+  inout statementNodes: Array<Statement>
+): usize throws ParserError {
+  const start = snapshot(tokens[current]);
+  try expectKind(tokens, inout current, TokenKind.forKeyword, "`for`");
+  try expectKind(tokens, inout current, TokenKind.leftParen, "`(` after `for`");
+  try expectKind(tokens, inout current, TokenKind.constKeyword, "`const` in a read-only `for...of` binding");
+  let patternChildren = Array<usize>();
+  let patternKind = "binding";
+  let patternStart = snapshot(tokens[current]);
+  if (takeIf(tokens, inout current, TokenKind.leftBrace)) {
+    patternKind = "object";
+    if (tokens[current].kind != TokenKind.rightBrace) {
+      while (true) {
+        const field = snapshot(tokens[current]);
+        try expectKind(tokens, inout current, TokenKind.identifier, "an iteration field name");
+        let bindingName = field.text.copyBytes(0, field.text.byteLength);
+        let bindingOffset = field.offset;
+        let bindingLine = field.line;
+        let bindingColumn = field.column;
+        if (takeIf(tokens, inout current, TokenKind.colon)) {
+          const binding = snapshot(tokens[current]);
+          try expectKind(tokens, inout current, TokenKind.identifier, "an iteration binding name");
+          bindingName = binding.text.copyBytes(0, binding.text.byteLength);
+          bindingOffset = binding.offset;
+          bindingLine = binding.line;
+          bindingColumn = binding.column;
+        }
+        const bindingNode = pushExpressionNodeAt(
+          inout nodes,
+          ExpressionKind.matchBindingExpression,
+          bindingName,
+          Array<usize>(),
+          Array<String>(),
+          bindingOffset,
+          bindingLine,
+          bindingColumn
+        );
+        let fieldChildren = Array<usize>();
+        fieldChildren.push(bindingNode);
+        patternChildren.push(pushExpressionNode(
+          inout nodes,
+          ExpressionKind.matchObjectFieldExpression,
+          field.text.copyBytes(0, field.text.byteLength),
+          fieldChildren,
+          Array<String>(),
+          field
+        ));
+        if (!takeIf(tokens, inout current, TokenKind.comma)) break;
+        if (tokens[current].kind == TokenKind.rightBrace) break;
+      }
+    }
+    try expectKind(tokens, inout current, TokenKind.rightBrace, "`}` ending an iteration pattern");
+  } else {
+    const binding = snapshot(tokens[current]);
+    try expectKind(tokens, inout current, TokenKind.identifier, "an iteration binding");
+    patternChildren.push(pushExpressionNode(
+      inout nodes,
+      ExpressionKind.matchBindingExpression,
+      binding.text.copyBytes(0, binding.text.byteLength),
+      Array<usize>(),
+      Array<String>(),
+      binding
+    ));
+  }
+  const pattern = pushExpressionNode(
+    inout nodes,
+    ExpressionKind.forBindingExpression,
+    patternKind,
+    patternChildren,
+    Array<String>(),
+    patternStart
+  );
+  try expectKind(tokens, inout current, TokenKind.ofKeyword, "`of` after an iteration binding");
+  let mode = "auto";
+  if (takeIf(tokens, inout current, TokenKind.inoutKeyword)) mode = "inout";
+  let children = Array<usize>();
+  children.push(pattern);
+  const iterable = try parseConditionalTree(tokens, inout current, end, inout nodes, inout statementNodes);
+  children.push(iterable);
+  try expectKind(tokens, inout current, TokenKind.rightParen, "`)` after a `for...of` expression header");
+  const body = try parseValueBlockTree(
+    tokens,
+    inout current,
+    "a `for...of` expression body",
+    inout nodes,
+    inout statementNodes
+  );
+  children.push(body);
+  try expectKind(tokens, inout current, TokenKind.elseKeyword, "`else` in a value-producing `for...of`");
+  const elseBranch = try parseValueBlockTree(
+    tokens,
+    inout current,
+    "a `for...of` exhaustion body",
+    inout nodes,
+    inout statementNodes
+  );
+  children.push(elseBranch);
+  return pushExpressionNode(
+    inout nodes,
+    ExpressionKind.forExpression,
+    mode,
+    children,
+    Array<String>(),
+    start
+  );
+}
+
 function parseExecutorPlacementTree(
   in tokens: Array<Token>,
   inout current: usize,
@@ -1071,6 +1227,12 @@ function parsePrimaryTree(
   }
   if (start.kind == TokenKind.ifKeyword) {
     return try parseIfExpressionTree(tokens, inout current, end, inout nodes, inout statementNodes);
+  }
+  if (start.kind == TokenKind.whileKeyword) {
+    return try parseWhileExpressionTree(tokens, inout current, end, inout nodes, inout statementNodes);
+  }
+  if (start.kind == TokenKind.forKeyword) {
+    return try parseForExpressionTree(tokens, inout current, end, inout nodes, inout statementNodes);
   }
   if (start.kind == TokenKind.matchKeyword) {
     return try parseMatchTree(tokens, inout current, end, inout nodes, inout statementNodes);
@@ -2977,6 +3139,9 @@ function expressionKindName(kind: ExpressionKind): String {
     matchBindingExpression => "matchBinding";
     matchObjectFieldExpression => "matchObjectField";
     ifExpression => "ifExpression";
+    whileExpression => "whileExpression";
+    forExpression => "forExpression";
+    forBindingExpression => "forBinding";
     valueBlockExpression => "valueBlock";
     executorPlacementExpression => "executorPlacement";
     executorOnExpression => "executorOn";

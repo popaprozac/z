@@ -1,4 +1,5 @@
 import type {
+  BlockStatement,
   Expression,
   EnumDeclaration,
   FunctionDeclaration,
@@ -392,6 +393,7 @@ type AnalysisState = {
   readonly cPlusPlus: boolean;
   readonly frameworks: readonly string[];
   readonly loopStack: LoopAnalysisFrame[];
+  readonly valueLoopStack: ValueLoopAnalysisFrame[];
   readonly moveOrigins: Map<string, SourceLocation>;
   readonly borrowOrigins: Map<string, { readonly location: SourceLocation; readonly kind: "closure" | "iteration" | "match" }>;
   readonly iterationBorrowOrigins: Map<string, SourceLocation>;
@@ -436,6 +438,16 @@ type AccessLoanState = {
 type LoopAnalysisFrame = {
   readonly breaks: Map<string, ValueType>[];
   readonly continues: Map<string, ValueType>[];
+  readonly valueProducing?: boolean;
+};
+
+type ValueLoopAnalysisFrame = {
+  readonly loopOffset: number;
+  readonly expected: ValueType | null;
+  selections: Array<{
+    readonly type: ValueType;
+    readonly locals: Map<string, ValueType>;
+  }>;
 };
 
 type SymbolValue =
@@ -647,6 +659,7 @@ export function analyze(
     cPlusPlus,
     frameworks: [...frameworks],
     loopStack: [],
+    valueLoopStack: [],
     moveOrigins: new Map(),
     borrowOrigins: new Map(),
     iterationBorrowOrigins: new Map(),
@@ -1792,6 +1805,16 @@ function analyzeConstructorInitialization(
         if (expression.elseBranch.kind === "ifExpression") checkExpression(expression.elseBranch, initialized);
         else analyzeConstructorStatements(expression.elseBranch.statements, new Set(initialized));
         return;
+      case "whileExpression":
+        checkExpression(expression.condition, initialized);
+        analyzeConstructorStatements(expression.body.statements, new Set(initialized));
+        analyzeConstructorStatements(expression.elseBranch.statements, new Set(initialized));
+        return;
+      case "forExpression":
+        checkExpression(expression.iterable, initialized);
+        analyzeConstructorStatements(expression.body.statements, new Set(initialized));
+        analyzeConstructorStatements(expression.elseBranch.statements, new Set(initialized));
+        return;
     }
   };
 
@@ -2452,6 +2475,11 @@ function analyzeStatement(
     case "break": {
       const loop = state.loopStack.at(-1);
       if (!loop) throw new DiagnosticError(fileName, statement.location, "break requires an enclosing loop");
+      if (loop.valueProducing) {
+        throw new DiagnosticError(fileName, statement.location, "break cannot exit a value-producing loop without a value", {
+          helps: ["use `select value;` to produce the loop expression result"],
+        });
+      }
       loop.breaks.push(new Map(locals));
       return;
     }
@@ -2461,8 +2489,33 @@ function analyzeStatement(
       loop.continues.push(new Map(locals));
       return;
     }
-    case "select":
-      throw new DiagnosticError(fileName, statement.location, "select requires an enclosing value-producing block");
+    case "select": {
+      const selection = state.valueLoopStack.at(-1);
+      const loop = state.loopStack.at(-1);
+      if (!selection || !loop?.valueProducing) {
+        throw new DiagnosticError(fileName, statement.location, "select requires an enclosing value-producing block");
+      }
+      let type = inferDirectValue(
+        statement.expression,
+        owner,
+        locals,
+        globals,
+        structs,
+        enums,
+        fileName,
+        state,
+        selection.expected,
+      );
+      if (selection.expected) {
+        requireAssignable(selection.expected, type, statement.expression, fileName, structs, enums, state);
+        type = selection.expected;
+      } else {
+        type = implicitlyLoadCopyableView(type, statement.expression, structs, enums, state);
+      }
+      consumeOwnedValue(statement.expression, type, locals, structs, enums, fileName, state);
+      selection.selections.push({ type, locals: new Map(locals) });
+      return;
+    }
     case "asyncScope": {
       if (!owner.async) {
         throw new DiagnosticError(fileName, statement.location, "async scope requires an enclosing async function", {
@@ -2691,6 +2744,12 @@ function inferDirectValue(
   }
   if (expression.kind === "ifExpression") {
     return inferIfExpression(expression, owner, locals, globals, structs, enums, fileName, state, expected);
+  }
+  if (expression.kind === "whileExpression") {
+    return inferWhileExpression(expression, owner, locals, globals, structs, enums, fileName, state, expected);
+  }
+  if (expression.kind === "forExpression") {
+    return inferForExpression(expression, owner, locals, globals, structs, enums, fileName, state, expected);
   }
   if (expression.kind === "closure") {
     return inferClosureExpression(expression, locals, globals, structs, enums, fileName, state);
@@ -3216,6 +3275,20 @@ function collectClosureCaptures(
         if (expression.elseBranch.kind === "ifExpression") walkExpression(expression.elseBranch, new Set(localNames));
         else walkStatement(expression.elseBranch, new Set(localNames));
         return;
+      case "whileExpression":
+        walkExpression(expression.condition, localNames);
+        walkStatement(expression.body, new Set(localNames));
+        walkStatement(expression.elseBranch, new Set(localNames));
+        return;
+      case "forExpression": {
+        walkExpression(expression.iterable, localNames);
+        const bodyNames = new Set(localNames);
+        if (expression.binding) bodyNames.add(expression.binding);
+        for (const binding of expression.objectBindings ?? []) bodyNames.add(binding.bindingName);
+        walkStatement(expression.body, bodyNames);
+        walkStatement(expression.elseBranch, new Set(localNames));
+        return;
+      }
     }
   };
 
@@ -3343,6 +3416,169 @@ function commonBranchType(
     throw new DiagnosticError(fileName, location, `${construct} branch produces ${second}, but the other branch produces ${first}`);
   }
   return first;
+}
+
+function inferWhileExpression(
+  expression: Extract<Expression, { kind: "whileExpression" }>,
+  owner: FunctionDeclaration,
+  locals: Map<string, ValueType>,
+  globals: Map<string, SymbolValue>,
+  structs: Map<string, StructDeclaration>,
+  enums: Map<string, EnumDeclaration>,
+  fileName: string,
+  state: AnalysisState,
+  expected: ValueType | null = null,
+): ValueType {
+  if (owner.async) {
+    throw new DiagnosticError(fileName, expression.location, "value-producing while expressions are not executable in async functions yet", {
+      code: "Z0700",
+      helps: ["use a statement loop and assign a local until task-frame loop selection is implemented"],
+    });
+  }
+  const frame: ValueLoopAnalysisFrame = {
+    loopOffset: expression.location.offset,
+    expected,
+    selections: [],
+  };
+  state.valueLoopStack.push(frame);
+  state.asyncLoopDepth += 1;
+  try {
+    analyzeWhileLoop(
+      {
+        kind: "while",
+        condition: expression.condition,
+        body: expression.body,
+        location: expression.location,
+      },
+      owner,
+      locals,
+      globals,
+      structs,
+      enums,
+      fileName,
+      state,
+    );
+  } finally {
+    state.asyncLoopDepth -= 1;
+    state.valueLoopStack.pop();
+  }
+  return finishLoopExpression(
+    "while",
+    expression.elseBranch,
+    frame,
+    owner,
+    locals,
+    globals,
+    structs,
+    enums,
+    fileName,
+    state,
+    expected,
+  );
+}
+
+function inferForExpression(
+  expression: Extract<Expression, { kind: "forExpression" }>,
+  owner: FunctionDeclaration,
+  locals: Map<string, ValueType>,
+  globals: Map<string, SymbolValue>,
+  structs: Map<string, StructDeclaration>,
+  enums: Map<string, EnumDeclaration>,
+  fileName: string,
+  state: AnalysisState,
+  expected: ValueType | null = null,
+): ValueType {
+  if (owner.async) {
+    throw new DiagnosticError(fileName, expression.location, "value-producing for expressions are not executable in async functions yet", {
+      code: "Z0700",
+      helps: ["use a statement loop and assign a local until task-frame loop selection is implemented"],
+    });
+  }
+  const frame: ValueLoopAnalysisFrame = {
+    loopOffset: expression.location.offset,
+    expected,
+    selections: [],
+  };
+  state.valueLoopStack.push(frame);
+  state.asyncLoopDepth += 1;
+  try {
+    analyzeForLoop(
+      {
+        kind: "for",
+        mode: expression.mode,
+        binding: expression.binding,
+        bindingLocation: expression.bindingLocation,
+        objectBindings: expression.objectBindings,
+        iterable: expression.iterable,
+        body: expression.body,
+        location: expression.location,
+      },
+      owner,
+      locals,
+      globals,
+      structs,
+      enums,
+      fileName,
+      state,
+    );
+  } finally {
+    state.asyncLoopDepth -= 1;
+    state.valueLoopStack.pop();
+  }
+  return finishLoopExpression(
+    "for",
+    expression.elseBranch,
+    frame,
+    owner,
+    locals,
+    globals,
+    structs,
+    enums,
+    fileName,
+    state,
+    expected,
+  );
+}
+
+function finishLoopExpression(
+  construct: "for" | "while",
+  elseBranch: BlockStatement,
+  frame: ValueLoopAnalysisFrame,
+  owner: FunctionDeclaration,
+  locals: Map<string, ValueType>,
+  globals: Map<string, SymbolValue>,
+  structs: Map<string, StructDeclaration>,
+  enums: Map<string, EnumDeclaration>,
+  fileName: string,
+  state: AnalysisState,
+  expected: ValueType | null,
+): ValueType {
+  const continuing: Map<string, ValueType>[] = frame.selections.map((selection) => selection.locals);
+  const exhaustionLocals = new Map(locals);
+  const exhaustionType = inferValueArm(
+    elseBranch,
+    owner,
+    exhaustionLocals,
+    globals,
+    structs,
+    enums,
+    fileName,
+    state,
+    expected,
+  );
+  if (exhaustionType !== "never") continuing.push(exhaustionLocals);
+  let resultType = exhaustionType;
+  for (const selection of frame.selections) {
+    resultType = commonBranchType(
+      `${construct} expression`,
+      resultType,
+      selection.type,
+      elseBranch.location,
+      fileName,
+    );
+  }
+  mergeOwnershipStates(locals, continuing, state);
+  return resultType;
 }
 
 function inferMatchExpression(
@@ -4570,6 +4806,10 @@ function inferExpressionInner(
       throw new DiagnosticError(fileName, expression.location, "match must be the direct value of a binding, return, or expression statement");
     case "ifExpression":
       throw new DiagnosticError(fileName, expression.location, "if must be the direct value of a binding, return, or expression statement");
+    case "whileExpression":
+      throw new DiagnosticError(fileName, expression.location, "while must be the direct value of a binding, return, or expression statement");
+    case "forExpression":
+      throw new DiagnosticError(fileName, expression.location, "for must be the direct value of a binding, return, or expression statement");
     case "member": {
       if (expression.object.kind === "identifier" && !locals.has(expression.object.name)) {
         const standard = globals.get(expression.object.name);
@@ -6613,6 +6853,16 @@ function validateDeinitExpression(expression: Expression, fileName: string): voi
     if (expression.elseBranch.kind === "ifExpression") validateDeinitExpression(expression.elseBranch, fileName);
     else validateDeinitControlFlow(expression.elseBranch.statements, fileName);
   }
+  if (expression.kind === "whileExpression") {
+    validateDeinitExpression(expression.condition, fileName);
+    validateDeinitControlFlow(expression.body.statements, fileName);
+    validateDeinitControlFlow(expression.elseBranch.statements, fileName);
+  }
+  if (expression.kind === "forExpression") {
+    validateDeinitExpression(expression.iterable, fileName);
+    validateDeinitControlFlow(expression.body.statements, fileName);
+    validateDeinitControlFlow(expression.elseBranch.statements, fileName);
+  }
   if (expression.kind === "closure") {
     throw new DiagnosticError(fileName, expression.location, "deinit cannot create a closure");
   }
@@ -7268,12 +7518,16 @@ function analyzeWhileLoop(
   fileName: string,
   state: AnalysisState,
 ): void {
+  const valueFrame = state.valueLoopStack.at(-1)?.loopOffset === statement.location.offset
+    ? state.valueLoopStack.at(-1)!
+    : null;
   const entry = new Map(locals);
   let header = new Map(entry);
   let finalCondition = new Map(header);
   let finalFrame: LoopAnalysisFrame = { breaks: [], continues: [] };
 
   for (let iteration = 0; iteration < 8; iteration += 1) {
+    if (valueFrame) valueFrame.selections = [];
     const conditionLocals = new Map(header);
     const conditionType = inferExpression(
       statement.condition,
@@ -7297,7 +7551,11 @@ function analyzeWhileLoop(
     }
 
     const bodyLocals = narrowedConditionLocals(conditionLocals, statement.condition, true, state);
-    const frame: LoopAnalysisFrame = { breaks: [], continues: [] };
+    const frame: LoopAnalysisFrame = {
+      breaks: [],
+      continues: [],
+      valueProducing: Boolean(valueFrame),
+    };
     state.loopStack.push(frame);
     try {
       analyzeStatement(statement.body, owner, bodyLocals, globals, structs, enums, fileName, state);
@@ -7366,6 +7624,9 @@ function analyzeForLoop(
   fileName: string,
   state: AnalysisState,
 ): void {
+  const valueFrame = state.valueLoopStack.at(-1)?.loopOffset === statement.location.offset
+    ? state.valueLoopStack.at(-1)!
+    : null;
   if (statement.binding && statement.bindingLocation) {
     validateUserName(statement.binding, statement.bindingLocation, fileName);
     if (locals.has(statement.binding)) {
@@ -7448,6 +7709,7 @@ function analyzeForLoop(
   };
 
   for (let iteration = 0; iteration < 8; iteration += 1) {
+    if (valueFrame) valueFrame.selections = [];
     const bodyLocals = new Map(header);
     const rootType = bodyLocals.get(root.name);
     if (rootType) bodyLocals.set(root.name, `${borrowedPrefix}${underlyingType(rootType)}`);
@@ -7463,7 +7725,11 @@ function analyzeForLoop(
       bodyLocals.set(binding.bindingName, borrowedField ? `${borrowedPrefix}${field.type.name}` : field.type.name);
     }
 
-    const frame: LoopAnalysisFrame = { breaks: [], continues: [] };
+    const frame: LoopAnalysisFrame = {
+      breaks: [],
+      continues: [],
+      valueProducing: Boolean(valueFrame),
+    };
     const previousIterationBorrow = state.iterationBorrowOrigins.get(root.name);
     const previousElementBorrow = statement.binding ? state.borrowOrigins.get(statement.binding) : null;
     const previousFieldBorrows = new Map(objectFields.map(({ binding }) => [binding.bindingName, state.borrowOrigins.get(binding.bindingName)]));
@@ -7496,6 +7762,12 @@ function analyzeForLoop(
 
     const backEdges = frame.continues.map(normalize);
     if (!statementStopsFlow(statement.body)) backEdges.push(normalize(bodyLocals));
+    if (valueFrame) {
+      valueFrame.selections = valueFrame.selections.map((selection) => ({
+        ...selection,
+        locals: normalize(selection.locals),
+      }));
+    }
     const nextHeader = new Map(entry);
     mergeOwnershipStates(nextHeader, [entry, ...backEdges], state);
     finalFrame = {
@@ -7525,6 +7797,9 @@ function analyzeIteratorForLoop(
   fileName: string,
   state: AnalysisState,
 ): void {
+  const valueFrame = state.valueLoopStack.at(-1)?.loopOffset === statement.location.offset
+    ? state.valueLoopStack.at(-1)!
+    : null;
   if (root) {
     if (statement.mode !== "inout") {
       throw new DiagnosticError(fileName, statement.iterable.location, `stored iterator ${JSON.stringify(root.name)} requires explicit inout iteration`, {
@@ -7593,6 +7868,7 @@ function analyzeIteratorForLoop(
   };
 
   for (let iteration = 0; iteration < 8; iteration += 1) {
+    if (valueFrame) valueFrame.selections = [];
     const bodyLocals = new Map(header);
     if (root) {
       const rootType = bodyLocals.get(root.name);
@@ -7600,7 +7876,11 @@ function analyzeIteratorForLoop(
     }
     if (statement.binding) bodyLocals.set(statement.binding, elementType);
     for (const { binding, field } of objectFields) bodyLocals.set(binding.bindingName, field.type.name);
-    const frame: LoopAnalysisFrame = { breaks: [], continues: [] };
+    const frame: LoopAnalysisFrame = {
+      breaks: [],
+      continues: [],
+      valueProducing: Boolean(valueFrame),
+    };
     state.loopStack.push(frame);
     try {
       analyzeStatement(statement.body, owner, bodyLocals, globals, structs, enums, fileName, state);
@@ -7609,6 +7889,12 @@ function analyzeIteratorForLoop(
     }
     const backEdges = frame.continues.map(normalize);
     if (!statementStopsFlow(statement.body)) backEdges.push(normalize(bodyLocals));
+    if (valueFrame) {
+      valueFrame.selections = valueFrame.selections.map((selection) => ({
+        ...selection,
+        locals: normalize(selection.locals),
+      }));
+    }
     const nextHeader = new Map(entry);
     mergeOwnershipStates(nextHeader, [entry, ...backEdges], state);
     finalFrame = {

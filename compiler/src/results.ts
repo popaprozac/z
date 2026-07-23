@@ -229,6 +229,16 @@ function collectClosureResults(
         if (expression.elseBranch.kind === "ifExpression") visitExpression(expression.elseBranch);
         else visitStatements(expression.elseBranch.statements);
         break;
+      case "whileExpression":
+        visitExpression(expression.condition);
+        visitStatements(expression.body.statements);
+        visitStatements(expression.elseBranch.statements);
+        break;
+      case "forExpression":
+        visitExpression(expression.iterable);
+        visitStatements(expression.body.statements);
+        visitStatements(expression.elseBranch.statements);
+        break;
       case "number":
       case "string":
       case "boolean":

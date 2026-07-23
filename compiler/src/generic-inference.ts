@@ -833,6 +833,67 @@ export function inferGenericCalls(
           }], environment),
         };
       }
+      case "whileExpression": {
+        const condition = rewriteExpression(expression.condition, environment);
+        const body = rewriteStatement(
+          expression.body,
+          new Map(environment),
+          null,
+          expectedType,
+        ) as typeof expression.body;
+        const elseBranch = rewriteStatement(
+          expression.elseBranch,
+          new Map(environment),
+          null,
+          expectedType,
+        ) as typeof expression.elseBranch;
+        return {
+          expression: { ...expression, condition: condition.expression, body, elseBranch },
+          type: armValueType([{
+            variantName: "",
+            binding: null,
+            body: elseBranch,
+            location: elseBranch.location,
+          }], environment),
+        };
+      }
+      case "forExpression": {
+        const iterable = rewriteExpression(expression.iterable, environment);
+        const map = iterable.type ? parseMapType(iterable.type) : null;
+        const set = iterable.type ? parseSetType(iterable.type) : null;
+        const collection = iterable.type
+          ? parseFixedArrayType(iterable.type)
+            ?? parseSliceType(iterable.type)
+            ?? parseDynamicArrayType(iterable.type)
+            ?? (map ? { elementType: mapEntryTypeName(map.keyType, map.valueType) } : null)
+            ?? (set ? { elementType: set.elementType } : null)
+          : null;
+        const bodyEnvironment = new Map(environment);
+        if (collection && expression.binding) bodyEnvironment.set(expression.binding, collection.elementType);
+        const element = collection ? structs.get(collection.elementType) : null;
+        if (element) {
+          for (const binding of expression.objectBindings ?? []) {
+            const field = element.fields.find((candidate) => candidate.name === binding.fieldName);
+            if (field) bodyEnvironment.set(binding.bindingName, field.type.name);
+          }
+        }
+        const body = rewriteStatement(expression.body, bodyEnvironment, null, expectedType) as typeof expression.body;
+        const elseBranch = rewriteStatement(
+          expression.elseBranch,
+          new Map(environment),
+          null,
+          expectedType,
+        ) as typeof expression.elseBranch;
+        return {
+          expression: { ...expression, iterable: iterable.expression, body, elseBranch },
+          type: armValueType([{
+            variantName: "",
+            binding: null,
+            body: elseBranch,
+            location: elseBranch.location,
+          }], environment),
+        };
+      }
       case "call": {
         if (
           expression.callee.kind === "identifier"

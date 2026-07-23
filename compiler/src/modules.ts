@@ -710,6 +710,36 @@ function transformExpression(
           ? transformExpression(expression.elseBranch, scope, locals, typeParameters) as typeof expression.elseBranch
           : { ...expression.elseBranch, statements: transformStatements(expression.elseBranch.statements, scope, new Set(locals), typeParameters) },
       };
+    case "whileExpression":
+      return {
+        ...expression,
+        condition: transformExpression(expression.condition, scope, locals, typeParameters),
+        body: {
+          ...expression.body,
+          statements: transformStatements(expression.body.statements, scope, new Set(locals), typeParameters),
+        },
+        elseBranch: {
+          ...expression.elseBranch,
+          statements: transformStatements(expression.elseBranch.statements, scope, new Set(locals), typeParameters),
+        },
+      };
+    case "forExpression": {
+      const bodyLocals = new Set(locals);
+      if (expression.binding) bodyLocals.add(expression.binding);
+      for (const binding of expression.objectBindings ?? []) bodyLocals.add(binding.bindingName);
+      return {
+        ...expression,
+        iterable: transformExpression(expression.iterable, scope, locals, typeParameters),
+        body: {
+          ...expression.body,
+          statements: transformStatements(expression.body.statements, scope, bodyLocals, typeParameters),
+        },
+        elseBranch: {
+          ...expression.elseBranch,
+          statements: transformStatements(expression.elseBranch.statements, scope, new Set(locals), typeParameters),
+        },
+      };
+    }
     case "argumentReference":
       return locals.has(expression.name)
         ? expression

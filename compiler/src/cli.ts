@@ -904,6 +904,81 @@ function flattenExpression(
     if (elseBranch === null) return null;
     return append("ifExpression", "", [condition, thenBranch, elseBranch], []);
   }
+  if (expression.kind === "whileExpression") {
+    const condition = flattenExpression(expression.condition, nodes, tokens);
+    if (condition === null) return null;
+    const body = appendAt(
+      "valueBlock",
+      "",
+      [],
+      [],
+      expression.body.location,
+      [expression.body.statements],
+    );
+    const elseBranch = appendAt(
+      "valueBlock",
+      "",
+      [],
+      [],
+      expression.elseBranch.location,
+      [expression.elseBranch.statements],
+    );
+    return append("whileExpression", "", [condition, body, elseBranch], []);
+  }
+  if (expression.kind === "forExpression") {
+    const patternChildren: number[] = [];
+    let patternKind = "binding";
+    let patternLocation = expression.location;
+    if (expression.binding && expression.bindingLocation) {
+      patternLocation = expression.bindingLocation;
+      patternChildren.push(appendAt(
+        "matchBinding",
+        expression.binding,
+        [],
+        [],
+        expression.bindingLocation,
+      ));
+    } else {
+      patternKind = "object";
+      patternLocation = expression.objectBindings?.[0]?.fieldLocation ?? expression.location;
+      for (const binding of expression.objectBindings ?? []) {
+        const bindingNode = appendAt(
+          "matchBinding",
+          binding.bindingName,
+          [],
+          [],
+          binding.bindingLocation,
+        );
+        patternChildren.push(appendAt(
+          "matchObjectField",
+          binding.fieldName,
+          [bindingNode],
+          [],
+          binding.fieldLocation,
+        ));
+      }
+    }
+    const pattern = appendAt("forBinding", patternKind, patternChildren, [], patternLocation);
+    const iterable = flattenExpression(expression.iterable, nodes, tokens);
+    if (iterable === null) return null;
+    const body = appendAt(
+      "valueBlock",
+      "",
+      [],
+      [],
+      expression.body.location,
+      [expression.body.statements],
+    );
+    const elseBranch = appendAt(
+      "valueBlock",
+      "",
+      [],
+      [],
+      expression.elseBranch.location,
+      [expression.elseBranch.statements],
+    );
+    return append("forExpression", expression.mode, [pattern, iterable, body, elseBranch], []);
+  }
   if (expression.kind === "executorPlacement") {
     const marker = appendAt("executorOn", "", [], [], expression.onLocation);
     const executor = flattenExpression(expression.executor, nodes, tokens);

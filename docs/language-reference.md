@@ -434,6 +434,35 @@ to the nearest unmatched `if`. Conditions are always `boolean`; nullable pointer
 and references require an explicit comparison with `null` rather than
 truthiness.
 
+`while` and `for...of` may also produce values. A required `else` block handles
+natural exhaustion, including a loop that executes zero times. `select` supplies
+the loop expression's value and exits it:
+
+```zs
+const firstEven: Option<i32> = for (const value of values) {
+  if (value % 2 == 0) {
+    select Option.some(value);
+  }
+} else {
+  select Option.none;
+};
+
+const state = while (attempts < 3) {
+  attempts = attempts + 1;
+  if (ready()) {
+    select "ready";
+  }
+} else {
+  select "exhausted";
+};
+```
+
+All reachable `select` values and the exhaustion value must have one compatible
+type. `continue` begins the next iteration. A plain `break` is invalid in a
+value-producing loop because it would leave the expression without a value;
+`return` and `throw` still exit the enclosing function. This first executable
+tier is synchronous.
+
 Integer arithmetic is checked. Intentional overflow uses explicit wrapping or
 saturating operations.
 
