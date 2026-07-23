@@ -9,6 +9,8 @@ import type {
 } from "./ast.ts";
 import { importedStandardFunctions, standardFunctionSignature } from "./standard-library.ts";
 import type { ForeignModule } from "./foreign.ts";
+import { generatorStepTypeName, isGeneratorFunction, parseGeneratorType } from "./generator-types.ts";
+import { optionTypeName } from "./option-types.ts";
 
 export function resultTypeName(successType: string, errorType: string): string {
   return `__z_Result_${successType}_${errorType}`;
@@ -36,6 +38,18 @@ export function materializeResultTypes(
         { name: "failure", payload: error, location },
       ],
     });
+  };
+  const addGeneratorAdvanceResult = (type: TypeReference, location: SourceLocation): void => {
+    const generator = parseGeneratorType(type.name);
+    if (!generator?.errorType) return;
+    const advanceType = generator.returnType
+      ? generatorStepTypeName(generator.elementType, generator.returnType)
+      : optionTypeName(generator.elementType);
+    addResult(
+      { name: advanceType, location: type.location },
+      { name: generator.errorType, location: type.location },
+      location,
+    );
   };
   const functions: FunctionDeclaration[] = [
     ...program.functions,
@@ -82,11 +96,34 @@ export function materializeResultTypes(
   }
 
   for (const declaration of functions) {
-    if (declaration.errorType) addResult(declaration.returnType, declaration.errorType, declaration.location);
+    addGeneratorAdvanceResult(declaration.returnType, declaration.location);
+    for (const parameter of declaration.parameters) {
+      addGeneratorAdvanceResult(parameter.type, parameter.location);
+    }
+    if (declaration.errorType) {
+      const generator = isGeneratorFunction(declaration)
+        ? parseGeneratorType(declaration.returnType.name)
+        : null;
+      if (generator) {
+        const advanceType = generator.returnType
+          ? generatorStepTypeName(generator.elementType, generator.returnType)
+          : optionTypeName(generator.elementType);
+        addResult(
+          { name: advanceType, location: declaration.returnType.location },
+          declaration.errorType,
+          declaration.location,
+        );
+      } else {
+        addResult(declaration.returnType, declaration.errorType, declaration.location);
+      }
+    }
     collectClosureResults(declaration.body, addResult);
   }
 
   for (const aggregate of program.structs) {
+    for (const field of aggregate.fields) {
+      addGeneratorAdvanceResult(field.type, field.location);
+    }
     const constructor = aggregate.constructor;
     if (constructor?.errorType) {
       addResult({ name: aggregate.name, location: constructor.location }, constructor.errorType, constructor.location);

@@ -10755,7 +10755,7 @@ test("runs cold synchronous generators with deterministic suspended-frame cleanu
   assert.match(native.stdout, /native frontend hybrid/);
 
   const generatorOffset = source.indexOf("Generator<i32>");
-  assert.match(hover(source, example, generatorOffset + 1)?.contents.value ?? "", /Generator<Yield, Return\?>.*cold, move-only/s);
+  assert.match(hover(source, example, generatorOffset + 1)?.contents.value ?? "", /Generator<Yield, Return\?, Error\?>.*cold, move-only/s);
   const yieldOffset = source.indexOf("yield identifier");
   assert.match(hover(source, example, yieldOffset + 1)?.contents.value ?? "", /suspends the current Generator/);
   const identifiersOffset = source.indexOf("identifiers =");
@@ -10886,6 +10886,60 @@ test("returns explicit terminal values from typed generators", () => {
   assert.equal(cleanupResult.status, 0, cleanupResult.stderr);
   assert.equal(cleanupResult.stdout, "released 42\n");
 
+  const terminalFile = resolve(cleanupDirectory, "terminal.zs");
+  writeFileSync(terminalFile, `
+    import { Generator } from "std/iteration";
+    struct ReadError { code: i32; }
+    function values(): Generator<i32, i32> throws ReadError {
+      yield 20;
+      return 22;
+    }
+    function consume(values: Generator<i32, i32, ReadError>): i32 throws ReadError {
+      const yielded = try values.next();
+      const first = match (yielded) {
+        yielded(value) => value;
+        complete(value) => 0;
+      };
+      const completed = try values.next();
+      return match (completed) {
+        yielded(value) => 1;
+        complete(value) => first + value;
+      };
+    }
+    function main(): i32 {
+      return match (attempt consume(values())) {
+        success(value) => value - 42;
+        failure(error) => error.code;
+      };
+    }
+  `);
+  const terminalResult = spawnSync(process.execPath, [cli, "run", terminalFile], { encoding: "utf8" });
+  assert.equal(terminalResult.status, 0, terminalResult.stderr);
+
+  const genericFile = resolve(cleanupDirectory, "generic.zs");
+  writeFileSync(genericFile, `
+    import { Generator } from "std/iteration";
+    struct ReadError { code: i32; }
+    function values<T>(value: T): Generator<T> throws ReadError {
+      yield value;
+    }
+    function main(): i32 {
+      const sequence = values(42);
+      return match (attempt sequence.next()) {
+        success(result) => {
+          const observed = match (result) {
+            some(value) => value - 42;
+            none => 1;
+          };
+          select observed;
+        }
+        failure(error) => error.code;
+      };
+    }
+  `);
+  const genericResult = spawnSync(process.execPath, [cli, "run", genericFile], { encoding: "utf8" });
+  assert.equal(genericResult.status, 0, genericResult.stderr);
+
   assert.throws(
     () => compileToC(`
       import { Generator } from "std/iteration";
@@ -10916,6 +10970,96 @@ test("returns explicit terminal values from typed generators", () => {
       function main(): i32 { return 0; }
     `, "generator-return-missing.zs"),
     /must return a terminal value/,
+  );
+});
+
+test("advances throwing generators explicitly without making cold construction throw", () => {
+  const example = resolve(projectRoot, "examples/language/control-flow/generator-throws.zs");
+  const source = readFileSync(example, "utf8");
+  const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, "completed 42\nfailed 7\n");
+  const native = spawnSync(process.execPath, [cli, "check", example, "--native-frontend"], { encoding: "utf8" });
+  assert.equal(native.status, 0, native.stderr);
+  assert.match(native.stdout, /native frontend hybrid/);
+
+  const generated = compileToC(source, example);
+  assert.match(generated, /Z_GeneratorFrame_readValues_advance/);
+  assert.match(generated, /\.data\.failure/);
+  assert.match(generated, /\.data\.success/);
+
+  const valuesOffset = source.indexOf("values: Generator");
+  assert.match(
+    hover(source, example, valuesOffset + 1)?.contents.value ?? "",
+    /values: Generator<i32, void, ReadError>/,
+  );
+  const nextOffset = source.indexOf("next()");
+  assert.match(
+    hover(source, example, nextOffset + 1)?.contents.value ?? "",
+    /next\(\): Result<Option<i32>, ReadError>/,
+  );
+
+  const cleanupDirectory = mkdtempSync("/tmp/z-generator-throw-");
+  const cleanupFile = resolve(cleanupDirectory, "cleanup.zs");
+  writeFileSync(cleanupFile, `
+    import console from "std/console";
+    import { Generator } from "std/iteration";
+    struct ReadError { code: i32; }
+    struct Lease {
+      id: i32;
+      deinit { console.log(\`released \${this.id}\`); }
+    }
+    function fail(): i32 throws ReadError {
+      throw ReadError({ code: 7 });
+    }
+    function values(): Generator<i32> throws ReadError {
+      const lease = Lease({ id: 42 });
+      yield 1;
+      const value = try fail();
+      yield value;
+    }
+    function consume(values: Generator<i32, void, ReadError>): i32 throws ReadError {
+      const first = try values.next();
+      const second = try values.next();
+      return 1;
+    }
+    function main(): i32 {
+      return match (attempt consume(values())) {
+        success(value) => 1;
+        failure(error) => error.code - 7;
+      };
+    }
+  `);
+  const cleanupResult = spawnSync(process.execPath, [cli, "run", cleanupFile], { encoding: "utf8" });
+  assert.equal(cleanupResult.status, 0, cleanupResult.stderr);
+  assert.equal(cleanupResult.stdout, "released 42\n");
+
+  assert.throws(
+    () => compileToC(`
+      import { Generator } from "std/iteration";
+      struct ReadError { code: i32; }
+      function values(): Generator<i32> throws ReadError { yield 1; throw ReadError({ code: 1 }); }
+      function run(): i32 {
+        const sequence = values();
+        const next = sequence.next();
+        return 0;
+      }
+      function main(): i32 { return run(); }
+    `, "generator-throw-unhandled.zs"),
+    /advancing a throwing generator requires `attempt` or `try`/,
+  );
+  assert.throws(
+    () => compileToC(`
+      import { Generator } from "std/iteration";
+      struct ReadError { code: i32; }
+      function values(): Generator<i32> throws ReadError { yield 1; }
+      function main(): i32 {
+        const sequence = values();
+        for (const value of sequence) {}
+        return 0;
+      }
+    `, "generator-throw-for.zs"),
+    /for\.\.\.of cannot implicitly propagate ReadError/,
   );
 });
 

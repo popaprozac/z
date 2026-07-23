@@ -2962,6 +2962,27 @@ function parameterizedTypeName(
   return output.finish();
 }
 
+function throwingGeneratorHandleType(
+  in returnType: String,
+  in errorType: String
+): Option<String> {
+  return match (genericTypeShape(returnType)) {
+    some(generator) => {
+      if (generator.base != "Generator") return Option<String>.none;
+      let arguments = Array<String>();
+      for (const argument of generator.arguments) {
+        arguments.push(argument.copyBytes(0, argument.byteLength));
+      }
+      if (arguments.length == 1) arguments.push("void");
+      if (arguments.length == 2) {
+        arguments.push(errorType.copyBytes(0, errorType.byteLength));
+      }
+      return Option.some(parameterizedTypeName("Generator", arguments));
+    }
+    none => Option<String>.none;
+  };
+}
+
 function genericCallError(
   in module: ParsedModule,
   in tree: ExpressionTree,
@@ -5459,10 +5480,16 @@ function inferSignatureCallType(
     }
     parameterIndex = parameterIndex + 1;
   }
-  const returnType = substituteGenericType(signature.returnType, substitutions);
+  let returnType = substituteGenericType(signature.returnType, substitutions);
   let errorType = "";
   if (signature.errorType.byteLength > 0) {
     errorType = substituteGenericType(signature.errorType, substitutions);
+    match (throwingGeneratorHandleType(returnType, errorType)) {
+      some(generatorType) => {
+        returnType = generatorType;
+      }
+      none => {}
+    }
   }
   if (substitutions.length > 0 && callKind != "value") {
     let typeParameters = Array<String>();
@@ -5505,6 +5532,10 @@ function inferSignatureCallType(
   }
   if (signature.asynchronous) return "";
   if (errorType.byteLength > 0) {
+    match (throwingGeneratorHandleType(returnType, errorType)) {
+      some(generatorType) => return generatorType;
+      none => {}
+    }
     return pendingThrowingCallType(returnType, errorType);
   }
   return returnType;
@@ -5783,18 +5814,39 @@ function collectionMethodSignature(
     }
   } else if (
     generic.base == "Generator"
-    && (generic.arguments.length == 1 || generic.arguments.length == 2)
+    && (
+      generic.arguments.length == 1
+      || generic.arguments.length == 2
+      || generic.arguments.length == 3
+    )
     && methodName == "next"
   ) {
     const elementType = generic.arguments[0].copyBytes(
       0,
       generic.arguments[0].byteLength
     );
-    if (generic.arguments.length == 1) {
+    if (generic.arguments.length == 1 || generic.arguments[1] == "void") {
       returnType = `Option<${elementType}>`;
     } else {
       returnType = `GeneratorStep<${elementType}, ${generic.arguments[1]}>`;
     }
+    let errorType = "";
+    if (generic.arguments.length == 3) {
+      errorType = generic.arguments[2].copyBytes(
+        0,
+        generic.arguments[2].byteLength
+      );
+    }
+    if (returnType.byteLength == 0) return Option<ModuleFunctionSignature>.none;
+    return Option.some(ModuleFunctionSignature({
+      asynchronous: false,
+      typeParameters: Array<String>(),
+      typeParameterConstraints: Array<ModuleTypeParameterConstraint>(),
+      parameterModes,
+      parameterTypes,
+      returnType,
+      errorType,
+    }));
   }
   if (returnType.byteLength == 0) return Option<ModuleFunctionSignature>.none;
   return Option.some(ModuleFunctionSignature({

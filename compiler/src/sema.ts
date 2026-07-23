@@ -1060,7 +1060,7 @@ export function analyze(
 
   for (const declaration of program.functions) {
     const generator = parseGeneratorType(declaration.returnType.name);
-    if (generator && !generator.returnType) {
+    if (generator && !generator.returnType && !generator.errorType) {
       state.iteratorElementTypes.set(declaration.returnType.name, generator.elementType);
     }
   }
@@ -1505,13 +1505,19 @@ function validateFunctionSignature(
   }
   const generator = isGeneratorFunction(declaration) ? parseGeneratorType(declaration.returnType.name) : null;
   if (generator) {
+    if (generator.errorType !== (declaration.errorType?.name ?? null)) {
+      throw new DiagnosticError(
+        fileName,
+        declaration.returnType.location,
+        generator.errorType
+          ? `generator error capability ${displayArrayType(generator.errorType)} requires a matching throws declaration`
+          : "a throwing generator must carry its declared error capability",
+      );
+    }
     if (declaration.async) {
       throw new DiagnosticError(fileName, declaration.location, "a synchronous Generator<T> function cannot be async", {
         notes: ["async generators require a separate scheduling and cancellation contract"],
       });
-    }
-    if (declaration.errorType) {
-      throw new DiagnosticError(fileName, declaration.errorType.location, "throwing generators are deferred beyond the first generator tier");
     }
     if (containsViewType(generator.elementType) || containsSliceType(generator.elementType)) {
       throw new DiagnosticError(fileName, declaration.returnType.location, "Generator<T> cannot yield borrowed storage in the first generator tier", {
@@ -1743,7 +1749,7 @@ function analyzeFunction(
     validateGeneratorBodyShape(declaration, fileName);
   }
   const generator = isGeneratorFunction(declaration) ? parseGeneratorType(declaration.returnType.name) : null;
-  if (generator && !generator.returnType) {
+  if (generator && !generator.returnType && !generator.errorType) {
     state.iteratorElementTypes.set(declaration.returnType.name, generator.elementType);
   }
   const returns = analyzeStatements(declaration.body, declaration, locals, globals, structs, enums, fileName, state);
@@ -5948,9 +5954,18 @@ function inferExpressionInner(
           if (!root || !locals.has(root.name)) {
             throw new DiagnosticError(fileName, expression.callee.object.location, "Generator.next requires a named generator handle");
           }
-          return generator.returnType
+          const success = generator.returnType
             ? generatorStepTypeName(generator.elementType, generator.returnType)
             : optionTypeName(generator.elementType);
+          if (generator.errorType) {
+            if (!allowThrowingCall) {
+              throw new DiagnosticError(fileName, expression.location, "advancing a throwing generator requires `attempt` or `try`", {
+                helps: ["write `try generator.next()` to propagate the error, or `attempt generator.next()` to inspect it"],
+              });
+            }
+            return resultTypeName(success, generator.errorType);
+          }
+          return success;
         }
         if (receiverValueType === "Arena") {
           rejectLabeledArguments(expression.argumentLabels, expression.location, fileName);
@@ -6654,7 +6669,7 @@ function inferExpressionInner(
       checkArguments(callable, expression.arguments, locals, globals, structs, enums, fileName, expression.location, state);
       registerAsyncCall(callable, expression.location, fileName, state);
       state.observer?.onFunctionCall?.(functionResolution);
-      if (callable.errorType) {
+      if (callable.errorType && !isGeneratorFunction(callable)) {
         if (!allowThrowingCall) throw new DiagnosticError(fileName, expression.location, "throwing call requires `attempt` or `try`");
         return resultTypeName(callable.returnType.name, callable.errorType.name);
       }
@@ -7877,6 +7892,17 @@ function analyzeForLoop(
       {
         code: "Z0311",
         helps: ["advance the generator with `.next()` and match `yielded(value)` or `complete(result)`"],
+      },
+    );
+  }
+  if (generator?.errorType) {
+    throw new DiagnosticError(
+      fileName,
+      statement.iterable.location,
+      `for...of cannot implicitly propagate ${displayArrayType(generator.errorType)} from a throwing generator`,
+      {
+        code: "Z0311",
+        helps: ["advance the generator with `try generator.next()` or `attempt generator.next()`"],
       },
     );
   }
@@ -9673,6 +9699,9 @@ function validateType(
     validateType({ name: generator.elementType, location: type.location }, structs, enums, foreignNamedTypes, fileName, false);
     if (generator.returnType) {
       validateType({ name: generator.returnType, location: type.location }, structs, enums, foreignNamedTypes, fileName, false);
+    }
+    if (generator.errorType) {
+      validateType({ name: generator.errorType, location: type.location }, structs, enums, foreignNamedTypes, fileName, false);
     }
     return;
   }

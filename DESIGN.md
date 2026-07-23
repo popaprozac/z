@@ -630,10 +630,34 @@ transferred exactly once, and all reachable paths must return it.
 value. The one-argument `Generator<T>` remains the sequence-oriented
 `Iterator<T>` form with `next(): Option<T>`.
 
-The first tier is synchronous and non-throwing. Parameters transfer owned
-values into the cold frame; borrowed inputs, generator methods, yields inside
-`for...of` or `match`, borrowed yielded values, async generators, and values
-sent back into a suspension remain later work.
+Fallibility remains a property of the generator declaration:
+
+```zs
+function rows(): Generator<Row> throws DatabaseError {
+  yield row;
+  throw error;
+}
+```
+
+Calling `rows()` only constructs the cold handle and therefore does not require
+`try` or `attempt`. Advancing it does:
+
+```zs
+const rows = rows();
+const next = try rows.next();
+```
+
+The explicit stored type is `Generator<Yield, Return, Error>`, with `void` in
+the return slot for a value-only sequence. `.next()` returns
+`Result<Option<Yield>, Error>` or
+`Result<GeneratorStep<Yield, Return>, Error>`. Throwing generators do not
+implement `Iterator` and direct `for...of` remains rejected until an explicit
+propagation syntax is chosen.
+
+The first tier is synchronous. Parameters transfer owned values into the cold
+frame; borrowed inputs, generator methods, yields inside `for...of` or `match`,
+borrowed yielded values, async generators, and values sent back into a
+suspension remain later work.
 
 Mutable element iteration, consuming iterators, cleanup-bearing object
 destructuring, move-only foreign iterator elements, array and tuple patterns,

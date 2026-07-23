@@ -661,7 +661,7 @@ export function hover(source: string, fileName: string, offset: number): Hover |
     return markdownHover("trait Iterator<T>  // next(inout this): Option<T>", source, word.start, word.end);
   }
   if (context.semanticInfo.standardTypeBindings.get(word.text) === "Generator") {
-    return markdownHover("Generator<Yield, Return?>  // cold, move-only synchronous sequence with deterministic cleanup", source, word.start, word.end);
+    return markdownHover("Generator<Yield, Return?, Error?>  // cold, move-only synchronous sequence with deterministic cleanup", source, word.start, word.end);
   }
   if (word.text === "next") {
     const receiver = source.slice(0, word.start).match(/([A-Za-z_][A-Za-z0-9_]*)\.$/)?.[1];
@@ -1149,7 +1149,7 @@ function selectiveImportCandidates(specifier: string, fileName: string): Complet
       {
         label: "Generator",
         kind: completionKinds.struct,
-        detail: "Generator<Yield, Return?>  // cold, move-only synchronous sequence",
+        detail: "Generator<Yield, Return?, Error?>  // cold, move-only synchronous sequence",
       },
     ];
   }
@@ -1698,7 +1698,7 @@ function symbolCompletions(source: string, fileName: string, offset: number): Co
                 : standardType === "Iterator"
                   ? "trait Iterator<T>  // next(inout this): Option<T>"
                   : standardType === "Generator"
-                    ? "Generator<Yield, Return?>  // cold, move-only synchronous sequence"
+                    ? "Generator<Yield, Return?, Error?>  // cold, move-only synchronous sequence"
                   : "Hasher  // mutable hash-composition state",
       sortText: `0-${name}`,
     });
@@ -3304,7 +3304,12 @@ type ResolvedReceiver =
   | { readonly kind: "hasher" }
   | { readonly kind: "map"; readonly keyType: string; readonly valueType: string }
   | { readonly kind: "set"; readonly elementType: string }
-  | { readonly kind: "generator"; readonly elementType: string; readonly returnType: string | null }
+  | {
+    readonly kind: "generator";
+    readonly elementType: string;
+    readonly returnType: string | null;
+    readonly errorType: string | null;
+  }
   | { readonly kind: "weak"; readonly target: string }
   | { readonly kind: "task"; readonly successType: string; readonly errorType: string | null }
   | { readonly kind: "objcConnection" };
@@ -4187,13 +4192,20 @@ function normalizeOutputPointerSpelling(value: string): string {
 }
 
 function generatorNextDisplayType(
-  generator: { readonly elementType: string; readonly returnType: string | null },
+  generator: {
+    readonly elementType: string;
+    readonly returnType: string | null;
+    readonly errorType: string | null;
+  },
   typeDisplayNames: ReadonlyMap<string, string>,
 ): string {
   const element = displayType(generator.elementType, typeDisplayNames);
-  return generator.returnType
+  const success = generator.returnType
     ? `GeneratorStep<${element}, ${displayType(generator.returnType, typeDisplayNames)}>`
     : `Option<${element}>`;
+  return generator.errorType
+    ? `Result<${success}, ${displayType(generator.errorType, typeDisplayNames)}>`
+    : success;
 }
 
 function displayType(type: string, typeDisplayNames: ReadonlyMap<string, string> = new Map()): string {

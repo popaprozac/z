@@ -1,7 +1,12 @@
 import { genericTypeName, parseGenericType } from "./generic-types.ts";
 import type { FunctionDeclaration } from "./ast.ts";
 
-export function generatorTypeName(elementType: string, returnType: string | null = null): string {
+export function generatorTypeName(
+  elementType: string,
+  returnType: string | null = null,
+  errorType: string | null = null,
+): string {
+  if (errorType) return genericTypeName("Generator", [elementType, returnType ?? "void", errorType]);
   return genericTypeName("Generator", returnType ? [elementType, returnType] : [elementType]);
 }
 
@@ -11,12 +16,22 @@ export function generatorStepTypeName(elementType: string, returnType: string): 
 
 export function parseGeneratorType(
   name: string,
-): { readonly elementType: string; readonly returnType: string | null } | null {
+): {
+  readonly elementType: string;
+  readonly returnType: string | null;
+  readonly errorType: string | null;
+} | null {
   const generic = parseGenericType(name);
-  if (!generic || generic.base !== "Generator" || (generic.arguments.length !== 1 && generic.arguments.length !== 2)) return null;
+  if (
+    !generic
+    || generic.base !== "Generator"
+    || generic.arguments.length < 1
+    || generic.arguments.length > 3
+  ) return null;
   return {
     elementType: generic.arguments[0],
-    returnType: generic.arguments[1] ?? null,
+    returnType: generic.arguments[1] && generic.arguments[1] !== "void" ? generic.arguments[1] : null,
+    errorType: generic.arguments[2] ?? null,
   };
 }
 

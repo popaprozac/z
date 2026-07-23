@@ -17,7 +17,7 @@ import { optionTypeName } from "./option-types.ts";
 import { parseViewType, viewTypeName } from "./view-types.ts";
 import { hashableTraitDeclaration } from "./hash-types.ts";
 import { iteratorTraitDeclaration } from "./iterator-types.ts";
-import { generatorStepTypeName, generatorTypeName, parseGeneratorType } from "./generator-types.ts";
+import { generatorStepTypeName, generatorTypeName, isGeneratorFunction, parseGeneratorType } from "./generator-types.ts";
 
 export function materializeGenerics(
   program: Program,
@@ -143,15 +143,16 @@ export function materializeGenerics(
     if (!generic) return name;
     const args = generic.arguments.map((argument) => substituteName(argument, substitutions));
     if (generic.base === "Generator" || generatorBindings.has(generic.base)) {
-      if (args.length !== 1 && args.length !== 2) {
-        throw new DiagnosticError(fileName, { offset: 0, line: 1, column: 1 }, `Generator expects 1 or 2 type arguments, received ${args.length}`);
+      if (args.length < 1 || args.length > 3) {
+        throw new DiagnosticError(fileName, { offset: 0, line: 1, column: 1 }, `Generator expects 1, 2, or 3 type arguments, received ${args.length}`);
       }
-      const name = generatorTypeName(args[0], args[1] ?? null);
+      const returnType = args[1] && args[1] !== "void" ? args[1] : null;
+      const name = generatorTypeName(args[0], returnType, args[2] ?? null);
       if (args.length === 1) {
         instantiateStruct("Option", [args[0]]);
-      } else {
-        const step = generatorStepTypeName(args[0], args[1]);
-        typeDisplayNames.set(step, `GeneratorStep<${displayName(args[0])}, ${displayName(args[1])}>`);
+      } else if (returnType) {
+        const step = generatorStepTypeName(args[0], returnType);
+        typeDisplayNames.set(step, `GeneratorStep<${displayName(args[0])}, ${displayName(returnType)}>`);
         if (!generatorStepInstances.has(step)) {
           const location = program.functions[0]?.location ?? program.structs[0]?.location ?? program.enums[0]?.location
             ?? { offset: 0, line: 1, column: 1 };
@@ -161,10 +162,12 @@ export function materializeGenerics(
             location,
             variants: [
               { name: "yielded", payload: { name: args[0], location }, location },
-              { name: "complete", payload: { name: args[1], location }, location },
+              { name: "complete", payload: { name: returnType, location }, location },
             ],
           });
         }
+      } else {
+        instantiateStruct("Option", [args[0]]);
       }
       typeDisplayNames.set(name, `Generator<${args.map(displayName).join(", ")}>`);
       return name;
@@ -487,7 +490,7 @@ export function materializeGenerics(
     functionInstances.set(key, name);
     const substitutions = new Map(template.typeParameters!.map((parameter, index) => [parameter, args[index]]));
     const concrete = transform({ ...template, name, typeParameters: [], typeParameterConstraints: [] }, substitutions) as FunctionDeclaration;
-    functions.push(concrete);
+    functions.push(attachGeneratorError(concrete));
     return name;
   }
 
@@ -505,6 +508,7 @@ export function materializeGenerics(
         const intrinsicGeneratorConformance = Boolean(
           generator
           && !generator.returnType
+          && !generator.errorType
           && iteratorTemplate
           && required === instantiateTrait(iteratorTemplate.name, [generator.elementType]),
         );
@@ -560,6 +564,21 @@ export function materializeGenerics(
     return methods;
   }
 
+  function attachGeneratorError(declaration: FunctionDeclaration): FunctionDeclaration {
+    if (!declaration.errorType || !isGeneratorFunction(declaration)) return declaration;
+    const generator = parseGeneratorType(declaration.returnType.name)!;
+    if (generator.errorType) return declaration;
+    const name = generatorTypeName(generator.elementType, generator.returnType, declaration.errorType.name);
+    const baseDisplay = generator.returnType
+      ? `Generator<${displayName(generator.elementType)}, ${displayName(generator.returnType)}>`
+      : `Generator<${displayName(generator.elementType)}>`;
+    typeDisplayNames.set(name, `${baseDisplay} throws ${displayName(declaration.errorType.name)}`);
+    return {
+      ...declaration,
+      returnType: { ...declaration.returnType, name },
+    };
+  }
+
   for (const declaration of program.structs.filter((item) => !item.typeParameters?.length)) {
     structs.push({
       ...transform({ ...declaration, methods: [] }, new Map()),
@@ -567,7 +586,7 @@ export function materializeGenerics(
     });
   }
   for (const declaration of program.functions.filter((item) => !item.typeParameters?.length)) {
-    functions.push(transform(declaration, new Map()));
+    functions.push(attachGeneratorError(transform(declaration, new Map())));
   }
   const enums = transform(program.enums, new Map()) as EnumDeclaration[];
   const typeAliases = transform(program.typeAliases, new Map()) as Program["typeAliases"];

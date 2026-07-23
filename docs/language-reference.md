@@ -102,6 +102,7 @@ text value.
 | Iteration contract | `Iterator<T>` | Nominal mutable-cursor trait imported from `std/iteration` |
 | Generator sequence | `Generator<T>` | Cold move-only compiler frame imported from `std/iteration`; `.next()` returns `Option<T>` |
 | Generator with completion | `Generator<Yield, Return>` | Cold frame whose `.next()` returns `GeneratorStep<Yield, Return>` with `yielded` or `complete` |
+| Throwing generator handle | `Generator<Yield, Return, Error>` | Explicit storage spelling for a fallible generator; declarations normally use `Generator<...> throws Error` |
 | Function value | `(in value: T) => U throws E` | Closure/callback signature; parameter capabilities are part of the type |
 | Read-only projection | `view T` | Inferred non-storable borrow tied to owner storage, not a general reference type |
 | Native types | Imported nominal names and `T | null` | ABI-exact C, Objective-C, C++, or Swift-generated types; nullability is limited to nullable native references/handles |
@@ -699,10 +700,46 @@ discard `Return`. Advance it explicitly and match both outcomes. The
 one-argument `Generator<T>` remains the ergonomic sequence form and continues
 to satisfy `Iterator<T>`.
 
+Generator errors occur during advancement, not cold construction:
+
+```zs
+struct ReadError {
+  code: i32;
+}
+
+function readValues(): Generator<i32> throws ReadError {
+  yield 20;
+  throw ReadError({ code: 7 });
+}
+
+const values = readValues();                 // does not execute or throw
+const next = attempt values.next();          // Result<Option<i32>, ReadError>
+```
+
+Use `try values.next()` inside a function throwing the same error to propagate,
+or `attempt values.next()` to retain the `Result`. A fallible handle is written
+explicitly as `Generator<Yield, Return, Error>` when it crosses another type
+boundary; `void` occupies the terminal slot when there is no terminal value:
+
+```zs
+function consume(
+  values: Generator<i32, void, ReadError>,
+): i32 throws ReadError {
+  return match (try values.next()) {
+    some(value) => value;
+    none => 0;
+  };
+}
+```
+
+Direct `for...of` over a throwing generator is rejected until an explicit
+propagation form is designed. This keeps generator errors consistent with Z's
+rule that throwing work always appears beneath `try` or `attempt`.
+
 The initial lowering supports ordinary statements, `if`, `while`, multiple
 `yield` points, owned parameters, and owned yielded values. Generator methods,
 borrowed parameters or yielded views, suspending through `for...of` or `match`,
-`throws`, async generators, and bidirectional sent values are deferred.
+async generators, and bidirectional sent values are deferred.
 
 `Map` and `Set` use open-addressed hashed buckets for amortized O(1) lookup and
 membership. Owned entries remain in compact storage, while rehashing moves only

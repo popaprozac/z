@@ -144,8 +144,17 @@ export function generateC(program: Program, sourceName: string, semanticInfo: Se
   const generatorTypes = [...new Set(
     [
       ...semanticInfo.iteratorElementTypes.keys(),
-      ...program.functions.map((declaration) => declaration.returnType.name),
-      ...program.structs.flatMap((declaration) => declaration.methods.map((method) => method.returnType.name)),
+      ...program.functions.flatMap((declaration) => [
+        declaration.returnType.name,
+        ...declaration.parameters.map((parameter) => parameter.type.name),
+      ]),
+      ...program.structs.flatMap((declaration) => [
+        ...declaration.fields.map((field) => field.type.name),
+        ...declaration.methods.flatMap((method) => [
+          method.returnType.name,
+          ...method.parameters.map((parameter) => parameter.type.name),
+        ]),
+      ]),
     ].filter((name) => parseGeneratorType(name)),
   )];
   const dynamicArrayPushTypes = [...new Set([
@@ -2651,14 +2660,21 @@ function generateGeneratorRuntime(
   foreignNamedTypes: SemanticInfo["foreignNamedTypes"],
 ): string {
   const generator = parseGeneratorType(type)!;
-  const advanceType = generator.returnType
+  const advanceSuccessType = generator.returnType
     ? generatorStepTypeName(generator.elementType, generator.returnType)
     : optionTypeName(generator.elementType);
+  const advanceType = generator.errorType
+    ? resultTypeName(advanceSuccessType, generator.errorType)
+    : advanceSuccessType;
   const generatorName = generatorCName(type);
   const advanceName = mapType(advanceType, structs, enums, foreignNamedTypes);
+  const none = `(${mapType(advanceSuccessType, structs, enums, foreignNamedTypes)}){ .tag = ${variantTag(advanceSuccessType, "none")} }`;
+  const successfulExhaustion = generator.errorType
+    ? `(${advanceName}){ .tag = ${variantTag(advanceType, "success")}, .data.success = ${none} }`
+    : none;
   const exhausted = generator.returnType
     ? "abort();"
-    : `return (${advanceName}){ .tag = ${variantTag(advanceType, "none")} };`;
+    : `return ${successfulExhaustion};`;
   return `struct ${generatorName} {
   void *context;
   ${advanceName} (*advance)(void *context);
@@ -2743,9 +2759,12 @@ function generateGeneratorFunction(
   semanticInfo: SemanticInfo,
 ): string {
   const generator = parseGeneratorType(declaration.returnType.name)!;
-  const advanceType = generator.returnType
+  const advanceSuccessType = generator.returnType
     ? generatorStepTypeName(generator.elementType, generator.returnType)
     : optionTypeName(generator.elementType);
+  const advanceType = generator.errorType
+    ? resultTypeName(advanceSuccessType, generator.errorType)
+    : advanceSuccessType;
   const frameName = generatorFrameName(declaration);
   const fields = collectGeneratorFrameFields(declaration, semanticInfo);
   const storage = new Map(fields.map((field) => [field.name, `frame->${cBindingName(field.name)}`]));
@@ -2788,9 +2807,15 @@ function generateGeneratorFunction(
     return indent(generated, 6);
   });
   const completionCleanup = generateCleanup(context.cleanupScopes, context);
+  const none = generator.returnType
+    ? null
+    : generateCompilerVariantConstruction(advanceSuccessType, "none", null, context);
+  const successfulExhaustion = none && generator.errorType
+    ? generateCompilerVariantConstruction(advanceType, "success", none, context)
+    : none;
   const exhausted = generator.returnType
     ? "abort();"
-    : `return ${generateCompilerVariantConstruction(advanceType, "none", null, context)};`;
+    : `return ${successfulExhaustion};`;
   body.push(indent(`${completionCleanup ? `${completionCleanup}\n` : ""}frame->state = -1;\n${exhausted}`, 6));
 
   const frameFields = fields.flatMap((field) => {
@@ -3041,7 +3066,7 @@ function generateFunctionSignature(
       parameters.unshift(`${receiverConst}${structName(receiver.name)} *self`);
     }
   }
-  const returnName = declaration.errorType
+  const returnName = declaration.errorType && !isGeneratorFunction(declaration)
     ? resultTypeName(declaration.returnType.name, declaration.errorType.name)
     : declaration.returnType.name;
   return `${storage}${mapType(returnName, structs, enums, foreignNamedTypes)} ${name}(${parameters.join(", ") || "void"})`;
@@ -3205,7 +3230,15 @@ bool ${liveFlag} = true;`;
           );
           const cleanup = generateCleanup(valueContext.cleanupScopes, valueContext);
           const step = generatorStepTypeName(generator.elementType, generator.returnType!);
-          const returned = generateCompilerVariantConstruction(step, "complete", temporary, valueContext);
+          const completed = generateCompilerVariantConstruction(step, "complete", temporary, valueContext);
+          const returned = generator.errorType
+            ? generateCompilerVariantConstruction(
+                resultTypeName(step, generator.errorType),
+                "success",
+                completed,
+                valueContext,
+              )
+            : completed;
           return `${declaration} = ${value};\n${cleanup ? `${cleanup}\n` : ""}frame->state = -1;\nreturn ${returned};`;
         }, true);
       }
@@ -3229,7 +3262,15 @@ bool ${liveFlag} = true;`;
         true,
       );
     case "throw": {
-      const result = resultTypeName(context.owner.returnType.name, context.owner.errorType!.name);
+      const generator = context.generatorFrame ? parseGeneratorType(context.owner.returnType.name) : null;
+      const generatorSuccess = generator
+        ? generator.returnType
+          ? generatorStepTypeName(generator.elementType, generator.returnType)
+          : optionTypeName(generator.elementType)
+        : null;
+      const result = generatorSuccess
+        ? resultTypeName(generatorSuccess, context.owner.errorType!.name)
+        : resultTypeName(context.owner.returnType.name, context.owner.errorType!.name);
       return generateDirectValue(statement.expression, context, (value, valueContext) => {
         const cleanup = generateCleanup(valueContext.cleanupScopes, valueContext);
         const releaseSelf = valueContext.constructorSelf ? `free(${valueContext.constructorSelf});\n` : "";
@@ -3252,7 +3293,8 @@ bool ${liveFlag} = true;`;
           valueContext.semanticInfo.foreignNamedTypes,
         ) ? `std::move(${temporary})` : temporary;
         const returned = generateCompilerVariantConstruction(result, "failure", failureValue, valueContext);
-        return `${declaration} = ${value};\n${cleanup ? `${cleanup}\n` : ""}${releaseSelf}return ${returned};`;
+        const finishGenerator = generator ? "frame->state = -1;\n" : "";
+        return `${declaration} = ${value};\n${cleanup ? `${cleanup}\n` : ""}${releaseSelf}${finishGenerator}return ${returned};`;
       }, true);
     }
     case "yield": {
@@ -3263,11 +3305,18 @@ bool ${liveFlag} = true;`;
         : optionTypeName(generator.elementType);
       const variant = generator.returnType ? "yielded" : "some";
       const resume = context.generatorFrame.stateCounter.value++;
-      return generateDirectValue(statement.expression, context, (value) => (
-        `frame->state = ${resume};\n`
-        + `return ${generateCompilerVariantConstruction(advanceType, variant, value, context)};\n`
-        + `case ${resume}: ;`
-      ), true);
+      return generateDirectValue(statement.expression, context, (value) => {
+        const yielded = generateCompilerVariantConstruction(advanceType, variant, value, context);
+        const returned = generator.errorType
+          ? generateCompilerVariantConstruction(
+              resultTypeName(advanceType, generator.errorType),
+              "success",
+              yielded,
+              context,
+            )
+          : yielded;
+        return `frame->state = ${resume};\nreturn ${returned};\ncase ${resume}: ;`;
+      }, true);
     }
     case "select": {
       const selection = context.valueSelectionStack.at(-1);
@@ -4714,7 +4763,16 @@ function generateTry(
 ): string {
   const resultType = throwingCallResultType(expression.expression, context);
   const temporary = `_z_try_${context.tryCounter.value++}`;
-  const ownerResult = resultTypeName(context.owner.returnType.name, context.owner.errorType!.name);
+  const generator = context.generatorFrame ? parseGeneratorType(context.owner.returnType.name) : null;
+  const generatorSuccess = generator
+    ? generator.returnType
+      ? generatorStepTypeName(generator.elementType, generator.returnType)
+      : optionTypeName(generator.elementType)
+    : null;
+  const ownerResult = resultTypeName(
+    generatorSuccess ?? context.owner.returnType.name,
+    context.owner.errorType!.name,
+  );
   const cleanup = generateCleanup(context.cleanupScopes, context);
   const releaseSelf = context.constructorSelf ? `free(${context.constructorSelf});\n` : "";
   const propagatedError = context.owner.errorType && requiresNativeMove(
@@ -4723,7 +4781,8 @@ function generateTry(
     context.enums,
     context.semanticInfo.foreignNamedTypes,
   ) ? `std::move(${temporary}.data.failure)` : `${temporary}.data.failure`;
-  const failureReturn = `${releaseSelf}return ${generateCompilerVariantConstruction(ownerResult, "failure", propagatedError, context)};`;
+  const finishGenerator = generator ? "frame->state = -1;\n" : "";
+  const failureReturn = `${releaseSelf}${finishGenerator}return ${generateCompilerVariantConstruction(ownerResult, "failure", propagatedError, context)};`;
   const successType = trySuccessType(expression, context);
   const successValue = successType === "void"
     ? "0"
@@ -4776,6 +4835,13 @@ function throwingCallResultType(expression: Expression, context: GenerationConte
       if (method) return resultTypeName(method.returnType.name, method.errorType!.name);
     }
     const receiverType = inferExpressionType(expression.callee.object, context);
+    const generator = parseGeneratorType(receiverType);
+    if (generator && expression.callee.property === "next" && generator.errorType) {
+      const success = generator.returnType
+        ? generatorStepTypeName(generator.elementType, generator.returnType)
+        : optionTypeName(generator.elementType);
+      return resultTypeName(success, generator.errorType);
+    }
     const weak = parseWeakType(receiverType);
     if (weak && expression.callee.property === "upgrade") return weakResultTypeName(weak.target);
     const receiver = context.structs.get(receiverType)!;
