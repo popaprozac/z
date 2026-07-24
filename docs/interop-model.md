@@ -515,6 +515,29 @@ immutable `String` snapshots, and deeply readonly Z ARC identity. Mutable or
 borrowed captures, `Weak<T>`, views, slices, and native values without a
 compatible sharing contract are rejected.
 
+Generated Swift Objective-C headers expose escaping closures as ARC-owned
+blocks, so they need neither an explicit context parameter nor a destroy
+callback. A qualified `.zd` entry adds only the fact the header cannot prove:
+
+```z
+declare module "ZSwiftTaskScope-Swift.h" {
+  export function ZSwiftBackgroundWorker.calculate(
+    value: _,
+    move completion: _
+  ): _ {
+    callback completion {
+      thread any;
+    }
+  }
+}
+```
+
+The class, static selector, parameter names, and block ABI remain Clang-derived.
+The contract makes the closure environment atomic and checks its captures; the
+copied native block retains and releases that environment through Objective-C
+ARC. Instance-method contracts and richer completion/error semantics remain
+future tiers.
+
 An arbitrary-thread callback does not itself create an unowned root task.
 Instead, the implemented `TaskScope` bridge owns callback-created operations,
 rejects submissions that lose the race with close, and joins accepted work.
@@ -541,12 +564,12 @@ Objective-C APIs that return a separate observer token already use that native
 token directly: an owned `move` block may persist across calls, Z keeps the
 token, and source code explicitly unregisters it. Weak capture prevents the
 block from strongly cycling back to ARC-managed application state. The AppKit
-observer probe remains caller-thread/AppKit-executor work. The first
-arbitrary-thread C callback tier now proves atomic ARC environment ownership,
+observer probe remains caller-thread/AppKit-executor work. The arbitrary-thread
+C and Swift-block tiers now prove atomic ARC environment ownership,
 conservative capture shareability, and TaskScope-based main-executor delivery.
-Objective-C/Swift delivery, typed scope errors, conditional C ownership
-transfer, and callback-to-async synthesis still require richer completion,
-cancellation, executor, and release metadata.
+Typed scope errors, conditional C ownership transfer, instance block contracts,
+and callback-to-async synthesis still require richer completion, cancellation,
+executor, and release metadata.
 
 ## Direct Objective-C imports versus `std/objc`
 

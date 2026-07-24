@@ -934,8 +934,25 @@ export function definition(source: string, uri: string, offset: number): Locatio
   if (fileName.endsWith(".zd")) {
     const module = foreignDeclarationNativeModule(source, fileName);
     const declaration = module?.functions.get(word.text);
-    const native = declaration ? foreignMetadataLocation(declaration.overloads[0]?.metadata) : null;
-    if (native) return native;
+    const nativeFunction = declaration ? foreignMetadataLocation(declaration.overloads[0]?.metadata) : null;
+    if (nativeFunction) return nativeFunction;
+    if (module) {
+      try {
+        const contract = parseForeignDeclarationContracts(source, fileName).functions.find((candidate) => (
+          containsDeclarationName(candidate.nameLocation.offset, candidate.name, word.start)
+        ));
+        const method = contract
+          ? foreignDeclarationObjCStaticMethods(module, contract.name, contract.parameters.length)
+            .find(({ method }) => method.parameters.every((parameter, index) => (
+              parameter.name === null || parameter.name === contract.parameters[index]?.name
+            )))?.method
+          : null;
+        const nativeMethod = method ? foreignMetadataLocation(method.metadata) : null;
+        if (nativeMethod) return nativeMethod;
+      } catch {
+        // Incomplete declaration files still fall through to ordinary recovery.
+      }
+    }
   }
   const context = safeAnalysis(source, fileName);
   if (context) {
@@ -1917,6 +1934,40 @@ function languageTokenCompletions(fileName: string): CompletionItem[] {
   return items;
 }
 
+function foreignDeclarationObjCStaticMethods(
+  module: ForeignModule,
+  qualifiedName: string,
+  parameterCount?: number,
+): readonly { readonly className: string; readonly method: ForeignObjCMethod }[] {
+  const separator = qualifiedName.lastIndexOf(".");
+  if (separator < 1 || separator === qualifiedName.length - 1) return [];
+  const className = qualifiedName.slice(0, separator);
+  const baseName = qualifiedName.slice(separator + 1);
+  const declaration = module.interfaces.get(className);
+  if (!declaration) return [];
+  return declaration.methods
+    .filter((method) => (
+      !method.instance
+      && method.baseName === baseName
+      && (parameterCount === undefined || method.parameters.length === parameterCount)
+    ))
+    .map((method) => ({ className, method }));
+}
+
+function foreignDeclarationNativeSignatures(
+  module: ForeignModule,
+  qualifiedName: string,
+  parameterCount?: number,
+): readonly {
+  readonly parameters: ForeignObjCMethod["parameters"];
+  readonly returnType: ForeignType;
+}[] {
+  const declaration = module.functions.get(qualifiedName);
+  if (declaration) return declaration.overloads;
+  return foreignDeclarationObjCStaticMethods(module, qualifiedName, parameterCount)
+    .map(({ method }) => method);
+}
+
 function foreignDeclarationCompletions(source: string, fileName: string, offset: number): CompletionItem[] {
   const before = source.slice(0, offset);
   const prefix = before.match(/([A-Za-z_][A-Za-z0-9_.]*)$/)?.[1] ?? "";
@@ -1925,6 +1976,9 @@ function foreignDeclarationCompletions(source: string, fileName: string, offset:
   const contextual: CompletionItem[] = [];
   const ownerName = [...before.matchAll(/\bexport\s+function\s+([A-Za-z_][A-Za-z0-9_.]*)\s*\(/g)].at(-1)?.[1];
   const owner = ownerName ? module?.functions.get(ownerName) : null;
+  const ownerSignatures = ownerName && module
+    ? foreignDeclarationNativeSignatures(module, ownerName)
+    : [];
 
   const typePrefix = /\bexport\s+type\s+([A-Za-z_][A-Za-z0-9_.]*)?$/.exec(before)?.[1];
   if (module && typePrefix !== undefined) {
@@ -1996,6 +2050,19 @@ function foreignDeclarationCompletions(source: string, fileName: string, offset:
         sortText: `0-${name}`,
       });
     }
+    for (const declaration of module.interfaces.values()) {
+      for (const method of declaration.methods) {
+        if (method.instance) continue;
+        const name = `${declaration.exportName}.${method.baseName}`;
+        if (declared.has(name) || !name.toLowerCase().startsWith(functionPrefix.toLowerCase())) continue;
+        contextual.push({
+          label: name,
+          kind: completionKinds.method,
+          detail: `static ${declaration.exportName}.${objCMethodDetail(method)}`,
+          sortText: `0-${name}`,
+        });
+      }
+    }
   }
 
   const fixedContractPrefix = /:\s*_(?:\s*\|\s*null)?\s*\{[^{}]*\b([A-Za-z_]*)$/.exec(before)?.[1];
@@ -2049,9 +2116,9 @@ function foreignDeclarationCompletions(source: string, fileName: string, offset:
   }
 
   const callbackDeinitPrefix = /\bcallback\s+[A-Za-z_][A-Za-z0-9_]*\s*\{[^}]*\bdeinit\s+([A-Za-z_][A-Za-z0-9_]*)?$/.exec(before)?.[1];
-  if (owner && callbackDeinitPrefix !== undefined) {
+  if (ownerSignatures.length > 0 && callbackDeinitPrefix !== undefined) {
     const candidates = new Map<string, string>();
-    for (const overload of owner.overloads) {
+    for (const overload of ownerSignatures) {
       for (const parameter of overload.parameters) {
         if (parameter.name && parameter.type.kind === "callbackRelease") {
           candidates.set(parameter.name, foreignTypeName(parameter.type));
@@ -2070,11 +2137,11 @@ function foreignDeclarationCompletions(source: string, fileName: string, offset:
   }
 
   const callbackContractPrefix = /\bcallback\s+([A-Za-z_][A-Za-z0-9_]*)?$/.exec(before)?.[1];
-  if (owner && callbackContractPrefix !== undefined) {
+  if (ownerSignatures.length > 0 && callbackContractPrefix !== undefined) {
     const candidates = new Map<string, string>();
-    for (const overload of owner.overloads) {
+    for (const overload of ownerSignatures) {
       for (const parameter of overload.parameters) {
-        if (parameter.name && parameter.type.kind === "callback") {
+        if (parameter.name && (parameter.type.kind === "callback" || parameter.type.kind === "block")) {
           candidates.set(parameter.name, foreignTypeName(parameter.type));
         }
       }
@@ -2091,9 +2158,9 @@ function foreignDeclarationCompletions(source: string, fileName: string, offset:
   }
 
   const contextContractPrefix = /\bcallback\s+([A-Za-z_][A-Za-z0-9_]*)\s*\{\s*context\s+([A-Za-z_][A-Za-z0-9_]*)?$/.exec(before);
-  if (owner && contextContractPrefix?.[2] !== undefined) {
+  if (ownerSignatures.length > 0 && contextContractPrefix?.[2] !== undefined) {
     const candidates = new Map<string, string>();
-    for (const overload of owner.overloads) {
+    for (const overload of ownerSignatures) {
       for (const parameter of overload.parameters) {
         if (parameter.name && parameter.type.kind === "callbackContext") {
           candidates.set(parameter.name, foreignTypeName(parameter.type));
@@ -2113,10 +2180,9 @@ function foreignDeclarationCompletions(source: string, fileName: string, offset:
 
   const parameterContext = /\bexport\s+function\s+([A-Za-z_][A-Za-z0-9_.]*)\s*\(([^)]*)$/.exec(before);
   if (module && parameterContext) {
-    const declaration = module.functions.get(parameterContext[1]);
     const parameterIndex = topLevelCommaCount(parameterContext[2]);
     const names = new Map<string, string>();
-    for (const overload of declaration?.overloads ?? []) {
+    for (const overload of foreignDeclarationNativeSignatures(module, parameterContext[1])) {
       const parameter = overload.parameters[parameterIndex];
       if (parameter?.name) names.set(parameter.name, foreignTypeName(parameter.type));
     }
@@ -2196,13 +2262,31 @@ function foreignDeclarationHover(source: string, fileName: string, offset: numbe
 
   for (const contract of contracts.functions) {
     const declaration = module.functions.get(contract.name);
-    if (containsDeclarationName(contract.nameLocation.offset, contract.name, word.start) && declaration) {
-      return markdownHover(foreignFunctionDetail(declaration), source, word.start, word.end);
+    const methodMatch = foreignDeclarationObjCStaticMethods(
+      module,
+      contract.name,
+      contract.parameters.length,
+    ).find(({ method }) => method.parameters.every((parameter, index) => (
+      parameter.name === null || parameter.name === contract.parameters[index]?.name
+    )));
+    const nativeSignatures = declaration?.overloads ?? (methodMatch ? [methodMatch.method] : []);
+    if (containsDeclarationName(contract.nameLocation.offset, contract.name, word.start)) {
+      if (declaration) {
+        return markdownHover(foreignFunctionDetail(declaration), source, word.start, word.end);
+      }
+      if (methodMatch) {
+        return markdownHover(
+          `static ${methodMatch.className}.${objCMethodDetail(methodMatch.method)}`,
+          source,
+          word.start,
+          word.end,
+        );
+      }
     }
     const parameterIndex = contract.parameters.findIndex((parameter) => parameter.location.offset === word.start);
     if (parameterIndex >= 0) {
       const parameter = contract.parameters[parameterIndex];
-      const types = new Set(declaration?.overloads.map((overload) => overload.parameters[parameterIndex]).filter(Boolean).map((native) => foreignTypeName(native.type)) ?? []);
+      const types = new Set(nativeSignatures.map((overload) => overload.parameters[parameterIndex]).filter(Boolean).map((native) => foreignTypeName(native.type)));
       const capability = parameter.mode === "value" ? "" : `${parameter.mode} `;
       return markdownHover(`${capability}${parameter.name}: ${[...types].join(" | ") || "_"}  // inferred from native parameter`, source, word.start, word.end);
     }
@@ -2211,7 +2295,7 @@ function foreignDeclarationHover(source: string, fileName: string, offset: numbe
       if (contract.parameters[parameterTypeIndex].nullOnly) {
         return markdownHover("null  // only the native null pointer is exposed to safe Z", source, word.start, word.end);
       }
-      const types = new Set(declaration?.overloads.map((overload) => overload.parameters[parameterTypeIndex]).filter(Boolean).map((native) => foreignTypeName(native.type)) ?? []);
+      const types = new Set(nativeSignatures.map((overload) => overload.parameters[parameterTypeIndex]).filter(Boolean).map((native) => foreignTypeName(native.type)));
       return markdownHover(`_: ${[...types].join(" | ") || "unknown"}  // inferred native parameter type`, source, word.start, word.end);
     }
     const outputRelease = contract.parameters.find((parameter) => (
@@ -2243,7 +2327,7 @@ function foreignDeclarationHover(source: string, fileName: string, offset: numbe
         return markdownHover(`view cstring${contract.returnNullable ? " | null" : ""}  // borrowed native text tied to the input owner`, source, word.start, word.end);
       }
       if (contract.returnSemanticType === "status-void") {
-        const types = new Set(declaration?.overloads.map((overload) => foreignTypeName(overload.returnType)) ?? []);
+        const types = new Set(nativeSignatures.map((overload) => foreignTypeName(overload.returnType)));
         return markdownHover(
           `void throws ${[...types].join(" | ") || "_"}  // native integer status; success returns void and failure preserves the status`,
           source,
@@ -2251,12 +2335,12 @@ function foreignDeclarationHover(source: string, fileName: string, offset: numbe
           word.end,
         );
       }
-      const types = new Set(declaration?.overloads.map((overload) => foreignTypeName(overload.returnType)) ?? []);
+      const types = new Set(nativeSignatures.map((overload) => foreignTypeName(overload.returnType)));
       const lifecycle = contract.release ? `; deinit ${contract.release}` : "";
       return markdownHover(`_: ${[...types].join(" | ") || "unknown"}${lifecycle}  // inferred native return type`, source, word.start, word.end);
     }
     if (contract.throwsLocation?.offset === word.start) {
-      const types = new Set(declaration?.overloads.map((overload) => foreignTypeName(overload.returnType)) ?? []);
+      const types = new Set(nativeSignatures.map((overload) => foreignTypeName(overload.returnType)));
       return markdownHover(
         `throws ${[...types].join(" | ") || "_"}  // error type inferred from the native integer status`,
         source,
@@ -2292,32 +2376,37 @@ function foreignDeclarationHover(source: string, fileName: string, offset: numbe
     }
     for (const callback of contract.callbacks) {
       const callbackIndex = contract.parameters.findIndex((parameter) => parameter.name === callback.parameter);
-      const contextIndex = contract.parameters.findIndex((parameter) => parameter.name === callback.context);
+      const contextIndex = callback.context === null
+        ? -1
+        : contract.parameters.findIndex((parameter) => parameter.name === callback.context);
       const releaseIndex = callback.release
         ? contract.parameters.findIndex((parameter) => parameter.name === callback.release)
         : -1;
       if (callback.parameterLocation.offset === word.start) {
         const types = new Set(
-          declaration?.overloads
+          nativeSignatures
             .map((overload) => overload.parameters[callbackIndex])
             .filter(Boolean)
-            .map((native) => foreignTypeName(native.type)) ?? [],
+            .map((native) => foreignTypeName(native.type)),
         );
         const mode = contract.parameters[callbackIndex]?.mode ?? "in";
         const lifetime = mode === "move" ? "escaping retained callback" : "call-scoped callback";
+        const ownership = callback.context
+          ? `${lifetime} using native context ${callback.context}`
+          : `${lifetime}; owned by the Objective-C block under ARC`;
         return markdownHover(
-          `${mode} ${callback.parameter}: ${[...types].join(" | ") || "_"}  // ${lifetime} using native context ${callback.context}`,
+          `${mode} ${callback.parameter}: ${[...types].join(" | ") || "_"}  // ${ownership}`,
           source,
           word.start,
           word.end,
         );
       }
-      if (callback.contextLocation.offset === word.start) {
+      if (callback.context && callback.contextLocation?.offset === word.start) {
         const types = new Set(
-          declaration?.overloads
+          nativeSignatures
             .map((overload) => overload.parameters[contextIndex])
             .filter(Boolean)
-            .map((native) => foreignTypeName(native.type)) ?? [],
+            .map((native) => foreignTypeName(native.type)),
         );
         return markdownHover(
           `${callback.context}: ${[...types].join(" | ") || "_"}  // native context for callback ${callback.parameter}`,
@@ -2328,10 +2417,10 @@ function foreignDeclarationHover(source: string, fileName: string, offset: numbe
       }
       if (callback.release && callback.releaseLocation?.offset === word.start) {
         const types = new Set(
-          declaration?.overloads
+          nativeSignatures
             .map((overload) => overload.parameters[releaseIndex])
             .filter(Boolean)
-            .map((native) => foreignTypeName(native.type)) ?? [],
+            .map((native) => foreignTypeName(native.type)),
         );
         return markdownHover(
           `${callback.release}: ${[...types].join(" | ") || "_"}  // exactly-once native release for callback ${callback.parameter}`,

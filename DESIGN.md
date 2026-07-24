@@ -1703,6 +1703,17 @@ Manifest paths are relative to `z.json`, generated products live in a local
 ignored `.z-cache`, and manifest or Swift-source modification times invalidate
 both the Swift build and imported Clang metadata.
 
+Generated Objective-C headers do not encode where Swift invokes an escaping
+completion block. An adjacent `.zd` contract may therefore name an existing
+static class method as `export function Type.method(...)` and refine an
+ARC-owned block with `thread caller` or `thread any`. It cannot invent the class,
+selector, parameters, or ABI. The arbitrary-thread probe copies the block,
+uses atomic ownership for its Z closure environment, submits a synchronous
+AppKit operation through a named `TaskScope`, and joins that operation on
+`thread.main`. The first tier covers static methods only; instance contracts,
+typed completion errors, cardinality, cancellation, and callback-to-async
+synthesis remain separate semantics.
+
 A Swift manifest may select `interop: "cxx"`. In that mode `swiftc` emits its
 generated C++ compatibility header as `Module-Swift.hpp`, Z selects C++20, and
 Swift-native copyable structs cross the boundary as ordinary native values. The

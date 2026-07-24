@@ -1,0 +1,12 @@
+{
+  "target": {
+    "entry": "main.zs",
+    "platform": "macos",
+    "minimumVersion": "14.0",
+    "swift": {
+      "module": "ZSwiftTaskScope",
+      "sources": ["BackgroundWorker.swift"],
+      "frameworks": ["Foundation"]
+    }
+  }
+}

@@ -21,6 +21,17 @@ import { resultTypeName } from "./results.ts";
 import { parseSetType } from "./set-types.ts";
 import { standardFunctionSignature } from "./standard-library.ts";
 import type { IntegerOperation, SemanticInfo } from "./sema.ts";
+import {
+  closureAdapterName,
+  closureEnvironmentName,
+  closureEnvironmentReleaseName,
+  closureEnvironmentRetainName,
+  closureFunctionType,
+  functionTypeCName,
+  functionValueLiteral,
+  generateObjCBlockArgument,
+  generateObjCMessage,
+} from "./codegen-c.ts";
 
 type AwaitSite = {
   readonly index: number;
@@ -4348,6 +4359,21 @@ function generatePoll(
         state += 1;
         continue;
       }
+      if (
+        statement.expression.kind === "call"
+        && plan.types.semanticInfo.objcCalls.has(statement.expression.location.offset)
+        && statement.expression.arguments.some((argument) => (
+          plan.types.semanticInfo.objcBlockArguments.has(argument.location.offset)
+        ))
+      ) {
+        cases.push(caseBlock(state, [
+          ...emitAsyncObjCCall(statement.expression, plan, fileName),
+          `frame->state = ${state + 1};`,
+          "continue;",
+        ]));
+        state += 1;
+        continue;
+      }
       const operation = awaitOperation(statement.expression)!;
       if (!operation) {
         cases.push(caseBlock(state, [
@@ -4895,6 +4921,26 @@ function validateFrameExpression(
   types: AsyncTypeContext,
   suspensions: ReadonlyMap<number, NestedAwaitSite>,
 ): void {
+  if (
+    expression.kind === "call"
+    && types.semanticInfo.objcCalls.has(expression.location.offset)
+    && expression.arguments.some((argument) => types.semanticInfo.objcBlockArguments.has(argument.location.offset))
+  ) {
+    const objcCall = types.semanticInfo.objcCalls.get(expression.location.offset)!;
+    if (objcCall.instance) {
+      emitFrameExpression(expression.callee.kind === "member" ? expression.callee.object : expression, { locals, types, suspensions }, fileName);
+    }
+    for (const argument of expression.arguments) {
+      if (types.semanticInfo.objcBlockArguments.has(argument.location.offset)) {
+        if (argument.kind !== "closure" || !types.semanticInfo.closures.has(argument.location.offset)) {
+          unsupported(fileName, argument.location, "async Objective-C block lowering requires an analyzed inline closure");
+        }
+        continue;
+      }
+      emitFrameExpression(argument, { locals, types, suspensions }, fileName);
+    }
+    return;
+  }
   emitFrameExpression(expression, { locals, types, suspensions }, fileName);
 }
 
@@ -4906,6 +4952,80 @@ function validateAsyncConsoleCall(
   suspensions: ReadonlyMap<number, NestedAwaitSite>,
 ): void {
   emitAsyncConsoleCall(expression, { locals, types, suspensions }, fileName);
+}
+
+function emitAsyncObjCCall(
+  expression: CallExpression,
+  plan: FrameExpressionContext,
+  fileName: string,
+): string[] {
+  const call = plan.types.semanticInfo.objcCalls.get(expression.location.offset);
+  if (!call || expression.callee.kind !== "member") {
+    unsupported(fileName, expression.location, "Objective-C async-frame lowering requires a resolved method call");
+  }
+  const lines: string[] = [];
+  const arguments_ = expression.arguments.map((argument) => {
+    const block = plan.types.semanticInfo.objcBlockArguments.get(argument.location.offset);
+    if (!block) return emitFrameExpression(argument, plan, fileName);
+    if (argument.kind !== "closure") {
+      unsupported(fileName, argument.location, "async Objective-C block lowering requires an inline closure");
+    }
+    const closure = plan.types.semanticInfo.closures.get(argument.location.offset)!;
+    const functionType = closureFunctionType(closure);
+    const functionValue = `_z_async_objc_function_${argument.location.offset}`;
+    if (!closure.owned && closure.captures.length === 0) {
+      lines.push(
+        `${functionTypeCName(functionType)} ${functionValue} = ${functionValueLiteral(functionType, closureAdapterName(closure))};`,
+      );
+    } else {
+      if (!closure.owned) {
+        unsupported(fileName, argument.location, "escaping async Objective-C blocks require an owned move closure");
+      }
+      const environmentType = closureEnvironmentName(closure);
+      const environment = `_z_async_objc_environment_${argument.location.offset}`;
+      lines.push(
+        `${environmentType} *${environment} = (${environmentType} *)calloc(1, sizeof(${environmentType}));`,
+        `if (${environment} == NULL) abort();`,
+        `${environment}->refcount = 1;`,
+      );
+      for (const capture of closure.captures) {
+        const captured: Expression = {
+          kind: "identifier",
+          name: capture.name,
+          location: capture.location,
+        };
+        let value = emitFrameExpression(captured, plan, fileName);
+        if (capture.type === "TaskScope") value = `z_task_scope_retain(${value})`;
+        else if (plan.types.structs.get(capture.type)?.kind === "class") {
+          value = `Z_${capture.type}_retain(${value})`;
+        }
+        lines.push(`${environment}->${capture.name} = ${value};`);
+      }
+      lines.push(
+        `${functionTypeCName(functionType)} ${functionValue} = ${functionValueLiteral(
+          functionType,
+          closureAdapterName(closure),
+          environment,
+          closureEnvironmentRetainName(closure),
+          closureEnvironmentReleaseName(closure),
+        )};`,
+      );
+    }
+    const box = `_z_async_objc_box_${argument.location.offset}`;
+    const nativeBlock = `_z_async_objc_block_${argument.location.offset}`;
+    lines.push(...generateObjCBlockArgument(block, functionValue, box, nativeBlock));
+    return nativeBlock;
+  });
+  const receiver = call.instance
+    ? emitFrameExpression(expression.callee.object, plan, fileName)
+    : call.className;
+  lines.push(`(void)${generateObjCMessage(receiver, call.selector, arguments_)};`);
+  for (const argument of expression.arguments) {
+    if (!plan.types.semanticInfo.objcBlockArguments.has(argument.location.offset)) continue;
+    const functionValue = `_z_async_objc_function_${argument.location.offset}`;
+    lines.push(`if (${functionValue}.release != NULL) ${functionValue}.release(${functionValue}.context);`);
+  }
+  return lines;
 }
 
 function emitAsyncConsoleCall(
@@ -5278,6 +5398,17 @@ function emitFrameExpressionInner(
             plan.types,
           );
         }
+      }
+      const objcCall = plan.types.semanticInfo.objcCalls.get(expression.location.offset);
+      if (objcCall && expression.callee.kind === "member") {
+        if (expression.arguments.some((argument) => plan.types.semanticInfo.objcBlockArguments.has(argument.location.offset))) {
+          unsupported(fileName, expression.location, "an Objective-C block call requires statement-position async lowering");
+        }
+        const receiver = objcCall.instance
+          ? emitFrameExpression(expression.callee.object, plan, fileName)
+          : objcCall.className;
+        const arguments_ = emitSyncCallArguments(expression, plan, fileName);
+        return generateObjCMessage(receiver, objcCall.selector, arguments_);
       }
       const cxxMethod = plan.types.semanticInfo.foreignCxxMethodCalls.get(expression.location.offset);
       if (cxxMethod && expression.callee.kind === "member") {

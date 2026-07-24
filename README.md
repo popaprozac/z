@@ -74,7 +74,7 @@ requiring lifetime syntax throughout ordinary application code.
 | C | Header imports, functions, records, enums, constants, pointers and typed status errors with `.zd` contracts, callbacks, target-aware availability |
 | Objective-C | ARC objects, nullability, selectors, blocks, persistent observers, imported property ownership, lifetime-safe target/action connections, checked Z-class protocol adapters and weak-property bindings, AppKit |
 | C++ | Hierarchical functions/types, overload selection, records, `.zd`-contracted copyable and move-only RAII values, constructors, methods, named-value references, and receiver qualifiers |
-| Swift | Generated Objective-C compatibility headers plus generated C++ values, associated-value enum cases, methods, copying, cleanup, and exact owned `String` returns |
+| Swift | Generated Objective-C compatibility headers, arbitrary-thread ARC block callbacks routed through `TaskScope`, plus generated C++ values, associated-value enum cases, methods, copying, cleanup, and exact owned `String` returns |
 | Editor | VS Code/Cursor highlighting, diagnostics, hover, completion, and definitions |
 
 This table is intentionally summarized. The precise implemented boundary and

@@ -96,6 +96,8 @@ import {
 
 export type ObjCCallInfo = {
   readonly selector: string;
+  readonly instance: boolean;
+  readonly className: string;
 };
 
 export type ObjCPropertyInfo = {
@@ -3510,7 +3512,12 @@ function finalizeClosureFunctionValue(
     // Shared identities are retained explicitly when codegen stores them in
     // the owned environment. Marking the capture's source location as a
     // managed copy also affected ordinary reads at that same AST location.
-    if (structs.get(capture.type)?.kind === "class" || parseFunctionType(capture.type) || parseWeakType(capture.type)) {
+    if (
+      capture.type === "TaskScope"
+      || structs.get(capture.type)?.kind === "class"
+      || parseFunctionType(capture.type)
+      || parseWeakType(capture.type)
+    ) {
       continue;
     }
     consumeOwnedValue(
@@ -3573,7 +3580,7 @@ function validateConcurrentForeignCallbackClosure(
 }
 
 function validateConcurrentForeignCallbackSignature(
-  callback: ForeignCallbackType,
+  callback: ForeignCallbackType | ForeignBlockType,
   location: SourceLocation,
   structs: Map<string, StructDeclaration>,
   enums: Map<string, EnumDeclaration>,
@@ -6736,7 +6743,11 @@ function inferExpressionInner(
           );
           checkForeignAvailability(method.metadata, method.selector, expression.callee.location, fileName, state);
           checkObjCArguments(method, expression.arguments, locals, globals, structs, enums, fileName, state);
-          state.objcCalls.set(expression.location.offset, { selector: method.selector });
+          state.objcCalls.set(expression.location.offset, {
+            selector: method.selector,
+            instance: method.instance,
+            className: objcReceiverType.declaration.className,
+          });
           let result = foreignValueType(method.returnType);
           if (method.returnsInstanceType) {
             const nullable = method.returnType.kind === "object" && method.returnType.nullable;
@@ -9390,6 +9401,24 @@ function checkObjCArguments(
         state,
         !parameter.type.escaping,
       );
+      if (parameter.type.thread === "any") {
+        validateConcurrentForeignCallbackSignature(
+          parameter.type,
+          argument.location,
+          structs,
+          enums,
+          fileName,
+          state,
+        );
+        validateConcurrentForeignCallbackClosure(
+          argument,
+          locals,
+          structs,
+          enums,
+          fileName,
+          state,
+        );
+      }
       state.foreignArgumentAccesses.set(argument.location.offset, "in");
       state.objcBlockArguments.set(argument.location.offset, parameter.type);
       actual = expectedType;

@@ -3,7 +3,12 @@ import { dirname, resolve } from "node:path";
 import type { SourceLocation } from "./ast.ts";
 import { DiagnosticError } from "./diagnostics.ts";
 import type { ApiNotes, PointerNote, StatusNote } from "./foreign-api-notes.ts";
-import type { ForeignFunctionDeclaration } from "./foreign-ir.ts";
+import type {
+  ForeignBlockType,
+  ForeignFunctionDeclaration,
+  ForeignObjCInterface,
+  ForeignObjCMethod,
+} from "./foreign-ir.ts";
 import type { ForeignThreadContract } from "./foreign-ir.ts";
 import { callbackParameterSpellings, normalizeCallbackContextType } from "./foreign-type-spelling.ts";
 import { lex, type Token } from "./lexer.ts";
@@ -49,12 +54,12 @@ export type ForeignThreadContractLocations = {
 
 export type ForeignCallbackContract = {
   readonly parameter: string;
-  readonly context: string;
+  readonly context: string | null;
   readonly release: string | null;
   readonly thread: "caller" | "any" | null;
   readonly location: SourceLocation;
   readonly parameterLocation: SourceLocation;
-  readonly contextLocation: SourceLocation;
+  readonly contextLocation: SourceLocation | null;
   readonly releaseLocation: SourceLocation | null;
   readonly threadLocation: SourceLocation | null;
 };
@@ -423,17 +428,14 @@ export function parseForeignDeclarationContracts(source: string, fileName: strin
             );
           }
           expectText("}");
-          if (!context) {
-            fail(callback, `callback ${JSON.stringify(callback.text)} requires a named native context parameter`);
-          }
           callbacks.push({
             parameter: callback.text,
-            context: context.text,
+            context: context?.text ?? null,
             release: callbackRelease?.text ?? null,
             thread: callbackThread?.text === "any" ? "any" : callbackThread ? "caller" : null,
             location: contract.location,
             parameterLocation: callback.location,
-            contextLocation: context.location,
+            contextLocation: context?.location ?? null,
             releaseLocation: callbackRelease?.location ?? null,
             threadLocation: callbackThread?.location ?? null,
           });
@@ -504,6 +506,7 @@ export function parseForeignDeclarationContracts(source: string, fileName: strin
 export function foreignDeclarationApiNotes(
   contracts: ForeignDeclarationContracts,
   declarations: ReadonlyMap<string, ForeignFunctionDeclaration>,
+  interfaces: ReadonlyMap<string, ForeignObjCInterface>,
   expectedModuleSpecifier: string,
   includeDirectory: string,
   fileName: string,
@@ -524,10 +527,21 @@ export function foreignDeclarationApiNotes(
     parameters?: Record<string, PointerNote>;
     status?: StatusNote;
   }> = {};
+  const objcMethods: Record<string, {
+    parameters?: Record<string, PointerNote>;
+  }> = {};
   for (const contract of contracts.functions) {
     const declaration = declarations.get(contract.name);
     if (!declaration) {
-      throw new DiagnosticError(fileName, contract.location, `declaration names unknown foreign function ${JSON.stringify(contract.name)}`, { code: "Z0801" });
+      const method = resolveObjCStaticMethodContract(contract, interfaces, fileName);
+      if (!method) {
+        const kind = contract.name.includes(".")
+          ? "foreign function or static Objective-C method"
+          : "foreign function";
+        throw new DiagnosticError(fileName, contract.location, `declaration names unknown ${kind} ${JSON.stringify(contract.name)}`, { code: "Z0801" });
+      }
+      objcMethods[method.key] = objectiveCMethodApiNote(contract, method.method, fileName);
+      continue;
     }
     const parameters: Record<string, PointerNote> = {};
     for (const overload of declaration.overloads) {
@@ -557,6 +571,17 @@ export function foreignDeclarationApiNotes(
       parameters[String(parameterIndex)] = parameterNote(parameter);
     }
     for (const callback of contract.callbacks) {
+      if (!callback.context || !callback.contextLocation) {
+        throw new DiagnosticError(
+          fileName,
+          callback.location,
+          `C callback ${JSON.stringify(callback.parameter)} requires a named native context parameter`,
+          {
+            code: "Z0801",
+            helps: ["add `context <parameter>;`; context-free callback environments remain unsupported"],
+          },
+        );
+      }
       const callbackIndex = contract.parameters.findIndex((parameter) => parameter.name === callback.parameter);
       if (callbackIndex < 0) {
         throw new DiagnosticError(
@@ -678,7 +703,172 @@ export function foreignDeclarationApiNotes(
         : {}),
     };
   }
-  return Object.keys(functions).length ? { functions } : {};
+  return {
+    ...(Object.keys(functions).length ? { functions } : {}),
+    ...(Object.keys(objcMethods).length ? { objcMethods } : {}),
+  };
+}
+
+function resolveObjCStaticMethodContract(
+  contract: ForeignFunctionContract,
+  interfaces: ReadonlyMap<string, ForeignObjCInterface>,
+  fileName: string,
+): { readonly key: string; readonly method: ForeignObjCMethod } | null {
+  const separator = contract.name.lastIndexOf(".");
+  if (separator < 1 || separator === contract.name.length - 1) return null;
+  const className = contract.name.slice(0, separator);
+  const baseName = contract.name.slice(separator + 1);
+  const declaration = interfaces.get(className);
+  if (!declaration) return null;
+  const candidates = declaration.methods.filter((method) => (
+    !method.instance
+    && method.baseName === baseName
+    && method.parameters.length === contract.parameters.length
+    && method.parameters.every((parameter, index) => (
+      parameter.name === null || parameter.name === contract.parameters[index]?.name
+    ))
+  ));
+  if (candidates.length === 0) {
+    throw new DiagnosticError(
+      fileName,
+      contract.location,
+      `declaration does not match a static Objective-C method ${JSON.stringify(contract.name)} with parameters (${contract.parameters.map((parameter) => parameter.name).join(", ")})`,
+      {
+        code: "Z0801",
+        notes: ["the class exists, but no class selector has the same base name and native parameter names"],
+      },
+    );
+  }
+  if (candidates.length > 1) {
+    throw new DiagnosticError(
+      fileName,
+      contract.location,
+      `declaration is ambiguous across static Objective-C selectors ${candidates.map((method) => JSON.stringify(method.selector)).join(", ")}`,
+      { code: "Z0801" },
+    );
+  }
+  return { key: `${className}.${candidates[0].selector}`, method: candidates[0] };
+}
+
+function objectiveCMethodApiNote(
+  contract: ForeignFunctionContract,
+  method: ForeignObjCMethod,
+  fileName: string,
+): { readonly parameters?: Readonly<Record<string, PointerNote>> } {
+  if (
+    contract.returnSemanticType !== "inferred"
+    || contract.release
+    || contract.thread.transfer
+    || contract.thread.share
+    || contract.thread.deinit
+    || contract.statusSuccessValues.length > 0
+  ) {
+    throw new DiagnosticError(
+      fileName,
+      contract.returnLocation,
+      "the first Objective-C method contract tier refines block parameters only",
+      { code: "Z0801" },
+    );
+  }
+  const callbacks = new Map(contract.callbacks.map((callback) => [callback.parameter, callback]));
+  const parameters: Record<string, PointerNote> = {};
+  for (let index = 0; index < contract.parameters.length; index += 1) {
+    const parameter = contract.parameters[index];
+    const native = method.parameters[index];
+    if (native.name !== null && native.name !== parameter.name) {
+      throw new DiagnosticError(
+        fileName,
+        parameter.location,
+        `declaration parameter ${JSON.stringify(parameter.name)} does not match native parameter ${JSON.stringify(native.name)} at position ${index + 1}`,
+        { code: "Z0801" },
+      );
+    }
+    const callback = callbacks.get(parameter.name);
+    if (native.type.kind !== "block") {
+      if (callback) {
+        throw new DiagnosticError(
+          fileName,
+          callback.parameterLocation,
+          `callback contract parameter ${JSON.stringify(parameter.name)} is not an Objective-C block`,
+          { code: "Z0801" },
+        );
+      }
+      if (parameter.mode !== "value") {
+        throw new DiagnosticError(
+          fileName,
+          parameter.location,
+          `non-block Objective-C parameter ${JSON.stringify(parameter.name)} cannot use ${parameter.mode} in this contract tier`,
+          { code: "Z0801" },
+        );
+      }
+      continue;
+    }
+    validateObjCBlockContract(parameter, native.type, callback, fileName);
+    parameters[String(index)] = {
+      callback: {
+        lifetime: native.type.escaping ? "escape" : "call",
+        ...(callback?.thread ? { thread: callback.thread } : {}),
+      },
+    };
+  }
+  for (const callback of contract.callbacks) {
+    if (!contract.parameters.some((parameter) => parameter.name === callback.parameter)) {
+      throw new DiagnosticError(
+        fileName,
+        callback.parameterLocation,
+        `callback contract names unknown parameter ${JSON.stringify(callback.parameter)} on ${JSON.stringify(contract.name)}`,
+        { code: "Z0801" },
+      );
+    }
+  }
+  return Object.keys(parameters).length ? { parameters } : {};
+}
+
+function validateObjCBlockContract(
+  parameter: ContractParameter,
+  block: ForeignBlockType,
+  callback: ForeignCallbackContract | undefined,
+  fileName: string,
+): void {
+  if (!callback) {
+    throw new DiagnosticError(
+      fileName,
+      parameter.location,
+      `Objective-C block parameter ${JSON.stringify(parameter.name)} requires a callback contract`,
+      {
+        code: "Z0801",
+        helps: [`add \`callback ${parameter.name} { thread caller; }\` or \`thread any;\``],
+      },
+    );
+  }
+  if (callback.context || callback.release) {
+    throw new DiagnosticError(
+      fileName,
+      callback.location,
+      `Objective-C block ${JSON.stringify(parameter.name)} is ARC-owned and cannot declare context or deinit parameters`,
+      { code: "Z0801" },
+    );
+  }
+  const expectedMode = block.escaping ? "move" : "in";
+  if (parameter.mode !== expectedMode) {
+    throw new DiagnosticError(
+      fileName,
+      parameter.location,
+      `${block.escaping ? "escaping" : "non-escaping"} Objective-C block ${JSON.stringify(parameter.name)} requires ${expectedMode}`,
+      { code: "Z0801" },
+    );
+  }
+  if (!callback.thread) {
+    throw new DiagnosticError(
+      fileName,
+      callback.location,
+      `Objective-C block ${JSON.stringify(parameter.name)} requires an explicit thread guarantee`,
+      {
+        code: "Z0214",
+        helps: ["add `thread caller;` or `thread any;` after verifying the native API"],
+      },
+    );
+  }
 }
 
 function inferCallbackContextPosition(

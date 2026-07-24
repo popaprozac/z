@@ -5577,6 +5577,24 @@ function inferUnclassifiedCallArguments(
   let argumentIndex: usize = 1;
   while (argumentIndex < children.length) {
     const nodeIndex = children[argumentIndex];
+    let awaitsForeignContext = false;
+    if (tree.nodes[nodeIndex].kind == ExpressionKind.closureExpression) {
+      for (const child of tree.nodes[nodeIndex].children) {
+        if (
+          tree.nodes[child].kind == ExpressionKind.closureParameterExpression
+          && tree.nodes[child].labels[1].byteLength == 0
+        ) awaitsForeignContext = true;
+      }
+    }
+    if (awaitsForeignContext) {
+      // Imported C/Objective-C/C++/Swift declarations are deliberately absent
+      // from the stage-1 source-module graph. Stage 0 remains authoritative for
+      // contextual closure typing at that boundary, so the native resolver must
+      // defer instead of inventing a missing-type diagnostic.
+      argumentTypes.push("");
+      argumentIndex = argumentIndex + 2;
+      continue;
+    }
     const argumentType = try inferExpressionNodeType(
       module,
       modules,

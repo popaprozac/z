@@ -1138,7 +1138,7 @@ function generateFunctionTypeParameters(
   });
 }
 
-function functionTypeCName(functionType: FunctionType): string {
+export function functionTypeCName(functionType: FunctionType): string {
   let hash = 14695981039346656037n;
   for (const character of functionTypeAbiKey(functionType)) {
     hash ^= BigInt(character.codePointAt(0)!);
@@ -1166,7 +1166,7 @@ function declarationFunctionType(declaration: FunctionDeclaration, skipParameter
   };
 }
 
-function closureFunctionType(closure: ClosureInfo): FunctionType {
+export function closureFunctionType(closure: ClosureInfo): FunctionType {
   return declarationFunctionType(closure.declaration, closure.captures.length);
 }
 
@@ -1178,23 +1178,23 @@ function standardFunctionAdapterName(name: StandardFunctionName): string {
   return `__z_standard_function_adapter_${nativeSymbolPart(name)}`;
 }
 
-function closureAdapterName(closure: ClosureInfo): string {
+export function closureAdapterName(closure: ClosureInfo): string {
   return `${closure.declaration.name}_adapter`;
 }
 
-function closureEnvironmentName(closure: ClosureInfo): string {
+export function closureEnvironmentName(closure: ClosureInfo): string {
   return `Z_ClosureEnv_${closure.declaration.location.offset}`;
 }
 
-function closureEnvironmentRetainName(closure: ClosureInfo): string {
+export function closureEnvironmentRetainName(closure: ClosureInfo): string {
   return `${closureEnvironmentName(closure)}_retain`;
 }
 
-function closureEnvironmentReleaseName(closure: ClosureInfo): string {
+export function closureEnvironmentReleaseName(closure: ClosureInfo): string {
   return `${closureEnvironmentName(closure)}_release`;
 }
 
-function functionValueLiteral(
+export function functionValueLiteral(
   functionType: FunctionType,
   call: string,
   context = "NULL",
@@ -4339,7 +4339,7 @@ function temporaryValueType(expression: Expression, context: GenerationContext):
     ?? inferExpressionType(expression, context);
 }
 
-function generateObjCBlockArgument(
+export function generateObjCBlockArgument(
   block: ForeignBlockType,
   functionValue: string,
   box: string,
@@ -7446,7 +7446,7 @@ function mapValueHasReferenceIdentity(
   return structs.get(type)?.kind === "class" || semanticInfo.foreignNamedTypes.get(type)?.kind === "object";
 }
 
-function generateObjCMessage(receiver: string, selector: string, args: string[]): string {
+export function generateObjCMessage(receiver: string, selector: string, args: string[]): string {
   if (args.length === 0) return `[${receiver} ${selector}]`;
   const parts = selector.split(":");
   const message = args.map((argument, index) => `${parts[index]}:${argument}`).join(" ");

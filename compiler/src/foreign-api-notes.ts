@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 import type { ImportDeclaration } from "./ast.ts";
 import { DiagnosticError } from "./diagnostics.ts";
 import { foreignDeclarationApiNotes, parseForeignDeclarationContracts } from "./foreign-declarations.ts";
-import type { ForeignFunctionDeclaration } from "./foreign-ir.ts";
+import type { ForeignFunctionDeclaration, ForeignObjCInterface } from "./foreign-ir.ts";
 
 export type PointerNote = {
   readonly ownership?: "owned" | "borrowed" | "consuming";
@@ -45,6 +45,9 @@ export type ApiNotes = {
     readonly parameters?: Readonly<Record<string, PointerNote>>;
     readonly status?: StatusNote;
   }>>;
+  readonly objcMethods?: Readonly<Record<string, {
+    readonly parameters?: Readonly<Record<string, PointerNote>>;
+  }>>;
 };
 
 export class ApiNoteConflictError extends Error {
@@ -60,6 +63,9 @@ export function mergeApiNotes(
     return?: PointerNote;
     parameters?: Record<string, PointerNote>;
     status?: StatusNote;
+  }> = {};
+  const objcMethods: Record<string, {
+    parameters?: Record<string, PointerNote>;
   }> = {};
   const owners = new Map<string, string>();
   for (const source of sources) {
@@ -87,8 +93,24 @@ export function mergeApiNotes(
         );
       }
     }
+    for (const [methodName, note] of Object.entries(source.notes.objcMethods ?? {})) {
+      const target = objcMethods[methodName] ??= {};
+      for (const [index, parameter] of Object.entries(note.parameters ?? {})) {
+        const parameters = target.parameters ??= {};
+        parameters[index] = mergePointerNote(
+          parameters[index],
+          parameter,
+          `objcMethods.${methodName}.parameters.${index}`,
+          source.name,
+          owners,
+        );
+      }
+    }
   }
-  return Object.keys(merged).length > 0 ? { functions: merged } : {};
+  return {
+    ...(Object.keys(merged).length > 0 ? { functions: merged } : {}),
+    ...(Object.keys(objcMethods).length > 0 ? { objcMethods } : {}),
+  };
 }
 
 export function readApiNotes(
@@ -96,6 +118,7 @@ export function readApiNotes(
   fileName: string,
   includeDirectory: string,
   declarations: ReadonlyMap<string, ForeignFunctionDeclaration>,
+  interfaces: ReadonlyMap<string, ForeignObjCInterface>,
 ): ApiNotes {
   const sources = apiNoteSources(declaration, includeDirectory);
   try {
@@ -105,6 +128,7 @@ export function readApiNotes(
         ? foreignDeclarationApiNotes(
           parseForeignDeclarationContracts(readFileSync(source.path, "utf8"), source.path),
           declarations,
+          interfaces,
           declaration.header,
           includeDirectory,
           source.path,
@@ -133,13 +157,17 @@ function apiNoteSources(
   declaration: ImportDeclaration,
   includeDirectory: string,
 ): { readonly path: string; readonly kind: "json" | "declaration" }[] {
-  const localDeclarationPath = resolve(includeDirectory, `${declaration.header}.zd`);
+  const declarationDirectory = resolve(dirname(declaration.location.fileName ?? includeDirectory));
+  const declarationDirectories = [...new Set([declarationDirectory, resolve(includeDirectory)])];
+  const localDeclarationPaths = declarationDirectories
+    .map((directory) => resolve(directory, `${declaration.header}.zd`))
+    .filter((path) => existsSync(path));
   const localHeader = resolve(includeDirectory, declaration.header);
   const builtInPath = resolve(dirname(fileURLToPath(import.meta.url)), "../api-notes", `${basename(declaration.header)}.json`);
   const canUseBuiltIn = declaration.header === basename(declaration.header) && !existsSync(localHeader);
   return [
     ...(canUseBuiltIn && existsSync(builtInPath) ? [{ path: builtInPath, kind: "json" as const }] : []),
-    ...(existsSync(localDeclarationPath) ? [{ path: localDeclarationPath, kind: "declaration" as const }] : []),
+    ...localDeclarationPaths.map((path) => ({ path, kind: "declaration" as const })),
   ];
 }
 
@@ -190,18 +218,32 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function parseApiNotes(value: unknown, source: string): ApiNotes {
   const root = requireRecord(value, source, "root");
-  requireKeys(root, ["functions"], source, "root");
-  if (root.functions === undefined) return {};
-  const functions = requireRecord(root.functions, source, "functions");
-  for (const [name, rawFunction] of Object.entries(functions)) {
-    const functionNote = requireRecord(rawFunction, source, `functions.${name}`);
-    requireKeys(functionNote, ["return", "parameters", "status"], source, `functions.${name}`);
-    if (functionNote.return !== undefined) validatePointerNote(functionNote.return, source, `functions.${name}.return`);
-    if (functionNote.status !== undefined) validateStatusNote(functionNote.status, source, `functions.${name}.status`);
-    if (functionNote.parameters !== undefined) {
-      const parameters = requireRecord(functionNote.parameters, source, `functions.${name}.parameters`);
-      for (const [index, parameter] of Object.entries(parameters)) {
-        validatePointerNote(parameter, source, `functions.${name}.parameters.${index}`);
+  requireKeys(root, ["functions", "objcMethods"], source, "root");
+  if (root.functions !== undefined) {
+    const functions = requireRecord(root.functions, source, "functions");
+    for (const [name, rawFunction] of Object.entries(functions)) {
+      const functionNote = requireRecord(rawFunction, source, `functions.${name}`);
+      requireKeys(functionNote, ["return", "parameters", "status"], source, `functions.${name}`);
+      if (functionNote.return !== undefined) validatePointerNote(functionNote.return, source, `functions.${name}.return`);
+      if (functionNote.status !== undefined) validateStatusNote(functionNote.status, source, `functions.${name}.status`);
+      if (functionNote.parameters !== undefined) {
+        const parameters = requireRecord(functionNote.parameters, source, `functions.${name}.parameters`);
+        for (const [index, parameter] of Object.entries(parameters)) {
+          validatePointerNote(parameter, source, `functions.${name}.parameters.${index}`);
+        }
+      }
+    }
+  }
+  if (root.objcMethods !== undefined) {
+    const methods = requireRecord(root.objcMethods, source, "objcMethods");
+    for (const [name, rawMethod] of Object.entries(methods)) {
+      const methodNote = requireRecord(rawMethod, source, `objcMethods.${name}`);
+      requireKeys(methodNote, ["parameters"], source, `objcMethods.${name}`);
+      if (methodNote.parameters !== undefined) {
+        const parameters = requireRecord(methodNote.parameters, source, `objcMethods.${name}.parameters`);
+        for (const [index, parameter] of Object.entries(parameters)) {
+          validatePointerNote(parameter, source, `objcMethods.${name}.parameters.${index}`);
+        }
       }
     }
   }

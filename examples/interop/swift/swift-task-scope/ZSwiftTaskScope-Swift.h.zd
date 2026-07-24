@@ -1,0 +1,10 @@
+declare module "ZSwiftTaskScope-Swift.h" {
+  export function ZSwiftBackgroundWorker.calculate(
+    value: _,
+    move completion: _
+  ): _ {
+    callback completion {
+      thread any;
+    }
+  }
+}

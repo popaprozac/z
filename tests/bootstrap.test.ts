@@ -3872,6 +3872,110 @@ test("builds a declared Swift target for ordinary CLI and editor workflows", () 
   );
 });
 
+test("routes Swift background callbacks through TaskScope onto the main executor", () => {
+  if (process.platform !== "darwin") return;
+  const example = resolve(projectRoot, "examples/interop/swift/swift-task-scope/main.zs");
+  const source = readFileSync(example, "utf8");
+  const artifact = compileToNative(source, example);
+  assert.equal(artifact.language, "objective-c");
+  assert.match(artifact.source, /\[ZSwiftBackgroundWorker calculate:40 completion:_z_async_objc_block_[0-9]+\]/);
+  assert.match(artifact.source, /\[ZSwiftBackgroundWorker waitForCompletion\]/);
+  assert.match(artifact.source, /z_task_scope_spawn\(updates,/);
+  assert.match(artifact.source, /__atomic_add_fetch\(&environment->refcount, 1, __ATOMIC_RELAXED\)/);
+  assert.match(artifact.source, /__atomic_sub_fetch\(&environment->refcount, 1, __ATOMIC_ACQ_REL\)/);
+  assert.doesNotMatch(artifact.source, /z_task_scope_retain\(z_task_scope_retain\(/);
+
+  const context = analyzeSource(source, example);
+  const calculate = context.foreignModules.get("Swift")
+    ?.interfaces.get("ZSwiftBackgroundWorker")
+    ?.methods.find((method) => !method.instance && method.selector === "calculate:completion:");
+  assert.equal(calculate?.parameters[1]?.type.kind, "block");
+  if (calculate?.parameters[1]?.type.kind === "block") {
+    assert.equal(calculate.parameters[1].type.escaping, true);
+    assert.equal(calculate.parameters[1].type.thread, "any");
+  }
+
+  const invalidDirectory = mkdtempSync("/tmp/z-swift-block-contract-");
+  const generatedHeader = resolve(artifact.includeDirectories[0], "ZSwiftTaskScope-Swift.h");
+  writeFileSync(
+    resolve(invalidDirectory, "ZSwiftTaskScope-Swift.h"),
+    readFileSync(generatedHeader, "utf8"),
+  );
+  writeFileSync(resolve(invalidDirectory, "ZSwiftTaskScope-Swift.h.zd"), `
+    declare module "ZSwiftTaskScope-Swift.h" {
+      export function ZSwiftBackgroundWorker.calculate(
+        value: _,
+        in completion: _
+      ): _ {
+        callback completion {
+          thread any;
+        }
+      }
+    }
+  `);
+  const invalidFile = resolve(invalidDirectory, "main.zs");
+  const invalidSource = `
+    import Swift from "ZSwiftTaskScope-Swift.h";
+    function main(): i32 { return 0; }
+  `;
+  const invalidContract = diagnostics(invalidSource, invalidFile)[0];
+  assert.equal(invalidContract.code, "Z0801");
+  assert.match(invalidContract.message, /escaping Objective-C block "completion" requires move/);
+
+  const declarationFile = resolve(
+    projectRoot,
+    "examples/interop/swift/swift-task-scope/ZSwiftTaskScope-Swift.h.zd",
+  );
+  const declarationSource = readFileSync(declarationFile, "utf8");
+  const methodHover = hover(
+    declarationSource,
+    declarationFile,
+    declarationSource.indexOf("ZSwiftBackgroundWorker.calculate") + 2,
+  )?.contents.value ?? "";
+  assert.match(methodHover, /static ZSwiftBackgroundWorker\.calculate\(value: i32, completion: \(argument1: i32\) => void\): void/);
+  assert.match(
+    definition(
+      declarationSource,
+      `file://${declarationFile}`,
+      declarationSource.indexOf("ZSwiftBackgroundWorker.calculate") + "ZSwiftBackgroundWorker.".length + 2,
+    )?.uri ?? "",
+    /ZSwiftTaskScope-Swift\.h$/,
+  );
+  const callbackHover = hover(
+    declarationSource,
+    declarationFile,
+    declarationSource.indexOf("callback completion") + "callback ".length + 2,
+  )?.contents.value ?? "";
+  assert.match(callbackHover, /move completion: \(argument1: i32\) => void/);
+  assert.match(callbackHover, /owned by the Objective-C block under ARC/);
+  const threadHover = hover(
+    declarationSource,
+    declarationFile,
+    declarationSource.indexOf("any;") + 1,
+  )?.contents.value ?? "";
+  assert.match(threadHover, /arbitrary threads/);
+
+  const callbackCompletionSource = declarationSource.replace("callback completion {", "callback comp");
+  const callbackCompletionOffset = callbackCompletionSource.indexOf("callback comp") + "callback comp".length;
+  assert.equal(
+    completions(callbackCompletionSource, declarationFile, callbackCompletionOffset)
+      .find((item) => item.label === "completion")?.kind,
+    6,
+  );
+
+  const nativeCheck = spawnSync(
+    process.execPath,
+    [cli, "check", example, "--native-frontend"],
+    { encoding: "utf8" },
+  );
+  assert.equal(nativeCheck.status, 0, nativeCheck.stderr);
+  assert.match(nativeCheck.stdout, /native frontend hybrid matches/);
+
+  const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, "Swift background result=42\n");
+}, 60_000);
+
 test("imports and owns a Swift value through its generated C++ compatibility header", () => {
   if (process.platform !== "darwin") return;
   const example = resolve(projectRoot, "examples/interop/swift/swift-value-interop/main.zs");

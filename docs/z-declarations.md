@@ -69,6 +69,15 @@ declare module "vendor.h" {
       thread caller;
     }
   }
+
+  export function ZVendorWorker.calculate(
+    value: _,
+    move completion: _
+  ): _ {
+    callback completion {
+      thread any;
+    }
+  }
 }
 ```
 
@@ -81,6 +90,7 @@ spelling does not silently pass through.
 | --- | --- | --- |
 | `declare module "header"` | Bind this contract to one imported header | Specifier and resolved header must match |
 | `export function name(...)` | Refine an existing native function | Name, parameter count/order, and native types come from Clang |
+| `export function Type.method(...)` | Refine an existing static Objective-C method | The class, selector base name, parameter names, and types must match Clang; the first tier refines block parameters only |
 | `export type Name { ... }` | Refine an existing C++/generated value type | Clang must prove the named value and supported lifecycle operations |
 | `_` | Infer the ABI type from the header | Never means dynamic or untyped |
 | `_ \| null` | Expose a header pointer/reference as nullable | Requires a compatible native pointer/reference representation |
@@ -94,8 +104,8 @@ spelling does not silently pass through.
 | `fixed CONSTANT;` | Hide one native ABI parameter and always pass a header constant | Z call omits that argument; generated native code inserts the constant in place |
 | `void throws _` | Project an integer-returning native status into Z's error channel | Native return type remains ABI-exact and allocation-free |
 | `success N;` | Treat status `N` as successful `void` completion | Every other integer status becomes the typed error value |
-| `callback operation { ... }` | Classify a named native callback parameter | Callback/context/release positions must exist in the function signature |
-| `context context;` | Pair the callback with its opaque native context parameter | Generated trampoline recovers the exact Z closure environment |
+| `callback operation { ... }` | Classify a named native callback or Objective-C block parameter | The parameter must exist and have a compatible native callable type |
+| `context context;` | Pair a C callback with its opaque native context parameter | Generated trampoline recovers the exact Z closure environment; ARC-owned Objective-C blocks omit this |
 | `thread caller;` | Callback invocation and release remain on the registering thread | Escaping closure environment uses ordinary thread-local ownership |
 | `thread any;` | Callback invocation and release may occur on arbitrary threads, including overlapping invocations | Escaping closure environment uses atomic ownership and every capture must satisfy Z's conservative concurrent-shareability rules |
 | `copy;` | Native value has usable copy construction | Enables `copy value` and copying aggregate storage that contains it |
@@ -114,7 +124,7 @@ released—but its owner is determined by location:
 | Function result block | Returned native handle | `(): _ \| null { deinit vendor_close; }` |
 | `out` parameter block | Handle written into caller storage | `out handle: _ \| null { deinit vendor_close; }` |
 | `export type` block | C++/generated value storage | `export type Lease { move; deinit; }` |
-| `callback` block | Escaping callback environment | `deinit release;` names the native destroy-callback parameter |
+| C `callback` block | Escaping callback environment | `deinit release;` names the native destroy-callback parameter; ARC-owned Objective-C blocks omit it |
 | `thread` block | Cross-thread destruction permission | `deinit;` has no name because the ordinary owner already carries its destructor |
 
 `deinit` does not guess ownership. The surrounding result, output, native value,
@@ -188,11 +198,12 @@ These are semantic mappings, not textual rewrites:
 | C++ `T &&` | `move value: _` with value lifecycle contract | Consumed unique owner |
 | C++ RAII value | `export type` with `copy` or `move`, and `deinit` | Deterministic Z-owned native storage |
 | Objective-C object/method/property/protocol | Usually no `.zd` entry | Clang supplies ARC identity, nullability, selectors, blocks, and protocol metadata directly |
+| Objective-C/Swift static method with an escaping block | `export function Type.method(..., move completion: _)` plus `callback completion { thread ...; }` | Native block owns the Z closure under ARC; `.zd` supplies the thread guarantee absent from the header |
 
-The current `.zd` grammar does not redeclare Objective-C methods or selectors.
-Use direct header imports and Z protocol conformance for those. Declaration
-files remain available for C functions and value types contained in mixed
-Objective-C/C++ headers when the ABI lacks the needed semantic facts.
+The current Objective-C method contract tier names an existing static method by
+class and base name; it does not redeclare or rename selectors. Parameter names
+disambiguate the imported selector, and only block lifetime/thread facts may be
+refined. Ordinary Objective-C calls still need no sidecar.
 
 ## Trust boundary
 

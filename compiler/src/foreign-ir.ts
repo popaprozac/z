@@ -143,6 +143,7 @@ export type ForeignBlockType = {
   readonly returnType: ForeignType;
   readonly escaping: boolean;
   readonly nullable: boolean;
+  readonly thread: "caller" | "any" | null;
 };
 
 export type ForeignObjCMethod = {

@@ -3,7 +3,7 @@ import { existsSync, readFileSync, statSync } from "node:fs";
 import { basename, dirname, resolve } from "node:path";
 import type { ImportDeclaration } from "./ast.ts";
 import { DiagnosticError } from "./diagnostics.ts";
-import { apiNotesFreshness, readApiNotes, type PointerNote } from "./foreign-api-notes.ts";
+import { apiNotesFreshness, readApiNotes, type ApiNotes, type PointerNote } from "./foreign-api-notes.ts";
 import { normalizeForeignContracts } from "./foreign-contracts.ts";
 import { parseForeignDeclarationContracts, type ForeignValueContract } from "./foreign-declarations.ts";
 import {
@@ -265,7 +265,13 @@ function readHeader(
     objectiveC,
     cPlusPlus,
   };
-  const notes = readApiNotes(declaration, fileName, headerDirectory, produced.functions);
+  const notes = readApiNotes(
+    declaration,
+    fileName,
+    headerDirectory,
+    produced.functions,
+    produced.interfaces,
+  );
   const contracts = normalizeForeignContracts(
     produced.functions,
     produced.nativeTypes,
@@ -295,12 +301,43 @@ function readHeader(
     namespaces: new Set([...contracts.namespaces, ...imported.namespaces]),
     constants: produced.constants,
     objectTypes: produced.objectTypes,
-    interfaces: produced.interfaces,
+    interfaces: applyObjCMethodApiNotes(produced.interfaces, notes),
     protocols: produced.protocols,
     framework: produced.framework,
     objectiveC: produced.objectiveC,
     cPlusPlus: produced.cPlusPlus,
   };
+}
+
+function applyObjCMethodApiNotes(
+  interfaces: ReadonlyMap<string, ForeignObjCInterface>,
+  notes: ApiNotes,
+): ReadonlyMap<string, ForeignObjCInterface> {
+  if (!notes.objcMethods || Object.keys(notes.objcMethods).length === 0) return interfaces;
+  return new Map([...interfaces].map(([className, declaration]) => [
+    className,
+    {
+      ...declaration,
+      methods: declaration.methods.map((method) => {
+        const note = notes.objcMethods?.[`${className}.${method.selector}`];
+        if (!note?.parameters) return method;
+        return {
+          ...method,
+          parameters: method.parameters.map((parameter, index) => {
+            const parameterNote = note.parameters?.[String(index)];
+            if (parameter.type.kind !== "block" || !parameterNote?.callback) return parameter;
+            return {
+              ...parameter,
+              type: {
+                ...parameter.type,
+                thread: parameterNote.callback.thread ?? null,
+              },
+            };
+          }),
+        };
+      }),
+    },
+  ]));
 }
 
 function collectNamedTypes(
@@ -1084,6 +1121,7 @@ function mapObjCBlockType(
     returnType,
     escaping: !/\bnoescape\b/.test(cName),
     nullable: /\b(?:_Nullable|_Null_unspecified)\b/.test(cName),
+    thread: null,
   };
 }
 
