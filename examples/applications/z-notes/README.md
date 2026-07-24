@@ -14,6 +14,9 @@ The application currently combines:
   delivery;
 - opaque transfer of a main-isolated Z presenter through the background save
   worker, with access and eventual release proven back on `thread.main`;
+- per-save `TaskControl` storage in the main-isolated presenter, with an
+  interactive Cancel Save action while the owning `TaskScope` retains join
+  responsibility;
 - `Option<usize>` selection and borrowed callback inspection;
 - direct AppKit header import, an ARC-managed `NSWindow`, and a native
   `NSScrollView`/`NSTableView` note browser;
@@ -158,7 +161,10 @@ innermost worker placement; capture analysis automatically forwards it through
 the Objective-C action, scheduled async root, and worker without relay aliases.
 
 The UI applies an accepted note optimistically on the main thread. A
-`SaveStatusPresenter on thread.main` owns the status label. The worker may
+`SaveStatusPresenter on thread.main` owns the status label and an
+`Option<TaskControl>` for the active save. The Cancel Save button synchronously
+requests cancellation through that non-joining control; the main task's
+`TaskScope` still joins the save and its worker before shutdown. The worker may
 carry that ARC identity only as an opaque capability: it cannot inspect,
 alias, return, retain, or release the presenter on the worker. Its nested
 `await on thread.main` region may call `persisted`, and worker teardown queues
@@ -166,5 +172,4 @@ the transferred retain's release to the main executor. The enclosing
 main-executor scope handles typed persistence failures through the same
 presenter. This deliberately proves that AppKit identity can participate in a
 cross-thread operation without becoming generally shareable or atomically
-reference counted. Per-operation cancellation remains the next application
-pressure test.
+reference counted.

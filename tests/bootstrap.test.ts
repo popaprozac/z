@@ -15496,13 +15496,27 @@ test("routes arbitrary-thread callbacks through named TaskScope ownership", () =
   const completionSource = 'import { TaskScope } from "std/async"; function inspect(taskScope: TaskScope): void { taskScope.sc; }';
   const completionOffset = completionSource.indexOf("taskScope.sc") + "taskScope.sc".length;
   assert.ok(completions(completionSource, example, completionOffset).some((item) => item.label === "schedule"));
+  const controlSource = `
+    import { TaskControl } from "std/async";
+    function inspect(control: TaskControl): void {
+      control.re;
+    }
+  `;
+  const controlCompletionOffset = controlSource.indexOf("control.re") + "control.re".length;
+  assert.ok(completions(controlSource, example, controlCompletionOffset).some((item) => item.label === "requestCancel"));
+  const controlHoverSource = controlSource.replace("control.re", "control.requestCancel()");
+  const requestCancelOffset = controlHoverSource.indexOf("requestCancel");
+  assert.match(
+    hover(controlHoverSource, example, requestCancelOffset)?.contents.value ?? "",
+    /scope still joins|TaskScope retains join ownership/,
+  );
 
   const namedOffset = source.indexOf("updates {");
   assert.match(hover(source, example, namedOffset)?.contents.value ?? "", /TaskScope/);
   const scheduleOffset = source.indexOf(".schedule(") + 2;
   assert.match(
     hover(source, example, scheduleOffset)?.contents.value ?? "",
-    /schedule\(thread\.main, operation: async \(\) => void\): boolean/,
+    /schedule\(thread\.main, operation: async \(\) => void\): TaskControl/,
   );
   const scopeTokens = decodeSemanticTokens(semanticTokens(source, example).data);
   const scopeDeclaration = positionForOffset(source, source.indexOf("updates {"));
@@ -15525,7 +15539,8 @@ test("routes arbitrary-thread callbacks through named TaskScope ownership", () =
     import { TaskScope } from "std/async";
     import { thread } from "std/thread";
     function schedule(taskScope: TaskScope): void {
-      taskScope.schedule(thread.main, move (): void => { console.log("joined before return"); });
+      const control = taskScope.schedule(thread.main, move (): void => { console.log("joined before return"); });
+      if (!control.accepted) console.error("scope closed");
     }
     async function main(): i32 {
       async scope jobs {
@@ -15544,7 +15559,8 @@ test("routes arbitrary-thread callbacks through named TaskScope ownership", () =
     import { TaskScope } from "std/async";
     import { thread } from "std/thread";
     function schedule(taskScope: TaskScope): void {
-      taskScope.schedule(thread.main, move (): void => { console.log("explicit scope joined"); });
+      const control = taskScope.schedule(thread.main, move (): void => { console.log("explicit scope joined"); });
+      if (!control.accepted) console.error("scope closed");
     }
     async function main(): i32 {
       const taskScope = new TaskScope();
@@ -15565,7 +15581,7 @@ test("routes arbitrary-thread callbacks through named TaskScope ownership", () =
     async function main(): i32 {
       const taskScope = new TaskScope();
       const message: String = "direct async schedule";
-      const accepted = taskScope.schedule(
+      const control = taskScope.schedule(
         thread.main,
         async move (): void => {
           await delay(1);
@@ -15573,7 +15589,7 @@ test("routes arbitrary-thread callbacks through named TaskScope ownership", () =
         }
       );
       await taskScope.close();
-      return accepted ? 0 : 1;
+      return control.accepted ? 0 : 1;
     }
   `);
   const directAsyncResult = spawnSync(
@@ -15602,7 +15618,7 @@ test("routes arbitrary-thread callbacks through named TaskScope ownership", () =
     async function main(): i32 on thread.main {
       const taskScope = new TaskScope();
       const presenter = new Presenter({ offset: 2 });
-      const accepted = taskScope.schedule(
+      const control = taskScope.schedule(
         thread.main,
         async move (): void => {
           const worker = thread.spawn(async move (): void => {
@@ -15615,7 +15631,7 @@ test("routes arbitrary-thread callbacks through named TaskScope ownership", () =
         }
       );
       await taskScope.close();
-      return accepted ? 0 : 1;
+      return control.accepted ? 0 : 1;
     }
   `);
   const isolatedScheduleResult = spawnSync(
@@ -15625,6 +15641,56 @@ test("routes arbitrary-thread callbacks through named TaskScope ownership", () =
   );
   assert.equal(isolatedScheduleResult.status, 0, isolatedScheduleResult.stderr);
   assert.equal(isolatedScheduleResult.stdout, "42\nreleased scheduled presenter\n");
+
+  const individualCancellation = resolve(directory, "individual-cancellation.zs");
+  writeFileSync(individualCancellation, `
+    import console from "std/console";
+    import { TaskControl, TaskScope } from "std/async";
+    import { thread } from "std/thread";
+    class CancellationPanel {
+      active: Option<TaskControl>;
+      function track(inout this, control: TaskControl): void {
+        this.active = Option.some(control);
+      }
+      function cancelCurrent(inout this): boolean {
+        let requested = false;
+        match (in this.active) {
+          some(control) => { requested = control.requestCancel(); }
+          none => {}
+        }
+        if (requested) this.active = Option.none;
+        return requested;
+      }
+    }
+    async function main(): i32 {
+      const taskScope = new TaskScope();
+      const panel = new CancellationPanel({ active: Option<TaskControl>.none });
+      const control: TaskControl = taskScope.schedule(
+        thread.main,
+        async move (): void => {
+          console.error("individually cancelled work should not run");
+        }
+      );
+      panel.track(control);
+      const requested = panel.cancelCurrent();
+      const requestedAgain = control.requestCancel();
+      const observed = control.isCancellationRequested;
+      await taskScope.close();
+      const rejected = taskScope.schedule(thread.main, async move (): void => {
+        console.error("closed scope should reject work");
+      });
+      if (!control.accepted || !requested || requestedAgain || !observed || rejected.accepted) return 1;
+      console.log("individual cancellation joined by scope");
+      return 0;
+    }
+  `);
+  const individualCancellationResult = spawnSync(
+    process.execPath,
+    [cli, "run", individualCancellation],
+    { encoding: "utf8" },
+  );
+  assert.equal(individualCancellationResult.status, 0, individualCancellationResult.stderr);
+  assert.equal(individualCancellationResult.stdout, "individual cancellation joined by scope\n");
 
   const unprovenIsolatedSchedule = `
     import { TaskScope } from "std/async";

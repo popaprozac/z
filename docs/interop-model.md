@@ -588,8 +588,10 @@ rejects submissions that lose the race with close, and joins accepted work.
 `new TaskScope()` exposes the manual API. A callback may place either a
 synchronous nonthrowing operation or an explicitly async, nonthrowing root on
 `thread.main`. The async form can await and own `thread.spawn` children; it
-handles fallible work locally because submission returns only the immediate
-accepted-versus-closing boolean. Repeated callback APIs may later
+handles fallible work locally because submission returns a non-joining
+`TaskControl`, not a result-bearing task. The control exposes the
+accepted-versus-closing race and per-operation cancellation while the scope
+keeps join ownership. Repeated callback APIs may later
 synthesize an async sequence:
 
 ```z

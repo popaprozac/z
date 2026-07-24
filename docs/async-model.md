@@ -107,19 +107,22 @@ import { thread } from "std/thread";
 
 async scope updates {
   native.register(move (value) => {
-    updates.schedule(thread.main, async move (): void => {
+    const control = updates.schedule(thread.main, async move (): void => {
       const worker = thread.spawn(async move () => calculate(value));
       const result = attempt await worker;
       publish(result);
     });
+    if (!control.accepted) reportClosing();
   });
 }
 ```
 
 The handle has type `TaskScope`. It is a synchronized ownership boundary, not
 an executor: `thread.main` still names placement. Close rejects later
-submissions and joins accepted operations; `TaskScope.schedule` returns `false`
-when close wins the race. `new TaskScope()` exposes the same mechanism directly. Explicit
+submissions and joins accepted operations. `TaskScope.schedule` returns a
+non-joining `TaskControl`; `control.accepted` is `false` when close wins the
+race, and `control.requestCancel()` requests cancellation of that one operation
+without taking join ownership from the scope. `new TaskScope()` exposes the same mechanism directly. Explicit
 `await taskScope.close()` or `await taskScope.cancel()` creates an earlier
 boundary; return and throw still close or cancel an owned scope automatically.
 The dynamic tier accepts synchronous `(): void` and explicitly async
@@ -127,6 +130,9 @@ The dynamic tier accepts synchronous `(): void` and explicitly async
 fallible children locally with `attempt await` because its synchronous
 submitter has no task result through which to receive an unhandled error.
 The scope owns the submitted async root and all of its structured descendants.
+The complete authority matrix for direct await, `Task<T, E>`, `TaskScope`, and
+`TaskControl` is in the
+[language reference](./language-reference.md#task-taskscope-and-taskcontrol).
 
 `task` accepts exactly one direct async call in an async function and produces
 a scope-bound `Task<T>` or `Task<T, E>`. The task's source-level success and

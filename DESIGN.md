@@ -1213,10 +1213,11 @@ An explicit scope may bind its runtime handle:
 ```z
 async scope updates {
   callbackSource(move (value) => {
-    updates.schedule(thread.main, async move (): void => {
+    const control = updates.schedule(thread.main, async move (): void => {
       const calculation = thread.spawn(async move () => calculate(value));
       publish(attempt await calculation);
     });
+    if (!control.accepted) reportClosing();
   });
 }
 ```
@@ -1224,15 +1225,17 @@ async scope updates {
 `updates` has the standard type `TaskScope`. The handle is a synchronized
 ownership boundary, not an executor: submission names its target separately.
 Closing atomically rejects later submissions and joins accepted operations;
-the boolean result of `schedule` exposes the close-versus-submit race. The unnamed
+`schedule` returns a non-joining `TaskControl`. Its `accepted` property exposes
+the close-versus-submit race, and `requestCancel()` can target that operation
+without transferring join ownership away from the scope. The unnamed
 form remains statically lowered when no dynamic handle is required. An explicit
 `new TaskScope()` may close or cancel earlier; otherwise its owning async
 function closes on return and cancels on throw.
 `schedule` accepts either synchronous `(): void` work or an explicitly async
 `async (): void` root. The async form may suspend and own structured children,
 but it cannot declare `throws`: callback-created work must materialize and
-handle errors locally because submission returns only the immediate
-accepted-versus-closing boolean.
+handle errors locally because submission returns control authority rather than
+a result-bearing task.
 
 Keyword `task` always inherits the current executor. Explicit native CPU work
 uses a standard-library boundary rather than overloading the keyword:

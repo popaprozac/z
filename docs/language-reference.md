@@ -1075,7 +1075,7 @@ Nested closures forward free captures automatically:
 
 ```z
 const save = move (): void => {
-  scope.schedule(thread.main, async move (): void => {
+  const control = scope.schedule(thread.main, async move (): void => {
     const worker = thread.spawn(async move (): void => {
       await on thread.main {
         presenter.saved();
@@ -1083,6 +1083,7 @@ const save = move (): void => {
     });
     await worker;
   });
+  if (!control.accepted) presenter.closing();
 };
 ```
 
@@ -1210,26 +1211,28 @@ cancellation is a structural task outcome, not an invented member of `E`.
 A scope can optionally expose its compiler-owned handle:
 
 ```z
-import { TaskScope } from "std/async";
+import { TaskControl, TaskScope } from "std/async";
 import { thread } from "std/thread";
 
 async scope updates {
   registerNativeCallback(move (value) => {
-    const accepted = updates.schedule(
+    const control: TaskControl = updates.schedule(
       thread.main,
       async move (): void => {
         const worker = thread.spawn(async move () => calculate(value));
         publish(attempt await worker);
       }
     );
+    if (!control.accepted) reportClosing();
   });
 } // rejects new submissions and joins every accepted operation
 ```
 
 The unnamed form retains its allocation-free static lowering when all children
 are lexically visible. `async scope updates {}` binds `updates: TaskScope` for
-dynamic submission by callbacks. `TaskScope.schedule` returns `false` if close has
-won the submission race. The explicit form is `new TaskScope()`, followed by
+dynamic submission by callbacks. `TaskScope.schedule` returns a `TaskControl`;
+its `accepted` property is `false` if close has won the submission race. The
+explicit form is `new TaskScope()`, followed by
 direct `await scope.close()` or `await scope.cancel()` when an earlier boundary
 is useful. Its owning async function otherwise closes it on return and cancels
 it on throw. `TaskScope` owns lifetime; `thread.main` selects placement.
@@ -1238,6 +1241,43 @@ it on throw. `TaskScope` owns lifetime; `thread.main` selects placement.
 structured children. It handles fallible work locally with `attempt await`;
 there is intentionally no unobserved error channel back to the synchronous
 submitter.
+
+### Task, TaskScope, and TaskControl
+
+These types deliberately expose different kinds of authority:
+
+| Surface | Created by | Owns completion/join? | Carries a value or typed error? | Cancellation |
+|---|---|---:|---:|---|
+| Direct `await operation()` | Async call | Current task waits directly | Yes | Parent cancellation propagates structurally |
+| `Task<T, E>` | `task operation()` or `thread.spawn(...)` | Yes, for one child; `await` consumes the join handle | Yes | `await task.cancel()` requests cancellation and joins |
+| `TaskScope` | `async scope name {}` or `new TaskScope()` | Yes, for every accepted dynamic operation | No per-operation result | `await scope.cancel()` cancels and joins the entire scope |
+| `TaskControl` | `scope.schedule(...)` | No; the scope remains the sole join owner | No | `requestCancel()` requests cancellation of only that operation |
+
+`TaskControl` is a shared, cleanup-bearing identity rather than a second task
+handle. It may be stored in an `Option<TaskControl>` or ARC-managed controller
+for UI cancellation:
+
+```z
+const save = updates.schedule(thread.main, async move (): void => {
+  const result = attempt await persist(note);
+  publish(result);
+});
+
+if (!save.accepted) {
+  showClosing();
+  return;
+}
+
+// A later callback may request cancellation without taking join ownership.
+if (save.requestCancel()) showCancelling();
+```
+
+`requestCancel()` returns `true` only for the first accepted request while the
+operation is still live. It returns `false` when scheduling was rejected, the
+request was already made, or the operation has completed.
+`isCancellationRequested` reports whether this control issued a request; it is
+not a completion flag. Dropping a `TaskControl` does not detach or cancel work.
+The owning `TaskScope` still rejects, cancels, and joins safely at its boundary.
 
 CPU work that must leave the inherited executor uses the explicitly imported
 native-thread launcher:

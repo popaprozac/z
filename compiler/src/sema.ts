@@ -334,7 +334,7 @@ export type SemanticInfo = {
   readonly standardFunctionReferences: ReadonlyMap<number, StandardFunctionName>;
   readonly standardFunctionBindings: ReadonlyMap<string, StandardFunctionName>;
   readonly standardModuleBindings: ReadonlyMap<string, StandardModuleName>;
-  readonly standardTypeBindings: ReadonlyMap<string, "TextBuffer" | "Arena" | "Map" | "Set" | "Hashable" | "Hasher" | "Iterator" | "Generator" | "AsyncGenerator" | "TaskScope">;
+  readonly standardTypeBindings: ReadonlyMap<string, StandardTypeName>;
   readonly iteratorElementTypes: ReadonlyMap<string, string>;
   readonly hasherAddTypes: ReadonlyMap<number, string>;
   readonly typeDisplayNames: ReadonlyMap<string, string>;
@@ -349,6 +349,19 @@ export type ExecutorAffinityInfo = {
   readonly originType: string;
   readonly fieldPath: readonly string[];
 };
+
+type StandardTypeName =
+  | "TextBuffer"
+  | "Arena"
+  | "Map"
+  | "Set"
+  | "Hashable"
+  | "Hasher"
+  | "Iterator"
+  | "Generator"
+  | "AsyncGenerator"
+  | "TaskScope"
+  | "TaskControl";
 
 type AnalysisState = {
   readonly warnings: DiagnosticError[];
@@ -418,7 +431,7 @@ type AnalysisState = {
   readonly standardFunctionReferences: Map<number, StandardFunctionName>;
   readonly standardFunctionBindings: Map<string, StandardFunctionName>;
   readonly standardModuleBindings: Map<string, StandardModuleName>;
-  readonly standardTypeBindings: Map<string, "TextBuffer" | "Arena" | "Map" | "Set" | "Hashable" | "Hasher" | "Iterator" | "Generator" | "AsyncGenerator" | "TaskScope">;
+  readonly standardTypeBindings: Map<string, StandardTypeName>;
   readonly iteratorElementTypes: Map<string, string>;
   readonly hasherAddTypes: Map<number, string>;
   readonly inferredOutBindingLocations: Map<string, SourceLocation>;
@@ -497,14 +510,14 @@ type SymbolValue =
   | { readonly kind: "console" }
   | { readonly kind: "standardModule"; readonly module: StandardModuleName }
   | { readonly kind: "standardFunction"; readonly name: StandardFunctionName; readonly declaration: FunctionDeclaration }
-  | { readonly kind: "standardType"; readonly type: "TextBuffer" | "Arena" | "Map" | "Set" | "Hasher" | "TaskScope" }
+  | { readonly kind: "standardType"; readonly type: "TextBuffer" | "Arena" | "Map" | "Set" | "Hasher" | "TaskScope" | "TaskControl" }
   | { readonly kind: "struct"; readonly declaration: StructDeclaration }
   | { readonly kind: "trait"; readonly declaration: TraitDeclaration }
   | { readonly kind: "enum"; readonly declaration: EnumDeclaration };
 
 const integerTypes = new Set(["i8", "u8", "i16", "u16", "i32", "u32", "i64", "u64", "isize", "usize"]);
 const floatTypes = new Set(["f32", "f64"]);
-const primitiveTypes = new Set([...integerTypes, ...floatTypes, "void", "boolean", "cstring", "String", "TextBuffer", "Arena", "Hasher", "TaskScope"]);
+const primitiveTypes = new Set([...integerTypes, ...floatTypes, "void", "boolean", "cstring", "String", "TextBuffer", "Arena", "Hasher", "TaskScope", "TaskControl"]);
 const movedPrefix = "__z_moved:";
 const maybeMovedPrefix = "__z_maybe_moved:";
 const uninitializedPrefix = "__z_uninitialized:";
@@ -925,19 +938,20 @@ export function analyze(
         if (!declaration.bindings) {
           throw new DiagnosticError(fileName, declaration.location, "std/async requires a selective import", {
             code: "Z0501",
-            helps: ["use `import { TaskScope } from \"std/async\";`"],
+            helps: ["use `import { TaskControl, TaskScope } from \"std/async\";`"],
           });
         }
         for (const binding of declaration.bindings) {
-          if (binding.importedName !== "TaskScope") {
+          if (binding.importedName !== "TaskScope" && binding.importedName !== "TaskControl") {
             throw new DiagnosticError(fileName, binding.location, `std/async has no export ${JSON.stringify(binding.importedName)}`, {
               code: "Z0501",
-              helps: ["the first std/async tier exports `TaskScope`"],
+              helps: ["std/async exports `TaskScope` and `TaskControl`"],
             });
           }
           validateUserName(binding.localName, binding.location, fileName);
-          declareGlobal(globals, binding.localName, { kind: "standardType", type: "TaskScope" }, binding.location, fileName);
-          state.standardTypeBindings.set(binding.localName, "TaskScope");
+          const standardType = binding.importedName as "TaskScope" | "TaskControl";
+          declareGlobal(globals, binding.localName, { kind: "standardType", type: standardType }, binding.location, fileName);
+          state.standardTypeBindings.set(binding.localName, standardType);
         }
         continue;
       }
@@ -3687,6 +3701,7 @@ function finalizeClosureFunctionValue(
     // managed copy also affected ordinary reads at that same AST location.
     if (
       capture.type === "TaskScope"
+      || capture.type === "TaskControl"
       || structs.get(capture.type)?.kind === "class"
       || parseFunctionType(capture.type)
       || parseWeakType(capture.type)
@@ -5708,6 +5723,10 @@ function inferExpressionInner(
       if (receiverValueType === objcConnectionTypeName) {
         throw new DiagnosticError(fileName, expression.location, `objc.Connection has no property ${JSON.stringify(expression.property)}`);
       }
+      if (receiverValueType === "TaskControl") {
+        if (expression.property === "accepted" || expression.property === "isCancellationRequested") return "boolean";
+        throw new DiagnosticError(fileName, expression.location, `TaskControl has no property ${JSON.stringify(expression.property)}; call requestCancel instead`);
+      }
       const map = parseMapType(receiverValueType);
       if (map) {
         if (expression.property === "length") return "usize";
@@ -6649,6 +6668,19 @@ function inferExpressionInner(
             : optionTypeName(asyncGenerator.elementType);
           return taskTypeName(success, asyncGenerator.errorType);
         }
+        if (receiverValueType === "TaskControl") {
+          rejectLabeledArguments(expression.argumentLabels, expression.location, fileName);
+          if (expression.callee.property !== "requestCancel") {
+            throw new DiagnosticError(fileName, expression.callee.location, `TaskControl has no method ${JSON.stringify(expression.callee.property)}`);
+          }
+          if (expression.arguments.length !== 0) {
+            throw new DiagnosticError(fileName, expression.location, `TaskControl.requestCancel expects 0 arguments, received ${expression.arguments.length}`);
+          }
+          if (!isNamedStorageExpression(expression.callee.object)) {
+            throw new DiagnosticError(fileName, expression.callee.object.location, "TaskControl.requestCancel requires a named control handle");
+          }
+          return "boolean";
+        }
         if (receiverValueType === "TaskScope") {
           rejectLabeledArguments(expression.argumentLabels, expression.location, fileName);
           if (expression.callee.object.kind !== "identifier") {
@@ -6735,6 +6767,7 @@ function inferExpressionInner(
               for (const capture of closure.captures) {
                 if (
                   capture.type === "TaskScope"
+                  || capture.type === "TaskControl"
                   || structs.get(String(underlyingType(capture.type)))?.kind === "class"
                   || !hasOwnershipType(capture.type, structs, enums, state)
                 ) {
@@ -6755,7 +6788,7 @@ function inferExpressionInner(
               state.closures.set(operation.location.offset, { ...closure, threadSafe: true });
               state.taskScopeSpawnCalls.set(expression.location.offset, operation.location.offset);
             }
-            return "boolean";
+            return "TaskControl";
           }
           if (method !== "close" && method !== "cancel") {
             throw new DiagnosticError(fileName, expression.callee.location, `TaskScope has no method ${JSON.stringify(method)}`);
@@ -8074,7 +8107,7 @@ function consumeOwnedValue(
     }
   }
   const declaration = structs.get(actual);
-  if (actual === "TaskScope" || declaration?.kind === "class" || parseFunctionType(actual)) {
+  if (actual === "TaskScope" || actual === "TaskControl" || declaration?.kind === "class" || parseFunctionType(actual)) {
     if (!force && (expression.kind === "identifier" || expression.kind === "member" || expression.kind === "index")) {
       state.managedCopies.add(expression.location.offset);
       return;
@@ -9255,7 +9288,7 @@ function hasCleanupType(
 ): boolean {
   const actual = underlyingType(type);
   if (actual === "unknown" || actual === "never" || visiting.has(actual)) return false;
-  if (actual === "String" || actual === "TextBuffer" || actual === "Arena" || actual === "TaskScope") return true;
+  if (actual === "String" || actual === "TextBuffer" || actual === "Arena" || actual === "TaskScope" || actual === "TaskControl") return true;
   if (parseGeneratorType(actual) || parseAsyncGeneratorType(actual)) return true;
   if (parseWeakType(actual)) return true;
   if (parseFunctionType(String(actual))) return true;
@@ -9300,6 +9333,7 @@ function explicitCopyPlanForType(
     actual === "TextBuffer"
     || actual === "Arena"
     || actual === "TaskScope"
+    || actual === "TaskControl"
     || parseAsyncGeneratorType(actual)
     || parseWeakType(actual)
     || parseFunctionType(actual)
@@ -9335,6 +9369,7 @@ function explicitAggregateCopyable(
   if (
     type === "TextBuffer"
     || type === "Arena"
+    || type === "TaskControl"
     || parseAsyncGeneratorType(type)
     || parseWeakType(type)
     || parseFunctionType(type)
@@ -9483,7 +9518,7 @@ function shareableTypeIssue(
   path = String(underlyingType(type)),
 ): ShareabilityIssue | null {
   const actual = String(underlyingType(type));
-  if (actual === "void" || actual === "boolean" || integerTypes.has(actual) || floatTypes.has(actual) || actual === "String" || actual === "TaskScope") {
+  if (actual === "void" || actual === "boolean" || integerTypes.has(actual) || floatTypes.has(actual) || actual === "String" || actual === "TaskScope" || actual === "TaskControl") {
     return null;
   }
   const executorAffinity = state.aggregateExecutorAffinities.get(actual);
@@ -9592,6 +9627,7 @@ function initialThreadTransferKind(
   const actual = String(underlyingType(type));
   if (actual === "void" || actual === "boolean" || integerTypes.has(actual) || floatTypes.has(actual)) return "copy";
   if (state.aggregateExecutorAffinities.has(actual)) return null;
+  if (actual === "TaskScope" || actual === "TaskControl") return "copy";
   if (actual === "String" || actual === "TextBuffer") return "move";
   if (parseViewType(actual) || parseSliceType(actual) || parseTaskType(actual)) return null;
   const fixed = parseFixedArrayType(actual);

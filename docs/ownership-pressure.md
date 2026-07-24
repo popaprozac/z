@@ -265,6 +265,15 @@ retain is queued back to main for release, so neither AppKit access nor ARC
 destruction occurs on the native worker. This is narrower than sendability and
 avoids making mutable UI state atomically shared merely to coordinate work.
 
+The presenter now also stores `Option<TaskControl>` for the active save. This
+control is shared identity with deliberately narrow authority: it can report
+whether scheduling was accepted and request cancellation of its one operation,
+but cannot await it or extract a result. The scheduled job and control retain
+one another only while the job is live; completion severs that link before
+release. The `TaskScope` remains the sole join owner, so dropping the UI control
+cannot detach work and cancelling one save cannot accidentally close the whole
+application scope.
+
 The probe also keeps boundaries explicit rather than silently widened:
 throwing user constructors still use synchronous helpers when called from async
 code, escaping `objc.connect` storage remains in a synchronous

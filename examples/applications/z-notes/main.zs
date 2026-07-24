@@ -1,6 +1,6 @@
 import console from "std/console";
 import objc from "std/objc";
-import { TaskScope } from "std/async";
+import { TaskControl, TaskScope } from "std/async";
 import { thread } from "std/thread";
 import { delay } from "std/time";
 import AppKit from "AppKit/AppKit.h";
@@ -26,12 +26,35 @@ function createNoteStore(): NoteStore {
 
 class SaveStatusPresenter on thread.main {
   label: AppKit.NSTextField;
+  activeSave: Option<TaskControl>;
 
-  function persisted(noteId: i64): void {
+  function track(inout this, control: TaskControl, noteId: i64): void {
+    this.activeSave = Option.some(control);
+    this.label.stringValue = `Queued note ${noteId}`;
+  }
+
+  function cancelCurrent(inout this): boolean {
+    let requested = false;
+    match (in this.activeSave) {
+      some(control) => {
+        requested = control.requestCancel();
+      }
+      none => {}
+    }
+    if (requested) {
+      this.activeSave = Option.none;
+      this.label.stringValue = "Save cancellation requested";
+    }
+    return requested;
+  }
+
+  function persisted(inout this, noteId: i64): void {
+    this.activeSave = Option.none;
     this.label.stringValue = `Saved note ${noteId}`;
   }
 
-  function failed(noteId: i64, status: i32): void {
+  function failed(inout this, noteId: i64, status: i32): void {
+    this.activeSave = Option.none;
     this.label.stringValue = `Could not save note ${noteId} — sqlite status ${status}`;
   }
 }
@@ -142,7 +165,7 @@ function runApplication(
   content.addSubview(notesScroll);
 
   const statusLabel = AppKit.NSTextField.alloc().initWithFrame(
-    AppKit.NSMakeRect(24.0, 24.0, 620.0, 24.0)
+    AppKit.NSMakeRect(24.0, 24.0, 500.0, 24.0)
   );
   statusLabel.stringValue = "Loading notes…";
   statusLabel.bezeled = false;
@@ -150,7 +173,10 @@ function runApplication(
   statusLabel.editable = false;
   statusLabel.selectable = false;
   content.addSubview(statusLabel);
-  const saveStatus = new SaveStatusPresenter({ label: statusLabel });
+  const saveStatus = new SaveStatusPresenter({
+    label: statusLabel,
+    activeSave: Option<TaskControl>.none,
+  });
   match (in loadFailure) {
     some(status) => {
       window.title = "Z Notes — Load failed";
@@ -167,6 +193,10 @@ function runApplication(
     AppKit.NSMakeRect(680.0, 20.0, 112.0, 32.0)
   );
   addButton.title = "Add Note";
+  const cancelSaveButton = AppKit.NSButton.alloc().initWithFrame(
+    AppKit.NSMakeRect(548.0, 20.0, 124.0, 32.0)
+  );
+  cancelSaveButton.title = "Cancel Save";
 
   let nextId = store.nextNoteId();
   const actionDatabasePath = copy databasePath;
@@ -182,7 +212,7 @@ function runApplication(
     const pendingBody = copy body;
     const note = Note({ id: noteId, title, body });
     const savePath = copy actionDatabasePath;
-    const accepted = updates.schedule(
+    const saveControl = updates.schedule(
       thread.main,
       async move (): void => {
         const workerNote = Note({
@@ -211,10 +241,11 @@ function runApplication(
         }
       }
     );
-    if (!accepted) {
+    if (!saveControl.accepted) {
       statusLabel.stringValue = "Application is closing; note was not queued";
       return;
     }
+    saveStatus.track(saveControl, noteId);
     nextId = nextId + 1;
     selectedLabel.stringValue = `Selected: ${note.title}`;
     store.add(note);
@@ -227,6 +258,12 @@ function runApplication(
     console.log(`queued note ${noteId}, total=${store.noteCount()}`);
   });
   content.addSubview(addButton);
+  const cancelSaveConnection = objc.connect(cancelSaveButton, move (): void => {
+    if (!saveStatus.cancelCurrent()) {
+      statusLabel.stringValue = "No pending save to cancel";
+    }
+  });
+  content.addSubview(cancelSaveButton);
 
   window.center();
   window.makeKeyAndOrderFront(null);

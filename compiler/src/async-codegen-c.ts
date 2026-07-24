@@ -79,7 +79,7 @@ type PlacementTarget = {
   readonly captures: readonly {
     readonly name: string;
     readonly type: string;
-    readonly kind: "plain" | "string" | "class" | "executorBoundClass" | "objc" | "taskScope";
+    readonly kind: "plain" | "string" | "class" | "executorBoundClass" | "objc" | "taskScope" | "taskControl";
     readonly location: SourceLocation;
   }[];
 };
@@ -1772,6 +1772,7 @@ function placementCaptureKind(
 ): PlacementTarget["captures"][number]["kind"] | null {
   if (type === "String") return "string";
   if (type === "TaskScope") return "taskScope";
+  if (type === "TaskControl") return "taskControl";
   const aggregate = types.structs.get(type);
   if (aggregate?.kind === "class") {
     if (!fromNativeThread || types.semanticInfo.shareableClasses.has(type)) return "class";
@@ -2485,6 +2486,7 @@ function generateRuntime(
     ] : []),
     ...(usesTaskScopes ? [
       "typedef struct Z_TaskScopeJob Z_TaskScopeJob;",
+      "typedef struct Z_TaskControl Z_TaskControl;",
       "struct Z_TaskScope {",
       "  size_t refcount;",
       "  Z_AsyncExecutor *executor;",
@@ -2495,6 +2497,14 @@ function generateRuntime(
       "  Z_TaskScopeJob *jobs;",
       "};",
       "",
+      "struct Z_TaskControl {",
+      "  size_t refcount;",
+      "  Z_TaskScope *scope;",
+      "  Z_TaskScopeJob *job;",
+      "  bool accepted;",
+      "  bool cancellation_requested;",
+      "};",
+      "",
       "struct Z_TaskScopeJob {",
       "  Z_AsyncTask task;",
       "  Z_TaskScope *scope;",
@@ -2503,6 +2513,7 @@ function generateRuntime(
       "  void (*release)(void *);",
       "  Z_AsyncTask *child;",
       "  void (*destroy_child)(Z_AsyncTask *);",
+      "  Z_TaskControl *control;",
       "  Z_TaskScopeJob *scope_next;",
       "};",
       "",
@@ -2962,6 +2973,7 @@ function generateRuntime(
       "  scope->jobs = NULL;",
       "  while (job != NULL) {",
       "    Z_TaskScopeJob *next = job->scope_next;",
+      "    if (job->control != NULL) abort();",
       "    free(job);",
       "    job = next;",
       "  }",
@@ -2973,6 +2985,50 @@ function generateRuntime(
       "  if (scope->pending != 0) abort();",
       "  z_task_scope_discard_jobs(scope);",
       "  free(scope);",
+      "}",
+      "",
+      "static Z_TaskControl *z_task_control_new(bool accepted) {",
+      "  Z_TaskControl *control = (Z_TaskControl *)calloc(1, sizeof(Z_TaskControl));",
+      "  if (control == NULL) abort();",
+      "  control->refcount = 1;",
+      "  control->accepted = accepted;",
+      "  return control;",
+      "}",
+      "",
+      "static __attribute__((unused)) Z_TaskControl *z_task_control_retain(Z_TaskControl *control) {",
+      "  if (control != NULL) __atomic_add_fetch(&control->refcount, 1, __ATOMIC_RELAXED);",
+      "  return control;",
+      "}",
+      "",
+      "static void z_task_control_release(Z_TaskControl *control) {",
+      "  if (control == NULL) return;",
+      "  if (__atomic_sub_fetch(&control->refcount, 1, __ATOMIC_ACQ_REL) != 0) return;",
+      "  if (control->job != NULL) abort();",
+      "  z_task_scope_release(control->scope);",
+      "  free(control);",
+      "}",
+      "",
+      "static __attribute__((unused)) bool z_task_control_is_accepted(Z_TaskControl *control) {",
+      "  return control != NULL && control->accepted;",
+      "}",
+      "",
+      "static __attribute__((unused)) bool z_task_control_is_cancellation_requested(Z_TaskControl *control) {",
+      "  return control != NULL && __atomic_load_n(&control->cancellation_requested, __ATOMIC_ACQUIRE);",
+      "}",
+      "",
+      "static __attribute__((unused)) bool z_task_control_request_cancel(Z_TaskControl *control) {",
+      "  if (control == NULL || !control->accepted || control->scope == NULL) return false;",
+      "  Z_TaskScope *scope = control->scope;",
+      "  z_async_thread_lock(scope->executor);",
+      "  Z_TaskScopeJob *job = control->job;",
+      "  if (job == NULL || __atomic_load_n(&control->cancellation_requested, __ATOMIC_RELAXED)) {",
+      "    z_async_thread_unlock(scope->executor);",
+      "    return false;",
+      "  }",
+      "  __atomic_store_n(&control->cancellation_requested, true, __ATOMIC_RELEASE);",
+      "  z_async_thread_unlock(scope->executor);",
+      "  z_async_cancel_from_thread(scope->executor, &job->task);",
+      "  return true;",
       "}",
       "",
       "static Z_TaskScope *z_task_scope_new(Z_AsyncExecutor *executor) {",
@@ -2987,6 +3043,9 @@ function generateRuntime(
       "  Z_TaskScope *scope = job->scope;",
       "  z_async_thread_lock(scope->executor);",
       "  if (scope->pending == 0) abort();",
+      "  Z_TaskControl *control = job->control;",
+      "  if (control != NULL) control->job = NULL;",
+      "  job->control = NULL;",
       "  scope->pending -= 1;",
       "  Z_AsyncTask *waiter = scope->pending == 0 ? scope->waiter : NULL;",
       "  if (waiter != NULL) scope->waiter = NULL;",
@@ -2996,6 +3055,7 @@ function generateRuntime(
       "    waiter->suspended = false;",
       "    z_async_enqueue(scope->executor, waiter);",
       "  }",
+      "  z_task_control_release(control);",
       "  z_task_scope_release(scope);",
       "}",
       "",
@@ -3003,7 +3063,9 @@ function generateRuntime(
       "  Z_TaskScopeJob *job = (Z_TaskScopeJob *)task;",
       "  Z_TaskScope *scope = job->scope;",
       "  z_async_thread_lock(scope->executor);",
-      "  const bool cancelled = scope->cancelled;",
+      "  const bool cancelled = scope->cancelled",
+      "    || z_async_is_cancellation_requested(task)",
+      "    || z_task_control_is_cancellation_requested(job->control);",
       "  z_async_thread_unlock(scope->executor);",
       "  if (job->child != NULL) {",
       "    if (cancelled) z_async_cancel(job->child);",
@@ -3026,7 +3088,7 @@ function generateRuntime(
       "  z_task_scope_finish_job(job);",
       "}",
       "",
-      "static __attribute__((unused)) bool z_task_scope_spawn(Z_TaskScope *scope, void (*call)(void *), void *context, void (*retain)(void *), void (*release)(void *)) {",
+      "static __attribute__((unused)) Z_TaskControl *z_task_scope_spawn(Z_TaskScope *scope, void (*call)(void *), void *context, void (*retain)(void *), void (*release)(void *)) {",
       "  if (scope == NULL || call == NULL) abort();",
       "  Z_TaskScopeJob *job = (Z_TaskScopeJob *)calloc(1, sizeof(Z_TaskScopeJob));",
       "  if (job == NULL) abort();",
@@ -3034,8 +3096,9 @@ function generateRuntime(
       "  if (scope->closing) {",
       "    z_async_thread_unlock(scope->executor);",
       "    free(job);",
-      "    return false;",
+      "    return z_task_control_new(false);",
       "  }",
+      "  Z_TaskControl *control = z_task_control_new(true);",
       "  if (retain != NULL) retain(context);",
       "  job->task.poll = z_task_scope_job_poll;",
       "  job->task.executor = scope->executor;",
@@ -3043,15 +3106,18 @@ function generateRuntime(
       "  job->call = call;",
       "  job->context = context;",
       "  job->release = release;",
+      "  job->control = z_task_control_retain(control);",
+      "  control->scope = z_task_scope_retain(scope);",
+      "  control->job = job;",
       "  job->scope_next = scope->jobs;",
       "  scope->jobs = job;",
       "  scope->pending += 1;",
       "  z_async_thread_unlock(scope->executor);",
       "  z_async_enqueue_from_thread(scope->executor, &job->task);",
-      "  return true;",
+      "  return control;",
       "}",
       "",
-      "static __attribute__((unused)) bool z_task_scope_spawn_async(Z_TaskScope *scope, Z_AsyncTask *child, void (*destroy_child)(Z_AsyncTask *)) {",
+      "static __attribute__((unused)) Z_TaskControl *z_task_scope_spawn_async(Z_TaskScope *scope, Z_AsyncTask *child, void (*destroy_child)(Z_AsyncTask *)) {",
       "  if (scope == NULL || child == NULL || destroy_child == NULL) abort();",
       "  Z_TaskScopeJob *job = (Z_TaskScopeJob *)calloc(1, sizeof(Z_TaskScopeJob));",
       "  if (job == NULL) abort();",
@@ -3060,19 +3126,23 @@ function generateRuntime(
       "    z_async_thread_unlock(scope->executor);",
       "    destroy_child(child);",
       "    free(job);",
-      "    return false;",
+      "    return z_task_control_new(false);",
       "  }",
+      "  Z_TaskControl *control = z_task_control_new(true);",
       "  job->task.poll = z_task_scope_job_poll;",
       "  job->task.executor = scope->executor;",
       "  job->scope = z_task_scope_retain(scope);",
       "  job->child = child;",
       "  job->destroy_child = destroy_child;",
+      "  job->control = z_task_control_retain(control);",
+      "  control->scope = z_task_scope_retain(scope);",
+      "  control->job = job;",
       "  job->scope_next = scope->jobs;",
       "  scope->jobs = job;",
       "  scope->pending += 1;",
       "  z_async_thread_unlock(scope->executor);",
       "  z_async_enqueue_from_thread(scope->executor, &job->task);",
-      "  return true;",
+      "  return control;",
       "}",
       "",
       "static bool z_task_scope_join(Z_TaskScope *scope, Z_AsyncTask *parent, bool cancel) {",
@@ -3670,7 +3740,7 @@ function generateTaskScopeAsyncSchedule(
     "  free(frame);",
     "}",
     "",
-    `static bool ${taskScopeAsyncScheduleName(callOffset)}(Z_TaskScope *scope${parameters.length ? `, ${parameters.join(", ")}` : ""}) {`,
+    `static Z_TaskControl *${taskScopeAsyncScheduleName(callOffset)}(Z_TaskScope *scope${parameters.length ? `, ${parameters.join(", ")}` : ""}) {`,
     `  ${plan.frameName} *child = ${plan.startName}(scope->executor${arguments_.length ? `, ${arguments_.join(", ")}` : ""});`,
     `  return z_task_scope_spawn_async(scope, &child->task, ${destroyName});`,
     "}",
@@ -3864,6 +3934,8 @@ function emitAwaitArguments(
         value = `z_string_copy_bytes(${value}, 0, (${value}).length)`;
       } else if (type === "TaskScope") {
         value = `z_task_scope_retain(${value})`;
+      } else if (type === "TaskControl") {
+        value = `z_task_control_retain(${value})`;
       } else if (type && parent.types.structs.get(type)?.kind === "class") {
         value = `Z_${type}_retain(${value})`;
       }
@@ -5612,6 +5684,7 @@ function emitPreparedFrameExpression(
           };
           const value = emitFrameExpression(captured, plan, fileName);
           const hasReferenceIdentity = capture.type === "TaskScope"
+            || capture.type === "TaskControl"
             || plan.types.structs.get(capture.type)?.kind === "class"
             || plan.types.semanticInfo.foreignNamedTypes.get(capture.type)?.kind === "object";
           const borrowedPointer = capture.mode !== "value"
@@ -5751,6 +5824,7 @@ function emitAsyncObjCCall(
         };
         let value = emitFrameExpression(captured, plan, fileName);
         if (capture.type === "TaskScope") value = `z_task_scope_retain(${value})`;
+        else if (capture.type === "TaskControl") value = `z_task_control_retain(${value})`;
         else if (plan.types.structs.get(capture.type)?.kind === "class") {
           value = `Z_${capture.type}_retain(${value})`;
         }
@@ -5950,9 +6024,13 @@ function emitFrameExpressionInner(
         if (
           type
           && plan.types.semanticInfo.managedCopies.has(expression.location.offset)
-          && (type === "TaskScope" || plan.types.structs.get(type)?.kind === "class")
+          && (type === "TaskScope" || type === "TaskControl" || plan.types.structs.get(type)?.kind === "class")
         ) {
-          return type === "TaskScope" ? `z_task_scope_retain(${value})` : `Z_${type}_retain(${value})`;
+          return type === "TaskScope"
+            ? `z_task_scope_retain(${value})`
+            : type === "TaskControl"
+              ? `z_task_control_retain(${value})`
+              : `Z_${type}_retain(${value})`;
         }
         return value;
       }
@@ -5972,9 +6050,13 @@ function emitFrameExpressionInner(
         }
         if (
           plan.types.semanticInfo.managedCopies.has(expression.location.offset)
-          && (type === "TaskScope" || plan.types.structs.get(type)?.kind === "class")
+          && (type === "TaskScope" || type === "TaskControl" || plan.types.structs.get(type)?.kind === "class")
         ) {
-          return type === "TaskScope" ? `z_task_scope_retain(${value})` : `Z_${type}_retain(${value})`;
+          return type === "TaskScope"
+            ? `z_task_scope_retain(${value})`
+            : type === "TaskControl"
+              ? `z_task_control_retain(${value})`
+              : `Z_${type}_retain(${value})`;
         }
         return value;
       }
@@ -6064,7 +6146,10 @@ function emitFrameExpressionInner(
       return `(${cFrameType(type, plan.types)}){ .data = NULL, .length = 0, .capacity = 0 }`;
     }
     case "index": {
-      const ownerType = frameExpressionType(expression.object, plan);
+      const analyzedOwnerType = frameExpressionType(expression.object, plan);
+      const ownerType = expression.object.kind === "identifier"
+        ? plan.locals.get(expression.object.name) ?? analyzedOwnerType
+        : analyzedOwnerType;
       const array = parseFixedArrayType(ownerType);
       const slice = parseSliceType(ownerType);
       const dynamic = parseDynamicArrayType(ownerType);
@@ -6089,12 +6174,20 @@ function emitFrameExpressionInner(
         }
       }
       const ownerType = frameExpressionType(expression.object, plan);
+      const ownerView = parseViewType(ownerType);
+      if ((ownerView?.target ?? ownerType) === "TaskControl") {
+        const owner = emitFrameExpression(expression.object, plan, fileName);
+        const value = ownerView ? `(*(${owner}))` : owner;
+        if (expression.property === "accepted") return `z_task_control_is_accepted(${value})`;
+        if (expression.property === "isCancellationRequested") {
+          return `z_task_control_is_cancellation_requested(${value})`;
+        }
+      }
       if (ownerType === "String" || ownerType === "TextBuffer") {
         const owner = emitFrameExpression(expression.object, plan, fileName);
         if (expression.property === "byteLength") return `((${owner}).length)`;
         if (expression.property === "isEmpty") return `((${owner}).length == 0)`;
       }
-      const ownerView = parseViewType(ownerType);
       const access = ownerView || plan.types.structs.get(ownerType)?.kind === "class" ? "->" : ".";
       const value = `((${emitFrameExpression(expression.object, plan, fileName)})${access}${expression.property})`;
       const type = frameExpressionType(expression, plan);
@@ -6117,6 +6210,21 @@ function emitFrameExpressionInner(
       );
     case "call": {
       if (
+        expression.callee.kind === "member"
+        && (parseViewType(
+          expression.callee.object.kind === "identifier"
+            ? plan.locals.get(expression.callee.object.name) ?? frameExpressionType(expression.callee.object, plan)
+            : frameExpressionType(expression.callee.object, plan),
+        )?.target ?? frameExpressionType(expression.callee.object, plan)) === "TaskControl"
+      ) {
+        const receiverType = expression.callee.object.kind === "identifier"
+          ? plan.locals.get(expression.callee.object.name) ?? frameExpressionType(expression.callee.object, plan)
+          : frameExpressionType(expression.callee.object, plan);
+        const receiver = emitFrameExpression(expression.callee.object, plan, fileName);
+        const value = parseViewType(receiverType) ? `(*(${receiver}))` : receiver;
+        return `z_task_control_request_cancel(${value})`;
+      }
+      if (
         plan.types.semanticInfo.taskScopeAsyncCalls.has(expression.location.offset)
         && expression.callee.kind === "member"
       ) {
@@ -6131,6 +6239,8 @@ function emitFrameExpressionInner(
           );
           if (capture.type === "TaskScope") {
             value = `z_task_scope_retain(${value})`;
+          } else if (capture.type === "TaskControl") {
+            value = `z_task_control_retain(${value})`;
           } else if (plan.types.structs.get(capture.type)?.kind === "class") {
             value = `Z_${capture.type}_retain(${value})`;
           }
@@ -6480,6 +6590,7 @@ function cScalar(type: string): string {
 function cFrameType(type: string, types: AsyncTypeContext): string {
   if (parseTaskType(type)) return "Z_AsyncTask *";
   if (type === "TaskScope") return "Z_TaskScope *";
+  if (type === "TaskControl") return "Z_TaskControl *";
   if (parseAsyncGeneratorType(type)) return asyncGeneratorCName(type);
   const view = parseViewType(type);
   if (view) return `const ${cFrameType(view.target, types)} *`;
@@ -6521,6 +6632,7 @@ function borrowedFrameValue(name: string, type: string, types: AsyncTypeContext)
 function isSupportedFrameType(type: string, types: AsyncTypeContext, visiting = new Set<string>()): boolean {
   if (parseTaskType(type)) return true;
   if (type === "TaskScope") return true;
+  if (type === "TaskControl") return true;
   if (parseAsyncGeneratorType(type)) return true;
   if (parseViewType(type)) return true;
   if (scalarTypes.has(type)) return true;
@@ -6562,7 +6674,7 @@ function isSupportedFrameType(type: string, types: AsyncTypeContext, visiting = 
 function hasFrameCleanup(type: string, types: AsyncTypeContext, visiting = new Set<string>()): boolean {
   if (visiting.has(type)) return false;
   if (parseAsyncGeneratorType(type)) return true;
-  if (type === "String" || type === "TextBuffer" || type === "TaskScope") return true;
+  if (type === "String" || type === "TextBuffer" || type === "TaskScope" || type === "TaskControl") return true;
   if (
     types.semanticInfo.foreignObjectTypes.has(type)
     || types.semanticInfo.foreignNamedTypes.get(type)?.kind === "object"
@@ -6602,6 +6714,7 @@ function frameCleanup(value: string, type: string, types: AsyncTypeContext): str
     return `if ((${value}).capacity > 0) free((void *)(${value}).data);`;
   }
   if (type === "TaskScope") return `z_task_scope_release(${value});`;
+  if (type === "TaskControl") return `z_task_control_release(${value});`;
   if (
     types.semanticInfo.foreignObjectTypes.has(type)
     || types.semanticInfo.foreignNamedTypes.get(type)?.kind === "object"

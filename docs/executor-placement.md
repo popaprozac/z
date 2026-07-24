@@ -450,7 +450,9 @@ without creating a second concurrency model. The current executable tier
 accepts synchronous nonthrowing `(): void` operations or explicitly async,
 nonthrowing `async (): void` roots placed on `thread.main`. The async form may
 suspend and own structured workers; it handles typed child errors locally
-because submission has no result task. Additional executors and supervisor
+because submission has no result task. `schedule` returns a non-joining
+`TaskControl` for the admission race and per-operation cancellation; the scope
+still joins every accepted root. Additional executors and supervisor
 error policies remain future layers. Repeated callbacks may eventually lower
 into an async generator so ordinary `try for await` owns registration and
 cancellation.
