@@ -42,7 +42,7 @@ import { parseMapType } from "./map-types.ts";
 import { parseSetType } from "./set-types.ts";
 import { parseAsyncGeneratorType, parseGeneratorType } from "./generator-types.ts";
 import { publicObjCTypeName } from "./objc-types.ts";
-import type { ExplicitCopyPlan, IntegerConversion } from "./sema.ts";
+import type { ExecutorAffinityInfo, ExplicitCopyPlan, IntegerConversion } from "./sema.ts";
 import { collectForeignHandleTypeAliases } from "./foreign-handle-types.ts";
 import {
   parseForeignDeclarationContracts,
@@ -871,11 +871,26 @@ export function hover(source: string, fileName: string, offset: number): Hover |
       if (methods.length) return markdownHover(methods.map(objCMethodDetail).join("\n"), source, word.start, word.end);
     }
     if (resolved?.kind === "struct") {
+      const affinity = context.semanticInfo.aggregateExecutorAffinities.get(resolved.declaration.name);
       const field = resolved.declaration.fields.find((item) => item.name === word.text);
-      if (field) return markdownHover(fieldDetail(field, context.typeDisplayNames), source, word.start, word.end);
+      if (field) {
+        return markdownHover(
+          `${fieldDetail(field, context.typeDisplayNames)}${executorAffinityHover(affinity)}`,
+          source,
+          word.start,
+          word.end,
+        );
+      }
       const method = resolved.declaration.methods.find((item) => item.name === word.text)
         ?? resolved.sourceDeclaration?.methods.find((item) => item.name === word.text);
-      if (method) return markdownHover(methodDetail(method, context.typeDisplayNames), source, word.start, word.end);
+      if (method) {
+        return markdownHover(
+          `${methodDetail(method, context.typeDisplayNames)}${executorAffinityHover(affinity)}`,
+          source,
+          word.start,
+          word.end,
+        );
+      }
     }
     if (resolved?.kind === "foreignValue") {
       const method = resolved.declaration.methods.find((candidate) => candidate.name === word.text);
@@ -984,14 +999,24 @@ export function hover(source: string, fileName: string, offset: number): Hover |
     const provenance = owner ? `  // view of ${owner}` : "";
     const sourceType = binding ? sourceBindingTypeName(context.sourceProgram, binding.offset) : null;
     const aliasType = sourceType ? sourceAliasDisplayType(context, sourceType) : null;
+    const affinity = context.semanticInfo.aggregateExecutorAffinities.get(String(type))
+      ?? (sourceType ? context.semanticInfo.aggregateExecutorAffinities.get(sourceType) : undefined);
     return markdownHover(
-      `${word.text}: ${aliasType ?? displayServiceType(type, context)}${provenance}`,
+      `${word.text}: ${aliasType ?? displayServiceType(type, context)}${provenance}${executorAffinityHover(affinity)}`,
       source,
       word.start,
       word.end,
     );
   }
-  return declarationHover(source, context.sourceProgram, word.text, word.start, word.end, context.typeDisplayNames);
+  return declarationHover(
+    source,
+    context.sourceProgram,
+    word.text,
+    word.start,
+    word.end,
+    context.typeDisplayNames,
+    context.semanticInfo.aggregateExecutorAffinities,
+  );
 }
 
 export function definition(source: string, uri: string, offset: number): Location | null {
@@ -1718,15 +1743,20 @@ function symbolCompletions(source: string, fileName: string, offset: number): Co
         declaration.typeParameterConstraints,
         declaration.async,
         declaration.errorType?.name,
+        Boolean(declaration.executorAffinity),
       ),
     });
   }
   for (const declaration of context.program.structs) {
     if (declaration.name.startsWith("__z_mono_") || declaration.name.startsWith("__z_module_")) continue;
+    const executor = context.semanticInfo.aggregateExecutorAffinities.has(declaration.name)
+      || declaration.executorAffinity
+      ? " on thread.main"
+      : "";
     items.push({
       label: declaration.name,
       kind: declaration.kind === "class" ? completionKinds.class : completionKinds.struct,
-      detail: `${declaration.kind} ${declaration.name}`,
+      detail: `${declaration.kind} ${declaration.name}${executor}`,
     });
   }
   for (const declaration of context.sourceProgram.typeAliases) {
@@ -3561,14 +3591,17 @@ function sourceExportDetail(
       declaration.typeParameterConstraints,
       declaration.async,
       declaration.errorType?.name,
+      Boolean(declaration.executorAffinity),
     );
   }
   if (declaration.kind === "struct" || declaration.kind === "class") {
+    const affinity = sourceProgramExecutorAffinity(module.program, declaration.name);
+    const executor = affinity ? " on thread.main" : "";
     return `${declaration.kind} ${displayName}${formatTypeParameters(
       declaration.typeParameters ?? [],
       declaration.typeParameterConstraints ?? [],
       typeDisplayNames,
-    )}`;
+    )}${executor}${executorAffinityHover(affinity)}`;
   }
   if (declaration.kind === "trait") {
     return `trait ${displayName}${formatTypeParameters(
@@ -3581,6 +3614,36 @@ function sourceExportDetail(
     return `type ${displayName} = ${displayType(declaration.target.name, typeDisplayNames)}`;
   }
   return `${declaration.kind} ${displayName}`;
+}
+
+function sourceProgramExecutorAffinity(
+  program: Program,
+  name: string,
+  visiting = new Set<string>(),
+): ExecutorAffinityInfo | undefined {
+  const declaration = program.structs.find((candidate) => candidate.name === name);
+  if (!declaration || visiting.has(name)) return undefined;
+  if (declaration.executorAffinity) {
+    return {
+      executor: "main",
+      declared: true,
+      originType: name,
+      fieldPath: [],
+    };
+  }
+  visiting.add(name);
+  for (const field of declaration.fields) {
+    const inherited = sourceProgramExecutorAffinity(program, field.type.name, visiting);
+    if (!inherited) continue;
+    visiting.delete(name);
+    return {
+      ...inherited,
+      declared: false,
+      fieldPath: [field.name, ...inherited.fieldPath],
+    };
+  }
+  visiting.delete(name);
+  return undefined;
 }
 
 function sourceImportHover(
@@ -4440,6 +4503,7 @@ function declarationHover(
   start: number,
   end: number,
   typeDisplayNames: ReadonlyMap<string, string> = new Map(),
+  executorAffinities: ReadonlyMap<string, ExecutorAffinityInfo> = new Map(),
 ): Hover | null {
   if (program) {
     const fn = program.functions.find((item) => item.name === name);
@@ -4454,6 +4518,7 @@ function declarationHover(
           fn.typeParameterConstraints,
           fn.async,
           fn.errorType?.name,
+          Boolean(fn.executorAffinity),
         ),
         source,
         start,
@@ -4467,7 +4532,14 @@ function declarationHover(
         struct.typeParameterConstraints ?? [],
         typeDisplayNames,
       );
-      return markdownHover(`${struct.kind} ${struct.name}${parameters}`, source, start, end);
+      const info = executorAffinities.get(struct.name);
+      const executor = info || struct.executorAffinity ? " on thread.main" : "";
+      return markdownHover(
+        `${struct.kind} ${struct.name}${parameters}${executor}${executorAffinityHover(info)}`,
+        source,
+        start,
+        end,
+      );
     }
     const trait = program.traits.find((item) => item.name === name);
     if (trait) {
@@ -4598,11 +4670,13 @@ function zFunctionDetail(
   typeParameterConstraints: readonly TypeParameterConstraint[] = [],
   isAsync = false,
   errorType: string | undefined = undefined,
+  mainIsolated = false,
 ): string {
   const generic = formatTypeParameters(typeParameters, typeParameterConstraints, typeDisplayNames);
   const asyncPrefix = isAsync ? "async " : "";
   const throws = errorType ? ` throws ${displayType(errorType, typeDisplayNames)}` : "";
-  return `${asyncPrefix}function ${name}${generic}(${parameters.map((item) => `${item.name}: ${displayType(item.type.name, typeDisplayNames)}`).join(", ")}): ${displayType(returnType, typeDisplayNames)}${throws}`;
+  const executor = mainIsolated ? " on thread.main" : "";
+  return `${asyncPrefix}function ${name}${generic}(${parameters.map((item) => `${item.name}: ${displayType(item.type.name, typeDisplayNames)}`).join(", ")}): ${displayType(returnType, typeDisplayNames)}${throws}${executor}`;
 }
 
 function methodDetail(
@@ -4626,7 +4700,15 @@ function methodDetail(
   const throws = method.errorType
     ? ` throws ${displaySubstitutedType(method.errorType.name, substitutions, typeDisplayNames)}`
     : "";
-  return `${visibility}${staticPrefix}${asyncPrefix} function ${method.name}${generic}(${parameters.join(", ")}): ${result}${throws}`;
+  const executor = method.executorAffinity ? " on thread.main" : "";
+  return `${visibility}${staticPrefix}${asyncPrefix} function ${method.name}${generic}(${parameters.join(", ")}): ${result}${throws}${executor}`;
+}
+
+function executorAffinityHover(info: ExecutorAffinityInfo | undefined): string {
+  if (!info) return "";
+  if (info.declared) return "\n// executor-isolated to thread.main";
+  const path = info.fieldPath.length ? ` through ${info.fieldPath.join(".")}` : "";
+  return `\n// executor-isolated to thread.main (inherited from ${info.originType}${path})`;
 }
 
 function formatTypeParameters(

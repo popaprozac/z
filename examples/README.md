@@ -91,6 +91,7 @@ support or producing language-server diagnostics from hypothetical imports.
 - [`async-methods.zs`](async/async-methods.zs)
 - [`thread-native.zs`](async/thread-native.zs): trusted `.zd` thread transfer and receiving-thread destruction for a move-only C++ owner
 - [`thread-affine-worker.zs`](async/thread-affine-worker.zs): an `async` closure bound to one dedicated worker, inherited child tasks, typed failure, scheduler delay, `await on thread.main`, and resumption back on the worker
+- [`executor-affinity.zs`](async/executor-affinity.zs): declaration-header `on thread.main` contracts, main-isolated methods, and transitive affinity inherited through stored fields
 
 ## Native interop
 

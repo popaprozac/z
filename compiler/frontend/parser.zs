@@ -202,6 +202,7 @@ export struct FunctionDeclaration {
   parameters: Array<Parameter>;
   returnType: TypeReference;
   errorType: Option<TypeReference>;
+  executorAffinity: String;
   body: StatementArena;
   offset: usize;
   line: usize;
@@ -238,6 +239,7 @@ export struct AggregateDeclaration {
   kind: DeclarationKind;
   name: String;
   typeParameters: Array<TypeParameter>;
+  executorAffinity: String;
   implementedTraits: Array<TypeReference>;
   fields: Array<FieldDeclaration>;
   constructorDeclaration: Option<ConstructorDeclaration>;
@@ -2794,6 +2796,13 @@ function parseFunctionDeclaration(
     const error = try parseType(tokens, inout current, inout pendingGreater);
     errorType = Option.some(error);
   }
+  let executorAffinity = "";
+  if (takeIf(tokens, inout current, TokenKind.onKeyword)) {
+    const executor = try expect(tokens, inout current, TokenKind.identifier, "an executor name after `on`");
+    try expectKind(tokens, inout current, TokenKind.dot, "`.` in an executor name");
+    const member = try expect(tokens, inout current, TokenKind.identifier, "an executor member after `.`");
+    executorAffinity = `${executor.text}.${member.text}`;
+  }
   // Stage 1 does not consume Objective-C selector evidence semantically yet,
   // but it must accept the authoritative source grammar so the native frontend
   // remains usable while protocol conformance is lowered by the bootstrap.
@@ -2823,6 +2832,7 @@ function parseFunctionDeclaration(
     parameters,
     returnType,
     errorType,
+    executorAffinity,
     body,
     offset: start.offset,
     line: start.line,
@@ -2875,6 +2885,13 @@ function parseAggregateDeclaration(
   const start = try expect(tokens, inout current, keyword, description);
   const name = try expect(tokens, inout current, TokenKind.identifier, `a name after ${start.text}`);
   const typeParameters = try parseTypeParameters(tokens, inout current, inout pendingGreater);
+  let executorAffinity = "";
+  if (takeIf(tokens, inout current, TokenKind.onKeyword)) {
+    const executor = try expect(tokens, inout current, TokenKind.identifier, "an executor name after `on`");
+    try expectKind(tokens, inout current, TokenKind.dot, "`.` in an executor name");
+    const member = try expect(tokens, inout current, TokenKind.identifier, "an executor member after `.`");
+    executorAffinity = `${executor.text}.${member.text}`;
+  }
   let implementedTraits = Array<TypeReference>();
   if (takeIf(tokens, inout current, TokenKind.implementsKeyword)) {
     while (true) {
@@ -2953,6 +2970,7 @@ function parseAggregateDeclaration(
     kind,
     name: name.text.copyBytes(0, name.text.byteLength),
     typeParameters,
+    executorAffinity,
     implementedTraits,
     fields,
     constructorDeclaration: initializer,
@@ -3538,6 +3556,10 @@ export function functionSignatureText(in declaration: FunctionDeclaration): Stri
     }
     none => {}
   }
+  if (!declaration.executorAffinity.isEmpty) {
+    output.append(" on ");
+    output.append(declaration.executorAffinity);
+  }
   return output.finish();
 }
 
@@ -3571,6 +3593,10 @@ export function aggregateShapeText(in declaration: AggregateDeclaration): String
       }
     }
     output.append(">");
+  }
+  if (!declaration.executorAffinity.isEmpty) {
+    output.append(" on ");
+    output.append(declaration.executorAffinity);
   }
   if (declaration.implementedTraits.length > 0) {
     output.append(" implements ");

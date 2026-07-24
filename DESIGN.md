@@ -1273,6 +1273,23 @@ await on thread.main { /* hop and wait */ }
 task on thread.main { /* structured dispatch */ }
 ```
 
+Declarations use the same subject-on-executor ordering:
+
+```z
+class NotesController on thread.main { /* ... */ }
+struct WindowState on thread.main { /* ... */ }
+function updateWindow(): void on thread.main { /* ... */ }
+```
+
+The declaration establishes an execution requirement while a placement block
+establishes proof that the requirement is satisfied. Aggregate affinity is
+transitive through stored fields and is reported by editor hover, including
+the field path that introduced inferred isolation. The current tier rejects
+off-main calls, construction, member access, function-value erasure, native
+thread transfer, and placement results that would carry isolated state back to
+a non-main continuation. Async isolated functions do not auto-hop yet; callers
+use `await on thread.main`.
+
 The runtime executes placement blocks through structured task frames. Captures
 may be recursively plain values, owned `String` copies, retained Z ARC classes,
 or Objective-C identities retained by ARC when they originate in the owning
@@ -1295,7 +1312,9 @@ The planned source contract for those later tiers is a contextual `using`
 clause after the executor expression:
 
 ```z
-const task = task on thread.pool({ timeout: 5000 })
+const compute = thread.pool({ threads: 4 });
+
+const task = task on compute
   using (in config, inout value, move buffer)
   : i32 throws WorkError {
     value += config.increment;
@@ -1304,7 +1323,7 @@ const task = task on thread.pool({ timeout: 5000 })
   };
 ```
 
-Executor arguments configure placement; `using (...)` declares access to
+Executor construction configures the target; `using (...)` declares access to
 existing bindings. Its entries reuse the ordinary `in`, `inout`, and `move`
 capabilities without repeating types. Recursively Copy captures may remain
 inferred private snapshots. `out` is reserved until child-task initialization has

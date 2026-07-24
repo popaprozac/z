@@ -48,6 +48,7 @@ export type StructDeclaration = {
   readonly name: string;
   readonly typeParameters?: string[];
   readonly typeParameterConstraints?: TypeParameterConstraint[];
+  readonly executorAffinity?: ExecutorAffinity;
   readonly implements: TypeReference[];
   readonly fields: FieldDeclaration[];
   readonly constructor: ConstructorDeclaration | null;
@@ -113,10 +114,16 @@ export type FunctionDeclaration = {
   readonly parameters: Parameter[];
   readonly returnType: TypeReference;
   readonly errorType: TypeReference | null;
+  readonly executorAffinity?: ExecutorAffinity;
   /** Objective-C selector exported by a protocol-conforming class method. */
   readonly nativeSelector?: string | null;
   readonly body: Statement[];
   readonly location: SourceLocation;
+};
+
+export type ExecutorAffinity = {
+  readonly executor: Expression;
+  readonly onLocation: SourceLocation;
 };
 
 export type TypeParameterConstraint = {

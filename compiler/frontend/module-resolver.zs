@@ -260,6 +260,7 @@ export struct ModuleTypeParameterConstraint {
 export struct ModuleTypeSignature {
   typeParameters: Array<String>;
   typeParameterConstraints: Array<ModuleTypeParameterConstraint>;
+  executorAffinity: String;
   implementedTraits: Array<String>;
   fields: Array<ModuleFieldSignature>;
   methods: Array<ModuleMethodSignature>;
@@ -271,6 +272,7 @@ export struct ModuleTypeSignature {
 
 export struct ModuleFunctionSignature {
   asynchronous: boolean;
+  executorAffinity: String;
   typeParameters: Array<String>;
   typeParameterConstraints: Array<ModuleTypeParameterConstraint>;
   parameterModes: Array<String>;
@@ -510,6 +512,7 @@ function functionDeclarationSignature(
   }
   return ModuleFunctionSignature({
     asynchronous: declaration.asynchronous,
+    executorAffinity: declaration.executorAffinity.copyBytes(0, declaration.executorAffinity.byteLength),
     typeParameters,
     typeParameterConstraints,
     parameterModes,
@@ -539,6 +542,7 @@ function constructorDeclarationSignature(
   }
   return ModuleFunctionSignature({
     asynchronous: false,
+    executorAffinity: "",
     typeParameters: Array<String>(),
     typeParameterConstraints: Array<ModuleTypeParameterConstraint>(),
     parameterModes,
@@ -623,6 +627,7 @@ function moduleTypeSignature(
       return Option.some(ModuleTypeSignature({
         typeParameters,
         typeParameterConstraints,
+        executorAffinity: aggregate.executorAffinity.copyBytes(0, aggregate.executorAffinity.byteLength),
         implementedTraits,
         fields,
         methods,
@@ -649,6 +654,7 @@ function moduleTypeSignature(
       return Option.some(ModuleTypeSignature({
         typeParameters: Array<String>(),
         typeParameterConstraints: Array<ModuleTypeParameterConstraint>(),
+        executorAffinity: "",
         implementedTraits: Array<String>(),
         fields: Array<ModuleFieldSignature>(),
         methods,
@@ -677,6 +683,7 @@ function moduleTypeSignature(
       return Option.some(ModuleTypeSignature({
         typeParameters: Array<String>(),
         typeParameterConstraints: Array<ModuleTypeParameterConstraint>(),
+        executorAffinity: "",
         implementedTraits: Array<String>(),
         fields: Array<ModuleFieldSignature>(),
         methods: Array<ModuleMethodSignature>(),
@@ -4033,6 +4040,7 @@ function copyModuleFunctionSignature(
   }
   return ModuleFunctionSignature({
     asynchronous: signature.asynchronous,
+    executorAffinity: signature.executorAffinity.copyBytes(0, signature.executorAffinity.byteLength),
     typeParameters,
     typeParameterConstraints,
     parameterModes,
@@ -4088,6 +4096,7 @@ function rebaseModuleFunctionSignature(
   }
   return ModuleFunctionSignature({
     asynchronous: signature.asynchronous,
+    executorAffinity: signature.executorAffinity.copyBytes(0, signature.executorAffinity.byteLength),
     typeParameters,
     typeParameterConstraints,
     parameterModes,
@@ -4336,6 +4345,7 @@ function methodCallableSignature(
   }
   return ModuleFunctionSignature({
     asynchronous: method.signature.asynchronous,
+    executorAffinity: method.signature.executorAffinity.copyBytes(0, method.signature.executorAffinity.byteLength),
     typeParameters,
     typeParameterConstraints,
     parameterModes,
@@ -5791,6 +5801,7 @@ function nativeFunctionSignature(in typeName: String): Option<ModuleFunctionSign
   if (returnType.byteLength == 0) return Option<ModuleFunctionSignature>.none;
   return Option.some(ModuleFunctionSignature({
     asynchronous: false,
+    executorAffinity: "",
     typeParameters: Array<String>(),
     typeParameterConstraints: Array<ModuleTypeParameterConstraint>(),
     parameterModes,
@@ -5883,6 +5894,7 @@ function collectionMethodSignature(
     if (returnType.byteLength == 0) return Option<ModuleFunctionSignature>.none;
     return Option.some(ModuleFunctionSignature({
       asynchronous: generic.base == "AsyncGenerator",
+      executorAffinity: "",
       typeParameters: Array<String>(),
       typeParameterConstraints: Array<ModuleTypeParameterConstraint>(),
       parameterModes,
@@ -5894,6 +5906,7 @@ function collectionMethodSignature(
   if (returnType.byteLength == 0) return Option<ModuleFunctionSignature>.none;
   return Option.some(ModuleFunctionSignature({
     asynchronous: false,
+    executorAffinity: "",
     typeParameters: Array<String>(),
     typeParameterConstraints: Array<ModuleTypeParameterConstraint>(),
     parameterModes,

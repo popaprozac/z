@@ -158,6 +158,8 @@ function appendFunctionSignature(
       output.appendAscii(9);
       appendHexText(inout output, signature.errorType);
       output.appendAscii(9);
+      appendHexText(inout output, signature.executorAffinity);
+      output.appendAscii(9);
       appendHexUsize(inout output, signature.typeParameters.length);
       output.appendAscii(9);
       appendHexUsize(inout output, signature.parameterTypes.length);
@@ -216,6 +218,8 @@ function appendTypeSignature(
       output.appendAscii(9);
       if (signature.customConstructor) output.appendAscii(49);
       else output.appendAscii(48);
+      output.appendAscii(9);
+      appendHexText(inout output, signature.executorAffinity);
       for (const typeParameter of signature.typeParameters) {
         output.appendAscii(9);
         appendHexText(inout output, typeParameter);
@@ -295,6 +299,8 @@ function appendMethodSignatures(
         appendHexText(inout output, method.signature.returnType);
         output.appendAscii(9);
         appendHexText(inout output, method.signature.errorType);
+        output.appendAscii(9);
+        appendHexText(inout output, method.signature.executorAffinity);
         output.appendAscii(9);
         appendHexUsize(inout output, method.signature.typeParameters.length);
         output.appendAscii(9);

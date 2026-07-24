@@ -82,6 +82,7 @@ import {
 import { optionTypeName, parseOptionType } from "./option-types.ts";
 import { mapEntryTypeName, parseMapType } from "./map-types.ts";
 import { parseSetType } from "./set-types.ts";
+import { parseGenericType } from "./generic-types.ts";
 import { parseOptionalViewType, parseReceiverViewReturnType, parseViewType, viewTypeName } from "./view-types.ts";
 import { hashableSelfTypeName, hashableTraitDeclaration } from "./hash-types.ts";
 import { iteratorTraitDeclaration } from "./iterator-types.ts";
@@ -296,6 +297,7 @@ export type SemanticInfo = {
   readonly taskScopeSpawnCalls: ReadonlyMap<number, number>;
   readonly taskScopeAsyncCalls: ReadonlyMap<number, number>;
   readonly taskScopeConstructors: ReadonlySet<number>;
+  readonly aggregateExecutorAffinities: ReadonlyMap<string, ExecutorAffinityInfo>;
   readonly shareableClasses: ReadonlySet<string>;
   readonly foreignArgumentAccesses: ReadonlyMap<number, "in" | "out" | "inout">;
   readonly foreignCxxArgumentAccesses: ReadonlyMap<number, "in" | "inout" | "move">;
@@ -341,6 +343,13 @@ export type SemanticInfo = {
   readonly frameworks: readonly string[];
 };
 
+export type ExecutorAffinityInfo = {
+  readonly executor: "main";
+  readonly declared: boolean;
+  readonly originType: string;
+  readonly fieldPath: readonly string[];
+};
+
 type AnalysisState = {
   readonly warnings: DiagnosticError[];
   readonly warningKeys: Set<string>;
@@ -369,6 +378,7 @@ type AnalysisState = {
   readonly taskScopeSpawnCalls: Map<number, number>;
   readonly taskScopeAsyncCalls: Map<number, number>;
   readonly taskScopeConstructors: Set<number>;
+  readonly aggregateExecutorAffinities: Map<string, ExecutorAffinityInfo>;
   readonly shareableClasses: Set<string>;
   readonly threadSharedClassUses: Map<string, SourceLocation>;
   readonly weakClassUses: Map<string, SourceLocation>;
@@ -643,6 +653,7 @@ export function analyze(
     taskScopeSpawnCalls: new Map(),
     taskScopeAsyncCalls: new Map(),
     taskScopeConstructors: new Set(),
+    aggregateExecutorAffinities: new Map(),
     shareableClasses: new Set(),
     threadSharedClassUses: new Map(),
     weakClassUses: new Map(),
@@ -1065,9 +1076,16 @@ export function analyze(
   }
 
   for (const declaration of program.structs) {
+    validateExecutorAffinity(declaration.executorAffinity, declaration.location, globals, fileName);
+    for (const method of declaration.methods) {
+      validateExecutorAffinity(method.executorAffinity, method.location, globals, fileName);
+    }
     analyzeStructDeclaration(declaration, structs, enums, foreignNamedTypes, foreignTypes, fileName);
   }
   for (const declaration of program.traits) {
+    for (const method of declaration.methods) {
+      validateExecutorAffinity(method.executorAffinity, method.location, globals, fileName);
+    }
     analyzeTraitDeclaration(declaration, structs, enums, foreignNamedTypes, foreignTypes, fileName);
   }
   for (const declaration of program.structs) {
@@ -1078,6 +1096,7 @@ export function analyze(
   }
 
   for (const declaration of program.functions) {
+    validateExecutorAffinity(declaration.executorAffinity, declaration.location, globals, fileName);
     if (declaration.receiverMode) {
       throw new DiagnosticError(
         fileName,
@@ -1095,9 +1114,14 @@ export function analyze(
   }
 
   validateValueLayouts(program.structs, program.enums, structs, enums, fileName);
+  collectAggregateExecutorAffinities(program, structs, enums, state);
 
   for (const declaration of program.structs) {
-    if (declaration.kind === "class" && !shareableTypeIssue(declaration.name, structs, enums, state)) {
+    if (
+      declaration.kind === "class"
+      && !state.aggregateExecutorAffinities.has(declaration.name)
+      && !shareableTypeIssue(declaration.name, structs, enums, state)
+    ) {
       state.shareableClasses.add(declaration.name);
     }
   }
@@ -1175,6 +1199,124 @@ export function analyze(
     });
   }
   return state;
+}
+
+function validateExecutorAffinity(
+  affinity: StructDeclaration["executorAffinity"] | FunctionDeclaration["executorAffinity"],
+  declarationLocation: SourceLocation,
+  globals: Map<string, SymbolValue>,
+  fileName: string,
+): void {
+  if (!affinity) return;
+  if (
+    affinity.executor.location.fileName
+    && affinity.executor.location.fileName !== fileName
+    && affinity.executor.kind === "member"
+    && affinity.executor.object.kind === "identifier"
+    && affinity.executor.object.name === "thread"
+    && affinity.executor.property === "main"
+  ) {
+    // Source-module loading has already parsed the dependency in its own import
+    // environment. Preserve the canonical executor contract after linking,
+    // where the dependency's local `thread` binding is intentionally absent.
+    return;
+  }
+  if (
+    affinity.executor.kind === "member"
+    && affinity.executor.object.kind === "identifier"
+    && affinity.executor.property === "main"
+  ) {
+    const binding = globals.get(affinity.executor.object.name);
+    if (binding?.kind === "standardModule" && binding.module === "thread") return;
+  }
+  throw new DiagnosticError(fileName, affinity.executor.location, "declaration affinity currently requires the thread.main executor capability", {
+    code: "Z0710",
+    labels: [{ location: declarationLocation, message: "declaration begins here" }],
+    helps: ["import { thread } from \"std/thread\" and write `on thread.main` in the declaration header"],
+  });
+}
+
+function collectAggregateExecutorAffinities(
+  program: Program,
+  structs: ReadonlyMap<string, StructDeclaration>,
+  enums: ReadonlyMap<string, EnumDeclaration>,
+  state: AnalysisState,
+): void {
+  const aliases = new Map(program.typeAliases.map((declaration) => [declaration.name, declaration.target.name]));
+  const visiting = new Set<string>();
+
+  const typeAffinity = (type: string, path: readonly string[]): ExecutorAffinityInfo | null => {
+    const alias = aliases.get(type);
+    if (alias) return typeAffinity(alias, path);
+    const generic = parseGenericType(type);
+    if (generic) {
+      const base = aggregateAffinity(generic.base);
+      if (base) return { ...base, fieldPath: [...path, ...base.fieldPath] };
+      for (const argument of generic.arguments) {
+        const inherited = typeAffinity(argument, path);
+        if (inherited) return inherited;
+      }
+    }
+    const dynamic = parseDynamicArrayType(type);
+    if (dynamic) return typeAffinity(dynamic.elementType, path);
+    const fixed = parseFixedArrayType(type);
+    if (fixed) return typeAffinity(fixed.elementType, path);
+    const option = parseOptionType(type);
+    if (option) return typeAffinity(option.target, path);
+    const map = parseMapType(type);
+    if (map) return typeAffinity(map.keyType, path) ?? typeAffinity(map.valueType, path);
+    const set = parseSetType(type);
+    if (set) return typeAffinity(set.elementType, path);
+    const weak = parseWeakType(type);
+    if (weak) return typeAffinity(weak.target, path);
+    const declaration = structs.get(type);
+    if (declaration) {
+      const inherited = aggregateAffinity(type);
+      return inherited ? { ...inherited, fieldPath: [...path, ...inherited.fieldPath] } : null;
+    }
+    const enumeration = enums.get(type);
+    if (enumeration) {
+      for (const variant of enumeration.variants) {
+        if (!variant.payload) continue;
+        const inherited = typeAffinity(variant.payload.name, [...path, variant.name]);
+        if (inherited) return inherited;
+      }
+    }
+    return null;
+  };
+
+  const aggregateAffinity = (name: string): ExecutorAffinityInfo | null => {
+    const known = state.aggregateExecutorAffinities.get(name);
+    if (known) return known;
+    const declaration = structs.get(name);
+    if (!declaration || visiting.has(name)) return null;
+    if (declaration.executorAffinity) {
+      const declared: ExecutorAffinityInfo = {
+        executor: "main",
+        declared: true,
+        originType: name,
+        fieldPath: [],
+      };
+      state.aggregateExecutorAffinities.set(name, declared);
+      return declared;
+    }
+    visiting.add(name);
+    for (const field of declaration.fields) {
+      const inherited = typeAffinity(field.type.name, [field.name]);
+      if (!inherited) continue;
+      const inferred: ExecutorAffinityInfo = {
+        ...inherited,
+        declared: false,
+      };
+      state.aggregateExecutorAffinities.set(name, inferred);
+      visiting.delete(name);
+      return inferred;
+    }
+    visiting.delete(name);
+    return null;
+  };
+
+  for (const declaration of program.structs) aggregateAffinity(declaration.name);
 }
 
 function analyzeStructDeclaration(
@@ -1504,6 +1646,7 @@ function validateObjCProtocolMethodSignature(
 
 function sameMethodSignature(actual: FunctionDeclaration, required: FunctionDeclaration, ownerType?: string): boolean {
   return Boolean(actual.async) === Boolean(required.async)
+    && Boolean(actual.executorAffinity) === Boolean(required.executorAffinity)
     && actual.receiverMode === required.receiverMode
     && actual.returnType.name === required.returnType.name
     && actual.errorType?.name === required.errorType?.name
@@ -1815,7 +1958,11 @@ function analyzeFunction(
   const previousExecutorContext = state.executorContext;
   state.activeReceiver = receiver?.name ?? null;
   state.activeFunction = declaration;
-  state.executorContext = !receiver && declaration.name === "main" ? "main" : null;
+  state.executorContext = (
+    (!receiver && declaration.name === "main")
+    || Boolean(declaration.executorAffinity)
+    || Boolean(receiver && state.aggregateExecutorAffinities.has(receiver.name))
+  ) ? "main" : null;
   state.placementErrorTypes.length = 0;
   state.moveOrigins.clear();
   state.borrowOrigins.clear();
@@ -4409,6 +4556,16 @@ function inferExecutorPlacement(
     );
     successType = resolvedReturnType.name;
   }
+  const escapingAffinity = expression.mode === "sync" || previousExecutor === "main"
+    ? null
+    : executorAffinityForType(successType, structs, enums, state);
+  if (escapingAffinity) {
+    throw new DiagnosticError(fileName, expression.location, `executor placement cannot return main-isolated type ${JSON.stringify(displayArrayType(String(successType)))} to a non-main continuation`, {
+      code: "Z0712",
+      notes: ["main-isolated identity, cleanup, and destruction must remain on thread.main"],
+      helps: ["select a thread-independent owned snapshot, or consume the result inside the `on thread.main` block"],
+    });
+  }
   if (expression.mode !== "spawn") propagateOuterOwnership(locals, blockLocals);
   if (expression.mode === "spawn") {
     return taskTypeName(String(successType), resolvedErrorType?.name ?? null);
@@ -4655,6 +4812,76 @@ function registerAsyncCall(
   context.calls += 1;
 }
 
+function requireMainExecutorContext(
+  required: boolean,
+  location: SourceLocation,
+  subject: string,
+  fileName: string,
+  state: AnalysisState,
+  inherited: ExecutorAffinityInfo | null = null,
+): void {
+  if (!required || state.executorContext === "main") return;
+  const path = inherited?.fieldPath.length
+    ? ` through field ${inherited.fieldPath.join(".")}`
+    : "";
+  throw new DiagnosticError(fileName, location, `${subject} requires thread.main executor context`, {
+    code: "Z0711",
+    notes: inherited?.declared === false
+      ? [`main-thread isolation is inherited from ${inherited.originType}${path}`]
+      : ["the declaration is isolated with `on thread.main`"],
+    helps: [state.activeFunction?.async
+      ? "perform this operation inside `await on thread.main { ... }`"
+      : "call it from a function declared `on thread.main`, or make the caller async and hop to main"],
+  });
+}
+
+function executorAffinityForType(
+  type: ValueType,
+  structs: ReadonlyMap<string, StructDeclaration>,
+  enums: ReadonlyMap<string, EnumDeclaration>,
+  state: AnalysisState,
+  visiting = new Set<string>(),
+): ExecutorAffinityInfo | null {
+  const actual = String(underlyingType(type));
+  const direct = state.aggregateExecutorAffinities.get(actual);
+  if (direct) return direct;
+  if (visiting.has(actual)) return null;
+  visiting.add(actual);
+  const dynamic = parseDynamicArrayType(actual);
+  const fixed = parseFixedArrayType(actual);
+  const option = parseOptionType(actual);
+  const map = parseMapType(actual);
+  const set = parseSetType(actual);
+  const weak = parseWeakType(actual);
+  const view = parseViewType(actual);
+  const task = parseTaskType(actual);
+  const generic = parseGenericType(actual);
+  const children = [
+    dynamic?.elementType,
+    fixed?.elementType,
+    option?.target,
+    map?.keyType,
+    map?.valueType,
+    set?.elementType,
+    weak?.target,
+    view?.target,
+    task?.successType,
+    task?.errorType,
+    ...(generic?.arguments ?? []),
+    ...(structs.get(actual)?.fields.map((field) => field.type.name) ?? []),
+    ...(enums.get(actual)?.variants.flatMap((variant) => variant.payload ? [variant.payload.name] : []) ?? []),
+  ].filter((child): child is string => Boolean(child));
+  for (const child of children) {
+    const inherited = executorAffinityForType(child, structs, enums, state, visiting);
+    if (inherited) {
+      visiting.delete(actual);
+      return inherited;
+    }
+  }
+  visiting.delete(actual);
+  return null;
+}
+
 function isTaskCancellationCall(expression: Expression): expression is Extract<Expression, { kind: "call" }> {
   return expression.kind === "call"
     && expression.callee.kind === "member"
@@ -4859,6 +5086,12 @@ function inferExpressionInner(
       }
       const global = globals.get(expression.name);
       if (global?.kind === "function") {
+        if (global.declaration.executorAffinity) {
+          throw new DiagnosticError(fileName, expression.location, "executor-isolated function values are deferred; call the function directly from its required executor context", {
+            code: "Z0711",
+            notes: ["ordinary function types do not erase or implicitly carry executor affinity"],
+          });
+        }
         if (global.declaration.async) {
           throw new DiagnosticError(fileName, expression.location, "async function values are deferred; call the function beneath `await` or `task`");
         }
@@ -5052,6 +5285,15 @@ function inferExpressionInner(
       if (declaration.kind !== "class") {
         throw new DiagnosticError(fileName, expression.location, `new requires a class type; construct ${expression.typeName} as ${expression.typeName}({ ... })`);
       }
+      const constructorAffinity = state.aggregateExecutorAffinities.get(declaration.name) ?? null;
+      requireMainExecutorContext(
+        Boolean(constructorAffinity),
+        expression.location,
+        `construction of ${declaration.kind} ${JSON.stringify(declaration.name)}`,
+        fileName,
+        state,
+        constructorAffinity,
+      );
       rejectLabeledArguments(expression.argumentLabels, expression.location, fileName);
       if (declaration.constructor) {
         const target = constructorFunction(declaration);
@@ -5104,6 +5346,17 @@ function inferExpressionInner(
       if (!declaration && foreignDeclaration?.kind !== "record") {
         throw new DiagnosticError(fileName, expression.location, `unknown struct ${JSON.stringify(expression.typeName)}`);
       }
+      const constructionAffinity = declaration
+        ? state.aggregateExecutorAffinities.get(declaration.name) ?? null
+        : null;
+      requireMainExecutorContext(
+        Boolean(constructionAffinity),
+        expression.location,
+        `construction of ${declaration?.kind ?? "struct"} ${JSON.stringify(expression.typeName)}`,
+        fileName,
+        state,
+        constructionAffinity,
+      );
       const provided = new Set<string>();
       for (const initializer of expression.fields) {
         if (provided.has(initializer.name)) {
@@ -5477,6 +5730,15 @@ function inferExpressionInner(
       if (!declaration) {
         throw new DiagnosticError(fileName, expression.location, `type ${JSON.stringify(receiverType)} has no members`);
       }
+      const memberAffinity = state.aggregateExecutorAffinities.get(declaration.name) ?? null;
+      requireMainExecutorContext(
+        Boolean(memberAffinity),
+        expression.location,
+        `member access on ${declaration.kind} ${JSON.stringify(declaration.name)}`,
+        fileName,
+        state,
+        memberAffinity,
+      );
       const declaredField = declaration.fields.find((candidate) => candidate.name === expression.property);
       if (declaredField) {
         const field = resolveSemanticField(expression.location, declaration, declaredField, state);
@@ -6121,6 +6383,15 @@ function inferExpressionInner(
             if (callable.visibility === "private" && state.activeReceiver !== aggregate.name) {
               throw new DiagnosticError(fileName, expression.callee.location, `static method ${JSON.stringify(callable.name)} is private to ${aggregate.kind} ${JSON.stringify(aggregate.name)}`);
             }
+            const staticAffinity = state.aggregateExecutorAffinities.get(aggregate.name) ?? null;
+            requireMainExecutorContext(
+              Boolean(callable.executorAffinity) || Boolean(staticAffinity),
+              expression.location,
+              `static method ${JSON.stringify(aggregate.name)}.${JSON.stringify(callable.name)}`,
+              fileName,
+              state,
+              staticAffinity,
+            );
             rejectLabeledArguments(expression.argumentLabels, expression.location, fileName);
             checkArguments(callable, expression.arguments, locals, globals, structs, enums, fileName, expression.location, state);
             registerAsyncCall(callable, expression.location, fileName, state);
@@ -7011,6 +7282,15 @@ function inferExpressionInner(
         if (callable.visibility === "private" && state.activeReceiver !== declaration.name) {
           throw new DiagnosticError(fileName, expression.callee.location, `method ${JSON.stringify(callable.name)} is private to ${declaration.kind} ${JSON.stringify(declaration.name)}`);
         }
+        const methodAffinity = state.aggregateExecutorAffinities.get(declaration.name) ?? null;
+        requireMainExecutorContext(
+          Boolean(callable.executorAffinity) || Boolean(methodAffinity),
+          expression.location,
+          `method ${JSON.stringify(declaration.name)}.${JSON.stringify(callable.name)}`,
+          fileName,
+          state,
+          methodAffinity,
+        );
         rejectLabeledArguments(expression.argumentLabels, expression.location, fileName);
         if (
           callable.receiverMode !== "move"
@@ -7197,6 +7477,13 @@ function inferExpressionInner(
       }
       const functionResolution = { location: expression.location, declaration: target.declaration };
       const callable = state.observer?.resolveFunctionCall?.(functionResolution) ?? target.declaration;
+      requireMainExecutorContext(
+        Boolean(callable.executorAffinity),
+        expression.location,
+        `function ${JSON.stringify(callable.name)}`,
+        fileName,
+        state,
+      );
       rejectLabeledArguments(expression.argumentLabels, expression.location, fileName);
       checkArguments(callable, expression.arguments, locals, globals, structs, enums, fileName, expression.location, state);
       registerAsyncCall(callable, expression.location, fileName, state);
@@ -9035,6 +9322,16 @@ function shareableTypeIssue(
   if (actual === "void" || actual === "boolean" || integerTypes.has(actual) || floatTypes.has(actual) || actual === "String" || actual === "TaskScope") {
     return null;
   }
+  const executorAffinity = state.aggregateExecutorAffinities.get(actual);
+  if (executorAffinity) {
+    const inherited = executorAffinity.declared
+      ? ""
+      : ` inherited through ${executorAffinity.fieldPath.join(".")}`;
+    return {
+      reason: `${path} is isolated to thread.main${inherited}`,
+      help: "keep the value on thread.main and transfer an owned thread-independent snapshot instead",
+    };
+  }
   if (actual === "TextBuffer" || parseDynamicArrayType(actual)) {
     return {
       reason: `${path} contains mutable ${displayArrayType(actual)} storage`,
@@ -9123,6 +9420,7 @@ function initialThreadTransferKind(
 ): ThreadTransferKind | null {
   const actual = String(underlyingType(type));
   if (actual === "void" || actual === "boolean" || integerTypes.has(actual) || floatTypes.has(actual)) return "copy";
+  if (state.aggregateExecutorAffinities.has(actual)) return null;
   if (actual === "String" || actual === "TextBuffer") return "move";
   if (parseViewType(actual) || parseSliceType(actual) || parseTaskType(actual)) return null;
   const fixed = parseFixedArrayType(actual);

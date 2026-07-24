@@ -244,7 +244,9 @@ The planned explicit capture contract is a contextual `using` clause after the
 executor expression:
 
 ```z
-const task = task on thread.pool({ timeout: 5000 })
+const compute = thread.pool({ threads: 4 });
+
+const task = task on compute
   using (in config, inout value, move buffer)
   : i32 throws WorkError {
     value += config.increment;
@@ -254,7 +256,7 @@ const task = task on thread.pool({ timeout: 5000 })
 ```
 
 `using` is contextual in this position rather than a globally reserved word.
-The executor call configures where and how the operation runs; `using (...)`
+Executor construction configures where and how operations run; `using (...)`
 states how the placed operation may access existing bindings. Capture entries
 reuse Z's ordinary capability vocabulary and do not repeat types:
 
@@ -418,17 +420,35 @@ cancellation.
 
 ## Function-level isolation
 
-Functions will eventually need executor-affinity contracts. Two distinct
-semantics are useful:
+Z declarations place executor isolation in the declaration header:
 
-- a synchronous main-isolated function can be called only from a proven main
-  context; and
-- an async main-isolated function returns a task and can schedule onto main for
-  an off-main caller.
+```z
+class NotesController on thread.main {
+  function refresh(): void { /* main proof is established here */ }
+}
 
-The exact declaration syntax is intentionally not settled by this note.
-Candidates must be reviewed alongside return types, `throws`, methods, and
-foreign declarations rather than introduced opportunistically.
+struct WindowModel {
+  controller: NotesController;
+}
+
+function displayError(in error: SaveError): void on thread.main {
+  /* main proof is established here */
+}
+```
+
+Methods, construction, stored-field access, cleanup, and deinitialization of an
+isolated aggregate require the named executor. Affinity is transitive through
+stored fields: `WindowModel` above is inferred as main-isolated because it owns
+`controller`. Hover reports whether affinity was declared or inherited and
+shows the field path that introduced it. Explicit spelling remains recommended
+for exported API contracts.
+
+The current executable tier requires both synchronous and async isolated calls
+to occur under statically proven main context. Automatic scheduling when an
+off-main caller invokes an async isolated function remains later lowering;
+today the caller enters through `await on thread.main`. Isolated function
+values are rejected rather than erasing the effect from an ordinary function
+type.
 
 ## Scheduling and cancellation
 

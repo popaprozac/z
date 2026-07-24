@@ -1278,6 +1278,32 @@ platform UI-loop adapters remain bounded work. See
 [`executor-placement.md`](executor-placement.md).
 The returned task remains scope-bound and is joined explicitly by `await` or
 implicitly at scope exit.
+
+Executor-isolated declarations place the contract after the declaration
+signature and before the body:
+
+```z
+class NotesController on thread.main { /* ... */ }
+struct WindowState on thread.main { /* ... */ }
+function updateWindow(): void on thread.main { /* ... */ }
+```
+
+For a long public return contract, prefer a semantic type alias so the executor
+requirement remains easy to scan:
+
+```z
+type LoadNotesResult = Result<Map<String, Array<Note>>, StorageError>;
+
+function loadNotes(): LoadNotesResult on thread.main { /* ... */ }
+```
+
+An isolated aggregate establishes main proof inside all of its methods and
+lifecycle bodies. A struct or class that stores an isolated aggregate inherits
+that affinity transitively; hover shows the originating type and field path.
+Calls, construction, member access, and cleanup must remain on main. The
+current async tier requires an explicit `await on thread.main` hop rather than
+automatically scheduling an isolated async function.
+
 Throwing worker closures return `Task<T, E>`; `try await` propagates `E` and
 `attempt await` produces `Result<T, E>`. Error slots have the same explicit
 liveness as result slots, so transferable String/Array ownership, containing

@@ -218,6 +218,12 @@ export function parse(tokens: Token[], fileName: string): Program {
     return { kind: "executorPlacement", mode, executor, returnType, errorType, body, location, onLocation };
   };
 
+  const parseExecutorAffinity = (): FunctionDeclaration["executorAffinity"] => {
+    if (!match("on")) return undefined;
+    const onLocation = previous().location;
+    return { executor: parsePostfix(), onLocation };
+  };
+
   const parseTypeParameters = (): { names: string[]; constraints: NonNullable<FunctionDeclaration["typeParameterConstraints"]> } => {
     if (!match("less")) return { names: [], constraints: [] };
     const names = [];
@@ -828,6 +834,7 @@ export function parse(tokens: Token[], fileName: string): Program {
     expect("colon", "`:`");
     const returnType = parseType();
     const errorType = match("throws") ? parseType() : null;
+    const executorAffinity = parseExecutorAffinity();
     const nativeSelector = match("as")
       ? expect("string", "an Objective-C selector string after `as`").text
       : null;
@@ -849,6 +856,7 @@ export function parse(tokens: Token[], fileName: string): Program {
       parameters,
       returnType,
       errorType,
+      executorAffinity,
       nativeSelector,
       body,
       location: start,
@@ -861,6 +869,7 @@ export function parse(tokens: Token[], fileName: string): Program {
     const start = declarationToken.location;
     const name = expect("identifier", `a ${kind} name`).text;
     const generic = parseTypeParameters();
+    const executorAffinity = parseExecutorAffinity();
     const implemented: TypeReference[] = [];
     if (match("implements")) {
       do implemented.push(parseType()); while (match("comma"));
@@ -928,6 +937,7 @@ export function parse(tokens: Token[], fileName: string): Program {
       name,
       typeParameters: generic.names,
       typeParameterConstraints: generic.constraints,
+      executorAffinity,
       implements: implemented,
       fields,
       constructor,

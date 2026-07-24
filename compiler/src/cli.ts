@@ -4,7 +4,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, writeFi
 import { basename, dirname, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import type { Expression, FunctionDeclaration, Program, SourceLocation, Statement } from "./ast.ts";
+import type { Expression, FunctionDeclaration, Program, SourceLocation, Statement, StructDeclaration } from "./ast.ts";
 import { canonicalTypeName } from "./canonical-type-name.ts";
 import { analyzeSource, check, compileToNative, type NativeArtifact } from "./compiler.ts";
 import { DiagnosticError, formatDiagnostic } from "./diagnostics.ts";
@@ -426,7 +426,19 @@ function canonicalFunctionText(declaration: FunctionDeclaration): string {
   if (declaration.receiverMode) parameters.unshift(`${declaration.receiverMode} this`);
   const error = declaration.errorType ? ` throws ${canonicalTypeName(declaration.errorType.name)}` : "";
   const asynchronous = declaration.async ? "async " : "";
-  return `${asynchronous}function ${declaration.name}${generic}(${parameters.join(", ")}): ${canonicalTypeName(declaration.returnType.name)}${error}`;
+  const executor = canonicalExecutorAffinity(declaration.executorAffinity);
+  return `${asynchronous}function ${declaration.name}${generic}(${parameters.join(", ")}): ${canonicalTypeName(declaration.returnType.name)}${error}${executor}`;
+}
+
+function canonicalExecutorAffinity(
+  affinity: FunctionDeclaration["executorAffinity"] | StructDeclaration["executorAffinity"],
+): string {
+  if (!affinity) return "";
+  const expression = affinity.executor;
+  if (expression.kind === "member" && expression.object.kind === "identifier") {
+    return ` on ${expression.object.name}.${expression.property}`;
+  }
+  return " on <executor>";
 }
 
 function stage0FunctionBody(
@@ -1132,6 +1144,7 @@ function stage0TypeShapes(program: Program, fileName: string): readonly Stage1Ty
       location: { ...declaration.location, fileName },
     })),
     ...program.structs.map((declaration): Stage1TypeShape => {
+      const executor = canonicalExecutorAffinity(declaration.executorAffinity);
       const implemented = declaration.implements.length
         ? ` implements ${declaration.implements.map((trait) => canonicalTypeName(trait.name)).join(", ")}`
         : "";
@@ -1158,7 +1171,7 @@ function stage0TypeShapes(program: Program, fileName: string): readonly Stage1Ty
         text: `${declaration.kind} ${declaration.name}${canonicalTypeParameters(
           declaration.typeParameters,
           declaration.typeParameterConstraints,
-        )}${implemented} {${members.length ? ` ${members.join(" ")}` : ""} }`,
+        )}${executor}${implemented} {${members.length ? ` ${members.join(" ")}` : ""} }`,
         location: { ...declaration.location, fileName },
       };
     }),

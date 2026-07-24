@@ -169,6 +169,7 @@ export type Stage1ModuleTypeParameterConstraint = {
 export type Stage1ModuleTypeSignature = {
   readonly typeParameters: readonly string[];
   readonly typeParameterConstraints: readonly Stage1ModuleTypeParameterConstraint[];
+  readonly executorAffinity: string | null;
   readonly implementedTraits: readonly string[];
   readonly fields: readonly Stage1ModuleFieldSignature[];
   readonly methods: readonly Stage1ModuleMethodSignature[];
@@ -180,6 +181,7 @@ export type Stage1ModuleTypeSignature = {
 
 export type Stage1ModuleFunctionSignature = {
   readonly asynchronous: boolean;
+  readonly executorAffinity: string | null;
   readonly typeParameters: readonly string[];
   readonly typeParameterConstraints: readonly Stage1ModuleTypeParameterConstraint[];
   readonly parameterModes: readonly ("value" | "in" | "inout" | "out")[];
@@ -446,7 +448,7 @@ export function decodeStage1ModuleGraphStream(output: string): Stage1ModuleGraph
       continue;
     }
     if (fields[0] === "typeSignature") {
-      if (fields.length < 8) throw new Error(`malformed stage-1 type signature line: ${line}`);
+      if (fields.length < 9) throw new Error(`malformed stage-1 type signature line: ${line}`);
       const moduleIndex = parseProtocolHexInteger(fields[1], "type signature module");
       const symbolIndex = parseProtocolHexInteger(fields[2], "type signature symbol");
       const symbol = modules[moduleIndex]?.symbols[symbolIndex] as Stage1ModuleSymbol | undefined;
@@ -468,10 +470,13 @@ export function decodeStage1ModuleGraphStream(output: string): Stage1ModuleGraph
       if (customConstructor !== "0" && customConstructor !== "1") {
         throw new Error(`malformed stage-1 type signature constructor state: ${line}`);
       }
-      if (fields.length !== 8 + typeParameterCount + (fieldCount * 4) + (variantCount * 2)) {
+      if (!/^(?:[0-9a-f]{2})*$/.test(fields[8])) {
+        throw new Error(`malformed stage-1 type executor affinity: ${line}`);
+      }
+      if (fields.length !== 9 + typeParameterCount + (fieldCount * 4) + (variantCount * 2)) {
         throw new Error(`malformed stage-1 type signature arity: ${line}`);
       }
-      const encoded = fields.slice(8);
+      const encoded = fields.slice(9);
       const typeParameters = encoded.slice(0, typeParameterCount);
       const encodedFields = encoded.slice(typeParameterCount, typeParameterCount + (fieldCount * 4));
       const encodedVariants = encoded.slice(typeParameterCount + (fieldCount * 4));
@@ -511,6 +516,7 @@ export function decodeStage1ModuleGraphStream(output: string): Stage1ModuleGraph
       (symbol as { typeSignature: Stage1ModuleTypeSignature | null }).typeSignature = {
         typeParameters: typeParameters.map((field) => Buffer.from(field, "hex").toString("utf8")),
         typeParameterConstraints: [],
+        executorAffinity: fields[8].length === 0 ? null : Buffer.from(fields[8], "hex").toString("utf8"),
         implementedTraits: [],
         fields: decodedFields,
         methods: [],
@@ -556,6 +562,7 @@ export function decodeStage1ModuleGraphStream(output: string): Stage1ModuleGraph
       }
       (symbol.typeSignature as { constructorSignature: Stage1ModuleFunctionSignature | null }).constructorSignature = {
         asynchronous: false,
+        executorAffinity: null,
         returnType: Buffer.from(fields[4], "hex").toString("utf8"),
         errorType: fields[5].length === 0 ? null : Buffer.from(fields[5], "hex").toString("utf8"),
         typeParameters: encodedTypes.slice(0, typeParameterCount)
@@ -568,7 +575,7 @@ export function decodeStage1ModuleGraphStream(output: string): Stage1ModuleGraph
       continue;
     }
     if (fields[0] === "methodSignature") {
-      if (fields.length < 12) throw new Error(`malformed stage-1 method signature line: ${line}`);
+      if (fields.length < 13) throw new Error(`malformed stage-1 method signature line: ${line}`);
       const moduleIndex = parseProtocolHexInteger(fields[1], "method signature module");
       const symbolIndex = parseProtocolHexInteger(fields[2], "method signature symbol");
       const symbol = modules[moduleIndex]?.symbols[symbolIndex] as Stage1ModuleSymbol | undefined;
@@ -579,7 +586,7 @@ export function decodeStage1ModuleGraphStream(output: string): Stage1ModuleGraph
       if (fields[7] !== "0" && fields[7] !== "1") {
         throw new Error(`malformed stage-1 method async state: ${fields[7]}`);
       }
-      if (![fields[3], fields[5], fields[6], fields[8], fields[9]].every((field) => /^(?:[0-9a-f]{2})*$/.test(field))) {
+      if (![fields[3], fields[5], fields[6], fields[8], fields[9], fields[10]].every((field) => /^(?:[0-9a-f]{2})*$/.test(field))) {
         throw new Error(`malformed stage-1 method signature text: ${line}`);
       }
       const visibility = Buffer.from(fields[5], "hex").toString("utf8");
@@ -590,12 +597,12 @@ export function decodeStage1ModuleGraphStream(output: string): Stage1ModuleGraph
       if (receiverMode !== "in" && receiverMode !== "inout" && receiverMode !== "move") {
         throw new Error(`malformed stage-1 method receiver mode: ${line}`);
       }
-      const typeParameterCount = parseProtocolHexInteger(fields[10], "method type parameter count");
-      const parameterCount = parseProtocolHexInteger(fields[11], "method parameter count");
-      if (fields.length !== 12 + typeParameterCount + (parameterCount * 2)) {
+      const typeParameterCount = parseProtocolHexInteger(fields[11], "method type parameter count");
+      const parameterCount = parseProtocolHexInteger(fields[12], "method parameter count");
+      if (fields.length !== 13 + typeParameterCount + (parameterCount * 2)) {
         throw new Error(`malformed stage-1 method signature arity: ${line}`);
       }
-      const encodedTypes = fields.slice(12);
+      const encodedTypes = fields.slice(13);
       if (encodedTypes.some((field) => !/^(?:[0-9a-f]{2})*$/.test(field))) {
         throw new Error(`malformed stage-1 method signature type: ${line}`);
       }
@@ -612,6 +619,7 @@ export function decodeStage1ModuleGraphStream(output: string): Stage1ModuleGraph
         receiverMode,
         signature: {
           asynchronous: fields[7] === "1",
+          executorAffinity: fields[10].length === 0 ? null : Buffer.from(fields[10], "hex").toString("utf8"),
           returnType: Buffer.from(fields[8], "hex").toString("utf8"),
           errorType: fields[9].length === 0 ? null : Buffer.from(fields[9], "hex").toString("utf8"),
           typeParameters: encodedTypes.slice(0, typeParameterCount)
@@ -625,7 +633,7 @@ export function decodeStage1ModuleGraphStream(output: string): Stage1ModuleGraph
       continue;
     }
     if (fields[0] === "signature") {
-      if (fields.length < 8) throw new Error(`malformed stage-1 function signature line: ${line}`);
+      if (fields.length < 9) throw new Error(`malformed stage-1 function signature line: ${line}`);
       const moduleIndex = parseProtocolHexInteger(fields[1], "signature module");
       const symbolIndex = parseProtocolHexInteger(fields[2], "signature symbol");
       const symbol = modules[moduleIndex]?.symbols[symbolIndex] as Stage1ModuleSymbol | undefined;
@@ -636,15 +644,15 @@ export function decodeStage1ModuleGraphStream(output: string): Stage1ModuleGraph
       if (fields[3] !== "0" && fields[3] !== "1") {
         throw new Error(`malformed stage-1 function async state: ${fields[3]}`);
       }
-      if (!/^(?:[0-9a-f]{2})*$/.test(fields[4]) || !/^(?:[0-9a-f]{2})*$/.test(fields[5])) {
+      if (!/^(?:[0-9a-f]{2})*$/.test(fields[4]) || !/^(?:[0-9a-f]{2})*$/.test(fields[5]) || !/^(?:[0-9a-f]{2})*$/.test(fields[6])) {
         throw new Error(`malformed stage-1 function signature text: ${line}`);
       }
-      const typeParameterCount = parseProtocolHexInteger(fields[6], "signature type parameter count");
-      const parameterCount = parseProtocolHexInteger(fields[7], "signature parameter count");
-      if (fields.length !== 8 + typeParameterCount + (parameterCount * 2)) {
+      const typeParameterCount = parseProtocolHexInteger(fields[7], "signature type parameter count");
+      const parameterCount = parseProtocolHexInteger(fields[8], "signature parameter count");
+      if (fields.length !== 9 + typeParameterCount + (parameterCount * 2)) {
         throw new Error(`malformed stage-1 function signature arity: ${line}`);
       }
-      const encodedTypes = fields.slice(8);
+      const encodedTypes = fields.slice(9);
       if (encodedTypes.some((field) => !/^(?:[0-9a-f]{2})*$/.test(field))) {
         throw new Error(`malformed stage-1 function signature type: ${line}`);
       }
@@ -656,6 +664,7 @@ export function decodeStage1ModuleGraphStream(output: string): Stage1ModuleGraph
       }
       (symbol as { functionSignature: Stage1ModuleFunctionSignature | null }).functionSignature = {
         asynchronous: fields[3] === "1",
+        executorAffinity: fields[6].length === 0 ? null : Buffer.from(fields[6], "hex").toString("utf8"),
         returnType: Buffer.from(fields[4], "hex").toString("utf8"),
         errorType: fields[5].length === 0 ? null : Buffer.from(fields[5], "hex").toString("utf8"),
         typeParameters: encodedTypes.slice(0, typeParameterCount).map((field) => Buffer.from(field, "hex").toString("utf8")),

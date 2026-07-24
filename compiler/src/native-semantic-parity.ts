@@ -13,6 +13,7 @@ export type NativeSemanticEvidence = {
 export function stage0FunctionSignature(declaration: FunctionDeclaration): Stage1ModuleFunctionSignature {
   return {
     asynchronous: declaration.async ?? false,
+    executorAffinity: executorAffinityName(declaration.executorAffinity),
     typeParameters: declaration.typeParameters ?? [],
     typeParameterConstraints: (declaration.typeParameterConstraints ?? []).flatMap((constraint) => (
       constraint.traits.map((trait) => ({
@@ -31,6 +32,7 @@ export function stage0ConstructorSignature(declaration: StructDeclaration): Stag
   if (!declaration.constructor) return null;
   return {
     asynchronous: false,
+    executorAffinity: null,
     typeParameters: [],
     typeParameterConstraints: [],
     parameterModes: declaration.constructor.parameters.map((parameter) => parameter.mode),
@@ -40,6 +42,16 @@ export function stage0ConstructorSignature(declaration: StructDeclaration): Stag
       ? canonicalTypeName(declaration.constructor.errorType.name)
       : null,
   };
+}
+
+function executorAffinityName(
+  affinity: FunctionDeclaration["executorAffinity"] | StructDeclaration["executorAffinity"],
+): string | null {
+  if (!affinity) return null;
+  const expression = affinity.executor;
+  return expression.kind === "member" && expression.object.kind === "identifier"
+    ? `${expression.object.name}.${expression.property}`
+    : "<executor>";
 }
 
 export function validateNativeFrontendSemantics(
@@ -115,6 +127,7 @@ function stage0ModuleSymbols(
           traitName: canonicalTypeName(trait.name),
         }))
       )),
+      executorAffinity: executorAffinityName(declaration.executorAffinity),
       implementedTraits: declaration.implements.map((trait) => canonicalTypeName(trait.name)),
       fields: declaration.fields.map((field) => ({
         name: field.name,
@@ -129,6 +142,7 @@ function stage0ModuleSymbols(
         receiverMode: method.receiverMode ?? "in",
         signature: {
           asynchronous: method.async ?? false,
+          executorAffinity: executorAffinityName(method.executorAffinity),
           typeParameters: method.typeParameters ?? [],
           typeParameterConstraints: (method.typeParameterConstraints ?? []).flatMap((constraint) => (
             constraint.traits.map((trait) => ({
@@ -154,6 +168,7 @@ function stage0ModuleSymbols(
           traitName: canonicalTypeName(trait.name),
         }))
       )),
+      executorAffinity: null,
       implementedTraits: [],
       fields: [],
       methods: declaration.methods.map((method) => ({
@@ -170,6 +185,7 @@ function stage0ModuleSymbols(
     } : declaration.kind === "enum" ? {
       typeParameters: [],
       typeParameterConstraints: [],
+      executorAffinity: null,
       implementedTraits: [],
       fields: [],
       methods: [],
@@ -306,6 +322,7 @@ function sameModuleTypeSignature(
   if (left === null || right === null) return left === right;
   return left.customDeinit === right.customDeinit
     && left.customConstructor === right.customConstructor
+    && left.executorAffinity === right.executorAffinity
     && sameModuleFunctionSignature(left.constructorSignature, right.constructorSignature)
     && left.typeParameters.length === right.typeParameters.length
     && left.typeParameters.every((value, index) => value === right.typeParameters[index])
@@ -346,6 +363,7 @@ export function sameModuleFunctionSignature(
 ): boolean {
   if (left === null || right === null) return left === right;
   return left.asynchronous === right.asynchronous
+    && left.executorAffinity === right.executorAffinity
     && left.returnType === right.returnType
     && left.errorType === right.errorType
     && left.typeParameters.length === right.typeParameters.length

@@ -8283,7 +8283,7 @@ test("resolves a canonical module graph directly from native Z ASTs", () => {
     "entry\t0000000000000000\n"
     + "module\t2f612e7a73\n"
     + "symbol\t0000000000000000\tfunction\t6964656e74697479\t1\t-\t6964656e74697479\t0000000000000000\t0000000000000001\t0000000000000001\n"
-    + "signature\t0000000000000000\t0000000000000000\t0\t54\t\t0000000000000001\t0000000000000001\t54\t76616c7565\t54\n"
+    + "signature\t0000000000000000\t0000000000000000\t0\t54\t\t\t0000000000000001\t0000000000000001\t54\t76616c7565\t54\n"
     + "callResolution\t0000000000000000\t000000000000002a\t0000000000000002\t000000000000000a\t0000000000000000\t0000000000000000\t66756e6374696f6e\t6964656e74697479\t0\t\t693332\t\t0000000000000001\t0000000000000001\t54\t693332\t76616c7565\t693332\n"
     + "bindingResolution\t0000000000000000\t000000000000001e\t0000000000000002\t0000000000000007\t76616c7565\t0\t693332\t0000000000000000\n"
     + "expressionResolution\t0000000000000000\t000000000000002a\t0000000000000002\t000000000000000a\t693332\t0000000000000000\n"
@@ -8340,7 +8340,7 @@ test("resolves a canonical module graph directly from native Z ASTs", () => {
     () => decodeStage1ModuleGraphStream(
       "entry\t0000000000000000\n"
       + "module\t2f612e7a73\n"
-      + "signature\t0000000000000000\t0000000000000000\t0\t693332\t\t0000000000000000\t0000000000000000\n"
+      + "signature\t0000000000000000\t0000000000000000\t0\t693332\t\t\t0000000000000000\t0000000000000000\n"
       + "order\t0000000000000000\n",
     ),
     /function signature appeared before its symbol/,
@@ -8350,7 +8350,7 @@ test("resolves a canonical module graph directly from native Z ASTs", () => {
       "entry\t0000000000000000\n"
       + "module\t2f612e7a73\n"
       + "symbol\t0000000000000000\tfunction\t76616c7565\t1\t-\t76616c7565\t0000000000000000\t0000000000000001\t0000000000000001\n"
-      + "signature\t0000000000000000\t0000000000000000\t0\t693332\t\t0000000000000000\t0000000000000001\t626164\t693332\n"
+      + "signature\t0000000000000000\t0000000000000000\t0\t693332\t\t\t0000000000000000\t0000000000000001\t626164\t693332\n"
       + "order\t0000000000000000\n",
     ),
     /malformed stage-1 function parameter mode/,
@@ -8360,7 +8360,7 @@ test("resolves a canonical module graph directly from native Z ASTs", () => {
       "entry\t0000000000000000\n"
       + "module\t2f612e7a73\n"
       + "symbol\t0000000000000000\tclass\t536563726574\t1\t-\t536563726574\t0000000000000000\t0000000000000001\t0000000000000001\n"
-      + "typeSignature\t0000000000000000\t0000000000000000\t0000000000000000\t0000000000000000\t0000000000000000\t0\t1\n"
+      + "typeSignature\t0000000000000000\t0000000000000000\t0000000000000000\t0000000000000000\t0000000000000000\t0\t1\t\n"
       + "constructorSignature\t0000000000000000\t0000000000000000\t0\t536563726574\t\t0000000000000000\t0000000000000001\t626164\t693332\n"
       + "order\t0000000000000000\n",
     ),
@@ -8371,7 +8371,7 @@ test("resolves a canonical module graph directly from native Z ASTs", () => {
       "entry\t0000000000000000\n"
       + "module\t2f612e7a73\n"
       + "symbol\t0000000000000000\tenum\t5374617465\t1\t-\t5374617465\t0000000000000000\t0000000000000001\t0000000000000001\n"
-      + "typeSignature\t0000000000000000\t0000000000000000\t0000000000000000\t0000000000000000\t0000000000000001\t0\t0\n"
+      + "typeSignature\t0000000000000000\t0000000000000000\t0000000000000000\t0000000000000000\t0000000000000001\t0\t0\t\n"
       + "order\t0000000000000000\n",
     ),
     /malformed stage-1 type signature arity/,
@@ -8381,8 +8381,8 @@ test("resolves a canonical module graph directly from native Z ASTs", () => {
       "entry\t0000000000000000\n"
       + "module\t2f612e7a73\n"
       + "symbol\t0000000000000000\tstruct\t506f696e74\t1\t-\t506f696e74\t0000000000000000\t0000000000000001\t0000000000000001\n"
-      + "typeSignature\t0000000000000000\t0000000000000000\t0000000000000000\t0000000000000000\t0000000000000000\t0\t0\n"
-      + "methodSignature\t0000000000000000\t0000000000000000\t72656164\t0\t7075626c6963\t626164\t0\t693332\t\t0000000000000000\t0000000000000000\n"
+      + "typeSignature\t0000000000000000\t0000000000000000\t0000000000000000\t0000000000000000\t0000000000000000\t0\t0\t\n"
+      + "methodSignature\t0000000000000000\t0000000000000000\t72656164\t0\t7075626c6963\t626164\t0\t693332\t\t\t0000000000000000\t0000000000000000\n"
       + "order\t0000000000000000\n",
     ),
     /malformed stage-1 method receiver mode/,
@@ -13148,6 +13148,130 @@ test("type-checks main-thread executor placement and exposes thread.main to edit
   `);
   const syncResult = spawnSync(process.execPath, [cli, "run", syncMain], { encoding: "utf8" });
   assert.equal(syncResult.status, 0, syncResult.stderr);
+});
+
+test("enforces declaration-header executor affinity and surfaces inherited isolation", () => {
+  const source = `
+    import { thread } from "std/thread";
+
+    class Controller on thread.main {
+      readonly value: i32;
+
+      function read(): i32 {
+        return this.value;
+      }
+    }
+
+    struct WindowModel {
+      controller: Controller;
+    }
+
+    function readModel(in model: WindowModel): i32 on thread.main {
+      return model.controller.read();
+    }
+
+    function main(): i32 {
+      const controller = new Controller({ value: 42 });
+      const model = WindowModel({ controller });
+      return readModel(model) - 42;
+    }
+  `;
+  const analysis = analyzeSource(source, "executor-affinity.zs");
+  const controllerAffinity = analysis.semanticInfo.aggregateExecutorAffinities.get("Controller");
+  assert.deepEqual(controllerAffinity, {
+    executor: "main",
+    declared: true,
+    originType: "Controller",
+    fieldPath: [],
+  });
+  const modelAffinity = analysis.semanticInfo.aggregateExecutorAffinities.get("WindowModel");
+  assert.deepEqual(modelAffinity, {
+    executor: "main",
+    declared: false,
+    originType: "Controller",
+    fieldPath: ["controller"],
+  });
+
+  const controllerOffset = source.indexOf("Controller on") + 1;
+  assert.match(hover(source, "executor-affinity.zs", controllerOffset)?.contents.value ?? "", /class Controller on thread\.main/);
+  const modelTypeOffset = source.indexOf("WindowModel {") + 1;
+  const modelTypeHover = hover(source, "executor-affinity.zs", modelTypeOffset)?.contents.value ?? "";
+  assert.match(modelTypeHover, /struct WindowModel on thread\.main/);
+  assert.match(modelTypeHover, /inherited from Controller through controller/);
+  const functionOffset = source.indexOf("readModel") + 1;
+  assert.match(hover(source, "executor-affinity.zs", functionOffset)?.contents.value ?? "", /function readModel.*on thread\.main/);
+  const bindingOffset = source.indexOf("model =") + 1;
+  assert.match(hover(source, "executor-affinity.zs", bindingOffset)?.contents.value ?? "", /executor-isolated to thread\.main/);
+
+  const offMain = source.replace(
+    "function readModel(in model: WindowModel): i32 on thread.main",
+    "function readModel(in model: WindowModel): i32",
+  );
+  const diagnostic = diagnostics(offMain, "executor-affinity-off-main.zs")[0];
+  assert.equal(diagnostic.code, "Z0711");
+  assert.match(diagnostic.message, /requires thread\.main executor context/);
+
+  const generated = compileToC(source, "executor-affinity.zs");
+  assert.match(generated, /Z_Controller_read/);
+
+  const missingCapability = source.replace('import { thread } from "std/thread";', "");
+  const capabilityDiagnostic = diagnostics(missingCapability, "executor-affinity-missing-import.zs")[0];
+  assert.equal(capabilityDiagnostic.code, "Z0710");
+  assert.match(capabilityDiagnostic.message, /requires the thread\.main executor capability/);
+});
+
+test("preserves executor affinity across Z module boundaries", () => {
+  const directory = mkdtempSync("/tmp/z-executor-affinity-modules-");
+  try {
+    const ui = resolve(directory, "ui.zs");
+    const entry = resolve(directory, "main.zs");
+    writeFileSync(ui, `
+      import { thread } from "std/thread";
+
+      export class Controller on thread.main {
+        readonly value: i32;
+        function read(): i32 { return this.value; }
+      }
+
+      export struct WindowModel {
+        controller: Controller;
+      }
+
+      export function readModel(in model: WindowModel): i32 on thread.main {
+        return model.controller.read();
+      }
+    `);
+    writeFileSync(entry, `
+      import { Controller, WindowModel, readModel } from "./ui.zs";
+
+      function main(): i32 {
+        const controller = new Controller({ value: 42 });
+        const model = WindowModel({ controller });
+        return readModel(model) - 42;
+      }
+    `);
+    const source = readFileSync(entry, "utf8");
+    check(source, entry);
+    const imported = source.indexOf("readModel(model)") + 1;
+    assert.match(hover(source, entry, imported)?.contents.value ?? "", /on thread\.main/);
+    const importedModel = source.indexOf("WindowModel") + 1;
+    const importedModelHover = hover(source, entry, importedModel)?.contents.value ?? "";
+    assert.match(importedModelHover, /struct WindowModel on thread\.main/);
+    assert.match(importedModelHover, /inherited from Controller through controller/);
+
+    const offMain = source.replace(
+      "function main(): i32",
+      "function inspect(): i32",
+    ).replace(
+      "return readModel(model) - 42;",
+      "return readModel(model);",
+    ) + "\nfunction main(): i32 { return 0; }\n";
+    const diagnostic = diagnostics(offMain, entry)[0];
+    assert.equal(diagnostic.code, "Z0711");
+    assert.match(diagnostic.message, /requires thread\.main executor context/);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
 });
 
 test("places structured work onto main from a native worker without blocking main", () => {
