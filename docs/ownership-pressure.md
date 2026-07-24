@@ -191,11 +191,54 @@ through optional views generated a pointer-to-pointer, and `throw` bypassed the
 ordinary statement-valued lowering needed by directly constructed errors with
 interpolated messages.
 
+## Application probe 3: ownership boundaries across suspension
+
+Source:
+[`ownership-boundaries.zs`](../examples/interop/objc/desktop-ownership/ownership-boundaries.zs)
+
+This probe applies the current alternatives to the same document lookup while
+crossing from synchronous code into a task:
+
+| Need | Current Z shape | Observed cost and boundary |
+| --- | --- | --- |
+| Immediate read from value-owned storage | `documentAt(index): view Document` inside a synchronous helper | one checked pointer projection; no document or String copy; mutation is legal after last use |
+| Immediate read through ARC identity | `withDocument(id, (in document) => ...)` | zero-copy lexical callback; aliases cannot retain the document projection |
+| Data that survives mutation and suspension | `documentSnapshot(id): Option<Document>` passed into a task | explicit owned document and String copy; ordinary straight-line use after `await` |
+
+The complete run prints the IDs observed through all three contracts and mutates
+both collections after the zero-copy accesses have ended. The snapshot remains
+valid while its task is live and after the ARC-owned workspace grows.
+
+Two rejected shapes clarify the current boundary:
+
+- a free function cannot return `view Item` derived from an `in Store`
+  parameter; the implemented provenance model requires a synchronous borrowed
+  instance receiver;
+- a receiver view declared in an async function cannot coexist with a later
+  suspension, even when its last source use precedes the `await`.
+
+The first is the deliberate parameter-provenance design question. The second is
+a bootstrap composition gap: synchronous analysis knows where the view's last
+use ends, but Phase 1 async frames cannot yet represent that shortened local
+lifetime. A synchronous helper expresses the intended lexical region today.
+The same probe found that an inline nonescaping closure nested directly inside
+an async-frame call is not lowered yet; moving that callback into a synchronous
+helper preserves identical ownership semantics.
+
+This evidence does not justify user-visible lifetime syntax. The supported call
+sites remain readable, but helper extraction becomes friction when otherwise
+synchronous view or closure work appears before a later await. Closing those
+async composition gaps is higher leverage than widening `view` to stored or
+class-owned projections.
+
 ## Not tested yet
 
 - child-task output and cross-thread borrows that survive suspension;
-- parameter-provenanced, retained, or class-owned views;
-- cross-thread ownership, atomic ARC, and sendability;
+- accepted parameter-provenanced or retained views; rejected parameter and
+  class-owner shapes now have explicit evidence;
+- mutable shared ARC identity, concurrent weak upgrade, native sendability
+  inference, and destruction-affinity protocols; Copy snapshots, unique owner
+  transfer, and deeply readonly atomic ARC sharing now cross one native thread;
 - cyclic application graphs under ORC;
 - storing move-only native values in ARC fields or owned closure environments;
   compiler `Option`/`Result` payloads, direct native async locals and owned

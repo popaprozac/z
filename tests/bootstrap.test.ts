@@ -3153,6 +3153,64 @@ test("compares scoped document borrows with independently owned snapshots", () =
   assert.match(hover(source, example, viewOffset)?.contents.value ?? "", /view Document.*view of documents/);
 });
 
+test("keeps ownership boundary alternatives explicit across async suspension", () => {
+  const example = resolve(projectRoot, "examples/interop/objc/desktop-ownership/ownership-boundaries.zs");
+  const source = readFileSync(example, "utf8");
+  const generated = compileToC(source, example);
+  assert.match(generated, /const Z_[A-Za-z0-9_]*Document \* const projected =/);
+  assert.match(generated, /inspectSharedWorkspace\(frame->value_workspace\)/);
+  assert.match(generated, /z_string_copy/);
+
+  const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, "value view=1, class callback=2, delayed snapshot=2\n");
+
+  const parameterView = `
+    struct Item { value: i32; }
+    struct Store { item: Item; }
+    function current(in store: Store): view Item { return store.item; }
+    function main(): i32 { return 0; }
+  `;
+  const parameterDiagnostic = diagnostics(parameterView, "parameter-view-return.zs")[0];
+  assert.equal(parameterDiagnostic.code, "Z0206");
+  assert.match(parameterDiagnostic.message, /view returns require a borrowed instance method receiver/);
+
+  const viewAcrossAwait = `
+    struct Item { value: i32; }
+    struct Store {
+      item: Item;
+      function current(): view Item { return this.item; }
+    }
+    async function ready(): i32 { return 1; }
+    async function inspect(): i32 {
+      const store = Store({ item: Item({ value: 42 }) });
+      const item = store.current();
+      const copied = item.value;
+      const waited = await ready();
+      return copied + waited;
+    }
+    async function main(): i32 { return await inspect() - 43; }
+  `;
+  const suspensionDiagnostic = diagnostics(viewAcrossAwait, "view-across-await.zs")[0];
+  assert.equal(suspensionDiagnostic.code, "Z0704");
+  assert.match(suspensionDiagnostic.message, /cannot await while borrowed storage "item" is live/);
+
+  const closureInsideAsync = `
+    struct Item { value: i32; }
+    function inspect(in operation: () => i32): i32 { return operation(); }
+    async function main(): i32 {
+      const item = Item({ value: 42 });
+      return inspect(() => item.value) - 42;
+    }
+  `;
+  assert.throws(() => compileToC(closureInsideAsync, "async-inline-closure.zs"), (error: unknown) => {
+    assert.ok(error instanceof DiagnosticError);
+    assert.equal(error.code, "Z0700");
+    assert.match(error.message, /expression "closure" is not executable/);
+    return true;
+  });
+});
+
 test("keeps receiver-tied views read-only, local, and value-struct-owned", () => {
   const base = `
     struct Item { value: i32; }
