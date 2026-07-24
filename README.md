@@ -171,6 +171,7 @@ Each document has one job:
 | [Z declaration files](docs/z-declarations.md) | `.zd` grammar, capability dictionary, and C/C++/Objective-C mapping |
 | [Foreign Interface IR](docs/foreign-interface-ir.md) | Backend-neutral foreign declaration model |
 | [Diagnostics](docs/diagnostics.md) | Diagnostic structure and authoring conventions |
+| [Performance](docs/performance.md) | Repeatable release benchmarks, methodology, and current evidence |
 | [Ownership pressure log](docs/ownership-pressure.md) | Evidence from application-shaped ownership probes |
 | [Design checkpoint — 2026-07-19](docs/design-checkpoint-2026-07-19.md) | Dated thesis, performance target, risks, and validation sequence |
 
@@ -185,6 +186,7 @@ compiler/src/     stage-0 compiler and language server
 runtime/          native runtime support
 editors/vscode/   VS Code/Cursor extension
 examples/         categorized language, async, and interop probes
+benchmarks/       repeatable release-mode performance probes
 tests/fixtures/   deterministic native integration fixtures
 docs/             focused reference, model, and status documents
 ```

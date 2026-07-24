@@ -1,6 +1,6 @@
 # Bootstrap implementation status
 
-Last reviewed: 2026-07-23.
+Last reviewed: 2026-07-24.
 
 This document answers “what does the Bun/TypeScript stage-0 compiler implement
 today?” It is not the language specification. Accepted source semantics live in
@@ -121,7 +121,7 @@ functions unavailable to C++; Z does not bypass that limit through private ABI.
 | Structured scopes | Implemented slice | Lexical child joins, sibling/descendant cancellation, shared immutable and exclusive mutable child borrows, plus named `async scope updates {}` handles. Imported `TaskScope` accepts thread-safe callback submissions onto `thread.main`, rejects during close, and joins accepted operations; the first dynamic tier is synchronous nonthrowing `(): void` work |
 | Caller cancellation | Implemented slice | Consuming `await task.cancel()` requests cancellation, joins descendants and cleanup, and discards an unclaimed completed outcome |
 | Timers | Implemented slice | Scheduler-aware monotonic `delay`; blocking `sleep` remains synchronous |
-| Sync work in async frames | Partial | Z and supported direct native calls/methods, console, checked arithmetic, concise and block-arm matches |
+| Sync work in async frames | Partial | Z and supported direct native calls/methods, console, checked arithmetic, concise and block-arm matches; explicitly typed `cstring` locals currently lower incorrectly as owned `String` frame fields |
 | Embedded awaits | Partial | Left-to-right cleanup-free values, awaited conditions, and awaits inside only the selected match arm |
 | Lazy/suspending expressions | Partial | Value-producing match arms can suspend and select scalar, ARC, String, Z-owned, or move-only native results; `&&`, `||`, ternaries, and value `if` remain |
 | Executor placement | Implemented ownership-aware runtime tier | `thread.main` is typed; synchronous proof, hop-and-wait, and structured children execute with plain copied values, owned String copies, retained Z ARC classes, and ARC-retained Objective-C identity from the owning async task. Native workers publish without blocking main; Darwin installs and wakes a CFRunLoop source. Mutable/borrowed/native-affine captures, foreign affinity declarations, Windows message-loop integration, and Linux toolkit adapters remain |
