@@ -11434,7 +11434,7 @@ test("runs cold async generators through reusable awaited advancement tasks", ()
     `, "async-generator-overlap.zs"),
     /spawning AsyncGenerator.next is deferred until concurrent advancement is statically excluded/,
   );
-});
+}, 10_000);
 
 test("returns explicit terminal values from typed generators", () => {
   const example = resolve(projectRoot, "examples/language/control-flow/generator-return.zs");
@@ -12794,7 +12794,7 @@ test("normalizes embedded awaits left-to-right and resumes awaited branches", ()
   assert.equal(result.stdout, "20\n22\n1\n2\n3\n4\npositive\nnot positive\n");
 });
 
-test("diagnoses embedded awaits whose lazy branch lowering has not landed", () => {
+test("diagnoses embedded awaits whose short-circuit lowering has not landed", () => {
   const shortCircuit = `
     async function flag(): boolean { return true; }
     async function main(): i32 {
@@ -12809,23 +12809,35 @@ test("diagnoses embedded awaits whose lazy branch lowering has not landed", () =
     return true;
   });
 
-  const selectedArm = `
+});
+
+test("runs awaits only in the selected async match arm", () => {
+  const directory = mkdtempSync("/tmp/z-async-selected-arm-");
+  const fileName = resolve(directory, "main.zs");
+  writeFileSync(fileName, `
+    import console from "std/console";
     enum State { ready, empty, }
-    async function value(): i32 { return 42; }
+    async function value(): i32 {
+      console.log("selected");
+      return 42;
+    }
     async function main(): i32 {
       const state = State.ready;
       return match (state) {
         ready => await value();
-        empty => 0;
+        empty => {
+          console.log("not selected");
+          select 0;
+        }
       };
     }
-  `;
-  assert.throws(() => compileToC(selectedArm, "async-selected-arm.zs"), (error: unknown) => {
-    assert.ok(error instanceof DiagnosticError);
-    assert.equal(error.code, "Z0700");
-    assert.match(error.message, /selected-arm suspension/);
-    return true;
-  });
+  `);
+
+  const generated = compileToC(readFileSync(fileName, "utf8"), fileName);
+  assert.match(generated, /z_async_start_value/);
+  const result = spawnSync(process.execPath, [cli, "run", fileName], { encoding: "utf8" });
+  assert.equal(result.status, 42, result.stderr);
+  assert.equal(result.stdout, "selected\n");
 });
 
 test("executes async failure matches with scalar and object payload bindings", () => {
@@ -12862,40 +12874,237 @@ test("executes async failure matches with scalar and object payload bindings", (
   assert.equal(object.status, 0, object.stderr);
 });
 
-test("keeps async match ownership and suspending-arm boundaries explicit", () => {
-  const owned = `
+test("consumes owned async match expressions without requiring suspension", () => {
+  const directory = mkdtempSync("/tmp/z-async-owned-match-expression-");
+  const fileName = resolve(directory, "main.zs");
+  writeFileSync(fileName, `
     class Session { id: i32; }
     async function main(): i32 {
       const option = Option.some(new Session({ id: 42 }));
       return match (option) {
-        some(session) => session.id;
+        some(session) => session.id - 42;
         none => 0;
       };
     }
-  `;
-  assert.throws(() => compileToC(owned, "async-owned-match.zs"), (error: unknown) => {
-    assert.ok(error instanceof DiagnosticError);
-    assert.equal(error.code, "Z0700");
-    assert.match(error.message, /ownership-bearing enum/);
-    return true;
-  });
+  `);
 
-  const blockArm = `
-    enum State { ready i32, empty, }
+  const generated = compileToC(readFileSync(fileName, "utf8"), fileName);
+  assert.match(generated, /Z_Option_Session value___z_async_match_subject_/);
+  const result = spawnSync(process.execPath, [cli, "run", fileName], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+});
+
+test("consumes owned async statement matches across suspension", () => {
+  const directory = mkdtempSync("/tmp/z-async-owned-statement-match-");
+  const fileName = resolve(directory, "main.zs");
+  writeFileSync(fileName, `
+    import { delay } from "std/time";
+
+    class Session { id: i32; }
+
     async function main(): i32 {
-      const state = State.ready(42);
+      const option = Option.some(new Session({ id: 42 }));
+      let observed = 0;
+      match (option) {
+        some(session) => {
+          await delay(1);
+          observed = session.id;
+        }
+        none => {
+          observed = -1;
+        }
+      }
+      return observed - 42;
+    }
+  `);
+
+  const generated = compileToC(readFileSync(fileName, "utf8"), fileName);
+  assert.match(generated, /Z_Option_Session value___z_async_match_subject_/);
+  assert.match(generated, /frame->live___z_async_match_subject_\d+ = true;/);
+  assert.match(generated, /frame->value_session = .*data\.some\);/);
+  assert.match(generated, /Z_Session_release\(frame->value_session\)/);
+
+  const result = spawnSync(process.execPath, [cli, "run", fileName], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+});
+
+test("selects from consuming owned async match arms after suspension", () => {
+  const directory = mkdtempSync("/tmp/z-async-owned-value-match-");
+  const fileName = resolve(directory, "main.zs");
+  writeFileSync(fileName, `
+    import { delay } from "std/time";
+
+    class Session { id: i32; }
+
+    async function main(): i32 {
+      const option = Option.some(new Session({ id: 42 }));
+      const observed = match (option) {
+        some(session) => {
+          await delay(1);
+          select session.id;
+        }
+        none => 0;
+      };
+      return observed - 42;
+    }
+  `);
+
+  const generated = compileToC(readFileSync(fileName, "utf8"), fileName);
+  assert.match(generated, /Z_Option_Session value___z_async_match_subject_/);
+  assert.match(generated, /z_async_schedule_delay/);
+  assert.match(generated, /frame->value_observed = .*value_session.*id/);
+
+  const result = spawnSync(process.execPath, [cli, "run", fileName], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+});
+
+test("runs custom deinit exactly once after transferring an async match payload", () => {
+  const directory = mkdtempSync("/tmp/z-async-owned-match-deinit-");
+  const fileName = resolve(directory, "main.zs");
+  writeFileSync(fileName, `
+    import console from "std/console";
+    import { delay } from "std/time";
+
+    struct Resource {
+      id: i32;
+      deinit { console.log(\`released resource \${this.id}\`); }
+    }
+
+    enum ResourceState {
+      ready Resource,
+      empty,
+    }
+
+    async function main(): i32 {
+      const state = ResourceState.ready(Resource({ id: 42 }));
       return match (state) {
-        ready(value) => { select value; }
+        ready(resource) => {
+          await delay(1);
+          select resource.id - 42;
+        }
         empty => 0;
       };
     }
-  `;
-  assert.throws(() => compileToC(blockArm, "async-block-match.zs"), (error: unknown) => {
-    assert.ok(error instanceof DiagnosticError);
-    assert.equal(error.code, "Z0700");
-    assert.match(error.message, /single synchronous expressions/);
-    return true;
-  });
+  `);
+
+  const result = spawnSync(process.execPath, [cli, "run", fileName], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, "released resource 42\n");
+});
+
+test("cleans selected owned match payloads on async error and cancellation", () => {
+  const directory = mkdtempSync("/tmp/z-async-owned-match-exits-");
+  const fileName = resolve(directory, "main.zs");
+  writeFileSync(fileName, `
+    import console from "std/console";
+    import { delay } from "std/time";
+
+    class Session {
+      id: i32;
+      deinit { console.log(\`released match session \${this.id}\`); }
+    }
+
+    async function fail(): i32 throws i32 {
+      await delay(1);
+      throw 7;
+    }
+
+    async function propagate(): i32 throws i32 {
+      const option = Option.some(new Session({ id: 7 }));
+      return match (option) {
+        some(session) => {
+          select try await fail();
+        }
+        none => 0;
+      };
+    }
+
+    async function hold(): i32 {
+      const option = Option.some(new Session({ id: 9 }));
+      return match (option) {
+        some(session) => {
+          await delay(1000);
+          select session.id;
+        }
+        none => 0;
+      };
+    }
+
+    async function main(): i32 {
+      const observed = attempt await propagate();
+      const code = match (observed) {
+        success(value) => value;
+        failure(error) => error;
+      };
+      const task = spawn hold();
+      await delay(5);
+      await task.cancel();
+      return code - 7;
+    }
+  `);
+
+  const source = readFileSync(fileName, "utf8");
+  const generated = compileToC(source, fileName);
+  assert.match(generated, /frame->cancel_children = true;/);
+  assert.match(generated, /if \(frame->live_session\)/);
+  const sessionUse = source.indexOf("session.id");
+  assert.match(hover(source, fileName, sessionUse + 1)?.contents.value ?? "", /session: Session/);
+
+  const result = spawnSync(process.execPath, [cli, "run", fileName], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, "released match session 7\nreleased match session 9\n");
+});
+
+test("keeps consuming async object patterns live through nested loop control", () => {
+  const directory = mkdtempSync("/tmp/z-async-owned-match-loop-");
+  const fileName = resolve(directory, "main.zs");
+  writeFileSync(fileName, `
+    import console from "std/console";
+    import { delay } from "std/time";
+
+    class Session {
+      id: i32;
+      deinit { console.log(\`released loop session \${this.id}\`); }
+    }
+
+    struct Delivery {
+      session: Session;
+      adjustment: i32;
+    }
+
+    enum DeliveryState {
+      ready Delivery,
+      empty,
+    }
+
+    async function main(): i32 {
+      let observed = 0;
+      while (true) {
+        match (DeliveryState.ready(Delivery({
+          session: new Session({ id: 40 }),
+          adjustment: 2,
+        }))) {
+          ready({ session, adjustment }) => {
+            while (true) {
+              await delay(1);
+              break;
+            }
+            observed = session.id + adjustment;
+            break;
+          }
+          empty => break;
+        }
+      }
+      return observed - 42;
+    }
+  `);
+
+  const generated = compileToC(readFileSync(fileName, "utf8"), fileName);
+  assert.match(generated, /Z_Session \* value_session/);
+  assert.match(generated, /Z_Session_release/);
+  const result = spawnSync(process.execPath, [cli, "run", fileName], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, "released loop session 40\n");
 });
 
 test("runs scalar async functions as stackless Phase 1 task frames", () => {

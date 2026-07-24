@@ -403,7 +403,10 @@ type AnalysisState = {
   readonly loopStack: LoopAnalysisFrame[];
   readonly valueLoopStack: ValueLoopAnalysisFrame[];
   readonly moveOrigins: Map<string, SourceLocation>;
-  readonly borrowOrigins: Map<string, { readonly location: SourceLocation; readonly kind: "closure" | "iteration" | "match" }>;
+  readonly borrowOrigins: Map<string, {
+    readonly location: SourceLocation;
+    readonly kind: "closure" | "iteration" | "match" | "ownedMatch";
+  }>;
   readonly iterationBorrowOrigins: Map<string, SourceLocation>;
   readonly activeLoans: AccessLoanSet;
   readonly asyncSpawnBorrowRoots: Map<number, readonly string[]>;
@@ -3008,7 +3011,10 @@ function analyzeStatement(
         for (const fieldBinding of arm.objectBindings ?? []) {
           const field = resolvedObjectFields.get(fieldBinding.fieldName)!;
           if (hasOwnershipType(field.type.name, structs, enums, state)) {
-            state.borrowOrigins.set(fieldBinding.bindingName, { location: statement.location, kind: "match" });
+            state.borrowOrigins.set(fieldBinding.bindingName, {
+              location: statement.location,
+              kind: borrowed ? "match" : "ownedMatch",
+            });
           }
         }
         try {
@@ -4014,7 +4020,10 @@ function inferMatchExpression(
     for (const fieldBinding of arm.objectBindings ?? []) {
       const field = resolvedObjectFields.get(fieldBinding.fieldName)!;
       if (hasOwnershipType(field.type.name, structs, enums, state)) {
-        state.borrowOrigins.set(fieldBinding.bindingName, { location: expression.location, kind: "match" });
+        state.borrowOrigins.set(fieldBinding.bindingName, {
+          location: expression.location,
+          kind: borrowed ? "match" : "ownedMatch",
+        });
       }
     }
     let armType: ValueType = "never";
@@ -4510,7 +4519,10 @@ function isTaskCancellationCall(expression: Expression): expression is Extract<E
 function firstLiveBorrow(
   locals: ReadonlyMap<string, ValueType>,
   activeFunction: FunctionDeclaration | null,
-  borrowOrigins: ReadonlyMap<string, { readonly location: SourceLocation; readonly kind: "closure" | "iteration" | "match" }>,
+  borrowOrigins: ReadonlyMap<string, {
+    readonly location: SourceLocation;
+    readonly kind: "closure" | "iteration" | "match" | "ownedMatch";
+  }>,
   iterationBorrowOrigins: ReadonlyMap<string, SourceLocation>,
 ): string | null {
   const asyncParameters = new Set(
@@ -4532,6 +4544,7 @@ function firstLiveBorrow(
       && ownershipState(type) === "available"
       && (!asyncParameters.has(name) || borrowOrigins.has(name))) {
       const origin = borrowOrigins.get(name);
+      if (origin?.kind === "ownedMatch") continue;
       if (
         persistentGenerator
         && (
@@ -7356,7 +7369,7 @@ function consumeOwnedValue(
         helps: ["use `copy` when an independent copy is supported, or remove the value after iteration ends"],
       });
     }
-    if (borrow?.kind === "match") {
+    if (borrow?.kind === "match" || borrow?.kind === "ownedMatch") {
       throw new DiagnosticError(fileName, expression.location, `cannot move borrowed match binding ${JSON.stringify(expression.name)}`, {
         code: "Z0231",
         length: expression.name.length,

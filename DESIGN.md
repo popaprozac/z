@@ -712,8 +712,13 @@ remain there, so pattern bindings and the remainder each clean up exactly once
 on every exit. Moving a selected binding in the body clears only that binding's
 live state. Structs with custom `deinit`, native RAII value fields, or opaque
 foreign cleanup remain whole-value-only because their partial destruction
-contract is not compiler-derivable. Consuming statement matches,
-value-producing suspending matches, async generator methods, richer async
+contract is not compiler-derivable. Async consuming matches now move their
+subject into hidden frame storage, transfer a whole selected payload into
+arm-owned storage, and keep object-pattern fields borrowed from the hidden
+payload. Only the selected value-producing arm may suspend before its final
+expression or `select`; live flags preserve exact cleanup through normal
+selection, loop exits, return, propagation, and cancellation. Producing an
+ownership-bearing selected result, async generator methods, richer async
 patterns, and borrowed inputs/yields remain following layers.
 
 The source-inspector pressure test uses this complete synchronous protocol to

@@ -845,13 +845,29 @@ contract.
 
 The executable tier supports persistent `if` and `while`, `break` and
 `continue`, built-in `Array`/fixed-array/`Slice`/`Map`/`Set` `for...of`
-cursors, and borrowed `match (in value)` statement payloads across both
-`yield` and ordinary awaits such as `delay`. It also supports typed terminal
-return, typed advancement errors, exact-once suspended-local cleanup,
-caller-cancellation propagation, editor details, and native-frontend parity.
-Concurrent `.next()` calls are rejected. Consuming or value-producing
-suspending matches, async generator methods, async patterns beyond value-struct
-object fields, and borrowed parameters/yields remain explicit follow-up layers.
+cursors, borrowed `match (in value)` statement payloads, and consuming owned
+enum matches across both `yield` and ordinary awaits such as `delay`.
+Only the selected arm runs. A value-producing arm may suspend before its final
+expression or explicit `select`; `return` and `throw` still exit the enclosing
+async function directly:
+
+```zs
+return match (lookup) {
+  found(job) => {
+    const score = await calculate(job.id);
+    select job.id + score;
+  }
+  missing(code) => throw LookupError({ code });
+};
+```
+
+The enum subject is moved into hidden frame storage exactly once. A whole
+payload binding becomes the selected arm's owner; object-pattern fields remain
+borrowed from the hidden payload. Live-state cleanup covers normal selection,
+`break`, `continue`, return, error propagation, and cancellation. Selected
+ownership-bearing result transfer, async generator methods, async patterns
+beyond value-struct object fields, and borrowed parameters/yields remain
+explicit follow-up layers.
 
 `Map` and `Set` use open-addressed hashed buckets for amortized O(1) lookup and
 membership. Owned entries remain in compact storage, while rehashing moves only

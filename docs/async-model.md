@@ -419,11 +419,16 @@ arithmetic. Embedded awaits with cleanup-free results normalize into hidden
 task-frame slots. Their calls run once in left-to-right order, including awaits
 inside ordinary call arguments or another awaited call, and awaited `if`
 conditions resume through explicit branch states. Inline `match (attempt await
-operation())` therefore needs no source-level temporary. Lazy suspension under
-short-circuit operators, ternaries, value-producing `if`, and match arms is
-diagnosed until branch-aware expression lowering can preserve selected-branch
-evaluation. The next Phase 1 layers add owned hidden-result and match-payload
-transfer, block and suspending arms, broader foreign-call shapes, and brace-local
-value cleanup. Later phases
+operation())` therefore needs no source-level temporary. Consuming matches move
+their enum subject into hidden live-tracked frame storage. Whole payload
+bindings own the selected payload; object-pattern fields borrow the hidden
+payload. A selected value-producing arm may run synchronous statements and
+suspend before its final expression or `select`, while `return`, `throw`,
+propagation, loop control, and cancellation retain exact cleanup.
+Lazy suspension under short-circuit operators, ternaries, and value-producing
+`if` remains diagnosed until branch-aware expression lowering preserves
+selected-branch evaluation. The next Phase 1 layers add ownership-bearing
+selected results, broader foreign-call shapes, and brace-local value cleanup.
+Later phases
 add channels, sendability and atomic ARC, native executors, actors, and
 callback-to-async synthesis. Async-free programs never link the runtime.

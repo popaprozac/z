@@ -7,6 +7,8 @@ import type {
   Statement,
   StructDeclaration,
   EnumDeclaration,
+  MatchExpression,
+  MatchStatement,
 } from "./ast.ts";
 import { DiagnosticError } from "./diagnostics.ts";
 import { parseTaskType } from "./async-types.ts";
@@ -75,6 +77,19 @@ type NestedAwaitSite = {
   readonly field: string;
 };
 
+type AsyncMatchSite = {
+  readonly match: MatchStatement | MatchExpression;
+  readonly subjectType: string;
+  readonly subjectBinding: string | null;
+};
+
+type AsyncValueMatchSite = AsyncMatchSite & {
+  readonly destination: string;
+  readonly destinationType: string;
+  readonly terminal: boolean;
+  readonly endLabel: number;
+};
+
 type AsyncOperation =
   | { readonly kind: "statement"; readonly statement: Statement }
   | { readonly kind: "scopeExit"; readonly scope: number }
@@ -96,15 +111,23 @@ type AsyncOperation =
     readonly exhaustedLabel: number;
   }
   | { readonly kind: "asyncForCleanup"; readonly site: AsyncForSite; readonly destroyHandle: boolean }
+  | { readonly kind: "matchInitialize"; readonly site: AsyncMatchSite }
   | {
     readonly kind: "matchDispatch";
-    readonly statement: Extract<Statement, { kind: "match" }>;
+    readonly site: AsyncMatchSite;
     readonly armLabels: readonly number[];
   }
   | {
     readonly kind: "matchBind";
-    readonly statement: Extract<Statement, { kind: "match" }>;
+    readonly site: AsyncMatchSite;
     readonly armIndex: number;
+  }
+  | { readonly kind: "matchCleanup"; readonly site: AsyncMatchSite; readonly armIndex: number }
+  | {
+    readonly kind: "matchSelect";
+    readonly site: AsyncValueMatchSite;
+    readonly armIndex: number;
+    readonly expression: Expression;
   }
   | { readonly kind: "jump"; readonly label: number }
   | { readonly kind: "label"; readonly label: number };
@@ -364,7 +387,12 @@ function planFunction(
   const nextScope = { value: 1 };
   const nextLabel = { value: 0 };
   const operations: AsyncOperation[] = [];
-  const loopTargets: { readonly breakLabel: number; readonly continueLabel: number }[] = [];
+  const loopTargets: {
+    readonly breakLabel: number;
+    readonly continueLabel: number;
+    readonly matchCleanupDepth: number;
+  }[] = [];
+  const activeMatchCleanups: { readonly site: AsyncMatchSite; readonly armIndex: number }[] = [];
   const recordAwait = (
     mode: AwaitSite["mode"],
     expression: Extract<Expression, { kind: "await" | "executorPlacement" }>,
@@ -416,7 +444,97 @@ function planFunction(
     });
     nestedAwaits.set(group.location.offset, sites);
   };
-  const planStatements = (statements: readonly Statement[], scope: number, controlDepth = 0): void => {
+  const matchNeedsPlanning = (expression: MatchExpression): boolean => {
+    if (asyncMatchExpressionNeedsPlanning(expression)) return true;
+    const subjectType = semanticInfo.expressionTypes.get(expression.expression.location.offset);
+    return Boolean(
+      subjectType
+      && hasFrameCleanup(subjectType, types)
+      && !semanticInfo.borrowedMatches.has(expression.location.offset),
+    );
+  };
+  let planStatements: (statements: readonly Statement[], scope: number, controlDepth?: number) => void;
+  const planValueMatch = (
+    expression: MatchExpression,
+    destination: string,
+    destinationType: string,
+    terminal: boolean,
+    scope: number,
+    controlDepth: number,
+  ): void => {
+    recordNestedAwaits(expression.expression);
+    validateFrameExpression(expression.expression, locals, fileName, types, suspensions);
+    const subjectType = semanticInfo.expressionTypes.get(expression.expression.location.offset);
+    const declaration = subjectType ? types.enums.get(subjectType) : null;
+    if (!subjectType || !declaration) {
+      unsupported(fileName, expression.expression.location, "persistent async match requires an enum subject");
+    }
+    if (hasFrameCleanup(destinationType, types)) {
+      unsupported(
+        fileName,
+        expression.location,
+        "a suspending async match cannot produce an ownership-bearing value yet",
+        "select a scalar or plain-data value while owned selected-result transfer is implemented",
+      );
+    }
+    const borrowed = semanticInfo.borrowedMatches.has(expression.location.offset);
+    const subjectBinding = borrowed ? null : `__z_async_match_subject_${expression.location.offset}`;
+    const armLabels = expression.arms.map(() => nextLabel.value++);
+    const endLabel = nextLabel.value++;
+    const site: AsyncValueMatchSite = {
+      match: expression,
+      subjectType: subjectType!,
+      subjectBinding,
+      destination,
+      destinationType,
+      terminal,
+      endLabel,
+    };
+    if (subjectBinding) {
+      requireFrameType(subjectType!, expression.expression.location, fileName, "async match subject", types);
+      locals.set(subjectBinding, subjectType!);
+      operations.push({ kind: "matchInitialize", site });
+    }
+    operations.push({ kind: "matchDispatch", site, armLabels });
+    expression.arms.forEach((arm, armIndex) => {
+      operations.push({ kind: "label", label: armLabels[armIndex] });
+      registerAsyncMatchBindings(
+        site,
+        armIndex,
+        locals,
+        borrowedLocals,
+        types,
+        semanticInfo,
+        fileName,
+      );
+      operations.push({ kind: "matchBind", site, armIndex });
+      if (!borrowed) activeMatchCleanups.push({ site, armIndex });
+
+      const statements = arm.body.kind === "block" ? arm.body.statements : [arm.body];
+      const final = statements.at(-1);
+      if (!final) {
+        unsupported(fileName, arm.body.location, "a value-producing async match arm cannot be empty");
+      }
+      const prefix = statements.slice(0, -1);
+      if (prefix.length > 0) planStatements(prefix, scope, controlDepth + 1);
+      if (final.kind === "expressionStatement" || final.kind === "select") {
+        recordNestedAwaits(final.expression);
+        validateFrameExpression(final.expression, locals, fileName, types, suspensions);
+        operations.push({ kind: "matchSelect", site, armIndex, expression: final.expression });
+      } else if (final.kind === "return" || final.kind === "throw") {
+        planStatements([final], scope, controlDepth + 1);
+      } else {
+        unsupported(
+          fileName,
+          final.location,
+          "a suspending async match arm must end with `select`, an expression, `return`, or `throw`",
+        );
+      }
+      if (!borrowed) activeMatchCleanups.pop();
+    });
+    operations.push({ kind: "label", label: endLabel });
+  };
+  planStatements = (statements: readonly Statement[], scope: number, controlDepth = 0): void => {
     for (const statement of statements) {
       if (statement.kind === "asyncScope") {
         const childScope = nextScope.value++;
@@ -468,7 +586,11 @@ function planFunction(
         validateFrameExpression(statement.condition, locals, fileName, types, suspensions);
         operations.push({ kind: "branch", condition: statement.condition, thenLabel: bodyLabel, elseLabel: endLabel });
         operations.push({ kind: "label", label: bodyLabel });
-        loopTargets.push({ breakLabel: endLabel, continueLabel: conditionLabel });
+        loopTargets.push({
+          breakLabel: endLabel,
+          continueLabel: conditionLabel,
+          matchCleanupDepth: activeMatchCleanups.length,
+        });
         planStatements(statement.body.statements, scope, controlDepth + 1);
         loopTargets.pop();
         operations.push({ kind: "jump", label: conditionLabel });
@@ -559,7 +681,11 @@ function planFunction(
             exhaustedLabel: breakCleanupLabel,
           });
           operations.push({ kind: "label", label: bodyLabel });
-          loopTargets.push({ breakLabel: breakCleanupLabel, continueLabel: continueCleanupLabel });
+          loopTargets.push({
+            breakLabel: breakCleanupLabel,
+            continueLabel: continueCleanupLabel,
+            matchCleanupDepth: activeMatchCleanups.length,
+          });
           planStatements(statement.body.statements, scope, controlDepth + 1);
           loopTargets.pop();
           operations.push({ kind: "label", label: continueCleanupLabel });
@@ -624,7 +750,11 @@ function planFunction(
         operations.push({ kind: "label", label: conditionLabel });
         operations.push({ kind: "forBranch", statement, indexBinding, bodyLabel, elseLabel: endLabel });
         operations.push({ kind: "label", label: bodyLabel });
-        loopTargets.push({ breakLabel: endLabel, continueLabel: incrementLabel });
+        loopTargets.push({
+          breakLabel: endLabel,
+          continueLabel: incrementLabel,
+          matchCleanupDepth: activeMatchCleanups.length,
+        });
         planStatements(statement.body.statements, scope, controlDepth + 1);
         loopTargets.pop();
         operations.push({ kind: "label", label: incrementLabel });
@@ -634,23 +764,28 @@ function planFunction(
         continue;
       }
       if (statement.kind === "match") {
-        if (statement.mode !== "in") {
-          unsupported(
-            fileName,
-            statement.location,
-            "suspending async statement match currently requires `match (in value)`",
-            "borrow the subject explicitly while consuming payload cleanup states are added",
-          );
-        }
         recordNestedAwaits(statement.expression);
         validateFrameExpression(statement.expression, locals, fileName, types, suspensions);
+        const subjectType = semanticInfo.expressionTypes.get(statement.expression.location.offset);
+        const declaration = subjectType ? types.enums.get(subjectType) : null;
+        if (!subjectType || !declaration) {
+          unsupported(fileName, statement.expression.location, "persistent async match requires an enum subject");
+        }
+        const borrowed = semanticInfo.borrowedMatches.has(statement.location.offset);
+        const subjectBinding = borrowed ? null : `__z_async_match_subject_${statement.location.offset}`;
+        const site: AsyncMatchSite = { match: statement, subjectType: subjectType!, subjectBinding };
+        if (subjectBinding) {
+          requireFrameType(subjectType!, statement.expression.location, fileName, "async match subject", types);
+          locals.set(subjectBinding, subjectType!);
+          operations.push({ kind: "matchInitialize", site });
+        }
         const armLabels = statement.arms.map(() => nextLabel.value++);
         const endLabel = nextLabel.value++;
-        operations.push({ kind: "matchDispatch", statement, armLabels });
+        operations.push({ kind: "matchDispatch", site, armLabels });
         statement.arms.forEach((arm, armIndex) => {
           operations.push({ kind: "label", label: armLabels[armIndex] });
           registerAsyncMatchBindings(
-            statement,
+            site,
             armIndex,
             locals,
             borrowedLocals,
@@ -658,13 +793,18 @@ function planFunction(
             semanticInfo,
             fileName,
           );
-          operations.push({ kind: "matchBind", statement, armIndex });
+          operations.push({ kind: "matchBind", site, armIndex });
+          if (!borrowed) activeMatchCleanups.push({ site, armIndex });
           planStatements(
             arm.body.kind === "block" ? arm.body.statements : [arm.body],
             scope,
             controlDepth + 1,
           );
-          if (!asyncStatementStopsFlow(arm.body)) operations.push({ kind: "jump", label: endLabel });
+          if (!borrowed) activeMatchCleanups.pop();
+          if (!asyncStatementStopsFlow(arm.body)) {
+            if (!borrowed) operations.push({ kind: "matchCleanup", site, armIndex });
+            operations.push({ kind: "jump", label: endLabel });
+          }
         });
         operations.push({ kind: "label", label: endLabel });
         continue;
@@ -672,6 +812,9 @@ function planFunction(
       if (statement.kind === "break" || statement.kind === "continue") {
         const loop = loopTargets.at(-1);
         if (!loop) unsupported(fileName, statement.location, `${statement.kind} requires an enclosing async loop`);
+        for (const cleanup of activeMatchCleanups.slice(loop.matchCleanupDepth).reverse()) {
+          operations.push({ kind: "matchCleanup", site: cleanup.site, armIndex: cleanup.armIndex });
+        }
         operations.push({
           kind: "jump",
           label: statement.kind === "break" ? loop.breakLabel : loop.continueLabel,
@@ -724,6 +867,21 @@ function planFunction(
         }
         locals.set(statement.name, type);
         if (!statement.initializer) continue;
+        if (
+          statement.initializer.kind === "matchExpression"
+          && matchNeedsPlanning(statement.initializer)
+        ) {
+          operations.pop();
+          planValueMatch(
+            statement.initializer,
+            `frame->${frameField(statement.name)}`,
+            type,
+            false,
+            scope,
+            controlDepth,
+          );
+          continue;
+        }
         if (
           statement.initializer.kind === "spawn"
           || (statement.initializer.kind === "executorPlacement" && statement.initializer.mode === "spawn")
@@ -797,6 +955,21 @@ function planFunction(
         continue;
       }
       if (statement.kind === "return") {
+        if (
+          statement.expression?.kind === "matchExpression"
+          && matchNeedsPlanning(statement.expression)
+        ) {
+          operations.pop();
+          planValueMatch(
+            statement.expression,
+            "frame->result",
+            declaration.returnType.name,
+            true,
+            scope,
+            controlDepth,
+          );
+          continue;
+        }
         const operation = statement.expression ? awaitOperation(statement.expression) : null;
         if (operation) {
           if (operation.expression.kind === "await") {
@@ -1047,7 +1220,7 @@ function registerAsyncForBindings(
 }
 
 function registerAsyncMatchBindings(
-  statement: Extract<Statement, { kind: "match" }>,
+  site: AsyncMatchSite,
   armIndex: number,
   locals: Map<string, string>,
   borrowedLocals: Set<string>,
@@ -1055,18 +1228,32 @@ function registerAsyncMatchBindings(
   semanticInfo: SemanticInfo,
   fileName: string,
 ): void {
-  const subjectType = semanticInfo.expressionTypes.get(statement.expression.location.offset);
-  const declaration = subjectType ? types.enums.get(subjectType) : null;
+  const { match: statement, subjectType } = site;
+  const declaration = types.enums.get(subjectType);
   const arm = statement.arms[armIndex];
   const variant = declaration?.variants.find((candidate) => candidate.name === arm.variantName);
-  if (!subjectType || !declaration || !variant) {
+  if (!declaration || !variant) {
     unsupported(fileName, statement.location, "persistent async match requires a materialized enum subject");
   }
   if (arm.binding && arm.bindingLocation && variant!.payload) {
+    requireFrameType(variant!.payload.name, arm.bindingLocation, fileName, "async match payload", types);
+    const borrowed = site.subjectBinding === null;
+    if (
+      locals.has(arm.binding)
+      && borrowedLocals.has(arm.binding) !== borrowed
+      && hasFrameCleanup(variant!.payload.name, types)
+    ) {
+      unsupported(
+        fileName,
+        arm.bindingLocation,
+        `persistent async control flow cannot reuse cleanup-bearing binding ${JSON.stringify(arm.binding)} as both borrowed and owned storage`,
+        "use distinct binding names for borrowed and consuming match arms",
+      );
+    }
     registerAsyncFrameBinding(
       arm.binding,
       variant!.payload.name,
-      true,
+      borrowed,
       arm.bindingLocation,
       locals,
       borrowedLocals,
@@ -1078,6 +1265,7 @@ function registerAsyncMatchBindings(
     const type = semanticInfo.bindingTypes.get(binding.bindingLocation.offset)
       ?? payload?.fields.find((field) => field.name === binding.fieldName)?.type.name;
     if (!type) unsupported(fileName, binding.bindingLocation, "could not determine persistent match binding type");
+    requireFrameType(type!, binding.bindingLocation, fileName, "async match field", types);
     registerAsyncFrameBinding(
       binding.bindingName,
       type!,
@@ -1921,6 +2109,13 @@ function asyncStatementStopsFlow(statement: Statement | undefined): boolean {
   }
   return statement.kind === "match" && statement.arms.length > 0
     && statement.arms.every((arm) => asyncStatementStopsFlow(arm.body));
+}
+
+function asyncMatchExpressionNeedsPlanning(expression: MatchExpression): boolean {
+  return expression.arms.some((arm) => (
+    (arm.body.kind !== "expressionStatement" && arm.body.kind !== "select")
+    || statementContainsAwait(arm.body)
+  ));
 }
 
 function validateAsyncMain(declaration: FunctionDeclaration, fileName: string): void {
@@ -3307,19 +3502,60 @@ function emitAsyncForCleanup(
   return lines;
 }
 
+function asyncMatchSubject(
+  site: AsyncMatchSite,
+  plan: AsyncFunctionPlan,
+  fileName: string,
+): string {
+  return site.subjectBinding
+    ? frameStoredValue(site.subjectBinding, site.subjectType, plan.types)
+    : emitFrameExpression(site.match.expression, plan, fileName);
+}
+
+function emitAsyncMatchInitialize(
+  site: AsyncMatchSite,
+  plan: AsyncFunctionPlan,
+  fileName: string,
+  nextState: number,
+): string[] {
+  if (!site.subjectBinding) return [`frame->state = ${nextState};`, "continue;"];
+  let value = emitFrameExpression(site.match.expression, plan, fileName);
+  const suspension = plan.suspensions.get(site.match.expression.location.offset);
+  if (suspension && hasFrameCleanup(site.subjectType, plan.types)) {
+    value = frameTransferredValue(
+      value,
+      `frame->${suspension.field}_live`,
+      site.subjectType,
+      plan.types,
+    );
+  }
+  const destination = frameStoredValue(site.subjectBinding, site.subjectType, plan.types);
+  const initialize = requiresNativeFramePlacement(site.subjectType, plan.types)
+    ? `new (frame->${frameField(site.subjectBinding)}) ${cFrameType(site.subjectType, plan.types)}(${value});`
+    : `${destination} = ${value};`;
+  return [
+    initialize,
+    ...(hasFrameCleanup(site.subjectType, plan.types)
+      ? [`frame->${frameLiveField(site.subjectBinding)} = true;`]
+      : []),
+    `frame->state = ${nextState};`,
+    "continue;",
+  ];
+}
+
 function emitAsyncMatchDispatch(
   operation: Extract<AsyncOperation, { kind: "matchDispatch" }>,
   plan: AsyncFunctionPlan,
   fileName: string,
 ): string[] {
-  const subjectType = frameExpressionType(operation.statement.expression, plan);
-  const declaration = plan.types.enums.get(subjectType);
-  if (!declaration) unsupported(fileName, operation.statement.location, "missing persistent async match enum");
-  const subject = emitFrameExpression(operation.statement.expression, plan, fileName);
+  const { site } = operation;
+  const declaration = plan.types.enums.get(site.subjectType);
+  if (!declaration) unsupported(fileName, site.match.location, "missing persistent async match enum");
+  const subject = asyncMatchSubject(site, plan, fileName);
   return [
     `switch ((${subject}).tag) {`,
-    ...operation.statement.arms.map((arm, index) => (
-      `  case ${resultTag(subjectType, arm.variantName)}: frame->state = ${asyncLabelMarker(operation.armLabels[index])}; break;`
+    ...site.match.arms.map((arm, index) => (
+      `  case ${resultTag(site.subjectType, arm.variantName)}: frame->state = ${asyncLabelMarker(operation.armLabels[index])}; break;`
     )),
     "  default: abort();",
     "}",
@@ -3332,16 +3568,34 @@ function emitAsyncMatchBinding(
   plan: AsyncFunctionPlan,
   fileName: string,
 ): string[] {
-  const subjectType = frameExpressionType(operation.statement.expression, plan);
-  const declaration = plan.types.enums.get(subjectType);
-  const arm = operation.statement.arms[operation.armIndex];
+  const { site } = operation;
+  const declaration = plan.types.enums.get(site.subjectType);
+  const arm = site.match.arms[operation.armIndex];
   const variant = declaration?.variants.find((candidate) => candidate.name === arm.variantName);
-  if (!declaration || !variant) unsupported(fileName, operation.statement.location, "missing persistent async match variant");
-  const subject = emitFrameExpression(operation.statement.expression, plan, fileName);
+  if (!declaration || !variant) unsupported(fileName, site.match.location, "missing persistent async match variant");
+  const subject = asyncMatchSubject(site, plan, fileName);
   const payload = `((${subject}).data.${variant!.name})`;
   const lines: string[] = [];
   if (arm.binding && variant!.payload) {
-    lines.push(assignPersistentBorrowedBinding(arm.binding, variant!.payload.name, payload, plan));
+    if (site.subjectBinding) {
+      const destination = frameStoredValue(arm.binding, variant!.payload.name, plan.types);
+      lines.push(requiresNativeFramePlacement(variant!.payload.name, plan.types)
+        ? `new (frame->${frameField(arm.binding)}) ${cFrameType(variant!.payload.name, plan.types)}(std::move(${payload}));`
+        : `${destination} = ${payload};`);
+      if (hasFrameCleanup(variant!.payload.name, plan.types)) {
+        lines.push(`frame->${frameLiveField(arm.binding)} = true;`);
+      }
+      if (hasFrameCleanup(site.subjectType, plan.types)) {
+        const nativePayload = requiresNativeFramePlacement(variant!.payload.name, plan.types);
+        if (!nativePayload) {
+          lines.push(`${payload} = ${asyncFrameZeroValue(variant!.payload.name, plan.types)};`);
+        }
+        if (nativePayload) lines.push(`std::destroy_at(&(${subject}));`);
+        lines.push(`frame->${frameLiveField(site.subjectBinding)} = false;`);
+      }
+    } else {
+      lines.push(assignPersistentBorrowedBinding(arm.binding, variant!.payload.name, payload, plan));
+    }
   }
   const aggregate = variant!.payload ? plan.types.structs.get(variant!.payload.name) : null;
   const access = aggregate?.kind === "class" ? "->" : ".";
@@ -3353,6 +3607,70 @@ function emitAsyncMatchBinding(
       `((${payload})${access}${field.name})`,
       plan,
     ));
+  }
+  return lines;
+}
+
+function emitAsyncMatchCleanupLines(
+  site: AsyncMatchSite,
+  armIndex: number,
+  plan: AsyncFunctionPlan,
+): string[] {
+  if (!site.subjectBinding) return [];
+  const arm = site.match.arms[armIndex];
+  const declaration = plan.types.enums.get(site.subjectType)!;
+  const variant = declaration.variants.find((candidate) => candidate.name === arm.variantName)!;
+  const lines: string[] = [];
+  if (arm.binding && variant.payload && hasFrameCleanup(variant.payload.name, plan.types)) {
+    lines.push(
+      `if (frame->${frameLiveField(arm.binding)}) {`,
+      `  ${frameCleanup(frameStoredValue(arm.binding, variant.payload.name, plan.types), variant.payload.name, plan.types)}`,
+      `  frame->${frameLiveField(arm.binding)} = false;`,
+      "}",
+    );
+  }
+  if (hasFrameCleanup(site.subjectType, plan.types)) {
+    lines.push(
+      `if (frame->${frameLiveField(site.subjectBinding)}) {`,
+      `  ${frameCleanup(frameStoredValue(site.subjectBinding, site.subjectType, plan.types), site.subjectType, plan.types)}`,
+      `  frame->${frameLiveField(site.subjectBinding)} = false;`,
+      "}",
+    );
+  }
+  return lines;
+}
+
+function emitAsyncMatchCleanup(
+  operation: Extract<AsyncOperation, { kind: "matchCleanup" }>,
+  plan: AsyncFunctionPlan,
+  nextState: number,
+): string[] {
+  return [
+    ...emitAsyncMatchCleanupLines(operation.site, operation.armIndex, plan),
+    `frame->state = ${nextState};`,
+    "continue;",
+  ];
+}
+
+function emitAsyncMatchSelect(
+  operation: Extract<AsyncOperation, { kind: "matchSelect" }>,
+  plan: AsyncFunctionPlan,
+  fileName: string,
+): string[] {
+  const { site } = operation;
+  const value = emitFrameExpression(operation.expression, plan, fileName);
+  const lines = [
+    `${site.destination} = ${value};`,
+    ...emitAsyncMatchCleanupLines(site, operation.armIndex, plan),
+  ];
+  if (hasFrameCleanup(site.destinationType, plan.types)) {
+    lines.push(`${destinationLiveFlag(site.destination, plan)} = true;`);
+  }
+  if (site.terminal) {
+    if (plan.declaration.errorType) lines.push("frame->failed = false;");
+    lines.push(`frame->state = ${finalizeStateMarker};`, "continue;");
+  } else {
+    lines.push(`frame->state = ${asyncLabelMarker(site.endLabel)};`, "continue;");
   }
   return lines;
 }
@@ -3444,9 +3762,26 @@ function generatePoll(
       state += 1;
       continue;
     }
+    if (operation.kind === "matchInitialize") {
+      emitNestedAwaits(operation.site.match.expression);
+      cases.push(caseBlock(state, emitAsyncMatchInitialize(operation.site, plan, fileName, state + 1)));
+      state += 1;
+      continue;
+    }
     if (operation.kind === "matchDispatch") {
-      emitNestedAwaits(operation.statement.expression);
+      if (!operation.site.subjectBinding) emitNestedAwaits(operation.site.match.expression);
       cases.push(caseBlock(state, emitAsyncMatchDispatch(operation, plan, fileName)));
+      state += 1;
+      continue;
+    }
+    if (operation.kind === "matchCleanup") {
+      cases.push(caseBlock(state, emitAsyncMatchCleanup(operation, plan, state + 1)));
+      state += 1;
+      continue;
+    }
+    if (operation.kind === "matchSelect") {
+      emitNestedAwaits(operation.expression);
+      cases.push(caseBlock(state, emitAsyncMatchSelect(operation, plan, fileName)));
       state += 1;
       continue;
     }
