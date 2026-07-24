@@ -894,7 +894,11 @@ export function hover(source: string, fileName: string, offset: number): Hover |
     }
     if (resolved?.kind === "taskScope") {
       const detail = word.text === "schedule"
-        ? "schedule(thread.main, operation: () => void): boolean  // accepts work unless the scope is closing"
+        ? [
+            "schedule(thread.main, operation: () => void): boolean",
+            "schedule(thread.main, operation: async () => void): boolean",
+            "// accepts structured work unless the scope is closing",
+          ].join("\n")
         : word.text === "close"
           ? "async close(): void  // rejects new work and joins accepted children"
           : word.text === "cancel"
@@ -3416,7 +3420,7 @@ function memberCompletions(
       {
         label: "schedule",
         kind: completionKinds.method,
-        detail: "schedule(thread.main, operation: () => void): boolean",
+        detail: "schedule(thread.main, operation: () => void | async () => void): boolean",
         insertText: "schedule()",
       },
       {

@@ -1204,7 +1204,10 @@ An explicit scope may bind its runtime handle:
 ```z
 async scope updates {
   callbackSource(move (value) => {
-    updates.schedule(thread.main, move (): void => { publish(value); });
+    updates.schedule(thread.main, async move (): void => {
+      const calculation = thread.spawn(async move () => calculate(value));
+      publish(attempt await calculation);
+    });
   });
 }
 ```
@@ -1216,6 +1219,11 @@ the boolean result of `schedule` exposes the close-versus-submit race. The unnam
 form remains statically lowered when no dynamic handle is required. An explicit
 `new TaskScope()` may close or cancel earlier; otherwise its owning async
 function closes on return and cancels on throw.
+`schedule` accepts either synchronous `(): void` work or an explicitly async
+`async (): void` root. The async form may suspend and own structured children,
+but it cannot declare `throws`: callback-created work must materialize and
+handle errors locally because submission returns only the immediate
+accepted-versus-closing boolean.
 
 Keyword `task` always inherits the current executor. Explicit native CPU work
 uses a standard-library boundary rather than overloading the keyword:

@@ -2926,6 +2926,10 @@ test("builds the interactive Z Notes AppKit and sqlite3 application", () => {
   assert.match(artifact.source, /z_async_start_native_thread\(&frame->child_\d+->task, true\)/);
   assert.match(artifact.source, /z_async_executor_init\(task->native_executor, false\)/);
   assert.match(artifact.source, /loadNotesFromPath\(\(frame->live_backgroundPath = false/);
+  assert.match(artifact.source, /z_task_scope_schedule_async_/);
+  assert.match(artifact.source, /z_task_scope_spawn_async/);
+  assert.match(artifact.source, /saveNoteToPath\(/);
+  assert.match(artifact.source, /z_task_scope_join\(frame->value_updates, &frame->task, false\)/);
   assert.match(artifact.source, /z_async_start___z_executor_main_/);
   assert.match(artifact.source, /frame->result = runApplication\(/);
 
@@ -15120,12 +15124,17 @@ test("routes arbitrary-thread callbacks through named TaskScope ownership", () =
   const source = readFileSync(example, "utf8");
   const generated = compileToC(source, example);
   assert.match(generated, /z_task_scope_spawn/);
+  assert.match(generated, /z_task_scope_spawn_async/);
+  assert.match(generated, /z_task_scope_schedule_async_/);
   assert.match(generated, /z_task_scope_join/);
   assert.match(generated, /z_async_enqueue_from_thread/);
 
   const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
-  assert.equal(result.stdout, "main-executor callback value=40\n");
+  assert.equal(
+    result.stdout,
+    "main-executor callback value=40\njoined async callback value=41\n",
+  );
 
   const completionSource = 'import { TaskScope } from "std/async"; function inspect(taskScope: TaskScope): void { taskScope.sc; }';
   const completionOffset = completionSource.indexOf("taskScope.sc") + "taskScope.sc".length;
@@ -15136,7 +15145,7 @@ test("routes arbitrary-thread callbacks through named TaskScope ownership", () =
   const scheduleOffset = source.indexOf(".schedule(") + 2;
   assert.match(
     hover(source, example, scheduleOffset)?.contents.value ?? "",
-    /schedule\(thread\.main, operation: \(\) => void\): boolean/,
+    /schedule\(thread\.main, operation: async \(\) => void\): boolean/,
   );
   const scopeTokens = decodeSemanticTokens(semanticTokens(source, example).data);
   const scopeDeclaration = positionForOffset(source, source.indexOf("updates {"));
@@ -15190,6 +15199,34 @@ test("routes arbitrary-thread callbacks through named TaskScope ownership", () =
   assert.equal(explicitResult.status, 0, explicitResult.stderr);
   assert.equal(explicitResult.stdout, "explicit scope joined\n");
 
+  const directAsyncSchedule = resolve(directory, "direct-async.zs");
+  writeFileSync(directAsyncSchedule, `
+    import console from "std/console";
+    import { TaskScope } from "std/async";
+    import { thread } from "std/thread";
+    import { delay } from "std/time";
+    async function main(): i32 {
+      const taskScope = new TaskScope();
+      const message: String = "direct async schedule";
+      const accepted = taskScope.schedule(
+        thread.main,
+        async move (): void => {
+          await delay(1);
+          console.log(message);
+        }
+      );
+      await taskScope.close();
+      return accepted ? 0 : 1;
+    }
+  `);
+  const directAsyncResult = spawnSync(
+    process.execPath,
+    [cli, "run", directAsyncSchedule],
+    { encoding: "utf8" },
+  );
+  assert.equal(directAsyncResult.status, 0, directAsyncResult.stderr);
+  assert.equal(directAsyncResult.stdout, "direct async schedule\n");
+
   const throwingScope = `
     import { TaskScope } from "std/async";
     async function fail(): void throws i32 {
@@ -15204,6 +15241,34 @@ test("routes arbitrary-thread callbacks through named TaskScope ownership", () =
   assert.match(
     compileToC(throwingScope, "task-scope-throw.zs"),
     /z_task_scope_join\(frame->value_taskScope, &frame->task, true\)/,
+  );
+
+  const unhandledScheduledError = `
+    import { TaskScope } from "std/async";
+    import { thread } from "std/thread";
+    function schedule(taskScope: TaskScope): void {
+      taskScope.schedule(thread.main, async move (): void throws i32 => { throw 7; });
+    }
+    async function main(): i32 { return 0; }
+  `;
+  assert.throws(
+    () => compileToC(unhandledScheduledError, "task-scope-unhandled-error.zs"),
+    /TaskScope\.schedule async operations cannot throw/,
+  );
+
+  const borrowedScheduledCapture = `
+    import console from "std/console";
+    import { TaskScope } from "std/async";
+    import { thread } from "std/thread";
+    function schedule(taskScope: TaskScope): void {
+      const value = 42;
+      taskScope.schedule(thread.main, async (): void => { console.log(value); });
+    }
+    async function main(): i32 { return 0; }
+  `;
+  assert.throws(
+    () => compileToC(borrowedScheduledCapture, "task-scope-borrowed-capture.zs"),
+    /TaskScope\.schedule requires `move` for a capturing closure/,
   );
 });
 

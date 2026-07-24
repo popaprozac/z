@@ -276,7 +276,12 @@ export function compileToNative(source: string, fileName: string): NativeArtifac
     includeDirectories: [...new Set([...projectBuild.includeDirectories, ...moduleIncludeDirectories])],
     nativeLibraries: projectBuild.nativeLibraries,
     nativeLinkerArguments: [...new Set([
-      ...(semanticInfo.threadSpawnCalls.size > 0 && process.platform !== "win32" ? ["-pthread"] : []),
+      ...(
+        (semanticInfo.threadSpawnCalls.size > 0 || semanticInfo.taskScopeAsyncCalls.size > 0)
+        && process.platform !== "win32"
+          ? ["-pthread"]
+          : []
+      ),
       ...projectBuild.nativeLinkerArguments,
     ])],
     deploymentTarget: projectBuild.deploymentTarget,

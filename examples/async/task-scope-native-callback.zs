@@ -1,6 +1,7 @@
 import console from "std/console";
 import { TaskScope } from "std/async";
 import { thread } from "std/thread";
+import { delay } from "std/time";
 import native from "../interop/c/cross-thread-callback/native-callback.h";
 
 function beginCalculation(taskScope: TaskScope): void {
@@ -18,11 +19,39 @@ function beginCalculation(taskScope: TaskScope): void {
   );
 }
 
+function beginAsyncCalculation(taskScope: TaskScope): void {
+  native.z_example_start_calculation(
+    41,
+    move (value: i32): i32 => {
+      const accepted = taskScope.schedule(
+        thread.main,
+        async move (): void => {
+          const input = value;
+          const worker = thread.spawn(async move (): i32 => {
+            await delay(1);
+            return input;
+          });
+          const observed = await worker;
+          console.log(`joined async callback value=${observed}`);
+        }
+      );
+      return accepted ? value + 1 : -1;
+    }
+  );
+}
+
 function scheduleThenCancel(taskScope: TaskScope): void {
   taskScope.schedule(
     thread.main,
     move (): void => {
       console.error("cancelled TaskScope operation should not run");
+    }
+  );
+  taskScope.schedule(
+    thread.main,
+    async move (): void => {
+      await delay(1);
+      console.error("cancelled async TaskScope operation should not run");
     }
   );
 }
@@ -34,6 +63,8 @@ async function main(): i32 {
 
   async scope updates {
     beginCalculation(updates);
+    native.z_example_join_calculation();
+    beginAsyncCalculation(updates);
     native.z_example_join_calculation();
   }
   return 0;

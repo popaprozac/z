@@ -294,6 +294,7 @@ export type SemanticInfo = {
   readonly arenaResetCalls: ReadonlySet<number>;
   readonly threadSpawnCalls: ReadonlyMap<number, number>;
   readonly taskScopeSpawnCalls: ReadonlyMap<number, number>;
+  readonly taskScopeAsyncCalls: ReadonlyMap<number, number>;
   readonly taskScopeConstructors: ReadonlySet<number>;
   readonly shareableClasses: ReadonlySet<string>;
   readonly foreignArgumentAccesses: ReadonlyMap<number, "in" | "out" | "inout">;
@@ -366,6 +367,7 @@ type AnalysisState = {
   readonly arenaResetCalls: Set<number>;
   readonly threadSpawnCalls: Map<number, number>;
   readonly taskScopeSpawnCalls: Map<number, number>;
+  readonly taskScopeAsyncCalls: Map<number, number>;
   readonly taskScopeConstructors: Set<number>;
   readonly shareableClasses: Set<string>;
   readonly threadSharedClassUses: Map<string, SourceLocation>;
@@ -639,6 +641,7 @@ export function analyze(
     arenaResetCalls: new Set(),
     threadSpawnCalls: new Map(),
     taskScopeSpawnCalls: new Map(),
+    taskScopeAsyncCalls: new Map(),
     taskScopeConstructors: new Set(),
     shareableClasses: new Set(),
     threadSharedClassUses: new Map(),
@@ -3204,12 +3207,16 @@ function inferClosureExpression(
   transientBorrow = false,
   oneShotOwnedCaptures = false,
   nativeThreadBody = false,
+  scheduledAsyncBody = false,
 ): ValueType {
-  if (expression.async && !nativeThreadBody) {
+  if (expression.async && !nativeThreadBody && !scheduledAsyncBody) {
     throw new DiagnosticError(fileName, expression.location, "async closures are currently executable only through thread.spawn", {
       code: "Z0703",
-      notes: ["the first async-closure tier binds its continuation to one dedicated worker thread"],
-      helps: ["pass this closure directly to thread.spawn, or use an async function with `task` on the inherited executor"],
+      notes: ["an async closure requires an explicit owner and executor"],
+      helps: [
+        "pass this closure directly to thread.spawn for a dedicated worker",
+        "or submit it through TaskScope.schedule for structured executor work",
+      ],
     });
   }
   if (expression.errorType && expectedFunction) {
@@ -6280,9 +6287,12 @@ function inferExpressionInner(
           const method = expression.callee.property;
           if (method === "schedule") {
             if (expression.arguments.length !== 2 || expression.arguments[1].kind !== "closure") {
-              throw new DiagnosticError(fileName, expression.location, "TaskScope.schedule expects an executor and one synchronous closure", {
+              throw new DiagnosticError(fileName, expression.location, "TaskScope.schedule expects an executor and one closure", {
                 code: "Z0710",
-                helps: ["use `scope.schedule(thread.main, move () => operation())`"],
+                helps: [
+                  "use `scope.schedule(thread.main, move () => operation())`",
+                  "or `scope.schedule(thread.main, async move (): void => { await operation(); })`",
+                ],
               });
             }
             const executor = inferExpression(expression.arguments[0], locals, globals, structs, enums, fileName, state);
@@ -6295,17 +6305,39 @@ function inferExpressionInner(
             const operation = expression.arguments[1];
             const expectedFunction: FunctionType = { parameters: [], returnType: "void" };
             const expectedType = functionTypeName([], "void");
-            inferClosureExpression(operation, locals, globals, structs, enums, fileName, state, expectedFunction);
-            const closure = finalizeClosureFunctionValue(
+            if (operation.async && operation.errorType) {
+              throw new DiagnosticError(fileName, operation.errorType.location, "TaskScope.schedule async operations cannot throw", {
+                code: "Z0710",
+                notes: ["a synchronous submitter has no task result through which to receive an unhandled error"],
+                helps: ["handle fallible work locally with `attempt await`"],
+              });
+            }
+            inferClosureExpression(
               operation,
-              expectedFunction,
-              expectedType,
               locals,
+              globals,
               structs,
               enums,
               fileName,
               state,
+              expectedFunction,
+              false,
+              operation.async,
+              false,
+              operation.async,
             );
+            const closure = operation.async
+              ? state.closures.get(operation.location.offset)!
+              : finalizeClosureFunctionValue(
+                  operation,
+                  expectedFunction,
+                  expectedType,
+                  locals,
+                  structs,
+                  enums,
+                  fileName,
+                  state,
+                );
             if (closure.captures.length > 0 && operation.captureMode !== "move") {
               throw new DiagnosticError(fileName, operation.location, "TaskScope.schedule requires `move` for a capturing closure", {
                 code: "Z0704",
@@ -6327,8 +6359,30 @@ function inferExpressionInner(
                 );
               }
             }
-            state.closures.set(operation.location.offset, { ...closure, threadSafe: true });
-            state.taskScopeSpawnCalls.set(expression.location.offset, operation.location.offset);
+            if (operation.async) {
+              for (const capture of closure.captures) {
+                if (
+                  capture.type === "TaskScope"
+                  || structs.get(String(underlyingType(capture.type)))?.kind === "class"
+                  || !hasOwnershipType(capture.type, structs, enums, state)
+                ) {
+                  continue;
+                }
+                consumeOwnedValue(
+                  { kind: "identifier", name: capture.name, location: capture.location },
+                  capture.type,
+                  locals,
+                  structs,
+                  enums,
+                  fileName,
+                  state,
+                );
+              }
+              state.taskScopeAsyncCalls.set(expression.location.offset, operation.location.offset);
+            } else {
+              state.closures.set(operation.location.offset, { ...closure, threadSafe: true });
+              state.taskScopeSpawnCalls.set(expression.location.offset, operation.location.offset);
+            }
             return "boolean";
           }
           if (method !== "close" && method !== "cancel") {

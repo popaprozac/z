@@ -136,8 +136,9 @@ export function generateC(program: Program, sourceName: string, semanticInfo: Se
   const enums = new Map(program.enums.map((declaration) => [declaration.name, declaration]));
   const functions = new Map(program.functions.map((declaration) => [declaration.name, declaration]));
   const threadClosureOffsets = new Set(semanticInfo.threadSpawnCalls.values());
+  const taskScopeAsyncClosureOffsets = new Set(semanticInfo.taskScopeAsyncCalls.values());
   const closures = [...semanticInfo.closures.entries()]
-    .filter(([offset]) => !threadClosureOffsets.has(offset))
+    .filter(([offset]) => !threadClosureOffsets.has(offset) && !taskScopeAsyncClosureOffsets.has(offset))
     .map(([, closure]) => closure);
   const arrayTypes = collectFixedArrayTypes(program, semanticInfo);
   const sliceTypes = collectSliceTypes(program, semanticInfo);
@@ -172,7 +173,8 @@ export function generateC(program: Program, sourceName: string, semanticInfo: Se
   const arenaCreateTypes = [...new Set(semanticInfo.arenaCreateCalls.values())];
   const usesArena = [...semanticInfo.standardTypeBindings.values()].includes("Arena");
   const usesTaskScope = semanticInfo.taskScopeConstructors.size > 0
-    || semanticInfo.taskScopeSpawnCalls.size > 0;
+    || semanticInfo.taskScopeSpawnCalls.size > 0
+    || semanticInfo.taskScopeAsyncCalls.size > 0;
   const usesHasher = semanticInfo.hasherAddTypes.size > 0
     || [...semanticInfo.standardTypeBindings.values()].includes("Hasher")
     || [...mapTypes, ...setTypes].some((type) => {
@@ -396,6 +398,11 @@ export function generateC(program: Program, sourceName: string, semanticInfo: Se
   }
 
   lines.push(...generateAggregateDefinitions(program.structs, program.enums, arrayTypes, structs, enums, semanticInfo.foreignNamedTypes));
+  for (const [callOffset, closureOffset] of semanticInfo.taskScopeAsyncCalls) {
+    const closure = semanticInfo.closures.get(closureOffset)!;
+    lines.push(`${taskScopeAsyncScheduleSignature(callOffset, closure, structs, enums, semanticInfo)};`);
+  }
+  if (semanticInfo.taskScopeAsyncCalls.size > 0) lines.push("");
   for (const type of generatorTypes) {
     lines.push(generateGeneratorRuntime(type, structs, enums, semanticInfo.foreignNamedTypes), "");
   }
@@ -1192,6 +1199,23 @@ export function closureEnvironmentRetainName(closure: ClosureInfo): string {
 
 export function closureEnvironmentReleaseName(closure: ClosureInfo): string {
   return `${closureEnvironmentName(closure)}_release`;
+}
+
+export function taskScopeAsyncScheduleName(callOffset: number): string {
+  return `z_task_scope_schedule_async_${callOffset}`;
+}
+
+function taskScopeAsyncScheduleSignature(
+  callOffset: number,
+  closure: ClosureInfo,
+  structs: Map<string, StructDeclaration>,
+  enums: Map<string, EnumDeclaration>,
+  semanticInfo: SemanticInfo,
+): string {
+  const captures = closure.captures.map((capture, index) => (
+    `${mapType(capture.type, structs, enums, semanticInfo.foreignNamedTypes)} _z_capture_${index}`
+  ));
+  return `static bool ${taskScopeAsyncScheduleName(callOffset)}(Z_TaskScope *scope${captures.length ? `, ${captures.join(", ")}` : ""})`;
 }
 
 export function functionValueLiteral(
@@ -4185,6 +4209,9 @@ function generateDirectValue(
       consumeValue(generateBridgedStringValue(expression, value, valueContext), valueContext)
     ), consumeTerminates);
   }
+  if (expression.kind === "call" && context.semanticInfo.taskScopeAsyncCalls.has(expression.location.offset)) {
+    return consumeValue(generateExpression(expression, context), context);
+  }
   if (expression.kind === "call" && expression.arguments.some((argument) => callArgumentNeedsLowering(argument, context))) {
     return generateLoweredCall(expression, context, consumeValue, consumeTerminates);
   }
@@ -6108,6 +6135,29 @@ function generateExpressionInner(expression: Expression, context: GenerationCont
       const integerOperation = context.semanticInfo.integerOperations.get(expression.location.offset);
       if (integerOperation && expression.callee.kind === "member") {
         return `${integerOperationName(integerOperation)}(${generateExpression(expression.callee.object, context)}, ${generateExpression(expression.arguments[0], context)})`;
+      }
+      if (
+        context.semanticInfo.taskScopeAsyncCalls.has(expression.location.offset)
+        && expression.callee.kind === "member"
+      ) {
+        const closureOffset = context.semanticInfo.taskScopeAsyncCalls.get(expression.location.offset)!;
+        const closure = context.semanticInfo.closures.get(closureOffset)!;
+        const scope = generateExpression(expression.callee.object, context);
+        const captures = closure.captures.map((capture) => {
+          const captured: Expression = {
+            kind: "identifier",
+            name: capture.name,
+            location: capture.location,
+          };
+          let value = generateExpression(captured, context);
+          if (capture.type === "TaskScope") {
+            value = `z_task_scope_retain(${value})`;
+          } else if (context.structs.get(capture.type)?.kind === "class") {
+            value = `${retainName(capture.type)}(${value})`;
+          }
+          return value;
+        });
+        return `${taskScopeAsyncScheduleName(expression.location.offset)}(${[scope, ...captures].join(", ")})`;
       }
       if (
         context.semanticInfo.taskScopeSpawnCalls.has(expression.location.offset)

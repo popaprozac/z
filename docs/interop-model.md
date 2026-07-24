@@ -565,8 +565,11 @@ An arbitrary-thread callback does not itself create an unowned root task.
 Instead, the implemented `TaskScope` bridge owns callback-created operations,
 rejects submissions that lose the race with close, and joins accepted work.
 `async scope updates {}` exposes the same handle with lexical automatic close;
-`new TaskScope()` exposes the manual API. The first tier places synchronous
-nonthrowing operations on `thread.main`. Repeated callback APIs may later
+`new TaskScope()` exposes the manual API. A callback may place either a
+synchronous nonthrowing operation or an explicitly async, nonthrowing root on
+`thread.main`. The async form can await and own `thread.spawn` children; it
+handles fallible work locally because submission returns only the immediate
+accepted-versus-closing boolean. Repeated callback APIs may later
 synthesize an async sequence:
 
 ```z

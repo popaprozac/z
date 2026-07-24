@@ -32,6 +32,7 @@ import {
   functionValueLiteral,
   generateObjCBlockArgument,
   generateObjCMessage,
+  taskScopeAsyncScheduleName,
 } from "./codegen-c.ts";
 
 type AwaitSite = {
@@ -78,7 +79,7 @@ type PlacementTarget = {
   readonly captures: readonly {
     readonly name: string;
     readonly type: string;
-    readonly kind: "plain" | "string" | "class" | "objc";
+    readonly kind: "plain" | "string" | "class" | "objc" | "taskScope";
     readonly location: SourceLocation;
   }[];
 };
@@ -285,6 +286,30 @@ export function generateAsyncC(
       },
     });
   }
+  const taskScopeTargets = new Map<number, AsyncTarget>();
+  for (const [callOffset, closureOffset] of semanticInfo.taskScopeAsyncCalls) {
+    const closure = semanticInfo.closures.get(closureOffset)!;
+    const directVoidReturn = closure.declaration.returnType.name === "void"
+      && closure.declaration.errorType === null
+      && closure.declaration.body.length === 1
+      && closure.declaration.body[0].kind === "return"
+      && closure.declaration.body[0].expression;
+    taskScopeTargets.set(callOffset, {
+      owner: null,
+      declaration: {
+        ...closure.declaration,
+        name: `__z_task_scope_job_${callOffset}`,
+        async: true,
+        body: directVoidReturn
+          ? [{
+              kind: "expressionStatement",
+              expression: directVoidReturn,
+              location: directVoidReturn.location,
+            }]
+          : closure.declaration.body,
+      },
+    });
+  }
   const foreignTargets = new Map<number, AsyncTarget>();
   for (const [callOffset, call] of semanticInfo.objcCalls) {
     if (!call.async) continue;
@@ -316,7 +341,12 @@ export function generateAsyncC(
       },
     });
   }
-  const targets: AsyncTarget[] = [...sourceTargets, ...threadTargets.values(), ...foreignTargets.values()];
+  const targets: AsyncTarget[] = [
+    ...sourceTargets,
+    ...threadTargets.values(),
+    ...taskScopeTargets.values(),
+    ...foreignTargets.values(),
+  ];
   const functions = new Map(
     targets.filter((target) => !target.owner).map((target) => [target.declaration.name, target]),
   );
@@ -369,13 +399,14 @@ export function generateAsyncC(
   const usesMainPlacement = plans.some((plan) => (
     [...plan.awaits.values()].some((site) => site.placement !== null)
     || [...plan.spawns.values()].some((site) => site.placement !== null)
-  )) || semanticInfo.taskScopeSpawnCalls.size > 0;
+  )) || semanticInfo.taskScopeSpawnCalls.size > 0 || semanticInfo.taskScopeAsyncCalls.size > 0;
   const usesNativeThreads = foreignTargets.size > 0
     || semanticInfo.taskScopeSpawnCalls.size > 0
+    || semanticInfo.taskScopeAsyncCalls.size > 0
     || plans.some((plan) => [...plan.spawns.values()].some((site) => site.nativeThread));
   return {
     synchronousProgram,
-    source: generateRuntime(plans, planByKey, main, fileName),
+    source: generateRuntime(plans, planByKey, main, taskScopeTargets, fileName),
     frameworks: usesMainPlacement && usesNativeThreads && process.platform === "darwin"
       ? ["CoreFoundation"]
       : [],
@@ -1740,6 +1771,7 @@ function placementCaptureKind(
   fromNativeThread: boolean,
 ): PlacementTarget["captures"][number]["kind"] | null {
   if (type === "String") return "string";
+  if (type === "TaskScope") return "taskScope";
   const aggregate = types.structs.get(type);
   if (aggregate?.kind === "class") {
     return !fromNativeThread || types.semanticInfo.shareableClasses.has(type) ? "class" : null;
@@ -2280,6 +2312,7 @@ function generateRuntime(
   plans: readonly AsyncFunctionPlan[],
   planByKey: ReadonlyMap<string, AsyncFunctionPlan>,
   main: AsyncFunctionPlan | undefined,
+  taskScopeTargets: ReadonlyMap<number, AsyncTarget>,
   fileName: string,
 ): string {
   const usesDelay = plans.some((plan) => [...plan.awaits.values()].some((site) => site.intrinsic === "delay"));
@@ -2287,6 +2320,7 @@ function generateRuntime(
     [...plan.locals.values()].includes("TaskScope")
     || plan.types.semanticInfo.taskScopeConstructors.size > 0
     || plan.types.semanticInfo.taskScopeSpawnCalls.size > 0
+    || plan.types.semanticInfo.taskScopeAsyncCalls.size > 0
   ));
   const usesThreads = usesTaskScopes
     || plans.some((plan) => plan.foreign !== null)
@@ -2294,7 +2328,10 @@ function generateRuntime(
   const usesMainPlacement = plans.some((plan) => (
     [...plan.awaits.values()].some((site) => site.placement !== null)
     || [...plan.spawns.values()].some((site) => site.placement !== null)
-  )) || plans.some((plan) => plan.types.semanticInfo.taskScopeSpawnCalls.size > 0);
+  )) || plans.some((plan) => (
+    plan.types.semanticInfo.taskScopeSpawnCalls.size > 0
+    || plan.types.semanticInfo.taskScopeAsyncCalls.size > 0
+  ));
   const usesDarwinMainLoop = usesThreads && usesMainPlacement;
   const usesNativeFrameStorage = plans.some((plan) => (
     requiresNativeFramePlacement(planSuccessType(plan), plan.types)
@@ -2418,6 +2455,8 @@ function generateRuntime(
       "  void (*call)(void *);",
       "  void *context;",
       "  void (*release)(void *);",
+      "  Z_AsyncTask *child;",
+      "  void (*destroy_child)(Z_AsyncTask *);",
       "  Z_TaskScopeJob *scope_next;",
       "};",
       "",
@@ -2745,6 +2784,8 @@ function generateRuntime(
       "",
     ] : []),
     ...(usesTaskScopes ? [
+      "static void z_async_cancel(Z_AsyncTask *task);",
+      "",
       "static Z_TaskScope *z_task_scope_retain(Z_TaskScope *scope) {",
       "  if (scope != NULL) __atomic_add_fetch(&scope->refcount, 1, __ATOMIC_RELAXED);",
       "  return scope;",
@@ -2776,23 +2817,15 @@ function generateRuntime(
       "  return scope;",
       "}",
       "",
-      "static void z_task_scope_job_poll(Z_AsyncTask *task) {",
-      "  Z_TaskScopeJob *job = (Z_TaskScopeJob *)task;",
+      "static void z_task_scope_finish_job(Z_TaskScopeJob *job) {",
       "  Z_TaskScope *scope = job->scope;",
-      "  z_async_thread_lock(scope->executor);",
-      "  const bool cancelled = scope->cancelled;",
-      "  z_async_thread_unlock(scope->executor);",
-      "  if (!cancelled) job->call(job->context);",
-      "  if (job->release != NULL) job->release(job->context);",
-      "  job->context = NULL;",
-      "  job->release = NULL;",
       "  z_async_thread_lock(scope->executor);",
       "  if (scope->pending == 0) abort();",
       "  scope->pending -= 1;",
       "  Z_AsyncTask *waiter = scope->pending == 0 ? scope->waiter : NULL;",
       "  if (waiter != NULL) scope->waiter = NULL;",
       "  z_async_thread_unlock(scope->executor);",
-      "  z_async_complete_task(task);",
+      "  z_async_complete_task(&job->task);",
       "  if (waiter != NULL) {",
       "    waiter->suspended = false;",
       "    z_async_enqueue(scope->executor, waiter);",
@@ -2800,7 +2833,34 @@ function generateRuntime(
       "  z_task_scope_release(scope);",
       "}",
       "",
-      "static bool z_task_scope_spawn(Z_TaskScope *scope, void (*call)(void *), void *context, void (*retain)(void *), void (*release)(void *)) {",
+      "static void z_task_scope_job_poll(Z_AsyncTask *task) {",
+      "  Z_TaskScopeJob *job = (Z_TaskScopeJob *)task;",
+      "  Z_TaskScope *scope = job->scope;",
+      "  z_async_thread_lock(scope->executor);",
+      "  const bool cancelled = scope->cancelled;",
+      "  z_async_thread_unlock(scope->executor);",
+      "  if (job->child != NULL) {",
+      "    if (cancelled) z_async_cancel(job->child);",
+      "    if (!z_async_is_completed(job->child)) {",
+      "      if (job->child->waiter != NULL && job->child->waiter != task) abort();",
+      "      job->child->waiter = task;",
+      "      task->suspended = true;",
+      "      z_async_enqueue(scope->executor, job->child);",
+      "      return;",
+      "    }",
+      "    job->destroy_child(job->child);",
+      "    job->child = NULL;",
+      "    job->destroy_child = NULL;",
+      "  } else {",
+      "    if (!cancelled) job->call(job->context);",
+      "    if (job->release != NULL) job->release(job->context);",
+      "    job->context = NULL;",
+      "    job->release = NULL;",
+      "  }",
+      "  z_task_scope_finish_job(job);",
+      "}",
+      "",
+      "static __attribute__((unused)) bool z_task_scope_spawn(Z_TaskScope *scope, void (*call)(void *), void *context, void (*retain)(void *), void (*release)(void *)) {",
       "  if (scope == NULL || call == NULL) abort();",
       "  Z_TaskScopeJob *job = (Z_TaskScopeJob *)calloc(1, sizeof(Z_TaskScopeJob));",
       "  if (job == NULL) abort();",
@@ -2825,11 +2885,40 @@ function generateRuntime(
       "  return true;",
       "}",
       "",
+      "static __attribute__((unused)) bool z_task_scope_spawn_async(Z_TaskScope *scope, Z_AsyncTask *child, void (*destroy_child)(Z_AsyncTask *)) {",
+      "  if (scope == NULL || child == NULL || destroy_child == NULL) abort();",
+      "  Z_TaskScopeJob *job = (Z_TaskScopeJob *)calloc(1, sizeof(Z_TaskScopeJob));",
+      "  if (job == NULL) abort();",
+      "  z_async_thread_lock(scope->executor);",
+      "  if (scope->closing) {",
+      "    z_async_thread_unlock(scope->executor);",
+      "    destroy_child(child);",
+      "    free(job);",
+      "    return false;",
+      "  }",
+      "  job->task.poll = z_task_scope_job_poll;",
+      "  job->task.executor = scope->executor;",
+      "  job->scope = z_task_scope_retain(scope);",
+      "  job->child = child;",
+      "  job->destroy_child = destroy_child;",
+      "  job->scope_next = scope->jobs;",
+      "  scope->jobs = job;",
+      "  scope->pending += 1;",
+      "  z_async_thread_unlock(scope->executor);",
+      "  z_async_enqueue_from_thread(scope->executor, &job->task);",
+      "  return true;",
+      "}",
+      "",
       "static bool z_task_scope_join(Z_TaskScope *scope, Z_AsyncTask *parent, bool cancel) {",
       "  if (scope == NULL) return true;",
       "  z_async_thread_lock(scope->executor);",
       "  scope->closing = true;",
       "  if (cancel) scope->cancelled = true;",
+      "  if (cancel) {",
+      "    for (Z_TaskScopeJob *job = scope->jobs; job != NULL; job = job->scope_next) {",
+      "      if (job->child != NULL) z_async_cancel(job->child);",
+      "    }",
+      "  }",
       "  if (scope->pending == 0) {",
       "    z_async_thread_unlock(scope->executor);",
       "    z_task_scope_discard_jobs(scope);",
@@ -3136,6 +3225,10 @@ function generateRuntime(
   if (plans.length > 0) lines.push("");
   for (const plan of plans) lines.push(generateDestroy(plan, planByKey), "");
   for (const plan of plans) lines.push(generateStart(plan), "");
+  for (const [callOffset, target] of taskScopeTargets) {
+    const plan = planByKey.get(targetKey(target))!;
+    lines.push(generateTaskScopeAsyncSchedule(callOffset, plan), "");
+  }
   for (const plan of plans) {
     if (plan.generator) lines.push(generateAsyncGeneratorAdapters(plan), "");
   }
@@ -3382,6 +3475,34 @@ function generateStart(plan: AsyncFunctionPlan): string {
   return lines.join("\n");
 }
 
+function generateTaskScopeAsyncSchedule(
+  callOffset: number,
+  plan: AsyncFunctionPlan,
+): string {
+  const inputs = frameInputs(plan);
+  const parameters = inputs.map((input, index) => (
+    `${cFrameType(input.type, plan.types)} _z_capture_${index}`
+  ));
+  const arguments_ = inputs.map((input, index) => (
+    requiresNativeFramePlacement(input.type, plan.types)
+      ? `std::move(_z_capture_${index})`
+      : `_z_capture_${index}`
+  ));
+  const destroyName = `z_task_scope_destroy_async_${callOffset}`;
+  return [
+    `static void ${destroyName}(Z_AsyncTask *task) {`,
+    `  ${plan.frameName} *frame = (${plan.frameName} *)task;`,
+    `  ${plan.destroyName}(frame);`,
+    "  free(frame);",
+    "}",
+    "",
+    `static bool ${taskScopeAsyncScheduleName(callOffset)}(Z_TaskScope *scope${parameters.length ? `, ${parameters.join(", ")}` : ""}) {`,
+    `  ${plan.frameName} *child = ${plan.startName}(scope->executor${arguments_.length ? `, ${arguments_.join(", ")}` : ""});`,
+    `  return z_task_scope_spawn_async(scope, &child->task, ${destroyName});`,
+    "}",
+  ].join("\n");
+}
+
 function asyncGeneratorFactoryName(plan: Pick<AsyncFunctionPlan, "declaration" | "owner">): string {
   return `z_async_generator_make_${targetPart(plan)}`;
 }
@@ -3550,6 +3671,8 @@ function emitAwaitArguments(
       const type = parent.locals.get(argument.name);
       if (type === "String") {
         value = `z_string_copy_bytes(${value}, 0, (${value}).length)`;
+      } else if (type === "TaskScope") {
+        value = `z_task_scope_retain(${value})`;
       } else if (type && parent.types.structs.get(type)?.kind === "class") {
         value = `Z_${type}_retain(${value})`;
       }
@@ -5193,6 +5316,25 @@ function validateFrameExpression(
 ): void {
   if (
     expression.kind === "call"
+    && types.semanticInfo.taskScopeAsyncCalls.has(expression.location.offset)
+  ) {
+    if (expression.callee.kind !== "member") {
+      unsupported(fileName, expression.location, "TaskScope.schedule lowering requires a member call");
+    }
+    emitFrameExpression(expression.callee.object, { locals, types, suspensions }, fileName);
+    const closureOffset = types.semanticInfo.taskScopeAsyncCalls.get(expression.location.offset)!;
+    const closure = types.semanticInfo.closures.get(closureOffset)!;
+    for (const capture of closure.captures) {
+      emitFrameExpression(
+        { kind: "identifier", name: capture.name, location: capture.location },
+        { locals, types, suspensions },
+        fileName,
+      );
+    }
+    return;
+  }
+  if (
+    expression.kind === "call"
     && types.semanticInfo.objcCalls.has(expression.location.offset)
     && expression.arguments.some((argument) => types.semanticInfo.objcBlockArguments.has(argument.location.offset))
   ) {
@@ -5219,6 +5361,12 @@ function emitPreparedFrameExpression(
   plan: FrameExpressionContext,
   fileName: string,
 ): { readonly prefix: readonly string[]; readonly value: string } {
+  if (
+    expression.kind === "call"
+    && plan.types.semanticInfo.taskScopeAsyncCalls.has(expression.location.offset)
+  ) {
+    return { prefix: [], value: emitFrameExpression(expression, plan, fileName) };
+  }
   const prefix: string[] = [];
   const expressionBindings = new Map(plan.expressionBindings ?? []);
 
@@ -5764,6 +5912,28 @@ function emitFrameExpressionInner(
         plan.types,
       );
     case "call": {
+      if (
+        plan.types.semanticInfo.taskScopeAsyncCalls.has(expression.location.offset)
+        && expression.callee.kind === "member"
+      ) {
+        const closureOffset = plan.types.semanticInfo.taskScopeAsyncCalls.get(expression.location.offset)!;
+        const closure = plan.types.semanticInfo.closures.get(closureOffset)!;
+        const scope = emitFrameExpression(expression.callee.object, plan, fileName);
+        const captures = closure.captures.map((capture) => {
+          let value = emitFrameExpression(
+            { kind: "identifier", name: capture.name, location: capture.location },
+            plan,
+            fileName,
+          );
+          if (capture.type === "TaskScope") {
+            value = `z_task_scope_retain(${value})`;
+          } else if (plan.types.structs.get(capture.type)?.kind === "class") {
+            value = `Z_${capture.type}_retain(${value})`;
+          }
+          return value;
+        });
+        return `${taskScopeAsyncScheduleName(expression.location.offset)}(${[scope, ...captures].join(", ")})`;
+      }
       const integerConversion = plan.types.semanticInfo.integerConversions.get(expression.location.offset);
       if (integerConversion) {
         const value = emitFrameExpression(expression.arguments[0], plan, fileName);

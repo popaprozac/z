@@ -137,8 +137,17 @@ refreshes the selected-note label.
 
 The app also records two current bootstrap boundaries honestly. Throwing
 user-defined constructors are called through synchronous helpers rather than
-directly inside async frames, and the long-lived `objc.connect` closure lives
-inside the synchronous AppKit lifetime function rather than as escaping storage
-in the async frame. The next application slices should drive interactive
-background search, cancellation, richer controls, and eventually async-owned
-escaping callback environments.
+directly inside async frames, and the long-lived `objc.connect` closure remains
+inside the synchronous AppKit lifetime function. It now captures a
+main-task-owned `TaskScope`: each button action snapshots the note into owned Z
+values and schedules an explicitly async root on `thread.main`. That root moves
+the snapshot into a dedicated worker, opens and closes its own SQLite handle,
+and reports completion after resuming on main. The button callback returns
+immediately, and `main` closes the scope after `app.run()` so every accepted
+save is joined before shutdown.
+
+The UI applies an accepted note optimistically on the main thread. This keeps
+AppKit identity out of the cross-thread graph; the current example logs a rare
+background persistence error rather than mutating AppKit from the completion
+path. A following application slice can add a main-affine controller contract
+for error presentation and per-operation cancellation.

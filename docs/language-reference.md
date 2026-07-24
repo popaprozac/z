@@ -1195,7 +1195,10 @@ async scope updates {
   registerNativeCallback(move (value) => {
     const accepted = updates.schedule(
       thread.main,
-      move (): void => { publish(value); }
+      async move (): void => {
+        const worker = thread.spawn(async move () => calculate(value));
+        publish(attempt await worker);
+      }
     );
   });
 } // rejects new submissions and joins every accepted operation
@@ -1208,6 +1211,11 @@ won the submission race. The explicit form is `new TaskScope()`, followed by
 direct `await scope.close()` or `await scope.cancel()` when an earlier boundary
 is useful. Its owning async function otherwise closes it on return and cancels
 it on throw. `TaskScope` owns lifetime; `thread.main` selects placement.
+`schedule` accepts nonthrowing synchronous `(): void` or explicitly async
+`async (): void` operations. An async operation can suspend and start
+structured children. It handles fallible work locally with `attempt await`;
+there is intentionally no unobserved error channel back to the synchronous
+submitter.
 
 CPU work that must leave the inherited executor uses the explicitly imported
 native-thread launcher:

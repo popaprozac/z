@@ -408,10 +408,13 @@ implemented bridge is the imported thread-safe `TaskScope`: it owns operations
 submitted by foreign callbacks, rejects new operations during close, and joins
 accepted work. `async scope updates {}` exposes that same handle as `updates`
 without creating a second concurrency model. The current executable tier
-accepts synchronous nonthrowing `(): void` operations placed on `thread.main`;
-typed child errors and additional executors follow after deterministic
-multi-error policy. Repeated callbacks may eventually lower into an async
-generator so ordinary `try for await` owns registration and cancellation.
+accepts synchronous nonthrowing `(): void` operations or explicitly async,
+nonthrowing `async (): void` roots placed on `thread.main`. The async form may
+suspend and own structured workers; it handles typed child errors locally
+because submission has no result task. Additional executors and supervisor
+error policies remain future layers. Repeated callbacks may eventually lower
+into an async generator so ordinary `try for await` owns registration and
+cancellation.
 
 ## Function-level isolation
 

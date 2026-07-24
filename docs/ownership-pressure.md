@@ -243,18 +243,26 @@ work, then opens, loads, finalizes, and closes entirely on that dedicated
 thread. Only the owned `Array<Note>`—including each owned title/body
 `String`—crosses back through `Task<T, E>`.
 
-The long-lived database used by AppKit target/action remains a separate
-main-owned instance. This is stronger evidence than marking the SQLite handle
-sendable: the application does not need to transport it at all. The main task
-moves the returned array into its ARC `NoteStore`, materializes typed load
-failure locally, and enters the synchronous AppKit lifetime through
-`await on thread.main`. A headless smoke test executes the same worker-owned
-SQLite and result-transfer path without opening a window.
+The long-lived database remains a separate main-owned instance while startup
+loading and interactive saves use worker-local handles. This is stronger
+evidence than marking the SQLite handle sendable: the application does not
+transport one at all. The main task moves the returned array into its ARC
+`NoteStore`, materializes typed load failure locally, and enters the synchronous
+AppKit lifetime through `await on thread.main`.
 
-The probe also exposed boundaries that remain explicit rather than silently
-widened: throwing user constructors still use synchronous helpers when called
-from async code, and escaping `objc.connect` closure storage remains in a
-synchronous application-lifetime function rather than an async frame.
+The target/action callback now captures a synchronized `TaskScope`. It copies
+the note's owned strings, submits an explicitly async root onto `thread.main`,
+and returns immediately. That root moves the note snapshot into an async
+`thread.spawn` worker, awaits persistence, and resumes on main. Scope close
+after `app.run()` rejects later submissions and joins every accepted save,
+including worker descendants. The submitted root handles its typed SQLite
+failure locally because its synchronous callback has no result task.
+
+The probe also keeps boundaries explicit rather than silently widened:
+throwing user constructors still use synchronous helpers when called from async
+code, escaping `objc.connect` storage remains in a synchronous
+application-lifetime function, and AppKit identities are not captured into the
+worker-owned persistence graph.
 
 ## Not tested yet
 

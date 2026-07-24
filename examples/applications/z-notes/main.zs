@@ -1,10 +1,16 @@
 import console from "std/console";
 import objc from "std/objc";
+import { TaskScope } from "std/async";
 import { thread } from "std/thread";
 import { delay } from "std/time";
 import AppKit from "AppKit/AppKit.h";
 import { Note, NoteStore } from "./model.zs";
-import { NoteDatabase, loadNotesFromPath, sqliteVersion } from "./persistence.zs";
+import {
+  NoteDatabase,
+  loadNotesFromPath,
+  saveNoteToPath,
+  sqliteVersion,
+} from "./persistence.zs";
 import { NotesTableController } from "./table-controller.zs";
 
 function openNoteDatabase(in path: String): NoteDatabase throws i32 {
@@ -58,7 +64,8 @@ function runApplication(
   database: NoteDatabase,
   store: NoteStore,
   in databasePath: String,
-  loadFailure: Option<i32>
+  loadFailure: Option<i32>,
+  updates: TaskScope
 ): i32 {
   const app = currentApplication();
   app.setActivationPolicy(AppKit.NSApplicationActivationPolicyRegular);
@@ -149,6 +156,7 @@ function runApplication(
   addButton.title = "Add Note";
 
   let nextId = store.nextNoteId();
+  const actionDatabasePath = copy databasePath;
   const addNoteConnection = objc.connect(addButton, move (): void => {
     const noteId = nextId;
     const title = `${titleField.stringValue}`;
@@ -157,26 +165,48 @@ function runApplication(
       statusLabel.stringValue = "Enter a title before saving";
       return;
     }
+    const pendingTitle = copy title;
+    const pendingBody = copy body;
     const note = Note({ id: noteId, title, body });
-    const inserted = attempt database.insertNote(note);
-    match (inserted) {
-      success => {
-        nextId = nextId + 1;
-        selectedLabel.stringValue = `Selected: ${note.title}`;
-        store.add(note);
-        store.selectNote(store.noteCount() - 1);
-        notesView.reloadData();
-        statusLabel.stringValue = `Added note ${noteId} — ${store.noteCount()} total`;
-        window.title = `Z Notes — ${store.noteCount()} notes`;
-        titleField.stringValue = "";
-        bodyField.stringValue = "";
-        console.log(`added note ${noteId}, total=${store.noteCount()}`);
+    const savePath = copy actionDatabasePath;
+    const accepted = updates.schedule(
+      thread.main,
+      async move (): void => {
+        const workerNote = Note({
+          id: noteId,
+          title: pendingTitle,
+          body: pendingBody,
+        });
+        const workerPath = savePath;
+        const saveTask = thread.spawn(async move (): Note throws i32 => {
+          await delay(1);
+          return try saveNoteToPath(workerPath, workerNote);
+        });
+        const saved = attempt await saveTask;
+        match (saved) {
+          success(savedNote) => {
+            console.log(`persisted note ${savedNote.id} on a background worker`);
+          }
+          failure(status) => {
+            console.error(`could not persist note ${noteId}: sqlite status ${status}`);
+          }
+        }
       }
-      failure(status) => {
-        statusLabel.stringValue = `Could not save note ${noteId}`;
-        console.error(`could not save note ${noteId}: sqlite status ${status}`);
-      }
+    );
+    if (!accepted) {
+      statusLabel.stringValue = "Application is closing; note was not queued";
+      return;
     }
+    nextId = nextId + 1;
+    selectedLabel.stringValue = `Selected: ${note.title}`;
+    store.add(note);
+    store.selectNote(store.noteCount() - 1);
+    notesView.reloadData();
+    statusLabel.stringValue = `Queued note ${noteId} — ${store.noteCount()} total`;
+    window.title = `Z Notes — ${store.noteCount()} notes`;
+    titleField.stringValue = "";
+    bodyField.stringValue = "";
+    console.log(`queued note ${noteId}, total=${store.noteCount()}`);
   });
   content.addSubview(addButton);
 
@@ -219,7 +249,10 @@ async function main(): i32 {
     }
   }
 
-  return await on thread.main: i32 {
-    select runApplication(database, store, databasePath, loadFailure);
+  const updates = new TaskScope();
+  const applicationStatus = await on thread.main: i32 {
+    select runApplication(database, store, databasePath, loadFailure, updates);
   };
+  await updates.close();
+  return applicationStatus;
 }

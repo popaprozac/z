@@ -100,3 +100,9 @@ export function loadNotesFromPath(path: String): Array<Note> throws i32 {
   const database = try new NoteDatabase(path);
   return try database.loadNotes();
 }
+
+export function saveNoteToPath(path: String, note: Note): Note throws i32 {
+  const database = try new NoteDatabase(path);
+  try database.insertNote(note);
+  return note;
+}

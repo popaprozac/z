@@ -107,7 +107,11 @@ import { thread } from "std/thread";
 
 async scope updates {
   native.register(move (value) => {
-    updates.schedule(thread.main, move (): void => { publish(value); });
+    updates.schedule(thread.main, async move (): void => {
+      const worker = thread.spawn(async move () => calculate(value));
+      const result = attempt await worker;
+      publish(result);
+    });
   });
 }
 ```
@@ -118,7 +122,11 @@ submissions and joins accepted operations; `TaskScope.schedule` returns `false`
 when close wins the race. `new TaskScope()` exposes the same mechanism directly. Explicit
 `await taskScope.close()` or `await taskScope.cancel()` creates an earlier
 boundary; return and throw still close or cancel an owned scope automatically.
-The current dynamic tier accepts synchronous nonthrowing `(): void` work.
+The dynamic tier accepts synchronous `(): void` and explicitly async
+`async (): void` work. Both forms are nonthrowing: an async operation handles
+fallible children locally with `attempt await` because its synchronous
+submitter has no task result through which to receive an unhandled error.
+The scope owns the submitted async root and all of its structured descendants.
 
 `task` accepts exactly one direct async call in an async function and produces
 a scope-bound `Task<T>` or `Task<T, E>`. The task's source-level success and
