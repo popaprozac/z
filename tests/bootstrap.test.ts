@@ -2933,6 +2933,16 @@ test("builds the interactive Z Notes AppKit and sqlite3 application", () => {
   assert.match(artifact.source, /z_task_scope_join\(frame->value_updates, &frame->task, false\)/);
   assert.match(artifact.source, /z_async_start___z_executor_main_/);
   assert.match(artifact.source, /frame->result = runApplication\(/);
+  assert.match(artifact.source, /z_async_release_SaveStatusPresenter_on_executor/);
+  assert.match(
+    artifact.source,
+    /z_async_release_from_thread\(frame->task\.completion_executor, frame->value_workerPresenter, z_async_release_SaveStatusPresenter_on_executor\)/,
+  );
+  assert.match(
+    artifact.source,
+    /z_async_start___z_executor_main_\d+\(frame->task\.completion_executor, frame->value_workerPresenter, frame->value_noteId\)/,
+  );
+  assert.match(artifact.source, /Z_SaveStatusPresenter_persisted\(frame->value_workerPresenter/);
 
   const compilation = spawnSync("xcrun", [
     "clang", "-x", "objective-c", "-fobjc-arc", "-fblocks",
@@ -2987,6 +2997,11 @@ test("builds the interactive Z Notes AppKit and sqlite3 application", () => {
     completions(incompleteBinding, application, incompleteBindingOffset)
       .find((item) => item.label === "Binding")?.kind,
     7,
+  );
+  const presenterUseOffset = source.indexOf("workerPresenter.persisted") + 1;
+  assert.match(
+    hover(source, application, presenterUseOffset)?.contents.value ?? "",
+    /executor-isolated to thread\.main/,
   );
   const applicationTokens = decodeSemanticTokens(semanticTokens(source, application).data);
   const bindingTypePosition = positionForOffset(source, source.indexOf("Binding", source.indexOf("objc.Binding")));
@@ -15514,6 +15529,63 @@ test("routes arbitrary-thread callbacks through named TaskScope ownership", () =
   assert.equal(directAsyncResult.status, 0, directAsyncResult.stderr);
   assert.equal(directAsyncResult.stdout, "direct async schedule\n");
 
+  const isolatedSchedule = resolve(directory, "main-isolated-schedule.zs");
+  writeFileSync(isolatedSchedule, `
+    import console from "std/console";
+    import { TaskScope } from "std/async";
+    import { thread } from "std/thread";
+    import { delay } from "std/time";
+    class Presenter on thread.main {
+      offset: i32;
+      function publish(value: i32): void {
+        console.log(value + this.offset);
+      }
+      deinit {
+        console.log("released scheduled presenter");
+      }
+    }
+    async function main(): i32 on thread.main {
+      const taskScope = new TaskScope();
+      const presenter = new Presenter({ offset: 2 });
+      const accepted = taskScope.schedule(
+        thread.main,
+        async move (): void => {
+          await delay(1);
+          presenter.publish(40);
+        }
+      );
+      await taskScope.close();
+      return accepted ? 0 : 1;
+    }
+  `);
+  const isolatedScheduleResult = spawnSync(
+    process.execPath,
+    [cli, "run", isolatedSchedule],
+    { encoding: "utf8" },
+  );
+  assert.equal(isolatedScheduleResult.status, 0, isolatedScheduleResult.stderr);
+  assert.equal(isolatedScheduleResult.stdout, "42\nreleased scheduled presenter\n");
+
+  const unprovenIsolatedSchedule = `
+    import { TaskScope } from "std/async";
+    import { thread } from "std/thread";
+    class Presenter on thread.main { offset: i32; }
+    function schedule(taskScope: TaskScope, presenter: Presenter): void {
+      taskScope.schedule(
+        thread.main,
+        move (): void => {
+          const escaped = presenter;
+        }
+      );
+    }
+  `;
+  const unprovenDiagnostic = diagnostics(
+    unprovenIsolatedSchedule,
+    "unproven-main-isolated-schedule.zs",
+  )[0];
+  assert.equal(unprovenDiagnostic.code, "Z0704");
+  assert.match(unprovenDiagnostic.message, /cannot cross to the scope executor/);
+
   const throwingScope = `
     import { TaskScope } from "std/async";
     async function fail(): void throws i32 {
@@ -16045,6 +16117,81 @@ test("suspends and resumes async closures on one dedicated native thread", () =>
   const detachedDiagnostic = diagnostics(detachedAsyncClosure, "detached-async-closure.zs")[0];
   assert.equal(detachedDiagnostic.code, "Z0703");
   assert.match(detachedDiagnostic.message, /only through thread\.spawn/);
+});
+
+test("carries main-isolated ARC identity opaquely through a native worker", () => {
+  const source = `
+    import console from "std/console";
+    import { delay } from "std/time";
+    import { thread } from "std/thread";
+
+    class Presenter on thread.main {
+      offset: i32;
+
+      function publish(value: i32): i32 {
+        return value + this.offset;
+      }
+
+      deinit {
+        console.log("released presenter");
+      }
+    }
+
+    async function main(): i32 on thread.main {
+      const presenter = new Presenter({ offset: 2 });
+      const worker = thread.spawn(async move (): i32 => {
+        await delay(1);
+        return await on thread.main {
+          select presenter.publish(40);
+        };
+      });
+      const answer = await worker;
+      return answer - 42;
+    }
+  `;
+  const artifact = compileToNative(source, "executor-bound-class.zs");
+  assert.match(artifact.source, /z_async_release_Presenter_on_executor/);
+  assert.match(artifact.source, /z_async_release_from_thread\(frame->task\.completion_executor, frame->value_presenter/);
+  assert.match(
+    artifact.source,
+    /z_async_start___z_executor_main_\d+\(frame->task\.completion_executor, frame->value_presenter\)/,
+  );
+  assert.doesNotMatch(
+    artifact.source,
+    /z_async_start___z_executor_main_\d+\(frame->task\.completion_executor, Z_Presenter_retain/,
+  );
+  const workerUseOffset = source.indexOf("presenter.publish") + 1;
+  assert.match(
+    hover(source, "executor-bound-class.zs", workerUseOffset)?.contents.value ?? "",
+    /executor-isolated to thread\.main/,
+  );
+
+  const directory = mkdtempSync("/tmp/z-executor-bound-class-");
+  const fileName = resolve(directory, "main.zs");
+  writeFileSync(fileName, source);
+  const result = spawnSync(process.execPath, [cli, "run", fileName], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, "released presenter\n");
+
+  const directAccess = source.replace(
+    "return await on thread.main {\n          select presenter.publish(40);\n        };",
+    "return presenter.publish(40);",
+  );
+  const directDiagnostic = diagnostics(directAccess, "executor-bound-direct.zs")[0];
+  assert.equal(directDiagnostic.code, "Z0704");
+  assert.match(directDiagnostic.message, /main-isolated capture "presenter" is only opaque/);
+  assert.match(directDiagnostic.message, /await on thread\.main/);
+
+  const escapedAlias = source.replace(
+    "await delay(1);",
+    "await delay(1);\n        const escaped = presenter;",
+  ).replace(
+    "select presenter.publish(40);",
+    "select escaped.publish(40);",
+  );
+  const aliasDiagnostic = diagnostics(escapedAlias, "executor-bound-alias.zs")[0];
+  assert.equal(aliasDiagnostic.code, "Z0704");
+  assert.match(aliasDiagnostic.message, /main-isolated capture "presenter" is only opaque/);
 });
 
 test("preserves typed errors from thread.spawn as Task<T, E>", () => {

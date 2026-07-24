@@ -79,7 +79,7 @@ type PlacementTarget = {
   readonly captures: readonly {
     readonly name: string;
     readonly type: string;
-    readonly kind: "plain" | "string" | "class" | "objc" | "taskScope";
+    readonly kind: "plain" | "string" | "class" | "executorBoundClass" | "objc" | "taskScope";
     readonly location: SourceLocation;
   }[];
 };
@@ -1693,7 +1693,7 @@ function createPlacementTarget(
     receiverMode: null,
     parameters: captures.map((capture) => ({
       name: capture.name,
-      mode: "value" as const,
+      mode: captureKinds.get(capture.name) === "executorBoundClass" ? "in" as const : "value" as const,
       type: { name: locals.get(capture.name)!, location: capture.location },
       location: capture.location,
     })),
@@ -1774,7 +1774,8 @@ function placementCaptureKind(
   if (type === "TaskScope") return "taskScope";
   const aggregate = types.structs.get(type);
   if (aggregate?.kind === "class") {
-    return !fromNativeThread || types.semanticInfo.shareableClasses.has(type) ? "class" : null;
+    if (!fromNativeThread || types.semanticInfo.shareableClasses.has(type)) return "class";
+    return types.semanticInfo.aggregateExecutorAffinities.has(type) ? "executorBoundClass" : null;
   }
   if (
     types.semanticInfo.foreignObjectTypes.has(type)
@@ -1783,6 +1784,15 @@ function placementCaptureKind(
     return fromNativeThread ? null : "objc";
   }
   return isPlacementCopyType(type, types) ? "plain" : null;
+}
+
+function isExecutorBoundClassType(type: string, types: AsyncTypeContext): boolean {
+  return types.structs.get(type)?.kind === "class"
+    && types.semanticInfo.aggregateExecutorAffinities.has(type);
+}
+
+function executorBoundReleaseAdapter(type: string): string {
+  return `z_async_release_${asyncNativeSymbolPart(type)}_on_executor`;
 }
 
 function collectPlacementCaptures(
@@ -2341,6 +2351,12 @@ function generateRuntime(
     ))
     || [...plan.suspensions.values()].some((site) => requiresNativeFramePlacement(site.type, plan.types))
   ));
+  const executorBoundClasses = new Set(plans.flatMap((plan) => (
+    plan.nativeThread
+      ? [...plan.locals.values()].filter((type) => isExecutorBoundClassType(type, plan.types))
+      : []
+  )));
+  const usesExecutorBoundReleases = executorBoundClasses.size > 0;
   const lines = [
     ...(usesThreads ? [
       "#if defined(_WIN32)",
@@ -2361,6 +2377,12 @@ function generateRuntime(
       "",
     ] : []),
     ...(usesNativeFrameStorage ? ["#include <memory>", "#include <new>", ""] : []),
+    ...[...executorBoundClasses].flatMap((type) => [
+      `static void ${executorBoundReleaseAdapter(type)}(void *value) {`,
+      `  Z_${type}_release((Z_${type} *)value);`,
+      "}",
+      "",
+    ]),
     ...(usesNativeFrameStorage ? [
       "template <typename T>",
       "static __attribute__((unused)) T z_async_take(T *value, bool *live) {",
@@ -2381,6 +2403,7 @@ function generateRuntime(
     "typedef struct Z_AsyncTask Z_AsyncTask;",
     "typedef struct Z_AsyncExecutor Z_AsyncExecutor;",
     ...(usesThreads ? ["typedef struct Z_AsyncCancellation Z_AsyncCancellation;"] : []),
+    ...(usesExecutorBoundReleases ? ["typedef struct Z_AsyncRelease Z_AsyncRelease;"] : []),
     "struct Z_AsyncTask {",
     "  void (*poll)(Z_AsyncTask *task);",
     "  bool completed;",
@@ -2423,6 +2446,10 @@ function generateRuntime(
       "  Z_AsyncTask *thread_enqueued_tail;",
       "  Z_AsyncCancellation *thread_cancellations_head;",
       "  Z_AsyncCancellation *thread_cancellations_tail;",
+      ...(usesExecutorBoundReleases ? [
+        "  Z_AsyncRelease *thread_releases_head;",
+        "  Z_AsyncRelease *thread_releases_tail;",
+      ] : []),
       "  size_t active_native_threads;",
       "  size_t active_external_callbacks;",
       "#if defined(_WIN32)",
@@ -2445,6 +2472,14 @@ function generateRuntime(
       "struct Z_AsyncCancellation {",
       "  Z_AsyncTask *task;",
       "  Z_AsyncCancellation *next;",
+      "};",
+      "",
+    ] : []),
+    ...(usesExecutorBoundReleases ? [
+      "struct Z_AsyncRelease {",
+      "  void *value;",
+      "  void (*release)(void *value);",
+      "  Z_AsyncRelease *next;",
       "};",
       "",
     ] : []),
@@ -2542,6 +2577,10 @@ function generateRuntime(
       "  executor->thread_enqueued_tail = NULL;",
       "  executor->thread_cancellations_head = NULL;",
       "  executor->thread_cancellations_tail = NULL;",
+      ...(usesExecutorBoundReleases ? [
+        "  executor->thread_releases_head = NULL;",
+        "  executor->thread_releases_tail = NULL;",
+      ] : []),
       "  executor->active_native_threads = 0;",
       "  executor->active_external_callbacks = 0;",
       "#if defined(_WIN32)",
@@ -2572,7 +2611,11 @@ function generateRuntime(
       "static void z_async_executor_destroy(Z_AsyncExecutor *executor) {",
       "  if (executor->thread_completions != NULL",
       "      || executor->thread_enqueued_head != NULL",
-      "      || executor->thread_cancellations_head != NULL) abort();",
+      "      || executor->thread_cancellations_head != NULL",
+      ...(usesExecutorBoundReleases
+        ? ["      || executor->thread_releases_head != NULL"]
+        : []),
+      "  ) abort();",
       "  if (executor->active_native_threads != 0 || executor->active_external_callbacks != 0) abort();",
       ...(usesDarwinMainLoop ? [
         "#if defined(__APPLE__)",
@@ -2817,6 +2860,41 @@ function generateRuntime(
       "  z_async_thread_unlock(executor);",
       "}",
       "",
+      ...(usesExecutorBoundReleases ? [
+        "static __attribute__((unused)) void z_async_release_from_thread(",
+        "  Z_AsyncExecutor *executor,",
+        "  void *value,",
+        "  void (*release)(void *value)",
+        ") {",
+        "  if (value == NULL || release == NULL) return;",
+        "  Z_AsyncRelease *pending = (Z_AsyncRelease *)calloc(1, sizeof(Z_AsyncRelease));",
+        "  if (pending == NULL) abort();",
+        "  pending->value = value;",
+        "  pending->release = release;",
+        "  z_async_thread_lock(executor);",
+        "  if (executor->thread_releases_tail != NULL) {",
+        "    executor->thread_releases_tail->next = pending;",
+        "  } else {",
+        "    executor->thread_releases_head = pending;",
+        "  }",
+        "  executor->thread_releases_tail = pending;",
+        ...(usesDarwinMainLoop ? [
+          "#if defined(__APPLE__)",
+          "  if (executor->main_executor) {",
+          "    CFRunLoopSourceSignal(executor->main_source);",
+          "    CFRunLoopWakeUp(executor->main_run_loop);",
+          "  }",
+          "#endif",
+        ] : []),
+        "#if defined(_WIN32)",
+        "  WakeConditionVariable(&executor->thread_condition);",
+        "#else",
+        "  if (pthread_cond_signal(&executor->thread_condition) != 0) abort();",
+        "#endif",
+        "  z_async_thread_unlock(executor);",
+        "}",
+        "",
+      ] : []),
       "static void z_async_drain_native_completions(Z_AsyncExecutor *executor) {",
       "  z_async_thread_lock(executor);",
       "  Z_AsyncTask *completed = executor->thread_completions;",
@@ -2827,10 +2905,23 @@ function generateRuntime(
       "  Z_AsyncCancellation *cancellations = executor->thread_cancellations_head;",
       "  executor->thread_cancellations_head = NULL;",
       "  executor->thread_cancellations_tail = NULL;",
+      ...(usesExecutorBoundReleases ? [
+        "  Z_AsyncRelease *releases = executor->thread_releases_head;",
+        "  executor->thread_releases_head = NULL;",
+        "  executor->thread_releases_tail = NULL;",
+      ] : []),
       "  for (Z_AsyncTask *task = completed; task != NULL; task = task->completion_next) {",
       "    task->completion_queued = false;",
       "  }",
       "  z_async_thread_unlock(executor);",
+      ...(usesExecutorBoundReleases ? [
+        "  while (releases != NULL) {",
+        "    Z_AsyncRelease *pending = releases;",
+        "    releases = pending->next;",
+        "    pending->release(pending->value);",
+        "    free(pending);",
+        "  }",
+      ] : []),
       "  while (cancellations != NULL) {",
       "    Z_AsyncCancellation *cancellation = cancellations;",
       "    cancellations = cancellation->next;",
@@ -3127,6 +3218,7 @@ function generateRuntime(
       "  z_async_thread_lock(executor);",
       "  if (executor->thread_completions == NULL",
       "      && executor->thread_enqueued_head == NULL",
+      ...(usesExecutorBoundReleases ? ["      && executor->thread_releases_head == NULL"] : []),
       "      && executor->active_native_threads == 0",
       "      && executor->active_external_callbacks == 0",
       "      && executor->timers == NULL",
@@ -3134,7 +3226,10 @@ function generateRuntime(
       "    z_async_thread_unlock(executor);",
       "    return false;",
       "  }",
-      "  if (executor->thread_completions == NULL && executor->thread_enqueued_head == NULL) {",
+      "  if (executor->thread_completions == NULL",
+      "      && executor->thread_enqueued_head == NULL",
+      ...(usesExecutorBoundReleases ? ["      && executor->thread_releases_head == NULL"] : []),
+      "  ) {",
       "#if defined(_WIN32)",
       "    DWORD timeout = INFINITE;",
       ...(usesDelay ? [
@@ -3746,9 +3841,25 @@ function emitAwaitArguments(
   }
   arguments_.push(...site.call.arguments.map((argument, index) => {
     const parameter = site.target.declaration.parameters[index];
-    let value = emitFrameExpression(argument, parent, fileName);
+    const argumentType = argument.kind === "identifier"
+      ? parent.locals.get(argument.name)
+      : undefined;
+    const executorBoundThreadCapture = Boolean(
+      site.nativeThread
+      && argument.kind === "identifier"
+      && argumentType
+      && isExecutorBoundClassType(argumentType, parent.types),
+    );
+    let value = executorBoundThreadCapture && argument.kind === "identifier" && argumentType
+      ? parent.borrowedLocals.has(argument.name)
+        ? borrowedFrameValue(argument.name, argumentType, parent.types)
+        : frameStoredValue(argument.name, argumentType, parent.types)
+      : emitFrameExpression(argument, parent, fileName);
+    if (executorBoundThreadCapture && argumentType) {
+      return `Z_${argumentType}_retain(${value})`;
+    }
     if (site.placement && argument.kind === "identifier" && parameter?.mode === "value") {
-      const type = parent.locals.get(argument.name);
+      const type = argumentType;
       if (type === "String") {
         value = `z_string_copy_bytes(${value}, 0, (${value}).length)`;
       } else if (type === "TaskScope") {
@@ -3761,7 +3872,7 @@ function emitAwaitArguments(
       return emitFrameSliceConversion(argument, value, parent, fileName) ?? value;
     }
     if (site.nativeThread && argument.kind === "identifier" && parameter?.mode === "value") {
-      const type = parent.locals.get(argument.name);
+      const type = argumentType;
       if (type && hasFrameCleanup(type, parent.types)) {
         const liveFlag = `frame->${frameLiveField(argument.name)}`;
         return requiresNativeFramePlacement(type, parent.types)
@@ -4905,7 +5016,9 @@ function generatePoll(
             ? []
             : [
                 `if (frame->${frameLiveField(name)}) {`,
-                `  ${frameCleanup(frameStoredValue(name, type, plan.types), type, plan.types)}`,
+                `  ${isExecutorBoundClassType(type, plan.types)
+                  ? `z_async_release_from_thread(frame->task.completion_executor, ${frameStoredValue(name, type, plan.types)}, ${executorBoundReleaseAdapter(type)});`
+                  : frameCleanup(frameStoredValue(name, type, plan.types), type, plan.types)}`,
                 `  frame->${frameLiveField(name)} = false;`,
                 "}",
               ]

@@ -258,11 +258,18 @@ after `app.run()` rejects later submissions and joins every accepted save,
 including worker descendants. The submitted root handles its typed SQLite
 failure locally because its synchronous callback has no result task.
 
+The save path now also carries a `SaveStatusPresenter on thread.main` through
+the worker. The presenter owns the AppKit status label but is opaque on the
+worker: only the nested `await on thread.main` child can call it. Its worker
+retain is queued back to main for release, so neither AppKit access nor ARC
+destruction occurs on the native worker. This is narrower than sendability and
+avoids making mutable UI state atomically shared merely to coordinate work.
+
 The probe also keeps boundaries explicit rather than silently widened:
 throwing user constructors still use synchronous helpers when called from async
 code, escaping `objc.connect` storage remains in a synchronous
-application-lifetime function, and AppKit identities are not captured into the
-worker-owned persistence graph.
+application-lifetime function, and raw AppKit identities are not captured into
+the worker-owned persistence graph.
 
 ## Not tested yet
 

@@ -428,7 +428,7 @@ export function generateC(program: Program, sourceName: string, semanticInfo: Se
       lines.push(`static ${moduleUnused}void ${deinitName(declaration.name)}(${structName(declaration.name)} *self);`);
     }
     if (declaration.kind === "class") {
-      lines.push(`static ${moduleUnused}${structName(declaration.name)} *${retainName(declaration.name)}(${structName(declaration.name)} *value);`);
+      lines.push(`static ${moduleUnused}${structName(declaration.name)} *${retainName(declaration.name)}(const ${structName(declaration.name)} *borrowed);`);
       lines.push(`static ${moduleUnused}void ${releaseName(declaration.name)}(${structName(declaration.name)} *value);`);
       lines.push(`static ${moduleUnused}Z_Weak ${weakMakeName(declaration.name)}(const ${structName(declaration.name)} *borrowed);`);
       lines.push(`static ${moduleUnused}${enumName(weakResultTypeName(declaration.name))} ${weakUpgradeName(declaration.name)}(Z_Weak value);`);
@@ -2465,7 +2465,8 @@ ${declaration.fields.map((field) => `  self->${field.name} = ${field.name};`).jo
     }
     free(value);
   }`;
-  return `static ${unused}${cName} *${retainName(declaration.name)}(${cName} *value) {
+  return `static ${unused}${cName} *${retainName(declaration.name)}(const ${cName} *borrowed) {
+  ${cName} *value = (${cName} *)borrowed;
   ${retain}
   return value;
 }

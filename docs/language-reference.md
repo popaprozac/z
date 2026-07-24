@@ -1249,12 +1249,14 @@ owns a private executor bound to that worker, may suspend, and resumes on the
 same worker after `await on thread.main`. Child `task` operations inherit the
 worker executor. The transfer classifier copies recursively cleanup-free
 values, moves unique owners, and retains deeply readonly ARC class identity
-atomically. A capturing closure must spell `move`. Copy and shareable ARC
-captures remain valid in the parent; moved unique owners do not. `Array`, owned
-`String`, mutable `TextBuffer`, and supported aggregates containing them use the
-consuming path and may return ownership through `await`. Mutable classes,
-borrows, views, native references, `Arena`, custom `deinit`, and cross-thread
-`Weak<T>` remain rejected. Results follow the same rules.
+atomically. A main-isolated Z class may instead cross opaquely: the worker can
+use it only in a nested main placement, and its transferred retain is released
+on main. A capturing closure must spell `move`. Copy and shareable ARC captures
+remain valid in the parent; moved unique owners do not. `Array`, owned `String`,
+mutable `TextBuffer`, and supported aggregates containing them use the
+consuming path and may return ownership through `await`. Other mutable classes,
+borrows, views, raw native references, `Arena`, custom `deinit`, and
+cross-thread `Weak<T>` remain rejected. Results follow the same rules.
 
 The thread namespace also supplies typed placement targets. The first target is
 `thread.main`:

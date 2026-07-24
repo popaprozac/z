@@ -24,6 +24,18 @@ function createNoteStore(): NoteStore {
   });
 }
 
+class SaveStatusPresenter on thread.main {
+  label: AppKit.NSTextField;
+
+  function persisted(noteId: i64): void {
+    this.label.stringValue = `Saved note ${noteId}`;
+  }
+
+  function failed(noteId: i64, status: i32): void {
+    this.label.stringValue = `Could not save note ${noteId} — sqlite status ${status}`;
+  }
+}
+
 function createTableController(
   store: NoteStore,
   tableView: AppKit.NSTableView,
@@ -138,6 +150,7 @@ function runApplication(
   statusLabel.editable = false;
   statusLabel.selectable = false;
   content.addSubview(statusLabel);
+  const saveStatus = new SaveStatusPresenter({ label: statusLabel });
   match (in loadFailure) {
     some(status) => {
       window.title = "Z Notes — Load failed";
@@ -169,9 +182,11 @@ function runApplication(
     const pendingBody = copy body;
     const note = Note({ id: noteId, title, body });
     const savePath = copy actionDatabasePath;
+    const savePresenter = saveStatus;
     const accepted = updates.schedule(
       thread.main,
       async move (): void => {
+        const workerPresenter = savePresenter;
         const workerNote = Note({
           id: noteId,
           title: pendingTitle,
@@ -180,7 +195,11 @@ function runApplication(
         const workerPath = savePath;
         const saveTask = thread.spawn(async move (): Note throws i32 => {
           await delay(1);
-          return try saveNoteToPath(workerPath, workerNote);
+          const savedNote = try saveNoteToPath(workerPath, workerNote);
+          await on thread.main {
+            workerPresenter.persisted(noteId);
+          }
+          return savedNote;
         });
         const saved = attempt await saveTask;
         match (saved) {
@@ -188,6 +207,7 @@ function runApplication(
             console.log(`persisted note ${savedNote.id} on a background worker`);
           }
           failure(status) => {
+            savePresenter.failed(noteId, status);
             console.error(`could not persist note ${noteId}: sqlite status ${status}`);
           }
         }

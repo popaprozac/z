@@ -298,8 +298,11 @@ The current executable tier applies these concrete rules:
 - `String` captures receive independent owned UTF-8 storage;
 - Z class captures retain ARC identity and release it with the placed frame;
 - Objective-C captures from the owning async task are held as ARC strong fields;
-- a native worker may capture a deeply readonly/shareable Z class, but may not
-  carry an Objective-C identity through itself merely to place it back on main;
+- a native worker may capture a deeply readonly/shareable Z class normally;
+- it may carry a `thread.main`-isolated Z class opaquely, access it only inside
+  a nested main placement, and release that transferred retain back on main;
+- it may not carry raw Objective-C identity through itself merely to place it
+  back on main;
 - captured mutation, borrows/views/slices, and native resource owners remain
   rejected until their contracts can be proven.
 
@@ -365,8 +368,35 @@ The placement operation does not suspend the native closure. The dedicated OS
 thread may exit after its synchronous body finishes, while the owning worker
 `Task` remains incomplete until its placed children finish. This preserves
 structured lifetime without parking the OS thread. Cross-thread captures must
-still satisfy transfer rules; main-isolated foreign references need explicit
-affinity facts before they can be transported opaquely through a worker.
+still satisfy transfer rules.
+
+A main-isolated Z ARC identity may be retained on main and carried opaquely by
+the worker:
+
+```z
+class Presenter on thread.main {
+  label: AppKit.NSTextField;
+
+  function publish(in status: String): void {
+    this.label.stringValue = status;
+  }
+}
+
+const presenter = new Presenter({ label });
+const worker = thread.spawn(async move (): i32 => {
+  const answer = await calculate();
+  await on thread.main {
+    presenter.publish(`Ready: ${answer}`);
+  }
+  return answer;
+});
+```
+
+The worker has no permission to dereference, alias, return, retain, or release
+`presenter`. The placement child borrows the pointer. Once the worker is done,
+its transferred retain is queued to the main executor for release. This is
+transport of an executor-bound capability, not general thread sharing or
+atomic ARC. Raw Objective-C references remain rejected as worker captures.
 
 When the worker itself needs a value or ordered completion from main, it may be
 explicitly async:
@@ -538,8 +568,10 @@ later without making executor blocks a special case.
    `CFRunLoopSource`, including while an AppKit-compatible run loop is active.
 6. **Partial:** integrate owned, ARC, native-affine, borrowed, cancellation, and
    cleanup capture contracts. String, Z ARC, owning-task Objective-C captures,
-   and native executor-affinity metadata are implemented; mutation, cross-
-   executor borrows, and broader native ownership remain.
+   opaque main-isolated Z class transport with main-executor release, and
+   native executor-affinity metadata are implemented; mutation,
+   cross-executor borrows, raw foreign-identity transport, and broader native
+   ownership remain.
 7. **Done for the main-executor tier:** carry main-affinity facts through FIIR,
    automatically import explicit Clang actor attributes and `@MainActor` facts
    from declared Swift-target symbol graphs, accept `on thread.main` fallbacks

@@ -198,6 +198,15 @@ to the executor that owns a placed child before structured cleanup joins it. The
 source return annotation remains the logical `T throws E`; `thread.spawn`
 supplies the `Task<T, E>` wrapper.
 
+A `thread.main`-isolated Z class can also be captured by that worker as an
+opaque executor-bound capability. Z retains it before launching the thread,
+rejects every worker-side use outside `await on thread.main` or
+`task on thread.main`, lends the pointer to the placed child without another
+retain, and queues the worker's release back to main. This does not make the
+class shareable and does not make its ARC counter atomic. Direct Objective-C
+identity remains outside this transfer tier; a main-isolated Z presenter may
+own such identity and expose only main-isolated behavior.
+
 The intended fallible form preserves the ordinary typed-error channel:
 
 ```z

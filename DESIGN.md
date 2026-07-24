@@ -1285,10 +1285,12 @@ The declaration establishes an execution requirement while a placement block
 establishes proof that the requirement is satisfied. Aggregate affinity is
 transitive through stored fields and is reported by editor hover, including
 the field path that introduced inferred isolation. The current tier rejects
-off-main calls, construction, member access, function-value erasure, native
-thread transfer, and placement results that would carry isolated state back to
-a non-main continuation. Async isolated functions do not auto-hop yet; callers
-use `await on thread.main`.
+off-main calls, construction, member access, function-value erasure, and
+placement results that would carry isolated state back to a non-main
+continuation. A native worker may carry retained Z ARC identity that is
+isolated to `thread.main`, but only opaquely: every access must remain inside a
+nested main placement and the worker's retain is released back on main. Async
+isolated functions do not auto-hop yet; callers use `await on thread.main`.
 
 Foreign declarations carry the same FIIR affinity fact. Explicit Clang
 `swift_attr("@UIActor")` and `swift_attr("@MainActor")` metadata maps
@@ -1312,10 +1314,14 @@ becoming async itself. OS-thread exit and Z-task completion are distinct, so an
 async main task awaiting that worker suspends rather than blocking main. Darwin
 publishes cross-thread children through a protected inbound queue and wakes a
 `CFRunLoopSource`; Windows message-loop and Linux toolkit/event-loop adapters
-remain platform-runtime work behind the same `thread.main` capability. Mutable
-captures, cross-executor borrows, and broader native-owner transfer remain later
-capture-contract tiers. Objective-C identity is intentionally not
-transported through a native worker merely to place it back on main.
+remain platform-runtime work behind the same `thread.main` capability. An
+executor-isolated Z class may cross a native worker as an opaque retained
+pointer. The worker cannot inspect, alias, return, copy, or destroy it; a nested
+main placement borrows it, and worker cleanup posts the release to the owning
+executor. This permits a main-isolated Z presenter to store Objective-C fields
+without declaring that presenter generally thread-safe. Raw Objective-C
+identity, mutable captures, cross-executor borrows, and broader native-owner
+transfer remain later capture-contract tiers.
 An `async` worker closure may instead `await on thread.main`; after the placed
 operation finishes, its continuation is enqueued back onto the private worker
 executor. Detailed semantics and lowering order live in

@@ -12,6 +12,8 @@ The application currently combines:
   private worker executor, scheduler suspension, a worker-local SQLite owner,
   owned `Array<Note>` transfer, typed failure, and `await on thread.main`
   delivery;
+- opaque transfer of a main-isolated Z presenter through the background save
+  worker, with access and eventual release proven back on `thread.main`;
 - `Option<usize>` selection and borrowed callback inspection;
 - direct AppKit header import, an ARC-managed `NSWindow`, and a native
   `NSScrollView`/`NSTableView` note browser;
@@ -153,8 +155,14 @@ and reports completion after resuming on main. The button callback returns
 immediately, and `main` closes the scope after `app.run()` so every accepted
 save is joined before shutdown.
 
-The UI applies an accepted note optimistically on the main thread. This keeps
-AppKit identity out of the cross-thread graph; the current example logs a rare
-background persistence error rather than mutating AppKit from the completion
-path. A following application slice can add a main-affine controller contract
-for error presentation and per-operation cancellation.
+The UI applies an accepted note optimistically on the main thread. A
+`SaveStatusPresenter on thread.main` owns the status label. The worker may
+carry that ARC identity only as an opaque capability: it cannot inspect,
+alias, return, retain, or release the presenter on the worker. Its nested
+`await on thread.main` region may call `persisted`, and worker teardown queues
+the transferred retain's release to the main executor. The enclosing
+main-executor scope handles typed persistence failures through the same
+presenter. This deliberately proves that AppKit identity can participate in a
+cross-thread operation without becoming generally shareable or atomically
+reference counted. Per-operation cancellation remains the next application
+pressure test.

@@ -6292,9 +6292,13 @@ function inferExpressionInner(
                     helps: ["make an owned value snapshot before thread.spawn, then capture that snapshot with move"],
                   });
                 }
-                const transfer = initialThreadTransferKind(capture.type, structs, enums, state);
+                const capturedClass = structs.get(String(underlyingType(capture.type)));
+                const executorBound = capturedClass?.kind === "class"
+                  && state.aggregateExecutorAffinities.has(capturedClass.name);
+                const transfer = executorBound
+                  ? "executorBound"
+                  : initialThreadTransferKind(capture.type, structs, enums, state);
                 if (!transfer) {
-                  const capturedClass = structs.get(String(underlyingType(capture.type)));
                   const shareability = capturedClass?.kind === "class"
                     ? shareableTypeIssue(capturedClass.name, structs, enums, state)
                     : null;
@@ -6306,6 +6310,25 @@ function inferExpressionInner(
                     notes: [issue?.reason ?? "the current tier copies plain values, shares deeply readonly ARC identity, and moves supported Array, String, TextBuffer, and containing aggregate owners"],
                     helps: [issue?.help ?? "capture a transferable owned value, or keep this work on the inherited executor with `task`"],
                   });
+                }
+                if (transfer === "executorBound") {
+                  const invalidUse = executorBoundCaptureUseOutsideMain(operation.body, capture.name);
+                  if (invalidUse) {
+                    throw new DiagnosticError(
+                      fileName,
+                      invalidUse,
+                      `main-isolated capture ${JSON.stringify(capture.name)} is only opaque while crossing a native thread boundary`,
+                      {
+                        code: "Z0704",
+                        notes: [
+                          `${capturedClass!.name} remains owned by thread.main; the worker may carry its identity but cannot access, copy, return, or escape it`,
+                        ],
+                        helps: [
+                          `access ${JSON.stringify(capture.name)} only inside \`await on thread.main { ... }\` or \`task on thread.main { ... }\``,
+                        ],
+                      },
+                    );
+                  }
                 }
                 captureTransfers.push({ capture, kind: transfer });
               }
@@ -6686,7 +6709,9 @@ function inferExpressionInner(
             }
             for (const capture of closure.captures) {
               const issue = shareableTypeIssue(capture.type, structs, enums, state);
-              if (issue) {
+              const affinity = executorAffinityForType(capture.type, structs, enums, state);
+              const remainsOnMain = affinity?.executor === "main" && state.executorContext === "main";
+              if (issue && !remainsOnMain) {
                 throw new DiagnosticError(
                   fileName,
                   capture.location,
@@ -9327,7 +9352,55 @@ function explicitAggregateCopyable(
   return result;
 }
 
-type ThreadTransferKind = "copy" | "move";
+type ThreadTransferKind = "copy" | "move" | "executorBound";
+
+function executorBoundCaptureUseOutsideMain(
+  value: unknown,
+  name: string,
+  onMain = false,
+): SourceLocation | null {
+  if (!value || typeof value !== "object") return null;
+  if (Array.isArray(value)) {
+    for (const child of value) {
+      const invalid = executorBoundCaptureUseOutsideMain(child, name, onMain);
+      if (invalid) return invalid;
+    }
+    return null;
+  }
+  const node = value as {
+    readonly kind?: string;
+    readonly name?: string;
+    readonly location?: SourceLocation;
+    readonly body?: unknown;
+    readonly executor?: unknown;
+  };
+  if (node.kind === "identifier" && node.name === name) {
+    return onMain ? null : node.location ?? null;
+  }
+  if (node.kind === "executorPlacement") {
+    const executorUse = executorBoundCaptureUseOutsideMain(node.executor, name, onMain);
+    return executorUse ?? executorBoundCaptureUseOutsideMain(node.body, name, true);
+  }
+  if (node.kind === "closure") {
+    // A nested closure can outlive the placement that constructs it. Keep this
+    // first tier structural: only the worker's direct main-placement regions
+    // may borrow executor-bound identity.
+    return executorBoundCaptureUseOutsideMain(node.body, name, false);
+  }
+  for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
+    if (
+      key === "location"
+      || key === "nameLocation"
+      || key === "type"
+      || key === "returnType"
+      || key === "errorType"
+      || key === "executorAffinity"
+    ) continue;
+    const invalid = executorBoundCaptureUseOutsideMain(child, name, onMain);
+    if (invalid) return invalid;
+  }
+  return null;
+}
 
 type ShareabilityIssue = {
   readonly reason: string;
