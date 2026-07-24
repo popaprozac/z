@@ -251,7 +251,7 @@ export type ForeignCallbackType = {
     readonly parameter: number;
     readonly callbackParameter: number;
   } | null;
-  readonly thread: "caller" | null;
+  readonly thread: "caller" | "any" | null;
 };
 
 export type ForeignCallbackContextType = {

@@ -113,7 +113,7 @@ const primitiveTypeTokens = [
 
 const declarationKeywordTokens = [
   "declare", "module", "export", "function", "type", "copy", "in", "inout", "out", "move", "deinit",
-  "callback", "context", "thread", "caller", "transfer", "share", "fixed", "throws", "success",
+  "callback", "context", "thread", "caller", "any", "transfer", "share", "fixed", "throws", "success",
 ] as const;
 
 export function diagnostics(source: string, fileName: string): ServiceDiagnostic[] {
@@ -2313,8 +2313,11 @@ function foreignDeclarationHover(source: string, fileName: string, offset: numbe
         );
       }
       if (callback.threadLocation?.offset === word.start) {
+        const detail = callback.thread === "any"
+          ? "any  // native code may invoke and release this callback from arbitrary threads, including concurrent invocations"
+          : "caller  // native code invokes and releases this callback only on the registering thread";
         return markdownHover(
-          "caller  // native code invokes and releases this callback only on the registering thread",
+          detail,
           source,
           word.start,
           word.end,

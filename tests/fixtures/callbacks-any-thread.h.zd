@@ -1,0 +1,16 @@
+declare module "callbacks-any-thread.h" {
+  export function z_start_any_thread_callback(
+    value: _,
+    move callback: _,
+    context: _,
+    release: _
+  ): _ {
+    callback callback {
+      context context;
+      deinit release;
+      thread any;
+    }
+  }
+
+  export function z_join_any_thread_callback(): _;
+}

@@ -205,14 +205,14 @@ function validateCallbackContract(
   fileName: string,
   location: SourceLocation,
 ): void {
-  if (callback.lifetime === "escape" && (!callback.context || !callback.release || callback.thread !== "caller")) {
+  if (callback.lifetime === "escape" && (!callback.context || !callback.release || !callback.thread)) {
     throw new DiagnosticError(
       fileName,
       location,
-      `escaping callback API notes for ${JSON.stringify(declaration.name)} require caller-thread context and release contracts`,
+      `escaping callback API notes for ${JSON.stringify(declaration.name)} require context, release, and thread contracts`,
       {
         code: "Z0214",
-        helps: ["declare thread: caller plus valid context and release parameter pairs, or keep the callback call-only"],
+        helps: ["declare thread: caller or thread: any plus valid context and release parameter pairs, or keep the callback call-only"],
       },
     );
   }

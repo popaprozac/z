@@ -933,6 +933,7 @@ test("passes contextual inline closures directly to imported C callbacks", () =>
   assert.match(generated, /z_apply_i32\(6, 7, __z_closure_call_[0-9]+\)/);
   assert.match(generated, /z_apply_context_i32\(40, \(void \*\)&\(_z_argument_[0-9]+\), __z_c_callback_/);
   assert.match(generated, /z_register_context_callback\(__z_c_callback_[^,]+, Z_Function_[0-9a-f]+_c_escape_box\(_z_argument_[0-9]+\)/);
+  assert.doesNotMatch(generated, /__atomic_(?:add|sub)_fetch\(&environment->refcount/);
 
   const parameter = source.indexOf("(left, right)") + 2;
   assert.match(hover(source, fixture, parameter)?.contents.value ?? "", /left: i32/);
@@ -1010,7 +1011,74 @@ test("rejects escaping C callbacks without complete release and threading contra
   `;
   writeFileSync(sourceFile, source);
   const diagnostic = diagnostics(source, sourceFile).find((item) => item.code === "Z0214");
-  assert.match(diagnostic?.message ?? "", /requires deinit and caller-thread contracts/);
+  assert.match(diagnostic?.message ?? "", /requires deinit and thread contracts/);
+});
+
+test("owns arbitrary-thread native callback environments atomically and checks captures", () => {
+  const fixture = resolve(projectRoot, "tests/fixtures/callbacks-any-thread.zs");
+  const source = readFileSync(fixture, "utf8");
+  const generated = compileToC(source, fixture);
+  assert.match(generated, /__atomic_add_fetch\(&environment->refcount, 1, __ATOMIC_RELAXED\)/);
+  assert.match(generated, /__atomic_sub_fetch\(&environment->refcount, 1, __ATOMIC_ACQ_REL\)/);
+
+  const declarationFile = resolve(projectRoot, "tests/fixtures/callbacks-any-thread.h.zd");
+  const declarationSource = readFileSync(declarationFile, "utf8");
+  const threadHover = hover(
+    declarationSource,
+    declarationFile,
+    declarationSource.indexOf("any;") + 1,
+  );
+  assert.match(threadHover?.contents.value ?? "", /arbitrary threads/);
+
+  const result = spawnSync(process.execPath, [cli, "run", fixture], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+
+  const mutableCapture = `
+    import callbacks from "callbacks-any-thread.h";
+    function main(): i32 {
+      let offset = 2;
+      callbacks.z_start_any_thread_callback(
+        40,
+        move (value) => { offset = value; return offset; }
+      );
+      return callbacks.z_join_any_thread_callback();
+    }
+  `;
+  const mutable = diagnostics(mutableCapture, fixture).find((item) => item.code === "Z0704");
+  assert.match(mutable?.message ?? "", /mutable capture "offset" cannot enter an arbitrary-thread native callback/);
+
+  const borrowedCapture = `
+    import callbacks from "callbacks-any-thread.h";
+    class CalculationInput { readonly offset: i32; }
+    function install(in input: CalculationInput): void {
+      callbacks.z_start_any_thread_callback(40, move (value) => value + input.offset);
+    }
+    function main(): i32 { return 0; }
+  `;
+  const borrowed = diagnostics(borrowedCapture, fixture).find((item) => item.code === "Z0704");
+  assert.match(borrowed?.message ?? "", /borrowed capture "input" cannot enter an arbitrary-thread native callback/);
+
+  const namedFunction = `
+    import callbacks from "callbacks-any-thread.h";
+    function increment(value: i32): i32 { return value + 1; }
+    function main(): i32 {
+      callbacks.z_start_any_thread_callback(41, increment);
+      return callbacks.z_join_any_thread_callback() - 42;
+    }
+  `;
+  assert.doesNotThrow(() => compileToC(namedFunction, fixture));
+
+  const storedEnvironment = `
+    import callbacks from "callbacks-any-thread.h";
+    function main(): i32 {
+      const offset = 2;
+      const operation: (value: i32) => i32 = move (value) => value + offset;
+      callbacks.z_start_any_thread_callback(40, operation);
+      return callbacks.z_join_any_thread_callback() - 42;
+    }
+  `;
+  const stored = diagnostics(storedEnvironment, fixture).find((item) => item.code === "Z0704");
+  assert.match(stored?.message ?? "", /requires an inline closure or named function/);
 });
 
 test("rejects unknown functions from imported headers", () => {
@@ -1432,7 +1500,7 @@ test("diagnoses malformed and mismatched Z declaration contracts", () => {
   `);
   const incompleteEscape = diagnostics(callbackImport, callbackSource)[0];
   assert.equal(incompleteEscape.code, "Z0214");
-  assert.match(incompleteEscape.message, /requires deinit and caller-thread contracts/);
+  assert.match(incompleteEscape.message, /requires deinit and thread contracts/);
 });
 
 test("merges API-note sources without allowing safety contracts to conflict", () => {
@@ -12506,6 +12574,7 @@ test("editor grammar tracks keywords without reserving Result variants", () => {
   assert.equal(foreignDeclarationPatterns[12].captures[2].name, "variable.parameter.context.z");
   assert.equal(foreignDeclarationPatterns[13].captures[1].name, "keyword.control.declaration.callback.z");
   assert.equal(foreignDeclarationPatterns[13].captures[2].name, "constant.language.callback-thread.z");
+  assert.match(foreignDeclarationPatterns[13].match, /caller\\\|any|caller\|any/);
   assert.match(selectiveImportPatterns, /\\bas\\b/);
   assert.doesNotMatch("move () =>", new RegExp(matchPattern));
   assert.match("some(value) =>", new RegExp(matchPattern));

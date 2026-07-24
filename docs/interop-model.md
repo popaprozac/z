@@ -335,7 +335,7 @@ or finalized while the view is live. `fixed` accepts a header-defined
 identifier, not an arbitrary expression; the parameter name and position still
 must match Clang, and Z callers cannot override it. These are semantic safety contracts; the
 header remains the ABI authority. Callback lifetime, context, release, and
-caller-thread contracts are also supported now.
+explicit `thread caller` or `thread any` contracts are also supported now.
 
 `void throws _` is the narrow status-code projection. It is valid only when
 Clang proves an integer native return. Each `success N;` lists one successful
@@ -497,14 +497,54 @@ callbacks only on the registering thread, call release exactly once after the
 final invocation, and never invoke the callback afterward. Those requirements
 are a trusted foreign contract, just like pointer ownership API notes.
 
+An API that may invoke or release the callback from arbitrary native threads
+uses the stronger contract:
+
+```z
+callback operation {
+  context context;
+  deinit release;
+  thread any;
+}
+```
+
+`thread any` conservatively permits overlapping invocations. Z therefore emits
+atomic closure-environment ownership and accepts only captures proven safe for
+concurrent read-only sharing. The first tier includes primitives, owned
+immutable `String` snapshots, and deeply readonly Z ARC identity. Mutable or
+borrowed captures, `Weak<T>`, views, slices, and native values without a
+compatible sharing contract are rejected.
+
+An arbitrary-thread callback does not itself create an unowned root task. The
+intended progression is an explicit thread-safe `TaskScope`, followed by a named
+first-class form of `async scope` if the explicit API proves ergonomic. That
+scope will own callback-created placed children, cancellation, errors, and
+joining. Repeated callback APIs may later synthesize an async sequence:
+
+```z
+const events = native.watchEvents();
+
+try for await (const event of events) {
+  await on thread.main {
+    display(event);
+  }
+}
+```
+
+Such synthesis requires declaration facts for callback cardinality, completion,
+errors, cancellation, buffering, and release. It is an intended destination,
+not semantics inferred from an ordinary callback signature.
+
 Objective-C APIs that return a separate observer token already use that native
 token directly: an owned `move` block may persist across calls, Z keeps the
 token, and source code explicitly unregisters it. Weak capture prevents the
-block from strongly cycling back to ARC-managed application state. The current
-probe remains caller-thread/AppKit-executor work; cross-thread callbacks still
-wait for atomic ARC and sendability rules. Conditional C ownership transfer and
-callback-to-async synthesis additionally require completion cardinality,
-cancellation, executor, and release metadata.
+block from strongly cycling back to ARC-managed application state. The AppKit
+observer probe remains caller-thread/AppKit-executor work. The first
+arbitrary-thread C callback tier now proves atomic ARC environment ownership and
+conservative capture shareability, while Objective-C/Swift delivery, TaskScope
+integration, conditional C ownership transfer, and callback-to-async synthesis
+still require completion cardinality, cancellation, executor, and release
+metadata.
 
 ## Direct Objective-C imports versus `std/objc`
 

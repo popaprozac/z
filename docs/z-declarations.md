@@ -96,7 +96,8 @@ spelling does not silently pass through.
 | `success N;` | Treat status `N` as successful `void` completion | Every other integer status becomes the typed error value |
 | `callback operation { ... }` | Classify a named native callback parameter | Callback/context/release positions must exist in the function signature |
 | `context context;` | Pair the callback with its opaque native context parameter | Generated trampoline recovers the exact Z closure environment |
-| `thread caller;` | Callback invocation and release remain on the registering thread | Current escaping-callback tier; cross-thread callbacks remain unsupported |
+| `thread caller;` | Callback invocation and release remain on the registering thread | Escaping closure environment uses ordinary thread-local ownership |
+| `thread any;` | Callback invocation and release may occur on arbitrary threads, including overlapping invocations | Escaping closure environment uses atomic ownership and every capture must satisfy Z's conservative concurrent-shareability rules |
 | `copy;` | Native value has usable copy construction | Enables `copy value` and copying aggregate storage that contains it |
 | `move;` | Native value has usable move construction | Enables ownership transfer and `std::move` lowering |
 | `thread { transfer; }` | One unique owner may cross to another native thread | Separate trusted fact from ordinary move construction |
@@ -181,7 +182,7 @@ These are semantic mappings, not textual rewrites:
 | C integer status | `void throws _ { success 0; }` | `try`/`attempt` and `Result<void, E>` |
 | C sentinel/policy argument | Parameter `{ fixed CONSTANT; }` | Argument omitted from the Z call |
 | C call-only callback | `in operation: _` plus callback/context pairing when needed | Nonescaping borrowed closure |
-| C escaping callback | `move operation: _` plus context, release, and caller-thread facts | ARC-owned escaping Z closure |
+| C escaping callback | `move operation: _` plus context, release, and an explicit `thread caller` or `thread any` fact | ARC-owned escaping Z closure; `thread any` adds atomic environment ownership and capture checking |
 | C++ `const T &` | `in value: _` | Borrowed value |
 | C++ `T &` | `inout value: _` | Mutable borrowed value |
 | C++ `T &&` | `move value: _` with value lifecycle contract | Consumed unique owner |

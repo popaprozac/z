@@ -1313,15 +1313,22 @@ function generateClosureEnvironmentLifecycle(
   const cleanup = [...closure.captures].reverse().map((capture) => (
     generateOwnedEnvironmentCleanup(`environment->${capture.name}`, capture.type, structs, enums, semanticInfo, cleanupCounter)
   )).filter(Boolean).map((line) => indent(line, 4));
+  const retain = closure.threadSafe
+    ? "__atomic_add_fetch(&environment->refcount, 1, __ATOMIC_RELAXED);"
+    : "environment->refcount += 1;";
+  const release = closure.threadSafe
+    ? "if (__atomic_sub_fetch(&environment->refcount, 1, __ATOMIC_ACQ_REL) != 0) return;"
+    : `environment->refcount -= 1;
+  if (environment->refcount != 0) return;`;
   return `static void ${closureEnvironmentRetainName(closure)}(void *context) {
   ${name} *environment = (${name} *)context;
-  environment->refcount += 1;
+  ${retain}
 }
 
 static void ${closureEnvironmentReleaseName(closure)}(void *context) {
   ${name} *environment = (${name} *)context;
-  environment->refcount -= 1;
-  if (environment->refcount == 0) {
+  ${release}
+  {
 ${cleanup.join("\n")}${cleanup.length ? "\n" : ""}    free(environment);
   }
 }`;

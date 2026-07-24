@@ -385,6 +385,16 @@ Callbacks that an Objective-C API guarantees to invoke on main should establish
 main-executor proof inside their bodies. Cross-thread callbacks instead need a
 safe runtime handoff into a Z-owned executor/task scope.
 
+The first C callback tier describes arbitrary native invocation with `thread
+any`, but deliberately does not make `spawn on thread.main` detached. The
+planned foundation is an imported thread-safe `TaskScope` that explicitly owns
+children submitted by foreign callbacks, rejects new children during close,
+propagates cancellation and errors, and joins accepted work. If that API proves
+ergonomic, a named first-class `async scope` should become its language-shaped
+surface rather than a separate concurrency model. Repeated callbacks may
+eventually lower into an async generator so ordinary `try for await` owns the
+registration and cancellation lifetime.
+
 ## Function-level isolation
 
 Functions will eventually need executor-affinity contracts. Two distinct

@@ -125,6 +125,7 @@ export type ClosureInfo = {
   readonly parameterCount: number;
   readonly owned: boolean;
   readonly storable: boolean;
+  readonly threadSafe: boolean;
 };
 
 export type SemanticFunctionCallResolution = {
@@ -3417,6 +3418,7 @@ function inferClosureExpression(
     parameterCount: resolvedParameters.length,
     owned: false,
     storable: false,
+    threadSafe: false,
   });
   return type;
 }
@@ -3487,6 +3489,83 @@ function finalizeClosureFunctionValue(
     );
   }
   return closure;
+}
+
+function validateConcurrentForeignCallbackClosure(
+  expression: Extract<Expression, { kind: "closure" }>,
+  locals: ReadonlyMap<string, ValueType>,
+  structs: Map<string, StructDeclaration>,
+  enums: Map<string, EnumDeclaration>,
+  fileName: string,
+  state: AnalysisState,
+): void {
+  const closure = state.closures.get(expression.location.offset)!;
+  for (const capture of closure.captures) {
+    const binding = locals.get(capture.name);
+    if (binding && isBorrowedBinding(binding)) {
+      throw new DiagnosticError(fileName, capture.location, `borrowed capture ${JSON.stringify(capture.name)} cannot enter an arbitrary-thread native callback`, {
+        code: "Z0704",
+        notes: ["thread any callbacks can outlive the registering call and may execute concurrently on native threads"],
+        helps: ["capture an owned immutable snapshot with move, or keep the callback on thread caller"],
+      });
+    }
+    if (capture.mode === "inout") {
+      throw new DiagnosticError(fileName, capture.location, `mutable capture ${JSON.stringify(capture.name)} cannot enter an arbitrary-thread native callback`, {
+        code: "Z0704",
+        notes: ["thread any permits overlapping callback invocations, so captured state must be safe for concurrent read-only sharing"],
+        helps: ["capture an immutable snapshot, use a deeply readonly ARC class, or keep the callback on thread caller"],
+      });
+    }
+    const issue = shareableTypeIssue(capture.type, structs, enums, state);
+    if (issue) {
+      throw new DiagnosticError(
+        fileName,
+        capture.location,
+        `capture ${JSON.stringify(capture.name)} of type ${JSON.stringify(capture.type)} cannot enter an arbitrary-thread native callback: ${issue.reason}`,
+        {
+          code: "Z0704",
+          notes: ["the first thread any tier supports primitives, owned String snapshots, and deeply readonly atomic-ARC identity"],
+          helps: [issue.help],
+        },
+      );
+    }
+    const capturedClass = structs.get(String(underlyingType(capture.type)));
+    if (capturedClass?.kind === "class") {
+      state.threadSharedClassUses.set(capturedClass.name, capture.location);
+    }
+  }
+  state.closures.set(expression.location.offset, { ...closure, threadSafe: true });
+}
+
+function validateConcurrentForeignCallbackSignature(
+  callback: ForeignCallbackType,
+  location: SourceLocation,
+  structs: Map<string, StructDeclaration>,
+  enums: Map<string, EnumDeclaration>,
+  fileName: string,
+  state: AnalysisState,
+): void {
+  const values = [
+    ...callback.parameters.map((parameter, index) => ({
+      label: `parameter ${index + 1}`,
+      type: String(foreignValueType(parameter)),
+    })),
+    { label: "return value", type: String(foreignValueType(callback.returnType)) },
+  ];
+  for (const value of values) {
+    const issue = shareableTypeIssue(value.type, structs, enums, state);
+    if (!issue) continue;
+    throw new DiagnosticError(
+      fileName,
+      location,
+      `arbitrary-thread native callback ${value.label} of type ${JSON.stringify(value.type)} is not supported: ${issue.reason}`,
+      {
+        code: "Z0704",
+        notes: ["the first thread any callback ABI tier accepts thread-independent primitive values"],
+        helps: ["translate the native payload to a plain value in a trusted bridge, or keep the callback on thread caller"],
+      },
+    );
+  }
 }
 
 function collectClosureCaptures(
@@ -9731,6 +9810,31 @@ function checkForeignCall(
       }
       continue;
     }
+    if (parameter?.type.kind === "callback" && parameter.type.thread === "any") {
+      validateConcurrentForeignCallbackSignature(
+        parameter.type,
+        argument.location,
+        structs,
+        enums,
+        fileName,
+        state,
+      );
+      if (argument.kind !== "closure") {
+        const global = argument.kind === "identifier" ? globals.get(argument.name) : null;
+        if (global?.kind !== "function") {
+          throw new DiagnosticError(
+            fileName,
+            argument.location,
+            "thread any currently requires an inline closure or named function with no stored environment",
+            {
+              code: "Z0704",
+              notes: ["a previously stored function value does not yet carry a compiler-proven concurrent environment contract"],
+              helps: ["pass the move closure directly, or use a named function that captures no local state"],
+            },
+          );
+        }
+      }
+    }
     let actual: ValueType;
     if (parameter?.type.kind === "callback" && argument.kind === "closure") {
       const expectedCallback = foreignValueType(parameter.type);
@@ -9747,6 +9851,16 @@ function checkForeignCall(
         state,
         parameter.type.lifetime === "call" && parameter.type.context !== null,
       );
+      if (parameter.type.thread === "any") {
+        validateConcurrentForeignCallbackClosure(
+          argument,
+          locals,
+          structs,
+          enums,
+          fileName,
+          state,
+        );
+      }
       state.foreignArgumentAccesses.set(argument.location.offset, "in");
       actual = expectedCallback;
     } else {

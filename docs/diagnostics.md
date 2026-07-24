@@ -46,7 +46,7 @@ Currently structured codes include:
 | `Z0211` | cleanup-bearing move capture needs an explicitly typed owned closure |
 | `Z0212` | borrowed capturing closure cannot become a storable function value |
 | `Z0213` | environment-carrying function value cannot cross a context-free C callback boundary |
-| `Z0214` | an escaping C callback declaration is missing its caller-thread or release contract |
+| `Z0214` | an escaping C callback declaration is missing its explicit thread or release contract |
 | `Z0215` | closure parameter type cannot be inferred without a contextual function type |
 | `Z0216` | throwing closure cannot become a general stored function value |
 | `Z0217` | explicit copy requested for a type without an independent-copy capability |

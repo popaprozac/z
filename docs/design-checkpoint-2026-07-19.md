@@ -119,6 +119,12 @@ planned experiment rather than a rejected direction.
    capture spelling is contextual `using (in value, inout state, move owner)`:
    Copy snapshots may remain inferred, loans end only when the child actually
    joins, and spawned `out` remains deferred pending failure/cancellation rules.
+   The first `thread any` C callback slice now emits atomic closure-environment
+   ownership and checks conservative concurrent shareability. Next, use an
+   explicit thread-safe `TaskScope` to own callback-created placed children; if
+   successful, evolve that evidence into a named first-class `async scope`.
+   Preserve callback-to-async-sequence synthesis as the intended ergonomic
+   endpoint for repeated native callbacks.
 4. **Probed:** Swift 6.2 does not expose noncopyable values or Swift async APIs
    through its generated C++ interface. Z records that gate and now imports a
    nearby Swift-only surface—associated-value enum case factories—directly.

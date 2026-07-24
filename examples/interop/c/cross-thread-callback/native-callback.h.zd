@@ -1,0 +1,16 @@
+declare module "native-callback.h" {
+  export function z_example_start_calculation(
+    input: _,
+    move calculation: _,
+    context: _,
+    release: _
+  ): _ {
+    callback calculation {
+      context context;
+      deinit release;
+      thread any;
+    }
+  }
+
+  export function z_example_join_calculation(): _;
+}

@@ -51,7 +51,7 @@ export type ForeignCallbackContract = {
   readonly parameter: string;
   readonly context: string;
   readonly release: string | null;
-  readonly thread: "caller" | null;
+  readonly thread: "caller" | "any" | null;
   readonly location: SourceLocation;
   readonly parameterLocation: SourceLocation;
   readonly contextLocation: SourceLocation;
@@ -411,8 +411,8 @@ export function parseForeignDeclarationContracts(source: string, fileName: strin
               if (callbackThread) fail(callbackFact, `callback ${JSON.stringify(callback.text)} cannot declare more than one thread guarantee`);
               take();
               callbackThread = expectIdentifier("a callback thread guarantee");
-              if (callbackThread.text !== "caller") {
-                fail(callbackThread, `the first escaping callback tier requires "caller" threading, found ${JSON.stringify(callbackThread.text)}`);
+              if (callbackThread.text !== "caller" && callbackThread.text !== "any") {
+                fail(callbackThread, `callback threading must be "caller" or "any", found ${JSON.stringify(callbackThread.text)}`);
               }
               expectText(";");
               continue;
@@ -430,7 +430,7 @@ export function parseForeignDeclarationContracts(source: string, fileName: strin
             parameter: callback.text,
             context: context.text,
             release: callbackRelease?.text ?? null,
-            thread: callbackThread ? "caller" : null,
+            thread: callbackThread?.text === "any" ? "any" : callbackThread ? "caller" : null,
             location: contract.location,
             parameterLocation: callback.location,
             contextLocation: context.location,
@@ -595,14 +595,14 @@ export function foreignDeclarationApiNotes(
           { code: "Z0801" },
         );
       }
-      if (parameter.mode === "move" && (!callback.release || callback.thread !== "caller")) {
+      if (parameter.mode === "move" && (!callback.release || !callback.thread)) {
         throw new DiagnosticError(
           fileName,
           callback.location,
-          `escaping callback ${JSON.stringify(callback.parameter)} requires deinit and caller-thread contracts`,
+          `escaping callback ${JSON.stringify(callback.parameter)} requires deinit and thread contracts`,
           {
             code: "Z0214",
-            helps: [`add \`deinit <release parameter>;\` and \`thread caller;\` to the callback contract`],
+            helps: [`add \`deinit <release parameter>;\` plus \`thread caller;\` or \`thread any;\` to the callback contract`],
           },
         );
       }

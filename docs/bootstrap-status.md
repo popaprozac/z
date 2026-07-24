@@ -79,7 +79,7 @@ an inferred receiver-tied view.
 | C records and enums | Implemented | Complete supported layouts, nested records, constants |
 | C macros | Implemented literal slice | Active object-like integer-literal macros defined by the imported header receive target-correct scalar types, namespace/selective imports, direct native emission, completion, hover, and definitions; function-like, string, alias, and expression macros remain |
 | C pointers and statuses | Partial | Safe opaque handles and record borrows use adjacent `.zd` contracts; owned nullable `T *` results and `T **` outputs receive deterministic cleanup and expose source-nameable namespace types such as `sqlite.sqlite3`; those owners may persist in ARC class fields and close at final release; `void throws _ { success N; }` projects integer statuses into allocation-free typed errors and activates owned outputs before propagation; null-only parameters safely hide unsupported pointer values; nullable `view cstring` results borrow their single pointer input and copy into owned `String`; fixed native sentinel parameters preserve the verified ABI while disappearing from safe Z calls; nullable declared handles lift into niche-backed `Option`; owned handles with explicit transfer/destruction facts cross `thread.spawn`; general pointer/view contracts and internal toolchain notes remain |
-| C callbacks | Partial | Call-only and caller-thread escaping callbacks use `.zd` with named context and exact release contracts; cross-thread callbacks remain unsupported |
+| C callbacks | Partial | Call-only and escaping callbacks use `.zd` with named context and exact release contracts; `thread caller` preserves thread-local ownership, while `thread any` emits atomic closure ownership and checks conservative concurrent-shareability for primitives, String snapshots, and deeply readonly ARC identity. Objective-C/Swift cross-thread delivery, TaskScope ownership, weak capture, native shared values, and callback-to-async synthesis remain |
 | Native availability | Implemented host slice | Explicit `z.json` platform/minimum target, introduced/obsoleted errors, deprecation warnings, native source locations, and matching Clang/Swift deployment flags; cross-compilation and runtime guards remain |
 | Native library linkage | Implemented host slice | Validated, deduplicated `target.link.libraries` names become host-native library arguments; raw linker flags and cross-platform library resolution remain outside the project contract |
 | Objective-C | Partial | ARC classes/fields, methods, properties/global object constants, imported property ownership (`weak`/`strong`/`copy`/`assign`), labels, nullability, niche-backed `Option.fromNullable`, owned `String`/`NSString` copies, escaping blocks, persistent observer tokens, lifetime-safe `std/objc` target/action connections, and checked Z-class protocol adapters with owned weak-property bindings |
@@ -90,7 +90,8 @@ an inferred receiver-tied view.
 
 Current interop gaps that block a richer desktop application include
 broader Objective-C block shapes, inherited/generic protocol edge cases,
-cross-thread callbacks, runtime availability guards, cross-compilation, and API
+cross-thread callback delivery into structured tasks, runtime availability
+guards, cross-compilation, and API
 notes at SDK scale. General
 `T | null`/`Option<T>` representation unification remains language
 foundation work; Objective-C reference options now have the first one-pointer

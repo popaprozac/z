@@ -115,7 +115,7 @@
         }
       }, {
         "name": "meta.declaration.callback-thread.foreign.z",
-        "match": "\\b(thread)\\s+(caller)(?=\\s*;)",
+          "match": "\\b(thread)\\s+(caller|any)(?=\\s*;)",
         "captures": {
           "1": { "name": "keyword.control.declaration.callback.z" },
           "2": { "name": "constant.language.callback-thread.z" }
