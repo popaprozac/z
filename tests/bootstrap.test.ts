@@ -4084,6 +4084,31 @@ test("projects an exactly-once Swift callback into an awaitable Z task", () => {
     source.indexOf("calculateChecked") + 2,
   )?.contents.value ?? "";
   assert.match(checkedSourceHover, /async calculateChecked\(value: i32, shouldFail: boolean\): i32 throws Swift\.NSError/);
+  const shouldFailOffset = source.indexOf("shouldFail: false") + 2;
+  assert.match(
+    hover(source, example, shouldFailOffset)?.contents.value ?? "",
+    /shouldFail: boolean.*Objective-C selector calculateChecked:shouldFail:completion:/,
+  );
+
+  const sourceTokens = decodeSemanticTokens(semanticTokens(source, example).data);
+  const shouldFailPosition = positionForOffset(source, source.indexOf("shouldFail: false"));
+  assert.ok(sourceTokens.some((token) => (
+    token.line === shouldFailPosition.line
+    && token.character === shouldFailPosition.character
+    && token.type === semanticTokenTypes.indexOf("property")
+  )));
+  const labelDeclarationOffset = source.indexOf("label =");
+  const labelUseOffset = source.indexOf("label.sizeToFit");
+  assert.match(hover(source, example, labelUseOffset + 2)?.contents.value ?? "", /label: AppKit\.NSTextField/);
+  for (const [offset, modifiers] of [[labelDeclarationOffset, 3], [labelUseOffset, 2]] as const) {
+    const position = positionForOffset(source, offset);
+    const token = sourceTokens.find((candidate) => (
+      candidate.line === position.line
+      && candidate.character === position.character
+      && candidate.type === semanticTokenTypes.indexOf("variable")
+    ));
+    assert.equal(token?.modifiers, modifiers);
+  }
 
   const checkedDeclarationHover = hover(
     declarationSource,

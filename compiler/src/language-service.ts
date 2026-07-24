@@ -272,6 +272,10 @@ export function semanticTokens(source: string, fileName: string): { readonly dat
   );
   const consoleBindings = context.semanticInfo.consoleBindings;
   const tokens = lex(source, fileName);
+  const objcArgumentLabels = new Map(
+    collectObjCArgumentLabelInfos(context, tokens)
+      .map((info) => [info.offset, info] as const),
+  );
 
   for (let index = 0; index < tokens.length; index += 1) {
     const token = tokens[index];
@@ -318,6 +322,13 @@ export function semanticTokens(source: string, fileName: string): { readonly dat
       classifications.set(token.location.offset, {
         type: semanticTokenTypes.indexOf("property"),
         modifiers: 0,
+      });
+      continue;
+    }
+    if (objcArgumentLabels.has(token.location.offset)) {
+      classifications.set(token.location.offset, {
+        type: semanticTokenTypes.indexOf("property"),
+        modifiers: 4,
       });
       continue;
     }
@@ -573,6 +584,17 @@ export function hover(source: string, fileName: string, offset: number): Hover |
 
   const literalField = structLiteralFieldHover(context, word.start);
   if (literalField) return markdownHover(literalField, source, word.start, word.end);
+
+  const objcArgumentLabel = collectObjCArgumentLabelInfos(context, lex(source, fileName))
+    .find((info) => info.offset === word.start);
+  if (objcArgumentLabel) {
+    return markdownHover(
+      `${objcArgumentLabel.label}: ${foreignTypeName(objcArgumentLabel.parameterType)}  // Objective-C selector ${objcArgumentLabel.selector}`,
+      source,
+      word.start,
+      word.end,
+    );
+  }
 
   const matchVariant = collectMatchArmInfos(context).find((item) => item.variantOffset === word.start);
   if (matchVariant) {
@@ -2621,6 +2643,7 @@ function sourceAliasDisplayType(context: AnalyzedSource, typeName: string): stri
 function collectBindings(context: AnalyzedSource): Binding[] {
   const bindings: Binding[] = [];
   const seenClosures = new Set<number>();
+  const seenExpressionBlocks = new Set<number>();
   const visitClosure = (expression: Extract<Expression, { kind: "closure" }>): void => {
     if (seenClosures.has(expression.location.offset)) return;
     seenClosures.add(expression.location.offset);
@@ -2636,8 +2659,56 @@ function collectBindings(context: AnalyzedSource): Binding[] {
     }
     if (expression.body.kind === "block") visitStatements(expression.body.statements);
   };
+  const visitExpressionBlocks = (value: unknown): void => {
+    if (!value || typeof value !== "object") return;
+    if (Array.isArray(value)) {
+      for (const child of value) visitExpressionBlocks(child);
+      return;
+    }
+    const node = value as Partial<Expression>;
+    if (node.kind === "closure") {
+      visitClosure(node as Extract<Expression, { kind: "closure" }>);
+      return;
+    }
+    if (
+      node.kind === "executorPlacement"
+      || node.kind === "ifExpression"
+      || node.kind === "whileExpression"
+      || node.kind === "forExpression"
+      || node.kind === "matchExpression"
+    ) {
+      const location = (node as { readonly location?: SourceLocation }).location;
+      if (location && seenExpressionBlocks.has(location.offset)) return;
+      if (location) seenExpressionBlocks.add(location.offset);
+      if (node.kind === "executorPlacement") {
+        visitStatements((node as Extract<Expression, { kind: "executorPlacement" }>).body.statements);
+        return;
+      }
+      if (node.kind === "ifExpression") {
+        const expression = node as Extract<Expression, { kind: "ifExpression" }>;
+        visitExpressionBlocks(expression.condition);
+        visitStatements(expression.thenBranch.statements);
+        if (expression.elseBranch.kind === "ifExpression") visitExpressionBlocks(expression.elseBranch);
+        else visitStatements(expression.elseBranch.statements);
+        return;
+      }
+      if (node.kind === "whileExpression" || node.kind === "forExpression") {
+        const expression = node as Extract<Expression, { kind: "whileExpression" | "forExpression" }>;
+        visitExpressionBlocks(expression.kind === "whileExpression" ? expression.condition : expression.iterable);
+        visitStatements(expression.body.statements);
+        visitStatements(expression.elseBranch.statements);
+        return;
+      }
+      const expression = node as Extract<Expression, { kind: "matchExpression" }>;
+      visitExpressionBlocks(expression.expression);
+      for (const arm of expression.arms) visitStatements([arm.body]);
+      return;
+    }
+    for (const child of Object.values(value as Record<string, unknown>)) visitExpressionBlocks(child);
+  };
   const visitStatements = (statements: readonly Statement[]): void => {
     for (const statement of statements) {
+      visitExpressionBlocks(statement);
       if (statement.kind === "variable") {
         bindings.push({
           name: statement.name,
@@ -2647,7 +2718,6 @@ function collectBindings(context: AnalyzedSource): Binding[] {
           parameter: false,
           fileName: statement.nameLocation.fileName,
         });
-        if (statement.initializer?.kind === "closure") visitClosure(statement.initializer);
       }
       if (statement.kind === "destructure") {
         for (const binding of statement.objectBindings) {
@@ -4400,6 +4470,70 @@ function objectiveCSelectorAt(context: AnalyzedSource, memberOffset: number): st
   };
   visit(context.program);
   return selector;
+}
+
+type ObjCArgumentLabelInfo = {
+  readonly offset: number;
+  readonly label: string;
+  readonly selector: string;
+  readonly parameterType: ForeignType;
+};
+
+function collectObjCArgumentLabelInfos(
+  context: AnalyzedSource,
+  tokens: readonly ReturnType<typeof lex>[number][],
+): ObjCArgumentLabelInfo[] {
+  const result: ObjCArgumentLabelInfo[] = [];
+  const visit = (value: unknown): void => {
+    if (!value || typeof value !== "object") return;
+    if (Array.isArray(value)) {
+      for (const child of value) visit(child);
+      return;
+    }
+    const node = value as Partial<Expression>;
+    if (node.kind === "call") {
+      const call = node as Extract<Expression, { kind: "call" }>;
+      const callInfo = context.semanticInfo.objcCalls.get(call.location.offset);
+      if (callInfo) {
+        const candidateMethods = [...context.semanticInfo.foreignInterfaces.values()]
+          .flatMap((declaration) => declaration.methods)
+          .filter((candidate) => candidate.selector === callInfo.selector);
+        const method = callInfo.async?.method
+          ?? [...context.semanticInfo.foreignInterfaces.values()]
+            .filter((declaration) => declaration.className === callInfo.className)
+            .flatMap((declaration) => declaration.methods)
+            .find((candidate) => candidate.selector === callInfo.selector)
+          ?? candidateMethods[0];
+        if (method) {
+          const parameters = callInfo.async
+            ? method.parameters.filter((_, index) => index !== callInfo.async!.callbackParameter)
+            : method.parameters;
+          call.argumentLabels.forEach((label, index) => {
+            if (!label || !call.arguments[index] || !parameters[index]) return;
+            const argumentOffset = call.arguments[index].location.offset;
+            const labelToken = tokens
+              .filter((token, tokenIndex) => (
+                token.location.offset > call.location.offset
+                && token.location.offset < argumentOffset
+                && token.text === label
+                && tokens[tokenIndex + 1]?.kind === "colon"
+              ))
+              .at(-1);
+            if (!labelToken) return;
+            result.push({
+              offset: labelToken.location.offset,
+              label,
+              selector: callInfo.selector,
+              parameterType: parameters[index].type,
+            });
+          });
+        }
+      }
+    }
+    for (const child of Object.values(value as Record<string, unknown>)) visit(child);
+  };
+  visit(context.sourceProgram);
+  return result;
 }
 
 function zFunctionDetail(
