@@ -23,13 +23,13 @@ async function saveDocument(document: DocumentLease): i32 {
 
 async function main(): i32 {
   const resource = zcpp.UniqueValue(40);
-  const nativeTask = spawn inspectNative(resource);
+  const nativeTask = task inspectNative(resource);
 
   const document = DocumentLease({
     id: 42,
     resource: zcpp.UniqueValue(42),
   });
-  const documentTask = spawn saveDocument(document);
+  const documentTask = task saveDocument(document);
 
   const nativeAnswer = await nativeTask;
   const documentAnswer = await documentTask;

@@ -3916,7 +3916,7 @@ test("projects an exactly-once Swift callback into an awaitable Z task", () => {
   );
   const nakedDiagnostic = diagnostics(naked, example)[0];
   assert.equal(nakedDiagnostic.code, "Z0702");
-  assert.match(nakedDiagnostic.message, /requires `await` or `spawn`/);
+  assert.match(nakedDiagnostic.message, /requires `await` or `task`/);
 
   const uncheckedThrow = `
     import Swift from "ZSwiftTaskScope-Swift.h";
@@ -10146,9 +10146,37 @@ test("supports explicit copy and move ownership expressions", () => {
   const contextualKeywords = `
     function copy(value: i32): i32 { return value + 1; }
     function move(value: i32): i32 { return value + 1; }
-    function main(): i32 { return move(copy(40)) - 42; }
+    function main(): i32 {
+      const value = move(copy(40));
+      const text = "ready";
+      const copy = copy text;
+      const move = move copy;
+      if (move.byteLength == 5) return value - 42;
+      return 1;
+    }
   `;
   assert.deepEqual(diagnostics(contextualKeywords, "contextual-copy-move.zs"), []);
+  const contextualOwnershipTokens = decodeSemanticTokens(
+    semanticTokens(contextualKeywords, "contextual-copy-move.zs").data,
+  );
+  const copyBindingOffset = contextualKeywords.indexOf("const copy") + "const ".length;
+  const copyOperatorOffset = contextualKeywords.indexOf("= copy") + 2;
+  const copyBindingPosition = positionForOffset(contextualKeywords, copyBindingOffset);
+  const copyOperatorPosition = positionForOffset(contextualKeywords, copyOperatorOffset);
+  assert.ok(contextualOwnershipTokens.some((token) => (
+    token.line === copyBindingPosition.line
+    && token.character === copyBindingPosition.character
+    && token.type === semanticTokenTypes.indexOf("variable")
+  )));
+  assert.ok(!contextualOwnershipTokens.some((token) => (
+    token.line === copyOperatorPosition.line
+    && token.character === copyOperatorPosition.character
+  )));
+  const moveUseOffset = contextualKeywords.indexOf("move.byteLength");
+  assert.match(
+    hover(contextualKeywords, "contextual-copy-move.zs", moveUseOffset)?.contents.value ?? "",
+    /move: String/,
+  );
 
   const recursiveCopies = `
     enum Label { present String, missing }
@@ -11746,7 +11774,7 @@ test("runs cold async generators through reusable awaited advancement tasks", ()
       return 1;
     }
     async function main(): i32 {
-      const task = spawn consume();
+      const task = task consume();
       await delay(1);
       await task.cancel();
       return 0;
@@ -11762,11 +11790,11 @@ test("runs cold async generators through reusable awaited advancement tasks", ()
       async function values(): AsyncGenerator<i32> { yield 42; }
       async function main(): i32 {
         const values = values();
-        const task = spawn values.next();
+        const task = task values.next();
         return 0;
       }
     `, "async-generator-overlap.zs"),
-    /spawning AsyncGenerator.next is deferred until concurrent advancement is statically excluded/,
+    /starting AsyncGenerator.next as a task is deferred until concurrent advancement is statically excluded/,
   );
 }, 10_000);
 
@@ -12796,7 +12824,16 @@ test("editor grammar tracks keywords without reserving Result variants", () => {
   const qualifiedTypeAnnotation = grammar.repository.typeAnnotations.patterns[0];
   const exportPattern = grammar.repository.keywords.patterns
     .find((pattern: { match: string }) => pattern.match.includes("export"));
+  const taskPattern = grammar.repository.keywords.patterns
+    .find((pattern: { name: string }) => pattern.name === "keyword.control.concurrent.z");
+  const ownershipPattern = grammar.repository.keywords.patterns
+    .find((pattern: { name: string }) => pattern.name === "keyword.operator.ownership.z");
   assert.equal(exportPattern?.name, "keyword.control.export.z");
+  assert.match("task fetch()", new RegExp(taskPattern?.match ?? "$^"));
+  assert.match("task on thread.main", new RegExp(taskPattern?.match ?? "$^"));
+  assert.doesNotMatch("const task = operation();", new RegExp(taskPattern?.match ?? "$^"));
+  assert.match("copy value", new RegExp(ownershipPattern?.match ?? "$^"));
+  assert.doesNotMatch("const copy = value;", new RegExp(ownershipPattern?.match ?? "$^"));
   assert.match(keywordPattern, /throw/);
   assert.match(keywordPattern, /attempt/);
   assert.match(keywordPattern, /on/);
@@ -12804,6 +12841,8 @@ test("editor grammar tracks keywords without reserving Result variants", () => {
   assert.match(keywordPattern, /select/);
   assert.match(keywordPattern, /copy/);
   assert.match(keywordPattern, /move/);
+  assert.match(keywordPattern, /task/);
+  assert.doesNotMatch(keywordPattern, /await\|task\|on/);
   assert.match(keywordPattern, /view/);
   assert.match(keywordPattern, /weak/);
   assert.match(keywordPattern, /readonly/);
@@ -12938,7 +12977,7 @@ test("type-checks main-thread executor placement and exposes thread.main to edit
   const synchronousHelper = `
     import { thread } from "std/thread";
     function publishStatus(): void {
-      spawn on thread.main {}
+      task on thread.main {}
     }
     async function main(): i32 {
       const worker = thread.spawn((): void => publishStatus());
@@ -12951,7 +12990,7 @@ test("type-checks main-thread executor placement and exposes thread.main to edit
     assert.equal(error.code, "Z0711");
     assert.match(error.summary, /enclosing async function or the direct thread\.spawn closure/);
     assert.match(error.notes.join(" "), /does not inherit its caller's task scope/);
-    assert.match(error.helps.join(" "), /keep `spawn on thread\.main \{ \.\.\. \}` directly in that closure/);
+    assert.match(error.helps.join(" "), /keep `task on thread\.main \{ \.\.\. \}` directly in that closure/);
     assert.match(error.helps.join(" "), /async thread\.spawn closures are not implemented yet/);
     return true;
   });
@@ -13479,7 +13518,7 @@ test("cleans owned async match results after later error and cancellation", () =
         success(value) => value;
         failure(error) => error;
       };
-      const task = spawn holdAfterSelection();
+      const task = task holdAfterSelection();
       await delay(5);
       await task.cancel();
       return code - 7;
@@ -13538,7 +13577,7 @@ test("cleans selected owned match payloads on async error and cancellation", () 
         success(value) => value;
         failure(error) => error;
       };
-      const task = spawn hold();
+      const task = task hold();
       await delay(5);
       await task.cancel();
       return code - 7;
@@ -13746,15 +13785,15 @@ test("constructs and destroys move-only C++ values across async suspension", () 
 
     async function linger(): void {
       const resource = native.zcpp.UniqueValue(9);
-      const completed = spawn makeOwned();
+      const completed = task makeOwned();
       await delay(1000);
       const returned = await completed;
       return;
     }
 
     async function coordinate(): i32 throws i32 {
-      const failure = spawn failOwned();
-      spawn linger();
+      const failure = task failOwned();
+      task linger();
       return try await failure;
     }
 
@@ -13821,7 +13860,7 @@ test("constructs and destroys move-only C++ values across async suspension", () 
     async function consume(resource: native.zcpp.UniqueValue): void { return; }
     async function main(): i32 {
       const resource = native.zcpp.UniqueValue(42);
-      const task = spawn consume(resource);
+      const task = task consume(resource);
       return resource.value();
     }
   `;
@@ -13840,7 +13879,7 @@ test("constructs and destroys move-only C++ values across async suspension", () 
     }
 
     async function cancelBeforeChildPoll(): i32 throws i32 {
-      spawn hold(native.zcpp.UniqueValue(9));
+      task hold(native.zcpp.UniqueValue(9));
       throw 7;
     }
 
@@ -13925,7 +13964,7 @@ test("constructs and destroys move-only C++ values across async suspension", () 
     }
 
     async function linger(): void {
-      const completed = spawn makeJob();
+      const completed = task makeJob();
       await delay(1000);
       const returned = await completed;
       return;
@@ -13937,7 +13976,7 @@ test("constructs and destroys move-only C++ values across async suspension", () 
     }
 
     async function coordinate(): i32 throws i32 {
-      spawn linger();
+      task linger();
       return try await fail();
     }
 
@@ -14022,7 +14061,7 @@ test("represents fallible void success without an enum payload", () => {
   assert.equal(compilation.status, 0, compilation.stderr);
 });
 
-test("allows root-scoped spawn and diagnoses unacknowledged async calls and async borrows", () => {
+test("allows root-scoped task and diagnoses unacknowledged async calls and async borrows", () => {
   const prelude = `
     async function fetch(value: i32): i32 { return value; }
   `;
@@ -14030,26 +14069,55 @@ test("allows root-scoped spawn and diagnoses unacknowledged async calls and asyn
   assert.throws(() => check(naked, "async-naked.zs"), (error: unknown) => {
     assert.ok(error instanceof DiagnosticError);
     assert.equal(error.code, "Z0702");
-    assert.match(error.message, /requires `await` or `spawn`/);
+    assert.match(error.message, /requires `await` or `task`/);
     return true;
   });
 
-  const rootScoped = `${prelude} async function use(): i32 { const task = spawn fetch(42); return await task; }`;
+  const rootScoped = `${prelude} async function use(): i32 { const task = task fetch(42); return await task; }`;
   check(rootScoped, "async-root-scope.zs");
 
-  const immediatelyJoined = `${prelude} async function use(): i32 { return await spawn fetch(42); }`;
-  assert.throws(() => check(immediatelyJoined, "async-await-spawn.zs"), (error: unknown) => {
+  const contextualTask = `
+    async function task(value: i32): i32 { return value; }
+    async function use(): i32 {
+      const task = task task(42);
+      return await task;
+    }
+  `;
+  check(contextualTask, "contextual-task.zs");
+  const contextualTaskTokens = decodeSemanticTokens(semanticTokens(contextualTask, "contextual-task.zs").data);
+  const taskBindingPosition = positionForOffset(
+    contextualTask,
+    contextualTask.indexOf("const task") + "const ".length,
+  );
+  const taskOperatorOffset = contextualTask.indexOf("= task") + 2;
+  const taskOperatorPosition = positionForOffset(contextualTask, taskOperatorOffset);
+  assert.ok(contextualTaskTokens.some((token) => (
+    token.line === taskBindingPosition.line
+    && token.character === taskBindingPosition.character
+    && token.type === semanticTokenTypes.indexOf("variable")
+  )));
+  assert.ok(!contextualTaskTokens.some((token) => (
+    token.line === taskOperatorPosition.line
+    && token.character === taskOperatorPosition.character
+  )));
+  assert.match(
+    hover(contextualTask, "contextual-task.zs", taskOperatorOffset)?.contents.value ?? "",
+    /hot structured child/,
+  );
+
+  const immediatelyJoined = `${prelude} async function use(): i32 { return await task fetch(42); }`;
+  assert.throws(() => check(immediatelyJoined, "async-await-task.zs"), (error: unknown) => {
     assert.ok(error instanceof DiagnosticError);
     assert.equal(error.code, "Z0701");
-    assert.match(error.message, /`await spawn` is redundant/);
+    assert.match(error.message, /`await task` is redundant/);
     return true;
   });
 
-  const synchronousSpawn = `${prelude} function use(): i32 { const task = spawn fetch(42); return 42; }`;
-  assert.throws(() => check(synchronousSpawn, "async-sync-spawn.zs"), (error: unknown) => {
+  const synchronousSpawn = `${prelude} function use(): i32 { const task = task fetch(42); return 42; }`;
+  assert.throws(() => check(synchronousSpawn, "async-sync-task.zs"), (error: unknown) => {
     assert.ok(error instanceof DiagnosticError);
     assert.equal(error.code, "Z0703");
-    assert.match(error.message, /spawn requires an enclosing async function/);
+    assert.match(error.message, /task requires an enclosing async function/);
     return true;
   });
 
@@ -14073,7 +14141,7 @@ test("allows root-scoped spawn and diagnoses unacknowledged async calls and asyn
   });
 });
 
-test("borrows immutable values across direct await and scoped spawn", () => {
+test("borrows immutable values across direct await and scoped task", () => {
   const example = resolve(projectRoot, "examples/async/async-borrowing.zs");
   const header = resolve(projectRoot, "tests/fixtures/move-only.hpp");
   const source = readFileSync(example, "utf8");
@@ -14111,7 +14179,7 @@ test("borrows immutable values across direct await and scoped spawn", () => {
     async function inspect(in resource: Resource): i32 { return resource.id; }
     async function main(): i32 {
       const resource = Resource({ id: 42 });
-      const task = spawn inspect(resource);
+      const task = task inspect(resource);
       return await task;
     }
   `;
@@ -14125,7 +14193,7 @@ test("borrows immutable values across direct await and scoped spawn", () => {
     async function main(): i32 {
       let resource = Resource({ id: 42 });
       async scope {
-        spawn inspect(resource);
+        task inspect(resource);
         resource.id = 43;
       }
       return resource.id;
@@ -14133,7 +14201,7 @@ test("borrows immutable values across direct await and scoped spawn", () => {
   `;
   const mutationDiagnostic = diagnostics(mutation, "async-borrow-mutation.zs")[0];
   assert.equal(mutationDiagnostic.code, "Z0704");
-  assert.match(mutationDiagnostic.message, /cannot mutate "resource" while a spawned task borrows it/);
+  assert.match(mutationDiagnostic.message, /cannot mutate "resource" while a child task borrows it/);
 
   const moved = `
     import native from ${JSON.stringify(header)};
@@ -14141,7 +14209,7 @@ test("borrows immutable values across direct await and scoped spawn", () => {
     async function main(): i32 {
       const resource = native.zcpp.UniqueValue(42);
       async scope {
-        spawn inspect(resource);
+        task inspect(resource);
         return resource.finish(0);
       }
       return 0;
@@ -14149,7 +14217,7 @@ test("borrows immutable values across direct await and scoped spawn", () => {
   `;
   const moveDiagnostic = diagnostics(moved, "async-borrow-move.zs")[0];
   assert.equal(moveDiagnostic.code, "Z0704");
-  assert.match(moveDiagnostic.message, /cannot move "resource" while a spawned task borrows it/);
+  assert.match(moveDiagnostic.message, /cannot move "resource" while a child task borrows it/);
 
   const ownedClass = `
     class Session { id: i32; }
@@ -14173,7 +14241,7 @@ test("borrows immutable values across direct await and scoped spawn", () => {
     async function failWithBorrow(): i32 throws i32 {
       const resource = native.zcpp.UniqueValue(9);
       async scope {
-        spawn observe(resource);
+        task observe(resource);
         throw 7;
       }
     }
@@ -14199,7 +14267,7 @@ test("borrows immutable values across direct await and scoped spawn", () => {
     async function main(): i32 {
       let resource = zcpp.UniqueValue(40);
       async scope {
-        const task = spawn adjustLater(inout resource);
+        const task = task adjustLater(inout resource);
         await task;
       }
       const result = resource.finish(0);
@@ -14241,11 +14309,11 @@ test("mutates caller storage through a direct-awaited async inout parameter", ()
     async function add(inout counter: Counter): void { return; }
     async function main(): i32 {
       let counter = Counter({ value: 41 });
-      spawn add(inout counter);
+      task add(inout counter);
       return 0;
     }
   `;
-  const spawnedDiagnostic = diagnostics(spawned, "async-spawn-inout.zs")[0];
+  const spawnedDiagnostic = diagnostics(spawned, "async-task-inout.zs")[0];
   assert.equal(spawnedDiagnostic.code, "Z0704");
   assert.match(spawnedDiagnostic.message, /requires an explicit async scope/);
 
@@ -14293,7 +14361,7 @@ test("mutates caller storage through a direct-awaited async inout parameter", ()
     }
 
     async function coordinate(): i32 throws i32 {
-      spawn holdBorrow();
+      task holdBorrow();
       return try await failSoon();
     }
 
@@ -14334,7 +14402,7 @@ test("mutates caller storage through a direct-awaited async inout parameter", ()
   assert.equal(failed.status, 0, failed.stderr);
 });
 
-test("mutably borrows caller storage through scoped spawn and releases it on join", () => {
+test("mutably borrows caller storage through scoped task and releases it on join", () => {
   const example = resolve(projectRoot, "examples/async/async-scoped-inout.zs");
   const source = readFileSync(example, "utf8");
   const generated = compileToNative(source, example).source;
@@ -14360,7 +14428,7 @@ test("mutably borrows caller storage through scoped spawn and releases it on joi
     async function main(): i32 {
       let counter = Counter({ value: 41 });
       async scope {
-        const task = spawn add(inout counter);
+        const task = task add(inout counter);
         const observed = counter.value;
         await task;
       }
@@ -14369,11 +14437,11 @@ test("mutably borrows caller storage through scoped spawn and releases it on joi
   `;
   const readDiagnostic = diagnostics(beforeJoin, "async-scoped-inout-read.zs")[0];
   assert.equal(readDiagnostic.code, "Z0704");
-  assert.match(readDiagnostic.message, /cannot read "counter" while a spawned task mutably borrows it/);
+  assert.match(readDiagnostic.message, /cannot read "counter" while a child task mutably borrows it/);
 
   const overlapping = beforeJoin.replace(
     "const observed = counter.value;",
-    "const second = spawn add(inout counter);",
+    "const second = task add(inout counter);",
   );
   const overlapDiagnostic = diagnostics(overlapping, "async-scoped-inout-overlap.zs")[0];
   assert.equal(overlapDiagnostic.code, "Z0704");
@@ -14399,8 +14467,8 @@ test("mutably borrows caller storage through scoped spawn and releases it on joi
     async function main(): i32 {
       let counter = Counter({ value: 42 });
       async scope {
-        spawn observe(counter);
-        spawn update(inout counter);
+        task observe(counter);
+        task update(inout counter);
       }
       return 0;
     }
@@ -14414,7 +14482,7 @@ test("mutably borrows caller storage through scoped spawn and releases it on joi
   );
   const conditionalDiagnostic = diagnostics(conditionalJoin, "async-scoped-inout-conditional-join.zs")[0];
   assert.equal(conditionalDiagnostic.code, "Z0704");
-  assert.match(conditionalDiagnostic.message, /cannot read "counter" while a spawned task mutably borrows it/);
+  assert.match(conditionalDiagnostic.message, /cannot read "counter" while a child task mutably borrows it/);
 
   const joinedOnEveryPath = `
     struct Counter { value: i32; }
@@ -14423,7 +14491,7 @@ test("mutably borrows caller storage through scoped spawn and releases it on joi
       let counter = Counter({ value: 41 });
       const joinNormally = true;
       async scope {
-        const task = spawn add(inout counter);
+        const task = task add(inout counter);
         if (joinNormally) {
           await task;
         } else {
@@ -14446,7 +14514,7 @@ test("mutably borrows caller storage through scoped spawn and releases it on joi
     async function add(inout counter: Counter): void { counter.value = counter.value + 1; }
     async function updateOrExit(exitEarly: boolean, inout counter: Counter): i32 {
       async scope {
-        const task = spawn add(inout counter);
+        const task = task add(inout counter);
         if (exitEarly) {
           return 0;
         } else {
@@ -14474,8 +14542,8 @@ test("mutably borrows caller storage through scoped spawn and releases it on joi
     async function main(): i32 {
       let resource = Resource({ value: 42 });
       async scope {
-        const first = spawn inspect(resource);
-        const second = spawn inspect(resource);
+        const first = task inspect(resource);
+        const second = task inspect(resource);
         await first;
         resource.value = 43;
         await second;
@@ -14485,7 +14553,7 @@ test("mutably borrows caller storage through scoped spawn and releases it on joi
   `;
   const sharedDiagnostic = diagnostics(sharedAfterOneJoin, "async-shared-partial-join.zs")[0];
   assert.equal(sharedDiagnostic.code, "Z0704");
-  assert.match(sharedDiagnostic.message, /cannot mutate "resource" while a spawned task borrows it/);
+  assert.match(sharedDiagnostic.message, /cannot mutate "resource" while a child task borrows it/);
   const sharedAfterBothJoin = sharedAfterOneJoin.replace(
     "resource.value = 43;\n        await second;",
     "await second;\n        resource.value = 43;",
@@ -14510,7 +14578,7 @@ test("mutably borrows caller storage through scoped spawn and releases it on joi
     async function main(): i32 {
       let counter = Counter({ value: 40 });
       async scope {
-        const task = spawn addLater(inout counter);
+        const task = task addLater(inout counter);
         await delay(1);
         await task.cancel();
         counter.add(2);
@@ -14546,20 +14614,20 @@ test("borrows fixed-array storage as Slice across async suspension", () => {
     async function inspect(values: Slice<i32>): i32 { return values[0]; }
     async function main(): i32 {
       const values = [42];
-      const task = spawn inspect(values);
+      const task = task inspect(values);
       return await task;
     }
   `;
   const scopeDiagnostic = diagnostics(outsideScope, "async-slice-scope.zs")[0];
   assert.equal(scopeDiagnostic.code, "Z0704");
-  assert.match(scopeDiagnostic.message, /spawned Slice borrow of "values" requires an explicit async scope/);
+  assert.match(scopeDiagnostic.message, /child-task Slice borrow of "values" requires an explicit async scope/);
 
   const mutateBeforeJoin = `
     async function inspect(values: Slice<i32>): i32 { return values[0]; }
     async function main(): i32 {
       let values = [41];
       async scope {
-        const task = spawn inspect(values);
+        const task = task inspect(values);
         values[0] = 42;
         await task;
       }
@@ -14568,7 +14636,7 @@ test("borrows fixed-array storage as Slice across async suspension", () => {
   `;
   const mutationDiagnostic = diagnostics(mutateBeforeJoin, "async-slice-mutate-before-join.zs")[0];
   assert.equal(mutationDiagnostic.code, "Z0704");
-  assert.match(mutationDiagnostic.message, /cannot mutate "values" while a spawned task borrows it/);
+  assert.match(mutationDiagnostic.message, /cannot mutate "values" while a child task borrows it/);
 
   const mutateAfterJoin = mutateBeforeJoin.replace(
     "values[0] = 42;\n        await task;",
@@ -14582,8 +14650,8 @@ test("borrows fixed-array storage as Slice across async suspension", () => {
     async function main(): i32 {
       let values = [41];
       async scope {
-        const reader = spawn inspect(values);
-        const writer = spawn update(inout values);
+        const reader = task inspect(values);
+        const writer = task update(inout values);
         await reader;
         await writer;
       }
@@ -14625,7 +14693,7 @@ test("borrows growable and cleanup-bearing collection storage across async suspe
       let values = Array<i32>();
       values.push(41);
       async scope {
-        const task = spawn inspect(values);
+        const task = task inspect(values);
         values.push(42);
         await task;
       }
@@ -14634,7 +14702,7 @@ test("borrows growable and cleanup-bearing collection storage across async suspe
   `;
   const growDiagnostic = diagnostics(liveGrow, "async-grow-live-slice.zs")[0];
   assert.equal(growDiagnostic.code, "Z0704");
-  assert.match(growDiagnostic.message, /cannot mutate "values" while a spawned task borrows it/);
+  assert.match(growDiagnostic.message, /cannot mutate "values" while a child task borrows it/);
 
   const afterJoin = liveGrow.replace(
     "values.push(42);\n        await task;",
@@ -14686,13 +14754,13 @@ test("destroys move-only native collection elements on async completion and canc
       const fixedValue = await exerciseFixed();
       const afterFixed = native.zcpp.unique_live();
       async scope {
-        const dynamicTask = spawn holdDynamic();
+        const dynamicTask = task holdDynamic();
         await delay(1);
         await dynamicTask.cancel();
       }
       const afterDynamicCancel = native.zcpp.unique_live();
       async scope {
-        const fixedTask = spawn holdFixed();
+        const fixedTask = task holdFixed();
         await delay(1);
         await fixedTask.cancel();
       }
@@ -14735,13 +14803,13 @@ test("initializes cleanup-free caller storage through a direct-awaited async out
     async function fill(out value: i32): void { value = 42; }
     async function main(): i32 {
       let value: i32;
-      async scope { spawn fill(out value); }
+      async scope { task fill(out value); }
       return value;
     }
   `;
-  const spawnedDiagnostic = diagnostics(spawned, "async-spawn-out.zs")[0];
+  const spawnedDiagnostic = diagnostics(spawned, "async-task-out.zs")[0];
   assert.equal(spawnedDiagnostic.code, "Z0704");
-  assert.match(spawnedDiagnostic.message, /spawned output borrow of "value" is not supported/);
+  assert.match(spawnedDiagnostic.message, /child-task output borrow of "value" is not supported/);
 
   const incomplete = `
     async function fill(out value: i32): void { return; }
@@ -14814,8 +14882,8 @@ test("runs retained class, consuming struct, and static async methods", () => {
   assert.equal(result.stdout, "released async request 7\nreleased async client 5\n");
 });
 
-test("schedules hot spawned functions and methods on the FIFO executor", () => {
-  const example = resolve(projectRoot, "examples/async/async-spawn.zs");
+test("schedules hot child functions and methods on the FIFO executor", () => {
+  const example = resolve(projectRoot, "examples/async/async-tasks.zs");
   const source = readFileSync(example, "utf8");
   const generated = compileToC(source, example);
   assert.match(generated, /struct Z_AsyncExecutor/);
@@ -14830,24 +14898,24 @@ test("schedules hot spawned functions and methods on the FIFO executor", () => {
   assert.equal(result.status, 0, result.stderr);
   assert.equal(
     result.stdout,
-    "released spawned job 22\nreleased spawned job 23\nreleased spawn worker 24\n",
+    "released child job 22\nreleased child job 23\nreleased task worker 24\n",
   );
 
   const unacknowledgedFailure = `
     async function fail(): i32 throws i32 { throw 7; }
     async function main(): i32 {
-      spawn fail();
+      task fail();
       return 0;
     }
   `;
   assert.throws(() => compileToC(unacknowledgedFailure, "async-unjoined-error.zs"), (error: unknown) => {
     assert.ok(error instanceof DiagnosticError);
     assert.equal(error.code, "Z0700");
-    assert.match(error.message, /throwing spawned task must be joined explicitly/);
+    assert.match(error.message, /throwing child task must be joined explicitly/);
     return true;
   });
 
-  const directory = mkdtempSync("/tmp/z-async-spawn-error-");
+  const directory = mkdtempSync("/tmp/z-async-task-error-");
   const failing = resolve(directory, "main.zs");
   writeFileSync(failing, `
     import console from "std/console";
@@ -14859,8 +14927,8 @@ test("schedules hot spawned functions and methods on the FIFO executor", () => {
     async function fail(): i32 throws i32 { throw 7; }
     async function main(): i32 throws i32 {
       const resource = Resource({ id: 9 });
-      spawn finish(resource);
-      const failureTask = spawn fail();
+      task finish(resource);
+      const failureTask = task fail();
       return try await failureTask;
     }
   `);
@@ -14893,7 +14961,7 @@ test("joins nested async scopes at their lexical boundaries", () => {
     async function finish(): void throws i32 { return; }
     async function main(): i32 throws i32 {
       async scope {
-        const task = spawn finish();
+        const task = task finish();
         try await task;
       }
       return 0;
@@ -14928,12 +14996,17 @@ test("routes arbitrary-thread callbacks through named TaskScope ownership", () =
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stdout, "main-executor callback value=40\n");
 
-  const completionSource = 'import { TaskScope } from "std/async"; function inspect(taskScope: TaskScope): void { taskScope.sp; }';
-  const completionOffset = completionSource.indexOf("taskScope.sp") + "taskScope.sp".length;
-  assert.ok(completions(completionSource, example, completionOffset).some((item) => item.label === "spawn"));
+  const completionSource = 'import { TaskScope } from "std/async"; function inspect(taskScope: TaskScope): void { taskScope.sc; }';
+  const completionOffset = completionSource.indexOf("taskScope.sc") + "taskScope.sc".length;
+  assert.ok(completions(completionSource, example, completionOffset).some((item) => item.label === "schedule"));
 
   const namedOffset = source.indexOf("updates {");
   assert.match(hover(source, example, namedOffset)?.contents.value ?? "", /TaskScope/);
+  const scheduleOffset = source.indexOf(".schedule(") + 2;
+  assert.match(
+    hover(source, example, scheduleOffset)?.contents.value ?? "",
+    /schedule\(thread\.main, operation: \(\) => void\): boolean/,
+  );
   const scopeTokens = decodeSemanticTokens(semanticTokens(source, example).data);
   const scopeDeclaration = positionForOffset(source, source.indexOf("updates {"));
   const scopeUse = positionForOffset(source, source.indexOf("beginCalculation(updates)") + "beginCalculation(".length);
@@ -14955,7 +15028,7 @@ test("routes arbitrary-thread callbacks through named TaskScope ownership", () =
     import { TaskScope } from "std/async";
     import { thread } from "std/thread";
     function schedule(taskScope: TaskScope): void {
-      taskScope.spawn(thread.main, move (): void => { console.log("joined before return"); });
+      taskScope.schedule(thread.main, move (): void => { console.log("joined before return"); });
     }
     async function main(): i32 {
       async scope jobs {
@@ -14974,7 +15047,7 @@ test("routes arbitrary-thread callbacks through named TaskScope ownership", () =
     import { TaskScope } from "std/async";
     import { thread } from "std/thread";
     function schedule(taskScope: TaskScope): void {
-      taskScope.spawn(thread.main, move (): void => { console.log("explicit scope joined"); });
+      taskScope.schedule(thread.main, move (): void => { console.log("explicit scope joined"); });
     }
     async function main(): i32 {
       const taskScope = new TaskScope();
@@ -15075,7 +15148,7 @@ test("requests and joins caller-driven task cancellation", () => {
     }
 
     async function main(): i32 {
-      const task = spawn makeResource();
+      const task = task makeResource();
       await delay(1);
       await task.cancel();
       return zcpp.unique_live();
@@ -15093,7 +15166,7 @@ test("requests and joins caller-driven task cancellation", () => {
     }
 
     async function main(): i32 {
-      const task = spawn fail();
+      const task = task fail();
       await delay(1);
       await task.cancel();
       return 0;
@@ -15109,7 +15182,7 @@ test("requests and joins caller-driven task cancellation", () => {
   const naked = `
     async function work(): i32 { return 42; }
     async function main(): i32 {
-      const task = spawn work();
+      const task = task work();
       task.cancel();
       return 0;
     }
@@ -15118,10 +15191,10 @@ test("requests and joins caller-driven task cancellation", () => {
   assert.equal(nakedDiagnostic.code, "Z0702");
   assert.match(nakedDiagnostic.message, /Task\.cancel requires direct await/);
 
-  const spawned = naked.replace("task.cancel();", "spawn task.cancel();");
-  const spawnedDiagnostic = diagnostics(spawned, "async-spawn-cancel.zs")[0];
+  const spawned = naked.replace("task.cancel();", "task task.cancel();");
+  const spawnedDiagnostic = diagnostics(spawned, "async-task-cancel.zs")[0];
   assert.equal(spawnedDiagnostic.code, "Z0703");
-  assert.match(spawnedDiagnostic.message, /Task\.cancel cannot be spawned/);
+  assert.match(spawnedDiagnostic.message, /Task\.cancel cannot be started as another task/);
 
   const reused = naked.replace("task.cancel();", "await task.cancel(); await task;");
   const reusedDiagnostic = diagnostics(reused, "async-reused-task.zs")[0];
@@ -15180,18 +15253,18 @@ test("suspends async tasks on scheduler-aware std/time delay", () => {
   assert.throws(() => check(naked, "naked-delay.zs"), (error: unknown) => {
     assert.ok(error instanceof DiagnosticError);
     assert.equal(error.code, "Z0702");
-    assert.match(error.message, /requires `await` or `spawn`/);
+    assert.match(error.message, /requires `await` or `task`/);
     return true;
   });
 
   const spawned = `
     import { delay } from "std/time";
-    async function main(): i32 { spawn delay(1); return 0; }
+    async function main(): i32 { task delay(1); return 0; }
   `;
-  assert.throws(() => compileToC(spawned, "spawn-delay.zs"), (error: unknown) => {
+  assert.throws(() => compileToC(spawned, "task-delay.zs"), (error: unknown) => {
     assert.ok(error instanceof DiagnosticError);
     assert.equal(error.code, "Z0700");
-    assert.match(error.message, /spawning the delay intrinsic is not executable yet/);
+    assert.match(error.message, /starting the delay intrinsic as a task is not executable yet/);
     return true;
   });
 
@@ -15207,8 +15280,8 @@ test("suspends async tasks on scheduler-aware std/time delay", () => {
     async function linger(resource: TimerResource): void { await delay(1000); return; }
     async function fail(): i32 throws i32 { throw 7; }
     async function main(): i32 throws i32 {
-      const failure = spawn fail();
-      spawn linger(TimerResource({ id: 9 }));
+      const failure = task fail();
+      task linger(TimerResource({ id: 9 }));
       return try await failure;
     }
   `);

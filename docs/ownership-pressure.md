@@ -193,14 +193,14 @@ interpolated messages.
 
 ## Not tested yet
 
-- spawned output and cross-thread borrows that survive suspension;
+- child-task output and cross-thread borrows that survive suspension;
 - parameter-provenanced, retained, or class-owned views;
 - cross-thread ownership, atomic ARC, and sendability;
 - cyclic application graphs under ORC;
 - storing move-only native values in ARC fields or owned closure environments;
   compiler `Option`/`Result` payloads, direct native async locals and owned
   parameters, immutable scoped async borrows, direct-awaited and scope-bounded
-  spawned mutable borrows, whole Z value aggregates containing them, and
+  child-task mutable borrows, whole Z value aggregates containing them, and
   fallible results now survive suspension, return/await relay, `try`/`attempt`,
   match, failure, and cancellation;
 - Windows C++ UI ownership and callback shapes.

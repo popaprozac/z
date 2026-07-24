@@ -60,7 +60,7 @@ cancellation cleanup. Generated C-family source remains inspectable evidence.
 - The ownership model handles non-trivial application-shaped probes without
   source lifetime parameters, and the unified loan checker now covers call,
   task, receiver-view, and Arena-region lifetimes.
-- Stackless async tasks, structured scopes, hot spawn, cancellation, scheduler
+- Stackless async tasks, structured scopes, hot task, cancellation, scheduler
   delay, native ownership, and fixed-array-backed slices have executable
   lowering on the deterministic FIFO executor.
 - Diagnostics, examples, editor support, and readable generated code are treated
@@ -118,7 +118,7 @@ planned experiment rather than a rejected direction.
    fixing pools or a multithreaded executor design. The intended placed-block
    capture spelling is contextual `using (in value, inout state, move owner)`:
    Copy snapshots may remain inferred, loans end only when the child actually
-   joins, and spawned `out` remains deferred pending failure/cancellation rules.
+   joins, and child-task `out` remains deferred pending failure/cancellation rules.
    The first `thread any` C callback slice now emits atomic closure-environment
    ownership and checks conservative concurrent shareability. Next, use an
    explicit thread-safe `TaskScope` to own callback-created placed children; if

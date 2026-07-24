@@ -35,7 +35,7 @@ async function main(): i32 {
     label.sizeToFit();
     console.log(value);
   }
-  const cancelled = spawn Swift.ZSwiftBackgroundWorker.calculateDelayed(1);
+  const cancelled = task Swift.ZSwiftBackgroundWorker.calculateDelayed(1);
   await delay(1);
   await cancelled.cancel();
   return value - 42 + checkedValue - 42 + failureStatus;

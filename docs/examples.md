@@ -92,7 +92,7 @@ Read [`async-model.md`](async-model.md) alongside these examples:
 | --- | --- |
 | Sequential await | [`async-sequential.zs`](../examples/async/async-sequential.zs) |
 | Typed errors | [`async-errors.zs`](../examples/async/async-errors.zs) |
-| Hot spawn and explicit join | [`async-spawn.zs`](../examples/async/async-spawn.zs) |
+| Hot task and explicit join | [`async-tasks.zs`](../examples/async/async-tasks.zs) |
 | Lexical task scopes | [`async-scopes.zs`](../examples/async/async-scopes.zs) |
 | Native callback task scopes | [`task-scope-native-callback.zs`](../examples/async/task-scope-native-callback.zs) — `thread any` C callback submission through named `TaskScope` ownership onto the main executor |
 | Cancellation | [`async-cancellation.zs`](../examples/async/async-cancellation.zs) |
@@ -103,18 +103,18 @@ Read [`async-model.md`](async-model.md) alongside these examples:
 | Owned values across suspension | [`async-ownership.zs`](../examples/async/async-ownership.zs), [`async-owned-enums.zs`](../examples/async/async-owned-enums.zs) |
 | Move-only native values across suspension | [`async-native-ownership.zs`](../examples/async/async-native-ownership.zs) — local ownership plus fallible return/await relay, `try`, `attempt`, direct match, and deterministic Result cleanup |
 | Native-owning Z aggregates across suspension | [`async-native-aggregate.zs`](../examples/async/async-native-aggregate.zs) — whole-owner relay, success/failure, consuming match, cancellation cleanup, and zero leaked native values |
-| Owned native async parameters | [`async-native-parameters.zs`](../examples/async/async-native-parameters.zs) — immediate argument transfer into hot spawned tasks for direct C++ owners and native-owning Z structs |
+| Owned native async parameters | [`async-native-parameters.zs`](../examples/async/async-native-parameters.zs) — immediate argument transfer into hot child tasks for direct C++ owners and native-owning Z structs |
 | Scoped immutable async borrowing | [`async-borrowing.zs`](../examples/async/async-borrowing.zs) — direct-await C++ borrow, two scope-bounded child borrows of one Z aggregate, post-join consumption, and zero leaked native values |
 | Direct-awaited mutable borrowing | [`async-inout.zs`](../examples/async/async-inout.zs) — a Z struct and move-only C++ owner mutated after suspension without ownership transfer or leaked cleanup |
-| Scoped spawned mutable borrowing | [`async-scoped-inout.zs`](../examples/async/async-scoped-inout.zs) — exclusive child mutation, independent parent work, and early owner reuse after explicit join |
-| Async Slice borrowing | [`async-slices.zs`](../examples/async/async-slices.zs) — copied pointer/length descriptors, direct read borrowing, scoped spawned mutation, and post-join owner reuse |
+| Scoped child-task mutable borrowing | [`async-scoped-inout.zs`](../examples/async/async-scoped-inout.zs) — exclusive child mutation, independent parent work, and early owner reuse after explicit join |
+| Async Slice borrowing | [`async-slices.zs`](../examples/async/async-slices.zs) — copied pointer/length descriptors, direct read borrowing, scoped child-task mutation, and post-join owner reuse |
 | Async collection-backed Slices | [`async-collection-slices.zs`](../examples/async/async-collection-slices.zs) — growable and cleanup-bearing owners, cancellation-released loans, post-cancel growth, and reverse cleanup |
 | Direct-awaited output initialization | [`async-out.zs`](../examples/async/async-out.zs) — a suspended callee initializes cleanup-free caller storage before the caller resumes |
 | Async methods | [`async-methods.zs`](../examples/async/async-methods.zs) |
 
 ```sh
 bun run z run examples/async/async-sequential.zs
-bun run z run examples/async/async-spawn.zs
+bun run z run examples/async/async-tasks.zs
 bun run z run examples/async/async-scopes.zs
 bun run z run examples/async/async-cancellation.zs
 bun run z run examples/async/async-delay.zs
@@ -172,7 +172,7 @@ complete declaration layer plus variable declarations, returns, expression
 statements, and nested standalone blocks. Identifiers, scalar literals, arrays,
 objects, calls, members, and indexes use a flat owned expression arena;
 unary, binary-precedence, and ternary nodes share that arena. Z-specific
-`new`, `weak`, `try`, `attempt`, `await`, and `spawn` nodes do too. Templates
+`new`, `weak`, `try`, `attempt`, `await`, and `task` nodes do too. Templates
 retain ordered text/value children, including nested embedded expressions.
 Expression-bodied closures retain capture mode, typed/capability-bearing
 parameters, result/error types, and their body root. Block-bodied closures carry
@@ -187,7 +187,7 @@ flat subject/arm tree; payload bindings, object destructuring, aliases, and arm
 bodies retain their locations and statement edges. `async scope` retains its
 required block as the lexical structured-join edge. Value-producing `if`
 expressions retain condition, value-block, and nested else-if edges, with branch
-statements pointing into the shared arena. `on`, `await on`, and `spawn on`
+statements pointing into the shared arena. `on`, `await on`, and `task on`
 retain placement mode, exact `on` location, executor root, optional result/error
 types, and body statements. Enum payload construction and explicit `out`/`inout`
 arguments are structural expression nodes too. Generic callees and generic

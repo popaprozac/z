@@ -12,7 +12,7 @@ async function main(): i32 {
     select 20;
   };
 
-  const placedTask = spawn on thread.main: i32 {
+  const placedTask = task on thread.main: i32 {
     select 21;
   };
   const placed = await placedTask;

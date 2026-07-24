@@ -4315,12 +4315,12 @@ function inferExecutorPlacement(
       throw new DiagnosticError(
         fileName,
         expression.location,
-        "spawn on thread.main requires an enclosing async function or the direct thread.spawn closure",
+        "task on thread.main requires an enclosing async function or the direct thread.spawn closure",
         {
           code: "Z0711",
           notes: ["an ordinary synchronous helper does not inherit its caller's task scope or executor context"],
           helps: [
-            "inside thread.spawn, call synchronous helpers first and keep `spawn on thread.main { ... }` directly in that closure",
+            "inside thread.spawn, call synchronous helpers first and keep `task on thread.main { ... }` directly in that closure",
             "otherwise make this helper async and call it from an async-capable context; async thread.spawn closures are not implemented yet",
           ],
         },
@@ -4629,10 +4629,10 @@ function registerAsyncCall(
   if (isAsyncGeneratorFunction(declaration)) return;
   const context = state.asyncCallContexts.at(-1);
   if (!context) {
-    throw new DiagnosticError(fileName, location, `async call to ${JSON.stringify(declaration.name)} requires \`await\` or \`spawn\``, {
+    throw new DiagnosticError(fileName, location, `async call to ${JSON.stringify(declaration.name)} requires \`await\` or \`task\``, {
       code: "Z0702",
       notes: ["Z never starts asynchronous work from a naked function call"],
-      helps: ["use `await` for sequential work or `spawn` for concurrent work in an async function"],
+      helps: ["use `await` for sequential work or `task` for concurrent work in an async function"],
     });
   }
   context.calls += 1;
@@ -4803,10 +4803,10 @@ function inferExpressionInner(
         const asyncBorrow = state.activeLoans.get(expression.name)
           ?.find((loan) => loan.lifetime.kind === "task" && loan.capability === "inout");
         if (asyncBorrow) {
-          throw new DiagnosticError(fileName, expression.location, `cannot read ${JSON.stringify(expression.name)} while a spawned task mutably borrows it`, {
+          throw new DiagnosticError(fileName, expression.location, `cannot read ${JSON.stringify(expression.name)} while a child task mutably borrows it`, {
             code: "Z0704",
             length: expression.name.length,
-            labels: [{ location: asyncBorrow.location, message: "spawned mutable borrow begins here", length: expression.name.length }],
+            labels: [{ location: asyncBorrow.location, message: "child task's mutable borrow begins here", length: expression.name.length }],
             notes: ["the child has exclusive access until the enclosing async scope joins its tasks"],
             helps: ["finish the async scope before reading the mutably borrowed value"],
           });
@@ -4840,7 +4840,7 @@ function inferExpressionInner(
       const global = globals.get(expression.name);
       if (global?.kind === "function") {
         if (global.declaration.async) {
-          throw new DiagnosticError(fileName, expression.location, "async function values are deferred; call the function beneath `await` or `spawn`");
+          throw new DiagnosticError(fileName, expression.location, "async function values are deferred; call the function beneath `await` or `task`");
         }
         if (global.declaration.typeParameters?.length) {
           throw new DiagnosticError(fileName, expression.location, "generic function values require explicit specialization, which is not implemented yet");
@@ -4860,7 +4860,7 @@ function inferExpressionInner(
       if (global?.kind === "standardFunction") {
         const signature = standardFunctionSignature(global.name);
         if (signature.async) {
-          throw new DiagnosticError(fileName, expression.location, "async function values are deferred; call the function beneath `await` or `spawn`");
+          throw new DiagnosticError(fileName, expression.location, "async function values are deferred; call the function beneath `await` or `task`");
         }
         state.standardFunctionReferences.set(expression.location.offset, global.name);
         return functionTypeName(signature.parameters, signature.returnType);
@@ -5205,10 +5205,10 @@ function inferExpressionInner(
         });
       }
       if (expression.expression.kind === "spawn") {
-        throw new DiagnosticError(fileName, expression.location, "`await spawn` is redundant", {
+        throw new DiagnosticError(fileName, expression.location, "`await task` is redundant", {
           code: "Z0701",
           notes: ["an immediately joined child creates no interval of concurrent parent work"],
-          helps: ["use `await operation()` for sequential work, or bind `spawn operation()` and await the Task later"],
+          helps: ["use `await operation()` for sequential work, or bind `task operation()` and await the Task later"],
         });
       }
       const borrowed = firstLiveBorrow(
@@ -5266,13 +5266,13 @@ function inferExpressionInner(
     }
     case "spawn": {
       if (!state.activeFunction?.async) {
-        throw new DiagnosticError(fileName, expression.location, "spawn requires an enclosing async function", {
+        throw new DiagnosticError(fileName, expression.location, "task requires an enclosing async function", {
           code: "Z0703",
           helps: ["add `async` before the enclosing function declaration"],
         });
       }
       if (expression.expression.kind !== "call") {
-        throw new DiagnosticError(fileName, expression.location, "spawn requires a direct async function or method call");
+        throw new DiagnosticError(fileName, expression.location, "task requires a direct async function or method call");
       }
       const context = {
         mode: "spawn" as const,
@@ -5288,7 +5288,7 @@ function inferExpressionInner(
         state.asyncCallContexts.pop();
       }
       if (context.calls !== 1) {
-        throw new DiagnosticError(fileName, expression.location, "spawn requires exactly one direct async call");
+        throw new DiagnosticError(fileName, expression.location, "task requires exactly one direct async call");
       }
       const result = enums.get(String(spawned));
       if (result?.name.startsWith("__z_Result_")) {
@@ -5953,7 +5953,7 @@ function inferExpressionInner(
                   throw new DiagnosticError(fileName, capture.location, `capture ${JSON.stringify(capture.name)} of type ${JSON.stringify(capture.type)} cannot cross a native thread boundary${detail}`, {
                     code: "Z0704",
                     notes: [issue?.reason ?? "the current tier copies plain values, shares deeply readonly ARC identity, and moves supported Array, String, TextBuffer, and containing aggregate owners"],
-                    helps: [issue?.help ?? "capture a transferable owned value, or keep this work on the inherited executor with `spawn`"],
+                    helps: [issue?.help ?? "capture a transferable owned value, or keep this work on the inherited executor with `task`"],
                   });
                 }
                 captureTransfers.push({ capture, kind: transfer });
@@ -6211,7 +6211,7 @@ function inferExpressionInner(
             });
           }
           if (context.mode === "spawn") {
-            throw new DiagnosticError(fileName, expression.location, "Task.cancel cannot be spawned", {
+            throw new DiagnosticError(fileName, expression.location, "Task.cancel cannot be started as another task", {
               code: "Z0703",
               notes: ["cancel already joins the task whose cancellation it requests"],
               helps: ["write `await task.cancel()`"],
@@ -6247,7 +6247,7 @@ function inferExpressionInner(
             });
           }
           if (context.mode === "spawn") {
-            throw new DiagnosticError(fileName, expression.location, "spawning AsyncGenerator.next is deferred until concurrent advancement is statically excluded", {
+            throw new DiagnosticError(fileName, expression.location, "starting AsyncGenerator.next as a task is deferred until concurrent advancement is statically excluded", {
               code: "Z0703",
               helps: ["advance the stream with direct `await generator.next()`"],
             });
@@ -6264,16 +6264,16 @@ function inferExpressionInner(
             throw new DiagnosticError(fileName, expression.callee.object.location, "TaskScope methods require a named scope handle");
           }
           const method = expression.callee.property;
-          if (method === "spawn") {
+          if (method === "schedule") {
             if (expression.arguments.length !== 2 || expression.arguments[1].kind !== "closure") {
-              throw new DiagnosticError(fileName, expression.location, "TaskScope.spawn expects an executor and one synchronous closure", {
+              throw new DiagnosticError(fileName, expression.location, "TaskScope.schedule expects an executor and one synchronous closure", {
                 code: "Z0710",
-                helps: ["use `scope.spawn(thread.main, move () => operation())`"],
+                helps: ["use `scope.schedule(thread.main, move () => operation())`"],
               });
             }
             const executor = inferExpression(expression.arguments[0], locals, globals, structs, enums, fileName, state);
             if (executor !== "__z_executor:main") {
-              throw new DiagnosticError(fileName, expression.arguments[0].location, "TaskScope.spawn currently requires thread.main", {
+              throw new DiagnosticError(fileName, expression.arguments[0].location, "TaskScope.schedule currently requires thread.main", {
                 code: "Z0710",
                 notes: ["additional explicit executor capabilities remain a standard-library extension point"],
               });
@@ -6293,7 +6293,7 @@ function inferExpressionInner(
               state,
             );
             if (closure.captures.length > 0 && operation.captureMode !== "move") {
-              throw new DiagnosticError(fileName, operation.location, "TaskScope.spawn requires `move` for a capturing closure", {
+              throw new DiagnosticError(fileName, operation.location, "TaskScope.schedule requires `move` for a capturing closure", {
                 code: "Z0704",
                 notes: ["accepted work may execute after the submitting callback returns"],
                 helps: ["write `move () => operation()`"],
@@ -6782,10 +6782,10 @@ function inferExpressionInner(
             }
             const context = state.asyncCallContexts.at(-1);
             if (!state.activeFunction?.async || !context) {
-              throw new DiagnosticError(fileName, expression.location, `async call to ${JSON.stringify(method.baseName)} requires \`await\` or \`spawn\``, {
+              throw new DiagnosticError(fileName, expression.location, `async call to ${JSON.stringify(method.baseName)} requires \`await\` or \`task\``, {
                 code: "Z0702",
                 notes: ["Z never starts asynchronous work from a naked function call"],
-                helps: ["use `await` for sequential work or `spawn` for concurrent work in an async function"],
+                helps: ["use `await` for sequential work or `task` for concurrent work in an async function"],
               });
             }
             let errorType: string | null = null;
@@ -7288,10 +7288,10 @@ function checkArguments(
       state.expressionTypes.set(argument.nameLocation.offset, String(underlyingType(stored)));
       const asyncContext = state.asyncCallContexts.at(-1);
       if (target.async && asyncContext?.mode === "spawn") {
-        throw new DiagnosticError(fileName, argument.location, `spawned output borrow of ${JSON.stringify(argument.name)} is not supported`, {
+        throw new DiagnosticError(fileName, argument.location, `child-task output borrow of ${JSON.stringify(argument.name)} is not supported`, {
           code: "Z0704",
-          notes: ["direct await suspends the caller until initialization finishes; spawned output would leave caller storage concurrently observable"],
-          helps: [`use \`await ${target.name}(out ${argument.name})\`, or return an owned result from the spawned task`],
+          notes: ["direct await suspends the caller until initialization finishes; a child-task output would leave caller storage concurrently observable"],
+          helps: [`use \`await ${target.name}(out ${argument.name})\`, or return an owned result from the child task`],
         });
       }
       continue;
@@ -7359,10 +7359,10 @@ function checkArguments(
       state.expressionTypes.set(argument.nameLocation.offset, String(storedType));
       if (target.async && asyncContext?.mode === "spawn") {
         if (state.asyncScopeDepth === 0) {
-          throw new DiagnosticError(fileName, argument.location, `spawned mutable borrow of ${JSON.stringify(argument.name)} requires an explicit async scope`, {
+          throw new DiagnosticError(fileName, argument.location, `child-task mutable borrow of ${JSON.stringify(argument.name)} requires an explicit async scope`, {
             code: "Z0704",
             notes: ["the scope join bounds exclusive child access before caller storage can be read, mutated, moved, or destroyed"],
-            helps: ["place the spawn inside `async scope { ... }`, use direct `await`, or transfer ownership into the spawned task"],
+            helps: ["place the task inside `async scope { ... }`, use direct `await`, or transfer ownership into the child task"],
           });
         }
         recordAsyncSpawnBorrow(argument.name, argument.location, "inout", asyncContext.spawnOffset!, fileName, state);
@@ -7431,16 +7431,16 @@ function checkArguments(
       if (target.async && asyncContext?.mode === "spawn") {
         const borrowedRoot = storageRoot(argument)?.name ?? null;
         if (state.asyncScopeDepth === 0) {
-          throw new DiagnosticError(fileName, argument.location, `spawned borrow of ${JSON.stringify(borrowedRoot ?? "value")} requires an explicit async scope`, {
+          throw new DiagnosticError(fileName, argument.location, `child-task borrow of ${JSON.stringify(borrowedRoot ?? "value")} requires an explicit async scope`, {
             code: "Z0704",
             notes: ["the scope join bounds the child task before borrowed caller storage can be destroyed"],
-            helps: ["place the spawn and its uses inside `async scope { ... }`, or pass ownership instead"],
+            helps: ["place the task and its uses inside `async scope { ... }`, or pass ownership instead"],
           });
         }
         if (!borrowedRoot) {
-          throw new DiagnosticError(fileName, argument.location, "a spawned async borrow requires named storage", {
+          throw new DiagnosticError(fileName, argument.location, "an async child-task borrow requires named storage", {
             code: "Z0704",
-            helps: ["bind the value before borrowing it into the spawned task"],
+            helps: ["bind the value before borrowing it into the child task"],
           });
         }
         recordAsyncSpawnBorrow(borrowedRoot, argument.location, "in", asyncContext.spawnOffset!, fileName, state);
@@ -7465,16 +7465,16 @@ function checkArguments(
       if (target.async && asyncContext?.mode === "spawn") {
         const borrowedRoot = storageRoot(argument)?.name ?? null;
         if (state.asyncScopeDepth === 0) {
-          throw new DiagnosticError(fileName, argument.location, `spawned Slice borrow of ${JSON.stringify(borrowedRoot ?? "value")} requires an explicit async scope`, {
+          throw new DiagnosticError(fileName, argument.location, `child-task Slice borrow of ${JSON.stringify(borrowedRoot ?? "value")} requires an explicit async scope`, {
             code: "Z0704",
             notes: ["the scope join keeps the Slice backing storage alive and stable until the child finishes"],
-            helps: ["place the spawn inside `async scope { ... }`, or use direct `await`"],
+            helps: ["place the task inside `async scope { ... }`, or use direct `await`"],
           });
         }
         if (!borrowedRoot) {
-          throw new DiagnosticError(fileName, argument.location, "a spawned async Slice borrow requires named storage", {
+          throw new DiagnosticError(fileName, argument.location, "an async child-task Slice borrow requires named storage", {
             code: "Z0704",
-            helps: ["bind the backing collection before borrowing it into the spawned task"],
+            helps: ["bind the backing collection before borrowing it into the child task"],
           });
         }
         recordAsyncSpawnBorrow(borrowedRoot, argument.location, "in", asyncContext.spawnOffset!, fileName, state);
@@ -7852,11 +7852,11 @@ function rejectOwnerMutationWhileViewed(
 ): void {
   const asyncBorrow = state.activeLoans.get(owner)?.find((loan) => loan.lifetime.kind === "task");
   if (asyncBorrow) {
-    throw new DiagnosticError(fileName, location, `cannot ${action} ${JSON.stringify(owner)} while a spawned task borrows it`, {
+    throw new DiagnosticError(fileName, location, `cannot ${action} ${JSON.stringify(owner)} while a child task borrows it`, {
       code: "Z0704",
       labels: [{
         location: asyncBorrow.location,
-        message: `spawned ${asyncBorrow.capability === "inout" ? "mutable" : "immutable"} borrow begins here`,
+        message: `child-task ${asyncBorrow.capability === "inout" ? "mutable" : "immutable"} borrow begins here`,
         length: owner.length,
       }],
       notes: [`the ${asyncBorrow.capability === "inout" ? "exclusive borrow" : "borrow"} remains live until the enclosing async scope joins its child tasks`],

@@ -4,7 +4,7 @@ struct Job {
   id: i32;
 
   deinit {
-    console.log(`released spawned job ${this.id}`);
+    console.log(`released child job ${this.id}`);
   }
 }
 
@@ -16,7 +16,7 @@ class Worker {
   }
 
   deinit {
-    console.log(`released spawn worker ${this.id}`);
+    console.log(`released task worker ${this.id}`);
   }
 }
 
@@ -40,11 +40,11 @@ async function main(): i32 throws i32 {
   const worker = new Worker({ id: 24 });
   const job = Job({ id: 22 });
   const backgroundJob = Job({ id: 23 });
-  const firstTask = spawn fetch(20);
-  const jobTask = spawn consume(job);
-  const workerTask = spawn worker.read();
-  const failureTask = spawn fail();
-  spawn finish(backgroundJob);
+  const firstTask = task fetch(20);
+  const jobTask = task consume(job);
+  const workerTask = task worker.read();
+  const failureTask = task fail();
+  task finish(backgroundJob);
   const parentValue = 18;
   const first = try await firstTask;
   const second = await jobTask;

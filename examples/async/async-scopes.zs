@@ -14,17 +14,17 @@ async function finish(job: ScopeJob): void {
 
 async function main(): i32 {
   async scope {
-    spawn finish(ScopeJob({ id: 10 }));
+    task finish(ScopeJob({ id: 10 }));
 
     async scope {
-      spawn finish(ScopeJob({ id: 20 }));
-      spawn finish(ScopeJob({ id: 21 }));
+      task finish(ScopeJob({ id: 20 }));
+      task finish(ScopeJob({ id: 21 }));
     }
 
-    spawn finish(ScopeJob({ id: 11 }));
+    task finish(ScopeJob({ id: 11 }));
   }
 
   // This root child cannot start until both explicit scope boundaries exit.
-  spawn finish(ScopeJob({ id: 30 }));
+  task finish(ScopeJob({ id: 30 }));
   return 0;
 }

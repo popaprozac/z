@@ -7,7 +7,7 @@ async function main(): i32 {
   const worker = thread.spawn((): void => {
     sleep(25);
 
-    spawn on thread.main {
+    task on thread.main {
       console.log("placed child is running on the Darwin main run loop");
       native.z_test_stop_main_loop();
     };

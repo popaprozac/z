@@ -38,16 +38,16 @@ synchronous calls block that executor thread until they return. A foreign API
 becomes suspending only through an explicit async adapter; importing it never
 silently changes its scheduling behavior.
 
-An async call is valid only beneath `await` or `spawn`. Calling an async
+An async call is valid only beneath `await` or `task`. Calling an async
 function never silently starts detached work:
 
 ```z
 const user = try await fetchUser(id); // sequential suspension
-fetchUser(id);                        // error: requires await or spawn
+fetchUser(id);                        // error: requires await or task
 ```
 
 `await fetchUser(id)` starts the operation as sequential work in the current
-task. It may run synchronously until its first actual suspension. `spawn
+task. It may run synchronously until its first actual suspension. `task
 fetchUser(id)` schedules a child immediately; the returned task is hot.
 `await userTask` later joins that child, returning immediately if it has already
 completed or suspending only the current task until it does. It does not block
@@ -58,8 +58,8 @@ implicit root task scope, so common concurrent work needs no wrapper:
 
 ```z
 async function loadDashboard(id: UserId): Dashboard throws NetworkError {
-  const userTask = spawn fetchUser(id);
-  const postsTask = spawn fetchPosts(id);
+  const userTask = task fetchUser(id);
+  const postsTask = task fetchPosts(id);
 
   return Dashboard({
     user: try await userTask,
@@ -78,8 +78,8 @@ program-owned supervisor.
 ```z
 async function refresh(): void throws NetworkError {
   async scope {
-    const cacheTask = spawn refreshCache();
-    const sessionTask = spawn refreshSession();
+    const cacheTask = task refreshCache();
+    const sessionTask = task refreshSession();
     try await cacheTask;
     try await sessionTask;
   }
@@ -107,31 +107,31 @@ import { thread } from "std/thread";
 
 async scope updates {
   native.register(move (value) => {
-    updates.spawn(thread.main, move (): void => { publish(value); });
+    updates.schedule(thread.main, move (): void => { publish(value); });
   });
 }
 ```
 
 The handle has type `TaskScope`. It is a synchronized ownership boundary, not
 an executor: `thread.main` still names placement. Close rejects later
-submissions and joins accepted operations; `spawn` returns `false` when close
-wins the race. `new TaskScope()` exposes the same mechanism directly. Explicit
+submissions and joins accepted operations; `TaskScope.schedule` returns `false`
+when close wins the race. `new TaskScope()` exposes the same mechanism directly. Explicit
 `await taskScope.close()` or `await taskScope.cancel()` creates an earlier
 boundary; return and throw still close or cancel an owned scope automatically.
 The current dynamic tier accepts synchronous nonthrowing `(): void` work.
 
-`spawn` accepts exactly one direct async call in an async function and produces
+`task` accepts exactly one direct async call in an async function and produces
 a scope-bound `Task<T>` or `Task<T, E>`. The task's source-level success and
 error types are the async function's declared `T throws E`; async functions do
 not expose a Promise or Future wrapper in their signatures.
 
-`await spawn operation()` is rejected as redundant. Sequential work uses
-`await operation()`; concurrent work binds the spawned task and joins it after
+`await task operation()` is rejected as redundant. Sequential work uses
+`await operation()`; concurrent work binds the child task and joins it after
 the parent has had an opportunity to continue.
 
 ## Explicit native threads
 
-Keyword `spawn` always inherits the current async executor. It never silently
+Keyword `task` always inherits the current async executor. It never silently
 changes an operation into CPU-parallel work. Starting a native OS thread is a
 separate standard-library operation:
 
@@ -224,8 +224,8 @@ waiter.
 Cancellation cannot forcibly interrupt synchronous native work. It records an
 atomic cooperative request; the worker finishes its current synchronous call,
 publishes completion, and its unclaimed outcome is discarded after the awaiting
-task resumes. Future `pool.spawn` and multithreaded executors remain separate
-designs; `thread.spawn` will continue to mean one explicit native thread rather
+task resumes. Future worker-pool submission and multithreaded executors remain
+separate designs; `thread.spawn` will continue to mean one explicit native thread rather
 than silently becoming pooled work.
 
 This keeps the existing Z error model intact: `try await` unwraps success and
@@ -245,7 +245,7 @@ task suspended on `delay` removes its pending timer before task-frame cleanup.
 Caller-driven cancellation is an explicit consuming join:
 
 ```z
-const task = spawn refresh();
+const task = task refresh();
 await task.cancel();
 // refresh and all descendant cleanup are finished here
 ```
@@ -270,10 +270,10 @@ borrowed and consuming match lowering. These paths are exercised across normal
 completion, consuming transfer, failure, cancellation, and destruction of
 completed-but-unclaimed storage. Owned native arguments, including whole Z
 value aggregates containing them, move into child-frame parameter storage when
-`await` or `spawn` creates the task. Cancellation cleans those parameters even
+`await` or `task` creates the task. Cancellation cleans those parameters even
 when the child body has not been polled. Immutable `in` value/native parameters
 borrow caller-frame storage across suspension. Direct await is intrinsically
-bounded by its join. Spawned borrowing requires an explicit `async scope`, and
+bounded by its join. Child-task borrowing requires an explicit `async scope`, and
 the owner cannot move or mutate until every borrowing child joins; multiple
 immutable children may share it. Consuming a task through `await task` or `await
 task.cancel()` releases that child's borrow immediately. ARC classes continue to
@@ -292,13 +292,13 @@ let document = Document({ revision: 41 });
 await refreshAfter(inout document);
 ```
 
-Spawned mutation uses the same pointer path inside an explicit scope. The owner
+Child-task mutation uses the same pointer path inside an explicit scope. The owner
 is inaccessible while the child holds its exclusive borrow, then becomes
 available after an explicit consuming join or at scope exit:
 
 ```z
 async scope {
-  const task = spawn refreshAfter(inout document);
+  const task = task refreshAfter(inout document);
   doIndependentWork();
   await task;
   publish(document);
@@ -338,7 +338,7 @@ output needs a completion-time live-storage handoff.
 
 `Slice<T>` uses the same loan model without copying its elements. The task frame
 copies only the pointer/length descriptor. Direct await permits read-only or
-`inout` access; spawn requires an explicit scope and holds a shared or exclusive
+`inout` access; task requires an explicit scope and holds a shared or exclusive
 loan on the backing collection until join:
 
 ```z
@@ -349,7 +349,7 @@ async function calibrate(inout readings: Slice<i32>): void {
 
 let readings = [40, 41];
 async scope {
-  const task = spawn calibrate(inout readings);
+  const task = task calibrate(inout readings);
   await task;
 }
 ```
@@ -360,7 +360,7 @@ the collection storage, destroys initialized elements in reverse order, and
 releases it on ordinary completion, failure, or cancellation. A growable owner
 cannot call `push` or otherwise reallocate while a child holds a Slice loan; an
 explicit join or consuming cancellation releases the loan and permits growth
-again. Spawned `out`, ARC-reference rebinding, borrowed struct receivers, and
+again. Child-task `out`, ARC-reference rebinding, borrowed struct receivers, and
 other unrelated live borrows remain rejected. Cross-thread executors will
 additionally require sendability before these pointer-backed borrows can leave
 one thread.
@@ -386,8 +386,8 @@ engines, and deterministic tests.
 
 Phase 0 implements parsing, static typing, ownership restrictions, diagnostics,
 hover, completion, and highlighting for `async`, `await`, `try await`,
-`attempt await`, `async scope`, `spawn`, inferred task handles, and the
-`on thread.main`, `await on thread.main`, and `spawn on thread.main` placement
+`attempt await`, `async scope`, `task`, inferred task handles, and the
+`on thread.main`, `await on thread.main`, and `task on thread.main` placement
 forms. `z check` accepts these programs. The executable placement tier lowers
 blocks into structured task frames and supports recursively plain captures,
 owned String copies, retained Z ARC classes, and Objective-C identities retained
@@ -400,7 +400,7 @@ affinity contracts, and Windows/Linux UI-loop adapters remain; see
 Phase 1 executes owned async functions and methods on a deterministic
 single-thread FIFO executor. Each call allocates a typed task frame and each
 `await` becomes an explicit poll state. Direct awaits suspend their parent;
-`spawn` enqueues hot children and a task handle joins the already-running frame.
+`task` enqueues hot children and a task handle joins the already-running frame.
 Scalars, enums with owned payloads, value structs, ARC class references,
 growable arrays, and cleanup-bearing fixed arrays can live in task frames;
 error values are currently cleanup-free. Growable arrays keep their native

@@ -5,7 +5,7 @@ async function main(): i32 {
   const worker = thread.spawn((): void => {
     const answer = 42;
 
-    spawn on thread.main {
+    task on thread.main {
       console.log(`main placement received ${answer}`);
     }
   });

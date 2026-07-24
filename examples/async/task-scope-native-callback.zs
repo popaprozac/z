@@ -7,7 +7,7 @@ function beginCalculation(taskScope: TaskScope): void {
   native.z_example_start_calculation(
     40,
     move (value: i32): i32 => {
-      const accepted = taskScope.spawn(
+      const accepted = taskScope.schedule(
         thread.main,
         move (): void => {
           console.log(`main-executor callback value=${value}`);
@@ -19,7 +19,7 @@ function beginCalculation(taskScope: TaskScope): void {
 }
 
 function scheduleThenCancel(taskScope: TaskScope): void {
-  taskScope.spawn(
+  taskScope.schedule(
     thread.main,
     move (): void => {
       console.error("cancelled TaskScope operation should not run");

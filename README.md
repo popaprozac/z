@@ -53,7 +53,7 @@ Z is exploring a specific combination:
 - `return` for success, `throw` for typed failure, and `Result<T, E>` through
   `attempt`;
 - exhaustive expression-oriented pattern matching;
-- structured async tasks with hot `spawn`, lexical joins, cancellation,
+- structured async tasks with hot `task`, lexical joins, cancellation,
   scheduler-aware delay, and an initial explicit native-thread launcher;
 - header-first C and Objective-C imports, plus staged C++ and Swift interop.
 
@@ -70,7 +70,7 @@ requiring lifetime syntax throughout ordinary application code.
 | Ownership | Lexical borrows, moves, deterministic cleanup, ARC, `Weak<T>`, field-level and whole-aggregate `readonly`, inferred shareable classes, receiver-tied views, and synchronous arena regions |
 | Errors | Typed `throws`, `try` propagation, `attempt`, `Result<T, E>` |
 | Control flow | Checked arithmetic, loops, ternaries, value `if`, exhaustive `match`, owned async matches with selected-arm suspension, custom iterators, cold synchronous `Generator<Yield, Return?, Error?>`, cold awaited `AsyncGenerator<Yield, Return?, Error?>` frames, sequential `for await...of`, and explicit `try for await` propagation |
-| Async | Stackless tasks, FIFO executor, spawn/join scopes, cancellation, delay, reusable async-generator advancement, exactly-once native callback-to-task projection with owned Objective-C errors, and nonblocking `thread.spawn` joins with Copy snapshots, unique-owner moves, atomic-ARC readonly sharing, and owned typed worker errors on one native thread |
+| Async | Stackless tasks, FIFO executor, task/join scopes, cancellation, delay, reusable async-generator advancement, exactly-once native callback-to-task projection with owned Objective-C errors, and nonblocking `thread.spawn` joins with Copy snapshots, unique-owner moves, atomic-ARC readonly sharing, and owned typed worker errors on one native thread |
 | C | Header imports, functions, records, enums, constants, pointers and typed status errors with `.zd` contracts, callbacks, target-aware availability |
 | Objective-C | ARC objects, nullability, selectors, blocks, persistent observers, imported property ownership, lifetime-safe target/action connections, checked Z-class protocol adapters and weak-property bindings, AppKit |
 | C++ | Hierarchical functions/types, overload selection, records, `.zd`-contracted copyable and move-only RAII values, constructors, methods, named-value references, and receiver qualifiers |

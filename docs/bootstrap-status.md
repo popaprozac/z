@@ -46,7 +46,7 @@ Status meanings:
 | `Map<K, V>` | Implemented hashed tier | Explicit `std/collections` import; amortized O(1) open-addressed lookup, owned value-storage transfer, deterministic replacement/removal/delete/clear, `Option<view V>` lookup for values tied into the unified loan checker, retained `Option<V>` lookup for Z-class and Objective-C identity, native construction/destruction for move-only C++ values, borrowed `Map.Entry<K, V>` iteration with whole-entry or `{ key, value }` patterns, mutation exclusion and editor support, built-in scalar/String/enum keys, and readonly nominal `Hashable` keys through `std/hash`; function/weak values, native keys, and copy-only native values remain |
 | `Set<T>` | Implemented hashed tier | Explicit `std/collections` import; amortized O(1) open-addressed membership, owned unique-value transfer, insertion status, deterministic duplicate/removal/delete/clear cleanup, owned `Option<T>` removal, borrowed element iteration with mutation exclusion and editor support, and the same built-in or nominal `Hashable` contract as `Map` |
 | `Iterator<T>` | Implemented synchronous tier | Explicit `std/iteration` import; generic nominal conformance, `next(inout this): Option<T>`, explicit mutable loans for stored value iterators, unique temporary iterator storage, owned element transfer and cleanup, native-parser parity, and editor support; consuming, mutable-element, move-only foreign-element, and async iterators remain |
-| `Slice<T>` | Partial | Non-escaping parameters plus direct-awaited and scope-bounded spawned borrowing from fixed and growable owners, including cleanup-bearing Z and move-only C++ elements; returned/stored and cross-thread Slices remain |
+| `Slice<T>` | Partial | Non-escaping parameters plus direct-awaited and scope-bounded child-task borrowing from fixed and growable owners, including cleanup-bearing Z and move-only C++ elements; returned/stored and cross-thread Slices remain |
 | Receiver-tied `view T` | Implemented narrow tier | Direct field/index projections and niche-backed `Option<view T>` lookups from synchronous value-struct methods; inferred const local, read-only, non-storable, implicit ordinary by-value load when `T` is already cleanup-free and copyable—including contextual `match`/`if` expression arms—plus synchronous `in T` forwarding and proven nonescaping inline capture; no class owners |
 | `std/memory` `Arena` | Implemented narrow tier | Stable region allocation, inferred owner-tied views, reverse `deinit`/ARC/native RAII cleanup, shared-loan reset exclusion and proven nonescaping inline capture; synchronous and single-threaded |
 | General returned/stored borrows | Planned | Parameter provenance, class alias safety, retained views, and regions remain open |
@@ -83,7 +83,7 @@ an inferred receiver-tied view.
 | Native availability | Implemented host slice | Explicit `z.json` platform/minimum target, introduced/obsoleted errors, deprecation warnings, native source locations, and matching Clang/Swift deployment flags; cross-compilation and runtime guards remain |
 | Native library linkage | Implemented host slice | Validated, deduplicated `target.link.libraries` names become host-native library arguments; raw linker flags and cross-platform library resolution remain outside the project contract |
 | Objective-C | Partial | ARC classes/fields, methods, properties/global object constants, imported property ownership (`weak`/`strong`/`copy`/`assign`), labels, nullability, niche-backed `Option.fromNullable`, owned `String`/`NSString` copies, escaping blocks, persistent observer tokens, lifetime-safe `std/objc` target/action connections, and checked Z-class protocol adapters with owned weak-property bindings |
-| C++ | Partial | Hierarchical/selectively aliased namespaces, typed overloads, records, and `.zd`-contracted copyable or move-only RAII values; move-only values work in synchronous locals/calls/returns, Z structs, dynamic arrays, named enums, compiler `Option`/`Result`, direct async locals, owned async parameters, scoped immutable async borrows, direct-awaited and scope-bounded spawned mutable async borrows, whole Z async value aggregates, fallible async results, and explicit native-thread transfer when `.zd` separately guarantees transfer and receiving-thread destruction; named references and receiver qualifiers map to existing Z capabilities with direct native lowering; reference returns, spawned output async borrows, ARC/closure storage, native sharing, capability-changing overloads, and templates remain |
+| C++ | Partial | Hierarchical/selectively aliased namespaces, typed overloads, records, and `.zd`-contracted copyable or move-only RAII values; move-only values work in synchronous locals/calls/returns, Z structs, dynamic arrays, named enums, compiler `Option`/`Result`, direct async locals, owned async parameters, scoped immutable async borrows, direct-awaited and scope-bounded child-task mutable async borrows, whole Z async value aggregates, fallible async results, and explicit native-thread transfer when `.zd` separately guarantees transfer and receiving-thread destruction; named references and receiver qualifiers map to existing Z capabilities with direct native lowering; reference returns, child-task output async borrows, ARC/closure storage, native sharing, capability-changing overloads, and templates remain |
 | Swift via Objective-C | Implemented slice | Generated compatibility header, classes/properties/methods, automatic local dylib build/link, qualified `.zd` threading contracts for escaping blocks, and exactly-once callback-to-task synthesis with owned nullable `NSError` failures that resumes safely from arbitrary threads before AppKit work returns to `thread.main` |
 | Swift value via C++ | Implemented probes | Native static construction, associated-value enum case factories, const/mutable instance methods, struct return/copy/aggregate storage/round-trip/destruction, and exact owned `String` returns without handwritten shim |
 | Broader Swift surface | Planned vertical slices | Length-aware `String` inputs, property sugar, generics, protocols, errors, async, packages; Swift 6.2 currently withholds noncopyable values and async functions from its generated C++ interface |
@@ -114,7 +114,7 @@ functions unavailable to C++; Z does not bypass that limit through private ABI.
 
 | Area | Status | Current boundary |
 | --- | --- | --- |
-| Async syntax and typing | Implemented | Functions/methods, `await`, `spawn`, task scopes, typed errors, and `on thread.main` / `await on thread.main` / `spawn on thread.main` placement blocks |
+| Async syntax and typing | Implemented | Functions/methods, `await`, `task`, task scopes, typed errors, and `on thread.main` / `await on thread.main` / `task on thread.main` placement blocks |
 | Stackless task frames | Partial | Scalars, owned String/TextBuffer, cleanup-bearing fixed arrays, growable arrays, copied Slice descriptors, owned structs/enums/classes, direct move-only C++ locals and parameters, collection elements containing them, consuming owned enum matches, cleanup-free direct-awaited output, and fallible native result transfer through `try`/`attempt`/match across suspension |
 | Executor | Implemented bootstrap | Deterministic single-thread FIFO ready queue |
 | Explicit native threads | Implemented narrow tier | `thread.spawn` starts one OS thread for a synchronous one-shot closure; `move` is required when capturing; plain values copy, unique Array/String/TextBuffer owners and explicitly contracted C/C++ native owners move, and deeply readonly classes share through atomic ARC; `(): T throws E` produces `Task<T, E>` with live-state-aware owned errors plus bound/direct `try` and local `attempt`; await, cancellation, and implicit scope exit suspend through a race-free executor completion queue before joining; native `share` remains deferred |
@@ -197,7 +197,7 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
   relayed through task results, consumed by its caller, and cleaned exactly once.
 - [`examples/async/async-collection-slices.zs`](../examples/async/async-collection-slices.zs): growable
   and cleanup-bearing collection owners borrowed as Slices across direct await,
-  scoped spawn, and cancellation, followed by safe growth and reverse cleanup.
+  scoped task, and cancellation, followed by safe growth and reverse cleanup.
 - `bun test`: compiler, runtime, diagnostics, interop, async, and editor
   regression suite.
 
@@ -216,12 +216,12 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    fallible returns work across suspension, `return await`, `try await`,
    `attempt await`, hidden result slots, match, and cancellation. Owned async
    parameters transfer into child frames at task creation. Immutable `in`
-   parameters work through direct await and explicit-scope spawn. Mutable
+   parameters work through direct await and explicit-scope task. Mutable
    `inout` parameters work through direct await and exclusive explicit-scope
-   spawn. Fixed and growable async collection owners, including move-only native
+   task. Fixed and growable async collection owners, including move-only native
    elements, now provide Slice backing with reverse cleanup on completion and
-   cancellation; a live spawned loan prevents reallocation until join. Cleanup-free
-   `out` works through direct await. Spawned output,
+   cancellation; a live child-task loan prevents reallocation until join. Cleanup-free
+   `out` works through direct await. Child-task output,
    ownership-bearing output, ARC fields, and closure environments remain.
 3. **Larger application probe — implemented.** The multi-module
    `document-workspace` combines a move-only native lease, dynamic arrays,
@@ -263,7 +263,7 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    objects, calls, member access, and indexes. Prefix unary operators, the full
    current binary-precedence table, and right-nested ternaries use the same
    representation. `new`, `weak`, `try`, `attempt`, direct `await`, and direct
-   `spawn` retain their distinct grammar and node kinds too. Nodes retain values,
+   `task` retain their distinct grammar and node kinds too. Nodes retain values,
    integer child edges, argument/field labels, and locations without recursive
    heap boxes. Enum payload construction retains separate enum/case/payload
    identities, and explicit `out`/`inout` call arguments retain their capability
@@ -591,7 +591,7 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    Value-producing `if` expressions retain condition, then-value-block, and
    else-value-block/if-expression edges. Their branch statements use the shared
    statement arena, preserving local declarations and explicit `select` nodes.
-   Executor-placement expressions retain sync/await/spawn mode, a distinct
+   Executor-placement expressions retain sync/await/task mode, a distinct
    source-located `on` marker, the executor expression root, optional success and
    error types, and the placed body. This leaves a structural insertion point for
    the planned contextual `using` capture clause.

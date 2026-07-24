@@ -25,14 +25,14 @@ async function main(): i32 throws NetworkError {
     failure(error) => -error.code;
   };
   const first = try await fetchValue(20);
-  const secondTask = spawn fetchValue(22);
+  const secondTask = task fetchValue(22);
   const second = try await secondTask;
 
   // The scope is an earlier implicit-join boundary. Both children are complete
   // before the statement following the block executes.
   async scope {
-    spawn warmValue(1);
-    spawn warmValue(2);
+    task warmValue(1);
+    task warmValue(2);
   }
 
   console.log("warm batch complete");

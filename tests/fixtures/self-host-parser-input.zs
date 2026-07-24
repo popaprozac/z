@@ -59,10 +59,10 @@ export async function load(id: i32): Reading {
   const hopped = await on thread.main: i32 throws LoadError {
     select immediate;
   };
-  const task = spawn on thread.main: i32 {
+  const task = task on thread.main: i32 {
     select hopped;
   };
-  spawn on thread.main {
+  task on thread.main {
     const copied = id;
   }
   const placed = await task;
@@ -178,7 +178,10 @@ function expressionShapes(value: i32): i32 {
   const awaitedAttempt = attempt await load(value);
   const tried = try load(value);
   const awaited = await load(value);
-  const spawned = spawn load(value);
+  const copy = copy stringValue;
+  const move = move copy;
+  bodyShapes(move.byteLength);
+  const childTask = task load(value);
   bodyShapes(value: selected);
   return (object.value);
 }

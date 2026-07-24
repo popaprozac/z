@@ -22,7 +22,7 @@ Z should keep three concerns orthogonal:
 
 The central source-level invariant is:
 
-> `spawn` is the construct that visibly forks concurrent work. `on` specifies
+> `task` is the construct that visibly forks concurrent work. `on` specifies
 > or proves execution placement. `async scope` owns child-task lifetime.
 
 This avoids conflating executor affinity with thread creation or lexical task
@@ -43,8 +43,8 @@ user-provided executor:
 ```z
 import { thread } from "std/thread";
 
-const ui = spawn on thread.main { /* ... */ };
-const work = spawn on thread.pool { /* future shared compute target */ };
+const ui = task on thread.main { /* ... */ };
+const work = task on thread.pool { /* future shared compute target */ };
 ```
 
 `thread.main` is the committed first spelling. Future targets such as pools or
@@ -66,7 +66,7 @@ context is statically proven to execute on `main`. The block evaluates directly
 to its selected value.
 
 Using it from an unproven context is a compile error with guidance to use
-`await on thread.main` or `spawn on thread.main`.
+`await on thread.main` or `task on thread.main`.
 
 ### Hop, wait, and receive a value
 
@@ -92,7 +92,7 @@ selects another executor.
 ### Fork a structured child on an executor
 
 ```z
-const titleTask = spawn on thread.main {
+const titleTask = task on thread.main {
   select window.title;
 };
 
@@ -105,17 +105,17 @@ The expression has type `Task<T>` or `Task<T, E>`. The parent continues without
 waiting, while the enclosing structured scope retains responsibility for
 joining or cancelling the child.
 
-`spawn on thread.main` preserves a concurrency boundary even when the caller already
-runs on `main`; it follows ordinary `spawn` scheduling rather than becoming the
+`task on thread.main` preserves a concurrency boundary even when the caller already
+runs on `main`; it follows ordinary `task` scheduling rather than becoming the
 synchronous assertion form.
 
 ## Block contracts and type transformation
 
 An optional annotation describes the block's success and error contract, not
-the wrapper introduced by `spawn`:
+the wrapper introduced by `task`:
 
 ```z
-const task = spawn on thread.main: i32 throws TaskError {
+const task = task on thread.main: i32 throws TaskError {
   if (!condition) {
     throw TaskError({});
   }
@@ -132,7 +132,7 @@ outer expression type:
 | `try on thread.main: T throws E { ... }` | `T` |
 | `try await on thread.main: T throws E { ... }` | `T` |
 | `attempt await on thread.main: T throws E { ... }` | `Result<T, E>` |
-| `spawn on thread.main: T throws E { ... }` | `Task<T, E>` |
+| `task on thread.main: T throws E { ... }` | `Task<T, E>` |
 
 Therefore this spelling is intentionally avoided:
 
@@ -148,7 +148,7 @@ Local blocks should infer their success type from `select` and their error type
 from `throw` when unambiguous:
 
 ```z
-const task = spawn on thread.main {
+const task = task on thread.main {
   if (!condition) throw TaskError({});
   select 1;
 };
@@ -185,7 +185,7 @@ The compiler should prove that:
 A fallible placed child preserves Z's normal typed error channel:
 
 ```z
-const windowTask = spawn on thread.main: AppKit.NSWindow throws WindowError {
+const windowTask = task on thread.main: AppKit.NSWindow throws WindowError {
   if (application.keyWindow == null) {
     throw WindowError({ message: "No key window" });
   }
@@ -196,17 +196,17 @@ const windowTask = spawn on thread.main: AppKit.NSWindow throws WindowError {
 const observed = attempt await windowTask;
 ```
 
-A throwing spawned task must be explicitly acknowledged with `try await`,
+A throwing child task must be explicitly acknowledged with `try await`,
 `attempt await`, cancellation, or a future explicit scope error policy. A bare
-fallible `spawn on` must not silently discard its error.
+fallible `task on` must not silently discard its error.
 
 ## Structured concurrency, not detachment
 
-`spawn on thread.main` is "fire and continue," not true fire-and-forget:
+`task on thread.main` is "fire and continue," not true fire-and-forget:
 
 ```z
 async scope {
-  spawn on thread.main {
+  task on thread.main {
     window.updateDashboard(result);
   }
 
@@ -221,7 +221,7 @@ provides the same ownership rule outside an explicit nested scope.
 
 Truly detached work has different lifetime and error semantics and remains a
 separate future facility. A library operation such as `main.post(...)` may be a
-better shape than weakening `spawn`; it would require owned captures, an
+better shape than weakening `task`; it would require owned captures, an
 explicit error sink, and runtime-owned lifetime.
 
 ## Capture and transfer safety
@@ -244,7 +244,7 @@ The planned explicit capture contract is a contextual `using` clause after the
 executor expression:
 
 ```z
-const task = spawn on thread.pool({ timeout: 5000 })
+const task = task on thread.pool({ timeout: 5000 })
   using (in config, inout value, move buffer)
   : i32 throws WorkError {
     value += config.increment;
@@ -263,14 +263,14 @@ reuse Z's ordinary capability vocabulary and do not repeat types:
 - `inout binding` is one exclusive mutable loan;
 - `move binding` transfers ownership into the placed operation; and
 - `out` is deferred until failure, cancellation, and definite initialization
-  have one sound spawned-output contract.
+  have one sound child-task-output contract.
 
 The same clause is intended to compose with all placement forms:
 
 ```z
 on thread.main using (in window) { /* prove current placement */ }
 await on thread.main using (in window) { /* hop and join */ }
-spawn on thread.pool using (move work) { /* structured child */ }
+task on thread.pool using (move work) { /* structured child */ }
 ```
 
 An `in` or `inout` loan remains active until the child actually joins, either
@@ -312,11 +312,11 @@ a value expression and ends with one.
 
 | Syntax | Meaning |
 |---|---|
-| `spawn operation()` | Fork a structured child on the inherited executor |
+| `task operation()` | Fork a structured child on the inherited executor |
 | `async scope { ... }` | Own and join lexical child tasks |
 | `on thread.main { ... }` | Synchronously execute with statically proven main affinity |
 | `await on thread.main { ... }` | Hop if necessary, wait, and produce `T` or `E` |
-| `spawn on thread.main { ... }` | Fork a structured child placed on the existing main executor |
+| `task on thread.main { ... }` | Fork a structured child placed on the existing main executor |
 | `thread.spawn(operation)` | Allocate and start one dedicated OS thread |
 
 `thread.spawn` is not defined by whether the OS thread has a debugging name.
@@ -326,12 +326,12 @@ Naming can be optional metadata:
 thread.spawn({ name: "image-decoder" }, move () => decode(image));
 ```
 
-It still means one new dedicated OS thread, unlike `spawn on thread.main` or a future
-`spawn on thread.pool`, which target existing executors.
+It still means one new dedicated OS thread, unlike `task on thread.main` or a future
+`task on thread.pool`, which target existing executors.
 
 ### Dispatching from a synchronous native worker
 
-`spawn on thread.main` should be legal inside the synchronous closure passed to
+`task on thread.main` should be legal inside the synchronous closure passed to
 `thread.spawn`. This is Z's structured analogue of dispatching asynchronously
 onto a platform main queue:
 
@@ -339,7 +339,7 @@ onto a platform main queue:
 const worker = thread.spawn(move () => {
   const snapshot = calculateSnapshot();
 
-  spawn on thread.main {
+  task on thread.main {
     display(snapshot);
   };
 
@@ -386,7 +386,7 @@ main-executor proof inside their bodies. Cross-thread callbacks instead need a
 safe runtime handoff into a Z-owned executor/task scope.
 
 The first C callback tier describes arbitrary native invocation with `thread
-any`, but deliberately does not make `spawn on thread.main` detached. The
+any`, but deliberately does not make `task on thread.main` detached. The
 implemented bridge is the imported thread-safe `TaskScope`: it owns operations
 submitted by foreign callbacks, rejects new operations during close, and joins
 accepted work. `async scope updates {}` exposes that same handle as `updates`
@@ -416,7 +416,7 @@ foreign declarations rather than introduced opportunistically.
   proven.
 - `await on thread.main` may use a direct fast path when already isolated; otherwise it
   enqueues and suspends the current task.
-- `spawn on thread.main` creates a hot structured child and lets the parent continue.
+- `task on thread.main` creates a hot structured child and lets the parent continue.
 - Cancellation before a placed child starts should prevent its body from
   running when possible.
 - Once running, cancellation remains cooperative and must preserve cleanup.
@@ -469,8 +469,8 @@ familiarity.
 
 ### Bare `on thread.main` always returning `Task<T, E>`
 
-This hides the concurrency fork. Requiring `spawn on thread.main` preserves the rule
-that every fork is visibly marked `spawn` and leaves a useful zero-cost
+This hides the concurrency fork. Requiring `task on thread.main` preserves the rule
+that every fork is visibly marked `task` and leaves a useful zero-cost
 synchronous proof form.
 
 ### `return` as the block value
@@ -483,7 +483,7 @@ later without making executor blocks a special case.
 
 1. **Done:** parse and type-check the three forms.
 2. **Done:** introduce the typed `thread.main` capability.
-3. **Done:** execute synchronous, awaited, and spawned placement through task
+3. **Done:** execute synchronous, awaited, and child-task placement through task
    frames for `void`, scalar, and recursively plain values.
 4. **Done:** publish placed children from `thread.spawn` through a thread-safe
    queue without equating OS-thread exit with task completion.
@@ -508,7 +508,7 @@ later without making executor blocks a special case.
 - Which cross-executor borrows can the unified loan checker prove safely?
 - Which inferred Copy captures should diagnostics ask users to spell explicitly
   for clarity or ABI stability?
-- What eventual spawned-`out` contract remains sound across failure and
+- What eventual child-task `out` contract remains sound across failure and
   cancellation?
 - What is the final function-level isolation syntax?
 - What is the final `.zd` spelling for method, callback, and type affinity?

@@ -1167,15 +1167,15 @@ OS/ABI calls remain a thin platform substrate.
 ## Async and structured concurrency
 
 `async function` returns a task conceptually, while `await` observes its
-completion. `spawn` starts child work immediately. Every spawned child belongs
+completion. `task` starts child work immediately. Every child task belongs
 to a lexical task scope; an async function body is an implicit root scope and an
 `async scope` creates a narrower join boundary.
 
 ```z
 async function refresh(): void throws NetworkError {
   async scope {
-    spawn refreshUser();
-    spawn refreshPosts();
+    task refreshUser();
+    task refreshPosts();
   }
   publishRefreshedUI();
 }
@@ -1193,7 +1193,7 @@ import { thread } from "std/thread";
 
 async scope updates {
   registerNativeCallback(move (value) => {
-    const accepted = updates.spawn(
+    const accepted = updates.schedule(
       thread.main,
       move (): void => { publish(value); }
     );
@@ -1203,7 +1203,7 @@ async scope updates {
 
 The unnamed form retains its allocation-free static lowering when all children
 are lexically visible. `async scope updates {}` binds `updates: TaskScope` for
-dynamic submission by callbacks. `TaskScope.spawn` returns `false` if close has
+dynamic submission by callbacks. `TaskScope.schedule` returns `false` if close has
 won the submission race. The explicit form is `new TaskScope()`, followed by
 direct `await scope.close()` or `await scope.cancel()` when an earlier boundary
 is useful. Its owning async function otherwise closes it on return and cancels
@@ -1226,7 +1226,7 @@ const fallible = thread.spawn(move (): i32 throws CalculationError => {
 const result = attempt await fallible;
 ```
 
-This is distinct from keyword `spawn`: `spawn operation()` schedules an async
+This is distinct from keyword `task`: `task operation()` schedules an async
 child on the current executor, while `thread.spawn(operation)` starts exactly
 one OS thread. The initial transfer classifier copies recursively cleanup-free
 values, moves unique owners, and retains deeply readonly ARC class identity
@@ -1243,7 +1243,7 @@ The thread namespace also supplies typed placement targets. The first target is
 ```z
 const title = on thread.main { select window.title; };
 const updated = await on thread.main { select refreshUI(); };
-const child = spawn on thread.main { select refreshUI(); };
+const child = task on thread.main { select refreshUI(); };
 ```
 
 The first form is a zero-scheduling static proof, the second hops and waits, and
@@ -1484,27 +1484,27 @@ tagged-union lifetime machinery, including borrowed and consuming matches.
 Direct async frame locals, whole Z value structs/enums containing them, and
 fallible task results also support move-only native storage through `try await`
 and `attempt await`. Unqualified owned async parameters move native values or
-whole native-owning Z aggregates into the child frame at `await`/`spawn`; the
+whole native-owning Z aggregates into the child frame at `await`/`task`; the
 source is unavailable immediately after task creation. ARC class fields, owned
-closure environments, ownership-bearing async output, and spawned output remain
+closure environments, ownership-bearing async output, and child-task output remain
 later construction paths. Immutable `in` value/native parameters may suspend: direct
-await bounds the borrow to its join, while spawn requires an explicit `async
+await bounds the borrow to its join, while task requires an explicit `async
 scope` and keeps the owner immutable and unmovable until each borrowing task is
 joined. ARC class parameters omit `in` and use their ordinary retained-reference
 behavior. Value/native `inout` parameters may suspend when called through direct
 `await`; the caller's mutable storage remains stable and inaccessible until the
-join. An explicit async scope also permits one spawned `inout` child to hold
+join. An explicit async scope also permits one `inout` child task to hold
 exclusive access. Consuming that task through await or cancellation releases the
 borrow early; otherwise scope exit releases it. Async `Slice<T>` parameters copy
 only their pointer/length descriptor and borrow fixed-array or growable
-`Array<T>` backing storage under the same direct-await or scoped-spawn rules.
+`Array<T>` backing storage under the same direct-await or scoped-task rules.
 The owner may contain Z cleanup-bearing or move-only C++ elements; task-frame
 cleanup destroys initialized elements in reverse order on success, failure, or
 cancellation. A live Slice loan prevents `Array.push` and other owner mutation
 that could invalidate its data pointer. ARC-reference rebinding is not
 implemented. Non-throwing
 direct-awaited `out` parameters may initialize cleanup-free caller storage and
-must do so on every successful path; spawned and ownership-bearing output remain
+must do so on every successful path; child-task and ownership-bearing output remain
 deferred. Mutations made before failure or cancellation are not rolled back.
 
 Swift-generated C++ compatibility values use this same surface. For example,

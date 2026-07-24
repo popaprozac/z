@@ -15,8 +15,8 @@ async function finish(work: CancelledWork): void {
 async function sibling(work: CancelledWork): void {
   await finish(CancelledWork({ id: 2 }));
 
-  // The propagated sibling failure cancels this task before this spawn runs.
-  spawn finish(CancelledWork({ id: 3 }));
+  // The propagated sibling failure cancels this task before this task runs.
+  task finish(CancelledWork({ id: 3 }));
   return;
 }
 
@@ -25,7 +25,7 @@ async function fail(): i32 throws i32 {
 }
 
 async function main(): i32 throws i32 {
-  const failure = spawn fail();
-  spawn sibling(CancelledWork({ id: 1 }));
+  const failure = task fail();
+  task sibling(CancelledWork({ id: 1 }));
   return try await failure;
 }

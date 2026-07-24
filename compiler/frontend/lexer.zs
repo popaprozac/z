@@ -16,7 +16,6 @@ export enum TokenKind {
   functionKeyword,
   asyncKeyword,
   awaitKeyword,
-  spawnKeyword,
   onKeyword,
   scopeKeyword,
   structKeyword,
@@ -132,7 +131,6 @@ function keywordKind(in text: String): Option<TokenKind> {
   if (text == "function") return Option.some(TokenKind.functionKeyword);
   if (text == "async") return Option.some(TokenKind.asyncKeyword);
   if (text == "await") return Option.some(TokenKind.awaitKeyword);
-  if (text == "spawn") return Option.some(TokenKind.spawnKeyword);
   if (text == "on") return Option.some(TokenKind.onKeyword);
   if (text == "scope") return Option.some(TokenKind.scopeKeyword);
   if (text == "struct") return Option.some(TokenKind.structKeyword);
@@ -596,7 +594,6 @@ export function tokenKindName(kind: TokenKind): String {
     functionKeyword => "function";
     asyncKeyword => "async";
     awaitKeyword => "await";
-    spawnKeyword => "spawn";
     onKeyword => "on";
     scopeKeyword => "scope";
     structKeyword => "struct";

@@ -20,7 +20,7 @@ async function reportExecutorProgress(): void {
 async function main(): i32 {
   const input = Calculation({ value: 21, multiplier: 2 });
   const calculation = thread.spawn(move () => calculate(input));
-  const progress = spawn reportExecutorProgress();
+  const progress = task reportExecutorProgress();
 
   console.log("main task continued after thread.spawn");
 

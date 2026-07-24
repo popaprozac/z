@@ -155,14 +155,14 @@ storage and match either borrows or consumes its active payload. Owned async
 parameters use the same aligned storage: task creation move-constructs each
 child-frame slot, and cancellation destroys it even before the child body is
 polled. Immutable `in` native values and native-owning Z aggregates borrow stable
-caller-frame storage through direct await. Spawned borrows require an explicit
+caller-frame storage through direct await. Child-task borrows require an explicit
 async scope and prevent owner mutation or movement until every borrowing child
 joins; no wrapper, retain, or copy is added. Direct-awaited and scope-bounded
-spawned `inout` native values similarly use a mutable pointer into the suspended
+child-task `inout` native values similarly use a mutable pointer into the suspended
 caller frame; no native copy or move occurs, and the child does not destroy the
 owner. An explicit consuming join releases the borrow before scope exit.
 Cleanup-free `out` values can use the same direct-await storage path;
-ownership-bearing and spawned output still need explicit live-storage handoff
+ownership-bearing and child-task output still need explicit live-storage handoff
 lowering. ARC class fields and owned closure environments likewise remain
 deferred.
 
@@ -539,7 +539,7 @@ The callback contract makes a raw closure environment atomic and checks its
 captures; the copied native block retains and releases that environment through
 Objective-C ARC. `async completion;` additionally promises exactly-once terminal
 delivery. Z preserves the raw callback overload and synthesizes
-`async calculate(value: i32): i32`, usable with either `await` or `spawn`.
+`async calculate(value: i32): i32`, usable with either `await` or `task`.
 
 The projected task owns its callback frame until completion. Cancellation
 without a native cancellation hook requests cancellation but still waits for

@@ -278,8 +278,17 @@
         "name": "storage.modifier.z",
         "match": "\\bmove(?=\\s+this\\b)"
       }, {
+        "name": "keyword.control.concurrent.z",
+        "match": "\\btask(?=\\s+(?:on\\b|[A-Za-z_][A-Za-z0-9_]*))"
+      }, {
+        "name": "keyword.operator.ownership.z",
+        "match": "\\b(?:copy|move)(?=\\s+[A-Za-z_][A-Za-z0-9_]*)"
+      }, {
+        "name": "storage.modifier.capture.z",
+        "match": "\\bmove(?=\\s*\\([^)]*\\)\\s*(?:(?::|throws\\b)[^=]*)?=>)"
+      }, {
         "name": "keyword.control.z",
-        "match": "\\b(?:return|throws|throw|select|yield|try|attempt|match|if|else|while|for|of|break|continue|async|await|spawn|on|scope|deinit|constructor|unsafe|in|out|inout|copy|move|view|weak|new|as|implements|module|type)\\b"
+        "match": "\\b(?:return|throws|throw|select|yield|try|attempt|match|if|else|while|for|of|break|continue|async|await|on|scope|deinit|constructor|unsafe|in|out|inout|view|weak|new|as|implements|module|type)\\b"
       }, {
         "name": "storage.modifier.z",
         "match": "\\b(?:const|let|mut|weak|readonly|static|private|public)\\b"

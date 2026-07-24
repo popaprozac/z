@@ -914,7 +914,7 @@ function planFunction(
             fileName,
             statement.location,
             "scope-local value bindings are not executable yet",
-            "bind values outside the `async scope`; scope-local spawned task handles are supported",
+            "bind values outside the `async scope`; scope-local child task handles are supported",
           );
         }
         if (scope !== 0 && locals.has(statement.name)) {
@@ -1150,7 +1150,7 @@ function planFunction(
         fileName,
         statement.location,
         `statement ${JSON.stringify(statement.kind)} is not executable in the first Phase 1 async slice`,
-        "the current state-machine lowering supports owned bindings, direct await, spawn, throw, and return",
+        "the current state-machine lowering supports owned bindings, direct await, task, throw, and return",
       );
     }
   };
@@ -1164,8 +1164,8 @@ function planFunction(
     unsupported(
       fileName,
       unjoinedThrowing.expression.location,
-      "a throwing spawned task must be joined explicitly",
-      "bind the spawned task and acknowledge its error with `try await` or `attempt await`",
+      "a throwing child task must be joined explicitly",
+      "bind the child task and acknowledge its error with `try await` or `attempt await`",
     );
   }
 
@@ -1408,7 +1408,7 @@ function awaitSite(
       unsupported(fileName, expression.location, "awaiting task parameters or aliases is not executable yet");
     }
     if (joinedSpawns.has(spawn.index)) {
-      unsupported(fileName, expression.location, "a spawned task handle can only be joined once");
+      unsupported(fileName, expression.location, "a child task handle can only be joined once");
     }
     joinedSpawns.add(spawn.index);
     return {
@@ -1464,7 +1464,7 @@ function awaitSite(
       unsupported(fileName, expression.location, "cancelling task parameters or aliases is not executable yet");
     }
     if (joinedSpawns.has(spawn.index)) {
-      unsupported(fileName, expression.location, "a spawned task handle can only be joined or cancelled once");
+      unsupported(fileName, expression.location, "a child task handle can only be joined or cancelled once");
     }
     joinedSpawns.add(spawn.index);
     return {
@@ -1631,8 +1631,8 @@ function createPlacementTarget(
     unsupported(
       fileName,
       expression.location,
-      "synchronous `on thread.main` cannot suspend or spawn",
-      "use `await on thread.main` or `spawn on thread.main` for asynchronous work",
+      "synchronous `on thread.main` cannot suspend or start a task",
+      "use `await on thread.main` or `task on thread.main` for asynchronous work",
     );
   }
   const final = expression.body.statements.at(-1);
@@ -1891,14 +1891,14 @@ function spawnSite(
   types: AsyncTypeContext,
 ): SpawnSite {
   if (expression.expression.kind !== "call") {
-    unsupported(fileName, expression.location, "spawn lowering requires a direct async call");
+    unsupported(fileName, expression.location, "task lowering requires a direct async call");
   }
   if (types.semanticInfo.standardFunctionReferences.get(expression.expression.callee.location.offset) === "delay") {
     unsupported(
       fileName,
       expression.location,
-      "spawning the delay intrinsic is not executable yet",
-      "await `delay(...)` directly, or spawn an async function that awaits it",
+      "starting the delay intrinsic as a task is not executable yet",
+      "await `delay(...)` directly, or start an async function as a task that awaits it",
     );
   }
   const resolved = resolveAsyncCall(expression.expression, functions, fileName, locals, types);
@@ -6327,7 +6327,7 @@ function unsupported(
 ): never {
   throw new DiagnosticError(fileName, location, message, {
     code: "Z0700",
-    notes: ["Phase 1 executes owned task frames, synchronous calls and console output, FIFO scheduling, scoped spawn, cancellation, and timer delay"],
+    notes: ["Phase 1 executes owned task frames, synchronous calls and console output, FIFO scheduling, scoped tasks, cancellation, and timer delay"],
     helps: [help],
   });
 }

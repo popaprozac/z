@@ -18,7 +18,7 @@ async function main(): i32 {
   let progress = ImportProgress({ completed: 40 });
 
   async scope {
-    const batch = spawn importBatchAfter(inout progress, 1);
+    const batch = task importBatchAfter(inout progress, 1);
     console.log("import batch started");
 
     await batch;

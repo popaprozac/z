@@ -22,7 +22,7 @@ async function main(): i32 {
   const originalTotal = await totalAfterDelay(readings);
 
   async scope {
-    const calibration = spawn calibrateAfterDelay(inout readings, 2);
+    const calibration = task calibrateAfterDelay(inout readings, 2);
     console.log("calibration started");
     await calibration;
   }

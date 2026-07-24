@@ -413,8 +413,12 @@ export function parse(tokens: Token[], fileName: string): Program {
       if (match("on")) return parseExecutorPlacement("await", token.location, previous().location);
       return { kind: "await", expression: parsePostfix(), location: token.location };
     }
-    if (match("spawn")) {
-      const token = previous();
+    if (
+      at("identifier")
+      && peek().text === "task"
+      && (tokens[current + 1]?.kind === "on" || tokens[current + 1]?.kind === "identifier")
+    ) {
+      const token = take();
       if (match("on")) return parseExecutorPlacement("spawn", token.location, previous().location);
       return { kind: "spawn", expression: parsePostfix(), location: token.location };
     }
@@ -546,7 +550,7 @@ export function parse(tokens: Token[], fileName: string): Program {
       // Keep `move(...)` available as an ordinary call/alias and preserve the
       // existing `move (...) =>` closure spelling. Ownership operators use the
       // intentionally readable, whitespace-separated form `move value`.
-      && tokens[current + 1]?.kind !== "leftParen"
+      && tokens[current + 1]?.kind === "identifier"
     ) {
       const token = take();
       return { kind: "unary", operator: token.text, operand: parseUnary(), location: token.location };

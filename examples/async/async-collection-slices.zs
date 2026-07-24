@@ -30,7 +30,7 @@ async function main(): i32 {
   registered.push(Sensor({ id: 9 }));
 
   async scope {
-    const abandonedScan = spawn firstSensorAfterDelay(registered);
+    const abandonedScan = task firstSensorAfterDelay(registered);
     await abandonedScan.cancel();
   }
 
@@ -41,7 +41,7 @@ async function main(): i32 {
   const fallback = [Sensor({ id: 11 }), Sensor({ id: 13 })];
   let fallbackId = 0;
   async scope {
-    const fallbackScan = spawn firstSensorAfterDelay(fallback);
+    const fallbackScan = task firstSensorAfterDelay(fallback);
     fallbackId = await fallbackScan;
   }
 

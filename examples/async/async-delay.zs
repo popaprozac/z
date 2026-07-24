@@ -23,8 +23,8 @@ async function finishAfter(job: DelayedJob, milliseconds: u64): void {
 async function main(): i32 {
   async scope {
     // Both hot children suspend on independent timers. Scope exit joins them.
-    spawn finishAfter(DelayedJob({ id: 1 }), 5);
-    spawn finishAfter(DelayedJob({ id: 2 }), 1);
+    task finishAfter(DelayedJob({ id: 1 }), 5);
+    task finishAfter(DelayedJob({ id: 2 }), 1);
   }
 
   return 0;

@@ -42,8 +42,8 @@ async function main(): i32 {
   const direct = await inspectDocument(document);
 
   async scope {
-    spawn observeDocument(document);
-    spawn observeDocument(document);
+    task observeDocument(document);
+    task observeDocument(document);
   }
 
   const nativeClosed = nativeResource.finish(1);

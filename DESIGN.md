@@ -218,7 +218,7 @@ scope), and release event (return, join/cancel, or scope exit). The stage-0
 compiler uses one access-loan representation and capability compatibility
 checker for call-lifetime overlaps and task-lifetime borrows. Task-to-loan maps
 are lifecycle indexes only: they identify which loans a join or cancellation
-releases rather than defining another aliasing policy. Spawned `out`, suspended
+releases rather than defining another aliasing policy. Child-task `out`, suspended
 Slice borrowing, regions, and cross-thread loans must extend this same checker
 rather than adding parallel rules.
 
@@ -776,7 +776,7 @@ elements and performs no cleanup.
 
 An async Slice parameter copies that two-word descriptor into the task frame
 while keeping a loan on the backing collection. Direct await bounds the loan to
-the join. Spawn requires `async scope`; immutable Slice tasks may share the
+the join. A child task requires `async scope`; immutable Slice tasks may share the
 backing array, while an `inout Slice<T>` task has exclusive access until join,
 cancellation, or scope exit. The first executable backing-storage tier is a
 cleanup-free fixed array in an async frame. Growable arrays and cleanup-bearing
@@ -1182,20 +1182,20 @@ The intended model combines:
 
 - `async` and `await` for suspension;
 - `try await` and `attempt await` for typed outcomes;
-- structured `async scope` and `spawn` for task lifetime;
+- structured `async scope` and `task` for task lifetime;
 - typed, bounded, move-aware channels for communication;
 - actors for long-lived isolated mutable state;
 - pluggable native executors;
 - structural cancellation and deterministic task-frame cleanup.
 
 Async calls never start implicitly. A direct call must be covered by `await`
-for sequential work or by `spawn` for concurrent work. Every async function
+for sequential work or by `task` for concurrent work. Every async function
 body is an implicit root task scope; an explicit `async scope` creates a
-narrower child lifetime. `spawn` produces a scope-bound `Task<T>` or `Task<T,
+narrower child lifetime. `task` produces a scope-bound `Task<T>` or `Task<T,
 E>`; child handles and work cannot escape their owning scope. Detached work
-requires an explicitly owned supervisor. `await spawn operation()` is rejected
+requires an explicitly owned supervisor. `await task operation()` is rejected
 as redundant; an immediately joined child creates no interval of concurrency.
-Spawned children are scheduled immediately. Awaiting a task joins already-hot
+Child tasks are scheduled immediately. Awaiting a task joins already-hot
 work: it returns an available outcome or suspends the current task without
 blocking the executor thread.
 
@@ -1204,7 +1204,7 @@ An explicit scope may bind its runtime handle:
 ```z
 async scope updates {
   callbackSource(move (value) => {
-    updates.spawn(thread.main, move (): void => { publish(value); });
+    updates.schedule(thread.main, move (): void => { publish(value); });
   });
 }
 ```
@@ -1212,12 +1212,12 @@ async scope updates {
 `updates` has the standard type `TaskScope`. The handle is a synchronized
 ownership boundary, not an executor: submission names its target separately.
 Closing atomically rejects later submissions and joins accepted operations;
-the boolean result of `spawn` exposes the close-versus-submit race. The unnamed
+the boolean result of `schedule` exposes the close-versus-submit race. The unnamed
 form remains statically lowered when no dynamic handle is required. An explicit
 `new TaskScope()` may close or cancel earlier; otherwise its owning async
 function closes on return and cancels on throw.
 
-Keyword `spawn` always inherits the current executor. Explicit native CPU work
+Keyword `task` always inherits the current executor. Explicit native CPU work
 uses a standard-library boundary rather than overloading the keyword:
 
 ```z
@@ -1226,8 +1226,9 @@ const task = thread.spawn(move () => calculate(input));
 const result = await task;
 ```
 
-`thread.spawn` means exactly one OS thread; a future `pool.spawn` remains a
-separate operation. The implemented transfer classifier copies recursively
+`thread.spawn` means exactly one OS thread; future worker-pool submission
+remains a separate standard-library operation whose method spelling is not yet
+committed. The implemented transfer classifier copies recursively
 cleanup-free values into the synchronous closure and moves uniquely owned
 `Array` storage, including recursively supported value aggregates. Capturing
 still requires `move`: for a Copy value this describes how the closure acquires
@@ -1247,20 +1248,20 @@ remain validation work. Atomic reference counts protect lifetime, not mutable
 class fields; isolation or an explicit concurrency contract must address those
 data races.
 
-Explicit placement composes the same `spawn` boundary with typed targets from
+Explicit placement composes the same `task` boundary with typed targets from
 the thread namespace:
 
 ```z
 on thread.main { /* synchronous proof */ }
 await on thread.main { /* hop and wait */ }
-spawn on thread.main { /* structured dispatch */ }
+task on thread.main { /* structured dispatch */ }
 ```
 
 The runtime executes placement blocks through structured task frames. Captures
 may be recursively plain values, owned `String` copies, retained Z ARC classes,
 or Objective-C identities retained by ARC when they originate in the owning
 async task. A synchronous `thread.spawn`
-closure can create a structured child with `spawn on thread.main` without
+closure can create a structured child with `task on thread.main` without
 becoming async itself. OS-thread exit and Z-task completion are distinct, so an
 async main task awaiting that worker suspends rather than blocking main. Darwin
 publishes cross-thread children through a protected inbound queue and wakes a
@@ -1277,7 +1278,7 @@ The planned source contract for those later tiers is a contextual `using`
 clause after the executor expression:
 
 ```z
-const task = spawn on thread.pool({ timeout: 5000 })
+const task = task on thread.pool({ timeout: 5000 })
   using (in config, inout value, move buffer)
   : i32 throws WorkError {
     value += config.increment;
@@ -1289,7 +1290,7 @@ const task = spawn on thread.pool({ timeout: 5000 })
 Executor arguments configure placement; `using (...)` declares access to
 existing bindings. Its entries reuse the ordinary `in`, `inout`, and `move`
 capabilities without repeating types. Recursively Copy captures may remain
-inferred private snapshots. `out` is reserved until spawned initialization has
+inferred private snapshots. `out` is reserved until child-task initialization has
 sound failure, cancellation, and definite-assignment semantics. A borrowed
 capture remains unavailable to conflicting parent access until the task is
 actually joined, explicitly or by the enclosing `async scope`; cancellation
@@ -1297,7 +1298,7 @@ request alone does not end the loan. A moved binding remains consumed unless
 the task explicitly returns ownership. This is committed design direction, not
 implemented syntax yet.
 
-The error contract is the same as local `spawn`: a synchronous worker closure
+The error contract is the same as local `task`: a synchronous worker closure
 declared `(): T throws E` produces `Task<T, E>`, `try await` propagates `E`, and
 `attempt await` materializes it. Error slots carry explicit liveness just like
 result slots, so transferable String/Array ownership, containing aggregates,
@@ -1308,7 +1309,7 @@ Worker bodies support direct and binding-valued synchronous `try` plus local
 `attempt`; nested `try` remains excluded by the language-wide direct-value rule.
 
 An async function continues to declare its domain contract as `T throws E`.
-`spawn` preserves that contract as `Task<T, E>`, `try await` propagates `E`, and
+`task` preserves that contract as `Task<T, E>`, `try await` propagates `E`, and
 `attempt await` materializes `Result<T, E>`. Suspension composes with the
 existing error model rather than adding a second Result-shaped return layer.
 
@@ -1325,7 +1326,7 @@ contract; cancellation is never smuggled into `throws E`.
 
 The first ownership tier supports immutable `in` value/native parameters across
 suspension. A direct await stores a pointer into its stable suspended caller
-frame. A spawned immutable borrow requires an explicit `async scope`; its owner
+frame. A child-task immutable borrow requires an explicit `async scope`; its owner
 cannot move or mutate until every borrowing child joins. Multiple immutable
 child borrows may share the same owner. A consuming `await task` or `await
 task.cancel()` releases that child's borrow early; otherwise the scope's implicit
@@ -1333,12 +1334,12 @@ join releases it. Borrowed ARC class parameters intentionally use the ordinary
 owned parameter form instead, which retains identity while preserving caller
 access. A direct-awaited `inout` parameter stores a mutable pointer into the same
 stable caller frame; the caller cannot resume until the callee finishes. A
-spawned `inout` borrow requires an explicit async scope and grants one child
+child-task `inout` borrow requires an explicit async scope and grants one child
 exclusive access until its explicit or implicit join. Mutations completed before
 an error or cancellation remain visible—`inout` is not transactional. A non-throwing,
 direct-awaited `out` parameter may similarly initialize cleanup-free caller
 storage; every successful path must assign it before returning. Ownership-bearing
-output waits for completion-time live-storage handoff lowering. Spawned `out`,
+output waits for completion-time live-storage handoff lowering. Child-task `out`,
 ARC-reference rebinding, borrowed struct receivers, growable-array-backed Slice,
 and other live borrows remain rejected across suspension. Cross-thread executors
 must prove sendability before any pointer-backed borrow can leave its originating
@@ -1350,8 +1351,8 @@ storage is aligned, placement-constructed, and destroyed exactly once according
 to its semantic live flag. A typed take operation move-constructs the destination
 and ends the moved-from object's C++ lifetime before its raw frame storage is
 released. Owned call arguments use the same operation and placement-construct
-their child-frame parameter slots when `await` or `spawn` creates the task;
-`spawn` therefore owns its arguments before the child is first polled. Results
+their child-frame parameter slots when `await` or `task` creates the task;
+`task` therefore owns its arguments before the child is first polled. Results
 move through `return`, `return await`, and awaited caller bindings. Fallible
 native tasks preserve that storage through `try await`, while
 `attempt await` placement-constructs a non-trivial `Result<T, E>` in either a
@@ -1371,7 +1372,7 @@ no receiver.
 
 The intended lowering uses typed heap frames, explicit poll states, and live
 flags that preserve moves, ARC copies, and active enum payload destruction.
-Direct awaits suspend their parent; hot `spawn` enqueues children immediately;
+Direct awaits suspend their parent; hot `task` enqueues children immediately;
 task handles join already-running frames. Class receiver frames retain `this`,
 consuming struct receiver frames move it, and static methods carry no receiver.
 Propagation redirects live siblings and descendants through their cleanup
@@ -1562,8 +1563,8 @@ move-only native locals and whole Z value aggregates containing them use aligned
 placement storage inside async locals, owned parameter slots, and task results;
 fallible results compose with `try await`, `attempt await`, hidden expression
 slots, and match. Immutable scoped async parameters, direct-awaited or
-scope-bounded spawned mutable parameters, and cleanup-free direct-awaited output
-parameters borrow without a wrapper, retain, or copy; spawned output and
+scope-bounded child-task mutable parameters, and cleanup-free direct-awaited output
+parameters borrow without a wrapper, retain, or copy; child-task output and
 ownership-bearing output remain deferred.
 Named-value `const T&`, `T&`, and move-only `T&&` parameters reuse Z's `in`,
 `inout`, and owned-value capabilities. Receiver-qualified `const &`, `&`, and
@@ -1923,7 +1924,7 @@ ported independently rather than translated as one monolith.
    without per-node heap boxes. The same arena now retains prefix unary nodes,
    precedence-climbed binary trees for the complete current operator table, and
    right-nested conditional expressions. Z-specific `new`, `weak`, `try`,
-   `attempt`, direct `await`, and direct `spawn` nodes share the arena while
+   `attempt`, direct `await`, and direct `task` nodes share the arena while
    preserving their postfix-operand grammar; `new` retains its canonical type,
    labels, and argument edges. Generic identifier and member callees retain
    canonical nested type arguments, including the `Array<T>()` construction used

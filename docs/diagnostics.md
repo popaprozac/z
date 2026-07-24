@@ -71,8 +71,8 @@ Currently structured codes include:
 | `Z0603` | duplicate source-module export or binding |
 | `Z0700` | async program is valid but uses a shape outside the current executable lowering tier |
 | `Z0701` | invalid `await` context or operand |
-| `Z0702` | async call is missing `await` or `spawn` |
-| `Z0703` | `spawn` or `async scope` is outside its required structured context |
+| `Z0702` | async call is missing `await` or `task` |
+| `Z0703` | `task` or `async scope` is outside its required structured context |
 | `Z0704` | borrowed storage could remain live in a task or across suspension |
 | `Z0801` | malformed, unmatched, or conflicting foreign API contract metadata |
 | `Z0802` | native declaration is unavailable for the explicit project deployment target |

@@ -1151,7 +1151,10 @@ function parseExecutorPlacementTree(
   if (tokens[current].kind == TokenKind.awaitKeyword) {
     mode = "await";
     current = current + 1;
-  } else if (tokens[current].kind == TokenKind.spawnKeyword) {
+  } else if (
+    tokens[current].kind == TokenKind.identifier
+    && tokens[current].text == "task"
+  ) {
     mode = "spawn";
     current = current + 1;
   }
@@ -1399,7 +1402,12 @@ function parsePrimaryTree(
     || start.kind == TokenKind.tryKeyword
     || start.kind == TokenKind.attemptKeyword
     || start.kind == TokenKind.awaitKeyword
-    || start.kind == TokenKind.spawnKeyword
+    || (
+      start.kind == TokenKind.identifier
+      && start.text == "task"
+      && current + 1 < end
+      && tokens[current + 1].kind == TokenKind.identifier
+    )
   ) {
     current = current + 1;
     const operand = try parsePostfixTree(tokens, inout current, end, inout nodes, inout statementNodes);
@@ -1409,7 +1417,7 @@ function parsePrimaryTree(
     if (start.kind == TokenKind.tryKeyword) expressionKind = ExpressionKind.tryExpression;
     else if (start.kind == TokenKind.attemptKeyword) expressionKind = ExpressionKind.attemptExpression;
     else if (start.kind == TokenKind.awaitKeyword) expressionKind = ExpressionKind.awaitExpression;
-    else if (start.kind == TokenKind.spawnKeyword) expressionKind = ExpressionKind.spawnExpression;
+    else if (start.kind == TokenKind.identifier && start.text == "task") expressionKind = ExpressionKind.spawnExpression;
     return pushExpressionNode(
       inout nodes,
       expressionKind,
@@ -1797,7 +1805,7 @@ function parseUnaryTree(
     kind == TokenKind.identifier
     && (tokens[current].text == "copy" || tokens[current].text == "move")
     && current + 1 < end
-    && tokens[current + 1].kind != TokenKind.leftParen
+    && tokens[current + 1].kind == TokenKind.identifier
   ) {
     const operator = snapshot(tokens[current]);
     current = current + 1;
@@ -2014,7 +2022,13 @@ function skipProjectedStatement(
 
 function startsExecutorPlacement(in tokens: Array<Token>, current: usize): boolean {
   if (tokens[current].kind == TokenKind.onKeyword) return true;
-  return (tokens[current].kind == TokenKind.awaitKeyword || tokens[current].kind == TokenKind.spawnKeyword)
+  return (
+      tokens[current].kind == TokenKind.awaitKeyword
+      || (
+        tokens[current].kind == TokenKind.identifier
+        && tokens[current].text == "task"
+      )
+    )
     && current + 1 < tokens.length
     && tokens[current + 1].kind == TokenKind.onKeyword;
 }
@@ -2025,7 +2039,13 @@ function projectedExecutorPlacementEnd(
 ): usize throws ParserError {
   const start = snapshot(tokens[startIndex]);
   let current = startIndex;
-  if (tokens[current].kind == TokenKind.awaitKeyword || tokens[current].kind == TokenKind.spawnKeyword) {
+  if (
+    tokens[current].kind == TokenKind.awaitKeyword
+    || (
+      tokens[current].kind == TokenKind.identifier
+      && tokens[current].text == "task"
+    )
+  ) {
     current = current + 1;
   }
   try expectKind(tokens, inout current, TokenKind.onKeyword, "`on` in an executor placement");

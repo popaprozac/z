@@ -69,16 +69,16 @@ support or producing language-server diagnostics from hypothetical imports.
 ## Async
 
 - [`async-phase-0.zs`](async/async-phase-0.zs): overview of the implemented model
-- [`async-sequential.zs`](async/async-sequential.zs), [`async-spawn.zs`](async/async-spawn.zs), and [`async-scopes.zs`](async/async-scopes.zs)
+- [`async-sequential.zs`](async/async-sequential.zs), [`async-tasks.zs`](async/async-tasks.zs), and [`async-scopes.zs`](async/async-scopes.zs)
 - [`async-errors.zs`](async/async-errors.zs), [`async-cancellation.zs`](async/async-cancellation.zs), [`async-caller-cancellation.zs`](async/async-caller-cancellation.zs), and [`async-delay.zs`](async/async-delay.zs)
 - [`async-aggregates.zs`](async/async-aggregates.zs), [`async-ownership.zs`](async/async-ownership.zs), and [`async-owned-enums.zs`](async/async-owned-enums.zs)
 - [`async-native-ownership.zs`](async/async-native-ownership.zs): move-only C++ ownership across suspension, fallible task-result relays, `try await`, `attempt await`, and match
 - [`async-native-aggregate.zs`](async/async-native-aggregate.zs): a native-owning Z value struct across suspension, fallible relay, consuming match, and deterministic aggregate/native cleanup
 - [`async-match-arms.zs`](async/async-match-arms.zs): consuming owned matches whose selected arm can await, return an owned ARC result, `select`, or throw with exact payload cleanup
-- [`async-native-parameters.zs`](async/async-native-parameters.zs): direct C++ and native-owning Z values transferred into hot spawned task frames
-- [`async-borrowing.zs`](async/async-borrowing.zs): direct-await and explicit-scope spawned immutable borrows without moving the owner
+- [`async-native-parameters.zs`](async/async-native-parameters.zs): direct C++ and native-owning Z values transferred into hot child task frames
+- [`async-borrowing.zs`](async/async-borrowing.zs): direct-await and explicit-scope child-task immutable borrows without moving the owner
 - [`async-inout.zs`](async/async-inout.zs): direct-awaited mutation of a Z struct and move-only C++ owner across suspension
-- [`async-scoped-inout.zs`](async/async-scoped-inout.zs): scope-bounded spawned mutation with early release after explicit join
+- [`async-scoped-inout.zs`](async/async-scoped-inout.zs): scope-bounded child-task mutation with early release after explicit join
 - [`async-slices.zs`](async/async-slices.zs): direct and scope-bounded Slice borrowing over fixed-array storage
 - [`async-collection-slices.zs`](async/async-collection-slices.zs): growable and cleanup-bearing Slice backing, post-cancel growth, and reverse owner cleanup
 - [`async-out.zs`](async/async-out.zs): direct-awaited initialization of caller storage across suspension

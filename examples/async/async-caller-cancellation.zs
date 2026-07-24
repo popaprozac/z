@@ -18,7 +18,7 @@ async function download(session: DownloadSession): i32 {
 }
 
 async function main(): i32 {
-  const task = spawn download(DownloadSession({
+  const task = task download(DownloadSession({
     fileId: 42,
     lease: zcpp.UniqueValue(42),
   }));

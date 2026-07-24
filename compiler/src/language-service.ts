@@ -103,7 +103,7 @@ const sourceKeywordTokens = [
   "continue", "declare", "deinit", "else", "enum", "export", "for", "from",
   "function", "if", "implements", "import", "in", "inout", "let", "match", "module",
   "copy", "move", "mut", "new", "of", "on", "out", "private", "public", "return", "scope", "select",
-  "readonly", "spawn", "static", "struct", "throw", "throws", "trait", "type", "try", "unsafe", "view",
+  "readonly", "static", "struct", "task", "throw", "throws", "trait", "type", "try", "unsafe", "view",
   "weak", "while", "yield",
 ] as const;
 
@@ -283,6 +283,11 @@ export function semanticTokens(source: string, fileName: string): { readonly dat
     const next = tokens[index + 1];
     const keywordMember = previous?.kind === "dot" && /^[A-Za-z_][A-Za-z0-9_]*$/.test(token.text);
     if (token.kind !== "identifier" && !keywordMember) continue;
+    const contextualTask = token.text === "task"
+      && (next?.kind === "on" || next?.kind === "identifier");
+    const contextualOwnership = (token.text === "copy" || token.text === "move")
+      && next?.kind === "identifier";
+    if (contextualTask || contextualOwnership) continue;
     if (keywordMember && tokens[index - 2]?.text === "String" && token.text === "from") {
       classifications.set(token.location.offset, { type: semanticTokenTypes.indexOf("method"), modifiers: 4 });
       continue;
@@ -535,13 +540,28 @@ export function hover(source: string, fileName: string, offset: number): Hover |
     ?? context.semanticInfo.numericLiteralTypes.get(word.start)
     ?? context.semanticInfo.expressionTypes.get(word.start);
 
+  if (
+    word.text === "task"
+    && /^\s+(?:on\b|[A-Za-z_][A-Za-z0-9_]*)/.test(source.slice(word.end))
+  ) {
+    const result = directWordType
+      ? displayType(String(directWordType), context.typeDisplayNames)
+      : "Task<T, E?>";
+    return markdownHover(
+      `task operation() -> ${result}  // starts a hot structured child on the selected or inherited executor`,
+      source,
+      word.start,
+      word.end,
+    );
+  }
+
   if (word.text === "copy") {
     const plan = context.semanticInfo.explicitCopies.get(word.start);
     if (plan) return markdownHover(explicitCopyHover(plan, context), source, word.start, word.end);
   }
   if (
     word.text === "move"
-    && !/^\s*\(/.test(source.slice(word.end))
+    && /^\s+[A-Za-z_][A-Za-z0-9_]*/.test(source.slice(word.end))
     && context.semanticInfo.expressionTypes.has(word.start)
   ) {
     const type = context.semanticInfo.expressionTypes.get(word.start)!;
@@ -854,8 +874,8 @@ export function hover(source: string, fileName: string, offset: number): Hover |
       );
     }
     if (resolved?.kind === "taskScope") {
-      const detail = word.text === "spawn"
-        ? "spawn(thread.main, operation: () => void): boolean  // accepts work unless the scope is closing"
+      const detail = word.text === "schedule"
+        ? "schedule(thread.main, operation: () => void): boolean  // accepts work unless the scope is closing"
         : word.text === "close"
           ? "async close(): void  // rejects new work and joins accepted children"
           : word.text === "cancel"
@@ -3365,10 +3385,10 @@ function memberCompletions(
   if (resolved?.kind === "taskScope") {
     return filterCompletions([
       {
-        label: "spawn",
+        label: "schedule",
         kind: completionKinds.method,
-        detail: "spawn(thread.main, operation: () => void): boolean",
-        insertText: "spawn()",
+        detail: "schedule(thread.main, operation: () => void): boolean",
+        insertText: "schedule()",
       },
       {
         label: "close",
