@@ -500,6 +500,11 @@ later without making executor blocks a special case.
    target/action, callbacks, background work, and UI-thread resumption.
 10. Add Windows message-loop and selected Linux GUI/event-loop adapters, driven
     by compile-time target selection rather than source preprocessing.
+11. Support an async task bound to one dedicated `thread.spawn` worker, including
+    literal `await on thread.main` from that worker and thread-affine continuation
+    resumption back onto the same live worker thread. This requires async worker
+    closures and a dedicated-thread executor; it is not provided by the current
+    synchronous worker-closure tier.
 
 ## Open questions
 

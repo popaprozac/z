@@ -203,6 +203,7 @@ type FrameExpressionContext = {
   readonly borrowedLocals?: ReadonlySet<string>;
   readonly types: AsyncTypeContext;
   readonly bindings?: ReadonlyMap<string, string>;
+  readonly expressionBindings?: ReadonlyMap<number, string>;
   readonly suspensions?: ReadonlyMap<number, NestedAwaitSite>;
 };
 
@@ -4240,11 +4241,12 @@ function generatePoll(
         state += 1;
       } else {
         const type = plan.locals.get(statement.name)!;
-        const value = emitFrameExpression(initializer, plan, fileName);
+        const prepared = emitPreparedFrameExpression(initializer, plan, fileName);
         const initialize = requiresNativeFramePlacement(type, plan.types)
-          ? `new (frame->${frameField(statement.name)}) ${cFrameType(type, plan.types)}(${value});`
-          : `frame->${frameField(statement.name)} = ${value};`;
+          ? `new (frame->${frameField(statement.name)}) ${cFrameType(type, plan.types)}(${prepared.value});`
+          : `frame->${frameField(statement.name)} = ${prepared.value};`;
         cases.push(caseBlock(state, [
+          ...prepared.prefix,
           initialize,
           ...(hasFrameCleanup(type, plan.types)
             ? [`frame->${frameLiveField(statement.name)} = true;`]
@@ -4266,8 +4268,10 @@ function generatePoll(
           "initialize a new owned binding, or use direct-awaited inout mutation",
         );
       }
+      const prepared = emitPreparedFrameExpression(statement.expression, plan, fileName);
       cases.push(caseBlock(state, [
-        `${emitFrameExpression(statement.target, plan, fileName)} = ${emitFrameExpression(statement.expression, plan, fileName)};`,
+        ...prepared.prefix,
+        `${emitFrameExpression(statement.target, plan, fileName)} = ${prepared.value};`,
         `frame->state = ${state + 1};`,
         "continue;",
       ]));
@@ -4277,16 +4281,18 @@ function generatePoll(
     if (statement.kind === "yield") {
       const generator = plan.generator!;
       const successType = asyncGeneratorAdvanceType(generator);
+      const prepared = emitPreparedFrameExpression(statement.expression, plan, fileName);
       const value = emitAsyncEnumVariant(
         successType,
         generator.returnType ? "yielded" : "some",
-        emitFrameExpression(statement.expression, plan, fileName),
+        prepared.value,
         plan.types,
       );
       const initialize = requiresNativeFramePlacement(successType, plan.types)
         ? `new (frame->result) ${cFrameType(successType, plan.types)}(${value});`
         : `frame->result = ${value};`;
       cases.push(caseBlock(state, [
+        ...prepared.prefix,
         initialize,
         ...(hasFrameCleanup(successType, plan.types) ? ["frame->live_result = true;"] : []),
         ...(plan.declaration.errorType ? ["frame->failed = false;"] : []),
@@ -4301,16 +4307,20 @@ function generatePoll(
     if (statement.kind === "return") {
       if (plan.generator) {
         const successType = asyncGeneratorAdvanceType(plan.generator);
+        const prepared = statement.expression
+          ? emitPreparedFrameExpression(statement.expression, plan, fileName)
+          : null;
         const value = emitAsyncEnumVariant(
           successType,
           plan.generator.returnType ? "complete" : "none",
-          statement.expression ? emitFrameExpression(statement.expression, plan, fileName) : null,
+          prepared?.value ?? null,
           plan.types,
         );
         const initialize = requiresNativeFramePlacement(successType, plan.types)
           ? `new (frame->result) ${cFrameType(successType, plan.types)}(${value});`
           : `frame->result = ${value};`;
         cases.push(caseBlock(state, [
+          ...(prepared?.prefix ?? []),
           initialize,
           ...(hasFrameCleanup(successType, plan.types) ? ["frame->live_result = true;"] : []),
           ...(plan.declaration.errorType ? ["frame->failed = false;"] : []),
@@ -4372,16 +4382,19 @@ function generatePoll(
         cases.push(caseBlock(state, emitThreadTryReturn(statement.expression.expression, plan, fileName, state)));
       } else {
         const completion: string[] = [];
+        const prepared = statement.expression
+          ? emitPreparedFrameExpression(statement.expression, plan, fileName)
+          : null;
         if (statement.expression) {
-          const value = emitFrameExpression(statement.expression, plan, fileName);
           completion.push(requiresNativeFramePlacement(plan.declaration.returnType.name, plan.types)
-            ? `new (frame->result) ${cFrameType(plan.declaration.returnType.name, plan.types)}(${value});`
-            : `frame->result = ${value};`);
+            ? `new (frame->result) ${cFrameType(plan.declaration.returnType.name, plan.types)}(${prepared!.value});`
+            : `frame->result = ${prepared!.value};`);
           if (hasFrameCleanup(plan.declaration.returnType.name, plan.types)) {
             completion.push("frame->live_result = true;");
           }
         }
         cases.push(caseBlock(state, [
+          ...(prepared?.prefix ?? []),
           ...completion,
           ...(plan.declaration.errorType ? ["frame->failed = false;"] : []),
           `frame->state = ${finalizeStateMarker};`,
@@ -4393,11 +4406,12 @@ function generatePoll(
     }
     if (statement.kind === "throw") {
       const errorType = plan.declaration.errorType!.name;
-      const value = emitFrameExpression(statement.expression, plan, fileName);
+      const prepared = emitPreparedFrameExpression(statement.expression, plan, fileName);
       const initialize = requiresNativeFramePlacement(errorType, plan.types)
-        ? `new (frame->error) ${cFrameType(errorType, plan.types)}(${value});`
-        : `frame->error = ${value};`;
+        ? `new (frame->error) ${cFrameType(errorType, plan.types)}(${prepared.value});`
+        : `frame->error = ${prepared.value};`;
       cases.push(caseBlock(state, [
+        ...prepared.prefix,
         initialize,
         ...(hasFrameCleanup(errorType, plan.types) ? ["frame->live_error = true;"] : []),
         "frame->failed = true;",
@@ -4457,8 +4471,10 @@ function generatePoll(
       }
       const operation = awaitOperation(statement.expression)!;
       if (!operation) {
+        const prepared = emitPreparedFrameExpression(statement.expression, plan, fileName);
         cases.push(caseBlock(state, [
-          `(void)${emitFrameExpression(statement.expression, plan, fileName)};`,
+          ...prepared.prefix,
+          `(void)${prepared.value};`,
           `frame->state = ${state + 1};`,
           "continue;",
         ]));
@@ -5084,7 +5100,140 @@ function validateFrameExpression(
     }
     return;
   }
-  emitFrameExpression(expression, { locals, types, suspensions }, fileName);
+  emitPreparedFrameExpression(expression, { locals, types, suspensions }, fileName);
+}
+
+function emitPreparedFrameExpression(
+  expression: Expression,
+  plan: FrameExpressionContext,
+  fileName: string,
+): { readonly prefix: readonly string[]; readonly value: string } {
+  const prefix: string[] = [];
+  const expressionBindings = new Map(plan.expressionBindings ?? []);
+
+  const visit = (candidate: Expression): void => {
+    switch (candidate.kind) {
+      case "closure": {
+        const closure = plan.types.semanticInfo.closures.get(candidate.location.offset);
+        if (!closure) {
+          unsupported(fileName, candidate.location, "async closure lowering requires analyzed closure metadata");
+        }
+        if (closure.owned) {
+          unsupported(
+            fileName,
+            candidate.location,
+            "an owned or escaping inline closure is not executable in an async frame yet",
+            "use a synchronous nonescaping closure parameter here, or construct the owned closure outside the async function",
+          );
+        }
+        const functionType = closureFunctionType(closure);
+        const functionValue = `_z_async_inline_function_${candidate.location.offset}`;
+        if (closure.captures.length === 0) {
+          prefix.push(
+            `${functionTypeCName(functionType)} ${functionValue} = ${functionValueLiteral(
+              functionType,
+              closureAdapterName(closure),
+            )};`,
+          );
+          expressionBindings.set(candidate.location.offset, functionValue);
+          return;
+        }
+        const environmentType = closureEnvironmentName(closure);
+        const environment = `_z_async_inline_environment_${candidate.location.offset}`;
+        prefix.push(`${environmentType} ${environment};`);
+        for (const capture of closure.captures) {
+          const captured: Expression = {
+            kind: "identifier",
+            name: capture.name,
+            location: capture.location,
+          };
+          const value = emitFrameExpression(captured, plan, fileName);
+          const hasReferenceIdentity = capture.type === "TaskScope"
+            || plan.types.structs.get(capture.type)?.kind === "class"
+            || plan.types.semanticInfo.foreignNamedTypes.get(capture.type)?.kind === "object";
+          const borrowedPointer = capture.mode !== "value"
+            && !(capture.mode === "in" && hasReferenceIdentity);
+          prefix.push(`${environment}.${capture.name} = ${borrowedPointer ? `&(${value})` : value};`);
+        }
+        prefix.push(
+          `${functionTypeCName(functionType)} ${functionValue} = ${functionValueLiteral(
+            functionType,
+            closureAdapterName(closure),
+            `&${environment}`,
+          )};`,
+        );
+        expressionBindings.set(candidate.location.offset, functionValue);
+        return;
+      }
+      case "number":
+      case "string":
+      case "boolean":
+      case "null":
+      case "identifier":
+      case "argumentReference":
+      case "dynamicArrayExpression":
+        return;
+      case "template":
+        for (const part of candidate.parts) if (part.kind === "value") visit(part.expression);
+        return;
+      case "unary":
+        visit(candidate.operand);
+        return;
+      case "weak":
+      case "attempt":
+      case "try":
+      case "await":
+      case "spawn":
+        visit(candidate.expression);
+        return;
+      case "binary":
+        visit(candidate.left);
+        visit(candidate.right);
+        return;
+      case "conditional":
+        visit(candidate.condition);
+        visit(candidate.thenExpression);
+        visit(candidate.elseExpression);
+        return;
+      case "new":
+      case "call":
+        if (candidate.kind === "call") visit(candidate.callee);
+        for (const argument of candidate.arguments) visit(argument);
+        return;
+      case "member":
+        visit(candidate.object);
+        return;
+      case "index":
+        visit(candidate.object);
+        visit(candidate.index);
+        return;
+      case "arrayExpression":
+        for (const element of candidate.elements) visit(element);
+        return;
+      case "structExpression":
+      case "objectExpression":
+        for (const field of candidate.fields) visit(field.expression);
+        return;
+      case "variantExpression":
+        visit(candidate.payload);
+        return;
+      case "executorPlacement":
+      case "matchExpression":
+      case "ifExpression":
+      case "whileExpression":
+      case "forExpression":
+        // These expressions own nested statement lowering. Their individual
+        // synchronous operands are prepared when those statements are emitted.
+        return;
+    }
+  };
+
+  visit(expression);
+  const preparedPlan = expressionBindings.size === 0 ? plan : { ...plan, expressionBindings };
+  return {
+    prefix,
+    value: emitFrameExpression(expression, preparedPlan, fileName),
+  };
 }
 
 function validateAsyncConsoleCall(
@@ -5306,6 +5455,8 @@ function emitFrameExpressionInner(
 ): string {
   const suspension = plan.suspensions?.get(expression.location.offset);
   if (suspension) return frameSuspensionValue(suspension, plan.types);
+  const prepared = plan.expressionBindings?.get(expression.location.offset);
+  if (prepared) return prepared;
   switch (expression.kind) {
     case "number":
       return expression.value;

@@ -11,14 +11,6 @@ function inspectLocalDocuments(inout documents: DocumentStore): i32 {
   return projectedId;
 }
 
-function inspectSharedWorkspace(in workspace: Workspace): i32 {
-  let observed: i32 = -1;
-  const found = workspace.withDocument(2, (in document) => {
-    observed = document.id;
-  });
-  return found ? observed : -1;
-}
-
 async function inspectAfterDelay(snapshot: Option<Document>): i32 {
   await delay(1);
   return match (snapshot) {
@@ -36,8 +28,12 @@ async function main(): i32 {
   workspace.open(Document({ id: 2, title: "Shared Draft" }));
 
   // ARC identity can have aliases that mutate the same storage, so class-owned
-  // access remains lexical through a nonescaping callback.
-  const callbackId = inspectSharedWorkspace(workspace);
+  // access remains lexical through a nonescaping callback. Its environment is
+  // local to this synchronous call even though the enclosing function is async.
+  let callbackId: i32 = -1;
+  const found = workspace.withDocument(2, (in document) => {
+    callbackId = document.id;
+  });
 
   // An owned snapshot is the explicit boundary when data must survive
   // mutation, task creation, and suspension.
@@ -52,6 +48,7 @@ async function main(): i32 {
 
   if (
     projectedId == 1
+    && found
     && callbackId == 2
     && snapshotId == 2
     && localDocuments.documentCount() == 2

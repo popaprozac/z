@@ -221,6 +221,12 @@ finished OS thread is joined. Registration and completion use the same lock so
 a completion cannot be lost between checking the task and installing its
 waiter.
 
+A future async-worker tier will allow an async task to remain bound to a
+dedicated worker thread, perform `await on thread.main`, and resume its
+continuation on that same worker. Async `thread.spawn` closures, keeping the
+worker alive while suspended, and thread-affine continuation resumption must
+land together; the current synchronous closure API does not imply any of them.
+
 Cancellation cannot forcibly interrupt synchronous native work. It records an
 atomic cooperative request; the worker finishes its current synchronous call,
 publishes completion, and its unclaimed outcome is discarded after the awaiting

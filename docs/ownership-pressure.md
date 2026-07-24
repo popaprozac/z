@@ -221,14 +221,16 @@ The first is the deliberate parameter-provenance design question. The second is
 a bootstrap composition gap: synchronous analysis knows where the view's last
 use ends, but Phase 1 async frames cannot yet represent that shortened local
 lifetime. A synchronous helper expresses the intended lexical region today.
-The same probe found that an inline nonescaping closure nested directly inside
-an async-frame call is not lowered yet; moving that callback into a synchronous
-helper preserves identical ownership semantics.
+The first version of this probe also found that an inline nonescaping closure
+nested directly inside an async-frame call was not lowered. That composition
+gap is now closed: the state-machine case creates a stack closure environment,
+invokes the callback synchronously, and leaves no callable value in the task
+frame.
 
 This evidence does not justify user-visible lifetime syntax. The supported call
-sites remain readable, but helper extraction becomes friction when otherwise
-synchronous view or closure work appears before a later await. Closing those
-async composition gaps is higher leverage than widening `view` to stored or
+sites remain readable, but helper extraction still becomes friction when a
+synchronous receiver view appears before a later await. Closing that remaining
+async composition gap is higher leverage than widening `view` to stored or
 class-owned projections.
 
 ## Not tested yet

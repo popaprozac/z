@@ -3158,7 +3158,8 @@ test("keeps ownership boundary alternatives explicit across async suspension", (
   const source = readFileSync(example, "utf8");
   const generated = compileToC(source, example);
   assert.match(generated, /const Z_[A-Za-z0-9_]*Document \* const projected =/);
-  assert.match(generated, /inspectSharedWorkspace\(frame->value_workspace\)/);
+  assert.match(generated, /_z_async_inline_environment_/);
+  assert.match(generated, /_z_async_inline_function_/);
   assert.match(generated, /z_string_copy/);
 
   const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
@@ -3198,15 +3199,37 @@ test("keeps ownership boundary alternatives explicit across async suspension", (
   const closureInsideAsync = `
     struct Item { value: i32; }
     function inspect(in operation: () => i32): i32 { return operation(); }
+    function consume(operation: () => i32): i32 { return operation(); }
+    function update(in operation: () => void): void { operation(); }
+    async function ready(): i32 { return 1; }
     async function main(): i32 {
+      let observed = 40;
+      update(() => { observed = observed + 2; });
       const item = Item({ value: 42 });
-      return inspect(() => item.value) - 42;
+      const before = inspect(() => item.value);
+      const waited = await ready();
+      return inspect(() => item.value) + before + observed + waited - 127;
     }
   `;
-  assert.throws(() => compileToC(closureInsideAsync, "async-inline-closure.zs"), (error: unknown) => {
+  const closureGenerated = compileToC(closureInsideAsync, "async-inline-closure.zs");
+  assert.match(closureGenerated, /Z_ClosureEnv_/);
+  assert.match(closureGenerated, /_z_async_inline_environment_/);
+  assert.match(closureGenerated, /_z_async_inline_function_/);
+
+  const closureDirectory = mkdtempSync("/tmp/z-async-inline-closure-");
+  const closureFile = resolve(closureDirectory, "main.zs");
+  writeFileSync(closureFile, closureInsideAsync);
+  const closureResult = spawnSync(process.execPath, [cli, "run", closureFile], { encoding: "utf8" });
+  assert.equal(closureResult.status, 0, closureResult.stderr);
+
+  const ownedInsideAsync = closureInsideAsync.replace(
+    "const before = inspect(() => item.value);",
+    "const before = consume(move () => item.value);",
+  );
+  assert.throws(() => compileToC(ownedInsideAsync, "async-owned-inline-closure.zs"), (error: unknown) => {
     assert.ok(error instanceof DiagnosticError);
     assert.equal(error.code, "Z0700");
-    assert.match(error.message, /expression "closure" is not executable/);
+    assert.match(error.message, /owned or escaping inline closure is not executable/);
     return true;
   });
 });
