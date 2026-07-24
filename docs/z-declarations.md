@@ -32,7 +32,7 @@ hover, and validation.
 
 ```z
 declare module "vendor.h" {
-  export type NativeValue {
+  export type NativeValue on thread.main {
     move;
     deinit;
     thread {
@@ -52,7 +52,7 @@ declare module "vendor.h" {
   export function vendor_visit(
     in operation: _,
     context: _
-  ): _ {
+  ): _ on thread.main {
     callback operation {
       context context;
     }
@@ -90,8 +90,11 @@ spelling does not silently pass through.
 | --- | --- | --- |
 | `declare module "header"` | Bind this contract to one imported header | Specifier and resolved header must match |
 | `export function name(...)` | Refine an existing native function | Name, parameter count/order, and native types come from Clang |
-| `export function Type.method(...)` | Refine an existing static Objective-C method | The class, selector base name, parameter names, and types must match Clang; the first tier refines block parameters only |
+| `export function Type.method(...)` | Refine an existing Objective-C method | The class, selector base name, parameter names, and types must match Clang; static and instance methods share this declaration shape |
 | `export type Name { ... }` | Refine an existing C++/generated value type | Clang must prove the named value and supported lifecycle operations |
+| `export type Name on thread.main;` | Isolate an existing native type to the main executor | The type must exist in the imported header; values, construction, member access, destruction, and containing Z aggregates retain the affinity |
+| `export type Name on thread.main { ... }` | Combine executor isolation with native value lifecycle facts | Affinity is independent from copy/move/deinit capability |
+| `export function name(...): _ on thread.main` | Isolate a native function or Objective-C method | Calls require proven main-executor context; the native ABI is unchanged |
 | `_` | Infer the ABI type from the header | Never means dynamic or untyped |
 | `_ \| null` | Expose a header pointer/reference as nullable | Requires a compatible native pointer/reference representation |
 | `null` parameter type | Caller never supplies the native pointer; Z emits null | Used only for a value parameter that is intentionally hidden |
@@ -198,6 +201,8 @@ These are semantic mappings, not textual rewrites:
 | C++ `T &&` | `move value: _` with value lifecycle contract | Consumed unique owner |
 | C++ RAII value | `export type` with `copy` or `move`, and `deinit` | Deterministic Z-owned native storage |
 | Objective-C object/method/property/protocol | Usually no `.zd` entry | Clang supplies ARC identity, nullability, selectors, blocks, and protocol metadata directly |
+| Clang `swift_attr("@UIActor")` / `swift_attr("@MainActor")` | Imported automatically | Z exposes `on thread.main` in hover and enforces the same executor boundary |
+| Legacy native UI type or method without actor metadata | `.zd` `on thread.main` fallback or reviewed shipped API notes | The affinity enters the same FIIR field as a compiler-derived fact |
 | Objective-C/Swift static method with an escaping block | `export function Type.method(..., move completion: _)` plus `callback completion { thread ...; }` | Native block owns the Z closure under ARC; `.zd` supplies the thread guarantee absent from the header |
 | Objective-C/Swift exactly-once completion method | The escaping-block contract plus `async completion;` | Keeps the raw overload and synthesizes an infallible `async method(...): T`; zero callback values produce `void`, one cleanup-free scalar produces `T` |
 | Objective-C/Swift value/error completion method | `async completion(value, error) { return value; throw error; }` | Names callback positions and synthesizes `async method(...): T throws E`, surfaced as `Task<T, E>` |
@@ -235,6 +240,8 @@ once or that a native owner may be destroyed on another thread. Such a false
 contract is the foreign equivalent of an unsafe declaration.
 
 Reusable bindings should ship reviewed `.zd` metadata with the library or
-toolchain. Application-local declarations are the explicit fallback for legacy
-and project-specific APIs, not intended as one handwritten sidecar per system
+toolchain. Z may also ship reviewed API notes for platform surfaces such as
+AppKit when the public header does not uniformly encode its executor contract.
+Application-local declarations are the explicit fallback for legacy and
+project-specific APIs, not intended as one handwritten sidecar per system
 header.

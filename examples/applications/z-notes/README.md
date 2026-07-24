@@ -26,6 +26,13 @@ button plus editable title and body fields. The bound connection owns the
 button and callback, so AppKit's weak target cannot silently expire while the
 application is running.
 
+The AppKit helpers are explicitly declared `on thread.main`. Z imports explicit
+Clang `@UIActor` metadata when present and supplements AppKit's incompletely
+annotated Objective-C headers with reviewed compiler API notes. As a result,
+`NSApplication`, `NSWindow`, view/control identities, and Z aggregates storing
+them carry main-executor affinity in hover and fail during Z analysis if moved
+into an ordinary helper or native worker.
+
 Startup deliberately uses two ownership domains. The main task opens one
 persistent `NoteDatabase` for later button inserts. It then starts
 `thread.spawn(async move () => ...)` with an owned path snapshot. The dedicated

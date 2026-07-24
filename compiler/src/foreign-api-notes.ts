@@ -1,10 +1,10 @@
 import { existsSync, readFileSync, statSync } from "node:fs";
-import { basename, dirname, resolve } from "node:path";
+import { basename, dirname, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ImportDeclaration } from "./ast.ts";
 import { DiagnosticError } from "./diagnostics.ts";
 import { foreignDeclarationApiNotes, parseForeignDeclarationContracts } from "./foreign-declarations.ts";
-import type { ForeignFunctionDeclaration, ForeignObjCInterface } from "./foreign-ir.ts";
+import type { ForeignFunctionDeclaration, ForeignNamedType, ForeignObjCInterface } from "./foreign-ir.ts";
 
 export type PointerNote = {
   readonly ownership?: "owned" | "borrowed" | "consuming";
@@ -40,13 +40,18 @@ export type StatusNote = {
 };
 
 export type ApiNotes = {
+  readonly types?: Readonly<Record<string, {
+    readonly executorAffinity?: "main";
+  }>>;
   readonly functions?: Readonly<Record<string, {
     readonly return?: PointerNote;
     readonly parameters?: Readonly<Record<string, PointerNote>>;
     readonly status?: StatusNote;
+    readonly executorAffinity?: "main";
   }>>;
   readonly objcMethods?: Readonly<Record<string, {
     readonly parameters?: Readonly<Record<string, PointerNote>>;
+    readonly executorAffinity?: "main";
     readonly async?: {
       readonly callbackParameter: number;
       readonly resultParameter: number | null;
@@ -68,9 +73,12 @@ export function mergeApiNotes(
     return?: PointerNote;
     parameters?: Record<string, PointerNote>;
     status?: StatusNote;
+    executorAffinity?: "main";
   }> = {};
+  const types: Record<string, { executorAffinity?: "main" }> = {};
   const objcMethods: Record<string, {
     parameters?: Record<string, PointerNote>;
+    executorAffinity?: "main";
     async?: {
       readonly callbackParameter: number;
       readonly resultParameter: number | null;
@@ -79,8 +87,27 @@ export function mergeApiNotes(
   }> = {};
   const owners = new Map<string, string>();
   for (const source of sources) {
+    for (const [typeName, note] of Object.entries(source.notes.types ?? {})) {
+      const target = types[typeName] ??= {};
+      if (note.executorAffinity) {
+        const path = `types.${typeName}.executorAffinity`;
+        if (target.executorAffinity && target.executorAffinity !== note.executorAffinity) {
+          throw new ApiNoteConflictError(path, owners.get(path) ?? "an earlier source", source.name);
+        }
+        target.executorAffinity = note.executorAffinity;
+        owners.set(path, source.name);
+      }
+    }
     for (const [functionName, note] of Object.entries(source.notes.functions ?? {})) {
       const target = merged[functionName] ??= {};
+      if (note.executorAffinity) {
+        const path = `functions.${functionName}.executorAffinity`;
+        if (target.executorAffinity && target.executorAffinity !== note.executorAffinity) {
+          throw new ApiNoteConflictError(path, owners.get(path) ?? "an earlier source", source.name);
+        }
+        target.executorAffinity = note.executorAffinity;
+        owners.set(path, source.name);
+      }
       if (note.return) target.return = mergePointerNote(target.return, note.return, `functions.${functionName}.return`, source.name, owners);
       if (note.status) {
         const path = `functions.${functionName}.status`;
@@ -105,6 +132,14 @@ export function mergeApiNotes(
     }
     for (const [methodName, note] of Object.entries(source.notes.objcMethods ?? {})) {
       const target = objcMethods[methodName] ??= {};
+      if (note.executorAffinity) {
+        const path = `objcMethods.${methodName}.executorAffinity`;
+        if (target.executorAffinity && target.executorAffinity !== note.executorAffinity) {
+          throw new ApiNoteConflictError(path, owners.get(path) ?? "an earlier source", source.name);
+        }
+        target.executorAffinity = note.executorAffinity;
+        owners.set(path, source.name);
+      }
       if (note.async) {
         const path = `objcMethods.${methodName}.async`;
         if (target.async && JSON.stringify(target.async) !== JSON.stringify(note.async)) {
@@ -128,6 +163,7 @@ export function mergeApiNotes(
     }
   }
   return {
+    ...(Object.keys(types).length > 0 ? { types } : {}),
     ...(Object.keys(merged).length > 0 ? { functions: merged } : {}),
     ...(Object.keys(objcMethods).length > 0 ? { objcMethods } : {}),
   };
@@ -138,6 +174,7 @@ export function readApiNotes(
   fileName: string,
   includeDirectory: string,
   declarations: ReadonlyMap<string, ForeignFunctionDeclaration>,
+  namedTypes: ReadonlyMap<string, ForeignNamedType>,
   interfaces: ReadonlyMap<string, ForeignObjCInterface>,
 ): ApiNotes {
   const sources = apiNoteSources(declaration, includeDirectory);
@@ -148,6 +185,7 @@ export function readApiNotes(
         ? foreignDeclarationApiNotes(
           parseForeignDeclarationContracts(readFileSync(source.path, "utf8"), source.path),
           declarations,
+          namedTypes,
           interfaces,
           declaration.header,
           includeDirectory,
@@ -183,10 +221,16 @@ function apiNoteSources(
     .map((directory) => resolve(directory, `${declaration.header}.zd`))
     .filter((path) => existsSync(path));
   const localHeader = resolve(includeDirectory, declaration.header);
-  const builtInPath = resolve(dirname(fileURLToPath(import.meta.url)), "../api-notes", `${basename(declaration.header)}.json`);
-  const canUseBuiltIn = declaration.header === basename(declaration.header) && !existsSync(localHeader);
+  const builtInRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../api-notes");
+  const qualifiedBuiltInPath = resolve(builtInRoot, `${declaration.header}.json`);
+  const qualifiedBuiltInIsSafe = qualifiedBuiltInPath.startsWith(`${builtInRoot}${sep}`);
+  const basenameBuiltInPath = resolve(builtInRoot, `${basename(declaration.header)}.json`);
+  const builtInPath = qualifiedBuiltInIsSafe && existsSync(qualifiedBuiltInPath)
+    ? qualifiedBuiltInPath
+    : declaration.header === basename(declaration.header) ? basenameBuiltInPath : null;
+  const canUseBuiltIn = Boolean(builtInPath) && !existsSync(localHeader);
   return [
-    ...(canUseBuiltIn && existsSync(builtInPath) ? [{ path: builtInPath, kind: "json" as const }] : []),
+    ...(canUseBuiltIn && builtInPath && existsSync(builtInPath) ? [{ path: builtInPath, kind: "json" as const }] : []),
     ...localDeclarationPaths.map((path) => ({ path, kind: "declaration" as const })),
   ];
 }
@@ -238,12 +282,21 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function parseApiNotes(value: unknown, source: string): ApiNotes {
   const root = requireRecord(value, source, "root");
-  requireKeys(root, ["functions", "objcMethods"], source, "root");
+  requireKeys(root, ["types", "functions", "objcMethods"], source, "root");
+  if (root.types !== undefined) {
+    const types = requireRecord(root.types, source, "types");
+    for (const [name, rawType] of Object.entries(types)) {
+      const typeNote = requireRecord(rawType, source, `types.${name}`);
+      requireKeys(typeNote, ["executorAffinity"], source, `types.${name}`);
+      requireEnum(typeNote.executorAffinity, ["main"], source, `types.${name}.executorAffinity`);
+    }
+  }
   if (root.functions !== undefined) {
     const functions = requireRecord(root.functions, source, "functions");
     for (const [name, rawFunction] of Object.entries(functions)) {
       const functionNote = requireRecord(rawFunction, source, `functions.${name}`);
-      requireKeys(functionNote, ["return", "parameters", "status"], source, `functions.${name}`);
+      requireKeys(functionNote, ["return", "parameters", "status", "executorAffinity"], source, `functions.${name}`);
+      requireEnum(functionNote.executorAffinity, ["main"], source, `functions.${name}.executorAffinity`);
       if (functionNote.return !== undefined) validatePointerNote(functionNote.return, source, `functions.${name}.return`);
       if (functionNote.status !== undefined) validateStatusNote(functionNote.status, source, `functions.${name}.status`);
       if (functionNote.parameters !== undefined) {
@@ -258,7 +311,8 @@ function parseApiNotes(value: unknown, source: string): ApiNotes {
     const methods = requireRecord(root.objcMethods, source, "objcMethods");
     for (const [name, rawMethod] of Object.entries(methods)) {
       const methodNote = requireRecord(rawMethod, source, `objcMethods.${name}`);
-      requireKeys(methodNote, ["parameters"], source, `objcMethods.${name}`);
+      requireKeys(methodNote, ["parameters", "async", "executorAffinity"], source, `objcMethods.${name}`);
+      requireEnum(methodNote.executorAffinity, ["main"], source, `objcMethods.${name}.executorAffinity`);
       if (methodNote.parameters !== undefined) {
         const parameters = requireRecord(methodNote.parameters, source, `objcMethods.${name}.parameters`);
         for (const [index, parameter] of Object.entries(parameters)) {

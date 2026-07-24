@@ -1,0 +1,28 @@
+{
+  "types": {
+    "NSApplication": {
+      "executorAffinity": "main"
+    },
+    "NSButton": {
+      "executorAffinity": "main"
+    },
+    "NSScrollView": {
+      "executorAffinity": "main"
+    },
+    "NSTableColumn": {
+      "executorAffinity": "main"
+    },
+    "NSTableView": {
+      "executorAffinity": "main"
+    },
+    "NSTextField": {
+      "executorAffinity": "main"
+    },
+    "NSView": {
+      "executorAffinity": "main"
+    },
+    "NSWindow": {
+      "executorAffinity": "main"
+    }
+  }
+}

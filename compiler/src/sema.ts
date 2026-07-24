@@ -579,7 +579,7 @@ export function analyze(
   if (program.imports.some((declaration) => declaration.header === "std/objc")) {
     objectiveC = true;
     frameworks.add("Foundation");
-    const metadata: ForeignDeclarationMetadata = { source: null, availability: [] };
+    const metadata: ForeignDeclarationMetadata = { source: null, availability: [], executorAffinity: null };
     const connection: ForeignNamedType = {
       kind: "object",
       exportName: "Connection",
@@ -1248,6 +1248,8 @@ function collectAggregateExecutorAffinities(
   const typeAffinity = (type: string, path: readonly string[]): ExecutorAffinityInfo | null => {
     const alias = aliases.get(type);
     if (alias) return typeAffinity(alias, path);
+    const foreign = foreignExecutorAffinityForTypeName(type, state);
+    if (foreign) return { ...foreign, fieldPath: [...path, ...foreign.fieldPath] };
     const generic = parseGenericType(type);
     if (generic) {
       const base = aggregateAffinity(generic.base);
@@ -4845,6 +4847,8 @@ function executorAffinityForType(
   const actual = String(underlyingType(type));
   const direct = state.aggregateExecutorAffinities.get(actual);
   if (direct) return direct;
+  const foreign = foreignExecutorAffinityForTypeName(actual, state);
+  if (foreign) return foreign;
   if (visiting.has(actual)) return null;
   visiting.add(actual);
   const dynamic = parseDynamicArrayType(actual);
@@ -4880,6 +4884,46 @@ function executorAffinityForType(
   }
   visiting.delete(actual);
   return null;
+}
+
+function foreignExecutorAffinityForTypeName(
+  typeName: string,
+  state: AnalysisState,
+): ExecutorAffinityInfo | null {
+  const publicName = typeName.replace(/^__z_objc:(?:nullable|nonnull):/, "");
+  const interfaceType = state.foreignInterfaces.get(publicName);
+  if (interfaceType && foreignInterfaceRequiresMain(interfaceType, state)) {
+    return {
+      executor: "main",
+      declared: true,
+      originType: interfaceType.typeName,
+      fieldPath: [],
+    };
+  }
+  const named = state.foreignNamedTypes.get(typeName) ?? state.foreignNamedTypes.get(publicName);
+  if (named?.metadata.executorAffinity === "main") {
+    return {
+      executor: "main",
+      declared: true,
+      originType: named.typeName,
+      fieldPath: [],
+    };
+  }
+  return null;
+}
+
+function foreignInterfaceRequiresMain(
+  declaration: ForeignObjCInterface,
+  state: AnalysisState,
+): boolean {
+  let current: ForeignObjCInterface | undefined = declaration;
+  while (current) {
+    if (current.metadata.executorAffinity === "main") return true;
+    if (!current.superName) break;
+    const moduleName = current.typeName.slice(0, current.typeName.lastIndexOf("."));
+    current = state.foreignInterfaces.get(`${moduleName}.${current.superName}`);
+  }
+  return false;
 }
 
 function isTaskCancellationCall(expression: Expression): expression is Extract<Expression, { kind: "call" }> {
@@ -5607,6 +5651,13 @@ function inferExpressionInner(
       const objcClass = getObjCClass(expression, globals);
       if (objcClass) {
         checkForeignAvailability(objcClass.metadata, objcClass.className, expression.location, fileName, state);
+        requireMainExecutorContext(
+          foreignInterfaceRequiresMain(objcClass, state),
+          expression.location,
+          `Objective-C class ${JSON.stringify(objcClass.className)}`,
+          fileName,
+          state,
+        );
         state.objcClassNames.set(expression.location.offset, objcClass.className);
         return `${objcClassPrefix}${objcClass.typeName}`;
       }
@@ -5697,6 +5748,14 @@ function inferExpressionInner(
         if (!property) {
           throw new DiagnosticError(fileName, expression.location, `Objective-C ${JSON.stringify(objcReceiverType.declaration.className)} has no ${objcReceiverType.instance ? "instance" : "class"} property ${JSON.stringify(expression.property)}`);
         }
+        requireMainExecutorContext(
+          foreignInterfaceRequiresMain(objcReceiverType.declaration, state)
+            || property.metadata.executorAffinity === "main",
+          expression.location,
+          `Objective-C property ${JSON.stringify(objcReceiverType.declaration.className)}.${JSON.stringify(property.name)}`,
+          fileName,
+          state,
+        );
         const propertyType = foreignValueType(property.type);
         if (propertyType === "unknown") throw new DiagnosticError(fileName, expression.location, `Objective-C property ${JSON.stringify(property.name)} uses an unsupported type`);
         checkForeignAvailability(property.metadata, property.name, expression.location, fileName, state);
@@ -5714,6 +5773,15 @@ function inferExpressionInner(
       }
       const declaration = structs.get(receiverValueType);
       const foreignRecord = state.foreignNamedTypes.get(receiverValueType);
+      if (foreignRecord?.metadata.executorAffinity === "main") {
+        requireMainExecutorContext(
+          true,
+          expression.location,
+          `native type ${JSON.stringify(foreignRecord.qualifiedName)}`,
+          fileName,
+          state,
+        );
+      }
       if (foreignRecord?.kind === "record") {
         const field = foreignRecord.fields.find((candidate) => candidate.name === expression.property);
         if (field) {
@@ -7088,6 +7156,14 @@ function inferExpressionInner(
             expression.callee.location,
           );
           const method = selection.method;
+          requireMainExecutorContext(
+            foreignInterfaceRequiresMain(objcReceiverType.declaration, state)
+              || method.metadata.executorAffinity === "main",
+            expression.location,
+            `Objective-C method ${JSON.stringify(objcReceiverType.declaration.className)}.${JSON.stringify(method.selector)}`,
+            fileName,
+            state,
+          );
           checkForeignAvailability(method.metadata, method.selector, expression.callee.location, fileName, state);
           const checkedMethod = selection.projected
             ? {
@@ -7175,6 +7251,13 @@ function inferExpressionInner(
         }
         const foreignValue = state.foreignNamedTypes.get(receiverValueType);
         if (foreignValue?.kind === "value") {
+          requireMainExecutorContext(
+            foreignValue.metadata.executorAffinity === "main",
+            expression.location,
+            `native type ${JSON.stringify(foreignValue.qualifiedName)}`,
+            fileName,
+            state,
+          );
           const method = foreignValue.methods.find((candidate) => candidate.name === expression.callee.property);
           if (!method) {
             throw new DiagnosticError(fileName, expression.callee.location, `native value ${JSON.stringify(foreignValue.typeName)} has no method ${JSON.stringify(expression.callee.property)}`);
@@ -9332,6 +9415,13 @@ function shareableTypeIssue(
       help: "keep the value on thread.main and transfer an owned thread-independent snapshot instead",
     };
   }
+  const foreignAffinity = foreignExecutorAffinityForTypeName(actual, state);
+  if (foreignAffinity) {
+    return {
+      reason: `${path} is isolated to thread.main by native metadata`,
+      help: "keep the value on thread.main and transfer an owned thread-independent snapshot instead",
+    };
+  }
   if (actual === "TextBuffer" || parseDynamicArrayType(actual)) {
     return {
       reason: `${path} contains mutable ${displayArrayType(actual)} storage`,
@@ -10006,6 +10096,13 @@ function checkForeignFunctionCall(
 ): ValueType {
   if (target.overloads.length === 1) {
     const selected = target.overloads[0];
+    requireMainExecutorContext(
+      selected.metadata.executorAffinity === "main",
+      location,
+      `${subject} ${JSON.stringify(target.qualifiedName)}`,
+      fileName,
+      state,
+    );
     checkForeignAvailability(selected.metadata, target.qualifiedName, location, fileName, state);
     state.foreignFunctionNames.set(calleeOffset, selected.cName);
     state.foreignFunctionDefinitions.set(calleeOffset, selected.metadata);
@@ -10065,6 +10162,13 @@ function checkForeignFunctionCall(
     );
   }
   const selected = best[0].overload;
+  requireMainExecutorContext(
+    selected.metadata.executorAffinity === "main",
+    location,
+    `${subject} ${JSON.stringify(target.qualifiedName)}`,
+    fileName,
+    state,
+  );
   checkForeignAvailability(selected.metadata, target.qualifiedName, location, fileName, state);
   state.foreignFunctionNames.set(calleeOffset, selected.cName);
   state.foreignFunctionDefinitions.set(calleeOffset, selected.metadata);
@@ -10091,6 +10195,13 @@ function checkForeignCxxConstructorCall(
   calleeOffset: number,
   state: AnalysisState,
 ): ValueType {
+  requireMainExecutorContext(
+    declaration.metadata.executorAffinity === "main",
+    location,
+    `native type ${JSON.stringify(declaration.qualifiedName)}`,
+    fileName,
+    state,
+  );
   if (declaration.constructors.length === 0) {
     throw new DiagnosticError(
       fileName,
@@ -10133,6 +10244,13 @@ function checkForeignCxxStaticMethodCall(
   calleeOffset: number,
   state: AnalysisState,
 ): ValueType {
+  requireMainExecutorContext(
+    declaration.metadata.executorAffinity === "main",
+    location,
+    `native type ${JSON.stringify(declaration.qualifiedName)}`,
+    fileName,
+    state,
+  );
   return checkForeignFunctionCall(
     {
       name: method.name,

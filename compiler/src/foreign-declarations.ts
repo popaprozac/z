@@ -6,6 +6,7 @@ import type { ApiNotes, PointerNote, StatusNote } from "./foreign-api-notes.ts";
 import type {
   ForeignBlockType,
   ForeignFunctionDeclaration,
+  ForeignNamedType,
   ForeignObjCInterface,
   ForeignObjCMethod,
 } from "./foreign-ir.ts";
@@ -54,6 +55,8 @@ export type ForeignFunctionContract = {
   readonly asyncReturnLocation: SourceLocation | null;
   readonly asyncThrowBinding: string | null;
   readonly asyncThrowLocation: SourceLocation | null;
+  readonly executorAffinity: "main" | null;
+  readonly executorAffinityLocation: SourceLocation | null;
 };
 
 export type ForeignThreadContractLocations = {
@@ -93,6 +96,8 @@ export type ForeignValueContract = {
   readonly deinitLocation: SourceLocation | null;
   readonly thread: ForeignThreadContract;
   readonly threadLocations: ForeignThreadContractLocations;
+  readonly executorAffinity: "main" | null;
+  readonly executorAffinityLocation: SourceLocation | null;
 };
 
 export function parseForeignDeclarationContracts(source: string, fileName: string): ForeignDeclarationContracts {
@@ -296,6 +301,19 @@ export function parseForeignDeclarationContracts(source: string, fileName: strin
       locations: { location: start.location, transfer, share, deinit },
     };
   };
+  const parseExecutorAffinity = (): {
+    readonly affinity: "main";
+    readonly location: SourceLocation;
+  } | null => {
+    if (!at("on")) return null;
+    const on = take();
+    const namespace = expectIdentifier("`thread` after `on`");
+    if (namespace.text !== "thread") fail(namespace, "foreign declaration affinity currently requires `on thread.main`");
+    expectText(".");
+    const executor = expectIdentifier("`main` after `on thread.`");
+    if (executor.text !== "main") fail(executor, "foreign declaration affinity currently requires `on thread.main`");
+    return { affinity: "main", location: on.location };
+  };
 
   expectText("declare");
   expectText("module");
@@ -315,6 +333,28 @@ export function parseForeignDeclarationContracts(source: string, fileName: strin
       const name = parsedName.name;
       if (typeNames.has(name)) fail(start, `duplicate declaration contract for foreign type ${JSON.stringify(name)}`);
       typeNames.add(name);
+      const executorAffinity = parseExecutorAffinity();
+      if (at(";")) {
+        if (!executorAffinity) fail(peek(), "an affinity-only foreign type declaration requires `on thread.main`");
+        take();
+        const emptyThread = emptyThreadContract();
+        types.push({
+          name,
+          copy: false,
+          move: false,
+          deinit: false,
+          location: start.location,
+          nameLocation: parsedName.location,
+          copyLocation: null,
+          moveLocation: null,
+          deinitLocation: null,
+          thread: emptyThread.thread,
+          threadLocations: emptyThread.locations,
+          executorAffinity: executorAffinity.affinity,
+          executorAffinityLocation: executorAffinity.location,
+        });
+        continue;
+      }
       expectText("{");
       let copyLocation: SourceLocation | null = null;
       let moveLocation: SourceLocation | null = null;
@@ -343,17 +383,21 @@ export function parseForeignDeclarationContracts(source: string, fileName: strin
         expectText(";");
       }
       expectText("}");
-      if (!deinitLocation) {
+      const hasLifecycle = Boolean(copyLocation || moveLocation || deinitLocation || threadContract.locations.location);
+      if (hasLifecycle && !deinitLocation) {
         fail(start, `foreign value type ${JSON.stringify(name)} must declare deterministic deinit`);
       }
-      if (!copyLocation && !moveLocation) {
+      if (hasLifecycle && !copyLocation && !moveLocation) {
         fail(start, `foreign value type ${JSON.stringify(name)} must declare copy or move`);
+      }
+      if (!hasLifecycle && !executorAffinity) {
+        fail(start, `foreign type ${JSON.stringify(name)} must declare lifecycle facts or \`on thread.main\``);
       }
       types.push({
         name,
         copy: Boolean(copyLocation),
         move: Boolean(moveLocation),
-        deinit: true,
+        deinit: Boolean(deinitLocation),
         location: start.location,
         nameLocation: parsedName.location,
         copyLocation,
@@ -361,6 +405,8 @@ export function parseForeignDeclarationContracts(source: string, fileName: strin
         deinitLocation,
         thread: threadContract.thread,
         threadLocations: threadContract.locations,
+        executorAffinity: executorAffinity?.affinity ?? null,
+        executorAffinityLocation: executorAffinity?.location ?? null,
       });
       continue;
     }
@@ -381,6 +427,7 @@ export function parseForeignDeclarationContracts(source: string, fileName: strin
     expectText(")");
     expectText(":");
     const returnType = parseReturnType();
+    const executorAffinity = parseExecutorAffinity();
     const returnNullable = returnType.nullable;
     const statusSuccessValues: number[] = [];
     const statusSuccessLocations: SourceLocation[] = [];
@@ -576,6 +623,8 @@ export function parseForeignDeclarationContracts(source: string, fileName: strin
       asyncReturnLocation,
       asyncThrowBinding,
       asyncThrowLocation,
+      executorAffinity: executorAffinity?.affinity ?? null,
+      executorAffinityLocation: executorAffinity?.location ?? null,
     });
   }
   expectText("}");
@@ -586,6 +635,7 @@ export function parseForeignDeclarationContracts(source: string, fileName: strin
 export function foreignDeclarationApiNotes(
   contracts: ForeignDeclarationContracts,
   declarations: ReadonlyMap<string, ForeignFunctionDeclaration>,
+  namedTypes: ReadonlyMap<string, ForeignNamedType>,
   interfaces: ReadonlyMap<string, ForeignObjCInterface>,
   expectedModuleSpecifier: string,
   includeDirectory: string,
@@ -606,22 +656,39 @@ export function foreignDeclarationApiNotes(
     return?: PointerNote;
     parameters?: Record<string, PointerNote>;
     status?: StatusNote;
+    executorAffinity?: "main";
   }> = {};
+  const types: Record<string, { executorAffinity?: "main" }> = {};
   const objcMethods: Record<string, {
     parameters?: Record<string, PointerNote>;
+    executorAffinity?: "main";
     async?: {
       readonly callbackParameter: number;
       readonly resultParameter: number | null;
       readonly errorParameter: number | null;
     };
   }> = {};
+  for (const contract of contracts.types) {
+    if (!contract.executorAffinity) continue;
+    const namedType = namedTypes.get(contract.name);
+    const interfaceType = interfaces.get(contract.name);
+    if (!namedType && !interfaceType) {
+      throw new DiagnosticError(
+        fileName,
+        contract.nameLocation,
+        `declaration names unknown foreign type ${JSON.stringify(contract.name)}`,
+        { code: "Z0801" },
+      );
+    }
+    types[contract.name] = { executorAffinity: contract.executorAffinity };
+  }
   for (const contract of contracts.functions) {
     const declaration = declarations.get(contract.name);
     if (!declaration) {
-      const method = resolveObjCStaticMethodContract(contract, interfaces, fileName);
+      const method = resolveObjCMethodContract(contract, interfaces, fileName);
       if (!method) {
         const kind = contract.name.includes(".")
-          ? "foreign function or static Objective-C method"
+          ? "foreign function or Objective-C method"
           : "foreign function";
         throw new DiagnosticError(fileName, contract.location, `declaration names unknown ${kind} ${JSON.stringify(contract.name)}`, { code: "Z0801" });
       }
@@ -632,7 +699,7 @@ export function foreignDeclarationApiNotes(
       throw new DiagnosticError(
         fileName,
         contract.asyncCallbackLocation!,
-        "the first async callback projection tier supports static Objective-C methods only",
+        "the first async callback projection tier supports Objective-C methods only",
         { code: "Z0801" },
       );
     }
@@ -776,6 +843,7 @@ export function foreignDeclarationApiNotes(
       };
     }
     functions[contract.name] = {
+      ...(contract.executorAffinity ? { executorAffinity: contract.executorAffinity } : {}),
       return: {
         nullable: contract.returnNullable,
         ...(contract.returnSemanticType === "view-cstring" ? { ownership: "borrowed" as const, semanticType: "view-cstring" as const } : {}),
@@ -797,12 +865,13 @@ export function foreignDeclarationApiNotes(
     };
   }
   return {
+    ...(Object.keys(types).length ? { types } : {}),
     ...(Object.keys(functions).length ? { functions } : {}),
     ...(Object.keys(objcMethods).length ? { objcMethods } : {}),
   };
 }
 
-function resolveObjCStaticMethodContract(
+function resolveObjCMethodContract(
   contract: ForeignFunctionContract,
   interfaces: ReadonlyMap<string, ForeignObjCInterface>,
   fileName: string,
@@ -814,8 +883,7 @@ function resolveObjCStaticMethodContract(
   const declaration = interfaces.get(className);
   if (!declaration) return null;
   const candidates = declaration.methods.filter((method) => (
-    !method.instance
-    && method.baseName === baseName
+    method.baseName === baseName
     && method.parameters.length === contract.parameters.length
     && method.parameters.every((parameter, index) => (
       parameter.name === null || parameter.name === contract.parameters[index]?.name
@@ -825,10 +893,10 @@ function resolveObjCStaticMethodContract(
     throw new DiagnosticError(
       fileName,
       contract.location,
-      `declaration does not match a static Objective-C method ${JSON.stringify(contract.name)} with parameters (${contract.parameters.map((parameter) => parameter.name).join(", ")})`,
+      `declaration does not match an Objective-C method ${JSON.stringify(contract.name)} with parameters (${contract.parameters.map((parameter) => parameter.name).join(", ")})`,
       {
         code: "Z0801",
-        notes: ["the class exists, but no class selector has the same base name and native parameter names"],
+        notes: ["the class exists, but no selector has the same base name and native parameter names"],
       },
     );
   }
@@ -836,7 +904,7 @@ function resolveObjCStaticMethodContract(
     throw new DiagnosticError(
       fileName,
       contract.location,
-      `declaration is ambiguous across static Objective-C selectors ${candidates.map((method) => JSON.stringify(method.selector)).join(", ")}`,
+      `declaration is ambiguous across Objective-C selectors ${candidates.map((method) => JSON.stringify(method.selector)).join(", ")}`,
       { code: "Z0801" },
     );
   }
@@ -849,6 +917,7 @@ function objectiveCMethodApiNote(
   fileName: string,
 ): {
   readonly parameters?: Readonly<Record<string, PointerNote>>;
+  readonly executorAffinity?: "main";
   readonly async?: {
     readonly callbackParameter: number;
     readonly resultParameter: number | null;
@@ -1048,6 +1117,7 @@ function objectiveCMethodApiNote(
     asyncProjection = { callbackParameter: callbackIndex, resultParameter, errorParameter };
   }
   return {
+    ...(contract.executorAffinity ? { executorAffinity: contract.executorAffinity } : {}),
     ...(Object.keys(parameters).length ? { parameters } : {}),
     ...(asyncProjection ? { async: asyncProjection } : {}),
   };

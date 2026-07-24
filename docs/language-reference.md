@@ -1304,6 +1304,23 @@ Calls, construction, member access, and cleanup must remain on main. The
 current async tier requires an explicit `await on thread.main` hop rather than
 automatically scheduling an isolated async function.
 
+Native declarations use the same contract. Clang-imported
+`swift_attr("@UIActor")` and `swift_attr("@MainActor")` facts automatically map
+to `thread.main`. A reviewed `.zd` fallback handles legacy or incompletely
+annotated surfaces:
+
+```z
+declare module "LegacyUI.h" {
+  export type LegacyWindow on thread.main;
+  export function LegacyWindow.refresh(): _ on thread.main;
+}
+```
+
+Native affinity appears in class, binding, property, method, and function hover.
+A Z aggregate that stores an isolated native identity inherits the same
+affinity. The ABI call remains direct; the contract adds compile-time placement
+and transfer checks rather than a runtime wrapper.
+
 Throwing worker closures return `Task<T, E>`; `try await` propagates `E` and
 `attempt await` produces `Result<T, E>`. Error slots have the same explicit
 liveness as result slots, so transferable String/Array ownership, containing

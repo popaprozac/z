@@ -28,25 +28,25 @@ function createTableController(
   store: NoteStore,
   tableView: AppKit.NSTableView,
   selectedLabel: AppKit.NSTextField
-): NotesTableController {
+): NotesTableController on thread.main {
   return new NotesTableController(store, tableView, selectedLabel);
 }
 
 function bindNotesTable(
   notesView: AppKit.NSTableView,
   tableController: NotesTableController
-): objc.Binding {
+): objc.Binding on thread.main {
   return objc.bind(notesView, {
     dataSource: tableController,
     delegate: tableController,
   });
 }
 
-function currentApplication(): AppKit.NSApplication {
+function currentApplication(): AppKit.NSApplication on thread.main {
   return AppKit.NSApplication.sharedApplication;
 }
 
-function createWindow(): AppKit.NSWindow {
+function createWindow(): AppKit.NSWindow on thread.main {
   const frame = AppKit.NSMakeRect(0.0, 0.0, 820.0, 640.0);
   const style = AppKit.NSWindowStyleMaskTitled
     | AppKit.NSWindowStyleMaskClosable
@@ -66,7 +66,7 @@ function runApplication(
   in databasePath: String,
   loadFailure: Option<i32>,
   updates: TaskScope
-): i32 {
+): i32 on thread.main {
   const app = currentApplication();
   app.setActivationPolicy(AppKit.NSApplicationActivationPolicyRegular);
 

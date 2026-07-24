@@ -530,10 +530,13 @@ later without making executor blocks a special case.
 5. **Done on Darwin:** wake and drain the main executor through a
    `CFRunLoopSource`, including while an AppKit-compatible run loop is active.
 6. **Partial:** integrate owned, ARC, native-affine, borrowed, cancellation, and
-   cleanup capture contracts. String, Z ARC, and owning-task Objective-C captures
-   are implemented; mutation, borrows, native ownership, and affinity metadata
-   remain.
-7. Carry main-affinity facts through FIIR and `.zd` declarations.
+   cleanup capture contracts. String, Z ARC, owning-task Objective-C captures,
+   and native executor-affinity metadata are implemented; mutation, cross-
+   executor borrows, and broader native ownership remain.
+7. **Done for the main-executor tier:** carry main-affinity facts through FIIR,
+   automatically import Clang `@UIActor`/`@MainActor` Swift attributes, accept
+   `on thread.main` fallbacks in `.zd`, and ship reviewed AppKit type notes where
+   its Objective-C headers do not uniformly carry actor metadata.
 8. **Done for current syntax:** highlighting, completion, hover, definitions,
    and placement diagnostics.
 9. Pressure-test the model in an application-shaped AppKit example, including
@@ -555,7 +558,8 @@ later without making executor blocks a special case.
 - What eventual child-task `out` contract remains sound across failure and
   cancellation?
 - What is the final function-level isolation syntax?
-- What is the final `.zd` spelling for method, callback, and type affinity?
+- How should `.zd` represent callback-delivery executors beyond the existing
+  caller/any invocation guarantee and main-isolated types/functions?
 - Should any runtime-owned detached operation exist, and how must it report
   errors?
 - How does the main executor integrate with application startup and shutdown?

@@ -1,0 +1,7 @@
+declare module "executor-affinity.h" {
+  export type ZDeclaredMainObject on thread.main;
+
+  export function ZMethodMainObject.refresh(): _ on thread.main;
+
+  export function z_main_only(value: _): _ on thread.main;
+}

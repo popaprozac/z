@@ -1290,6 +1290,14 @@ thread transfer, and placement results that would carry isolated state back to
 a non-main continuation. Async isolated functions do not auto-hop yet; callers
 use `await on thread.main`.
 
+Foreign declarations carry the same FIIR affinity fact. Clang
+`swift_attr("@UIActor")` and `swift_attr("@MainActor")` metadata maps
+automatically to `thread.main`; reviewed API notes and `.zd` declarations such
+as `export type LegacyWindow on thread.main;` cover legacy or incompletely
+annotated headers. The fact applies transitively to Z aggregates storing the
+native identity and is visible in editor hover. It changes compile-time
+placement and transfer legality, not the native ABI or call sequence.
+
 The runtime executes placement blocks through structured task frames. Captures
 may be recursively plain values, owned `String` copies, retained Z ARC classes,
 or Objective-C identities retained by ARC when they originate in the owning
@@ -1300,8 +1308,8 @@ async main task awaiting that worker suspends rather than blocking main. Darwin
 publishes cross-thread children through a protected inbound queue and wakes a
 `CFRunLoopSource`; Windows message-loop and Linux toolkit/event-loop adapters
 remain platform-runtime work behind the same `thread.main` capability. Mutable
-captures, borrows, native owners, and explicit foreign-affinity declarations
-remain later capture-contract tiers. Objective-C identity is intentionally not
+captures, cross-executor borrows, and broader native-owner transfer remain later
+capture-contract tiers. Objective-C identity is intentionally not
 transported through a native worker merely to place it back on main.
 An `async` worker closure may instead `await on thread.main`; after the placed
 operation finishes, its continuation is enqueued back onto the private worker

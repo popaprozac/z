@@ -186,7 +186,11 @@ function readHeader(
   const declarationContracts = existsSync(declarationContractPath)
     ? parseForeignDeclarationContracts(readFileSync(declarationContractPath, "utf8"), declarationContractPath)
     : null;
-  const valueContracts = new Map((declarationContracts?.types ?? []).map((contract) => [contract.name, contract]));
+  const valueContracts = new Map(
+    (declarationContracts?.types ?? [])
+      .filter((contract) => contract.copy || contract.move || contract.deinit)
+      .map((contract) => [contract.name, contract]),
+  );
   const imported = collectNamedTypes(root, declaration.moduleName, cPlusPlus, swiftCxxNamespace, valueContracts, fileName);
   const constants = new Map(imported.constants);
   const objectTypes = new Map<string, ForeignObjectType>();
@@ -270,8 +274,10 @@ function readHeader(
     fileName,
     headerDirectory,
     produced.functions,
+    produced.namedTypes,
     produced.interfaces,
   );
+  validateForeignTypeApiNotes(notes, produced.namedTypes, produced.interfaces, fileName, declaration.location);
   const contracts = normalizeForeignContracts(
     produced.functions,
     produced.nativeTypes,
@@ -296,7 +302,7 @@ function readHeader(
     functions: contracts.functions,
     functionAliases: contracts.functionAliases,
     types: contracts.pointerTypes,
-    namedTypes: produced.namedTypes,
+    namedTypes: applyForeignNamedTypeApiNotes(produced.namedTypes, notes),
     namedTypeAliases: imported.namedTypeAliases,
     namespaces: new Set([...contracts.namespaces, ...imported.namespaces]),
     constants: produced.constants,
@@ -313,16 +319,27 @@ function applyObjCMethodApiNotes(
   interfaces: ReadonlyMap<string, ForeignObjCInterface>,
   notes: ApiNotes,
 ): ReadonlyMap<string, ForeignObjCInterface> {
-  if (!notes.objcMethods || Object.keys(notes.objcMethods).length === 0) return interfaces;
+  if (
+    (!notes.objcMethods || Object.keys(notes.objcMethods).length === 0)
+    && (!notes.types || Object.keys(notes.types).length === 0)
+  ) return interfaces;
   return new Map([...interfaces].map(([className, declaration]) => [
     className,
     {
       ...declaration,
+      metadata: {
+        ...declaration.metadata,
+        executorAffinity: notes.types?.[className]?.executorAffinity ?? declaration.metadata.executorAffinity,
+      },
       methods: declaration.methods.map((method) => {
         const note = notes.objcMethods?.[`${className}.${method.selector}`];
         if (!note) return method;
         return {
           ...method,
+          metadata: {
+            ...method.metadata,
+            executorAffinity: note.executorAffinity ?? method.metadata.executorAffinity,
+          },
           asyncCallbackParameter: note.async?.callbackParameter ?? method.asyncCallbackParameter,
           asyncResultParameter: note.async?.resultParameter ?? method.asyncResultParameter,
           asyncErrorParameter: note.async?.errorParameter ?? method.asyncErrorParameter,
@@ -341,6 +358,40 @@ function applyObjCMethodApiNotes(
       }),
     },
   ]));
+}
+
+function applyForeignNamedTypeApiNotes(
+  namedTypes: ReadonlyMap<string, ForeignNamedType>,
+  notes: ApiNotes,
+): ReadonlyMap<string, ForeignNamedType> {
+  if (!notes.types || Object.keys(notes.types).length === 0) return namedTypes;
+  return new Map([...namedTypes].map(([qualifiedName, declaration]) => {
+    const note = notes.types?.[qualifiedName];
+    return [qualifiedName, note?.executorAffinity
+      ? {
+          ...declaration,
+          metadata: {
+            ...declaration.metadata,
+            executorAffinity: note.executorAffinity,
+          },
+        }
+      : declaration];
+  }));
+}
+
+function validateForeignTypeApiNotes(
+  notes: ApiNotes,
+  namedTypes: ReadonlyMap<string, ForeignNamedType>,
+  interfaces: ReadonlyMap<string, ForeignObjCInterface>,
+  fileName: string,
+  location: ImportDeclaration["location"],
+): void {
+  for (const name of Object.keys(notes.types ?? {})) {
+    if (namedTypes.has(name) || interfaces.has(name)) continue;
+    throw new DiagnosticError(fileName, location, `API notes name unknown foreign type ${JSON.stringify(name)}`, {
+      code: "Z0801",
+    });
+  }
 }
 
 function collectNamedTypes(
@@ -1185,7 +1236,7 @@ function resolvePotentialNamedType<T>(
 }
 
 function foreignDeclarationMetadata(node: ClangNode | undefined): ForeignDeclarationMetadata {
-  if (!node) return { source: null, availability: [] };
+  if (!node) return { source: null, availability: [], executorAffinity: null };
   const fallbackFile = clangNodeSourceFiles.get(node) ?? null;
   const source = foreignSourceLocation(node.loc ?? node.range?.begin, node.name?.length ?? 1, fallbackFile);
   const attributeAvailability = (node.inner ?? [])
@@ -1195,7 +1246,20 @@ function foreignDeclarationMetadata(node: ClangNode | undefined): ForeignDeclara
   const availability = attributeAvailability.length > 0
     ? attributeAvailability
     : sourceDeclarationAvailability(node, source);
-  return { source, availability };
+  return {
+    source,
+    availability,
+    executorAffinity: clangExecutorAffinity(node, source?.fileName ?? fallbackFile),
+  };
+}
+
+function clangExecutorAffinity(node: ClangNode, fallbackFile: string | null): "main" | null {
+  for (const attribute of node.inner ?? []) {
+    if (attribute.kind !== "SwiftAttrAttr") continue;
+    const text = attributeText(attribute, fallbackFile);
+    if (text && /@(?:UIActor|MainActor)\b/.test(text)) return "main";
+  }
+  return null;
 }
 
 function sourceDeclarationAvailability(

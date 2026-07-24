@@ -309,6 +309,22 @@ function's single borrowed pointer input. A parameter-local `fixed NAME;`
 contract keeps a real native ABI parameter in the declaration while omitting it
 from the Z call surface and supplying that header constant during code generation:
 
+Executor affinity is also producer-neutral FIIR metadata. Clang Swift
+attributes are imported automatically; `.zd` supplies the same fact when a
+legacy header cannot:
+
+```z
+declare module "LegacyUI.h" {
+  export type LegacyWindow on thread.main;
+  export function LegacyWindow.refresh(): _ on thread.main;
+}
+```
+
+An isolated native type makes construction, member access, calls, cleanup, and
+containing Z aggregates main-affine. A function or method annotation isolates
+only that operation. These checks compile away: generated code still performs
+the original native call directly.
+
 ```z
 declare module "sqlite3.h" {
   export function sqlite3_prepare_v2(

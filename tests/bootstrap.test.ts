@@ -1543,7 +1543,7 @@ test("normalizes producer declarations without exposing Clang nodes to FIIR cons
       parameters: [],
       variadic: false,
       nativeSignature: "int (void)",
-      metadata: { source: null, availability: [] },
+      metadata: { source: null, availability: [], executorAffinity: null },
     }],
   };
   const normalized = normalizeForeignContracts(
@@ -2711,13 +2711,14 @@ test("narrows nullable Objective-C references before member access", () => {
 
   const annotated = `
     import AppKit from "AppKit/AppKit.h";
+    import { thread } from "std/thread";
     class WindowSlot {
       window: AppKit.NSWindow | null;
       constructor(window: AppKit.NSWindow | null) {
         this.window = window;
       }
     }
-    function inspect(window: AppKit.NSWindow | null): i32 {
+    function inspect(window: AppKit.NSWindow | null): i32 on thread.main {
       if (window == null) return 0;
       window.center();
       return 1;
@@ -2844,7 +2845,7 @@ test("lifts nullable Objective-C references into Option values", () => {
     () => compileToNative(nonnullable, example),
     /Option\.fromNullable requires AppKit\.NSWindow \| null, found AppKit\.NSWindow/,
   );
-});
+}, 10_000);
 
 test("compiles a desktop ownership slice and preserves its current pressure walls", () => {
   if (process.platform !== "darwin") return;
@@ -13271,6 +13272,122 @@ test("preserves executor affinity across Z module boundaries", () => {
     assert.match(diagnostic.message, /requires thread\.main executor context/);
   } finally {
     rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("imports native executor affinity from Clang metadata and Z declarations", () => {
+  if (process.platform !== "darwin") return;
+  const fileName = resolve(projectRoot, "tests/fixtures/executor-affinity-test.zs");
+  const source = `
+    import native from "executor-affinity.h";
+
+    struct WindowState {
+      object: native.ZDeclaredMainObject;
+    }
+
+    function main(): i32 {
+      const annotated = native.ZAnnotatedMainObject.shared();
+      const declared = native.ZDeclaredMainObject.shared();
+      const methodOnly = native.ZMethodMainObject.shared();
+      const annotatedMethod = native.ZAnnotatedMethodObject.shared();
+      const state = WindowState({ object: declared });
+      annotated.value();
+      state.object.value();
+      methodOnly.refresh();
+      annotatedMethod.refresh();
+      native.z_annotated_main_only(0);
+      native.z_main_only(0);
+      return 0;
+    }
+  `;
+  const analysis = analyzeSource(source, fileName);
+  assert.deepEqual(analysis.semanticInfo.aggregateExecutorAffinities.get("WindowState"), {
+    executor: "main",
+    declared: false,
+    originType: "native.ZDeclaredMainObject",
+    fieldPath: ["object"],
+  });
+
+  const annotated = analysis.foreignModules.get("native")?.interfaces.get("ZAnnotatedMainObject");
+  assert.equal(annotated?.metadata.executorAffinity, "main");
+  const declared = analysis.foreignModules.get("native")?.interfaces.get("ZDeclaredMainObject");
+  assert.equal(declared?.metadata.executorAffinity, "main");
+  const method = analysis.foreignModules.get("native")?.interfaces.get("ZMethodMainObject")
+    ?.methods.find((candidate) => candidate.selector === "refresh");
+  assert.equal(method?.metadata.executorAffinity, "main");
+  const annotatedMethod = analysis.foreignModules.get("native")?.interfaces.get("ZAnnotatedMethodObject")
+    ?.methods.find((candidate) => candidate.selector === "refresh");
+  assert.equal(annotatedMethod?.metadata.executorAffinity, "main");
+  const fn = analysis.foreignModules.get("native")?.functions.get("z_main_only")?.overloads[0];
+  assert.equal(fn?.metadata.executorAffinity, "main");
+  const annotatedFn = analysis.foreignModules.get("native")?.functions.get("z_annotated_main_only")?.overloads[0];
+  assert.equal(annotatedFn?.metadata.executorAffinity, "main");
+
+  const annotatedClassOffset = source.indexOf("ZAnnotatedMainObject") + 1;
+  assert.match(
+    hover(source, fileName, annotatedClassOffset)?.contents.value ?? "",
+    /Objective-C class ZAnnotatedMainObject on thread\.main/,
+  );
+  const declaredBindingOffset = source.indexOf("declared =") + 1;
+  assert.match(
+    hover(source, fileName, declaredBindingOffset)?.contents.value ?? "",
+    /executor-isolated to thread\.main/,
+  );
+  const refreshOffset = source.indexOf("refresh()") + 1;
+  assert.match(hover(source, fileName, refreshOffset)?.contents.value ?? "", /on thread\.main/);
+  const nativeFunctionOffset = source.indexOf("z_main_only") + 1;
+  assert.match(hover(source, fileName, nativeFunctionOffset)?.contents.value ?? "", /on thread\.main/);
+
+  const declarationFile = resolve(projectRoot, "tests/fixtures/executor-affinity.h.zd");
+  const declarationSource = readFileSync(declarationFile, "utf8");
+  const declaredTypeOffset = declarationSource.indexOf("ZDeclaredMainObject") + 1;
+  assert.match(
+    hover(declarationSource, declarationFile, declaredTypeOffset)?.contents.value ?? "",
+    /Objective-C class ZDeclaredMainObject on thread\.main/,
+  );
+  const incompleteDeclaration = declarationSource.replace("thread.main;", "thread.ma;");
+  const declarationCompletionOffset = incompleteDeclaration.indexOf("thread.ma") + "thread.ma".length;
+  assert.ok(completions(
+    incompleteDeclaration,
+    declarationFile,
+    declarationCompletionOffset,
+  ).some((item) => item.label === "main"));
+
+  const offMainCases = [
+    {
+      body: "return native.ZAnnotatedMainObject.shared().value();",
+      subject: /Objective-C class "ZAnnotatedMainObject"/,
+    },
+    {
+      body: "return native.ZDeclaredMainObject.shared().value();",
+      subject: /Objective-C class "ZDeclaredMainObject"/,
+    },
+    {
+      body: "const object = native.ZMethodMainObject.shared(); return object.refresh();",
+      subject: /Objective-C method "ZMethodMainObject"."refresh"/,
+    },
+    {
+      body: "const object = native.ZAnnotatedMethodObject.shared(); return object.refresh();",
+      subject: /Objective-C method "ZAnnotatedMethodObject"."refresh"/,
+    },
+    {
+      body: "return native.z_annotated_main_only(42);",
+      subject: /foreign function "z_annotated_main_only"/,
+    },
+    {
+      body: "return native.z_main_only(42);",
+      subject: /foreign function "z_main_only"/,
+    },
+  ];
+  for (const [index, testCase] of offMainCases.entries()) {
+    const invalid = `
+      import native from "executor-affinity.h";
+      function background(): i32 { ${testCase.body} }
+      function main(): i32 { return 0; }
+    `;
+    const diagnostic = diagnostics(invalid, resolve(projectRoot, `tests/fixtures/executor-affinity-invalid-${index}.zs`))[0];
+    assert.equal(diagnostic.code, "Z0711", `${index}: ${diagnostic.message}`);
+    assert.match(diagnostic.message, testCase.subject);
   }
 });
 

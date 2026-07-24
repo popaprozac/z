@@ -163,7 +163,10 @@ function normalizeOverload(
       parameters,
       variadic: declaration.variadic,
       cSignature: declaration.nativeSignature,
-      metadata: declaration.metadata,
+      metadata: {
+        ...declaration.metadata,
+        executorAffinity: functionNotes?.executorAffinity ?? declaration.metadata.executorAffinity,
+      },
     };
 }
 

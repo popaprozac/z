@@ -746,7 +746,9 @@ export function hover(source: string, fileName: string, offset: number): Hover |
     const details = new Set<string>();
     for (const declaration of context.semanticInfo.foreignInterfaces.values()) {
       for (const method of declaration.methods) {
-        if (method.selector === chainedSelector && method.baseName === word.text) details.add(objCMethodDetail(method));
+        if (method.selector === chainedSelector && method.baseName === word.text) {
+          details.add(objCMethodDetail(method, foreignObjCRequiresMain(declaration, context)));
+        }
       }
     }
     if (details.size > 0) return markdownHover([...details].join("\n"), source, word.start, word.end);
@@ -865,10 +867,11 @@ export function hover(source: string, fileName: string, offset: number): Hover |
       if (item) return markdownHover(item, source, word.start, word.end);
     }
     if (resolved?.kind === "objc") {
+      const mainIsolated = foreignObjCRequiresMain(resolved.declaration, context);
       const property = collectObjCProperties(resolved.declaration, resolved.instance, context).find((item) => item.name === word.text);
-      if (property) return markdownHover(`${objcPropertyDetail(property)}${foreignAvailabilityDetail(property.metadata)}`, source, word.start, word.end);
+      if (property) return markdownHover(`${objcPropertyDetail(property, mainIsolated)}${foreignAvailabilityDetail(property.metadata)}`, source, word.start, word.end);
       const methods = collectObjCMethods(resolved.declaration, resolved.instance, context).filter((item) => item.baseName === word.text);
-      if (methods.length) return markdownHover(methods.map(objCMethodDetail).join("\n"), source, word.start, word.end);
+      if (methods.length) return markdownHover(methods.map((method) => objCMethodDetail(method, mainIsolated)).join("\n"), source, word.start, word.end);
     }
     if (resolved?.kind === "struct") {
       const affinity = context.semanticInfo.aggregateExecutorAffinities.get(resolved.declaration.name);
@@ -1000,7 +1003,8 @@ export function hover(source: string, fileName: string, offset: number): Hover |
     const sourceType = binding ? sourceBindingTypeName(context.sourceProgram, binding.offset) : null;
     const aliasType = sourceType ? sourceAliasDisplayType(context, sourceType) : null;
     const affinity = context.semanticInfo.aggregateExecutorAffinities.get(String(type))
-      ?? (sourceType ? context.semanticInfo.aggregateExecutorAffinities.get(sourceType) : undefined);
+      ?? (sourceType ? context.semanticInfo.aggregateExecutorAffinities.get(sourceType) : undefined)
+      ?? foreignTypeExecutorAffinity(type, context);
     return markdownHover(
       `${word.text}: ${aliasType ?? displayServiceType(type, context)}${provenance}${executorAffinityHover(affinity)}`,
       source,
@@ -1034,7 +1038,7 @@ export function definition(source: string, uri: string, offset: number): Locatio
           containsDeclarationName(candidate.nameLocation.offset, candidate.name, word.start)
         ));
         const method = contract
-          ? foreignDeclarationObjCStaticMethods(module, contract.name, contract.parameters.length)
+          ? foreignDeclarationObjCMethods(module, contract.name, contract.parameters.length)
             .find(({ method }) => method.parameters.every((parameter, index) => (
               parameter.name === null || parameter.name === contract.parameters[index]?.name
             )))?.method
@@ -2031,7 +2035,7 @@ function languageTokenCompletions(fileName: string): CompletionItem[] {
   return items;
 }
 
-function foreignDeclarationObjCStaticMethods(
+function foreignDeclarationObjCMethods(
   module: ForeignModule,
   qualifiedName: string,
   parameterCount?: number,
@@ -2044,8 +2048,7 @@ function foreignDeclarationObjCStaticMethods(
   if (!declaration) return [];
   return declaration.methods
     .filter((method) => (
-      !method.instance
-      && method.baseName === baseName
+      method.baseName === baseName
       && (parameterCount === undefined || method.parameters.length === parameterCount)
     ))
     .map((method) => ({ className, method }));
@@ -2061,7 +2064,7 @@ function foreignDeclarationNativeSignatures(
 }[] {
   const declaration = module.functions.get(qualifiedName);
   if (declaration) return declaration.overloads;
-  return foreignDeclarationObjCStaticMethods(module, qualifiedName, parameterCount)
+  return foreignDeclarationObjCMethods(module, qualifiedName, parameterCount)
     .map(({ method }) => method);
 }
 
@@ -2069,6 +2072,17 @@ function foreignDeclarationCompletions(source: string, fileName: string, offset:
   const before = source.slice(0, offset);
   const prefix = before.match(/([A-Za-z_][A-Za-z0-9_.]*)$/)?.[1] ?? "";
   if (!prefix) return [];
+  const executorPrefix = /\bon\s+thread\.([A-Za-z_]*)$/.exec(before)?.[1];
+  if (executorPrefix !== undefined) {
+    return "main".startsWith(executorPrefix)
+      ? [{
+          label: "main",
+          kind: completionKinds.property,
+          detail: "main-thread executor affinity",
+          sortText: "0-main",
+        }]
+      : [];
+  }
   const module = foreignDeclarationNativeModule(source, fileName);
   const contextual: CompletionItem[] = [];
   const ownerName = [...before.matchAll(/\bexport\s+function\s+([A-Za-z_][A-Za-z0-9_.]*)\s*\(/g)].at(-1)?.[1];
@@ -2079,7 +2093,7 @@ function foreignDeclarationCompletions(source: string, fileName: string, offset:
 
   const typePrefix = /\bexport\s+type\s+([A-Za-z_][A-Za-z0-9_.]*)?$/.exec(before)?.[1];
   if (module && typePrefix !== undefined) {
-    const declared = new Set([...source.matchAll(/\bexport\s+type\s+([A-Za-z_][A-Za-z0-9_.]*)\s*\{/g)].map((match) => match[1]));
+    const declared = new Set([...source.matchAll(/\bexport\s+type\s+([A-Za-z_][A-Za-z0-9_.]*)\b/g)].map((match) => match[1]));
     for (const declaration of module.namedTypes.values()) {
       if (declaration.kind !== "value"
         || declared.has(declaration.qualifiedName)
@@ -2089,6 +2103,16 @@ function foreignDeclarationCompletions(source: string, fileName: string, offset:
         kind: completionKinds.struct,
         detail: foreignNamedTypeDetail(declaration),
         sortText: `0-${declaration.qualifiedName}`,
+      });
+    }
+    for (const declaration of module.interfaces.values()) {
+      if (declared.has(declaration.exportName)
+        || !declaration.exportName.toLowerCase().startsWith(typePrefix.toLowerCase())) continue;
+      contextual.push({
+        label: declaration.exportName,
+        kind: completionKinds.class,
+        detail: `Objective-C class ${declaration.className}`,
+        sortText: `0-${declaration.exportName}`,
       });
     }
   }
@@ -2367,10 +2391,27 @@ function foreignDeclarationHover(source: string, fileName: string, offset: numbe
 
   for (const contract of contracts.types) {
     const declaration = module.namedTypes.get(contract.name);
-    if (!declaration || declaration.kind !== "value") continue;
+    const interfaceDeclaration = module.interfaces.get(contract.name);
+    if (!declaration && !interfaceDeclaration) continue;
     if (containsDeclarationName(contract.nameLocation.offset, contract.name, word.start)) {
-      return markdownHover(`type ${foreignNamedTypeDetail(declaration)}`, source, word.start, word.end);
+      const detail = declaration
+        ? `type ${foreignNamedTypeDetail(declaration)}`
+        : `type ${interfaceDeclaration!.exportName}: Objective-C class ${interfaceDeclaration!.className}`;
+      return markdownHover(`${detail}${contract.executorAffinity ? " on thread.main" : ""}`, source, word.start, word.end);
     }
+    if (
+      contract.executorAffinityLocation
+      && word.start >= contract.executorAffinityLocation.offset
+      && word.start < contract.executorAffinityLocation.offset + "on thread.main".length
+    ) {
+      return markdownHover(
+        `on thread.main  // ${contract.name} is executor-isolated to the main thread`,
+        source,
+        word.start,
+        word.end,
+      );
+    }
+    if (!declaration || declaration.kind !== "value") continue;
     for (const [capability, location] of [
       ["copy", contract.copyLocation],
       ["move", contract.moveLocation],
@@ -2394,7 +2435,7 @@ function foreignDeclarationHover(source: string, fileName: string, offset: numbe
 
   for (const contract of contracts.functions) {
     const declaration = module.functions.get(contract.name);
-    const methodMatch = foreignDeclarationObjCStaticMethods(
+    const methodMatch = foreignDeclarationObjCMethods(
       module,
       contract.name,
       contract.parameters.length,
@@ -2402,13 +2443,25 @@ function foreignDeclarationHover(source: string, fileName: string, offset: numbe
       parameter.name === null || parameter.name === contract.parameters[index]?.name
     )));
     const nativeSignatures = declaration?.overloads ?? (methodMatch ? [methodMatch.method] : []);
+    if (
+      contract.executorAffinityLocation
+      && word.start >= contract.executorAffinityLocation.offset
+      && word.start < contract.executorAffinityLocation.offset + "on thread.main".length
+    ) {
+      return markdownHover(
+        `on thread.main  // ${contract.name} may only be called on the main executor`,
+        source,
+        word.start,
+        word.end,
+      );
+    }
     if (containsDeclarationName(contract.nameLocation.offset, contract.name, word.start)) {
       if (declaration) {
         return markdownHover(foreignFunctionDetail(declaration), source, word.start, word.end);
       }
       if (methodMatch) {
         return markdownHover(
-          `static ${methodMatch.className}.${objCMethodDetail(methodMatch.method)}`,
+          `${methodMatch.method.instance ? "instance" : "static"} ${methodMatch.className}.${objCMethodDetail(methodMatch.method)}`,
           source,
           word.start,
           word.end,
@@ -3971,7 +4024,8 @@ function moduleCompletions(
       });
     }
     for (const declaration of module.interfaces.values()) {
-      items.push({ label: declaration.exportName, kind: completionKinds.class, detail: `Objective-C class ${declaration.className}` });
+      const executor = declaration.metadata.executorAffinity === "main" ? " on thread.main" : "";
+      items.push({ label: declaration.exportName, kind: completionKinds.class, detail: `Objective-C class ${declaration.className}${executor}` });
     }
     for (const declaration of module.protocols.values()) {
       items.push({
@@ -4047,19 +4101,20 @@ function resolveModuleHandleType(
 }
 
 function objcCompletions(declaration: ForeignObjCInterface, instance: boolean, context: AnalyzedSource): CompletionItem[] {
+  const mainIsolated = foreignObjCRequiresMain(declaration, context);
   const properties = collectObjCProperties(declaration, instance, context);
   const accessors = new Set(properties.flatMap((property) => [property.getter, property.setter].filter(Boolean)));
   const items: CompletionItem[] = properties.map((property) => ({
     label: property.name,
     kind: completionKinds.property,
-    detail: objcPropertyDetail(property),
+    detail: objcPropertyDetail(property, mainIsolated),
   }));
   for (const method of collectObjCMethods(declaration, instance, context)) {
     if (accessors.has(method.selector)) continue;
     items.push({
       label: method.baseName,
       kind: completionKinds.method,
-      detail: objCMethodDetail(method),
+      detail: objCMethodDetail(method, mainIsolated),
       insertText: objCMethodSnippet(method),
       insertTextFormat: 2,
     });
@@ -4209,6 +4264,43 @@ function collectObjCMethods(declaration: ForeignObjCInterface, instance: boolean
   return methods;
 }
 
+function foreignObjCRequiresMain(declaration: ForeignObjCInterface, context: AnalyzedSource): boolean {
+  let current: ForeignObjCInterface | undefined = declaration;
+  while (current) {
+    if (current.metadata.executorAffinity === "main") return true;
+    if (!current.superName) break;
+    const moduleName = current.typeName.slice(0, current.typeName.lastIndexOf("."));
+    current = context.semanticInfo.foreignInterfaces.get(`${moduleName}.${current.superName}`);
+  }
+  return false;
+}
+
+function foreignTypeExecutorAffinity(
+  typeName: string,
+  context: AnalyzedSource,
+): ExecutorAffinityInfo | undefined {
+  const publicName = typeName.replace(/^__z_objc:(?:nullable|nonnull):/, "");
+  const objc = context.semanticInfo.foreignInterfaces.get(publicName);
+  if (objc && foreignObjCRequiresMain(objc, context)) {
+    return {
+      executor: "main",
+      declared: true,
+      originType: objc.typeName,
+      fieldPath: [],
+    };
+  }
+  const named = context.semanticInfo.foreignNamedTypes.get(typeName)
+    ?? context.semanticInfo.foreignNamedTypes.get(publicName);
+  return named?.metadata.executorAffinity === "main"
+    ? {
+        executor: "main",
+        declared: true,
+        originType: named.typeName,
+        fieldPath: [],
+      }
+    : undefined;
+}
+
 function collectObjCProperties(declaration: ForeignObjCInterface, instance: boolean, context: AnalyzedSource): ForeignObjCProperty[] {
   const properties: ForeignObjCProperty[] = [];
   let current: ForeignObjCInterface | undefined = declaration;
@@ -4221,13 +4313,16 @@ function collectObjCProperties(declaration: ForeignObjCInterface, instance: bool
   return properties;
 }
 
-function objcPropertyDetail(property: ForeignObjCProperty): string {
+function objcPropertyDetail(property: ForeignObjCProperty, inheritedMain: boolean | number = false): string {
   const referenceOwnership = property.type.kind === "object" || property.type.kind === "block";
   const qualifiers = [
     property.readonly ? "readonly" : null,
     !referenceOwnership || property.ownership === "unspecified" ? null : property.ownership,
   ].filter((value): value is string => value !== null);
-  return `${qualifiers.length > 0 ? `${qualifiers.join(" ")} ` : ""}${property.name}: ${foreignTypeName(property.type)}`;
+  const executor = property.metadata.executorAffinity === "main" || inheritedMain === true
+    ? "  // executor-isolated to thread.main"
+    : "";
+  return `${qualifiers.length > 0 ? `${qualifiers.join(" ")} ` : ""}${property.name}: ${foreignTypeName(property.type)}${executor}`;
 }
 
 function objCMethodSnippet(method: ForeignObjCMethod): string {
@@ -4244,14 +4339,15 @@ function objCMethodSnippet(method: ForeignObjCMethod): string {
   return `${method.baseName}(${args.join(", ")})`;
 }
 
-function objCMethodDetail(method: ForeignObjCMethod): string {
+function objCMethodDetail(method: ForeignObjCMethod, inheritedMain: boolean | number = false): string {
   const signature = (parameters: readonly ForeignObjCMethod["parameters"][number][]): string => parameters.map((parameter) => {
     const index = method.parameters.indexOf(parameter);
     const label = selectorParts(method.selector)[index];
     const sourceName = index === 0 ? parameter.name ?? "value" : label;
     return `${sourceName}: ${foreignTypeName(parameter.type)}`;
   }).join(", ");
-  const raw = `${method.baseName}(${signature(method.parameters)}): ${foreignTypeName(method.returnType)}  // ${method.selector}${foreignAvailabilityDetail(method.metadata)}`;
+  const executor = method.metadata.executorAffinity === "main" || inheritedMain === true ? " on thread.main" : "";
+  const raw = `${method.baseName}(${signature(method.parameters)}): ${foreignTypeName(method.returnType)}${executor}  // ${method.selector}${foreignAvailabilityDetail(method.metadata)}`;
   if (method.asyncCallbackParameter === null) return raw;
   const callback = method.parameters[method.asyncCallbackParameter].type;
   const result = callback.kind === "block" && method.asyncResultParameter !== null
@@ -4264,7 +4360,7 @@ function objCMethodDetail(method: ForeignObjCMethod): string {
     : null;
   const throws = error?.kind === "object" ? ` throws ${publicObjCTypeName(error.typeName)}` : "";
   const visible = method.parameters.filter((_, index) => index !== method.asyncCallbackParameter);
-  return `async ${method.baseName}(${signature(visible)}): ${result}${throws}  // synthesized from exactly-once callback\n${raw}`;
+  return `async ${method.baseName}(${signature(visible)}): ${result}${throws}${executor}  // synthesized from exactly-once callback\n${raw}`;
 }
 
 function resolveForeignModuleNamespace(
@@ -4356,7 +4452,10 @@ function describeModuleMember(module: ForeignModule, namespacePath: readonly str
   const constant = module.constants.get(name);
   if (constant) return `${foreignConstantDetail(constant)}${foreignAvailabilityDetail(constant.metadata)}`;
   const objc = module.interfaces.get(name);
-  if (objc) return `Objective-C class ${objc.className}${foreignAvailabilityDetail(objc.metadata)}`;
+  if (objc) {
+    const executor = objc.metadata.executorAffinity === "main" ? " on thread.main" : "";
+    return `Objective-C class ${objc.className}${executor}${foreignAvailabilityDetail(objc.metadata)}`;
+  }
   const protocol = module.protocols.get(name);
   return protocol ? `Objective-C protocol ${protocol.protocolName}${foreignAvailabilityDetail(protocol.metadata)}` : null;
 }
@@ -4371,7 +4470,8 @@ function foreignConstantDetail(constant: ForeignConstant): string {
 }
 
 function foreignNamedTypeDetail(named: ForeignNamedType): string {
-  if (named.kind !== "value") return `${named.exportName}: ${named.cName}`;
+  const executor = named.metadata.executorAffinity === "main" ? " on thread.main" : "";
+  if (named.kind !== "value") return `${named.exportName}: ${named.cName}${executor}`;
   const available = (["copy", "move", "deinit"] as const).filter((capability) => named.lifecycle[capability]);
   const unavailable = (["copy", "move", "deinit"] as const).filter((capability) => !named.lifecycle[capability]);
   const missing = unavailable.length ? `; unavailable: ${unavailable.join(", ")}` : "";
@@ -4385,7 +4485,7 @@ function foreignNamedTypeDetail(named: ForeignNamedType): string {
     return `${named.exportName}(${parameters.join(", ")}): ${named.typeName}  // C++ constructor`;
   });
   const constructorDetail = constructors.length ? `\n${constructors.join("\n")}` : "";
-  return `${named.exportName}: ${named.cName}  // native value: ${available.join(", ")}${missing}${thread}${constructorDetail}`;
+  return `${named.exportName}: ${named.cName}${executor}  // native value: ${available.join(", ")}${missing}${thread}${constructorDetail}`;
 }
 
 function foreignFunctionDetail(declaration: ForeignFunction): string {
@@ -4401,7 +4501,8 @@ function foreignFunctionDetail(declaration: ForeignFunction): string {
     const result = overload.status
       ? `void throws ${foreignTypeName(overload.returnType)}`
       : foreignTypeName(overload.returnType);
-    return `${declaration.name}(${parameters.join(", ")}): ${result}  // C: ${overload.cSignature}${foreignAvailabilityDetail(overload.metadata)}`;
+    const executor = overload.metadata.executorAffinity === "main" ? " on thread.main" : "";
+    return `${declaration.name}(${parameters.join(", ")}): ${result}${executor}  // C: ${overload.cSignature}${foreignAvailabilityDetail(overload.metadata)}`;
   }).join("\n");
 }
 
@@ -4415,7 +4516,8 @@ function foreignCxxMethodDetail(method: ForeignCxxMethod): string {
     const receiver = overload.receiverAccess === "in"
       ? "C++ const borrow"
       : overload.receiverAccess === "inout" ? "C++ mutable borrow" : "C++ consuming receiver";
-    return `${method.name}(${parameters.join(", ")}): ${foreignTypeName(overload.returnType)}  // ${receiver}; ${overload.cSignature}${foreignAvailabilityDetail(overload.metadata)}`;
+    const executor = overload.metadata.executorAffinity === "main" ? " on thread.main" : "";
+    return `${method.name}(${parameters.join(", ")}): ${foreignTypeName(overload.returnType)}${executor}  // ${receiver}; ${overload.cSignature}${foreignAvailabilityDetail(overload.metadata)}`;
   }).join("\n");
 }
 
@@ -4425,7 +4527,8 @@ function foreignCxxStaticMethodDetail(method: ForeignCxxStaticMethod): string {
       foreignParameterDetail(parameter, index)
     ));
     if (overload.variadic) parameters.push("...arguments");
-    return `${method.name}(${parameters.join(", ")}): ${foreignTypeName(overload.returnType)}  // C++ static; ${overload.cSignature}${foreignAvailabilityDetail(overload.metadata)}`;
+    const executor = overload.metadata.executorAffinity === "main" ? " on thread.main" : "";
+    return `${method.name}(${parameters.join(", ")}): ${foreignTypeName(overload.returnType)}${executor}  // C++ static; ${overload.cSignature}${foreignAvailabilityDetail(overload.metadata)}`;
   }).join("\n");
 }
 

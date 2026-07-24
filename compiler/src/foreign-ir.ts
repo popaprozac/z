@@ -18,9 +18,12 @@ export type ForeignAvailability = {
   readonly message: string | null;
 };
 
+export type ForeignExecutorAffinity = "main" | null;
+
 export type ForeignDeclarationMetadata = {
   readonly source: ForeignSourceLocation | null;
   readonly availability: readonly ForeignAvailability[];
+  readonly executorAffinity: ForeignExecutorAffinity;
 };
 
 export type ForeignType =
