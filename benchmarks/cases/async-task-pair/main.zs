@@ -20,6 +20,7 @@ async function main(): i32 {
   }
 
   const elapsed = bench.z_bench_now_ns() - started;
-  bench.z_bench_report_async_task_pair(elapsed, checksum);
+  const name: cstring = "async-task-pair";
+  bench.z_bench_report(name, elapsed, checksum);
   return 0;
 }

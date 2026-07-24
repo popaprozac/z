@@ -15,6 +15,7 @@ async function main(): i32 {
   }
 
   const elapsed = bench.z_bench_now_ns() - started;
-  bench.z_bench_report_native_thread(elapsed, checksum);
+  const name: cstring = "native-thread";
+  bench.z_bench_report(name, elapsed, checksum);
   return 0;
 }

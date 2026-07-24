@@ -5315,7 +5315,8 @@ function emitFrameExpressionInner(
       return "NULL";
     case "string": {
       const type = plan.types.semanticInfo.expressionTypes.get(expression.location.offset);
-      return type === "String"
+      const convertedToCString = plan.types.semanticInfo.cstringConversions.has(expression.location.offset);
+      return type === "String" && !convertedToCString
         ? `(Z_String){ .data = ${JSON.stringify(expression.value)}, .length = sizeof(${JSON.stringify(expression.value)}) - 1, .capacity = 0 }`
         : JSON.stringify(expression.value);
     }

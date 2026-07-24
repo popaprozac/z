@@ -1,6 +1,6 @@
 # Z performance checkpoint 1
 
-Generated 2026-07-24T08:18:23.226Z on arm64, macOS 26.4.
+Generated 2026-07-24T14:47:35.488Z on arm64, macOS 26.4.
 
 - Compiler: Apple clang version 17.0.0 (clang-1700.4.4.1)
 - Rust: rustc 1.97.1 (8bab26f4f 2026-07-14)
@@ -18,32 +18,32 @@ Each workload's C, C++, or Z direct-await reference is the `1.000×` baseline.
 
 | Workload | Variant | Median | Relative to baseline | Allocation calls/frees (requested bytes) |
 | --- | --- | ---: | ---: | ---: |
-| arithmetic | z | 50.267 ms | 1.016× | 0/0 (0.0 KiB) |
-| arithmetic | c | 49.497 ms | 1.000× | 0/0 (0.0 KiB) |
-| arithmetic | rust | 49.812 ms | 1.006× | — |
-| arithmetic | zig | 48.019 ms | 0.970× | — |
-| arithmetic | nim | 49.363 ms | 0.997× | — |
-| direct-c-call | z | 22.441 ms | 0.997× | 0/0 (0.0 KiB) |
-| direct-c-call | c | 22.520 ms | 1.000× | 0/0 (0.0 KiB) |
-| direct-c-call | rust | 22.675 ms | 1.007× | — |
-| direct-c-call | zig | 22.673 ms | 1.007× | — |
-| direct-c-call | nim | 22.647 ms | 1.006× | — |
-| dynamic-array | z | 3.885 ms | 0.985× | 22/1 (131072.0 KiB) |
-| dynamic-array | c | 3.946 ms | 1.000× | 22/1 (131072.0 KiB) |
-| dynamic-array | rust | 5.510 ms | 1.396× | — |
-| dynamic-array | zig | 5.966 ms | 1.512× | — |
-| dynamic-array | nim | 20.744 ms | 5.258× | — |
-| struct-ownership | z | 14.643 ms | 0.977× | 0/0 (0.0 KiB) |
-| struct-ownership | c++ | 14.989 ms | 1.000× | 0/0 (0.0 KiB) |
-| struct-ownership | rust | 15.072 ms | 1.006× | — |
-| struct-ownership | zig | 14.886 ms | 0.993× | — |
-| struct-ownership | nim | 29.087 ms | 1.941× | — |
-| async-task-pair | z | 2.362 ms | 0.902× | 100001/100001 (8593.9 KiB) |
-| async-task-pair | z-direct-await | 2.618 ms | 1.000× | 100001/100001 (8593.9 KiB) |
-| native-thread | z | 13.151 ms | 0.930× | 1001/1001 (117.4 KiB) |
-| native-thread | c | 14.138 ms | 1.000× | 1000/1000 (15.6 KiB) |
-| native-thread | rust | 17.258 ms | 1.221× | — |
-| native-thread | zig | 21.053 ms | 1.489× | — |
+| arithmetic | z | 46.285 ms | 1.004× | 0/0 (0.0 KiB) |
+| arithmetic | c | 46.091 ms | 1.000× | 0/0 (0.0 KiB) |
+| arithmetic | rust | 46.223 ms | 1.003× | — |
+| arithmetic | zig | 46.352 ms | 1.006× | — |
+| arithmetic | nim | 46.351 ms | 1.006× | — |
+| direct-c-call | z | 21.253 ms | 0.986× | 0/0 (0.0 KiB) |
+| direct-c-call | c | 21.562 ms | 1.000× | 0/0 (0.0 KiB) |
+| direct-c-call | rust | 21.787 ms | 1.010× | — |
+| direct-c-call | zig | 21.313 ms | 0.988× | — |
+| direct-c-call | nim | 21.993 ms | 1.020× | — |
+| dynamic-array | z | 3.793 ms | 1.035× | 22/1 (131072.0 KiB) |
+| dynamic-array | c | 3.664 ms | 1.000× | 22/1 (131072.0 KiB) |
+| dynamic-array | rust | 4.999 ms | 1.364× | — |
+| dynamic-array | zig | 6.039 ms | 1.648× | — |
+| dynamic-array | nim | 19.405 ms | 5.296× | — |
+| struct-ownership | z | 13.769 ms | 0.974× | 0/0 (0.0 KiB) |
+| struct-ownership | c++ | 14.133 ms | 1.000× | 0/0 (0.0 KiB) |
+| struct-ownership | rust | 14.206 ms | 1.005× | — |
+| struct-ownership | zig | 14.006 ms | 0.991× | — |
+| struct-ownership | nim | 27.740 ms | 1.963× | — |
+| async-task-pair | z | 2.342 ms | 0.927× | 100001/100001 (8593.9 KiB) |
+| async-task-pair | z-direct-await | 2.525 ms | 1.000× | 100001/100001 (8593.9 KiB) |
+| native-thread | z | 13.085 ms | 0.949× | 1001/1001 (117.4 KiB) |
+| native-thread | c | 13.788 ms | 1.000× | 1000/1000 (15.6 KiB) |
+| native-thread | rust | 17.043 ms | 1.236× | — |
+| native-thread | zig | 16.252 ms | 1.179× | — |
 
 ## Whole-process sanity check
 
@@ -52,42 +52,42 @@ warmups for the 50-million-iteration arithmetic workload.
 
 | Variant | Mean wall time | Standard deviation |
 | --- | ---: | ---: |
-| z | 49.25 ms | ± 0.67 ms |
-| c | 49.61 ms | ± 0.57 ms |
-| rust | 49.52 ms | ± 0.96 ms |
-| zig | 49.43 ms | ± 0.35 ms |
-| nim | 49.34 ms | ± 0.41 ms |
+| z | 50.23 ms | ± 1.18 ms |
+| c | 50.17 ms | ± 0.53 ms |
+| rust | 50.97 ms | ± 0.45 ms |
+| zig | 50.58 ms | ± 1.04 ms |
+| nim | 53.15 ms | ± 1.79 ms |
 
 ## Compilation and stripped binary size
 
 | Workload | Variant | Z emit (Bun stage 0) | Native build | Stripped binary |
 | --- | --- | ---: | ---: | ---: |
-| arithmetic | z | 116.7 ms | 66.2 ms | 33.7 KiB |
-| arithmetic | c | — | 55.8 ms | 33.7 KiB |
-| arithmetic | rust | — | 338.0 ms | 363.2 KiB |
-| arithmetic | zig | — | 5747.0 ms | 377.0 KiB |
-| arithmetic | nim | — | 362.8 ms | 66.9 KiB |
-| direct-c-call | z | 109.4 ms | 57.8 ms | 33.7 KiB |
-| direct-c-call | c | — | 50.1 ms | 33.7 KiB |
-| direct-c-call | rust | — | 72.7 ms | 363.2 KiB |
-| direct-c-call | zig | — | 4265.6 ms | 377.0 KiB |
-| direct-c-call | nim | — | 314.7 ms | 66.9 KiB |
-| dynamic-array | z | 109.6 ms | 64.9 ms | 33.7 KiB |
-| dynamic-array | c | — | 57.6 ms | 33.7 KiB |
-| dynamic-array | rust | — | 130.6 ms | 363.2 KiB |
-| dynamic-array | zig | — | 4282.0 ms | 377.0 KiB |
-| dynamic-array | nim | — | 359.6 ms | 66.9 KiB |
-| struct-ownership | z | 110.7 ms | 58.9 ms | 33.7 KiB |
-| struct-ownership | c++ | — | 115.8 ms | 33.8 KiB |
-| struct-ownership | rust | — | 344.6 ms | 363.2 KiB |
-| struct-ownership | zig | — | 4255.4 ms | 377.0 KiB |
-| struct-ownership | nim | — | 312.5 ms | 66.9 KiB |
-| async-task-pair | z | 111.6 ms | 67.7 ms | 33.7 KiB |
-| async-task-pair | z-direct-await | — | 67.6 ms | 33.8 KiB |
-| native-thread | z | 110.8 ms | 80.4 ms | 34.5 KiB |
-| native-thread | c | — | 56.8 ms | 33.9 KiB |
-| native-thread | rust | — | 159.3 ms | 366.2 KiB |
-| native-thread | zig | — | 4277.9 ms | 377.0 KiB |
+| arithmetic | z | 107.0 ms | 62.8 ms | 33.6 KiB |
+| arithmetic | c | — | 50.0 ms | 33.6 KiB |
+| arithmetic | rust | — | 450.0 ms | 363.2 KiB |
+| arithmetic | zig | — | 5501.0 ms | 377.0 KiB |
+| arithmetic | nim | — | 342.3 ms | 66.8 KiB |
+| direct-c-call | z | 105.8 ms | 56.8 ms | 33.6 KiB |
+| direct-c-call | c | — | 50.0 ms | 33.6 KiB |
+| direct-c-call | rust | — | 71.3 ms | 363.2 KiB |
+| direct-c-call | zig | — | 4059.2 ms | 377.0 KiB |
+| direct-c-call | nim | — | 313.2 ms | 66.8 KiB |
+| dynamic-array | z | 107.3 ms | 61.4 ms | 33.6 KiB |
+| dynamic-array | c | — | 56.0 ms | 33.6 KiB |
+| dynamic-array | rust | — | 136.0 ms | 363.2 KiB |
+| dynamic-array | zig | — | 4104.0 ms | 377.0 KiB |
+| dynamic-array | nim | — | 313.1 ms | 66.8 KiB |
+| struct-ownership | z | 111.6 ms | 58.4 ms | 33.6 KiB |
+| struct-ownership | c++ | — | 95.3 ms | 33.6 KiB |
+| struct-ownership | rust | — | 77.1 ms | 363.2 KiB |
+| struct-ownership | zig | — | 4120.6 ms | 377.0 KiB |
+| struct-ownership | nim | — | 317.1 ms | 66.8 KiB |
+| async-task-pair | z | 109.2 ms | 68.0 ms | 33.6 KiB |
+| async-task-pair | z-direct-await | — | 69.5 ms | 33.6 KiB |
+| native-thread | z | 110.3 ms | 83.3 ms | 34.4 KiB |
+| native-thread | c | — | 58.1 ms | 33.7 KiB |
+| native-thread | rust | — | 170.5 ms | 366.2 KiB |
+| native-thread | zig | — | 5855.5 ms | 377.0 KiB |
 
 ## Semantic equivalence
 

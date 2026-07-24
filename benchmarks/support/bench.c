@@ -84,14 +84,6 @@ void z_bench_report(const char *name, uint64_t nanoseconds, uint64_t checksum) {
   );
 }
 
-void z_bench_report_async_task_pair(uint64_t nanoseconds, uint64_t checksum) {
-  z_bench_report("async-task-pair", nanoseconds, checksum);
-}
-
-void z_bench_report_native_thread(uint64_t nanoseconds, uint64_t checksum) {
-  z_bench_report("native-thread", nanoseconds, checksum);
-}
-
 void *z_bench_malloc(size_t size) {
   atomic_fetch_add_explicit(&z_bench_allocation_count, 1, memory_order_relaxed);
   atomic_fetch_add_explicit(&z_bench_requested_bytes, (uint64_t)size, memory_order_relaxed);

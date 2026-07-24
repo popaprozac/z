@@ -14,8 +14,6 @@ uint64_t z_bench_mix(uint64_t value);
 void z_bench_drop(uint64_t value);
 void z_bench_consume_u64(uint64_t value);
 void z_bench_report(const char *name, uint64_t nanoseconds, uint64_t checksum);
-void z_bench_report_async_task_pair(uint64_t nanoseconds, uint64_t checksum);
-void z_bench_report_native_thread(uint64_t nanoseconds, uint64_t checksum);
 
 void *z_bench_malloc(size_t size);
 void *z_bench_calloc(size_t count, size_t size);

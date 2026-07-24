@@ -15293,6 +15293,7 @@ test("suspends async tasks on scheduler-aware std/time delay", () => {
 test("runs synchronous calls and typed console output inside async frames", () => {
   const source = `
     import console from "std/console";
+    import stdio from "stdio.h";
     struct Point {
       x: i32;
       y: i32;
@@ -15307,6 +15308,8 @@ test("runs synchronous calls and typed console output inside async frames", () =
       const state = State.ready(7);
       show(point);
       console.write("answer ");
+      const label: cstring = "async cstring";
+      stdio.puts(label);
       console.log(sum(20, 22), point.total(), Point.unit(), true, point, state);
       console.error("debug", false);
       return 0;
@@ -15318,6 +15321,9 @@ test("runs synchronous calls and typed console output inside async frames", () =
   assert.match(generated, /Z_Point_total\(&\(frame->value_point\)\)/);
   assert.match(generated, /Z_Point_unit\(\)/);
   assert.match(generated, /fputs\("Point \{ ", stdout\)/);
+  assert.match(generated, /const char \* value_label;/);
+  assert.match(generated, /frame->value_label = "async cstring";/);
+  assert.match(generated, /puts\(frame->value_label\)/);
 
   const directory = mkdtempSync("/tmp/z-async-sync-calls-");
   const fileName = resolve(directory, "main.zs");
@@ -15326,7 +15332,7 @@ test("runs synchronous calls and typed console output inside async frames", () =
   assert.equal(result.status, 0, result.stderr);
   assert.equal(
     result.stdout,
-    "helper Point { x: 20, y: 22 }\nanswer 42 42 1 true Point { x: 20, y: 22 } State.ready(7)\n",
+    "helper Point { x: 20, y: 22 }\nanswer async cstring\n42 42 1 true Point { x: 20, y: 22 } State.ready(7)\n",
   );
   assert.equal(result.stderr, "debug false\n");
 });
