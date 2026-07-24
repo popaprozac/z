@@ -425,10 +425,13 @@ bindings own the selected payload; object-pattern fields borrow the hidden
 payload. A selected value-producing arm may run synchronous statements and
 suspend before its final expression or `select`, while `return`, `throw`,
 propagation, loop control, and cancellation retain exact cleanup.
-Lazy suspension under short-circuit operators, ternaries, and value-producing
-`if` remains diagnosed until branch-aware expression lowering preserves
-selected-branch evaluation. The next Phase 1 layers add ownership-bearing
-selected results, broader foreign-call shapes, and brace-local value cleanup.
+Selected results may own ARC identity, strings, Z values with `deinit`, or
+move-only native storage. A direct owned `await` in the selected arm transfers
+its hidden suspension slot into the result before cleaning the arm. Lazy
+suspension under short-circuit operators, ternaries, and value-producing `if`
+remains diagnosed until branch-aware expression lowering preserves
+selected-branch evaluation. The next Phase 1 layers add broader foreign-call
+shapes and brace-local value cleanup.
 Later phases
 add channels, sendability and atomic ARC, native executors, actors, and
 callback-to-async synthesis. Async-free programs never link the runtime.

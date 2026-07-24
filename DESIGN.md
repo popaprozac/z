@@ -705,6 +705,15 @@ Local recovery likewise remains explicit `attempt await stream.next()`.
 Cancelling a caller awaiting an advancement cancels and joins it before
 destroying the stream frame.
 
+An open design item is recovery-oriented iteration over fallible synchronous
+and asynchronous sequences. The candidate spellings are `attempt for...of` and
+`attempt for await...of`, potentially paired with an `else` branch. Before
+committing that surface, Z must decide whether `else` means natural exhaustion,
+captured failure, or both; how the error is bound; what value-producing loops
+select on each outcome; and how partial progress and cleanup remain visible.
+This is intentionally recorded for later deliberation rather than inferred
+from `try for await`.
+
 `for await (const { field, other: local } of stream)` consumes each yielded
 value struct and transfers selected fields into frame-backed pattern bindings.
 Selected owned fields are cleared in the hidden aggregate; unselected fields
@@ -717,8 +726,10 @@ subject into hidden frame storage, transfer a whole selected payload into
 arm-owned storage, and keep object-pattern fields borrowed from the hidden
 payload. Only the selected value-producing arm may suspend before its final
 expression or `select`; live flags preserve exact cleanup through normal
-selection, loop exits, return, propagation, and cancellation. Producing an
-ownership-bearing selected result, async generator methods, richer async
+selection, loop exits, return, propagation, and cancellation. Selected results
+may themselves own ARC identity, strings, Z values with `deinit`, or move-only
+native storage; a directly awaited owned result transfers its suspension slot
+into the destination before arm cleanup. Async generator methods, richer async
 patterns, and borrowed inputs/yields remain following layers.
 
 The source-inspector pressure test uses this complete synchronous protocol to

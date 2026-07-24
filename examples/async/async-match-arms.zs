@@ -14,29 +14,31 @@ struct LookupError {
 }
 
 enum Lookup {
-  found Job,
+  cached Job,
+  remote i32,
   missing i32,
 }
 
-async function score(id: i32): i32 {
+async function loadRemote(id: i32): Job {
   await delay(1);
-  return id;
+  return new Job({ id });
 }
 
-async function evaluate(lookup: Lookup): i32 throws LookupError {
+async function resolve(lookup: Lookup): Job throws LookupError {
   return match (lookup) {
-    found(job) => {
-      const weighted = await score(job.id);
-      select job.id + weighted;
+    cached(job) => {
+      await delay(1);
+      select job;
     }
+    remote(id) => await loadRemote(id);
     missing(code) => throw LookupError({ code });
   };
 }
 
 async function main(): i32 {
-  const observed = attempt await evaluate(Lookup.found(new Job({ id: 21 })));
+  const observed = attempt await resolve(Lookup.remote(42));
   const answer = match (observed) {
-    success(value) => value;
+    success(job) => job.id;
     failure(error) => -error.code;
   };
 

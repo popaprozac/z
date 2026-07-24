@@ -12992,6 +12992,167 @@ test("runs custom deinit exactly once after transferring an async match payload"
   assert.equal(result.stdout, "released resource 42\n");
 });
 
+test("returns ARC, String, and owned value results from selected async match arms", () => {
+  const directory = mkdtempSync("/tmp/z-async-owned-match-results-");
+  const fileName = resolve(directory, "main.zs");
+  writeFileSync(fileName, `
+    import console from "std/console";
+    import { delay } from "std/time";
+
+    class Session {
+      id: i32;
+      deinit { console.log(\`released selected session \${this.id}\`); }
+    }
+
+    struct Resource {
+      id: i32;
+      deinit { console.log(\`released selected resource \${this.id}\`); }
+    }
+
+    enum SessionChoice { available Session, unavailable, }
+    enum Source { remote, local, }
+
+    async function chooseSession(): Session {
+      const choice = SessionChoice.available(new Session({ id: 20 }));
+      return match (choice) {
+        available(session) => session;
+        unavailable => new Session({ id: 0 });
+      };
+    }
+
+    async function loadResource(): Resource {
+      await delay(1);
+      return Resource({ id: 22 });
+    }
+
+    async function chooseResource(): Resource {
+      return match (Source.remote) {
+        remote => await loadResource();
+        local => Resource({ id: 0 });
+      };
+    }
+
+    async function chooseLabel(): String {
+      const label: String = match (Source.remote) {
+        remote => "selected";
+        local => "fallback";
+      };
+      return label;
+    }
+
+    async function main(): i32 {
+      const session = await chooseSession();
+      const resource = await chooseResource();
+      const label = await chooseLabel();
+      console.log(label);
+      return session.id + resource.id - 42;
+    }
+  `);
+
+  const source = readFileSync(fileName, "utf8");
+  const generated = compileToC(source, fileName);
+  assert.match(generated, /frame->result = Z_Session_retain\(frame->value_session\)/);
+  assert.match(generated, /frame->live_result = true;/);
+  assert.match(generated, /frame->suspend_\d+_live = false/);
+  const sessionOffset = source.indexOf("session = await");
+  assert.match(hover(source, fileName, sessionOffset + 1)?.contents.value ?? "", /session: Session/);
+
+  const result = spawnSync(process.execPath, [cli, "run", fileName], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(
+    result.stdout,
+    "selected\nreleased selected resource 22\nreleased selected session 20\n",
+  );
+});
+
+test("returns a directly awaited move-only native value from an async match arm", () => {
+  const directory = mkdtempSync("/tmp/z-async-native-match-result-");
+  const fileName = resolve(directory, "main.zs");
+  const header = resolve(projectRoot, "tests/fixtures/move-only.hpp");
+  writeFileSync(fileName, `
+    import { delay } from "std/time";
+    import { zcpp } from ${JSON.stringify(header)};
+
+    enum Source { remote, local, }
+
+    async function load(): zcpp.UniqueValue {
+      await delay(1);
+      return zcpp.UniqueValue(42);
+    }
+
+    async function choose(): zcpp.UniqueValue {
+      return match (Source.remote) {
+        remote => await load();
+        local => zcpp.UniqueValue(0);
+      };
+    }
+
+    async function main(): i32 {
+      const selected = await choose();
+      return selected.finish(0) - 42 + zcpp.unique_live();
+    }
+  `);
+
+  const source = readFileSync(fileName, "utf8");
+  const generated = compileToNative(source, fileName).source;
+  assert.match(generated, /new \(frame->result\) zcpp::UniqueValue\(z_async_take/);
+  assert.match(generated, /frame->suspend_\d+_live = false/);
+  const result = spawnSync(process.execPath, [cli, "run", fileName], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+});
+
+test("cleans owned async match results after later error and cancellation", () => {
+  const directory = mkdtempSync("/tmp/z-async-match-result-exits-");
+  const fileName = resolve(directory, "main.zs");
+  writeFileSync(fileName, `
+    import console from "std/console";
+    import { delay } from "std/time";
+
+    struct Resource {
+      id: i32;
+      deinit { console.log(\`released selected result \${this.id}\`); }
+    }
+
+    enum Source { ready, empty, }
+
+    async function failAfterSelection(): i32 throws i32 {
+      const resource: Resource = match (Source.ready) {
+        ready => Resource({ id: 7 });
+        empty => Resource({ id: 0 });
+      };
+      throw resource.id;
+    }
+
+    async function holdAfterSelection(): i32 {
+      const resource: Resource = match (Source.ready) {
+        ready => Resource({ id: 9 });
+        empty => Resource({ id: 0 });
+      };
+      await delay(1000);
+      return resource.id;
+    }
+
+    async function main(): i32 {
+      const observed = attempt await failAfterSelection();
+      const code = match (observed) {
+        success(value) => value;
+        failure(error) => error;
+      };
+      const task = spawn holdAfterSelection();
+      await delay(5);
+      await task.cancel();
+      return code - 7;
+    }
+  `);
+
+  const generated = compileToC(readFileSync(fileName, "utf8"), fileName);
+  assert.match(generated, /frame->live_resource = true;/);
+  assert.match(generated, /if \(frame->live_resource\)/);
+  const result = spawnSync(process.execPath, [cli, "run", fileName], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, "released selected result 7\nreleased selected result 9\n");
+});
+
 test("cleans selected owned match payloads on async error and cancellation", () => {
   const directory = mkdtempSync("/tmp/z-async-owned-match-exits-");
   const fileName = resolve(directory, "main.zs");

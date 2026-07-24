@@ -864,8 +864,10 @@ return match (lookup) {
 The enum subject is moved into hidden frame storage exactly once. A whole
 payload binding becomes the selected arm's owner; object-pattern fields remain
 borrowed from the hidden payload. Live-state cleanup covers normal selection,
-`break`, `continue`, return, error propagation, and cancellation. Selected
-ownership-bearing result transfer, async generator methods, async patterns
+`break`, `continue`, return, error propagation, and cancellation. The selected
+result may itself own ARC identity, a `String`, a Z value with `deinit`, or
+move-only native storage. A directly awaited owned value transfers from its
+hidden suspension slot without copying. Async generator methods, async patterns
 beyond value-struct object fields, and borrowed parameters/yields remain
 explicit follow-up layers.
 

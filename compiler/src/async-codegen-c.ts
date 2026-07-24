@@ -414,7 +414,11 @@ function planFunction(
     if (!site.intrinsic && !site.generator) children.set(site.index, site.target);
     return site;
   };
-  const recordNestedAwaits = (expression: Expression, group: Expression = expression): void => {
+  const recordNestedAwaits = (
+    expression: Expression,
+    group: Expression = expression,
+    allowOwnedRoot = false,
+  ): void => {
     const found = collectNestedAwaitOperations(expression, fileName);
     if (found.length === 0) return;
     const sites = found.map((operation) => {
@@ -425,7 +429,11 @@ function planFunction(
       if (type === "void") {
         unsupported(fileName, operation.source.location, "a void await cannot be embedded in a value expression");
       }
-      if (hasFrameCleanup(type, types) && !/^__z_Result_/.test(type)) {
+      if (
+        hasFrameCleanup(type, types)
+        && !/^__z_Result_/.test(type)
+        && !(allowOwnedRoot && operation.source.location.offset === group.location.offset)
+      ) {
         unsupported(
           fileName,
           operation.source.location,
@@ -444,8 +452,9 @@ function planFunction(
     });
     nestedAwaits.set(group.location.offset, sites);
   };
-  const matchNeedsPlanning = (expression: MatchExpression): boolean => {
+  const matchNeedsPlanning = (expression: MatchExpression, destinationType: string): boolean => {
     if (asyncMatchExpressionNeedsPlanning(expression)) return true;
+    if (hasFrameCleanup(destinationType, types)) return true;
     const subjectType = semanticInfo.expressionTypes.get(expression.expression.location.offset);
     return Boolean(
       subjectType
@@ -468,14 +477,6 @@ function planFunction(
     const declaration = subjectType ? types.enums.get(subjectType) : null;
     if (!subjectType || !declaration) {
       unsupported(fileName, expression.expression.location, "persistent async match requires an enum subject");
-    }
-    if (hasFrameCleanup(destinationType, types)) {
-      unsupported(
-        fileName,
-        expression.location,
-        "a suspending async match cannot produce an ownership-bearing value yet",
-        "select a scalar or plain-data value while owned selected-result transfer is implemented",
-      );
     }
     const borrowed = semanticInfo.borrowedMatches.has(expression.location.offset);
     const subjectBinding = borrowed ? null : `__z_async_match_subject_${expression.location.offset}`;
@@ -518,7 +519,7 @@ function planFunction(
       const prefix = statements.slice(0, -1);
       if (prefix.length > 0) planStatements(prefix, scope, controlDepth + 1);
       if (final.kind === "expressionStatement" || final.kind === "select") {
-        recordNestedAwaits(final.expression);
+        recordNestedAwaits(final.expression, final.expression, hasFrameCleanup(destinationType, types));
         validateFrameExpression(final.expression, locals, fileName, types, suspensions);
         operations.push({ kind: "matchSelect", site, armIndex, expression: final.expression });
       } else if (final.kind === "return" || final.kind === "throw") {
@@ -869,7 +870,7 @@ function planFunction(
         if (!statement.initializer) continue;
         if (
           statement.initializer.kind === "matchExpression"
-          && matchNeedsPlanning(statement.initializer)
+          && matchNeedsPlanning(statement.initializer, type)
         ) {
           operations.pop();
           planValueMatch(
@@ -957,7 +958,7 @@ function planFunction(
       if (statement.kind === "return") {
         if (
           statement.expression?.kind === "matchExpression"
-          && matchNeedsPlanning(statement.expression)
+          && matchNeedsPlanning(statement.expression, declaration.returnType.name)
         ) {
           operations.pop();
           planValueMatch(
@@ -3658,14 +3659,26 @@ function emitAsyncMatchSelect(
   fileName: string,
 ): string[] {
   const { site } = operation;
-  const value = emitFrameExpression(operation.expression, plan, fileName);
+  let value = emitFrameExpression(operation.expression, plan, fileName);
+  const suspension = plan.suspensions.get(operation.expression.location.offset);
+  if (suspension && hasFrameCleanup(site.destinationType, plan.types)) {
+    value = frameTransferredValue(
+      value,
+      `frame->${suspension.field}_live`,
+      site.destinationType,
+      plan.types,
+    );
+  }
+  const initialize = requiresNativeFramePlacement(site.destinationType, plan.types)
+    ? `new (${site.destination}) ${cFrameType(site.destinationType, plan.types)}(${value});`
+    : `${site.destination} = ${value};`;
   const lines = [
-    `${site.destination} = ${value};`,
+    initialize,
+    ...(hasFrameCleanup(site.destinationType, plan.types)
+      ? [`${destinationLiveFlag(site.destination, plan)} = true;`]
+      : []),
     ...emitAsyncMatchCleanupLines(site, operation.armIndex, plan),
   ];
-  if (hasFrameCleanup(site.destinationType, plan.types)) {
-    lines.push(`${destinationLiveFlag(site.destination, plan)} = true;`);
-  }
   if (site.terminal) {
     if (plan.declaration.errorType) lines.push("frame->failed = false;");
     lines.push(`frame->state = ${finalizeStateMarker};`, "continue;");
@@ -4793,11 +4806,21 @@ function emitFrameExpressionInner(
       if (plan.bindings?.has(expression.name)) {
         const value = plan.bindings.get(expression.name)!;
         const type = plan.locals.get(expression.name);
-        return type
+        if (
+          type
           && plan.types.semanticInfo.movedExpressions.has(expression.location.offset)
           && requiresNativeFramePlacement(type, plan.types)
-          ? `std::move(${value})`
-          : value;
+        ) {
+          return `std::move(${value})`;
+        }
+        if (
+          type
+          && plan.types.semanticInfo.managedCopies.has(expression.location.offset)
+          && plan.types.structs.get(type)?.kind === "class"
+        ) {
+          return `Z_${type}_retain(${value})`;
+        }
+        return value;
       }
       if (!plan.locals.has(expression.name)) {
         unsupported(fileName, expression.location, "the first async lowering slice cannot reference this value");
