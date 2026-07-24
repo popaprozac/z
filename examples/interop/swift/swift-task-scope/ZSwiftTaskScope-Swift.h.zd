@@ -6,5 +6,18 @@ declare module "ZSwiftTaskScope-Swift.h" {
     callback completion {
       thread any;
     }
+
+    async completion;
+  }
+
+  export function ZSwiftBackgroundWorker.calculateDelayed(
+    value: _,
+    move completion: _
+  ): _ {
+    callback completion {
+      thread any;
+    }
+
+    async completion;
   }
 }

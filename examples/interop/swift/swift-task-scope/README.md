@@ -1,13 +1,14 @@
-# Swift background callback through `TaskScope`
+# Swift callback-to-async projection
 
-This example composes four native boundaries:
+This example composes five native boundaries:
 
 1. Swift starts work on a global Dispatch queue.
 2. Its generated Objective-C compatibility header exposes an escaping block.
 3. An adjacent `.zd` contract proves that Swift may invoke that block on any
    thread.
-4. The callback submits a synchronous AppKit operation through the named
-   `TaskScope`, which joins it on the main executor before scope exit.
+4. `async completion;` synthesizes an overload that hides the callback and
+   produces a Z task result.
+5. Z awaits that result and then hops to the main executor for AppKit work.
 
 Run it on macOS:
 
@@ -18,10 +19,11 @@ bun run z run examples/interop/swift/swift-task-scope/main.zs
 The expected output is:
 
 ```text
-Swift background result=42
+42
 ```
 
-`waitForCompletion` keeps the foreign producer alive until it has attempted
-submission. It does not execute the AppKit operation. Scope exit performs the
-structured join, and the Darwin executor asserts that the operation runs on the
-process main thread.
+The generated task frame remains alive until Swift invokes its exactly-once
+completion, even when cancellation has already been requested. The raw
+callback-taking overload remains available by supplying `completion:` explicitly.
+The delayed second operation is cancelled after native work starts; Z waits for
+Swift's callback before destroying the frame.

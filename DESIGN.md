@@ -1708,11 +1708,17 @@ completion block. An adjacent `.zd` contract may therefore name an existing
 static class method as `export function Type.method(...)` and refine an
 ARC-owned block with `thread caller` or `thread any`. It cannot invent the class,
 selector, parameters, or ABI. The arbitrary-thread probe copies the block,
-uses atomic ownership for its Z closure environment, submits a synchronous
-AppKit operation through a named `TaskScope`, and joins that operation on
-`thread.main`. The first tier covers static methods only; instance contracts,
-typed completion errors, cardinality, cancellation, and callback-to-async
-synthesis remain separate semantics.
+uses atomic ownership for its Z closure environment, and can submit synchronous
+AppKit operations through a named `TaskScope`.
+
+The same contract may add `async completion;` when that terminal block is
+guaranteed exactly once. Z preserves the raw callback overload and synthesizes
+an async overload whose result is the block's zero-or-one payload. Its owned
+task frame remains alive until completion, including after a cancellation
+request when the native API has no cancellation hook. The first executable tier
+covers static methods and cleanup-free scalar payloads; instance contracts,
+typed completion errors, ownership-bearing payloads, and native cancellation
+hooks remain separate semantics.
 
 A Swift manifest may select `interop: "cxx"`. In that mode `swiftc` emits its
 generated C++ compatibility header as `Module-Swift.hpp`, Z selects C++20, and

@@ -107,6 +107,13 @@
           "2": { "name": "entity.name.function.callback.z" }
         }
       }, {
+        "name": "meta.declaration.async-callback.foreign.z",
+        "match": "\\b(async)\\s+([A-Za-z_][A-Za-z0-9_]*)(?=\\s*;)",
+        "captures": {
+          "1": { "name": "storage.modifier.async.z" },
+          "2": { "name": "entity.name.function.callback.z" }
+        }
+      }, {
         "name": "meta.declaration.callback-context.foreign.z",
         "match": "\\b(context)\\s+([A-Za-z_][A-Za-z0-9_]*)(?=\\s*;)",
         "captures": {

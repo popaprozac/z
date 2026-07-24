@@ -98,6 +98,12 @@ export type ObjCCallInfo = {
   readonly selector: string;
   readonly instance: boolean;
   readonly className: string;
+  readonly async: {
+    readonly callbackParameter: number;
+    readonly resultType: string;
+    readonly parameterTypes: readonly string[];
+    readonly method: ForeignObjCMethod;
+  } | null;
 };
 
 export type ObjCPropertyInfo = {
@@ -6732,7 +6738,7 @@ function inferExpressionInner(
         const objcReceiverType = objcReceiver(receiverValueType, state);
         rejectNullableObjCReceiver(receiverType, expression.callee.object.location, fileName, state);
         if (objcReceiverType) {
-          const method = findObjCMethod(
+          const selection = findObjCMethod(
             objcReceiverType,
             expression.callee.property,
             expression.arguments.length,
@@ -6741,13 +6747,62 @@ function inferExpressionInner(
             fileName,
             expression.callee.location,
           );
+          const method = selection.method;
           checkForeignAvailability(method.metadata, method.selector, expression.callee.location, fileName, state);
-          checkObjCArguments(method, expression.arguments, locals, globals, structs, enums, fileName, state);
+          const checkedMethod = selection.projected
+            ? {
+                ...method,
+                parameters: method.parameters.filter((_, index) => index !== method.asyncCallbackParameter),
+              }
+            : method;
+          checkObjCArguments(checkedMethod, expression.arguments, locals, globals, structs, enums, fileName, state);
+          let asyncProjection: ObjCCallInfo["async"] = null;
+          if (selection.projected) {
+            const callback = method.parameters[method.asyncCallbackParameter!].type;
+            if (callback.kind !== "block") {
+              throw new DiagnosticError(fileName, expression.location, "invalid async Objective-C projection metadata", { code: "Z0801" });
+            }
+            const result = callback.parameters.length === 0 ? "void" : String(foreignValueType(callback.parameters[0]));
+            if (
+              result === "unknown"
+              || (result !== "void" && result !== "boolean" && !integerTypes.has(result) && !floatTypes.has(result))
+            ) {
+              throw new DiagnosticError(
+                fileName,
+                expression.location,
+                `the first executable async Objective-C projection tier requires a scalar callback value, found ${displayArrayType(result)}`,
+                {
+                  code: "Z0700",
+                  helps: ["use the raw callback overload while ownership-bearing async payload frames are implemented"],
+                },
+              );
+            }
+            const context = state.asyncCallContexts.at(-1);
+            if (!state.activeFunction?.async || !context) {
+              throw new DiagnosticError(fileName, expression.location, `async call to ${JSON.stringify(method.baseName)} requires \`await\` or \`spawn\``, {
+                code: "Z0702",
+                notes: ["Z never starts asynchronous work from a naked function call"],
+                helps: ["use `await` for sequential work or `spawn` for concurrent work in an async function"],
+              });
+            }
+            context.calls += 1;
+            asyncProjection = {
+              callbackParameter: method.asyncCallbackParameter!,
+              resultType: result,
+              parameterTypes: checkedMethod.parameters.map((parameter) => String(foreignValueType(parameter.type))),
+              method,
+            };
+          }
           state.objcCalls.set(expression.location.offset, {
             selector: method.selector,
             instance: method.instance,
             className: objcReceiverType.declaration.className,
+            async: asyncProjection,
           });
+          if (selection.projected) {
+            state.foreignCallTypes.set(expression.location.offset, asyncProjection!.resultType);
+            return asyncProjection!.resultType;
+          }
           let result = foreignValueType(method.returnType);
           if (method.returnsInstanceType) {
             const nullable = method.returnType.kind === "object" && method.returnType.nullable;
@@ -9280,7 +9335,7 @@ function findObjCMethod(
   state: AnalysisState,
   fileName: string,
   location: SourceLocation,
-): ForeignObjCMethod {
+): { readonly method: ForeignObjCMethod; readonly projected: boolean } {
   const usesLabels = argumentLabels.some((label) => label !== null);
   if (argumentLabels[0] !== null && argumentLabels.length > 0) {
     throw new DiagnosticError(fileName, location, "the first Objective-C argument is already named by the method and must not have a label");
@@ -9289,14 +9344,19 @@ function findObjCMethod(
     throw new DiagnosticError(fileName, location, "a labeled Objective-C call must label every argument after the first");
   }
   let declaration: ForeignObjCInterface | undefined = receiver.declaration;
-  const matches: ForeignObjCMethod[] = [];
+  const matches: { readonly method: ForeignObjCMethod; readonly projected: boolean }[] = [];
   while (declaration) {
-    matches.push(...declaration.methods.filter((method) => (
-      method.instance === receiver.instance
-      && method.baseName === baseName
-      && method.parameters.length === argumentCount
-      && (!usesLabels || objectiveCLabels(method.selector).every((label, index) => label === argumentLabels[index]))
-    )));
+    matches.push(...declaration.methods.flatMap((method) => {
+      if (method.instance !== receiver.instance || method.baseName !== baseName) return [];
+      const projected = method.asyncCallbackParameter !== null
+        && method.parameters.length - 1 === argumentCount;
+      if (!projected && method.parameters.length !== argumentCount) return [];
+      const labels = projected
+        ? objectiveCLabels(method.selector).filter((_, index) => index !== method.asyncCallbackParameter)
+        : objectiveCLabels(method.selector);
+      if (usesLabels && !labels.every((label, index) => label === argumentLabels[index])) return [];
+      return [{ method, projected }];
+    }));
     if (matches.length > 0 || !declaration.superName) break;
     const moduleName = declaration.typeName.slice(0, declaration.typeName.lastIndexOf("."));
     declaration = state.foreignInterfaces.get(`${moduleName}.${declaration.superName}`);

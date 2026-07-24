@@ -70,11 +70,11 @@ requiring lifetime syntax throughout ordinary application code.
 | Ownership | Lexical borrows, moves, deterministic cleanup, ARC, `Weak<T>`, field-level and whole-aggregate `readonly`, inferred shareable classes, receiver-tied views, and synchronous arena regions |
 | Errors | Typed `throws`, `try` propagation, `attempt`, `Result<T, E>` |
 | Control flow | Checked arithmetic, loops, ternaries, value `if`, exhaustive `match`, owned async matches with selected-arm suspension, custom iterators, cold synchronous `Generator<Yield, Return?, Error?>`, cold awaited `AsyncGenerator<Yield, Return?, Error?>` frames, sequential `for await...of`, and explicit `try for await` propagation |
-| Async | Stackless tasks, FIFO executor, spawn/join scopes, cancellation, delay, reusable async-generator advancement, and nonblocking `thread.spawn` joins with Copy snapshots, unique-owner moves, atomic-ARC readonly sharing, and owned typed worker errors on one native thread |
+| Async | Stackless tasks, FIFO executor, spawn/join scopes, cancellation, delay, reusable async-generator advancement, exactly-once native callback-to-task projection, and nonblocking `thread.spawn` joins with Copy snapshots, unique-owner moves, atomic-ARC readonly sharing, and owned typed worker errors on one native thread |
 | C | Header imports, functions, records, enums, constants, pointers and typed status errors with `.zd` contracts, callbacks, target-aware availability |
 | Objective-C | ARC objects, nullability, selectors, blocks, persistent observers, imported property ownership, lifetime-safe target/action connections, checked Z-class protocol adapters and weak-property bindings, AppKit |
 | C++ | Hierarchical functions/types, overload selection, records, `.zd`-contracted copyable and move-only RAII values, constructors, methods, named-value references, and receiver qualifiers |
-| Swift | Generated Objective-C compatibility headers, arbitrary-thread ARC block callbacks routed through `TaskScope`, plus generated C++ values, associated-value enum cases, methods, copying, cleanup, and exact owned `String` returns |
+| Swift | Generated Objective-C compatibility headers, arbitrary-thread ARC blocks, exactly-once callback-to-task synthesis, plus generated C++ values, associated-value enum cases, methods, copying, cleanup, and exact owned `String` returns |
 | Editor | VS Code/Cursor highlighting, diagnostics, hover, completion, and definitions |
 
 This table is intentionally summarized. The precise implemented boundary and

@@ -199,11 +199,16 @@ These are semantic mappings, not textual rewrites:
 | C++ RAII value | `export type` with `copy` or `move`, and `deinit` | Deterministic Z-owned native storage |
 | Objective-C object/method/property/protocol | Usually no `.zd` entry | Clang supplies ARC identity, nullability, selectors, blocks, and protocol metadata directly |
 | Objective-C/Swift static method with an escaping block | `export function Type.method(..., move completion: _)` plus `callback completion { thread ...; }` | Native block owns the Z closure under ARC; `.zd` supplies the thread guarantee absent from the header |
+| Objective-C/Swift exactly-once completion method | The escaping-block contract plus `async completion;` | Keeps the raw overload and synthesizes `async method(...): T`; zero callback values produce `void`, one cleanup-free scalar produces `T` |
 
 The current Objective-C method contract tier names an existing static method by
 class and base name; it does not redeclare or rename selectors. Parameter names
-disambiguate the imported selector, and only block lifetime/thread facts may be
-refined. Ordinary Objective-C calls still need no sidecar.
+disambiguate the imported selector. Block lifetime/thread facts may be refined,
+and `async completion;` may identify the terminal escaping block as exactly
+once. The first executable projection tier requires a static method, a terminal
+callback parameter, native and block `void` returns, and zero or one
+cleanup-free scalar callback value. Ordinary Objective-C calls still need no
+sidecar.
 
 ## Trust boundary
 

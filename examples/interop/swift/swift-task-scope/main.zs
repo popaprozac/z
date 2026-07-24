@@ -1,27 +1,20 @@
 import console from "std/console";
 import { thread } from "std/thread";
+import { delay } from "std/time";
 import AppKit from "AppKit/AppKit.h";
 import Swift from "ZSwiftTaskScope-Swift.h";
 
 async function main(): i32 {
-  async scope updates {
-    Swift.ZSwiftBackgroundWorker.calculate(
-      40,
-      completion: move (value) => {
-        const accepted = updates.spawn(
-          thread.main,
-          move (): void => {
-            const label = AppKit.NSTextField.alloc().initWithFrame(
-              AppKit.NSMakeRect(0.0, 0.0, 240.0, 24.0)
-            );
-            label.stringValue = `Swift background result=${value}`;
-            console.log(label.stringValue);
-          }
-        );
-        if (!accepted) return;
-      }
+  const value = await Swift.ZSwiftBackgroundWorker.calculate(40);
+  await on thread.main {
+    const label = AppKit.NSTextField.alloc().initWithFrame(
+      AppKit.NSMakeRect(0.0, 0.0, 240.0, 24.0)
     );
-    Swift.ZSwiftBackgroundWorker.waitForCompletion();
+    label.sizeToFit();
+    console.log(value);
   }
-  return 0;
+  const cancelled = spawn Swift.ZSwiftBackgroundWorker.calculateDelayed(1);
+  await delay(1);
+  await cancelled.cancel();
+  return value - 42;
 }

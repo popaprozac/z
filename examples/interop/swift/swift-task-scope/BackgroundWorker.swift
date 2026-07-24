@@ -17,6 +17,18 @@ public final class SwiftBackgroundWorker: NSObject {
     }
   }
 
+  @objc(calculateDelayed:completion:)
+  public static func calculateDelayed(
+    _ value: Int32,
+    completion: @escaping @Sendable (Int32) -> Void
+  ) {
+    work.enter()
+    DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + .milliseconds(30)) {
+      completion(value + 2)
+      work.leave()
+    }
+  }
+
   @objc(waitForCompletion)
   public static func waitForCompletion() {
     work.wait()

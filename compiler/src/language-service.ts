@@ -113,7 +113,7 @@ const primitiveTypeTokens = [
 
 const declarationKeywordTokens = [
   "declare", "module", "export", "function", "type", "copy", "in", "inout", "out", "move", "deinit",
-  "callback", "context", "thread", "caller", "any", "transfer", "share", "fixed", "throws", "success",
+  "async", "callback", "context", "thread", "caller", "any", "transfer", "share", "fixed", "throws", "success",
 ] as const;
 
 export function diagnostics(source: string, fileName: string): ServiceDiagnostic[] {
@@ -2157,6 +2157,27 @@ function foreignDeclarationCompletions(source: string, fileName: string, offset:
     }
   }
 
+  const asyncContractPrefix = /\basync\s+([A-Za-z_][A-Za-z0-9_]*)?$/.exec(before)?.[1];
+  if (ownerSignatures.length > 0 && asyncContractPrefix !== undefined) {
+    const candidates = new Map<string, string>();
+    for (const overload of ownerSignatures) {
+      for (const parameter of overload.parameters) {
+        if (parameter.name && parameter.type.kind === "block" && parameter.type.escaping) {
+          candidates.set(parameter.name, foreignTypeName(parameter.type));
+        }
+      }
+    }
+    for (const [name, type] of candidates) {
+      if (!name.toLowerCase().startsWith(asyncContractPrefix.toLowerCase())) continue;
+      contextual.push({
+        label: name,
+        kind: completionKinds.variable,
+        detail: `exactly-once terminal callback projected as async: ${type}`,
+        sortText: `0-${name}`,
+      });
+    }
+  }
+
   const contextContractPrefix = /\bcallback\s+([A-Za-z_][A-Za-z0-9_]*)\s*\{\s*context\s+([A-Za-z_][A-Za-z0-9_]*)?$/.exec(before);
   if (ownerSignatures.length > 0 && contextContractPrefix?.[2] !== undefined) {
     const candidates = new Map<string, string>();
@@ -2440,6 +2461,27 @@ function foreignDeclarationHover(source: string, fileName: string, offset: numbe
           word.end,
         );
       }
+    }
+    if (
+      contract.asyncCallback
+      && (
+        contract.asyncLocation?.offset === word.start
+        || contract.asyncCallbackLocation?.offset === word.start
+      )
+    ) {
+      const callbackIndex = contract.parameters.findIndex((parameter) => parameter.name === contract.asyncCallback);
+      const callbackType = nativeSignatures
+        .map((signature) => signature.parameters[callbackIndex]?.type)
+        .find((type) => type?.kind === "block");
+      const result = callbackType?.kind === "block"
+        ? callbackType.parameters.length === 0 ? "void" : foreignTypeName(callbackType.parameters[0])
+        : "_";
+      return markdownHover(
+        `async ${contract.asyncCallback}: ${result}  // exactly-once terminal callback synthesized as an awaitable overload`,
+        source,
+        word.start,
+        word.end,
+      );
     }
   }
   return null;
@@ -3971,22 +4013,34 @@ function objcPropertyDetail(property: ForeignObjCProperty): string {
 }
 
 function objCMethodSnippet(method: ForeignObjCMethod): string {
-  if (method.parameters.length === 0) return `${method.baseName}()`;
+  const parameters = method.asyncCallbackParameter === null
+    ? method.parameters
+    : method.parameters.filter((_, index) => index !== method.asyncCallbackParameter);
+  if (parameters.length === 0) return `${method.baseName}()`;
   const parts = selectorParts(method.selector);
-  const args = method.parameters.map((parameter, index) => {
+  const args = parameters.map((parameter, visibleIndex) => {
+    const index = method.parameters.indexOf(parameter);
     const placeholder = `\${${index + 1}:${parameter.name ?? "value"}}`;
-    return index === 0 ? placeholder : `${parts[index]}: ${placeholder}`;
+    return visibleIndex === 0 ? placeholder : `${parts[index]}: ${placeholder}`;
   });
   return `${method.baseName}(${args.join(", ")})`;
 }
 
 function objCMethodDetail(method: ForeignObjCMethod): string {
-  const parameters = method.parameters.map((parameter, index) => {
+  const signature = (parameters: readonly ForeignObjCMethod["parameters"][number][]): string => parameters.map((parameter) => {
+    const index = method.parameters.indexOf(parameter);
     const label = selectorParts(method.selector)[index];
     const sourceName = index === 0 ? parameter.name ?? "value" : label;
     return `${sourceName}: ${foreignTypeName(parameter.type)}`;
-  });
-  return `${method.baseName}(${parameters.join(", ")}): ${foreignTypeName(method.returnType)}  // ${method.selector}${foreignAvailabilityDetail(method.metadata)}`;
+  }).join(", ");
+  const raw = `${method.baseName}(${signature(method.parameters)}): ${foreignTypeName(method.returnType)}  // ${method.selector}${foreignAvailabilityDetail(method.metadata)}`;
+  if (method.asyncCallbackParameter === null) return raw;
+  const callback = method.parameters[method.asyncCallbackParameter].type;
+  const result = callback.kind === "block"
+    ? callback.parameters.length === 0 ? "void" : foreignTypeName(callback.parameters[0])
+    : "_";
+  const visible = method.parameters.filter((_, index) => index !== method.asyncCallbackParameter);
+  return `async ${method.baseName}(${signature(visible)}): ${result}  // synthesized from exactly-once callback\n${raw}`;
 }
 
 function resolveForeignModuleNamespace(

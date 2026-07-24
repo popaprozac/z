@@ -528,15 +528,25 @@ declare module "ZSwiftTaskScope-Swift.h" {
     callback completion {
       thread any;
     }
+
+    async completion;
   }
 }
 ```
 
 The class, static selector, parameter names, and block ABI remain Clang-derived.
-The contract makes the closure environment atomic and checks its captures; the
-copied native block retains and releases that environment through Objective-C
-ARC. Instance-method contracts and richer completion/error semantics remain
-future tiers.
+The callback contract makes a raw closure environment atomic and checks its
+captures; the copied native block retains and releases that environment through
+Objective-C ARC. `async completion;` additionally promises exactly-once terminal
+delivery. Z preserves the raw callback overload and synthesizes
+`async calculate(value: i32): i32`, usable with either `await` or `spawn`.
+
+The projected task owns its callback frame until completion. Cancellation
+without a native cancellation hook requests cancellation but still waits for
+the callback before destroying that frame. The first executable tier supports
+static methods with zero or one cleanup-free scalar completion value. Instance
+methods, typed completion errors, ownership-bearing values, and native
+cancellation hooks remain future tiers.
 
 An arbitrary-thread callback does not itself create an unowned root task.
 Instead, the implemented `TaskScope` bridge owns callback-created operations,
@@ -566,10 +576,10 @@ token, and source code explicitly unregisters it. Weak capture prevents the
 block from strongly cycling back to ARC-managed application state. The AppKit
 observer probe remains caller-thread/AppKit-executor work. The arbitrary-thread
 C and Swift-block tiers now prove atomic ARC environment ownership,
-conservative capture shareability, and TaskScope-based main-executor delivery.
-Typed scope errors, conditional C ownership transfer, instance block contracts,
-and callback-to-async synthesis still require richer completion, cancellation,
-executor, and release metadata.
+conservative capture shareability, TaskScope-based main-executor delivery, and
+exactly-once Swift/Objective-C callback-to-task synthesis. Typed scope errors,
+conditional C ownership transfer, instance block contracts, typed callback
+failures, and native cancellation hooks still require richer metadata.
 
 ## Direct Objective-C imports versus `std/objc`
 

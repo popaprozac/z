@@ -47,6 +47,9 @@ export type ApiNotes = {
   }>>;
   readonly objcMethods?: Readonly<Record<string, {
     readonly parameters?: Readonly<Record<string, PointerNote>>;
+    readonly async?: {
+      readonly callbackParameter: number;
+    };
   }>>;
 };
 
@@ -66,6 +69,7 @@ export function mergeApiNotes(
   }> = {};
   const objcMethods: Record<string, {
     parameters?: Record<string, PointerNote>;
+    async?: { readonly callbackParameter: number };
   }> = {};
   const owners = new Map<string, string>();
   for (const source of sources) {
@@ -95,6 +99,16 @@ export function mergeApiNotes(
     }
     for (const [methodName, note] of Object.entries(source.notes.objcMethods ?? {})) {
       const target = objcMethods[methodName] ??= {};
+      if (note.async) {
+        const path = `objcMethods.${methodName}.async`;
+        if (target.async && JSON.stringify(target.async) !== JSON.stringify(note.async)) {
+          throw new ApiNoteConflictError(path, owners.get(path) ?? "an earlier source", source.name);
+        }
+        if (!target.async) {
+          target.async = note.async;
+          owners.set(path, source.name);
+        }
+      }
       for (const [index, parameter] of Object.entries(note.parameters ?? {})) {
         const parameters = target.parameters ??= {};
         parameters[index] = mergePointerNote(

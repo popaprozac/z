@@ -1413,7 +1413,7 @@ test("diagnoses malformed and mismatched Z declaration contracts", () => {
   `;
   const executableDiagnostic = diagnostics(executableContract, "/tmp/contract.h.zd")[0];
   assert.equal(executableDiagnostic.code, "Z0801");
-  assert.match(executableDiagnostic.message, /expected "deinit", "thread", "callback", or "success" in foreign function contract/);
+  assert.match(executableDiagnostic.message, /expected "async", "deinit", "thread", "callback", or "success" in foreign function contract/);
 
   const threadWithoutOwner = `
     declare module "contract.h" {
@@ -3872,18 +3872,17 @@ test("builds a declared Swift target for ordinary CLI and editor workflows", () 
   );
 });
 
-test("routes Swift background callbacks through TaskScope onto the main executor", () => {
+test("projects an exactly-once Swift callback into an awaitable Z task", () => {
   if (process.platform !== "darwin") return;
   const example = resolve(projectRoot, "examples/interop/swift/swift-task-scope/main.zs");
   const source = readFileSync(example, "utf8");
   const artifact = compileToNative(source, example);
   assert.equal(artifact.language, "objective-c");
-  assert.match(artifact.source, /\[ZSwiftBackgroundWorker calculate:40 completion:_z_async_objc_block_[0-9]+\]/);
-  assert.match(artifact.source, /\[ZSwiftBackgroundWorker waitForCompletion\]/);
-  assert.match(artifact.source, /z_task_scope_spawn\(updates,/);
-  assert.match(artifact.source, /__atomic_add_fetch\(&environment->refcount, 1, __ATOMIC_RELAXED\)/);
-  assert.match(artifact.source, /__atomic_sub_fetch\(&environment->refcount, 1, __ATOMIC_ACQ_REL\)/);
-  assert.doesNotMatch(artifact.source, /z_task_scope_retain\(z_task_scope_retain\(/);
+  assert.match(artifact.source, /\[ZSwiftBackgroundWorker calculate:frame->value_value completion:\^void\(int32_t value\)/);
+  assert.match(artifact.source, /z_async_begin_external_completion\(task\)/);
+  assert.match(artifact.source, /z_async_report_external_completion\(&frame->task\)/);
+  assert.match(artifact.source, /active_external_callbacks/);
+  assert.doesNotMatch(artifact.source, /\[ZSwiftBackgroundWorker waitForCompletion\]/);
 
   const context = analyzeSource(source, example);
   const calculate = context.foreignModules.get("Swift")
@@ -3894,6 +3893,28 @@ test("routes Swift background callbacks through TaskScope onto the main executor
     assert.equal(calculate.parameters[1].type.escaping, true);
     assert.equal(calculate.parameters[1].type.thread, "any");
   }
+  assert.equal(calculate?.asyncCallbackParameter, 1);
+
+  const naked = source.replace(
+    "const value = await Swift.ZSwiftBackgroundWorker.calculate(40);",
+    "const value = Swift.ZSwiftBackgroundWorker.calculate(40);",
+  );
+  const nakedDiagnostic = diagnostics(naked, example)[0];
+  assert.equal(nakedDiagnostic.code, "Z0702");
+  assert.match(nakedDiagnostic.message, /requires `await` or `spawn`/);
+
+  const rawSource = `
+    import Swift from "ZSwiftTaskScope-Swift.h";
+    function main(): i32 {
+      Swift.ZSwiftBackgroundWorker.calculate(
+        40,
+        completion: move (value) => { return; }
+      );
+      Swift.ZSwiftBackgroundWorker.waitForCompletion();
+      return 0;
+    }
+  `;
+  assert.deepEqual(diagnostics(rawSource, example), []);
 
   const invalidDirectory = mkdtempSync("/tmp/z-swift-block-contract-");
   const generatedHeader = resolve(artifact.includeDirectories[0], "ZSwiftTaskScope-Swift.h");
@@ -3932,7 +3953,8 @@ test("routes Swift background callbacks through TaskScope onto the main executor
     declarationFile,
     declarationSource.indexOf("ZSwiftBackgroundWorker.calculate") + 2,
   )?.contents.value ?? "";
-  assert.match(methodHover, /static ZSwiftBackgroundWorker\.calculate\(value: i32, completion: \(argument1: i32\) => void\): void/);
+  assert.match(methodHover, /async calculate\(value: i32\): i32/);
+  assert.match(methodHover, /calculate\(value: i32, completion: \(argument1: i32\) => void\): void/);
   assert.match(
     definition(
       declarationSource,
@@ -3962,6 +3984,26 @@ test("routes Swift background callbacks through TaskScope onto the main executor
       .find((item) => item.label === "completion")?.kind,
     6,
   );
+  const asyncHover = hover(
+    declarationSource,
+    declarationFile,
+    declarationSource.indexOf("async completion") + 1,
+  )?.contents.value ?? "";
+  assert.match(asyncHover, /exactly-once terminal callback synthesized as an awaitable overload/);
+  const asyncCompletionSource = declarationSource.replace("async completion;", "async comp");
+  const asyncCompletionOffset = asyncCompletionSource.indexOf("async comp") + "async comp".length;
+  assert.equal(
+    completions(asyncCompletionSource, declarationFile, asyncCompletionOffset)
+      .find((item) => item.label === "completion")?.kind,
+    6,
+  );
+
+  const sourceHover = hover(
+    source,
+    example,
+    source.indexOf("calculate(40)") + 2,
+  )?.contents.value ?? "";
+  assert.match(sourceHover, /async calculate\(value: i32\): i32/);
 
   const nativeCheck = spawnSync(
     process.execPath,
@@ -3973,7 +4015,7 @@ test("routes Swift background callbacks through TaskScope onto the main executor
 
   const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
-  assert.equal(result.stdout, "Swift background result=42\n");
+  assert.equal(result.stdout, "42\n");
 }, 60_000);
 
 test("imports and owns a Swift value through its generated C++ compatibility header", () => {
@@ -12674,11 +12716,13 @@ test("editor grammar tracks keywords without reserving Result variants", () => {
   assert.equal(foreignDeclarationPatterns[9].captures[2].name, "constant.numeric.integer.status.z");
   assert.equal(foreignDeclarationPatterns[10].captures[1].name, "storage.type.inferred.z");
   assert.equal(foreignDeclarationPatterns[11].captures[1].name, "keyword.control.declaration.callback.z");
-  assert.equal(foreignDeclarationPatterns[12].captures[1].name, "keyword.control.declaration.callback.z");
-  assert.equal(foreignDeclarationPatterns[12].captures[2].name, "variable.parameter.context.z");
+  assert.equal(foreignDeclarationPatterns[12].captures[1].name, "storage.modifier.async.z");
+  assert.equal(foreignDeclarationPatterns[12].captures[2].name, "entity.name.function.callback.z");
   assert.equal(foreignDeclarationPatterns[13].captures[1].name, "keyword.control.declaration.callback.z");
-  assert.equal(foreignDeclarationPatterns[13].captures[2].name, "constant.language.callback-thread.z");
-  assert.match(foreignDeclarationPatterns[13].match, /caller\\\|any|caller\|any/);
+  assert.equal(foreignDeclarationPatterns[13].captures[2].name, "variable.parameter.context.z");
+  assert.equal(foreignDeclarationPatterns[14].captures[1].name, "keyword.control.declaration.callback.z");
+  assert.equal(foreignDeclarationPatterns[14].captures[2].name, "constant.language.callback-thread.z");
+  assert.match(foreignDeclarationPatterns[14].match, /caller\\\|any|caller\|any/);
   assert.match(selectiveImportPatterns, /\\bas\\b/);
   assert.doesNotMatch("move () =>", new RegExp(matchPattern));
   assert.match("some(value) =>", new RegExp(matchPattern));

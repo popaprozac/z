@@ -43,6 +43,9 @@ export type ForeignFunctionContract = {
   readonly thread: ForeignThreadContract;
   readonly threadLocations: ForeignThreadContractLocations;
   readonly callbacks: readonly ForeignCallbackContract[];
+  readonly asyncCallback: string | null;
+  readonly asyncLocation: SourceLocation | null;
+  readonly asyncCallbackLocation: SourceLocation | null;
 };
 
 export type ForeignThreadContractLocations = {
@@ -377,10 +380,22 @@ export function parseForeignDeclarationContracts(source: string, fileName: strin
     let releaseLocation: SourceLocation | null = null;
     let threadContract = emptyThreadContract();
     const callbacks: ForeignCallbackContract[] = [];
+    let asyncCallback: string | null = null;
+    let asyncLocation: SourceLocation | null = null;
+    let asyncCallbackLocation: SourceLocation | null = null;
     if (at("{")) {
       take();
       while (!at("}")) {
         const contract = peek();
+        if (at("async")) {
+          if (asyncCallback) fail(contract, `foreign function ${JSON.stringify(name)} cannot declare more than one async callback`);
+          asyncLocation = take().location;
+          const callback = expectIdentifier("a terminal callback parameter name after `async`");
+          asyncCallback = callback.text;
+          asyncCallbackLocation = callback.location;
+          expectText(";");
+          continue;
+        }
         if (at("thread")) {
           if (threadContract.locations.location) fail(contract, `foreign function ${JSON.stringify(name)} cannot declare more than one result thread contract`);
           threadContract = parseThreadContract(`result of foreign function ${JSON.stringify(name)}`);
@@ -456,7 +471,7 @@ export function parseForeignDeclarationContracts(source: string, fileName: strin
           continue;
         }
         if (!at("deinit")) {
-          fail(contract, `expected "deinit", "thread", "callback", or "success" in foreign function contract, found ${JSON.stringify(contract.text)}`);
+          fail(contract, `expected "async", "deinit", "thread", "callback", or "success" in foreign function contract, found ${JSON.stringify(contract.text)}`);
         }
         if (release) fail(contract, `foreign function ${JSON.stringify(name)} cannot declare more than one deinit contract`);
         take();
@@ -496,6 +511,9 @@ export function parseForeignDeclarationContracts(source: string, fileName: strin
       thread: threadContract.thread,
       threadLocations: threadContract.locations,
       callbacks,
+      asyncCallback,
+      asyncLocation,
+      asyncCallbackLocation,
     });
   }
   expectText("}");
@@ -529,6 +547,7 @@ export function foreignDeclarationApiNotes(
   }> = {};
   const objcMethods: Record<string, {
     parameters?: Record<string, PointerNote>;
+    async?: { readonly callbackParameter: number };
   }> = {};
   for (const contract of contracts.functions) {
     const declaration = declarations.get(contract.name);
@@ -542,6 +561,14 @@ export function foreignDeclarationApiNotes(
       }
       objcMethods[method.key] = objectiveCMethodApiNote(contract, method.method, fileName);
       continue;
+    }
+    if (contract.asyncCallback) {
+      throw new DiagnosticError(
+        fileName,
+        contract.asyncCallbackLocation!,
+        "the first async callback projection tier supports static Objective-C methods only",
+        { code: "Z0801" },
+      );
     }
     const parameters: Record<string, PointerNote> = {};
     for (const overload of declaration.overloads) {
@@ -754,7 +781,10 @@ function objectiveCMethodApiNote(
   contract: ForeignFunctionContract,
   method: ForeignObjCMethod,
   fileName: string,
-): { readonly parameters?: Readonly<Record<string, PointerNote>> } {
+): {
+  readonly parameters?: Readonly<Record<string, PointerNote>>;
+  readonly async?: { readonly callbackParameter: number };
+} {
   if (
     contract.returnSemanticType !== "inferred"
     || contract.release
@@ -821,7 +851,86 @@ function objectiveCMethodApiNote(
       );
     }
   }
-  return Object.keys(parameters).length ? { parameters } : {};
+  let asyncProjection: { readonly callbackParameter: number } | undefined;
+  if (contract.asyncCallback) {
+    const callbackIndex = contract.parameters.findIndex((parameter) => parameter.name === contract.asyncCallback);
+    if (callbackIndex < 0) {
+      throw new DiagnosticError(
+        fileName,
+        contract.asyncCallbackLocation!,
+        `async contract names unknown callback parameter ${JSON.stringify(contract.asyncCallback)} on ${JSON.stringify(contract.name)}`,
+        { code: "Z0801" },
+      );
+    }
+    const parameter = contract.parameters[callbackIndex];
+    const native = method.parameters[callbackIndex];
+    const callback = callbacks.get(contract.asyncCallback);
+    if (native.type.kind !== "block" || !callback) {
+      throw new DiagnosticError(
+        fileName,
+        contract.asyncCallbackLocation!,
+        `async callback ${JSON.stringify(contract.asyncCallback)} must name a declared Objective-C block callback`,
+        { code: "Z0801" },
+      );
+    }
+    if (callbackIndex !== contract.parameters.length - 1) {
+      throw new DiagnosticError(
+        fileName,
+        contract.asyncCallbackLocation!,
+        `async callback ${JSON.stringify(contract.asyncCallback)} must be the terminal native parameter in the first projection tier`,
+        { code: "Z0801" },
+      );
+    }
+    if (!native.type.escaping || parameter.mode !== "move") {
+      throw new DiagnosticError(
+        fileName,
+        contract.asyncCallbackLocation!,
+        `async callback ${JSON.stringify(contract.asyncCallback)} must be an escaping move block`,
+        { code: "Z0801" },
+      );
+    }
+    if (callback.thread !== "caller" && callback.thread !== "any") {
+      throw new DiagnosticError(
+        fileName,
+        contract.asyncCallbackLocation!,
+        `async callback ${JSON.stringify(contract.asyncCallback)} requires a caller or any thread guarantee`,
+        { code: "Z0801" },
+      );
+    }
+    if (!isVoidForeignType(method.returnType)) {
+      throw new DiagnosticError(
+        fileName,
+        contract.returnLocation,
+        "an async Objective-C projection currently requires the native method to return void",
+        { code: "Z0801" },
+      );
+    }
+    if (!isVoidForeignType(native.type.returnType)) {
+      throw new DiagnosticError(
+        fileName,
+        contract.asyncCallbackLocation!,
+        "an async Objective-C projection currently requires its callback to return void",
+        { code: "Z0801" },
+      );
+    }
+    if (native.type.parameters.length > 1) {
+      throw new DiagnosticError(
+        fileName,
+        contract.asyncCallbackLocation!,
+        `an async Objective-C projection currently supports zero or one callback value, found ${native.type.parameters.length}`,
+        { code: "Z0801" },
+      );
+    }
+    asyncProjection = { callbackParameter: callbackIndex };
+  }
+  return {
+    ...(Object.keys(parameters).length ? { parameters } : {}),
+    ...(asyncProjection ? { async: asyncProjection } : {}),
+  };
+}
+
+function isVoidForeignType(type: ForeignBlockType["returnType"]): boolean {
+  return type.kind === "z" && type.name === "void";
 }
 
 function validateObjCBlockContract(

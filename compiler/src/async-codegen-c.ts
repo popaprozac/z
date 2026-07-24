@@ -20,7 +20,7 @@ import { parsePointerTypeName } from "./foreign.ts";
 import { resultTypeName } from "./results.ts";
 import { parseSetType } from "./set-types.ts";
 import { standardFunctionSignature } from "./standard-library.ts";
-import type { IntegerOperation, SemanticInfo } from "./sema.ts";
+import type { IntegerOperation, ObjCCallInfo, SemanticInfo } from "./sema.ts";
 import {
   closureAdapterName,
   closureEnvironmentName,
@@ -147,11 +147,18 @@ type AsyncOperation =
 type AsyncTarget = {
   readonly declaration: FunctionDeclaration;
   readonly owner: StructDeclaration | null;
+  readonly foreign?: ForeignAsyncProjection;
+};
+
+type ForeignAsyncProjection = NonNullable<ObjCCallInfo["async"]> & {
+  readonly className: string;
+  readonly selector: string;
 };
 
 type AsyncFunctionPlan = {
   readonly declaration: FunctionDeclaration;
   readonly owner: StructDeclaration | null;
+  readonly foreign: ForeignAsyncProjection | null;
   readonly nativeThread: boolean;
   readonly generator: ReturnType<typeof parseAsyncGeneratorType>;
   readonly frameName: string;
@@ -188,6 +195,7 @@ type AsyncTypeContext = {
   readonly enums: ReadonlyMap<string, EnumDeclaration>;
   readonly functions: ReadonlyMap<string, FunctionDeclaration>;
   readonly semanticInfo: SemanticInfo;
+  readonly foreignTargets: ReadonlyMap<number, AsyncTarget>;
 };
 
 type FrameExpressionContext = {
@@ -271,7 +279,38 @@ export function generateAsyncC(
       },
     });
   }
-  const targets: AsyncTarget[] = [...sourceTargets, ...threadTargets.values()];
+  const foreignTargets = new Map<number, AsyncTarget>();
+  for (const [callOffset, call] of semanticInfo.objcCalls) {
+    if (!call.async) continue;
+    const location: SourceLocation = { offset: callOffset, line: 1, column: 1, fileName };
+    const visibleParameters = call.async.method.parameters.filter((_, index) => index !== call.async!.callbackParameter);
+    const foreign: ForeignAsyncProjection = {
+      ...call.async,
+      className: call.className,
+      selector: call.selector,
+    };
+    foreignTargets.set(callOffset, {
+      owner: null,
+      foreign,
+      declaration: {
+        kind: "function",
+        name: `__z_foreign_async_${callOffset}`,
+        async: true,
+        receiverMode: null,
+        parameters: visibleParameters.map((parameter, index) => ({
+          name: parameter.name ?? `argument${index + 1}`,
+          mode: "value",
+          type: { name: call.async!.parameterTypes[index], location },
+          location,
+        })),
+        returnType: { name: call.async.resultType, location },
+        errorType: null,
+        body: [],
+        location,
+      },
+    });
+  }
+  const targets: AsyncTarget[] = [...sourceTargets, ...threadTargets.values(), ...foreignTargets.values()];
   const functions = new Map(
     targets.filter((target) => !target.owner).map((target) => [target.declaration.name, target]),
   );
@@ -280,6 +319,7 @@ export function generateAsyncC(
     enums: new Map(program.enums.map((declaration) => [declaration.name, declaration])),
     functions: new Map(program.functions.map((declaration) => [declaration.name, declaration])),
     semanticInfo,
+    foreignTargets,
   };
   const placementTargets = new Map<number, PlacementTarget>();
   const registerPlacement = (
@@ -324,9 +364,9 @@ export function generateAsyncC(
     [...plan.awaits.values()].some((site) => site.placement !== null)
     || [...plan.spawns.values()].some((site) => site.placement !== null)
   )) || semanticInfo.taskScopeSpawnCalls.size > 0;
-  const usesNativeThreads = semanticInfo.taskScopeSpawnCalls.size > 0 || plans.some((plan) => (
-    [...plan.spawns.values()].some((site) => site.nativeThread)
-  ));
+  const usesNativeThreads = foreignTargets.size > 0
+    || semanticInfo.taskScopeSpawnCalls.size > 0
+    || plans.some((plan) => [...plan.spawns.values()].some((site) => site.nativeThread));
   return {
     synchronousProgram,
     source: generateRuntime(plans, planByKey, main, fileName),
@@ -350,6 +390,7 @@ function planFunction(
   ) => PlacementTarget,
 ): AsyncFunctionPlan {
   const { declaration, owner } = target;
+  const foreign = target.foreign ?? null;
   const nativeThread = [...threadTargets.values()].includes(target);
   const generator = parseAsyncGeneratorType(declaration.returnType.name);
   requireFrameType(
@@ -1132,6 +1173,7 @@ function planFunction(
   return {
     declaration,
     owner,
+    foreign,
     nativeThread,
     generator,
     frameName: `Z_AsyncFrame_${part}`,
@@ -1940,6 +1982,8 @@ function resolveAsyncCall(
   locals: ReadonlyMap<string, string>,
   types: AsyncTypeContext,
 ): { readonly target: AsyncTarget; readonly receiver: Expression | null } {
+  const foreign = types.foreignTargets.get(call.location.offset);
+  if (foreign) return { target: foreign, receiver: null };
   if (call.callee.kind === "identifier") {
     const target = functions.get(call.callee.name);
     if (target?.declaration.async) return { target, receiver: null };
@@ -2234,6 +2278,7 @@ function generateRuntime(
     || plan.types.semanticInfo.taskScopeSpawnCalls.size > 0
   ));
   const usesThreads = usesTaskScopes
+    || plans.some((plan) => plan.foreign !== null)
     || plans.some((plan) => [...plan.spawns.values()].some((site) => site.nativeThread));
   const usesMainPlacement = plans.some((plan) => (
     [...plan.awaits.values()].some((site) => site.placement !== null)
@@ -2296,6 +2341,7 @@ function generateRuntime(
     "  bool cancelled;",
     "  bool timer_scheduled;",
     "  bool native_thread;",
+    "  bool external_completion;",
     "  bool thread_joined;",
     "  bool native_body_completed;",
     "  bool native_thread_finished;",
@@ -2322,6 +2368,7 @@ function generateRuntime(
       "  Z_AsyncTask *thread_enqueued_head;",
       "  Z_AsyncTask *thread_enqueued_tail;",
       "  size_t active_native_threads;",
+      "  size_t active_external_callbacks;",
       "#if defined(_WIN32)",
       "  CRITICAL_SECTION thread_mutex;",
       "  CONDITION_VARIABLE thread_condition;",
@@ -2362,14 +2409,14 @@ function generateRuntime(
     ] : []),
     "static __attribute__((unused)) bool z_async_is_completed(Z_AsyncTask *task) {",
     ...(usesThreads ? [
-      "  if (task->native_thread) return __atomic_load_n(&task->completed, __ATOMIC_ACQUIRE);",
+      "  if (task->native_thread || task->external_completion) return __atomic_load_n(&task->completed, __ATOMIC_ACQUIRE);",
     ] : []),
     "  return task->completed;",
     "}",
     "",
     "static __attribute__((unused)) bool z_async_is_cancellation_requested(Z_AsyncTask *task) {",
     ...(usesThreads ? [
-      "  if (task->native_thread) return __atomic_load_n(&task->cancellation_requested, __ATOMIC_ACQUIRE);",
+      "  if (task->native_thread || task->external_completion) return __atomic_load_n(&task->cancellation_requested, __ATOMIC_ACQUIRE);",
     ] : []),
     "  return task->cancellation_requested;",
     "}",
@@ -2416,6 +2463,7 @@ function generateRuntime(
       "  executor->thread_enqueued_head = NULL;",
       "  executor->thread_enqueued_tail = NULL;",
       "  executor->active_native_threads = 0;",
+      "  executor->active_external_callbacks = 0;",
       "#if defined(_WIN32)",
       "  InitializeCriticalSection(&executor->thread_mutex);",
       "  InitializeConditionVariable(&executor->thread_condition);",
@@ -2439,7 +2487,7 @@ function generateRuntime(
       "",
       "static void z_async_executor_destroy(Z_AsyncExecutor *executor) {",
       "  if (executor->thread_completions != NULL || executor->thread_enqueued_head != NULL) abort();",
-      "  if (executor->active_native_threads != 0) abort();",
+      "  if (executor->active_native_threads != 0 || executor->active_external_callbacks != 0) abort();",
       ...(usesDarwinMainLoop ? [
         "#if defined(__APPLE__)",
         "  CFRunLoopRemoveSource(executor->main_run_loop, executor->main_source, kCFRunLoopCommonModes);",
@@ -2465,6 +2513,36 @@ function generateRuntime(
       "    task->cancelled = __atomic_load_n(&task->cancellation_requested, __ATOMIC_ACQUIRE);",
       "    __atomic_store_n(&task->completed, true, __ATOMIC_RELEASE);",
       "  }",
+      "  task->completion_queued = true;",
+      "  task->completion_next = executor->thread_completions;",
+      "  executor->thread_completions = task;",
+      "#if defined(_WIN32)",
+      "  WakeConditionVariable(&executor->thread_condition);",
+      "#else",
+      "  if (pthread_cond_signal(&executor->thread_condition) != 0) abort();",
+      "#endif",
+      "  z_async_thread_unlock(executor);",
+      "}",
+      "",
+      "static __attribute__((unused)) void z_async_begin_external_completion(Z_AsyncTask *task) {",
+      "  Z_AsyncExecutor *executor = task->executor;",
+      "  task->external_completion = true;",
+      "  task->completion_queued = false;",
+      "  task->completion_next = NULL;",
+      "  task->suspended = true;",
+      "  z_async_thread_lock(executor);",
+      "  executor->active_external_callbacks += 1;",
+      "  z_async_thread_unlock(executor);",
+      "}",
+      "",
+      "static __attribute__((unused)) void z_async_report_external_completion(Z_AsyncTask *task) {",
+      "  Z_AsyncExecutor *executor = task->executor;",
+      "  z_async_thread_lock(executor);",
+      "  if (!task->external_completion || executor->active_external_callbacks == 0) abort();",
+      "  if (__atomic_load_n(&task->completed, __ATOMIC_ACQUIRE)) abort();",
+      "  executor->active_external_callbacks -= 1;",
+      "  task->cancelled = __atomic_load_n(&task->cancellation_requested, __ATOMIC_ACQUIRE);",
+      "  __atomic_store_n(&task->completed, true, __ATOMIC_RELEASE);",
       "  task->completion_queued = true;",
       "  task->completion_next = executor->thread_completions;",
       "  executor->thread_completions = task;",
@@ -2800,6 +2878,7 @@ function generateRuntime(
       "  if (executor->thread_completions == NULL",
       "      && executor->thread_enqueued_head == NULL",
       "      && executor->active_native_threads == 0",
+      "      && executor->active_external_callbacks == 0",
       "      && executor->timers == NULL) {",
       "    z_async_thread_unlock(executor);",
       "    return false;",
@@ -2856,7 +2935,7 @@ function generateRuntime(
     ] : []),
     "static __attribute__((unused)) void z_async_cancel(Z_AsyncTask *task) {",
     ...(usesThreads ? [
-      "  if (task->native_thread) {",
+      "  if (task->native_thread || task->external_completion) {",
       "    z_async_thread_lock(task->executor);",
       "    if (!__atomic_load_n(&task->completed, __ATOMIC_ACQUIRE)) {",
       "      __atomic_store_n(&task->cancellation_requested, true, __ATOMIC_RELEASE);",
@@ -2874,7 +2953,7 @@ function generateRuntime(
     "",
     "static __attribute__((unused)) bool z_async_wait(Z_AsyncTask *parent, Z_AsyncTask *child) {",
     ...(usesThreads ? [
-      "  if (child->native_thread) {",
+      "  if (child->native_thread || child->external_completion) {",
       "    Z_AsyncExecutor *executor = child->executor;",
       "    z_async_thread_lock(executor);",
       "    const bool completed = __atomic_load_n(&child->completed, __ATOMIC_ACQUIRE);",
@@ -2893,7 +2972,7 @@ function generateRuntime(
       "      parent->suspended = true;",
       "    }",
       "    z_async_thread_unlock(executor);",
-      "    if (completed) z_async_join_native_thread(child);",
+      "    if (completed && child->native_thread) z_async_join_native_thread(child);",
       "    return completed;",
       "  }",
     ] : []),
@@ -3147,6 +3226,7 @@ function generateStart(plan: AsyncFunctionPlan): string {
     "  frame->task.cancelled = false;",
     "  frame->task.timer_scheduled = false;",
     "  frame->task.native_thread = false;",
+    "  frame->task.external_completion = false;",
     "  frame->task.thread_joined = false;",
     "  frame->task.native_body_completed = false;",
     "  frame->task.native_thread_finished = false;",
@@ -3912,6 +3992,7 @@ function generatePoll(
   planByKey: ReadonlyMap<string, AsyncFunctionPlan>,
   fileName: string,
 ): string {
+  if (plan.foreign) return generateForeignAsyncPoll(plan);
   const cases: string[] = [];
   const labels = new Map<number, number>();
   let state = 0;
@@ -4528,6 +4609,41 @@ ${renderedCases.map((item) => indent(item, 6)).join("\n")}
     }
   }
 }`;
+}
+
+function generateForeignAsyncPoll(plan: AsyncFunctionPlan): string {
+  const projection = plan.foreign!;
+  const callback = projection.method.parameters[projection.callbackParameter].type;
+  if (callback.kind !== "block") throw new Error("invalid foreign async callback projection");
+  const callbackBody = [
+    ...(projection.resultType === "void" ? [] : ["frame->result = value;"]),
+    "z_async_report_external_completion(&frame->task);",
+  ].join(" ");
+  const block = callback.parameters.length === 0
+    ? `^void(void) { ${callbackBody} }`
+    : `^void(${callback.parameters[0].cName} value) { ${callbackBody} }`;
+  const visibleInputs = frameInputs(plan);
+  let inputIndex = 0;
+  const arguments_ = projection.method.parameters.map((_, index) => {
+    if (index === projection.callbackParameter) return block;
+    const input = visibleInputs[inputIndex++];
+    return frameStoredValue(input.name, input.type, plan.types);
+  });
+  const invocation = generateObjCMessage(projection.className, projection.selector, arguments_);
+  return [
+    `static void ${plan.pollName}(Z_AsyncTask *task) {`,
+    `  ${plan.frameName} *frame = (${plan.frameName} *)task;`,
+    "  if (frame->state != 0) abort();",
+    "  if (z_async_is_cancellation_requested(task)) {",
+    "    task->cancelled = true;",
+    "    z_async_complete_task(task);",
+    "    return;",
+    "  }",
+    "  frame->state = 1;",
+    "  z_async_begin_external_completion(task);",
+    `  (void)${invocation};`,
+    "}",
+  ].join("\n");
 }
 
 function scheduleDelay(
