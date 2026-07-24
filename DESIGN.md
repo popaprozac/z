@@ -1199,6 +1199,24 @@ Spawned children are scheduled immediately. Awaiting a task joins already-hot
 work: it returns an available outcome or suspends the current task without
 blocking the executor thread.
 
+An explicit scope may bind its runtime handle:
+
+```z
+async scope updates {
+  callbackSource(move (value) => {
+    updates.spawn(thread.main, move (): void => { publish(value); });
+  });
+}
+```
+
+`updates` has the standard type `TaskScope`. The handle is a synchronized
+ownership boundary, not an executor: submission names its target separately.
+Closing atomically rejects later submissions and joins accepted operations;
+the boolean result of `spawn` exposes the close-versus-submit race. The unnamed
+form remains statically lowered when no dynamic handle is required. An explicit
+`new TaskScope()` may close or cancel earlier; otherwise its owning async
+function closes on return and cancels on throw.
+
 Keyword `spawn` always inherits the current executor. Explicit native CPU work
 uses a standard-library boundary rather than overloading the keyword:
 

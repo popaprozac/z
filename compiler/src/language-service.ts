@@ -666,6 +666,9 @@ export function hover(source: string, fileName: string, offset: number): Hover |
   if (context.semanticInfo.standardTypeBindings.get(word.text) === "AsyncGenerator") {
     return markdownHover("AsyncGenerator<Yield, Return?, Error?>  // cold, move-only asynchronous sequence with awaited advancement", source, word.start, word.end);
   }
+  if (context.semanticInfo.standardTypeBindings.get(word.text) === "TaskScope") {
+    return markdownHover("TaskScope  // thread-safe structured owner for dynamically submitted child work", source, word.start, word.end);
+  }
   if (word.text === "next") {
     const receiver = source.slice(0, word.start).match(/([A-Za-z_][A-Za-z0-9_]*)\.$/)?.[1];
     const binding = receiver
@@ -825,6 +828,16 @@ export function hover(source: string, fileName: string, offset: number): Hover |
         word.start,
         word.end,
       );
+    }
+    if (resolved?.kind === "taskScope") {
+      const detail = word.text === "spawn"
+        ? "spawn(thread.main, operation: () => void): boolean  // accepts work unless the scope is closing"
+        : word.text === "close"
+          ? "async close(): void  // rejects new work and joins accepted children"
+          : word.text === "cancel"
+            ? "async cancel(): void  // rejects new work, cancels pending children, and joins"
+            : null;
+      if (detail) return markdownHover(detail, source, word.start, word.end);
     }
     if (resolved?.kind === "integer") {
       const detail = integerMethodDetail(word.text, resolved.type);
@@ -1175,6 +1188,13 @@ function selectiveImportCandidates(specifier: string, fileName: string): Complet
       label: "thread",
       kind: completionKinds.module,
       detail: "native thread task launcher",
+    }];
+  }
+  if (specifier === "std/async") {
+    return [{
+      label: "TaskScope",
+      kind: completionKinds.class,
+      detail: "thread-safe structured owner for dynamically submitted child work",
     }];
   }
   if (specifier === "std/console" || specifier === "std/objc") return [];
@@ -1537,9 +1557,9 @@ function symbolCompletions(source: string, fileName: string, offset: number): Co
   try {
     const parsed = parse(lex(source, fileName), fileName);
     for (const declaration of parsed.imports) {
-      if (declaration.header !== "std/text" && declaration.header !== "std/memory" && declaration.header !== "std/collections" && declaration.header !== "std/hash" && declaration.header !== "std/iteration") continue;
+      if (declaration.header !== "std/text" && declaration.header !== "std/memory" && declaration.header !== "std/collections" && declaration.header !== "std/hash" && declaration.header !== "std/iteration" && declaration.header !== "std/async") continue;
       for (const binding of declaration.bindings ?? []) {
-        if (binding.importedName !== "TextBuffer" && binding.importedName !== "Arena" && binding.importedName !== "Map" && binding.importedName !== "Set" && binding.importedName !== "Hashable" && binding.importedName !== "Hasher" && binding.importedName !== "Iterator" && binding.importedName !== "Generator" && binding.importedName !== "AsyncGenerator") continue;
+        if (binding.importedName !== "TextBuffer" && binding.importedName !== "Arena" && binding.importedName !== "Map" && binding.importedName !== "Set" && binding.importedName !== "Hashable" && binding.importedName !== "Hasher" && binding.importedName !== "Iterator" && binding.importedName !== "Generator" && binding.importedName !== "AsyncGenerator" && binding.importedName !== "TaskScope") continue;
         const detail = binding.importedName === "TextBuffer"
           ? "move-only UTF-8 construction storage"
           : binding.importedName === "Arena"
@@ -1556,12 +1576,16 @@ function symbolCompletions(source: string, fileName: string, offset: number): Co
                       ? "cold move-only synchronous sequence"
                       : binding.importedName === "AsyncGenerator"
                         ? "cold move-only asynchronous sequence"
+                      : binding.importedName === "TaskScope"
+                        ? "thread-safe structured child-work owner"
                     : "mutable hash-composition state";
         builtIns.push({
           label: binding.localName,
-          kind: binding.importedName === "Hashable" || binding.importedName === "Iterator" ? completionKinds.interface : completionKinds.struct,
+          kind: binding.importedName === "Hashable" || binding.importedName === "Iterator"
+            ? completionKinds.interface
+            : binding.importedName === "TaskScope" ? completionKinds.class : completionKinds.struct,
           detail: binding.localName === binding.importedName
-            ? `${binding.importedName}${binding.importedName === "Hashable" || binding.importedName === "Iterator" || binding.importedName === "Generator" || binding.importedName === "AsyncGenerator" ? "" : "()"}  // ${detail}`
+            ? `${binding.importedName}${binding.importedName === "Hashable" || binding.importedName === "Iterator" || binding.importedName === "Generator" || binding.importedName === "AsyncGenerator" || binding.importedName === "TaskScope" ? "" : "()"}  // ${detail}`
             : `${binding.importedName}  // imported as ${binding.localName}`,
           sortText: `0-${binding.localName}`,
         });
@@ -1703,7 +1727,9 @@ function symbolCompletions(source: string, fileName: string, offset: number): Co
   for (const [name, standardType] of context.semanticInfo.standardTypeBindings) {
     items.push({
       label: name,
-      kind: standardType === "Hashable" || standardType === "Iterator" ? completionKinds.interface : completionKinds.struct,
+      kind: standardType === "Hashable" || standardType === "Iterator"
+        ? completionKinds.interface
+        : standardType === "TaskScope" ? completionKinds.class : completionKinds.struct,
       detail: standardType === "TextBuffer"
         ? `${standardType}()  // move-only UTF-8 construction storage`
         : standardType === "Arena"
@@ -1720,6 +1746,8 @@ function symbolCompletions(source: string, fileName: string, offset: number): Co
                     ? "Generator<Yield, Return?, Error?>  // cold, move-only synchronous sequence"
                   : standardType === "AsyncGenerator"
                     ? "AsyncGenerator<Yield, Return?, Error?>  // cold, move-only asynchronous sequence"
+                  : standardType === "TaskScope"
+                    ? "new TaskScope()  // thread-safe structured child-work owner"
                   : "Hasher  // mutable hash-composition state",
       sortText: `0-${name}`,
     });
@@ -2477,7 +2505,19 @@ function collectBindings(context: AnalyzedSource): Binding[] {
         if (statement.elseBranch?.kind === "if") visitStatements([statement.elseBranch]);
       }
       if (statement.kind === "while") visitStatements(statement.body.statements);
-      if (statement.kind === "asyncScope") visitStatements(statement.body.statements);
+      if (statement.kind === "asyncScope") {
+        if (statement.name && statement.nameLocation) {
+          bindings.push({
+            name: statement.name,
+            type: context.semanticInfo.bindingTypes.get(statement.nameLocation.offset) ?? "TaskScope",
+            offset: statement.nameLocation.offset,
+            readonly: true,
+            parameter: false,
+            fileName: statement.nameLocation.fileName,
+          });
+        }
+        visitStatements(statement.body.statements);
+      }
       if (statement.kind === "for") {
         if (statement.binding && statement.bindingLocation) {
           bindings.push({
@@ -3089,6 +3129,28 @@ function memberCompletions(
       insertText: "cancel()",
     }], prefix, 1000);
   }
+  if (resolved?.kind === "taskScope") {
+    return filterCompletions([
+      {
+        label: "spawn",
+        kind: completionKinds.method,
+        detail: "spawn(thread.main, operation: () => void): boolean",
+        insertText: "spawn()",
+      },
+      {
+        label: "close",
+        kind: completionKinds.method,
+        detail: "async close(): void  // rejects new work and joins",
+        insertText: "close()",
+      },
+      {
+        label: "cancel",
+        kind: completionKinds.method,
+        detail: "async cancel(): void  // rejects new work, cancels pending children, and joins",
+        insertText: "cancel()",
+      },
+    ], prefix, 1000);
+  }
   return [];
 }
 
@@ -3367,6 +3429,7 @@ type ResolvedReceiver =
   }
   | { readonly kind: "weak"; readonly target: string }
   | { readonly kind: "task"; readonly successType: string; readonly errorType: string | null }
+  | { readonly kind: "taskScope" }
   | { readonly kind: "objcConnection" };
 
 function mapValueHasReferenceIdentity(context: AnalyzedSource, type: string): boolean {
@@ -3393,6 +3456,7 @@ function resolveReceiver(context: AnalyzedSource, text: string, offset: number):
   if (receiverType === "TextBuffer") return { kind: "textBuffer" };
   if (receiverType === "Arena") return { kind: "arena" };
   if (receiverType === "Hasher") return { kind: "hasher" };
+  if (receiverType === "TaskScope") return { kind: "taskScope" };
   if (receiverType === "String") return { kind: "string" };
   const map = parseMapType(receiverType);
   if (map) return { kind: "map", ...map };

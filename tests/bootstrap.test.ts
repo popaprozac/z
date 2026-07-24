@@ -14644,6 +14644,93 @@ test("joins nested async scopes at their lexical boundaries", () => {
   });
 });
 
+test("routes arbitrary-thread callbacks through named TaskScope ownership", () => {
+  const example = resolve(projectRoot, "examples/async/task-scope-native-callback.zs");
+  const source = readFileSync(example, "utf8");
+  const generated = compileToC(source, example);
+  assert.match(generated, /z_task_scope_spawn/);
+  assert.match(generated, /z_task_scope_join/);
+  assert.match(generated, /z_async_enqueue_from_thread/);
+
+  const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, "main-executor callback value=40\n");
+
+  const completionSource = 'import { TaskScope } from "std/async"; function inspect(taskScope: TaskScope): void { taskScope.sp; }';
+  const completionOffset = completionSource.indexOf("taskScope.sp") + "taskScope.sp".length;
+  assert.ok(completions(completionSource, example, completionOffset).some((item) => item.label === "spawn"));
+
+  const namedOffset = source.indexOf("updates {");
+  assert.match(hover(source, example, namedOffset)?.contents.value ?? "", /TaskScope/);
+  const scopeTokens = decodeSemanticTokens(semanticTokens(source, example).data);
+  const scopeDeclaration = positionForOffset(source, source.indexOf("updates {"));
+  const scopeUse = positionForOffset(source, source.indexOf("beginCalculation(updates)") + "beginCalculation(".length);
+  assert.ok(scopeTokens.some((token) => (
+    token.line === scopeDeclaration.line
+    && token.character === scopeDeclaration.character
+    && token.type === semanticTokenTypes.indexOf("variable")
+  )));
+  assert.ok(scopeTokens.some((token) => (
+    token.line === scopeUse.line
+    && token.character === scopeUse.character
+    && token.type === semanticTokenTypes.indexOf("variable")
+  )));
+
+  const directory = mkdtempSync("/tmp/z-task-scope-return-");
+  const earlyReturn = resolve(directory, "main.zs");
+  writeFileSync(earlyReturn, `
+    import console from "std/console";
+    import { TaskScope } from "std/async";
+    import { thread } from "std/thread";
+    function schedule(taskScope: TaskScope): void {
+      taskScope.spawn(thread.main, move (): void => { console.log("joined before return"); });
+    }
+    async function main(): i32 {
+      async scope jobs {
+        schedule(jobs);
+        return 0;
+      }
+    }
+  `);
+  const earlyResult = spawnSync(process.execPath, [cli, "run", earlyReturn], { encoding: "utf8" });
+  assert.equal(earlyResult.status, 0, earlyResult.stderr);
+  assert.equal(earlyResult.stdout, "joined before return\n");
+
+  const explicitReturn = resolve(directory, "explicit.zs");
+  writeFileSync(explicitReturn, `
+    import console from "std/console";
+    import { TaskScope } from "std/async";
+    import { thread } from "std/thread";
+    function schedule(taskScope: TaskScope): void {
+      taskScope.spawn(thread.main, move (): void => { console.log("explicit scope joined"); });
+    }
+    async function main(): i32 {
+      const taskScope = new TaskScope();
+      schedule(taskScope);
+      return 0;
+    }
+  `);
+  const explicitResult = spawnSync(process.execPath, [cli, "run", explicitReturn], { encoding: "utf8" });
+  assert.equal(explicitResult.status, 0, explicitResult.stderr);
+  assert.equal(explicitResult.stdout, "explicit scope joined\n");
+
+  const throwingScope = `
+    import { TaskScope } from "std/async";
+    async function fail(): void throws i32 {
+      const taskScope = new TaskScope();
+      throw 7;
+    }
+    async function main(): i32 {
+      const result = attempt await fail();
+      return 0;
+    }
+  `;
+  assert.match(
+    compileToC(throwingScope, "task-scope-throw.zs"),
+    /z_task_scope_join\(frame->value_taskScope, &frame->task, true\)/,
+  );
+});
+
 test("cancels live siblings and descendants when an async failure propagates", () => {
   const example = resolve(projectRoot, "examples/async/async-cancellation.zs");
   const source = readFileSync(example, "utf8");

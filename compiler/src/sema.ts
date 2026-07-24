@@ -284,6 +284,8 @@ export type SemanticInfo = {
   readonly arenaCreateCalls: ReadonlyMap<number, string>;
   readonly arenaResetCalls: ReadonlySet<number>;
   readonly threadSpawnCalls: ReadonlyMap<number, number>;
+  readonly taskScopeSpawnCalls: ReadonlyMap<number, number>;
+  readonly taskScopeConstructors: ReadonlySet<number>;
   readonly shareableClasses: ReadonlySet<string>;
   readonly foreignArgumentAccesses: ReadonlyMap<number, "in" | "out" | "inout">;
   readonly foreignCxxArgumentAccesses: ReadonlyMap<number, "in" | "inout" | "move">;
@@ -320,7 +322,7 @@ export type SemanticInfo = {
   readonly standardFunctionReferences: ReadonlyMap<number, StandardFunctionName>;
   readonly standardFunctionBindings: ReadonlyMap<string, StandardFunctionName>;
   readonly standardModuleBindings: ReadonlyMap<string, StandardModuleName>;
-  readonly standardTypeBindings: ReadonlyMap<string, "TextBuffer" | "Arena" | "Map" | "Set" | "Hashable" | "Hasher" | "Iterator" | "Generator" | "AsyncGenerator">;
+  readonly standardTypeBindings: ReadonlyMap<string, "TextBuffer" | "Arena" | "Map" | "Set" | "Hashable" | "Hasher" | "Iterator" | "Generator" | "AsyncGenerator" | "TaskScope">;
   readonly iteratorElementTypes: ReadonlyMap<string, string>;
   readonly hasherAddTypes: ReadonlyMap<number, string>;
   readonly typeDisplayNames: ReadonlyMap<string, string>;
@@ -354,6 +356,8 @@ type AnalysisState = {
   readonly arenaCreateCalls: Map<number, string>;
   readonly arenaResetCalls: Set<number>;
   readonly threadSpawnCalls: Map<number, number>;
+  readonly taskScopeSpawnCalls: Map<number, number>;
+  readonly taskScopeConstructors: Set<number>;
   readonly shareableClasses: Set<string>;
   readonly threadSharedClassUses: Map<string, SourceLocation>;
   readonly weakClassUses: Map<string, SourceLocation>;
@@ -393,7 +397,7 @@ type AnalysisState = {
   readonly standardFunctionReferences: Map<number, StandardFunctionName>;
   readonly standardFunctionBindings: Map<string, StandardFunctionName>;
   readonly standardModuleBindings: Map<string, StandardModuleName>;
-  readonly standardTypeBindings: Map<string, "TextBuffer" | "Arena" | "Map" | "Set" | "Hashable" | "Hasher" | "Iterator" | "Generator" | "AsyncGenerator">;
+  readonly standardTypeBindings: Map<string, "TextBuffer" | "Arena" | "Map" | "Set" | "Hashable" | "Hasher" | "Iterator" | "Generator" | "AsyncGenerator" | "TaskScope">;
   readonly iteratorElementTypes: Map<string, string>;
   readonly hasherAddTypes: Map<number, string>;
   readonly inferredOutBindingLocations: Map<string, SourceLocation>;
@@ -472,14 +476,14 @@ type SymbolValue =
   | { readonly kind: "console" }
   | { readonly kind: "standardModule"; readonly module: StandardModuleName }
   | { readonly kind: "standardFunction"; readonly name: StandardFunctionName; readonly declaration: FunctionDeclaration }
-  | { readonly kind: "standardType"; readonly type: "TextBuffer" | "Arena" | "Map" | "Set" | "Hasher" }
+  | { readonly kind: "standardType"; readonly type: "TextBuffer" | "Arena" | "Map" | "Set" | "Hasher" | "TaskScope" }
   | { readonly kind: "struct"; readonly declaration: StructDeclaration }
   | { readonly kind: "trait"; readonly declaration: TraitDeclaration }
   | { readonly kind: "enum"; readonly declaration: EnumDeclaration };
 
 const integerTypes = new Set(["i8", "u8", "i16", "u16", "i32", "u32", "i64", "u64", "isize", "usize"]);
 const floatTypes = new Set(["f32", "f64"]);
-const primitiveTypes = new Set([...integerTypes, ...floatTypes, "void", "boolean", "cstring", "String", "TextBuffer", "Arena", "Hasher"]);
+const primitiveTypes = new Set([...integerTypes, ...floatTypes, "void", "boolean", "cstring", "String", "TextBuffer", "Arena", "Hasher", "TaskScope"]);
 const movedPrefix = "__z_moved:";
 const maybeMovedPrefix = "__z_maybe_moved:";
 const uninitializedPrefix = "__z_uninitialized:";
@@ -623,6 +627,8 @@ export function analyze(
     arenaCreateCalls: new Map(),
     arenaResetCalls: new Set(),
     threadSpawnCalls: new Map(),
+    taskScopeSpawnCalls: new Map(),
+    taskScopeConstructors: new Set(),
     shareableClasses: new Set(),
     threadSharedClassUses: new Map(),
     weakClassUses: new Map(),
@@ -890,6 +896,26 @@ export function analyze(
         }
         continue;
       }
+      if (declaration.header === "std/async") {
+        if (!declaration.bindings) {
+          throw new DiagnosticError(fileName, declaration.location, "std/async requires a selective import", {
+            code: "Z0501",
+            helps: ["use `import { TaskScope } from \"std/async\";`"],
+          });
+        }
+        for (const binding of declaration.bindings) {
+          if (binding.importedName !== "TaskScope") {
+            throw new DiagnosticError(fileName, binding.location, `std/async has no export ${JSON.stringify(binding.importedName)}`, {
+              code: "Z0501",
+              helps: ["the first std/async tier exports `TaskScope`"],
+            });
+          }
+          validateUserName(binding.localName, binding.location, fileName);
+          declareGlobal(globals, binding.localName, { kind: "standardType", type: "TaskScope" }, binding.location, fileName);
+          state.standardTypeBindings.set(binding.localName, "TaskScope");
+        }
+        continue;
+      }
       if (declaration.header === "std/fs" || declaration.header === "std/process" || declaration.header === "std/objc") {
         const module: StandardModuleName = declaration.header === "std/fs"
           ? "fs"
@@ -907,7 +933,7 @@ export function analyze(
       }
       throw new DiagnosticError(fileName, declaration.location, `unknown standard module ${JSON.stringify(declaration.header)}`, {
         code: "Z0501",
-        helps: ["the bootstrap standard library currently provides `std`, `std/console`, `std/time`, `std/text`, `std/memory`, `std/collections`, `std/hash`, `std/iteration`, `std/thread`, `std/fs`, `std/process`, and `std/objc`"],
+        helps: ["the bootstrap standard library currently provides `std`, `std/console`, `std/time`, `std/text`, `std/memory`, `std/collections`, `std/hash`, `std/iteration`, `std/thread`, `std/async`, `std/fs`, `std/process`, and `std/objc`"],
       });
     }
     const module = foreignModules.get(declaration.moduleName);
@@ -2845,6 +2871,15 @@ function analyzeStatement(
         });
       }
       const scopeLocals = new Map(locals);
+      if (statement.name && statement.nameLocation) {
+        validateUserName(statement.name, statement.nameLocation, fileName);
+        if (scopeLocals.has(statement.name)) {
+          throw new DiagnosticError(fileName, statement.nameLocation, `duplicate local ${JSON.stringify(statement.name)}`);
+        }
+        scopeLocals.set(statement.name, "TaskScope");
+        state.bindingTypes.set(statement.nameLocation.offset, "TaskScope");
+        state.taskScopeConstructors.add(statement.location.offset);
+      }
       const outerLoans = new Map(state.activeLoans);
       const outerSpawnBorrowRoots = new Map(state.asyncSpawnBorrowRoots);
       const outerTaskBorrowSpawns = new Map(state.asyncTaskBorrowSpawns);
@@ -4960,6 +4995,22 @@ function inferExpressionInner(
       return commonBranchType("conditional", thenType, elseType, expression.elseExpression.location, fileName);
     }
     case "new": {
+      const standardType = [...state.standardTypeBindings.entries()]
+        .find(([localName]) => localName === expression.typeName)?.[1];
+      if (standardType === "TaskScope") {
+        if (!state.activeFunction?.async) {
+          throw new DiagnosticError(fileName, expression.location, "TaskScope construction requires an enclosing async function", {
+            code: "Z0703",
+            notes: ["a TaskScope inherits the current task executor and must be joined before its owner exits"],
+          });
+        }
+        rejectLabeledArguments(expression.argumentLabels, expression.location, fileName);
+        if (expression.arguments.length !== 0) {
+          throw new DiagnosticError(fileName, expression.location, `new TaskScope() expects no arguments, received ${expression.arguments.length}`);
+        }
+        state.taskScopeConstructors.add(expression.location.offset);
+        return "TaskScope";
+      }
       const declaration = structs.get(expression.typeName);
       if (!declaration) {
         throw new DiagnosticError(fileName, expression.location, `unknown class ${JSON.stringify(expression.typeName)}`);
@@ -6193,6 +6244,81 @@ function inferExpressionInner(
             : optionTypeName(asyncGenerator.elementType);
           return taskTypeName(success, asyncGenerator.errorType);
         }
+        if (receiverValueType === "TaskScope") {
+          rejectLabeledArguments(expression.argumentLabels, expression.location, fileName);
+          if (expression.callee.object.kind !== "identifier") {
+            throw new DiagnosticError(fileName, expression.callee.object.location, "TaskScope methods require a named scope handle");
+          }
+          const method = expression.callee.property;
+          if (method === "spawn") {
+            if (expression.arguments.length !== 2 || expression.arguments[1].kind !== "closure") {
+              throw new DiagnosticError(fileName, expression.location, "TaskScope.spawn expects an executor and one synchronous closure", {
+                code: "Z0710",
+                helps: ["use `scope.spawn(thread.main, move () => operation())`"],
+              });
+            }
+            const executor = inferExpression(expression.arguments[0], locals, globals, structs, enums, fileName, state);
+            if (executor !== "__z_executor:main") {
+              throw new DiagnosticError(fileName, expression.arguments[0].location, "TaskScope.spawn currently requires thread.main", {
+                code: "Z0710",
+                notes: ["additional explicit executor capabilities remain a standard-library extension point"],
+              });
+            }
+            const operation = expression.arguments[1];
+            const expectedFunction: FunctionType = { parameters: [], returnType: "void" };
+            const expectedType = functionTypeName([], "void");
+            inferClosureExpression(operation, locals, globals, structs, enums, fileName, state, expectedFunction);
+            const closure = finalizeClosureFunctionValue(
+              operation,
+              expectedFunction,
+              expectedType,
+              locals,
+              structs,
+              enums,
+              fileName,
+              state,
+            );
+            if (closure.captures.length > 0 && operation.captureMode !== "move") {
+              throw new DiagnosticError(fileName, operation.location, "TaskScope.spawn requires `move` for a capturing closure", {
+                code: "Z0704",
+                notes: ["accepted work may execute after the submitting callback returns"],
+                helps: ["write `move () => operation()`"],
+              });
+            }
+            for (const capture of closure.captures) {
+              const issue = shareableTypeIssue(capture.type, structs, enums, state);
+              if (issue) {
+                throw new DiagnosticError(
+                  fileName,
+                  capture.location,
+                  `capture ${JSON.stringify(capture.name)} of type ${JSON.stringify(capture.type)} cannot cross to the scope executor: ${issue.reason}`,
+                  {
+                    code: "Z0704",
+                    helps: [issue.help],
+                  },
+                );
+              }
+            }
+            state.closures.set(operation.location.offset, { ...closure, threadSafe: true });
+            state.taskScopeSpawnCalls.set(expression.location.offset, operation.location.offset);
+            return "boolean";
+          }
+          if (method !== "close" && method !== "cancel") {
+            throw new DiagnosticError(fileName, expression.callee.location, `TaskScope has no method ${JSON.stringify(method)}`);
+          }
+          if (expression.arguments.length !== 0) {
+            throw new DiagnosticError(fileName, expression.location, `TaskScope.${method} expects 0 arguments, received ${expression.arguments.length}`);
+          }
+          const context = state.asyncCallContexts.at(-1);
+          if (!state.activeFunction?.async || !context || context.mode !== "await") {
+            throw new DiagnosticError(fileName, expression.location, `TaskScope.${method} requires direct await`, {
+              code: "Z0702",
+              helps: [`write \`await scope.${method}()\` inside an async function`],
+            });
+          }
+          context.calls += 1;
+          return taskTypeName("void", null);
+        }
         const generator = parseGeneratorType(receiverValueType);
         if (generator) {
           rejectLabeledArguments(expression.argumentLabels, expression.location, fileName);
@@ -7391,7 +7517,7 @@ function consumeOwnedValue(
     }
   }
   const declaration = structs.get(actual);
-  if (declaration?.kind === "class" || parseFunctionType(actual)) {
+  if (actual === "TaskScope" || declaration?.kind === "class" || parseFunctionType(actual)) {
     if (!force && (expression.kind === "identifier" || expression.kind === "member" || expression.kind === "index")) {
       state.managedCopies.add(expression.location.offset);
       return;
@@ -8572,7 +8698,7 @@ function hasCleanupType(
 ): boolean {
   const actual = underlyingType(type);
   if (actual === "unknown" || actual === "never" || visiting.has(actual)) return false;
-  if (actual === "String" || actual === "TextBuffer" || actual === "Arena") return true;
+  if (actual === "String" || actual === "TextBuffer" || actual === "Arena" || actual === "TaskScope") return true;
   if (parseGeneratorType(actual) || parseAsyncGeneratorType(actual)) return true;
   if (parseWeakType(actual)) return true;
   if (parseFunctionType(String(actual))) return true;
@@ -8616,6 +8742,7 @@ function explicitCopyPlanForType(
   if (
     actual === "TextBuffer"
     || actual === "Arena"
+    || actual === "TaskScope"
     || parseAsyncGeneratorType(actual)
     || parseWeakType(actual)
     || parseFunctionType(actual)
@@ -8751,7 +8878,7 @@ function shareableTypeIssue(
   path = String(underlyingType(type)),
 ): ShareabilityIssue | null {
   const actual = String(underlyingType(type));
-  if (actual === "void" || actual === "boolean" || integerTypes.has(actual) || floatTypes.has(actual) || actual === "String") {
+  if (actual === "void" || actual === "boolean" || integerTypes.has(actual) || floatTypes.has(actual) || actual === "String" || actual === "TaskScope") {
     return null;
   }
   if (actual === "TextBuffer" || parseDynamicArrayType(actual)) {

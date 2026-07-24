@@ -99,6 +99,27 @@ joined and their frames are cleaned up. A future synchronous bridge for
 starting an async root will be an explicit blocking runtime API, not ordinary
 `async scope` syntax.
 
+When native callbacks can submit work dynamically, a scope can expose the
+compiler-owned handle:
+
+```z
+import { thread } from "std/thread";
+
+async scope updates {
+  native.register(move (value) => {
+    updates.spawn(thread.main, move (): void => { publish(value); });
+  });
+}
+```
+
+The handle has type `TaskScope`. It is a synchronized ownership boundary, not
+an executor: `thread.main` still names placement. Close rejects later
+submissions and joins accepted operations; `spawn` returns `false` when close
+wins the race. `new TaskScope()` exposes the same mechanism directly. Explicit
+`await taskScope.close()` or `await taskScope.cancel()` creates an earlier
+boundary; return and throw still close or cancel an owned scope automatically.
+The current dynamic tier accepts synchronous nonthrowing `(): void` work.
+
 `spawn` accepts exactly one direct async call in an async function and produces
 a scope-bound `Task<T>` or `Task<T, E>`. The task's source-level success and
 error types are the async function's declared `T throws E`; async functions do

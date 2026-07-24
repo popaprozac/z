@@ -632,8 +632,15 @@ export function parse(tokens: Token[], fileName: string): Program {
     if (match("async")) {
       const token = previous();
       expect("scope", "`scope` after `async`");
+      const nameToken = at("identifier") ? take() : null;
       const body = parseRequiredBlock("an `async scope` body");
-      return { kind: "asyncScope", body, location: token.location };
+      return {
+        kind: "asyncScope",
+        name: nameToken?.text ?? null,
+        nameLocation: nameToken?.location ?? null,
+        body,
+        location: token.location,
+      };
     }
     if (match("if")) {
       const ifToken = previous();

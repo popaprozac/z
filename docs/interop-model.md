@@ -515,11 +515,13 @@ immutable `String` snapshots, and deeply readonly Z ARC identity. Mutable or
 borrowed captures, `Weak<T>`, views, slices, and native values without a
 compatible sharing contract are rejected.
 
-An arbitrary-thread callback does not itself create an unowned root task. The
-intended progression is an explicit thread-safe `TaskScope`, followed by a named
-first-class form of `async scope` if the explicit API proves ergonomic. That
-scope will own callback-created placed children, cancellation, errors, and
-joining. Repeated callback APIs may later synthesize an async sequence:
+An arbitrary-thread callback does not itself create an unowned root task.
+Instead, the implemented `TaskScope` bridge owns callback-created operations,
+rejects submissions that lose the race with close, and joins accepted work.
+`async scope updates {}` exposes the same handle with lexical automatic close;
+`new TaskScope()` exposes the manual API. The first tier places synchronous
+nonthrowing operations on `thread.main`. Repeated callback APIs may later
+synthesize an async sequence:
 
 ```z
 const events = native.watchEvents();
@@ -540,11 +542,11 @@ token directly: an owned `move` block may persist across calls, Z keeps the
 token, and source code explicitly unregisters it. Weak capture prevents the
 block from strongly cycling back to ARC-managed application state. The AppKit
 observer probe remains caller-thread/AppKit-executor work. The first
-arbitrary-thread C callback tier now proves atomic ARC environment ownership and
-conservative capture shareability, while Objective-C/Swift delivery, TaskScope
-integration, conditional C ownership transfer, and callback-to-async synthesis
-still require completion cardinality, cancellation, executor, and release
-metadata.
+arbitrary-thread C callback tier now proves atomic ARC environment ownership,
+conservative capture shareability, and TaskScope-based main-executor delivery.
+Objective-C/Swift delivery, typed scope errors, conditional C ownership
+transfer, and callback-to-async synthesis still require richer completion,
+cancellation, executor, and release metadata.
 
 ## Direct Objective-C imports versus `std/objc`
 

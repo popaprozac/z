@@ -1185,6 +1185,30 @@ Leaving a scope joins its children. Failure propagation cancels live siblings
 before the failing task completes. Domain errors remain `T throws E`;
 cancellation is a structural task outcome, not an invented member of `E`.
 
+A scope can optionally expose its compiler-owned handle:
+
+```z
+import { TaskScope } from "std/async";
+import { thread } from "std/thread";
+
+async scope updates {
+  registerNativeCallback(move (value) => {
+    const accepted = updates.spawn(
+      thread.main,
+      move (): void => { publish(value); }
+    );
+  });
+} // rejects new submissions and joins every accepted operation
+```
+
+The unnamed form retains its allocation-free static lowering when all children
+are lexically visible. `async scope updates {}` binds `updates: TaskScope` for
+dynamic submission by callbacks. `TaskScope.spawn` returns `false` if close has
+won the submission race. The explicit form is `new TaskScope()`, followed by
+direct `await scope.close()` or `await scope.cancel()` when an earlier boundary
+is useful. Its owning async function otherwise closes it on return and cancels
+it on throw. `TaskScope` owns lifetime; `thread.main` selects placement.
+
 CPU work that must leave the inherited executor uses the explicitly imported
 native-thread launcher:
 

@@ -25,7 +25,7 @@ import type { IntegerOperation, SemanticInfo } from "./sema.ts";
 type AwaitSite = {
   readonly index: number;
   readonly mode: "await" | "try" | "attempt";
-  readonly intrinsic: "delay" | "cancel" | null;
+  readonly intrinsic: "delay" | "cancel" | "scopeClose" | "scopeCancel" | null;
   readonly expression: Expression;
   readonly call: CallExpression;
   readonly target: AsyncTarget;
@@ -92,7 +92,8 @@ type AsyncValueMatchSite = AsyncMatchSite & {
 
 type AsyncOperation =
   | { readonly kind: "statement"; readonly statement: Statement }
-  | { readonly kind: "scopeExit"; readonly scope: number }
+  | { readonly kind: "scopeEnter"; readonly scope: number; readonly name: string }
+  | { readonly kind: "scopeExit"; readonly scope: number; readonly name: string | null; readonly cancel: boolean }
   | { readonly kind: "branch"; readonly condition: Expression; readonly thenLabel: number; readonly elseLabel: number }
   | {
     readonly kind: "forBranch";
@@ -311,8 +312,8 @@ export function generateAsyncC(
   const usesMainPlacement = plans.some((plan) => (
     [...plan.awaits.values()].some((site) => site.placement !== null)
     || [...plan.spawns.values()].some((site) => site.placement !== null)
-  ));
-  const usesNativeThreads = plans.some((plan) => (
+  )) || semanticInfo.taskScopeSpawnCalls.size > 0;
+  const usesNativeThreads = semanticInfo.taskScopeSpawnCalls.size > 0 || plans.some((plan) => (
     [...plan.spawns.values()].some((site) => site.nativeThread)
   ));
   return {
@@ -393,6 +394,13 @@ function planFunction(
     readonly matchCleanupDepth: number;
   }[] = [];
   const activeMatchCleanups: { readonly site: AsyncMatchSite; readonly armIndex: number }[] = [];
+  const activeScopes: Array<{ readonly scope: number; readonly name: string | null }> = [];
+  const ownedTaskScopes = new Set<string>();
+  const unwindOwnedTaskScopes = (cancel: boolean): void => {
+    for (const name of [...ownedTaskScopes].reverse()) {
+      operations.push({ kind: "scopeExit", scope: 0, name, cancel });
+    }
+  };
   const recordAwait = (
     mode: AwaitSite["mode"],
     expression: Extract<Expression, { kind: "await" | "executorPlacement" }>,
@@ -539,8 +547,18 @@ function planFunction(
     for (const statement of statements) {
       if (statement.kind === "asyncScope") {
         const childScope = nextScope.value++;
-        planStatements(statement.body.statements, childScope, controlDepth);
-        operations.push({ kind: "scopeExit", scope: childScope });
+        if (statement.name) {
+          requireFrameType("TaskScope", statement.nameLocation ?? statement.location, fileName, "named async scope", types);
+          locals.set(statement.name, "TaskScope");
+          operations.push({ kind: "scopeEnter", scope: childScope, name: statement.name });
+        }
+        activeScopes.push({ scope: childScope, name: statement.name });
+        try {
+          planStatements(statement.body.statements, childScope, controlDepth);
+        } finally {
+          activeScopes.pop();
+        }
+        operations.push({ kind: "scopeExit", scope: childScope, name: statement.name, cancel: false });
         continue;
       }
       if (statement.kind === "if") {
@@ -822,6 +840,19 @@ function planFunction(
         });
         continue;
       }
+      if ((statement.kind === "return" || statement.kind === "throw") && activeScopes.length > 0) {
+        for (const activeScope of [...activeScopes].reverse()) {
+          operations.push({
+            kind: "scopeExit",
+            scope: activeScope.scope,
+            name: activeScope.name,
+            cancel: statement.kind === "throw",
+          });
+        }
+      }
+      if (statement.kind === "return" || statement.kind === "throw") {
+        unwindOwnedTaskScopes(statement.kind === "throw");
+      }
       operations.push({ kind: "statement", statement });
       if (statement.kind === "variable") {
         const threadSpawn = statement.initializer?.kind === "call"
@@ -867,6 +898,12 @@ function planFunction(
           );
         }
         locals.set(statement.name, type);
+        if (
+          statement.initializer?.kind === "new"
+          && semanticInfo.taskScopeConstructors.has(statement.initializer.location.offset)
+        ) {
+          ownedTaskScopes.add(statement.name);
+        }
         if (!statement.initializer) continue;
         if (
           statement.initializer.kind === "matchExpression"
@@ -1066,6 +1103,7 @@ function planFunction(
     }
   };
   planStatements(declaration.body, 0);
+  unwindOwnedTaskScopes(false);
 
   const unjoinedThrowing = [...spawns.values()].find((site) => (
     !joinedSpawns.has(site.index) && site.target.declaration.errorType
@@ -1343,6 +1381,27 @@ function awaitSite(
   const call = expression.expression;
   if (
     call.callee.kind === "member"
+    && (call.callee.property === "close" || call.callee.property === "cancel")
+  ) {
+    const receiverType = types.semanticInfo.expressionTypes.get(call.callee.object.location.offset)
+      ?? (call.callee.object.kind === "identifier" ? locals.get(call.callee.object.name) : null);
+    if (receiverType === "TaskScope") {
+      return {
+        index: nextChild.value++,
+        mode,
+        intrinsic: call.callee.property === "close" ? "scopeClose" : "scopeCancel",
+        expression,
+        call,
+        target: intrinsicTaskScopeTarget(call.location),
+        receiver: call.callee.object,
+        spawn: null,
+        placement: null,
+        generator: null,
+      };
+    }
+  }
+  if (
+    call.callee.kind === "member"
     && call.callee.property === "cancel"
     && call.callee.object.kind === "identifier"
     && parseTaskType(locals.get(call.callee.object.name) ?? "")
@@ -1451,6 +1510,23 @@ function intrinsicDelayTarget(location: SourceLocation): AsyncTarget {
         type: { name: "u64", location },
         location,
       }],
+      returnType: { name: "void", location },
+      errorType: null,
+      body: [],
+      location,
+    },
+  };
+}
+
+function intrinsicTaskScopeTarget(location: SourceLocation): AsyncTarget {
+  return {
+    owner: null,
+    declaration: {
+      kind: "function",
+      name: "__z_task_scope_join",
+      async: true,
+      receiverMode: null,
+      parameters: [],
       returnType: { name: "void", location },
       errorType: null,
       body: [],
@@ -1690,7 +1766,12 @@ function collectPlacementCaptures(
           statement(arm.body, names);
         }
         return;
-      case "asyncScope": statement(value.body, new Set(localNames)); return;
+      case "asyncScope": {
+        const names = new Set(localNames);
+        if (value.name) names.add(value.name);
+        statement(value.body, names);
+        return;
+      }
       case "break": case "continue": return;
     }
   };
@@ -1898,7 +1979,7 @@ function awaitOperation(expression: Expression): {
 }
 
 function nestedAwaitResultType(site: AwaitSite): string {
-  if (site.intrinsic === "cancel") return "void";
+  if (site.intrinsic === "cancel" || site.intrinsic === "scopeClose" || site.intrinsic === "scopeCancel") return "void";
   if (site.mode === "attempt") {
     return resultTypeName(
       site.target.declaration.returnType.name,
@@ -2136,11 +2217,17 @@ function generateRuntime(
   fileName: string,
 ): string {
   const usesDelay = plans.some((plan) => [...plan.awaits.values()].some((site) => site.intrinsic === "delay"));
-  const usesThreads = plans.some((plan) => [...plan.spawns.values()].some((site) => site.nativeThread));
+  const usesTaskScopes = plans.some((plan) => (
+    [...plan.locals.values()].includes("TaskScope")
+    || plan.types.semanticInfo.taskScopeConstructors.size > 0
+    || plan.types.semanticInfo.taskScopeSpawnCalls.size > 0
+  ));
+  const usesThreads = usesTaskScopes
+    || plans.some((plan) => [...plan.spawns.values()].some((site) => site.nativeThread));
   const usesMainPlacement = plans.some((plan) => (
     [...plan.awaits.values()].some((site) => site.placement !== null)
     || [...plan.spawns.values()].some((site) => site.placement !== null)
-  ));
+  )) || plans.some((plan) => plan.types.semanticInfo.taskScopeSpawnCalls.size > 0);
   const usesDarwinMainLoop = usesThreads && usesMainPlacement;
   const usesNativeFrameStorage = plans.some((plan) => (
     requiresNativeFramePlacement(planSuccessType(plan), plan.types)
@@ -2240,6 +2327,28 @@ function generateRuntime(
     ] : []),
     "};",
     "",
+    ...(usesTaskScopes ? [
+      "typedef struct Z_TaskScopeJob Z_TaskScopeJob;",
+      "struct Z_TaskScope {",
+      "  size_t refcount;",
+      "  Z_AsyncExecutor *executor;",
+      "  size_t pending;",
+      "  bool closing;",
+      "  bool cancelled;",
+      "  Z_AsyncTask *waiter;",
+      "  Z_TaskScopeJob *jobs;",
+      "};",
+      "",
+      "struct Z_TaskScopeJob {",
+      "  Z_AsyncTask task;",
+      "  Z_TaskScope *scope;",
+      "  void (*call)(void *);",
+      "  void *context;",
+      "  void (*release)(void *);",
+      "  Z_TaskScopeJob *scope_next;",
+      "};",
+      "",
+    ] : []),
     "static __attribute__((unused)) bool z_async_is_completed(Z_AsyncTask *task) {",
     ...(usesThreads ? [
       "  if (task->native_thread) return __atomic_load_n(&task->completed, __ATOMIC_ACQUIRE);",
@@ -2372,7 +2481,7 @@ function generateRuntime(
       "}",
       "#endif",
       "",
-      "static void z_async_start_native_thread(Z_AsyncTask *task) {",
+      "static __attribute__((unused)) void z_async_start_native_thread(Z_AsyncTask *task) {",
       "  task->native_thread = true;",
       "  task->thread_joined = false;",
       "  task->completion_queued = false;",
@@ -2463,6 +2572,105 @@ function generateRuntime(
       "      z_async_enqueue(executor, waiter);",
       "    }",
       "  }",
+      "}",
+      "",
+    ] : []),
+    ...(usesTaskScopes ? [
+      "static Z_TaskScope *z_task_scope_retain(Z_TaskScope *scope) {",
+      "  if (scope != NULL) __atomic_add_fetch(&scope->refcount, 1, __ATOMIC_RELAXED);",
+      "  return scope;",
+      "}",
+      "",
+      "static void z_task_scope_discard_jobs(Z_TaskScope *scope) {",
+      "  Z_TaskScopeJob *job = scope->jobs;",
+      "  scope->jobs = NULL;",
+      "  while (job != NULL) {",
+      "    Z_TaskScopeJob *next = job->scope_next;",
+      "    free(job);",
+      "    job = next;",
+      "  }",
+      "}",
+      "",
+      "static void z_task_scope_release(Z_TaskScope *scope) {",
+      "  if (scope == NULL) return;",
+      "  if (__atomic_sub_fetch(&scope->refcount, 1, __ATOMIC_ACQ_REL) != 0) return;",
+      "  if (scope->pending != 0) abort();",
+      "  z_task_scope_discard_jobs(scope);",
+      "  free(scope);",
+      "}",
+      "",
+      "static Z_TaskScope *z_task_scope_new(Z_AsyncExecutor *executor) {",
+      "  Z_TaskScope *scope = (Z_TaskScope *)calloc(1, sizeof(Z_TaskScope));",
+      "  if (scope == NULL) abort();",
+      "  scope->refcount = 1;",
+      "  scope->executor = executor;",
+      "  return scope;",
+      "}",
+      "",
+      "static void z_task_scope_job_poll(Z_AsyncTask *task) {",
+      "  Z_TaskScopeJob *job = (Z_TaskScopeJob *)task;",
+      "  Z_TaskScope *scope = job->scope;",
+      "  z_async_thread_lock(scope->executor);",
+      "  const bool cancelled = scope->cancelled;",
+      "  z_async_thread_unlock(scope->executor);",
+      "  if (!cancelled) job->call(job->context);",
+      "  if (job->release != NULL) job->release(job->context);",
+      "  job->context = NULL;",
+      "  job->release = NULL;",
+      "  z_async_thread_lock(scope->executor);",
+      "  if (scope->pending == 0) abort();",
+      "  scope->pending -= 1;",
+      "  Z_AsyncTask *waiter = scope->pending == 0 ? scope->waiter : NULL;",
+      "  if (waiter != NULL) scope->waiter = NULL;",
+      "  z_async_thread_unlock(scope->executor);",
+      "  z_async_complete_task(task);",
+      "  if (waiter != NULL) {",
+      "    waiter->suspended = false;",
+      "    z_async_enqueue(scope->executor, waiter);",
+      "  }",
+      "  z_task_scope_release(scope);",
+      "}",
+      "",
+      "static bool z_task_scope_spawn(Z_TaskScope *scope, void (*call)(void *), void *context, void (*retain)(void *), void (*release)(void *)) {",
+      "  if (scope == NULL || call == NULL) abort();",
+      "  Z_TaskScopeJob *job = (Z_TaskScopeJob *)calloc(1, sizeof(Z_TaskScopeJob));",
+      "  if (job == NULL) abort();",
+      "  z_async_thread_lock(scope->executor);",
+      "  if (scope->closing) {",
+      "    z_async_thread_unlock(scope->executor);",
+      "    free(job);",
+      "    return false;",
+      "  }",
+      "  if (retain != NULL) retain(context);",
+      "  job->task.poll = z_task_scope_job_poll;",
+      "  job->task.executor = scope->executor;",
+      "  job->scope = z_task_scope_retain(scope);",
+      "  job->call = call;",
+      "  job->context = context;",
+      "  job->release = release;",
+      "  job->scope_next = scope->jobs;",
+      "  scope->jobs = job;",
+      "  scope->pending += 1;",
+      "  z_async_thread_unlock(scope->executor);",
+      "  z_async_enqueue_from_thread(scope->executor, &job->task);",
+      "  return true;",
+      "}",
+      "",
+      "static bool z_task_scope_join(Z_TaskScope *scope, Z_AsyncTask *parent, bool cancel) {",
+      "  if (scope == NULL) return true;",
+      "  z_async_thread_lock(scope->executor);",
+      "  scope->closing = true;",
+      "  if (cancel) scope->cancelled = true;",
+      "  if (scope->pending == 0) {",
+      "    z_async_thread_unlock(scope->executor);",
+      "    z_task_scope_discard_jobs(scope);",
+      "    return true;",
+      "  }",
+      "  if (scope->waiter != NULL && scope->waiter != parent) abort();",
+      "  scope->waiter = parent;",
+      "  parent->suspended = true;",
+      "  z_async_thread_unlock(scope->executor);",
+      "  return false;",
       "}",
       "",
     ] : []),
@@ -3807,17 +4015,42 @@ function generatePoll(
       state += 1;
       continue;
     }
+    if (operation.kind === "scopeEnter") {
+      cases.push(caseBlock(state, [
+        `frame->${frameField(operation.name)} = z_task_scope_new(frame->task.executor);`,
+        `frame->${frameLiveField(operation.name)} = true;`,
+        `frame->state = ${state + 1};`,
+        "continue;",
+      ]));
+      state += 1;
+      continue;
+    }
     if (operation.kind === "scopeExit") {
       for (const site of [...plan.spawns.values()].filter((candidate) => candidate.scope === operation.scope)) {
         const target = planByKey.get(targetKey(site.target))!;
         const child = `frame->child_${site.index}`;
         cases.push(caseBlock(state, [
           `if (${child} != NULL) {`,
+          ...(operation.cancel ? [`  z_async_cancel(&${child}->task);`] : []),
           `  if (!z_async_wait(&frame->task, &${child}->task)) return;`,
           `  ${target.destroyName}(${child});`,
           `  free(${child});`,
           `  frame->child_${site.index} = NULL;`,
           ...(site.binding ? [`  frame->${frameField(site.binding)} = NULL;`] : []),
+          "}",
+          `frame->state = ${state + 1};`,
+          "continue;",
+        ]));
+        state += 1;
+      }
+      if (operation.name) {
+        const scope = `frame->${frameField(operation.name)}`;
+        cases.push(caseBlock(state, [
+          `if (frame->${frameLiveField(operation.name)}) {`,
+          `  if (!z_task_scope_join(${scope}, &frame->task, ${operation.cancel ? "true" : "frame->cancel_children"})) return;`,
+          `  z_task_scope_release(${scope});`,
+          `  frame->${frameField(operation.name)} = NULL;`,
+          `  frame->${frameLiveField(operation.name)} = false;`,
           "}",
           `frame->state = ${state + 1};`,
           "continue;",
@@ -3870,7 +4103,7 @@ function generatePoll(
       const operation = awaitOperation(initializer);
       if (operation) {
         const site = plan.awaits.get(operation.expression.location.offset)!;
-        if (site.intrinsic === "delay" || site.intrinsic === "cancel") {
+        if (site.intrinsic === "delay" || site.intrinsic === "cancel" || site.intrinsic === "scopeClose" || site.intrinsic === "scopeCancel") {
           unsupported(fileName, statement.location, `the void ${site.intrinsic} operation cannot initialize a binding`);
         }
         if (!site.spawn) {
@@ -4010,6 +4243,17 @@ function generatePoll(
           state += 1;
           continue;
         }
+        if (site.intrinsic === "scopeClose" || site.intrinsic === "scopeCancel") {
+          const receiver = emitFrameExpression(site.receiver!, plan, fileName);
+          cases.push(caseBlock(state, [
+            `if (!z_task_scope_join(${receiver}, &frame->task, ${site.intrinsic === "scopeCancel" ? "true" : "false"})) return;`,
+            ...(plan.declaration.errorType ? ["frame->failed = false;"] : []),
+            `frame->state = ${finalizeStateMarker};`,
+            "continue;",
+          ]));
+          state += 1;
+          continue;
+        }
         if (!site.spawn) {
           cases.push(caseBlock(state, beginAwait(site, plan, planByKey, fileName, state + 1)));
           state += 1;
@@ -4117,6 +4361,16 @@ function generatePoll(
       const site = plan.awaits.get(operation.expression.location.offset)!;
       if (site.intrinsic === "delay") {
         cases.push(caseBlock(state, scheduleDelay(site, plan, fileName, state + 1)));
+        state += 1;
+        continue;
+      }
+      if (site.intrinsic === "scopeClose" || site.intrinsic === "scopeCancel") {
+        const receiver = emitFrameExpression(site.receiver!, plan, fileName);
+        cases.push(caseBlock(state, [
+          `if (!z_task_scope_join(${receiver}, &frame->task, ${site.intrinsic === "scopeCancel" ? "true" : "false"})) return;`,
+          `frame->state = ${state + 1};`,
+          "continue;",
+        ]));
         state += 1;
         continue;
       }
@@ -4816,9 +5070,9 @@ function emitFrameExpressionInner(
         if (
           type
           && plan.types.semanticInfo.managedCopies.has(expression.location.offset)
-          && plan.types.structs.get(type)?.kind === "class"
+          && (type === "TaskScope" || plan.types.structs.get(type)?.kind === "class")
         ) {
-          return `Z_${type}_retain(${value})`;
+          return type === "TaskScope" ? `z_task_scope_retain(${value})` : `Z_${type}_retain(${value})`;
         }
         return value;
       }
@@ -4838,9 +5092,9 @@ function emitFrameExpressionInner(
         }
         if (
           plan.types.semanticInfo.managedCopies.has(expression.location.offset)
-          && plan.types.structs.get(type)?.kind === "class"
+          && (type === "TaskScope" || plan.types.structs.get(type)?.kind === "class")
         ) {
-          return `Z_${type}_retain(${value})`;
+          return type === "TaskScope" ? `z_task_scope_retain(${value})` : `Z_${type}_retain(${value})`;
         }
         return value;
       }
@@ -5103,6 +5357,9 @@ function emitFrameExpressionInner(
       unsupported(fileName, expression.location, "only aggregate construction is executable as a synchronous async-frame call yet");
     }
     case "new": {
+      if (plan.types.semanticInfo.taskScopeConstructors.has(expression.location.offset)) {
+        return "z_task_scope_new(frame->task.executor)";
+      }
       const declaration = plan.types.structs.get(expression.typeName);
       if (declaration?.kind !== "class") {
         unsupported(fileName, expression.location, "async new requires a Z class type");
@@ -5308,6 +5565,7 @@ function cScalar(type: string): string {
 
 function cFrameType(type: string, types: AsyncTypeContext): string {
   if (parseTaskType(type)) return "Z_AsyncTask *";
+  if (type === "TaskScope") return "Z_TaskScope *";
   if (parseAsyncGeneratorType(type)) return asyncGeneratorCName(type);
   if (scalarTypes.has(type)) return cScalar(type);
   if (type === "String" || type === "TextBuffer") return "Z_String";
@@ -5346,6 +5604,7 @@ function borrowedFrameValue(name: string, type: string, types: AsyncTypeContext)
 
 function isSupportedFrameType(type: string, types: AsyncTypeContext, visiting = new Set<string>()): boolean {
   if (parseTaskType(type)) return true;
+  if (type === "TaskScope") return true;
   if (parseAsyncGeneratorType(type)) return true;
   if (scalarTypes.has(type)) return true;
   if (type === "String" || type === "TextBuffer") return true;
@@ -5386,7 +5645,7 @@ function isSupportedFrameType(type: string, types: AsyncTypeContext, visiting = 
 function hasFrameCleanup(type: string, types: AsyncTypeContext, visiting = new Set<string>()): boolean {
   if (visiting.has(type)) return false;
   if (parseAsyncGeneratorType(type)) return true;
-  if (type === "String" || type === "TextBuffer") return true;
+  if (type === "String" || type === "TextBuffer" || type === "TaskScope") return true;
   if (
     types.semanticInfo.foreignObjectTypes.has(type)
     || types.semanticInfo.foreignNamedTypes.get(type)?.kind === "object"
@@ -5425,6 +5684,7 @@ function frameCleanup(value: string, type: string, types: AsyncTypeContext): str
   if (type === "String" || type === "TextBuffer") {
     return `if ((${value}).capacity > 0) free((void *)(${value}).data);`;
   }
+  if (type === "TaskScope") return `z_task_scope_release(${value});`;
   if (
     types.semanticInfo.foreignObjectTypes.has(type)
     || types.semanticInfo.foreignNamedTypes.get(type)?.kind === "object"

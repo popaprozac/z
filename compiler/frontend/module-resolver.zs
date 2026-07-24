@@ -1155,6 +1155,14 @@ function resolveStatement(
     try resolveStatementSequence(module, symbols, arena, arena.nodes[index].children, loopBindings);
     return;
   }
+  if (arena.nodes[index].kind == StatementKind.asyncScopeStatement) {
+    let scopeBindings = copyBindings(bindings);
+    if (arena.nodes[index].name.byteLength > 0) {
+      scopeBindings.push(arena.nodes[index].name.copyBytes(0, arena.nodes[index].name.byteLength));
+    }
+    try resolveStatementSequence(module, symbols, arena, arena.nodes[index].children, scopeBindings);
+    return;
+  }
   try resolveStatementSequence(module, symbols, arena, arena.nodes[index].children, bindings);
 }
 
@@ -6077,6 +6085,12 @@ function collectClosureStatementCaptures(
         addUniqueString(inout nestedNames, binding.bindingName);
       }
     }
+    if (
+      arena.nodes[statementIndex].kind == StatementKind.asyncScopeStatement
+      && arena.nodes[statementIndex].name.byteLength > 0
+    ) {
+      addUniqueString(inout nestedNames, arena.nodes[statementIndex].name);
+    }
     const children = copyIndices(arena.nodes[statementIndex].children);
     collectClosureStatementCaptures(
       arena,
@@ -8482,6 +8496,24 @@ function inferStatement(
       copyBindingFlowStates(inout bindings, beforeLoop);
     }
     return true;
+  }
+  if (kind == StatementKind.asyncScopeStatement) {
+    let scopeBindings = copyValueBindings(bindings);
+    if (arena.nodes[index].name.byteLength > 0) {
+      addValueBinding(inout scopeBindings, arena.nodes[index].name, "TaskScope");
+    }
+    const scopeContinues = try inferStatementSequence(
+      module,
+      modules,
+      moduleIndex,
+      arena,
+      statementChildren,
+      inout scopeBindings,
+      inout evidence,
+      expectedReturn
+    );
+    if (scopeContinues) copyBindingFlowStates(inout bindings, scopeBindings);
+    return scopeContinues;
   }
   let nestedBindings = copyValueBindings(bindings);
   const nestedContinues = try inferStatementSequence(

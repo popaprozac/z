@@ -164,6 +164,8 @@ export type Statement =
 
 export type AsyncScopeStatement = {
   readonly kind: "asyncScope";
+  readonly name: string | null;
+  readonly nameLocation: SourceLocation | null;
   readonly body: BlockStatement;
   readonly location: SourceLocation;
 };

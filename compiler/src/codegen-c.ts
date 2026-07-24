@@ -127,6 +127,7 @@ const primitiveTypeNames: Record<string, string> = {
   TextBuffer: "Z_String",
   Arena: "Z_Arena",
   Hasher: "Z_Hasher",
+  TaskScope: "Z_TaskScope *",
   [objcSelectorTypeName]: "SEL",
 };
 
@@ -170,6 +171,8 @@ export function generateC(program: Program, sourceName: string, semanticInfo: Se
   const explicitCopyTypes = collectExplicitCopyTypes(semanticInfo, structs, enums);
   const arenaCreateTypes = [...new Set(semanticInfo.arenaCreateCalls.values())];
   const usesArena = [...semanticInfo.standardTypeBindings.values()].includes("Arena");
+  const usesTaskScope = semanticInfo.taskScopeConstructors.size > 0
+    || semanticInfo.taskScopeSpawnCalls.size > 0;
   const usesHasher = semanticInfo.hasherAddTypes.size > 0
     || [...semanticInfo.standardTypeBindings.values()].includes("Hasher")
     || [...mapTypes, ...setTypes].some((type) => {
@@ -310,6 +313,16 @@ export function generateC(program: Program, sourceName: string, semanticInfo: Se
     );
   }
   lines.push("");
+
+  if (usesTaskScope) {
+    lines.push(
+      "typedef struct Z_TaskScope Z_TaskScope;",
+      "static Z_TaskScope *z_task_scope_retain(Z_TaskScope *scope);",
+      "static void z_task_scope_release(Z_TaskScope *scope);",
+      "static bool z_task_scope_spawn(Z_TaskScope *scope, void (*call)(void *), void *context, void (*retain)(void *), void (*release)(void *));",
+      "",
+    );
+  }
 
   if (usesString) lines.push(generateStringRuntime(), "");
   if (semanticInfo.swiftStringsToZ.size > 0) lines.push(generateSwiftStringRuntime(), "");
@@ -1105,6 +1118,10 @@ function generateFunctionTypeParameters(
     const name = cBindingName(parameter.name);
     const type = mapType(parameter.type, structs, enums, foreignNamedTypes);
     if (parseSliceType(parameter.type)) return `${type} ${name}`;
+    if (parameter.type === "TaskScope") {
+      if (parameter.mode === "inout" || parameter.mode === "out") return `${type} *${name}`;
+      return `${type} ${name}`;
+    }
     const aggregate = structs.get(parameter.type);
     if (foreignNamedTypes.get(parameter.type)?.kind === "object") {
       if (parameter.mode === "inout" || parameter.mode === "out") return `${type} *${name}`;
@@ -1345,6 +1362,7 @@ function generateOwnedEnvironmentCleanup(
   if (parseGeneratorType(type)) return `${generatorDeinitName(type)}(&(${value}));`;
   if (type === "String" || type === "TextBuffer") return `if ((${value}).capacity > 0) free((void *)(${value}).data);`;
   if (type === "Arena") return `z_arena_reset(&(${value}));`;
+  if (type === "TaskScope") return `z_task_scope_release(${value});`;
   if (parseWeakType(type)) return `z_weak_release(${value});`;
   const functionType = parseFunctionType(type);
   if (functionType) return `${functionTypeReleaseName(functionType)}(${value});`;
@@ -2353,6 +2371,10 @@ function generateClassConstructorSignature(
   const parameters = declaration.constructor
     ? declaration.constructor.parameters.map((parameter) => {
       const type = mapType(parameter.type.name, structs, enums, foreignNamedTypes);
+      if (parameter.type.name === "TaskScope") {
+        if (parameter.mode === "inout" || parameter.mode === "out") return `${type} *${cBindingName(parameter.name)}`;
+        return `${type} ${cBindingName(parameter.name)}`;
+      }
       const aggregate = structs.get(parameter.type.name);
       if (parseSliceType(parameter.type.name)) return `${type} ${cBindingName(parameter.name)}`;
       if (foreignNamedTypes.get(parameter.type.name)?.kind === "object") {
@@ -3092,6 +3114,10 @@ function generateFunctionSignature(
     const name = cBindingName(parameter.name);
     const type = mapType(parameter.type.name, structs, enums, foreignNamedTypes);
     if (parseSliceType(parameter.type.name)) return `${type} ${name}`;
+    if (parameter.type.name === "TaskScope") {
+      if (parameter.mode === "inout" || parameter.mode === "out") return `${type} *${name}`;
+      return `${type} ${name}`;
+    }
     const aggregate = structs.get(parameter.type.name);
     if (foreignNamedTypes.get(parameter.type.name)?.kind === "object") {
       if (parameter.mode === "inout" || parameter.mode === "out") return `${type} *${name}`;
@@ -4284,7 +4310,8 @@ function generateOwnedClosureCaptureValue(
   let value = generateExpression(captured, context);
   const capturedClass = context.structs.get(capture.type);
   const capturedFunction = parseFunctionType(capture.type);
-  if (capturedClass?.kind === "class") value = `${retainName(capture.type)}(${value})`;
+  if (capture.type === "TaskScope") value = `z_task_scope_retain(${value})`;
+  else if (capturedClass?.kind === "class") value = `${retainName(capture.type)}(${value})`;
   else if (capturedFunction) value = `${functionTypeRetainName(capturedFunction)}(${value})`;
   else if (parseWeakType(capture.type)) value = `z_weak_retain(${value})`;
   return value;
@@ -4344,7 +4371,11 @@ function generateLoweredCall(
   const lines: string[] = [];
   const overrides = new Map<number, string>();
   const borrowedTemporaries: Array<{ readonly name: string; readonly type: string }> = [];
-  for (const argument of expression.arguments) {
+  for (let argumentIndex = 0; argumentIndex < expression.arguments.length; argumentIndex += 1) {
+    const argument = expression.arguments[argumentIndex];
+    if (context.semanticInfo.taskScopeSpawnCalls.has(expression.location.offset) && argumentIndex === 0) {
+      continue;
+    }
     if (
       !callArgumentNeedsLowering(argument, context)
       && ["number", "string", "boolean", "null"].includes(argument.kind)
@@ -4777,6 +4808,10 @@ function generateValueCleanup(
   if (type === "Arena") {
     const reset = `z_arena_reset(&(${value}));`;
     return liveFlag ? `if (${liveFlag}) ${reset}` : reset;
+  }
+  if (type === "TaskScope") {
+    const release = `z_task_scope_release(${value});`;
+    return liveFlag ? `if (${liveFlag}) ${release}` : release;
   }
   if (context.semanticInfo.foreignNamedTypes.get(type)?.kind === "object") {
     const release = `${value} = nil;`;
@@ -5800,6 +5835,12 @@ function generateExpressionInner(expression: Expression, context: GenerationCont
         if (!liveFlag) throw new Error(`missing ownership flag for moved value ${JSON.stringify(expression.name)}`);
         return `(${liveFlag} = false, ${generateStoredValue(expression.name, context)})`;
       }
+      if (
+        context.semanticInfo.managedCopies.has(expression.location.offset)
+        && inferExpressionType(expression, context) === "TaskScope"
+      ) {
+        return `z_task_scope_retain(${generateStoredValue(expression.name, context)})`;
+      }
       return maybeRetainClass(
         expression,
         context.localTypes.has(expression.name) ? generateStoredValue(expression.name, context) : expression.name,
@@ -6039,6 +6080,14 @@ function generateExpressionInner(expression: Expression, context: GenerationCont
       const integerOperation = context.semanticInfo.integerOperations.get(expression.location.offset);
       if (integerOperation && expression.callee.kind === "member") {
         return `${integerOperationName(integerOperation)}(${generateExpression(expression.callee.object, context)}, ${generateExpression(expression.arguments[0], context)})`;
+      }
+      if (
+        context.semanticInfo.taskScopeSpawnCalls.has(expression.location.offset)
+        && expression.callee.kind === "member"
+      ) {
+        const scope = generateExpression(expression.callee.object, context);
+        const operation = generateExpression(expression.arguments[1], context);
+        return `z_task_scope_spawn(${scope}, (${operation}).call, (${operation}).context, (${operation}).retain, (${operation}).release)`;
       }
       const referencedStandard = context.semanticInfo.standardFunctionReferences.get(expression.callee.location.offset);
       if (referencedStandard) {
@@ -6296,7 +6345,9 @@ function closureCaptureHasReferenceIdentity(
   structs: ReadonlyMap<string, StructDeclaration>,
   foreignNamedTypes: SemanticInfo["foreignNamedTypes"],
 ): boolean {
-  return structs.get(type)?.kind === "class" || foreignNamedTypes.get(type)?.kind === "object";
+  return type === "TaskScope"
+    || structs.get(type)?.kind === "class"
+    || foreignNamedTypes.get(type)?.kind === "object";
 }
 
 function generateViewPayload(expression: Expression, context: GenerationContext): string {
@@ -7078,6 +7129,7 @@ function inferExpressionType(expression: Expression, context: GenerationContext)
     analyzedType === "String"
     || analyzedType === "TextBuffer"
     || analyzedType === "Arena"
+    || analyzedType === "TaskScope"
     || analyzedType === "boolean"
     || analyzedType === "u8"
     || analyzedType === "usize"
@@ -7518,7 +7570,7 @@ function hasCleanupType(
   visiting = new Set<string>(),
 ): boolean {
   if (visiting.has(type)) return false;
-  if (type === "String" || type === "TextBuffer" || type === "Arena") return true;
+  if (type === "String" || type === "TextBuffer" || type === "Arena" || type === "TaskScope") return true;
   if (parseGeneratorType(type)) return true;
   if (parseWeakType(type)) return true;
   if (parseFunctionType(type)) return true;

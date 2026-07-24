@@ -387,13 +387,14 @@ safe runtime handoff into a Z-owned executor/task scope.
 
 The first C callback tier describes arbitrary native invocation with `thread
 any`, but deliberately does not make `spawn on thread.main` detached. The
-planned foundation is an imported thread-safe `TaskScope` that explicitly owns
-children submitted by foreign callbacks, rejects new children during close,
-propagates cancellation and errors, and joins accepted work. If that API proves
-ergonomic, a named first-class `async scope` should become its language-shaped
-surface rather than a separate concurrency model. Repeated callbacks may
-eventually lower into an async generator so ordinary `try for await` owns the
-registration and cancellation lifetime.
+implemented bridge is the imported thread-safe `TaskScope`: it owns operations
+submitted by foreign callbacks, rejects new operations during close, and joins
+accepted work. `async scope updates {}` exposes that same handle as `updates`
+without creating a second concurrency model. The current executable tier
+accepts synchronous nonthrowing `(): void` operations placed on `thread.main`;
+typed child errors and additional executors follow after deterministic
+multi-error policy. Repeated callbacks may eventually lower into an async
+generator so ordinary `try for await` owns registration and cancellation.
 
 ## Function-level isolation
 

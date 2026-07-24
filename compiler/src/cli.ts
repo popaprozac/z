@@ -585,7 +585,10 @@ function canonicalStatementText(statement: Statement, tokens: readonly Token[]):
     })`;
   }
   if (statement.kind === "asyncScope") {
-    return `asyncScope@${location}(body=${canonicalStatementText(statement.body, tokens)})`;
+    const name = statement.name && statement.nameLocation
+      ? `name=${statement.name}@${canonicalLocation(statement.nameLocation)},`
+      : "";
+    return `asyncScope@${location}(${name}body=${canonicalStatementText(statement.body, tokens)})`;
   }
   if (statement.kind === "expressionStatement") {
     const expressionLocation = lexicalExpressionLocation(statement.expression);

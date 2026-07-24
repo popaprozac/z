@@ -2292,6 +2292,17 @@ function parseProjectedStatement(
     const start = snapshot(tokens[current]);
     current = current + 1;
     try expectKind(tokens, inout current, TokenKind.scopeKeyword, "`scope` after `async`");
+    let scopeName = "";
+    let scopeNameOffset: usize = 0;
+    let scopeNameLine: usize = 0;
+    let scopeNameColumn: usize = 0;
+    if (tokens[current].kind == TokenKind.identifier) {
+      scopeName = copy tokens[current].text;
+      scopeNameOffset = tokens[current].offset;
+      scopeNameLine = tokens[current].line;
+      scopeNameColumn = tokens[current].column;
+      current = current + 1;
+    }
     const bodyStart = snapshot(tokens[current]);
     const bodyStatements = try parseProjectedBlock(tokens, inout current, "an `async scope` body", inout nodes);
     let children = Array<usize>();
@@ -2300,10 +2311,10 @@ function parseProjectedStatement(
     nodes.push(Statement({
       kind: StatementKind.asyncScopeStatement,
       mutableBinding: false,
-      name: "",
-      nameOffset: 0,
-      nameLine: 0,
-      nameColumn: 0,
+      name: scopeName,
+      nameOffset: scopeNameOffset,
+      nameLine: scopeNameLine,
+      nameColumn: scopeNameColumn,
       typeAnnotation: Option<TypeReference>.none,
       expression: Option<ExpressionSyntax>.none,
       secondExpression: Option<ExpressionSyntax>.none,
@@ -3356,6 +3367,12 @@ function renderStatementText(in arena: StatementArena, in statement: Statement):
       }
       none => {}
     }
+  }
+  if (statement.kind == StatementKind.asyncScopeStatement && !statement.name.isEmpty) {
+    output.append("name=");
+    output.append(statement.name);
+    output.append("@");
+    output.append(`${statement.nameOffset},${statement.nameLine},${statement.nameColumn},`);
   }
   if (statement.kind == StatementKind.assignmentStatement) {
     match (in statement.expression) {
