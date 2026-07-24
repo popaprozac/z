@@ -4008,7 +4008,7 @@ test("builds a declared Swift target for ordinary CLI and editor workflows", () 
   );
 });
 
-test("projects an exactly-once Swift callback into an awaitable Z task", () => {
+test("projects Swift callbacks into tasks and preserves MainActor isolation", () => {
   if (process.platform !== "darwin") return;
   const example = resolve(projectRoot, "examples/interop/swift/swift-task-scope/main.zs");
   const source = readFileSync(example, "utf8");
@@ -4019,6 +4019,7 @@ test("projects an exactly-once Swift callback into an awaitable Z task", () => {
     artifact.source,
     /\[ZSwiftBackgroundWorker calculateChecked:frame->value_value shouldFail:frame->value_shouldFail completion:\^void\(int32_t callback_value_0, NSError \* callback_value_1\)/,
   );
+  assert.match(artifact.source, /\[ZSwiftMainActorWorker calculate:frame->value_value completion:\^void\(int32_t callback_value_0\)/);
   assert.match(artifact.source, /if \(callback_value_1 != nil\)/);
   assert.match(artifact.source, /frame->error = callback_value_1/);
   assert.match(artifact.source, /z_async_begin_external_completion\(task\)/);
@@ -4027,6 +4028,11 @@ test("projects an exactly-once Swift callback into an awaitable Z task", () => {
   assert.doesNotMatch(artifact.source, /\[ZSwiftBackgroundWorker waitForCompletion\]/);
 
   const context = analyzeSource(source, example);
+  assert.equal(
+    context.projectBuild.foreignApiNotes["ZSwiftTaskScope-Swift.h"]
+      ?.types?.ZSwiftMainActorWorker?.executorAffinity,
+    "main",
+  );
   const calculate = context.foreignModules.get("Swift")
     ?.interfaces.get("ZSwiftBackgroundWorker")
     ?.methods.find((method) => !method.instance && method.selector === "calculate:completion:");
@@ -4045,6 +4051,25 @@ test("projects an exactly-once Swift callback into an awaitable Z task", () => {
   assert.equal(calculateChecked?.asyncCallbackParameter, 2);
   assert.equal(calculateChecked?.asyncResultParameter, 0);
   assert.equal(calculateChecked?.asyncErrorParameter, 1);
+
+  const mainActor = context.foreignModules.get("Swift")
+    ?.interfaces.get("ZSwiftMainActorWorker");
+  const mainActorCalculate = mainActor
+    ?.methods.find((method) => !method.instance && method.selector === "calculate:completion:");
+  assert.equal(mainActor?.metadata.executorAffinity, "main");
+  assert.equal(mainActorCalculate?.metadata.executorAffinity, "main");
+  assert.equal(mainActorCalculate?.asyncCallbackParameter, 1);
+  assert.equal(mainActorCalculate?.asyncResultParameter, 0);
+
+  const offMain = `
+    import Swift from "ZSwiftTaskScope-Swift.h";
+    async function calculate(): i32 {
+      return await Swift.ZSwiftMainActorWorker.calculate(40);
+    }
+  `;
+  const offMainDiagnostic = diagnostics(offMain, example)[0];
+  assert.equal(offMainDiagnostic.code, "Z0711");
+  assert.match(offMainDiagnostic.message, /ZSwiftMainActorWorker.*requires thread\.main executor context/);
 
   const naked = source.replace(
     "const value = await Swift.ZSwiftBackgroundWorker.calculate(40);",
@@ -4165,6 +4190,12 @@ test("projects an exactly-once Swift callback into an awaitable Z task", () => {
   )?.contents.value ?? "";
   assert.match(methodHover, /async calculate\(value: i32\): i32/);
   assert.match(methodHover, /calculate\(value: i32, completion: \(argument1: i32\) => void\): void/);
+  const mainActorDeclarationHover = hover(
+    declarationSource,
+    declarationFile,
+    declarationSource.indexOf("ZSwiftMainActorWorker.calculate") + "ZSwiftMainActorWorker.".length + 2,
+  )?.contents.value ?? "";
+  assert.match(mainActorDeclarationHover, /async calculate\(value: i32\): i32 on thread\.main/);
   assert.match(
     definition(
       declarationSource,
@@ -4214,6 +4245,18 @@ test("projects an exactly-once Swift callback into an awaitable Z task", () => {
     source.indexOf("calculate(40)") + 2,
   )?.contents.value ?? "";
   assert.match(sourceHover, /async calculate\(value: i32\): i32/);
+  const mainActorSourceHover = hover(
+    source,
+    example,
+    source.indexOf("ZSwiftMainActorWorker.calculate") + "ZSwiftMainActorWorker.".length + 2,
+  )?.contents.value ?? "";
+  assert.match(mainActorSourceHover, /async calculate\(value: i32\): i32 on thread\.main/);
+  const mainActorTypeHover = hover(
+    source,
+    example,
+    source.indexOf("ZSwiftMainActorWorker") + 2,
+  )?.contents.value ?? "";
+  assert.match(mainActorTypeHover, /Objective-C class ZSwiftMainActorWorker on thread\.main/);
   const checkedSourceHover = hover(
     source,
     example,

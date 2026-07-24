@@ -91,7 +91,13 @@ export function analyzeSource(source: string, fileName: string, options: Analysi
   const typeAliases = resolveTypeAliases(linked.program, fileName, linked.typeDisplayNames);
   const projectBuild = prepareProject(fileName);
   const includeDirectories = [...new Set([...projectBuild.includeDirectories, ...linked.includeDirectories])];
-  const foreignModules = resolveForeignModules(typeAliases.program.imports, fileName, includeDirectories, projectBuild.deploymentTarget);
+  const foreignModules = resolveForeignModules(
+    typeAliases.program.imports,
+    fileName,
+    includeDirectories,
+    projectBuild.deploymentTarget,
+    projectBuild.foreignApiNotes,
+  );
   const foreignHandleTypes = collectForeignHandleTypeAliases(foreignModules);
   const typeDisplayNames = new Map(linked.typeDisplayNames);
   for (const module of foreignModules.values()) {

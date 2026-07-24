@@ -2,6 +2,7 @@ import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { DiagnosticError } from "./diagnostics.ts";
+import type { ApiNotes } from "./foreign-api-notes.ts";
 
 export type ProjectBuild = {
   readonly manifestPath: string | null;
@@ -10,6 +11,7 @@ export type ProjectBuild = {
   readonly nativeLibraries: readonly string[];
   readonly nativeLinkerArguments: readonly string[];
   readonly frameworks: readonly string[];
+  readonly foreignApiNotes: Readonly<Record<string, ApiNotes>>;
 };
 
 export type DeploymentTarget = {
@@ -41,6 +43,7 @@ const emptyBuild: ProjectBuild = {
   nativeLibraries: [],
   nativeLinkerArguments: [],
   frameworks: [],
+  foreignApiNotes: {},
 };
 const buildCache = new Map<string, { readonly freshness: number; readonly build: ProjectBuild }>();
 
@@ -98,11 +101,14 @@ export function prepareProject(fileName: string): ProjectBuild {
   const cxxInterop = swift.interop === "cxx";
   const header = resolve(buildDirectory, `${moduleName}-Swift.${cxxInterop ? "hpp" : "h"}`);
   const library = resolve(buildDirectory, `lib${moduleName}.dylib`);
+  const symbolGraphDirectory = resolve(buildDirectory, "symbol-graphs");
+  const symbolGraph = resolve(symbolGraphDirectory, `${moduleName}.symbols.json`);
   const freshness = Math.max(statSync(manifestPath).mtimeMs, ...sources.map((source) => statSync(source).mtimeMs));
   const cached = buildCache.get(manifestPath);
   const outputsFresh = existsSync(header)
     && existsSync(library)
-    && statSync(library).mtimeMs >= freshness;
+    && statSync(library).mtimeMs >= freshness
+    && (cxxInterop || (existsSync(symbolGraph) && statSync(symbolGraph).mtimeMs >= freshness));
   if (cached?.freshness === freshness && outputsFresh) return cached.build;
   if (!outputsFresh) {
     mkdirSync(buildDirectory, { recursive: true });
@@ -126,8 +132,31 @@ export function prepareProject(fileName: string): ProjectBuild {
         ?? "swiftc failed";
       throw projectDiagnostic(fileName, `could not build Swift module ${JSON.stringify(moduleName)}: ${detail}`);
     }
+    if (!cxxInterop) {
+      mkdirSync(symbolGraphDirectory, { recursive: true });
+      const graphResult = spawnSync("xcrun", [
+        "swift-symbolgraph-extract",
+        "-module-name", moduleName,
+        "-I", buildDirectory,
+        "-target", deploymentTarget
+          ? deploymentTargetTriple(deploymentTarget)
+          : swiftHostTargetTriple(fileName),
+        "-sdk", macosSdkPath(fileName),
+        "-output-dir", symbolGraphDirectory,
+      ], { encoding: "utf8" });
+      if (graphResult.error) {
+        throw projectDiagnostic(fileName, `could not inspect Swift module ${JSON.stringify(moduleName)} for executor metadata: ${graphResult.error.message}`);
+      }
+      if (graphResult.status !== 0) {
+        const detail = graphResult.stderr.trim().split("\n").find((line) => line.includes("error:"))
+          ?? graphResult.stderr.trim().split("\n")[0]
+          ?? "swift-symbolgraph-extract failed";
+        throw projectDiagnostic(fileName, `could not inspect Swift module ${JSON.stringify(moduleName)} for executor metadata: ${detail}`);
+      }
+    }
   }
 
+  const compatibilityHeader = `${moduleName}-Swift.${cxxInterop ? "hpp" : "h"}`;
   const build: ProjectBuild = {
     manifestPath,
     deploymentTarget,
@@ -138,6 +167,9 @@ export function prepareProject(fileName: string): ProjectBuild {
       ...(cxxInterop ? swiftRuntimeLinkerArguments(fileName) : []),
     ],
     frameworks: [...(swift.frameworks ?? [])],
+    foreignApiNotes: cxxInterop
+      ? {}
+      : { [compatibilityHeader]: swiftExecutorApiNotes(symbolGraph, fileName) },
   };
   buildCache.set(manifestPath, { freshness, build });
   return build;
@@ -158,18 +190,80 @@ function parseLinkedLibraries(libraries: readonly string[] | undefined, fileName
 }
 
 function swiftRuntimeLinkerArguments(fileName: string): string[] {
-  const result = spawnSync("xcrun", ["--sdk", "macosx", "--show-sdk-path"], { encoding: "utf8" });
-  if (result.error) {
-    throw projectDiagnostic(fileName, `could not locate the macOS SDK for Swift C++ interop: ${result.error.message}`);
-  }
-  if (result.status !== 0) {
-    throw projectDiagnostic(fileName, `could not locate the macOS SDK for Swift C++ interop: ${result.stderr.trim() || "xcrun failed"}`);
-  }
-  const runtimeLibraryDirectory = resolve(result.stdout.trim(), "usr/lib/swift");
+  const runtimeLibraryDirectory = resolve(macosSdkPath(fileName), "usr/lib/swift");
   if (!existsSync(runtimeLibraryDirectory)) {
     throw projectDiagnostic(fileName, `Swift runtime link directory ${JSON.stringify(runtimeLibraryDirectory)} does not exist`);
   }
   return ["-L", runtimeLibraryDirectory, "-lswiftCore"];
+}
+
+function macosSdkPath(fileName: string): string {
+  const result = spawnSync("xcrun", ["--sdk", "macosx", "--show-sdk-path"], { encoding: "utf8" });
+  if (result.error) {
+    throw projectDiagnostic(fileName, `could not locate the macOS SDK for Swift interop: ${result.error.message}`);
+  }
+  if (result.status !== 0) {
+    throw projectDiagnostic(fileName, `could not locate the macOS SDK for Swift interop: ${result.stderr.trim() || "xcrun failed"}`);
+  }
+  return result.stdout.trim();
+}
+
+function swiftHostTargetTriple(fileName: string): string {
+  const result = spawnSync("xcrun", ["swiftc", "-print-target-info"], { encoding: "utf8" });
+  if (result.error) {
+    throw projectDiagnostic(fileName, `could not inspect the Swift compiler target: ${result.error.message}`);
+  }
+  if (result.status !== 0) {
+    throw projectDiagnostic(fileName, `could not inspect the Swift compiler target: ${result.stderr.trim() || "swiftc failed"}`);
+  }
+  try {
+    const parsed = JSON.parse(result.stdout) as { readonly target?: { readonly triple?: unknown } };
+    if (typeof parsed.target?.triple === "string" && parsed.target.triple.length > 0) {
+      return parsed.target.triple;
+    }
+  } catch {
+    // The diagnostic below describes the stable contract Z needs from swiftc.
+  }
+  throw projectDiagnostic(fileName, "Swift compiler target information did not contain a target triple");
+}
+
+function swiftExecutorApiNotes(symbolGraphPath: string, fileName: string): ApiNotes {
+  let graph: {
+    readonly symbols?: readonly {
+      readonly identifier?: { readonly precise?: unknown };
+      readonly declarationFragments?: readonly {
+        readonly spelling?: unknown;
+        readonly preciseIdentifier?: unknown;
+      }[];
+    }[];
+  };
+  try {
+    graph = JSON.parse(readFileSync(symbolGraphPath, "utf8")) as typeof graph;
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    throw projectDiagnostic(fileName, `could not read Swift executor metadata ${JSON.stringify(symbolGraphPath)}: ${detail}`);
+  }
+  const types: Record<string, { executorAffinity: "main" }> = {};
+  const objcMethods: Record<string, { executorAffinity: "main" }> = {};
+  for (const symbol of graph.symbols ?? []) {
+    const mainActor = symbol.declarationFragments?.some((fragment) => (
+      fragment.preciseIdentifier === "s:ScM"
+      || fragment.spelling === "MainActor"
+    )) ?? false;
+    if (!mainActor || typeof symbol.identifier?.precise !== "string") continue;
+    const precise = symbol.identifier.precise;
+    const method = precise.match(/@objc\(cs\)([^@()]+)\((?:cm|im)\)(.+)$/);
+    if (method) {
+      objcMethods[`${method[1]}.${method[2]}`] = { executorAffinity: "main" };
+      continue;
+    }
+    const type = precise.match(/@objc\(cs\)([^@()]+)$/);
+    if (type) types[type[1]] = { executorAffinity: "main" };
+  }
+  return {
+    ...(Object.keys(types).length > 0 ? { types } : {}),
+    ...(Object.keys(objcMethods).length > 0 ? { objcMethods } : {}),
+  };
 }
 
 function parseDeploymentTarget(target: ProjectManifest["target"], fileName: string): DeploymentTarget | null {

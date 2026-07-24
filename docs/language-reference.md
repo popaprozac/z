@@ -1304,10 +1304,13 @@ Calls, construction, member access, and cleanup must remain on main. The
 current async tier requires an explicit `await on thread.main` hop rather than
 automatically scheduling an isolated async function.
 
-Native declarations use the same contract. Clang-imported
+Native declarations use the same contract. Explicit Clang
 `swift_attr("@UIActor")` and `swift_attr("@MainActor")` facts automatically map
-to `thread.main`. A reviewed `.zd` fallback handles legacy or incompletely
-annotated surfaces:
+to `thread.main`. Swift-generated Objective-C headers omit the source
+`@MainActor` attribute, so a Swift target declared in `z.json` also emits a
+compiler-consumed symbol graph; its actor-isolated Objective-C types and methods
+enter the same FIIR fact automatically. A reviewed `.zd` fallback handles
+external, legacy, or incompletely annotated surfaces:
 
 ```z
 declare module "LegacyUI.h" {

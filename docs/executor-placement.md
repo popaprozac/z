@@ -534,9 +534,10 @@ later without making executor blocks a special case.
    and native executor-affinity metadata are implemented; mutation, cross-
    executor borrows, and broader native ownership remain.
 7. **Done for the main-executor tier:** carry main-affinity facts through FIIR,
-   automatically import Clang `@UIActor`/`@MainActor` Swift attributes, accept
-   `on thread.main` fallbacks in `.zd`, and ship reviewed AppKit type notes where
-   its Objective-C headers do not uniformly carry actor metadata.
+   automatically import explicit Clang actor attributes and `@MainActor` facts
+   from declared Swift-target symbol graphs, accept `on thread.main` fallbacks
+   in `.zd`, and ship reviewed AppKit type notes where its Objective-C headers
+   do not uniformly carry actor metadata.
 8. **Done for current syntax:** highlighting, completion, hover, definitions,
    and placement diagnostics.
 9. Pressure-test the model in an application-shaped AppKit example, including

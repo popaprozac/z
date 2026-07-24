@@ -309,9 +309,13 @@ function's single borrowed pointer input. A parameter-local `fixed NAME;`
 contract keeps a real native ABI parameter in the declaration while omitting it
 from the Z call surface and supplying that header constant during code generation:
 
-Executor affinity is also producer-neutral FIIR metadata. Clang Swift
-attributes are imported automatically; `.zd` supplies the same fact when a
-legacy header cannot:
+Executor affinity is also producer-neutral FIIR metadata. Explicit Clang actor
+attributes are imported automatically. A Swift-generated Objective-C header
+does not preserve source `@MainActor`, so declared Swift targets additionally
+emit a structured Swift symbol graph; Z maps its Objective-C runtime identities
+back onto the Clang declarations before FIIR normalization. `.zd` supplies the
+same fact for external or legacy surfaces whose toolchain metadata is
+unavailable:
 
 ```z
 declare module "LegacyUI.h" {

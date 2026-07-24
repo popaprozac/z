@@ -1,6 +1,6 @@
 # Swift callback-to-async projection
 
-This example composes five native boundaries:
+This example composes six native boundaries:
 
 1. Swift starts work on a global Dispatch queue.
 2. Its generated Objective-C compatibility header exposes an escaping block.
@@ -11,6 +11,9 @@ This example composes five native boundaries:
    nullable `NSError` callback into `Task<T, E>`.
 5. Z uses `attempt await` to inspect both success and failure, then hops to the
    main executor for AppKit work.
+6. A real Swift `@MainActor` class crosses the generated header, enters Z's
+   foreign IR as `on thread.main`, and keeps that isolation on its synthesized
+   awaitable overload.
 
 Run it on macOS:
 
@@ -28,6 +31,11 @@ The expected output is:
 The generated task frame remains alive until Swift invokes its exactly-once
 completion, even when cancellation has already been requested. The raw
 callback-taking overload remains available by supplying `completion:` explicitly.
+`ZSwiftMainActorWorker.calculate` invokes its completion synchronously, proving
+that callback-to-task projection is also safe when native code completes before
+the imported call returns. Its Z call is accepted because `main` is explicitly
+declared `on thread.main`; the same call from an ordinary async function is a
+compile-time executor-affinity error.
 The delayed second operation is cancelled after native work starts; Z waits for
 Swift's callback before destroying the frame. The first line is the owned
 `NSError.code` observed through `failure(error)`; the second is the successful

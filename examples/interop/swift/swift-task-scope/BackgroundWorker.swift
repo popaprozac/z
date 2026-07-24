@@ -58,3 +58,15 @@ public final class SwiftBackgroundWorker: NSObject {
     work.wait()
   }
 }
+
+@MainActor
+@objc(ZSwiftMainActorWorker)
+public final class SwiftMainActorWorker: NSObject {
+  @objc(calculate:completion:)
+  public static func calculate(
+    _ value: Int32,
+    completion: @escaping @Sendable (Int32) -> Void
+  ) {
+    completion(value + 2)
+  }
+}

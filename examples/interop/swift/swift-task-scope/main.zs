@@ -4,8 +4,9 @@ import { delay } from "std/time";
 import AppKit from "AppKit/AppKit.h";
 import Swift from "ZSwiftTaskScope-Swift.h";
 
-async function main(): i32 {
+async function main(): i32 on thread.main {
   const value = await Swift.ZSwiftBackgroundWorker.calculate(40);
+  const mainActorValue = await Swift.ZSwiftMainActorWorker.calculate(40);
   const checked = attempt await Swift.ZSwiftBackgroundWorker.calculateChecked(
     40,
     shouldFail: false
@@ -38,5 +39,5 @@ async function main(): i32 {
   const cancelled = task Swift.ZSwiftBackgroundWorker.calculateDelayed(1);
   await delay(1);
   await cancelled.cancel();
-  return value - 42 + checkedValue - 42 + failureStatus;
+  return value - 42 + mainActorValue - 42 + checkedValue - 42 + failureStatus;
 }

@@ -1290,13 +1290,18 @@ thread transfer, and placement results that would carry isolated state back to
 a non-main continuation. Async isolated functions do not auto-hop yet; callers
 use `await on thread.main`.
 
-Foreign declarations carry the same FIIR affinity fact. Clang
+Foreign declarations carry the same FIIR affinity fact. Explicit Clang
 `swift_attr("@UIActor")` and `swift_attr("@MainActor")` metadata maps
-automatically to `thread.main`; reviewed API notes and `.zd` declarations such
-as `export type LegacyWindow on thread.main;` cover legacy or incompletely
-annotated headers. The fact applies transitively to Z aggregates storing the
-native identity and is visible in editor hover. It changes compile-time
-placement and transfer legality, not the native ABI or call sequence.
+automatically to `thread.main`. Generated Objective-C headers omit a Swift
+source declaration's `@MainActor`, so a Swift target declared in `z.json`
+additionally emits a symbol graph; Z maps its Objective-C runtime identities
+onto the Clang ABI declarations before FIIR normalization. Reviewed API notes
+and `.zd` declarations such as
+`export type LegacyWindow on thread.main;` cover external, legacy, or
+incompletely annotated surfaces. The fact applies transitively to Z aggregates
+storing the native identity and is visible in editor hover. It changes
+compile-time placement and transfer legality, not the native ABI or call
+sequence.
 
 The runtime executes placement blocks through structured task frames. Captures
 may be recursively plain values, owned `String` copies, retained Z ARC classes,
@@ -1747,6 +1752,14 @@ Package integration remain separate from native Swift module import.
 Manifest paths are relative to `z.json`, generated products live in a local
 ignored `.z-cache`, and manifest or Swift-source modification times invalidate
 both the Swift build and imported Clang metadata.
+
+For Objective-C-compatible declared targets, the same cached build emits a
+Swift symbol graph. Swift's generated Objective-C header does not retain
+`@MainActor`; the symbol graph does, together with Objective-C runtime class and
+selector identities. Z merges only that executor-affinity fact into the
+header-derived declaration. The header remains ABI authority, and `.zd` remains
+responsible for behavioral callback facts such as exactly-once completion and
+delivery thread.
 
 Generated Objective-C headers do not encode where Swift invokes an escaping
 completion block. An adjacent `.zd` contract may therefore name an existing

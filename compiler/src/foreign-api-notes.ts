@@ -176,23 +176,27 @@ export function readApiNotes(
   declarations: ReadonlyMap<string, ForeignFunctionDeclaration>,
   namedTypes: ReadonlyMap<string, ForeignNamedType>,
   interfaces: ReadonlyMap<string, ForeignObjCInterface>,
+  generatedSource: { readonly name: string; readonly notes: ApiNotes } | null = null,
 ): ApiNotes {
   const sources = apiNoteSources(declaration, includeDirectory);
   try {
-    return mergeApiNotes(sources.map((source) => ({
-      name: source.path,
-      notes: source.kind === "declaration"
-        ? foreignDeclarationApiNotes(
-          parseForeignDeclarationContracts(readFileSync(source.path, "utf8"), source.path),
-          declarations,
-          namedTypes,
-          interfaces,
-          declaration.header,
-          includeDirectory,
-          source.path,
-        )
-        : parseApiNotes(JSON.parse(readFileSync(source.path, "utf8")), source.path),
-    })));
+    return mergeApiNotes([
+      ...(generatedSource ? [generatedSource] : []),
+      ...sources.map((source) => ({
+        name: source.path,
+        notes: source.kind === "declaration"
+          ? foreignDeclarationApiNotes(
+            parseForeignDeclarationContracts(readFileSync(source.path, "utf8"), source.path),
+            declarations,
+            namedTypes,
+            interfaces,
+            declaration.header,
+            includeDirectory,
+            source.path,
+          )
+          : parseApiNotes(JSON.parse(readFileSync(source.path, "utf8")), source.path),
+      })),
+    ]);
   } catch (error) {
     if (error instanceof DiagnosticError) throw error;
     const detail = error instanceof Error ? error.message : String(error);

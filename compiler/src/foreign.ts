@@ -102,6 +102,7 @@ export function resolveForeignModules(
   fileName: string,
   projectIncludeDirectories: readonly string[] = [],
   deploymentTarget: DeploymentTarget | null = null,
+  projectApiNotes: Readonly<Record<string, ApiNotes>> = {},
 ): ReadonlyMap<string, ForeignModule> {
   const modules = new Map<string, ForeignModule>();
   const sourceDirectory = resolve(dirname(fileName));
@@ -121,12 +122,23 @@ export function resolveForeignModules(
       || (existsSync(localHeader) && /(?:^|\n)\s*(?:@interface|@protocol|@class|#import\b)/.test(readFileSync(localHeader, "utf8")));
     const cPlusPlus = isCPlusPlusHeader(declaration.header);
     const language = objectiveC ? cPlusPlus ? "objective-c++" : "objective-c" : cPlusPlus ? "c++" : "c";
-    const notesFreshness = apiNotesFreshness(declaration, headerDirectory);
+    const generatedNotes = projectApiNotes[declaration.header] ?? null;
+    const notesFreshness = `${apiNotesFreshness(declaration, headerDirectory)}\0${JSON.stringify(generatedNotes)}`;
     const targetKey = deploymentTarget ? `${deploymentTarget.platform}:${deploymentTarget.minimumVersion}` : "host-default";
     const cacheKey = `${declarationIncludeDirectories.join("\0")}\0${declaration.header}\0${headerFreshness}\0${notesFreshness}\0${declaration.moduleName}\0${framework ?? language}\0${targetKey}`;
     let header = headerCache.get(cacheKey);
     if (!header) {
-      header = readHeader(declaration, fileName, declarationIncludeDirectories, headerDirectory, framework, objectiveC, cPlusPlus, deploymentTarget);
+      header = readHeader(
+        declaration,
+        fileName,
+        declarationIncludeDirectories,
+        headerDirectory,
+        framework,
+        objectiveC,
+        cPlusPlus,
+        deploymentTarget,
+        generatedNotes,
+      );
       headerCache.set(cacheKey, header);
     }
     modules.set(declaration.moduleName, { declaration, ...header });
@@ -143,6 +155,7 @@ function readHeader(
   objectiveC: boolean,
   cPlusPlus: boolean,
   deploymentTarget: DeploymentTarget | null,
+  generatedNotes: ApiNotes | null,
 ): HeaderInfo {
   const clangLanguage = objectiveC ? cPlusPlus ? "objective-c++" : "objective-c" : cPlusPlus ? "c++" : "c";
   const swiftCxxNamespace = cPlusPlus ? swiftCompatibilityNamespace(declaration.header) : null;
@@ -276,6 +289,9 @@ function readHeader(
     produced.functions,
     produced.namedTypes,
     produced.interfaces,
+    generatedNotes
+      ? { name: `Swift module metadata for ${declaration.header}`, notes: generatedNotes }
+      : null,
   );
   validateForeignTypeApiNotes(notes, produced.namedTypes, produced.interfaces, fileName, declaration.location);
   const contracts = normalizeForeignContracts(

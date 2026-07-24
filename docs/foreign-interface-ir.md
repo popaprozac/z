@@ -89,9 +89,17 @@ normalizer without becoming a second project-authored contract format.
 
 ### Swift and package metadata
 
-Future Swift module interfaces, generated C++ surfaces, API notes, and package
-products should produce the same IR. Z semantic analysis should not care which
-tool supplied a function or type once its verified contract is equivalent.
+Declared Objective-C-compatible Swift targets now provide the first independent
+Swift metadata producer. `swift-symbolgraph-extract` preserves `@MainActor`
+facts that the generated Objective-C header omits and identifies the matching
+Objective-C runtime class and selector. Z merges those facts with Clang's ABI
+declarations before FIIR reaches semantic analysis. The symbol graph never
+redeclares the ABI, callback ownership, or completion guarantees.
+
+Future external Swift module interfaces, generated C++ ownership facts, package
+products, and broader actor/sendability metadata should produce the same IR. Z
+semantic analysis should not care which tool supplied a function or type once
+its verified contract is equivalent.
 
 ## Required invariants
 

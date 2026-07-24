@@ -35,4 +35,15 @@ declare module "ZSwiftTaskScope-Swift.h" {
       throw error;
     }
   }
+
+  export function ZSwiftMainActorWorker.calculate(
+    value: _,
+    move completion: _
+  ): _ {
+    callback completion {
+      thread caller;
+    }
+
+    async completion;
+  }
 }
