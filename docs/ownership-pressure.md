@@ -233,6 +233,29 @@ sites now compose without helper extraction across this application path.
 Widening `view` to parameter-provenanced, stored, or class-owned projections
 would be a separate design decision requiring new evidence.
 
+## Application-shaped worker ownership
+
+Z Notes now loads its persisted model through
+`thread.spawn(async move (): Array<Note> throws i32 => ...)`. The worker owns a
+copied path, a private executor, an operation-local ARC `NoteDatabase`, its
+owned `sqlite3 *`, and every prepared statement. It suspends before the native
+work, then opens, loads, finalizes, and closes entirely on that dedicated
+thread. Only the owned `Array<Note>`—including each owned title/body
+`String`—crosses back through `Task<T, E>`.
+
+The long-lived database used by AppKit target/action remains a separate
+main-owned instance. This is stronger evidence than marking the SQLite handle
+sendable: the application does not need to transport it at all. The main task
+moves the returned array into its ARC `NoteStore`, materializes typed load
+failure locally, and enters the synchronous AppKit lifetime through
+`await on thread.main`. A headless smoke test executes the same worker-owned
+SQLite and result-transfer path without opening a window.
+
+The probe also exposed boundaries that remain explicit rather than silently
+widened: throwing user constructors still use synchronous helpers when called
+from async code, and escaping `objc.connect` closure storage remains in a
+synchronous application-lifetime function rather than an async frame.
+
 ## Not tested yet
 
 - child-task output and cross-thread borrows that survive suspension;

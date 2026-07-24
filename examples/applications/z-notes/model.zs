@@ -14,6 +14,11 @@ export class NoteStore {
     this.notes.push(note);
   }
 
+  function replace(inout this, notes: Array<Note>): void {
+    this.notes = move notes;
+    this.selection = Option.none;
+  }
+
   function selectNote(inout this, index: usize): boolean {
     if (index >= this.notes.length) return false;
     this.selection = Option.some(index);

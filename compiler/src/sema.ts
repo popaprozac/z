@@ -579,6 +579,7 @@ export function analyze(
       metadata,
     };
     foreignNamedTypes.set(objcConnectionTypeName, connection);
+    foreignNamedTypes.set(connection.qualifiedName, connection);
     foreignObjectTypes.set(objcConnectionTypeName, {
       kind: "object",
       typeName: objcConnectionTypeName,
@@ -597,6 +598,7 @@ export function analyze(
       metadata,
     };
     foreignNamedTypes.set(objcBindingTypeName, binding);
+    foreignNamedTypes.set(binding.qualifiedName, binding);
     foreignObjectTypes.set(objcBindingTypeName, {
       kind: "object",
       typeName: objcBindingTypeName,

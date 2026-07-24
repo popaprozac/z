@@ -95,3 +95,8 @@ export class NoteDatabase {
     if (status != doneStatus) throw status;
   }
 }
+
+export function loadNotesFromPath(path: String): Array<Note> throws i32 {
+  const database = try new NoteDatabase(path);
+  return try database.loadNotes();
+}

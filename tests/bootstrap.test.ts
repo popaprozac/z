@@ -2918,10 +2918,16 @@ test("builds the interactive Z Notes AppKit and sqlite3 application", () => {
   assert.match(artifact.source, /@interface ZObjCProtocolAdapter_[A-Za-z0-9_]+NotesTableController : NSObject <NSTableViewDataSource, NSTableViewDelegate>/);
   assert.match(artifact.source, /\[object setDataSource:_z_adapter_0\]/);
   assert.match(artifact.source, /\[object setDelegate:_z_adapter_0\]/);
-  assert.match(artifact.source, /ZObjCBinding \* const tableBinding = z_objc_bind_/);
+  assert.match(artifact.source, /ZObjCBinding \* const tableBinding = bindNotesTable\(/);
+  assert.match(artifact.source, /ZObjCBinding \* const _z_return_\d+ = z_objc_bind_/);
   assert.match(artifact.source, /z_checked_convert_usize_to_isize/);
   assert.match(artifact.source, /z_checked_convert_isize_to_usize/);
   assert.match(artifact.source, /tableViewSelectionDidChange:/);
+  assert.match(artifact.source, /z_async_start_native_thread\(&frame->child_\d+->task, true\)/);
+  assert.match(artifact.source, /z_async_executor_init\(task->native_executor, false\)/);
+  assert.match(artifact.source, /loadNotesFromPath\(\(frame->live_backgroundPath = false/);
+  assert.match(artifact.source, /z_async_start___z_executor_main_/);
+  assert.match(artifact.source, /frame->result = runApplication\(/);
 
   const compilation = spawnSync("xcrun", [
     "clang", "-x", "objective-c", "-fobjc-arc", "-fblocks",
@@ -2951,8 +2957,39 @@ test("builds the interactive Z Notes AppKit and sqlite3 application", () => {
   assert.equal(persistenceResult.stdout, "persisted note 3, before=2, after=3\n");
   rmSync(persistenceDatabase, { force: true });
 
+  const backgroundSmoke = resolve(projectRoot, "examples/applications/z-notes/background-load-smoke.zs");
+  const backgroundDatabase = resolve(projectRoot, ".z-cache/z-notes-background-smoke.sqlite3");
+  rmSync(backgroundDatabase, { force: true });
+  const backgroundResult = spawnSync(
+    process.execPath,
+    [cli, "run", backgroundSmoke],
+    { encoding: "utf8" },
+  );
+  assert.equal(backgroundResult.status, 0, backgroundResult.stderr);
+  assert.equal(backgroundResult.stdout, "background notes=2\n");
+  rmSync(backgroundDatabase, { force: true });
+
   const selectionUse = source.indexOf("selectNote(0)") + 1;
   assert.match(hover(source, application, selectionUse)?.contents.value ?? "", /selectNote\(index: usize\): boolean/);
+  const bindingTypeOffset = source.indexOf("objc.Binding") + "objc.".length + 1;
+  assert.match(
+    hover(source, application, bindingTypeOffset)?.contents.value ?? "",
+    /objc\.Binding/,
+  );
+  const incompleteBinding = source.replace("objc.Binding", "objc.Bi");
+  const incompleteBindingOffset = incompleteBinding.indexOf("objc.Bi") + "objc.Bi".length;
+  assert.equal(
+    completions(incompleteBinding, application, incompleteBindingOffset)
+      .find((item) => item.label === "Binding")?.kind,
+    7,
+  );
+  const applicationTokens = decodeSemanticTokens(semanticTokens(source, application).data);
+  const bindingTypePosition = positionForOffset(source, source.indexOf("Binding", source.indexOf("objc.Binding")));
+  assert.ok(applicationTokens.some((token) => (
+    token.line === bindingTypePosition.line
+    && token.character === bindingTypePosition.character
+    && token.type === semanticTokenTypes.indexOf("class")
+  )));
   const tableController = resolve(projectRoot, "examples/applications/z-notes/table-controller.zs");
   const tableControllerSource = readFileSync(tableController, "utf8");
   const rowCountUse = tableControllerSource.indexOf("tableRowCount()") + 1;

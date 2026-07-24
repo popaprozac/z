@@ -5568,6 +5568,8 @@ function emitFrameExpressionInner(
   if (suspension) return frameSuspensionValue(suspension, plan.types);
   const prepared = plan.expressionBindings?.get(expression.location.offset);
   if (prepared) return prepared;
+  const foreignConstant = plan.types.semanticInfo.foreignConstantNames.get(expression.location.offset);
+  if (foreignConstant) return foreignConstant;
   switch (expression.kind) {
     case "number":
       return expression.value;

@@ -392,8 +392,11 @@ export function semanticTokens(source: string, fileName: string): { readonly dat
       && context.semanticInfo.standardModuleBindings.has(tokens[index - 2]?.text ?? "")
     ) {
       const owner = context.semanticInfo.standardModuleBindings.get(tokens[index - 2]?.text ?? "");
+      const objcType = owner === "objc" && (token.text === "Connection" || token.text === "Binding");
       classifications.set(token.location.offset, {
-        type: semanticTokenTypes.indexOf(owner === "thread" && token.text === "main" ? "property" : "method"),
+        type: semanticTokenTypes.indexOf(
+          objcType ? "class" : owner === "thread" && token.text === "main" ? "property" : "method",
+        ),
         modifiers: owner === "thread" && token.text === "main" ? 6 : 4,
       });
       continue;
@@ -790,6 +793,22 @@ export function hover(source: string, fileName: string, offset: number): Hover |
     if (standardOwner === "objc" && word.text === "bind") {
       return markdownHover(
         "bind(object: Objective-C object, protocols: { property: ZController }): objc.Binding  // owns the native object, generated protocol adapters, and Z controllers",
+        source,
+        word.start,
+        word.end,
+      );
+    }
+    if (standardOwner === "objc" && word.text === "Connection") {
+      return markdownHover(
+        "objc.Connection  // owned Objective-C target/action lifetime",
+        source,
+        word.start,
+        word.end,
+      );
+    }
+    if (standardOwner === "objc" && word.text === "Binding") {
+      return markdownHover(
+        "objc.Binding  // owns an Objective-C object, protocol adapters, and Z controllers",
         source,
         word.start,
         word.end,
@@ -2987,6 +3006,16 @@ function memberCompletions(
   if (standardModule) {
     return filterCompletions(standardModuleMemberNames(standardModule).map((member) => {
       const name = standardModuleFunction(standardModule, member);
+      if (standardModule === "objc" && (member === "Connection" || member === "Binding")) {
+        return {
+          label: member,
+          kind: completionKinds.class,
+          detail: member === "Connection"
+            ? "owned Objective-C target/action lifetime"
+            : "owned Objective-C protocol-binding lifetime",
+          insertText: member,
+        };
+      }
       if (standardModule === "thread" && member === "main") {
         return {
           label: member,

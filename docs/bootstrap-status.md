@@ -135,7 +135,11 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
 - [`examples/applications/z-notes`](../examples/applications/z-notes): persistent
   AppKit application, ARC-owned note model, optional selection, direct SQLite
   declaration import, owned database/statement cleanup, borrowed native text
-  views, explicit `sqlite3` linkage, and `std/objc` target/action.
+  views, explicit `sqlite3` linkage, `std/objc` target/action, and async startup
+  loading on a dedicated worker. The worker creates and destroys its SQLite
+  owner locally, transfers an owned `Array<Note>` through `Task<T, E>`, and the
+  main task enters the synchronous AppKit lifetime through
+  `await on thread.main`.
 - [`examples/applications/document-workspace`](../examples/applications/document-workspace): cross-platform,
   multi-module document registration and saving with move-only native leases,
   cleanup-bearing errors, optional views, array growth, and zero live resources.

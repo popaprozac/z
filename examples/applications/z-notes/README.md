@@ -6,8 +6,12 @@ application rather than a collection of isolated compiler probes.
 The application currently combines:
 
 - an ARC-managed Z application model containing owned `Array<Note>` storage;
-- an ARC-managed `NoteDatabase` containing one persistent
-  `sqlite.sqlite3` native owner;
+- an ARC-managed `NoteDatabase` containing a persistent
+  `sqlite.sqlite3` native owner for interactive inserts;
+- async startup loading on one dedicated `thread.spawn` worker, including a
+  private worker executor, scheduler suspension, a worker-local SQLite owner,
+  owned `Array<Note>` transfer, typed failure, and `await on thread.main`
+  delivery;
 - `Option<usize>` selection and borrowed callback inspection;
 - direct AppKit header import, an ARC-managed `NSWindow`, and a native
   `NSScrollView`/`NSTableView` note browser;
@@ -17,13 +21,21 @@ The application currently combines:
   borrowed-text, fixed-sentinel, and typed native-status `.zd` contracts;
 - explicit `target.link.libraries` configuration for `sqlite3`.
 
-The application now uses the first `std/objc` target/action connection for an
-interactive Add Note button plus editable title and body fields. The bound
-connection owns the button and callback, so AppKit's weak target cannot silently
-expire while the application is running. Startup opens
-`.z-cache/z-notes.sqlite3` once, stores the handle in `NoteDatabase`, loads
-notes through that owner, and renders their titles and bodies as native table
-rows. Each click first persists the entered note, then
+The application uses `std/objc` target/action for an interactive Add Note
+button plus editable title and body fields. The bound connection owns the
+button and callback, so AppKit's weak target cannot silently expire while the
+application is running.
+
+Startup deliberately uses two ownership domains. The main task opens one
+persistent `NoteDatabase` for later button inserts. It then starts
+`thread.spawn(async move () => ...)` with an owned path snapshot. The dedicated
+worker suspends once through scheduler-aware `delay`, opens a second
+worker-local database, creates/seeds/loads the table, closes that handle on the
+worker, and transfers only owned `Array<Note>` model data back through
+`Task<Array<Note>, i32>`. No mutable ARC database or raw SQLite handle crosses
+threads. The main task materializes that result into `NoteStore`, then
+`await on thread.main` enters the synchronous AppKit lifetime. Each click first
+persists the entered note, then
 mutates the ARC-managed `NoteStore`, selects it, updates native AppKit labels
 and the window title, refreshes the browser, and logs the new note. The
 window, controls, methods, properties, strings, and layouts still come directly
@@ -40,6 +52,12 @@ Run the headless create/insert/reload persistence path with:
 
 ```sh
 bun run z run examples/applications/z-notes/persistence-smoke.zs
+```
+
+Run the headless async worker/SQLite/owned-result path with:
+
+```sh
+bun run z run examples/applications/z-notes/background-load-smoke.zs
 ```
 
 Open the native application with:
@@ -65,10 +83,12 @@ handwritten C wrapper. `sqlite3_open` produces an owned handle through
 `out` value whose deinitializer is `sqlite3_close`. A local `let database;`
 therefore acquires its native type from the call, becomes initialized after the
 call, narrows to non-null, and moves into the
-`private database: sqlite.sqlite3` field. The ARC-managed `NoteDatabase`
-reuses that handle for schema creation, loading, and every insert. Its final
-release calls `sqlite3_close` exactly once. Prepared statements remain
-operation-local owners and use the same `out` shape with `sqlite3_finalize`.
+`private database: sqlite.sqlite3` field. Each ARC-managed `NoteDatabase`
+reuses its handle within one ownership domain. The background instance creates
+and loads on the worker; the long-lived main instance handles interactive
+inserts. Each final release calls `sqlite3_close` exactly once on the thread
+that created and used that instance. Prepared statements remain operation-local
+owners and use the same `out` shape with `sqlite3_finalize`.
 
 The same declaration file projects SQLite's conventional zero-success integer
 statuses into `void throws i32`. Application code uses `try sqlite3_open(...)`
@@ -115,6 +135,10 @@ signed `NSInteger` index into Z's `usize` with explicit checked
 `usize(row)` construction, updates `Option<usize>` application state, and
 refreshes the selected-note label.
 
-Next, this application should drive richer controls, escaping block lifetime,
-background search through `thread.spawn`, cancellation, and main-thread UI
-delivery.
+The app also records two current bootstrap boundaries honestly. Throwing
+user-defined constructors are called through synchronous helpers rather than
+directly inside async frames, and the long-lived `objc.connect` closure lives
+inside the synchronous AppKit lifetime function rather than as escaping storage
+in the async frame. The next application slices should drive interactive
+background search, cancellation, richer controls, and eventually async-owned
+escaping callback environments.

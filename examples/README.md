@@ -49,6 +49,12 @@ support or producing language-server diagnostics from hypothetical imports.
 
 ## Applications
 
+- [`z-notes`](applications/z-notes): a native AppKit and SQLite application
+  combining ARC state, Objective-C protocols and target/action, owned native
+  handles, async loading on a dedicated worker, typed owned result transfer,
+  and main-executor delivery. Its
+  [`README.md`](applications/z-notes/README.md) documents the ownership domains
+  and current composition boundaries.
 - [`document-workspace`](applications/document-workspace): a readable,
   multi-module native application model combining document registration,
   domain errors, move-only C++ leases, dynamic arrays, optional views, saving,

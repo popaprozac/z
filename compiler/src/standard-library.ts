@@ -112,7 +112,7 @@ export function standardModuleFunctions(module: StandardModuleName): readonly St
 
 export function standardModuleMemberNames(module: StandardModuleName): readonly string[] {
   if (module === "thread") return ["spawn", "main"];
-  if (module === "objc") return ["connect", "bind"];
+  if (module === "objc") return ["connect", "bind", "Connection", "Binding"];
   return Object.keys(standardModuleMembers[module]);
 }
 

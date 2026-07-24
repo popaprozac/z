@@ -27,7 +27,7 @@ compile-only probes and `emit` to inspect generated native code.
 | Async iteration patterns | [`async-for-await-destructuring.zs`](../examples/language/control-flow/async-for-await-destructuring.zs) | Owned field transfer, aliases, suspension, explicit moves, and cleanup of unselected fields |
 | Async event stream | [`async-event-stream.zs`](../examples/language/control-flow/async-event-stream.zs) | Owned input records, persistent connection/collection loops, borrowed enum matching, typed errors, yielded events, and terminal summary |
 | Options | [`option.zs`](../examples/language/types/option.zs) | `Option.some`, `Option.none`, and payload matching |
-| Native desktop application | [`z-notes`](../examples/applications/z-notes) | AppKit controls, `std/objc` target/action, ARC application state, nullable selection, direct SQLite import, and native library linkage |
+| Native desktop application | [`z-notes`](../examples/applications/z-notes) | AppKit controls, `std/objc` target/action, ARC application state, nullable selection, direct SQLite import, async dedicated-worker loading with owned result transfer, main-executor delivery, and native library linkage |
 | Application walkthrough | [`document-workspace`](../examples/applications/document-workspace) | A native document model combining modules, errors, arrays, named enums, optional views, mutation, and deterministic cleanup |
 | Collection pressure test | [`project-index`](../examples/applications/project-index) | Borrowed Map lookups, owned snapshots, dirty-path Sets, typed IO errors, and an unchanged dense-to-hashed benchmark |
 | Self-hosting groundwork | [`source-stager`](../examples/applications/source-stager) | File IO, owned argv, typed OS failures, and direct no-shell child launch |
