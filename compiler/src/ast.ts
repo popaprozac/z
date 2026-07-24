@@ -404,6 +404,7 @@ export type WeakExpression = {
 
 export type ClosureExpression = {
   readonly kind: "closure";
+  readonly async: boolean;
   readonly captureMode: "borrow" | "move";
   readonly parameters: ClosureParameter[];
   readonly returnType: TypeReference | null;

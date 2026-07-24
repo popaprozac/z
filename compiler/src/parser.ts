@@ -244,12 +244,15 @@ export function parse(tokens: Token[], fileName: string): Program {
 
   const parsePrimary = (): Expression => {
     const closureCheckpoint = current;
+    const closureAsync = match("async");
     const closureCaptureMode = at("identifier") && peek().text === "move"
       ? (take(), "move" as const)
       : null;
-    if (closureCaptureMode || at("leftParen")) {
+    if (closureAsync || closureCaptureMode || at("leftParen")) {
       let recognizedClosure = false;
-      const closureLocation = closureCaptureMode ? previous().location : peek().location;
+      const closureLocation = closureAsync
+        ? tokens[closureCheckpoint].location
+        : closureCaptureMode ? previous().location : peek().location;
       try {
         expect("leftParen", "`(` starting closure parameters");
         const parameters = parseClosureParameters();
@@ -267,6 +270,7 @@ export function parse(tokens: Token[], fileName: string): Program {
           : parseExpression();
         return {
           kind: "closure",
+          async: closureAsync,
           captureMode: closureCaptureMode ?? "borrow",
           parameters,
           returnType,

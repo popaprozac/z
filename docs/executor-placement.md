@@ -329,7 +329,7 @@ thread.spawn({ name: "image-decoder" }, move () => decode(image));
 It still means one new dedicated OS thread, unlike `task on thread.main` or a future
 `task on thread.pool`, which target existing executors.
 
-### Dispatching from a synchronous native worker
+### Dispatching from a native worker
 
 `task on thread.main` should be legal inside the synchronous closure passed to
 `thread.spawn`. This is Z's structured analogue of dispatching asynchronously
@@ -356,12 +356,29 @@ structured lifetime without parking the OS thread. Cross-thread captures must
 still satisfy transfer rules; main-isolated foreign references need explicit
 affinity facts before they can be transported opaquely through a worker.
 
-Async closures passed directly to `thread.spawn` remain a future extension, not
-a rejected design. Supporting them requires a thread-affine executor and an
-explicit continuation rule: after awaiting another executor, Z must define
-whether execution resumes on the exact dedicated thread and how that thread is
-kept alive while suspended. Typed channels and structured placed children cover
-the initial progress-reporting use cases without closing that future path.
+When the worker itself needs a value or ordered completion from main, it may be
+explicitly async:
+
+```z
+const worker = thread.spawn(async move (): Status throws WorkError => {
+  const status = try await buildStatus();
+
+  await on thread.main {
+    display(status);
+  }
+
+  return status;
+});
+
+const status = try await worker;
+```
+
+The worker owns a private executor. It stays alive while suspended,
+`await on thread.main` places the child on the caller's main executor, and
+completion enqueues the continuation back onto the private executor. Ordinary
+continuations and `task` children therefore remain bound to the same dedicated
+OS thread. Cooperative cancellation wakes a suspended worker so its structured
+children and owned frame state unwind before the thread is joined.
 
 ## Foreign and Objective-C affinity
 
@@ -500,11 +517,10 @@ later without making executor blocks a special case.
    target/action, callbacks, background work, and UI-thread resumption.
 10. Add Windows message-loop and selected Linux GUI/event-loop adapters, driven
     by compile-time target selection rather than source preprocessing.
-11. Support an async task bound to one dedicated `thread.spawn` worker, including
-    literal `await on thread.main` from that worker and thread-affine continuation
-    resumption back onto the same live worker thread. This requires async worker
-    closures and a dedicated-thread executor; it is not provided by the current
-    synchronous worker-closure tier.
+11. **Done:** support an async task bound to one dedicated `thread.spawn`
+    worker, including child tasks, scheduler-aware delay, typed errors,
+    cooperative cancellation, literal `await on thread.main`, and thread-affine
+    continuation resumption back onto the same live worker thread.
 
 ## Open questions
 

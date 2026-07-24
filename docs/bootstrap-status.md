@@ -117,7 +117,7 @@ functions unavailable to C++; Z does not bypass that limit through private ABI.
 | Async syntax and typing | Implemented | Functions/methods, `await`, `task`, task scopes, typed errors, and `on thread.main` / `await on thread.main` / `task on thread.main` placement blocks |
 | Stackless task frames | Partial | Scalars, owned String/TextBuffer, cleanup-bearing fixed arrays, growable arrays, copied Slice descriptors, owned structs/enums/classes, direct move-only C++ locals and parameters, collection elements containing them, consuming owned enum matches, cleanup-free direct-awaited output, and fallible native result transfer through `try`/`attempt`/match across suspension |
 | Executor | Implemented bootstrap | Deterministic single-thread FIFO ready queue |
-| Explicit native threads | Implemented narrow tier | `thread.spawn` starts one OS thread for a synchronous one-shot closure; `move` is required when capturing; plain values copy, unique Array/String/TextBuffer owners and explicitly contracted C/C++ native owners move, and deeply readonly classes share through atomic ARC; `(): T throws E` produces `Task<T, E>` with live-state-aware owned errors plus bound/direct `try` and local `attempt`; await, cancellation, and implicit scope exit suspend through a race-free executor completion queue before joining; native `share` remains deferred |
+| Explicit native threads | Implemented thread-affine tier | `thread.spawn` starts one OS thread for a synchronous or explicitly `async` one-shot closure; an async worker owns a private executor, can await scheduler operations and structured children, can `await on thread.main`, and resumes on the same live worker; `move` is required when capturing; plain values copy, unique Array/String/TextBuffer owners and explicitly contracted C/C++ native owners move, and deeply readonly classes share through atomic ARC; `(): T throws E` produces `Task<T, E>` with live-state-aware owned errors plus bound/direct `try` and local `attempt`; await, cooperative cancellation, and implicit scope exit suspend through race-free cross-executor queues before joining; native `share` remains deferred |
 | Structured scopes | Implemented slice | Lexical child joins, sibling/descendant cancellation, shared immutable and exclusive mutable child borrows, plus named `async scope updates {}` handles. Imported `TaskScope` accepts thread-safe callback submissions onto `thread.main`, rejects during close, and joins accepted operations; the first dynamic tier is synchronous nonthrowing `(): void` work |
 | Caller cancellation | Implemented slice | Consuming `await task.cancel()` requests cancellation, joins descendants and cleanup, and discards an unclaimed completed outcome |
 | Timers | Implemented slice | Scheduler-aware monotonic `delay`; blocking `sleep` remains synchronous |
@@ -126,7 +126,7 @@ functions unavailable to C++; Z does not bypass that limit through private ABI.
 | Lazy/suspending expressions | Partial | Value-producing match arms can suspend and select scalar, ARC, String, Z-owned, or move-only native results; `&&`, `||`, ternaries, and value `if` remain |
 | Executor placement | Implemented ownership-aware runtime tier | `thread.main` is typed; synchronous proof, hop-and-wait, and structured children execute with plain copied values, owned String copies, retained Z ARC classes, and ARC-retained Objective-C identity from the owning async task. Native workers publish without blocking main; Darwin installs and wakes a CFRunLoop source. Mutable/borrowed/native-affine captures, foreign affinity declarations, Windows message-loop integration, and Linux toolkit adapters remain |
 | Channels and actors | Planned direction | API, isolation, and sendability remain intentionally unsettled |
-| CPU parallelism | Partial evidence | One explicit native thread can execute Copy-value or uniquely owned Array/String/TextBuffer work in parallel without blocking unrelated FIFO tasks or timers; pools, general sendability, mutable shared-state isolation, and multithreaded executors remain planned |
+| CPU parallelism | Partial evidence | One explicit native thread can execute Copy-value or uniquely owned Array/String/TextBuffer work in parallel without blocking unrelated FIFO tasks or timers; its async continuation remains thread-affine across suspension and main-executor hops; pools, general sendability, mutable shared-state isolation, and multithreaded executors remain planned |
 
 See [`async-model.md`](async-model.md) for the intended model and phase details.
 
@@ -599,12 +599,15 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    by stage 0. Unicode identifiers remain future lexer work.
    Exact lexer and parser parity now covers UTF-16 locations after BMP and
    supplementary Unicode text without giving up byte-oriented native slicing.
-5. **Threaded concurrency evidence — Copy, unique-owner, native-owner, readonly ARC, and owned-error slices implemented.**
+5. **Threaded concurrency evidence — thread-affine async worker slice implemented.**
    `thread.spawn` now proves one real cross-thread task frame with explicit
    move capture, hot start, structured join, private Copy snapshots, and moved
    Array/String/TextBuffer owners/results, explicitly contracted C/C++ owners,
    plus atomic-ARC deeply readonly class identity, live-state-aware owned error
-   transfer through `Task<T, E>`, and nonblocking executor completion. The next
+   transfer through `Task<T, E>`, and nonblocking executor completion.
+   An `async` worker closure owns a private executor, awaits child work and
+   delays, hops to `thread.main`, then resumes on the same dedicated worker;
+   cooperative cancellation wakes and unwinds a suspended worker. The next
    concurrency probes should be driven by the desktop application: cross-thread
    callbacks, UI-thread delivery, weak-reference and destruction-affinity
    protocols, and mutable shared-state isolation. Do not commit actors,

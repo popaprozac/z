@@ -84,6 +84,7 @@ support or producing language-server diagnostics from hypothetical imports.
 - [`async-out.zs`](async/async-out.zs): direct-awaited initialization of caller storage across suspension
 - [`async-methods.zs`](async/async-methods.zs)
 - [`thread-native.zs`](async/thread-native.zs): trusted `.zd` thread transfer and receiving-thread destruction for a move-only C++ owner
+- [`thread-affine-worker.zs`](async/thread-affine-worker.zs): an `async` closure bound to one dedicated worker, inherited child tasks, typed failure, scheduler delay, `await on thread.main`, and resumption back on the worker
 
 ## Native interop
 

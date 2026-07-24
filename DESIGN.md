@@ -1228,8 +1228,16 @@ const result = await task;
 
 `thread.spawn` means exactly one OS thread; future worker-pool submission
 remains a separate standard-library operation whose method spelling is not yet
-committed. The implemented transfer classifier copies recursively
-cleanup-free values into the synchronous closure and moves uniquely owned
+committed. Its closure may be synchronous or explicitly `async`. An async
+closure runs a private executor bound to that one worker, may suspend without
+blocking the main executor, and resumes ordinary continuations on the same
+worker thread. `task` inside it inherits that worker executor. An explicit
+`await on thread.main` hops to the main executor and returns the continuation
+to the worker. The worker OS thread intentionally remains alive while its task
+is suspended; a pool-backed design may make a different tradeoff later.
+
+The implemented transfer classifier copies recursively
+cleanup-free values into the one-shot closure and moves uniquely owned
 `Array` storage, including recursively supported value aggregates. Capturing
 still requires `move`: for a Copy value this describes how the closure acquires
 its private snapshot without invalidating the source; for a unique owner it
@@ -1241,10 +1249,10 @@ mutate those captures before returning an owned result. Deeply readonly Z class
 identity crosses by an atomic ARC retain, so the parent keeps its own reference.
 Mutable classes, borrows, views, native references, `Arena`, and custom `deinit`
 remain rejected. Cross-thread `Weak<T>` remains deferred until weak upgrade has
-a shared side-table protocol. Its first join
-implementation blocks the FIFO executor thread; nonblocking executor
-integration, general native sendability, pools, and cross-thread callbacks
-remain validation work. Atomic reference counts protect lifetime, not mutable
+a shared side-table protocol. Completion crosses a synchronized inbound queue,
+so awaiting and implicit joins suspend rather than block the caller's executor.
+General native sendability, pools, and cross-thread callbacks remain validation
+work. Atomic reference counts protect lifetime, not mutable
 class fields; isolation or an explicit concurrency contract must address those
 data races.
 
@@ -1270,9 +1278,10 @@ remain platform-runtime work behind the same `thread.main` capability. Mutable
 captures, borrows, native owners, and explicit foreign-affinity declarations
 remain later capture-contract tiers. Objective-C identity is intentionally not
 transported through a native worker merely to place it back on main.
-Directly async native-thread closures remain a future thread-affine continuation
-tier rather than a rejected feature. Detailed semantics and lowering order live
-in [`docs/executor-placement.md`](docs/executor-placement.md).
+An `async` worker closure may instead `await on thread.main`; after the placed
+operation finishes, its continuation is enqueued back onto the private worker
+executor. Detailed semantics and lowering order live in
+[`docs/executor-placement.md`](docs/executor-placement.md).
 
 The planned source contract for those later tiers is a contextual `using`
 clause after the executor expression:
@@ -1298,7 +1307,7 @@ request alone does not end the loan. A moved binding remains consumed unless
 the task explicitly returns ownership. This is committed design direction, not
 implemented syntax yet.
 
-The error contract is the same as local `task`: a synchronous worker closure
+The error contract is the same as local `task`: a worker closure
 declared `(): T throws E` produces `Task<T, E>`, `try await` propagates `E`, and
 `attempt await` materializes it. Error slots carry explicit liveness just like
 result slots, so transferable String/Array ownership, containing aggregates,

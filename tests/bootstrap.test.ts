@@ -13082,10 +13082,10 @@ test("type-checks main-thread executor placement and exposes thread.main to edit
   assert.throws(() => check(synchronousHelper, "executor-helper.zs"), (error: unknown) => {
     assert.ok(error instanceof DiagnosticError);
     assert.equal(error.code, "Z0711");
-    assert.match(error.summary, /enclosing async function or the direct thread\.spawn closure/);
+    assert.match(error.summary, /enclosing async function or a direct synchronous thread\.spawn closure/);
     assert.match(error.notes.join(" "), /does not inherit its caller's task scope/);
     assert.match(error.helps.join(" "), /keep `task on thread\.main \{ \.\.\. \}` directly in that closure/);
-    assert.match(error.helps.join(" "), /async thread\.spawn closures are not implemented yet/);
+    assert.match(error.helps.join(" "), /thread\.spawn\(async \(\) => await helper\(\)\)/);
     return true;
   });
 
@@ -15546,6 +15546,93 @@ test("runs cleanup-free owned work on an explicit native thread", () => {
     assert.match(error.message, /requires an enclosing async function/);
     return true;
   });
+});
+
+test("suspends and resumes async closures on one dedicated native thread", () => {
+  const example = resolve(projectRoot, "examples/async/thread-affine-worker.zs");
+  const source = readFileSync(example, "utf8");
+  const artifact = compileToNative(source, example);
+
+  assert.match(artifact.source, /z_async_start_native_thread\(&frame->child_\d+->task, true\)/);
+  assert.match(artifact.source, /z_async_executor_init\(task->native_executor, false\)/);
+  assert.match(artifact.source, /frame->task\.completion_executor/);
+  assert.match(artifact.source, /z_async_enqueue_from_thread\(waiter->executor, waiter\)/);
+  assert.match(artifact.source, /while \(!task->native_body_completed\)/);
+
+  const workerOffset = source.indexOf("worker =") + 1;
+  assert.match(
+    hover(source, example, workerOffset)?.contents.value ?? "",
+    /worker: Task<i32, WorkError>/,
+  );
+  const spawnOffset = source.indexOf("thread.spawn") + "thread.".length + 1;
+  assert.match(
+    hover(source, example, spawnOffset)?.contents.value ?? "",
+    /accepts synchronous or async one-shot closures/,
+  );
+  const failureFlagOffset = source.indexOf("shouldFail =") + 1;
+  assert.match(
+    hover(source, example, failureFlagOffset)?.contents.value ?? "",
+    /shouldFail: boolean/,
+  );
+
+  const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, "thread-affine answer=42\n");
+
+  const directory = mkdtempSync("/tmp/z-thread-affine-");
+  const failureFile = resolve(directory, "failure.zs");
+  writeFileSync(failureFile, `
+    import { delay } from "std/time";
+    import { thread } from "std/thread";
+    struct WorkError { code: i32; }
+    async function fail(): i32 throws WorkError {
+      await delay(1);
+      throw WorkError({ code: 42 });
+    }
+    async function main(): i32 {
+      const worker = thread.spawn(async (): i32 throws WorkError => {
+        return try await fail();
+      });
+      const observed = attempt await worker;
+      return match (in observed) {
+        success(value) => value;
+        failure(error) => error.code - 42;
+      };
+    }
+  `);
+  const failureResult = spawnSync(process.execPath, [cli, "run", failureFile], { encoding: "utf8" });
+  assert.equal(failureResult.status, 0, failureResult.stderr);
+
+  const cancellationFile = resolve(directory, "cancellation.zs");
+  writeFileSync(cancellationFile, `
+    import { delay } from "std/time";
+    import { thread } from "std/thread";
+    async function main(): i32 {
+      const worker = thread.spawn(async (): i32 => {
+        await delay(1000);
+        return 42;
+      });
+      await delay(1);
+      await worker.cancel();
+      return 0;
+    }
+  `);
+  const cancellationResult = spawnSync(
+    process.execPath,
+    [cli, "run", cancellationFile],
+    { encoding: "utf8" },
+  );
+  assert.equal(cancellationResult.status, 0, cancellationResult.stderr);
+
+  const detachedAsyncClosure = `
+    async function main(): i32 {
+      const operation = async (): i32 => 42;
+      return 0;
+    }
+  `;
+  const detachedDiagnostic = diagnostics(detachedAsyncClosure, "detached-async-closure.zs")[0];
+  assert.equal(detachedDiagnostic.code, "Z0703");
+  assert.match(detachedDiagnostic.message, /only through thread\.spawn/);
 });
 
 test("preserves typed errors from thread.spawn as Task<T, E>", () => {

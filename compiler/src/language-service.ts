@@ -770,7 +770,7 @@ export function hover(source: string, fileName: string, offset: number): Hover |
     const standardOwner = context.semanticInfo.standardModuleBindings.get(memberPrefix[1]);
     if (standardOwner === "thread" && word.text === "spawn") {
       return markdownHover(
-        "spawn<T>(operation: () => T): Task<T>\nspawn<T, E>(operation: () => T throws E): Task<T, E>  // starts one native thread; move captures copy snapshots or unique owners",
+        "spawn<T>(operation: () => T): Task<T>\nspawn<T, E>(operation: () => T throws E): Task<T, E>  // starts one native thread; accepts synchronous or async one-shot closures; async continuations stay worker-affine",
         source,
         word.start,
         word.end,
@@ -2998,7 +2998,7 @@ function memberCompletions(
         label: member,
         kind: completionKinds.method,
         detail: standardModule === "thread" && member === "spawn"
-          ? "spawn<T, E?>(operation: () => T throws E?): Task<T, E?>  // starts one native thread"
+          ? "spawn<T, E?>(operation: () => T throws E?): Task<T, E?>  // starts one native thread; sync or worker-affine async closure"
           : standardModule === "objc" && member === "connect"
             ? "connect(control: Objective-C target/action object, operation: move () => void): objc.Connection"
             : standardModule === "objc" && member === "bind"

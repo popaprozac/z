@@ -155,15 +155,39 @@ async function answer(input: Calculation): i32 {
 ```
 
 `thread.spawn` is hot: it starts exactly one native thread at the call. Its
-argument is a synchronous zero-parameter closure, not an async function, and
-the returned `Task<T>` or `Task<T, E>` remains owned by the surrounding
-structured task scope.
+argument is a zero-parameter closure that may be synchronous or explicitly
+`async`, and the returned `Task<T>` or `Task<T, E>` remains owned by the
+surrounding structured task scope.
 `await` joins it; leaving the scope with an unconsumed handle also joins it
 before destroying the child frame. A capturing closure must use `move` so the
 boundary visibly owns each input. Recursively cleanup-free values are Copy
 values: the thread receives a private snapshot and the source remains usable.
 Mutating such a capture changes only the thread's snapshot. A uniquely owned
 value instead transfers its owner and the source binding becomes unavailable.
+
+An async worker is written explicitly:
+
+```z
+const worker = thread.spawn(async move (): String throws WorkError => {
+  const status = try await buildStatus();
+
+  await on thread.main {
+    display(status);
+  }
+
+  return status;
+});
+
+const status = try await worker;
+```
+
+The closure owns a private executor bound to the dedicated worker. Ordinary
+continuations, including children started with `task`, run on that same worker.
+`await on thread.main` crosses to the main executor and enqueues the continuation
+back onto the worker after the placed operation completes. The OS thread stays
+alive while suspended; this preserves exact thread affinity rather than merely
+resuming on an arbitrary pool thread. The source return annotation remains the
+logical `T throws E`; `thread.spawn` supplies the `Task<T, E>` wrapper.
 
 The intended fallible form preserves the ordinary typed-error channel:
 
@@ -212,27 +236,23 @@ thread safety. Concurrent weak upgrade awaits a shared side-table protocol.
 Atomic ARC protects reference lifetime only; mutable shared class state will
 require actors, synchronization, or another explicit isolation contract.
 
-The worker may call ordinary synchronous Z or supported native functions. It
-cannot suspend or `await`. Awaiting or cancelling a running worker suspends only
-the awaiting task: the FIFO executor remains free to poll unrelated tasks and
-timers. Worker completion crosses into the executor through a synchronized
-completion queue, which resumes the waiter on the executor thread before the
-finished OS thread is joined. Registration and completion use the same lock so
-a completion cannot be lost between checking the task and installing its
-waiter.
-
-A future async-worker tier will allow an async task to remain bound to a
-dedicated worker thread, perform `await on thread.main`, and resume its
-continuation on that same worker. Async `thread.spawn` closures, keeping the
-worker alive while suspended, and thread-affine continuation resumption must
-land together; the current synchronous closure API does not imply any of them.
+The worker may call ordinary synchronous Z or supported native functions. An
+`async` worker may additionally await supported scheduler operations, child
+tasks, and executor placement. Awaiting or cancelling a running worker suspends
+only the awaiting task: its executor remains free to poll unrelated tasks and
+timers. Worker completion crosses into that executor through a synchronized
+completion queue, which resumes the waiter before the finished OS thread is
+joined. Cross-executor child completion similarly returns the waiter to its
+own executor. Registration and completion use synchronized queues so a wakeup
+cannot be lost between checking a task and installing its waiter.
 
 Cancellation cannot forcibly interrupt synchronous native work. It records an
-atomic cooperative request; the worker finishes its current synchronous call,
-publishes completion, and its unclaimed outcome is discarded after the awaiting
-task resumes. Future worker-pool submission and multithreaded executors remain
-separate designs; `thread.spawn` will continue to mean one explicit native thread rather
-than silently becoming pooled work.
+atomic cooperative request. A synchronous worker finishes its current call
+before publishing completion; an async worker is also awakened at a suspension
+boundary so its task tree can unwind and clean up. Future worker-pool submission
+and multithreaded executors remain separate designs; `thread.spawn` will
+continue to mean one explicit native thread rather than silently becoming
+pooled work.
 
 This keeps the existing Z error model intact: `try await` unwraps success and
 propagates `E`, while `attempt await` materializes `Result<T, E>` for matching or

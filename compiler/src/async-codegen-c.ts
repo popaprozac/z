@@ -59,6 +59,7 @@ type SpawnSite = {
   readonly receiver: Expression | null;
   readonly binding: string | null;
   readonly nativeThread: boolean;
+  readonly asyncNativeThread: boolean;
   readonly placement: "main" | null;
 };
 
@@ -149,6 +150,7 @@ type AsyncTarget = {
   readonly declaration: FunctionDeclaration;
   readonly owner: StructDeclaration | null;
   readonly foreign?: ForeignAsyncProjection;
+  readonly nativeThreadMode?: "sync" | "async";
 };
 
 type ForeignAsyncProjection = NonNullable<ObjCCallInfo["async"]> & {
@@ -161,6 +163,7 @@ type AsyncFunctionPlan = {
   readonly owner: StructDeclaration | null;
   readonly foreign: ForeignAsyncProjection | null;
   readonly nativeThread: boolean;
+  readonly asyncNativeThread: boolean;
   readonly generator: ReturnType<typeof parseAsyncGeneratorType>;
   readonly frameName: string;
   readonly pollName: string;
@@ -264,6 +267,7 @@ export function generateAsyncC(
     const captureCount = closure.captures.length;
     threadTargets.set(callOffset, {
       owner: null,
+      nativeThreadMode: closure.declaration.async ? "async" : "sync",
       declaration: {
         ...closure.declaration,
         name: `__z_thread_job_${callOffset}`,
@@ -393,7 +397,8 @@ function planFunction(
 ): AsyncFunctionPlan {
   const { declaration, owner } = target;
   const foreign = target.foreign ?? null;
-  const nativeThread = [...threadTargets.values()].includes(target);
+  const nativeThread = target.nativeThreadMode !== undefined;
+  const asyncNativeThread = target.nativeThreadMode === "async";
   const generator = parseAsyncGeneratorType(declaration.returnType.name);
   requireFrameType(
     generator ? asyncGeneratorAdvanceType(generator) : declaration.returnType.name,
@@ -1177,6 +1182,7 @@ function planFunction(
     owner,
     foreign,
     nativeThread,
+    asyncNativeThread,
     generator,
     frameName: `Z_AsyncFrame_${part}`,
     pollName: `z_async_poll_${part}`,
@@ -1913,6 +1919,7 @@ function spawnSite(
     receiver: resolved.receiver,
     binding,
     nativeThread: false,
+    asyncNativeThread: false,
     placement: null,
   };
 }
@@ -1940,6 +1947,7 @@ function placementSpawnSite(
     receiver: null,
     binding,
     nativeThread: false,
+    asyncNativeThread: false,
     placement: "main",
   };
 }
@@ -1973,6 +1981,7 @@ function threadSpawnSite(
     receiver: null,
     binding,
     nativeThread: true,
+    asyncNativeThread: target.nativeThreadMode === "async",
     placement: null,
   };
 }
@@ -2343,6 +2352,7 @@ function generateRuntime(
     "  bool cancelled;",
     "  bool timer_scheduled;",
     "  bool native_thread;",
+    "  bool native_async;",
     "  bool external_completion;",
     "  bool thread_joined;",
     "  bool native_body_completed;",
@@ -2352,6 +2362,8 @@ function generateRuntime(
     "  Z_AsyncTask *next;",
     "  Z_AsyncTask *timer_next;",
     "  Z_AsyncExecutor *executor;",
+    "  Z_AsyncExecutor *completion_executor;",
+    "  Z_AsyncExecutor *native_executor;",
     ...(usesThreads ? [
       "  Z_NativeThreadHandle native_handle;",
       "  bool completion_queued;",
@@ -2362,6 +2374,7 @@ function generateRuntime(
     "};",
     "",
     "struct Z_AsyncExecutor {",
+    "  bool main_executor;",
     "  Z_AsyncTask *head;",
     "  Z_AsyncTask *tail;",
     "  Z_AsyncTask *timers;",
@@ -2427,6 +2440,7 @@ function generateRuntime(
     ...(usesThreads ? [
       "  if (task->native_thread) {",
       "    task->native_body_completed = true;",
+      "    task->suspended = true;",
       "    if (task->native_thread_finished) __atomic_store_n(&task->completed, true, __ATOMIC_RELEASE);",
       "    return;",
       "  }",
@@ -2457,7 +2471,8 @@ function generateRuntime(
       "#endif",
       "}",
       "",
-      "static void z_async_executor_init(Z_AsyncExecutor *executor) {",
+      "static void z_async_executor_init(Z_AsyncExecutor *executor, bool main_executor) {",
+      "  executor->main_executor = main_executor;",
       "  executor->head = NULL;",
       "  executor->tail = NULL;",
       "  executor->timers = NULL;",
@@ -2475,14 +2490,18 @@ function generateRuntime(
       "#endif",
       ...(usesDarwinMainLoop ? [
         "#if defined(__APPLE__)",
-        "  executor->main_run_loop = CFRunLoopGetMain();",
-        "  CFRetain(executor->main_run_loop);",
-        "  CFRunLoopSourceContext source_context = { 0 };",
-        "  source_context.info = executor;",
-        "  source_context.perform = z_async_main_source_perform;",
-        "  executor->main_source = CFRunLoopSourceCreate(NULL, 0, &source_context);",
-        "  if (executor->main_source == NULL) abort();",
-        "  CFRunLoopAddSource(executor->main_run_loop, executor->main_source, kCFRunLoopCommonModes);",
+        "  executor->main_run_loop = NULL;",
+        "  executor->main_source = NULL;",
+        "  if (main_executor) {",
+        "    executor->main_run_loop = CFRunLoopGetMain();",
+        "    CFRetain(executor->main_run_loop);",
+        "    CFRunLoopSourceContext source_context = { 0 };",
+        "    source_context.info = executor;",
+        "    source_context.perform = z_async_main_source_perform;",
+        "    executor->main_source = CFRunLoopSourceCreate(NULL, 0, &source_context);",
+        "    if (executor->main_source == NULL) abort();",
+        "    CFRunLoopAddSource(executor->main_run_loop, executor->main_source, kCFRunLoopCommonModes);",
+        "  }",
         "#endif",
       ] : []),
       "}",
@@ -2492,9 +2511,11 @@ function generateRuntime(
       "  if (executor->active_native_threads != 0 || executor->active_external_callbacks != 0) abort();",
       ...(usesDarwinMainLoop ? [
         "#if defined(__APPLE__)",
-        "  CFRunLoopRemoveSource(executor->main_run_loop, executor->main_source, kCFRunLoopCommonModes);",
-        "  CFRelease(executor->main_source);",
-        "  CFRelease(executor->main_run_loop);",
+        "  if (executor->main_executor) {",
+        "    CFRunLoopRemoveSource(executor->main_run_loop, executor->main_source, kCFRunLoopCommonModes);",
+        "    CFRelease(executor->main_source);",
+        "    CFRelease(executor->main_run_loop);",
+        "  }",
         "#endif",
       ] : []),
       "#if defined(_WIN32)",
@@ -2506,7 +2527,7 @@ function generateRuntime(
       "}",
       "",
       "static void z_async_report_native_completion(Z_AsyncTask *task) {",
-      "  Z_AsyncExecutor *executor = task->executor;",
+      "  Z_AsyncExecutor *executor = task->completion_executor;",
       "  z_async_thread_lock(executor);",
       "  if (executor->active_native_threads == 0) abort();",
       "  executor->active_native_threads -= 1;",
@@ -2556,32 +2577,83 @@ function generateRuntime(
       "  z_async_thread_unlock(executor);",
       "}",
       "",
+      "static __attribute__((unused)) void z_async_enqueue(Z_AsyncExecutor *executor, Z_AsyncTask *task);",
+      "static bool z_async_run_one(Z_AsyncExecutor *executor);",
+      "static bool z_async_wait_for_work(Z_AsyncExecutor *executor, bool keep_alive);",
+      "static void z_async_drain_native_completions(Z_AsyncExecutor *executor);",
+      ...(usesDelay
+        ? ["static __attribute__((unused)) void z_async_release_timers(Z_AsyncExecutor *executor);"]
+        : []),
+      "",
       "#if defined(_WIN32)",
       "static DWORD WINAPI z_async_native_thread_entry(LPVOID context) {",
       "  Z_AsyncTask *task = (Z_AsyncTask *)context;",
-      "  task->poll(task);",
+      "  if (task->native_async) {",
+      "    Z_AsyncExecutor *executor = task->native_executor;",
+      "    z_async_enqueue(executor, task);",
+      "    while (!task->native_body_completed) {",
+      ...(usesDelay ? ["      z_async_release_timers(executor);"] : []),
+      "      z_async_drain_native_completions(executor);",
+      "      if (z_async_is_cancellation_requested(task) && task->suspended) {",
+      "        task->suspended = false;",
+      "        z_async_enqueue(executor, task);",
+      "      }",
+      "      if (executor->head == NULL && !z_async_wait_for_work(executor, true)) abort();",
+      "      if (executor->head == NULL) continue;",
+      "      if (!z_async_run_one(executor)) abort();",
+      "    }",
+      "  } else {",
+      "    task->poll(task);",
+      "  }",
       "  z_async_report_native_completion(task);",
+      "  if (task->native_async) z_async_executor_destroy(task->native_executor);",
       "  return 0;",
       "}",
       "#else",
       "static void *z_async_native_thread_entry(void *context) {",
       "  Z_AsyncTask *task = (Z_AsyncTask *)context;",
-      "  task->poll(task);",
+      "  if (task->native_async) {",
+      "    Z_AsyncExecutor *executor = task->native_executor;",
+      "    z_async_enqueue(executor, task);",
+      "    while (!task->native_body_completed) {",
+      ...(usesDelay ? ["      z_async_release_timers(executor);"] : []),
+      "      z_async_drain_native_completions(executor);",
+      "      if (z_async_is_cancellation_requested(task) && task->suspended) {",
+      "        task->suspended = false;",
+      "        z_async_enqueue(executor, task);",
+      "      }",
+      "      if (executor->head == NULL && !z_async_wait_for_work(executor, true)) abort();",
+      "      if (executor->head == NULL) continue;",
+      "      if (!z_async_run_one(executor)) abort();",
+      "    }",
+      "  } else {",
+      "    task->poll(task);",
+      "  }",
       "  z_async_report_native_completion(task);",
+      "  if (task->native_async) z_async_executor_destroy(task->native_executor);",
       "  return NULL;",
       "}",
       "#endif",
       "",
-      "static __attribute__((unused)) void z_async_start_native_thread(Z_AsyncTask *task) {",
+      "static __attribute__((unused)) void z_async_start_native_thread(Z_AsyncTask *task, bool async_worker) {",
       "  task->native_thread = true;",
+      "  task->native_async = async_worker;",
+      "  task->completion_executor = task->executor;",
+      "  task->native_executor = NULL;",
+      "  if (async_worker) {",
+      "    task->native_executor = (Z_AsyncExecutor *)calloc(1, sizeof(Z_AsyncExecutor));",
+      "    if (task->native_executor == NULL) abort();",
+      "    z_async_executor_init(task->native_executor, false);",
+      "    task->executor = task->native_executor;",
+      "  }",
       "  task->thread_joined = false;",
       "  task->completion_queued = false;",
       "  task->thread_queued = false;",
       "  task->completion_next = NULL;",
       "  task->thread_next = NULL;",
-      "  z_async_thread_lock(task->executor);",
-      "  task->executor->active_native_threads += 1;",
-      "  z_async_thread_unlock(task->executor);",
+      "  z_async_thread_lock(task->completion_executor);",
+      "  task->completion_executor->active_native_threads += 1;",
+      "  z_async_thread_unlock(task->completion_executor);",
       "#if defined(_WIN32)",
       "  task->native_handle = CreateThread(NULL, 0, z_async_native_thread_entry, task, 0, NULL);",
       "  if (task->native_handle == NULL) abort();",
@@ -2599,6 +2671,10 @@ function generateRuntime(
       "  if (pthread_join(task->native_handle, NULL) != 0) abort();",
       "#endif",
       "  task->thread_joined = true;",
+      "  if (task->native_executor != NULL) {",
+      "    free(task->native_executor);",
+      "    task->native_executor = NULL;",
+      "  }",
       "}",
       "",
     ] : []),
@@ -2622,8 +2698,10 @@ function generateRuntime(
       "  executor->thread_enqueued_tail = task;",
       ...(usesDarwinMainLoop ? [
         "#if defined(__APPLE__)",
-        "  CFRunLoopSourceSignal(executor->main_source);",
-        "  CFRunLoopWakeUp(executor->main_run_loop);",
+        "  if (executor->main_executor) {",
+        "    CFRunLoopSourceSignal(executor->main_source);",
+        "    CFRunLoopWakeUp(executor->main_run_loop);",
+        "  }",
         "#endif",
       ] : []),
       "#if defined(_WIN32)",
@@ -2778,7 +2856,12 @@ function generateRuntime(
     "      Z_AsyncTask *waiter = task->waiter;",
     "      task->waiter = NULL;",
     "      waiter->suspended = false;",
-    "      z_async_enqueue(executor, waiter);",
+    ...(usesThreads ? [
+      "      if (waiter->executor == executor) z_async_enqueue(executor, waiter);",
+      "      else z_async_enqueue_from_thread(waiter->executor, waiter);",
+    ] : [
+      "      z_async_enqueue(executor, waiter);",
+    ]),
     "    }",
     "  } else if (!task->suspended) {",
     "    z_async_enqueue(executor, task);",
@@ -2875,13 +2958,14 @@ function generateRuntime(
     "",
     ] : []),
     ...(usesThreads ? [
-      "static bool z_async_wait_for_work(Z_AsyncExecutor *executor) {",
+      "static bool z_async_wait_for_work(Z_AsyncExecutor *executor, bool keep_alive) {",
       "  z_async_thread_lock(executor);",
       "  if (executor->thread_completions == NULL",
       "      && executor->thread_enqueued_head == NULL",
       "      && executor->active_native_threads == 0",
       "      && executor->active_external_callbacks == 0",
-      "      && executor->timers == NULL) {",
+      "      && executor->timers == NULL",
+      "      && !keep_alive) {",
       "    z_async_thread_unlock(executor);",
       "    return false;",
       "  }",
@@ -2938,11 +3022,23 @@ function generateRuntime(
     "static __attribute__((unused)) void z_async_cancel(Z_AsyncTask *task) {",
     ...(usesThreads ? [
       "  if (task->native_thread || task->external_completion) {",
-      "    z_async_thread_lock(task->executor);",
+      "    Z_AsyncExecutor *completion_executor = task->native_thread",
+      "      ? task->completion_executor",
+      "      : task->executor;",
+      "    z_async_thread_lock(completion_executor);",
       "    if (!__atomic_load_n(&task->completed, __ATOMIC_ACQUIRE)) {",
       "      __atomic_store_n(&task->cancellation_requested, true, __ATOMIC_RELEASE);",
+      "      if (task->native_async && task->native_executor != NULL) {",
+      "        z_async_thread_lock(task->native_executor);",
+      "#if defined(_WIN32)",
+      "        WakeConditionVariable(&task->native_executor->thread_condition);",
+      "#else",
+      "        if (pthread_cond_signal(&task->native_executor->thread_condition) != 0) abort();",
+      "#endif",
+      "        z_async_thread_unlock(task->native_executor);",
+      "      }",
       "    }",
-      "    z_async_thread_unlock(task->executor);",
+      "    z_async_thread_unlock(completion_executor);",
       "    return;",
       "  }",
     ] : []),
@@ -2956,7 +3052,9 @@ function generateRuntime(
     "static __attribute__((unused)) bool z_async_wait(Z_AsyncTask *parent, Z_AsyncTask *child) {",
     ...(usesThreads ? [
       "  if (child->native_thread || child->external_completion) {",
-      "    Z_AsyncExecutor *executor = child->executor;",
+      "    Z_AsyncExecutor *executor = child->native_thread",
+      "      ? child->completion_executor",
+      "      : child->executor;",
       "    z_async_thread_lock(executor);",
       "    const bool completed = __atomic_load_n(&child->completed, __ATOMIC_ACQUIRE);",
       "    if (completed) {",
@@ -2994,7 +3092,7 @@ function generateRuntime(
     ] : []),
     ...(usesThreads ? [
       "    z_async_drain_native_completions(executor);",
-      "    if (executor->head == NULL && !z_async_wait_for_work(executor)) abort();",
+      "    if (executor->head == NULL && !z_async_wait_for_work(executor, false)) abort();",
       "    if (executor->head == NULL) continue;",
     ] : usesDelay ? [
       "    if (executor->head == NULL) z_async_wait_for_timer(executor);",
@@ -3052,8 +3150,8 @@ function generateRuntime(
       "  (void)argv;",
       ...(usesProcess ? ["  z_process_set_arguments(argc, argv);"] : []),
       ...(usesThreads
-        ? ["  Z_AsyncExecutor executor;", "  z_async_executor_init(&executor);"]
-        : ["  Z_AsyncExecutor executor = { .head = NULL, .tail = NULL, .timers = NULL };"]),
+        ? ["  Z_AsyncExecutor executor;", "  z_async_executor_init(&executor, true);"]
+        : ["  Z_AsyncExecutor executor = { .main_executor = true, .head = NULL, .tail = NULL, .timers = NULL };"]),
       `  ${main.frameName} *root = ${main.startName}(&executor);`,
       "  z_async_run(&root->task);",
       ...(main.declaration.errorType
@@ -3228,6 +3326,7 @@ function generateStart(plan: AsyncFunctionPlan): string {
     "  frame->task.cancelled = false;",
     "  frame->task.timer_scheduled = false;",
     "  frame->task.native_thread = false;",
+    "  frame->task.native_async = false;",
     "  frame->task.external_completion = false;",
     "  frame->task.thread_joined = false;",
     "  frame->task.native_body_completed = false;",
@@ -3242,6 +3341,8 @@ function generateStart(plan: AsyncFunctionPlan): string {
   lines.push("  frame->task.next = NULL;");
   lines.push("  frame->task.timer_next = NULL;");
   lines.push("  frame->task.executor = executor;");
+  lines.push("  frame->task.completion_executor = executor;");
+  lines.push("  frame->task.native_executor = NULL;");
   if (plan.declaration.errorType) {
     lines.push("  frame->failed = false;");
     if (hasFrameCleanup(plan.declaration.errorType.name, plan.types)) lines.push("  frame->live_error = false;");
@@ -3502,9 +3603,18 @@ function schedulePlacedChild(
     ];
   }
   if ("placement" in site && site.placement && parent.nativeThread) {
-    return [`z_async_enqueue_from_thread(frame->task.executor, &${child}->task);`];
+    return [`z_async_enqueue_from_thread(frame->task.completion_executor, &${child}->task);`];
   }
   return [`z_async_enqueue(frame->task.executor, &${child}->task);`];
+}
+
+function childExecutor(
+  site: Pick<AwaitSite, "placement"> | Pick<SpawnSite, "placement">,
+  parent: Pick<AsyncFunctionPlan, "nativeThread">,
+): string {
+  return "placement" in site && site.placement && parent.nativeThread
+    ? "frame->task.completion_executor"
+    : "frame->task.executor";
 }
 
 function beginAwait(
@@ -3526,7 +3636,7 @@ function beginAwait(
   const target = planByKey.get(targetKey(site.target))!;
   const arguments_ = emitAwaitArguments(site, parent, fileName);
   return [
-    `frame->child_${site.index} = ${target.startName}(${["frame->task.executor", ...arguments_].join(", ")});`,
+    `frame->child_${site.index} = ${target.startName}(${[childExecutor(site, parent), ...arguments_].join(", ")});`,
     ...schedulePlacedChild(site, parent, `frame->child_${site.index}`),
     `frame->state = ${nextState};`,
     "continue;",
@@ -4183,10 +4293,10 @@ function generatePoll(
         const target = planByKey.get(targetKey(site.target))!;
         const arguments_ = emitAwaitArguments(site, plan, fileName);
         cases.push(caseBlock(state, [
-          `frame->child_${site.index} = ${target.startName}(${["frame->task.executor", ...arguments_].join(", ")});`,
+          `frame->child_${site.index} = ${target.startName}(${[childExecutor(site, plan), ...arguments_].join(", ")});`,
           `frame->${frameField(statement.name)} = &frame->child_${site.index}->task;`,
           site.nativeThread
-            ? `z_async_start_native_thread(&frame->child_${site.index}->task);`
+            ? `z_async_start_native_thread(&frame->child_${site.index}->task, ${site.asyncNativeThread ? "true" : "false"});`
             : schedulePlacedChild(site, plan, `frame->child_${site.index}`).join("\n"),
           `frame->state = ${state + 1};`,
           "continue;",
@@ -4433,9 +4543,9 @@ function generatePoll(
         const target = planByKey.get(targetKey(site.target))!;
         const arguments_ = emitAwaitArguments(site, plan, fileName);
         cases.push(caseBlock(state, [
-          `frame->child_${site.index} = ${target.startName}(${["frame->task.executor", ...arguments_].join(", ")});`,
+          `frame->child_${site.index} = ${target.startName}(${[childExecutor(site, plan), ...arguments_].join(", ")});`,
           site.nativeThread
-            ? `z_async_start_native_thread(&frame->child_${site.index}->task);`
+            ? `z_async_start_native_thread(&frame->child_${site.index}->task, ${site.asyncNativeThread ? "true" : "false"});`
             : schedulePlacedChild(site, plan, `frame->child_${site.index}`).join("\n"),
           `frame->state = ${state + 1};`,
           "continue;",

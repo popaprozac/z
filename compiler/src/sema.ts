@@ -3203,6 +3203,13 @@ function inferClosureExpression(
   oneShotOwnedCaptures = false,
   nativeThreadBody = false,
 ): ValueType {
+  if (expression.async && !nativeThreadBody) {
+    throw new DiagnosticError(fileName, expression.location, "async closures are currently executable only through thread.spawn", {
+      code: "Z0703",
+      notes: ["the first async-closure tier binds its continuation to one dedicated worker thread"],
+      helps: ["pass this closure directly to thread.spawn, or use an async function with `task` on the inherited executor"],
+    });
+  }
   if (expression.errorType && expectedFunction) {
     throw new DiagnosticError(fileName, expression.errorType.location, "throwing closure values are not implemented yet", {
       code: "Z0216",
@@ -3399,6 +3406,7 @@ function inferClosureExpression(
   const syntheticBase: FunctionDeclaration = {
     kind: "function",
     name: `__z_closure_call_${expression.location.offset}`,
+    async: expression.async,
     receiverMode: null,
     parameters: [
       ...captures.map((capture) => ({
@@ -4315,13 +4323,13 @@ function inferExecutorPlacement(
       throw new DiagnosticError(
         fileName,
         expression.location,
-        "task on thread.main requires an enclosing async function or the direct thread.spawn closure",
+        "task on thread.main requires an enclosing async function or a direct synchronous thread.spawn closure",
         {
           code: "Z0711",
           notes: ["an ordinary synchronous helper does not inherit its caller's task scope or executor context"],
           helps: [
             "inside thread.spawn, call synchronous helpers first and keep `task on thread.main { ... }` directly in that closure",
-            "otherwise make this helper async and call it from an async-capable context; async thread.spawn closures are not implemented yet",
+            "otherwise make this helper async and call it from `thread.spawn(async () => await helper())`",
           ],
         },
       );
@@ -5914,9 +5922,9 @@ function inferExpressionInner(
                 });
               }
               if (expression.arguments.length !== 1 || expression.arguments[0].kind !== "closure") {
-                throw new DiagnosticError(fileName, expression.location, "thread.spawn expects one synchronous closure", {
+                throw new DiagnosticError(fileName, expression.location, "thread.spawn expects one closure", {
                   code: "Z0703",
-                  helps: [`use \`${localModuleName}.spawn(move () => operation())\``],
+                  helps: [`use \`${localModuleName}.spawn(move () => operation())\` or \`${localModuleName}.spawn(async move () => await operation())\``],
                 });
               }
               const operation = expression.arguments[0];

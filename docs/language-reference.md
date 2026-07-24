@@ -1224,11 +1224,23 @@ const fallible = thread.spawn(move (): i32 throws CalculationError => {
   return value;
 });
 const result = attempt await fallible;
+
+const threadAffine = thread.spawn(async move (): i32 throws CalculationError => {
+  const value = try await calculateLater(input);
+  await on thread.main {
+    publish(value);
+  }
+  return value;
+});
+const published = try await threadAffine;
 ```
 
 This is distinct from keyword `task`: `task operation()` schedules an async
 child on the current executor, while `thread.spawn(operation)` starts exactly
-one OS thread. The initial transfer classifier copies recursively cleanup-free
+one OS thread. A synchronous closure runs once; an explicitly `async` closure
+owns a private executor bound to that worker, may suspend, and resumes on the
+same worker after `await on thread.main`. Child `task` operations inherit the
+worker executor. The transfer classifier copies recursively cleanup-free
 values, moves unique owners, and retains deeply readonly ARC class identity
 atomically. A capturing closure must spell `move`. Copy and shareable ARC
 captures remain valid in the parent; moved unique owners do not. `Array`, owned
