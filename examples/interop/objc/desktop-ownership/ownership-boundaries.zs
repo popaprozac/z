@@ -2,15 +2,6 @@ import console from "std/console";
 import { delay } from "std/time";
 import { Document, DocumentStore, Workspace } from "./model.zs";
 
-function inspectLocalDocuments(inout documents: DocumentStore): i32 {
-  // A value-struct owner can project a zero-copy view. Its loan ends at the
-  // projected value's last use, so later collection growth is legal.
-  const projected = documents.documentAt(0);
-  const projectedId = projected.id;
-  documents.open(Document({ id: 4, title: "After View" }));
-  return projectedId;
-}
-
 async function inspectAfterDelay(snapshot: Option<Document>): i32 {
   await delay(1);
   return match (snapshot) {
@@ -22,7 +13,13 @@ async function inspectAfterDelay(snapshot: Option<Document>): i32 {
 async function main(): i32 {
   let localDocuments = DocumentStore({ documents: Array<Document>() });
   localDocuments.open(Document({ id: 1, title: "Local Draft" }));
-  const projectedId = inspectLocalDocuments(inout localDocuments);
+
+  // A value-struct owner can project a zero-copy view. Its loan ends at the
+  // projected value's last use, so collection growth and later suspension are
+  // legal without extracting this synchronous work into a helper.
+  const projected = localDocuments.documentAt(0);
+  const projectedId = projected.id;
+  localDocuments.open(Document({ id: 4, title: "After View" }));
 
   const workspace = new Workspace({ documents: Array<Document>() });
   workspace.open(Document({ id: 2, title: "Shared Draft" }));

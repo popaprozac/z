@@ -201,7 +201,7 @@ crossing from synchronous code into a task:
 
 | Need | Current Z shape | Observed cost and boundary |
 | --- | --- | --- |
-| Immediate read from value-owned storage | `documentAt(index): view Document` inside a synchronous helper | one checked pointer projection; no document or String copy; mutation is legal after last use |
+| Immediate read from value-owned storage | `documentAt(index): view Document` before suspension | one checked pointer projection; no document or String copy; mutation and later suspension are legal after last use |
 | Immediate read through ARC identity | `withDocument(id, (in document) => ...)` | zero-copy lexical callback; aliases cannot retain the document projection |
 | Data that survives mutation and suspension | `documentSnapshot(id): Option<Document>` passed into a task | explicit owned document and String copy; ordinary straight-line use after `await` |
 
@@ -209,29 +209,29 @@ The complete run prints the IDs observed through all three contracts and mutates
 both collections after the zero-copy accesses have ended. The snapshot remains
 valid while its task is live and after the ARC-owned workspace grows.
 
-Two rejected shapes clarify the current boundary:
+One rejected shape remains a deliberate boundary:
 
 - a free function cannot return `view Item` derived from an `in Store`
   parameter; the implemented provenance model requires a synchronous borrowed
-  instance receiver;
-- a receiver view declared in an async function cannot coexist with a later
-  suspension, even when its last source use precedes the `await`.
+  instance receiver.
 
-The first is the deliberate parameter-provenance design question. The second is
-a bootstrap composition gap: synchronous analysis knows where the view's last
-use ends, but Phase 1 async frames cannot yet represent that shortened local
-lifetime. A synchronous helper expresses the intended lexical region today.
-The first version of this probe also found that an inline nonescaping closure
-nested directly inside an async-frame call was not lowered. That composition
-gap is now closed: the state-machine case creates a stack closure environment,
-invokes the callback synchronously, and leaves no callable value in the task
-frame.
+Parameter provenance is still a design question. The two bootstrap composition
+gaps found by the first version of this probe are now closed:
+
+- a receiver view may be declared and read in an async function when its last
+  use precedes the next suspension; the frame stores only its non-owning pointer,
+  while semantic last-use analysis ends the owner loan before `await`;
+- an inline nonescaping closure nested directly inside an async-frame call gets
+  a stack environment in that state-machine case, invokes synchronously, and
+  leaves no callable value in the task frame.
+
+Using the view after the suspension keeps its loan live and is still rejected
+before lowering.
 
 This evidence does not justify user-visible lifetime syntax. The supported call
-sites remain readable, but helper extraction still becomes friction when a
-synchronous receiver view appears before a later await. Closing that remaining
-async composition gap is higher leverage than widening `view` to stored or
-class-owned projections.
+sites now compose without helper extraction across this application path.
+Widening `view` to parameter-provenanced, stored, or class-owned projections
+would be a separate design decision requiring new evidence.
 
 ## Not tested yet
 

@@ -20,6 +20,7 @@ import { parsePointerTypeName } from "./foreign.ts";
 import { resultTypeName } from "./results.ts";
 import { parseSetType } from "./set-types.ts";
 import { standardFunctionSignature } from "./standard-library.ts";
+import { parseViewType } from "./view-types.ts";
 import type { IntegerOperation, ObjCCallInfo, SemanticInfo } from "./sema.ts";
 import {
   closureAdapterName,
@@ -5629,7 +5630,8 @@ function emitFrameExpressionInner(
         if (expression.property === "byteLength") return `((${owner}).length)`;
         if (expression.property === "isEmpty") return `((${owner}).length == 0)`;
       }
-      const access = plan.types.structs.get(ownerType)?.kind === "class" ? "->" : ".";
+      const ownerView = parseViewType(ownerType);
+      const access = ownerView || plan.types.structs.get(ownerType)?.kind === "class" ? "->" : ".";
       const value = `((${emitFrameExpression(expression.object, plan, fileName)})${access}${expression.property})`;
       const type = frameExpressionType(expression, plan);
       if (
@@ -5993,6 +5995,8 @@ function cFrameType(type: string, types: AsyncTypeContext): string {
   if (parseTaskType(type)) return "Z_AsyncTask *";
   if (type === "TaskScope") return "Z_TaskScope *";
   if (parseAsyncGeneratorType(type)) return asyncGeneratorCName(type);
+  const view = parseViewType(type);
+  if (view) return `const ${cFrameType(view.target, types)} *`;
   if (scalarTypes.has(type)) return cScalar(type);
   if (type === "String" || type === "TextBuffer") return "Z_String";
   if (parseFixedArrayType(type)) return `Z_Array_${asyncNativeSymbolPart(type)}`;
@@ -6032,6 +6036,7 @@ function isSupportedFrameType(type: string, types: AsyncTypeContext, visiting = 
   if (parseTaskType(type)) return true;
   if (type === "TaskScope") return true;
   if (parseAsyncGeneratorType(type)) return true;
+  if (parseViewType(type)) return true;
   if (scalarTypes.has(type)) return true;
   if (type === "String" || type === "TextBuffer") return true;
   const fixedArray = parseFixedArrayType(type);

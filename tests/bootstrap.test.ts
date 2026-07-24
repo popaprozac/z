@@ -3157,7 +3157,7 @@ test("keeps ownership boundary alternatives explicit across async suspension", (
   const example = resolve(projectRoot, "examples/interop/objc/desktop-ownership/ownership-boundaries.zs");
   const source = readFileSync(example, "utf8");
   const generated = compileToC(source, example);
-  assert.match(generated, /const Z_[A-Za-z0-9_]*Document \* const projected =/);
+  assert.match(generated, /const Z_[A-Za-z0-9_]*Document \* value_projected;/);
   assert.match(generated, /_z_async_inline_environment_/);
   assert.match(generated, /_z_async_inline_function_/);
   assert.match(generated, /z_string_copy/);
@@ -3192,7 +3192,20 @@ test("keeps ownership boundary alternatives explicit across async suspension", (
     }
     async function main(): i32 { return await inspect() - 43; }
   `;
-  const suspensionDiagnostic = diagnostics(viewAcrossAwait, "view-across-await.zs")[0];
+  const viewGenerated = compileToC(viewAcrossAwait, "view-before-await.zs");
+  assert.match(viewGenerated, /const Z_Item \* value_item;/);
+
+  const viewDirectory = mkdtempSync("/tmp/z-view-before-await-");
+  const viewFile = resolve(viewDirectory, "main.zs");
+  writeFileSync(viewFile, viewAcrossAwait);
+  const viewResult = spawnSync(process.execPath, [cli, "run", viewFile], { encoding: "utf8" });
+  assert.equal(viewResult.status, 0, viewResult.stderr);
+
+  const viewAfterAwait = viewAcrossAwait.replace(
+    "return copied + waited;",
+    "return item.value + copied + waited;",
+  );
+  const suspensionDiagnostic = diagnostics(viewAfterAwait, "view-after-await.zs")[0];
   assert.equal(suspensionDiagnostic.code, "Z0704");
   assert.match(suspensionDiagnostic.message, /cannot await while borrowed storage "item" is live/);
 

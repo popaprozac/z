@@ -4647,6 +4647,7 @@ function isTaskCancellationCall(expression: Expression): expression is Extract<E
 function firstLiveBorrow(
   locals: ReadonlyMap<string, ValueType>,
   activeFunction: FunctionDeclaration | null,
+  viewOrigins: ReadonlyMap<string, { readonly owner: string; readonly location: SourceLocation }>,
   borrowOrigins: ReadonlyMap<string, {
     readonly location: SourceLocation;
     readonly kind: "closure" | "iteration" | "match" | "ownedMatch";
@@ -4667,6 +4668,8 @@ function firstLiveBorrow(
   );
   const persistentGenerator = Boolean(activeFunction && isAsyncGeneratorFunction(activeFunction));
   for (const [name, type] of locals) {
+    const view = parseViewType(String(underlyingType(type)));
+    if (view && !viewOrigins.has(name)) continue;
     if (isBorrowedBinding(type)
       && initializationState(type) === "initialized"
       && ownershipState(type) === "available"
@@ -5214,6 +5217,7 @@ function inferExpressionInner(
       const borrowed = firstLiveBorrow(
         locals,
         state.activeFunction,
+        state.viewOrigins,
         state.borrowOrigins,
         state.iterationBorrowOrigins,
       );
