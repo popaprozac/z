@@ -8,7 +8,8 @@ import type {
   TypeReference,
 } from "./ast.ts";
 import { importedStandardFunctions, standardFunctionSignature } from "./standard-library.ts";
-import type { ForeignModule } from "./foreign.ts";
+import type { ForeignModule, ForeignType } from "./foreign.ts";
+import { publicObjCTypeName } from "./objc-types.ts";
 import {
   generatorStepTypeName,
   isAsyncGeneratorFunction,
@@ -99,6 +100,24 @@ export function materializeResultTypes(
         );
       }
     }
+    for (const declaration of module.interfaces.values()) {
+      for (const method of declaration.methods) {
+        if (method.asyncCallbackParameter === null || method.asyncErrorParameter === null) continue;
+        const callback = method.parameters[method.asyncCallbackParameter]?.type;
+        if (callback?.kind !== "block") continue;
+        const error = callback.parameters[method.asyncErrorParameter];
+        if (error?.kind !== "object") continue;
+        const success = method.asyncResultParameter === null
+          ? "void"
+          : projectedForeignTypeName(callback.parameters[method.asyncResultParameter]);
+        if (!success) continue;
+        addResult(
+          { name: success, location: module.declaration.location },
+          { name: publicObjCTypeName(error.typeName), location: module.declaration.location },
+          module.declaration.location,
+        );
+      }
+    }
   }
 
   for (const declaration of functions) {
@@ -144,6 +163,17 @@ export function materializeResultTypes(
   }
 
   return { ...program, enums: [...program.enums, ...generated.values()] };
+}
+
+function projectedForeignTypeName(type: ForeignType): string | null {
+  if (type.kind === "z") return type.name;
+  if (type.kind === "named") return type.type.typeName;
+  if (type.kind === "reference") {
+    return type.type.kind === "scalar" ? type.type.underlying : type.type.typeName;
+  }
+  if (type.kind === "pointer" || type.kind === "object") return type.typeName;
+  if (type.kind === "pointerOut") return type.pointer.typeName;
+  return null;
 }
 
 function collectClosureResults(

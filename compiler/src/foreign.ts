@@ -324,6 +324,8 @@ function applyObjCMethodApiNotes(
         return {
           ...method,
           asyncCallbackParameter: note.async?.callbackParameter ?? method.asyncCallbackParameter,
+          asyncResultParameter: note.async?.resultParameter ?? method.asyncResultParameter,
+          asyncErrorParameter: note.async?.errorParameter ?? method.asyncErrorParameter,
           parameters: method.parameters.map((parameter, index) => {
             const parameterNote = note.parameters?.[String(index)];
             if (parameter.type.kind !== "block" || !parameterNote?.callback) return parameter;
@@ -894,6 +896,8 @@ function collectObjCInterfaces(
           })),
         metadata: foreignDeclarationMetadata(method),
         asyncCallbackParameter: null,
+        asyncResultParameter: null,
+        asyncErrorParameter: null,
       }));
     const properties = (declaration.inner ?? [])
       .filter((child) => child.kind === "ObjCPropertyDecl" && child.name && child.type?.qualType)
@@ -1005,6 +1009,8 @@ function collectObjCProtocols(
         required: objcProtocolMethodRequired(declaration, method),
         metadata: foreignDeclarationMetadata(method),
         asyncCallbackParameter: null,
+        asyncResultParameter: null,
+        asyncErrorParameter: null,
       }));
     protocols.set(protocolName, {
       exportName: protocolName,

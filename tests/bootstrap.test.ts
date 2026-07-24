@@ -3878,7 +3878,13 @@ test("projects an exactly-once Swift callback into an awaitable Z task", () => {
   const source = readFileSync(example, "utf8");
   const artifact = compileToNative(source, example);
   assert.equal(artifact.language, "objective-c");
-  assert.match(artifact.source, /\[ZSwiftBackgroundWorker calculate:frame->value_value completion:\^void\(int32_t value\)/);
+  assert.match(artifact.source, /\[ZSwiftBackgroundWorker calculate:frame->value_value completion:\^void\(int32_t callback_value_0\)/);
+  assert.match(
+    artifact.source,
+    /\[ZSwiftBackgroundWorker calculateChecked:frame->value_value shouldFail:frame->value_shouldFail completion:\^void\(int32_t callback_value_0, NSError \* callback_value_1\)/,
+  );
+  assert.match(artifact.source, /if \(callback_value_1 != nil\)/);
+  assert.match(artifact.source, /frame->error = callback_value_1/);
   assert.match(artifact.source, /z_async_begin_external_completion\(task\)/);
   assert.match(artifact.source, /z_async_report_external_completion\(&frame->task\)/);
   assert.match(artifact.source, /active_external_callbacks/);
@@ -3894,6 +3900,15 @@ test("projects an exactly-once Swift callback into an awaitable Z task", () => {
     assert.equal(calculate.parameters[1].type.thread, "any");
   }
   assert.equal(calculate?.asyncCallbackParameter, 1);
+  assert.equal(calculate?.asyncResultParameter, 0);
+  assert.equal(calculate?.asyncErrorParameter, null);
+
+  const calculateChecked = context.foreignModules.get("Swift")
+    ?.interfaces.get("ZSwiftBackgroundWorker")
+    ?.methods.find((method) => !method.instance && method.selector === "calculateChecked:shouldFail:completion:");
+  assert.equal(calculateChecked?.asyncCallbackParameter, 2);
+  assert.equal(calculateChecked?.asyncResultParameter, 0);
+  assert.equal(calculateChecked?.asyncErrorParameter, 1);
 
   const naked = source.replace(
     "const value = await Swift.ZSwiftBackgroundWorker.calculate(40);",
@@ -3902,6 +3917,24 @@ test("projects an exactly-once Swift callback into an awaitable Z task", () => {
   const nakedDiagnostic = diagnostics(naked, example)[0];
   assert.equal(nakedDiagnostic.code, "Z0702");
   assert.match(nakedDiagnostic.message, /requires `await` or `spawn`/);
+
+  const uncheckedThrow = `
+    import Swift from "ZSwiftTaskScope-Swift.h";
+    async function main(): i32 {
+      return await Swift.ZSwiftBackgroundWorker.calculateChecked(40, shouldFail: false);
+    }
+  `;
+  const uncheckedThrowDiagnostic = diagnostics(uncheckedThrow, example)[0];
+  assert.equal(uncheckedThrowDiagnostic.code, "Z0701");
+  assert.match(uncheckedThrowDiagnostic.message, /requires `attempt` or `try`/);
+
+  const propagatedThrow = `
+    import Swift from "ZSwiftTaskScope-Swift.h";
+    async function checked(): i32 throws Swift.NSError {
+      return try await Swift.ZSwiftBackgroundWorker.calculateChecked(40, shouldFail: false);
+    }
+  `;
+  assert.deepEqual(diagnostics(propagatedThrow, example), []);
 
   const rawSource = `
     import Swift from "ZSwiftTaskScope-Swift.h";
@@ -3942,6 +3975,47 @@ test("projects an exactly-once Swift callback into an awaitable Z task", () => {
   const invalidContract = diagnostics(invalidSource, invalidFile)[0];
   assert.equal(invalidContract.code, "Z0801");
   assert.match(invalidContract.message, /escaping Objective-C block "completion" requires move/);
+
+  writeFileSync(resolve(invalidDirectory, "ZSwiftTaskScope-Swift.h.zd"), `
+    declare module "ZSwiftTaskScope-Swift.h" {
+      export function ZSwiftBackgroundWorker.calculateChecked(
+        value: _,
+        shouldFail: _,
+        move completion: _
+      ): _ {
+        callback completion {
+          thread any;
+        }
+        async completion(value) {
+          throw value;
+        }
+      }
+    }
+  `);
+  const bindingCountContract = diagnostics(invalidSource, invalidFile)[0];
+  assert.equal(bindingCountContract.code, "Z0801");
+  assert.match(bindingCountContract.message, /declares 1 binding.*native block receives 2/);
+
+  writeFileSync(resolve(invalidDirectory, "ZSwiftTaskScope-Swift.h.zd"), `
+    declare module "ZSwiftTaskScope-Swift.h" {
+      export function ZSwiftBackgroundWorker.calculateChecked(
+        value: _,
+        shouldFail: _,
+        move completion: _
+      ): _ {
+        callback completion {
+          thread any;
+        }
+        async completion(value, error) {
+          return error;
+          throw value;
+        }
+      }
+    }
+  `);
+  const scalarErrorContract = diagnostics(invalidSource, invalidFile)[0];
+  assert.equal(scalarErrorContract.code, "Z0801");
+  assert.match(scalarErrorContract.message, /requires a nullable Objective-C error reference/);
 
   const declarationFile = resolve(
     projectRoot,
@@ -4004,6 +4078,27 @@ test("projects an exactly-once Swift callback into an awaitable Z task", () => {
     source.indexOf("calculate(40)") + 2,
   )?.contents.value ?? "";
   assert.match(sourceHover, /async calculate\(value: i32\): i32/);
+  const checkedSourceHover = hover(
+    source,
+    example,
+    source.indexOf("calculateChecked") + 2,
+  )?.contents.value ?? "";
+  assert.match(checkedSourceHover, /async calculateChecked\(value: i32, shouldFail: boolean\): i32 throws Swift\.NSError/);
+
+  const checkedDeclarationHover = hover(
+    declarationSource,
+    declarationFile,
+    declarationSource.indexOf("async completion(value") + "async completion(".length + 2,
+  )?.contents.value ?? "";
+  assert.match(checkedDeclarationHover, /async completion\(value, error\): i32 throws NSError/);
+
+  const partialThrowBinding = declarationSource.replace("throw error;", "throw er");
+  const partialThrowOffset = partialThrowBinding.indexOf("throw er") + "throw er".length;
+  assert.equal(
+    completions(partialThrowBinding, declarationFile, partialThrowOffset)
+      .find((item) => item.label === "error")?.kind,
+    6,
+  );
 
   const nativeCheck = spawnSync(
     process.execPath,
@@ -4015,7 +4110,7 @@ test("projects an exactly-once Swift callback into an awaitable Z task", () => {
 
   const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
-  assert.equal(result.stdout, "42\n");
+  assert.equal(result.stdout, "7\n42\n");
 }, 60_000);
 
 test("imports and owns a Swift value through its generated C++ compatibility header", () => {
@@ -12716,13 +12811,17 @@ test("editor grammar tracks keywords without reserving Result variants", () => {
   assert.equal(foreignDeclarationPatterns[9].captures[2].name, "constant.numeric.integer.status.z");
   assert.equal(foreignDeclarationPatterns[10].captures[1].name, "storage.type.inferred.z");
   assert.equal(foreignDeclarationPatterns[11].captures[1].name, "keyword.control.declaration.callback.z");
-  assert.equal(foreignDeclarationPatterns[12].captures[1].name, "storage.modifier.async.z");
-  assert.equal(foreignDeclarationPatterns[12].captures[2].name, "entity.name.function.callback.z");
-  assert.equal(foreignDeclarationPatterns[13].captures[1].name, "keyword.control.declaration.callback.z");
-  assert.equal(foreignDeclarationPatterns[13].captures[2].name, "variable.parameter.context.z");
+  assert.equal(foreignDeclarationPatterns[12].beginCaptures[1].name, "storage.modifier.async.z");
+  assert.equal(foreignDeclarationPatterns[12].beginCaptures[2].name, "entity.name.function.callback.z");
+  assert.equal(foreignDeclarationPatterns[12].patterns[1].captures[1].name, "keyword.control.flow.z");
+  assert.equal(foreignDeclarationPatterns[12].patterns[1].captures[2].name, "variable.parameter.callback.z");
+  assert.equal(foreignDeclarationPatterns[13].captures[1].name, "storage.modifier.async.z");
+  assert.equal(foreignDeclarationPatterns[13].captures[2].name, "entity.name.function.callback.z");
   assert.equal(foreignDeclarationPatterns[14].captures[1].name, "keyword.control.declaration.callback.z");
-  assert.equal(foreignDeclarationPatterns[14].captures[2].name, "constant.language.callback-thread.z");
-  assert.match(foreignDeclarationPatterns[14].match, /caller\\\|any|caller\|any/);
+  assert.equal(foreignDeclarationPatterns[14].captures[2].name, "variable.parameter.context.z");
+  assert.equal(foreignDeclarationPatterns[15].captures[1].name, "keyword.control.declaration.callback.z");
+  assert.equal(foreignDeclarationPatterns[15].captures[2].name, "constant.language.callback-thread.z");
+  assert.match(foreignDeclarationPatterns[15].match, /caller\\\|any|caller\|any/);
   assert.match(selectiveImportPatterns, /\\bas\\b/);
   assert.doesNotMatch("move () =>", new RegExp(matchPattern));
   assert.match("some(value) =>", new RegExp(matchPattern));

@@ -29,6 +29,30 @@ public final class SwiftBackgroundWorker: NSObject {
     }
   }
 
+  @objc(calculateChecked:shouldFail:completion:)
+  public static func calculateChecked(
+    _ value: Int32,
+    shouldFail: Bool,
+    completion: @escaping @Sendable (Int32, NSError?) -> Void
+  ) {
+    work.enter()
+    DispatchQueue.global(qos: .userInitiated).async {
+      if shouldFail {
+        completion(
+          0,
+          NSError(
+            domain: "ZSwiftTaskScope",
+            code: 7,
+            userInfo: [NSLocalizedDescriptionKey: "the requested calculation failed"]
+          )
+        )
+      } else {
+        completion(value + 2, nil)
+      }
+      work.leave()
+    }
+  }
+
   @objc(waitForCompletion)
   public static func waitForCompletion() {
     work.wait()

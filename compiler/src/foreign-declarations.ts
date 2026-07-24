@@ -46,6 +46,14 @@ export type ForeignFunctionContract = {
   readonly asyncCallback: string | null;
   readonly asyncLocation: SourceLocation | null;
   readonly asyncCallbackLocation: SourceLocation | null;
+  readonly asyncBindings: readonly {
+    readonly name: string;
+    readonly location: SourceLocation;
+  }[];
+  readonly asyncReturnBinding: string | null;
+  readonly asyncReturnLocation: SourceLocation | null;
+  readonly asyncThrowBinding: string | null;
+  readonly asyncThrowLocation: SourceLocation | null;
 };
 
 export type ForeignThreadContractLocations = {
@@ -383,6 +391,11 @@ export function parseForeignDeclarationContracts(source: string, fileName: strin
     let asyncCallback: string | null = null;
     let asyncLocation: SourceLocation | null = null;
     let asyncCallbackLocation: SourceLocation | null = null;
+    let asyncBindings: { readonly name: string; readonly location: SourceLocation }[] = [];
+    let asyncReturnBinding: string | null = null;
+    let asyncReturnLocation: SourceLocation | null = null;
+    let asyncThrowBinding: string | null = null;
+    let asyncThrowLocation: SourceLocation | null = null;
     if (at("{")) {
       take();
       while (!at("}")) {
@@ -393,7 +406,51 @@ export function parseForeignDeclarationContracts(source: string, fileName: strin
           const callback = expectIdentifier("a terminal callback parameter name after `async`");
           asyncCallback = callback.text;
           asyncCallbackLocation = callback.location;
-          expectText(";");
+          if (at(";")) {
+            take();
+            continue;
+          }
+          expectText("(");
+          if (!at(")")) {
+            const binding = expectIdentifier("an async callback value binding");
+            asyncBindings.push({ name: binding.text, location: binding.location });
+            while (at(",")) {
+              take();
+              const next = expectIdentifier("an async callback value binding");
+              if (asyncBindings.some((candidate) => candidate.name === next.text)) {
+                fail(next, `async callback binding ${JSON.stringify(next.text)} cannot be declared more than once`);
+              }
+              asyncBindings.push({ name: next.text, location: next.location });
+            }
+          }
+          expectText(")");
+          expectText("{");
+          while (!at("}")) {
+            const projection = peek();
+            if (at("return")) {
+              if (asyncReturnBinding) fail(projection, "an async callback projection cannot declare more than one return binding");
+              take();
+              const binding = expectIdentifier("an async callback binding after `return`");
+              asyncReturnBinding = binding.text;
+              asyncReturnLocation = projection.location;
+              expectText(";");
+              continue;
+            }
+            if (at("throw")) {
+              if (asyncThrowBinding) fail(projection, "an async callback projection cannot declare more than one throw binding");
+              take();
+              const binding = expectIdentifier("an async callback binding after `throw`");
+              asyncThrowBinding = binding.text;
+              asyncThrowLocation = projection.location;
+              expectText(";");
+              continue;
+            }
+            fail(projection, `expected "return" or "throw" in async callback projection, found ${JSON.stringify(projection.text)}`);
+          }
+          expectText("}");
+          if (!asyncThrowBinding) {
+            fail(contract, "an expanded async callback projection requires `throw <binding>;`; use `async <callback>;` for an infallible callback");
+          }
           continue;
         }
         if (at("thread")) {
@@ -514,6 +571,11 @@ export function parseForeignDeclarationContracts(source: string, fileName: strin
       asyncCallback,
       asyncLocation,
       asyncCallbackLocation,
+      asyncBindings,
+      asyncReturnBinding,
+      asyncReturnLocation,
+      asyncThrowBinding,
+      asyncThrowLocation,
     });
   }
   expectText("}");
@@ -547,7 +609,11 @@ export function foreignDeclarationApiNotes(
   }> = {};
   const objcMethods: Record<string, {
     parameters?: Record<string, PointerNote>;
-    async?: { readonly callbackParameter: number };
+    async?: {
+      readonly callbackParameter: number;
+      readonly resultParameter: number | null;
+      readonly errorParameter: number | null;
+    };
   }> = {};
   for (const contract of contracts.functions) {
     const declaration = declarations.get(contract.name);
@@ -783,7 +849,11 @@ function objectiveCMethodApiNote(
   fileName: string,
 ): {
   readonly parameters?: Readonly<Record<string, PointerNote>>;
-  readonly async?: { readonly callbackParameter: number };
+  readonly async?: {
+    readonly callbackParameter: number;
+    readonly resultParameter: number | null;
+    readonly errorParameter: number | null;
+  };
 } {
   if (
     contract.returnSemanticType !== "inferred"
@@ -851,7 +921,11 @@ function objectiveCMethodApiNote(
       );
     }
   }
-  let asyncProjection: { readonly callbackParameter: number } | undefined;
+  let asyncProjection: {
+    readonly callbackParameter: number;
+    readonly resultParameter: number | null;
+    readonly errorParameter: number | null;
+  } | undefined;
   if (contract.asyncCallback) {
     const callbackIndex = contract.parameters.findIndex((parameter) => parameter.name === contract.asyncCallback);
     if (callbackIndex < 0) {
@@ -913,7 +987,8 @@ function objectiveCMethodApiNote(
         { code: "Z0801" },
       );
     }
-    if (native.type.parameters.length > 1) {
+    const expanded = contract.asyncBindings.length > 0;
+    if (!expanded && native.type.parameters.length > 1) {
       throw new DiagnosticError(
         fileName,
         contract.asyncCallbackLocation!,
@@ -921,7 +996,56 @@ function objectiveCMethodApiNote(
         { code: "Z0801" },
       );
     }
-    asyncProjection = { callbackParameter: callbackIndex };
+    if (expanded && native.type.parameters.length !== contract.asyncBindings.length) {
+      throw new DiagnosticError(
+        fileName,
+        contract.asyncCallbackLocation!,
+        `async callback projection declares ${contract.asyncBindings.length} binding(s), but the native block receives ${native.type.parameters.length}`,
+        { code: "Z0801" },
+      );
+    }
+    const resultParameter = contract.asyncReturnBinding === null
+      ? expanded ? null : native.type.parameters.length === 1 ? 0 : null
+      : contract.asyncBindings.findIndex((binding) => binding.name === contract.asyncReturnBinding);
+    if (contract.asyncReturnBinding !== null && resultParameter < 0) {
+      throw new DiagnosticError(
+        fileName,
+        contract.asyncReturnLocation!,
+        `return names unknown async callback binding ${JSON.stringify(contract.asyncReturnBinding)}`,
+        { code: "Z0801" },
+      );
+    }
+    const errorParameter = contract.asyncThrowBinding === null
+      ? null
+      : contract.asyncBindings.findIndex((binding) => binding.name === contract.asyncThrowBinding);
+    if (contract.asyncThrowBinding !== null && errorParameter < 0) {
+      throw new DiagnosticError(
+        fileName,
+        contract.asyncThrowLocation!,
+        `throw names unknown async callback binding ${JSON.stringify(contract.asyncThrowBinding)}`,
+        { code: "Z0801" },
+      );
+    }
+    if (resultParameter !== null && resultParameter === errorParameter) {
+      throw new DiagnosticError(
+        fileName,
+        contract.asyncThrowLocation!,
+        "the same async callback binding cannot be both returned and thrown",
+        { code: "Z0801" },
+      );
+    }
+    if (errorParameter !== null) {
+      const errorType = native.type.parameters[errorParameter];
+      if (errorType.kind !== "object" || !errorType.nullable) {
+        throw new DiagnosticError(
+          fileName,
+          contract.asyncThrowLocation!,
+          `the first typed async projection tier requires a nullable Objective-C error reference, found ${JSON.stringify(errorType.cName)}`,
+          { code: "Z0801" },
+        );
+      }
+    }
+    asyncProjection = { callbackParameter: callbackIndex, resultParameter, errorParameter };
   }
   return {
     ...(Object.keys(parameters).length ? { parameters } : {}),

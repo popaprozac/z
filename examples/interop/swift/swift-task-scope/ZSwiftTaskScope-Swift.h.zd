@@ -20,4 +20,19 @@ declare module "ZSwiftTaskScope-Swift.h" {
 
     async completion;
   }
+
+  export function ZSwiftBackgroundWorker.calculateChecked(
+    value: _,
+    shouldFail: _,
+    move completion: _
+  ): _ {
+    callback completion {
+      thread any;
+    }
+
+    async completion(value, error) {
+      return value;
+      throw error;
+    }
+  }
 }

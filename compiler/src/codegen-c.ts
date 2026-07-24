@@ -2580,8 +2580,36 @@ function generateEnum(
   const tag = declaration.variants.map((variant) => `  ${variantTag(declaration.name, variant.name)},`).join("\n");
   const payloads = declaration.variants.filter((variant) => variant.payload)
     .map((variant) => `    ${mapType(variant.payload!.name, structs, enums, foreignNamedTypes)} ${variant.name};`).join("\n");
-  const union = payloads ? `\n  union {\n${payloads}\n  } data;` : "";
-  return `typedef enum {\n${tag}\n} ${enumName(declaration.name)}_Tag;\n\nstruct ${enumName(declaration.name)} {\n  ${enumName(declaration.name)}_Tag tag;${union}\n};`;
+  const storageKind = declaration.variants.some((variant) => (
+    variant.payload && containsObjCStrongStorage(variant.payload.name, structs, enums, foreignNamedTypes)
+  )) ? "struct" : "union";
+  const storage = payloads ? `\n  ${storageKind} {\n${payloads}\n  } data;` : "";
+  return `typedef enum {\n${tag}\n} ${enumName(declaration.name)}_Tag;\n\nstruct ${enumName(declaration.name)} {\n  ${enumName(declaration.name)}_Tag tag;${storage}\n};`;
+}
+
+function containsObjCStrongStorage(
+  type: string,
+  structs: ReadonlyMap<string, StructDeclaration>,
+  enums: ReadonlyMap<string, EnumDeclaration>,
+  foreignNamedTypes: SemanticInfo["foreignNamedTypes"],
+  visiting = new Set<string>(),
+): boolean {
+  if (foreignNamedTypes.get(type)?.kind === "object") return true;
+  if (visiting.has(type)) return false;
+  const declaration = structs.get(type);
+  const enumeration = enums.get(type);
+  if (!declaration && !enumeration) return false;
+  visiting.add(type);
+  const result = declaration
+    ? declaration.fields.some((field) => (
+        containsObjCStrongStorage(field.type.name, structs, enums, foreignNamedTypes, visiting)
+      ))
+    : enumeration!.variants.some((variant) => (
+        variant.payload
+        && containsObjCStrongStorage(variant.payload.name, structs, enums, foreignNamedTypes, visiting)
+      ));
+  visiting.delete(type);
+  return result;
 }
 
 function generateNativeMoveEnum(

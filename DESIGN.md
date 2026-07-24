@@ -1715,10 +1715,13 @@ The same contract may add `async completion;` when that terminal block is
 guaranteed exactly once. Z preserves the raw callback overload and synthesizes
 an async overload whose result is the block's zero-or-one payload. Its owned
 task frame remains alive until completion, including after a cancellation
-request when the native API has no cancellation hook. The first executable tier
-covers static methods and cleanup-free scalar payloads; instance contracts,
-typed completion errors, ownership-bearing payloads, and native cancellation
-hooks remain separate semantics.
+request when the native API has no cancellation hook. An expanded
+`async completion(value, error) { return value; throw error; }` contract maps a
+conventional nullable Objective-C error slot into `Task<T, E>` while retaining
+the ARC error through `try await` or `attempt await`. The first executable tier
+covers static methods, cleanup-free scalar success payloads, and Objective-C
+reference errors; instance contracts, ownership-bearing success payloads, and
+native cancellation hooks remain separate semantics.
 
 A Swift manifest may select `interop: "cxx"`. In that mode `swiftc` emits its
 generated C++ compatibility header as `Module-Swift.hpp`, Z selects C++20, and

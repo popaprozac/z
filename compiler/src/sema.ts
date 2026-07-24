@@ -101,6 +101,7 @@ export type ObjCCallInfo = {
   readonly async: {
     readonly callbackParameter: number;
     readonly resultType: string;
+    readonly errorType: string | null;
     readonly parameterTypes: readonly string[];
     readonly method: ForeignObjCMethod;
   } | null;
@@ -6762,7 +6763,9 @@ function inferExpressionInner(
             if (callback.kind !== "block") {
               throw new DiagnosticError(fileName, expression.location, "invalid async Objective-C projection metadata", { code: "Z0801" });
             }
-            const result = callback.parameters.length === 0 ? "void" : String(foreignValueType(callback.parameters[0]));
+            const result = method.asyncResultParameter === null
+              ? "void"
+              : String(foreignValueType(callback.parameters[method.asyncResultParameter]));
             if (
               result === "unknown"
               || (result !== "void" && result !== "boolean" && !integerTypes.has(result) && !floatTypes.has(result))
@@ -6785,10 +6788,25 @@ function inferExpressionInner(
                 helps: ["use `await` for sequential work or `spawn` for concurrent work in an async function"],
               });
             }
+            let errorType: string | null = null;
+            if (method.asyncErrorParameter !== null) {
+              const nativeError = callback.parameters[method.asyncErrorParameter];
+              if (nativeError.kind !== "object" || !nativeError.nullable) {
+                throw new DiagnosticError(fileName, expression.location, "invalid typed async Objective-C error projection metadata", { code: "Z0801" });
+              }
+              errorType = publicObjCTypeName(nativeError.typeName);
+              if (!allowThrowingCall) {
+                throw new DiagnosticError(fileName, expression.location, "throwing async native call requires `attempt` or `try`", {
+                  code: "Z0701",
+                  helps: ["write `try await` to propagate the error, or `attempt await` to inspect Result<T, E>"],
+                });
+              }
+            }
             context.calls += 1;
             asyncProjection = {
               callbackParameter: method.asyncCallbackParameter!,
               resultType: result,
+              errorType,
               parameterTypes: checkedMethod.parameters.map((parameter) => String(foreignValueType(parameter.type))),
               method,
             };
@@ -6801,7 +6819,9 @@ function inferExpressionInner(
           });
           if (selection.projected) {
             state.foreignCallTypes.set(expression.location.offset, asyncProjection!.resultType);
-            return asyncProjection!.resultType;
+            return asyncProjection!.errorType
+              ? resultTypeName(asyncProjection!.resultType, asyncProjection!.errorType)
+              : asyncProjection!.resultType;
           }
           let result = foreignValueType(method.returnType);
           if (method.returnsInstanceType) {

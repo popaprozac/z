@@ -107,6 +107,38 @@
           "2": { "name": "entity.name.function.callback.z" }
         }
       }, {
+        "name": "meta.declaration.async-callback-projection.foreign.z",
+        "begin": "\\b(async)\\s+([A-Za-z_][A-Za-z0-9_]*)\\s*(\\()",
+        "beginCaptures": {
+          "1": { "name": "storage.modifier.async.z" },
+          "2": { "name": "entity.name.function.callback.z" },
+          "3": { "name": "punctuation.definition.parameters.begin.z" }
+        },
+        "end": "(\\})",
+        "endCaptures": {
+          "1": { "name": "punctuation.section.block.end.z" }
+        },
+        "patterns": [{
+          "name": "variable.parameter.callback.z",
+          "match": "\\b[A-Za-z_][A-Za-z0-9_]*\\b(?=\\s*(?:,|\\)))"
+        }, {
+          "name": "meta.declaration.async-callback-outcome.foreign.z",
+          "match": "\\b(return|throw)\\s+([A-Za-z_][A-Za-z0-9_]*)(?=\\s*;)",
+          "captures": {
+            "1": { "name": "keyword.control.flow.z" },
+            "2": { "name": "variable.parameter.callback.z" }
+          }
+        }, {
+          "name": "punctuation.separator.parameter.z",
+          "match": ","
+        }, {
+          "name": "punctuation.definition.parameters.end.z",
+          "match": "\\)"
+        }, {
+          "name": "punctuation.section.block.begin.z",
+          "match": "\\{"
+        }]
+      }, {
         "name": "meta.declaration.async-callback.foreign.z",
         "match": "\\b(async)\\s+([A-Za-z_][A-Za-z0-9_]*)(?=\\s*;)",
         "captures": {

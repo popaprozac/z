@@ -155,6 +155,8 @@ export type ForeignObjCMethod = {
   readonly parameters: readonly ForeignParameter[];
   readonly metadata: ForeignDeclarationMetadata;
   readonly asyncCallbackParameter: number | null;
+  readonly asyncResultParameter: number | null;
+  readonly asyncErrorParameter: number | null;
 };
 
 export type ForeignObjCProtocolMethod = ForeignObjCMethod & {

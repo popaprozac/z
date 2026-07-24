@@ -543,10 +543,23 @@ delivery. Z preserves the raw callback overload and synthesizes
 
 The projected task owns its callback frame until completion. Cancellation
 without a native cancellation hook requests cancellation but still waits for
-the callback before destroying that frame. The first executable tier supports
-static methods with zero or one cleanup-free scalar completion value. Instance
-methods, typed completion errors, ownership-bearing values, and native
-cancellation hooks remain future tiers.
+the callback before destroying that frame. A value/error completion names both
+callback positions explicitly:
+
+```z
+async completion(value, error) {
+  return value;
+  throw error;
+}
+```
+
+When the nullable Objective-C error is non-null, the generated task completes
+as `Task<T, E>` failure; otherwise it transfers the scalar value as success.
+`try await` propagates the owned error and `attempt await` materializes
+`Result<T, E>`. The first executable tier supports static methods, cleanup-free
+scalar success values, and ARC-owned Objective-C errors. Instance methods,
+ownership-bearing success values, and native cancellation hooks remain future
+tiers.
 
 An arbitrary-thread callback does not itself create an unowned root task.
 Instead, the implemented `TaskScope` bridge owns callback-created operations,
@@ -577,9 +590,11 @@ block from strongly cycling back to ARC-managed application state. The AppKit
 observer probe remains caller-thread/AppKit-executor work. The arbitrary-thread
 C and Swift-block tiers now prove atomic ARC environment ownership,
 conservative capture shareability, TaskScope-based main-executor delivery, and
-exactly-once Swift/Objective-C callback-to-task synthesis. Typed scope errors,
-conditional C ownership transfer, instance block contracts, typed callback
-failures, and native cancellation hooks still require richer metadata.
+exactly-once Swift/Objective-C callback-to-task synthesis, including nullable
+Objective-C errors projected into owned `Task<T, E>` failures. Typed scope
+errors, conditional C ownership transfer, instance block contracts,
+ownership-bearing callback values, and native cancellation hooks still require
+richer metadata.
 
 ## Direct Objective-C imports versus `std/objc`
 

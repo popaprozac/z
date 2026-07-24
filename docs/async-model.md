@@ -453,6 +453,6 @@ suspension under short-circuit operators, ternaries, and value-producing `if`
 remains diagnosed until branch-aware expression lowering preserves
 selected-branch evaluation. The next Phase 1 layers add broader foreign-call
 shapes and brace-local value cleanup.
-Later phases
-add channels, sendability and atomic ARC, native executors, actors, and
-callback-to-async synthesis. Async-free programs never link the runtime.
+Later phases add channels, broader sendability, actors, native cancellation
+hooks, repeated-callback async sequences, and richer ownership-bearing foreign
+completion payloads. Async-free programs never link the runtime.

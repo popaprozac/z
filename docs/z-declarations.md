@@ -199,23 +199,39 @@ These are semantic mappings, not textual rewrites:
 | C++ RAII value | `export type` with `copy` or `move`, and `deinit` | Deterministic Z-owned native storage |
 | Objective-C object/method/property/protocol | Usually no `.zd` entry | Clang supplies ARC identity, nullability, selectors, blocks, and protocol metadata directly |
 | Objective-C/Swift static method with an escaping block | `export function Type.method(..., move completion: _)` plus `callback completion { thread ...; }` | Native block owns the Z closure under ARC; `.zd` supplies the thread guarantee absent from the header |
-| Objective-C/Swift exactly-once completion method | The escaping-block contract plus `async completion;` | Keeps the raw overload and synthesizes `async method(...): T`; zero callback values produce `void`, one cleanup-free scalar produces `T` |
+| Objective-C/Swift exactly-once completion method | The escaping-block contract plus `async completion;` | Keeps the raw overload and synthesizes an infallible `async method(...): T`; zero callback values produce `void`, one cleanup-free scalar produces `T` |
+| Objective-C/Swift value/error completion method | `async completion(value, error) { return value; throw error; }` | Names callback positions and synthesizes `async method(...): T throws E`, surfaced as `Task<T, E>` |
 
 The current Objective-C method contract tier names an existing static method by
 class and base name; it does not redeclare or rename selectors. Parameter names
 disambiguate the imported selector. Block lifetime/thread facts may be refined,
-and `async completion;` may identify the terminal escaping block as exactly
-once. The first executable projection tier requires a static method, a terminal
-callback parameter, native and block `void` returns, and zero or one
-cleanup-free scalar callback value. Ordinary Objective-C calls still need no
-sidecar.
+and an `async` clause may identify the terminal escaping block as exactly once.
+The shorthand `async completion;` accepts zero or one cleanup-free scalar
+callback value. A conventional Objective-C/Swift completion pair can instead
+name its positions:
+
+```z
+async completion(value, error) {
+  return value;
+  throw error;
+}
+```
+
+This produces `Task<T, E>` while preserving the raw callback-taking overload.
+The first typed-error tier requires a static method, terminal callback
+parameter, native and block `void` returns, a cleanup-free scalar success
+value, and a nullable Objective-C error reference. Ordinary Objective-C calls
+still need no sidecar.
 
 ## Trust boundary
 
-Clang remains the ABI authority. `.zd` can narrow or classify that imported
-surface, but a project author can still lie about semantic facts that no header
-expresses—for example, claiming that a vendor callback is released exactly once
-or that a native owner may be destroyed on another thread. Such a false
+Clang remains the ABI authority. The compiler checks `.zd` grammar and validates
+ABI-visible claims—symbols, methods, parameter positions and names, callback
+shape, nullability, return types, and capability compatibility—against Clang's
+imported declaration graph. `.zd` can then narrow or classify that imported
+surface, but a project author can still lie about behavioral facts that no
+header expresses—for example, claiming that a vendor callback fires exactly
+once or that a native owner may be destroyed on another thread. Such a false
 contract is the foreign equivalent of an unsafe declaration.
 
 Reusable bindings should ship reviewed `.zd` metadata with the library or

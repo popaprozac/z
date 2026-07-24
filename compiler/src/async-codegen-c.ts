@@ -304,7 +304,7 @@ export function generateAsyncC(
           location,
         })),
         returnType: { name: call.async.resultType, location },
-        errorType: null,
+        errorType: call.async.errorType ? { name: call.async.errorType, location } : null,
         body: [],
         location,
       },
@@ -4615,13 +4615,40 @@ function generateForeignAsyncPoll(plan: AsyncFunctionPlan): string {
   const projection = plan.foreign!;
   const callback = projection.method.parameters[projection.callbackParameter].type;
   if (callback.kind !== "block") throw new Error("invalid foreign async callback projection");
-  const callbackBody = [
-    ...(projection.resultType === "void" ? [] : ["frame->result = value;"]),
-    "z_async_report_external_completion(&frame->task);",
-  ].join(" ");
-  const block = callback.parameters.length === 0
-    ? `^void(void) { ${callbackBody} }`
-    : `^void(${callback.parameters[0].cName} value) { ${callbackBody} }`;
+  const callbackArguments = callback.parameters.map((parameter, index) => ({
+    declaration: `${parameter.cName} callback_value_${index}`,
+    value: `callback_value_${index}`,
+  }));
+  const resultValue = projection.method.asyncResultParameter === null
+    ? null
+    : callbackArguments[projection.method.asyncResultParameter].value;
+  const errorValue = projection.method.asyncErrorParameter === null
+    ? null
+    : callbackArguments[projection.method.asyncErrorParameter].value;
+  const callbackLines: string[] = [];
+  if (errorValue && projection.errorType) {
+    callbackLines.push(`if (${errorValue} != nil) {`);
+    callbackLines.push(`  frame->error = ${errorValue};`);
+    if (hasFrameCleanup(projection.errorType, plan.types)) callbackLines.push("  frame->live_error = true;");
+    callbackLines.push("  frame->failed = true;");
+    callbackLines.push("} else {");
+    if (resultValue) callbackLines.push(`  frame->result = ${resultValue};`);
+    if (projection.resultType !== "void" && hasFrameCleanup(projection.resultType, plan.types)) {
+      callbackLines.push("  frame->live_result = true;");
+    }
+    callbackLines.push("  frame->failed = false;");
+    callbackLines.push("}");
+  } else {
+    if (resultValue) callbackLines.push(`frame->result = ${resultValue};`);
+    if (projection.resultType !== "void" && hasFrameCleanup(projection.resultType, plan.types)) {
+      callbackLines.push("frame->live_result = true;");
+    }
+  }
+  callbackLines.push("z_async_report_external_completion(&frame->task);");
+  const signature = callbackArguments.length === 0
+    ? "void"
+    : callbackArguments.map((argument) => argument.declaration).join(", ");
+  const block = `^void(${signature}) {\n${indent(callbackLines.join("\n"), 4)}\n  }`;
   const visibleInputs = frameInputs(plan);
   let inputIndex = 0;
   const arguments_ = projection.method.parameters.map((_, index) => {

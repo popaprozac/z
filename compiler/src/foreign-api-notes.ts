@@ -49,6 +49,8 @@ export type ApiNotes = {
     readonly parameters?: Readonly<Record<string, PointerNote>>;
     readonly async?: {
       readonly callbackParameter: number;
+      readonly resultParameter: number | null;
+      readonly errorParameter: number | null;
     };
   }>>;
 };
@@ -69,7 +71,11 @@ export function mergeApiNotes(
   }> = {};
   const objcMethods: Record<string, {
     parameters?: Record<string, PointerNote>;
-    async?: { readonly callbackParameter: number };
+    async?: {
+      readonly callbackParameter: number;
+      readonly resultParameter: number | null;
+      readonly errorParameter: number | null;
+    };
   }> = {};
   const owners = new Map<string, string>();
   for (const source of sources) {

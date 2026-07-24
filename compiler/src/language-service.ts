@@ -41,6 +41,7 @@ import { parseViewType } from "./view-types.ts";
 import { parseMapType } from "./map-types.ts";
 import { parseSetType } from "./set-types.ts";
 import { parseAsyncGeneratorType, parseGeneratorType } from "./generator-types.ts";
+import { publicObjCTypeName } from "./objc-types.ts";
 import type { ExplicitCopyPlan, IntegerConversion } from "./sema.ts";
 import { collectForeignHandleTypeAliases } from "./foreign-handle-types.ts";
 import {
@@ -114,6 +115,7 @@ const primitiveTypeTokens = [
 const declarationKeywordTokens = [
   "declare", "module", "export", "function", "type", "copy", "in", "inout", "out", "move", "deinit",
   "async", "callback", "context", "thread", "caller", "any", "transfer", "share", "fixed", "throws", "success",
+  "return", "throw",
 ] as const;
 
 export function diagnostics(source: string, fileName: string): ServiceDiagnostic[] {
@@ -2178,6 +2180,20 @@ function foreignDeclarationCompletions(source: string, fileName: string, offset:
     }
   }
 
+  const asyncProjectionBinding = /\basync\s+[A-Za-z_][A-Za-z0-9_]*\s*\(([^)]*)\)\s*\{[\s\S]*\b(?:return|throw)\s+([A-Za-z_][A-Za-z0-9_]*)?$/.exec(before);
+  if (asyncProjectionBinding?.[2] !== undefined) {
+    const prefix = asyncProjectionBinding[2].toLowerCase();
+    for (const binding of asyncProjectionBinding[1].split(",").map((item) => item.trim()).filter(Boolean)) {
+      if (!binding.toLowerCase().startsWith(prefix)) continue;
+      contextual.push({
+        label: binding,
+        kind: completionKinds.variable,
+        detail: "async callback value binding",
+        sortText: `0-${binding}`,
+      });
+    }
+  }
+
   const contextContractPrefix = /\bcallback\s+([A-Za-z_][A-Za-z0-9_]*)\s*\{\s*context\s+([A-Za-z_][A-Za-z0-9_]*)?$/.exec(before);
   if (ownerSignatures.length > 0 && contextContractPrefix?.[2] !== undefined) {
     const candidates = new Map<string, string>();
@@ -2467,17 +2483,33 @@ function foreignDeclarationHover(source: string, fileName: string, offset: numbe
       && (
         contract.asyncLocation?.offset === word.start
         || contract.asyncCallbackLocation?.offset === word.start
+        || contract.asyncBindings.some((binding) => binding.location.offset === word.start)
       )
     ) {
       const callbackIndex = contract.parameters.findIndex((parameter) => parameter.name === contract.asyncCallback);
       const callbackType = nativeSignatures
         .map((signature) => signature.parameters[callbackIndex]?.type)
         .find((type) => type?.kind === "block");
-      const result = callbackType?.kind === "block"
-        ? callbackType.parameters.length === 0 ? "void" : foreignTypeName(callbackType.parameters[0])
-        : "_";
+      const resultIndex = contract.asyncReturnBinding === null
+        ? contract.asyncBindings.length === 0 && callbackType?.kind === "block" && callbackType.parameters.length === 1 ? 0 : null
+        : contract.asyncBindings.findIndex((binding) => binding.name === contract.asyncReturnBinding);
+      const errorIndex = contract.asyncThrowBinding === null
+        ? null
+        : contract.asyncBindings.findIndex((binding) => binding.name === contract.asyncThrowBinding);
+      const result = callbackType?.kind === "block" && resultIndex !== null && resultIndex >= 0
+        ? foreignTypeName(callbackType.parameters[resultIndex]).replaceAll("declarationNative.", "")
+        : resultIndex === null ? "void" : "_";
+      const errorType = callbackType?.kind === "block" && errorIndex !== null && errorIndex >= 0
+        ? callbackType.parameters[errorIndex]
+        : null;
+      const throws = errorType?.kind === "object"
+        ? ` throws ${publicObjCTypeName(errorType.typeName).replaceAll("declarationNative.", "")}`
+        : "";
+      const bindings = contract.asyncBindings.length > 0
+        ? `(${contract.asyncBindings.map((binding) => binding.name).join(", ")})`
+        : "";
       return markdownHover(
-        `async ${contract.asyncCallback}: ${result}  // exactly-once terminal callback synthesized as an awaitable overload`,
+        `async ${contract.asyncCallback}${bindings}: ${result}${throws}  // exactly-once terminal callback synthesized as an awaitable overload`,
         source,
         word.start,
         word.end,
@@ -4036,11 +4068,17 @@ function objCMethodDetail(method: ForeignObjCMethod): string {
   const raw = `${method.baseName}(${signature(method.parameters)}): ${foreignTypeName(method.returnType)}  // ${method.selector}${foreignAvailabilityDetail(method.metadata)}`;
   if (method.asyncCallbackParameter === null) return raw;
   const callback = method.parameters[method.asyncCallbackParameter].type;
-  const result = callback.kind === "block"
-    ? callback.parameters.length === 0 ? "void" : foreignTypeName(callback.parameters[0])
+  const result = callback.kind === "block" && method.asyncResultParameter !== null
+    ? foreignTypeName(callback.parameters[method.asyncResultParameter])
+    : callback.kind === "block"
+      ? "void"
     : "_";
+  const error = callback.kind === "block" && method.asyncErrorParameter !== null
+    ? callback.parameters[method.asyncErrorParameter]
+    : null;
+  const throws = error?.kind === "object" ? ` throws ${publicObjCTypeName(error.typeName)}` : "";
   const visible = method.parameters.filter((_, index) => index !== method.asyncCallbackParameter);
-  return `async ${method.baseName}(${signature(visible)}): ${result}  // synthesized from exactly-once callback\n${raw}`;
+  return `async ${method.baseName}(${signature(visible)}): ${result}${throws}  // synthesized from exactly-once callback\n${raw}`;
 }
 
 function resolveForeignModuleNamespace(
