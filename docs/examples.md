@@ -94,6 +94,7 @@ Read [`async-model.md`](async-model.md) alongside these examples:
 | Typed errors | [`async-errors.zs`](../examples/async/async-errors.zs) |
 | Hot task and explicit join | [`async-tasks.zs`](../examples/async/async-tasks.zs) |
 | Lexical task scopes | [`async-scopes.zs`](../examples/async/async-scopes.zs) |
+| Scope-local ownership and child borrows | [`async-scope-locals.zs`](../examples/async/async-scope-locals.zs) |
 | Native callback task scopes | [`task-scope-native-callback.zs`](../examples/async/task-scope-native-callback.zs) — `thread any` C callback submission through named `TaskScope` ownership onto the main executor, including an async submitted root that owns and awaits a dedicated worker |
 | Cancellation | [`async-cancellation.zs`](../examples/async/async-cancellation.zs) |
 | Caller-driven cancellation | [`async-caller-cancellation.zs`](../examples/async/async-caller-cancellation.zs) — consuming request-and-join, descendant cleanup, and deterministic native resource release |

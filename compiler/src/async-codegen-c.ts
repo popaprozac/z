@@ -108,6 +108,7 @@ type AsyncOperation =
   | { readonly kind: "statement"; readonly statement: Statement }
   | { readonly kind: "scopeEnter"; readonly scope: number; readonly name: string }
   | { readonly kind: "scopeExit"; readonly scope: number; readonly name: string | null; readonly cancel: boolean }
+  | { readonly kind: "localCleanup"; readonly name: string; readonly type: string }
   | { readonly kind: "branch"; readonly condition: Expression; readonly thenLabel: number; readonly elseLabel: number }
   | {
     readonly kind: "forBranch";
@@ -482,9 +483,32 @@ function planFunction(
     readonly breakLabel: number;
     readonly continueLabel: number;
     readonly matchCleanupDepth: number;
+    readonly activeScopeDepth: number;
   }[] = [];
   const activeMatchCleanups: { readonly site: AsyncMatchSite; readonly armIndex: number }[] = [];
-  const activeScopes: Array<{ readonly scope: number; readonly name: string | null }> = [];
+  const activeScopes: Array<{
+    readonly scope: number;
+    readonly name: string | null;
+    readonly controlDepth: number;
+    readonly cleanupLocals: { readonly name: string; readonly type: string }[];
+  }> = [];
+  const appendScopeExit = (
+    activeScope: (typeof activeScopes)[number],
+    cancel: boolean,
+    cleanupLocals: boolean,
+  ): void => {
+    operations.push({
+      kind: "scopeExit",
+      scope: activeScope.scope,
+      name: activeScope.name,
+      cancel,
+    });
+    if (cleanupLocals) {
+      for (const local of [...activeScope.cleanupLocals].reverse()) {
+        operations.push({ kind: "localCleanup", name: local.name, type: local.type });
+      }
+    }
+  };
   const ownedTaskScopes = new Set<string>();
   const unwindOwnedTaskScopes = (cancel: boolean): void => {
     for (const name of [...ownedTaskScopes].reverse()) {
@@ -642,13 +666,19 @@ function planFunction(
           locals.set(statement.name, "TaskScope");
           operations.push({ kind: "scopeEnter", scope: childScope, name: statement.name });
         }
-        activeScopes.push({ scope: childScope, name: statement.name });
+        const activeScope = {
+          scope: childScope,
+          name: statement.name,
+          controlDepth,
+          cleanupLocals: [],
+        };
+        activeScopes.push(activeScope);
         try {
           planStatements(statement.body.statements, childScope, controlDepth);
         } finally {
           activeScopes.pop();
         }
-        operations.push({ kind: "scopeExit", scope: childScope, name: statement.name, cancel: false });
+        appendScopeExit(activeScope, false, true);
         continue;
       }
       if (statement.kind === "if") {
@@ -699,6 +729,7 @@ function planFunction(
           breakLabel: endLabel,
           continueLabel: conditionLabel,
           matchCleanupDepth: activeMatchCleanups.length,
+          activeScopeDepth: activeScopes.length,
         });
         planStatements(statement.body.statements, scope, controlDepth + 1);
         loopTargets.pop();
@@ -794,6 +825,7 @@ function planFunction(
             breakLabel: breakCleanupLabel,
             continueLabel: continueCleanupLabel,
             matchCleanupDepth: activeMatchCleanups.length,
+            activeScopeDepth: activeScopes.length,
           });
           planStatements(statement.body.statements, scope, controlDepth + 1);
           loopTargets.pop();
@@ -863,6 +895,7 @@ function planFunction(
           breakLabel: endLabel,
           continueLabel: incrementLabel,
           matchCleanupDepth: activeMatchCleanups.length,
+          activeScopeDepth: activeScopes.length,
         });
         planStatements(statement.body.statements, scope, controlDepth + 1);
         loopTargets.pop();
@@ -924,6 +957,9 @@ function planFunction(
         for (const cleanup of activeMatchCleanups.slice(loop.matchCleanupDepth).reverse()) {
           operations.push({ kind: "matchCleanup", site: cleanup.site, armIndex: cleanup.armIndex });
         }
+        for (const activeScope of activeScopes.slice(loop.activeScopeDepth).reverse()) {
+          appendScopeExit(activeScope, false, true);
+        }
         operations.push({
           kind: "jump",
           label: statement.kind === "break" ? loop.breakLabel : loop.continueLabel,
@@ -932,12 +968,10 @@ function planFunction(
       }
       if ((statement.kind === "return" || statement.kind === "throw") && activeScopes.length > 0) {
         for (const activeScope of [...activeScopes].reverse()) {
-          operations.push({
-            kind: "scopeExit",
-            scope: activeScope.scope,
-            name: activeScope.name,
-            cancel: statement.kind === "throw",
-          });
+          // The final frame destroy cleans scope locals after the return/throw
+          // expression has transferred its value. Eager cleanup here would make
+          // returning a scope-local owner observe destroyed storage.
+          appendScopeExit(activeScope, statement.kind === "throw", false);
         }
       }
       if (statement.kind === "return" || statement.kind === "throw") {
@@ -947,14 +981,6 @@ function planFunction(
       if (statement.kind === "variable") {
         const threadSpawn = statement.initializer?.kind === "call"
           && semanticInfo.threadSpawnCalls.has(statement.initializer.location.offset);
-        if (scope !== 0 && statement.initializer?.kind !== "spawn" && !threadSpawn) {
-          unsupported(
-            fileName,
-            statement.location,
-            "scope-local value bindings are not executable yet",
-            "bind values outside the `async scope`; scope-local child task handles are supported",
-          );
-        }
         if (scope !== 0 && locals.has(statement.name)) {
           unsupported(
             fileName,
@@ -980,7 +1006,14 @@ function planFunction(
             "shadowing or reusing an async frame binding inside conditional control flow is not executable yet",
           );
         }
-        if (controlDepth > 0 && hasFrameCleanup(type, types)) {
+        const owningAsyncScope = scope === 0
+          ? null
+          : [...activeScopes].reverse().find((candidate) => candidate.scope === scope) ?? null;
+        if (
+          controlDepth > 0
+          && hasFrameCleanup(type, types)
+          && (!owningAsyncScope || controlDepth > owningAsyncScope.controlDepth)
+        ) {
           unsupported(
             fileName,
             statement.nameLocation,
@@ -988,6 +1021,13 @@ function planFunction(
           );
         }
         locals.set(statement.name, type);
+        if (scope !== 0 && hasFrameCleanup(type, types)) {
+          const activeScope = [...activeScopes].reverse().find((candidate) => candidate.scope === scope);
+          if (!activeScope) {
+            throw new Error(`missing active async scope ${scope} for local ${JSON.stringify(statement.name)}`);
+          }
+          activeScope.cleanupLocals.push({ name: statement.name, type });
+        }
         if (
           statement.initializer?.kind === "new"
           && semanticInfo.taskScopeConstructors.has(statement.initializer.location.offset)
@@ -4657,6 +4697,18 @@ function generatePoll(
         ]));
         state += 1;
       }
+      continue;
+    }
+    if (operation.kind === "localCleanup") {
+      cases.push(caseBlock(state, [
+        `if (frame->${frameLiveField(operation.name)}) {`,
+        `  ${frameCleanup(frameStoredValue(operation.name, operation.type, plan.types), operation.type, plan.types)}`,
+        `  frame->${frameLiveField(operation.name)} = false;`,
+        "}",
+        `frame->state = ${state + 1};`,
+        "continue;",
+      ]));
+      state += 1;
       continue;
     }
     const statement = operation.statement;

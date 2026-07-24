@@ -15468,12 +15468,136 @@ test("joins nested async scopes at their lexical boundaries", () => {
       return 0;
     }
   `;
-  assert.throws(() => compileToC(localValue, "async-scope-local.zs"), (error: unknown) => {
-    assert.ok(error instanceof DiagnosticError);
-    assert.equal(error.code, "Z0700");
-    assert.match(error.message, /scope-local value bindings are not executable yet/);
-    return true;
-  });
+  const localValueC = compileToC(localValue, "async-scope-local.zs");
+  assert.match(localValueC, /frame->value_value = 42/);
+});
+
+test("cleans ownership-bearing async scope locals after child tasks join", () => {
+  const example = resolve(projectRoot, "examples/async/async-scope-locals.zs");
+  const source = readFileSync(example, "utf8");
+  const generated = compileToC(source, example);
+
+  const join = generated.indexOf("z_async_wait(&frame->task");
+  const cleanup = generated.lastIndexOf("Z_Report_deinit(&(frame->value_report))");
+  assert.ok(join >= 0, "expected the scoped child join");
+  assert.ok(cleanup > join, "expected the scope-local cleanup after the scoped child join");
+  assert.match(generated, /frame->live_report = false/);
+
+  const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(
+    result.stdout,
+    "observed report 42\nreleased report 42\nscope closed\n",
+  );
+
+  const directory = mkdtempSync("/tmp/z-async-scope-locals-");
+  const exits = resolve(directory, "exits.zs");
+  writeFileSync(exits, `
+    import console from "std/console";
+    import { delay } from "std/time";
+
+    struct Resource {
+      id: i32;
+      deinit { console.log(\`released local \${this.id}\`); }
+    }
+
+    async function observe(in resource: Resource): void {
+      await delay(1);
+      return;
+    }
+
+    async function returnFromScope(): i32 {
+      async scope {
+        const resource = Resource({ id: 1 });
+        task observe(resource);
+        return resource.id;
+      }
+    }
+
+    async function throwFromScope(): i32 throws i32 {
+      async scope {
+        const resource = Resource({ id: 2 });
+        task observe(resource);
+        throw 2;
+      }
+    }
+
+    async function breakFromScope(): i32 {
+      while (true) {
+        async scope {
+          const resource = Resource({ id: 3 });
+          task observe(resource);
+          break;
+        }
+      }
+      return 3;
+    }
+
+    async function continueFromScope(): i32 {
+      let iteration = 0;
+      while (iteration < 2) {
+        async scope {
+          const resource = Resource({ id: 10 + iteration });
+          task observe(resource);
+          iteration = iteration + 1;
+          continue;
+        }
+      }
+      return iteration;
+    }
+
+    async function main(): i32 {
+      const returned = await returnFromScope();
+      const failed = attempt await throwFromScope();
+      const failure = match (failed) {
+        success(value) => value;
+        failure(error) => error;
+      };
+      const broken = await breakFromScope();
+      const continued = await continueFromScope();
+      return returned + failure + broken + continued - 8;
+    }
+  `);
+  const exited = spawnSync(process.execPath, [cli, "run", exits], { encoding: "utf8" });
+  assert.equal(exited.status, 0, exited.stderr);
+  assert.equal(
+    exited.stdout,
+    "released local 1\nreleased local 2\nreleased local 3\nreleased local 10\nreleased local 11\n",
+  );
+
+  const cancellation = resolve(directory, "cancellation.zs");
+  writeFileSync(cancellation, `
+    import console from "std/console";
+    import { delay } from "std/time";
+
+    struct Resource {
+      id: i32;
+      deinit { console.log(\`released cancelled local \${this.id}\`); }
+    }
+
+    async function waitWith(in resource: Resource): void {
+      await delay(1000);
+      return;
+    }
+
+    async function cancellable(): void {
+      async scope {
+        const resource = Resource({ id: 4 });
+        task waitWith(resource);
+        await delay(1000);
+      }
+    }
+
+    async function main(): i32 {
+      const work = task cancellable();
+      await delay(1);
+      await work.cancel();
+      return 0;
+    }
+  `);
+  const cancelled = spawnSync(process.execPath, [cli, "run", cancellation], { encoding: "utf8" });
+  assert.equal(cancelled.status, 0, cancelled.stderr);
+  assert.equal(cancelled.stdout, "released cancelled local 4\n");
 });
 
 test("routes arbitrary-thread callbacks through named TaskScope ownership", () => {

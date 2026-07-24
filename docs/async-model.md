@@ -474,11 +474,19 @@ Class method frames retain `this`; consuming struct methods move `this`; static
 async methods carry no receiver. Function exit implicitly joins unacknowledged
 non-throwing root children, while throwing children require an explicit `try
 await` or `attempt await`. Nested explicit scopes now join and destroy their
-directly owned children at each lexical closing brace. Scope-local task handles
-are executable; other scope-local frame values remain diagnosed until their
-brace-local cleanup states land. Propagated failures now request structural
-cancellation of live siblings and descendants, redirecting their state machines
-through deterministic child and frame cleanup before failure completes. The
+directly owned children at each lexical closing brace. Ordinary scalar and
+ownership-bearing values may be declared directly in an `async scope`; the
+frame keeps them live across suspension, joins or cancels borrowing children
+first, and then destroys the values in reverse declaration order. `return` and
+`throw` transfer their expression before final frame teardown, while
+`break`/`continue` crossing the scope perform the same join-before-cleanup
+unwind. Cancellation leaves any still-live value to the idempotent frame
+destructor. Cleanup-bearing locals nested in an ordinary `if`, loop body, or
+match arm without their own `async scope` remain diagnosed until those
+brace-local cleanup states and child-borrow boundaries land. Propagated failures
+now request structural cancellation of live siblings and descendants,
+redirecting their state machines through deterministic child and frame cleanup
+before failure completes. The
 executor now maintains a sorted monotonic timer queue for direct `await
 delay(...)`; it wakes expired tasks in deadline order and blocks the OS thread
 only when the ready queue is empty. Synchronous Z calls, receiver methods,
