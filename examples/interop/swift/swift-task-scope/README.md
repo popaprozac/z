@@ -13,7 +13,9 @@ This example composes six native boundaries:
    main executor for AppKit work.
 6. A real Swift `@MainActor` class crosses the generated header, enters Z's
    foreign IR as `on thread.main`, and keeps that isolation on its synthesized
-   awaitable overload.
+   awaitable overload. A dedicated Z worker explicitly enters main placement,
+   suspends there while the Swift callback completes, then resumes on its
+   original worker.
 
 Run it on macOS:
 
@@ -33,10 +35,12 @@ completion, even when cancellation has already been requested. The raw
 callback-taking overload remains available by supplying `completion:` explicitly.
 `ZSwiftMainActorWorker.calculate` invokes its completion synchronously, proving
 that callback-to-task projection is also safe when native code completes before
-the imported call returns. Its Z call is accepted because `main` is explicitly
-declared `on thread.main`; the same call from an ordinary async function is a
-compile-time executor-affinity error.
+the imported call returns. Its Z call is accepted inside an explicit
+`await on thread.main { select await ...; }` region; the same direct call from
+an ordinary async function is a compile-time executor-affinity error. The outer
+`await` joins the placement operation, while the inner `await` suspends the
+Swift operation without losing main-executor proof.
 The delayed second operation is cancelled after native work starts; Z waits for
 Swift's callback before destroying the frame. The first line is the owned
 `NSError.code` observed through `failure(error)`; the second is the successful
-value delivered on the AppKit main thread.
+value delivered through the worker → main → worker round trip.

@@ -13007,12 +13007,15 @@ test("editor grammar tracks keywords without reserving Result variants", () => {
     .find((pattern: { name: string }) => pattern.name === "keyword.control.concurrent.z");
   const ownershipPattern = grammar.repository.keywords.patterns
     .find((pattern: { name: string }) => pattern.name === "keyword.operator.ownership.z");
+  const asyncProjectionPattern = new RegExp(foreignDeclarationPatterns[12].begin);
   assert.equal(exportPattern?.name, "keyword.control.export.z");
   assert.match("task fetch()", new RegExp(taskPattern?.match ?? "$^"));
   assert.match("task on thread.main", new RegExp(taskPattern?.match ?? "$^"));
   assert.doesNotMatch("const task = operation();", new RegExp(taskPattern?.match ?? "$^"));
   assert.match("copy value", new RegExp(ownershipPattern?.match ?? "$^"));
   assert.doesNotMatch("const copy = value;", new RegExp(ownershipPattern?.match ?? "$^"));
+  assert.match("async completion(value, error) {", asyncProjectionPattern);
+  assert.doesNotMatch("thread.spawn(async move (): i32 => {", asyncProjectionPattern);
   assert.match(keywordPattern, /throw/);
   assert.match(keywordPattern, /attempt/);
   assert.match(keywordPattern, /on/);
@@ -15943,6 +15946,8 @@ test("suspends and resumes async closures on one dedicated native thread", () =>
   assert.match(artifact.source, /z_async_executor_init\(task->native_executor, false\)/);
   assert.match(artifact.source, /frame->task\.completion_executor/);
   assert.match(artifact.source, /z_async_enqueue_from_thread\(waiter->executor, waiter\)/);
+  assert.match(artifact.source, /z_async_cancel_from_thread\(frame->task\.completion_executor/);
+  assert.match(artifact.source, /z_async_schedule_delay\(&frame->task, 1\)/);
   assert.match(artifact.source, /while \(!task->native_body_completed\)/);
 
   const workerOffset = source.indexOf("worker =") + 1;
@@ -15960,6 +15965,23 @@ test("suspends and resumes async closures on one dedicated native thread", () =>
     hover(source, example, failureFlagOffset)?.contents.value ?? "",
     /shouldFail: boolean/,
   );
+  const workerTokens = decodeSemanticTokens(semanticTokens(source, example).data);
+  for (const [text, offset, modifiers] of [
+    ["shouldFail", source.indexOf("shouldFail ="), 3],
+    ["shouldFail", source.indexOf("buildStatus(20, shouldFail)") + "buildStatus(20, ".length, 2],
+    ["statusTask", source.indexOf("statusTask ="), 3],
+    ["statusTask", source.indexOf("await statusTask") + "await ".length, 2],
+    ["mainValue", source.indexOf("mainValue ="), 3],
+    ["mainValue", source.indexOf("status + mainValue") + "status + ".length, 2],
+  ] as const) {
+    const position = positionForOffset(source, offset);
+    const token = workerTokens.find((candidate) => (
+      candidate.line === position.line
+      && candidate.character === position.character
+      && candidate.type === semanticTokenTypes.indexOf("variable")
+    ));
+    assert.equal(token?.modifiers, modifiers, `${text} should retain variable highlighting inside thread.spawn`);
+  }
 
   const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
@@ -15971,13 +15993,15 @@ test("suspends and resumes async closures on one dedicated native thread", () =>
     import { delay } from "std/time";
     import { thread } from "std/thread";
     struct WorkError { code: i32; }
-    async function fail(): i32 throws WorkError {
+    async function fail(): i32 throws WorkError on thread.main {
       await delay(1);
       throw WorkError({ code: 42 });
     }
     async function main(): i32 {
       const worker = thread.spawn(async (): i32 throws WorkError => {
-        return try await fail();
+        return try await on thread.main: i32 throws WorkError {
+          select try await fail();
+        };
       });
       const observed = attempt await worker;
       return match (in observed) {
@@ -15995,8 +16019,10 @@ test("suspends and resumes async closures on one dedicated native thread", () =>
     import { thread } from "std/thread";
     async function main(): i32 {
       const worker = thread.spawn(async (): i32 => {
-        await delay(1000);
-        return 42;
+        return await on thread.main: i32 {
+          await delay(1000);
+          select 42;
+        };
       });
       await delay(1);
       await worker.cancel();

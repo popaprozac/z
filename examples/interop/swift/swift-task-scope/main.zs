@@ -4,9 +4,14 @@ import { delay } from "std/time";
 import AppKit from "AppKit/AppKit.h";
 import Swift from "ZSwiftTaskScope-Swift.h";
 
-async function main(): i32 on thread.main {
+async function main(): i32 {
   const value = await Swift.ZSwiftBackgroundWorker.calculate(40);
-  const mainActorValue = await Swift.ZSwiftMainActorWorker.calculate(40);
+  const mainActorWork = thread.spawn(async (): i32 => {
+    return await on thread.main {
+      select await Swift.ZSwiftMainActorWorker.calculate(40);
+    };
+  });
+  const mainActorValue = await mainActorWork;
   const checked = attempt await Swift.ZSwiftBackgroundWorker.calculateChecked(
     40,
     shouldFail: false

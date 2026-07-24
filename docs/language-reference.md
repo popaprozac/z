@@ -1234,10 +1234,9 @@ const fallible = thread.spawn(move (): i32 throws CalculationError => {
 const result = attempt await fallible;
 
 const threadAffine = thread.spawn(async move (): i32 throws CalculationError => {
-  const value = try await calculateLater(input);
-  await on thread.main {
-    publish(value);
-  }
+  const value = try await on thread.main: i32 throws CalculationError {
+    select try await calculateForMain(input);
+  };
   return value;
 });
 const published = try await threadAffine;
@@ -1278,6 +1277,19 @@ platform UI-loop adapters remain bounded work. See
 [`executor-placement.md`](executor-placement.md).
 The returned task remains scope-bound and is joined explicitly by `await` or
 implicitly at scope exit.
+
+Awaited operations can suspend inside an awaited placement:
+
+```z
+const updated = await on thread.main {
+  select await refreshUI();
+};
+```
+
+The outer `await` joins the executor placement. The inner `await` is the
+operation performed on that executor. Its continuation retains main-executor
+proof; after the placement completes, a native-worker caller resumes on its
+original private executor.
 
 Executor-isolated declarations place the contract after the declaration
 signature and before the body:

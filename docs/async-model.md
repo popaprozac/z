@@ -177,11 +177,9 @@ An async worker is written explicitly:
 
 ```z
 const worker = thread.spawn(async move (): String throws WorkError => {
-  const status = try await buildStatus();
-
-  await on thread.main {
-    display(status);
-  }
+  const status = try await on thread.main: String throws WorkError {
+    select try await buildMainStatus();
+  };
 
   return status;
 });
@@ -191,11 +189,14 @@ const status = try await worker;
 
 The closure owns a private executor bound to the dedicated worker. Ordinary
 continuations, including children started with `task`, run on that same worker.
-`await on thread.main` crosses to the main executor and enqueues the continuation
-back onto the worker after the placed operation completes. The OS thread stays
-alive while suspended; this preserves exact thread affinity rather than merely
-resuming on an arbitrary pool thread. The source return annotation remains the
-logical `T throws E`; `thread.spawn` supplies the `Task<T, E>` wrapper.
+`await on thread.main` crosses to the main executor. An `await` nested inside
+that placement suspends and resumes with main-executor proof. After the placed
+operation completes, the outer continuation is enqueued back onto the worker.
+The OS thread stays alive while suspended; this preserves exact thread affinity
+rather than merely resuming on an arbitrary pool thread. Cancellation is routed
+to the executor that owns a placed child before structured cleanup joins it. The
+source return annotation remains the logical `T throws E`; `thread.spawn`
+supplies the `Task<T, E>` wrapper.
 
 The intended fallible form preserves the ordinary typed-error channel:
 

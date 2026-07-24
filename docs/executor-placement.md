@@ -86,8 +86,18 @@ a future explicit operation such as `await main.yield()` should express that
 request.
 
 While execution remains lexically inside an `on thread.main` region, continuations
-after nested suspension should resume on `main` unless the source explicitly
-selects another executor.
+after nested suspension resume on `main` unless the source explicitly selects
+another executor:
+
+```z
+const value = await on thread.main {
+  select await mainIsolatedOperation();
+};
+```
+
+The two `await` keywords describe different boundaries. The outer one hops to
+and joins the main placement. The inner one suspends the operation while
+retaining main-executor proof.
 
 ### Fork a structured child on an executor
 
@@ -363,10 +373,8 @@ explicitly async:
 
 ```z
 const worker = thread.spawn(async move (): Status throws WorkError => {
-  const status = try await buildStatus();
-
-  await on thread.main {
-    display(status);
+  const status = try await on thread.main: Status throws WorkError {
+    select try await buildMainStatus();
   }
 
   return status;
@@ -376,23 +384,22 @@ const status = try await worker;
 ```
 
 The worker owns a private executor. It stays alive while suspended,
-`await on thread.main` places the child on the caller's main executor, and
-completion enqueues the continuation back onto the private executor. Ordinary
-continuations and `task` children therefore remain bound to the same dedicated
-OS thread. Cooperative cancellation wakes a suspended worker so its structured
-children and owned frame state unwind before the thread is joined.
+`await on thread.main` places the child on the caller's main executor, the
+nested `await` resumes within that placement, and completion enqueues the outer
+continuation back onto the private executor. Ordinary continuations and `task`
+children therefore remain bound to the same dedicated OS thread. Cooperative
+cancellation is delivered to the executor that owns each child, so a suspended
+worker can unwind structured children and owned frame state before the thread
+is joined.
 
 ## Foreign and Objective-C affinity
 
-Foreign declarations need a way to state executor requirements that headers do
-not encode. The exact `.zd` grammar remains to be designed, but it should reuse
-declaration specification blocks rather than invent ad hoc wrapper code:
+Foreign declarations can state executor requirements that headers do not
+encode while preserving the imported ABI:
 
 ```z
 declare module "AppKit/AppKit.h" {
-  export function display(in window: NSWindow): void {
-    on thread.main;
-  }
+  export function display(in window: NSWindow): void on thread.main;
 }
 ```
 

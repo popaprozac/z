@@ -14,6 +14,17 @@ async function buildStatus(value: i32, shouldFail: boolean): i32 throws WorkErro
   return value;
 }
 
+async function buildMainStatus(
+  value: i32,
+  shouldFail: boolean
+): i32 throws WorkError on thread.main {
+  await delay(1);
+  if (shouldFail) {
+    throw WorkError({ code: value });
+  }
+  return value;
+}
+
 async function main(): i32 throws WorkError {
   const shouldFail = false;
   const worker = thread.spawn(async move (): i32 throws WorkError => {
@@ -21,8 +32,8 @@ async function main(): i32 throws WorkError {
     const status = try await statusTask;
     await delay(1);
 
-    const mainValue = await on thread.main: i32 {
-      select 22;
+    const mainValue = try await on thread.main: i32 throws WorkError {
+      select try await buildMainStatus(22, shouldFail);
     };
 
     await delay(1);

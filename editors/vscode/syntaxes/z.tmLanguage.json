@@ -108,7 +108,7 @@
         }
       }, {
         "name": "meta.declaration.async-callback-projection.foreign.z",
-        "begin": "\\b(async)\\s+([A-Za-z_][A-Za-z0-9_]*)\\s*(\\()",
+        "begin": "\\b(async)\\s+((?!move\\b)[A-Za-z_][A-Za-z0-9_]*)\\s*(\\()",
         "beginCaptures": {
           "1": { "name": "storage.modifier.async.z" },
           "2": { "name": "entity.name.function.callback.z" },
