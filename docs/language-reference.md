@@ -1071,6 +1071,28 @@ Owned closure environments use ARC. Noncapturing closures can lower directly to
 native function pointers where the foreign ABI permits it. `weak` captures may
 break class/closure cycles.
 
+Nested closures forward free captures automatically:
+
+```z
+const save = move (): void => {
+  scope.schedule(thread.main, async move (): void => {
+    const worker = thread.spawn(async move (): void => {
+      await on thread.main {
+        presenter.saved();
+      }
+    });
+    await worker;
+  });
+};
+```
+
+`presenter` is captured through every intervening closure without relay
+bindings. Each boundary still applies its own rules: borrowed closures cannot
+escape, escaping closures require `move`, native-thread captures must be
+transferable, and executor-isolated identity remains opaque outside its
+executor placement. Parameters and locals in an intervening closure shadow
+outer names normally.
+
 ## Strings and console
 
 `"text"` and `'text'` are ordinary string literals. Backticks are template

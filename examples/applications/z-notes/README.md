@@ -153,7 +153,9 @@ values and schedules an explicitly async root on `thread.main`. That root moves
 the snapshot into a dedicated worker, opens and closes its own SQLite handle,
 and reports completion after resuming on main. The button callback returns
 immediately, and `main` closes the scope after `app.run()` so every accepted
-save is joined before shutdown.
+save is joined before shutdown. The source names `saveStatus` directly in the
+innermost worker placement; capture analysis automatically forwards it through
+the Objective-C action, scheduled async root, and worker without relay aliases.
 
 The UI applies an accepted note optimistically on the main thread. A
 `SaveStatusPresenter on thread.main` owns the status label. The worker may

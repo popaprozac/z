@@ -182,11 +182,9 @@ function runApplication(
     const pendingBody = copy body;
     const note = Note({ id: noteId, title, body });
     const savePath = copy actionDatabasePath;
-    const savePresenter = saveStatus;
     const accepted = updates.schedule(
       thread.main,
       async move (): void => {
-        const workerPresenter = savePresenter;
         const workerNote = Note({
           id: noteId,
           title: pendingTitle,
@@ -197,7 +195,7 @@ function runApplication(
           await delay(1);
           const savedNote = try saveNoteToPath(workerPath, workerNote);
           await on thread.main {
-            workerPresenter.persisted(noteId);
+            saveStatus.persisted(noteId);
           }
           return savedNote;
         });
@@ -207,7 +205,7 @@ function runApplication(
             console.log(`persisted note ${savedNote.id} on a background worker`);
           }
           failure(status) => {
-            savePresenter.failed(noteId, status);
+            saveStatus.failed(noteId, status);
             console.error(`could not persist note ${noteId}: sqlite status ${status}`);
           }
         }

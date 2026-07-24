@@ -2936,13 +2936,13 @@ test("builds the interactive Z Notes AppKit and sqlite3 application", () => {
   assert.match(artifact.source, /z_async_release_SaveStatusPresenter_on_executor/);
   assert.match(
     artifact.source,
-    /z_async_release_from_thread\(frame->task\.completion_executor, frame->value_workerPresenter, z_async_release_SaveStatusPresenter_on_executor\)/,
+    /z_async_release_from_thread\(frame->task\.completion_executor, frame->value_saveStatus, z_async_release_SaveStatusPresenter_on_executor\)/,
   );
   assert.match(
     artifact.source,
-    /z_async_start___z_executor_main_\d+\(frame->task\.completion_executor, frame->value_workerPresenter, frame->value_noteId\)/,
+    /z_async_start___z_executor_main_\d+\(frame->task\.completion_executor, frame->value_saveStatus, frame->value_noteId\)/,
   );
-  assert.match(artifact.source, /Z_SaveStatusPresenter_persisted\(frame->value_workerPresenter/);
+  assert.match(artifact.source, /Z_SaveStatusPresenter_persisted\(frame->value_saveStatus/);
 
   const compilation = spawnSync("xcrun", [
     "clang", "-x", "objective-c", "-fobjc-arc", "-fblocks",
@@ -2998,7 +2998,7 @@ test("builds the interactive Z Notes AppKit and sqlite3 application", () => {
       .find((item) => item.label === "Binding")?.kind,
     7,
   );
-  const presenterUseOffset = source.indexOf("workerPresenter.persisted") + 1;
+  const presenterUseOffset = source.indexOf("saveStatus.persisted") + 1;
   assert.match(
     hover(source, application, presenterUseOffset)?.contents.value ?? "",
     /executor-isolated to thread\.main/,
@@ -4986,6 +4986,61 @@ test("runs non-escaping arrow closures with inferred borrow, mutation, and move 
   assert.match(generated, /__z_closure_call_/);
   assert.match(generated, /const int32_t \*offset/);
   assert.match(generated, /int32_t \*total/);
+});
+
+test("forwards captures through nested closures without relay bindings", () => {
+  const source = `
+    function read(in operation: () => i32): i32 {
+      return operation();
+    }
+
+    function run(in operation: () => void): void {
+      operation();
+    }
+
+    function main(): i32 {
+      const base = 40;
+      let total = 40;
+      const forwarded = read(() => read(() => base + 2));
+      run(() => {
+        run(() => {
+          total = total + 2;
+        });
+      });
+      const shadowed = read(() => {
+        const base = 1;
+        return read(() => base + 1);
+      });
+      return forwarded - 42 + total - 42 + shadowed - 2;
+    }
+  `;
+  const generated = compileToC(source, "nested-closure-captures.zs");
+  assert.ok((generated.match(/const int32_t \*base/g)?.length ?? 0) >= 2);
+  assert.ok((generated.match(/int32_t \*total/g)?.length ?? 0) >= 2);
+  const nestedBaseOffset = source.indexOf("base + 2") + 1;
+  assert.match(
+    hover(source, "nested-closure-captures.zs", nestedBaseOffset)?.contents.value ?? "",
+    /base: i32/,
+  );
+  const nestedBasePosition = positionForOffset(source, nestedBaseOffset - 1);
+  assert.ok(decodeSemanticTokens(
+    semanticTokens(source, "nested-closure-captures.zs").data,
+  ).some((token) => (
+    token.line === nestedBasePosition.line
+    && token.character === nestedBasePosition.character
+    && token.type === semanticTokenTypes.indexOf("variable")
+  )));
+
+  const directory = mkdtempSync("/tmp/z-nested-closure-captures-");
+  const fileName = resolve(directory, "main.zs");
+  writeFileSync(fileName, source);
+  const result = spawnSync(process.execPath, [cli, "run", fileName], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+
+  const immutable = source.replace("let total = 40;", "const total = 40;");
+  const immutableDiagnostic = diagnostics(immutable, "nested-closure-immutable.zs")[0];
+  assert.equal(immutableDiagnostic.code, "Z0210");
+  assert.match(immutableDiagnostic.message, /closure cannot mutate immutable capture "total"/);
 });
 
 test("checks closure parameters, block return types, and immutable captures", () => {
@@ -15550,8 +15605,13 @@ test("routes arbitrary-thread callbacks through named TaskScope ownership", () =
       const accepted = taskScope.schedule(
         thread.main,
         async move (): void => {
-          await delay(1);
-          presenter.publish(40);
+          const worker = thread.spawn(async move (): void => {
+            await delay(1);
+            await on thread.main {
+              presenter.publish(40);
+            }
+          });
+          await worker;
         }
       );
       await taskScope.close();

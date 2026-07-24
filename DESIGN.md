@@ -1028,6 +1028,15 @@ environment, including mutable captured state. The final release destroys
 captured fields in reverse order and frees the environment. Borrowing closures
 remain non-escaping and allocation-free.
 
+Capture discovery is lexical across nested closures. When an inner closure
+uses an outer binding, each intervening closure automatically forwards the
+capture with its inferred read or mutation capability. Source-level relay
+aliases are unnecessary. Forwarding does not erase a boundary: every
+intervening escaping closure must still own its environment, every native
+thread transfer must still pass transfer checking, and executor-bound identity
+remains unusable outside its placement. Closure parameters and locals shadow
+outer bindings before capture forwarding is computed.
+
 The bootstrap reference count is single-threaded, matching the first class ARC
 tier. Explicit weak values can now be captured to break class/closure cycles.
 Inferred single-parameter syntax, weak capture-list sugar, direct strong

@@ -3836,8 +3836,16 @@ function collectClosureCaptures(
       case "weak":
         walkExpression(expression.expression, localNames);
         return;
-      case "closure":
+      case "closure": {
+        const nestedNames = new Set(localNames);
+        for (const parameter of expression.parameters) nestedNames.add(parameter.name);
+        if (expression.body.kind === "block") {
+          walkStatements(expression.body.statements, nestedNames);
+        } else {
+          walkExpression(expression.body, nestedNames);
+        }
         return;
+      }
       case "call":
         if (expression.callee.kind === "member" && expression.callee.object.kind === "identifier") {
           const receiverType = outerLocals.get(expression.callee.object.name);
