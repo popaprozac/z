@@ -6347,6 +6347,8 @@ function emitFrameExpressionInner(
   const foreignConstant = plan.types.semanticInfo.foreignConstantNames.get(expression.location.offset);
   if (foreignConstant) return foreignConstant;
   switch (expression.kind) {
+    case "raw":
+      unsupported(fileName, expression.location, "raw native expressions are not executable in async frames yet");
     case "number":
       return expression.value;
     case "boolean":

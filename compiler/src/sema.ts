@@ -269,6 +269,16 @@ export type ExplicitCopyPlan = {
   readonly sourceIsView: boolean;
 };
 
+export type RawExpressionPlan = {
+  readonly returnType: string;
+  readonly expression: Extract<Expression, { kind: "raw" }>;
+  readonly captures: readonly {
+    readonly mode: "in" | "inout" | "out";
+    readonly name: string;
+    readonly type: string;
+  }[];
+};
+
 export type ObjCProtocolConformance = {
   readonly declaration: StructDeclaration;
   readonly protocols: readonly ForeignObjCProtocol[];
@@ -293,6 +303,7 @@ export type SemanticInfo = {
   readonly movedExpressions: ReadonlySet<number>;
   readonly managedCopies: ReadonlySet<number>;
   readonly explicitCopies: ReadonlyMap<number, ExplicitCopyPlan>;
+  readonly rawExpressions: ReadonlyMap<number, RawExpressionPlan>;
   readonly sliceConversions: ReadonlyMap<number, { readonly sourceType: string; readonly targetType: string }>;
   readonly foreignTypes: ReadonlyMap<string, ForeignPointerType>;
   readonly foreignCallTypes: ReadonlyMap<number, string>;
@@ -390,6 +401,7 @@ type AnalysisState = {
   readonly movedExpressions: Set<number>;
   readonly managedCopies: Set<number>;
   readonly explicitCopies: Map<number, ExplicitCopyPlan>;
+  readonly rawExpressions: Map<number, RawExpressionPlan>;
   readonly sliceConversions: Map<number, { readonly sourceType: string; readonly targetType: string }>;
   readonly foreignTypes: ReadonlyMap<string, ForeignPointerType>;
   readonly foreignCallTypes: Map<number, string>;
@@ -558,6 +570,27 @@ const borrowedPrefix = "__z_borrowed:";
 const callTargetPrefix = "__z_calltarget:";
 const swiftStringTypeName = "__z_swift:String";
 
+function collectRawNativeLanguages(program: Program): ReadonlySet<"c" | "cpp" | "objc"> {
+  const languages = new Set<"c" | "cpp" | "objc">();
+  const visit = (value: unknown): void => {
+    if (!value || typeof value !== "object") return;
+    if (Array.isArray(value)) {
+      for (const item of value) visit(item);
+      return;
+    }
+    const record = value as Record<string, unknown>;
+    if (
+      typeof record.source === "string"
+      && (record.language === "c" || record.language === "cpp" || record.language === "objc")
+    ) {
+      languages.add(record.language);
+    }
+    for (const nested of Object.values(record)) visit(nested);
+  };
+  visit(program);
+  return languages;
+}
+
 export function analyze(
   program: Program,
   fileName: string,
@@ -579,6 +612,9 @@ export function analyze(
   const frameworks = new Set<string>();
   let objectiveC = false;
   let cPlusPlus = false;
+  const rawLanguages = collectRawNativeLanguages(program);
+  if (rawLanguages.has("objc")) objectiveC = true;
+  if (rawLanguages.has("cpp")) cPlusPlus = true;
   for (const module of foreignModules.values()) {
     for (const [name, type] of module.types) foreignTypes.set(name, type);
     for (const type of module.namedTypes.values()) foreignNamedTypes.set(type.typeName, type);
@@ -687,6 +723,7 @@ export function analyze(
     movedExpressions: new Set(),
     managedCopies: new Set(),
     explicitCopies: new Map(),
+    rawExpressions: new Map(),
     sliceConversions: new Map(),
     foreignTypes,
     foreignCallTypes: new Map(),
@@ -1434,6 +1471,12 @@ function analyzeStructDeclaration(
       throw new DiagnosticError(fileName, method.location, `duplicate member ${JSON.stringify(method.name)} in ${declaration.kind} ${JSON.stringify(declaration.name)}`);
     }
     members.add(method.name);
+    if (method.rawBody) {
+      throw new DiagnosticError(fileName, method.rawBody.location, "raw native method bodies are deferred beyond the first raw interop tier", {
+        code: "Z0820",
+        helps: ["move the boundary into a module function and pass the receiver state explicitly"],
+      });
+    }
     if (method.static && method.receiverMode) {
       throw new DiagnosticError(fileName, method.location, "static methods cannot declare a `this` receiver");
     }
@@ -1762,6 +1805,23 @@ function validateFunctionSignature(
   fileName: string,
 ): void {
   validateType(declaration.returnType, structs, enums, foreignNamedTypes, fileName, true);
+  if (declaration.rawBody) {
+    if (declaration.async || declaration.errorType) {
+      throw new DiagnosticError(fileName, declaration.rawBody.location, "a raw native function body must be synchronous and non-throwing in the first tier", {
+        code: "Z0820",
+      });
+    }
+    if ((declaration.typeParameters?.length ?? 0) > 0) {
+      throw new DiagnosticError(fileName, declaration.rawBody.location, "a raw native function body cannot be generic in the first tier", {
+        code: "Z0820",
+        notes: ["the native body needs one concrete ABI signature"],
+      });
+    }
+    validateRawBoundaryType(declaration.returnType, true, foreignNamedTypes, foreignTypes, fileName);
+    for (const parameter of declaration.parameters) {
+      validateRawBoundaryType(parameter.type, false, foreignNamedTypes, foreignTypes, fileName);
+    }
+  }
   if (declaration.async && parseGeneratorType(declaration.returnType.name)) {
     throw new DiagnosticError(fileName, declaration.returnType.location, "an async generator must return AsyncGenerator<T>, not Generator<T>", {
       code: "Z0704",
@@ -1937,6 +1997,26 @@ function validateFunctionSignature(
   }
 }
 
+function validateRawBoundaryType(
+  type: TypeReference,
+  allowVoid: boolean,
+  foreignNamedTypes: ReadonlyMap<string, ForeignNamedType>,
+  foreignTypes: ReadonlyMap<string, ForeignPointerType>,
+  fileName: string,
+): void {
+  const supportedPrimitive = type.name === "boolean"
+    || type.name === "cstring"
+    || integerTypes.has(type.name)
+    || floatTypes.has(type.name)
+    || (allowVoid && type.name === "void");
+  if (supportedPrimitive || foreignNamedTypes.has(type.name) || foreignTypes.has(type.name)) return;
+  throw new DiagnosticError(fileName, type.location, `type ${JSON.stringify(displayArrayType(type.name))} cannot cross a raw native boundary in the first tier`, {
+    code: "Z0821",
+    notes: ["raw boundaries currently accept ABI-stable scalars, cstring, and imported native types"],
+    helps: ["keep Z-owned storage outside the block and expose an imported native representation through an adjacent .zd contract"],
+  });
+}
+
 function validateValueLayouts(
   structDeclarations: StructDeclaration[],
   enumDeclarations: EnumDeclaration[],
@@ -2056,6 +2136,13 @@ function analyzeFunction(
     const uninitialized = parameter.mode === "out" ? uninitializedPrefix : "";
     locals.set(parameter.name, `${uninitialized}${borrowed}${mutable}${parameter.type.name}`);
     state.bindingTypes.set(parameter.location.offset, parameter.type.name);
+  }
+
+  if (declaration.rawBody) {
+    state.activeReceiver = previousReceiver;
+    state.activeFunction = previousFunction;
+    state.executorContext = previousExecutorContext;
+    return;
   }
 
   const synchronousGenerator = isGeneratorFunction(declaration)
@@ -2219,6 +2306,11 @@ function analyzeConstructorInitialization(
       case "null":
       case "dynamicArrayExpression":
       case "argumentReference":
+        return;
+      case "raw":
+        for (const capture of expression.captures) {
+          checkExpression({ kind: "identifier", name: capture.name, location: capture.nameLocation }, initialized);
+        }
         return;
       case "template":
         for (const part of expression.parts) if (part.kind === "value") checkExpression(part.expression, initialized);
@@ -4004,6 +4096,11 @@ function collectClosureCaptures(
       case "null":
       case "dynamicArrayExpression":
         return;
+      case "raw":
+        for (const capture of expression.captures) {
+          record(capture.name, capture.nameLocation, capture.mode !== "in", localNames);
+        }
+        return;
       case "template":
         for (const part of expression.parts) {
           if (part.kind === "value") walkExpression(part.expression, localNames);
@@ -5525,6 +5622,88 @@ function inferExpressionInner(
       return "boolean";
     case "null":
       return "null";
+    case "raw": {
+      if (state.activeFunction?.async) {
+        throw new DiagnosticError(fileName, expression.location, "raw native expressions are not executable in async functions in the first tier", {
+          code: "Z0820",
+          notes: ["the native helper is synchronous, but async frame lowering does not compose with raw expressions yet"],
+        });
+      }
+      validateRawBoundaryType(expression.returnType, true, state.foreignNamedTypes, state.foreignTypes, fileName);
+      const captures: RawExpressionPlan["captures"][number][] = [];
+      const declared = new Map<string, typeof expression.captures[number]>();
+      for (const capture of expression.captures) {
+        const first = declared.get(capture.name);
+        if (first) {
+          throw new DiagnosticError(fileName, capture.nameLocation, `duplicate raw operand ${JSON.stringify(capture.name)}`, {
+            code: "Z0820",
+            labels: [{ location: first.nameLocation, message: "first operand is declared here", length: capture.name.length }],
+          });
+        }
+        const stored = locals.get(capture.name);
+        if (!stored) {
+          throw new DiagnosticError(fileName, capture.nameLocation, `unknown raw operand ${JSON.stringify(capture.name)}`, {
+            code: "Z0820",
+            helps: ["name a binding visible before the raw expression"],
+          });
+        }
+        const type = String(underlyingType(stored));
+        if (type === "unknown") {
+          throw new DiagnosticError(fileName, capture.nameLocation, `raw operand ${JSON.stringify(capture.name)} requires an explicit type`, {
+            code: "Z0821",
+            helps: [`add a type annotation to the \`let ${capture.name}\` declaration`],
+          });
+        }
+        validateRawBoundaryType({ name: type, location: capture.nameLocation }, false, state.foreignNamedTypes, state.foreignTypes, fileName);
+        if (type === "cstring" && capture.mode !== "in") {
+          throw new DiagnosticError(fileName, capture.nameLocation, "cstring is already a borrowed native string and only supports `in` at a raw boundary", {
+            code: "Z0821",
+            helps: ["use an imported writable native pointer type when native code must replace pointer storage"],
+          });
+        }
+        if (capture.mode !== "out" && initializationState(stored) !== "initialized") {
+          throw new DiagnosticError(fileName, capture.nameLocation, `${capture.mode} raw operand ${JSON.stringify(capture.name)} must be initialized before the native call`, {
+            code: "Z0303",
+          });
+        }
+        if (capture.mode !== "out" && ownershipState(stored) !== "available") {
+          throw movedValueError(fileName, { name: capture.name, location: capture.nameLocation }, state, ownershipState(stored) === "maybeMoved");
+        }
+        if (capture.mode !== "in" && !isMutableBinding(stored)) {
+          throw new DiagnosticError(fileName, capture.nameLocation, `${capture.mode} raw operand ${JSON.stringify(capture.name)} requires a mutable let binding`, {
+            code: capture.mode === "inout" ? "Z0301" : "Z0302",
+            helps: [`declare ${JSON.stringify(capture.name)} with \`let\``],
+          });
+        }
+        if (
+          capture.mode === "out"
+          && initializationState(stored) === "initialized"
+          && hasOwnershipType(type, structs, enums, state)
+        ) {
+          throw new DiagnosticError(fileName, capture.nameLocation, `out raw operand ${JSON.stringify(capture.name)} cannot overwrite an initialized owner`, {
+            code: "Z0302",
+            notes: ["raw native code cannot prove that the previous owner was destroyed before replacement"],
+            helps: ["use a fresh uninitialized let binding for the output"],
+          });
+        }
+        if (capture.mode === "inout" || capture.mode === "out") {
+          rejectOwnerMutationWhileViewed(capture.name, capture.nameLocation, fileName, state);
+        }
+        if (capture.mode === "out") {
+          locals.set(capture.name, initializedAvailableBinding(stored));
+          state.moveOrigins.delete(capture.name);
+        }
+        state.bindingTypes.set(capture.nameLocation.offset, type);
+        declared.set(capture.name, capture);
+        captures.push({ mode: capture.mode, name: capture.name, type });
+      }
+      state.rawExpressions.set(expression.location.offset, {
+        returnType: expression.returnType.name,
+        expression,
+        captures,
+      });
+      return expression.returnType.name;
+    }
     case "argumentReference":
       throw new DiagnosticError(
         fileName,

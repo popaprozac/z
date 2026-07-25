@@ -364,6 +364,13 @@
     },
     "keywords": {
       "patterns": [{
+        "name": "meta.embedded.native-language.z",
+        "match": "\\b(raw)\\s+(c|cpp|objc)\\b",
+        "captures": {
+          "1": { "name": "keyword.control.raw.z" },
+          "2": { "name": "support.language.native.z" }
+        }
+      }, {
         "name": "keyword.control.export.z",
         "match": "\\bexport\\b"
       }, {
@@ -386,7 +393,7 @@
         "match": "\\bmove(?=\\s*\\([^)]*\\)\\s*(?:(?::|throws\\b)[^=]*)?=>)"
       }, {
         "name": "keyword.control.z",
-        "match": "\\b(?:return|throws|throw|select|yield|try|attempt|match|if|else|while|for|of|break|continue|async|await|on|scope|deinit|constructor|unsafe|in|out|inout|view|weak|new|as|implements|module|type)\\b"
+        "match": "\\b(?:return|throws|throw|select|yield|try|attempt|match|if|else|while|for|of|break|continue|async|await|on|scope|deinit|constructor|unsafe|raw|in|out|inout|view|weak|new|as|implements|module|type)\\b"
       }, {
         "name": "storage.modifier.z",
         "match": "\\b(?:const|let|mut|weak|readonly|static|private|public)\\b"

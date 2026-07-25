@@ -23,6 +23,7 @@ import type {
   IntegerOperation,
   ObjCBindingPlan,
   ObjCProtocolConformance,
+  RawExpressionPlan,
   SemanticInfo,
 } from "./sema.ts";
 import {
@@ -486,6 +487,9 @@ export function generateC(program: Program, sourceName: string, semanticInfo: Se
   }
   for (const type of setTypes) {
     lines.push(generateSetRuntime(type, structs, enums, semanticInfo), "");
+  }
+  for (const plan of semanticInfo.rawExpressions.values()) {
+    lines.push(generateRawExpressionHelper(plan, sourceName, structs, enums, semanticInfo), "");
   }
 
   for (const declaration of program.structs) {
@@ -3243,6 +3247,13 @@ function generateFunction(
   if (!receiver && isGeneratorFunction(declaration)) {
     return generateGeneratorFunction(declaration, structs, enums, functions, semanticInfo);
   }
+  if (declaration.rawBody) {
+    const signature = generateFunctionSignature(declaration, structs, enums, receiver, semanticInfo.foreignNamedTypes);
+    const parameters = declaration.parameters.map((parameter) => `(void)${cBindingName(parameter.name)};`);
+    if (!receiver && declaration.name === "main") parameters.push("(void)argc;", "(void)argv;");
+    const prefix = parameters.length > 0 ? `${parameters.map((line) => `  ${line}`).join("\n")}\n` : "";
+    return `${signature} {\n${prefix}${generateRawBodySource(declaration.rawBody, declaration.rawBody.location.fileName ?? "<z-source>")}\n}`;
+  }
   const instanceReceiver = receiver && !declaration.static ? receiver : null;
   const localTypes = new Map(declaration.parameters.map((parameter) => [parameter.name, parameter.type.name]));
   if (instanceReceiver) localTypes.set("this", instanceReceiver.name);
@@ -3324,6 +3335,54 @@ function generateFunction(
     return `${signature} {\n  @autoreleasepool {\n${indent(body, 2)}\n  }\n}`;
   }
   return `${signature} {\n${body}\n}`;
+}
+
+function rawExpressionHelperName(offset: number): string {
+  return `_z_raw_expression_${offset}`;
+}
+
+function generateRawExpressionHelper(
+  plan: RawExpressionPlan,
+  sourceName: string,
+  structs: Map<string, StructDeclaration>,
+  enums: Map<string, EnumDeclaration>,
+  semanticInfo: SemanticInfo,
+): string {
+  const result = mapType(plan.returnType, structs, enums, semanticInfo.foreignNamedTypes);
+  const parameters = plan.captures.map((capture) => (
+    generateRawBoundaryParameter(capture, structs, enums, semanticInfo)
+  ));
+  const signature = `static ${result} ${rawExpressionHelperName(plan.expression.location.offset)}(${parameters.join(", ") || "void"})`;
+  const unused = plan.captures.map((capture) => `  (void)${cBindingName(capture.name)};`).join("\n");
+  return `${signature} {\n${unused}${unused ? "\n" : ""}${generateRawBodySource(plan.expression.body, sourceName)}\n}`;
+}
+
+function generateRawBoundaryParameter(
+  capture: RawExpressionPlan["captures"][number],
+  structs: Map<string, StructDeclaration>,
+  enums: Map<string, EnumDeclaration>,
+  semanticInfo: SemanticInfo,
+): string {
+  const name = cBindingName(capture.name);
+  const type = mapType(capture.type, structs, enums, semanticInfo.foreignNamedTypes);
+  if (capture.mode === "in") {
+    const nativeReference = capture.type === "cstring"
+      || semanticInfo.foreignTypes.has(capture.type)
+      || semanticInfo.foreignNamedTypes.get(capture.type)?.kind === "object";
+    return nativeReference ? `${type} ${name}` : `const ${type} *${name}`;
+  }
+  return `${type} *${name}`;
+}
+
+function generateRawBodySource(
+  body: NonNullable<FunctionDeclaration["rawBody"]>,
+  fallbackSourceName: string,
+): string {
+  const fileName = body.location.fileName ?? fallbackSourceName;
+  const firstLinePadding = " ".repeat(Math.max(0, body.location.column - 1));
+  return `#line ${body.location.line} ${JSON.stringify(fileName)}\n`
+    + `${firstLinePadding}${body.source}\n`
+    + '#line 1 "<z-generated>"';
 }
 
 function generateDeinit(
@@ -6003,6 +6062,31 @@ function generateExpression(expression: Expression, context: GenerationContext):
   return value;
 }
 
+function generateRawExpressionCall(
+  expression: Extract<Expression, { kind: "raw" }>,
+  context: GenerationContext,
+): string {
+  const plan = context.semanticInfo.rawExpressions.get(expression.location.offset);
+  if (!plan) throw new Error(`missing raw expression plan at ${expression.location.offset}`);
+  const arguments_ = plan.captures.map((capture) => {
+    const value = generateStoredValue(capture.name, context);
+    const nativeReference = capture.type === "cstring"
+      || context.semanticInfo.foreignTypes.has(capture.type)
+      || context.semanticInfo.foreignNamedTypes.get(capture.type)?.kind === "object";
+    return capture.mode === "in" && nativeReference ? value : `&(${value})`;
+  });
+  const call = `${rawExpressionHelperName(expression.location.offset)}(${arguments_.join(", ") || ""})`;
+  const initializedFlags = plan.captures
+    .filter((capture) => capture.mode === "out")
+    .flatMap((capture) => {
+      const flag = context.liveFlags.get(capture.name);
+      return flag ? [`${flag} = true`] : [];
+    });
+  return initializedFlags.length > 0
+    ? `(${initializedFlags.join(", ")}, ${call})`
+    : call;
+}
+
 function generateExpressionInner(expression: Expression, context: GenerationContext): string {
   switch (expression.kind) {
     case "number":
@@ -6024,6 +6108,8 @@ function generateExpressionInner(expression: Expression, context: GenerationCont
       return expression.value ? "true" : "false";
     case "null":
       return "NULL";
+    case "raw":
+      return generateRawExpressionCall(expression, context);
     case "argumentReference":
       if (expression.name === "this") return context.owner.receiverMode === "move" ? "&(self)" : "self";
       if (parseSliceType(context.localTypes.get(expression.name) ?? "")) return cBindingName(expression.name);
@@ -7531,6 +7617,8 @@ function inferExpressionType(expression: Expression, context: GenerationContext)
     case "boolean":
     case "null":
       return expression.kind === "null" ? "null" : "boolean";
+    case "raw":
+      return expression.returnType.name;
     case "unary":
       return context.semanticInfo.expressionTypes.get(expression.location.offset)
         ?? (expression.operator === "!" ? "boolean" : inferExpressionType(expression.operand, context));

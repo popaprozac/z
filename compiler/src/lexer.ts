@@ -88,6 +88,7 @@ export type TokenKind =
   | "star"
   | "slash"
   | "percent"
+  | "rawBody"
   | "eof";
 
 export type Token = {
@@ -153,6 +154,7 @@ export function lex(
   let offset = 0;
   let line = base.line;
   let column = base.column;
+  let rawHeaderState: "none" | "language" | "body" = "none";
 
   const location = (): SourceLocation => ({ offset: base.offset + offset, line, column, fileName });
   const peek = (distance = 0): string => source[offset + distance] ?? "\0";
@@ -304,6 +306,11 @@ export function lex(
       let text = "";
       while (/[A-Za-z0-9_]/.test(peek())) text += advance();
       tokens.push({ kind: keywords.get(text) ?? "identifier", text, location: start });
+      if (rawHeaderState === "none" && text === "raw") {
+        rawHeaderState = "language";
+      } else if (rawHeaderState === "language") {
+        rawHeaderState = text === "c" || text === "cpp" || text === "objc" ? "body" : "none";
+      }
       continue;
     }
 
@@ -409,8 +416,72 @@ export function lex(
     }
     const kind = punctuation[character];
     if (kind) {
+      if (kind === "leftBrace" && rawHeaderState === "body") {
+        advance();
+        tokens.push({ kind: "leftBrace", text: "{", location: start });
+        const bodyStart = location();
+        const bodyOffset = offset;
+        let depth = 0;
+        let quote: '"' | "'" | null = null;
+        while (true) {
+          const current = peek();
+          if (current === "\0") {
+            throw new DiagnosticError(fileName, start, "unterminated raw native body");
+          }
+          if (quote) {
+            if (current === "\\") {
+              advance();
+              if (peek() !== "\0") advance();
+              continue;
+            }
+            if (current === quote) quote = null;
+            advance();
+            continue;
+          }
+          if (current === '"' || current === "'") {
+            quote = current;
+            advance();
+            continue;
+          }
+          if (current === "/" && peek(1) === "/") {
+            while (peek() !== "\n" && peek() !== "\0") advance();
+            continue;
+          }
+          if (current === "/" && peek(1) === "*") {
+            const commentStart = location();
+            advance();
+            advance();
+            while (peek() !== "\0" && !(peek() === "*" && peek(1) === "/")) advance();
+            if (peek() === "\0") {
+              throw new DiagnosticError(fileName, commentStart, "unterminated block comment in raw native body");
+            }
+            advance();
+            advance();
+            continue;
+          }
+          if (current === "{") {
+            depth += 1;
+            advance();
+            continue;
+          }
+          if (current === "}") {
+            if (depth === 0) break;
+            depth -= 1;
+            advance();
+            continue;
+          }
+          advance();
+        }
+        tokens.push({ kind: "rawBody", text: source.slice(bodyOffset, offset), location: bodyStart });
+        const end = location();
+        advance();
+        tokens.push({ kind: "rightBrace", text: "}", location: end });
+        rawHeaderState = "none";
+        continue;
+      }
       advance();
       tokens.push({ kind, text: character, location: start });
+      if (kind === "semicolon") rawHeaderState = "none";
       continue;
     }
 

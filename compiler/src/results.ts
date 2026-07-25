@@ -355,6 +355,7 @@ function collectClosureResults(
       case "identifier":
       case "dynamicArrayExpression":
       case "argumentReference":
+      case "raw":
         break;
     }
   };

@@ -265,6 +265,39 @@ adjacent `<header>.zd` Z declaration files, and built-in toolchain contracts
 feed the same normalizer and FIIR. `.zd` is the sole project-authored foreign
 contract format.
 
+Raw native source is the final escape hatch when an API cannot be represented
+as a Z call even with `.zd` facts. The anonymous form is an immediately applied
+generated helper, never an inline statement expression:
+
+```z
+const status = raw c
+  using (in input, inout state, out result)
+  : i32 {
+    *result = native_operation(input, state);
+    return *result;
+  };
+```
+
+The helper boundary makes native `return` local, prevents access to undeclared
+lexical Z values, and preserves enclosing Z cleanup. `out` initializes its
+mutable Z binding on successful helper return. Tier 1 accepts only ABI-stable
+scalars, `cstring`, and imported native types; `move` operands and Z-owned
+representations are rejected.
+
+A whole function can use native source without repeating its declared
+contract:
+
+```z
+function nativeCount(input: i32): i32 = raw cpp {
+  return static_cast<int32_t>(input);
+}
+```
+
+`raw objc` may be combined with `on thread.main`. Async, throwing, generic, and
+method raw bodies remain outside the first tier. Clang diagnostics are mapped
+back to the raw source location. Prefer header imports and `.zd`; raw code
+receives no Z safety proof inside the body.
+
 The first `.zd` slice augments Clang declarations without repeating their ABI
 types. `_` means "use the header-derived type," while ordinary Z capabilities,
 nullability, and `deinit` describe the missing safety facts:

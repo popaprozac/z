@@ -1474,6 +1474,42 @@ nullability, lifetime, callback retention, threading, and async behavior.
 Those facts normalize through the
 [`Foreign Interface IR`](foreign-interface-ir.md) before semantic checking.
 
+### Raw native source
+
+Use raw source only when header import plus `.zd` cannot represent the native
+operation. A standalone raw expression must declare every Z operand and its
+result:
+
+```z
+const value = raw c
+  using (in input, inout state, out output)
+  : i32 {
+    *state += *input;
+    *output = *state;
+    return *output;
+  };
+```
+
+`in` permits reads, `inout` permits reads and replacement, and `out` must
+initialize a mutable binding without relying on its prior value. The compiler
+lowers the expression to an isolated helper function, so native `return` cannot
+return from the enclosing Z function or bypass its cleanup. Nothing outside
+`using` is visible to the native body.
+
+When the whole function is native, its ordinary signature is the boundary:
+
+```z
+function add(left: i32, right: i32): i32 = raw c {
+  return left + right;
+}
+```
+
+The supported language tags are `c`, `cpp`, and `objc`. A raw function may
+retain an `on thread.main` declaration. The first tier rejects `async`,
+`throws`, generics, raw methods, `move` operands, and Z-owned representations.
+Boundary types are currently ABI-stable scalars, `cstring`, and imported native
+types. Native compile errors point to the original `.zs` body.
+
 A project may explicitly configure `target.platform` and
 `target.minimumVersion` together in `z.json`. The target is compile-time project
 configuration, not a nullable runtime global. Native declarations introduced

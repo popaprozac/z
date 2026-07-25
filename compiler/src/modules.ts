@@ -574,6 +574,11 @@ function transformExpression(
     case "boolean":
     case "null":
       return expression;
+    case "raw":
+      return {
+        ...expression,
+        returnType: renameTypeReference(expression.returnType, scope, typeParameters),
+      };
     case "identifier": {
       if (locals.has(expression.name)) return expression;
       if (scope.namespaces.has(expression.name)) {

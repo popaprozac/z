@@ -117,7 +117,23 @@ export type FunctionDeclaration = {
   readonly executorAffinity?: ExecutorAffinity;
   /** Objective-C selector exported by a protocol-conforming class method. */
   readonly nativeSelector?: string | null;
+  readonly rawBody?: RawNativeBody | null;
   readonly body: Statement[];
+  readonly location: SourceLocation;
+};
+
+export type RawNativeLanguage = "c" | "cpp" | "objc";
+
+export type RawNativeBody = {
+  readonly language: RawNativeLanguage;
+  readonly source: string;
+  readonly location: SourceLocation;
+};
+
+export type RawCapture = {
+  readonly mode: "in" | "inout" | "out";
+  readonly name: string;
+  readonly nameLocation: SourceLocation;
   readonly location: SourceLocation;
 };
 
@@ -331,6 +347,7 @@ export type Expression =
   | IfExpression
   | WhileExpression
   | ForExpression
+  | RawExpression
   | ArgumentReferenceExpression;
 
 export type NumberExpression = {
@@ -566,5 +583,14 @@ export type ArgumentReferenceExpression = {
   readonly access: "out" | "inout";
   readonly name: string;
   readonly nameLocation: SourceLocation;
+  readonly location: SourceLocation;
+};
+
+export type RawExpression = {
+  readonly kind: "raw";
+  readonly language: RawNativeLanguage;
+  readonly captures: RawCapture[];
+  readonly returnType: TypeReference;
+  readonly body: RawNativeBody;
   readonly location: SourceLocation;
 };

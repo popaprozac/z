@@ -104,7 +104,7 @@ const sourceKeywordTokens = [
   "function", "if", "implements", "import", "in", "inout", "let", "match", "module",
   "copy", "move", "mut", "new", "of", "on", "out", "private", "public", "return", "scope", "select",
   "readonly", "static", "struct", "task", "throw", "throws", "trait", "type", "try", "unsafe", "view",
-  "using", "weak", "while", "yield",
+  "using", "weak", "while", "yield", "raw",
 ] as const;
 
 const primitiveTypeTokens = [
@@ -192,24 +192,44 @@ export function completions(source: string, fileName: string, offset: number): C
   const selectiveImport = selectiveImportCompletions(source, fileName, offset);
   if (selectiveImport) return selectiveImport;
   const before = source.slice(0, offset);
+  const rawLanguage = /\braw\s+([A-Za-z_]*)$/.exec(before);
+  if (rawLanguage) {
+    return filterCompletions(
+      ["c", "cpp", "objc"].map((label) => ({
+        label,
+        kind: completionKinds.keyword,
+        detail: `${label === "cpp" ? "C++" : label === "objc" ? "Objective-C" : "C"} native source body`,
+        sortText: `0-${label}`,
+      })),
+      rawLanguage[1],
+      3,
+    );
+  }
   if (/\busing\s*\([^)]*$/.test(before)) {
+    const rawBoundary = /\braw\s+(?:c|cpp|objc)\s+using\s*\([^)]*$/.test(before);
     const symbols = symbolCompletions(source, fileName, offset, true);
     const capabilities: CompletionItem[] = [
       {
         label: "in",
         kind: completionKinds.keyword,
-        detail: "read-only executor capture loan",
+        detail: rawBoundary ? "read-only raw native operand" : "read-only executor capture loan",
         insertText: "in ",
         sortText: "0-in",
       },
       {
         label: "inout",
         kind: completionKinds.keyword,
-        detail: "exclusive mutable executor capture loan",
+        detail: rawBoundary ? "read/write raw native operand" : "exclusive mutable executor capture loan",
         insertText: "inout ",
         sortText: "0-inout",
       },
-      {
+      rawBoundary ? {
+        label: "out",
+        kind: completionKinds.keyword,
+        detail: "write-only raw native output; initializes caller storage",
+        insertText: "out ",
+        sortText: "0-out",
+      } : {
         label: "move",
         kind: completionKinds.keyword,
         detail: "transfer unique ownership into executor placement",
@@ -217,7 +237,10 @@ export function completions(source: string, fileName: string, offset: number): C
         sortText: "0-move",
       },
     ];
-    return [...capabilities, ...symbols];
+    return [
+      ...capabilities,
+      ...symbols.filter((item) => !["in", "inout", "out", "move"].includes(item.label)),
+    ];
   }
   const member = before.match(/([A-Za-z_][A-Za-z0-9_]*(?:<[^<>]+>)?(?:\.[A-Za-z_][A-Za-z0-9_]*)*)\.([A-Za-z_][A-Za-z0-9_]*)?$/);
   if (member) return memberCompletions(source, fileName, offset, member[1], member[2] ?? "");
@@ -565,6 +588,14 @@ export function hover(source: string, fileName: string, offset: number): Hover |
   if (word.text === "Option") {
     return markdownHover("compiler-provided enum Option<T>", source, word.start, word.end);
   }
+  if (word.text === "raw") {
+    return markdownHover(
+      "raw c | raw cpp | raw objc  // isolated native-source boundary; prefer checked header import plus .zd when representable",
+      source,
+      word.start,
+      word.end,
+    );
+  }
   if (word.text === "yield") {
     const memberPrefix = source.slice(0, word.start).match(/([A-Za-z_][A-Za-z0-9_]*)\.$/)?.[1];
     if (memberPrefix && context.semanticInfo.standardModuleBindings.get(memberPrefix) === "scheduler") {
@@ -590,12 +621,43 @@ export function hover(source: string, fileName: string, offset: number): Hover |
 
   if (
     word.text === "using"
+    && /\braw\s+(?:c|cpp|objc)\s+$/.test(
+      source.slice(Math.max(0, word.start - 96), word.start),
+    )
+  ) {
+    return markdownHover(
+      "using (in input, inout state, out result)  // complete operand contract for an anonymous raw helper",
+      source,
+      word.start,
+      word.end,
+    );
+  }
+  if (
+    word.text === "using"
     && /\b(?:await|task)\s+on\s+[A-Za-z_][A-Za-z0-9_.]*\s+$/.test(
       source.slice(Math.max(0, word.start - 96), word.start),
     )
   ) {
     return markdownHover(
       "using (in value, inout state, move owner)  // explicit lexical capture contract for an executor-placement block",
+      source,
+      word.start,
+      word.end,
+    );
+  }
+  if (
+    (word.text === "in" || word.text === "inout" || word.text === "out")
+    && /\braw\s+(?:c|cpp|objc)\s+using\s*\([^)]*$/.test(
+      source.slice(Math.max(0, word.start - 200), word.start),
+    )
+  ) {
+    const detail = word.text === "in"
+      ? "native code may read but not replace caller storage"
+      : word.text === "inout"
+        ? "native code may read and replace mutable caller storage"
+        : "native code must initialize mutable caller storage without reading its prior value";
+    return markdownHover(
+      `${word.text} raw operand  // ${detail}`,
       source,
       word.start,
       word.end,

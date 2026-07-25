@@ -527,6 +527,8 @@ export function inferGenericCalls(
         return { expression, type: "boolean" };
       case "null":
         return { expression, type: "null" };
+      case "raw":
+        return { expression, type: expression.returnType.name };
       case "identifier":
         const genericIdentifier = parseGenericType(expression.name);
         return {

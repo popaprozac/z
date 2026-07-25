@@ -2063,12 +2063,57 @@ Z's intended foreign boundary has three explicit trust tiers:
    ABI authority and Z enforces the added ownership and lifetime contract.
 2. A future `unsafe { ... }` block permits otherwise unsupported native calls
    while retaining Z expression syntax, but gives up the missing static proof.
-3. A future `raw c`, `raw cpp`, or `raw objc` block embeds foreign source for
-   APIs that cannot be expressed through Z calls. Captured Z values must cross
-   through an explicit `using (in ... / inout ... / move ...)` contract.
+3. `raw c`, `raw cpp`, or `raw objc` embeds foreign source for APIs that cannot
+   be expressed through Z calls. It escapes Z's type system rather than merely
+   accepting an unverified Z proof.
 
-The latter two are escape hatches, not substitutes for extending FIIR and
-`.zd`. Their exact grammar will be reviewed before implementation.
+The first raw tier has two forms. An anonymous expression declares its entire
+operand and result contract:
+
+```z
+const result = raw c
+  using (in input, inout state, out output)
+  : i32 {
+    return native_operation(input, state, output);
+  };
+```
+
+The compiler lowers this to an isolated generated helper. Native `return`
+therefore returns from the helper and cannot skip cleanup in the enclosing Z
+function. The raw body cannot reach lexical Z values omitted from `using`.
+`in`, `inout`, and `out` have the same storage meaning planned for inline
+assembly: read-only access, read/write access, and definite initialization
+without reading the prior value. Tier 1 deliberately omits `move`; relinquishing
+a cleanup-bearing owner to unverifiable native source needs a separate,
+explicit destruction contract.
+
+A named function places the boundary in its ordinary signature, so it does not
+repeat `using` or the result type:
+
+```z
+function operation(in input: i32, out output: i32): i32 = raw c {
+  *output = *input;
+  return *output;
+}
+```
+
+`= raw c` replaces the function body; it is not a general expression-bodied
+function precedent. A declaration may retain `on thread.main`, since executor
+affinity is a checked header contract and is useful for raw Objective-C.
+`async`, `throws`, generic raw functions, and raw method bodies are rejected in
+the first tier. Anonymous raw expressions are likewise synchronous.
+
+Raw boundaries initially admit ABI-stable integer, floating-point, boolean,
+`cstring`, and imported native types. Z-owned String, collection, ARC, region,
+view, and generated Result representations are rejected rather than exposing
+unstable names such as generated structs or liveness flags. `#line` mapping
+returns native diagnostics to the original `.zs` body. Rich embedded-language
+completion remains later editor work.
+
+The latter two tiers are escape hatches, not substitutes for extending FIIR and
+`.zd`. `unsafe` remains the next interop tier: it should reuse `.zd` facts
+inline while keeping Z syntax and types, rather than becoming raw source under
+a second spelling.
 
 Over time, Clang attributes, Apple's API notes, Windows SAL
 annotations, package metadata, and generated bindings should populate the same

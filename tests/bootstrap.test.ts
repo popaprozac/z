@@ -44,6 +44,127 @@ test("emits functions and direct imported C calls", () => {
   assert.doesNotMatch(generated, /stdio\.puts/);
 });
 
+test("lowers raw native expressions through isolated helpers and supports raw function bodies", () => {
+  const example = resolve(projectRoot, "examples/interop/raw/native-boundary.zs");
+  const source = readFileSync(example, "utf8");
+  const artifact = compileToNative(source, example);
+  assert.equal(artifact.language, "c");
+  assert.match(artifact.source, /static int32_t _z_raw_expression_/);
+  assert.match(artifact.source, /const int32_t \*left, int32_t \*right, int32_t \*output/);
+  assert.match(artifact.source, /#line 15 .*native-boundary\.zs/);
+  assert.match(artifact.source, /static int32_t add\(int32_t left, int32_t right\)/);
+
+  const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+});
+
+test("checks raw native boundary capabilities and supported representations", () => {
+  const moved = `
+    function main(): i32 {
+      const value: i32 = 42;
+      return raw c using (move value): i32 { return value; };
+    }
+  `;
+  assert.throws(
+    () => compileToNative(moved, "raw-move.zs"),
+    /raw operands require `in`, `inout`, or `out`/,
+  );
+
+  const immutableOutput = `
+    function main(): i32 {
+      const value: i32 = 0;
+      return raw c using (out value): i32 { *value = 42; return *value; };
+    }
+  `;
+  assert.throws(
+    () => compileToNative(immutableOutput, "raw-out.zs"),
+    /out raw operand "value" requires a mutable let binding/,
+  );
+
+  const unsupported = `
+    function main(): i32 {
+      const value = "owned";
+      return raw c using (in value): i32 { return 0; };
+    }
+  `;
+  assert.throws(
+    () => compileToNative(unsupported, "raw-owned.zs"),
+    /type "String" cannot cross a raw native boundary/,
+  );
+
+  const throwing = `
+    struct NativeError { code: i32; }
+    function operation(): i32 throws NativeError = raw c { return 42; }
+    function main(): i32 { return 0; }
+  `;
+  assert.throws(
+    () => compileToNative(throwing, "raw-throws.zs"),
+    /raw native function body must be synchronous and non-throwing/,
+  );
+});
+
+test("provides raw-boundary completion, hover, and syntax highlighting vocabulary", () => {
+  const source = `
+    function main(): i32 {
+      const input: i32 = 42;
+      let output: i32;
+      return raw c using (in input, out output): i32 {
+        *output = *input;
+        return *output;
+      };
+    }
+  `;
+  const rawOffset = source.indexOf("raw c") + 1;
+  assert.match(hover(source, "raw-editor.zs", rawOffset)?.contents.value ?? "", /isolated native-source boundary/);
+  const usingOffset = source.indexOf("using") + 1;
+  assert.match(hover(source, "raw-editor.zs", usingOffset)?.contents.value ?? "", /complete operand contract/);
+  const outOffset = source.indexOf("out output") + 1;
+  assert.match(hover(source, "raw-editor.zs", outOffset)?.contents.value ?? "", /must initialize mutable caller storage/);
+
+  const languageSource = "function operation(): i32 = raw cp";
+  const languages = completions(languageSource, "raw-editor.zs", languageSource.length);
+  assert.deepEqual(languages.map((item) => item.label), ["cpp"]);
+
+  const operandOffset = source.indexOf("in input");
+  const operands = completions(source, "raw-editor.zs", operandOffset);
+  assert.match(operands.find((item) => item.label === "in")?.detail ?? "", /raw native operand/);
+  assert.match(operands.find((item) => item.label === "out")?.detail ?? "", /initializes caller storage/);
+  assert.equal(operands.some((item) => item.label === "move"), false);
+  assert.ok(operands.some((item) => item.label === "input"));
+
+  const grammar = readFileSync(resolve(projectRoot, "editors/vscode/syntaxes/z.tmLanguage.json"), "utf8");
+  assert.ok(grammar.includes("keyword.control.raw.z"));
+  assert.ok(grammar.includes("(c|cpp|objc)"));
+});
+
+test("selects native dialects for raw bodies and preserves executor affinity", () => {
+  const cpp = `
+    function operation(): i32 = raw cpp {
+      return static_cast<int32_t>(42);
+    }
+    function main(): i32 { return operation() - 42; }
+  `;
+  assert.equal(compileToNative(cpp, "raw-cpp.zs").language, "c++");
+
+  const objc = `
+    import { thread } from "std/thread";
+    function operation(): i32 on thread.main = raw objc {
+      return 42;
+    }
+    function main(): i32 { return operation() - 42; }
+  `;
+  assert.equal(compileToNative(objc, "raw-objc.zs").language, "objective-c");
+});
+
+test("maps native raw-body diagnostics back to Z source", () => {
+  const fixture = resolve(projectRoot, "tests/fixtures/raw-native-error.zs");
+  const result = spawnSync(process.execPath, [cli, "run", fixture], { encoding: "utf8" });
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /raw-native-error\.zs:3:/);
+  assert.match(result.stderr, /native_name_that_does_not_exist/);
+  assert.doesNotMatch(result.stderr, /\.z-cache\/raw-native-error/);
+});
+
 test("selectively imports C functions with optional local aliases", () => {
   const example = resolve(projectRoot, "examples/interop/c/selective-import.zs");
   const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });

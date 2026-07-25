@@ -332,6 +332,66 @@ export function parse(tokens: Token[], fileName: string): Program {
     return { names, constraints };
   };
 
+  const parseRawLanguageAndBody = (): {
+    language: "c" | "cpp" | "objc";
+    body: NonNullable<FunctionDeclaration["rawBody"]>;
+  } => {
+    const language = expect("identifier", "`c`, `cpp`, or `objc` after `raw`");
+    if (language.text !== "c" && language.text !== "cpp" && language.text !== "objc") {
+      throw new DiagnosticError(fileName, language.location, "raw native language must be `c`, `cpp`, or `objc`");
+    }
+    expect("leftBrace", "`{` starting a raw native body");
+    const body = expect("rawBody", "raw native source");
+    expect("rightBrace", "`}` ending a raw native body");
+    return {
+      language: language.text,
+      body: { language: language.text, source: body.text, location: body.location },
+    };
+  };
+
+  const parseRawExpression = (): Expression => {
+    const raw = expect("identifier", "`raw`");
+    const language = expect("identifier", "`c`, `cpp`, or `objc` after `raw`");
+    if (language.text !== "c" && language.text !== "cpp" && language.text !== "objc") {
+      throw new DiagnosticError(fileName, language.location, "raw native language must be `c`, `cpp`, or `objc`");
+    }
+    const using = expect("identifier", "`using` after the raw native language");
+    if (using.text !== "using") {
+      throw new DiagnosticError(fileName, using.location, "a raw expression requires an explicit `using` boundary");
+    }
+    expect("leftParen", "`(` after `using`");
+    const captures = [];
+    if (!at("rightParen")) {
+      do {
+        const capability = at("in") || at("inout") || at("out") ? take() : null;
+        if (!capability) {
+          throw new DiagnosticError(fileName, peek().location, "raw operands require `in`, `inout`, or `out`");
+        }
+        const name = expect("identifier", "a captured binding name");
+        captures.push({
+          mode: capability.text as "in" | "inout" | "out",
+          name: name.text,
+          nameLocation: name.location,
+          location: capability.location,
+        });
+      } while (match("comma"));
+    }
+    expect("rightParen", "`)` after raw captures");
+    expect("colon", "`:` before a raw expression result type");
+    const returnType = parseType();
+    expect("leftBrace", "`{` starting a raw native body");
+    const body = expect("rawBody", "raw native source");
+    expect("rightBrace", "`}` ending a raw native body");
+    return {
+      kind: "raw",
+      language: language.text,
+      captures,
+      returnType,
+      body: { language: language.text, source: body.text, location: body.location },
+      location: raw.location,
+    };
+  };
+
   const parsePrimary = (): Expression => {
     const closureCheckpoint = current;
     const closureAsync = match("async");
@@ -389,6 +449,14 @@ export function parse(tokens: Token[], fileName: string): Program {
       }
       expect("rightParen", "`)` after a class initializer");
       return { kind: "new", typeName: type.name, arguments: arguments_, argumentLabels, location: token.location };
+    }
+    if (
+      at("identifier")
+      && peek().text === "raw"
+      && tokens[current + 1]?.kind === "identifier"
+      && ["c", "cpp", "objc"].includes(tokens[current + 1].text)
+    ) {
+      return parseRawExpression();
     }
     if (match("templateStart")) {
       const token = previous();
@@ -919,8 +987,15 @@ export function parse(tokens: Token[], fileName: string): Program {
       ? expect("string", "an Objective-C selector string after `as`").text
       : null;
     const body: Statement[] = [];
+    let rawBody: FunctionDeclaration["rawBody"] = null;
     if (signatureOnly) {
       expect("semicolon", "`;`");
+    } else if (match("equal")) {
+      const raw = expect("identifier", "`raw` after `=`");
+      if (raw.text !== "raw") {
+        throw new DiagnosticError(fileName, raw.location, "a native function body must use `= raw c`, `= raw cpp`, or `= raw objc`");
+      }
+      rawBody = parseRawLanguageAndBody().body;
     } else {
       expect("leftBrace", "`{`");
       while (!at("rightBrace") && !at("eof")) body.push(parseStatement());
@@ -938,6 +1013,7 @@ export function parse(tokens: Token[], fileName: string): Program {
       errorType,
       executorAffinity,
       nativeSelector,
+      rawBody,
       body,
       location: start,
     };

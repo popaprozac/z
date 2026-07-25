@@ -61,6 +61,7 @@ bun run z run examples/language/control-flow/result.zs
 | --- | --- | --- |
 | Selective C import | [`selective-import.zs`](../examples/interop/c/selective-import.zs) | Header declarations with local aliases |
 | C records and enums | [`foreign-types.zs`](../examples/interop/c/foreign-types.zs) | Native layouts and constants |
+| Raw native boundary | [`native-boundary.zs`](../examples/interop/raw/native-boundary.zs) | Isolated anonymous C helper with `in` / `inout` / `out`, definite output initialization, and a whole-function `= raw c` body |
 | C pointers | [`foreign-pointers.zs`](../examples/interop/c/foreign-pointers.zs), [`foreign-handle.zs`](../examples/interop/c/foreign-handle.zs) | Borrowed and owned `.zd` contracts |
 | Z declaration contract | [`declared-handle.zs`](../examples/interop/c/declared-handle.zs), [`declared-handle.h.zd`](../examples/interop/c/declared-handle.h.zd) | Adjacent `.zd` capabilities, niche-backed `Option.fromNullable`, borrowed/consuming match, and `deinit` release |
 | C callbacks | [`callbacks.zs`](../examples/interop/c/callbacks.zs), [`callbacks.h.zd`](../examples/interop/c/callbacks.h.zd) | `.zd` call-only borrowing plus escaping ownership, named context/release pairing, and caller-thread guarantees |
