@@ -51,22 +51,12 @@ const work = task on thread.pool { /* future shared compute target */ };
 application executors remain library capabilities; the language grammar depends
 only on the expression after `on` having an executor-capability type.
 
-## Three execution forms
+## Two execution forms
 
-### Synchronous placement proof
-
-```z
-const title = on thread.main {
-  select window.title;
-};
-```
-
-This form does not schedule or suspend. It compiles only when the surrounding
-context is statically proven to execute on `main`. The block evaluates directly
-to its selected value.
-
-Using it from an unproven context is a compile error with guidance to use
-`await on thread.main` or `task on thread.main`.
+Executor proof comes from the enclosing declaration or placement. Code already
+running under a declaration such as `function title(): String on thread.main`
+accesses main-isolated state directly; Z deliberately has no subjectless
+`on thread.main { ... }` proof block.
 
 ### Hop, wait, and receive a value
 
@@ -81,9 +71,9 @@ task, and resumes with the block's selected value. It does not expose a task
 handle because the operation is immediately awaited.
 
 If the current task is already proven to run on `main`, the implementation may
-take a zero-hop fast path. `await on thread.main` does not promise an event-loop yield;
-a future explicit operation such as `await main.yield()` should express that
-request.
+take a zero-hop fast path. `await on thread.main` does not promise an event-loop
+yield; `await scheduler.yield()` explicitly cooperates with the current
+executor instead.
 
 While execution remains lexically inside an `on thread.main` region, continuations
 after nested suspension resume on `main` unless the source explicitly selects
@@ -115,9 +105,8 @@ The expression has type `Task<T>` or `Task<T, E>`. The parent continues without
 waiting, while the enclosing structured scope retains responsibility for
 joining or cancelling the child.
 
-`task on thread.main` preserves a concurrency boundary even when the caller already
-runs on `main`; it follows ordinary `task` scheduling rather than becoming the
-synchronous assertion form.
+`task on thread.main` preserves a concurrency boundary even when the caller
+already runs on `main`; it follows ordinary `task` scheduling.
 
 ## Block contracts and type transformation
 
@@ -139,7 +128,6 @@ outer expression type:
 
 | Form | Expression type |
 |---|---|
-| `try on thread.main: T throws E { ... }` | `T` |
 | `try await on thread.main: T throws E { ... }` | `T` |
 | `attempt await on thread.main: T throws E { ... }` | `Result<T, E>` |
 | `task on thread.main: T throws E { ... }` | `Task<T, E>` |
@@ -277,10 +265,9 @@ reuse Z's ordinary capability vocabulary and do not repeat types:
 - `out` is deferred until failure, cancellation, and definite initialization
   have one sound child-task-output contract.
 
-The same clause is intended to compose with all placement forms:
+The same clause is intended to compose with both placement forms:
 
 ```z
-on thread.main using (in window) { /* prove current placement */ }
 await on thread.main using (in window) { /* hop and join */ }
 task on thread.pool using (move work) { /* structured child */ }
 ```
@@ -329,7 +316,6 @@ a value expression and ends with one.
 |---|---|
 | `task operation()` | Fork a structured child on the inherited executor |
 | `async scope { ... }` | Own and join lexical child tasks |
-| `on thread.main { ... }` | Synchronously execute with statically proven main affinity |
 | `await on thread.main { ... }` | Hop if necessary, wait, and produce `T` or `E` |
 | `task on thread.main { ... }` | Fork a structured child placed on the existing main executor |
 | `thread.spawn(operation)` | Allocate and start one dedicated OS thread |
@@ -491,8 +477,6 @@ type.
 
 ## Scheduling and cancellation
 
-- `on thread.main` performs no scheduling and has no runtime check when statically
-  proven.
 - `await on thread.main` may use a direct fast path when already isolated; otherwise it
   enqueues and suspends the current task.
 - `task on thread.main` creates a hot structured child and lets the parent continue.
@@ -546,11 +530,23 @@ This looks like a JavaScript control-flow label while assigning unrelated
 executor semantics. It would misuse rather than benefit from TypeScript
 familiarity.
 
-### Bare `on thread.main` always returning `Task<T, E>`
+### Bare `on thread.main { ... }`
 
-This hides the concurrency fork. Requiring `task on thread.main` preserves the rule
-that every fork is visibly marked `task` and leaves a useful zero-cost
-synchronous proof form.
+This has no subject describing whether the operation hops, waits, forks, or
+merely asserts existing proof. Because existing proof already permits direct
+access, the bare form adds no authority. Z requires `await on` or `task on`
+when placement performs work.
+
+### Placing `on executor` after a task body
+
+```z
+task { /* ... */ } on thread.main
+```
+
+The scheduling target should be visible before the operation body. Expression
+placement therefore keeps the operator-first `task on executor` and
+`await on executor` order, while declaration contracts remain suffixes such as
+`function update(): void on thread.main`.
 
 ### `return` as the block value
 
@@ -560,10 +556,11 @@ later without making executor blocks a special case.
 
 ## Validation sequence
 
-1. **Done:** parse and type-check the three forms.
+1. **Done:** parse and type-check awaited and child-task placement; the
+   redundant synchronous proof form was removed before alpha.
 2. **Done:** introduce the typed `thread.main` capability.
-3. **Done:** execute synchronous, awaited, and child-task placement through task
-   frames for `void`, scalar, and recursively plain values.
+3. **Done:** execute awaited and child-task placement through task frames for
+   `void`, scalar, and recursively plain values.
 4. **Done:** publish placed children from `thread.spawn` through a thread-safe
    queue without equating OS-thread exit with task completion.
 5. **Done on Darwin:** wake and drain the main executor through a
@@ -589,6 +586,11 @@ later without making executor blocks a special case.
     worker, including child tasks, scheduler-aware delay, typed errors,
     cooperative cancellation, literal `await on thread.main`, and thread-affine
     continuation resumption back onto the same live worker thread.
+12. **Committed next syntax slice:** accept a direct call operand after an
+    executor, for example `task on thread.main load(in value)` and
+    `try await on thread.main load(inout state)`. The function arguments are
+    the capability boundary and therefore need no `using` clause. Placement
+    blocks retain `using (...)` for lexical captures and multiple statements.
 
 ## Open questions
 

@@ -38,13 +38,13 @@ import {
 type AwaitSite = {
   readonly index: number;
   readonly mode: "await" | "try" | "attempt";
-  readonly intrinsic: "delay" | "cancel" | "scopeClose" | "scopeCancel" | null;
+  readonly intrinsic: "delay" | "yield" | "cancel" | "scopeClose" | "scopeCancel" | null;
   readonly expression: Expression;
   readonly call: CallExpression;
   readonly target: AsyncTarget;
   readonly receiver: Expression | null;
   readonly spawn: SpawnSite | null;
-  readonly placement: "sync" | "await" | null;
+  readonly placement: "await" | null;
   readonly generator: {
     readonly type: string;
     readonly receiver: Expression;
@@ -1777,6 +1777,20 @@ function awaitSite(
       generator: null,
     };
   }
+  if (types.semanticInfo.standardFunctionReferences.get(call.callee.location.offset) === "scheduler.yield") {
+    return {
+      index: nextChild.value++,
+      mode,
+      intrinsic: "yield",
+      expression,
+      call,
+      target: intrinsicSchedulerYieldTarget(call.location),
+      receiver: null,
+      spawn: null,
+      placement: null,
+      generator: null,
+    };
+  }
   if (call.callee.kind === "member" && call.callee.property === "next") {
     const receiverType = types.semanticInfo.expressionTypes.get(call.callee.object.location.offset)
       ?? (call.callee.object.kind === "identifier" ? locals.get(call.callee.object.name) : null);
@@ -1854,6 +1868,23 @@ function intrinsicDelayTarget(location: SourceLocation): AsyncTarget {
   };
 }
 
+function intrinsicSchedulerYieldTarget(location: SourceLocation): AsyncTarget {
+  return {
+    owner: null,
+    declaration: {
+      kind: "function",
+      name: "__z_scheduler_yield",
+      async: true,
+      receiverMode: null,
+      parameters: [],
+      returnType: { name: "void", location },
+      errorType: null,
+      body: [],
+      location,
+    },
+  };
+}
+
 function intrinsicTaskScopeTarget(location: SourceLocation): AsyncTarget {
   return {
     owner: null,
@@ -1908,14 +1939,6 @@ function createPlacementTarget(
       expression.location,
       "return from an executor-placement block is not executable yet",
       "use `select` to produce the block value; enclosing-function return lowering follows after placed-frame unwinding",
-    );
-  }
-  if (expression.mode === "sync" && placementContainsAsyncWork(expression.body)) {
-    unsupported(
-      fileName,
-      expression.location,
-      "synchronous `on thread.main` cannot suspend or start a task",
-      "use `await on thread.main` or `task on thread.main` for asynchronous work",
     );
   }
   const final = expression.body.statements.at(-1);
@@ -2139,42 +2162,6 @@ function placementContainsFunctionReturn(statement: Statement): boolean {
   }
 }
 
-function placementContainsAsyncWork(statement: Statement): boolean {
-  if (statementContainsAwait(statement)) return true;
-  const expressionHasSpawn = (value: Expression): boolean => {
-    if (value.kind === "spawn" || (value.kind === "executorPlacement" && value.mode !== "sync")) return true;
-    switch (value.kind) {
-      case "weak": case "attempt": case "try": case "await": return expressionHasSpawn(value.expression);
-      case "unary": return expressionHasSpawn(value.operand);
-      case "binary": return expressionHasSpawn(value.left) || expressionHasSpawn(value.right);
-      case "conditional": return expressionHasSpawn(value.condition) || expressionHasSpawn(value.thenExpression) || expressionHasSpawn(value.elseExpression);
-      case "call": return expressionHasSpawn(value.callee) || value.arguments.some(expressionHasSpawn);
-      case "member": return expressionHasSpawn(value.object);
-      case "index": return expressionHasSpawn(value.object) || expressionHasSpawn(value.index);
-      case "new": return value.arguments.some(expressionHasSpawn);
-      case "template": return value.parts.some((part) => part.kind === "value" && expressionHasSpawn(part.expression));
-      case "arrayExpression": return value.elements.some(expressionHasSpawn);
-      case "structExpression": case "objectExpression": return value.fields.some((field) => expressionHasSpawn(field.expression));
-      case "variantExpression": return expressionHasSpawn(value.payload);
-      default: return false;
-    }
-  };
-  switch (statement.kind) {
-    case "variable": return Boolean(statement.initializer && expressionHasSpawn(statement.initializer));
-    case "assignment": return expressionHasSpawn(statement.target) || expressionHasSpawn(statement.expression);
-    case "return": return Boolean(statement.expression && expressionHasSpawn(statement.expression));
-    case "throw": case "yield": case "select": case "expressionStatement": return expressionHasSpawn(statement.expression);
-    case "block": return statement.statements.some(placementContainsAsyncWork);
-    case "if": return expressionHasSpawn(statement.condition) || placementContainsAsyncWork(statement.thenBranch)
-      || Boolean(statement.elseBranch && placementContainsAsyncWork(statement.elseBranch));
-    case "while": return expressionHasSpawn(statement.condition) || placementContainsAsyncWork(statement.body);
-    case "for": return expressionHasSpawn(statement.iterable) || placementContainsAsyncWork(statement.body);
-    case "match": return expressionHasSpawn(statement.expression) || statement.arms.some((arm) => placementContainsAsyncWork(arm.body));
-    case "asyncScope": return placementContainsAsyncWork(statement.body);
-    case "break": case "continue": return false;
-  }
-}
-
 function spawnSite(
   index: number,
   scope: number,
@@ -2194,6 +2181,14 @@ function spawnSite(
       expression.location,
       "starting the delay intrinsic as a task is not executable yet",
       "await `delay(...)` directly, or start an async function as a task that awaits it",
+    );
+  }
+  if (types.semanticInfo.standardFunctionReferences.get(expression.expression.callee.location.offset) === "scheduler.yield") {
+    unsupported(
+      fileName,
+      expression.location,
+      "scheduler.yield() cooperates with the current task and cannot start a child task",
+      "write `await scheduler.yield()` inside the task that should yield",
     );
   }
   const resolved = resolveAsyncCall(expression.expression, functions, fileName, locals, types);
@@ -4226,12 +4221,6 @@ function schedulePlacedChild(
   parent: Pick<AsyncFunctionPlan, "nativeThread">,
   child: string,
 ): string[] {
-  if ("placement" in site && site.placement === "sync") {
-    return [
-      `${child}->task.poll(&${child}->task);`,
-      `if (!z_async_is_completed(&${child}->task)) abort();`,
-    ];
-  }
   if ("placement" in site && site.placement && parent.nativeThread) {
     return [`z_async_enqueue_from_thread(frame->task.completion_executor, &${child}->task);`];
   }
@@ -4787,8 +4776,8 @@ function generatePoll(
   const emitNestedAwaits = (expression: Expression): void => {
     for (const nested of plan.nestedAwaits.get(expression.location.offset) ?? []) {
       const site = nested.await;
-      if (site.intrinsic === "delay") {
-        unsupported(fileName, nested.expression.location, "a void delay cannot be embedded in a value expression");
+      if (site.intrinsic === "delay" || site.intrinsic === "yield") {
+        unsupported(fileName, nested.expression.location, `a void ${site.intrinsic} cannot be embedded in a value expression`);
       }
       if (!site.spawn) {
         cases.push(caseBlock(state, beginAwait(site, plan, planByKey, fileName, state + 1)));
@@ -5001,7 +4990,7 @@ function generatePoll(
       const operation = awaitOperation(initializer);
       if (operation) {
         const site = plan.awaits.get(operation.expression.location.offset)!;
-        if (site.intrinsic === "delay" || site.intrinsic === "cancel" || site.intrinsic === "scopeClose" || site.intrinsic === "scopeCancel") {
+        if (site.intrinsic === "delay" || site.intrinsic === "yield" || site.intrinsic === "cancel" || site.intrinsic === "scopeClose" || site.intrinsic === "scopeCancel") {
           unsupported(fileName, statement.location, `the void ${site.intrinsic} operation cannot initialize a binding`);
         }
         if (!site.spawn) {
@@ -5150,6 +5139,17 @@ function generatePoll(
           state += 1;
           continue;
         }
+        if (site.intrinsic === "yield") {
+          cases.push(caseBlock(state, scheduleYield(state + 1)));
+          state += 1;
+          cases.push(caseBlock(state, [
+            ...(plan.declaration.errorType ? ["frame->failed = false;"] : []),
+            `frame->state = ${finalizeStateMarker};`,
+            "continue;",
+          ]));
+          state += 1;
+          continue;
+        }
         if (site.intrinsic === "scopeClose" || site.intrinsic === "scopeCancel") {
           const receiver = emitFrameExpression(site.receiver!, plan, fileName);
           cases.push(caseBlock(state, [
@@ -5289,6 +5289,11 @@ function generatePoll(
       const site = plan.awaits.get(operation.expression.location.offset)!;
       if (site.intrinsic === "delay") {
         cases.push(caseBlock(state, scheduleDelay(site, plan, fileName, state + 1)));
+        state += 1;
+        continue;
+      }
+      if (site.intrinsic === "yield") {
+        cases.push(caseBlock(state, scheduleYield(state + 1)));
         state += 1;
         continue;
       }
@@ -5506,6 +5511,13 @@ function scheduleDelay(
   const milliseconds = emitFrameExpression(site.call.arguments[0], parent, fileName);
   return [
     `z_async_schedule_delay(&frame->task, ${milliseconds});`,
+    `frame->state = ${nextState};`,
+    "return;",
+  ];
+}
+
+function scheduleYield(nextState: number): string[] {
+  return [
     `frame->state = ${nextState};`,
     "return;",
   ];

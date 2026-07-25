@@ -10,6 +10,7 @@
     { "include": "#declarations" },
     { "include": "#typeAnnotations" },
     { "include": "#matchPatterns" },
+    { "include": "#memberCalls" },
     { "include": "#keywords" },
     { "include": "#types" },
     { "include": "#constants" },
@@ -265,6 +266,12 @@
       "patterns": [{
         "name": "constant.language.enum-member.z",
         "match": "\\b(?!move\\b)[A-Za-z_][A-Za-z0-9_]*(?=\\s*(?:\\([^)]*\\))?\\s*=>)"
+      }]
+    },
+    "memberCalls": {
+      "patterns": [{
+        "name": "entity.name.function.member.z",
+        "match": "(?<=\\.)yield(?=\\s*\\()"
       }]
     },
     "keywords": {

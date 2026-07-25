@@ -6430,7 +6430,7 @@ test("parses declarations, function bodies, and type shapes in native Z", () => 
   const parser = resolve(projectRoot, "compiler/frontend/parser.zs");
   const result = spawnSync(process.execPath, [cli, "self-host-parse", fixture, lexer, parser, "--timings"], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
-  assert.match(result.stdout, /self-host-parser-input\.zs: stage-1 parser matches 16 declarations, 3 imports, 7 function signatures, 7 function bodies, and 6 type shapes/);
+  assert.match(result.stdout, /self-host-parser-input\.zs: stage-1 parser matches 17 declarations, 4 imports, 7 function signatures, 7 function bodies, and 6 type shapes/);
   assert.match(result.stdout, /lexer\.zs: stage-1 parser matches 17 declarations, 1 imports, 13 function signatures, 13 function bodies, and 3 type shapes/);
   assert.match(result.stdout, /parser\.zs: stage-1 parser matches \d+ declarations, \d+ imports, \d+ function signatures, \d+ function bodies, and \d+ type shapes/);
   assert.match(result.stdout, /stage-1 parser timing \(3 files, cache (?:hit|miss; stage-0 compile \+ native build included)\)/);
@@ -13070,6 +13070,7 @@ test("editor grammar tracks keywords without reserving Result variants", () => {
   const matchScopes = grammar.repository.matchPatterns.patterns
     .map((pattern: { name: string }) => pattern.name)
     .join(" ");
+  const memberCallPattern = new RegExp(grammar.repository.memberCalls.patterns[0].match);
   const qualifiedTypeAnnotation = grammar.repository.typeAnnotations.patterns[0];
   const exportPattern = grammar.repository.keywords.patterns
     .find((pattern: { match: string }) => pattern.match.includes("export"));
@@ -13081,6 +13082,7 @@ test("editor grammar tracks keywords without reserving Result variants", () => {
   assert.equal(exportPattern?.name, "keyword.control.export.z");
   assert.match("task fetch()", new RegExp(taskPattern?.match ?? "$^"));
   assert.match("task on thread.main", new RegExp(taskPattern?.match ?? "$^"));
+  assert.match(".yield()", memberCallPattern);
   assert.doesNotMatch("const task = operation();", new RegExp(taskPattern?.match ?? "$^"));
   assert.match("copy value", new RegExp(ownershipPattern?.match ?? "$^"));
   assert.doesNotMatch("const copy = value;", new RegExp(ownershipPattern?.match ?? "$^"));
@@ -13196,8 +13198,6 @@ test("type-checks main-thread executor placement and exposes thread.main to edit
   const mainTarget = source.indexOf("thread.main") + "thread.".length + 1;
   assert.match(hover(source, example, mainTarget)?.contents.value ?? "", /thread\.main: Executor/);
 
-  const immediate = source.indexOf("immediate =") + 1;
-  assert.match(hover(source, example, immediate)?.contents.value ?? "", /immediate: i32/);
   const placedTask = source.indexOf("placedTask =") + 1;
   assert.match(hover(source, example, placedTask)?.contents.value ?? "", /placedTask: Task<i32>/);
 
@@ -13215,16 +13215,15 @@ test("type-checks main-thread executor placement and exposes thread.main to edit
     && token.type === semanticTokenTypes.indexOf("property")
   )));
 
-  const unproven = `
+  const removedBareForm = `
     import { thread } from "std/thread";
     function inspect(): i32 {
       return on thread.main: i32 { select 1; };
     }
     function main(): i32 { return inspect(); }
   `;
-  const proofDiagnostic = diagnostics(unproven, "executor-proof.zs")[0];
-  assert.equal(proofDiagnostic.code, "Z0711");
-  assert.match(proofDiagnostic.message, /requires proven main-executor context/);
+  const bareDiagnostic = diagnostics(removedBareForm, "removed-bare-executor.zs")[0];
+  assert.match(bareDiagnostic.message, /expected an expression, found "on"/);
 
   const synchronousHelper = `
     import { thread } from "std/thread";
@@ -13254,17 +13253,6 @@ test("type-checks main-thread executor placement and exposes thread.main to edit
   const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
 
-  const directory = mkdtempSync("/tmp/z-sync-main-placement-");
-  const syncMain = resolve(directory, "main.zs");
-  writeFileSync(syncMain, `
-    import { thread } from "std/thread";
-    function main(): i32 {
-      const answer = on thread.main: i32 { select 42; };
-      return answer - 42;
-    }
-  `);
-  const syncResult = spawnSync(process.execPath, [cli, "run", syncMain], { encoding: "utf8" });
-  assert.equal(syncResult.status, 0, syncResult.stderr);
 });
 
 test("enforces declaration-header executor affinity and surfaces inherited isolation", () => {
@@ -16262,6 +16250,119 @@ test("suspends async tasks on scheduler-aware std/time delay", () => {
   const cancelledResult = spawnSync(process.execPath, [cli, "run", cancelled], { encoding: "utf8" });
   assert.equal(cancelledResult.status, 1, cancelledResult.stderr);
   assert.equal(cancelledResult.stdout, "released timer 9\n");
+});
+
+test("cooperatively yields the current task on its existing executor", () => {
+  const example = resolve(projectRoot, "examples/async/scheduler-yield.zs");
+  const source = readFileSync(example, "utf8");
+  const generated = compileToC(source, example);
+  assert.doesNotMatch(generated, /z_async_schedule_delay/);
+
+  const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(
+    result.stdout,
+    [
+      "first: start",
+      "second: start",
+      "second: finish",
+      "first: finish",
+      "",
+    ].join("\n"),
+  );
+
+  const schedulerOffset = source.indexOf("scheduler.yield") + 1;
+  assert.match(
+    hover(source, example, schedulerOffset)?.contents.value ?? "",
+    /standard scheduler module imported as scheduler/,
+  );
+  const yieldOffset = source.indexOf("yield", source.indexOf("scheduler.yield")) + 1;
+  assert.match(
+    hover(source, example, yieldOffset)?.contents.value ?? "",
+    /cooperatively requeues the current task on its existing executor/,
+  );
+
+  const incomplete = source.replace("scheduler.yield()", "scheduler.yi");
+  const completionOffset = incomplete.indexOf("scheduler.yi") + "scheduler.yi".length;
+  const yieldCompletion = completions(incomplete, example, completionOffset)
+    .find((item) => item.label === "yield");
+  assert.match(yieldCompletion?.detail ?? "", /cooperatively requeues/);
+
+  const yieldPosition = positionForOffset(source, yieldOffset - 1);
+  const tokens = decodeSemanticTokens(semanticTokens(source, example).data);
+  assert.ok(tokens.some((token) => (
+    token.line === yieldPosition.line
+    && token.character === yieldPosition.character
+    && token.type === semanticTokenTypes.indexOf("method")
+  )));
+
+  const naked = `
+    import { scheduler } from "std/async";
+    function main(): i32 {
+      scheduler.yield();
+      return 0;
+    }
+  `;
+  const nakedDiagnostic = diagnostics(naked, "naked-scheduler-yield.zs")[0];
+  assert.equal(nakedDiagnostic.code, "Z0702");
+  assert.match(nakedDiagnostic.message, /requires `await` or `task`/);
+
+  const child = `
+    import { scheduler } from "std/async";
+    async function main(): i32 {
+      task scheduler.yield();
+      return 0;
+    }
+  `;
+  assert.throws(() => compileToC(child, "task-scheduler-yield.zs"), (error: unknown) => {
+    assert.ok(error instanceof DiagnosticError);
+    assert.equal(error.code, "Z0700");
+    assert.match(error.message, /cannot start a child task/);
+    return true;
+  });
+
+  const worker = `
+    import { scheduler } from "std/async";
+    import { thread } from "std/thread";
+    async function main(): i32 {
+      const calculation = thread.spawn(async move (): i32 => {
+        await scheduler.yield();
+        return 42;
+      });
+      return await calculation - 42;
+    }
+  `;
+  const workerDirectory = mkdtempSync("/tmp/z-scheduler-yield-worker-");
+  const workerPath = resolve(workerDirectory, "main.zs");
+  writeFileSync(workerPath, worker);
+  const workerResult = spawnSync(process.execPath, [cli, "run", workerPath], { encoding: "utf8" });
+  assert.equal(workerResult.status, 0, workerResult.stderr);
+
+  const cancellation = `
+    import console from "std/console";
+    import { scheduler } from "std/async";
+    struct Work {
+      id: i32;
+      deinit { console.log(\`released work \${this.id}\`); }
+    }
+    async function spin(work: Work): void {
+      while (true) {
+        await scheduler.yield();
+      }
+    }
+    async function main(): i32 {
+      const work = task spin(Work({ id: 42 }));
+      await scheduler.yield();
+      await work.cancel();
+      return 0;
+    }
+  `;
+  const cancellationDirectory = mkdtempSync("/tmp/z-scheduler-yield-cancel-");
+  const cancellationPath = resolve(cancellationDirectory, "main.zs");
+  writeFileSync(cancellationPath, cancellation);
+  const cancellationResult = spawnSync(process.execPath, [cli, "run", cancellationPath], { encoding: "utf8" });
+  assert.equal(cancellationResult.status, 0, cancellationResult.stderr);
+  assert.equal(cancellationResult.stdout, "released work 42\n");
 });
 
 test("runs synchronous calls and typed console output inside async frames", () => {

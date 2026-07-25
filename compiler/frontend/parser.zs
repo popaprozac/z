@@ -1149,9 +1149,8 @@ function parseExecutorPlacementTree(
   inout statementNodes: Array<Statement>
 ): usize throws ParserError {
   const start = snapshot(tokens[current]);
-  let mode = "sync";
+  let mode = "await";
   if (tokens[current].kind == TokenKind.awaitKeyword) {
-    mode = "await";
     current = current + 1;
   } else if (
     tokens[current].kind == TokenKind.identifier
@@ -2023,7 +2022,6 @@ function skipProjectedStatement(
 }
 
 function startsExecutorPlacement(in tokens: Array<Token>, current: usize): boolean {
-  if (tokens[current].kind == TokenKind.onKeyword) return true;
   return (
       tokens[current].kind == TokenKind.awaitKeyword
       || (

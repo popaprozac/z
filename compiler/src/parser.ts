@@ -204,7 +204,7 @@ export function parse(tokens: Token[], fileName: string): Program {
   let parseStatement: () => Statement;
 
   const parseExecutorPlacement = (
-    mode: "sync" | "await" | "spawn",
+    mode: "await" | "spawn",
     location: SourceLocation,
     onLocation: SourceLocation,
   ): Expression => {
@@ -413,10 +413,6 @@ export function parse(tokens: Token[], fileName: string): Program {
       const expression = parseExpression();
       expect("rightParen", "`)` after the match subject");
       return { kind: "matchExpression", mode, expression, arms: parseMatchArms(), location: token.location };
-    }
-    if (match("on")) {
-      const token = previous();
-      return parseExecutorPlacement("sync", token.location, token.location);
     }
     if (match("await")) {
       const token = previous();

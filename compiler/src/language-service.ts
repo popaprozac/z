@@ -530,6 +530,15 @@ export function hover(source: string, fileName: string, offset: number): Hover |
     return markdownHover("compiler-provided enum Option<T>", source, word.start, word.end);
   }
   if (word.text === "yield") {
+    const memberPrefix = source.slice(0, word.start).match(/([A-Za-z_][A-Za-z0-9_]*)\.$/)?.[1];
+    if (memberPrefix && context.semanticInfo.standardModuleBindings.get(memberPrefix) === "scheduler") {
+      return markdownHover(
+        "async yield(): void  // cooperatively requeues the current task on its existing executor",
+        source,
+        word.start,
+        word.end,
+      );
+    }
     return markdownHover("yield value  // suspends the current Generator and transfers one yielded value to its consumer", source, word.start, word.end);
   }
   const conversionSuffix = source.slice(word.end).match(/^\s*\(/)?.[0];
@@ -1318,6 +1327,11 @@ function selectiveImportCandidates(specifier: string, fileName: string): Complet
   }
   if (specifier === "std/async") {
     return [
+      {
+        label: "scheduler",
+        kind: completionKinds.module,
+        detail: "cooperative operations for the current async executor",
+      },
       {
         label: "TaskScope",
         kind: completionKinds.class,
@@ -2705,6 +2719,8 @@ function standardFunctionDetail(localName: string, name: StandardFunctionName): 
   const throws = signature.errorType ? ` throws ${displayArrayType(signature.errorType)}` : "";
   const behavior = name === "delay"
     ? "  // suspends the current task"
+    : name === "scheduler.yield"
+    ? "  // cooperatively requeues the current task on its existing executor"
     : name === "sleep"
     ? "  // blocks the current thread"
     : "";

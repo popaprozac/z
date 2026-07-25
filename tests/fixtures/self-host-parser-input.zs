@@ -1,5 +1,6 @@
 // Parser coordinates remain UTF-16 after café and 😀.
 import fs from "std/fs";
+import { scheduler } from "std/async";
 import { TextBuffer as Buffer } from "std/text";
 import { thread } from "std/thread";
 
@@ -53,11 +54,9 @@ export enum LoadState {
 }
 
 export async function load(id: i32): Reading {
-  const immediate = on thread.main: i32 {
-    select id;
-  };
+  await scheduler.yield();
   const hopped = await on thread.main: i32 throws LoadError {
-    select immediate;
+    select id;
   };
   const task = task on thread.main: i32 {
     select hopped;

@@ -5,7 +5,7 @@ export function isStandardModuleSpecifier(specifier: string): boolean {
   return specifier === "std" || specifier.startsWith("std/");
 }
 
-export type StandardModuleName = "fs" | "process" | "thread" | "objc";
+export type StandardModuleName = "fs" | "process" | "thread" | "scheduler" | "objc";
 
 export const objcConnectionTypeName = "__z_std_objc_Connection";
 export const objcBindingTypeName = "__z_std_objc_Binding";
@@ -14,6 +14,7 @@ export const objcSelectorTypeName = "__z_std_objc_Selector";
 export type StandardFunctionName =
   | "sleep"
   | "delay"
+  | "scheduler.yield"
   | "fs.readText"
   | "fs.writeText"
   | "fs.exists"
@@ -42,6 +43,12 @@ const standardFunctions: Record<StandardFunctionName, StandardFunctionSignature>
   delay: {
     cName: "z_async_schedule_delay",
     parameters: [{ name: "milliseconds", mode: "value", type: "u64" }],
+    returnType: "void",
+    async: true,
+  },
+  "scheduler.yield": {
+    cName: "z_async_scheduler_yield",
+    parameters: [],
     returnType: "void",
     async: true,
   },
@@ -96,6 +103,9 @@ const standardModuleMembers: Record<StandardModuleName, Readonly<Record<string, 
     run: "process.run",
   },
   thread: {},
+  scheduler: {
+    yield: "scheduler.yield",
+  },
   objc: {},
 };
 

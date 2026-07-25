@@ -507,7 +507,7 @@ export type SpawnExpression = {
 
 export type ExecutorPlacementExpression = {
   readonly kind: "executorPlacement";
-  readonly mode: "sync" | "await" | "spawn";
+  readonly mode: "await" | "spawn";
   readonly executor: Expression;
   readonly returnType: TypeReference | null;
   readonly errorType: TypeReference | null;

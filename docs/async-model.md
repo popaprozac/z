@@ -22,6 +22,22 @@ sleep(100);       // blocks the current OS thread
 await delay(100); // suspends this task on a monotonic executor timer
 ```
 
+CPU-heavy async work can cooperate without creating a timer:
+
+```z
+import { scheduler } from "std/async";
+
+for (const item of items) {
+  process(item);
+  await scheduler.yield();
+}
+```
+
+`scheduler.yield()` saves the current frame state, places the task at the back
+of its existing executor's ready queue, and resumes it on a later poll. It is
+also a structural cancellation-observation point. It does not sleep, promise
+elapsed time, hop executors, create a task, or yield a generator value.
+
 An ordinary call inside an async function remains ordinary synchronous work:
 
 ```z
@@ -437,8 +453,9 @@ engines, and deterministic tests.
 Phase 0 implements parsing, static typing, ownership restrictions, diagnostics,
 hover, completion, and highlighting for `async`, `await`, `try await`,
 `attempt await`, `async scope`, `task`, inferred task handles, and the
-`on thread.main`, `await on thread.main`, and `task on thread.main` placement
-forms. `z check` accepts these programs. The executable placement tier lowers
+`await on thread.main` and `task on thread.main` placement forms. Declaration
+headers use `on thread.main` as an isolation contract. `z check` accepts these
+programs. The executable placement tier lowers
 blocks into structured task frames and supports recursively plain captures,
 owned String copies, retained Z ARC classes, and Objective-C identities retained
 by ARC when captured from the owning async task. Native workers publish main

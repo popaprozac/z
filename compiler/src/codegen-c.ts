@@ -3485,14 +3485,7 @@ bool ${liveFlag} = true;`;
       return generateFor(statement, context);
     case "expressionStatement":
       if (statement.expression.kind === "executorPlacement") {
-        if (statement.expression.mode !== "sync") {
-          throw new Error("asynchronous executor placement must be lowered through task frames");
-        }
-        const final = statement.expression.body.statements.at(-1);
-        if (final?.kind === "select") {
-          return generateValueArm(statement.expression.body, context, (value) => `(void)${value};`, false);
-        }
-        return generateBlock(statement.expression.body.statements, context);
+        throw new Error("executor placement must be lowered through task frames");
       }
       if (statement.expression.kind === "call" && context.semanticInfo.consoleCalls.has(statement.expression.location.offset)) {
         return generateConsoleCall(statement.expression, context);
@@ -4266,10 +4259,7 @@ function generateDirectValue(
     );
   }
   if (expression.kind === "executorPlacement") {
-    if (expression.mode !== "sync") {
-      throw new Error("asynchronous executor placement must be lowered through task frames");
-    }
-    return generateValueArm(expression.body, context, consumeValue, consumeTerminates);
+    throw new Error("executor placement must be lowered through task frames");
   }
   return consumeValue(generateExpression(expression, context), context);
 }
@@ -6037,7 +6027,7 @@ function generateExpressionInner(expression: Expression, context: GenerationCont
         "executor placement must be lowered from a direct value-producing position",
         {
           code: "Z0713",
-          helps: ["bind the `on thread.main { ... }` result before composing it into a larger expression"],
+          helps: ["bind the `await on thread.main { ... }` result before composing it into a larger expression"],
         },
       );
     case "matchExpression":

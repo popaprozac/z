@@ -938,14 +938,20 @@ export function analyze(
         if (!declaration.bindings) {
           throw new DiagnosticError(fileName, declaration.location, "std/async requires a selective import", {
             code: "Z0501",
-            helps: ["use `import { TaskControl, TaskScope } from \"std/async\";`"],
+            helps: ["use `import { scheduler, TaskControl, TaskScope } from \"std/async\";`"],
           });
         }
         for (const binding of declaration.bindings) {
+          if (binding.importedName === "scheduler") {
+            validateUserName(binding.localName, binding.location, fileName);
+            declareGlobal(globals, binding.localName, { kind: "standardModule", module: "scheduler" }, binding.location, fileName);
+            state.standardModuleBindings.set(binding.localName, "scheduler");
+            continue;
+          }
           if (binding.importedName !== "TaskScope" && binding.importedName !== "TaskControl") {
             throw new DiagnosticError(fileName, binding.location, `std/async has no export ${JSON.stringify(binding.importedName)}`, {
               code: "Z0501",
-              helps: ["std/async exports `TaskScope` and `TaskControl`"],
+              helps: ["std/async exports `scheduler`, `TaskScope`, and `TaskControl`"],
             });
           }
           validateUserName(binding.localName, binding.location, fileName);
@@ -4486,20 +4492,11 @@ function inferExecutorPlacement(
   if (executor !== "__z_executor:main") {
     throw new DiagnosticError(fileName, expression.executor.location, `on requires an executor capability, found ${describeValueType(executor, state)}`, {
       code: "Z0710",
-      helps: ["import { thread } from \"std/thread\" and use `on thread.main { ... }`"],
-    });
-  }
-  if (expression.mode === "sync" && state.executorContext !== "main") {
-    throw new DiagnosticError(fileName, expression.location, "synchronous `on thread.main` requires proven main-executor context", {
-      code: "Z0711",
-      notes: ["this form is a static placement proof and never schedules at runtime"],
-      helps: [state.activeFunction?.async
-        ? "use `await on thread.main { ... }` to hop and wait"
-        : "enter through a main-isolated function or make this operation async before hopping"],
+      helps: ["import { thread } from \"std/thread\" and use `await on thread.main { ... }` or `task on thread.main { ... }`"],
     });
   }
   const synchronousNativePlacement = expression.mode === "spawn" && state.nativeThreadBodyDepth > 0;
-  if (expression.mode !== "sync" && !state.activeFunction?.async && !synchronousNativePlacement) {
+  if (!state.activeFunction?.async && !synchronousNativePlacement) {
     if (expression.mode === "spawn") {
       throw new DiagnosticError(
         fileName,
@@ -4581,7 +4578,7 @@ function inferExecutorPlacement(
     );
     successType = resolvedReturnType.name;
   }
-  const escapingAffinity = expression.mode === "sync" || previousExecutor === "main"
+  const escapingAffinity = previousExecutor === "main"
     ? null
     : executorAffinityForType(successType, structs, enums, state);
   if (escapingAffinity) {
@@ -6437,6 +6434,7 @@ function inferExpressionInner(
               ),
             );
             checkArguments(declaration, expression.arguments, locals, globals, structs, enums, fileName, expression.location, state);
+            registerAsyncCall(declaration, expression.location, fileName, state);
             if (declaration.errorType) {
               if (!allowThrowingCall) throw new DiagnosticError(fileName, expression.location, "throwing call requires `attempt` or `try`");
               return resultTypeName(declaration.returnType.name, declaration.errorType.name);

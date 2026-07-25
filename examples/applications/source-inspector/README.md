@@ -66,7 +66,7 @@ payload bindings, object patterns, aliases, and arm bodies are structural.
 `async scope` retains its required body as a lexical structured-join edge.
 Value-producing `if` expressions retain condition and value-block edges, with
 else-if nodes linked directly and branch statements stored in the shared arena.
-Executor placement retains sync/await/task mode, exact `on` location, executor
+Executor placement retains await/task mode, exact `on` location, executor
 root, optional result/error types, and body statements in the same flat model.
 Supported expressions use a separate flat owned arena;
 block-bodied closure nodes reference roots in the enclosing statement arena.

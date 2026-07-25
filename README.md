@@ -54,7 +54,8 @@ Z is exploring a specific combination:
   `attempt`;
 - exhaustive expression-oriented pattern matching;
 - structured async tasks with hot `task`, lexical joins, cancellation,
-  scheduler-aware delay, and an initial explicit native-thread launcher;
+  scheduler-aware delay and cooperative yield, plus an initial explicit
+  native-thread launcher;
 - header-first C and Objective-C imports, plus staged C++ and Swift interop.
 
 The wager is not that familiar syntax makes systems semantics disappear. It is
@@ -70,7 +71,7 @@ requiring lifetime syntax throughout ordinary application code.
 | Ownership | Lexical borrows, moves, deterministic cleanup, ARC, `Weak<T>`, field-level and whole-aggregate `readonly`, inferred shareable classes, receiver-tied views, and synchronous arena regions |
 | Errors | Typed `throws`, `try` propagation, `attempt`, `Result<T, E>` |
 | Control flow | Checked arithmetic, loops, ternaries, value `if`, exhaustive `match`, selected-branch suspension across logical/ternary/value-`if`/owned-match expressions, custom iterators, cold synchronous `Generator<Yield, Return?, Error?>`, cold awaited `AsyncGenerator<Yield, Return?, Error?>` frames, sequential `for await...of`, and explicit `try for await` propagation |
-| Async | Stackless tasks, FIFO executors, task/join scopes, cancellation, delay, reusable async-generator advancement, declaration-header `on thread.main` isolation with transitive stored-field affinity and hover, Clang actor-metadata import plus `.zd` native-affinity fallbacks, exactly-once native callback-to-task projection with owned Objective-C errors, and nonblocking `thread.spawn` joins with synchronous or thread-affine async closures, Copy snapshots, unique-owner moves, atomic-ARC readonly sharing, opaque main-isolated Z class transport with main-executor release, owned typed worker errors, and `await on thread.main` resumption back on the same worker |
+| Async | Stackless tasks, FIFO executors, task/join scopes, cancellation, timer-backed delay, timer-free `scheduler.yield()`, reusable async-generator advancement, declaration-header `on thread.main` isolation with transitive stored-field affinity and hover, Clang actor-metadata import plus `.zd` native-affinity fallbacks, exactly-once native callback-to-task projection with owned Objective-C errors, and nonblocking `thread.spawn` joins with synchronous or thread-affine async closures, Copy snapshots, unique-owner moves, atomic-ARC readonly sharing, opaque main-isolated Z class transport with main-executor release, owned typed worker errors, and `await on thread.main` resumption back on the same worker |
 | C | Header imports, functions, records, enums, constants, pointers and typed status errors with `.zd` contracts, callbacks, target-aware availability |
 | Objective-C | ARC objects, nullability, selectors, blocks, persistent observers, imported property ownership, lifetime-safe target/action connections, checked Z-class protocol adapters and weak-property bindings, AppKit |
 | C++ | Hierarchical functions/types, overload selection, records, `.zd`-contracted copyable and move-only RAII values, constructors, methods, named-value references, and receiver qualifiers |

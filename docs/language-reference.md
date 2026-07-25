@@ -1209,6 +1209,23 @@ Leaving a scope joins its children. Failure propagation cancels live siblings
 before the failing task completes. Domain errors remain `T throws E`;
 cancellation is a structural task outcome, not an invented member of `E`.
 
+Code performing long synchronous chunks inside an async task can cooperate
+with its current executor explicitly:
+
+```z
+import { scheduler } from "std/async";
+
+async function index(in records: Array<Record>): void {
+  for (const record of records) {
+    indexRecord(record);
+    await scheduler.yield();
+  }
+}
+```
+
+This requeues the current task and creates a cancellation-observation point. It
+does not create a timer, switch executors, or produce a generator value.
+
 A scope can optionally expose its compiler-owned handle:
 
 ```z
@@ -1325,19 +1342,19 @@ The thread namespace also supplies typed placement targets. The first target is
 `thread.main`:
 
 ```z
-const title = on thread.main { select window.title; };
 const updated = await on thread.main { select refreshUI(); };
 const child = task on thread.main { select refreshUI(); };
 ```
 
-The first form is a zero-scheduling static proof, the second hops and waits, and
-the third creates a hot structured child on main. The first executable tier
-supports plain copied captures, owned String copies, retained Z ARC classes, and
-Objective-C identities retained by ARC from the owning async task. A native
-worker can create a placed main child without blocking main; Darwin wakes the
-executor through a CFRunLoop source. A placement used as a statement is a block
-statement and does not require a trailing semicolon; bindings and other value
-expressions still do. Other ownership shapes and
+The first form hops and waits, while the second creates a hot structured child
+on main. Code already proven to run on main accesses isolated state directly;
+there is no bare `on thread.main { ... }` proof block. The first executable
+tier supports plain copied captures, owned String copies, retained Z ARC
+classes, and Objective-C identities retained by ARC from the owning async
+task. A native worker can create a placed main child without blocking main;
+Darwin wakes the executor through a CFRunLoop source. A placement used as a
+statement is a block statement and does not require a trailing semicolon;
+bindings and other value expressions still do. Other ownership shapes and
 platform UI-loop adapters remain bounded work. See
 [`executor-placement.md`](executor-placement.md).
 The returned task remains scope-bound and is joined explicitly by `await` or

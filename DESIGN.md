@@ -1080,6 +1080,18 @@ monotonic timer queue. It suspends only the current task; cancellation removes
 its pending timer. The separate names ensure `sleep` never changes behavior
 based on calling context.
 
+Cooperative scheduling is explicit and timer-free:
+
+```z
+import { scheduler } from "std/async";
+
+await scheduler.yield();
+```
+
+This saves the current task frame, returns it to the back of its existing
+executor's ready queue, and creates a cancellation-observation point. It does
+not sleep, hop executors, create a child, or yield a generator element.
+
 An interpolated template evaluates expressions exactly once from left to right.
 Interpolation uses TypeScript's `${expression}` spelling. Plain braces remain
 literal text, and `\${expression}` writes a literal `${expression}` sequence.
@@ -1280,10 +1292,13 @@ Explicit placement composes the same `task` boundary with typed targets from
 the thread namespace:
 
 ```z
-on thread.main { /* synchronous proof */ }
 await on thread.main { /* hop and wait */ }
 task on thread.main { /* structured dispatch */ }
 ```
+
+Existing executor proof comes from the enclosing declaration or placement and
+permits direct access. Z has no bare `on thread.main { ... }` form because it
+would have no subject describing an execution effect and would add no authority.
 
 Declarations use the same subject-on-executor ordering:
 
@@ -1353,6 +1368,18 @@ const task = task on compute
     select value;
   };
 ```
+
+A committed follow-up makes placement orthogonal to a direct function call:
+
+```z
+const loading = task on thread.main load(in model);
+const value = try await on thread.main refresh(inout state);
+```
+
+The callee's argument list is already the capability boundary, so direct placed
+calls do not repeat those arguments in `using`. Placement blocks retain
+`using (...)` for lexical captures and multi-statement anonymous operations.
+This direct-call spelling is design-complete but not executable yet.
 
 Executor construction configures the target; `using (...)` declares access to
 existing bindings. Its entries reuse the ordinary `in`, `inout`, and `move`
