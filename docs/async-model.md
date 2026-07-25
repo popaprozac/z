@@ -506,11 +506,17 @@ suspend before its final expression or `select`, while `return`, `throw`,
 propagation, loop control, and cancellation retain exact cleanup.
 Selected results may own ARC identity, strings, Z values with `deinit`, or
 move-only native storage. A direct owned `await` in the selected arm transfers
-its hidden suspension slot into the result before cleaning the arm. Lazy
-suspension under short-circuit operators, ternaries, and value-producing `if`
-remains diagnosed until branch-aware expression lowering preserves
-selected-branch evaluation. The next Phase 1 layers add broader foreign-call
-shapes and brace-local value cleanup.
+its hidden suspension slot into the result before cleaning the arm. Logical
+`&&`/`||`, ternaries, and value-producing `if` now lower through branch states
+when they contain suspension. Conditions may themselves contain nested lazy
+logic, and statement `if`/`while` conditions use the same path. Only the
+selected branch starts or awaits work. Direct binding and return destinations
+accept scalar or ownership-bearing values plus typed `try await` propagation;
+live suspension storage transfers once and cancellation destroys any active
+selected work. Arbitrary embedding of a suspending lazy expression inside a
+larger call or aggregate remains diagnosed while hidden branch-result storage
+is added. The next Phase 1 layers add broader foreign-call shapes and
+brace-local value cleanup.
 Later phases add channels, broader sendability, actors, native cancellation
 hooks, repeated-callback async sequences, and richer ownership-bearing foreign
 completion payloads. Async-free programs never link the runtime.

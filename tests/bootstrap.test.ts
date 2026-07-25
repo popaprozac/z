@@ -13666,21 +13666,118 @@ test("normalizes embedded awaits left-to-right and resumes awaited branches", ()
   assert.equal(result.stdout, "20\n22\n1\n2\n3\n4\npositive\nnot positive\n");
 });
 
-test("diagnoses embedded awaits whose short-circuit lowering has not landed", () => {
-  const shortCircuit = `
+test("suspends only in selected logical, ternary, and value-if branches", () => {
+  const example = resolve(projectRoot, "examples/async/async-branch-expressions.zs");
+  const source = readFileSync(example, "utf8");
+  const generated = compileToC(source, example);
+  assert.match(generated, /z_async_start_flag/);
+  assert.match(generated, /z_async_start_number/);
+  assert.match(generated, /frame->state = \(false\) \?/);
+
+  const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(
+    result.stdout,
+    "flag 2\nflag 4\nflag 5\nnumber 51\nflag 6\nnumber 60\nflag 7\nflag 8\nflag 9\nnumber 70\nflag 12\n",
+  );
+
+  const embedded = `
+    function consume(value: boolean): i32 { return value ? 0 : 1; }
     async function flag(): boolean { return true; }
     async function main(): i32 {
-      if (false && await flag()) { return 1; }
-      return 0;
+      return consume(false && await flag());
     }
   `;
-  assert.throws(() => compileToC(shortCircuit, "async-short-circuit.zs"), (error: unknown) => {
+  assert.throws(() => compileToC(embedded, "async-embedded-branch.zs"), (error: unknown) => {
     assert.ok(error instanceof DiagnosticError);
     assert.equal(error.code, "Z0700");
     assert.match(error.message, /short-circuit logic/);
     return true;
   });
+});
 
+test("transfers owned results and typed failures through selected async branches", () => {
+  const directory = mkdtempSync("/tmp/z-async-branch-ownership-");
+  const fileName = resolve(directory, "main.zs");
+  writeFileSync(fileName, `
+    import console from "std/console";
+
+    struct Payload {
+      id: i32;
+      deinit { console.log(\`released payload \${this.id}\`); }
+    }
+
+    async function make(id: i32): Payload {
+      console.log(\`made payload \${id}\`);
+      return Payload({ id });
+    }
+
+    async function fail(code: i32): Payload throws i32 {
+      console.log(\`failed payload \${code}\`);
+      throw code;
+    }
+
+    async function chooseOwned(first: boolean): Payload {
+      return first ? await make(1) : await make(2);
+    }
+
+    async function chooseFailure(shouldFail: boolean): Payload throws i32 {
+      return shouldFail ? try await fail(7) : await make(3);
+    }
+
+    async function main(): i32 throws i32 {
+      const chosen = await chooseOwned(false);
+      const successful = try await chooseFailure(false);
+      const failed = attempt await chooseFailure(true);
+      const code = match (failed) {
+        success(payload) => payload.id;
+        failure(error) => error;
+      };
+      return chosen.id + successful.id + code - 12;
+    }
+  `);
+
+  const result = spawnSync(process.execPath, [cli, "run", fileName], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(
+    result.stdout,
+    "made payload 2\nmade payload 3\nfailed payload 7\nreleased payload 3\nreleased payload 2\n",
+  );
+
+  const cancellation = resolve(directory, "cancellation.zs");
+  writeFileSync(cancellation, `
+    import console from "std/console";
+    import { delay } from "std/time";
+
+    struct Payload {
+      id: i32;
+      deinit { console.log(\`released cancelled payload \${this.id}\`); }
+    }
+
+    async function delayed(id: i32): Payload {
+      const payload = Payload({ id });
+      console.log(\`started payload \${id}\`);
+      await delay(1000);
+      return payload;
+    }
+
+    async function choose(): Payload {
+      return true ? await delayed(4) : await delayed(5);
+    }
+
+    async function main(): i32 {
+      const work = task choose();
+      await delay(1);
+      await work.cancel();
+      return 0;
+    }
+  `);
+  const cancelled = spawnSync(process.execPath, [cli, "run", cancellation], { encoding: "utf8" });
+  assert.equal(cancelled.status, 0, cancelled.stderr);
+  assert.equal(
+    cancelled.stdout,
+    "started payload 4\nreleased cancelled payload 4\n",
+  );
 });
 
 test("runs awaits only in the selected async match arm", () => {

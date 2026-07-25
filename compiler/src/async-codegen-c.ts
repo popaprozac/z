@@ -104,6 +104,13 @@ type AsyncValueMatchSite = AsyncMatchSite & {
   readonly endLabel: number;
 };
 
+type AsyncValueBranchSite = {
+  readonly destination: string;
+  readonly destinationType: string;
+  readonly terminal: boolean;
+  readonly endLabel: number;
+};
+
 type AsyncOperation =
   | { readonly kind: "statement"; readonly statement: Statement }
   | { readonly kind: "scopeEnter"; readonly scope: number; readonly name: string }
@@ -143,6 +150,11 @@ type AsyncOperation =
     readonly kind: "matchSelect";
     readonly site: AsyncValueMatchSite;
     readonly armIndex: number;
+    readonly expression: Expression;
+  }
+  | {
+    readonly kind: "branchSelect";
+    readonly site: AsyncValueBranchSite;
     readonly expression: Expression;
   }
   | { readonly kind: "jump"; readonly label: number }
@@ -657,6 +669,176 @@ function planFunction(
     });
     operations.push({ kind: "label", label: endLabel });
   };
+  const needsBranchPlanning = (expression: Expression): boolean => {
+    if (expression.kind === "ifExpression") return true;
+    if (expression.kind === "unary") return needsBranchPlanning(expression.operand);
+    return containsAwait(expression)
+      && (
+        expression.kind === "conditional"
+        || (expression.kind === "binary" && (expression.operator === "&&" || expression.operator === "||"))
+      );
+  };
+  let planSelectedBranchValue: (
+    expression: Expression,
+    site: AsyncValueBranchSite,
+    scope: number,
+    controlDepth: number,
+  ) => void;
+  const planBranchCondition = (
+    expression: Expression,
+    scope: number,
+    controlDepth: number,
+  ): Expression => {
+    if (!needsBranchPlanning(expression)) {
+      recordNestedAwaits(expression);
+      validateFrameExpression(expression, locals, fileName, types, suspensions);
+      return expression;
+    }
+    const binding = `__z_async_branch_condition_${expression.location.offset}`;
+    if (locals.has(binding)) {
+      throw new Error(`duplicate async branch condition ${expression.location.offset}`);
+    }
+    locals.set(binding, "boolean");
+    const endLabel = nextLabel.value++;
+    planSelectedBranchValue(
+      expression,
+      {
+        destination: `frame->${frameField(binding)}`,
+        destinationType: "boolean",
+        terminal: false,
+        endLabel,
+      },
+      scope,
+      controlDepth,
+    );
+    operations.push({ kind: "label", label: endLabel });
+    return {
+      kind: "identifier",
+      name: binding,
+      location: expression.location,
+    };
+  };
+  const planValueBranch = (
+    expression: Expression,
+    site: AsyncValueBranchSite,
+    scope: number,
+    controlDepth: number,
+  ): void => {
+    if (expression.kind === "unary" && needsBranchPlanning(expression.operand)) {
+      const operand = planBranchCondition(expression.operand, scope, controlDepth);
+      planSelectedBranchValue(
+        { ...expression, operand },
+        site,
+        scope,
+        controlDepth,
+      );
+      return;
+    }
+    if (expression.kind === "binary" && (expression.operator === "&&" || expression.operator === "||")) {
+      const condition = planBranchCondition(expression.left, scope, controlDepth);
+      const trueLabel = nextLabel.value++;
+      const falseLabel = nextLabel.value++;
+      operations.push({
+        kind: "branch",
+        condition,
+        thenLabel: trueLabel,
+        elseLabel: falseLabel,
+      });
+      operations.push({ kind: "label", label: trueLabel });
+      planSelectedBranchValue(
+        expression.operator === "&&"
+          ? expression.right
+          : { kind: "boolean", value: true, location: expression.location },
+        site,
+        scope,
+        controlDepth,
+      );
+      operations.push({ kind: "label", label: falseLabel });
+      planSelectedBranchValue(
+        expression.operator === "&&"
+          ? { kind: "boolean", value: false, location: expression.location }
+          : expression.right,
+        site,
+        scope,
+        controlDepth,
+      );
+      return;
+    }
+    if (expression.kind === "conditional") {
+      const condition = planBranchCondition(expression.condition, scope, controlDepth);
+      const thenLabel = nextLabel.value++;
+      const elseLabel = nextLabel.value++;
+      operations.push({
+        kind: "branch",
+        condition,
+        thenLabel,
+        elseLabel,
+      });
+      operations.push({ kind: "label", label: thenLabel });
+      planSelectedBranchValue(expression.thenExpression, site, scope, controlDepth);
+      operations.push({ kind: "label", label: elseLabel });
+      planSelectedBranchValue(expression.elseExpression, site, scope, controlDepth);
+      return;
+    }
+    if (expression.kind === "ifExpression") {
+      const condition = planBranchCondition(expression.condition, scope, controlDepth);
+      const thenLabel = nextLabel.value++;
+      const elseLabel = nextLabel.value++;
+      operations.push({
+        kind: "branch",
+        condition,
+        thenLabel,
+        elseLabel,
+      });
+      const planArm = (body: Extract<Statement, { kind: "block" }>): void => {
+        const final = body.statements.at(-1);
+        if (!final) {
+          unsupported(fileName, body.location, "a value-producing async if branch cannot be empty");
+        }
+        const prefix = body.statements.slice(0, -1);
+        if (prefix.length > 0) planStatements(prefix, scope, controlDepth + 1);
+        if (final.kind === "select" || final.kind === "expressionStatement") {
+          planSelectedBranchValue(final.expression, site, scope, controlDepth + 1);
+        } else if (final.kind === "return" || final.kind === "throw") {
+          planStatements([final], scope, controlDepth + 1);
+        } else {
+          unsupported(
+            fileName,
+            final.location,
+            "a suspending value-producing if branch must end with `select`, `return`, or `throw`",
+          );
+        }
+      };
+      operations.push({ kind: "label", label: thenLabel });
+      planArm(expression.thenBranch);
+      operations.push({ kind: "label", label: elseLabel });
+      if (expression.elseBranch.kind === "ifExpression") {
+        planSelectedBranchValue(expression.elseBranch, site, scope, controlDepth + 1);
+      } else {
+        planArm(expression.elseBranch);
+      }
+      return;
+    }
+    unsupported(fileName, expression.location, "expected a branch-aware async value expression");
+  };
+  planSelectedBranchValue = (
+    expression: Expression,
+    site: AsyncValueBranchSite,
+    scope: number,
+    controlDepth: number,
+  ): void => {
+    if (needsBranchPlanning(expression)) {
+      planValueBranch(expression, site, scope, controlDepth);
+      return;
+    }
+    recordNestedAwaits(
+      expression,
+      expression,
+      hasFrameCleanup(site.destinationType, types),
+    );
+    validateFrameExpression(expression, locals, fileName, types, suspensions);
+    operations.push({ kind: "branchSelect", site, expression });
+  };
   planStatements = (statements: readonly Statement[], scope: number, controlDepth = 0): void => {
     for (const statement of statements) {
       if (statement.kind === "asyncScope") {
@@ -682,13 +864,12 @@ function planFunction(
         continue;
       }
       if (statement.kind === "if") {
-        recordNestedAwaits(statement.condition);
-        validateFrameExpression(statement.condition, locals, fileName, types, suspensions);
+        const condition = planBranchCondition(statement.condition, scope, controlDepth);
         const thenLabel = nextLabel.value++;
         const elseLabel = nextLabel.value++;
         const endLabel = nextLabel.value++;
         const incomingJoins = new Set(joinedSpawns);
-        operations.push({ kind: "branch", condition: statement.condition, thenLabel, elseLabel });
+        operations.push({ kind: "branch", condition, thenLabel, elseLabel });
         operations.push({ kind: "label", label: thenLabel });
         planStatements(statement.thenBranch.statements, scope, controlDepth + 1);
         const thenJoins = new Set(joinedSpawns);
@@ -721,9 +902,8 @@ function planFunction(
         const bodyLabel = nextLabel.value++;
         const endLabel = nextLabel.value++;
         operations.push({ kind: "label", label: conditionLabel });
-        recordNestedAwaits(statement.condition);
-        validateFrameExpression(statement.condition, locals, fileName, types, suspensions);
-        operations.push({ kind: "branch", condition: statement.condition, thenLabel: bodyLabel, elseLabel: endLabel });
+        const condition = planBranchCondition(statement.condition, scope, controlDepth);
+        operations.push({ kind: "branch", condition, thenLabel: bodyLabel, elseLabel: endLabel });
         operations.push({ kind: "label", label: bodyLabel });
         loopTargets.push({
           breakLabel: endLabel,
@@ -1035,6 +1215,19 @@ function planFunction(
           ownedTaskScopes.add(statement.name);
         }
         if (!statement.initializer) continue;
+        if (needsBranchPlanning(statement.initializer)) {
+          operations.pop();
+          const endLabel = nextLabel.value++;
+          const site: AsyncValueBranchSite = {
+            destination: `frame->${frameField(statement.name)}`,
+            destinationType: type,
+            terminal: false,
+            endLabel,
+          };
+          planSelectedBranchValue(statement.initializer, site, scope, controlDepth);
+          operations.push({ kind: "label", label: endLabel });
+          continue;
+        }
         if (
           statement.initializer.kind === "matchExpression"
           && matchNeedsPlanning(statement.initializer, type)
@@ -1123,6 +1316,17 @@ function planFunction(
         continue;
       }
       if (statement.kind === "return") {
+        if (statement.expression && needsBranchPlanning(statement.expression)) {
+          operations.pop();
+          const site: AsyncValueBranchSite = {
+            destination: "frame->result",
+            destinationType: declaration.returnType.name,
+            terminal: true,
+            endLabel: nextLabel.value++,
+          };
+          planSelectedBranchValue(statement.expression, site, scope, controlDepth);
+          continue;
+        }
         if (
           statement.expression?.kind === "matchExpression"
           && matchNeedsPlanning(statement.expression, declaration.returnType.name)
@@ -2175,8 +2379,8 @@ function collectNestedAwaitOperations(
           unsupported(
             fileName,
             candidate.location,
-            "await inside short-circuit logic needs branch-aware expression lowering",
-            "bind the awaited operand first; lazy `&&` and `||` suspension lowering is a following tier",
+            "await inside embedded short-circuit logic needs hidden branch-result lowering",
+            "bind the lazy `&&` or `||` result first; direct bindings, returns, and control conditions already preserve selected-branch suspension",
           );
         }
         walk(candidate.left);
@@ -2188,8 +2392,8 @@ function collectNestedAwaitOperations(
           unsupported(
             fileName,
             candidate.location,
-            "await inside a conditional expression needs selected-branch suspension lowering",
-            "use an awaited `if` statement for now; ternary and value-producing-if suspension will preserve lazy branch evaluation",
+            "await inside an embedded conditional expression needs hidden branch-result lowering",
+            "bind the ternary or value-producing `if` first; direct bindings and returns already preserve selected-branch suspension",
           );
         }
         return;
@@ -4535,6 +4739,42 @@ function emitAsyncMatchSelect(
   return lines;
 }
 
+function emitAsyncBranchSelect(
+  operation: Extract<AsyncOperation, { kind: "branchSelect" }>,
+  plan: AsyncFunctionPlan,
+  fileName: string,
+): string[] {
+  const { site } = operation;
+  const prepared = emitPreparedFrameExpression(operation.expression, plan, fileName);
+  let value = prepared.value;
+  const suspension = plan.suspensions.get(operation.expression.location.offset);
+  if (suspension && hasFrameCleanup(site.destinationType, plan.types)) {
+    value = frameTransferredValue(
+      value,
+      `frame->${suspension.field}_live`,
+      site.destinationType,
+      plan.types,
+    );
+  }
+  const initialize = requiresNativeFramePlacement(site.destinationType, plan.types)
+    ? `new (${site.destination}) ${cFrameType(site.destinationType, plan.types)}(${value});`
+    : `${site.destination} = ${value};`;
+  const lines = [
+    ...prepared.prefix,
+    initialize,
+    ...(hasFrameCleanup(site.destinationType, plan.types)
+      ? [`${destinationLiveFlag(site.destination, plan)} = true;`]
+      : []),
+  ];
+  if (site.terminal) {
+    if (plan.declaration.errorType) lines.push("frame->failed = false;");
+    lines.push(`frame->state = ${finalizeStateMarker};`, "continue;");
+  } else {
+    lines.push(`frame->state = ${asyncLabelMarker(site.endLabel)};`, "continue;");
+  }
+  return lines;
+}
+
 function generatePoll(
   plan: AsyncFunctionPlan,
   planByKey: ReadonlyMap<string, AsyncFunctionPlan>,
@@ -4643,6 +4883,12 @@ function generatePoll(
     if (operation.kind === "matchSelect") {
       emitNestedAwaits(operation.expression);
       cases.push(caseBlock(state, emitAsyncMatchSelect(operation, plan, fileName)));
+      state += 1;
+      continue;
+    }
+    if (operation.kind === "branchSelect") {
+      emitNestedAwaits(operation.expression);
+      cases.push(caseBlock(state, emitAsyncBranchSelect(operation, plan, fileName)));
       state += 1;
       continue;
     }

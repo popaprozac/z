@@ -5320,10 +5320,15 @@ function inferExpressionInner(
       }
       const original = new Map(locals);
       const thenLocals = narrowedConditionLocals(original, expression.condition, true, state);
-      const thenType = inferExpression(expression.thenExpression, thenLocals, globals, structs, enums, fileName, state);
+      const activeFunction = state.activeFunction;
+      const thenType = activeFunction?.async
+        ? inferDirectValue(expression.thenExpression, activeFunction, thenLocals, globals, structs, enums, fileName, state)
+        : inferExpression(expression.thenExpression, thenLocals, globals, structs, enums, fileName, state);
       consumeOwnedValue(expression.thenExpression, thenType, thenLocals, structs, enums, fileName, state);
       const elseLocals = narrowedConditionLocals(original, expression.condition, false, state);
-      const elseType = inferExpression(expression.elseExpression, elseLocals, globals, structs, enums, fileName, state);
+      const elseType = activeFunction?.async
+        ? inferDirectValue(expression.elseExpression, activeFunction, elseLocals, globals, structs, enums, fileName, state)
+        : inferExpression(expression.elseExpression, elseLocals, globals, structs, enums, fileName, state);
       consumeOwnedValue(expression.elseExpression, elseType, elseLocals, structs, enums, fileName, state);
       mergeOwnershipStates(locals, [thenLocals, elseLocals], state);
       return commonBranchType("conditional", thenType, elseType, expression.elseExpression.location, fileName);
