@@ -1838,19 +1838,6 @@ test("contextually types signed literals at their destination width", () => {
   writeFileSync(fileName, source);
   const result = spawnSync(process.execPath, [cli, "run", fileName], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
-
-  const synchronousThrow = `
-    import { thread } from "std/thread";
-    struct WorkError { code: i32; }
-    function inspect(value: i32): i32 throws WorkError { return value; }
-    async function main(): i32 throws WorkError {
-      return try await on thread.main inspect(42);
-    }
-  `;
-  const diagnostic = diagnostics(synchronousThrow, "direct-placed-sync-throw.zs")[0];
-  assert.equal(diagnostic.code, "Z0713");
-  assert.match(diagnostic.message, /throwing synchronous call cannot be placed directly/);
-  assert.match(diagnostic.helps.join(" "), /wrap the synchronous operation in an async function/);
 });
 
 test("checks integer arithmetic and provides explicit wrapping and saturation", () => {
@@ -3834,6 +3821,23 @@ test("generates safe Objective-C protocol adapters with protocol-aware editor sc
     'as "notADataSourceSelector:"',
   );
   assert.match(diagnostics(wrongSelector, example)[0]?.message ?? "", /not declared by an implemented Objective-C protocol/);
+
+  const unsafeBindingFile = resolve(projectRoot, "tests/fixtures/objc-unsafe-binding-test.zs");
+  const unsafeBinding = `
+    import native from "objc-unsafe-binding.h";
+    import objc from "std/objc";
+    class Controller implements native.ZUnsafeBindingDelegate {}
+    function main(): i32 {
+      const owner = native.ZUnsafeBindingOwner.alloc().init();
+      const controller = new Controller({});
+      const binding = objc.bind(owner, { delegate: controller });
+      return 0;
+    }
+  `;
+  const unsafeDiagnostic = diagnostics(unsafeBinding, unsafeBindingFile)[0];
+  assert.equal(unsafeDiagnostic.code, "Z0810");
+  assert.match(unsafeDiagnostic.message, /requires a zeroing weak protocol property/);
+  assert.match(unsafeDiagnostic.message, /assign/);
 }, 15_000);
 
 test("registers persistent Objective-C event callbacks with explicit token cleanup", () => {
@@ -13328,6 +13332,24 @@ test("places direct async calls without nested tasks and preserves parameter cap
   assert.equal(result.status, 0, result.stderr);
 });
 
+test("diagnoses throwing synchronous direct placement before async lowering", () => {
+  const source = `
+    import { thread } from "std/thread";
+    struct WorkError { code: i32; }
+    function inspect(value: i32): i32 throws WorkError { return value; }
+    async function main(): i32 throws WorkError {
+      return try await on thread.main inspect(42);
+    }
+  `;
+  const diagnostic = diagnostics(source, "direct-placed-sync-throw.zs")[0];
+  assert.equal(diagnostic.code, "Z0713");
+  assert.match(diagnostic.message, /throwing synchronous call cannot be placed directly/);
+  assert.match(
+    diagnostic.data?.helps.join(" ") ?? "",
+    /wrap the synchronous operation in an async function/,
+  );
+});
+
 test("enforces declaration-header executor affinity and surfaces inherited isolation", () => {
   const source = `
     import { thread } from "std/thread";
@@ -15310,6 +15332,82 @@ test("mutably borrows caller storage through scoped task and releases it on join
   `);
   const cancelled = spawnSync(process.execPath, [cli, "run", cancellation], { encoding: "utf8" });
   assert.equal(cancelled.status, 0, cancelled.stderr);
+});
+
+test("requires loop-created child tasks to join before the back-edge", () => {
+  const unsafeFanOut = `
+    import { delay } from "std/time";
+    struct Counter { value: i32; }
+    async function bump(inout counter: Counter): void {
+      const seen = counter.value;
+      await delay(1);
+      counter.value = seen + 1;
+    }
+    async function main(): i32 {
+      let counter = Counter({ value: 0 });
+      let index = 0;
+      async scope {
+        while (index < 4) {
+          task bump(inout counter);
+          index = index + 1;
+        }
+      }
+      return counter.value;
+    }
+  `;
+  const diagnostic = diagnostics(unsafeFanOut, "loop-carried-task.zs")[0];
+  assert.equal(diagnostic.code, "Z0700");
+  assert.match(diagnostic.message, /child task cannot cross a loop back-edge/);
+  assert.match(diagnostic.message, /one child slot per syntactic task site/);
+
+  const directory = mkdtempSync("/tmp/z-loop-scoped-task-");
+  const fileName = resolve(directory, "main.zs");
+  const perIterationJoin = unsafeFanOut
+    .replace(
+      "task bump(inout counter);",
+      "async scope {\n            task bump(inout counter);\n          }",
+    )
+    .replace("return counter.value;", "return counter.value - 4;");
+  writeFileSync(fileName, perIterationJoin);
+  check(perIterationJoin, fileName);
+  const result = spawnSync(process.execPath, [cli, "run", fileName], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+
+  const directAwait = unsafeFanOut
+    .replace("task bump(inout counter);", "await bump(inout counter);")
+    .replace("return counter.value;", "return counter.value - 4;");
+  check(directAwait, "loop-direct-await.zs");
+
+  const placedTask = `
+    import { thread } from "std/thread";
+    async function work(): void {}
+    async function main(): i32 {
+      let index = 0;
+      while (index < 2) {
+        task on thread.main work();
+        index = index + 1;
+      }
+      return 0;
+    }
+  `;
+  const placedDiagnostic = diagnostics(placedTask, "loop-placed-task.zs")[0];
+  assert.equal(placedDiagnostic.code, "Z0700");
+  assert.match(placedDiagnostic.message, /child task cannot cross a loop back-edge/);
+
+  const nativeThread = `
+    import { thread } from "std/thread";
+    async function main(): i32 {
+      let index = 0;
+      while (index < 2) {
+        thread.spawn((): i32 => 42);
+        index = index + 1;
+      }
+      return 0;
+    }
+  `;
+  const threadDiagnostic = diagnostics(nativeThread, "loop-native-thread.zs")[0];
+  assert.equal(threadDiagnostic.code, "Z0700");
+  assert.match(threadDiagnostic.message, /native thread cannot cross a loop back-edge/);
 });
 
 test("borrows fixed-array storage as Slice across async suspension", () => {

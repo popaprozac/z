@@ -462,6 +462,7 @@ type AnalysisState = {
   nativeThreadBodyDepth: number;
   asyncScopeDepth: number;
   asyncLoopDepth: number;
+  readonly asyncLoopScopeFloors: number[];
   activeFunction: FunctionDeclaration | null;
   activeReceiver: string | null;
 };
@@ -729,6 +730,7 @@ export function analyze(
     nativeThreadBodyDepth: 0,
     asyncScopeDepth: 0,
     asyncLoopDepth: 0,
+    asyncLoopScopeFloors: [],
     activeFunction: null,
     activeReceiver: null,
   };
@@ -1994,6 +1996,7 @@ function analyzeFunction(
   state.asyncTaskBorrowSpawns.clear();
   state.asyncScopeDepth = 0;
   state.asyncLoopDepth = 0;
+  state.asyncLoopScopeFloors.length = 0;
   state.viewCallOrigins.clear();
   state.viewOrigins.clear();
   state.inferredOutBindingLocations.clear();
@@ -3098,18 +3101,22 @@ function analyzeStatement(
     }
     case "while": {
       state.asyncLoopDepth += 1;
+      state.asyncLoopScopeFloors.push(state.asyncScopeDepth);
       try {
         analyzeWhileLoop(statement, owner, locals, globals, structs, enums, fileName, state);
       } finally {
+        state.asyncLoopScopeFloors.pop();
         state.asyncLoopDepth -= 1;
       }
       return;
     }
     case "for": {
       state.asyncLoopDepth += 1;
+      state.asyncLoopScopeFloors.push(state.asyncScopeDepth);
       try {
         analyzeForLoop(statement, owner, locals, globals, structs, enums, fileName, state);
       } finally {
+        state.asyncLoopScopeFloors.pop();
         state.asyncLoopDepth -= 1;
       }
       return;
@@ -4497,6 +4504,7 @@ function inferExecutorPlacement(
       helps: ["import { thread } from \"std/thread\" and use `await on thread.main { ... }` or `task on thread.main { ... }`"],
     });
   }
+  if (expression.mode === "spawn") rejectLoopCarriedChildTask(expression.location, fileName, state);
   const synchronousNativePlacement = expression.mode === "spawn" && state.nativeThreadBodyDepth > 0;
   if (!state.activeFunction?.async && !synchronousNativePlacement) {
     if (expression.mode === "spawn") {
@@ -5667,6 +5675,7 @@ function inferExpressionInner(
       return awaited;
     }
     case "spawn": {
+      rejectLoopCarriedChildTask(expression.location, fileName, state);
       if (!state.activeFunction?.async) {
         throw new DiagnosticError(fileName, expression.location, "task requires an enclosing async function", {
           code: "Z0703",
@@ -6248,9 +6257,11 @@ function inferExpressionInner(
                       code: "Z0810",
                     });
                   }
-                  if (property.ownership !== "weak" && property.ownership !== "assign" && property.ownership !== "unsafeUnretained") {
-                    throw new DiagnosticError(fileName, field.location, `objc.bind is for non-owning protocol properties; ${receiver.declaration.className}.${field.name} is ${property.ownership}`, {
+                  if (property.ownership !== "weak") {
+                    throw new DiagnosticError(fileName, field.location, `objc.bind currently requires a zeroing weak protocol property; ${receiver.declaration.className}.${field.name} is ${property.ownership}`, {
                       code: "Z0810",
+                      notes: ["releasing an adapter behind assign or unsafeUnretained storage would leave a dangling native pointer"],
+                      helps: ["use a zeroing weak protocol property, or keep an explicit native adapter alive until that property is cleared"],
                     });
                   }
                   if (field.expression.kind !== "identifier") {
@@ -6348,6 +6359,7 @@ function inferExpressionInner(
                   helps: ["call thread.spawn from an async function so its Task can be awaited"],
                 });
               }
+              rejectLoopCarriedChildTask(expression.location, fileName, state, "native thread");
               if (expression.arguments.length !== 1 || expression.arguments[0].kind !== "closure") {
                 throw new DiagnosticError(fileName, expression.location, "thread.spawn expects one closure", {
                   code: "Z0703",
@@ -8392,6 +8404,27 @@ function recordAsyncSpawnBorrow(
   }
   const roots = state.asyncSpawnBorrowRoots.get(spawnOffset) ?? [];
   if (!roots.includes(root)) state.asyncSpawnBorrowRoots.set(spawnOffset, [...roots, root]);
+}
+
+function rejectLoopCarriedChildTask(
+  location: SourceLocation,
+  fileName: string,
+  state: AnalysisState,
+  subject = "child task",
+): void {
+  const loopScopeFloor = state.asyncLoopScopeFloors.at(-1);
+  if (loopScopeFloor === undefined || state.asyncScopeDepth > loopScopeFloor) return;
+  throw new DiagnosticError(fileName, location, `${subject} cannot cross a loop back-edge in the current runtime tier`, {
+    code: "Z0700",
+    notes: [
+      "the current task frame has one child slot per syntactic task site; repeating that site would overwrite a still-live child",
+      "a scope created inside the loop iteration joins all of its children before the next iteration",
+    ],
+    helps: [
+      "use direct await for sequential iteration",
+      "or create `async scope { ... }` inside the loop body so its child tasks join before the back-edge",
+    ],
+  });
 }
 
 function releaseAsyncTaskBorrows(task: string, state: AnalysisState): void {

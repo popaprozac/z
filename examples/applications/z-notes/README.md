@@ -7,7 +7,7 @@ The application currently combines:
 
 - an ARC-managed Z application model containing owned `Array<Note>` storage;
 - an ARC-managed `NoteDatabase` containing a persistent
-  `sqlite.sqlite3` native owner for interactive inserts;
+  `sqlite.sqlite3` native owner, pressure-testing long-lived native storage;
 - async startup loading on one dedicated `thread.spawn` worker, including a
   private worker executor, scheduler suspension, a worker-local SQLite owner,
   owned `Array<Note>` transfer, typed failure, and `await on thread.main`
@@ -39,15 +39,16 @@ them carry main-executor affinity in hover and fail during Z analysis if moved
 into an ordinary helper or native worker.
 
 Startup deliberately uses two ownership domains. The main task opens one
-persistent `NoteDatabase` for later button inserts. It then starts
+persistent `NoteDatabase` to prove long-lived native-owner storage. It then starts
 `thread.spawn(async move () => ...)` with an owned path snapshot. The dedicated
 worker suspends once through scheduler-aware `delay`, opens a second
 worker-local database, creates/seeds/loads the table, closes that handle on the
 worker, and transfers only owned `Array<Note>` model data back through
 `Task<Array<Note>, i32>`. No mutable ARC database or raw SQLite handle crosses
 threads. The main task materializes that result into `NoteStore`, then
-`await on thread.main` enters the synchronous AppKit lifetime. Each click first
-persists the entered note, then
+`await on thread.main` enters the synchronous AppKit lifetime. Interactive
+saves deliberately open a worker-local `NoteDatabase`; the long-lived main
+instance is not used for those calls. Each successful save then
 mutates the ARC-managed `NoteStore`, selects it, updates native AppKit labels
 and the window title, refreshes the browser, and logs the new note. The
 window, controls, methods, properties, strings, and layouts still come directly
@@ -96,11 +97,12 @@ handwritten C wrapper. `sqlite3_open` produces an owned handle through
 therefore acquires its native type from the call, becomes initialized after the
 call, narrows to non-null, and moves into the
 `private database: sqlite.sqlite3` field. Each ARC-managed `NoteDatabase`
-reuses its handle within one ownership domain. The background instance creates
-and loads on the worker; the long-lived main instance handles interactive
-inserts. Each final release calls `sqlite3_close` exactly once on the thread
-that created and used that instance. Prepared statements remain operation-local
-owners and use the same `out` shape with `sqlite3_finalize`.
+reuses its handle within one ownership domain. Worker-local instances perform
+startup loading and interactive inserts; the long-lived main instance proves
+storage and cleanup but currently performs no interactive query. Each final
+release calls `sqlite3_close` exactly once on the thread that created and used
+that instance. Prepared statements remain operation-local owners and use the
+same `out` shape with `sqlite3_finalize`.
 
 The same declaration file projects SQLite's conventional zero-success integer
 statuses into `void throws i32`. Application code uses `try sqlite3_open(...)`

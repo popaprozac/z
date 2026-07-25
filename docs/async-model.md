@@ -436,17 +436,20 @@ the task frame. A struct async instance method must initially declare `move
 this`, transferring its value into the frame; static async methods on either
 kind have no receiver restriction. `deinit` is never async.
 
-Typed channels transfer ownership:
+## Planned channels, actors, and pluggable executors
+
+The following shapes describe intended direction and are not implemented yet.
+Typed channels should transfer ownership:
 
 ```z
 const [sender, receiver] = Channel<Job>.bounded(64);
 try await sender.send(job); // moves a non-copyable job
 ```
 
-Actors provide isolation for long-lived mutable state; channels remain the
-primitive for pipelines and explicit communication. Executors are pluggable so
-Z can participate in Dispatch, GUI run loops, Windows thread-pool I/O, custom
-engines, and deterministic tests.
+Actors are intended to isolate long-lived mutable state; channels would remain
+the primitive for pipelines and explicit communication. Future executor
+capabilities should let Z participate in Dispatch, GUI run loops, Windows
+thread-pool I/O, custom engines, and deterministic tests.
 
 ## Bootstrap phases
 
@@ -464,8 +467,11 @@ children without blocking the main executor, and Darwin wakes an installed
 affinity contracts, and Windows/Linux UI-loop adapters remain; see
 [`executor-placement.md`](executor-placement.md).
 
-Phase 1 executes owned async functions and methods on a deterministic
-single-thread FIFO executor. Each call allocates a typed task frame and each
+Phase 1 executes owned async functions and methods on deterministic serial FIFO
+executors. The root/main task uses one executor, and an explicitly async
+`thread.spawn` closure owns a private executor bound to its dedicated OS
+thread. There is no shared pool or work-stealing scheduler yet. Each call
+allocates a typed task frame and each
 `await` becomes an explicit poll state. Direct awaits suspend their parent;
 `task` enqueues hot children and a task handle joins the already-running frame.
 Scalars, enums with owned payloads, value structs, ARC class references,
@@ -537,6 +543,15 @@ selected work. Arbitrary embedding of a suspending lazy expression inside a
 larger call or aggregate remains diagnosed while hidden branch-result storage
 is added. The next Phase 1 layers add broader foreign-call shapes and
 brace-local value cleanup.
+
+A syntactic child-task site currently has one fixed child slot in its owning
+task frame. Z therefore rejects `task`, `task on`, and `thread.spawn` when that
+child could remain live across a loop back-edge. Direct `await` is valid for
+sequential iteration. Multiple children may be started inside an
+`async scope` created within the loop body, because that scope joins them
+before the next iteration. Cross-iteration fan-out requires a future dynamic
+child group rather than overwriting a fixed slot.
+
 Later phases add channels, broader sendability, actors, native cancellation
 hooks, repeated-callback async sequences, and richer ownership-bearing foreign
 completion payloads. Async-free programs never link the runtime.

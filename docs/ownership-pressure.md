@@ -280,6 +280,23 @@ code, escaping `objc.connect` storage remains in a synchronous
 application-lifetime function, and raw AppKit identities are not captured into
 the worker-owned persistence graph.
 
+## Loop-carried child-task slots
+
+An adversarial loop exposed a compiler/runtime soundness boundary: one
+syntactic `task` site inside a loop reused one fixed generated child slot on
+every iteration. When the child suspended, later iterations overwrote the
+pointer, leaked earlier frames, and allowed multiple exclusive `inout` loans to
+the same storage. The serial executor could hide the problem when children did
+not suspend.
+
+Z now rejects a child whose lifetime could cross a loop back-edge. Sequential
+iteration uses direct `await`. Parallel work within one iteration may use an
+`async scope` created inside the loop body, whose implicit join runs before the
+back-edge. True cross-iteration fan-out remains a dynamic-child-group feature;
+it must not be approximated by reusing a fixed frame slot. This boundary applies
+to ordinary `task`, placed `task on`, and explicit `thread.spawn` children, not
+only to borrowed arguments.
+
 ## Not tested yet
 
 - child-task output and cross-thread borrows that survive suspension;

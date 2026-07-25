@@ -1520,7 +1520,8 @@ and returns an `objc.Connection`. The connection must remain bound while the
 callback is desired; its precise scope lifetime and teardown prevent a weak
 target from silently disappearing after a helper returns.
 
-Weak Objective-C delegate and data-source properties use `objc.bind`:
+Zeroing `weak` Objective-C delegate and data-source properties use
+`objc.bind`:
 
 ```zs
 const binding = objc.bind(tableView, {
@@ -1533,6 +1534,9 @@ The object literal names real imported writable protocol properties. Each value
 must be a stored Z class implementing the property's protocol. The returned
 `objc.Binding` retains the native object, generated `NSObject` adapter, and Z
 controller, so the native weak property cannot dangle while the token is live.
+The current adapter rejects `assign` and `unsafe_unretained` properties:
+releasing their adapter would otherwise leave a dangling native pointer because
+those storage conventions do not zero themselves.
 
 Adjacent `.zd` contracts can safely restrict native pointer surfaces without
 introducing a raw pointer into Z. `parameter: null` permits only the native null

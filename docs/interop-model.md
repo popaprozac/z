@@ -675,10 +675,12 @@ lowered into a generated `NSObject<Protocol>` adapter. The Z class itself
 remains a Z ARC allocation; it is not silently changed into an Objective-C
 class.
 
-Protocol properties such as `NSTableView.dataSource` and `.delegate` are weak.
-`objc.bind(object, { property: controller })` installs generated adapters and
-returns an owned `objc.Binding` token that keeps the native object, adapters,
-and Z controllers alive. This closes the common delegate/data-source lifetime
+Protocol properties such as `NSTableView.dataSource` and `.delegate` are
+zeroing `weak`. `objc.bind(object, { property: controller })` installs generated
+adapters and returns an owned `objc.Binding` token that keeps the native object,
+adapters, and Z controllers alive. The current adapter rejects `assign` and
+`unsafe_unretained` protocol storage because releasing its adapter could leave a
+dangling native pointer. This closes the common delegate/data-source lifetime
 seam without forcing ordinary Objective-C calls through `std/objc`.
 
 | Native surface | Ordinary header import | `std/objc` bridge |
