@@ -17,6 +17,7 @@ import {
 import type {
   ClosureInfo,
   ForeignCallArgumentPlan,
+  ForeignConnectionCallInfo,
   ForeignStatusCallInfo,
   IntegerConversion,
   IntegerOperation,
@@ -32,6 +33,7 @@ import {
 } from "./foreign.ts";
 import {
   isStandardModuleSpecifier,
+  nativeConnectionTypeName,
   objcConnectionTypeName,
   objcSelectorTypeName,
   standardFunctionSignature,
@@ -130,6 +132,7 @@ const primitiveTypeNames: Record<string, string> = {
   TaskScope: "Z_TaskScope *",
   TaskControl: "Z_TaskControl *",
   [objcSelectorTypeName]: "SEL",
+  [nativeConnectionTypeName]: "Z_NativeConnection",
 };
 
 export function generateC(program: Program, sourceName: string, semanticInfo: SemanticInfo): string {
@@ -185,6 +188,7 @@ export function generateC(program: Program, sourceName: string, semanticInfo: Se
   const functionTypes = collectFunctionTypes(program, semanticInfo);
   const foreignCallbackAdapters = collectForeignCallbackAdapters(semanticInfo);
   const foreignEscapeHelpers = collectForeignEscapeHelpers(foreignCallbackAdapters);
+  const foreignConnectionCalls = [...semanticInfo.foreignConnectionCalls.entries()];
   const usesSleep = [...semanticInfo.standardFunctionReferences.values()].includes("sleep");
   const usesTiming = usesSleep || [...semanticInfo.standardFunctionReferences.values()].includes("delay");
   const usedStandardFunctions = new Set(semanticInfo.standardFunctionReferences.values());
@@ -383,9 +387,10 @@ export function generateC(program: Program, sourceName: string, semanticInfo: Se
   for (const helper of foreignEscapeHelpers) {
     lines.push(generateForeignEscapeHelpers(helper), "");
   }
-  for (const adapter of foreignCallbackAdapters) {
+  for (const adapter of foreignCallbackAdapters.filter((candidate) => !candidate.callback.bytesProjection)) {
     lines.push(generateForeignCallbackAdapter(adapter), "");
   }
+  if (foreignConnectionCalls.length > 0) lines.push(generateNativeConnectionRuntime(), "");
 
   for (const type of sliceTypes) {
     const slice = parseSliceType(type)!;
@@ -405,6 +410,12 @@ export function generateC(program: Program, sourceName: string, semanticInfo: Se
   }
 
   lines.push(...generateAggregateDefinitions(program.structs, program.enums, arrayTypes, structs, enums, semanticInfo.foreignNamedTypes));
+  for (const adapter of foreignCallbackAdapters.filter((candidate) => candidate.callback.bytesProjection)) {
+    lines.push(generateForeignCallbackAdapter(adapter), "");
+  }
+  for (const [offset, connection] of foreignConnectionCalls) {
+    lines.push(generateForeignConnectionHelper(offset, connection), "");
+  }
   for (const [callOffset, closureOffset] of semanticInfo.taskScopeAsyncCalls) {
     const closure = semanticInfo.closures.get(closureOffset)!;
     lines.push(`${taskScopeAsyncScheduleSignature(callOffset, closure, structs, enums, semanticInfo)};`);
@@ -785,6 +796,12 @@ function generateObjCBlockRuntime(): string {
 function collectFixedArrayTypes(program: Program, semanticInfo: SemanticInfo): string[] {
   const collected = new Set<string>();
   const add = (name: string): void => {
+    const functionType = parseFunctionType(name);
+    if (functionType) {
+      for (const parameter of functionType.parameters) add(parameter.type);
+      add(functionType.returnType);
+      return;
+    }
     const slice = parseSliceType(name);
     if (slice) {
       add(slice.elementType);
@@ -815,6 +832,12 @@ function collectFixedArrayTypes(program: Program, semanticInfo: SemanticInfo): s
 function collectSliceTypes(program: Program, semanticInfo: SemanticInfo): string[] {
   const collected = new Set<string>();
   const add = (name: string): void => {
+    const functionType = parseFunctionType(name);
+    if (functionType) {
+      for (const parameter of functionType.parameters) add(parameter.type);
+      add(functionType.returnType);
+      return;
+    }
     const slice = parseSliceType(name);
     if (!slice || collected.has(name)) return;
     collected.add(name);
@@ -964,6 +987,30 @@ function foreignCallbackAdapterName(plan: Extract<ForeignCallArgumentPlan, { kin
 function generateForeignCallbackAdapter(plan: Extract<ForeignCallArgumentPlan, { kind: "callback" }>): string {
   const functionType = parseFunctionType(plan.functionType)!;
   const callback = plan.callback;
+  if (callback.bytesProjection && callback.nativeParameters) {
+    const contextIndex = callback.context!.callbackParameter;
+    const nativeNames = callback.nativeParameters.map((_, index) => (
+      index === contextIndex ? "callback_context" : `native_argument_${index + 1}`
+    ));
+    const nativeParameters = callback.nativeParameters.map((type, index) => (
+      `${type} ${nativeNames[index]}`
+    ));
+    const bytes = callback.bytesProjection;
+    const length = bytes.lengthParameters
+      .map((index) => `(uintptr_t)(${nativeNames[index]})`)
+      .join(" * ");
+    const functionValue = `((${functionTypeCName(functionType)} *)callback_context)`;
+    const sliceType = sliceTypeName("u8");
+    const slice = "_z_callback_bytes";
+    const invoke = `${functionValue}->call(${functionValue}->context, ${slice})`;
+    return `static __attribute__((unused)) size_t ${foreignCallbackAdapterName(plan)}(${nativeParameters.join(", ")}) {
+  ${sliceName(sliceType)} ${slice} = {
+    .data = (uint8_t *)${nativeNames[bytes.bufferParameter]},
+    .length = ${length},
+  };
+  return ${invoke};
+}`;
+  }
   const contextIndex = callback.context!.callbackParameter;
   const nativeParameters: string[] = [];
   const argumentNames: string[] = [];
@@ -984,6 +1031,110 @@ function generateForeignCallbackAdapter(plan: Extract<ForeignCallArgumentPlan, {
   const body = functionType.returnType === "void" ? `${invoke};\n  return;` : `return ${invoke};`;
   return `static __attribute__((unused)) ${callback.returnType.cName} ${functionName}(${nativeParameters.join(", ") || "void"}) {
   ${body}
+}`;
+}
+
+function generateNativeConnectionRuntime(): string {
+  return `typedef struct Z_NativeConnection {
+  void *owner;
+  void *context;
+  void (*disconnect)(void *owner, void *context);
+  void (*release)(void *context);
+  bool active;
+} Z_NativeConnection;
+
+static inline __attribute__((unused)) void z_native_connection_deinit(Z_NativeConnection *connection) {
+  if (!connection->active) return;
+  connection->active = false;
+  if (connection->disconnect != NULL) connection->disconnect(connection->owner, connection->context);
+  if (connection->release != NULL) connection->release(connection->context);
+  connection->owner = NULL;
+  connection->context = NULL;
+}`;
+}
+
+function foreignConnectionHelperName(offset: number): string {
+  return `__z_native_connection_${offset}`;
+}
+
+function foreignConnectionDisconnectName(offset: number): string {
+  return `${foreignConnectionHelperName(offset)}_disconnect`;
+}
+
+function generateForeignConnectionHelper(
+  offset: number,
+  connection: ForeignConnectionCallInfo,
+): string {
+  const target = connection.target;
+  const contract = target.connection!;
+  const owner = target.parameters[contract.ownerParameter].type;
+  const callback = target.parameters[contract.callbackParameter].type;
+  if (callback.kind !== "callback") throw new Error("native connection callback plan is not a callback");
+  const ownerType = owner.cName;
+  const functionType = parseFunctionType(connection.functionType)!;
+  const callbackPlan: Extract<ForeignCallArgumentPlan, { kind: "callback" }> = {
+    kind: "callback",
+    source: connection.callbackSource,
+    callback,
+    functionType: connection.functionType,
+  };
+  const errorType = target.returnType.kind === "z"
+    ? target.returnType.name
+    : target.returnType.kind === "named"
+      ? target.returnType.type.typeName
+      : null;
+  if (!errorType) throw new Error("native connection status has no supported error type");
+  const resultType = resultTypeName(nativeConnectionTypeName, errorType);
+  const resultCType = enumName(resultType);
+  const nativeStatusType = target.returnType.cName;
+  const success = target.status!.success.map((value) => `status == ${value}`).join(" || ");
+  const callbackBox = foreignCallbackBoxName(callbackPlan);
+  const callbackRelease = foreignCallbackBoxReleaseName(callbackPlan);
+  const callbackAdapter = foreignCallbackAdapterName(callbackPlan);
+  const disconnect = foreignConnectionDisconnectName(offset);
+  const helper = foreignConnectionHelperName(offset);
+  const disconnectSuccess = target.status!.success
+    .map((value) => `disconnect_status == ${value}`)
+    .join(" || ");
+  const ownerCast = `(${ownerType})owner_value`;
+  const connectionValue = `(Z_NativeConnection){
+      .owner = (void *)owner,
+      .context = callback_context,
+      .disconnect = ${disconnect},
+      .release = ${callbackRelease},
+      .active = true,
+    }`;
+  const successValue = `(${resultCType}){
+      .tag = ${variantTag(resultType, "success")},
+      .data.success = ${connectionValue},
+    }`;
+  const failureValue = `(${resultCType}){
+      .tag = ${variantTag(resultType, "failure")},
+      .data.failure = status,
+    }`;
+  return `static void ${disconnect}(void *owner_value, void *context) {
+  ${ownerType} owner = ${ownerCast};
+  (void)context;
+  ${nativeStatusType} disconnect_status = ${target.cName}(owner, ${contract.callbackOption}, (${callback.cName})NULL);
+  if (!(${disconnectSuccess})) abort();
+  disconnect_status = ${target.cName}(owner, ${contract.contextOption}, (void *)NULL);
+  if (!(${disconnectSuccess})) abort();
+}
+
+static ${resultCType} ${helper}(${ownerType} owner, ${functionTypeCName(functionType)} operation) {
+  void *callback_context = ${callbackBox}(operation);
+  ${nativeStatusType} status = ${target.cName}(owner, ${contract.contextOption}, callback_context);
+  if (!(${success})) {
+    ${callbackRelease}(callback_context);
+    return ${failureValue};
+  }
+  status = ${target.cName}(owner, ${contract.callbackOption}, ${callbackAdapter});
+  if (!(${success})) {
+    (void)${target.cName}(owner, ${contract.contextOption}, (void *)NULL);
+    ${callbackRelease}(callback_context);
+    return ${failureValue};
+  }
+  return ${successValue};
 }`;
 }
 
@@ -4872,6 +5023,10 @@ function generateValueCleanup(
     const release = `z_task_control_release(${value});`;
     return liveFlag ? `if (${liveFlag}) ${release}` : release;
   }
+  if (type === nativeConnectionTypeName) {
+    const release = `z_native_connection_deinit(&(${value}));`;
+    return liveFlag ? `if (${liveFlag}) ${release}` : release;
+  }
   if (context.semanticInfo.foreignNamedTypes.get(type)?.kind === "object") {
     const release = `${value} = nil;`;
     return liveFlag ? `if (${liveFlag}) ${release}` : release;
@@ -5036,6 +5191,16 @@ function trySuccessType(expression: Extract<Expression, { kind: "try" }>, contex
 
 function throwingCallResultType(expression: Expression, context: GenerationContext): string {
   if (expression.kind === "call") {
+    const connection = context.semanticInfo.foreignConnectionCalls.get(expression.location.offset);
+    if (connection) {
+      const errorType = connection.target.returnType.kind === "z"
+        ? connection.target.returnType.name
+        : connection.target.returnType.kind === "named"
+          ? connection.target.returnType.type.typeName
+          : null;
+      if (!errorType) throw new Error("connection call has no status error type");
+      return resultTypeName(nativeConnectionTypeName, errorType);
+    }
     const status = context.semanticInfo.foreignStatusCalls.get(expression.location.offset);
     if (status) return resultTypeName("void", status.errorType);
   }
@@ -6134,6 +6299,17 @@ function generateExpressionInner(expression: Expression, context: GenerationCont
       }
       if (context.semanticInfo.optionFromNullable.has(expression.location.offset)) {
         return generateExpression(expression.arguments[0], context);
+      }
+      const nativeConnection = context.semanticInfo.foreignConnectionCalls.get(expression.location.offset);
+      if (nativeConnection) {
+        const call = `${foreignConnectionHelperName(expression.location.offset)}(${[
+          generateExpression(expression.arguments[nativeConnection.ownerSource], context),
+          generateExpression(expression.arguments[nativeConnection.callbackSource], context),
+        ].join(", ")})`;
+        const validatedOnly = expression.arguments
+          .filter((_, index) => index !== nativeConnection.ownerSource && index !== nativeConnection.callbackSource)
+          .map((argument) => `(void)(${generateExpression(argument, context)})`);
+        return validatedOnly.length > 0 ? `(${validatedOnly.join(", ")}, ${call})` : call;
       }
       if (context.semanticInfo.objcConnectionCalls.has(expression.location.offset)) {
         return `z_objc_connect(${generateExpression(expression.arguments[0], context)}, ${generateExpression(expression.arguments[1], context)})`;
@@ -7681,6 +7857,7 @@ function hasCleanupType(
 ): boolean {
   if (visiting.has(type)) return false;
   if (type === "String" || type === "TextBuffer" || type === "Arena" || type === "TaskScope" || type === "TaskControl") return true;
+  if (type === nativeConnectionTypeName) return true;
   if (parseGeneratorType(type)) return true;
   if (parseWeakType(type)) return true;
   if (parseFunctionType(type)) return true;

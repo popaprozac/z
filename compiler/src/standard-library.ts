@@ -10,6 +10,7 @@ export type StandardModuleName = "fs" | "process" | "thread" | "scheduler" | "ob
 export const objcConnectionTypeName = "__z_std_objc_Connection";
 export const objcBindingTypeName = "__z_std_objc_Binding";
 export const objcSelectorTypeName = "__z_std_objc_Selector";
+export const nativeConnectionTypeName = "__z_native_Connection";
 
 export type StandardFunctionName =
   | "sleep"

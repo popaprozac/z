@@ -27,7 +27,7 @@ export type ForeignDeclarationMetadata = {
 };
 
 export type ForeignType =
-  | { readonly kind: "z"; readonly name: ForeignScalarTypeName | "cstring" | "void"; readonly cName: string }
+  | { readonly kind: "z"; readonly name: ForeignScalarTypeName | "cstring" | "void" | `__z_slice:${string}`; readonly cName: string }
   | { readonly kind: "nullPointer"; readonly cName: string }
   | { readonly kind: "fixedNative"; readonly cName: string; readonly expression: string }
   | { readonly kind: "selector"; readonly cName: "SEL" }
@@ -263,6 +263,14 @@ export type ForeignCallbackType = {
     readonly callbackParameter: number;
   } | null;
   readonly thread: "caller" | "any" | null;
+  readonly parameterNames?: readonly string[];
+  readonly parameterModes?: readonly ("value" | "in" | "inout" | "out")[];
+  readonly nativeParameters?: readonly string[];
+  readonly nativeParameterNames?: readonly string[];
+  readonly bytesProjection?: {
+    readonly bufferParameter: number;
+    readonly lengthParameters: readonly number[];
+  };
 };
 
 export type ForeignCallbackContextType = {
@@ -287,6 +295,12 @@ export type ForeignFunctionOverload = {
     readonly error: "return";
   } | null;
   readonly parameters: readonly ForeignParameter[];
+  readonly connection: {
+    readonly ownerParameter: number;
+    readonly callbackParameter: number;
+    readonly callbackOption: string;
+    readonly contextOption: string;
+  } | null;
   readonly variadic: boolean;
   readonly cSignature: string;
   readonly metadata: ForeignDeclarationMetadata;
@@ -327,6 +341,12 @@ export type ForeignFunctionDeclaration = {
   readonly namespacePath: readonly string[];
   readonly qualifiedName: string;
   readonly overloads: readonly ForeignFunctionOverloadDeclaration[];
+};
+
+export type ForeignCallbackTypedef = {
+  readonly name: string;
+  readonly signature: string;
+  readonly parameterNames: readonly string[];
 };
 
 export type ForeignDeclarationProducer = "clang" | "swift-interface" | "package-metadata" | "cache";

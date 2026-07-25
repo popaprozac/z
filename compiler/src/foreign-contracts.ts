@@ -25,6 +25,12 @@ export type ForeignContractTypeMapper = {
   readonly mapCallbackContext: (cName: string, callbackParameter: number) => ForeignCallbackContextType | ForeignType;
   readonly mapCallbackRelease: (cName: string, callbackParameter: number, contextParameter: number) => ForeignCallbackReleaseType | ForeignType;
   readonly mapVariadicType: (type: "cstring" | "clong") => ForeignType;
+  readonly mapVariadicCallback: (
+    nativeType: string,
+    nativeSignature: string,
+    nativeParameterNames: readonly string[],
+    bytes: { readonly bufferParameter: number; readonly lengthParameters: readonly number[] },
+  ) => ForeignType;
 };
 
 export type NormalizedForeignContracts = {
@@ -87,16 +93,26 @@ export function normalizeForeignContracts(
             })),
             ...projection.variadicParameters.map((parameter) => ({
               name: parameter.name,
-              type: mapper.mapVariadicType(parameter.type),
+              type: parameter.type === "callback"
+                ? mapper.mapVariadicCallback(
+                  parameter.callback!.nativeType,
+                  parameter.callback!.nativeSignature,
+                  parameter.callback!.nativeParameterNames,
+                  parameter.callback!.bytes,
+                )
+                : mapper.mapVariadicType(parameter.type),
               ...(parameter.type === "clong" ? { abiCast: "long" } : {}),
             })),
           ],
+          connection: projection.connection ?? null,
           variadic: false,
           cSignature: `${overload.nativeSignature} projected as (${[
             ...normalized.parameters.map((parameter, index) => (
               projection.literals[String(index)] ?? parameter.type.cName
             )),
-            ...projection.variadicParameters.map((parameter) => parameter.type),
+            ...projection.variadicParameters.map((parameter) => (
+              parameter.type === "callback" ? parameter.callback!.nativeType : parameter.type
+            )),
           ].join(", ")})`,
         };
       }))
@@ -177,6 +193,7 @@ function normalizeOverload(
     for (let index = 0; index < parameters.length; index += 1) {
       const type = parameters[index].type;
       if (type.kind !== "callback" || !type.context) continue;
+      if (type.context.parameter < 0) continue;
       const paired = parameters[type.context.parameter]?.type;
       if (paired?.kind !== "callbackContext" || paired.callbackParameter !== index) {
         throw contractError(fileName, location, `API notes for ${JSON.stringify(declaration.name)} do not describe a valid callback and void * context pair`);
@@ -218,6 +235,7 @@ function normalizeOverload(
       returnType,
       status: functionNotes?.status ?? null,
       parameters,
+      connection: null,
       variadic: declaration.variadic,
       cSignature: declaration.nativeSignature,
       metadata: {

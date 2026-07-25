@@ -7,7 +7,11 @@ import type {
   Statement,
   TypeReference,
 } from "./ast.ts";
-import { importedStandardFunctions, standardFunctionSignature } from "./standard-library.ts";
+import {
+  importedStandardFunctions,
+  nativeConnectionTypeName,
+  standardFunctionSignature,
+} from "./standard-library.ts";
 import type { ForeignModule, ForeignType } from "./foreign.ts";
 import { publicObjCTypeName } from "./objc-types.ts";
 import {
@@ -96,7 +100,10 @@ export function materializeResultTypes(
         const errorType = projectedForeignTypeName(overload.returnType);
         if (!errorType) continue;
         addResult(
-          { name: "void", location: module.declaration.location },
+          {
+            name: overload.connection ? nativeConnectionTypeName : "void",
+            location: module.declaration.location,
+          },
           { name: errorType, location: module.declaration.location },
           module.declaration.location,
         );

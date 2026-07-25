@@ -1,0 +1,27 @@
+declare module "callback-connection.h" {
+  export function z_callback_open(): _ | null {
+    deinit z_callback_close;
+  }
+
+  export function z_callback_close(move owner: _): _;
+
+  export function z_callback_setopt(
+    in owner: _,
+    option: Z_CALLBACK_WRITE,
+    move write: _
+  ): connection throws _ {
+    success Z_CALLBACK_OK;
+
+    callback write {
+      type ZCallbackWrite;
+      context option Z_CALLBACK_CONTEXT;
+      owner owner;
+      bytes from buffer length size * nitems;
+      thread caller;
+    }
+  }
+
+  export function z_callback_perform(in owner: _): void throws _ {
+    success Z_CALLBACK_OK;
+  }
+}

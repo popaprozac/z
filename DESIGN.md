@@ -1955,6 +1955,65 @@ It does not introduce a platform-dependent everyday Z integer. The safe call
 is checked against the target-width fixed integer (`i64` on LP64 and `i32` on
 Windows LLP64), then lowered with an explicit `(long)` cast so default variadic
 promotions cannot silently substitute `long long`.
+
+Native libraries sometimes install an escaping callback and its opaque context
+through two separate option calls. A paired-option connection contract makes
+that relationship explicit:
+
+```z
+export function curl_easy_setopt(
+  in curl: _,
+  option: CURLOPT_WRITEFUNCTION,
+  move write: _
+): connection throws _ {
+  success CURLE_OK;
+
+  callback write {
+    type curl_write_callback;
+    context option CURLOPT_WRITEDATA;
+    owner curl;
+    bytes from buffer length size * nitems;
+    thread caller;
+  }
+}
+```
+
+The safe Z call accepts an escaping closure and returns a move-only
+`native.Connection`:
+
+```z
+const writer = try curl.curl_easy_setopt(
+  easy,
+  curl.CURLOPT_WRITEFUNCTION,
+  move (bytes: Slice<u8>): usize => {
+    consume(bytes);
+    return bytes.length;
+  }
+);
+```
+
+`Slice<T>` is already a borrowed view, so its callback parameter does not and
+must not add `in`. The `move` applies to the escaping closure value. The
+connection retains that closure, installs the native context and callback as
+one checked operation, and unregisters both before releasing the closure
+environment. Its lexical loan prevents the native owner from moving or
+deinitializing first. The first tier supports a byte buffer whose length is a
+product of native `size_t` parameters and a callback invoked only on the
+registering thread.
+
+Z's intended foreign boundary has three explicit trust tiers:
+
+1. Header import plus checked `.zd` facts is the safe surface. Clang remains the
+   ABI authority and Z enforces the added ownership and lifetime contract.
+2. A future `unsafe { ... }` block permits otherwise unsupported native calls
+   while retaining Z expression syntax, but gives up the missing static proof.
+3. A future `raw c`, `raw cpp`, or `raw objc` block embeds foreign source for
+   APIs that cannot be expressed through Z calls. Captured Z values must cross
+   through an explicit `using (in ... / inout ... / move ...)` contract.
+
+The latter two are escape hatches, not substitutes for extending FIIR and
+`.zd`. Their exact grammar will be reviewed before implementation.
+
 Over time, Clang attributes, Apple's API notes, Windows SAL
 annotations, package metadata, and generated bindings should populate the same
 semantic model so the common case remains simply:

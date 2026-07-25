@@ -29,6 +29,14 @@ function fetchHosts(): void throws curl.CURLcode {
         curl.CURLOPT_TIMEOUT,
         10
     );
+    const writer = try curl.curl_easy_setopt(
+        easy,
+        curl.CURLOPT_WRITEFUNCTION,
+        move (bytes: Slice<u8>): usize => {
+            console.log(`received ${bytes.length} bytes`);
+            return bytes.length;
+        }
+    );
     try curl.curl_easy_perform(easy);
 }
 

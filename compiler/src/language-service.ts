@@ -115,7 +115,7 @@ const primitiveTypeTokens = [
 const declarationKeywordTokens = [
   "declare", "module", "export", "function", "type", "copy", "in", "inout", "out", "move", "deinit",
   "async", "callback", "context", "thread", "caller", "any", "transfer", "share", "fixed", "throws", "success",
-  "return", "throw",
+  "connection", "option", "owner", "bytes", "length", "from", "return", "throw",
 ] as const;
 
 export function diagnostics(source: string, fileName: string): ServiceDiagnostic[] {
@@ -2200,6 +2200,12 @@ function foreignDeclarationCompletions(source: string, fileName: string, offset:
   const ownerSignatures = ownerName && module
     ? foreignDeclarationNativeSignatures(module, ownerName)
     : [];
+  const activeCallbackName = [...before.matchAll(/\bcallback\s+([A-Za-z_][A-Za-z0-9_]*)\s*\{/g)].at(-1)?.[1];
+  const activeCallbacks = activeCallbackName
+    ? ownerSignatures.flatMap((signature) => signature.parameters
+      .filter((parameter) => parameter.name === activeCallbackName && parameter.type.kind === "callback")
+      .map((parameter) => parameter.type))
+    : [];
 
   const typePrefix = /\bexport\s+type\s+([A-Za-z_][A-Za-z0-9_.]*)?$/.exec(before)?.[1];
   if (module && typePrefix !== undefined) {
@@ -2407,6 +2413,75 @@ function foreignDeclarationCompletions(source: string, fileName: string, offset:
         label: name,
         kind: completionKinds.variable,
         detail: `native callback parameter ${name}: ${type}`,
+        sortText: `0-${name}`,
+      });
+    }
+  }
+
+  const callbackTypePrefix = /\bcallback\s+[A-Za-z_][A-Za-z0-9_]*\s*\{[^}]*\btype\s+([A-Za-z_]*)$/.exec(before)?.[1];
+  if (callbackTypePrefix !== undefined) {
+    for (const callback of activeCallbacks) {
+      if (!callback.cName.toLowerCase().startsWith(callbackTypePrefix.toLowerCase())) continue;
+      contextual.push({
+        label: callback.cName,
+        kind: completionKinds.typeParameter,
+        detail: `${callback.cName}: native callback typedef; projects to ${foreignTypeName(callback)}`,
+        insertText: `${callback.cName};`,
+        sortText: `0-${callback.cName}`,
+      });
+    }
+  }
+
+  const contextOptionPrefix = /\bcallback\s+[A-Za-z_][A-Za-z0-9_]*\s*\{[^}]*\bcontext\s+option\s+([A-Za-z_]*)$/.exec(before)?.[1];
+  if (module && contextOptionPrefix !== undefined) {
+    for (const constant of module.constants.values()) {
+      if (!constant.name.toLowerCase().startsWith(contextOptionPrefix.toLowerCase())) continue;
+      contextual.push({
+        label: constant.name,
+        kind: completionKinds.enumMember,
+        detail: `${foreignConstantDetail(constant)}; native option used to install the callback context`,
+        insertText: `${constant.name};`,
+        sortText: `0-${constant.name}`,
+      });
+    }
+  }
+
+  const connectionOwnerPrefix = /\bcallback\s+[A-Za-z_][A-Za-z0-9_]*\s*\{[^}]*\bowner\s+([A-Za-z_]*)$/.exec(before)?.[1];
+  if (connectionOwnerPrefix !== undefined) {
+    const candidates = new Map<string, string>();
+    for (const signature of ownerSignatures) {
+      for (const parameter of signature.parameters) {
+        if (parameter.name && parameter.type.kind !== "callback") {
+          candidates.set(parameter.name, foreignTypeName(parameter.type));
+        }
+      }
+    }
+    for (const [name, type] of candidates) {
+      if (!name.toLowerCase().startsWith(connectionOwnerPrefix.toLowerCase())) continue;
+      contextual.push({
+        label: name,
+        kind: completionKinds.variable,
+        detail: `${name}: ${type}; owner whose lifetime contains the callback connection`,
+        insertText: `${name};`,
+        sortText: `0-${name}`,
+      });
+    }
+  }
+
+  const byteParameterPrefix = /\bcallback\s+[A-Za-z_][A-Za-z0-9_]*\s*\{[^}]*(?:(?:\bbytes\s+from|\blength)\s+|\*\s*)([A-Za-z_]*)$/.exec(before)?.[1];
+  if (byteParameterPrefix !== undefined) {
+    const candidates = new Map<string, string>();
+    for (const callback of activeCallbacks) {
+      callback.nativeParameterNames?.forEach((name, index) => {
+        candidates.set(name, callback.nativeParameters?.[index] ?? "_");
+      });
+    }
+    for (const [name, type] of candidates) {
+      if (!name.toLowerCase().startsWith(byteParameterPrefix.toLowerCase())) continue;
+      contextual.push({
+        label: name,
+        kind: completionKinds.variable,
+        detail: `${name}: ${type}; native callback parameter`,
         sortText: `0-${name}`,
       });
     }
@@ -2667,6 +2742,15 @@ function foreignDeclarationHover(source: string, fileName: string, offset: numbe
           word.end,
         );
       }
+      if (contract.returnSemanticType === "connection-status") {
+        const types = new Set(nativeSignatures.map((overload) => foreignTypeName(overload.returnType)));
+        return markdownHover(
+          `connection throws ${[...types].join(" | ") || "_"}  // returns a move-only native.Connection on success`,
+          source,
+          word.start,
+          word.end,
+        );
+      }
       const types = new Set(nativeSignatures.map((overload) => foreignTypeName(overload.returnType)));
       const lifecycle = contract.release ? `; deinit ${contract.release}` : "";
       return markdownHover(`_: ${[...types].join(" | ") || "unknown"}${lifecycle}  // inferred native return type`, source, word.start, word.end);
@@ -2682,8 +2766,11 @@ function foreignDeclarationHover(source: string, fileName: string, offset: numbe
     }
     const successIndex = contract.statusSuccessLocations.findIndex((location) => location.offset === word.start);
     if (successIndex >= 0) {
+      const successfulValue = contract.returnSemanticType === "connection-status"
+        ? "a live native.Connection"
+        : "successful void completion";
       return markdownHover(
-        `success ${contract.statusSuccessValues[successIndex]}  // this native status becomes successful void completion`,
+        `success ${contract.statusSuccessValues[successIndex]}  // this native status produces ${successfulValue}`,
         source,
         word.start,
         word.end,
@@ -2693,8 +2780,11 @@ function foreignDeclarationHover(source: string, fileName: string, offset: numbe
     if (successValueIndex >= 0) {
       const value = contract.statusSuccessValues[successValueIndex];
       const constant = typeof value === "string" ? module.constants.get(value) : null;
+      const successfulValue = contract.returnSemanticType === "connection-status"
+        ? "a live native.Connection"
+        : "successful void completion";
       return markdownHover(
-        `${constant ? foreignConstantDetail(constant) : value}\n// this native status becomes successful void completion`,
+        `${constant ? foreignConstantDetail(constant) : value}\n// this native status produces ${successfulValue}`,
         source,
         word.start,
         word.end,
@@ -2719,6 +2809,10 @@ function foreignDeclarationHover(source: string, fileName: string, offset: numbe
     }
     for (const callback of contract.callbacks) {
       const callbackIndex = contract.parameters.findIndex((parameter) => parameter.name === callback.parameter);
+      const callbackTypes = nativeSignatures
+        .map((overload) => overload.parameters[callbackIndex]?.type)
+        .filter((type): type is Extract<ForeignType, { kind: "callback" }> => type?.kind === "callback");
+      const nativeCallback = callbackTypes[0];
       const contextIndex = callback.context === null
         ? -1
         : contract.parameters.findIndex((parameter) => parameter.name === callback.context);
@@ -2753,6 +2847,69 @@ function foreignDeclarationHover(source: string, fileName: string, offset: numbe
         );
         return markdownHover(
           `${callback.context}: ${[...types].join(" | ") || "_"}  // native context for callback ${callback.parameter}`,
+          source,
+          word.start,
+          word.end,
+        );
+      }
+      if (callback.nativeType && callback.nativeTypeLocation?.offset === word.start) {
+        const nativeSignature = nativeCallback?.nativeParameters
+          ? `${nativeCallback.cName}(${nativeCallback.nativeParameters.join(", ")})`
+          : callback.nativeType;
+        return markdownHover(
+          `${nativeSignature}\n// header callback typedef projected to ${nativeCallback ? foreignTypeName(nativeCallback) : "(bytes: Slice<u8>) => usize"}`,
+          source,
+          word.start,
+          word.end,
+        );
+      }
+      if (callback.contextOption && callback.contextOptionLocation?.offset === word.start) {
+        const constant = module.constants.get(callback.contextOption);
+        return markdownHover(
+          `${constant ? foreignConstantDetail(constant) : callback.contextOption}\n// native option used to install the retained callback context`,
+          source,
+          word.start,
+          word.end,
+        );
+      }
+      if (callback.owner && callback.ownerLocation?.offset === word.start) {
+        const ownerIndex = contract.parameters.findIndex((parameter) => parameter.name === callback.owner);
+        const types = new Set(
+          nativeSignatures
+            .map((overload) => overload.parameters[ownerIndex])
+            .filter(Boolean)
+            .map((native) => foreignTypeName(native.type)),
+        );
+        return markdownHover(
+          `in ${callback.owner}: ${[...types].join(" | ") || "_"}  // the callback connection cannot outlive this native owner`,
+          source,
+          word.start,
+          word.end,
+        );
+      }
+      if (callback.bytes?.location.offset === word.start) {
+        return markdownHover(
+          `bytes: Slice<u8>  // borrowed callback bytes; length is ${callback.bytes.factors.join(" * ")}`,
+          source,
+          word.start,
+          word.end,
+        );
+      }
+      if (callback.bytes && callback.bytes.bufferLocation.offset === word.start) {
+        const index = nativeCallback?.nativeParameterNames?.indexOf(callback.bytes.buffer) ?? -1;
+        return markdownHover(
+          `${callback.bytes.buffer}: ${index >= 0 ? nativeCallback?.nativeParameters?.[index] ?? "_" : "_"}  // native buffer projected as Slice<u8>.data`,
+          source,
+          word.start,
+          word.end,
+        );
+      }
+      const byteFactorIndex = callback.bytes?.factorLocations.findIndex((location) => location.offset === word.start) ?? -1;
+      if (callback.bytes && byteFactorIndex >= 0) {
+        const factor = callback.bytes.factors[byteFactorIndex];
+        const index = nativeCallback?.nativeParameterNames?.indexOf(factor) ?? -1;
+        return markdownHover(
+          `${factor}: ${index >= 0 ? nativeCallback?.nativeParameters?.[index] ?? "_" : "_"}  // multiplied into Slice<u8>.length`,
           source,
           word.start,
           word.end,
@@ -5014,7 +5171,7 @@ function formatTypeParameters(
 }
 
 function foreignTypeName(type: ForeignType): string {
-  if (type.kind === "z") return type.name;
+  if (type.kind === "z") return displayArrayType(type.name);
   if (type.kind === "nullPointer") return "null";
   if (type.kind === "fixedNative") return `fixed ${type.expression}`;
   if (type.kind === "selector") return "objc.Selector";
@@ -5027,7 +5184,9 @@ function foreignTypeName(type: ForeignType): string {
     : `${type.cName}${type.nullable ? " | null" : ""}`;
   if (type.kind === "pointerOut") return `${type.pointer.cName}${type.pointer.nullable ? " | null" : ""}`;
   if (type.kind === "callback" || type.kind === "block") {
-    const parameters = type.parameters.map((parameter, index) => `argument${index + 1}: ${foreignTypeName(parameter)}`);
+    const parameters = type.parameters.map((parameter, index) => (
+      `${type.kind === "callback" ? type.parameterNames?.[index] ?? `argument${index + 1}` : `argument${index + 1}`}: ${foreignTypeName(parameter)}`
+    ));
     return `(${parameters.join(", ")}) => ${foreignTypeName(type.returnType)}`;
   }
   return type.cName;

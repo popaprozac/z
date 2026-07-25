@@ -819,6 +819,131 @@ test("projects header constants and discriminated C variadic arguments through Z
   );
 });
 
+test("ties projected native callbacks to their owner with a move-only connection", () => {
+  const fileName = resolve(projectRoot, "tests/fixtures/callback-connection.zs");
+  const source = readFileSync(fileName, "utf8");
+  const generated = compileToC(source, fileName);
+
+  assert.match(generated, /typedef struct Z_NativeConnection/);
+  assert.match(generated, /Z_Slice_\S+ _z_callback_bytes = \{/);
+  assert.match(generated, /\.length = \(uintptr_t\)\(native_argument_2\) \* \(uintptr_t\)\(native_argument_3\)/);
+  assert.match(generated, /->call\([^,]+, _z_callback_bytes\)/);
+  assert.doesNotMatch(generated, /->call\([^,]+, &_z_callback_bytes\)/);
+  assert.match(generated, /z_callback_setopt\(owner, Z_CALLBACK_CONTEXT, callback_context\)/);
+  assert.match(generated, /z_callback_setopt\(owner, Z_CALLBACK_WRITE, __z_c_callback_/);
+  assert.match(
+    generated,
+    /disconnect_status = z_callback_setopt\(owner, Z_CALLBACK_WRITE, \(ZCallbackWrite\)NULL\)[\s\S]*if \(!\(disconnect_status == Z_CALLBACK_OK\)\) abort\(\);[\s\S]*disconnect_status = z_callback_setopt\(owner, Z_CALLBACK_CONTEXT, \(void \*\)NULL\)/,
+  );
+  assert.match(
+    generated,
+    /if \(_z_live_writer_\d+\) z_native_connection_deinit\(&\(writer\)\);\n\s+if \(_z_live_owner_\d+ && owner != NULL\) z_callback_close\(owner\);/,
+  );
+
+  const result = spawnSync(process.execPath, [cli, "run", fileName], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+
+  const bytesOffset = source.indexOf("bytes: Slice") + 2;
+  assert.match(hover(source, fileName, bytesOffset)?.contents.value ?? "", /bytes: Slice<u8>/);
+  const callbackOffset = source.indexOf("move (bytes") + 1;
+  assert.match(
+    hover(source, fileName, callbackOffset)?.contents.value ?? "",
+    /\(bytes: Slice<u8>\) => usize/,
+  );
+  assert.doesNotMatch(
+    hover(source, fileName, callbackOffset)?.contents.value ?? "",
+    /in bytes/,
+  );
+  const writerOffset = source.indexOf("writer =") + 2;
+  assert.match(hover(source, fileName, writerOffset)?.contents.value ?? "", /writer: native\.Connection/);
+
+  const discarded = source.replace("const writer = try native.z_callback_setopt(", "try native.z_callback_setopt(");
+  const discardedDiagnostic = diagnostics(discarded, fileName)[0];
+  assert.equal(discardedDiagnostic?.code, "Z0811");
+  assert.match(
+    discardedDiagnostic?.message ?? "",
+    /native\.Connection must be bound/,
+  );
+
+  const earlyClose = source.replace(
+    "try native.z_callback_perform(owner);",
+    "native.z_callback_close(owner);",
+  );
+  assert.match(
+    diagnostics(earlyClose, fileName)[0]?.message ?? "",
+    /cannot move \"owner\" while native connection \"writer\" is live/,
+  );
+
+  const declarationFile = resolve(projectRoot, "tests/fixtures/callback-connection.h.zd");
+  const declarationSource = readFileSync(declarationFile, "utf8");
+  assert.deepEqual(diagnostics(declarationSource, declarationFile), []);
+  assert.match(
+    hover(
+      declarationSource,
+      declarationFile,
+      declarationSource.indexOf("connection throws") + 2,
+    )?.contents.value ?? "",
+    /connection throws .*ZCallbackStatus.*move-only native\.Connection/,
+  );
+  assert.match(
+    hover(
+      declarationSource,
+      declarationFile,
+      declarationSource.indexOf("ZCallbackWrite") + 2,
+    )?.contents.value ?? "",
+    /header callback typedef projected to \(bytes: Slice<u8>\) => usize/,
+  );
+  assert.match(
+    hover(
+      declarationSource,
+      declarationFile,
+      declarationSource.indexOf("Z_CALLBACK_CONTEXT") + 2,
+    )?.contents.value ?? "",
+    /native option used to install the retained callback context/,
+  );
+  assert.match(
+    hover(
+      declarationSource,
+      declarationFile,
+      declarationSource.indexOf("owner owner") + "owner ".length + 2,
+    )?.contents.value ?? "",
+    /callback connection cannot outlive this native owner/,
+  );
+  const typeCompletionSource = declarationSource.replace("type ZCallbackWrite;", "type ZCall");
+  const typeCompletionOffset = typeCompletionSource.indexOf("type ZCall") + "type ZCall".length;
+  assert.equal(
+    completions(typeCompletionSource, declarationFile, typeCompletionOffset)
+      .find((item) => item.label === "ZCallbackWrite")?.insertText,
+    "ZCallbackWrite;",
+  );
+  const ownerCompletionSource = declarationSource.replace("owner owner;", "owner ow");
+  const ownerCompletionOffset = ownerCompletionSource.indexOf("owner ow") + "owner ow".length;
+  assert.equal(
+    completions(ownerCompletionSource, declarationFile, ownerCompletionOffset)
+      .find((item) => item.label === "owner")?.insertText,
+    "owner;",
+  );
+  const byteCompletionSource = declarationSource.replace("bytes from buffer", "bytes from bu");
+  const byteCompletionOffset = byteCompletionSource.indexOf("bytes from bu") + "bytes from bu".length;
+  assert.match(
+    completions(byteCompletionSource, declarationFile, byteCompletionOffset)
+      .find((item) => item.label === "buffer")?.detail ?? "",
+    /buffer: char \*/,
+  );
+  const factorCompletionSource = declarationSource.replace("size * nitems;", "size * ni");
+  const factorCompletionOffset = factorCompletionSource.indexOf("size * ni") + "size * ni".length;
+  assert.match(
+    completions(factorCompletionSource, declarationFile, factorCompletionOffset)
+      .find((item) => item.label === "nitems")?.detail ?? "",
+    /nitems: size_t/,
+  );
+  const invalidProjection = declarationSource.replace("bytes from buffer", "bytes from missing");
+  assert.match(
+    diagnostics(invalidProjection, declarationFile)[0]?.message ?? "",
+    /byte projection names unknown callback parameter \"missing\"/,
+  );
+});
+
 test("keeps unselected C types and constants out of scope", () => {
   const missingType = `
     import { z_score } from "tests/fixtures/geometry.h";
@@ -4006,7 +4131,7 @@ test("registers persistent Objective-C event callbacks with explicit token clean
       .some((item) => item.label === "NSWindowDidBecomeKeyNotification"),
     true,
   );
-});
+}, 10_000);
 
 test("copies owned Z strings across NSString boundaries without losing embedded nulls", () => {
   if (process.platform !== "darwin") return;

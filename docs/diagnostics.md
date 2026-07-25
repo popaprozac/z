@@ -78,6 +78,9 @@ Currently structured codes include:
 | `Z0802` | native declaration is unavailable for the explicit project deployment target |
 | `Z0803` | no unique viable native overload exists for a foreign call |
 | `Z0804` | native declaration is deprecated for the explicit project deployment target |
+| `Z0805` | a typed native status result is called without `try` or `attempt` |
+| `Z0810` | Objective-C protocol adaptation or protocol-property binding is invalid |
+| `Z0811` | a native callback connection is malformed or its ownership-bearing token is discarded |
 
 CLI diagnostics render source context. Language-server diagnostics expose the
 same code and message, secondary locations through related information, and

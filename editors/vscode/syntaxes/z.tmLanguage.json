@@ -98,7 +98,7 @@
         }
       }, {
         "name": "meta.declaration.status-result.foreign.z",
-        "match": "\\b(void)\\s+(throws)\\s+(_)",
+        "match": "\\b(void|connection)\\s+(throws)\\s+(_)",
         "captures": {
           "1": { "name": "storage.type.primitive.z" },
           "2": { "name": "keyword.control.declaration.z" },
@@ -130,6 +130,40 @@
         "captures": {
           "1": { "name": "keyword.control.declaration.callback.z" },
           "2": { "name": "entity.name.function.callback.z" }
+        }
+      }, {
+        "name": "meta.declaration.callback-type.foreign.z",
+        "match": "\\b(type)\\s+([A-Za-z_][A-Za-z0-9_]*)(?=\\s*;)",
+        "captures": {
+          "1": { "name": "keyword.control.declaration.callback.z" },
+          "2": { "name": "entity.name.type.native.z" }
+        }
+      }, {
+        "name": "meta.declaration.callback-context-option.foreign.z",
+        "match": "\\b(context)\\s+(option)\\s+([A-Za-z_][A-Za-z0-9_]*)(?=\\s*;)",
+        "captures": {
+          "1": { "name": "keyword.control.declaration.callback.z" },
+          "2": { "name": "keyword.control.declaration.callback.z" },
+          "3": { "name": "constant.other.native.z" }
+        }
+      }, {
+        "name": "meta.declaration.callback-owner.foreign.z",
+        "match": "\\b(owner)\\s+([A-Za-z_][A-Za-z0-9_]*)(?=\\s*;)",
+        "captures": {
+          "1": { "name": "keyword.control.declaration.callback.z" },
+          "2": { "name": "variable.parameter.z" }
+        }
+      }, {
+        "name": "meta.declaration.callback-bytes.foreign.z",
+        "match": "\\b(bytes)\\s+(from)\\s+([A-Za-z_][A-Za-z0-9_]*)\\s+(length)\\s+([A-Za-z_][A-Za-z0-9_]*)(?:\\s*(\\*)\\s*([A-Za-z_][A-Za-z0-9_]*))*\\s*(?=;)",
+        "captures": {
+          "1": { "name": "keyword.control.declaration.callback.z" },
+          "2": { "name": "keyword.control.declaration.callback.z" },
+          "3": { "name": "variable.parameter.z" },
+          "4": { "name": "keyword.control.declaration.callback.z" },
+          "5": { "name": "variable.parameter.z" },
+          "6": { "name": "keyword.operator.arithmetic.z" },
+          "7": { "name": "variable.parameter.z" }
         }
       }, {
         "name": "meta.declaration.async-callback-projection.foreign.z",

@@ -4,7 +4,13 @@ import { fileURLToPath } from "node:url";
 import type { ImportDeclaration } from "./ast.ts";
 import { DiagnosticError } from "./diagnostics.ts";
 import { foreignDeclarationApiNotes, parseForeignDeclarationContracts } from "./foreign-declarations.ts";
-import type { ForeignConstant, ForeignFunctionDeclaration, ForeignNamedType, ForeignObjCInterface } from "./foreign-ir.ts";
+import type {
+  ForeignCallbackTypedef,
+  ForeignConstant,
+  ForeignFunctionDeclaration,
+  ForeignNamedType,
+  ForeignObjCInterface,
+} from "./foreign-ir.ts";
 
 export type PointerNote = {
   readonly ownership?: "owned" | "borrowed" | "consuming";
@@ -41,8 +47,18 @@ export type StatusNote = {
 
 export type TypedVariadicParameterNote = {
   readonly name: string;
-  readonly type: "cstring" | "clong";
+  readonly type: "cstring" | "clong" | "callback";
   readonly access: "value" | "in";
+  readonly callback?: {
+    readonly nativeType: string;
+    readonly nativeSignature: string;
+    readonly nativeParameterNames: readonly string[];
+    readonly thread: "caller";
+    readonly bytes: {
+      readonly bufferParameter: number;
+      readonly lengthParameters: readonly number[];
+    };
+  };
 };
 
 export type FunctionProjectionNote = {
@@ -51,6 +67,12 @@ export type FunctionProjectionNote = {
   readonly literals: Readonly<Record<string, string>>;
   readonly variadicParameters: readonly TypedVariadicParameterNote[];
   readonly status?: StatusNote;
+  readonly connection?: {
+    readonly ownerParameter: number;
+    readonly callbackParameter: number;
+    readonly callbackOption: string;
+    readonly contextOption: string;
+  };
   readonly executorAffinity?: "main";
 };
 
@@ -198,6 +220,7 @@ export function readApiNotes(
   namedTypes: ReadonlyMap<string, ForeignNamedType>,
   interfaces: ReadonlyMap<string, ForeignObjCInterface>,
   constants: ReadonlyMap<string, ForeignConstant>,
+  callbackTypedefs: ReadonlyMap<string, ForeignCallbackTypedef> = new Map(),
   generatedSource: { readonly name: string; readonly notes: ApiNotes } | null = null,
   declarationOverride: { readonly source: string; readonly fileName: string } | null = null,
 ): ApiNotes {
@@ -215,6 +238,7 @@ export function readApiNotes(
             namedTypes,
             interfaces,
             constants,
+            callbackTypedefs,
             declaration.header,
             includeDirectory,
             declarationOverride.fileName,
@@ -230,6 +254,7 @@ export function readApiNotes(
             namedTypes,
             interfaces,
             constants,
+            callbackTypedefs,
             declaration.header,
             includeDirectory,
             source.path,

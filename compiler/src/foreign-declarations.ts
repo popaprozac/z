@@ -5,6 +5,7 @@ import { DiagnosticError } from "./diagnostics.ts";
 import type { ApiNotes, FunctionProjectionNote, PointerNote, StatusNote } from "./foreign-api-notes.ts";
 import type {
   ForeignConstant,
+  ForeignCallbackTypedef,
   ForeignBlockType,
   ForeignFunctionDeclaration,
   ForeignNamedType,
@@ -41,7 +42,7 @@ export type ForeignFunctionContract = {
   readonly name: string;
   readonly parameters: readonly ContractParameter[];
   readonly returnNullable: boolean;
-  readonly returnSemanticType: "inferred" | "view-cstring" | "status-void";
+  readonly returnSemanticType: "inferred" | "view-cstring" | "status-void" | "connection-status";
   readonly statusSuccessValues: readonly (number | string)[];
   readonly statusSuccessLocations: readonly SourceLocation[];
   readonly statusSuccessValueLocations: readonly SourceLocation[];
@@ -79,12 +80,25 @@ export type ForeignThreadContractLocations = {
 export type ForeignCallbackContract = {
   readonly parameter: string;
   readonly context: string | null;
+  readonly contextOption: string | null;
   readonly release: string | null;
+  readonly nativeType: string | null;
+  readonly owner: string | null;
+  readonly bytes: {
+    readonly buffer: string;
+    readonly factors: readonly string[];
+    readonly location: SourceLocation;
+    readonly bufferLocation: SourceLocation;
+    readonly factorLocations: readonly SourceLocation[];
+  } | null;
   readonly thread: "caller" | "any" | null;
   readonly location: SourceLocation;
   readonly parameterLocation: SourceLocation;
   readonly contextLocation: SourceLocation | null;
+  readonly contextOptionLocation: SourceLocation | null;
   readonly releaseLocation: SourceLocation | null;
+  readonly nativeTypeLocation: SourceLocation | null;
+  readonly ownerLocation: SourceLocation | null;
   readonly threadLocation: SourceLocation | null;
 };
 
@@ -152,10 +166,10 @@ export function parseForeignDeclarationContracts(source: string, fileName: strin
   const parseReturnType = (): {
     readonly nullable: boolean;
     readonly location: SourceLocation;
-    readonly semanticType: "inferred" | "view-cstring" | "status-void";
+    readonly semanticType: "inferred" | "view-cstring" | "status-void" | "connection-status";
     readonly throwsLocation: SourceLocation | null;
   } => {
-    if (at("void")) {
+    if (at("void") || at("connection")) {
       const result = take();
       const throws = expectText("throws");
       const error = parseInferredType();
@@ -163,7 +177,7 @@ export function parseForeignDeclarationContracts(source: string, fileName: strin
       return {
         nullable: false,
         location: result.location,
-        semanticType: "status-void",
+        semanticType: result.text === "connection" ? "connection-status" : "status-void",
         throwsLocation: throws.location,
       };
     }
@@ -549,15 +563,59 @@ export function parseForeignDeclarationContracts(source: string, fileName: strin
           }
           expectText("{");
           let context: Token | null = null;
+          let contextOption: Token | null = null;
           let callbackRelease: Token | null = null;
+          let nativeType: Token | null = null;
+          let callbackOwner: Token | null = null;
+          let bytes: ForeignCallbackContract["bytes"] = null;
           let callbackThread: Token | null = null;
           while (!at("}")) {
             const callbackFact = peek();
-            if (at("context")) {
-              if (context) fail(callbackFact, `callback ${JSON.stringify(callback.text)} cannot declare more than one context parameter`);
+            if (at("type")) {
+              if (nativeType) fail(callbackFact, `callback ${JSON.stringify(callback.text)} cannot declare more than one native type`);
               take();
-              context = expectIdentifier("a native callback context parameter name");
+              nativeType = expectIdentifier("a native callback typedef name");
               expectText(";");
+              continue;
+            }
+            if (at("context")) {
+              if (context || contextOption) fail(callbackFact, `callback ${JSON.stringify(callback.text)} cannot declare more than one context source`);
+              take();
+              if (at("option")) {
+                take();
+                contextOption = expectIdentifier("a native context option constant");
+              } else {
+                context = expectIdentifier("a native callback context parameter name");
+              }
+              expectText(";");
+              continue;
+            }
+            if (at("owner")) {
+              if (callbackOwner) fail(callbackFact, `callback ${JSON.stringify(callback.text)} cannot declare more than one owner`);
+              take();
+              callbackOwner = expectIdentifier("an owner parameter name");
+              expectText(";");
+              continue;
+            }
+            if (at("bytes")) {
+              if (bytes) fail(callbackFact, `callback ${JSON.stringify(callback.text)} cannot declare more than one byte-slice projection`);
+              take();
+              expectText("from");
+              const buffer = expectIdentifier("a native callback buffer parameter");
+              expectText("length");
+              const factors: Token[] = [expectIdentifier("a native callback length parameter")];
+              while (at("*")) {
+                take();
+                factors.push(expectIdentifier("a native callback length parameter"));
+              }
+              expectText(";");
+              bytes = {
+                buffer: buffer.text,
+                factors: factors.map((factor) => factor.text),
+                location: callbackFact.location,
+                bufferLocation: buffer.location,
+                factorLocations: factors.map((factor) => factor.location),
+              };
               continue;
             }
             if (at("deinit")) {
@@ -579,26 +637,33 @@ export function parseForeignDeclarationContracts(source: string, fileName: strin
             }
             fail(
               callbackFact,
-              `expected "context", "deinit", or "thread" in foreign callback contract, found ${JSON.stringify(callbackFact.text)}`,
+              `expected "type", "context", "owner", "bytes", "deinit", or "thread" in foreign callback contract, found ${JSON.stringify(callbackFact.text)}`,
             );
           }
           expectText("}");
           callbacks.push({
             parameter: callback.text,
             context: context?.text ?? null,
+            contextOption: contextOption?.text ?? null,
             release: callbackRelease?.text ?? null,
+            nativeType: nativeType?.text ?? null,
+            owner: callbackOwner?.text ?? null,
+            bytes,
             thread: callbackThread?.text === "any" ? "any" : callbackThread ? "caller" : null,
             location: contract.location,
             parameterLocation: callback.location,
             contextLocation: context?.location ?? null,
+            contextOptionLocation: contextOption?.location ?? null,
             releaseLocation: callbackRelease?.location ?? null,
+            nativeTypeLocation: nativeType?.location ?? null,
+            ownerLocation: callbackOwner?.location ?? null,
             threadLocation: callbackThread?.location ?? null,
           });
           continue;
         }
         if (at("success")) {
-          if (returnType.semanticType !== "status-void") {
-            fail(contract, "success is only valid on a `void throws _` native status projection");
+          if (returnType.semanticType !== "status-void" && returnType.semanticType !== "connection-status") {
+            fail(contract, "success is only valid on a `void throws _` or `connection throws _` native status projection");
           }
           take();
           const parsed = parseStatusValue();
@@ -628,7 +693,7 @@ export function parseForeignDeclarationContracts(source: string, fileName: strin
     if (threadContract.locations.location && !release) {
       throw new DiagnosticError(fileName, threadContract.locations.location, `result thread contract on ${JSON.stringify(name)} requires an owned return with deinit`, { code: "Z0801" });
     }
-    if (returnType.semanticType === "status-void") {
+    if (returnType.semanticType === "status-void" || returnType.semanticType === "connection-status") {
       if (statusSuccessValues.length === 0) {
         fail(start, `native status projection ${JSON.stringify(name)} requires at least one success value`);
       }
@@ -676,6 +741,7 @@ export function foreignDeclarationApiNotes(
   namedTypes: ReadonlyMap<string, ForeignNamedType>,
   interfaces: ReadonlyMap<string, ForeignObjCInterface>,
   constants: ReadonlyMap<string, ForeignConstant>,
+  callbackTypedefs: ReadonlyMap<string, ForeignCallbackTypedef>,
   expectedModuleSpecifier: string,
   includeDirectory: string,
   fileName: string,
@@ -743,7 +809,28 @@ export function foreignDeclarationApiNotes(
         { code: "Z0801" },
       );
     }
+    const pairedCallback = contract.returnSemanticType === "connection-status"
+      ? contract.callbacks[0] ?? null
+      : null;
+    if (contract.returnSemanticType === "connection-status" && contract.callbacks.length !== 1) {
+      throw new DiagnosticError(
+        fileName,
+        contract.returnLocation,
+        "a connection status projection requires exactly one callback contract",
+        { code: "Z0801" },
+      );
+    }
+    if (pairedCallback) validatePairedOptionCallbackContract(
+      contract,
+      pairedCallback,
+      declaration,
+      callbackTypedefs,
+      constants,
+      namedTypes,
+      fileName,
+    );
     const projection = contract.parameters.some((parameter) => parameter.literal || parameter.explicitType)
+      || Boolean(pairedCallback)
       || declaration.overloads.some((overload) => contract.parameters.length > overload.parameters.length);
     const parameters: Record<string, PointerNote> = {};
     for (const overload of declaration.overloads) {
@@ -793,7 +880,7 @@ export function foreignDeclarationApiNotes(
       }
       for (let parameterIndex = overload.parameters.length; parameterIndex < contract.parameters.length; parameterIndex += 1) {
         const parameter = contract.parameters[parameterIndex];
-        if (!parameter.explicitType) {
+        if (!parameter.explicitType && parameter.name !== pairedCallback?.parameter) {
           throw new DiagnosticError(
             fileName,
             parameter.typeLocation,
@@ -809,6 +896,7 @@ export function foreignDeclarationApiNotes(
       parameters[String(parameterIndex)] = parameterNote(parameter);
     }
     for (const callback of contract.callbacks) {
+      if (callback === pairedCallback) continue;
       if (!callback.context || !callback.contextLocation) {
         throw new DiagnosticError(
           fileName,
@@ -943,7 +1031,9 @@ export function foreignDeclarationApiNotes(
           : {}),
       },
       ...(Object.keys(parameters).length ? { parameters } : {}),
-      ...(contract.returnSemanticType === "status-void"
+      ...(
+        contract.returnSemanticType === "status-void"
+        || contract.returnSemanticType === "connection-status"
         ? {
           status: {
             success,
@@ -982,11 +1072,42 @@ export function foreignDeclarationApiNotes(
       projections.push({
         ...note,
         literals,
-        variadicParameters: contract.parameters.slice(nativeParameterCount).map((parameter) => ({
-          name: parameter.name,
-          type: parameter.explicitType!,
-          access: parameter.mode === "in" ? "in" as const : "value" as const,
-        })),
+        ...(pairedCallback
+          ? {
+            connection: pairedOptionConnectionNote(
+              contract,
+              pairedCallback,
+              declaration,
+              callbackTypedefs.get(pairedCallback.nativeType!)!,
+            ),
+          }
+          : {}),
+        variadicParameters: contract.parameters.slice(nativeParameterCount).map((parameter) => {
+          if (parameter.name === pairedCallback?.parameter) {
+            const callback = callbackTypedefs.get(pairedCallback.nativeType!)!;
+            const parameterNames = callback.parameterNames;
+            return {
+              name: parameter.name,
+              type: "callback" as const,
+              access: "value" as const,
+              callback: {
+                nativeType: callback.name,
+                nativeSignature: callback.signature,
+                nativeParameterNames: callback.parameterNames,
+                thread: "caller" as const,
+                bytes: {
+                  bufferParameter: parameterNames.indexOf(pairedCallback.bytes!.buffer),
+                  lengthParameters: pairedCallback.bytes!.factors.map((factor) => parameterNames.indexOf(factor)),
+                },
+              },
+            };
+          }
+          return {
+            name: parameter.name,
+            type: parameter.explicitType!,
+            access: parameter.mode === "in" ? "in" as const : "value" as const,
+          };
+        }),
       });
     } else {
       if (functions[contract.name]) {
@@ -1004,6 +1125,240 @@ export function foreignDeclarationApiNotes(
     ...(Object.keys(types).length ? { types } : {}),
     ...(Object.keys(functions).length ? { functions } : {}),
     ...(Object.keys(objcMethods).length ? { objcMethods } : {}),
+  };
+}
+
+function validatePairedOptionCallbackContract(
+  contract: ForeignFunctionContract,
+  callback: ForeignCallbackContract,
+  declaration: ForeignFunctionDeclaration,
+  callbackTypedefs: ReadonlyMap<string, ForeignCallbackTypedef>,
+  constants: ReadonlyMap<string, ForeignConstant>,
+  namedTypes: ReadonlyMap<string, ForeignNamedType>,
+  fileName: string,
+): void {
+  const parameter = contract.parameters.find((candidate) => candidate.name === callback.parameter);
+  if (!parameter) {
+    throw new DiagnosticError(
+      fileName,
+      callback.parameterLocation,
+      `callback contract names unknown parameter ${JSON.stringify(callback.parameter)} on ${JSON.stringify(contract.name)}`,
+      { code: "Z0801" },
+    );
+  }
+  if (parameter.mode !== "move") {
+    throw new DiagnosticError(
+      fileName,
+      callback.parameterLocation,
+      `connection callback ${JSON.stringify(callback.parameter)} requires move ownership`,
+      { code: "Z0801", helps: [`write \`move ${callback.parameter}: _\``] },
+    );
+  }
+  if (callback.context || callback.release) {
+    throw new DiagnosticError(
+      fileName,
+      callback.location,
+      "a paired-option connection uses `context option`, not a same-call context or deinit parameter",
+      { code: "Z0801" },
+    );
+  }
+  if (!callback.contextOption || !callback.contextOptionLocation) {
+    throw new DiagnosticError(
+      fileName,
+      callback.location,
+      `connection callback ${JSON.stringify(callback.parameter)} requires a native context option`,
+      { code: "Z0801", helps: ["add `context option <HEADER_CONSTANT>;`"] },
+    );
+  }
+  if (!callback.owner || !callback.ownerLocation) {
+    throw new DiagnosticError(
+      fileName,
+      callback.location,
+      `connection callback ${JSON.stringify(callback.parameter)} requires an owner parameter`,
+      { code: "Z0801", helps: ["add `owner <parameter>;`"] },
+    );
+  }
+  const ownerIndex = contract.parameters.findIndex((candidate) => candidate.name === callback.owner);
+  const nativeParameterCount = declaration.overloads[0]?.parameters.length ?? 0;
+  if (ownerIndex < 0 || ownerIndex >= nativeParameterCount) {
+    throw new DiagnosticError(
+      fileName,
+      callback.ownerLocation,
+      `connection owner ${JSON.stringify(callback.owner)} must name a fixed native parameter`,
+      { code: "Z0801" },
+    );
+  }
+  if (contract.parameters[ownerIndex].mode !== "in") {
+    throw new DiagnosticError(
+      fileName,
+      contract.parameters[ownerIndex].location,
+      `connection owner ${JSON.stringify(callback.owner)} must use in borrowing`,
+      { code: "Z0801" },
+    );
+  }
+  const nativeOwner = declaration.overloads[0]?.parameters[ownerIndex];
+  if (!nativeOwner || !/\*\s*$/.test(nativeOwner.type.nativeName)) {
+    throw new DiagnosticError(
+      fileName,
+      callback.ownerLocation,
+      `connection owner ${JSON.stringify(callback.owner)} must be a native pointer`,
+      { code: "Z0801" },
+    );
+  }
+  if (callback.thread !== "caller") {
+    throw new DiagnosticError(
+      fileName,
+      callback.threadLocation ?? callback.location,
+      "the first paired-option connection tier requires `thread caller`",
+      { code: "Z0801" },
+    );
+  }
+  if (!callback.nativeType || !callback.nativeTypeLocation) {
+    throw new DiagnosticError(
+      fileName,
+      callback.location,
+      `connection callback ${JSON.stringify(callback.parameter)} requires its native callback typedef`,
+      { code: "Z0801", helps: ["add `type <header_callback_typedef>;`"] },
+    );
+  }
+  const nativeCallback = callbackTypedefs.get(callback.nativeType);
+  if (!nativeCallback) {
+    throw new DiagnosticError(
+      fileName,
+      callback.nativeTypeLocation,
+      `callback type names unknown header typedef ${JSON.stringify(callback.nativeType)}`,
+      { code: "Z0801" },
+    );
+  }
+  if (!callback.bytes) {
+    throw new DiagnosticError(
+      fileName,
+      callback.location,
+      "the first paired-option callback tier requires a byte-slice projection",
+      { code: "Z0801", helps: ["add `bytes from <buffer> length <factor> * <factor>;`"] },
+    );
+  }
+  const parameterTypes = callbackParameterSpellings(nativeCallback.signature)!;
+  const names = nativeCallback.parameterNames;
+  const bufferIndex = names.indexOf(callback.bytes.buffer);
+  if (bufferIndex < 0) {
+    throw new DiagnosticError(
+      fileName,
+      callback.bytes.bufferLocation,
+      `byte projection names unknown callback parameter ${JSON.stringify(callback.bytes.buffer)}`,
+      { code: "Z0801", notes: [`${callback.nativeType} parameters: ${names.join(", ")}`] },
+    );
+  }
+  const normalizedBuffer = normalizeCallbackContextType(parameterTypes[bufferIndex]).replace(/^const /, "");
+  if (normalizedBuffer !== "char *" && normalizedBuffer !== "unsigned char *" && normalizedBuffer !== "void *") {
+    throw new DiagnosticError(
+      fileName,
+      callback.bytes.bufferLocation,
+      `byte projection buffer must be a native byte pointer, found ${JSON.stringify(parameterTypes[bufferIndex])}`,
+      { code: "Z0801" },
+    );
+  }
+  const factorIndexes = callback.bytes.factors.map((factor, index) => {
+    const parameterIndex = names.indexOf(factor);
+    if (parameterIndex < 0) {
+      throw new DiagnosticError(
+        fileName,
+        callback.bytes!.factorLocations[index],
+        `byte projection names unknown callback parameter ${JSON.stringify(factor)}`,
+        { code: "Z0801", notes: [`${callback.nativeType} parameters: ${names.join(", ")}`] },
+      );
+    }
+    if (normalizeCallbackContextType(parameterTypes[parameterIndex]) !== "size_t") {
+      throw new DiagnosticError(
+        fileName,
+        callback.bytes!.factorLocations[index],
+        `byte projection length factor must have native type size_t, found ${JSON.stringify(parameterTypes[parameterIndex])}`,
+        { code: "Z0801" },
+      );
+    }
+    return parameterIndex;
+  });
+  if (new Set([bufferIndex, ...factorIndexes]).size !== factorIndexes.length + 1) {
+    throw new DiagnosticError(fileName, callback.bytes.location, "byte projection parameters must be distinct", { code: "Z0801" });
+  }
+  const contextIndexes = parameterTypes
+    .map((type, index) => normalizeCallbackContextType(type) === "void *" ? index : -1)
+    .filter((index) => index >= 0 && index !== bufferIndex);
+  if (contextIndexes.length !== 1) {
+    throw new DiagnosticError(
+      fileName,
+      callback.location,
+      `${callback.nativeType} must have exactly one void * context parameter outside the byte projection`,
+      { code: "Z0801" },
+    );
+  }
+  const returnType = nativeCallback.signature.slice(0, nativeCallback.signature.indexOf("(*")).trim();
+  if (normalizeCallbackContextType(returnType) !== "size_t") {
+    throw new DiagnosticError(
+      fileName,
+      callback.nativeTypeLocation,
+      `byte callback must return size_t, found ${JSON.stringify(returnType)}`,
+      { code: "Z0801" },
+    );
+  }
+  const discriminants = contract.parameters.filter((candidate) => candidate.literal);
+  if (discriminants.length !== 1) {
+    throw new DiagnosticError(
+      fileName,
+      contract.location,
+      "a paired-option connection requires exactly one callback option discriminant",
+      { code: "Z0801" },
+    );
+  }
+  const optionIndex = contract.parameters.indexOf(discriminants[0]);
+  const nativeOption = declaration.overloads[0]?.parameters[optionIndex];
+  if (!nativeOption) {
+    throw new DiagnosticError(fileName, discriminants[0].typeLocation, "callback option must occupy a fixed native parameter", { code: "Z0801" });
+  }
+  validateContractConstant(
+    callback.contextOption,
+    callback.contextOptionLocation,
+    nativeOption.type.nativeName,
+    constants,
+    namedTypes,
+    fileName,
+    "native callback context option",
+  );
+  if (callback.contextOption === discriminants[0].literal) {
+    throw new DiagnosticError(fileName, callback.contextOptionLocation, "callback and context options must be distinct", { code: "Z0801" });
+  }
+  if (
+    nativeParameterCount !== 2
+    || new Set([ownerIndex, optionIndex]).size !== 2
+    || ![ownerIndex, optionIndex].every((index) => index >= 0 && index < nativeParameterCount)
+  ) {
+    throw new DiagnosticError(
+      fileName,
+      contract.location,
+      "the first paired-option connection tier requires exactly one native owner parameter and one native option parameter",
+      { code: "Z0801" },
+    );
+  }
+}
+
+function pairedOptionConnectionNote(
+  contract: ForeignFunctionContract,
+  callback: ForeignCallbackContract,
+  declaration: ForeignFunctionDeclaration,
+  nativeCallback: ForeignCallbackTypedef,
+): NonNullable<FunctionProjectionNote["connection"]> {
+  const parameterNames = nativeCallback.parameterNames;
+  const nativeParameterCount = declaration.overloads[0]?.parameters.length ?? 0;
+  const callbackParameter = contract.parameters.findIndex((parameter) => parameter.name === callback.parameter);
+  const ownerParameter = contract.parameters.findIndex((parameter) => parameter.name === callback.owner);
+  const callbackOption = contract.parameters.find((parameter) => parameter.literal)!.literal!;
+  if (callbackParameter < nativeParameterCount) throw new Error("validated callback connection must use a variadic parameter");
+  if (parameterNames.indexOf(callback.bytes!.buffer) < 0) throw new Error("validated callback buffer is missing");
+  return {
+    ownerParameter,
+    callbackParameter,
+    callbackOption,
+    contextOption: callback.contextOption!,
   };
 }
 

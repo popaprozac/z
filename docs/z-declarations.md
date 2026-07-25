@@ -85,6 +85,22 @@ declare module "vendor.h" {
     }
   }
 
+  export function vendor_setopt(
+    in owner: _,
+    option: VENDOR_WRITE,
+    move write: _
+  ): connection throws _ {
+    success VENDOR_OK;
+
+    callback write {
+      type VendorWriteCallback;
+      context option VENDOR_CONTEXT;
+      owner owner;
+      bytes from buffer length size * count;
+      thread caller;
+    }
+  }
+
   export function ZVendorWorker.calculate(
     value: _,
     move completion: _
@@ -126,8 +142,13 @@ spelling does not silently pass through.
 | `option: ENUM_MEMBER` | Restrict this argument to one exact header constant | Selects a safe overload of a native variadic function |
 | `in value: cstring` after the fixed native parameters | Give a C variadic argument an explicit safe type | The native function must be variadic; the Z call remains a direct native call |
 | `value: clong` after the fixed native parameters | Require the exact C `long` variadic ABI | Projects to the target-width fixed Z integer and emits an explicit `(long)` cast |
+| `connection throws _` | Turn a native status-returning callback registration into a move-only connection | Success returns `native.Connection`; failure preserves the native integer or enum status |
 | `callback operation { ... }` | Classify a named native callback or Objective-C block parameter | The parameter must exist and have a compatible native callable type |
 | `context context;` | Pair a C callback with its opaque native context parameter | Generated trampoline recovers the exact Z closure environment; ARC-owned Objective-C blocks omit this |
+| `type NativeCallback;` | Name the exact callback typedef used by an option-selected native callback | The typedef and its full function-pointer signature must exist in the header |
+| `context option CONSTANT;` | Name the separate native option used to install the opaque callback context | Constant must exist, match the native option type, and differ from the callback option |
+| `owner handle;` | Tie a callback connection to one borrowed native owner parameter | Z prevents the owner from moving or deinitializing while the connection is live |
+| `bytes from buffer length size * count;` | Project a native byte pointer and `size_t` factors into one borrowed `Slice<u8>` | Every named callback parameter and its native type are checked against the typedef |
 | `thread caller;` | Callback invocation and release remain on the registering thread | Escaping closure environment uses ordinary thread-local ownership |
 | `thread any;` | Callback invocation and release may occur on arbitrary threads, including overlapping invocations | Escaping closure environment uses atomic ownership and every capture must satisfy Z's conservative concurrent-shareability rules |
 | `copy;` | Native value has usable copy construction | Enables `copy value` and copying aggregate storage that contains it |
@@ -217,6 +238,7 @@ These are semantic mappings, not textual rewrites:
 | C sentinel/policy argument | Parameter `{ fixed CONSTANT; }` | Argument omitted from the Z call |
 | C call-only callback | `in operation: _` plus callback/context pairing when needed | Nonescaping borrowed closure |
 | C escaping callback | `move operation: _` plus context, release, and an explicit `thread caller` or `thread any` fact | ARC-owned escaping Z closure; `thread any` adds atomic environment ownership and capture checking |
+| C callback/context installed by separate options | `connection throws _` plus callback `type`, `context option`, `owner`, byte projection, and `thread caller` | `try` returns a move-only `native.Connection`; cleanup unregisters the callback before releasing its owner-tied closure |
 | C++ `const T &` | `in value: _` | Borrowed value |
 | C++ `T &` | `inout value: _` | Mutable borrowed value |
 | C++ `T &&` | `move value: _` with value lifecycle contract | Consumed unique owner |
@@ -267,3 +289,42 @@ AppKit when the public header does not uniformly encode its executor contract.
 Application-local declarations are the explicit fallback for legacy and
 project-specific APIs, not intended as one handwritten sidecar per system
 header.
+
+## Paired callback connections
+
+Some C APIs, including libcurl, install a function pointer and its opaque
+context in separate calls even though the two values form one logical
+registration. Z exposes that registration as one ownership-bearing value:
+
+```z
+const writer = try curl.curl_easy_setopt(
+  easy,
+  curl.CURLOPT_WRITEFUNCTION,
+  move (bytes: Slice<u8>): usize => {
+    console.log(`received ${bytes.length} bytes`);
+    return bytes.length;
+  }
+);
+```
+
+The closure itself is moved because native code retains it after the call.
+`bytes` does not use `in`: `Slice<u8>` is intrinsically a borrowed,
+non-escaping view and its two-word value is passed directly to the Z closure.
+The connection's scope determines when Z unregisters the native callback and
+releases the closure environment:
+
+```z
+{
+  const writer = try installWriter(easy);
+  try perform(easy);
+} // writer disconnects here
+
+// easy may move or deinitialize again here
+```
+
+Discarding the result is rejected. Moving or explicitly cleaning up `easy`
+while `writer` is live is also rejected. This converts a native lifetime
+convention that is normally maintained by comments into a checked Z ownership
+relationship. Connection cleanup is synchronous and cannot throw; if the
+native API unexpectedly rejects callback removal, Z terminates rather than
+release a closure that native code may still call.

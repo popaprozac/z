@@ -63,6 +63,7 @@ import {
   objcBindingTypeName,
   objcConnectionTypeName,
   objcSelectorTypeName,
+  nativeConnectionTypeName,
   standardFunctionSignature,
   standardModuleFunction,
   standardModuleMemberNames,
@@ -119,6 +120,13 @@ export type ObjCPropertyInfo = {
 export type ForeignStatusCallInfo = {
   readonly errorType: string;
   readonly success: readonly (number | string)[];
+};
+
+export type ForeignConnectionCallInfo = {
+  readonly target: ForeignFunctionOverload;
+  readonly functionType: string;
+  readonly ownerSource: number;
+  readonly callbackSource: number;
 };
 
 export type ClosureCaptureInfo = {
@@ -287,6 +295,7 @@ export type SemanticInfo = {
   readonly foreignTypes: ReadonlyMap<string, ForeignPointerType>;
   readonly foreignCallTypes: ReadonlyMap<number, string>;
   readonly foreignStatusCalls: ReadonlyMap<number, ForeignStatusCallInfo>;
+  readonly foreignConnectionCalls: ReadonlyMap<number, ForeignConnectionCallInfo>;
   readonly foreignNamedTypes: ReadonlyMap<string, ForeignNamedType>;
   readonly foreignExpressionTypes: ReadonlyMap<number, string>;
   readonly numericLiteralTypes: ReadonlyMap<number, string>;
@@ -374,6 +383,8 @@ type AnalysisState = {
   readonly viewBindingOwners: Map<number, string>;
   readonly viewCallOrigins: Map<number, { readonly owner: string; readonly location: SourceLocation }>;
   readonly viewOrigins: Map<string, { readonly owner: string; readonly location: SourceLocation }>;
+  readonly connectionCallOrigins: Map<number, { readonly owner: string; readonly location: SourceLocation }>;
+  readonly connectionOrigins: Map<string, { readonly owner: string; readonly location: SourceLocation }>;
   readonly movedExpressions: Set<number>;
   readonly managedCopies: Set<number>;
   readonly explicitCopies: Map<number, ExplicitCopyPlan>;
@@ -381,6 +392,7 @@ type AnalysisState = {
   readonly foreignTypes: ReadonlyMap<string, ForeignPointerType>;
   readonly foreignCallTypes: Map<number, string>;
   readonly foreignStatusCalls: Map<number, ForeignStatusCallInfo>;
+  readonly foreignConnectionCalls: Map<number, ForeignConnectionCallInfo>;
   readonly foreignNamedTypes: ReadonlyMap<string, ForeignNamedType>;
   readonly foreignExpressionTypes: Map<number, string>;
   readonly numericLiteralTypes: Map<number, string>;
@@ -477,6 +489,7 @@ type AccessLoan = {
   readonly lifetime:
     | { readonly kind: "call" }
     | { readonly kind: "view"; readonly binding: string }
+    | { readonly kind: "connection"; readonly binding: string }
     | { readonly kind: "task"; readonly spawnOffset: number };
   readonly location: SourceLocation;
 };
@@ -520,7 +533,20 @@ type SymbolValue =
 
 const integerTypes = new Set(["i8", "u8", "i16", "u16", "i32", "u32", "i64", "u64", "isize", "usize"]);
 const floatTypes = new Set(["f32", "f64"]);
-const primitiveTypes = new Set([...integerTypes, ...floatTypes, "void", "boolean", "cstring", "String", "TextBuffer", "Arena", "Hasher", "TaskScope", "TaskControl"]);
+const primitiveTypes = new Set([
+  ...integerTypes,
+  ...floatTypes,
+  "void",
+  "boolean",
+  "cstring",
+  "String",
+  "TextBuffer",
+  "Arena",
+  "Hasher",
+  "TaskScope",
+  "TaskControl",
+  nativeConnectionTypeName,
+]);
 const movedPrefix = "__z_moved:";
 const maybeMovedPrefix = "__z_maybe_moved:";
 const uninitializedPrefix = "__z_uninitialized:";
@@ -539,6 +565,10 @@ export function analyze(
   deploymentTarget: DeploymentTarget | null = null,
   observer: SemanticObserver | null = null,
 ): SemanticInfo {
+  typeDisplayNames = new Map([
+    ...typeDisplayNames,
+    [nativeConnectionTypeName, "native.Connection"],
+  ]);
   const foreignTypes = new Map<string, ForeignPointerType>();
   const foreignNamedTypes = new Map<string, ForeignNamedType>();
   const foreignObjectTypes = new Map<string, ForeignObjectType>();
@@ -650,6 +680,8 @@ export function analyze(
     viewBindingOwners: new Map(),
     viewCallOrigins: new Map(),
     viewOrigins: new Map(),
+    connectionCallOrigins: new Map(),
+    connectionOrigins: new Map(),
     movedExpressions: new Set(),
     managedCopies: new Set(),
     explicitCopies: new Map(),
@@ -657,6 +689,7 @@ export function analyze(
     foreignTypes,
     foreignCallTypes: new Map(),
     foreignStatusCalls: new Map(),
+    foreignConnectionCalls: new Map(),
     foreignNamedTypes,
     foreignExpressionTypes: new Map(),
     numericLiteralTypes: new Map(),
@@ -2001,6 +2034,8 @@ function analyzeFunction(
   state.asyncLoopScopeFloors.length = 0;
   state.viewCallOrigins.clear();
   state.viewOrigins.clear();
+  state.connectionCallOrigins.clear();
+  state.connectionOrigins.clear();
   state.inferredOutBindingLocations.clear();
   const locals = new Map<string, ValueType>();
   if (receiver && !declaration.static) {
@@ -2356,6 +2391,7 @@ function analyzeStatements(
   transientViews: ReadonlySet<string> = new Set(),
 ): boolean {
   const inheritedViews = new Set([...state.viewOrigins.keys()].filter((name) => !transientViews.has(name)));
+  const inheritedConnections = new Set(state.connectionOrigins.keys());
   let returns = false;
   let stops = false;
   for (let index = 0; index < statements.length; index += 1) {
@@ -2381,6 +2417,9 @@ function analyzeStatements(
   }
   for (const name of state.viewOrigins.keys()) {
     if (!inheritedViews.has(name)) unbindViewOrigin(name, state);
+  }
+  for (const name of state.connectionOrigins.keys()) {
+    if (!inheritedConnections.has(name)) unbindConnectionOrigin(name, state);
   }
   return returns;
 }
@@ -2628,6 +2667,43 @@ function analyzeStatement(
         state.bindingTypes.set(statement.nameLocation.offset, String(variableType));
         bindViewOrigin(statement.name, origin, fileName, state);
         state.viewBindingOwners.set(statement.nameLocation.offset, origin.owner);
+        return;
+      }
+      if (String(variableType) === nativeConnectionTypeName) {
+        if (statement.mutable) {
+          throw new DiagnosticError(fileName, statement.location, "a native connection binding must use const", {
+            code: "Z0205",
+          });
+        }
+        const origin = foreignConnectionOrigin(statement.initializer, state);
+        if (!origin) {
+          throw new DiagnosticError(
+            fileName,
+            statement.initializer.location,
+            "a native connection must be bound directly from its declaring foreign call",
+            {
+              code: "Z0205",
+              notes: ["connection tokens cannot be copied, returned, or stored in another aggregate in the first tier"],
+            },
+          );
+        }
+        const conflict = registerAccessLoan(state.activeLoans, {
+          root: origin.owner,
+          capability: "in",
+          lifetime: { kind: "connection", binding: statement.name },
+          location: origin.location,
+        });
+        if (conflict) {
+          throw new DiagnosticError(
+            fileName,
+            origin.location,
+            `cannot connect ${JSON.stringify(statement.name)} while ${JSON.stringify(origin.owner)} has an active ${conflict.capability} loan`,
+            { code: "Z0205" },
+          );
+        }
+        state.connectionOrigins.set(statement.name, origin);
+        locals.set(statement.name, nativeConnectionTypeName);
+        state.bindingTypes.set(statement.nameLocation.offset, nativeConnectionTypeName);
         return;
       }
       const directForeignValue = state.foreignNamedTypes.get(String(underlyingType(variableType)));
@@ -3137,9 +3213,16 @@ function analyzeStatement(
         const type = inferDirectValue(statement.expression, owner, locals, globals, structs, enums, fileName, state);
         if (type === objcConnectionTypeName) {
           throw new DiagnosticError(fileName, statement.expression.location, "objc.Connection must be bound so its callback lifetime is explicit", {
-            code: "Z0804",
+            code: "Z0811",
             notes: ["the connection owns the native control and callback until the binding leaves scope"],
             helps: ["use `const connection = objc.connect(control, move () => operation());`"],
+          });
+        }
+        if (type === nativeConnectionTypeName) {
+          throw new DiagnosticError(fileName, statement.expression.location, "native.Connection must be bound so its callback lifetime is explicit", {
+            code: "Z0811",
+            notes: ["the connection keeps the callback registered and its closure environment alive until the binding leaves scope"],
+            helps: ["bind the result with const so Z can unregister the callback before cleaning up its native owner"],
           });
         }
         if (hasOwnershipType(type, structs, enums, state)) {
@@ -6586,7 +6669,7 @@ function inferExpressionInner(
               rejectLabeledArguments(expression.argumentLabels, expression.location, fileName);
               if (expression.arguments.length !== 2 || expression.arguments[1].kind !== "closure") {
                 throw new DiagnosticError(fileName, expression.location, "objc.connect expects an Objective-C target/action object and one synchronous closure", {
-                  code: "Z0804",
+                  code: "Z0811",
                   helps: [`use \`${localModuleName}.connect(control, move () => operation())\``],
                 });
               }
@@ -6598,7 +6681,7 @@ function inferExpressionInner(
                 || !findObjCProperty(receiver, "target", state)?.setter
                 || !findObjCProperty(receiver, "action", state)?.setter) {
                 throw new DiagnosticError(fileName, control.location, "objc.connect requires a non-null Objective-C object with writable target and action properties", {
-                  code: "Z0804",
+                  code: "Z0811",
                   notes: ["the returned objc.Connection owns the object and operation while callbacks are active"],
                 });
               }
@@ -8574,6 +8657,28 @@ function bindViewOrigin(
   state.viewOrigins.set(binding, origin);
 }
 
+function foreignConnectionOrigin(
+  expression: Expression,
+  state: AnalysisState,
+): { readonly owner: string; readonly location: SourceLocation } | null {
+  if (expression.kind === "call") return state.connectionCallOrigins.get(expression.location.offset) ?? null;
+  if (expression.kind === "try" || expression.kind === "attempt") {
+    return foreignConnectionOrigin(expression.expression, state);
+  }
+  return null;
+}
+
+function unbindConnectionOrigin(binding: string, state: AnalysisState): void {
+  const origin = state.connectionOrigins.get(binding);
+  if (!origin) return;
+  const remaining = (state.activeLoans.get(origin.owner) ?? []).filter((loan) => (
+    loan.lifetime.kind !== "connection" || loan.lifetime.binding !== binding
+  ));
+  if (remaining.length > 0) state.activeLoans.set(origin.owner, remaining);
+  else state.activeLoans.delete(origin.owner);
+  state.connectionOrigins.delete(binding);
+}
+
 function unbindViewOrigin(binding: string, state: AnalysisState): void {
   const origin = state.viewOrigins.get(binding);
   if (!origin) return;
@@ -8624,6 +8729,8 @@ function mergeAccessLoanStates(state: AnalysisState, paths: readonly AccessLoanS
           ? `task:${loan.lifetime.spawnOffset}`
           : loan.lifetime.kind === "view"
             ? `view:${loan.lifetime.binding}`
+            : loan.lifetime.kind === "connection"
+              ? `connection:${loan.lifetime.binding}`
             : "call";
         const key = `${root}:${loan.capability}:${lifetime}:${loan.location.offset}`;
         if (seen.has(key)) continue;
@@ -8734,6 +8841,19 @@ function rejectOwnerMutationWhileViewed(
       }],
       notes: [`the ${asyncBorrow.capability === "inout" ? "exclusive borrow" : "borrow"} remains live until the enclosing async scope joins its child tasks`],
       helps: ["finish the async scope before mutating or moving the borrowed value"],
+    });
+  }
+  const connection = state.activeLoans.get(owner)?.find((loan) => loan.lifetime.kind === "connection");
+  if (connection?.lifetime.kind === "connection") {
+    throw new DiagnosticError(fileName, location, `cannot ${action} ${JSON.stringify(owner)} while native connection ${JSON.stringify(connection.lifetime.binding)} is live`, {
+      code: "Z0205",
+      labels: [{
+        location: connection.location,
+        message: `connection ${JSON.stringify(connection.lifetime.binding)} begins here`,
+        length: owner.length,
+      }],
+      notes: ["the connection cleanup must unregister its callback before the native owner can move or deinitialize"],
+      helps: [`place ${JSON.stringify(connection.lifetime.binding)} in a narrower block so it is cleaned up first`],
     });
   }
   const active = state.activeLoans.get(owner)?.find((loan) => loan.lifetime.kind === "view");
@@ -9658,6 +9778,7 @@ function hasCleanupType(
   const actual = underlyingType(type);
   if (actual === "unknown" || actual === "never" || visiting.has(actual)) return false;
   if (actual === "String" || actual === "TextBuffer" || actual === "Arena" || actual === "TaskScope" || actual === "TaskControl") return true;
+  if (actual === nativeConnectionTypeName) return true;
   if (parseGeneratorType(actual) || parseAsyncGeneratorType(actual)) return true;
   if (parseWeakType(actual)) return true;
   if (parseFunctionType(String(actual))) return true;
@@ -10381,8 +10502,10 @@ function foreignValueType(type: ForeignType): ValueType {
   if (type.kind === "pointerOut") return type.pointer.typeName;
   if (type.kind === "callback" || type.kind === "block") {
     const parameters = type.parameters.map((parameter, index) => ({
-      name: `argument${index + 1}`,
-      mode: "value" as const,
+      name: type.kind === "callback" ? type.parameterNames?.[index] ?? `argument${index + 1}` : `argument${index + 1}`,
+      mode: type.kind === "callback"
+        ? (type.parameterModes?.[index] ?? "value")
+        : "value",
       type: String(foreignValueType(parameter)),
     }));
     const returnType = foreignValueType(type.returnType);
@@ -11287,11 +11410,46 @@ function checkForeignCall(
     if (!errorType) {
       throw new DiagnosticError(fileName, location, `native status contract for ${JSON.stringify(target.name)} has no supported error type`);
     }
-    state.foreignStatusCalls.set(location.offset, {
-      errorType,
-      success: target.status.success,
-    });
-    result = resultTypeName("void", errorType);
+    if (target.connection) {
+      const ownerSource = visibleParameters.findIndex(({ nativeIndex }) => nativeIndex === target.connection!.ownerParameter);
+      const callbackSource = visibleParameters.findIndex(({ nativeIndex }) => nativeIndex === target.connection!.callbackParameter);
+      const callback = target.parameters[target.connection.callbackParameter]?.type;
+      if (ownerSource < 0 || callbackSource < 0 || callback?.kind !== "callback") {
+        throw new DiagnosticError(fileName, location, `invalid connection projection for ${JSON.stringify(target.name)}`, {
+          code: "Z0801",
+        });
+      }
+      const ownerArgument = args[ownerSource];
+      const ownerRoot = storageRoot(ownerArgument);
+      if (!ownerRoot || !locals.has(ownerRoot.name)) {
+        throw new DiagnosticError(
+          fileName,
+          ownerArgument.location,
+          "a native callback connection requires a named owner binding",
+          {
+            code: "Z0205",
+            helps: ["bind the native handle before installing its callback"],
+          },
+        );
+      }
+      state.foreignConnectionCalls.set(location.offset, {
+        target,
+        functionType: String(foreignValueType(callback)),
+        ownerSource,
+        callbackSource,
+      });
+      state.connectionCallOrigins.set(location.offset, {
+        owner: ownerRoot.name,
+        location: ownerArgument.location,
+      });
+      result = resultTypeName(nativeConnectionTypeName, errorType);
+    } else {
+      state.foreignStatusCalls.set(location.offset, {
+        errorType,
+        success: target.status.success,
+      });
+      result = resultTypeName("void", errorType);
+    }
   }
   state.foreignCallTypes.set(location.offset, result);
   return result;

@@ -7,14 +7,17 @@ import { apiNotesFreshness, readApiNotes, type ApiNotes, type PointerNote } from
 import { normalizeForeignContracts } from "./foreign-contracts.ts";
 import { parseForeignDeclarationContracts, type ForeignValueContract } from "./foreign-declarations.ts";
 import {
+  callbackParameterSpellings,
   normalizeCallbackContextType,
   splitCParameters,
 } from "./foreign-type-spelling.ts";
 import { isStandardModuleSpecifier } from "./standard-library.ts";
+import { sliceTypeName } from "./array-types.ts";
 import { deploymentTargetFlags, type DeploymentTarget } from "./project.ts";
 import { collectIntegerMacroConstants } from "./foreign-macros.ts";
 import type {
   ForeignCallbackType,
+  ForeignCallbackTypedef,
   ForeignAvailability,
   ForeignBlockType,
   ForeignConstant,
@@ -84,6 +87,7 @@ type ClangNode = {
 
 type ClangLocation = {
   readonly offset?: number;
+  readonly tokLen?: number;
   readonly file?: string;
   readonly line?: number;
   readonly presumedLine?: number;
@@ -92,6 +96,31 @@ type ClangLocation = {
   readonly spellingLoc?: ClangLocation;
   readonly expansionLoc?: ClangLocation;
 };
+
+function callbackTypedefParameterNames(node: ClangNode, parameterCount: number): readonly string[] {
+  const file = explicitClangFile(node.loc) ?? explicitClangFile(node.range?.begin) ?? clangNodeSourceFiles.get(node);
+  const start = node.range?.begin?.offset;
+  const end = node.range?.end?.offset;
+  if (!file || start === undefined || end === undefined) {
+    return Array.from({ length: parameterCount }, (_, index) => `argument${index + 1}`);
+  }
+  try {
+    const source = readFileSync(file, "utf8");
+    const text = source.slice(start, end + (node.range?.end?.tokLen ?? 1));
+    const match = /\(\s*\*\s*[A-Za-z_][A-Za-z0-9_]*\s*\)\s*\(([\s\S]*)\)\s*;?\s*$/.exec(text);
+    if (!match) throw new Error("callback typedef source has no declarator");
+    const names = splitCParameters(match[1]).map((parameter, index) => {
+      const withoutAttributes = parameter.replace(/__attribute__\s*\(\([\s\S]*?\)\)/g, " ").trim();
+      const name = /([A-Za-z_][A-Za-z0-9_]*)\s*(?:\[[^\]]*\])?\s*$/.exec(withoutAttributes)?.[1];
+      return name ?? `argument${index + 1}`;
+    });
+    return names.length === parameterCount
+      ? names
+      : Array.from({ length: parameterCount }, (_, index) => `argument${index + 1}`);
+  } catch {
+    return Array.from({ length: parameterCount }, (_, index) => `argument${index + 1}`);
+  }
+}
 
 const headerCache = new Map<string, HeaderInfo>();
 const foreignSourceCache = new Map<string, { readonly freshness: string; readonly source: string }>();
@@ -201,6 +230,18 @@ function readHeader(
     throw new DiagnosticError(fileName, declaration.location, `Clang returned an invalid AST for header ${JSON.stringify(declaration.header)}`);
   }
   hydrateClangSourceFiles(root);
+  const callbackTypedefs = new Map<string, ForeignCallbackTypedef>();
+  visit(root, (node) => {
+    if (node.kind !== "TypedefDecl" || !node.name || !node.type?.qualType) return;
+    const signature = node.type.desugaredQualType ?? node.type.qualType;
+    const parameterTypes = callbackParameterSpellings(signature);
+    if (!parameterTypes) return;
+    callbackTypedefs.set(node.name, {
+      name: node.name,
+      signature,
+      parameterNames: callbackTypedefParameterNames(node, parameterTypes.length),
+    });
+  });
 
   const declarationDirectory = resolve(dirname(declaration.location.fileName ?? fileName));
   const declarationContractPath = [
@@ -307,6 +348,7 @@ function readHeader(
     produced.namedTypes,
     produced.interfaces,
     produced.constants,
+    callbackTypedefs,
     generatedNotes
       ? { name: `Swift module metadata for ${declaration.header}`, notes: generatedNotes }
       : null,
@@ -331,6 +373,12 @@ function readHeader(
       mapVariadicType: (type) => type === "cstring"
         ? { kind: "z", name: "cstring", cName: "const char *" }
         : mapForeignType("long", undefined, "parameter", new Map(), produced.nativeTypes),
+      mapVariadicCallback: (nativeType, nativeSignature, nativeParameterNames, bytes) => mapProjectedByteCallback(
+        nativeType,
+        nativeSignature,
+        nativeParameterNames,
+        bytes,
+      ),
     },
     fileName,
     declaration.location,
@@ -1701,6 +1749,40 @@ function mapCallbackType(
       ? { parameter: callbackNote.release.parameter!, callbackParameter: callbackNote.release.callbackParameter! }
       : null,
     thread: callbackNote.thread ?? null,
+  };
+}
+
+function mapProjectedByteCallback(
+  nativeType: string,
+  signature: string,
+  nativeParameterNames: readonly string[],
+  bytes: { readonly bufferParameter: number; readonly lengthParameters: readonly number[] },
+): ForeignCallbackType {
+  const normalized = signature
+    .replace(/\b(restrict|_Nonnull|_Nullable|_Null_unspecified)\b/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  const match = /^(.+?)\s*\(\s*\*\s*\)\s*\((.*)\)$/.exec(normalized);
+  if (!match) throw new Error(`validated callback typedef ${nativeType} has no function-pointer signature`);
+  const nativeParameters = splitCParameters(match[2]);
+  const contextParameter = nativeParameters.findIndex((parameter) => (
+    normalizeCallbackContextType(parameter) === "void *"
+    && parameter !== nativeParameters[bytes.bufferParameter]
+  ));
+  return {
+    kind: "callback",
+    cName: nativeType,
+    parameters: [{ kind: "z", name: sliceTypeName("u8"), cName: "Z_Slice_u8" }],
+    returnType: { kind: "z", name: "usize", cName: "size_t" },
+    lifetime: "escape",
+    context: { parameter: -1, callbackParameter: contextParameter },
+    release: null,
+    thread: "caller",
+    parameterNames: ["bytes"],
+    parameterModes: ["value"],
+    nativeParameters,
+    nativeParameterNames,
+    bytesProjection: bytes,
   };
 }
 
