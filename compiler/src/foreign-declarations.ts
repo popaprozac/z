@@ -94,6 +94,7 @@ export type ForeignThreadContractLocations = {
 
 export type ForeignCallbackContract = {
   readonly parameter: string;
+  readonly cardinality: "once" | "repeatedly";
   readonly context: string | null;
   readonly contextOption: string | null;
   readonly release: string | null;
@@ -109,6 +110,8 @@ export type ForeignCallbackContract = {
   readonly thread: "caller" | "any" | null;
   readonly location: SourceLocation;
   readonly parameterLocation: SourceLocation;
+  readonly invokedLocation: SourceLocation;
+  readonly cardinalityLocation: SourceLocation;
   readonly contextLocation: SourceLocation | null;
   readonly contextOptionLocation: SourceLocation | null;
   readonly releaseLocation: SourceLocation | null;
@@ -585,8 +588,20 @@ export function parseForeignDeclarationContracts(source: string, fileName: strin
           let callbackOwner: Token | null = null;
           let bytes: ForeignCallbackContract["bytes"] = null;
           let callbackThread: Token | null = null;
+          let invoked: Token | null = null;
+          let cardinality: Token | null = null;
           while (!at("}")) {
             const callbackFact = peek();
+            if (at("invoked")) {
+              if (invoked) fail(callbackFact, `callback ${JSON.stringify(callback.text)} cannot declare invocation cardinality more than once`);
+              invoked = take();
+              cardinality = expectIdentifier("`once` or `repeatedly` after `invoked`");
+              if (cardinality.text !== "once" && cardinality.text !== "repeatedly") {
+                fail(cardinality, `callback invocation cardinality must be "once" or "repeatedly", found ${JSON.stringify(cardinality.text)}`);
+              }
+              expectText(";");
+              continue;
+            }
             if (at("type")) {
               if (nativeType) fail(callbackFact, `callback ${JSON.stringify(callback.text)} cannot declare more than one native type`);
               take();
@@ -653,12 +668,19 @@ export function parseForeignDeclarationContracts(source: string, fileName: strin
             }
             fail(
               callbackFact,
-              `expected "type", "context", "owner", "bytes", "deinit", or "thread" in foreign callback contract, found ${JSON.stringify(callbackFact.text)}`,
+              `expected "type", "context", "owner", "bytes", "deinit", "thread", or "invoked" in foreign callback contract, found ${JSON.stringify(callbackFact.text)}`,
             );
           }
           expectText("}");
+          if (!invoked || !cardinality) {
+            fail(
+              callback,
+              `callback ${JSON.stringify(callback.text)} requires explicit invocation cardinality; add \`invoked once;\` for an exactly-once callback or \`invoked repeatedly;\` for zero or more invocations`,
+            );
+          }
           callbacks.push({
             parameter: callback.text,
+            cardinality: cardinality.text as "once" | "repeatedly",
             context: context?.text ?? null,
             contextOption: contextOption?.text ?? null,
             release: callbackRelease?.text ?? null,
@@ -668,6 +690,8 @@ export function parseForeignDeclarationContracts(source: string, fileName: strin
             thread: callbackThread?.text === "any" ? "any" : callbackThread ? "caller" : null,
             location: contract.location,
             parameterLocation: callback.location,
+            invokedLocation: invoked.location,
+            cardinalityLocation: cardinality.location,
             contextLocation: context?.location ?? null,
             contextOptionLocation: contextOption?.location ?? null,
             releaseLocation: callbackRelease?.location ?? null,
@@ -1043,6 +1067,7 @@ export function foreignDeclarationApiNotes(
           ...note.callback,
           lifetime: parameter.mode === "move" ? "escape" : "call",
           ...(callback.thread ? { thread: callback.thread } : {}),
+          cardinality: callback.cardinality,
           context: { parameter: contextIndex, callbackParameter },
           ...(callback.release && releaseParameter !== null
             ? { release: { parameter: releaseIndex, callbackParameter: releaseParameter } }
@@ -1375,6 +1400,14 @@ function validatePairedOptionCallbackContract(
       { code: "Z0801" },
     );
   }
+  if (callback.cardinality !== "repeatedly") {
+    throw new DiagnosticError(
+      fileName,
+      callback.cardinalityLocation,
+      "a callback connection may receive zero or more invocations and requires `invoked repeatedly;`",
+      { code: "Z0801" },
+    );
+  }
   if (!callback.nativeType || !callback.nativeTypeLocation) {
     throw new DiagnosticError(
       fileName,
@@ -1676,6 +1709,7 @@ function objectiveCMethodApiNote(
       callback: {
         lifetime: native.type.escaping ? "escape" : "call",
         ...(callback?.thread ? { thread: callback.thread } : {}),
+        ...(callback ? { cardinality: callback.cardinality } : {}),
       },
     };
   }
@@ -1737,6 +1771,17 @@ function objectiveCMethodApiNote(
         contract.asyncCallbackLocation!,
         `async callback ${JSON.stringify(contract.asyncCallback)} requires a caller or any thread guarantee`,
         { code: "Z0801" },
+      );
+    }
+    if (callback.cardinality !== "once") {
+      throw new DiagnosticError(
+        fileName,
+        callback.cardinalityLocation,
+        `async callback ${JSON.stringify(contract.asyncCallback)} requires \`invoked once;\``,
+        {
+          code: "Z0801",
+          notes: ["the exactly-once fact permits one native completion to settle one Z Task"],
+        },
       );
     }
     if (!isVoidForeignType(method.returnType)) {

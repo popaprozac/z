@@ -115,7 +115,7 @@ const primitiveTypeTokens = [
 const declarationKeywordTokens = [
   "declare", "module", "export", "function", "type", "copy", "in", "inout", "out", "move", "deinit",
   "async", "callback", "context", "thread", "caller", "any", "transfer", "share", "fixed", "throws", "success",
-  "connection", "option", "owner", "bytes", "length", "from", "return", "throw",
+  "connection", "option", "owner", "bytes", "length", "from", "return", "throw", "invoked", "once", "repeatedly",
 ] as const;
 
 export function diagnostics(source: string, fileName: string): ServiceDiagnostic[] {
@@ -2431,6 +2431,21 @@ function foreignDeclarationCompletions(source: string, fileName: string, offset:
       });
     }
   }
+  const invocationValuePrefix = /\bcallback\s+[A-Za-z_][A-Za-z0-9_]*\s*\{[^}]*\binvoked\s+([A-Za-z_]*)$/.exec(before)?.[1];
+  if (invocationValuePrefix !== undefined) {
+    for (const value of ["once", "repeatedly"] as const) {
+      if (!value.startsWith(invocationValuePrefix)) continue;
+      contextual.push({
+        label: value,
+        kind: completionKinds.keyword,
+        detail: value === "once"
+          ? "exactly one native invocation; required for Task synthesis"
+          : "zero or more native invocations",
+        insertText: `${value};`,
+        sortText: `0-${value}`,
+      });
+    }
+  }
 
   const contextOptionPrefix = /\bcallback\s+[A-Za-z_][A-Za-z0-9_]*\s*\{[^}]*\bcontext\s+option\s+([A-Za-z_]*)$/.exec(before)?.[1];
   if (module && contextOptionPrefix !== undefined) {
@@ -3000,6 +3015,20 @@ function foreignDeclarationHover(source: string, fileName: string, offset: numbe
           : "caller  // native code invokes and releases this callback only on the registering thread";
         return markdownHover(
           detail,
+          source,
+          word.start,
+          word.end,
+        );
+      }
+      if (
+        callback.invokedLocation.offset === word.start
+        || callback.cardinalityLocation.offset === word.start
+      ) {
+        const detail = callback.cardinality === "once"
+          ? "exactly one native invocation; duplicate async completion traps deterministically"
+          : "zero or more native invocations; this does not imply an escaping connection";
+        return markdownHover(
+          `invoked ${callback.cardinality}  // ${detail}`,
           source,
           word.start,
           word.end,

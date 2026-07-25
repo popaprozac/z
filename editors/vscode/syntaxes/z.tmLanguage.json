@@ -154,6 +154,13 @@
           "2": { "name": "variable.parameter.z" }
         }
       }, {
+        "name": "meta.declaration.callback-cardinality.foreign.z",
+        "match": "\\b(invoked)\\s+(once|repeatedly)(?=\\s*;)",
+        "captures": {
+          "1": { "name": "keyword.control.declaration.callback.z" },
+          "2": { "name": "constant.language.callback-cardinality.z" }
+        }
+      }, {
         "name": "meta.declaration.callback-bytes.foreign.z",
         "match": "\\b(bytes)\\s+(from)\\s+([A-Za-z_][A-Za-z0-9_]*)\\s+(length)\\s+([A-Za-z_][A-Za-z0-9_]*)(?:\\s*(\\*)\\s*([A-Za-z_][A-Za-z0-9_]*))*\\s*(?=;)",
         "captures": {

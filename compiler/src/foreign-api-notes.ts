@@ -28,6 +28,7 @@ export type PointerNote = {
   readonly callback?: {
     readonly lifetime?: "call" | "escape";
     readonly thread?: "caller" | "any";
+    readonly cardinality?: "once" | "repeatedly";
     readonly context?: {
       readonly parameter?: number;
       readonly callbackParameter?: number;
@@ -453,9 +454,10 @@ function validatePointerNote(value: unknown, source: string, path: string): void
   }
   if (note.callback === undefined) return;
   const callback = requireRecord(note.callback, source, `${path}.callback`);
-  requireKeys(callback, ["lifetime", "thread", "context", "release"], source, `${path}.callback`);
+  requireKeys(callback, ["lifetime", "thread", "cardinality", "context", "release"], source, `${path}.callback`);
   requireEnum(callback.lifetime, ["call", "escape"], source, `${path}.callback.lifetime`);
   requireEnum(callback.thread, ["caller", "any"], source, `${path}.callback.thread`);
+  requireEnum(callback.cardinality, ["once", "repeatedly"], source, `${path}.callback.cardinality`);
   if (callback.context !== undefined) validatePair(callback.context, source, `${path}.callback.context`);
   if (callback.release !== undefined) validatePair(callback.release, source, `${path}.callback.release`);
 }

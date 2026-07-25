@@ -147,6 +147,7 @@ export type ForeignBlockType = {
   readonly escaping: boolean;
   readonly nullable: boolean;
   readonly thread: "caller" | "any" | null;
+  readonly cardinality: "once" | "repeatedly" | null;
 };
 
 export type ForeignObjCMethod = {
@@ -263,6 +264,7 @@ export type ForeignCallbackType = {
     readonly callbackParameter: number;
   } | null;
   readonly thread: "caller" | "any" | null;
+  readonly cardinality: "once" | "repeatedly" | null;
   readonly parameterNames?: readonly string[];
   readonly parameterModes?: readonly ("value" | "in" | "inout" | "out")[];
   readonly nativeParameters?: readonly string[];

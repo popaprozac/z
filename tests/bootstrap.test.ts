@@ -909,6 +909,21 @@ test("ties projected native callbacks to their owner with a move-only connection
     )?.contents.value ?? "",
     /callback connection cannot outlive this native owner/,
   );
+  assert.match(
+    hover(
+      declarationSource,
+      declarationFile,
+      declarationSource.indexOf("invoked repeatedly") + 2,
+    )?.contents.value ?? "",
+    /invoked repeatedly.*zero or more native invocations/,
+  );
+  const invocationCompletionSource = declarationSource.replace("invoked repeatedly;", "invoked rep");
+  const invocationCompletionOffset = invocationCompletionSource.indexOf("invoked rep") + "invoked rep".length;
+  assert.equal(
+    completions(invocationCompletionSource, declarationFile, invocationCompletionOffset)
+      .find((item) => item.label === "repeatedly")?.insertText,
+    "repeatedly;",
+  );
   const typeCompletionSource = declarationSource.replace("type ZCallbackWrite;", "type ZCall");
   const typeCompletionOffset = typeCompletionSource.indexOf("type ZCall") + "type ZCall".length;
   assert.equal(
@@ -941,6 +956,16 @@ test("ties projected native callbacks to their owner with a move-only connection
   assert.match(
     diagnostics(invalidProjection, declarationFile)[0]?.message ?? "",
     /byte projection names unknown callback parameter \"missing\"/,
+  );
+  const wrongCardinality = declarationSource.replace("invoked repeatedly;", "invoked once;");
+  assert.match(
+    diagnostics(wrongCardinality, declarationFile)[0]?.message ?? "",
+    /callback connection.*requires `invoked repeatedly;`/,
+  );
+  const missingCardinality = declarationSource.replace("      invoked repeatedly;\n", "");
+  assert.match(
+    diagnostics(missingCardinality, declarationFile)[0]?.message ?? "",
+    /requires explicit invocation cardinality/,
   );
 });
 
@@ -1287,6 +1312,7 @@ test("rejects invalid C callback and context declaration pairs", () => {
       export function invalid_context(value: _, not_context: _, in callback: _): _ {
         callback callback {
           context not_context;
+          invoked once;
         }
       }
     }
@@ -1322,6 +1348,7 @@ test("rejects escaping C callbacks without complete release and threading contra
       export function retain_callback(move callback: _, context: _, release: _): _ {
         callback callback {
           context context;
+          invoked repeatedly;
         }
       }
     }
@@ -1802,6 +1829,7 @@ test("diagnoses malformed and mismatched Z declaration contracts", () => {
       export function apply(value: _, context: _, in operation: _): _ {
         callback operation {
           context missing;
+          invoked once;
         }
       }
     }
@@ -1816,6 +1844,7 @@ test("diagnoses malformed and mismatched Z declaration contracts", () => {
       export function apply(value: _, context: _, move operation: _): _ {
         callback operation {
           context context;
+          invoked repeatedly;
         }
       }
     }
@@ -4385,6 +4414,10 @@ test("projects Swift callbacks into tasks and preserves MainActor isolation", ()
   assert.match(artifact.source, /if \(callback_value_1 != nil\)/);
   assert.match(artifact.source, /frame->error = callback_value_1/);
   assert.match(artifact.source, /z_async_begin_external_completion\(task\)/);
+  assert.match(
+    artifact.source,
+    /if \(__atomic_exchange_n\(&callback_invoked, true, __ATOMIC_ACQ_REL\)\) abort\(\);/,
+  );
   assert.match(artifact.source, /z_async_report_external_completion\(&frame->task\)/);
   assert.match(artifact.source, /active_external_callbacks/);
   assert.doesNotMatch(artifact.source, /\[ZSwiftBackgroundWorker waitForCompletion\]/);
@@ -4402,6 +4435,7 @@ test("projects Swift callbacks into tasks and preserves MainActor isolation", ()
   if (calculate?.parameters[1]?.type.kind === "block") {
     assert.equal(calculate.parameters[1].type.escaping, true);
     assert.equal(calculate.parameters[1].type.thread, "any");
+    assert.equal(calculate.parameters[1].type.cardinality, "once");
   }
   assert.equal(calculate?.asyncCallbackParameter, 1);
   assert.equal(calculate?.asyncResultParameter, 0);
@@ -4486,6 +4520,7 @@ test("projects Swift callbacks into tasks and preserves MainActor isolation", ()
       ): _ {
         callback completion {
           thread any;
+          invoked once;
         }
       }
     }
@@ -4499,6 +4534,15 @@ test("projects Swift callbacks into tasks and preserves MainActor isolation", ()
   assert.equal(invalidContract.code, "Z0801");
   assert.match(invalidContract.message, /escaping Objective-C block "completion" requires move/);
 
+  const repeatedAsyncContract = readFileSync(
+    resolve(projectRoot, "examples/interop/swift/swift-task-scope/ZSwiftTaskScope-Swift.h.zd"),
+    "utf8",
+  ).replace("invoked once;", "invoked repeatedly;");
+  writeFileSync(resolve(invalidDirectory, "ZSwiftTaskScope-Swift.h.zd"), repeatedAsyncContract);
+  const repeatedAsyncDiagnostic = diagnostics(invalidSource, invalidFile)[0];
+  assert.equal(repeatedAsyncDiagnostic.code, "Z0801");
+  assert.match(repeatedAsyncDiagnostic.message, /async callback "completion" requires `invoked once;`/);
+
   writeFileSync(resolve(invalidDirectory, "ZSwiftTaskScope-Swift.h.zd"), `
     declare module "ZSwiftTaskScope-Swift.h" {
       export function ZSwiftBackgroundWorker.calculateChecked(
@@ -4508,6 +4552,7 @@ test("projects Swift callbacks into tasks and preserves MainActor isolation", ()
       ): _ {
         callback completion {
           thread any;
+          invoked once;
         }
         async completion(value) {
           throw value;
@@ -4528,6 +4573,7 @@ test("projects Swift callbacks into tasks and preserves MainActor isolation", ()
       ): _ {
         callback completion {
           thread any;
+          invoked once;
         }
         async completion(value, error) {
           return error;
@@ -13502,6 +13548,10 @@ test("editor grammar tracks keywords without reserving Result variants", () => {
   assert.equal(callbackThreadGrammar.captures[1].name, "keyword.control.declaration.callback.z");
   assert.equal(callbackThreadGrammar.captures[2].name, "constant.language.callback-thread.z");
   assert.match(callbackThreadGrammar.match, /caller\\\|any|caller\|any/);
+  const callbackCardinalityGrammar = foreignPattern("meta.declaration.callback-cardinality.foreign.z");
+  assert.equal(callbackCardinalityGrammar.captures[1].name, "keyword.control.declaration.callback.z");
+  assert.equal(callbackCardinalityGrammar.captures[2].name, "constant.language.callback-cardinality.z");
+  assert.match(callbackCardinalityGrammar.match, /once\\\|repeatedly|once\|repeatedly/);
   assert.match(selectiveImportPatterns, /\\bas\\b/);
   assert.doesNotMatch("move () =>", new RegExp(matchPattern));
   assert.match("some(value) =>", new RegExp(matchPattern));

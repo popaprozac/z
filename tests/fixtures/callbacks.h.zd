@@ -4,6 +4,7 @@ declare module "callbacks.h" {
   export function z_apply_context_i32(value: _, context: _, in callback: _): _ {
     callback callback {
       context context;
+      invoked once;
     }
   }
   export function z_register_context_callback(move callback: _, context: _, release: _): _ {
@@ -11,6 +12,7 @@ declare module "callbacks.h" {
       context context;
       deinit release;
       thread caller;
+      invoked repeatedly;
     }
   }
 }

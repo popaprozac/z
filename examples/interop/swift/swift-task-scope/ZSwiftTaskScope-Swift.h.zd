@@ -5,6 +5,7 @@ declare module "ZSwiftTaskScope-Swift.h" {
   ): _ {
     callback completion {
       thread any;
+      invoked once;
     }
 
     async completion;
@@ -16,6 +17,7 @@ declare module "ZSwiftTaskScope-Swift.h" {
   ): _ {
     callback completion {
       thread any;
+      invoked once;
     }
 
     async completion;
@@ -28,6 +30,7 @@ declare module "ZSwiftTaskScope-Swift.h" {
   ): _ {
     callback completion {
       thread any;
+      invoked once;
     }
 
     async completion(value, error) {
@@ -42,6 +45,7 @@ declare module "ZSwiftTaskScope-Swift.h" {
   ): _ {
     callback completion {
       thread caller;
+      invoked once;
     }
 
     async completion;

@@ -35,6 +35,10 @@ C ABI uses two separate `curl_easy_setopt` calls. The returned
 Its cleanup resets `CURLOPT_WRITEFUNCTION`, resets `CURLOPT_WRITEDATA`, and
 releases the closure before `curl_easy_cleanup` can run.
 
+The adjacent declaration states `invoked repeatedly`: libcurl may deliver zero
+or more body chunks. This cardinality is independent of the connection
+lifetime. Z checks both facts rather than inferring one from the other.
+
 `Slice<u8>` is already borrowed in Z. The callback therefore spells
 `move (bytes: Slice<u8>)`, not `move (in bytes: Slice<u8>)`: `move` transfers
 the escaping closure environment, while the callback bytes remain a

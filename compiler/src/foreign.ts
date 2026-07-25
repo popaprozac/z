@@ -437,6 +437,7 @@ function applyObjCMethodApiNotes(
               type: {
                 ...parameter.type,
                 thread: parameterNote.callback.thread ?? null,
+                cardinality: parameterNote.callback.cardinality ?? null,
               },
             };
           }),
@@ -1298,6 +1299,7 @@ function mapObjCBlockType(
     escaping: !/\bnoescape\b/.test(cName),
     nullable: /\b(?:_Nullable|_Null_unspecified)\b/.test(cName),
     thread: null,
+    cardinality: null,
   };
 }
 
@@ -1749,6 +1751,7 @@ function mapCallbackType(
       ? { parameter: callbackNote.release.parameter!, callbackParameter: callbackNote.release.callbackParameter! }
       : null,
     thread: callbackNote.thread ?? null,
+    cardinality: callbackNote.cardinality ?? null,
   };
 }
 
@@ -1778,6 +1781,7 @@ function mapProjectedByteCallback(
     context: { parameter: -1, callbackParameter: contextParameter },
     release: null,
     thread: "caller",
+    cardinality: "repeatedly",
     parameterNames: ["bytes"],
     parameterModes: ["value"],
     nativeParameters,

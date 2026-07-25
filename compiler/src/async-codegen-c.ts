@@ -5493,6 +5493,7 @@ function generateForeignAsyncPoll(plan: AsyncFunctionPlan): string {
     ? null
     : callbackArguments[projection.method.asyncErrorParameter].value;
   const callbackLines: string[] = [];
+  callbackLines.push("if (__atomic_exchange_n(&callback_invoked, true, __ATOMIC_ACQ_REL)) abort();");
   if (errorValue && projection.errorType) {
     callbackLines.push(`if (${errorValue} != nil) {`);
     callbackLines.push(`  frame->error = ${errorValue};`);
@@ -5533,6 +5534,7 @@ function generateForeignAsyncPoll(plan: AsyncFunctionPlan): string {
     "    z_async_complete_task(task);",
     "    return;",
     "  }",
+    "  __block bool callback_invoked = false;",
     "  frame->state = 1;",
     "  z_async_begin_external_completion(task);",
     `  (void)${invocation};`,

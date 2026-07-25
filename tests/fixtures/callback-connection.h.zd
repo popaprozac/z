@@ -18,6 +18,7 @@ declare module "callback-connection.h" {
       owner owner;
       bytes from buffer length size * nitems;
       thread caller;
+      invoked repeatedly;
     }
   }
 

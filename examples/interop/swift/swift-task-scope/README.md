@@ -5,7 +5,7 @@ This example composes six native boundaries:
 1. Swift starts work on a global Dispatch queue.
 2. Its generated Objective-C compatibility header exposes an escaping block.
 3. An adjacent `.zd` contract proves that Swift may invoke that block on any
-   thread.
+   thread and asserts `invoked once`.
 4. `async completion;` synthesizes an infallible overload, while the expanded
    `async completion(value, error) { ... }` form projects a conventional
    nullable `NSError` callback into `Task<T, E>`.

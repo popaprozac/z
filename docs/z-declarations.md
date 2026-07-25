@@ -70,6 +70,7 @@ declare module "vendor.h" {
   ): _ on thread.main {
     callback operation {
       context context;
+      invoked repeatedly;
     }
   }
 
@@ -82,6 +83,7 @@ declare module "vendor.h" {
       context context;
       deinit release;
       thread caller;
+      invoked repeatedly;
     }
   }
 
@@ -105,6 +107,7 @@ declare module "vendor.h" {
       owner owner;
       bytes from buffer length size * count;
       thread caller;
+      invoked repeatedly;
     }
   }
 
@@ -114,6 +117,7 @@ declare module "vendor.h" {
   ): _ {
     callback completion {
       thread any;
+      invoked once;
     }
   }
 }
@@ -151,6 +155,8 @@ spelling does not silently pass through.
 | `value: clong` after the fixed native parameters | Require the exact C `long` variadic ABI | Projects to the target-width fixed Z integer and emits an explicit `(long)` cast |
 | `connection throws _` | Turn a native status-returning callback registration into a move-only connection | Success returns `native.Connection`; failure preserves the native integer or enum status |
 | `callback operation { ... }` | Classify a named native callback or Objective-C block parameter | The parameter must exist and have a compatible native callable type |
+| `invoked once;` | Assert exactly one native callback invocation | Required before an exactly-once callback may synthesize a Z `Task`; generated async adapters trap a duplicate invocation before touching completed task storage |
+| `invoked repeatedly;` | Assert zero or more native callback invocations | Required for owner-tied callback connections; also valid for call-scoped APIs such as sorting and visitation |
 | `context context;` | Pair a C callback with its opaque native context parameter | Generated trampoline recovers the exact Z closure environment; ARC-owned Objective-C blocks omit this |
 | `type NativeCallback;` | Name the exact callback typedef used by an option-selected native callback | The typedef and its full function-pointer signature must exist in the header |
 | `context option CONSTANT;` | Name the separate native option used to install the opaque callback context | Constant must exist, match the native option type, and differ from the callback option |
@@ -291,13 +297,14 @@ These are semantic mappings, not textual rewrites:
 | Swift `@MainActor` in a `z.json`-declared Swift target | Imported automatically from the emitted symbol graph | Generated Objective-C headers erase actor isolation; Z merges the toolchain graph with the header-derived declaration |
 | Legacy native UI type or method without actor metadata | `.zd` `on thread.main` fallback or reviewed shipped API notes | The affinity enters the same FIIR field as a compiler-derived fact |
 | Objective-C/Swift static method with an escaping block | `export function Type.method(..., move completion: _)` plus `callback completion { thread ...; }` | Native block owns the Z closure under ARC; `.zd` supplies the thread guarantee absent from the header |
-| Objective-C/Swift exactly-once completion method | The escaping-block contract plus `async completion;` | Keeps the raw overload and synthesizes an infallible `async method(...): T`; zero callback values produce `void`, one cleanup-free scalar produces `T` |
+| Objective-C/Swift exactly-once completion method | The escaping-block contract with `invoked once;` plus `async completion;` | Keeps the raw overload and synthesizes an infallible `async method(...): T`; zero callback values produce `void`, one cleanup-free scalar produces `T` |
 | Objective-C/Swift value/error completion method | `async completion(value, error) { return value; throw error; }` | Names callback positions and synthesizes `async method(...): T throws E`, surfaced as `Task<T, E>` |
 
 The current Objective-C method contract tier names an existing static method by
 class and base name; it does not redeclare or rename selectors. Parameter names
 disambiguate the imported selector. Block lifetime/thread facts may be refined,
-and an `async` clause may identify the terminal escaping block as exactly once.
+`invoked once` identifies exact terminal delivery, and an `async` clause may
+project that terminal escaping block into a Task.
 The shorthand `async completion;` accepts zero or one cleanup-free scalar
 callback value. A conventional Objective-C/Swift completion pair can instead
 name its positions:
@@ -314,6 +321,43 @@ The first typed-error tier requires a static method, terminal callback
 parameter, native and block `void` returns, a cleanup-free scalar success
 value, and a nullable Objective-C error reference. Ordinary Objective-C calls
 still need no sidecar.
+
+## Callback cardinality
+
+Every `.zd` callback contract states its native invocation cardinality
+explicitly:
+
+```z
+callback completion {
+  thread any;
+  invoked once;
+}
+
+callback visitor {
+  context context;
+  invoked repeatedly;
+}
+```
+
+`invoked once` means exactly one native invocation. It is required before an
+Objective-C or Swift completion may synthesize a Z `Task`. The generated async
+adapter atomically records its first completion and traps deterministically if
+native code invokes it again, before completed task storage can be touched.
+Because this is a trusted behavioral fact rather than a header property, a
+vendor that never invokes the callback leaves the synthesized task pending
+indefinitely unless a later contract supplies a native cancellation or terminal
+completion hook.
+
+`invoked repeatedly` means zero or more invocations. Every owner-tied callback
+connection requires it, but it is not connection-specific: a call-scoped
+visitor or sorting callback can also be invoked repeatedly.
+
+Native callbacks that return a status need a bidirectional projection: Z must
+describe both the normal native return and how a thrown Z error becomes a
+native abort value. That surface is intentionally deferred until throwing
+function values are representable end to end. Shipping a return-only projection
+would make libcurl and SQLite early-abort paths inexpressible, so callback
+`return` and callback `throws` will land together.
 
 ## Trust boundary
 

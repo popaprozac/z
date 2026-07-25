@@ -9,6 +9,7 @@ declare module "native-callback.h" {
       context context;
       deinit release;
       thread any;
+      invoked once;
     }
   }
 

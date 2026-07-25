@@ -9,6 +9,7 @@ declare module "callbacks-any-thread.h" {
       context context;
       deinit release;
       thread any;
+      invoked once;
     }
   }
 

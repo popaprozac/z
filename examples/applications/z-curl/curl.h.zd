@@ -38,6 +38,7 @@ declare module "curl/curl.h" {
       owner curl;
       bytes from buffer length size * nitems;
       thread caller;
+      invoked repeatedly;
     }
   }
 

@@ -3,6 +3,7 @@ declare module "callbacks.h" {
   export function applyWithContext(value: _, context: _, in operation: _): _ {
     callback operation {
       context context;
+      invoked once;
     }
   }
   export function retainOperation(move operation: _, context: _, release: _): _ {
@@ -10,6 +11,7 @@ declare module "callbacks.h" {
       context context;
       deinit release;
       thread caller;
+      invoked repeatedly;
     }
   }
 }

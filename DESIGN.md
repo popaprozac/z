@@ -1817,11 +1817,13 @@ selector, parameters, or ABI. The arbitrary-thread probe copies the block,
 uses atomic ownership for its Z closure environment, and can submit synchronous
 AppKit operations through a named `TaskScope`.
 
-The same contract may add `async completion;` when that terminal block is
-guaranteed exactly once. Z preserves the raw callback overload and synthesizes
-an async overload whose result is the block's zero-or-one payload. Its owned
-task frame remains alive until completion, including after a cancellation
-request when the native API has no cancellation hook. An expanded
+The same contract may state `invoked once;` for the terminal block, then add
+`async completion;` to request Task synthesis. Z preserves the raw callback
+overload and synthesizes an async overload whose result is the block's
+zero-or-one payload. Its owned task frame remains alive until completion,
+including after a cancellation request when the native API has no cancellation
+hook. A duplicate callback traps before touching completed frame storage; a
+missing callback leaves the task pending. An expanded
 `async completion(value, error) { return value; throw error; }` contract maps a
 conventional nullable Objective-C error slot into `Task<T, E>` while retaining
 the ARC error through `try await` or `attempt await`. The first executable tier
@@ -1974,6 +1976,7 @@ export function curl_easy_setopt(
     owner curl;
     bytes from buffer length size * nitems;
     thread caller;
+    invoked repeatedly;
   }
 }
 ```
@@ -2000,6 +2003,21 @@ environment. Its lexical loan prevents the native owner from moving or
 deinitializing first. The first tier supports a byte buffer whose length is a
 product of native `size_t` parameters and a callback invoked only on the
 registering thread.
+
+Callback invocation cardinality is a separate trusted fact. `invoked once`
+means exactly one native invocation and is required before a completion
+callback may synthesize a Z `Task`; `invoked repeatedly` means zero or more
+invocations and is required for callback connections without being exclusive to
+them. Synthesized async adapters trap a duplicate completion before touching
+completed task storage. A vendor that never invokes a callback declared
+`invoked once` leaves the task pending indefinitely unless a later contract
+provides a native cancellation or terminal-completion mechanism.
+
+Callback return projection is deliberately deferred until Z function values
+can carry `throws`. The first safe form must describe both directions together:
+the ordinary Z outcome mapped to the native callback return and a thrown Z
+error mapped to a native abort result. A return-only adapter would erase
+libcurl, SQLite, and similar early-termination paths.
 
 Ordinary non-callback pointer/length pairs use the same vocabulary at function
 scope:

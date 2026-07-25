@@ -111,8 +111,8 @@ facts are coherent:
 3. nullable and non-null variants cannot be silently interchanged;
 4. `in` record access targets const storage; `out`/`inout` target writable
    storage and cannot escape;
-5. an escaping callback has a complete context, threading, and exactly-once
-   release contract;
+5. an escaping callback has complete context, threading, invocation-cardinality,
+   and exactly-once release contracts;
 6. overload resolution selects exactly one viable native signature; no-match and
    ties remain visible diagnostics rather than first-declaration fallback;
 7. opaque RAII values carry explicit copy/move/deinit capabilities, `.zd`

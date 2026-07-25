@@ -473,6 +473,7 @@ declare module "callbacks.h" {
   ): _ {
     callback operation {
       context context;
+      invoked once;
     }
   }
 }
@@ -501,6 +502,7 @@ declare module "callbacks.h" {
       context context;
       deinit release;
       thread caller;
+      invoked repeatedly;
     }
   }
 }
@@ -525,6 +527,7 @@ callback operation {
   context context;
   deinit release;
   thread any;
+  invoked repeatedly;
 }
 ```
 
@@ -547,6 +550,7 @@ declare module "ZSwiftTaskScope-Swift.h" {
   ): _ {
     callback completion {
       thread any;
+      invoked once;
     }
 
     async completion;
@@ -557,14 +561,18 @@ declare module "ZSwiftTaskScope-Swift.h" {
 The class, static selector, parameter names, and block ABI remain Clang-derived.
 The callback contract makes a raw closure environment atomic and checks its
 captures; the copied native block retains and releases that environment through
-Objective-C ARC. `async completion;` additionally promises exactly-once terminal
-delivery. Z preserves the raw callback overload and synthesizes
+Objective-C ARC. `invoked once` separately promises exactly-one terminal
+delivery, while `async completion;` requests the Task projection. Z preserves
+the raw callback overload and synthesizes
 `async calculate(value: i32): i32`, usable with either `await` or `task`.
 
 The projected task owns its callback frame until completion. Cancellation
 without a native cancellation hook requests cancellation but still waits for
-the callback before destroying that frame. A value/error completion names both
-callback positions explicitly:
+the callback before destroying that frame. A duplicate completion traps before
+re-entering completed task storage. If native code never invokes a callback
+declared `invoked once`, the task remains pending indefinitely; the declaration
+is a trusted behavioral contract, not a fact Clang can prove. A value/error
+completion names both callback positions explicitly:
 
 ```z
 async completion(value, error) {
