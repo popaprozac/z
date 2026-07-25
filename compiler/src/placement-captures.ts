@@ -117,6 +117,9 @@ export function collectPlacementCaptures(
           visitStatement(value.elseBranch, new Set(localNames));
         }
         return;
+      case "unsafeExpression":
+        visitStatement(value.body, new Set(localNames));
+        return;
       case "whileExpression":
         visitExpression(value.condition, localNames);
         visitStatement(value.body, new Set(localNames));
@@ -204,6 +207,9 @@ export function collectPlacementCaptures(
         visitStatement(value.body, names);
         return;
       }
+      case "unsafe":
+        visitStatement(value.body, new Set(localNames));
+        return;
       case "break":
       case "continue":
         return;

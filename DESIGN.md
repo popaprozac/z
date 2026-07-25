@@ -2061,8 +2061,9 @@ Z's intended foreign boundary has three explicit trust tiers:
 
 1. Header import plus checked `.zd` facts is the safe surface. Clang remains the
    ABI authority and Z enforces the added ownership and lifetime contract.
-2. A future `unsafe { ... }` block permits otherwise unsupported native calls
-   while retaining Z expression syntax, but gives up the missing static proof.
+2. An `unsafe { ... }` block permits a narrow set of otherwise unsupported
+   native pointer calls while retaining Z expression syntax, but gives up the
+   missing local static proof.
 3. `raw c`, `raw cpp`, or `raw objc` embeds foreign source for APIs that cannot
    be expressed through Z calls. It escapes Z's type system rather than merely
    accepting an unverified Z proof.
@@ -2111,9 +2112,41 @@ returns native diagnostics to the original `.zs` body. Rich embedded-language
 completion remains later editor work.
 
 The latter two tiers are escape hatches, not substitutes for extending FIIR and
-`.zd`. `unsafe` remains the next interop tier: it should reuse `.zd` facts
-inline while keeping Z syntax and types, rather than becoming raw source under
-a second spelling.
+`.zd`. The first `unsafe` tier accepts two pointer-only shapes:
+
+```z
+unsafe {
+  const version: cstring = native.version();
+  const handle = native.open();
+  if (handle == null) return 1;
+  native.close(handle);
+}
+
+const observed = unsafe {
+  const handle = native.open();
+  if (handle == null) return -1;
+  const value = native.read(handle);
+  native.close(handle);
+  select value;
+};
+```
+
+An explicit `cstring` context locally asserts that a native character pointer
+is readable NUL-terminated text. Every other unsupported pointer becomes a
+scope-confined opaque native identity. It can be compared with `null` and
+passed only to an unsupported parameter with the exact same normalized native
+pointer spelling. It cannot be dereferenced, indexed, inspected, returned,
+stored outside the block, selected from a value-producing unsafe expression,
+or captured. `return` still exits the enclosing function. `select` may produce
+a representable scalar or independently owned Z value; for example,
+`String.from(borrowed)` copies an asserted `cstring` before it leaves the
+boundary. Unsafe blocks are synchronous and may
+not appear directly in an async function in this tier. Unsupported by-value
+layouts still require a checked `.zd` projection or raw source.
+
+This deliberately adds no source-level raw-pointer type. A later inline-fact
+tier may reuse more `.zd` ownership and lifetime vocabulary when concrete APIs
+show which facts need local assertion.
 
 Over time, Clang attributes, Apple's API notes, Windows SAL
 annotations, package metadata, and generated bindings should populate the same

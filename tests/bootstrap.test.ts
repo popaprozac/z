@@ -165,6 +165,170 @@ test("maps native raw-body diagnostics back to Z source", () => {
   assert.doesNotMatch(result.stderr, /\.z-cache\/raw-native-error/);
 });
 
+test("keeps unsafe native assertions typed and opaque pointer pass-through scoped", () => {
+  const example = resolve(projectRoot, "examples/interop/unsafe/native-boundary.zs");
+  const source = readFileSync(example, "utf8");
+  const artifact = compileToNative(source, example);
+  assert.match(artifact.source, /char \* const borrowed = z_unsafe_version\(\);/);
+  assert.match(artifact.source, /ZUnsafeHandle \* const handle = z_unsafe_open\(42\);/);
+  assert.match(artifact.source, /z_unsafe_read\(handle\)/);
+
+  const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, "unsafe version=unsafe-native, observed=42\n");
+});
+
+test("selects only independently safe values from unsafe expressions", () => {
+  const opaqueEscape = `
+    import native from "tests/fixtures/unsafe-native.h";
+    function main(): i32 {
+      const handle = unsafe {
+        select native.z_unsafe_open(42);
+      };
+      return 0;
+    }
+  `;
+  assert.throws(
+    () => compileToNative(opaqueEscape, resolve(projectRoot, "unsafe-select-opaque.zs")),
+    /unsafe native value cannot be selected from its unsafe block/,
+  );
+
+  const borrowedEscape = `
+    import native from "tests/fixtures/unsafe-native.h";
+    function main(): i32 {
+      const version: cstring = unsafe {
+        select native.z_unsafe_version();
+      };
+      return 0;
+    }
+  `;
+  assert.throws(
+    () => compileToNative(borrowedEscape, resolve(projectRoot, "unsafe-select-cstring.zs")),
+    /unsafe native value cannot be selected from its unsafe block/,
+  );
+});
+
+test("rejects unsafe native use outside its boundary and incompatible local assertions", () => {
+  const outside = `
+    import native from "tests/fixtures/unsafe-native.h";
+    function main(): i32 {
+      const handle = native.z_unsafe_open(42);
+      return 0;
+    }
+  `;
+  assert.throws(
+    () => compileToNative(outside, resolve(projectRoot, "unsafe-outside.zs")),
+    /uses unsupported type "ZUnsafeHandle \*"/,
+  );
+
+  const incompatible = `
+    import native from "tests/fixtures/unsafe-native.h";
+    function main(): i32 {
+      unsafe {
+        const version: i32 = native.z_unsafe_version();
+        return version;
+      }
+    }
+  `;
+  assert.throws(
+    () => compileToNative(incompatible, resolve(projectRoot, "unsafe-assertion.zs")),
+    /is not ABI-compatible with asserted Z type i32/,
+  );
+
+  const wrongIdentity = `
+    import native from "tests/fixtures/unsafe-native.h";
+    function main(): i32 {
+      unsafe {
+        const handle = native.z_unsafe_open(42);
+        return native.z_unsafe_read_other(handle);
+      }
+    }
+  `;
+  assert.throws(
+    () => compileToNative(wrongIdentity, resolve(projectRoot, "unsafe-identity.zs")),
+    /expects "ZUnsafeOther \*", found opaque native ZUnsafeHandle \*/,
+  );
+
+  const escapedAssignment = `
+    import native from "tests/fixtures/unsafe-native.h";
+    function main(): i32 {
+      let version: cstring = "safe";
+      unsafe {
+        version = native.z_unsafe_version();
+      }
+      return 0;
+    }
+  `;
+  assert.throws(
+    () => compileToNative(escapedAssignment, resolve(projectRoot, "unsafe-assignment-escape.zs")),
+    /unsafe native value cannot be stored outside its unsafe block/,
+  );
+
+  const escapedReturn = `
+    import native from "tests/fixtures/unsafe-native.h";
+    function version(): cstring {
+      unsafe {
+        return native.z_unsafe_version();
+      }
+    }
+    function main(): i32 {
+      return 0;
+    }
+  `;
+  assert.throws(
+    () => compileToNative(escapedReturn, resolve(projectRoot, "unsafe-return-escape.zs")),
+    /unsafe native value cannot be returned from its unsafe block/,
+  );
+});
+
+test("rejects suspension and capture across the first unsafe scope", () => {
+  const suspended = `
+    import { delay } from "std/time";
+    async function main(): i32 {
+      unsafe {
+        await delay(1);
+        return 0;
+      }
+    }
+  `;
+  assert.throws(
+    () => compileToNative(suspended, "unsafe-await.zs"),
+    /unsafe blocks must be isolated in a synchronous function in the first tier/,
+  );
+
+  const captured = `
+    function main(): i32 {
+      unsafe {
+        const operation = (): i32 => 42;
+        return operation();
+      }
+    }
+  `;
+  assert.throws(
+    () => compileToNative(captured, "unsafe-closure.zs"),
+    /closure construction cannot cross an unsafe block in the first tier/,
+  );
+});
+
+test("surfaces unsafe boundaries and opaque native identity in editor tooling", () => {
+  const example = resolve(projectRoot, "examples/interop/unsafe/native-boundary.zs");
+  const source = readFileSync(example, "utf8");
+  const unsafeOffset = source.indexOf("unsafe {") + 1;
+  assert.match(hover(source, example, unsafeOffset)?.contents.value ?? "", /local unverified native assertions/);
+
+  const handleOffset = source.indexOf("handle =") + 1;
+  assert.match(
+    hover(source, example, handleOffset)?.contents.value ?? "",
+    /handle: opaque native ZUnsafeHandle \* — unsafe pass-through only/,
+  );
+
+  const prefix = "function main(): i32 { uns";
+  assert.ok(completions(prefix, "unsafe-editor.zs", prefix.length).some((item) => item.label === "unsafe"));
+
+  const grammar = readFileSync(resolve(projectRoot, "editors/vscode/syntaxes/z.tmLanguage.json"), "utf8");
+  assert.match(grammar, /constructor\|unsafe\|raw/);
+});
+
 test("selectively imports C functions with optional local aliases", () => {
   const example = resolve(projectRoot, "examples/interop/c/selective-import.zs");
   const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });

@@ -1474,6 +1474,46 @@ nullability, lifetime, callback retention, threading, and async behavior.
 Those facts normalize through the
 [`Foreign Interface IR`](foreign-interface-ir.md) before semantic checking.
 
+### Unsafe native calls
+
+`unsafe { ... }` keeps Z syntax and types while accepting one local,
+unverified native pointer proof:
+
+```z
+unsafe {
+  const version: cstring = native.version();
+  const handle = native.open();
+  if (handle == null) return 1;
+  native.close(handle);
+}
+
+const observed = unsafe {
+  const handle = native.open();
+  if (handle == null) return -1;
+  const value = native.read(handle);
+  native.close(handle);
+  select value;
+};
+```
+
+An explicit `cstring` context may reinterpret a native character-pointer
+result. Other unsupported pointers become opaque scope-local identities. They
+may be compared with `null` and passed only to native parameters with the exact
+same pointer spelling. They cannot be dereferenced, indexed, inspected,
+returned, stored outside the block, captured by a closure, or used directly in async
+functions. The first tier does not add raw-pointer syntax or infer ownership,
+mutation, initialization, cleanup, or threading facts.
+
+An unsafe expression must finish with `select value;`. `select` supplies the
+local expression result; `return` continues to exit the enclosing function.
+Representable scalars and independently owned Z copies may be selected.
+Opaque native identities and locally asserted borrowed `cstring` values may
+not. Copy borrowed text with `String.from(value)` before selecting it.
+
+Prefer an adjacent `.zd` contract whenever the fact is reusable or should make
+the call safe. Use raw native source when the operation cannot be represented
+through Z types at all.
+
 ### Raw native source
 
 Use raw source only when header import plus `.zd` cannot represent the native

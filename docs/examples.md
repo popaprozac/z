@@ -239,3 +239,11 @@ snapshot that remains valid after collection mutation.
 then carries the same decision into async code: value-owned projections and
 class-owned callbacks remain synchronous lexical regions, while an explicit
 owned snapshot crosses task creation, workspace mutation, and suspension.
+
+[`unsafe/native-boundary.zs`](../examples/interop/unsafe/native-boundary.zs)
+shows the middle native trust tier without introducing raw-pointer syntax. A
+mutable native character pointer is asserted locally as `cstring`; an otherwise
+unsupported handle remains an opaque compiler type, is checked against null,
+and may pass only back to functions expecting the identical native pointer.
+The example uses value-producing unsafe expressions to copy borrowed text into
+an owned `String` and select a scalar while keeping native identities confined.

@@ -182,8 +182,15 @@ export type Statement =
   | ForStatement
   | BreakStatement
   | ContinueStatement
+  | UnsafeStatement
   | AsyncScopeStatement
   | MatchStatement;
+
+export type UnsafeStatement = {
+  readonly kind: "unsafe";
+  readonly body: BlockStatement;
+  readonly location: SourceLocation;
+};
 
 export type AsyncScopeStatement = {
   readonly kind: "asyncScope";
@@ -347,6 +354,7 @@ export type Expression =
   | IfExpression
   | WhileExpression
   | ForExpression
+  | UnsafeExpression
   | RawExpression
   | ArgumentReferenceExpression;
 
@@ -575,6 +583,12 @@ export type ForExpression = {
   readonly iterable: Expression;
   readonly body: BlockStatement;
   readonly elseBranch: BlockStatement;
+  readonly location: SourceLocation;
+};
+
+export type UnsafeExpression = {
+  readonly kind: "unsafeExpression";
+  readonly body: BlockStatement;
   readonly location: SourceLocation;
 };
 

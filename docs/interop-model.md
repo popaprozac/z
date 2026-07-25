@@ -265,6 +265,45 @@ adjacent `<header>.zd` Z declaration files, and built-in toolchain contracts
 feed the same normalizer and FIIR. `.zd` is the sole project-authored foreign
 contract format.
 
+`unsafe { ... }` is the middle trust tier. It remains ordinary Z source, but
+permits a local unverified interpretation of native pointer data:
+
+```z
+unsafe {
+  const version: cstring = native.version();
+  const handle = native.open();
+  if (handle == null) return 1;
+  native.close(handle);
+}
+
+const observed = unsafe {
+  const handle = native.open();
+  if (handle == null) return -1;
+  const value = native.read(handle);
+  native.close(handle);
+  select value;
+};
+```
+
+The annotation on `version` asserts that the native character pointer is
+readable NUL-terminated text. An unsupported pointer without a compatible
+context becomes an opaque scope-local identity. It may compare with null and
+pass only to a native parameter with the exact same normalized pointer
+spelling. It has no members, indexing, dereference, arithmetic, ownership, or
+implicit cleanup, and it cannot leave the block. This first tier rejects
+nesting, async functions, suspension, generators, and closure construction. It also
+rejects unsupported by-value layouts rather than exposing generated C names.
+
+The expression form uses Z's ordinary value-block rule: `select` supplies the
+unsafe expression's value, while `return` still exits the enclosing function.
+Only a safe result may be selected. Representable scalars and independently
+owned copies such as `String.from(borrowedCString)` may leave; asserted native
+identity or borrowed native storage may not.
+
+Unsafe code accepts the proof obligation locally; it does not turn off ordinary
+Z ownership or type checking. Reusable ownership, nullability, cleanup,
+callback, or threading facts still belong in `.zd`.
+
 Raw native source is the final escape hatch when an API cannot be represented
 as a Z call even with `.zd` facts. The anonymous form is an immediately applied
 generated helper, never an inline statement expression:

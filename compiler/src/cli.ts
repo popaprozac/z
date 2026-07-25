@@ -602,6 +602,9 @@ function canonicalStatementText(statement: Statement, tokens: readonly Token[]):
       : "";
     return `asyncScope@${location}(${name}body=${canonicalStatementText(statement.body, tokens)})`;
   }
+  if (statement.kind === "unsafe") {
+    return `unsafe@${location}(body=${canonicalStatementText(statement.body, tokens)})`;
+  }
   if (statement.kind === "expressionStatement") {
     const expressionLocation = lexicalExpressionLocation(statement.expression);
     const expressionStart = tokens.find((token) => token.location.offset === expressionLocation.offset);
@@ -932,6 +935,16 @@ function flattenExpression(
         );
     if (elseBranch === null) return null;
     return append("ifExpression", "", [condition, thenBranch, elseBranch], []);
+  }
+  if (expression.kind === "unsafeExpression") {
+    return appendAt(
+      "unsafeExpression",
+      "",
+      [],
+      [],
+      expression.location,
+      [expression.body.statements],
+    );
   }
   if (expression.kind === "whileExpression") {
     const condition = flattenExpression(expression.condition, nodes, tokens);

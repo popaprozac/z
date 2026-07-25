@@ -176,6 +176,8 @@ export function transformProgramTypeNames(
             ? expression(value.elseBranch) as typeof value.elseBranch
             : statement(value.elseBranch),
         };
+      case "unsafeExpression":
+        return { ...value, body: statement(value.body) };
       case "whileExpression":
         return {
           ...value,
@@ -230,6 +232,8 @@ export function transformProgramTypeNames(
         return { ...value, expression: expression(value.expression) } as T;
       case "block":
         return { ...value, statements: value.statements.map(statement) } as T;
+      case "unsafe":
+        return { ...value, body: statement(value.body) } as T;
       case "if":
         return {
           ...value,

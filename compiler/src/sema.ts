@@ -96,6 +96,14 @@ import {
   parseAsyncGeneratorType,
   parseGeneratorType,
 } from "./generator-types.ts";
+import {
+  displayUnsafeNativeType,
+  isUnsafeCStringSpelling,
+  isUnsafeNativePointerSpelling,
+  normalizeUnsafeNativeSpelling,
+  parseUnsafeNativeType,
+  unsafeNativeTypeName,
+} from "./unsafe-types.ts";
 
 export type ObjCCallInfo = {
   readonly selector: string;
@@ -402,6 +410,11 @@ type AnalysisState = {
   readonly managedCopies: Set<number>;
   readonly explicitCopies: Map<number, ExplicitCopyPlan>;
   readonly rawExpressions: Map<number, RawExpressionPlan>;
+  unsafeDepth: number;
+  readonly unsafeExpectedTypes: Map<number, string>;
+  readonly unsafeUnverifiedExpressions: Set<number>;
+  readonly unsafeUnverifiedBindings: Set<string>;
+  readonly unsafeLocalBindingScopes: Set<string>[];
   readonly sliceConversions: Map<number, { readonly sourceType: string; readonly targetType: string }>;
   readonly foreignTypes: ReadonlyMap<string, ForeignPointerType>;
   readonly foreignCallTypes: Map<number, string>;
@@ -724,6 +737,11 @@ export function analyze(
     managedCopies: new Set(),
     explicitCopies: new Map(),
     rawExpressions: new Map(),
+    unsafeDepth: 0,
+    unsafeExpectedTypes: new Map(),
+    unsafeUnverifiedExpressions: new Set(),
+    unsafeUnverifiedBindings: new Set(),
+    unsafeLocalBindingScopes: [],
     sliceConversions: new Map(),
     foreignTypes,
     foreignCallTypes: new Map(),
@@ -2379,6 +2397,9 @@ function analyzeConstructorInitialization(
         if (expression.elseBranch.kind === "ifExpression") checkExpression(expression.elseBranch, initialized);
         else analyzeConstructorStatements(expression.elseBranch.statements, new Set(initialized));
         return;
+      case "unsafeExpression":
+        analyzeConstructorStatements(expression.body.statements, new Set(initialized));
+        return;
       case "whileExpression":
         checkExpression(expression.condition, initialized);
         analyzeConstructorStatements(expression.body.statements, new Set(initialized));
@@ -2429,6 +2450,10 @@ function analyzeConstructorInitialization(
         checkExpression(statement.expression, initialized);
       } else if (statement.kind === "block") {
         const result = analyzeConstructorStatements(statement.statements, initialized);
+        initialized = result.initialized;
+        if (result.stops) return result;
+      } else if (statement.kind === "unsafe") {
+        const result = analyzeConstructorStatements(statement.body.statements, initialized);
         initialized = result.initialized;
         if (result.stops) return result;
       } else if (statement.kind === "if") {
@@ -2531,6 +2556,7 @@ function statementReturns(statement: Statement | undefined): boolean {
   if (!statement) return false;
   if (statement.kind === "return" || statement.kind === "throw") return true;
   if (statement.kind === "asyncScope") return statementReturns(statement.body);
+  if (statement.kind === "unsafe") return statementReturns(statement.body);
   if (statement.kind === "block") return statementReturns(statement.statements.at(-1));
   if (statement.kind === "if") {
     return Boolean(statement.elseBranch)
@@ -2552,6 +2578,7 @@ function statementStopsFlow(statement: Statement | undefined): boolean {
     return true;
   }
   if (statement.kind === "asyncScope") return statementStopsFlow(statement.body);
+  if (statement.kind === "unsafe") return statementStopsFlow(statement.body);
   if (statement.kind === "block") return statementStopsFlow(statement.statements.at(-1));
   if (statement.kind === "if") {
     return Boolean(statement.elseBranch)
@@ -2634,6 +2661,42 @@ function analyzeStatement(
   state: AnalysisState,
 ): void {
   switch (statement.kind) {
+    case "unsafe": {
+      if (state.unsafeDepth > 0) {
+        throw new DiagnosticError(fileName, statement.location, "unsafe blocks cannot be nested", {
+          code: "Z0822",
+          notes: ["the outer unsafe boundary already owns every unverified native assertion in this scope"],
+        });
+      }
+      if (owner.async) {
+        throw new DiagnosticError(fileName, statement.location, "unsafe blocks must be isolated in a synchronous function in the first tier", {
+          code: "Z0822",
+          notes: ["async task frames currently have no storage class for scope-confined opaque native values"],
+          helps: ["move the unsafe operation into a synchronous Z function, then call that function from async code"],
+        });
+      }
+      const deferred = findUnsafeDeferredOperation(statement.body);
+      if (deferred) {
+        throw new DiagnosticError(fileName, deferred.location, `${deferred.label} cannot cross an unsafe block in the first tier`, {
+          code: "Z0822",
+          notes: ["unsafe native proofs are synchronous and scoped; suspension or capture could outlive their asserted storage"],
+          helps: ["finish the native operation synchronously inside unsafe, then move a supported Z value into asynchronous work"],
+        });
+      }
+      const blockLocals = new Map(locals);
+      const unsafeLocalBindings = new Set<string>();
+      state.unsafeDepth += 1;
+      state.unsafeLocalBindingScopes.push(unsafeLocalBindings);
+      try {
+        analyzeStatements(statement.body.statements, owner, blockLocals, globals, structs, enums, fileName, state);
+      } finally {
+        state.unsafeLocalBindingScopes.pop();
+        for (const name of unsafeLocalBindings) state.unsafeUnverifiedBindings.delete(name);
+        state.unsafeDepth -= 1;
+      }
+      propagateOuterOwnership(locals, blockLocals);
+      return;
+    }
     case "variable": {
       validateUserName(statement.name, statement.location, fileName);
       if (locals.has(statement.name)) {
@@ -2883,6 +2946,12 @@ function analyzeStatement(
       }
       locals.set(statement.name, storedVariableType);
       state.bindingTypes.set(statement.nameLocation.offset, String(variableType));
+      if (state.unsafeDepth > 0) {
+        state.unsafeLocalBindingScopes.at(-1)?.add(statement.name);
+        if (isUnsafeUnverifiedValue(statement.initializer, state)) {
+          state.unsafeUnverifiedBindings.add(statement.name);
+        }
+      }
       if (
         (
           statement.initializer.kind === "spawn"
@@ -2993,6 +3062,13 @@ function analyzeStatement(
             actual = "cstring";
           }
           requireObjCAssignable(property.type, actual, statement.expression, structs, enums, fileName, state);
+          if (state.unsafeDepth > 0 && isUnsafeUnverifiedValue(statement.expression, state)) {
+            throw new DiagnosticError(fileName, statement.expression.location, "an unsafe native value cannot be stored outside its unsafe block", {
+              code: "Z0822",
+              notes: ["the local assertion has no reusable ownership or lifetime proof"],
+              helps: ["consume the native value inside unsafe, or describe its reusable contract in an adjacent .zd file"],
+            });
+          }
           return;
         }
       }
@@ -3033,6 +3109,19 @@ function analyzeStatement(
       actual = contextualObjCStringToZ(expected, actual, statement.expression, state) ?? actual;
       actual = contextualSwiftStringToZ(expected, actual, statement.expression, state) ?? actual;
       requireAssignable(expected, actual, statement.expression, fileName, structs, enums, state);
+      if (state.unsafeDepth > 0 && isUnsafeUnverifiedValue(statement.expression, state)) {
+        const localBindings = state.unsafeLocalBindingScopes.at(-1);
+        if (!localBindings?.has(root.name)) {
+          throw new DiagnosticError(fileName, statement.expression.location, "an unsafe native value cannot be stored outside its unsafe block", {
+            code: "Z0822",
+            notes: ["the local assertion has no reusable ownership or lifetime proof"],
+            helps: ["consume the native value inside unsafe, or describe its reusable contract in an adjacent .zd file"],
+          });
+        }
+        state.unsafeUnverifiedBindings.add(root.name);
+      } else if (state.unsafeDepth > 0 && statement.target.kind === "identifier") {
+        state.unsafeUnverifiedBindings.delete(root.name);
+      }
       if (
         hasCleanupType(expected, structs, enums, state.foreignTypes)
         && hasMoveOnlyForeignType(expected, structs, enums, state.foreignNamedTypes)
@@ -3138,6 +3227,13 @@ function analyzeStatement(
       actual = contextualObjCStringToZ(expected, actual, statement.expression, state) ?? actual;
       actual = contextualSwiftStringToZ(expected, actual, statement.expression, state) ?? actual;
       requireAssignable(expected, actual, statement.expression, fileName, structs, enums, state);
+      if (state.unsafeDepth > 0 && isUnsafeUnverifiedValue(statement.expression, state)) {
+        throw new DiagnosticError(fileName, statement.expression.location, "an unsafe native value cannot be returned from its unsafe block", {
+          code: "Z0822",
+          notes: ["the local assertion has no reusable ownership or lifetime proof"],
+          helps: ["consume the native value inside unsafe, or describe its reusable contract in an adjacent .zd file"],
+        });
+      }
       consumeOwnedValue(statement.expression, expected, locals, structs, enums, fileName, state);
       requireOutParametersInitialized(owner, locals, statement.location, fileName);
       return;
@@ -3530,6 +3626,9 @@ function inferDirectValue(
   if (expression.kind === "ifExpression") {
     return inferIfExpression(expression, owner, locals, globals, structs, enums, fileName, state, expected);
   }
+  if (expression.kind === "unsafeExpression") {
+    return inferUnsafeExpression(expression, owner, locals, globals, structs, enums, fileName, state, expected);
+  }
   if (expression.kind === "whileExpression") {
     return inferWhileExpression(expression, owner, locals, globals, structs, enums, fileName, state, expected);
   }
@@ -3539,7 +3638,47 @@ function inferDirectValue(
   if (expression.kind === "closure") {
     return inferClosureExpression(expression, locals, globals, structs, enums, fileName, state);
   }
-  return inferExpression(expression, locals, globals, structs, enums, fileName, state);
+  const contextualUnsafeCall = state.unsafeDepth > 0 && expected !== null && expression.kind === "call";
+  if (contextualUnsafeCall) {
+    state.unsafeExpectedTypes.set(expression.location.offset, String(underlyingType(expected)));
+  }
+  try {
+    return inferExpression(expression, locals, globals, structs, enums, fileName, state);
+  } finally {
+    if (contextualUnsafeCall) state.unsafeExpectedTypes.delete(expression.location.offset);
+  }
+}
+
+function findUnsafeDeferredOperation(value: unknown): { readonly label: string; readonly location: SourceLocation } | null {
+  if (!value || typeof value !== "object") return null;
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const issue = findUnsafeDeferredOperation(item);
+      if (issue) return issue;
+    }
+    return null;
+  }
+  const node = value as { readonly kind?: string; readonly location?: SourceLocation } & Record<string, unknown>;
+  const label = node.kind === "await"
+    ? "await"
+    : node.kind === "spawn"
+      ? "task creation"
+      : node.kind === "executorPlacement"
+        ? "executor placement"
+        : node.kind === "closure"
+          ? "closure construction"
+          : node.kind === "asyncScope"
+            ? "async scope"
+            : node.kind === "yield"
+              ? "generator suspension"
+              : null;
+  if (label && node.location) return { label, location: node.location };
+  for (const [key, child] of Object.entries(node)) {
+    if (key === "location" || key === "nameLocation" || key === "body" && node.kind === "raw") continue;
+    const issue = findUnsafeDeferredOperation(child);
+    if (issue) return issue;
+  }
+  return null;
 }
 
 function closureTypeName(expression: Extract<Expression, { kind: "closure" }>): string {
@@ -4205,6 +4344,9 @@ function collectClosureCaptures(
         if (expression.elseBranch.kind === "ifExpression") walkExpression(expression.elseBranch, new Set(localNames));
         else walkStatement(expression.elseBranch, new Set(localNames));
         return;
+      case "unsafeExpression":
+        walkStatement(expression.body, new Set(localNames));
+        return;
       case "whileExpression":
         walkExpression(expression.condition, localNames);
         walkStatement(expression.body, new Set(localNames));
@@ -4259,6 +4401,9 @@ function collectClosureCaptures(
         return;
       case "block":
         walkStatements(statement.statements, new Set(localNames));
+        return;
+      case "unsafe":
+        walkStatement(statement.body, new Set(localNames));
         return;
       case "if":
         walkExpression(statement.condition, localNames);
@@ -4332,6 +4477,69 @@ function inferIfExpression(
   const resultType = commonBranchType("if", thenType, elseType, expression.elseBranch.location, fileName);
   mergeOwnershipStates(locals, continuing, state);
   return resultType;
+}
+
+function inferUnsafeExpression(
+  expression: Extract<Expression, { kind: "unsafeExpression" }>,
+  owner: FunctionDeclaration,
+  locals: Map<string, ValueType>,
+  globals: Map<string, SymbolValue>,
+  structs: Map<string, StructDeclaration>,
+  enums: Map<string, EnumDeclaration>,
+  fileName: string,
+  state: AnalysisState,
+  expected: ValueType | null = null,
+): ValueType {
+  if (state.unsafeDepth > 0) {
+    throw new DiagnosticError(fileName, expression.location, "unsafe blocks cannot be nested", {
+      code: "Z0822",
+      notes: ["the outer unsafe boundary already owns every unverified native assertion in this scope"],
+    });
+  }
+  if (owner.async) {
+    throw new DiagnosticError(fileName, expression.location, "unsafe blocks must be isolated in a synchronous function in the first tier", {
+      code: "Z0822",
+      notes: ["async task frames currently have no storage class for scope-confined opaque native values"],
+      helps: ["move the unsafe operation into a synchronous Z function, then call that function from async code"],
+    });
+  }
+  const deferred = findUnsafeDeferredOperation(expression.body);
+  if (deferred) {
+    throw new DiagnosticError(fileName, deferred.location, `${deferred.label} cannot cross an unsafe block in the first tier`, {
+      code: "Z0822",
+      notes: ["unsafe native proofs are synchronous and scoped; suspension or capture could outlive their asserted storage"],
+      helps: ["finish the native operation synchronously inside unsafe, then move a supported Z value into asynchronous work"],
+    });
+  }
+  const finalStatement = expression.body.statements.at(-1);
+  if (!finalStatement || finalStatement.kind !== "select") {
+    throw new DiagnosticError(fileName, finalStatement?.location ?? expression.location, "an unsafe expression must finish with `select value;`", {
+      code: "Z0822",
+      notes: ["return still exits the enclosing function; select supplies the value of the unsafe expression"],
+    });
+  }
+
+  const blockLocals = new Map(locals);
+  const unsafeLocalBindings = new Set<string>();
+  state.unsafeDepth += 1;
+  state.unsafeLocalBindingScopes.push(unsafeLocalBindings);
+  let type: ValueType;
+  try {
+    type = inferValueArm(expression.body, owner, blockLocals, globals, structs, enums, fileName, state, expected);
+    if (isUnsafeUnverifiedValue(finalStatement.expression, state)) {
+      throw new DiagnosticError(fileName, finalStatement.expression.location, "an unsafe native value cannot be selected from its unsafe block", {
+        code: "Z0822",
+        notes: ["copy or project the native data into independently safe Z storage before selecting it"],
+        helps: ["use String.from for borrowed cstring text, select a representable scalar, or describe reusable ownership in .zd"],
+      });
+    }
+  } finally {
+    state.unsafeLocalBindingScopes.pop();
+    for (const name of unsafeLocalBindings) state.unsafeUnverifiedBindings.delete(name);
+    state.unsafeDepth -= 1;
+  }
+  propagateOuterOwnership(locals, blockLocals);
+  return type!;
 }
 
 function commonBranchType(
@@ -5622,6 +5830,11 @@ function inferExpressionInner(
       return "boolean";
     case "null":
       return "null";
+    case "unsafeExpression":
+      throw new DiagnosticError(fileName, expression.location, "unsafe expressions must appear in a direct value-producing position", {
+        code: "Z0822",
+        helps: ["bind the unsafe expression to a local before composing it into a larger expression"],
+      });
     case "raw": {
       if (state.activeFunction?.async) {
         throw new DiagnosticError(fileName, expression.location, "raw native expressions are not executable in async functions in the first tier", {
@@ -5966,9 +6179,13 @@ function inferExpressionInner(
       if (["==", "!="].includes(expression.operator)) {
         const leftNullableReference = nullableForeignReference(left, state);
         const rightNullableReference = nullableForeignReference(right, state);
+        const leftUnsafePointer = Boolean(parseUnsafeNativeType(String(underlyingType(left))));
+        const rightUnsafePointer = Boolean(parseUnsafeNativeType(String(underlyingType(right))));
         if (
           (canonicalLeft === "null" && rightNullableReference)
           || (canonicalRight === "null" && leftNullableReference)
+          || (canonicalLeft === "null" && rightUnsafePointer)
+          || (canonicalRight === "null" && leftUnsafePointer)
         ) {
           return "boolean";
         }
@@ -8769,6 +8986,9 @@ function validateDeinitExpression(expression: Expression, fileName: string): voi
     if (expression.elseBranch.kind === "ifExpression") validateDeinitExpression(expression.elseBranch, fileName);
     else validateDeinitControlFlow(expression.elseBranch.statements, fileName);
   }
+  if (expression.kind === "unsafeExpression") {
+    validateDeinitControlFlow(expression.body.statements, fileName);
+  }
   if (expression.kind === "whileExpression") {
     validateDeinitExpression(expression.condition, fileName);
     validateDeinitControlFlow(expression.body.statements, fileName);
@@ -11205,6 +11425,46 @@ function foreignOverloadScore(
   return score;
 }
 
+function unsafeForeignResultType(
+  cName: string,
+  location: SourceLocation,
+  fileName: string,
+  state: AnalysisState,
+): string {
+  const expected = state.unsafeExpectedTypes.get(location.offset) ?? null;
+  state.unsafeUnverifiedExpressions.add(location.offset);
+  if (!expected) return unsafeNativeTypeName(cName);
+  if (expected === "cstring" && isUnsafeCStringSpelling(cName)) return "cstring";
+  const expectedOpaque = parseUnsafeNativeType(expected);
+  if (
+    expectedOpaque
+    && normalizeUnsafeNativeSpelling(expectedOpaque) === normalizeUnsafeNativeSpelling(cName)
+  ) {
+    return expected;
+  }
+  throw new DiagnosticError(
+    fileName,
+    location,
+    `unsafe native result ${JSON.stringify(normalizeUnsafeNativeSpelling(cName))} is not ABI-compatible with asserted Z type ${displayAssignableType(expected)}`,
+    {
+      code: "Z0823",
+      notes: ["a contextual unsafe assertion changes only Z's local interpretation; it cannot change the native ABI"],
+      helps: ["assert cstring only for a native character pointer, keep another pointer opaque, or write a checked .zd projection"],
+    },
+  );
+}
+
+function isUnsafeUnverifiedValue(expression: Expression, state: AnalysisState): boolean {
+  if (state.unsafeUnverifiedExpressions.has(expression.location.offset)) return true;
+  if (expression.kind === "identifier") return state.unsafeUnverifiedBindings.has(expression.name);
+  if (expression.kind === "unary") return isUnsafeUnverifiedValue(expression.operand, state);
+  if (expression.kind === "ternary") {
+    return isUnsafeUnverifiedValue(expression.whenTrue, state)
+      || isUnsafeUnverifiedValue(expression.whenFalse, state);
+  }
+  return false;
+}
+
 function checkForeignCall(
   target: ForeignFunctionOverload,
   args: Expression[],
@@ -11221,20 +11481,40 @@ function checkForeignCall(
   const projectedLengths = new Map(
     buffers.flatMap((buffer) => buffer.lengthParameters.map((parameter) => [parameter, buffer] as const)),
   );
-  const unsupported = [
+  const unsupportedTypes = [
     target.returnType,
     ...target.parameters
       .map((parameter, nativeIndex) => ({ type: parameter.type, nativeIndex }))
       .filter(({ nativeIndex }) => !projectedBuffers.has(nativeIndex) && !projectedLengths.has(nativeIndex))
       .map(({ type }) => type),
   ]
-    .find((type) => type.kind === "unsupported");
-  if (unsupported?.kind === "unsupported") {
+    .filter((type): type is Extract<ForeignType, { readonly kind: "unsupported" }> => type.kind === "unsupported");
+  const unsupported = unsupportedTypes[0];
+  if (unsupported && state.unsafeDepth === 0) {
     throw new DiagnosticError(
       fileName,
       location,
       `C function ${JSON.stringify(target.name)} uses unsupported type ${JSON.stringify(unsupported.cName)} in signature ${JSON.stringify(target.cSignature)}`,
+      {
+        code: "Z0823",
+        helps: ["describe the reusable safety contract in an adjacent .zd file, or place a local unverified call inside `unsafe { ... }`"],
+      },
     );
+  }
+  if (unsupported && state.unsafeDepth > 0) {
+    const nonPointer = unsupportedTypes.find((type) => !isUnsafeNativePointerSpelling(type.cName));
+    if (nonPointer) {
+      throw new DiagnosticError(
+        fileName,
+        location,
+        `unsafe cannot represent native type ${JSON.stringify(nonPointer.cName)} in Z`,
+        {
+          code: "Z0823",
+          notes: ["the first unsafe tier supports pointer pass-through and compatible cstring assertions only"],
+          helps: ["use a checked .zd projection, or isolate this operation in raw c/cpp/objc source"],
+        },
+      );
+    }
   }
   const visibleParameters = target.parameters
     .map((parameter, nativeIndex) => ({ parameter, nativeIndex }))
@@ -11398,6 +11678,13 @@ function checkForeignCall(
         state.expressionTypes.set(argument.location.offset, String(underlyingType(stored)));
         state.expressionTypes.set(argument.nameLocation.offset, String(underlyingType(stored)));
         continue;
+      }
+      if (parameter?.type.kind === "unsupported") {
+        throw new DiagnosticError(fileName, argument.location, `${argument.access} requires a checked native capability contract`, {
+          code: "Z0823",
+          notes: ["unsafe pointer pass-through does not infer native mutation, initialization, or ownership facts"],
+          helps: ["describe the parameter with in, inout, or out in an adjacent .zd file"],
+        });
       }
       if (parameter?.type.kind !== "recordPointer") {
         throw new DiagnosticError(
@@ -11622,6 +11909,30 @@ function checkForeignCall(
     } else {
       actual = inferExpression(argument, locals, globals, structs, enums, fileName, state);
     }
+    if (parameter?.type.kind === "unsupported") {
+      if (actual === "null") continue;
+      if (actual === "String" && isUnsafeCStringSpelling(parameter.type.cName)) {
+        state.cstringConversions.add(argument.location.offset);
+        actual = "cstring";
+      }
+      const opaque = parseUnsafeNativeType(String(underlyingType(actual)));
+      if (
+        (opaque && normalizeUnsafeNativeSpelling(opaque) === normalizeUnsafeNativeSpelling(parameter.type.cName))
+        || (actual === "cstring" && isUnsafeCStringSpelling(parameter.type.cName))
+      ) {
+        continue;
+      }
+      throw new DiagnosticError(
+        fileName,
+        argument.location,
+        `unsafe native parameter ${index + 1} expects ${JSON.stringify(normalizeUnsafeNativeSpelling(parameter.type.cName))}, found ${describeValueType(actual, state)}`,
+        {
+          code: "Z0823",
+          notes: ["opaque unsafe values may pass only through an exactly matching native pointer identity"],
+          helps: ["add a reusable typed projection in .zd when the native types are intentionally compatible"],
+        },
+      );
+    }
     if (parameter?.type.kind === "nullPointer") {
       if (actual !== "null") {
         throw new DiagnosticError(
@@ -11833,6 +12144,8 @@ function checkForeignCall(
       ? target.returnType.typeName
     : target.returnType.kind === "callback" || target.returnType.kind === "block"
       ? foreignValueType(target.returnType)
+    : target.returnType.kind === "unsupported" && state.unsafeDepth > 0
+      ? unsafeForeignResultType(target.returnType.cName, location, fileName, state)
       : "unknown";
   if (target.status) {
     const errorType = target.returnType.kind === "z"
@@ -11899,6 +12212,8 @@ function describeValueType(type: ValueType, state: AnalysisState): string {
   const pointer = foreignPointer(type, state);
   if (pointer) return describePointer(pointer, state);
   const name = String(underlyingType(type));
+  const unsafeNative = displayUnsafeNativeType(name);
+  if (unsafeNative) return `${unsafeNative} (unsafe pass-through only)`;
   if (isNullableObjCTypeName(name)) return `${publicObjCTypeName(name)} | null`;
   return displayFunctionType(name, displayArrayType) ?? displayArrayType(name);
 }
@@ -12345,6 +12660,8 @@ function containsOpaqueCleanupStorage(
 
 function displayAssignableType(type: ValueType): string {
   const name = String(underlyingType(type));
+  const unsafeNative = displayUnsafeNativeType(name);
+  if (unsafeNative) return unsafeNative;
   const view = parseViewType(name);
   if (view) return `view ${displayAssignableType(view.target)}`;
   return isNullableObjCTypeName(name) ? `${publicObjCTypeName(name)} | null` : displayArrayType(name);

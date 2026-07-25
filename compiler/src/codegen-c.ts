@@ -56,6 +56,7 @@ import { parseOptionalViewType, parseViewType, viewTypeName } from "./view-types
 import { mapEntryTypeName, parseMapEntryType, parseMapType } from "./map-types.ts";
 import { parseSetType } from "./set-types.ts";
 import { generatorStepTypeName, isGeneratorFunction, parseGeneratorType } from "./generator-types.ts";
+import { parseUnsafeNativeType } from "./unsafe-types.ts";
 
 type GenerationContext = {
   readonly structs: Map<string, StructDeclaration>;
@@ -3759,6 +3760,8 @@ bool ${liveFlag} = true;`;
       return generateLoopTransfer("continue", context);
     case "block":
       return generateBlock(statement.statements, context);
+    case "unsafe":
+      return generateBlock(statement.body.statements, context);
     case "if":
       return generateIf(statement, context);
     case "while":
@@ -4530,6 +4533,11 @@ function generateDirectValue(
       consumeValue(generateBridgedStringValue(expression, value, valueContext), valueContext)
     ), consumeTerminates);
   }
+  if (expression.kind === "unsafeExpression") {
+    return generateUnsafeExpression(expression, context, (value, valueContext) => (
+      consumeValue(generateBridgedStringValue(expression, value, valueContext), valueContext)
+    ), consumeTerminates);
+  }
   if (expression.kind === "whileExpression" || expression.kind === "forExpression") {
     return generateLoopExpression(
       expression,
@@ -4555,7 +4563,7 @@ function generateBridgedStringValue(expression: Expression, value: string, conte
 
 function requiresStatementValue(expression: Expression, context: GenerationContext): boolean {
   if (context.expressionOverrides.has(expression.location.offset)) return false;
-  if (["template", "try", "matchExpression", "ifExpression", "whileExpression", "forExpression"].includes(expression.kind)) return true;
+  if (["template", "try", "matchExpression", "ifExpression", "unsafeExpression", "whileExpression", "forExpression"].includes(expression.kind)) return true;
   if (expression.kind === "conditional") {
     return requiresStatementValue(expression.thenExpression, context)
       || requiresStatementValue(expression.elseExpression, context);
@@ -5409,6 +5417,10 @@ function generateLocalDeclaration(
     const cType = mapType(type, structs, enums, foreignNamedTypes);
     return mutable ? `${cType}${name}` : `${cType} const ${name}`;
   }
+  if (parseUnsafeNativeType(type)) {
+    const cType = mapType(type, structs, enums, foreignNamedTypes);
+    return mutable ? `${cType} ${name}` : `${cType} const ${name}`;
+  }
   if (type.startsWith("__z_objc:")) {
     const cType = mapType(type, structs, enums, foreignNamedTypes);
     return mutable ? `${cType}${name}` : `${cType} const ${name}`;
@@ -5927,6 +5939,15 @@ function generateIfExpression(
   }`;
 }
 
+function generateUnsafeExpression(
+  expression: Extract<Expression, { kind: "unsafeExpression" }>,
+  context: GenerationContext,
+  consumeValue: (value: string, context: GenerationContext) => string,
+  consumeTerminates: boolean,
+): string {
+  return generateValueArm(expression.body, context, consumeValue, consumeTerminates);
+}
+
 function generateLoopExpression(
   expression: Extract<Expression, { kind: "whileExpression" | "forExpression" }>,
   context: GenerationContext,
@@ -6018,6 +6039,7 @@ function generateValueArm(
 
 function valueArmTerminates(statement: Statement): boolean {
   if (statement.kind === "return" || statement.kind === "throw") return true;
+  if (statement.kind === "unsafe") return valueArmTerminates(statement.body);
   if (statement.kind === "block") return valueArmTerminates(statement.statements.at(-1)!);
   return false;
 }
@@ -6030,6 +6052,7 @@ function statementTerminates(statement: Statement | undefined): boolean {
     || statement.kind === "break"
     || statement.kind === "continue"
   ) return true;
+  if (statement.kind === "unsafe") return statementTerminates(statement.body);
   if (statement.kind === "block") return statementTerminates(statement.statements.at(-1));
   if (statement.kind === "if") {
     return Boolean(statement.elseBranch)
@@ -6364,6 +6387,8 @@ function generateExpressionInner(expression: Expression, context: GenerationCont
       throw new Error("match must be lowered from its containing statement");
     case "ifExpression":
       throw new Error("if must be lowered from its containing statement");
+    case "unsafeExpression":
+      throw new Error("unsafe must be lowered from its containing statement");
     case "whileExpression":
       throw new Error("while must be lowered from its containing statement");
     case "forExpression":
@@ -7661,6 +7686,8 @@ function inferExpressionType(expression: Expression, context: GenerationContext)
       return matchExpressionType(expression, context);
     case "ifExpression":
       return ifExpressionType(expression, context);
+    case "unsafeExpression":
+      return unsafeExpressionType(expression, context);
     case "whileExpression":
     case "forExpression":
       return loopExpressionType(expression, context);
@@ -7753,6 +7780,7 @@ function directValueType(expression: Expression, context: GenerationContext): st
   if (expression.kind === "try") type = trySuccessType(expression, context);
   else if (expression.kind === "matchExpression") type = matchExpressionType(expression, context);
   else if (expression.kind === "ifExpression") type = ifExpressionType(expression, context);
+  else if (expression.kind === "unsafeExpression") type = unsafeExpressionType(expression, context);
   else if (expression.kind === "whileExpression" || expression.kind === "forExpression") {
     type = loopExpressionType(expression, context);
   }
@@ -7769,6 +7797,13 @@ function ifExpressionType(expression: Extract<Expression, { kind: "ifExpression"
       ? ifExpressionType(expression.elseBranch, context)
       : valueArmType(expression.elseBranch, context))
     ?? "i32";
+}
+
+function unsafeExpressionType(
+  expression: Extract<Expression, { kind: "unsafeExpression" }>,
+  context: GenerationContext,
+): string {
+  return valueArmType(expression.body, context) ?? "void";
 }
 
 function matchExpressionType(expression: Extract<Expression, { kind: "matchExpression" }>, context: GenerationContext): string {
@@ -7839,6 +7874,8 @@ function mapType(
   if (enums.has(name)) return enumName(name);
   const foreignNamed = foreignNamedTypes.get(name);
   if (foreignNamed) return foreignNamed.cName;
+  const unsafeNative = parseUnsafeNativeType(name);
+  if (unsafeNative) return unsafeNative;
   if (name.startsWith("__z_ffi:")) return name.split(":").slice(3).join(":");
   if (name.startsWith("__z_objc:")) {
     const baseName = name.replace(/^__z_objc:(?:nullable|nonnull):/, "");

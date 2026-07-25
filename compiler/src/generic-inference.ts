@@ -848,6 +848,23 @@ export function inferGenericCalls(
           }], environment),
         };
       }
+      case "unsafeExpression": {
+        const body = rewriteStatement(
+          expression.body,
+          new Map(environment),
+          null,
+          expectedType,
+        ) as typeof expression.body;
+        return {
+          expression: { ...expression, body },
+          type: armValueType([{
+            variantName: "",
+            binding: null,
+            body,
+            location: body.location,
+          }], environment),
+        };
+      }
       case "whileExpression": {
         const condition = rewriteExpression(expression.condition, environment);
         const body = rewriteStatement(
@@ -1413,6 +1430,11 @@ export function inferGenericCalls(
         return { ...statement, expression: rewriteExpression(statement.expression, environment, selectedType).expression };
       case "block":
         return { ...statement, statements: rewriteStatements(statement.statements, new Map(environment), returnType, selectedType) };
+      case "unsafe":
+        return {
+          ...statement,
+          body: rewriteStatement(statement.body, new Map(environment), returnType, selectedType) as typeof statement.body,
+        };
       case "if": {
         const condition = rewriteExpression(statement.condition, environment);
         const thenBranch = rewriteStatement(

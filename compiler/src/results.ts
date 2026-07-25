@@ -237,6 +237,9 @@ function collectClosureResults(
         case "block":
           visitStatements(statement.statements);
           break;
+        case "unsafe":
+          visitStatements(statement.body.statements);
+          break;
         case "if":
           visitExpression(statement.condition);
           visitStatements(statement.thenBranch.statements);
@@ -337,6 +340,9 @@ function collectClosureResults(
         visitStatements(expression.thenBranch.statements);
         if (expression.elseBranch.kind === "ifExpression") visitExpression(expression.elseBranch);
         else visitStatements(expression.elseBranch.statements);
+        break;
+      case "unsafeExpression":
+        visitStatements(expression.body.statements);
         break;
       case "whileExpression":
         visitExpression(expression.condition);

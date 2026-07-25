@@ -1170,6 +1170,11 @@ function resolveStatement(
     try resolveStatementSequence(module, symbols, arena, arena.nodes[index].children, scopeBindings);
     return;
   }
+  if (arena.nodes[index].kind == StatementKind.unsafeStatement) {
+    let unsafeBindings = copyBindings(bindings);
+    try resolveStatementSequence(module, symbols, arena, arena.nodes[index].children, unsafeBindings);
+    return;
+  }
   try resolveStatementSequence(module, symbols, arena, arena.nodes[index].children, bindings);
 }
 

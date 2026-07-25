@@ -50,6 +50,7 @@ export enum TokenKind {
   yieldKeyword,
   attemptKeyword,
   tryKeyword,
+  unsafeKeyword,
   weakKeyword,
   inKeyword,
   outKeyword,
@@ -165,6 +166,7 @@ function keywordKind(in text: String): Option<TokenKind> {
   if (text == "yield") return Option.some(TokenKind.yieldKeyword);
   if (text == "attempt") return Option.some(TokenKind.attemptKeyword);
   if (text == "try") return Option.some(TokenKind.tryKeyword);
+  if (text == "unsafe") return Option.some(TokenKind.unsafeKeyword);
   if (text == "weak") return Option.some(TokenKind.weakKeyword);
   if (text == "in") return Option.some(TokenKind.inKeyword);
   if (text == "out") return Option.some(TokenKind.outKeyword);
@@ -628,6 +630,7 @@ export function tokenKindName(kind: TokenKind): String {
     yieldKeyword => "yield";
     attemptKeyword => "attempt";
     tryKeyword => "try";
+    unsafeKeyword => "unsafe";
     weakKeyword => "weak";
     inKeyword => "in";
     outKeyword => "out";

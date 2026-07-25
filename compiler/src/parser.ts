@@ -450,6 +450,11 @@ export function parse(tokens: Token[], fileName: string): Program {
       expect("rightParen", "`)` after a class initializer");
       return { kind: "new", typeName: type.name, arguments: arguments_, argumentLabels, location: token.location };
     }
+    if (match("unsafe")) {
+      const token = previous();
+      const body = parseRequiredBlock("an `unsafe` expression body");
+      return { kind: "unsafeExpression", body, location: token.location };
+    }
     if (
       at("identifier")
       && peek().text === "raw"
@@ -791,6 +796,11 @@ export function parse(tokens: Token[], fileName: string): Program {
   };
 
   parseStatement = (): Statement => {
+    if (match("unsafe")) {
+      const token = previous();
+      const body = parseRequiredBlock("an `unsafe` body");
+      return { kind: "unsafe", body, location: token.location };
+    }
     if (match("async")) {
       const token = previous();
       expect("scope", "`scope` after `async`");

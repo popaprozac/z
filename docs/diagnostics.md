@@ -83,6 +83,8 @@ Currently structured codes include:
 | `Z0811` | a native callback connection is malformed or its ownership-bearing token is discarded |
 | `Z0820` | raw native source uses an unsupported declaration, context, or operand capability |
 | `Z0821` | a value representation cannot cross the first raw native boundary |
+| `Z0822` | an unsafe block is nested, asynchronous, suspending, or captures an escaping environment |
+| `Z0823` | an unsupported native call needs unsafe, or an unsafe pointer assertion/pass-through is incompatible |
 
 CLI diagnostics render source context. Language-server diagnostics expose the
 same code and message, secondary locations through related information, and

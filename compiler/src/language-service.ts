@@ -42,6 +42,7 @@ import { parseMapType } from "./map-types.ts";
 import { parseSetType } from "./set-types.ts";
 import { parseAsyncGeneratorType, parseGeneratorType } from "./generator-types.ts";
 import { publicObjCTypeName } from "./objc-types.ts";
+import { displayUnsafeNativeType } from "./unsafe-types.ts";
 import type { ExecutorAffinityInfo, ExplicitCopyPlan, IntegerConversion } from "./sema.ts";
 import { collectForeignHandleTypeAliases } from "./foreign-handle-types.ts";
 import {
@@ -591,6 +592,14 @@ export function hover(source: string, fileName: string, offset: number): Hover |
   if (word.text === "raw") {
     return markdownHover(
       "raw c | raw cpp | raw objc  // isolated native-source boundary; prefer checked header import plus .zd when representable",
+      source,
+      word.start,
+      word.end,
+    );
+  }
+  if (word.text === "unsafe") {
+    return markdownHover(
+      "unsafe { ... }  // local unverified native assertions remain in Z syntax and types; prefer reusable checked .zd contracts",
       source,
       word.start,
       word.end,
@@ -3354,6 +3363,7 @@ function collectBindings(context: AnalyzedSource): Binding[] {
     if (
       node.kind === "executorPlacement"
       || node.kind === "ifExpression"
+      || node.kind === "unsafeExpression"
       || node.kind === "whileExpression"
       || node.kind === "forExpression"
       || node.kind === "matchExpression"
@@ -3373,6 +3383,10 @@ function collectBindings(context: AnalyzedSource): Binding[] {
         visitStatements(expression.thenBranch.statements);
         if (expression.elseBranch.kind === "ifExpression") visitExpressionBlocks(expression.elseBranch);
         else visitStatements(expression.elseBranch.statements);
+        return;
+      }
+      if (node.kind === "unsafeExpression") {
+        visitStatements((node as Extract<Expression, { kind: "unsafeExpression" }>).body.statements);
         return;
       }
       if (node.kind === "whileExpression" || node.kind === "forExpression") {
@@ -3415,6 +3429,7 @@ function collectBindings(context: AnalyzedSource): Binding[] {
         }
       }
       if (statement.kind === "block") visitStatements(statement.statements);
+      if (statement.kind === "unsafe") visitStatements(statement.body.statements);
       if (statement.kind === "if") {
         visitStatements(statement.thenBranch.statements);
         if (statement.elseBranch?.kind === "block") visitStatements(statement.elseBranch.statements);
@@ -5490,6 +5505,8 @@ function asyncGeneratorNextDisplayType(
 function displayType(type: string, typeDisplayNames: ReadonlyMap<string, string> = new Map()): string {
   const known = typeDisplayNames.get(type);
   if (known) return known;
+  const unsafeNative = displayUnsafeNativeType(type);
+  if (unsafeNative) return `${unsafeNative} — unsafe pass-through only`;
   const view = parseViewType(type);
   if (view) return `view ${displayType(view.target, typeDisplayNames)}`;
   const nullableObjC = /^__z_objc:nullable:(.+)$/.exec(type);

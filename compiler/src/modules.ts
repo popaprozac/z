@@ -509,6 +509,14 @@ function transformStatement(
       return { ...statement, expression: transformExpression(statement.expression, scope, locals, typeParameters) };
     case "block":
       return { ...statement, statements: transformStatements(statement.statements, scope, new Set(locals), typeParameters) };
+    case "unsafe":
+      return {
+        ...statement,
+        body: {
+          ...statement.body,
+          statements: transformStatements(statement.body.statements, scope, new Set(locals), typeParameters),
+        },
+      };
     case "if":
       return {
         ...statement,
@@ -733,6 +741,14 @@ function transformExpression(
         elseBranch: expression.elseBranch.kind === "ifExpression"
           ? transformExpression(expression.elseBranch, scope, locals, typeParameters) as typeof expression.elseBranch
           : { ...expression.elseBranch, statements: transformStatements(expression.elseBranch.statements, scope, new Set(locals), typeParameters) },
+      };
+    case "unsafeExpression":
+      return {
+        ...expression,
+        body: {
+          ...expression.body,
+          statements: transformStatements(expression.body.statements, scope, new Set(locals), typeParameters),
+        },
       };
     case "whileExpression":
       return {

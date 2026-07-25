@@ -87,6 +87,7 @@ export enum StatementKind {
   forAwaitStatement,
   forTryAwaitStatement,
   matchStatement,
+  unsafeStatement,
   asyncScopeStatement,
   breakStatement,
   continueStatement,
@@ -136,6 +137,7 @@ export enum ExpressionKind {
   matchBindingExpression,
   matchObjectFieldExpression,
   ifExpression,
+  unsafeExpression,
   whileExpression,
   forExpression,
   forBindingExpression,
@@ -995,6 +997,31 @@ function parseIfExpressionTree(
   );
 }
 
+function parseUnsafeExpressionTree(
+  in tokens: Array<Token>,
+  inout current: usize,
+  inout nodes: Array<ExpressionNode>,
+  inout statementNodes: Array<Statement>
+): usize throws ParserError {
+  const start = snapshot(tokens[current]);
+  try expectKind(tokens, inout current, TokenKind.unsafeKeyword, "`unsafe`");
+  const statements = try parseProjectedBlock(
+    tokens,
+    inout current,
+    "an `unsafe` expression body",
+    inout statementNodes
+  );
+  return pushExpressionNodeWithStatements(
+    inout nodes,
+    ExpressionKind.unsafeExpression,
+    "",
+    Array<usize>(),
+    statements,
+    Array<String>(),
+    start
+  );
+}
+
 function parseWhileExpressionTree(
   in tokens: Array<Token>,
   inout current: usize,
@@ -1336,6 +1363,9 @@ function parsePrimaryTree(
   }
   if (start.kind == TokenKind.ifKeyword) {
     return try parseIfExpressionTree(tokens, inout current, end, inout nodes, inout statementNodes);
+  }
+  if (start.kind == TokenKind.unsafeKeyword) {
+    return try parseUnsafeExpressionTree(tokens, inout current, inout nodes, inout statementNodes);
   }
   if (start.kind == TokenKind.whileKeyword) {
     return try parseWhileExpressionTree(tokens, inout current, end, inout nodes, inout statementNodes);
@@ -2109,6 +2139,11 @@ function skipProjectedStatement(
     try skipProjectedStatement(tokens, inout current, inout statementNodes);
     return;
   }
+  if (kind == TokenKind.unsafeKeyword) {
+    current = current + 1;
+    try skipProjectedStatement(tokens, inout current, inout statementNodes);
+    return;
+  }
   const ignored = try scanExpression(tokens, inout current, "a statement", inout statementNodes);
   if (ignored.assignment) return;
 }
@@ -2399,6 +2434,32 @@ function parseProjectedStatement(
     const start = snapshot(tokens[current]);
     const statements = try parseProjectedBlock(tokens, inout current, "a statement block", inout nodes);
     return Option.some(pushProjectedBlock(inout nodes, statements, start));
+  }
+  if (kind == TokenKind.unsafeKeyword) {
+    const start = snapshot(tokens[current]);
+    current = current + 1;
+    const bodyStart = snapshot(tokens[current]);
+    const bodyStatements = try parseProjectedBlock(tokens, inout current, "an `unsafe` body", inout nodes);
+    let children = Array<usize>();
+    children.push(pushProjectedBlock(inout nodes, bodyStatements, bodyStart));
+    const index = nodes.length;
+    nodes.push(Statement({
+      kind: StatementKind.unsafeStatement,
+      mutableBinding: false,
+      name: "",
+      nameOffset: 0,
+      nameLine: 0,
+      nameColumn: 0,
+      typeAnnotation: Option<TypeReference>.none,
+      expression: Option<ExpressionSyntax>.none,
+      secondExpression: Option<ExpressionSyntax>.none,
+      objectBindings: Array<ObjectBinding>(),
+      children,
+      offset: start.offset,
+      line: start.line,
+      column: start.column,
+    }));
+    return Option.some(index);
   }
   if (kind == TokenKind.asyncKeyword) {
     const start = snapshot(tokens[current]);
@@ -3353,6 +3414,7 @@ function expressionKindName(kind: ExpressionKind): String {
     matchBindingExpression => "matchBinding";
     matchObjectFieldExpression => "matchObjectField";
     ifExpression => "ifExpression";
+    unsafeExpression => "unsafeExpression";
     whileExpression => "whileExpression";
     forExpression => "forExpression";
     forBindingExpression => "forBinding";
@@ -3461,6 +3523,7 @@ function renderStatementText(in arena: StatementArena, in statement: Statement):
   else if (statement.kind == StatementKind.forTryAwaitStatement) output.append("try-for-await@");
   else if (statement.kind == StatementKind.forStatement) output.append("for@");
   else if (statement.kind == StatementKind.matchStatement) output.append("match@");
+  else if (statement.kind == StatementKind.unsafeStatement) output.append("unsafe@");
   else if (statement.kind == StatementKind.asyncScopeStatement) output.append("asyncScope@");
   else if (statement.kind == StatementKind.breakStatement) output.append("break@");
   else if (statement.kind == StatementKind.continueStatement) output.append("continue@");
@@ -3569,6 +3632,7 @@ function renderStatementText(in arena: StatementArena, in statement: Statement):
     || statement.kind == StatementKind.forStatement
     || statement.kind == StatementKind.forAwaitStatement
     || statement.kind == StatementKind.forTryAwaitStatement
+    || statement.kind == StatementKind.unsafeStatement
     || statement.kind == StatementKind.asyncScopeStatement
   ) {
     if (statement.children.length > 0) {
