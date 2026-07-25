@@ -260,6 +260,7 @@ function collectClosureResults(
           addResult(expression.returnType, expression.errorType, expression.location);
         }
         visitExpression(expression.executor);
+        if (expression.call) visitExpression(expression.call);
         visitStatements(expression.body.statements);
         break;
       case "binary":

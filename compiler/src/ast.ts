@@ -512,6 +512,7 @@ export type ExecutorPlacementExpression = {
   readonly returnType: TypeReference | null;
   readonly errorType: TypeReference | null;
   readonly body: BlockStatement;
+  readonly call: CallExpression | null;
   readonly location: SourceLocation;
   readonly onLocation: SourceLocation;
 };

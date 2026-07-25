@@ -2847,7 +2847,9 @@ function collectBindings(context: AnalyzedSource): Binding[] {
       if (location && seenExpressionBlocks.has(location.offset)) return;
       if (location) seenExpressionBlocks.add(location.offset);
       if (node.kind === "executorPlacement") {
-        visitStatements((node as Extract<Expression, { kind: "executorPlacement" }>).body.statements);
+        const placement = node as Extract<Expression, { kind: "executorPlacement" }>;
+        if (placement.call) visitExpressionBlocks(placement.call);
+        visitStatements(placement.body.statements);
         return;
       }
       if (node.kind === "ifExpression") {

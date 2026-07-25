@@ -1342,20 +1342,26 @@ The thread namespace also supplies typed placement targets. The first target is
 `thread.main`:
 
 ```z
+const direct = await on thread.main refreshUI(model);
+const directChild = task on thread.main loadUI(model);
 const updated = await on thread.main { select refreshUI(); };
 const child = task on thread.main { select refreshUI(); };
 ```
 
-The first form hops and waits, while the second creates a hot structured child
-on main. Code already proven to run on main accesses isolated state directly;
-there is no bare `on thread.main { ... }` proof block. The first executable
-tier supports plain copied captures, owned String copies, retained Z ARC
-classes, and Objective-C identities retained by ARC from the owning async
-task. A native worker can create a placed main child without blocking main;
-Darwin wakes the executor through a CFRunLoop source. A placement used as a
-statement is a block statement and does not require a trailing semicolon;
-bindings and other value expressions still do. Other ownership shapes and
-platform UI-loop adapters remain bounded work. See
+`await on` hops and waits, while `task on` creates a hot structured child on
+main. A direct call uses its declared parameter capabilities; block placement
+is for anonymous multi-statement work and uses lexical captures. Async direct
+calls schedule the callee frame itself, so their result is `T`/`Result<T, E>`
+when awaited or `Task<T, E>` when forked—never a nested task. Code already
+proven to run on main accesses isolated state directly; there is no bare
+`on thread.main { ... }` proof block. The block tier supports plain copied
+captures, owned String copies, retained Z ARC classes, and Objective-C
+identities retained by ARC from the owning async task. A native worker can
+create a placed main child without blocking main; Darwin wakes the executor
+through a CFRunLoop source. A placement used as a statement is a block statement
+and does not require a trailing semicolon; bindings and other value expressions
+still do. Other ownership shapes and platform UI-loop adapters remain bounded
+work. See
 [`executor-placement.md`](executor-placement.md).
 The returned task remains scope-bound and is joined explicitly by `await` or
 implicitly at scope exit.

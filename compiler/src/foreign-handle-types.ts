@@ -163,6 +163,7 @@ export function transformProgramTypeNames(
           returnType: value.returnType ? type(value.returnType) : null,
           errorType: value.errorType ? type(value.errorType) : null,
           body: statement(value.body),
+          call: value.call ? expression(value.call) as typeof value.call : null,
         };
       case "matchExpression":
         return { ...value, expression: expression(value.expression), arms: value.arms.map(arm) };

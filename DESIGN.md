@@ -1372,14 +1372,18 @@ const task = task on compute
 A committed follow-up makes placement orthogonal to a direct function call:
 
 ```z
-const loading = task on thread.main load(in model);
+const loading = task on thread.main load(model);
 const value = try await on thread.main refresh(inout state);
 ```
 
 The callee's argument list is already the capability boundary, so direct placed
 calls do not repeat those arguments in `using`. Placement blocks retain
 `using (...)` for lexical captures and multi-statement anonymous operations.
-This direct-call spelling is design-complete but not executable yet.
+This direct-call spelling is executable. Async callees reuse their original
+task frame, so placement does not create `Task<Task<T, E>>`; synchronous
+nonthrowing calls use a minimal one-shot placed frame. Throwing synchronous
+direct calls still require an async adapter until synchronous `try` lowering is
+available inside task frames.
 
 Executor construction configures the target; `using (...)` declares access to
 existing bindings. Its entries reuse the ordinary `in`, `inout`, and `move`

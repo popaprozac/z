@@ -1838,6 +1838,19 @@ test("contextually types signed literals at their destination width", () => {
   writeFileSync(fileName, source);
   const result = spawnSync(process.execPath, [cli, "run", fileName], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
+
+  const synchronousThrow = `
+    import { thread } from "std/thread";
+    struct WorkError { code: i32; }
+    function inspect(value: i32): i32 throws WorkError { return value; }
+    async function main(): i32 throws WorkError {
+      return try await on thread.main inspect(42);
+    }
+  `;
+  const diagnostic = diagnostics(synchronousThrow, "direct-placed-sync-throw.zs")[0];
+  assert.equal(diagnostic.code, "Z0713");
+  assert.match(diagnostic.message, /throwing synchronous call cannot be placed directly/);
+  assert.match(diagnostic.helps.join(" "), /wrap the synchronous operation in an async function/);
 });
 
 test("checks integer arithmetic and provides explicit wrapping and saturation", () => {
@@ -13200,8 +13213,10 @@ test("type-checks main-thread executor placement and exposes thread.main to edit
 
   const placedTask = source.indexOf("placedTask =") + 1;
   assert.match(hover(source, example, placedTask)?.contents.value ?? "", /placedTask: Task<i32>/);
+  const directCall = source.indexOf("loadStatus(21)") + 1;
+  assert.match(hover(source, example, directCall)?.contents.value ?? "", /async function loadStatus\(value: i32\): i32/);
 
-  const incomplete = source.replace("thread.main: i32", "thread.ma: i32");
+  const incomplete = source.replace("thread.main readStatus", "thread.ma readStatus");
   const completionOffset = incomplete.indexOf("thread.ma") + "thread.ma".length;
   const mainCompletion = completions(incomplete, example, completionOffset).find((item) => item.label === "main");
   assert.equal(mainCompletion?.kind, 10);
@@ -13248,11 +13263,69 @@ test("type-checks main-thread executor placement and exposes thread.main to edit
 
   const generated = compileToC(source, example);
   assert.match(generated, /z_async_start___z_executor_main_/);
+  assert.match(generated, /z_async_start_loadStatus/);
+  assert.doesNotMatch(generated, /__z_executor_main_.*loadStatus/);
   assert.match(generated, /z_async_run_one/);
 
   const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
 
+});
+
+test("places direct async calls without nested tasks and preserves parameter capabilities", () => {
+  const directory = mkdtempSync("/tmp/z-direct-executor-calls-");
+  const fileName = resolve(directory, "main.zs");
+  const source = `
+    import { thread } from "std/thread";
+
+    struct WorkError {
+      code: i32;
+    }
+
+    struct Counter {
+      value: i32;
+    }
+
+    class Reader {
+      base: i32;
+
+      async function read(value: i32): i32 {
+        return this.base + value;
+      }
+    }
+
+    async function update(inout counter: Counter, amount: i32): i32 throws WorkError {
+      counter.value = counter.value + amount;
+      return counter.value;
+    }
+
+    async function load(value: i32): i32 throws WorkError {
+      return value;
+    }
+
+    async function main(): i32 throws WorkError {
+      let counter = Counter({ value: 20 });
+      const reader = new Reader({ base: 1 });
+      const methodValue = await on thread.main reader.read(19);
+      const first = try await on thread.main update(inout counter, 1);
+      const loading = task on thread.main load(counter.value);
+      const second = try await loading;
+      return methodValue + first + second + counter.value - 83;
+    }
+  `;
+  writeFileSync(fileName, source);
+  check(source, fileName);
+
+  const loading = source.indexOf("loading =") + 1;
+  assert.match(hover(source, fileName, loading)?.contents.value ?? "", /loading: Task<i32, WorkError>/);
+  const generated = compileToC(source, fileName);
+  assert.match(generated, /z_async_start_update/);
+  assert.match(generated, /z_async_start_load/);
+  assert.match(generated, /z_async_start_Reader_read/);
+  assert.doesNotMatch(generated, /__z_executor_main_.*(?:update|load)/);
+
+  const result = spawnSync(process.execPath, [cli, "run", fileName], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
 });
 
 test("enforces declaration-header executor affinity and surfaces inherited isolation", () => {

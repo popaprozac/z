@@ -702,6 +702,9 @@ function transformExpression(
           ...expression.body,
           statements: transformStatements(expression.body.statements, scope, new Set(locals), typeParameters),
         },
+        call: expression.call
+          ? transformExpression(expression.call, scope, locals, typeParameters) as typeof expression.call
+          : null,
       };
     case "matchExpression":
       return {

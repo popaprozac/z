@@ -2232,6 +2232,7 @@ function analyzeConstructorInitialization(
         return;
       case "executorPlacement":
         checkExpression(expression.executor, initialized);
+        if (expression.call) checkExpression(expression.call, initialized);
         analyzeConstructorStatements(expression.body.statements, new Set(initialized));
         return;
       case "matchExpression":
@@ -3914,6 +3915,7 @@ function collectClosureCaptures(
         return;
       case "executorPlacement":
         walkExpression(expression.executor, localNames);
+        if (expression.call) walkExpression(expression.call, localNames);
         walkStatement(expression.body, new Set(localNames));
         return;
       case "matchExpression":
@@ -4535,8 +4537,65 @@ function inferExecutorPlacement(
     };
   }
 
-  const blockLocals = new Map(locals);
   const previousExecutor = state.executorContext;
+  if (expression.call) {
+    const context = {
+      mode: expression.mode === "spawn" ? "spawn" as const : "await" as const,
+      spawnOffset: expression.mode === "spawn" ? expression.location.offset : null,
+      calls: 0,
+      cancellationCalls: 0,
+    };
+    state.executorContext = "main";
+    state.asyncCallContexts.push(context);
+    let callType: ValueType;
+    try {
+      callType = inferExpression(expression.call, locals, globals, structs, enums, fileName, state, true);
+    } finally {
+      state.asyncCallContexts.pop();
+      state.executorContext = previousExecutor;
+    }
+    if (context.calls > 1) {
+      throw new DiagnosticError(fileName, expression.call.location, "direct executor placement accepts exactly one async call", {
+        code: "Z0710",
+        helps: ["use an executor-placement block when coordinating multiple asynchronous operations"],
+      });
+    }
+    const result = enums.get(String(callType));
+    const failure = result?.name.startsWith("__z_Result_")
+      ? result.variants.find((variant) => variant.name === "failure")?.payload?.name ?? null
+      : null;
+    const success = result?.name.startsWith("__z_Result_")
+      ? result.variants.find((variant) => variant.name === "success")?.payload?.name ?? "void"
+      : String(callType);
+    if (failure && context.calls === 0) {
+      throw new DiagnosticError(fileName, expression.call.location, "a throwing synchronous call cannot be placed directly in the current runtime tier", {
+        code: "Z0713",
+        notes: ["direct placed async calls preserve typed failure without adding a wrapper Result layer"],
+        helps: ["wrap the synchronous operation in an async function, then place that async call directly"],
+      });
+    }
+    const escapingAffinity = previousExecutor === "main"
+      ? null
+      : executorAffinityForType(success, structs, enums, state);
+    if (escapingAffinity) {
+      throw new DiagnosticError(fileName, expression.location, `executor placement cannot return main-isolated type ${JSON.stringify(displayArrayType(success))} to a non-main continuation`, {
+        code: "Z0712",
+        notes: ["main-isolated identity, cleanup, and destruction must remain on thread.main"],
+        helps: ["return a thread-independent owned snapshot, or consume the result inside an `on thread.main` block"],
+      });
+    }
+    if (expression.mode === "spawn") return taskTypeName(success, failure);
+    if (!failure) return success;
+    if (!allowThrowingCall) {
+      throw new DiagnosticError(fileName, expression.location, "throwing placed call requires `attempt` or `try`", {
+        code: "Z0712",
+        helps: ["write `try await on thread.main operation()` to propagate the error, or use `attempt` to inspect Result<T, E>"],
+      });
+    }
+    return resultTypeName(success, failure);
+  }
+
+  const blockLocals = new Map(locals);
   state.executorContext = "main";
   state.placementErrorTypes.push(resolvedErrorType);
   let successType: ValueType = "void";
@@ -9419,13 +9478,15 @@ function executorBoundCaptureUseOutsideMain(
     readonly location?: SourceLocation;
     readonly body?: unknown;
     readonly executor?: unknown;
+    readonly call?: unknown;
   };
   if (node.kind === "identifier" && node.name === name) {
     return onMain ? null : node.location ?? null;
   }
   if (node.kind === "executorPlacement") {
     const executorUse = executorBoundCaptureUseOutsideMain(node.executor, name, onMain);
-    return executorUse ?? executorBoundCaptureUseOutsideMain(node.body, name, true);
+    const callUse = node.call ? executorBoundCaptureUseOutsideMain(node.call, name, true) : null;
+    return executorUse ?? callUse ?? executorBoundCaptureUseOutsideMain(node.body, name, true);
   }
   if (node.kind === "closure") {
     // A nested closure can outlive the placement that constructs it. Keep this

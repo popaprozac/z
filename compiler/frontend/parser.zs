@@ -1170,8 +1170,56 @@ function parseExecutorPlacementTree(
     Array<String>(),
     onToken
   ));
-  const executor = try parsePostfixTree(tokens, inout current, end, inout nodes, inout statementNodes);
+  const executorRoot = snapshot(tokens[current]);
+  try expectKind(tokens, inout current, TokenKind.identifier, "an executor capability");
+  let executor = pushExpressionNode(
+    inout nodes,
+    ExpressionKind.identifierExpression,
+    executorRoot.text.copyBytes(0, executorRoot.text.byteLength),
+    Array<usize>(),
+    Array<String>(),
+    executorRoot
+  );
+  while (takeIf(tokens, inout current, TokenKind.dot)) {
+    const property = snapshot(tokens[current]);
+    try expectKind(tokens, inout current, TokenKind.identifier, "an executor capability member");
+    let memberChildren = Array<usize>();
+    memberChildren.push(executor);
+    executor = pushExpressionNode(
+      inout nodes,
+      ExpressionKind.memberExpression,
+      property.text.copyBytes(0, property.text.byteLength),
+      memberChildren,
+      Array<String>(),
+      property
+    );
+  }
   children.push(executor);
+  if (
+    tokens[current].kind != TokenKind.colon
+    && tokens[current].kind != TokenKind.throwsKeyword
+    && tokens[current].kind != TokenKind.leftBrace
+  ) {
+    const call = try parsePostfixTree(tokens, inout current, end, inout nodes, inout statementNodes);
+    if (nodes[call].kind != ExpressionKind.callExpression) {
+      throw fail(tokens[current], "executor placement requires a direct call or block");
+    }
+    children.push(call);
+    let labels = Array<String>();
+    labels.push("");
+    labels.push("");
+    labels.push("call");
+    return pushExpressionNodeWithStatementsAndTypes(
+      inout nodes,
+      ExpressionKind.executorPlacementExpression,
+      mode,
+      children,
+      Array<usize>(),
+      labels,
+      Array<TypeReference>(),
+      start
+    );
+  }
   let typeReferences = Array<TypeReference>();
   let returnType = "";
   if (takeIf(tokens, inout current, TokenKind.colon)) {
@@ -1196,6 +1244,7 @@ function parseExecutorPlacementTree(
   let labels = Array<String>();
   labels.push(returnType);
   labels.push(errorType);
+  labels.push("");
   return pushExpressionNodeWithStatementsAndTypes(
     inout nodes,
     ExpressionKind.executorPlacementExpression,

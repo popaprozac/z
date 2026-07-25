@@ -1266,7 +1266,9 @@ function planFunction(
                 scope,
                 statement.initializer,
                 statement.name,
+                functions,
                 locals,
+                types,
                 registerPlacement,
                 nativeThread,
               );
@@ -1397,7 +1399,9 @@ function planFunction(
                 scope,
                 statement.expression,
                 null,
+                functions,
                 locals,
+                types,
                 registerPlacement,
                 nativeThread,
               );
@@ -1671,6 +1675,23 @@ function awaitSite(
   fromNativeThread: boolean,
 ): AwaitSite {
   if (expression.kind === "executorPlacement") {
+    if (expression.call) {
+      const resolved = tryResolveAsyncCall(expression.call, functions, locals, types);
+      if (resolved) {
+        return {
+          index: nextChild.value++,
+          mode,
+          intrinsic: null,
+          expression,
+          call: expression.call,
+          target: resolved.target,
+          receiver: resolved.receiver,
+          spawn: null,
+          placement: expression.mode,
+          generator: null,
+        };
+      }
+    }
     const placement = registerPlacement(expression, locals, fromNativeThread);
     return {
       index: nextChild.value++,
@@ -1909,14 +1930,29 @@ function createPlacementTarget(
   fileName: string,
   fromNativeThread: boolean,
 ): PlacementTarget {
-  const captures = collectPlacementCaptures(expression.body, locals);
+  const directBody = expression.call
+    ? {
+        kind: "block" as const,
+        statements: [{
+          kind: "return" as const,
+          expression: expression.call,
+          location: expression.call.location,
+        }],
+        location: expression.call.location,
+      }
+    : expression.body;
+  const captures = collectPlacementCaptures(directBody, locals);
   const mutated = captures.find((capture) => capture.mutated);
   if (mutated) {
     unsupported(
       fileName,
       mutated.location,
-      `executor placement cannot mutate captured binding ${JSON.stringify(mutated.name)} in the first runtime tier`,
-      "return a selected value from the placement block and apply mutation after awaiting it",
+      expression.call
+        ? `a synchronous placed call cannot carry mutable binding ${JSON.stringify(mutated.name)} across executors yet`
+        : `executor placement cannot mutate captured binding ${JSON.stringify(mutated.name)} in the first runtime tier`,
+      expression.call
+        ? "use an async function with an inout/out parameter, whose suspension loan is tracked until await completes"
+        : "return a selected value from the placement block and apply mutation after awaiting it",
     );
   }
   const captureKinds = new Map<string, PlacementTarget["captures"][number]["kind"]>();
@@ -1933,7 +1969,7 @@ function createPlacementTarget(
     }
     captureKinds.set(capture.name, kind);
   }
-  if (placementContainsFunctionReturn(expression.body)) {
+  if (!expression.call && placementContainsFunctionReturn(expression.body)) {
     unsupported(
       fileName,
       expression.location,
@@ -1943,16 +1979,26 @@ function createPlacementTarget(
   }
   const final = expression.body.statements.at(-1);
   const selected = final?.kind === "select" ? final : null;
-  const successType = expression.returnType?.name
+  const directType = expression.call
+    ? types.semanticInfo.expressionTypes.get(expression.call.location.offset) ?? "void"
+    : null;
+  const successType = directType
+    ?? expression.returnType?.name
     ?? (selected ? types.semanticInfo.expressionTypes.get(selected.expression.location.offset) : null)
     ?? "void";
   requireFrameType(successType, expression.returnType?.location ?? expression.location, fileName, "executor placement result", types);
-  const body = selected
-    ? [
+  const body = expression.call
+    ? [{
+        kind: "return" as const,
+        expression: expression.call,
+        location: expression.call.location,
+      }]
+    : selected
+      ? [
         ...expression.body.statements.slice(0, -1),
         { kind: "return" as const, expression: selected.expression, location: selected.location },
       ]
-    : [...expression.body.statements];
+      : [...expression.body.statements];
   const declaration: FunctionDeclaration = {
     kind: "function",
     name: `__z_executor_main_${expression.location.offset}`,
@@ -2092,7 +2138,10 @@ function collectPlacementCaptures(
       case "arrayExpression": for (const element of value.elements) expression(element, localNames); return;
       case "structExpression": case "objectExpression": for (const field of value.fields) expression(field.expression, localNames); return;
       case "variantExpression": expression(value.payload, localNames); return;
-      case "executorPlacement": statement(value.body, new Set(localNames)); return;
+      case "executorPlacement":
+        if (value.call) expression(value.call, localNames);
+        statement(value.body, new Set(localNames));
+        return;
       case "matchExpression":
         expression(value.expression, localNames);
         for (const arm of value.arms) {
@@ -2211,7 +2260,9 @@ function placementSpawnSite(
   scope: number,
   expression: Extract<Expression, { kind: "executorPlacement" }>,
   binding: string | null,
+  functions: ReadonlyMap<string, AsyncTarget>,
   locals: ReadonlyMap<string, string>,
+  types: AsyncTypeContext,
   registerPlacement: (
     expression: Extract<Expression, { kind: "executorPlacement" }>,
     locals: ReadonlyMap<string, string>,
@@ -2219,6 +2270,23 @@ function placementSpawnSite(
   ) => PlacementTarget,
   fromNativeThread: boolean,
 ): SpawnSite {
+  if (expression.call) {
+    const resolved = tryResolveAsyncCall(expression.call, functions, locals, types);
+    if (resolved) {
+      return {
+        index,
+        scope,
+        expression,
+        call: expression.call,
+        target: resolved.target,
+        receiver: resolved.receiver,
+        binding,
+        nativeThread: false,
+        asyncNativeThread: false,
+        placement: "main",
+      };
+    }
+  }
   const placement = registerPlacement(expression, locals, fromNativeThread);
   return {
     index,
@@ -2275,6 +2343,17 @@ function resolveAsyncCall(
   locals: ReadonlyMap<string, string>,
   types: AsyncTypeContext,
 ): { readonly target: AsyncTarget; readonly receiver: Expression | null } {
+  const resolved = tryResolveAsyncCall(call, functions, locals, types);
+  if (resolved) return resolved;
+  unsupported(fileName, call.location, "async lowering could not resolve the async call");
+}
+
+function tryResolveAsyncCall(
+  call: CallExpression,
+  functions: ReadonlyMap<string, AsyncTarget>,
+  locals: ReadonlyMap<string, string>,
+  types: AsyncTypeContext,
+): { readonly target: AsyncTarget; readonly receiver: Expression | null } | null {
   const foreign = types.foreignTargets.get(call.location.offset);
   if (foreign) return { target: foreign, receiver: null };
   if (call.callee.kind === "identifier") {
@@ -2301,7 +2380,7 @@ function resolveAsyncCall(
       return { target: { declaration: method, owner }, receiver: object };
     }
   }
-  unsupported(fileName, call.location, "async lowering could not resolve the async call");
+  return null;
 }
 
 function awaitOperation(expression: Expression): {
@@ -2471,6 +2550,7 @@ function containsAwait(expression: Expression): boolean {
       case "executorPlacement":
         if (candidate.mode === "await") found = true;
         visit(candidate.executor);
+        if (candidate.call) visit(candidate.call);
         if (statementContainsAwait(candidate.body)) found = true;
         return;
       case "call": visit(candidate.callee); for (const value of candidate.arguments) visit(value); return;

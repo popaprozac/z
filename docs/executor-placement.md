@@ -1,10 +1,11 @@
 # Executor Placement Design Note
 
-Status: ownership-aware placement blocks execute through structured task frames;
-plain values, String copies, Z ARC classes, and Objective-C identity from an
-owning async task are supported. Native-worker handoff and Darwin CFRunLoop
-wakeups are implemented. Mutable/borrowed/native-affine capture contracts and
-platform UI-loop adapters remain planned.
+Status: direct placed calls and ownership-aware placement blocks execute through
+structured task frames. Async direct calls use the callee frame without nesting
+`Task`; plain values, String copies, Z ARC classes, and Objective-C identity
+from an owning async task are supported. Native-worker handoff and Darwin
+CFRunLoop wakeups are implemented. Mutable/borrowed/native-affine block-capture
+contracts and platform UI-loop adapters remain planned.
 
 Date: 2026-07-20
 
@@ -61,14 +62,18 @@ accesses main-isolated state directly; Z deliberately has no subjectless
 ### Hop, wait, and receive a value
 
 ```z
+const title = await on thread.main readWindowTitle(window);
+
 const title = await on thread.main {
   select window.title;
 };
 ```
 
-If necessary, this form schedules the block on `main`, suspends the current
-task, and resumes with the block's selected value. It does not expose a task
-handle because the operation is immediately awaited.
+The direct-call form uses the callee's parameter capabilities as its transfer
+and loan boundary. The block form is for anonymous multi-statement work and
+uses `select` to provide its value. If necessary, either form schedules the
+operation on `main`, suspends the current task, and resumes with its value. It
+does not expose a task handle because the operation is immediately awaited.
 
 If the current task is already proven to run on `main`, the implementation may
 take a zero-hop fast path. `await on thread.main` does not promise an event-loop
@@ -92,6 +97,8 @@ retaining main-executor proof.
 ### Fork a structured child on an executor
 
 ```z
+const titleTask = task on thread.main readWindowTitle(window);
+
 const titleTask = task on thread.main {
   select window.title;
 };
@@ -107,6 +114,13 @@ joining or cancelling the child.
 
 `task on thread.main` preserves a concurrency boundary even when the caller
 already runs on `main`; it follows ordinary `task` scheduling.
+
+When the direct callee is async, placement schedules that callee's task frame
+directly. `task on thread.main load()` therefore has type `Task<T, E>`, never
+`Task<Task<T, E>>`. A synchronous direct call is wrapped in a minimal one-shot
+placed frame. The current bootstrap requires an async adapter for a throwing
+synchronous direct call because synchronous `try` lowering inside task frames
+is still pending.
 
 ## Block contracts and type transformation
 
@@ -276,8 +290,19 @@ An `in` or `inout` loan remains active until the child actually joins, either
 through an explicit `await`/cancelling join or the enclosing `async scope`'s
 implicit join. Merely requesting cancellation does not release a loan. The
 parent may use the binding again after that join; a `move` capture remains moved
-unless ownership is explicitly returned as the task result. This syntax and
-the borrowed/mutable cross-executor tiers are planned, not yet executable.
+unless ownership is explicitly returned as the task result. This block-capture
+syntax and the borrowed/mutable cross-executor tiers are planned, not yet
+executable. Direct calls need no `using` clause:
+
+```z
+const value = await on thread.main refresh(inout state);
+const loading = task on thread.main load(model);
+```
+
+The callee declaration and its ordinary arguments are already the capability
+boundary. Direct awaited async `inout`/`out` loans remain active until the
+placed call completes; a hot child loan follows the same explicit
+`async scope` and join rules as an ordinary `task` call.
 
 The current executable tier applies these concrete rules:
 
@@ -316,6 +341,8 @@ a value expression and ends with one.
 |---|---|
 | `task operation()` | Fork a structured child on the inherited executor |
 | `async scope { ... }` | Own and join lexical child tasks |
+| `await on thread.main operation()` | Place and immediately join one direct call |
+| `task on thread.main operation()` | Place one direct call as a structured child |
 | `await on thread.main { ... }` | Hop if necessary, wait, and produce `T` or `E` |
 | `task on thread.main { ... }` | Fork a structured child placed on the existing main executor |
 | `thread.spawn(operation)` | Allocate and start one dedicated OS thread |
@@ -586,8 +613,8 @@ later without making executor blocks a special case.
     worker, including child tasks, scheduler-aware delay, typed errors,
     cooperative cancellation, literal `await on thread.main`, and thread-affine
     continuation resumption back onto the same live worker thread.
-12. **Committed next syntax slice:** accept a direct call operand after an
-    executor, for example `task on thread.main load(in value)` and
+12. **Done:** accept a direct call operand after an
+    executor, for example `task on thread.main load(value)` and
     `try await on thread.main load(inout state)`. The function arguments are
     the capability boundary and therefore need no `using` clause. Placement
     blocks retain `using (...)` for lexical captures and multiple statements.

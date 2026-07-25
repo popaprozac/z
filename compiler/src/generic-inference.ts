@@ -810,8 +810,11 @@ export function inferGenericCalls(
       case "executorPlacement": {
         const executor = rewriteExpression(expression.executor, environment);
         const body = rewriteStatement(expression.body, new Map(environment)) as typeof expression.body;
+        const call = expression.call
+          ? rewriteExpression(expression.call, environment).expression as typeof expression.call
+          : null;
         return {
-          expression: { ...expression, executor: executor.expression, body },
+          expression: { ...expression, executor: executor.expression, body, call },
           type: expression.mode === "spawn" ? null : expression.returnType?.name ?? null,
         };
       }

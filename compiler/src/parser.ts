@@ -203,19 +203,58 @@ export function parse(tokens: Token[], fileName: string): Program {
 
   let parseStatement: () => Statement;
 
+  const parseExecutorCapability = (): Expression => {
+    const root = expect("identifier", "an executor capability");
+    let expression: Expression = { kind: "identifier", name: root.text, location: root.location };
+    while (match("dot")) {
+      const property = expect("identifier", "an executor capability member");
+      expression = {
+        kind: "member",
+        object: expression,
+        property: property.text,
+        location: property.location,
+      };
+    }
+    return expression;
+  };
+
   const parseExecutorPlacement = (
     mode: "await" | "spawn",
     location: SourceLocation,
     onLocation: SourceLocation,
   ): Expression => {
-    const executor = parsePostfix();
+    const executor = parseExecutorCapability();
+    if (!at("colon") && !at("throws") && !at("leftBrace")) {
+      const call = parsePostfix();
+      if (call.kind !== "call") {
+        throw new DiagnosticError(fileName, call.location, "executor placement requires a direct function or method call, or a block", {
+          code: "Z0710",
+          helps: [
+            `write \`${mode === "spawn" ? "task" : "await"} on thread.main operation()\``,
+            `or use \`${mode === "spawn" ? "task" : "await"} on thread.main { ... }\` for multiple statements`,
+          ],
+        });
+      }
+      const body = { kind: "block" as const, statements: [], location: call.location };
+      return {
+        kind: "executorPlacement",
+        mode,
+        executor,
+        returnType: null,
+        errorType: null,
+        body,
+        call,
+        location,
+        onLocation,
+      };
+    }
     const returnType = match("colon") ? parseType() : null;
     const errorType = match("throws") ? parseType() : null;
     if (errorType && !returnType) {
       throw new DiagnosticError(fileName, errorType.location, "a throwing executor block requires an explicit success type");
     }
     const body = parseRequiredBlock("an executor-placement body");
-    return { kind: "executorPlacement", mode, executor, returnType, errorType, body, location, onLocation };
+    return { kind: "executorPlacement", mode, executor, returnType, errorType, body, call: null, location, onLocation };
   };
 
   const parseExecutorAffinity = (): FunctionDeclaration["executorAffinity"] => {

@@ -678,6 +678,13 @@ function executorPlacementEndIndex(
   tokens: readonly Token[],
   expression: Extract<Expression, { kind: "executorPlacement" }>,
 ): number {
+  if (expression.call) {
+    const start = tokens.findIndex((token) => token.location.offset === expression.call!.location.offset);
+    for (let index = start + 1; index < tokens.length; index += 1) {
+      if (tokens[index].kind === "semicolon" || tokens[index].kind === "eof") return index;
+    }
+    throw new Error(`could not close direct executor-placement call at source offset ${expression.location.offset}`);
+  }
   const leftBraceIndex = tokens.findIndex((token) => token.location.offset === expression.body.location.offset);
   if (leftBraceIndex < 0) {
     throw new Error(`could not locate executor-placement body at source offset ${expression.location.offset}`);
@@ -1005,16 +1012,19 @@ function flattenExpression(
     const marker = appendAt("executorOn", "", [], [], expression.onLocation);
     const executor = flattenExpression(expression.executor, nodes, tokens);
     if (executor === null) return null;
+    const call = expression.call ? flattenExpression(expression.call, nodes, tokens) : null;
+    if (expression.call && call === null) return null;
     return appendAt(
       "executorPlacement",
       expression.mode,
-      [marker, executor],
+      call === null ? [marker, executor] : [marker, executor, call],
       [
         expression.returnType ? canonicalTypeName(expression.returnType.name) : "",
         expression.errorType ? canonicalTypeName(expression.errorType.name) : "",
+        expression.call ? "call" : "",
       ],
       expression.location,
-      [expression.body.statements],
+      expression.call ? [] : [expression.body.statements],
     );
   }
   if (expression.kind === "arrayExpression") {
