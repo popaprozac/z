@@ -82,6 +82,10 @@ export type AnalyzedSource = {
 export type AnalysisOptions = {
   readonly requireMain?: boolean;
   readonly nativeFrontendResolver?: (sourceBatch: SourceModuleBatch) => Stage1ModuleGraph;
+  readonly foreignDeclarationOverrides?: Readonly<Record<string, {
+    readonly source: string;
+    readonly fileName: string;
+  }>>;
 };
 
 export function analyzeSource(source: string, fileName: string, options: AnalysisOptions = {}): AnalyzedSource {
@@ -97,6 +101,7 @@ export function analyzeSource(source: string, fileName: string, options: Analysi
     includeDirectories,
     projectBuild.deploymentTarget,
     projectBuild.foreignApiNotes,
+    options.foreignDeclarationOverrides,
   );
   const foreignHandleTypes = collectForeignHandleTypeAliases(foreignModules);
   const typeDisplayNames = new Map(linked.typeDisplayNames);
@@ -296,7 +301,15 @@ export function compileToNative(source: string, fileName: string): NativeArtifac
 }
 
 export function check(source: string, fileName: string): readonly DiagnosticError[] {
-  if (fileName.endsWith(".zd")) parseForeignDeclarationContracts(source, fileName);
-  else return analyzeSource(source, fileName, { requireMain: false }).semanticInfo.warnings;
-  return [];
+  if (fileName.endsWith(".zd")) {
+    const contracts = parseForeignDeclarationContracts(source, fileName);
+    const declarationProbe = `import nativeContract from ${JSON.stringify(contracts.moduleSpecifier)};`;
+    return analyzeSource(declarationProbe, fileName, {
+      requireMain: false,
+      foreignDeclarationOverrides: {
+        [contracts.moduleSpecifier]: { source, fileName },
+      },
+    }).semanticInfo.warnings;
+  }
+  return analyzeSource(source, fileName, { requireMain: false }).semanticInfo.warnings;
 }

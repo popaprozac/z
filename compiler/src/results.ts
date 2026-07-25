@@ -92,10 +92,12 @@ export function materializeResultTypes(
   for (const module of foreignModules.values()) {
     for (const declaration of module.functions.values()) {
       for (const overload of declaration.overloads) {
-        if (!overload.status || overload.returnType.kind !== "z") continue;
+        if (!overload.status) continue;
+        const errorType = projectedForeignTypeName(overload.returnType);
+        if (!errorType) continue;
         addResult(
           { name: "void", location: module.declaration.location },
-          { name: overload.returnType.name, location: module.declaration.location },
+          { name: errorType, location: module.declaration.location },
           module.declaration.location,
         );
       }

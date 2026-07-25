@@ -120,10 +120,19 @@ const declarationKeywordTokens = [
 
 export function diagnostics(source: string, fileName: string): ServiceDiagnostic[] {
   try {
-    if (fileName.endsWith(".zd")) parseForeignDeclarationContracts(source, fileName);
-    else return analyzeSource(source, fileName, { requireMain: false }).semanticInfo.warnings
+    if (fileName.endsWith(".zd")) {
+      const contracts = parseForeignDeclarationContracts(source, fileName);
+      const declarationProbe = `import nativeContract from ${JSON.stringify(contracts.moduleSpecifier)};`;
+      return analyzeSource(declarationProbe, fileName, {
+        requireMain: false,
+        foreignDeclarationOverrides: {
+          [contracts.moduleSpecifier]: { source, fileName },
+        },
+      }).semanticInfo.warnings
+        .map((warning) => serviceDiagnostic(warning, fileName));
+    }
+    return analyzeSource(source, fileName, { requireMain: false }).semanticInfo.warnings
       .map((warning) => serviceDiagnostic(warning, fileName));
-    return [];
   } catch (error) {
     return [error instanceof DiagnosticError
       ? serviceDiagnostic(error, fileName)

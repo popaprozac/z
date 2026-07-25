@@ -177,11 +177,27 @@ export function readApiNotes(
   namedTypes: ReadonlyMap<string, ForeignNamedType>,
   interfaces: ReadonlyMap<string, ForeignObjCInterface>,
   generatedSource: { readonly name: string; readonly notes: ApiNotes } | null = null,
+  declarationOverride: { readonly source: string; readonly fileName: string } | null = null,
 ): ApiNotes {
-  const sources = apiNoteSources(declaration, includeDirectory);
+  const sources = apiNoteSources(declaration, includeDirectory)
+    .filter((source) => !declarationOverride || source.kind !== "declaration");
   try {
     return mergeApiNotes([
       ...(generatedSource ? [generatedSource] : []),
+      ...(declarationOverride
+        ? [{
+          name: declarationOverride.fileName,
+          notes: foreignDeclarationApiNotes(
+            parseForeignDeclarationContracts(declarationOverride.source, declarationOverride.fileName),
+            declarations,
+            namedTypes,
+            interfaces,
+            declaration.header,
+            includeDirectory,
+            declarationOverride.fileName,
+          ),
+        }]
+        : []),
       ...sources.map((source) => ({
         name: source.path,
         notes: source.kind === "declaration"
@@ -221,9 +237,13 @@ function apiNoteSources(
 ): { readonly path: string; readonly kind: "json" | "declaration" }[] {
   const declarationDirectory = resolve(dirname(declaration.location.fileName ?? includeDirectory));
   const declarationDirectories = [...new Set([declarationDirectory, resolve(includeDirectory)])];
-  const localDeclarationPaths = declarationDirectories
-    .map((directory) => resolve(directory, `${declaration.header}.zd`))
-    .filter((path) => existsSync(path));
+  const localDeclarationPaths = declarationDirectories.flatMap((directory) => {
+    const qualified = resolve(directory, `${declaration.header}.zd`);
+    const adjacent = resolve(directory, `${basename(declaration.header)}.zd`);
+    const candidates = [...new Set([qualified, adjacent])];
+    const selected = candidates.find((path) => existsSync(path));
+    return selected ? [selected] : [];
+  });
   const localHeader = resolve(includeDirectory, declaration.header);
   const builtInRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../api-notes");
   const qualifiedBuiltInPath = resolve(builtInRoot, `${declaration.header}.json`);

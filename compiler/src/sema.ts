@@ -11254,10 +11254,14 @@ function checkForeignCall(
       ? foreignValueType(target.returnType)
       : "unknown";
   if (target.status) {
-    if (target.returnType.kind !== "z") {
+    const errorType = target.returnType.kind === "z"
+      ? target.returnType.name
+      : target.returnType.kind === "named" && target.returnType.type.kind === "enum"
+        ? target.returnType.type.typeName
+        : null;
+    if (!errorType) {
       throw new DiagnosticError(fileName, location, `native status contract for ${JSON.stringify(target.name)} has no supported error type`);
     }
-    const errorType = target.returnType.name;
     state.foreignStatusCalls.set(location.offset, {
       errorType,
       success: target.status.success,

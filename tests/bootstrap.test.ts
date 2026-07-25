@@ -686,9 +686,10 @@ test("imports typed object-like integer macros without textual substitution", ()
   assert.equal(module?.constants.get("Z_MACRO_WIDE")?.typeName, "u64");
   assert.equal(module?.constants.get("Z_MACRO_MASK")?.typeName, "u32");
   assert.equal(module?.constants.get("Z_MACRO_LARGE_DECIMAL")?.typeName, "i64");
+  assert.equal(module?.constants.get("Z_MACRO_ALIAS")?.typeName, "i32");
+  assert.equal(module?.constants.get("Z_MACRO_EXPRESSION")?.typeName, "i32");
+  assert.equal(module?.constants.get("Z_MACRO_FLAGS")?.typeName, "i32");
   assert.equal(module?.constants.get("Z_MACRO_ANSWER")?.sourceKind, "macro");
-  assert.equal(module?.constants.has("Z_MACRO_ALIAS"), false);
-  assert.equal(module?.constants.has("Z_MACRO_EXPRESSION"), false);
   assert.equal(module?.constants.has("Z_MACRO_TEXT"), false);
   assert.equal(module?.constants.has("Z_MACRO_FUNCTION"), false);
 
@@ -729,6 +730,33 @@ test("imports typed object-like integer macros without textual substitution", ()
   assert.match(
     compileToC(selective, resolve(projectRoot, "selective-macro.zs")),
     /return z_checked_subtract_i32\(Z_MACRO_ANSWER, 42\);/,
+  );
+});
+
+test("imports anonymous typedef enums and validates flat sidecars for qualified headers", () => {
+  const fileName = resolve(projectRoot, "tests/fixtures/anonymous-status.zs");
+  const source = readFileSync(fileName, "utf8");
+  const generated = compileToC(source, fileName);
+  assert.match(generated, /z_anonymous_start\(Z_ANONYMOUS_ALL\)/);
+  assert.match(generated, /ZAnonymousStatus _z_native_status_/);
+  assert.match(generated, /Z_ANONYMOUS_FAILED/);
+
+  const analysis = analyzeSource(source, fileName);
+  const native = analysis.foreignModules.get("native");
+  assert.equal(native?.namedTypes.get("ZAnonymousStatus")?.kind, "enum");
+  assert.equal(native?.constants.get("Z_ANONYMOUS_OK")?.typeName, "native.ZAnonymousStatus");
+  assert.equal(native?.constants.get("Z_ANONYMOUS_ALL")?.typeName, "i32");
+
+  const result = spawnSync(process.execPath, [cli, "run", fileName], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+
+  const declarationFile = resolve(projectRoot, "tests/fixtures/anonymous-status.h.zd");
+  assert.deepEqual(diagnostics(readFileSync(declarationFile, "utf8"), declarationFile), []);
+  const invalidDeclaration = readFileSync(declarationFile, "utf8")
+    .replace("z_anonymous_start", "z_anonymous_missing");
+  assert.match(
+    diagnostics(invalidDeclaration, declarationFile)[0]?.message ?? "",
+    /unknown foreign function "z_anonymous_missing"/,
   );
 });
 
@@ -1729,6 +1757,9 @@ test("rejects malformed or unmatched Z declarations before FIIR reaches sema", (
   const missing = diagnostics(source, sourceFile)[0];
   assert.equal(missing.code, "Z0801");
   assert.match(missing.message, /declaration names unknown foreign function "missing"/);
+  const directMissing = spawnSync(process.execPath, [cli, "check", `${header}.zd`], { encoding: "utf8" });
+  assert.equal(directMissing.status, 1);
+  assert.match(directMissing.stderr, /declaration names unknown foreign function "missing"/);
 
   writeFileSync(`${header}.zd`, `
     declare module "contract.h" {

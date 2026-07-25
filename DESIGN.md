@@ -1911,9 +1911,9 @@ A parameter-local `{ fixed NATIVE_CONSTANT; }` contract likewise preserves its
 header-verified ABI position while omitting that policy parameter from Z calls;
 code generation supplies the named header constant. This is reserved for
 native semantic sentinels such as `SQLITE_TRANSIENT`, not arbitrary expressions.
-An integer-returning native function may additionally declare
+An integer- or integer-backed-enum-returning native function may additionally declare
 `void throws _ { success N; }`: listed statuses become successful `void`,
-every other native status is preserved as the inferred integer error, and
+every other native status is preserved as the inferred scalar or enum error, and
 owned `out` values become cleanup-active before failure propagation. This
 changes only the safe Z surface, not the native ABI, and introduces no heap
 exception or wrapper call.
@@ -1934,8 +1934,9 @@ import { sqlite3 as Database } from "sqlite3.h";
 ```
 
 This binds only those C declarations. Functions, supported typedef-named
-records, enums, scalar typedefs, enum constants, and supported object-like
-integer macros can share the same import list and can each be aliased. Aliases
+records, named or anonymous-typedef enums, scalar typedefs, enum constants, and
+supported object-like integer macros can share the same import list and can
+each be aliased. Aliases
 affect only Z source: generated C uses the original declaration spelling, and
 aliases preserve C type identity across selective and namespace imports.
 Namespace imports remain useful when provenance and breadth matter.
@@ -1943,11 +1944,13 @@ Namespace imports remain useful when provenance and breadth matter.
 Imported C data follows Z expression syntax whether it is namespaced or
 selective: typedef-named records can appear in signatures, are built with
 checked struct literals, and expose imported fields; C enum constants and
-active object-like integer-literal macros become typed values. Macro types
-follow target C integer-literal rules, editor definitions point to `#define`,
-and generated source preserves the native token. Function-like, string, alias,
-and expression macros remain deferred rather than being textually expanded by
-Z. The native compiler still includes the original header, so it does not
+active object-like integer macros become typed values. Literal macros follow
+target C integer-literal rules; integer aliases and expressions composed from
+supported arithmetic, shift, and bitwise operations are evaluated without
+textual substitution. Editor definitions point to `#define`, and generated
+source preserves the native token. Function-like, string, cast-heavy, and
+otherwise unsupported expression macros remain deferred. The native compiler
+still includes the original header, so it does not
 redeclare layouts or guess padding and calling conventions. A future
 explicit contract uses a TypeScript-shaped ambient declaration:
 

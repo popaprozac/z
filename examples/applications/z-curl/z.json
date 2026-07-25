@@ -1,0 +1,10 @@
+{
+  "target": {
+    "entry": "main.zs",
+    "platform": "macos",
+    "minimumVersion": "14.0",
+    "link": {
+      "libraries": ["curl"]
+    }
+  }
+}

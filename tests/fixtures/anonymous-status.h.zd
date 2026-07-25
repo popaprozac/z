@@ -1,0 +1,7 @@
+declare module "nested-native/anonymous-status.h" {
+  export function z_anonymous_start(
+    flags: _ { fixed Z_ANONYMOUS_ALL; }
+  ): void throws _ {
+    success 0;
+  }
+}

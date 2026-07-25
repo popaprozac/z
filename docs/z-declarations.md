@@ -24,9 +24,16 @@ declare module "sqlite3.h" {
 }
 ```
 
+Qualified includes may use either a mirrored path or the adjacent header
+basename. For `import curl from "curl/curl.h"`, Z first checks
+`curl/curl.h.zd` and then the much more convenient adjacent `curl.h.zd`.
+The `declare module "curl/curl.h"` string still identifies the exact header and
+prevents a same-basename contract from attaching to the wrong import.
+
 The enclosing `declare module` is already the authoring scope. No import is
 required inside the `.zd` file; the editor loads that header for completion,
-hover, and validation.
+hover, and validation. `z check path/to/header.h.zd` performs the same ABI
+validation against the real header rather than checking grammar alone.
 
 ## Complete current shape
 
@@ -105,8 +112,8 @@ spelling does not silently pass through.
 | `view cstring` | Borrowed native text tied to the supported input owner | Copies explicitly when converted to owned Z `String` |
 | `deinit release;` | Associate owned storage with its exact cleanup operation | Meaning depends on whether it appears on a result, output, callback, or type |
 | `fixed CONSTANT;` | Hide one native ABI parameter and always pass a header constant | Z call omits that argument; generated native code inserts the constant in place |
-| `void throws _` | Project an integer-returning native status into Z's error channel | Native return type remains ABI-exact and allocation-free |
-| `success N;` | Treat status `N` as successful `void` completion | Every other integer status becomes the typed error value |
+| `void throws _` | Project an integer or integer-backed native enum status into Z's error channel | Native return type remains ABI-exact and allocation-free; enum errors retain their imported enum type |
+| `success N;` | Treat status `N` as successful `void` completion | Every other integer or enum status becomes the typed error value; named success constants remain the next declaration-syntax slice |
 | `callback operation { ... }` | Classify a named native callback or Objective-C block parameter | The parameter must exist and have a compatible native callable type |
 | `context context;` | Pair a C callback with its opaque native context parameter | Generated trampoline recovers the exact Z closure environment; ARC-owned Objective-C blocks omit this |
 | `thread caller;` | Callback invocation and release remain on the registering thread | Escaping closure environment uses ordinary thread-local ownership |
@@ -192,7 +199,7 @@ These are semantic mappings, not textual rewrites:
 | C mutable `T *` input | `inout value: _` | Exclusive mutable call borrow |
 | C `T **` output | `out value: _` plus optional `deinit` | Definitely initialized owned result |
 | C opaque returned handle | Return `_ \| null { deinit close; }` | Nullable owned handle with deterministic cleanup |
-| C integer status | `void throws _ { success 0; }` | `try`/`attempt` and `Result<void, E>` |
+| C integer or integer-backed enum status | `void throws _ { success 0; }` | `try`/`attempt` and `Result<void, E>`; enum failures preserve their native enum type |
 | C sentinel/policy argument | Parameter `{ fixed CONSTANT; }` | Argument omitted from the Z call |
 | C call-only callback | `in operation: _` plus callback/context pairing when needed | Nonescaping borrowed closure |
 | C escaping callback | `move operation: _` plus context, release, and an explicit `thread caller` or `thread any` fact | ARC-owned escaping Z closure; `thread any` adds atomic environment ownership and capture checking |

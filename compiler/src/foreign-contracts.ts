@@ -146,12 +146,19 @@ function normalizeOverload(
       namedTypes,
     );
     if (functionNotes?.status) {
-      const statusType = returnType.kind === "z" ? returnType.name : null;
-      if (!statusType || !["i8", "u8", "i16", "u16", "i32", "u32", "i64", "u64", "isize", "usize"].includes(statusType)) {
+      const statusType = returnType.kind === "z"
+        ? returnType.name
+        : returnType.kind === "named" && returnType.type.kind === "enum"
+          ? returnType.type.underlying
+          : null;
+      if (
+        !statusType
+        || !["i8", "u8", "i16", "u16", "i32", "u32", "i64", "u64", "isize", "usize"].includes(statusType)
+      ) {
         throw contractError(
           fileName,
           location,
-          `status projection for ${JSON.stringify(declaration.name)} requires an integer native return type`,
+          `status projection for ${JSON.stringify(declaration.name)} requires an integer or integer-backed enum native return type`,
         );
       }
     }

@@ -10,6 +10,9 @@
 
 #define Z_MACRO_ALIAS Z_MACRO_ANSWER
 #define Z_MACRO_EXPRESSION (40 + 2)
+#define Z_MACRO_FLAG_A (1 << 0)
+#define Z_MACRO_FLAG_B (1 << 1)
+#define Z_MACRO_FLAGS (Z_MACRO_FLAG_A | Z_MACRO_FLAG_B)
 #define Z_MACRO_TEXT "forty-two"
 #define Z_MACRO_FUNCTION(value) ((value) + 1)
 

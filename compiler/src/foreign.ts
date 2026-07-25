@@ -76,6 +76,7 @@ type ClangNode = {
   readonly super?: { readonly name?: string };
   readonly protocols?: readonly { readonly name?: string }[];
   readonly fixedUnderlyingType?: { readonly qualType?: string; readonly desugaredQualType?: string };
+  readonly ownedTagDecl?: { readonly id?: string; readonly kind?: string; readonly name?: string };
   readonly loc?: ClangLocation;
   readonly range?: { readonly begin?: ClangLocation; readonly end?: ClangLocation };
   readonly inner?: readonly ClangNode[];
@@ -103,6 +104,7 @@ export function resolveForeignModules(
   projectIncludeDirectories: readonly string[] = [],
   deploymentTarget: DeploymentTarget | null = null,
   projectApiNotes: Readonly<Record<string, ApiNotes>> = {},
+  declarationOverrides: Readonly<Record<string, { readonly source: string; readonly fileName: string }>> = {},
 ): ReadonlyMap<string, ForeignModule> {
   const modules = new Map<string, ForeignModule>();
   const sourceDirectory = resolve(dirname(fileName));
@@ -123,7 +125,10 @@ export function resolveForeignModules(
     const cPlusPlus = isCPlusPlusHeader(declaration.header);
     const language = objectiveC ? cPlusPlus ? "objective-c++" : "objective-c" : cPlusPlus ? "c++" : "c";
     const generatedNotes = projectApiNotes[declaration.header] ?? null;
-    const notesFreshness = `${apiNotesFreshness(declaration, headerDirectory)}\0${JSON.stringify(generatedNotes)}`;
+    const declarationOverride = declarationOverrides[declaration.header] ?? null;
+    const notesFreshness = `${apiNotesFreshness(declaration, headerDirectory)}\0${JSON.stringify(generatedNotes)}\0${
+      declarationOverride ? `${declarationOverride.fileName}:${declarationOverride.source}` : ""
+    }`;
     const targetKey = deploymentTarget ? `${deploymentTarget.platform}:${deploymentTarget.minimumVersion}` : "host-default";
     const cacheKey = `${declarationIncludeDirectories.join("\0")}\0${declaration.header}\0${headerFreshness}\0${notesFreshness}\0${declaration.moduleName}\0${framework ?? language}\0${targetKey}`;
     let header = headerCache.get(cacheKey);
@@ -138,6 +143,7 @@ export function resolveForeignModules(
         cPlusPlus,
         deploymentTarget,
         generatedNotes,
+        declarationOverride,
       );
       headerCache.set(cacheKey, header);
     }
@@ -156,6 +162,7 @@ function readHeader(
   cPlusPlus: boolean,
   deploymentTarget: DeploymentTarget | null,
   generatedNotes: ApiNotes | null,
+  declarationOverride: { readonly source: string; readonly fileName: string } | null,
 ): HeaderInfo {
   const clangLanguage = objectiveC ? cPlusPlus ? "objective-c++" : "objective-c" : cPlusPlus ? "c++" : "c";
   const swiftCxxNamespace = cPlusPlus ? swiftCompatibilityNamespace(declaration.header) : null;
@@ -195,8 +202,18 @@ function readHeader(
   }
   hydrateClangSourceFiles(root);
 
-  const declarationContractPath = resolve(headerDirectory, `${declaration.header}.zd`);
-  const declarationContracts = existsSync(declarationContractPath)
+  const declarationDirectory = resolve(dirname(declaration.location.fileName ?? fileName));
+  const declarationContractPath = [
+    resolve(declarationDirectory, `${declaration.header}.zd`),
+    resolve(declarationDirectory, `${basename(declaration.header)}.zd`),
+    resolve(headerDirectory, `${declaration.header}.zd`),
+    resolve(headerDirectory, `${basename(declaration.header)}.zd`),
+  ].find((candidate, index, candidates) => (
+    candidates.indexOf(candidate) === index && existsSync(candidate)
+  )) ?? null;
+  const declarationContracts = declarationOverride
+    ? parseForeignDeclarationContracts(declarationOverride.source, declarationOverride.fileName)
+    : declarationContractPath
     ? parseForeignDeclarationContracts(readFileSync(declarationContractPath, "utf8"), declarationContractPath)
     : null;
   const valueContracts = new Map(
@@ -292,6 +309,7 @@ function readHeader(
     generatedNotes
       ? { name: `Swift module metadata for ${declaration.header}`, notes: generatedNotes }
       : null,
+    declarationOverride,
   );
   validateForeignTypeApiNotes(notes, produced.namedTypes, produced.interfaces, fileName, declaration.location);
   const contracts = normalizeForeignContracts(
@@ -426,6 +444,27 @@ function collectNamedTypes(
 } {
   const nodes: ClangNode[] = [];
   visit(root, (node) => nodes.push(node));
+  const nodesById = new Map<string, ClangNode>();
+  for (const node of nodes) {
+    if (!node.id) continue;
+    const existing = nodesById.get(node.id);
+    if (!existing || (node.inner?.length ?? 0) > (existing.inner?.length ?? 0)) {
+      nodesById.set(node.id, node);
+    }
+  }
+  const typedefEnumDeclarations = new Map<string, ClangNode>();
+  for (const node of nodes) {
+    if (node.kind !== "TypedefDecl" || !node.name) continue;
+    const ownedTag = node.inner
+      ?.map((child) => child.ownedTagDecl)
+      .find((candidate) => candidate?.kind === "EnumDecl" && candidate.id);
+    const declaration = ownedTag?.id ? nodesById.get(ownedTag.id) : undefined;
+    if (!declaration?.inner?.some((child) => child.kind === "EnumConstantDecl")) continue;
+    const existing = typedefEnumDeclarations.get(node.name);
+    if (!existing || (declaration.inner?.length ?? 0) > (existing.inner?.length ?? 0)) {
+      typedefEnumDeclarations.set(node.name, declaration);
+    }
+  }
   const records = new Map<string, ClangNode>();
   const enums = new Map<string, ClangNode>();
   for (const node of nodes) {
@@ -503,23 +542,25 @@ function collectNamedTypes(
     const recordMatch = /^struct (.+)$/.exec(desugared);
     const enumMatch = /^enum (.+)$/.exec(desugared) ?? /^enum (.+)$/.exec(qualified);
     const underlying = mapTypedefType(node.name, desugared);
-    const enumDeclaration = enumMatch ? enums.get(enumMatch[1]) : undefined;
+    const enumDeclaration = enumMatch
+      ? enums.get(enumMatch[1]) ?? typedefEnumDeclarations.get(node.name)
+      : undefined;
     const kind = recordMatch && records.has(recordMatch[1])
       ? "record"
-      : enumMatch && enums.has(enumMatch[1])
+      : enumMatch && enumDeclaration?.inner?.some((child) => child.kind === "EnumConstantDecl")
         ? "enum"
         : underlying && underlying !== "void"
           ? "scalar"
           : null;
     if (!kind) continue;
-    seeds.set(node.name, {
+    const seed: Seed = {
       kind,
       exportName: node.name,
       namespacePath: [],
       qualifiedName: node.name,
       typeName: `${moduleName}.${node.name}`,
       cName: node.name,
-      declaration: kind === "record" ? records.get(recordMatch![1]) : kind === "enum" ? enums.get(enumMatch![1]) : undefined,
+      declaration: kind === "record" ? records.get(recordMatch![1]) : kind === "enum" ? enumDeclaration : undefined,
       sourceDeclaration: node,
       underlying: kind === "scalar"
         ? underlying as ForeignScalarTypeName
@@ -527,7 +568,14 @@ function collectNamedTypes(
           ? mapBuiltinType(enumDeclaration?.fixedUnderlyingType?.desugaredQualType ?? enumDeclaration?.fixedUnderlyingType?.qualType ?? "int") ?? "i32"
           : undefined,
       flags: kind === "enum" && enumDeclaration?.inner?.some((child) => child.kind === "FlagEnumAttr"),
-    });
+    };
+    const existing = seeds.get(node.name);
+    if (
+      !existing
+      || (seed.declaration?.inner?.length ?? 0) > (existing.declaration?.inner?.length ?? 0)
+    ) {
+      seeds.set(node.name, seed);
+    }
   }
   for (const record of cppRecords) {
     if (seeds.has(record.qualifiedName)) continue;
