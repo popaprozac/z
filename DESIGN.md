@@ -1974,7 +1974,10 @@ export function curl_easy_setopt(
     type curl_write_callback;
     context option CURLOPT_WRITEDATA;
     owner curl;
-    bytes from buffer length size * nitems;
+    project bytes: Slice<u8> {
+      data buffer;
+      length size * nitems;
+    }
     thread caller;
     invoked repeatedly;
   }
@@ -2024,18 +2027,23 @@ scope:
 
 ```z
 export function blob_hash(in data: _, length: _): _ {
-  bytes from data length length;
+  project input: Slice<u8> {
+    data data;
+    length length;
+  }
 }
 ```
 
-This exposes `blob_hash(data: Slice<u8>)` to safe Z. The declaration's `in`
+This exposes `blob_hash(input: Slice<u8>)` to safe Z. The declaration's `in`
 classifies the native const pointer; callers omit it because `Slice<u8>` is
 already a borrowed, non-escaping view. The compiler validates a const
 `char *`, `unsigned char *`, or `void *` plus one distinct `size_t` parameter
 and lowers directly to `blob_hash(data.data, data.length)`. Stored fixed
 `u8` arrays and `Array<u8>` values receive the existing call-scoped slice
-conversion. Mutable buffers, retained pointers, and broader element/count
-shapes remain later contracts rather than unchecked inference.
+conversion. `project inout destination: Slice<u8> { ... }` accepts a mutable
+native byte pointer and exposes explicit `inout` at both the generated Z
+signature and call site. Retained pointers and broader element/count shapes
+remain later contracts rather than unchecked inference.
 
 Z's intended foreign boundary has three explicit trust tiers:
 

@@ -38,6 +38,9 @@ releases the closure before `curl_easy_cleanup` can run.
 The adjacent declaration states `invoked repeatedly`: libcurl may deliver zero
 or more body chunks. This cardinality is independent of the connection
 lifetime. Z checks both facts rather than inferring one from the other.
+Its named `project bytes: Slice<u8> { ... }` block combines libcurl's
+`buffer`, `size`, and `nitems` callback parameters into that one safe closure
+parameter without repeating the native length expression at the call site.
 
 `Slice<u8>` is already borrowed in Z. The callback therefore spells
 `move (bytes: Slice<u8>)`, not `move (in bytes: Slice<u8>)`: `move` transfers

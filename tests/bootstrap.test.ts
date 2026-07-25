@@ -877,6 +877,22 @@ test("ties projected native callbacks to their owner with a move-only connection
   const declarationFile = resolve(projectRoot, "tests/fixtures/callback-connection.h.zd");
   const declarationSource = readFileSync(declarationFile, "utf8");
   assert.deepEqual(diagnostics(declarationSource, declarationFile), []);
+  const mutableDirectory = mkdtempSync("/tmp/z-callback-mutable-projection-");
+  const mutableHeader = resolve(mutableDirectory, "callback-connection.h");
+  const mutableDeclaration = resolve(mutableDirectory, "callback-connection.h.zd");
+  const mutableFile = resolve(mutableDirectory, "callback-connection.zs");
+  writeFileSync(mutableHeader, readFileSync(resolve(projectRoot, "tests/fixtures/callback-connection.h"), "utf8"));
+  writeFileSync(
+    mutableDeclaration,
+    declarationSource.replace("project bytes: Slice<u8>", "project inout bytes: Slice<u8>"),
+  );
+  const mutableSource = source
+    .replace('import native from "callback-connection.h";', 'import native from "./callback-connection.h";')
+    .replace("move (bytes: Slice<u8>)", "move (inout bytes: Slice<u8>)")
+    .replace("return bytes.length;", "bytes[0] = 42; return bytes.length;");
+  writeFileSync(mutableFile, mutableSource);
+  const mutableGenerated = compileToC(mutableSource, mutableFile);
+  assert.match(mutableGenerated, /->call\([^,]+, &_z_callback_bytes\)/);
   assert.match(
     hover(
       declarationSource,
@@ -938,8 +954,8 @@ test("ties projected native callbacks to their owner with a move-only connection
       .find((item) => item.label === "owner")?.insertText,
     "owner;",
   );
-  const byteCompletionSource = declarationSource.replace("bytes from buffer", "bytes from bu");
-  const byteCompletionOffset = byteCompletionSource.indexOf("bytes from bu") + "bytes from bu".length;
+  const byteCompletionSource = declarationSource.replace("data buffer;", "data bu");
+  const byteCompletionOffset = byteCompletionSource.indexOf("data bu") + "data bu".length;
   assert.match(
     completions(byteCompletionSource, declarationFile, byteCompletionOffset)
       .find((item) => item.label === "buffer")?.detail ?? "",
@@ -952,7 +968,7 @@ test("ties projected native callbacks to their owner with a move-only connection
       .find((item) => item.label === "nitems")?.detail ?? "",
     /nitems: size_t/,
   );
-  const invalidProjection = declarationSource.replace("bytes from buffer", "bytes from missing");
+  const invalidProjection = declarationSource.replace("data buffer;", "data missing;");
   assert.match(
     diagnostics(invalidProjection, declarationFile)[0]?.message ?? "",
     /byte projection names unknown callback parameter \"missing\"/,
@@ -975,6 +991,7 @@ test("projects an ordinary native pointer and length as one borrowed byte slice"
   const generated = compileToC(source, fileName);
 
   assert.match(generated, /z_byte_sum\(\(\(bytes\)\.data\), 3\)/);
+  assert.match(generated, /z_byte_increment\(\(\(bytes\)\.data\), 3\)/);
   assert.doesNotMatch(generated, /z_byte_sum\([^)]*Z_Slice/);
 
   const result = spawnSync(process.execPath, [cli, "run", fileName], { encoding: "utf8" });
@@ -983,7 +1000,12 @@ test("projects an ordinary native pointer and length as one borrowed byte slice"
   const functionOffset = source.indexOf("z_byte_sum") + 2;
   assert.match(
     hover(source, fileName, functionOffset)?.contents.value ?? "",
-    /z_byte_sum\(data: Slice<u8>\): i32/,
+    /z_byte_sum\(input: Slice<u8>\): i32/,
+  );
+  const mutableFunctionOffset = source.indexOf("z_byte_increment") + 2;
+  assert.match(
+    hover(source, fileName, mutableFunctionOffset)?.contents.value ?? "",
+    /z_byte_increment\(inout bytes: Slice<u8>\): void/,
   );
 
   const declarationFile = resolve(projectRoot, "tests/fixtures/byte-buffer.h.zd");
@@ -993,29 +1015,37 @@ test("projects an ordinary native pointer and length as one borrowed byte slice"
     hover(
       declarationSource,
       declarationFile,
-      declarationSource.indexOf("bytes from") + 2,
+      declarationSource.indexOf("project input") + 2,
     )?.contents.value ?? "",
-    /bytes: Slice<u8>.*borrowed safe argument/,
+    /input: Slice<u8>.*named borrowed argument/,
   );
   assert.match(
     hover(
       declarationSource,
       declarationFile,
-      declarationSource.lastIndexOf("data length") + 2,
+      declarationSource.indexOf("inout bytes: Slice") + 2,
     )?.contents.value ?? "",
-    /native pointer supplied by Slice<u8>\.data/,
+    /inout bytes: Slice<u8>/,
   );
   assert.match(
     hover(
       declarationSource,
       declarationFile,
-      declarationSource.lastIndexOf("length;") + 2,
+      declarationSource.indexOf("data data;") + "data ".length + 2,
     )?.contents.value ?? "",
-    /hidden native length supplied by Slice<u8>\.length/,
+    /native pointer supplied by input\.data/,
+  );
+  assert.match(
+    hover(
+      declarationSource,
+      declarationFile,
+      declarationSource.indexOf("length length;") + "length ".length + 2,
+    )?.contents.value ?? "",
+    /hidden native length supplied by input\.length/,
   );
 
-  const bufferCompletionSource = declarationSource.replace("bytes from data", "bytes from da");
-  const bufferCompletionOffset = bufferCompletionSource.indexOf("bytes from da") + "bytes from da".length;
+  const bufferCompletionSource = declarationSource.replace("data data;", "data da");
+  const bufferCompletionOffset = bufferCompletionSource.indexOf("data da") + "data da".length;
   assert.match(
     completions(bufferCompletionSource, declarationFile, bufferCompletionOffset)
       .find((item) => item.label === "data")?.detail ?? "",
@@ -1032,15 +1062,49 @@ test("projects an ordinary native pointer and length as one borrowed byte slice"
   const missingBorrow = declarationSource.replace("in data: _", "data: _");
   assert.match(
     diagnostics(missingBorrow, declarationFile)[0]?.message ?? "",
-    /projected byte buffer "data" requires in borrowing/,
+    /projection "input" requires native parameter "data" to use in/,
   );
-  const wrongName = declarationSource.replace("bytes from data", "bytes from missing");
+  const wrongName = declarationSource.replace("data data;", "data missing;");
   assert.match(
     diagnostics(wrongName, declarationFile)[0]?.message ?? "",
     /byte projection names unknown function parameter "missing"/,
   );
+  const redundantProjectionIn = declarationSource.replace("project input:", "project in input:");
+  assert.match(
+    diagnostics(redundantProjectionIn, declarationFile)[0]?.message ?? "",
+    /Slice projections are already borrowed; omit `in`/,
+  );
+  const unsupportedElement = declarationSource.replace("project input: Slice<u8>", "project input: Slice<f32>");
+  assert.match(
+    diagnostics(unsupportedElement, declarationFile)[0]?.message ?? "",
+    /support only `Slice<u8>`/,
+  );
+  const mutableAsReadOnly = declarationSource
+    .replace("inout data: _", "in data: _")
+    .replace("project inout bytes:", "project bytes:");
+  assert.match(
+    diagnostics(mutableAsReadOnly, declarationFile)[0]?.message ?? "",
+    /read-only projection requires a const native byte pointer/,
+  );
+  const constAsMutable = declarationSource
+    .replace("in data: _", "inout data: _")
+    .replace("project input:", "project inout input:");
+  assert.match(
+    diagnostics(constAsMutable, declarationFile)[0]?.message ?? "",
+    /inout projection requires a mutable native byte pointer/,
+  );
+  const missingInout = source.replace("native.z_byte_increment(inout bytes);", "native.z_byte_increment(bytes);");
+  assert.match(
+    diagnostics(missingInout, fileName)[0]?.message ?? "",
+    /requires inout <mutable binding> for projected parameter "bytes"/,
+  );
+  const immutableInout = source.replace("let bytes:", "const bytes:");
+  assert.match(
+    diagnostics(immutableInout, fileName)[0]?.message ?? "",
+    /inout argument "bytes" requires a mutable let binding/,
+  );
 
-  const overflow = source.replace("[20, 21, 1]", "[256, 21, 1]");
+  const overflow = source.replace("[19, 20, 0]", "[256, 20, 0]");
   assert.match(
     diagnostics(overflow, fileName)[0]?.message ?? "",
     /integer literal 256 does not fit u8/,
@@ -1762,7 +1826,7 @@ test("diagnoses malformed and mismatched Z declaration contracts", () => {
   `;
   const executableDiagnostic = diagnostics(executableContract, "/tmp/contract.h.zd")[0];
   assert.equal(executableDiagnostic.code, "Z0801");
-  assert.match(executableDiagnostic.message, /expected "async", "bytes", "deinit", "thread", "callback", or "success" in foreign function contract/);
+  assert.match(executableDiagnostic.message, /expected "async", "project", "deinit", "thread", "callback", or "success" in foreign function contract/);
 
   const threadWithoutOwner = `
     declare module "contract.h" {
@@ -13552,6 +13616,12 @@ test("editor grammar tracks keywords without reserving Result variants", () => {
   assert.equal(callbackCardinalityGrammar.captures[1].name, "keyword.control.declaration.callback.z");
   assert.equal(callbackCardinalityGrammar.captures[2].name, "constant.language.callback-cardinality.z");
   assert.match(callbackCardinalityGrammar.match, /once\\\|repeatedly|once\|repeatedly/);
+  const projectionGrammar = foreignPattern("meta.declaration.buffer-projection.foreign.z");
+  assert.equal(projectionGrammar.beginCaptures[1].name, "keyword.control.declaration.projection.z");
+  assert.equal(projectionGrammar.beginCaptures[2].name, "storage.modifier.capability.z");
+  assert.equal(projectionGrammar.beginCaptures[3].name, "variable.parameter.projection.z");
+  assert.equal(projectionGrammar.patterns[0].captures[1].name, "keyword.control.declaration.projection.z");
+  assert.equal(projectionGrammar.patterns[0].captures[2].name, "variable.parameter.native.z");
   assert.match(selectiveImportPatterns, /\\bas\\b/);
   assert.doesNotMatch("move () =>", new RegExp(matchPattern));
   assert.match("some(value) =>", new RegExp(matchPattern));

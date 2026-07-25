@@ -115,7 +115,7 @@ const primitiveTypeTokens = [
 const declarationKeywordTokens = [
   "declare", "module", "export", "function", "type", "copy", "in", "inout", "out", "move", "deinit",
   "async", "callback", "context", "thread", "caller", "any", "transfer", "share", "fixed", "throws", "success",
-  "connection", "option", "owner", "bytes", "length", "from", "return", "throw", "invoked", "once", "repeatedly",
+  "connection", "option", "owner", "project", "data", "length", "from", "return", "throw", "invoked", "once", "repeatedly",
 ] as const;
 
 export function diagnostics(source: string, fileName: string): ServiceDiagnostic[] {
@@ -2376,7 +2376,7 @@ function foreignDeclarationCompletions(source: string, fileName: string, offset:
     }
   }
 
-  const callbackDeinitPrefix = /\bcallback\s+[A-Za-z_][A-Za-z0-9_]*\s*\{[^}]*\bdeinit\s+([A-Za-z_][A-Za-z0-9_]*)?$/.exec(before)?.[1];
+  const callbackDeinitPrefix = /\bcallback\s+[A-Za-z_][A-Za-z0-9_]*\s*\{(?:[^{}]|\{[^{}]*\})*\bdeinit\s+([A-Za-z_][A-Za-z0-9_]*)?$/.exec(before)?.[1];
   if (ownerSignatures.length > 0 && callbackDeinitPrefix !== undefined) {
     const candidates = new Map<string, string>();
     for (const overload of ownerSignatures) {
@@ -2418,7 +2418,7 @@ function foreignDeclarationCompletions(source: string, fileName: string, offset:
     }
   }
 
-  const callbackTypePrefix = /\bcallback\s+[A-Za-z_][A-Za-z0-9_]*\s*\{[^}]*\btype\s+([A-Za-z_]*)$/.exec(before)?.[1];
+  const callbackTypePrefix = /\bcallback\s+[A-Za-z_][A-Za-z0-9_]*\s*\{(?:[^{}]|\{[^{}]*\})*\btype\s+([A-Za-z_]*)$/.exec(before)?.[1];
   if (callbackTypePrefix !== undefined) {
     for (const callback of activeCallbacks) {
       if (!callback.cName.toLowerCase().startsWith(callbackTypePrefix.toLowerCase())) continue;
@@ -2431,7 +2431,7 @@ function foreignDeclarationCompletions(source: string, fileName: string, offset:
       });
     }
   }
-  const invocationValuePrefix = /\bcallback\s+[A-Za-z_][A-Za-z0-9_]*\s*\{[^}]*\binvoked\s+([A-Za-z_]*)$/.exec(before)?.[1];
+  const invocationValuePrefix = /\bcallback\s+[A-Za-z_][A-Za-z0-9_]*\s*\{(?:[^{}]|\{[^{}]*\})*\binvoked\s+([A-Za-z_]*)$/.exec(before)?.[1];
   if (invocationValuePrefix !== undefined) {
     for (const value of ["once", "repeatedly"] as const) {
       if (!value.startsWith(invocationValuePrefix)) continue;
@@ -2447,7 +2447,7 @@ function foreignDeclarationCompletions(source: string, fileName: string, offset:
     }
   }
 
-  const contextOptionPrefix = /\bcallback\s+[A-Za-z_][A-Za-z0-9_]*\s*\{[^}]*\bcontext\s+option\s+([A-Za-z_]*)$/.exec(before)?.[1];
+  const contextOptionPrefix = /\bcallback\s+[A-Za-z_][A-Za-z0-9_]*\s*\{(?:[^{}]|\{[^{}]*\})*\bcontext\s+option\s+([A-Za-z_]*)$/.exec(before)?.[1];
   if (module && contextOptionPrefix !== undefined) {
     for (const constant of module.constants.values()) {
       if (!constant.name.toLowerCase().startsWith(contextOptionPrefix.toLowerCase())) continue;
@@ -2461,7 +2461,7 @@ function foreignDeclarationCompletions(source: string, fileName: string, offset:
     }
   }
 
-  const connectionOwnerPrefix = /\bcallback\s+[A-Za-z_][A-Za-z0-9_]*\s*\{[^}]*\bowner\s+([A-Za-z_]*)$/.exec(before)?.[1];
+  const connectionOwnerPrefix = /\bcallback\s+[A-Za-z_][A-Za-z0-9_]*\s*\{(?:[^{}]|\{[^{}]*\})*\bowner\s+([A-Za-z_]*)$/.exec(before)?.[1];
   if (connectionOwnerPrefix !== undefined) {
     const candidates = new Map<string, string>();
     for (const signature of ownerSignatures) {
@@ -2483,7 +2483,7 @@ function foreignDeclarationCompletions(source: string, fileName: string, offset:
     }
   }
 
-  const byteParameterPrefix = /\bcallback\s+[A-Za-z_][A-Za-z0-9_]*\s*\{[^}]*(?:(?:\bbytes\s+from|\blength)\s+|\*\s*)([A-Za-z_]*)$/.exec(before)?.[1];
+  const byteParameterPrefix = /\bcallback\s+[A-Za-z_][A-Za-z0-9_]*\s*\{[\s\S]*\bproject\s+(?:inout\s+)?[A-Za-z_][A-Za-z0-9_]*\s*:\s*Slice\s*<\s*u8\s*>\s*\{[^}]*(?:(?:\bdata|\blength)\s+|\*\s*)([A-Za-z_]*)$/.exec(before)?.[1];
   if (byteParameterPrefix !== undefined) {
     const candidates = new Map<string, string>();
     for (const callback of activeCallbacks) {
@@ -2501,8 +2501,8 @@ function foreignDeclarationCompletions(source: string, fileName: string, offset:
       });
     }
   }
-  const ordinaryByteBufferPrefix = /\bexport\s+function\s+[A-Za-z_][A-Za-z0-9_.]*\s*\([^)]*\)\s*:[^{;]+\{[^{}]*\bbytes\s+from\s+([A-Za-z_]*)$/.exec(before)?.[1];
-  const ordinaryByteLengthPrefix = /\bexport\s+function\s+[A-Za-z_][A-Za-z0-9_.]*\s*\([^)]*\)\s*:[^{;]+\{[^{}]*\bbytes\s+from\s+[A-Za-z_][A-Za-z0-9_]*\s+length\s+([A-Za-z_]*)$/.exec(before)?.[1];
+  const ordinaryByteBufferPrefix = /\bexport\s+function\s+[A-Za-z_][A-Za-z0-9_.]*\s*\([^)]*\)\s*:[^{;]+\{[\s\S]*\bproject\s+(?:inout\s+)?[A-Za-z_][A-Za-z0-9_]*\s*:\s*Slice\s*<\s*u8\s*>\s*\{[^}]*\bdata\s+([A-Za-z_]*)$/.exec(before)?.[1];
+  const ordinaryByteLengthPrefix = /\bexport\s+function\s+[A-Za-z_][A-Za-z0-9_.]*\s*\([^)]*\)\s*:[^{;]+\{[\s\S]*\bproject\s+(?:inout\s+)?[A-Za-z_][A-Za-z0-9_]*\s*:\s*Slice\s*<\s*u8\s*>\s*\{[^}]*(?:\blength\s+|\*\s*)([A-Za-z_]*)$/.exec(before)?.[1];
   if (ordinaryByteBufferPrefix !== undefined || ordinaryByteLengthPrefix !== undefined) {
     const wantedPrefix = ordinaryByteBufferPrefix ?? ordinaryByteLengthPrefix ?? "";
     const candidates = new Map<string, string>();
@@ -2853,17 +2853,31 @@ function foreignDeclarationHover(source: string, fileName: string, offset: numbe
           .filter(Boolean)
           .map((native) => foreignTypeName(native.type)),
       );
-      if (buffer.location.offset === word.start) {
+      if (
+        buffer.location.offset === word.start
+        || buffer.nameLocation.offset === word.start
+        || buffer.typeLocation.offset === word.start
+        || buffer.accessLocation?.offset === word.start
+      ) {
+        const capability = buffer.access === "inout" ? "inout " : "";
         return markdownHover(
-          `bytes: Slice<u8>  // one borrowed safe argument projects to native ${buffer.buffer} plus ${buffer.factors.join(" * ")}`,
+          `${capability}${buffer.name}: Slice<u8>  // one named borrowed argument projects to native ${buffer.buffer} plus ${buffer.factors.join(" * ")}`,
           source,
           word.start,
           word.end,
         );
       }
-      if (buffer.bufferLocation.offset === word.start) {
+      if (buffer.dataLocation.offset === word.start || buffer.bufferLocation.offset === word.start) {
         return markdownHover(
-          `${buffer.buffer}: ${[...nativeBufferTypes].join(" | ") || "_"}  // native pointer supplied by Slice<u8>.data`,
+          `${buffer.buffer}: ${[...nativeBufferTypes].join(" | ") || "_"}  // native pointer supplied by ${buffer.name}.data`,
+          source,
+          word.start,
+          word.end,
+        );
+      }
+      if (buffer.lengthLocation.offset === word.start) {
+        return markdownHover(
+          `${buffer.name}.length  // supplies native ${buffer.factors.join(" * ")}`,
           source,
           word.start,
           word.end,
@@ -2880,7 +2894,7 @@ function foreignDeclarationHover(source: string, fileName: string, offset: numbe
             .map((native) => foreignTypeName(native.type)),
         );
         return markdownHover(
-          `${factor}: ${[...types].join(" | ") || "_"}  // hidden native length supplied by Slice<u8>.length`,
+          `${factor}: ${[...types].join(" | ") || "_"}  // hidden native length supplied by ${buffer.name}.length`,
           source,
           word.start,
           word.end,
@@ -2967,18 +2981,41 @@ function foreignDeclarationHover(source: string, fileName: string, offset: numbe
           word.end,
         );
       }
-      if (callback.bytes?.location.offset === word.start) {
+      if (
+        callback.bytes
+        && (
+          callback.bytes.location.offset === word.start
+          || callback.bytes.nameLocation.offset === word.start
+          || callback.bytes.typeLocation.offset === word.start
+          || callback.bytes.accessLocation?.offset === word.start
+        )
+      ) {
+        const capability = callback.bytes.access === "inout" ? "inout " : "";
         return markdownHover(
-          `bytes: Slice<u8>  // borrowed callback bytes; length is ${callback.bytes.factors.join(" * ")}`,
+          `${capability}${callback.bytes.name}: Slice<u8>  // named borrowed callback projection; length is ${callback.bytes.factors.join(" * ")}`,
           source,
           word.start,
           word.end,
         );
       }
-      if (callback.bytes && callback.bytes.bufferLocation.offset === word.start) {
+      if (
+        callback.bytes
+        && (
+          callback.bytes.dataLocation.offset === word.start
+          || callback.bytes.bufferLocation.offset === word.start
+        )
+      ) {
         const index = nativeCallback?.nativeParameterNames?.indexOf(callback.bytes.buffer) ?? -1;
         return markdownHover(
-          `${callback.bytes.buffer}: ${index >= 0 ? nativeCallback?.nativeParameters?.[index] ?? "_" : "_"}  // native buffer projected as Slice<u8>.data`,
+          `${callback.bytes.buffer}: ${index >= 0 ? nativeCallback?.nativeParameters?.[index] ?? "_" : "_"}  // native buffer projected as ${callback.bytes.name}.data`,
+          source,
+          word.start,
+          word.end,
+        );
+      }
+      if (callback.bytes?.lengthLocation.offset === word.start) {
+        return markdownHover(
+          `${callback.bytes.name}.length  // derived from native ${callback.bytes.factors.join(" * ")}`,
           source,
           word.start,
           word.end,
@@ -2989,7 +3026,7 @@ function foreignDeclarationHover(source: string, fileName: string, offset: numbe
         const factor = callback.bytes.factors[byteFactorIndex];
         const index = nativeCallback?.nativeParameterNames?.indexOf(factor) ?? -1;
         return markdownHover(
-          `${factor}: ${index >= 0 ? nativeCallback?.nativeParameters?.[index] ?? "_" : "_"}  // multiplied into Slice<u8>.length`,
+          `${factor}: ${index >= 0 ? nativeCallback?.nativeParameters?.[index] ?? "_" : "_"}  // multiplied into ${callback.bytes.name}.length`,
           source,
           word.start,
           word.end,
@@ -4936,7 +4973,7 @@ function foreignFunctionDetail(declaration: ForeignFunction): string {
         && !projectedLengths.has(nativeIndex))
       .map(({ parameter, nativeIndex }, index) => (
         projectedBuffers.has(nativeIndex)
-          ? `${parameter.name ?? `argument${index + 1}`}: Slice<${projectedBuffers.get(nativeIndex)!.elementType}>`
+          ? `${projectedBuffers.get(nativeIndex)!.access === "inout" ? "inout " : ""}${projectedBuffers.get(nativeIndex)!.name}: Slice<${projectedBuffers.get(nativeIndex)!.elementType}>`
           : foreignParameterDetail(parameter, index)
       ));
     if (overload.variadic) parameters.push("...arguments");

@@ -91,7 +91,10 @@ declare module "vendor.h" {
     in data: _,
     length: _
   ): _ {
-    bytes from data length length;
+    project input: Slice<u8> {
+      data data;
+      length length;
+    }
   }
 
   export function vendor_setopt(
@@ -105,7 +108,10 @@ declare module "vendor.h" {
       type VendorWriteCallback;
       context option VENDOR_CONTEXT;
       owner owner;
-      bytes from buffer length size * count;
+      project bytes: Slice<u8> {
+        data buffer;
+        length size * count;
+      }
       thread caller;
       invoked repeatedly;
     }
@@ -161,8 +167,8 @@ spelling does not silently pass through.
 | `type NativeCallback;` | Name the exact callback typedef used by an option-selected native callback | The typedef and its full function-pointer signature must exist in the header |
 | `context option CONSTANT;` | Name the separate native option used to install the opaque callback context | Constant must exist, match the native option type, and differ from the callback option |
 | `owner handle;` | Tie a callback connection to one borrowed native owner parameter | Z prevents the owner from moving or deinitializing while the connection is live |
-| `bytes from data length length;` in a function body | Replace a read-only native byte pointer plus `size_t` length with one borrowed `Slice<u8>` argument | Both names must identify distinct fixed parameters; the pointer must be const byte storage and the length must be `size_t`; generated code passes `.data` and `.length` directly |
-| `bytes from buffer length size * count;` in a callback body | Project native callback byte parameters into one borrowed `Slice<u8>` callback argument | Every named callback parameter and its native type are checked against the typedef |
+| `project input: Slice<u8> { data data; length length; }` in a function body | Replace a native byte pointer plus `size_t` length with one named borrowed `Slice<u8>` argument | Read-only projections require const native storage; `project inout` requires mutable native storage and explicit `inout` at the Z call site |
+| `project bytes: Slice<u8> { data buffer; length size * count; }` in a callback body | Project native callback byte parameters into one named borrowed `Slice<u8>` callback argument | Every named callback parameter and its native type are checked against the typedef |
 | `thread caller;` | Callback invocation and release remain on the registering thread | Escaping closure environment uses ordinary thread-local ownership |
 | `thread any;` | Callback invocation and release may occur on arbitrary threads, including overlapping invocations | Escaping closure environment uses atomic ownership and every capture must satisfy Z's conservative concurrent-shareability rules |
 | `copy;` | Native value has usable copy construction | Enables `copy value` and copying aggregate storage that contains it |
@@ -198,7 +204,10 @@ int vendor_hash(const unsigned char *data, size_t length);
 ```z
 declare module "vendor.h" {
   export function vendor_hash(in data: _, length: _): _ {
-    bytes from data length length;
+    project input: Slice<u8> {
+      data data;
+      length length;
+    }
   }
 }
 ```
@@ -206,8 +215,15 @@ declare module "vendor.h" {
 The resulting Z signature is:
 
 ```z
-vendor_hash(data: Slice<u8>): i32
+vendor_hash(input: Slice<u8>): i32
 ```
+
+`input` is the Z-visible projected parameter name. The inner `data` and
+`length` facts name ABI parameters from the header. A spelling such as
+`data data;` is therefore intentional: the first word is the `.zd` fact and the
+second is the C parameter. Naming the projection keeps multiple ordinary
+projections distinct and gives future callback return/error mappings an
+unambiguous value such as `bytes.length`.
 
 Callers pass stored fixed arrays, `Array<u8>`, or existing `Slice<u8>` values
 without spelling `in`; a slice is intrinsically borrowed. The declaration's
@@ -215,12 +231,26 @@ without spelling `in`; a slice is intrinsically borrowed. The declaration's
 safe call and is derived from the slice. Lowering remains a direct native call:
 
 ```c
-vendor_hash(bytes.data, bytes.length);
+vendor_hash(input.data, input.length);
 ```
 
-The first tier is deliberately read-only and supports one `size_t` length.
-Writable buffers, element types other than `u8`, retained pointers, and
-multi-factor ordinary lengths require separate reviewed contracts.
+Writable native buffers reuse Z's ordinary capability vocabulary:
+
+```z
+export function vendor_fill(inout data: _, length: _): _ {
+  project inout destination: Slice<u8> {
+    data data;
+    length length;
+  }
+}
+```
+
+The resulting `vendor_fill(inout destination: Slice<u8>)` requires mutable
+stored Z storage and explicit `inout destination` at the call site. Read-only
+projections require a const native byte pointer; mutable projections require a
+non-const native byte pointer. The current tier supports `u8` and one `size_t`
+length for ordinary calls. Retained pointers, other element types, and
+multi-factor ordinary lengths remain separate reviewed contracts.
 
 ## Why `fixed SQLITE_TRANSIENT` exists
 

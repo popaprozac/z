@@ -11,4 +11,10 @@ static inline int z_byte_sum(const unsigned char *data, size_t length) {
   return total;
 }
 
+static inline void z_byte_increment(unsigned char *data, size_t length) {
+  for (size_t index = 0; index < length; index += 1) {
+    data[index] += 1;
+  }
+}
+
 #endif

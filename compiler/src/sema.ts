@@ -11051,12 +11051,52 @@ function checkForeignCall(
     }
     if (argument.kind === "argumentReference") {
       if (bufferProjection) {
-        throw new DiagnosticError(
-          fileName,
-          argument.location,
-          "a projected byte slice is already borrowed; pass its stored value without in, inout, out, or move",
-          { code: "Z0301" },
-        );
+        if (bufferProjection.access !== "inout" || argument.access !== "inout") {
+          throw new DiagnosticError(
+            fileName,
+            argument.location,
+            bufferProjection.access === "inout"
+              ? `C function ${JSON.stringify(target.name)} requires inout <mutable binding> for projected parameter ${JSON.stringify(bufferProjection.name)}`
+              : "a read-only projected Slice is already borrowed; pass its stored value without in, inout, out, or move",
+            bufferProjection.access === "inout"
+              ? { code: "Z0301", helps: [`pass mutable storage explicitly as \`inout ${argument.name}\``] }
+              : { code: "Z0301" },
+          );
+        }
+        const stored = locals.get(argument.name);
+        rejectOwnerMutationWhileViewed(argument.name, argument.location, fileName, state);
+        if (!stored) throw new DiagnosticError(fileName, argument.location, `unknown name ${JSON.stringify(argument.name)}`);
+        if (initializationState(stored) !== "initialized") {
+          throw new DiagnosticError(fileName, argument.location, `inout argument ${JSON.stringify(argument.name)} must be initialized before the call`);
+        }
+        if (ownershipState(stored) === "moved") {
+          throw movedValueError(fileName, { ...argument, kind: "identifier" }, state, false);
+        }
+        if (ownershipState(stored) === "maybeMoved") {
+          throw movedValueError(fileName, { ...argument, kind: "identifier" }, state, true);
+        }
+        if (!isMutableBinding(stored)) {
+          throw new DiagnosticError(fileName, argument.location, `inout argument ${JSON.stringify(argument.name)} requires a mutable let binding`, {
+            code: "Z0301",
+            helps: [`declare ${JSON.stringify(argument.name)} with \`let\` before passing it as \`inout\``],
+          });
+        }
+        const storedType = String(underlyingType(stored));
+        const expectedSlice = sliceTypeName(bufferProjection.elementType);
+        const storedArray = parseFixedArrayType(storedType);
+        const storedDynamic = parseDynamicArrayType(storedType);
+        if ((storedArray ?? storedDynamic)?.elementType === bufferProjection.elementType) {
+          state.sliceConversions.set(argument.location.offset, {
+            sourceType: storedType,
+            targetType: expectedSlice,
+          });
+        } else {
+          requireAssignable(expectedSlice, storedType, argument, fileName, structs, enums, state);
+        }
+        state.nativeArgumentAccesses.set(argument.location.offset, "inout");
+        state.expressionTypes.set(argument.location.offset, storedType);
+        state.expressionTypes.set(argument.nameLocation.offset, storedType);
+        continue;
       }
       if (parameter?.type.kind === "pointerOut") {
         if (argument.access !== "out") {
@@ -11190,6 +11230,18 @@ function checkForeignCall(
       );
     }
     if (bufferProjection) {
+      if (bufferProjection.access === "inout") {
+        const binding = argument.kind === "identifier" ? argument.name : "value";
+        throw new DiagnosticError(
+          fileName,
+          argument.location,
+          `C function ${JSON.stringify(target.name)} requires inout <mutable binding> for projected parameter ${JSON.stringify(bufferProjection.name)}`,
+          {
+            code: "Z0301",
+            helps: [`pass mutable storage explicitly as \`inout ${binding}\``],
+          },
+        );
+      }
       if (!isNamedStorageExpression(argument)) {
         throw new DiagnosticError(
           fileName,

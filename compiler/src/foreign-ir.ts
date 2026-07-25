@@ -270,6 +270,8 @@ export type ForeignCallbackType = {
   readonly nativeParameters?: readonly string[];
   readonly nativeParameterNames?: readonly string[];
   readonly bytesProjection?: {
+    readonly name: string;
+    readonly access: "in" | "inout";
     readonly bufferParameter: number;
     readonly lengthParameters: readonly number[];
   };
@@ -304,6 +306,8 @@ export type ForeignFunctionOverload = {
     readonly contextOption: string;
   } | null;
   readonly buffers?: readonly {
+    readonly name: string;
+    readonly access: "in" | "inout";
     readonly bufferParameter: number;
     readonly lengthParameters: readonly number[];
     readonly elementType: "u8";

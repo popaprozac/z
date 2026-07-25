@@ -29,7 +29,12 @@ export type ForeignContractTypeMapper = {
     nativeType: string,
     nativeSignature: string,
     nativeParameterNames: readonly string[],
-    bytes: { readonly bufferParameter: number; readonly lengthParameters: readonly number[] },
+    bytes: {
+      readonly name: string;
+      readonly access: "in" | "inout";
+      readonly bufferParameter: number;
+      readonly lengthParameters: readonly number[];
+    },
   ) => ForeignType;
 };
 

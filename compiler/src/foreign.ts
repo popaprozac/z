@@ -1759,7 +1759,12 @@ function mapProjectedByteCallback(
   nativeType: string,
   signature: string,
   nativeParameterNames: readonly string[],
-  bytes: { readonly bufferParameter: number; readonly lengthParameters: readonly number[] },
+  bytes: {
+    readonly name: string;
+    readonly access: "in" | "inout";
+    readonly bufferParameter: number;
+    readonly lengthParameters: readonly number[];
+  },
 ): ForeignCallbackType {
   const normalized = signature
     .replace(/\b(restrict|_Nonnull|_Nullable|_Null_unspecified)\b/g, "")
@@ -1782,8 +1787,8 @@ function mapProjectedByteCallback(
     release: null,
     thread: "caller",
     cardinality: "repeatedly",
-    parameterNames: ["bytes"],
-    parameterModes: ["value"],
+    parameterNames: [bytes.name],
+    parameterModes: [bytes.access === "inout" ? "inout" : "value"],
     nativeParameters,
     nativeParameterNames,
     bytesProjection: bytes,

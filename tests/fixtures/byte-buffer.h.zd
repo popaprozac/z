@@ -3,6 +3,19 @@ declare module "byte-buffer.h" {
     in data: _,
     length: _
   ): _ {
-    bytes from data length length;
+    project input: Slice<u8> {
+      data data;
+      length length;
+    }
+  }
+
+  export function z_byte_increment(
+    inout data: _,
+    length: _
+  ): _ {
+    project inout bytes: Slice<u8> {
+      data data;
+      length length;
+    }
   }
 }

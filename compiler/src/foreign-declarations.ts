@@ -78,9 +78,16 @@ export type ForeignFunctionContract = {
 };
 
 export type ForeignBufferContract = {
+  readonly name: string;
+  readonly access: "in" | "inout";
   readonly buffer: string;
   readonly factors: readonly string[];
   readonly location: SourceLocation;
+  readonly nameLocation: SourceLocation;
+  readonly accessLocation: SourceLocation | null;
+  readonly typeLocation: SourceLocation;
+  readonly dataLocation: SourceLocation;
+  readonly lengthLocation: SourceLocation;
   readonly bufferLocation: SourceLocation;
   readonly factorLocations: readonly SourceLocation[];
 };
@@ -100,13 +107,7 @@ export type ForeignCallbackContract = {
   readonly release: string | null;
   readonly nativeType: string | null;
   readonly owner: string | null;
-  readonly bytes: {
-    readonly buffer: string;
-    readonly factors: readonly string[];
-    readonly location: SourceLocation;
-    readonly bufferLocation: SourceLocation;
-    readonly factorLocations: readonly SourceLocation[];
-  } | null;
+  readonly bytes: ForeignBufferContract | null;
   readonly thread: "caller" | "any" | null;
   readonly location: SourceLocation;
   readonly parameterLocation: SourceLocation;
@@ -240,6 +241,72 @@ export function parseForeignDeclarationContracts(source: string, fileName: strin
     const value = sign * Number(literal.text);
     if (!Number.isSafeInteger(value)) fail(literal, "native status success value must be a safe integer");
     return { value, location: literal.location, valueLocation: literal.location };
+  };
+  const parseBufferProjection = (): ForeignBufferContract => {
+    const project = expectText("project");
+    let access: ForeignBufferContract["access"] = "in";
+    let accessLocation: SourceLocation | null = null;
+    if (at("inout")) {
+      const capability = take();
+      access = "inout";
+      accessLocation = capability.location;
+    } else if (at("in")) {
+      fail(peek(), "Slice projections are already borrowed; omit `in`");
+    } else if (at("out") || at("move")) {
+      fail(peek(), "project currently supports a read-only Slice or `inout` mutable Slice");
+    }
+    const name = expectIdentifier("a Z-visible projection name");
+    expectText(":");
+    const type = expectIdentifier("`Slice<u8>` as the projected Z type");
+    if (type.text !== "Slice") fail(type, "native buffer projections currently require `Slice<u8>`");
+    expectText("<");
+    const element = expectIdentifier("`u8` as the projected Slice element type");
+    if (element.text !== "u8") fail(element, "native buffer projections currently support only `Slice<u8>`");
+    expectText(">");
+    expectText("{");
+    let data: Token | null = null;
+    let dataKeyword: Token | null = null;
+    let lengthKeyword: Token | null = null;
+    let factors: Token[] | null = null;
+    while (!at("}")) {
+      const fact = peek();
+      if (at("data")) {
+        if (data) fail(fact, `projection ${JSON.stringify(name.text)} cannot declare native data more than once`);
+        dataKeyword = take();
+        data = expectIdentifier("a native buffer parameter after `data`");
+        expectText(";");
+        continue;
+      }
+      if (at("length")) {
+        if (factors) fail(fact, `projection ${JSON.stringify(name.text)} cannot declare native length more than once`);
+        lengthKeyword = take();
+        factors = [expectIdentifier("a native length parameter after `length`")];
+        while (at("*")) {
+          take();
+          factors.push(expectIdentifier("a native length factor after `*`"));
+        }
+        expectText(";");
+        continue;
+      }
+      fail(fact, `expected "data" or "length" in projection ${JSON.stringify(name.text)}, found ${JSON.stringify(fact.text)}`);
+    }
+    expectText("}");
+    if (!data || !dataKeyword) fail(project, `projection ${JSON.stringify(name.text)} requires \`data <native parameter>;\``);
+    if (!factors || !lengthKeyword) fail(project, `projection ${JSON.stringify(name.text)} requires \`length <native parameter>;\``);
+    return {
+      name: name.text,
+      access,
+      buffer: data.text,
+      factors: factors.map((factor) => factor.text),
+      location: project.location,
+      nameLocation: name.location,
+      accessLocation,
+      typeLocation: type.location,
+      dataLocation: dataKeyword.location,
+      lengthLocation: lengthKeyword.location,
+      bufferLocation: data.location,
+      factorLocations: factors.map((factor) => factor.location),
+    };
   };
   const parseParameter = (): ContractParameter => {
     let mode: ContractParameter["mode"] = "value";
@@ -628,25 +695,9 @@ export function parseForeignDeclarationContracts(source: string, fileName: strin
               expectText(";");
               continue;
             }
-            if (at("bytes")) {
+            if (at("project")) {
               if (bytes) fail(callbackFact, `callback ${JSON.stringify(callback.text)} cannot declare more than one byte-slice projection`);
-              take();
-              expectText("from");
-              const buffer = expectIdentifier("a native callback buffer parameter");
-              expectText("length");
-              const factors: Token[] = [expectIdentifier("a native callback length parameter")];
-              while (at("*")) {
-                take();
-                factors.push(expectIdentifier("a native callback length parameter"));
-              }
-              expectText(";");
-              bytes = {
-                buffer: buffer.text,
-                factors: factors.map((factor) => factor.text),
-                location: callbackFact.location,
-                bufferLocation: buffer.location,
-                factorLocations: factors.map((factor) => factor.location),
-              };
+              bytes = parseBufferProjection();
               continue;
             }
             if (at("deinit")) {
@@ -668,7 +719,7 @@ export function parseForeignDeclarationContracts(source: string, fileName: strin
             }
             fail(
               callbackFact,
-              `expected "type", "context", "owner", "bytes", "deinit", "thread", or "invoked" in foreign callback contract, found ${JSON.stringify(callbackFact.text)}`,
+              `expected "type", "context", "owner", "project", "deinit", "thread", or "invoked" in foreign callback contract, found ${JSON.stringify(callbackFact.text)}`,
             );
           }
           expectText("}");
@@ -701,27 +752,25 @@ export function parseForeignDeclarationContracts(source: string, fileName: strin
           });
           continue;
         }
-        if (at("bytes")) {
-          take();
-          expectText("from");
-          const buffer = expectIdentifier("a native buffer parameter");
-          expectText("length");
-          const factors: Token[] = [expectIdentifier("a native buffer length parameter")];
-          while (at("*")) {
-            take();
-            factors.push(expectIdentifier("a native buffer length parameter"));
+        if (at("project")) {
+          const projection = parseBufferProjection();
+          if (buffers.some((candidate) => candidate.buffer === projection.buffer)) {
+            throw new DiagnosticError(
+              fileName,
+              projection.bufferLocation,
+              `foreign function ${JSON.stringify(name)} cannot project buffer ${JSON.stringify(projection.buffer)} more than once`,
+              { code: "Z0801" },
+            );
           }
-          expectText(";");
-          if (buffers.some((candidate) => candidate.buffer === buffer.text)) {
-            fail(buffer, `foreign function ${JSON.stringify(name)} cannot project buffer ${JSON.stringify(buffer.text)} more than once`);
+          if (buffers.some((candidate) => candidate.name === projection.name)) {
+            throw new DiagnosticError(
+              fileName,
+              projection.nameLocation,
+              `foreign function ${JSON.stringify(name)} cannot declare projection ${JSON.stringify(projection.name)} more than once`,
+              { code: "Z0801" },
+            );
           }
-          buffers.push({
-            buffer: buffer.text,
-            factors: factors.map((factor) => factor.text),
-            location: contract.location,
-            bufferLocation: buffer.location,
-            factorLocations: factors.map((factor) => factor.location),
-          });
+          buffers.push(projection);
           continue;
         }
         if (at("success")) {
@@ -740,7 +789,7 @@ export function parseForeignDeclarationContracts(source: string, fileName: strin
           continue;
         }
         if (!at("deinit")) {
-          fail(contract, `expected "async", "bytes", "deinit", "thread", "callback", or "success" in foreign function contract, found ${JSON.stringify(contract.text)}`);
+          fail(contract, `expected "async", "project", "deinit", "thread", "callback", or "success" in foreign function contract, found ${JSON.stringify(contract.text)}`);
         }
         if (release) fail(contract, `foreign function ${JSON.stringify(name)} cannot declare more than one deinit contract`);
         take();
@@ -1164,6 +1213,8 @@ export function foreignDeclarationApiNotes(
                 nativeParameterNames: callback.parameterNames,
                 thread: "caller" as const,
                 bytes: {
+                  name: pairedCallback.bytes!.name,
+                  access: pairedCallback.bytes!.access,
                   bufferParameter: parameterNames.indexOf(pairedCallback.bytes!.buffer),
                   lengthParameters: pairedCallback.bytes!.factors.map((factor) => parameterNames.indexOf(factor)),
                 },
@@ -1202,7 +1253,7 @@ function validateFunctionBufferContracts(
   fileName: string,
 ): ByteBufferProjectionNote[] {
   const used = new Set<number>();
-  return contract.buffers.map((buffer) => {
+  const projections = contract.buffers.map((buffer) => {
     if (buffer.factors.length !== 1) {
       throw new DiagnosticError(
         fileName,
@@ -1211,7 +1262,7 @@ function validateFunctionBufferContracts(
         {
           code: "Z0801",
           notes: ["multi-factor byte counts remain available for callback projections"],
-          helps: ["write `bytes from <buffer> length <length>;`"],
+          helps: ["write `project <name>: Slice<u8> { data <buffer>; length <length>; }`"],
         },
       );
     }
@@ -1244,12 +1295,13 @@ function validateFunctionBufferContracts(
     }
     const bufferContract = contract.parameters[bufferParameter];
     const lengthContract = contract.parameters[lengthParameter];
-    if (bufferContract.mode !== "in") {
+    if (bufferContract.mode !== buffer.access) {
+      const capability = buffer.access === "inout" ? "inout" : "in";
       throw new DiagnosticError(
         fileName,
         bufferContract.location,
-        `projected byte buffer ${JSON.stringify(buffer.buffer)} requires in borrowing`,
-        { code: "Z0801", helps: [`write \`in ${buffer.buffer}: _\``] },
+        `projection ${JSON.stringify(buffer.name)} requires native parameter ${JSON.stringify(buffer.buffer)} to use ${capability}`,
+        { code: "Z0801", helps: [`write \`${capability} ${buffer.buffer}: _\``] },
       );
     }
     if (lengthContract.mode !== "value") {
@@ -1275,20 +1327,27 @@ function validateFunctionBufferContracts(
         nativeBuffer.type.nativeName,
         nativeBuffer.type.canonicalNativeName,
       ].filter((value): value is string => Boolean(value));
-      const constBytePointer = pointerSpellings.some((spelling) => {
+      const compatibleBytePointer = pointerSpellings.some((spelling) => {
         const normalized = normalizeCallbackContextType(spelling);
-        return normalized === "const char *"
-          || normalized === "const unsigned char *"
-          || normalized === "const void *";
+        return buffer.access === "in"
+          ? normalized === "const char *"
+            || normalized === "const unsigned char *"
+            || normalized === "const void *"
+          : normalized === "char *"
+            || normalized === "unsigned char *"
+            || normalized === "void *";
       });
-      if (!constBytePointer) {
+      if (!compatibleBytePointer) {
+        const expected = buffer.access === "inout" ? "a mutable" : "a const";
         throw new DiagnosticError(
           fileName,
           buffer.bufferLocation,
-          `ordinary byte projection requires a const native byte pointer, found ${JSON.stringify(nativeBuffer.type.nativeName)}`,
+          `${buffer.access === "inout" ? "inout" : "read-only"} projection requires ${expected} native byte pointer, found ${JSON.stringify(nativeBuffer.type.nativeName)}`,
           {
             code: "Z0801",
-            notes: ["the first tier exposes read-only Slice<u8>; mutable native buffers require a separate reviewed contract"],
+            notes: [buffer.access === "inout"
+              ? "inout exposes writable Slice<u8> storage and cannot target const native bytes"
+              : "a mutable native parameter could modify storage and therefore requires `project inout`"],
           },
         );
       }
@@ -1308,11 +1367,30 @@ function validateFunctionBufferContracts(
     used.add(bufferParameter);
     used.add(lengthParameter);
     return {
+      name: buffer.name,
+      access: buffer.access,
       bufferParameter,
       lengthParameters: [lengthParameter],
       elementType: "u8",
     };
   });
+  for (const buffer of contract.buffers) {
+    const collision = contract.parameters.findIndex((parameter, index) => (
+      !used.has(index) && parameter.name === buffer.name
+    ));
+    if (collision >= 0) {
+      throw new DiagnosticError(
+        fileName,
+        buffer.nameLocation,
+        `projection name ${JSON.stringify(buffer.name)} collides with visible native parameter ${JSON.stringify(contract.parameters[collision].name)}`,
+        {
+          code: "Z0801",
+          helps: ["choose a distinct Z-visible name for the projected Slice"],
+        },
+      );
+    }
+  }
+  return projections;
 }
 
 function validatePairedOptionCallbackContract(
@@ -1430,7 +1508,7 @@ function validatePairedOptionCallbackContract(
       fileName,
       callback.location,
       "the first paired-option callback tier requires a byte-slice projection",
-      { code: "Z0801", helps: ["add `bytes from <buffer> length <factor> * <factor>;`"] },
+      { code: "Z0801", helps: ["add `project <name>: Slice<u8> { data <buffer>; length <factor> * <factor>; }`"] },
     );
   }
   const parameterTypes = callbackParameterSpellings(nativeCallback.signature)!;
@@ -1444,13 +1522,25 @@ function validatePairedOptionCallbackContract(
       { code: "Z0801", notes: [`${callback.nativeType} parameters: ${names.join(", ")}`] },
     );
   }
-  const normalizedBuffer = normalizeCallbackContextType(parameterTypes[bufferIndex]).replace(/^const /, "");
+  const rawBuffer = normalizeCallbackContextType(parameterTypes[bufferIndex]);
+  const normalizedBuffer = rawBuffer.replace(/^const /, "");
   if (normalizedBuffer !== "char *" && normalizedBuffer !== "unsigned char *" && normalizedBuffer !== "void *") {
     throw new DiagnosticError(
       fileName,
       callback.bytes.bufferLocation,
       `byte projection buffer must be a native byte pointer, found ${JSON.stringify(parameterTypes[bufferIndex])}`,
       { code: "Z0801" },
+    );
+  }
+  if (callback.bytes.access === "inout" && rawBuffer.startsWith("const ")) {
+    throw new DiagnosticError(
+      fileName,
+      callback.bytes.accessLocation ?? callback.bytes.location,
+      `inout projection ${JSON.stringify(callback.bytes.name)} requires a mutable native byte pointer`,
+      {
+        code: "Z0801",
+        notes: [`${callback.bytes.buffer} has native type ${parameterTypes[bufferIndex]}`],
+      },
     );
   }
   const factorIndexes = callback.bytes.factors.map((factor, index) => {

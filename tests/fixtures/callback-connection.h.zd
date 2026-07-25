@@ -16,7 +16,10 @@ declare module "callback-connection.h" {
       type ZCallbackWrite;
       context option Z_CALLBACK_CONTEXT;
       owner owner;
-      bytes from buffer length size * nitems;
+      project bytes: Slice<u8> {
+        data buffer;
+        length size * nitems;
+      }
       thread caller;
       invoked repeatedly;
     }

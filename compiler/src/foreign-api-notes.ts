@@ -47,6 +47,8 @@ export type StatusNote = {
 };
 
 export type ByteBufferProjectionNote = {
+  readonly name: string;
+  readonly access: "in" | "inout";
   readonly bufferParameter: number;
   readonly lengthParameters: readonly number[];
   readonly elementType: "u8";
@@ -62,6 +64,8 @@ export type TypedVariadicParameterNote = {
     readonly nativeParameterNames: readonly string[];
     readonly thread: "caller";
     readonly bytes: {
+      readonly name: string;
+      readonly access: "in" | "inout";
       readonly bufferParameter: number;
       readonly lengthParameters: readonly number[];
     };

@@ -1002,7 +1002,8 @@ function generateForeignCallbackAdapter(plan: Extract<ForeignCallArgumentPlan, {
     const functionValue = `((${functionTypeCName(functionType)} *)callback_context)`;
     const sliceType = sliceTypeName("u8");
     const slice = "_z_callback_bytes";
-    const invoke = `${functionValue}->call(${functionValue}->context, ${slice})`;
+    const projectedArgument = bytes.access === "inout" ? `&${slice}` : slice;
+    const invoke = `${functionValue}->call(${functionValue}->context, ${projectedArgument})`;
     return `static __attribute__((unused)) size_t ${foreignCallbackAdapterName(plan)}(${nativeParameters.join(", ")}) {
   ${sliceName(sliceType)} ${slice} = {
     .data = (uint8_t *)${nativeNames[bytes.bufferParameter]},
@@ -6681,7 +6682,9 @@ function generateForeignCallArgument(
   const expression = arguments_[plan.source];
   if (plan.kind === "argument") return generateCallArgument(expression, context);
   if (plan.kind === "sliceData" || plan.kind === "sliceLength") {
-    const value = generateExpression(expression, context);
+    const value = expression.kind === "argumentReference"
+      ? generateStoredValue(expression.name, context)
+      : generateExpression(expression, context);
     const conversion = context.semanticInfo.sliceConversions.get(expression.location.offset);
     const fixed = conversion ? parseFixedArrayType(conversion.sourceType) : null;
     if (plan.kind === "sliceLength" && fixed) return String(fixed.length);

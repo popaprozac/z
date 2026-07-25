@@ -36,7 +36,10 @@ declare module "curl/curl.h" {
       type curl_write_callback;
       context option CURLOPT_WRITEDATA;
       owner curl;
-      bytes from buffer length size * nitems;
+      project bytes: Slice<u8> {
+        data buffer;
+        length size * nitems;
+      }
       thread caller;
       invoked repeatedly;
     }
