@@ -142,6 +142,7 @@ export enum ExpressionKind {
   valueBlockExpression,
   executorPlacementExpression,
   executorOnExpression,
+  executorCaptureExpression,
 }
 
 export struct ExpressionNode {
@@ -1195,6 +1196,42 @@ function parseExecutorPlacementTree(
     );
   }
   children.push(executor);
+  if (
+    tokens[current].kind == TokenKind.identifier
+    && tokens[current].text == "using"
+  ) {
+    current = current + 1;
+    try expectKind(tokens, inout current, TokenKind.leftParen, "`(` after `using`");
+    while (tokens[current].kind != TokenKind.rightParen) {
+      const capability = snapshot(tokens[current]);
+      if (
+        tokens[current].kind == TokenKind.inKeyword
+        || tokens[current].kind == TokenKind.inoutKeyword
+        || (
+          tokens[current].kind == TokenKind.identifier
+          && tokens[current].text == "move"
+        )
+      ) {
+        current = current + 1;
+      } else {
+        throw fail(tokens[current], "executor captures require `in`, `inout`, or `move`");
+      }
+      const name = snapshot(tokens[current]);
+      try expectKind(tokens, inout current, TokenKind.identifier, "a captured binding name");
+      let captureLabels = Array<String>();
+      captureLabels.push(name.text.copyBytes(0, name.text.byteLength));
+      children.push(pushExpressionNode(
+        inout nodes,
+        ExpressionKind.executorCaptureExpression,
+        capability.text.copyBytes(0, capability.text.byteLength),
+        Array<usize>(),
+        captureLabels,
+        capability
+      ));
+      if (!takeIf(tokens, inout current, TokenKind.comma)) break;
+    }
+    try expectKind(tokens, inout current, TokenKind.rightParen, "`)` after executor captures");
+  }
   if (
     tokens[current].kind != TokenKind.colon
     && tokens[current].kind != TokenKind.throwsKeyword
@@ -3316,6 +3353,7 @@ function expressionKindName(kind: ExpressionKind): String {
     valueBlockExpression => "valueBlock";
     executorPlacementExpression => "executorPlacement";
     executorOnExpression => "executorOn";
+    executorCaptureExpression => "executorCapture";
   };
 }
 

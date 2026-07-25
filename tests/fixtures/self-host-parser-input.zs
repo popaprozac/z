@@ -55,10 +55,10 @@ export enum LoadState {
 
 export async function load(id: i32): Reading {
   await scheduler.yield();
-  const hopped = await on thread.main: i32 throws LoadError {
+  const hopped = await on thread.main using (in id): i32 throws LoadError {
     select id;
   };
-  const task = task on thread.main: i32 {
+  const task = task on thread.main using (in hopped): i32 {
     select hopped;
   };
   task on thread.main {

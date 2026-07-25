@@ -74,6 +74,7 @@ import {
   weakResultTypeName,
   weakTypeName,
 } from "./weak-types.ts";
+import { collectPlacementCaptures } from "./placement-captures.ts";
 import {
   isNullableObjCTypeName,
   nullableObjCTypeName,
@@ -2695,7 +2696,13 @@ function analyzeStatement(
       locals.set(statement.name, storedVariableType);
       state.bindingTypes.set(statement.nameLocation.offset, String(variableType));
       if (
-        statement.initializer.kind === "spawn"
+        (
+          statement.initializer.kind === "spawn"
+          || (
+            statement.initializer.kind === "executorPlacement"
+            && statement.initializer.mode === "spawn"
+          )
+        )
         && state.asyncSpawnBorrowRoots.has(statement.initializer.location.offset)
       ) {
         state.asyncTaskBorrowSpawns.set(statement.name, statement.initializer.location.offset);
@@ -4487,6 +4494,251 @@ function inferValueArm(
   throw new DiagnosticError(fileName, statement.location, "a value-producing block must produce a value with an expression or `select`");
 }
 
+type ExecutorCapturePlan = {
+  readonly mode: "in" | "inout" | "move" | "copy";
+  readonly name: string;
+  readonly type: string;
+  readonly outerBinding: ValueType;
+  readonly location: SourceLocation;
+};
+
+function inferImplicitPlacementCopyType(
+  type: string,
+  structs: ReadonlyMap<string, StructDeclaration>,
+  enums: ReadonlyMap<string, EnumDeclaration>,
+  state: AnalysisState,
+  visiting = new Set<string>(),
+): boolean {
+  if (type === "String") return true;
+  if (
+    type === "void"
+    || type === "boolean"
+    || integerTypes.has(type)
+    || floatTypes.has(type)
+  ) return true;
+  if (
+    type === "cstring"
+    || type === "TextBuffer"
+    || type === "Arena"
+    || type === "TaskScope"
+    || type === "TaskControl"
+    || parseViewType(type)
+    || parseSliceType(type)
+    || parseDynamicArrayType(type)
+    || parseTaskType(type)
+    || parseWeakType(type)
+    || state.foreignTypes.has(type)
+    || state.foreignNamedTypes.has(type)
+    || state.foreignObjectTypes.has(type)
+  ) return false;
+  const fixed = parseFixedArrayType(type);
+  if (fixed) return inferImplicitPlacementCopyType(fixed.elementType, structs, enums, state, visiting);
+  if (visiting.has(type)) return true;
+  const aggregate = structs.get(type);
+  if (aggregate) {
+    if (aggregate.kind === "class" || aggregate.deinitializer) return false;
+    visiting.add(type);
+    const copyable = aggregate.fields.every((field) => (
+      inferImplicitPlacementCopyType(field.type.name, structs, enums, state, visiting)
+    ));
+    visiting.delete(type);
+    return copyable;
+  }
+  const enumeration = enums.get(type);
+  if (enumeration) {
+    visiting.add(type);
+    const copyable = enumeration.variants.every((variant) => (
+      !variant.payload
+      || inferImplicitPlacementCopyType(variant.payload.name, structs, enums, state, visiting)
+    ));
+    visiting.delete(type);
+    return copyable;
+  }
+  return false;
+}
+
+function planExecutorPlacementCaptures(
+  expression: Extract<Expression, { kind: "executorPlacement" }>,
+  locals: Map<string, ValueType>,
+  blockLocals: Map<string, ValueType>,
+  structs: Map<string, StructDeclaration>,
+  enums: Map<string, EnumDeclaration>,
+  fileName: string,
+  state: AnalysisState,
+): readonly ExecutorCapturePlan[] {
+  if (expression.call) return [];
+  const declared = new Map<string, typeof expression.captures[number]>();
+  for (const capture of expression.captures) {
+    if (declared.has(capture.name)) {
+      throw new DiagnosticError(fileName, capture.nameLocation, `duplicate executor capture ${JSON.stringify(capture.name)}`, {
+        code: "Z0704",
+        labels: [{
+          location: declared.get(capture.name)!.nameLocation,
+          message: "first capture is declared here",
+          length: capture.name.length,
+        }],
+      });
+    }
+    const stored = locals.get(capture.name);
+    if (!stored) {
+      throw new DiagnosticError(fileName, capture.nameLocation, `unknown executor capture ${JSON.stringify(capture.name)}`, {
+        code: "Z0704",
+        helps: ["capture a binding visible before the placement block"],
+      });
+    }
+    if (initializationState(stored) !== "initialized") {
+      throw new DiagnosticError(fileName, capture.nameLocation, `cannot capture uninitialized value ${JSON.stringify(capture.name)}`, {
+        code: "Z0704",
+      });
+    }
+    if (ownershipState(stored) !== "available") {
+      throw movedValueError(fileName, { name: capture.name, location: capture.nameLocation }, state, false, "capture");
+    }
+    declared.set(capture.name, capture);
+    state.bindingTypes.set(capture.nameLocation.offset, String(underlyingType(stored)));
+  }
+
+  const uses = collectPlacementCaptures(expression.body, new Set(locals.keys()));
+  const usedNames = new Set(uses.map((capture) => capture.name));
+  for (const capture of expression.captures) {
+    if (!usedNames.has(capture.name)) {
+      throw new DiagnosticError(fileName, capture.nameLocation, `executor capture ${JSON.stringify(capture.name)} is not used by the placement block`, {
+        code: "Z0704",
+        helps: ["remove the unused capture from `using (...)`"],
+      });
+    }
+  }
+
+  const plans: ExecutorCapturePlan[] = [];
+  for (const use of uses) {
+    const stored = locals.get(use.name)!;
+    const type = String(underlyingType(stored));
+    const capture = declared.get(use.name);
+    if (!capture) {
+      if (!inferImplicitPlacementCopyType(type, structs, enums, state)) {
+        throw new DiagnosticError(fileName, use.location, `ownership-bearing executor capture ${JSON.stringify(use.name)} requires an explicit capability`, {
+          code: "Z0704",
+          notes: ["cleanup-free Copy values and owned String snapshots may be inferred; borrowing, mutation, and ownership transfer remain explicit"],
+          helps: [`add \`using (in ${use.name})\`, \`using (inout ${use.name})\`, or \`using (move ${use.name})\` after the executor`],
+        });
+      }
+      if (use.mutated) {
+        throw new DiagnosticError(fileName, use.location, `inferred Copy capture ${JSON.stringify(use.name)} cannot mutate caller storage`, {
+          code: "Z0704",
+          notes: ["an omitted Copy capture is a private snapshot"],
+          helps: [`declare \`using (inout ${use.name})\` when mutation must be visible to the caller`],
+        });
+      }
+      plans.push({ mode: "copy", name: use.name, type, outerBinding: stored, location: use.location });
+      continue;
+    }
+
+    if (capture.mode === "in" && use.mutated) {
+      throw new DiagnosticError(fileName, use.location, `read-only executor capture ${JSON.stringify(use.name)} cannot be mutated`, {
+        code: "Z0704",
+        labels: [{ location: capture.location, message: "read-only capture declared here", length: 2 }],
+        helps: [`use \`inout ${use.name}\` with a mutable let binding`],
+      });
+    }
+    if (capture.mode === "inout") {
+      if (!isMutableBinding(stored) && structs.get(type)?.kind !== "class") {
+        throw new DiagnosticError(fileName, capture.nameLocation, `inout executor capture ${JSON.stringify(use.name)} requires a mutable let binding`, {
+          code: "Z0704",
+          helps: [`declare ${JSON.stringify(use.name)} with \`let\``],
+        });
+      }
+      blockLocals.set(use.name, `${borrowedPrefix}${mutablePrefix}${type}`);
+    } else if (capture.mode === "in") {
+      blockLocals.set(use.name, `${borrowedPrefix}${type}`);
+    } else {
+      if (!hasOwnershipType(type, structs, enums, state)) {
+        throw new DiagnosticError(fileName, capture.location, `type ${displayAssignableType(type)} has no unique ownership to move into executor placement`, {
+          code: "Z0218",
+          notes: ["cleanup-free values are inferred private snapshots and do not need a capture entry"],
+          helps: [`remove \`move ${use.name}\` from the capture contract`],
+        });
+      }
+      blockLocals.set(use.name, type);
+    }
+
+    if (state.nativeThreadBodyDepth > 0) {
+      const aggregate = structs.get(type);
+      const executorBound = aggregate?.kind === "class" && state.aggregateExecutorAffinities.has(type);
+      if (executorBound) {
+        if (capture.mode === "move") {
+          throw new DiagnosticError(fileName, capture.location, `main-isolated capture ${JSON.stringify(use.name)} cannot move away from its owning executor`, {
+            code: "Z0704",
+            helps: [`use \`in ${use.name}\` for readonly behavior or \`inout ${use.name}\` for main-isolated mutation`],
+          });
+        }
+      } else {
+        const transfer = initialThreadTransferKind(type, structs, enums, state);
+        if (!transfer || (capture.mode === "move" && transfer !== "move")) {
+          const issue = aggregate?.kind === "class"
+            ? shareableTypeIssue(type, structs, enums, state)
+            : foreignThreadTransferIssue(type, state);
+          throw new DiagnosticError(fileName, capture.location, `capture ${JSON.stringify(use.name)} of type ${JSON.stringify(type)} cannot cross from a native worker to thread.main${issue ? `: ${issue.reason}` : ""}`, {
+            code: "Z0704",
+            notes: [issue?.reason ?? "cross-thread captures require a transferable value, unique owner, or deeply readonly ARC identity"],
+            helps: [issue?.help ?? "create an owned thread-independent snapshot before placement"],
+          });
+        }
+      }
+    }
+    plans.push({
+      mode: capture.mode,
+      name: use.name,
+      type,
+      outerBinding: stored,
+      location: capture.nameLocation,
+    });
+  }
+  return plans;
+}
+
+function applyExecutorPlacementCaptureEffects(
+  expression: Extract<Expression, { kind: "executorPlacement" }>,
+  plans: readonly ExecutorCapturePlan[],
+  locals: Map<string, ValueType>,
+  structs: Map<string, StructDeclaration>,
+  enums: Map<string, EnumDeclaration>,
+  fileName: string,
+  state: AnalysisState,
+): void {
+  for (const capture of plans) {
+    if (capture.mode === "move") {
+      consumeOwnedValue(
+        { kind: "identifier", name: capture.name, location: capture.location },
+        capture.type,
+        locals,
+        structs,
+        enums,
+        fileName,
+        state,
+        true,
+      );
+      continue;
+    }
+    if (capture.mode !== "in" && capture.mode !== "inout") continue;
+    if (expression.mode !== "spawn") continue;
+    if (state.asyncScopeDepth === 0) {
+      throw new DiagnosticError(fileName, capture.location, `child-task ${capture.mode} capture of ${JSON.stringify(capture.name)} requires an explicit async scope`, {
+        code: "Z0704",
+        notes: ["the scope join bounds the loan before caller storage may be used, moved, or destroyed"],
+        helps: ["place the task inside `async scope { ... }`, use `await on`, or transfer ownership with `move`"],
+      });
+    }
+    recordAsyncSpawnBorrow(
+      capture.name,
+      capture.location,
+      capture.mode,
+      expression.location.offset,
+      fileName,
+      state,
+    );
+  }
+}
+
 function inferExecutorPlacement(
   expression: Extract<Expression, { kind: "executorPlacement" }>,
   locals: Map<string, ValueType>,
@@ -4604,6 +4856,15 @@ function inferExecutorPlacement(
   }
 
   const blockLocals = new Map(locals);
+  const capturePlans = planExecutorPlacementCaptures(
+    expression,
+    locals,
+    blockLocals,
+    structs,
+    enums,
+    fileName,
+    state,
+  );
   state.executorContext = "main";
   state.placementErrorTypes.push(resolvedErrorType);
   let successType: ValueType = "void";
@@ -4655,7 +4916,19 @@ function inferExecutorPlacement(
       helps: ["select a thread-independent owned snapshot, or consume the result inside the `on thread.main` block"],
     });
   }
-  if (expression.mode !== "spawn") propagateOuterOwnership(locals, blockLocals);
+  if (expression.mode !== "spawn") {
+    propagateOuterOwnership(locals, blockLocals);
+    for (const capture of capturePlans) locals.set(capture.name, capture.outerBinding);
+  }
+  applyExecutorPlacementCaptureEffects(
+    expression,
+    capturePlans,
+    locals,
+    structs,
+    enums,
+    fileName,
+    state,
+  );
   if (expression.mode === "spawn") {
     return taskTypeName(String(successType), resolvedErrorType?.name ?? null);
   }

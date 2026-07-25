@@ -224,7 +224,50 @@ export function parse(tokens: Token[], fileName: string): Program {
     onLocation: SourceLocation,
   ): Expression => {
     const executor = parseExecutorCapability();
-    if (!at("colon") && !at("throws") && !at("leftBrace")) {
+    const captures: Extract<Expression, { kind: "executorPlacement" }>["captures"][number][] = [];
+    if (at("identifier") && peek().text === "using") {
+      const using = take();
+      expect("leftParen", "`(` after `using`");
+      if (!at("rightParen")) {
+        do {
+          if (at("out")) {
+            const out = take();
+            throw new DiagnosticError(fileName, out.location, "`out` executor captures are not supported yet", {
+              code: "Z0704",
+              notes: ["failure and cancellation need a sound definite-initialization rule before child tasks may initialize caller storage"],
+              helps: ["return an owned value from the placement and assign it after await"],
+            });
+          }
+          const capability = at("in") || at("inout")
+            ? take()
+            : at("identifier") && peek().text === "move"
+              ? take()
+              : null;
+          if (!capability) {
+            throw new DiagnosticError(fileName, peek().location, "executor captures require `in`, `inout`, or `move`", {
+              code: "Z0704",
+              helps: ["write `using (in value, inout state, move owner)`"],
+            });
+          }
+          const name = expect("identifier", "a captured binding name");
+          captures.push({
+            mode: capability.text as "in" | "inout" | "move",
+            name: name.text,
+            nameLocation: name.location,
+            location: capability.location,
+          });
+        } while (match("comma"));
+      }
+      expect("rightParen", "`)` after executor captures");
+      if (!at("colon") && !at("throws") && !at("leftBrace")) {
+        throw new DiagnosticError(fileName, using.location, "`using` belongs to a multi-statement executor-placement block", {
+          code: "Z0710",
+          notes: ["a direct placed call already declares access through its ordinary parameter and argument capabilities"],
+          helps: [`remove the \`using\` clause and write \`${mode === "spawn" ? "task" : "await"} on thread.main operation(...)\``],
+        });
+      }
+    }
+    if (captures.length === 0 && !at("colon") && !at("throws") && !at("leftBrace")) {
       const call = parsePostfix();
       if (call.kind !== "call") {
         throw new DiagnosticError(fileName, call.location, "executor placement requires a direct function or method call, or a block", {
@@ -240,6 +283,7 @@ export function parse(tokens: Token[], fileName: string): Program {
         kind: "executorPlacement",
         mode,
         executor,
+        captures,
         returnType: null,
         errorType: null,
         body,
@@ -254,7 +298,7 @@ export function parse(tokens: Token[], fileName: string): Program {
       throw new DiagnosticError(fileName, errorType.location, "a throwing executor block requires an explicit success type");
     }
     const body = parseRequiredBlock("an executor-placement body");
-    return { kind: "executorPlacement", mode, executor, returnType, errorType, body, call: null, location, onLocation };
+    return { kind: "executorPlacement", mode, executor, captures, returnType, errorType, body, call: null, location, onLocation };
   };
 
   const parseExecutorAffinity = (): FunctionDeclaration["executorAffinity"] => {

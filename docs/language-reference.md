@@ -1344,19 +1344,31 @@ The thread namespace also supplies typed placement targets. The first target is
 ```z
 const direct = await on thread.main refreshUI(model);
 const directChild = task on thread.main loadUI(model);
-const updated = await on thread.main { select refreshUI(); };
-const child = task on thread.main { select refreshUI(); };
+const updated = await on thread.main using (in model) {
+  select refreshUI(model);
+};
+const child = task on thread.main using (move work) {
+  consume(move work);
+};
 ```
 
 `await on` hops and waits, while `task on` creates a hot structured child on
 main. A direct call uses its declared parameter capabilities; block placement
-is for anonymous multi-statement work and uses lexical captures. Async direct
+is for anonymous multi-statement work and uses lexical captures. A contextual
+`using (in value, inout state, move owner)` clause makes ownership-bearing
+captures explicit without repeating their types. Cleanup-free recursively Copy
+values and owned String snapshots may be omitted and become private copies.
+`in` is read-only access until join, `inout` is an exclusive mutable loan until
+join, and `move` consumes the source binding. A borrowed `task on` capture
+requires an enclosing `async scope`; direct `await on` already joins it. `out`
+capture is reserved for a later definite-initialization tier. Value-storage
+`inout` requires `let`; a `const` ARC class reference may use `inout` to invoke
+mutable instance behavior because binding immutability and object mutation are
+separate. Async direct
 calls schedule the callee frame itself, so their result is `T`/`Result<T, E>`
 when awaited or `Task<T, E>` when forked—never a nested task. Code already
 proven to run on main accesses isolated state directly; there is no bare
-`on thread.main { ... }` proof block. The block tier supports plain copied
-captures, owned String copies, retained Z ARC classes, and Objective-C
-identities retained by ARC from the owning async task. A native worker can
+`on thread.main { ... }` proof block. A native worker can
 create a placed main child without blocking main; Darwin wakes the executor
 through a CFRunLoop source. A placement used as a statement is a block statement
 and does not require a trailing semicolon; bindings and other value expressions

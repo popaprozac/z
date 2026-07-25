@@ -21,6 +21,7 @@ import { resultTypeName } from "./results.ts";
 import { parseSetType } from "./set-types.ts";
 import { standardFunctionSignature } from "./standard-library.ts";
 import { parseViewType } from "./view-types.ts";
+import { collectPlacementCaptures } from "./placement-captures.ts";
 import type { IntegerOperation, ObjCCallInfo, SemanticInfo } from "./sema.ts";
 import {
   closureAdapterName,
@@ -79,7 +80,8 @@ type PlacementTarget = {
   readonly captures: readonly {
     readonly name: string;
     readonly type: string;
-    readonly kind: "plain" | "string" | "class" | "executorBoundClass" | "objc" | "taskScope" | "taskControl";
+    readonly mode: "copy" | "in" | "inout" | "move";
+    readonly kind: "plain" | "string" | "class" | "executorBoundClass" | "objc" | "taskScope" | "taskControl" | "borrow" | "owned";
     readonly location: SourceLocation;
   }[];
 };
@@ -1941,9 +1943,10 @@ function createPlacementTarget(
         location: expression.call.location,
       }
     : expression.body;
-  const captures = collectPlacementCaptures(directBody, locals);
+  const captures = collectPlacementCaptures(directBody, new Set(locals.keys()));
+  const declaredCaptures = new Map(expression.captures.map((capture) => [capture.name, capture]));
   const mutated = captures.find((capture) => capture.mutated);
-  if (mutated) {
+  if (mutated && (expression.call || declaredCaptures.get(mutated.name)?.mode !== "inout")) {
     unsupported(
       fileName,
       mutated.location,
@@ -1956,9 +1959,13 @@ function createPlacementTarget(
     );
   }
   const captureKinds = new Map<string, PlacementTarget["captures"][number]["kind"]>();
+  const captureModes = new Map<string, PlacementTarget["captures"][number]["mode"]>();
   for (const capture of captures) {
     const type = locals.get(capture.name)!;
-    const kind = placementCaptureKind(type, types, fromNativeThread);
+    const mode = expression.call
+      ? "copy"
+      : declaredCaptures.get(capture.name)?.mode ?? "copy";
+    const kind = placementCaptureKind(type, mode, types, fromNativeThread);
     if (!kind) {
       unsupported(
         fileName,
@@ -1968,6 +1975,7 @@ function createPlacementTarget(
       );
     }
     captureKinds.set(capture.name, kind);
+    captureModes.set(capture.name, mode);
   }
   if (!expression.call && placementContainsFunctionReturn(expression.body)) {
     unsupported(
@@ -2006,7 +2014,12 @@ function createPlacementTarget(
     receiverMode: null,
     parameters: captures.map((capture) => ({
       name: capture.name,
-      mode: captureKinds.get(capture.name) === "executorBoundClass" ? "in" as const : "value" as const,
+      mode: captureModes.get(capture.name) === "in"
+        || captureKinds.get(capture.name) === "executorBoundClass"
+        ? "in" as const
+        : captureModes.get(capture.name) === "inout"
+          ? "inout" as const
+          : "value" as const,
       type: { name: locals.get(capture.name)!, location: capture.location },
       location: capture.location,
     })),
@@ -2020,8 +2033,9 @@ function createPlacementTarget(
     captures: captures.map((capture) => ({
       name: capture.name,
       type: locals.get(capture.name)!,
+      mode: captureModes.get(capture.name)!,
       kind: captureKinds.get(capture.name)!,
-      location: capture.location,
+      location: declaredCaptures.get(capture.name)?.nameLocation ?? capture.location,
     })),
   };
 }
@@ -2037,11 +2051,31 @@ function placementCall(
       name: placement.target.declaration.name,
       location: expression.onLocation,
     },
-    arguments: placement.captures.map((capture) => ({
-      kind: "identifier",
-      name: capture.name,
-      location: capture.location,
-    })),
+    arguments: placement.captures.map((capture): Expression => {
+      const identifier = {
+        kind: "identifier" as const,
+        name: capture.name,
+        location: capture.location,
+      };
+      if (capture.mode === "move") {
+        return {
+          kind: "unary",
+          operator: "move",
+          operand: identifier,
+          location: capture.location,
+        };
+      }
+      if (capture.mode === "inout") {
+        return {
+          kind: "argumentReference",
+          access: "inout",
+          name: capture.name,
+          nameLocation: capture.location,
+          location: capture.location,
+        };
+      }
+      return identifier;
+    }),
     argumentLabels: placement.captures.map(() => null),
     location: expression.location,
   };
@@ -2080,9 +2114,11 @@ function isPlacementCopyType(
 
 function placementCaptureKind(
   type: string,
+  mode: PlacementTarget["captures"][number]["mode"],
   types: AsyncTypeContext,
   fromNativeThread: boolean,
 ): PlacementTarget["captures"][number]["kind"] | null {
+  if (mode === "in" || mode === "inout") return "borrow";
   if (type === "String") return "string";
   if (type === "TaskScope") return "taskScope";
   if (type === "TaskControl") return "taskControl";
@@ -2097,6 +2133,17 @@ function placementCaptureKind(
   ) {
     return fromNativeThread ? null : "objc";
   }
+  if (
+    mode === "move"
+    && (
+      type === "TextBuffer"
+      || parseDynamicArrayType(type)
+      || types.semanticInfo.foreignNamedTypes.has(type)
+      || parsePointerTypeName(type)
+      || types.structs.has(type)
+      || types.enums.has(type)
+    )
+  ) return "owned";
   return isPlacementCopyType(type, types) ? "plain" : null;
 }
 
@@ -2107,96 +2154,6 @@ function isExecutorBoundClassType(type: string, types: AsyncTypeContext): boolea
 
 function executorBoundReleaseAdapter(type: string): string {
   return `z_async_release_${asyncNativeSymbolPart(type)}_on_executor`;
-}
-
-function collectPlacementCaptures(
-  body: Extract<Statement, { kind: "block" }>,
-  outerLocals: ReadonlyMap<string, string>,
-): readonly { readonly name: string; readonly location: SourceLocation; mutated: boolean }[] {
-  const captures = new Map<string, { readonly name: string; readonly location: SourceLocation; mutated: boolean }>();
-  const record = (name: string, location: SourceLocation, localNames: ReadonlySet<string>, mutated = false): void => {
-    if (!outerLocals.has(name) || localNames.has(name)) return;
-    const existing = captures.get(name);
-    if (existing) existing.mutated ||= mutated;
-    else captures.set(name, { name, location, mutated });
-  };
-  const expression = (value: Expression, localNames: ReadonlySet<string>, mutated = false): void => {
-    switch (value.kind) {
-      case "number": case "string": case "boolean": case "null": case "dynamicArrayExpression": return;
-      case "identifier": record(value.name, value.location, localNames, mutated); return;
-      case "argumentReference": record(value.name, value.location, localNames, true); return;
-      case "template": for (const part of value.parts) if (part.kind === "value") expression(part.expression, localNames); return;
-      case "unary": expression(value.operand, localNames); return;
-      case "binary": expression(value.left, localNames); expression(value.right, localNames); return;
-      case "conditional": expression(value.condition, localNames); expression(value.thenExpression, localNames); expression(value.elseExpression, localNames); return;
-      case "new": for (const argument of value.arguments) expression(argument, localNames); return;
-      case "weak": case "attempt": case "try": case "await": case "spawn": expression(value.expression, localNames); return;
-      case "closure": return;
-      case "call": expression(value.callee, localNames); for (const argument of value.arguments) expression(argument, localNames); return;
-      case "member": expression(value.object, localNames, mutated); return;
-      case "index": expression(value.object, localNames, mutated); expression(value.index, localNames); return;
-      case "arrayExpression": for (const element of value.elements) expression(element, localNames); return;
-      case "structExpression": case "objectExpression": for (const field of value.fields) expression(field.expression, localNames); return;
-      case "variantExpression": expression(value.payload, localNames); return;
-      case "executorPlacement":
-        if (value.call) expression(value.call, localNames);
-        statement(value.body, new Set(localNames));
-        return;
-      case "matchExpression":
-        expression(value.expression, localNames);
-        for (const arm of value.arms) {
-          const names = new Set(localNames);
-          if (arm.binding) names.add(arm.binding);
-          for (const field of arm.objectBindings ?? []) names.add(field.bindingName);
-          statement(arm.body, names);
-        }
-        return;
-      case "ifExpression":
-        expression(value.condition, localNames);
-        statement(value.thenBranch, new Set(localNames));
-        if (value.elseBranch.kind === "ifExpression") expression(value.elseBranch, new Set(localNames));
-        else statement(value.elseBranch, new Set(localNames));
-        return;
-    }
-  };
-  const statements = (values: readonly Statement[], localNames: Set<string>): void => {
-    for (const value of values) {
-      if (value.kind === "variable") {
-        if (value.initializer) expression(value.initializer, localNames);
-        localNames.add(value.name);
-      } else statement(value, localNames);
-    }
-  };
-  const statement = (value: Statement, localNames: Set<string>): void => {
-    switch (value.kind) {
-      case "variable": if (value.initializer) expression(value.initializer, localNames); localNames.add(value.name); return;
-      case "assignment": expression(value.target, localNames, true); expression(value.expression, localNames); return;
-      case "return": if (value.expression) expression(value.expression, localNames); return;
-      case "throw": case "yield": case "select": case "expressionStatement": expression(value.expression, localNames); return;
-      case "block": statements(value.statements, new Set(localNames)); return;
-      case "if": expression(value.condition, localNames); statement(value.thenBranch, new Set(localNames)); if (value.elseBranch) statement(value.elseBranch, new Set(localNames)); return;
-      case "while": expression(value.condition, localNames); statement(value.body, new Set(localNames)); return;
-      case "for": { expression(value.iterable, localNames); const names = new Set(localNames); names.add(value.binding); statement(value.body, names); return; }
-      case "match":
-        expression(value.expression, localNames);
-        for (const arm of value.arms) {
-          const names = new Set(localNames);
-          if (arm.binding) names.add(arm.binding);
-          for (const field of arm.objectBindings ?? []) names.add(field.bindingName);
-          statement(arm.body, names);
-        }
-        return;
-      case "asyncScope": {
-        const names = new Set(localNames);
-        if (value.name) names.add(value.name);
-        statement(value.body, names);
-        return;
-      }
-      case "break": case "continue": return;
-    }
-  };
-  statements(body.statements, new Set());
-  return [...captures.values()];
 }
 
 function placementContainsFunctionReturn(statement: Statement): boolean {
@@ -4272,7 +4229,8 @@ function emitAwaitArguments(
       }
     }
     if (parameter?.mode !== "in" && parameter?.mode !== "inout" && parameter?.mode !== "out") return value;
-    return parameter.mode === "in" && parent.types.structs.get(parameter.type.name)?.kind === "class"
+    return (parameter.mode === "in" || parameter.mode === "inout")
+      && isFrameReferenceIdentityType(parameter.type.name, parent.types)
       ? value
       : `&(${value})`;
   }));
@@ -7011,12 +6969,20 @@ function asyncGeneratorCName(type: string): string {
 
 function borrowedFrameType(type: string, types: AsyncTypeContext, mutable = false): string {
   const cType = cFrameType(type, types);
-  return types.structs.get(type)?.kind === "class" ? cType : `${mutable ? "" : "const "}${cType} *`;
+  return isFrameReferenceIdentityType(type, types)
+    ? cType
+    : `${mutable ? "" : "const "}${cType} *`;
 }
 
 function borrowedFrameValue(name: string, type: string, types: AsyncTypeContext): string {
   const field = `frame->${frameField(name)}`;
-  return types.structs.get(type)?.kind === "class" ? field : `(*${field})`;
+  return isFrameReferenceIdentityType(type, types) ? field : `(*${field})`;
+}
+
+function isFrameReferenceIdentityType(type: string, types: AsyncTypeContext): boolean {
+  return types.structs.get(type)?.kind === "class"
+    || types.semanticInfo.foreignObjectTypes.has(type)
+    || types.semanticInfo.foreignNamedTypes.get(type)?.kind === "object";
 }
 
 function isSupportedFrameType(type: string, types: AsyncTypeContext, visiting = new Set<string>()): boolean {

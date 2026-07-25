@@ -224,7 +224,7 @@ function runApplication(
         const saveTask = thread.spawn(async move (): Note throws i32 => {
           await delay(1);
           const savedNote = try saveNoteToPath(workerPath, workerNote);
-          await on thread.main {
+          await on thread.main using (inout saveStatus) {
             saveStatus.persisted(noteId);
           }
           return savedNote;
@@ -305,9 +305,13 @@ async function main(): i32 {
   }
 
   const updates = new TaskScope();
-  const applicationStatus = await on thread.main: i32 {
-    select runApplication(database, store, databasePath, loadFailure, updates);
-  };
+  const applicationStatus = await on thread.main runApplication(
+    database,
+    store,
+    databasePath,
+    loadFailure,
+    updates
+  );
   await updates.close();
   return applicationStatus;
 }

@@ -1012,12 +1012,19 @@ function flattenExpression(
     const marker = appendAt("executorOn", "", [], [], expression.onLocation);
     const executor = flattenExpression(expression.executor, nodes, tokens);
     if (executor === null) return null;
+    const captures = expression.captures.map((capture) => appendAt(
+      "executorCapture",
+      capture.mode,
+      [],
+      [capture.name],
+      capture.location,
+    ));
     const call = expression.call ? flattenExpression(expression.call, nodes, tokens) : null;
     if (expression.call && call === null) return null;
     return appendAt(
       "executorPlacement",
       expression.mode,
-      call === null ? [marker, executor] : [marker, executor, call],
+      call === null ? [marker, executor, ...captures] : [marker, executor, call],
       [
         expression.returnType ? canonicalTypeName(expression.returnType.name) : "",
         expression.errorType ? canonicalTypeName(expression.errorType.name) : "",

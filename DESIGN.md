@@ -1332,10 +1332,10 @@ storing the native identity and is visible in editor hover. It changes
 compile-time placement and transfer legality, not the native ABI or call
 sequence.
 
-The runtime executes placement blocks through structured task frames. Captures
-may be recursively plain values, owned `String` copies, retained Z ARC classes,
-or Objective-C identities retained by ARC when they originate in the owning
-async task. A synchronous `thread.spawn`
+The runtime executes placement blocks through structured task frames.
+Cleanup-free Copy values and owned `String` snapshots may be inferred;
+ownership-bearing lexical captures use explicit `in`, `inout`, or `move`
+contracts. A synchronous `thread.spawn`
 closure can create a structured child with `task on thread.main` without
 becoming async itself. OS-thread exit and Z-task completion are distinct, so an
 async main task awaiting that worker suspends rather than blocking main. Darwin
@@ -1354,13 +1354,11 @@ operation finishes, its continuation is enqueued back onto the private worker
 executor. Detailed semantics and lowering order live in
 [`docs/executor-placement.md`](docs/executor-placement.md).
 
-The planned source contract for those later tiers is a contextual `using`
-clause after the executor expression:
+The source contract for placed-block captures is a contextual `using` clause
+after the executor expression:
 
 ```z
-const compute = thread.pool({ threads: 4 });
-
-const task = task on compute
+const task = task on thread.main
   using (in config, inout value, move buffer)
   : i32 throws WorkError {
     value += config.increment;
@@ -1385,16 +1383,17 @@ nonthrowing calls use a minimal one-shot placed frame. Throwing synchronous
 direct calls still require an async adapter until synchronous `try` lowering is
 available inside task frames.
 
-Executor construction configures the target; `using (...)` declares access to
-existing bindings. Its entries reuse the ordinary `in`, `inout`, and `move`
-capabilities without repeating types. Recursively Copy captures may remain
-inferred private snapshots. `out` is reserved until child-task initialization has
-sound failure, cancellation, and definite-assignment semantics. A borrowed
+The executor configures the target; `using (...)` declares access to existing
+bindings. Its entries reuse the ordinary `in`, `inout`, and `move` capabilities
+without repeating types. Cleanup-free recursively Copy captures and owned
+String snapshots may remain inferred private snapshots. `out` is reserved until
+child-task initialization has sound failure, cancellation, and
+definite-assignment semantics. A borrowed
 capture remains unavailable to conflicting parent access until the task is
 actually joined, explicitly or by the enclosing `async scope`; cancellation
 request alone does not end the loan. A moved binding remains consumed unless
-the task explicitly returns ownership. This is committed design direction, not
-implemented syntax yet.
+the task explicitly returns ownership. This capture tier is executable for
+`thread.main` placement blocks; future pool targets reuse the same contract.
 
 The error contract is the same as local `task`: a worker closure
 declared `(): T throws E` produces `Task<T, E>`, `try await` propagates `E`, and

@@ -23,7 +23,7 @@ async function main(): i32 on thread.main {
   const work = thread.spawn((): String => buildStatus());
   const status = await work;
 
-  await on thread.main {
+  await on thread.main using (in app, in status) {
     publishStatus(app, status);
   }
 

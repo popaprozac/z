@@ -509,12 +509,20 @@ export type ExecutorPlacementExpression = {
   readonly kind: "executorPlacement";
   readonly mode: "await" | "spawn";
   readonly executor: Expression;
+  readonly captures: ExecutorPlacementCapture[];
   readonly returnType: TypeReference | null;
   readonly errorType: TypeReference | null;
   readonly body: BlockStatement;
   readonly call: CallExpression | null;
   readonly location: SourceLocation;
   readonly onLocation: SourceLocation;
+};
+
+export type ExecutorPlacementCapture = {
+  readonly mode: "in" | "inout" | "move";
+  readonly name: string;
+  readonly nameLocation: SourceLocation;
+  readonly location: SourceLocation;
 };
 
 export type MatchExpression = {

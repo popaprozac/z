@@ -104,7 +104,7 @@ const sourceKeywordTokens = [
   "function", "if", "implements", "import", "in", "inout", "let", "match", "module",
   "copy", "move", "mut", "new", "of", "on", "out", "private", "public", "return", "scope", "select",
   "readonly", "static", "struct", "task", "throw", "throws", "trait", "type", "try", "unsafe", "view",
-  "weak", "while", "yield",
+  "using", "weak", "while", "yield",
 ] as const;
 
 const primitiveTypeTokens = [
@@ -183,6 +183,33 @@ export function completions(source: string, fileName: string, offset: number): C
   const selectiveImport = selectiveImportCompletions(source, fileName, offset);
   if (selectiveImport) return selectiveImport;
   const before = source.slice(0, offset);
+  if (/\busing\s*\([^)]*$/.test(before)) {
+    const symbols = symbolCompletions(source, fileName, offset, true);
+    const capabilities: CompletionItem[] = [
+      {
+        label: "in",
+        kind: completionKinds.keyword,
+        detail: "read-only executor capture loan",
+        insertText: "in ",
+        sortText: "0-in",
+      },
+      {
+        label: "inout",
+        kind: completionKinds.keyword,
+        detail: "exclusive mutable executor capture loan",
+        insertText: "inout ",
+        sortText: "0-inout",
+      },
+      {
+        label: "move",
+        kind: completionKinds.keyword,
+        detail: "transfer unique ownership into executor placement",
+        insertText: "move ",
+        sortText: "0-move",
+      },
+    ];
+    return [...capabilities, ...symbols];
+  }
   const member = before.match(/([A-Za-z_][A-Za-z0-9_]*(?:<[^<>]+>)?(?:\.[A-Za-z_][A-Za-z0-9_]*)*)\.([A-Za-z_][A-Za-z0-9_]*)?$/);
   if (member) return memberCompletions(source, fileName, offset, member[1], member[2] ?? "");
   const objectFields = objectFieldCompletions(source, fileName, offset);
@@ -551,6 +578,36 @@ export function hover(source: string, fileName: string, offset: number): Hover |
   const directWordType = context.semanticInfo.bindingTypes.get(word.start)
     ?? context.semanticInfo.numericLiteralTypes.get(word.start)
     ?? context.semanticInfo.expressionTypes.get(word.start);
+
+  if (
+    word.text === "using"
+    && /\b(?:await|task)\s+on\s+[A-Za-z_][A-Za-z0-9_.]*\s+$/.test(
+      source.slice(Math.max(0, word.start - 96), word.start),
+    )
+  ) {
+    return markdownHover(
+      "using (in value, inout state, move owner)  // explicit lexical capture contract for an executor-placement block",
+      source,
+      word.start,
+      word.end,
+    );
+  }
+  if (
+    (word.text === "in" || word.text === "inout" || word.text === "move")
+    && /\busing\s*\([^)]*$/.test(source.slice(Math.max(0, word.start - 160), word.start))
+  ) {
+    const detail = word.text === "in"
+      ? "read-only loan; caller storage stays alive until the placement joins"
+      : word.text === "inout"
+        ? "exclusive mutable loan; conflicting caller access is rejected until join"
+        : "transfers unique ownership into the placed operation; the source becomes unavailable";
+    return markdownHover(
+      `${word.text} capture  // ${detail}`,
+      source,
+      word.start,
+      word.end,
+    );
+  }
 
   if (
     word.text === "task"
@@ -1693,9 +1750,14 @@ function declaredBindingType(source: string, name: string, offset: number): stri
   return initializers.at(-1)?.[1]?.trim() ?? null;
 }
 
-function symbolCompletions(source: string, fileName: string, offset: number): CompletionItem[] {
-  const prefix = source.slice(0, offset).match(/([A-Za-z_][A-Za-z0-9_]*)$/)?.[1];
-  if (!prefix) return [];
+function symbolCompletions(
+  source: string,
+  fileName: string,
+  offset: number,
+  allowEmptyPrefix = false,
+): CompletionItem[] {
+  const prefix = source.slice(0, offset).match(/([A-Za-z_][A-Za-z0-9_]*)$/)?.[1] ?? "";
+  if (!prefix && !allowEmptyPrefix) return [];
   const builtIns: CompletionItem[] = [{
     label: "Option",
     kind: completionKinds.enum,

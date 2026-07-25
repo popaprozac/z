@@ -252,13 +252,11 @@ checker:
 - borrows, views, and slices require a proven cross-executor loan lifetime; and
 - the parent may not use a uniquely moved capture after the fork.
 
-The planned explicit capture contract is a contextual `using` clause after the
-executor expression:
+The explicit capture contract is a contextual `using` clause after the executor
+expression:
 
 ```z
-const compute = thread.pool({ threads: 4 });
-
-const task = task on compute
+const task = task on thread.main
   using (in config, inout value, move buffer)
   : i32 throws WorkError {
     value += config.increment;
@@ -268,18 +266,24 @@ const task = task on compute
 ```
 
 `using` is contextual in this position rather than a globally reserved word.
-Executor construction configures where and how operations run; `using (...)`
-states how the placed operation may access existing bindings. Capture entries
-reuse Z's ordinary capability vocabulary and do not repeat types:
+The executor configures where the operation runs; `using (...)` states how the
+placed operation may access existing bindings. Capture entries reuse Z's
+ordinary capability vocabulary and do not repeat types:
 
-- recursively Copy values may be inferred as private snapshots and omitted;
+- cleanup-free recursively Copy values and owned String snapshots may be
+  inferred as private snapshots and omitted;
 - `in binding` is an explicit readonly loan for a non-Copy capture;
 - `inout binding` is one exclusive mutable loan;
 - `move binding` transfers ownership into the placed operation; and
 - `out` is deferred until failure, cancellation, and definite initialization
   have one sound child-task-output contract.
 
-The same clause is intended to compose with both placement forms:
+For value storage, `inout` requires a mutable `let` binding. ARC class binding
+immutability remains distinct from instance mutation: a `const` class reference
+may appear as `inout` when the placed operation invokes mutable class behavior,
+while the reference itself is not rebound.
+
+The same clause composes with both placement forms:
 
 ```z
 await on thread.main using (in window) { /* hop and join */ }
@@ -290,9 +294,9 @@ An `in` or `inout` loan remains active until the child actually joins, either
 through an explicit `await`/cancelling join or the enclosing `async scope`'s
 implicit join. Merely requesting cancellation does not release a loan. The
 parent may use the binding again after that join; a `move` capture remains moved
-unless ownership is explicitly returned as the task result. This block-capture
-syntax and the borrowed/mutable cross-executor tiers are planned, not yet
-executable. Direct calls need no `using` clause:
+unless ownership is explicitly returned as the task result. A borrowed capture
+on `task on` requires an explicit `async scope`; an awaited placement already
+provides the join. Direct calls need no `using` clause:
 
 ```z
 const value = await on thread.main refresh(inout state);
@@ -307,16 +311,19 @@ placed call completes; a hot child loan follows the same explicit
 The current executable tier applies these concrete rules:
 
 - recursively plain captures copy into the placed task frame;
-- `String` captures receive independent owned UTF-8 storage;
-- Z class captures retain ARC identity and release it with the placed frame;
-- Objective-C captures from the owning async task are held as ARC strong fields;
+- omitted `String` captures receive independent owned UTF-8 storage;
+- `in` borrows a capture read-only until join;
+- `inout` exclusively borrows mutable caller storage until join;
+- `move` transfers a unique owner into the placed task frame;
 - a native worker may capture a deeply readonly/shareable Z class normally;
 - it may carry a `thread.main`-isolated Z class opaquely, access it only inside
   a nested main placement, and release that transferred retain back on main;
 - it may not carry raw Objective-C identity through itself merely to place it
   back on main;
-- captured mutation, borrows/views/slices, and native resource owners remain
-  rejected until their contracts can be proven.
+- `out` capture remains deferred until failure, cancellation, and definite
+  initialization share one sound child-output rule; and
+- the only executable placement target is currently `thread.main`; pool
+  executors remain planned.
 
 The application-shaped path keeps UI identity in its main async task, lets a
 worker return owned Z data, and then captures both in a main placement:

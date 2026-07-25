@@ -459,12 +459,13 @@ hover, completion, and highlighting for `async`, `await`, `try await`,
 `await on thread.main` and `task on thread.main` placement forms. Declaration
 headers use `on thread.main` as an isolation contract. `z check` accepts these
 programs. The executable placement tier lowers
-blocks into structured task frames and supports recursively plain captures,
-owned String copies, retained Z ARC classes, and Objective-C identities retained
-by ARC when captured from the owning async task. Native workers publish main
-children without blocking the main executor, and Darwin wakes an installed
-`CFRunLoopSource`. Mutable and borrowed captures, explicit native/foreign
-affinity contracts, and Windows/Linux UI-loop adapters remain; see
+blocks into structured task frames. Cleanup-free Copy values and owned String
+snapshots may be inferred; ownership-bearing lexical captures use contextual
+`using (in value, inout state, move owner)`. Loans remain active through join,
+and borrowed placed children require an explicit async scope. Native workers
+publish main children without blocking the main executor, and Darwin wakes an
+installed `CFRunLoopSource`. `out` capture, additional executor targets, and
+Windows/Linux UI-loop adapters remain; see
 [`executor-placement.md`](executor-placement.md).
 
 Phase 1 executes owned async functions and methods on deterministic serial FIFO

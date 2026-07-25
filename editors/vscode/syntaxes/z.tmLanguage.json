@@ -288,6 +288,9 @@
         "name": "keyword.control.concurrent.z",
         "match": "\\btask(?=\\s+(?:on\\b|[A-Za-z_][A-Za-z0-9_]*))"
       }, {
+        "name": "keyword.control.concurrent.capture.z",
+        "match": "\\busing(?=\\s*\\()"
+      }, {
         "name": "keyword.operator.ownership.z",
         "match": "\\b(?:copy|move)(?=\\s+[A-Za-z_][A-Za-z0-9_]*)"
       }, {

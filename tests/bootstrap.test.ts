@@ -8589,6 +8589,7 @@ test("builds owned UTF-8 String values through explicit std/text TextBuffer", ()
     }
   `;
   writeFileSync(fileName, source);
+
   const result = spawnSync(process.execPath, [cli, "run", fileName], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stdout, "alpha\né=42\n");
@@ -8889,6 +8890,7 @@ test("compares owned String values by their UTF-8 bytes", () => {
     }
   `;
   writeFileSync(fileName, source);
+
   const result = spawnSync(process.execPath, [cli, "run", fileName], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
   const generated = compileToC(source, fileName);
@@ -13093,12 +13095,16 @@ test("editor grammar tracks keywords without reserving Result variants", () => {
     .find((pattern: { match: string }) => pattern.match.includes("export"));
   const taskPattern = grammar.repository.keywords.patterns
     .find((pattern: { name: string }) => pattern.name === "keyword.control.concurrent.z");
+  const usingPattern = grammar.repository.keywords.patterns
+    .find((pattern: { name: string }) => pattern.name === "keyword.control.concurrent.capture.z");
   const ownershipPattern = grammar.repository.keywords.patterns
     .find((pattern: { name: string }) => pattern.name === "keyword.operator.ownership.z");
   const asyncProjectionPattern = new RegExp(foreignDeclarationPatterns[12].begin);
   assert.equal(exportPattern?.name, "keyword.control.export.z");
   assert.match("task fetch()", new RegExp(taskPattern?.match ?? "$^"));
   assert.match("task on thread.main", new RegExp(taskPattern?.match ?? "$^"));
+  assert.match("using (in value)", new RegExp(usingPattern?.match ?? "$^"));
+  assert.doesNotMatch("const using = operation;", new RegExp(usingPattern?.match ?? "$^"));
   assert.match(".yield()", memberCallPattern);
   assert.doesNotMatch("const task = operation();", new RegExp(taskPattern?.match ?? "$^"));
   assert.match("copy value", new RegExp(ownershipPattern?.match ?? "$^"));
@@ -13113,6 +13119,7 @@ test("editor grammar tracks keywords without reserving Result variants", () => {
   assert.match(keywordPattern, /copy/);
   assert.match(keywordPattern, /move/);
   assert.match(keywordPattern, /task/);
+  assert.match(keywordPattern, /using/);
   assert.doesNotMatch(keywordPattern, /await\|task\|on/);
   assert.match(keywordPattern, /view/);
   assert.match(keywordPattern, /weak/);
@@ -13330,6 +13337,110 @@ test("places direct async calls without nested tasks and preserves parameter cap
 
   const result = spawnSync(process.execPath, [cli, "run", fileName], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
+});
+
+test("captures executor-placement blocks through explicit using capabilities", () => {
+  const directory = mkdtempSync("/tmp/z-placement-using-");
+  const fileName = resolve(directory, "main.zs");
+  const source = `
+    import { thread } from "std/thread";
+    struct Counter { value: i32; }
+    async function main(): i32 {
+      let counter = Counter({ value: 20 });
+      const title = "notes";
+      let values = Array<i32>();
+      values.push(20);
+
+      const first = await on thread.main using (in title, inout counter): i32 {
+        if (title == "notes") counter.value = counter.value + 4;
+        select counter.value;
+      };
+      const second = await on thread.main using (move values): i32 {
+        select values[0];
+      };
+      async scope {
+        const update = task on thread.main using (inout counter) {
+          counter.value = counter.value + 1;
+        };
+        await update;
+        counter.value = counter.value + 1;
+      }
+      return first + second + counter.value - 70;
+    }
+  `;
+  writeFileSync(fileName, source);
+  const usingOffset = source.indexOf("using (in title") + 1;
+  assert.match(
+    hover(source, fileName, usingOffset)?.contents.value ?? "",
+    /explicit lexical capture contract/,
+  );
+  const inoutOffset = source.indexOf("inout counter") + 1;
+  assert.match(
+    hover(source, fileName, inoutOffset)?.contents.value ?? "",
+    /exclusive mutable loan/,
+  );
+  const captureNameOffset = source.indexOf("counter", inoutOffset) + 1;
+  assert.match(
+    hover(source, fileName, captureNameOffset)?.contents.value ?? "",
+    /counter: Counter/,
+  );
+  const completionSource = source.replace("in title, inout counter", "in title, inout cou");
+  const completionOffset = completionSource.indexOf("cou): i32 {") + "cou".length;
+  const captureCompletions = completions(completionSource, fileName, completionOffset);
+  assert.match(captureCompletions.find((item) => item.label === "in")?.detail ?? "", /read-only executor capture/);
+  assert.match(captureCompletions.find((item) => item.label === "inout")?.detail ?? "", /exclusive mutable/);
+  assert.match(captureCompletions.find((item) => item.label === "move")?.detail ?? "", /transfer unique ownership/);
+  assert.ok(captureCompletions.some((item) => item.label === "counter"));
+
+  const result = spawnSync(process.execPath, [cli, "run", fileName], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+
+  const movedUse = source.replace(
+    "return first + second + counter.value - 70;",
+    "return first + second + counter.value + values[0] - 70;",
+  );
+  const movedDiagnostic = diagnostics(movedUse, fileName)[0];
+  assert.equal(movedDiagnostic.code, "Z0201");
+  assert.match(movedDiagnostic.message, /use of moved value "values"/);
+
+  const implicitOwner = source.replace(
+    "using (move values): i32",
+    ": i32",
+  );
+  const implicitDiagnostic = diagnostics(implicitOwner, fileName)[0];
+  assert.equal(implicitDiagnostic.code, "Z0704");
+  assert.match(implicitDiagnostic.message, /capture "values" requires an explicit capability/);
+
+  const readOnlyMutation = source.replace("inout counter): i32", "in counter): i32");
+  const readOnlyDiagnostic = diagnostics(readOnlyMutation, fileName)[0];
+  assert.equal(readOnlyDiagnostic.code, "Z0704");
+  assert.match(readOnlyDiagnostic.message, /read-only executor capture "counter" cannot be mutated/);
+
+  const overlappingUse = source.replace(
+    "await update;\n        counter.value",
+    "const observed = counter.value;\n        await update;\n        counter.value",
+  );
+  const overlapDiagnostic = diagnostics(overlappingUse, fileName)[0];
+  assert.equal(overlapDiagnostic.code, "Z0704");
+  assert.match(overlapDiagnostic.message, /while a child task mutably borrows it/);
+
+  const outCapture = source.replace("move values", "out values");
+  const outDiagnostic = diagnostics(outCapture, fileName)[0];
+  assert.equal(outDiagnostic.code, "Z0704");
+  assert.match(outDiagnostic.message, /`out` executor captures are not supported yet/);
+
+  const duplicateCapture = source.replace("in title, inout counter", "in title, inout counter, in counter");
+  const duplicateDiagnostic = diagnostics(duplicateCapture, fileName)[0];
+  assert.equal(duplicateDiagnostic.code, "Z0704");
+  assert.match(duplicateDiagnostic.message, /duplicate executor capture "counter"/);
+
+  const directUsing = source.replace(
+    "await on thread.main using (in title, inout counter): i32 {",
+    "await on thread.main using (in title) title.byteLength;",
+  );
+  const directDiagnostic = diagnostics(directUsing, fileName)[0];
+  assert.equal(directDiagnostic.code, "Z0710");
+  assert.match(directDiagnostic.message, /belongs to a multi-statement executor-placement block/);
 });
 
 test("diagnoses throwing synchronous direct placement before async lowering", () => {
@@ -13617,7 +13728,7 @@ test("places structured work onto main from a native worker without blocking mai
   }
 });
 
-test("retains Z ARC identities captured by main-executor placement", () => {
+test("borrows Z ARC identities captured by main-executor placement", () => {
   const directory = mkdtempSync("/tmp/z-main-class-capture-");
   const fileName = resolve(directory, "main.zs");
   const source = `
@@ -13625,7 +13736,7 @@ test("retains Z ARC identities captured by main-executor placement", () => {
     class Session { id: i32; }
     async function main(): i32 {
       const session = new Session({ id: 42 });
-      const observed = await on thread.main: i32 {
+      const observed = await on thread.main using (in session): i32 {
         select session.id;
       };
       return observed - 42;
@@ -13634,14 +13745,15 @@ test("retains Z ARC identities captured by main-executor placement", () => {
   writeFileSync(fileName, source);
 
   const artifact = compileToNative(source, fileName);
-  assert.match(artifact.source, /z_async_start___z_executor_main_\d+\([^\n]+Z_Session_retain\(frame->value_session\)\)/);
+  assert.match(artifact.source, /z_async_start___z_executor_main_\d+\([^\n]+frame->value_session\)/);
+  assert.doesNotMatch(artifact.source, /z_async_start___z_executor_main_\d+\([^\n]+Z_Session_retain\(frame->value_session\)\)/);
   assert.match(artifact.source, /Z_Session_release\(frame->value_session\)/);
 
   const result = spawnSync(process.execPath, [cli, "run", fileName], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
 });
 
-test("publishes owned worker results through retained Objective-C identity on main", () => {
+test("publishes owned worker results through borrowed Objective-C identity on main", () => {
   if (process.platform !== "darwin") return;
   const example = resolve(projectRoot, "examples/async/appkit-main-result.zs");
   const source = readFileSync(example, "utf8");
@@ -13649,9 +13761,9 @@ test("publishes owned worker results through retained Objective-C identity on ma
 
   assert.ok(artifact.frameworks.includes("AppKit"));
   assert.ok(artifact.frameworks.includes("CoreFoundation"));
-  assert.match(artifact.source, /NSApplication \* value_app;/);
+  assert.match(artifact.source, /z_async_start___z_executor_main_\d+\(Z_AsyncExecutor \*executor, NSApplication \* value_app, const Z_String \* value_status\)/);
   assert.match(artifact.source, /frame->value_app = nil;/);
-  assert.match(artifact.source, /z_string_copy_bytes\(frame->value_status, 0, \(frame->value_status\)\.length\)/);
+  assert.doesNotMatch(artifact.source, /z_string_copy_bytes\(frame->value_status, 0, \(frame->value_status\)\.length\)/);
 
   const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
@@ -16075,7 +16187,7 @@ test("routes arbitrary-thread callbacks through named TaskScope ownership", () =
         async move (): void => {
           const worker = thread.spawn(async move (): void => {
             await delay(1);
-            await on thread.main {
+            await on thread.main using (in presenter) {
               presenter.publish(40);
             }
           });
@@ -16832,7 +16944,7 @@ test("carries main-isolated ARC identity opaquely through a native worker", () =
       const presenter = new Presenter({ offset: 2 });
       const worker = thread.spawn(async move (): i32 => {
         await delay(1);
-        return await on thread.main {
+        return await on thread.main using (in presenter) {
           select presenter.publish(40);
         };
       });
@@ -16865,7 +16977,7 @@ test("carries main-isolated ARC identity opaquely through a native worker", () =
   assert.equal(result.stdout, "released presenter\n");
 
   const directAccess = source.replace(
-    "return await on thread.main {\n          select presenter.publish(40);\n        };",
+    "return await on thread.main using (in presenter) {\n          select presenter.publish(40);\n        };",
     "return presenter.publish(40);",
   );
   const directDiagnostic = diagnostics(directAccess, "executor-bound-direct.zs")[0];
@@ -16877,8 +16989,8 @@ test("carries main-isolated ARC identity opaquely through a native worker", () =
     "await delay(1);",
     "await delay(1);\n        const escaped = presenter;",
   ).replace(
-    "select presenter.publish(40);",
-    "select escaped.publish(40);",
+    "using (in presenter) {\n          select presenter.publish(40);",
+    "using (in escaped) {\n          select escaped.publish(40);",
   );
   const aliasDiagnostic = diagnostics(escapedAlias, "executor-bound-alias.zs")[0];
   assert.equal(aliasDiagnostic.code, "Z0704");
