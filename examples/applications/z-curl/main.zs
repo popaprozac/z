@@ -7,6 +7,10 @@ struct CurlRuntime {
     }
 }
 
+struct WriteError {
+    code: i32;
+}
+
 function initializeCurl(): CurlRuntime throws curl.CURLcode {
     try curl.curl_global_init();
     return CurlRuntime({});
@@ -32,7 +36,10 @@ function fetchHosts(): void throws curl.CURLcode {
     const writer = try curl.curl_easy_setopt(
         easy,
         curl.CURLOPT_WRITEFUNCTION,
-        move (bytes: Slice<u8>): usize => {
+        move (bytes: Slice<u8>): usize throws WriteError => {
+            if (bytes.length == 0) {
+                throw WriteError({ code: 1 });
+            }
             console.log(`received ${bytes.length} bytes`);
             return bytes.length;
         }

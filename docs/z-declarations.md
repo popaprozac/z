@@ -112,6 +112,7 @@ declare module "vendor.h" {
         data buffer;
         length size * count;
       }
+      failure VENDOR_WRITE_ERROR;
       thread caller;
       invoked repeatedly;
     }
@@ -169,6 +170,8 @@ spelling does not silently pass through.
 | `owner handle;` | Tie a callback connection to one borrowed native owner parameter | Z prevents the owner from moving or deinitializing while the connection is live |
 | `project input: Slice<u8> { data data; length length; }` in a function body | Replace a native byte pointer plus `size_t` length with one named borrowed `Slice<u8>` argument | Read-only projections require const native storage; `project inout` requires mutable native storage and explicit `inout` at the Z call site |
 | `project bytes: Slice<u8> { data buffer; length size * count; }` in a callback body | Project native callback byte parameters into one named borrowed `Slice<u8>` callback argument | Every named callback parameter and its native type are checked against the typedef |
+| `failure N;` in a callback body | Return numeric native value `N` if the Z callback throws | Checked against the nested callback's native return type, not the enclosing foreign function return |
+| `failure CONSTANT;` in a callback body | Return a header-defined native failure value if the Z callback throws | The constant must exist and be compatible with the callback return type; the thrown Z payload is destroyed at the boundary |
 | `thread caller;` | Callback invocation and release remain on the registering thread | Escaping closure environment uses ordinary thread-local ownership |
 | `thread any;` | Callback invocation and release may occur on arbitrary threads, including overlapping invocations | Escaping closure environment uses atomic ownership and every capture must satisfy Z's conservative concurrent-shareability rules |
 | `copy;` | Native value has usable copy construction | Enables `copy value` and copying aggregate storage that contains it |
@@ -222,8 +225,8 @@ vendor_hash(input: Slice<u8>): i32
 `length` facts name ABI parameters from the header. A spelling such as
 `data data;` is therefore intentional: the first word is the `.zd` fact and the
 second is the C parameter. Naming the projection keeps multiple ordinary
-projections distinct and gives future callback return/error mappings an
-unambiguous value such as `bytes.length`.
+projections distinct and gives callback adapters an unambiguous value such as
+`bytes.length`.
 
 Callers pass stored fixed arrays, `Array<u8>`, or existing `Slice<u8>` values
 without spelling `in`; a slice is intrinsically borrowed. The declaration's
@@ -365,6 +368,7 @@ callback completion {
 
 callback visitor {
   context context;
+  failure 1;
   invoked repeatedly;
 }
 ```
@@ -382,14 +386,26 @@ completion hook.
 connection requires it, but it is not connection-specific: a call-scoped
 visitor or sorting callback can also be invoked repeatedly.
 
-Native callbacks that return a status need a bidirectional projection: Z must
-describe both the normal native return and how a thrown Z error becomes a
-native abort value. Throwing function values now preserve `throws E` through
-storage, aliases, calls, `try`, and `attempt`, providing the required language
-foundation. The remaining `.zd` work is to map the callback's success and
-failure outcomes onto the verified native return values. Shipping a return-only
-projection would make libcurl and SQLite early-abort paths inexpressible, so
-callback `return` and callback `throws` will land together.
+Native callbacks use their real ABI return type in Z. An ordinary return passes
+that value directly to C. A callback contract may add `failure N;` or
+`failure HEADER_CONSTANT;`, which permits a compatible Z function value to
+declare `throws E`. If the callback throws, the generated adapter destroys the
+`E` payload and returns the declared native failure value.
+
+This is narrowing rather than silent loss: the richer Z payload cannot cross
+the C callback ABI, but the failure fact does. A libcurl callback failure
+becomes `CURLE_WRITE_ERROR` on `curl_easy_perform`; a SQLite-style visitor can
+return nonzero to abort traversal. It is nevertheless the only Z `throw` whose
+payload never reaches a Z handler, so code should treat it as an explicit ABI
+boundary. In a callback declared `invoked repeatedly`, prefer a cleanup-free
+error type on hot paths. Owned strings and other cleanup-bearing payloads remain
+correct, but they are constructed and destroyed before control returns to C.
+
+The `failure` fact is checked against the callback typedef's return type. An
+outer `success CURLE_OK;` still describes the enclosing function's `CURLcode`
+return; nested `failure CURL_WRITEFUNC_ERROR;` describes the callback's
+`size_t` return. Placing either fact at the wrong nesting depth is rejected with
+a diagnostic naming the relevant return channel.
 
 ## Trust boundary
 

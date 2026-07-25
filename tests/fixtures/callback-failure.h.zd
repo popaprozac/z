@@ -1,0 +1,11 @@
+declare module "callback-failure.h" {
+  export function z_visit_rows(context: _, in visitor: _): void throws _ {
+    success Z_VISIT_OK;
+
+    callback visitor {
+      context context;
+      failure 1;
+      invoked repeatedly;
+    }
+  }
+}

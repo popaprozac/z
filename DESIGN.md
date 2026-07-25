@@ -1978,6 +1978,7 @@ export function curl_easy_setopt(
       data buffer;
       length size * nitems;
     }
+    failure CURL_WRITEFUNC_ERROR;
     thread caller;
     invoked repeatedly;
   }
@@ -1991,8 +1992,9 @@ The safe Z call accepts an escaping closure and returns a move-only
 const writer = try curl.curl_easy_setopt(
   easy,
   curl.CURLOPT_WRITEFUNCTION,
-  move (bytes: Slice<u8>): usize => {
+  move (bytes: Slice<u8>): usize throws WriteError => {
     consume(bytes);
+    if (cannotContinue()) throw WriteError({ code: 1 });
     return bytes.length;
   }
 );
@@ -2016,11 +2018,21 @@ completed task storage. A vendor that never invokes a callback declared
 `invoked once` leaves the task pending indefinitely unless a later contract
 provides a native cancellation or terminal-completion mechanism.
 
-Callback return projection is deliberately deferred until Z function values
-can carry `throws`. The first safe form must describe both directions together:
-the ordinary Z outcome mapped to the native callback return and a thrown Z
-error mapped to a native abort result. A return-only adapter would erase
-libcurl, SQLite, and similar early-termination paths.
+Callback return projection preserves both directions. An ordinary Z callback
+return remains the exact native callback return. `failure N;` or
+`failure CONSTANT;` states which value the adapter returns when the Z callback
+throws. The adapter destroys the error payload before returning that native
+value. The payload therefore stops at the ABI boundary, but the failure fact
+survives—for example, libcurl reports `CURLE_WRITE_ERROR` from the owning
+operation.
+
+This boundary behavior is intentionally exceptional: the callback's `throw`
+does not reach a Z `try` or `attempt` handler because C exposes no payload
+channel. Repeated callbacks should generally use cleanup-free error payloads;
+constructing an owned message only to destroy it during every failing
+invocation is valid but can add hot-path work. A future owner-tied
+`native.Connection` extension may preserve the last callback payload and
+rethrow it when the owning native operation reports failure.
 
 Ordinary non-callback pointer/length pairs use the same vocabulary at function
 scope:

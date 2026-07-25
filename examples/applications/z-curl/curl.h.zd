@@ -40,6 +40,7 @@ declare module "curl/curl.h" {
         data buffer;
         length size * nitems;
       }
+      failure CURL_WRITEFUNC_ERROR;
       thread caller;
       invoked repeatedly;
     }

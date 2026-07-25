@@ -15,7 +15,9 @@ semantic facts the C header does not express:
 - a checked `CURLOPT_TIMEOUT` overload whose declaration-only `clong` preserves
   C `long`'s target ABI; and
 - an owner-tied `CURLOPT_WRITEFUNCTION` callback projected as
-  `move (bytes: Slice<u8>): usize => ...`.
+  `move (bytes: Slice<u8>): usize throws WriteError => ...`; and
+- `failure CURL_WRITEFUNC_ERROR;`, which narrows a thrown Z callback error to
+  libcurl's callback ABI failure sentinel.
 
 Run it from the repository root:
 
@@ -41,6 +43,19 @@ lifetime. Z checks both facts rather than inferring one from the other.
 Its named `project bytes: Slice<u8> { ... }` block combines libcurl's
 `buffer`, `size`, and `nitems` callback parameters into that one safe closure
 parameter without repeating the native length expression at the call site.
+
+The callback's ordinary `usize` return is passed directly to libcurl. If it
+throws, the adapter destroys the `WriteError` payload immediately and returns
+`CURL_WRITEFUNC_ERROR`. libcurl then widens that failure fact into
+`CURLE_WRITE_ERROR` from `curl_easy_perform`, which reaches Z through the
+ordinary typed `CURLcode` error channel. The original `WriteError` payload
+cannot cross C's narrower ABI and therefore never reaches a Z `try` or
+`attempt` handler.
+
+For callbacks marked `invoked repeatedly`, prefer small cleanup-free error
+payloads. A cleanup-bearing payload such as an owned `String` is valid and is
+destroyed correctly, but constructing and immediately destroying it on every
+failing invocation can add hidden hot-path work.
 
 `Slice<u8>` is already borrowed in Z. The callback therefore spells
 `move (bytes: Slice<u8>)`, not `move (in bytes: Slice<u8>)`: `move` transfers

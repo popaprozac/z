@@ -387,9 +387,6 @@ export function generateC(program: Program, sourceName: string, semanticInfo: Se
   for (const helper of foreignEscapeHelpers) {
     lines.push(generateForeignEscapeHelpers(helper), "");
   }
-  for (const adapter of foreignCallbackAdapters.filter((candidate) => !candidate.callback.bytesProjection)) {
-    lines.push(generateForeignCallbackAdapter(adapter), "");
-  }
   if (foreignConnectionCalls.length > 0) lines.push(generateNativeConnectionRuntime(), "");
 
   for (const type of sliceTypes) {
@@ -410,12 +407,6 @@ export function generateC(program: Program, sourceName: string, semanticInfo: Se
   }
 
   lines.push(...generateAggregateDefinitions(program.structs, program.enums, arrayTypes, structs, enums, semanticInfo.foreignNamedTypes));
-  for (const adapter of foreignCallbackAdapters.filter((candidate) => candidate.callback.bytesProjection)) {
-    lines.push(generateForeignCallbackAdapter(adapter), "");
-  }
-  for (const [offset, connection] of foreignConnectionCalls) {
-    lines.push(generateForeignConnectionHelper(offset, connection), "");
-  }
   for (const [callOffset, closureOffset] of semanticInfo.taskScopeAsyncCalls) {
     const closure = semanticInfo.closures.get(closureOffset)!;
     lines.push(`${taskScopeAsyncScheduleSignature(callOffset, closure, structs, enums, semanticInfo)};`);
@@ -474,6 +465,13 @@ export function generateC(program: Program, sourceName: string, semanticInfo: Se
   }
   if (program.structs.some((declaration) => declaration.methods.length > 0) || program.functions.length > 0) {
     lines.push("");
+  }
+
+  for (const adapter of foreignCallbackAdapters) {
+    lines.push(generateForeignCallbackAdapter(adapter, structs, enums, semanticInfo), "");
+  }
+  for (const [offset, connection] of foreignConnectionCalls) {
+    lines.push(generateForeignConnectionHelper(offset, connection), "");
   }
 
   for (const type of arenaCreateTypes) {
@@ -986,7 +984,12 @@ function foreignCallbackAdapterName(plan: Extract<ForeignCallArgumentPlan, { kin
   return `__z_c_callback_${functionTypeCName(functionType)}_context_${plan.callback.context!.callbackParameter}`;
 }
 
-function generateForeignCallbackAdapter(plan: Extract<ForeignCallArgumentPlan, { kind: "callback" }>): string {
+function generateForeignCallbackAdapter(
+  plan: Extract<ForeignCallArgumentPlan, { kind: "callback" }>,
+  structs: Map<string, StructDeclaration>,
+  enums: Map<string, EnumDeclaration>,
+  semanticInfo: SemanticInfo,
+): string {
   const functionType = parseFunctionType(plan.functionType)!;
   const callback = plan.callback;
   if (callback.bytesProjection && callback.nativeParameters) {
@@ -1006,12 +1009,20 @@ function generateForeignCallbackAdapter(plan: Extract<ForeignCallArgumentPlan, {
     const slice = "_z_callback_bytes";
     const projectedArgument = bytes.access === "inout" ? `&${slice}` : slice;
     const invoke = `${functionValue}->call(${functionValue}->context, ${projectedArgument})`;
+    const body = generateForeignCallbackInvocation(
+      invoke,
+      functionType,
+      callback,
+      structs,
+      enums,
+      semanticInfo,
+    );
     return `static __attribute__((unused)) size_t ${foreignCallbackAdapterName(plan)}(${nativeParameters.join(", ")}) {
   ${sliceName(sliceType)} ${slice} = {
     .data = (uint8_t *)${nativeNames[bytes.bufferParameter]},
     .length = ${length},
   };
-  return ${invoke};
+  ${body}
 }`;
   }
   const contextIndex = callback.context!.callbackParameter;
@@ -1031,10 +1042,52 @@ function generateForeignCallbackAdapter(plan: Extract<ForeignCallArgumentPlan, {
   const functionName = foreignCallbackAdapterName(plan);
   const functionValue = `((${functionTypeCName(functionType)} *)callback_context)`;
   const invoke = `${functionValue}->call(${functionValue}->context${argumentNames.length ? `, ${argumentNames.join(", ")}` : ""})`;
-  const body = functionType.returnType === "void" ? `${invoke};\n  return;` : `return ${invoke};`;
+  const body = generateForeignCallbackInvocation(
+    invoke,
+    functionType,
+    callback,
+    structs,
+    enums,
+    semanticInfo,
+  );
   return `static __attribute__((unused)) ${callback.returnType.cName} ${functionName}(${nativeParameters.join(", ") || "void"}) {
   ${body}
 }`;
+}
+
+function generateForeignCallbackInvocation(
+  invoke: string,
+  functionType: FunctionType,
+  callback: ForeignCallbackType,
+  structs: Map<string, StructDeclaration>,
+  enums: Map<string, EnumDeclaration>,
+  semanticInfo: SemanticInfo,
+): string {
+  if (!functionType.errorType) {
+    return functionType.returnType === "void" ? `${invoke};\n  return;` : `return ${invoke};`;
+  }
+  if (callback.failure === null) {
+    throw new Error("throwing foreign callback has no native failure projection");
+  }
+  const resultType = resultTypeName(functionType.returnType, functionType.errorType);
+  const result = "_z_callback_result";
+  const cleanup = generateOwnedEnvironmentCleanup(
+    `${result}.data.failure`,
+    functionType.errorType,
+    structs,
+    enums,
+    semanticInfo,
+    { value: 0 },
+  );
+  const failed = [
+    ...(cleanup ? [cleanup] : []),
+    `return ${callback.failure};`,
+  ].map((line) => indent(line, 4)).join("\n");
+  return `${enumName(resultType)} ${result} = ${invoke};
+  if (${result}.tag == ${variantTag(resultType, "failure")}) {
+${failed}
+  }
+  return ${result}.data.success;`;
 }
 
 function generateNativeConnectionRuntime(): string {

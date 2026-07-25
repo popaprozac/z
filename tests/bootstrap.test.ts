@@ -1317,7 +1317,7 @@ test("passes typed Z functions to call-only C callbacks with optional context ad
   );
   assert.throws(
     () => compileToC(wrongShape, fixture),
-    /expected \(argument1: i32, argument2: i32\) => i32, found \(left: i32\) => i32/,
+    /native callback expects \(argument1: i32, argument2: i32\) => i32, found \(left: i32\) => i32/,
   );
 
   const capturedCallback = source.replace(
@@ -1352,6 +1352,75 @@ test("passes contextual inline closures directly to imported C callbacks", () =>
   const result = spawnSync(process.execPath, [cli, "run", fixture], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stdout, "inline-escape-drop=2\n");
+});
+
+test("narrows thrown callback errors to declared native failure values", () => {
+  const fixture = resolve(projectRoot, "tests/fixtures/callback-failure.zs");
+  const declarationFile = resolve(projectRoot, "tests/fixtures/callback-failure.h.zd");
+  const source = readFileSync(fixture, "utf8");
+  const generated = compileToC(source, fixture);
+  assert.match(generated, /Z_Result_i32_VisitError _z_callback_result = .*->call/);
+  assert.match(generated, /_z_callback_result\.tag == .*failure/);
+  assert.match(generated, /Z_VisitError_deinit\(&\(_z_callback_result\.data\.failure\)\)/);
+  assert.match(generated, /return 1;/);
+  assert.match(generated, /return _z_callback_result\.data\.success;/);
+
+  const result = spawnSync(process.execPath, [cli, "run", fixture], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+
+  const withoutFailure = readFileSync(
+    resolve(projectRoot, "tests/fixtures/callback-failure.h.zd"),
+    "utf8",
+  ).replace("      failure 1;\n", "");
+  const directory = mkdtempSync("/tmp/z-callback-failure-");
+  writeFileSync(resolve(directory, "callback-failure.h"), readFileSync(
+    resolve(projectRoot, "tests/fixtures/callback-failure.h"),
+    "utf8",
+  ));
+  writeFileSync(resolve(directory, "callback-failure.h.zd"), withoutFailure);
+  const missingContractSource = source.replace(
+    'import native from "callback-failure.h";',
+    'import native from "./callback-failure.h";',
+  );
+  const missingFile = resolve(directory, "main.zs");
+  writeFileSync(missingFile, missingContractSource);
+  assert.match(
+    diagnostics(missingContractSource, missingFile)[0]?.message ?? "",
+    /throwing callback .* has no native failure projection/,
+  );
+
+  const declarationSource = readFileSync(declarationFile, "utf8");
+  const failureKeyword = declarationSource.indexOf("failure 1");
+  assert.match(
+    hover(declarationSource, declarationFile, failureKeyword + 2)?.contents.value ?? "",
+    /thrown Z callback error is destroyed here and narrowed/,
+  );
+  const failureValue = failureKeyword + "failure ".length;
+  assert.match(
+    hover(declarationSource, declarationFile, failureValue)?.contents.value ?? "",
+    /returned through the native callback ABI/,
+  );
+  const completionSource = declarationSource.replace("      failure 1;", "      fai");
+  const completionOffset = completionSource.lastIndexOf("fai") + "fai".length;
+  assert.equal(
+    completions(completionSource, declarationFile, completionOffset)
+      .find((item) => item.label === "failure")?.insertText,
+    "failure ",
+  );
+  assert.match(
+    diagnostics(
+      declarationSource.replace("failure 1;", "success 1;"),
+      declarationFile,
+    )[0]?.message ?? "",
+    /success inside callback .* return successful values from the Z callback body instead/,
+  );
+  assert.match(
+    diagnostics(
+      declarationSource.replace("success Z_VISIT_OK;", "success Z_VISIT_OK;\n    failure 1;"),
+      declarationFile,
+    )[0]?.message ?? "",
+    /failure is scoped to a callback return/,
+  );
 });
 
 test("rejects invalid C callback and context declaration pairs", () => {

@@ -114,7 +114,7 @@ const primitiveTypeTokens = [
 
 const declarationKeywordTokens = [
   "declare", "module", "export", "function", "type", "copy", "in", "inout", "out", "move", "deinit",
-  "async", "callback", "context", "thread", "caller", "any", "transfer", "share", "fixed", "throws", "success",
+  "async", "callback", "context", "thread", "caller", "any", "transfer", "share", "fixed", "throws", "success", "failure",
   "connection", "option", "owner", "project", "data", "length", "from", "return", "throw", "invoked", "once", "repeatedly",
 ] as const;
 
@@ -2431,6 +2431,32 @@ function foreignDeclarationCompletions(source: string, fileName: string, offset:
       });
     }
   }
+  const callbackFailureContractPrefix = /\bcallback\s+[A-Za-z_][A-Za-z0-9_]*\s*\{(?:[^{}]|\{[^{}]*\})*\b([A-Za-z_]*)$/.exec(before)?.[1];
+  if (
+    callbackFailureContractPrefix !== undefined
+    && "failure".startsWith(callbackFailureContractPrefix)
+  ) {
+    contextual.push({
+      label: "failure",
+      kind: completionKinds.keyword,
+      detail: "native callback return used when a Z callback throws",
+      insertText: "failure ",
+      sortText: "0-failure",
+    });
+  }
+  const callbackFailureValuePrefix = /\bcallback\s+[A-Za-z_][A-Za-z0-9_]*\s*\{(?:[^{}]|\{[^{}]*\})*\bfailure\s+([A-Za-z_]*)$/.exec(before)?.[1];
+  if (module && callbackFailureValuePrefix !== undefined) {
+    for (const constant of module.constants.values()) {
+      if (!constant.name.toLowerCase().startsWith(callbackFailureValuePrefix.toLowerCase())) continue;
+      contextual.push({
+        label: constant.name,
+        kind: completionKinds.enumMember,
+        detail: `${foreignConstantDetail(constant)}; native return when the Z callback throws`,
+        insertText: `${constant.name};`,
+        sortText: `0-${constant.name}`,
+      });
+    }
+  }
   const invocationValuePrefix = /\bcallback\s+[A-Za-z_][A-Za-z0-9_]*\s*\{(?:[^{}]|\{[^{}]*\})*\binvoked\s+([A-Za-z_]*)$/.exec(before)?.[1];
   if (invocationValuePrefix !== undefined) {
     for (const value of ["once", "repeatedly"] as const) {
@@ -2976,6 +3002,25 @@ function foreignDeclarationHover(source: string, fileName: string, offset: numbe
         );
         return markdownHover(
           `in ${callback.owner}: ${[...types].join(" | ") || "_"}  // the callback connection cannot outlive this native owner`,
+          source,
+          word.start,
+          word.end,
+        );
+      }
+      if (callback.failureLocation?.offset === word.start) {
+        return markdownHover(
+          `failure ${callback.failure}  // a thrown Z callback error is destroyed here and narrowed to this native callback return value`,
+          source,
+          word.start,
+          word.end,
+        );
+      }
+      if (callback.failureValueLocation?.offset === word.start) {
+        const constant = typeof callback.failure === "string"
+          ? module.constants.get(callback.failure)
+          : null;
+        return markdownHover(
+          `${constant ? foreignConstantDetail(constant) : callback.failure}\n// returned through the native callback ABI after destroying the thrown Z error payload`,
           source,
           word.start,
           word.end,

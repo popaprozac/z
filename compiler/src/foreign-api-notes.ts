@@ -29,6 +29,7 @@ export type PointerNote = {
     readonly lifetime?: "call" | "escape";
     readonly thread?: "caller" | "any";
     readonly cardinality?: "once" | "repeatedly";
+    readonly failure?: number | string;
     readonly context?: {
       readonly parameter?: number;
       readonly callbackParameter?: number;
@@ -69,6 +70,7 @@ export type TypedVariadicParameterNote = {
       readonly bufferParameter: number;
       readonly lengthParameters: readonly number[];
     };
+    readonly failure?: number | string;
   };
 };
 
@@ -458,10 +460,17 @@ function validatePointerNote(value: unknown, source: string, path: string): void
   }
   if (note.callback === undefined) return;
   const callback = requireRecord(note.callback, source, `${path}.callback`);
-  requireKeys(callback, ["lifetime", "thread", "cardinality", "context", "release"], source, `${path}.callback`);
+  requireKeys(callback, ["lifetime", "thread", "cardinality", "failure", "context", "release"], source, `${path}.callback`);
   requireEnum(callback.lifetime, ["call", "escape"], source, `${path}.callback.lifetime`);
   requireEnum(callback.thread, ["caller", "any"], source, `${path}.callback.thread`);
   requireEnum(callback.cardinality, ["once", "repeatedly"], source, `${path}.callback.cardinality`);
+  if (
+    callback.failure !== undefined
+    && typeof callback.failure !== "string"
+    && !Number.isSafeInteger(callback.failure)
+  ) {
+    throw new Error(`invalid API notes ${JSON.stringify(source)}: ${path}.callback.failure must be a header constant name or safe integer`);
+  }
   if (callback.context !== undefined) validatePair(callback.context, source, `${path}.callback.context`);
   if (callback.release !== undefined) validatePair(callback.release, source, `${path}.callback.release`);
 }

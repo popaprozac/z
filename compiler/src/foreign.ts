@@ -373,11 +373,12 @@ function readHeader(
       mapVariadicType: (type) => type === "cstring"
         ? { kind: "z", name: "cstring", cName: "const char *" }
         : mapForeignType("long", undefined, "parameter", new Map(), produced.nativeTypes),
-      mapVariadicCallback: (nativeType, nativeSignature, nativeParameterNames, bytes) => mapProjectedByteCallback(
+      mapVariadicCallback: (nativeType, nativeSignature, nativeParameterNames, bytes, failure) => mapProjectedByteCallback(
         nativeType,
         nativeSignature,
         nativeParameterNames,
         bytes,
+        failure,
       ),
     },
     fileName,
@@ -1752,6 +1753,7 @@ function mapCallbackType(
       : null,
     thread: callbackNote.thread ?? null,
     cardinality: callbackNote.cardinality ?? null,
+    failure: callbackNote.failure ?? null,
   };
 }
 
@@ -1765,6 +1767,7 @@ function mapProjectedByteCallback(
     readonly bufferParameter: number;
     readonly lengthParameters: readonly number[];
   },
+  failure: number | string | undefined,
 ): ForeignCallbackType {
   const normalized = signature
     .replace(/\b(restrict|_Nonnull|_Nullable|_Null_unspecified)\b/g, "")
@@ -1787,6 +1790,7 @@ function mapProjectedByteCallback(
     release: null,
     thread: "caller",
     cardinality: "repeatedly",
+    failure: failure ?? null,
     parameterNames: [bytes.name],
     parameterModes: [bytes.access === "inout" ? "inout" : "value"],
     nativeParameters,

@@ -538,6 +538,24 @@ immutable `String` snapshots, and deeply readonly Z ARC identity. Mutable or
 borrowed captures, `Weak<T>`, views, slices, and native values without a
 compatible sharing contract are rejected.
 
+A callback whose native ABI returns a status can opt into typed Z failure:
+
+```z
+callback visitor {
+  context context;
+  failure 1;
+  invoked repeatedly;
+}
+```
+
+The Z function value retains the real native return type and may declare
+`throws E`. An ordinary return passes directly to C. On `throw`, the adapter
+destroys the `E` payload and returns native `1`. This narrows a richer Z error
+into C's status channel: an enclosing native operation may surface the failure
+fact, but the original payload never reaches a Z handler. For hot repeated
+callbacks, cleanup-free error payloads avoid constructing owned data that the
+ABI boundary must immediately destroy.
+
 Generated Swift Objective-C headers expose escaping closures as ARC-owned
 blocks, so they need neither an explicit context parameter nor a destroy
 callback. A qualified `.zd` entry adds only the fact the header cannot prove:

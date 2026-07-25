@@ -7,6 +7,15 @@ export function callbackParameterSpellings(signature: string): string[] | null {
   return match ? splitCParameters(match[2]) : null;
 }
 
+export function callbackReturnSpelling(signature: string): string | null {
+  const normalized = signature
+    .replace(/\b(restrict|_Nonnull|_Nullable|_Null_unspecified)\b/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  const match = /^(.+?)\s*\(\s*\*\s*\)\s*\((.*)\)$/.exec(normalized);
+  return match ? match[1].trim() : null;
+}
+
 export function normalizeCallbackContextType(cName: string): string {
   return cName
     .replace(/\b(restrict|_Nonnull|_Nullable|_Null_unspecified)\b/g, "")

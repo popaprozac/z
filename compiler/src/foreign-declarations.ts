@@ -19,7 +19,7 @@ import type {
   ForeignObjCMethod,
 } from "./foreign-ir.ts";
 import type { ForeignThreadContract } from "./foreign-ir.ts";
-import { callbackParameterSpellings, normalizeCallbackContextType } from "./foreign-type-spelling.ts";
+import { callbackParameterSpellings, callbackReturnSpelling, normalizeCallbackContextType } from "./foreign-type-spelling.ts";
 import { lex, type Token } from "./lexer.ts";
 
 export type ContractParameter = {
@@ -108,6 +108,7 @@ export type ForeignCallbackContract = {
   readonly nativeType: string | null;
   readonly owner: string | null;
   readonly bytes: ForeignBufferContract | null;
+  readonly failure: number | string | null;
   readonly thread: "caller" | "any" | null;
   readonly location: SourceLocation;
   readonly parameterLocation: SourceLocation;
@@ -119,6 +120,8 @@ export type ForeignCallbackContract = {
   readonly nativeTypeLocation: SourceLocation | null;
   readonly ownerLocation: SourceLocation | null;
   readonly threadLocation: SourceLocation | null;
+  readonly failureLocation: SourceLocation | null;
+  readonly failureValueLocation: SourceLocation | null;
 };
 
 export type ForeignDeclarationContracts = {
@@ -221,7 +224,7 @@ export function parseForeignDeclarationContracts(source: string, fileName: strin
       throwsLocation: null,
     };
   };
-  const parseStatusValue = (): ContractStatusValue => {
+  const parseStatusValue = (role = "success"): ContractStatusValue => {
     let sign = 1;
     if (at("-")) {
       take();
@@ -235,11 +238,11 @@ export function parseForeignDeclarationContracts(source: string, fileName: strin
       return { value: literal.text, location: literal.location, valueLocation: literal.location };
     }
     if (literal.kind !== "number" || !/^[0-9]+$/.test(literal.text)) {
-      fail(literal, "native status success values require an integer literal or header constant");
+      fail(literal, `native status ${role} values require an integer literal or header constant`);
     }
     take();
     const value = sign * Number(literal.text);
-    if (!Number.isSafeInteger(value)) fail(literal, "native status success value must be a safe integer");
+    if (!Number.isSafeInteger(value)) fail(literal, `native status ${role} value must be a safe integer`);
     return { value, location: literal.location, valueLocation: literal.location };
   };
   const parseBufferProjection = (): ForeignBufferContract => {
@@ -654,6 +657,8 @@ export function parseForeignDeclarationContracts(source: string, fileName: strin
           let nativeType: Token | null = null;
           let callbackOwner: Token | null = null;
           let bytes: ForeignCallbackContract["bytes"] = null;
+          let callbackFailure: ContractStatusValue | null = null;
+          let callbackFailureLocation: SourceLocation | null = null;
           let callbackThread: Token | null = null;
           let invoked: Token | null = null;
           let cardinality: Token | null = null;
@@ -700,6 +705,22 @@ export function parseForeignDeclarationContracts(source: string, fileName: strin
               bytes = parseBufferProjection();
               continue;
             }
+            if (at("failure")) {
+              if (callbackFailure) {
+                fail(callbackFact, `callback ${JSON.stringify(callback.text)} cannot declare more than one native failure value`);
+              }
+              take();
+              callbackFailureLocation = callbackFact.location;
+              callbackFailure = parseStatusValue("failure");
+              expectText(";");
+              continue;
+            }
+            if (at("success")) {
+              fail(
+                callbackFact,
+                `success inside callback ${JSON.stringify(callback.text)} would describe the callback return; return successful values from the Z callback body instead`,
+              );
+            }
             if (at("deinit")) {
               if (callbackRelease) fail(callbackFact, `callback ${JSON.stringify(callback.text)} cannot declare more than one deinit parameter`);
               take();
@@ -719,7 +740,7 @@ export function parseForeignDeclarationContracts(source: string, fileName: strin
             }
             fail(
               callbackFact,
-              `expected "type", "context", "owner", "project", "deinit", "thread", or "invoked" in foreign callback contract, found ${JSON.stringify(callbackFact.text)}`,
+              `expected "type", "context", "owner", "project", "failure", "deinit", "thread", or "invoked" in foreign callback contract, found ${JSON.stringify(callbackFact.text)}`,
             );
           }
           expectText("}");
@@ -738,6 +759,7 @@ export function parseForeignDeclarationContracts(source: string, fileName: strin
             nativeType: nativeType?.text ?? null,
             owner: callbackOwner?.text ?? null,
             bytes,
+            failure: callbackFailure?.value ?? null,
             thread: callbackThread?.text === "any" ? "any" : callbackThread ? "caller" : null,
             location: contract.location,
             parameterLocation: callback.location,
@@ -749,6 +771,8 @@ export function parseForeignDeclarationContracts(source: string, fileName: strin
             nativeTypeLocation: nativeType?.location ?? null,
             ownerLocation: callbackOwner?.location ?? null,
             threadLocation: callbackThread?.location ?? null,
+            failureLocation: callbackFailureLocation,
+            failureValueLocation: callbackFailure?.valueLocation ?? null,
           });
           continue;
         }
@@ -787,6 +811,12 @@ export function parseForeignDeclarationContracts(source: string, fileName: strin
           statusSuccessValueLocations.push(parsed.valueLocation);
           expectText(";");
           continue;
+        }
+        if (at("failure")) {
+          fail(
+            contract,
+            `failure is scoped to a callback return; place it inside \`callback <name> { ... }\` rather than on foreign function ${JSON.stringify(name)}`,
+          );
         }
         if (!at("deinit")) {
           fail(contract, `expected "async", "project", "deinit", "thread", "callback", or "success" in foreign function contract, found ${JSON.stringify(contract.text)}`);
@@ -1078,6 +1108,16 @@ export function foreignDeclarationApiNotes(
         callback,
         fileName,
       );
+      for (const overload of declaration.overloads) {
+        const signature = overload.parameters[callbackIndex]?.type;
+        validateCallbackFailure(
+          callback,
+          signature ? callbackReturnSpelling(signature.canonicalNativeName ?? signature.nativeName) : null,
+          constants,
+          namedTypes,
+          fileName,
+        );
+      }
       const releaseIndex = callback.release
         ? contract.parameters.findIndex((candidate) => candidate.name === callback.release)
         : -1;
@@ -1117,6 +1157,7 @@ export function foreignDeclarationApiNotes(
           lifetime: parameter.mode === "move" ? "escape" : "call",
           ...(callback.thread ? { thread: callback.thread } : {}),
           cardinality: callback.cardinality,
+          ...(callback.failure !== null ? { failure: callback.failure } : {}),
           context: { parameter: contextIndex, callbackParameter },
           ...(callback.release && releaseParameter !== null
             ? { release: { parameter: releaseIndex, callbackParameter: releaseParameter } }
@@ -1218,6 +1259,7 @@ export function foreignDeclarationApiNotes(
                   bufferParameter: parameterNames.indexOf(pairedCallback.bytes!.buffer),
                   lengthParameters: pairedCallback.bytes!.factors.map((factor) => parameterNames.indexOf(factor)),
                 },
+                ...(pairedCallback.failure !== null ? { failure: pairedCallback.failure } : {}),
               },
             };
           }
@@ -1586,6 +1628,13 @@ function validatePairedOptionCallbackContract(
       { code: "Z0801" },
     );
   }
+  validateCallbackFailure(
+    callback,
+    callbackReturnSpelling(nativeCallback.signature),
+    constants,
+    namedTypes,
+    fileName,
+  );
   const discriminants = contract.parameters.filter((candidate) => candidate.literal);
   if (discriminants.length !== 1) {
     throw new DiagnosticError(
@@ -1690,6 +1739,77 @@ function validateContractConstant(
     }
   }
   return constant;
+}
+
+function validateCallbackFailure(
+  callback: ForeignCallbackContract,
+  nativeReturnType: string | null,
+  constants: ReadonlyMap<string, ForeignConstant>,
+  namedTypes: ReadonlyMap<string, ForeignNamedType>,
+  fileName: string,
+): void {
+  if (callback.failure === null) return;
+  if (!nativeReturnType) {
+    throw new DiagnosticError(
+      fileName,
+      callback.failureLocation ?? callback.location,
+      `cannot determine the native return type for callback ${JSON.stringify(callback.parameter)}`,
+      { code: "Z0801" },
+    );
+  }
+  const normalized = normalizeCallbackContextType(nativeReturnType);
+  if (normalized === "void") {
+    throw new DiagnosticError(
+      fileName,
+      callback.failureLocation ?? callback.location,
+      `callback ${JSON.stringify(callback.parameter)} returns void and cannot narrow a thrown Z error to a native failure value`,
+      {
+        code: "Z0801",
+        notes: ["`failure` describes the callback return type, not the enclosing foreign function return type"],
+      },
+    );
+  }
+  const integerReturn = /\b(?:char|short|int|long|size_t|ptrdiff_t|u?int(?:8|16|32|64)_t)\b/.test(normalized)
+    || [...namedTypes.values()].some((candidate) => (
+      candidate.kind === "enum"
+      && [candidate.cName, candidate.exportName, candidate.qualifiedName]
+        .some((spelling) => normalized.includes(spelling))
+    ));
+  if (!integerReturn) {
+    throw new DiagnosticError(
+      fileName,
+      callback.failureValueLocation ?? callback.location,
+      `callback failure values require an integer or integer-backed enum return, found ${JSON.stringify(normalized)}`,
+      {
+        code: "Z0801",
+        notes: ["`failure` is checked against the nested callback return type, not the enclosing foreign function return type"],
+      },
+    );
+  }
+  if (typeof callback.failure === "string") {
+    const constant = validateContractConstant(
+      callback.failure,
+      callback.failureValueLocation ?? callback.location,
+      nativeReturnType,
+      constants,
+      namedTypes,
+      fileName,
+      `native failure value for callback ${JSON.stringify(callback.parameter)} returning ${JSON.stringify(normalized)}`,
+    );
+    const constantType = namedTypes.get(constant.typeName);
+    const integerConstant = /^(?:i|u)(?:8|16|32|64)$/.test(constant.typeName)
+      || constantType?.kind === "enum"
+      || (constantType?.kind === "scalar" && /^(?:i|u)(?:8|16|32|64)$/.test(constantType.underlying));
+    if (!integerConstant) {
+      throw new DiagnosticError(
+        fileName,
+        callback.failureValueLocation ?? callback.location,
+        `native failure value ${JSON.stringify(callback.failure)} has non-integer type ${JSON.stringify(constant.typeName)}`,
+        { code: "Z0801" },
+      );
+    }
+    return;
+  }
 }
 
 function resolveObjCMethodContract(

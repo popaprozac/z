@@ -3860,6 +3860,49 @@ function finalizeClosureFunctionValue(
   return closure;
 }
 
+function validateForeignCallbackFunctionType(
+  callback: ForeignCallbackType,
+  actual: FunctionType,
+  actualType: string,
+  location: SourceLocation,
+  fileName: string,
+): void {
+  const expectedType = String(foreignValueType(callback));
+  const expected = parseFunctionType(expectedType)!;
+  const actualWithoutError = { ...actual, errorType: null };
+  if (!functionTypesCompatible(expected, actualWithoutError)) {
+    throw new DiagnosticError(
+      fileName,
+      location,
+      `native callback expects ${displayFunctionType(expectedType)}, found ${displayFunctionType(actualType)}`,
+      { code: "Z0801" },
+    );
+  }
+  if (actual.errorType && callback.failure === null) {
+    throw new DiagnosticError(
+      fileName,
+      location,
+      `throwing callback ${displayFunctionType(actualType)} has no native failure projection`,
+      {
+        code: "Z0801",
+        notes: ["a native callback ABI cannot carry a Z error payload without an explicit boundary contract"],
+        helps: ["add `failure <native-value>;` inside this callback's .zd contract, or handle the error inside the callback"],
+      },
+    );
+  }
+  if (actual.errorType && callback.context === null) {
+    throw new DiagnosticError(
+      fileName,
+      location,
+      "throwing native callbacks currently require a declared context parameter so Z can install a result-aware adapter",
+      {
+        code: "Z0801",
+        helps: ["pair the callback with its native `void *` context in .zd, or handle the error inside a context-free callback"],
+      },
+    );
+  }
+}
+
 function validateConcurrentForeignCallbackClosure(
   expression: Extract<Expression, { kind: "closure" }>,
   locals: ReadonlyMap<string, ValueType>,
@@ -11033,6 +11076,7 @@ function checkForeignCall(
     const expectation = target.variadic ? `at least ${expected}` : String(expected);
     throw new DiagnosticError(fileName, location, `C function ${JSON.stringify(target.name)} expects ${expectation} argument(s), found ${args.length}`);
   }
+  const callbackFunctionTypes = new Map<number, string>();
   for (let index = 0; index < args.length; index += 1) {
     const argument = args[index];
     const visibleParameter = visibleParameters[index];
@@ -11360,10 +11404,23 @@ function checkForeignCall(
       const expectedCallback = foreignValueType(parameter.type);
       const expectedFunction = parseFunctionType(String(expectedCallback))!;
       inferClosureExpression(argument, locals, globals, structs, enums, fileName, state, expectedFunction, true);
+      const actualFunction = closureFunctionType(state.closures.get(argument.location.offset)!);
+      const actualCallback = functionTypeName(
+        actualFunction.parameters,
+        actualFunction.returnType,
+        actualFunction.errorType,
+      );
+      validateForeignCallbackFunctionType(
+        parameter.type,
+        actualFunction,
+        actualCallback,
+        argument.location,
+        fileName,
+      );
       finalizeClosureFunctionValue(
         argument,
-        expectedFunction,
-        String(expectedCallback),
+        actualFunction,
+        actualCallback,
         locals,
         structs,
         enums,
@@ -11382,7 +11439,7 @@ function checkForeignCall(
         );
       }
       state.foreignArgumentAccesses.set(argument.location.offset, "in");
-      actual = expectedCallback;
+      actual = actualCallback;
     } else {
       actual = inferExpression(argument, locals, globals, structs, enums, fileName, state);
     }
@@ -11398,16 +11455,27 @@ function checkForeignCall(
       continue;
     }
     if (parameter?.type.kind === "callback") {
-      const expectedCallback = foreignValueType(parameter.type);
-      requireAssignable(
-        expectedCallback,
-        actual,
-        argument,
-        fileName,
-        structs,
-        enums,
-        state,
+      const actualCallback = parseFunctionType(String(underlyingType(actual)));
+      if (!actualCallback) {
+        throw new DiagnosticError(
+          fileName,
+          argument.location,
+          `C function ${JSON.stringify(target.name)} expects a callback function value, found ${describeValueType(actual, state)}`,
+        );
+      }
+      const actualCallbackType = functionTypeName(
+        actualCallback.parameters,
+        actualCallback.returnType,
+        actualCallback.errorType,
       );
+      validateForeignCallbackFunctionType(
+        parameter.type,
+        actualCallback,
+        actualCallbackType,
+        argument.location,
+        fileName,
+      );
+      callbackFunctionTypes.set(index, actualCallbackType);
       if (!parameter.type.context) {
         const global = argument.kind === "identifier" ? globals.get(argument.name) : null;
         const inlineClosure = argument.kind === "closure"
@@ -11523,7 +11591,8 @@ function checkForeignCall(
           kind: "context",
           source: callback.source,
           callback: callback.parameter.type,
-          functionType: String(foreignValueType(callback.parameter.type)),
+          functionType: callbackFunctionTypes.get(callback.source)
+            ?? String(foreignValueType(callback.parameter.type)),
         };
       }
       if (parameter.type.kind === "callbackRelease") {
@@ -11532,7 +11601,8 @@ function checkForeignCall(
           kind: "release",
           source: callback.source,
           callback: callback.parameter.type,
-          functionType: String(foreignValueType(callback.parameter.type)),
+          functionType: callbackFunctionTypes.get(callback.source)
+            ?? String(foreignValueType(callback.parameter.type)),
         };
       }
       const source = visibleByNativeIndex.get(nativeIndex)!;
@@ -11544,7 +11614,8 @@ function checkForeignCall(
           kind: "callback",
           source,
           callback: parameter.type,
-          functionType: String(foreignValueType(parameter.type)),
+          functionType: callbackFunctionTypes.get(source)
+            ?? String(foreignValueType(parameter.type)),
         };
       }
       return { kind: "argument", source };
@@ -11617,7 +11688,8 @@ function checkForeignCall(
       }
       state.foreignConnectionCalls.set(location.offset, {
         target,
-        functionType: String(foreignValueType(callback)),
+        functionType: callbackFunctionTypes.get(callbackSource)
+          ?? String(foreignValueType(callback)),
         ownerSource,
         callbackSource,
       });

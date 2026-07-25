@@ -35,6 +35,7 @@ export type ForeignContractTypeMapper = {
       readonly bufferParameter: number;
       readonly lengthParameters: readonly number[];
     },
+    failure: number | string | undefined,
   ) => ForeignType;
 };
 
@@ -104,6 +105,7 @@ export function normalizeForeignContracts(
                   parameter.callback!.nativeSignature,
                   parameter.callback!.nativeParameterNames,
                   parameter.callback!.bytes,
+                  parameter.callback!.failure,
                 )
                 : mapper.mapVariadicType(parameter.type),
               ...(parameter.type === "clong" ? { abiCast: "long" } : {}),

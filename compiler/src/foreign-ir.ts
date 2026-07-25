@@ -265,6 +265,8 @@ export type ForeignCallbackType = {
   } | null;
   readonly thread: "caller" | "any" | null;
   readonly cardinality: "once" | "repeatedly" | null;
+  /** Native callback return value used when a Z callback throws. */
+  readonly failure: number | string | null;
   readonly parameterNames?: readonly string[];
   readonly parameterModes?: readonly ("value" | "in" | "inout" | "out")[];
   readonly nativeParameters?: readonly string[];
