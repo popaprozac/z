@@ -1476,8 +1476,8 @@ Those facts normalize through the
 
 ### Unsafe native calls
 
-`unsafe { ... }` keeps Z syntax and types while accepting one local,
-unverified native pointer proof:
+`unsafe { ... }` keeps Z syntax and types while accepting a local,
+unverified native proof:
 
 ```z
 unsafe {
@@ -1494,6 +1494,12 @@ const observed = unsafe {
   native.close(handle);
   select value;
 };
+
+let event;
+native.poll(out event);
+const eventType = unsafe {
+  select event.type;
+};
 ```
 
 An explicit `cstring` context may reinterpret a native character-pointer
@@ -1503,6 +1509,14 @@ same pointer spelling. They cannot be dereferenced, indexed, inspected,
 returned, stored outside the block, captured by a closure, or used directly in async
 functions. The first tier does not add raw-pointer syntax or infer ownership,
 mutation, initialization, cleanup, or threading facts.
+
+Imported C unions are a separate narrow case. A checked `.zd` `out Union*`
+contract may initialize ABI-preserving union storage without `unsafe`, but
+Clang's layout does not prove which member the native API activated. After
+validating the API's discriminator, an unsafe block may read and select a
+supported scalar or enum member. Pointer and nested-record members remain
+unavailable in this tier, and imported unions cannot be constructed as Z
+struct literals.
 
 An unsafe expression must finish with `select value;`. `select` supplies the
 local expression result; `return` continues to exit the enclosing function.

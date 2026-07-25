@@ -5535,6 +5535,49 @@ test("borrows and explicitly mutates imported C records through safe pointer mod
   );
 });
 
+test("initializes imported C union storage through out and confines scalar member assertions", () => {
+  const example = resolve(projectRoot, "examples/interop/c/native-union.zs");
+  const source = readFileSync(example, "utf8");
+  const artifact = compileToNative(source, example);
+  assert.match(artifact.source, /ZNativeEvent event;/);
+  assert.match(artifact.source, /z_native_poll\(&\(event\)\)/);
+  assert.match(artifact.source, /const int32_t eventType = \(event\)\.type;/);
+
+  const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+
+  const directRead = `
+    import native from "tests/fixtures/native-union.h";
+    function main(): i32 {
+      let event;
+      native.z_native_poll(out event);
+      return event.type;
+    }
+  `;
+  assert.throws(
+    () => compileToNative(directRead, resolve(projectRoot, "native-union-direct-read.zs")),
+    /native union member "type" requires an unsafe boundary/,
+  );
+
+  const construction = `
+    import native from "tests/fixtures/native-union.h";
+    function main(): i32 {
+      const event = native.ZNativeEvent({ type: 42 });
+      return 0;
+    }
+  `;
+  assert.throws(
+    () => compileToNative(construction, resolve(projectRoot, "native-union-construction.zs")),
+    /native union "native\.ZNativeEvent" cannot be constructed as a Z struct/,
+  );
+
+  const eventOffset = source.indexOf("event;") + 1;
+  assert.match(hover(source, example, eventOffset)?.contents.value ?? "", /event: native\.ZNativeEvent/);
+  const memberSource = source.replace("event.type", "event.ty");
+  const memberOffset = memberSource.indexOf("event.ty") + "event.ty".length;
+  assert.ok(completions(memberSource, example, memberOffset).some((item) => item.label === "type"));
+});
+
 test("requires exact pointer modes and mutable storage at imported record boundaries", () => {
   const uninitializedOutput = `
     import geometry from "tests/fixtures/geometry.h";

@@ -5526,6 +5526,12 @@ function requireConsoleFormattable(
   }
   const foreign = state.foreignNamedTypes.get(actual);
   if (foreign?.kind === "record") {
+    if (foreign.layout === "union") {
+      throw new DiagnosticError(fileName, expression.location, `console cannot format native union ${actual} without an active-member proof`, {
+        code: "Z0823",
+        helps: ["read a scalar member inside unsafe after validating the native API's discriminator"],
+      });
+    }
     for (const field of foreign.fields) {
       requireConsoleFormattable(
         field.typeName,
@@ -6312,6 +6318,13 @@ function inferExpressionInner(
       if (!declaration && foreignDeclaration?.kind !== "record") {
         throw new DiagnosticError(fileName, expression.location, `unknown struct ${JSON.stringify(expression.typeName)}`);
       }
+      if (foreignDeclaration?.kind === "record" && foreignDeclaration.layout === "union") {
+        throw new DiagnosticError(fileName, expression.location, `native union ${JSON.stringify(expression.typeName)} cannot be constructed as a Z struct`, {
+          code: "Z0823",
+          notes: ["a C union has one active member, while a Z struct literal initializes every declared field"],
+          helps: ["initialize union storage through a checked native out parameter, then inspect a scalar member inside unsafe"],
+        });
+      }
       const constructionAffinity = declaration
         ? state.aggregateExecutorAffinities.get(declaration.name) ?? null
         : null;
@@ -6710,6 +6723,13 @@ function inferExpressionInner(
         );
       }
       if (foreignRecord?.kind === "record") {
+        if (foreignRecord.layout === "union" && state.unsafeDepth === 0) {
+          throw new DiagnosticError(fileName, expression.location, `native union member ${JSON.stringify(expression.property)} requires an unsafe boundary`, {
+            code: "Z0823",
+            notes: ["Clang proves the member layout but not which union member the native API initialized"],
+            helps: ["validate the API discriminator, then read the scalar member inside `unsafe { ... }`"],
+          });
+        }
         const field = foreignRecord.fields.find((candidate) => candidate.name === expression.property);
         if (field) {
           state.foreignExpressionTypes.set(expression.location.offset, field.typeName);
@@ -11700,9 +11720,19 @@ function checkForeignCall(
           `C function ${JSON.stringify(target.name)} expects ${parameter.type.access} ${argument.name}, found ${argument.access} ${argument.name}`,
         );
       }
-      const stored = locals.get(argument.name);
+      let stored = locals.get(argument.name);
       if (!stored) {
         throw new DiagnosticError(fileName, argument.location, `unknown name ${JSON.stringify(argument.name)}`);
+      }
+      if (argument.access === "out" && underlyingType(stored) === "unknown") {
+        const declarationLocation = state.inferredOutBindingLocations.get(argument.name);
+        if (!declarationLocation) {
+          throw new DiagnosticError(fileName, argument.location, `cannot infer storage type for out argument ${JSON.stringify(argument.name)}`);
+        }
+        stored = `${uninitializedPrefix}${mutablePrefix}${parameter.type.record.typeName}`;
+        locals.set(argument.name, stored);
+        state.bindingTypes.set(declarationLocation.offset, parameter.type.record.typeName);
+        state.inferredOutBindingLocations.delete(argument.name);
       }
       if (argument.access !== "out" && initializationState(stored) === "uninitialized") {
         throw new DiagnosticError(fileName, argument.location, `${argument.access} argument ${JSON.stringify(argument.name)} must be initialized before the call`);

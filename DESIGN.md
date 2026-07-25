@@ -2062,8 +2062,9 @@ Z's intended foreign boundary has three explicit trust tiers:
 1. Header import plus checked `.zd` facts is the safe surface. Clang remains the
    ABI authority and Z enforces the added ownership and lifetime contract.
 2. An `unsafe { ... }` block permits a narrow set of otherwise unsupported
-   native pointer calls while retaining Z expression syntax, but gives up the
-   missing local static proof.
+   native pointer calls and active-member assertions for imported C union
+   storage while retaining Z expression syntax, but gives up the missing local
+   static proof.
 3. `raw c`, `raw cpp`, or `raw objc` embeds foreign source for APIs that cannot
    be expressed through Z calls. It escapes Z's type system rather than merely
    accepting an unverified Z proof.
@@ -2112,7 +2113,8 @@ returns native diagnostics to the original `.zs` body. Rich embedded-language
 completion remains later editor work.
 
 The latter two tiers are escape hatches, not substitutes for extending FIIR and
-`.zd`. The first `unsafe` tier accepts two pointer-only shapes:
+`.zd`. The first `unsafe` tier accepts two pointer shapes plus scalar/enum
+active-member assertions for imported C union storage:
 
 ```z
 unsafe {
@@ -2143,6 +2145,15 @@ a representable scalar or independently owned Z value; for example,
 boundary. Unsafe blocks are synchronous and may
 not appear directly in an async function in this tier. Unsupported by-value
 layouts still require a checked `.zd` projection or raw source.
+
+A C union may receive ABI-preserving storage through a contracted `out Union*`
+parameter without entering `unsafe`: the contract proves initialization of the
+storage, not its active member. Direct member access is rejected in safe Z.
+After validating the native API's discriminator, an unsafe block may read a
+supported scalar or nominal enum member, and a scalar copy may leave through
+`select`. The first tier deliberately withholds pointer and nested-record union
+members. A future `.zd` discriminated projection can make recurring
+tag-to-payload relationships safe without weakening the default.
 
 This deliberately adds no source-level raw-pointer type. A later inline-fact
 tier may reuse more `.zd` ownership and lifetime vocabulary when concrete APIs

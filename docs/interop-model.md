@@ -283,6 +283,12 @@ const observed = unsafe {
   native.close(handle);
   select value;
 };
+
+let event;
+native.poll(out event);
+const eventType = unsafe {
+  select event.type;
+};
 ```
 
 The annotation on `version` asserts that the native character pointer is
@@ -293,6 +299,14 @@ spelling. It has no members, indexing, dereference, arithmetic, ownership, or
 implicit cleanup, and it cannot leave the block. This first tier rejects
 nesting, async functions, suspension, generators, and closure construction. It also
 rejects unsupported by-value layouts rather than exposing generated C names.
+
+Imported C unions have ABI-preserving native storage and may be initialized
+through a checked `.zd` `out Union*` contract. Reading a member is still a local
+proof obligation because a C union carries no active-member tag. After checking
+the native API's discriminator, `unsafe` may copy a supported scalar or enum
+member into ordinary Z code. Pointer and nested-record members remain excluded
+until a reusable checked projection describes their lifetime and active-member
+rules.
 
 The expression form uses Z's ordinary value-block rule: `select` supplies the
 unsafe expression's value, while `return` still exits the enclosing function.

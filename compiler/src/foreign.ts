@@ -527,7 +527,11 @@ function collectNamedTypes(
   const enums = new Map<string, ClangNode>();
   for (const node of nodes) {
     if (!node.name || !node.inner?.length) continue;
-    if (node.kind === "RecordDecl" && node.tagUsed === "struct" && node.inner.some((child) => child.kind === "FieldDecl")) records.set(node.name, node);
+    if (
+      node.kind === "RecordDecl"
+      && (node.tagUsed === "struct" || node.tagUsed === "union")
+      && node.inner.some((child) => child.kind === "FieldDecl")
+    ) records.set(node.name, node);
     if (node.kind === "EnumDecl" && node.inner.some((child) => child.kind === "EnumConstantDecl")) enums.set(node.name, node);
   }
 
@@ -591,19 +595,20 @@ function collectNamedTypes(
     flags?: boolean;
     lifecycle?: ForeignValueLifecycle;
     thread?: ForeignValueContract["thread"];
+    layout?: "struct" | "union";
   };
   const seeds = new Map<string, Seed>();
   for (const node of nodes) {
     if (node.kind !== "TypedefDecl" || !node.name || !node.type?.qualType) continue;
     const qualified = node.type.qualType;
     const desugared = node.type.desugaredQualType ?? qualified;
-    const recordMatch = /^struct (.+)$/.exec(desugared);
+    const recordMatch = /^(struct|union) (.+)$/.exec(desugared);
     const enumMatch = /^enum (.+)$/.exec(desugared) ?? /^enum (.+)$/.exec(qualified);
     const underlying = mapTypedefType(node.name, desugared);
     const enumDeclaration = enumMatch
       ? enums.get(enumMatch[1]) ?? typedefEnumDeclarations.get(node.name)
       : undefined;
-    const kind = recordMatch && records.has(recordMatch[1])
+    const kind = recordMatch && records.has(recordMatch[2])
       ? "record"
       : enumMatch && enumDeclaration?.inner?.some((child) => child.kind === "EnumConstantDecl")
         ? "enum"
@@ -618,7 +623,7 @@ function collectNamedTypes(
       qualifiedName: node.name,
       typeName: `${moduleName}.${node.name}`,
       cName: node.name,
-      declaration: kind === "record" ? records.get(recordMatch![1]) : kind === "enum" ? enumDeclaration : undefined,
+      declaration: kind === "record" ? records.get(recordMatch![2]) : kind === "enum" ? enumDeclaration : undefined,
       sourceDeclaration: node,
       underlying: kind === "scalar"
         ? underlying as ForeignScalarTypeName
@@ -626,6 +631,7 @@ function collectNamedTypes(
           ? mapBuiltinType(enumDeclaration?.fixedUnderlyingType?.desugaredQualType ?? enumDeclaration?.fixedUnderlyingType?.qualType ?? "int") ?? "i32"
           : undefined,
       flags: kind === "enum" && enumDeclaration?.inner?.some((child) => child.kind === "FlagEnumAttr"),
+      layout: kind === "record" ? recordMatch![1] as "struct" | "union" : undefined,
     };
     const existing = seeds.get(node.name);
     if (
@@ -648,6 +654,7 @@ function collectNamedTypes(
       sourceDeclaration: record.declaration,
       lifecycle: record.lifecycle,
       thread: record.thread,
+      layout: "struct",
     });
   }
 
@@ -700,10 +707,34 @@ function collectNamedTypes(
     } else {
       const fields = (seed.declaration!.inner ?? []).filter((child) => child.kind === "FieldDecl");
       const mapped = fields.map((field) => field.name && field.type?.qualType
-        ? { name: field.name, typeName: mapRecordFieldType(field.type.qualType, seed.namespacePath, potential), metadata: foreignDeclarationMetadata(field) }
+        ? {
+            name: field.name,
+            typeName: mapRecordFieldType(
+              field.type.qualType,
+              seed.namespacePath,
+              potential,
+              seed.layout !== "union",
+            ),
+            metadata: foreignDeclarationMetadata(field),
+          }
         : null);
-      if (recordIsSupported(seed, potential, new Set()) && mapped.every((field): field is ForeignField => Boolean(field?.typeName))) {
-        named = { kind: "record", exportName: seed.exportName, namespacePath: seed.namespacePath, qualifiedName: seed.qualifiedName, typeName: seed.typeName, cName: seed.cName, fields: mapped, metadata };
+      const supportedFields = mapped.filter((field): field is ForeignField => Boolean(field?.typeName));
+      if (
+        seed.layout === "union"
+          ? supportedFields.length > 0
+          : recordIsSupported(seed, potential, new Set()) && supportedFields.length === mapped.length
+      ) {
+        named = {
+          kind: "record",
+          exportName: seed.exportName,
+          namespacePath: seed.namespacePath,
+          qualifiedName: seed.qualifiedName,
+          typeName: seed.typeName,
+          cName: seed.cName,
+          layout: seed.layout ?? "struct",
+          fields: supportedFields,
+          metadata,
+        };
       }
     }
     if (!named) continue;
@@ -1312,12 +1343,13 @@ function mapRecordFieldType(
   cName: string,
   namespacePath: readonly string[],
   named: ReadonlyMap<string, { typeName: string; kind: string; underlying?: ForeignScalarTypeName }>,
+  allowRecord = true,
 ): string {
   const builtin = mapBuiltinType(cName);
   if (builtin && builtin !== "void") return builtin;
   const imported = resolvePotentialNamedType(cName, namespacePath, named);
   if (imported?.kind === "scalar") return imported.underlying!;
-  if (imported?.kind === "enum" || imported?.kind === "record") return imported.typeName;
+  if (imported?.kind === "enum" || (allowRecord && imported?.kind === "record")) return imported.typeName;
   return "";
 }
 

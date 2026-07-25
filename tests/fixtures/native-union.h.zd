@@ -1,0 +1,3 @@
+declare module "native-union.h" {
+  export function z_native_poll(out event: _): _;
+}

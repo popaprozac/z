@@ -61,6 +61,7 @@ bun run z run examples/language/control-flow/result.zs
 | --- | --- | --- |
 | Selective C import | [`selective-import.zs`](../examples/interop/c/selective-import.zs) | Header declarations with local aliases |
 | C records and enums | [`foreign-types.zs`](../examples/interop/c/foreign-types.zs) | Native layouts and constants |
+| C union output | [`native-union.zs`](../examples/interop/c/native-union.zs) | ABI-preserving `out` initialization and an explicit unsafe scalar active-member assertion |
 | Raw native boundary | [`native-boundary.zs`](../examples/interop/raw/native-boundary.zs) | Isolated anonymous C helper with `in` / `inout` / `out`, definite output initialization, and a whole-function `= raw c` body |
 | C pointers | [`foreign-pointers.zs`](../examples/interop/c/foreign-pointers.zs), [`foreign-handle.zs`](../examples/interop/c/foreign-handle.zs) | Borrowed and owned `.zd` contracts |
 | Z declaration contract | [`declared-handle.zs`](../examples/interop/c/declared-handle.zs), [`declared-handle.h.zd`](../examples/interop/c/declared-handle.h.zd) | Adjacent `.zd` capabilities, niche-backed `Option.fromNullable`, borrowed/consuming match, and `deinit` release |

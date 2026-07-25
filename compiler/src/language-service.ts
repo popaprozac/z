@@ -3922,6 +3922,24 @@ function memberCompletions(
       }
     }
   }
+  if (!context && prefix.length > 0) {
+    const completionStart = offset - prefix.length;
+    const fieldProbes = new Set<string>();
+    for (const declaration of importContext.semanticInfo.foreignNamedTypes.values()) {
+      if (declaration.kind !== "record") continue;
+      for (const field of declaration.fields) {
+        if (field.name.startsWith(prefix)) fieldProbes.add(field.name);
+      }
+    }
+    for (const candidate of [...fieldProbes].sort((left, right) => left.length - right.length || left.localeCompare(right))) {
+      const probeSource = source.slice(0, completionStart) + candidate + source.slice(tailOffset);
+      context = safeAnalysis(probeSource, fileName);
+      if (context) {
+        resolvedOffset = receiverOffset;
+        break;
+      }
+    }
+  }
   if (!context) {
     const declaredType = declaredBindingType(source, receiverText, receiverOffset);
     if (declaredType) {
@@ -3957,6 +3975,13 @@ function memberCompletions(
       prefix,
       1000,
     );
+  }
+  if (resolved?.kind === "foreignRecord") {
+    return filterCompletions(resolved.declaration.fields.map((field) => ({
+      label: field.name,
+      kind: completionKinds.field,
+      detail: `${field.name}: ${field.typeName}${resolved.declaration.layout === "union" ? "  // active-member read requires unsafe" : ""}`,
+    })), prefix, 1000);
   }
   if (resolved?.kind === "foreignValue") {
     return filterCompletions(resolved.declaration.methods.map((method) => ({
@@ -4400,6 +4425,7 @@ type ResolvedReceiver =
     readonly declaration: StructDeclaration;
     readonly sourceDeclaration: StructDeclaration | null;
   }
+  | { readonly kind: "foreignRecord"; readonly declaration: Extract<ForeignNamedType, { kind: "record" }> }
   | { readonly kind: "foreignValue"; readonly declaration: Extract<ForeignNamedType, { kind: "value" }> }
   | { readonly kind: "integer"; readonly type: string }
   | { readonly kind: "array"; readonly type: string }
@@ -4477,8 +4503,9 @@ function resolveReceiver(context: AnalyzedSource, text: string, offset: number):
     const sourceDeclaration = sourceAggregateForType(context, sourceType)?.declaration ?? null;
     return { kind: "struct", declaration, sourceDeclaration };
   }
-  const foreignValue = context.semanticInfo.foreignNamedTypes.get(receiverType);
-  return foreignValue?.kind === "value" ? { kind: "foreignValue", declaration: foreignValue } : null;
+  const foreign = context.semanticInfo.foreignNamedTypes.get(receiverType);
+  if (foreign?.kind === "record") return { kind: "foreignRecord", declaration: foreign };
+  return foreign?.kind === "value" ? { kind: "foreignValue", declaration: foreign } : null;
 }
 
 function isIntegerSourceType(type: string): boolean {
@@ -5065,6 +5092,9 @@ function foreignConstantDetail(constant: ForeignConstant): string {
 
 function foreignNamedTypeDetail(named: ForeignNamedType): string {
   const executor = named.metadata.executorAffinity === "main" ? " on thread.main" : "";
+  if (named.kind === "record" && named.layout === "union") {
+    return `${named.exportName}: ${named.cName}${executor}  // native union; scalar member reads require unsafe`;
+  }
   if (named.kind !== "value") return `${named.exportName}: ${named.cName}${executor}`;
   const available = (["copy", "move", "deinit"] as const).filter((capability) => named.lifecycle[capability]);
   const unavailable = (["copy", "move", "deinit"] as const).filter((capability) => !named.lifecycle[capability]);
