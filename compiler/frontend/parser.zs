@@ -495,6 +495,12 @@ function parseType(
     output.append(") => ");
     output.append(returnType.name);
     appendTypeNameReferences(inout references, returnType.references);
+    if (takeIf(tokens, inout current, TokenKind.throwsKeyword)) {
+      const errorType = try parseType(tokens, inout current, inout pendingGreater);
+      output.append(" throws ");
+      output.append(errorType.name);
+      appendTypeNameReferences(inout references, errorType.references);
+    }
     return TypeReference({
       name: output.finish(),
       references,

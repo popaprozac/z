@@ -22,7 +22,8 @@ export function canonicalTypeName(name: string): string {
       const capability = parameter.mode === "value" ? "" : `${parameter.mode} `;
       return `${capability}${parameter.name}: ${canonicalTypeName(parameter.type)}`;
     });
-    return `(${parameters.join(", ")}) => ${canonicalTypeName(functionType.returnType)}`;
+    const throws = functionType.errorType ? ` throws ${canonicalTypeName(functionType.errorType)}` : "";
+    return `(${parameters.join(", ")}) => ${canonicalTypeName(functionType.returnType)}${throws}`;
   }
   return name;
 }

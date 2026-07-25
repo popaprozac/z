@@ -62,6 +62,7 @@ export function resolveTypeAliases(
           type: resolveName(parameter.type, stack),
         })),
         resolveName(functionType.returnType, stack),
+        functionType.errorType ? resolveName(functionType.errorType, stack) : null,
       );
     }
     const view = parseViewType(name);

@@ -309,6 +309,7 @@ function resolveForeignTypeName(name: string, aliases: ReadonlyMap<string, strin
         type: resolveForeignTypeName(parameter.type, aliases),
       })),
       resolveForeignTypeName(functionType.returnType, aliases),
+      functionType.errorType ? resolveForeignTypeName(functionType.errorType, aliases) : null,
     );
   }
   const view = parseViewType(name);

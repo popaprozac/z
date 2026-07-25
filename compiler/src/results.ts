@@ -22,6 +22,7 @@ import {
   parseGeneratorType,
 } from "./generator-types.ts";
 import { optionTypeName } from "./option-types.ts";
+import { parseFunctionType } from "./function-types.ts";
 
 export function resultTypeName(successType: string, errorType: string): string {
   return `__z_Result_${successType}_${errorType}`;
@@ -59,6 +60,15 @@ export function materializeResultTypes(
     addResult(
       { name: advanceType, location: type.location },
       { name: generator.errorType, location: type.location },
+      location,
+    );
+  };
+  const addFunctionValueResult = (type: TypeReference, location: SourceLocation): void => {
+    const functionType = parseFunctionType(type.name);
+    if (!functionType?.errorType) return;
+    addResult(
+      { name: functionType.returnType, location: type.location },
+      { name: functionType.errorType, location: type.location },
       location,
     );
   };
@@ -131,8 +141,10 @@ export function materializeResultTypes(
 
   for (const declaration of functions) {
     addGeneratorAdvanceResult(declaration.returnType, declaration.location);
+    addFunctionValueResult(declaration.returnType, declaration.location);
     for (const parameter of declaration.parameters) {
       addGeneratorAdvanceResult(parameter.type, parameter.location);
+      addFunctionValueResult(parameter.type, parameter.location);
     }
     if (declaration.errorType) {
       const generator = isGeneratorFunction(declaration)
@@ -159,6 +171,7 @@ export function materializeResultTypes(
   for (const aggregate of program.structs) {
     for (const field of aggregate.fields) {
       addGeneratorAdvanceResult(field.type, field.location);
+      addFunctionValueResult(field.type, field.location);
     }
     const constructor = aggregate.constructor;
     if (constructor?.errorType) {
@@ -193,6 +206,16 @@ function collectClosureResults(
     for (const statement of nested) {
       switch (statement.kind) {
         case "variable":
+          if (statement.type) {
+            const functionType = parseFunctionType(statement.type.name);
+            if (functionType?.errorType) {
+              addResult(
+                { name: functionType.returnType, location: statement.type.location },
+                { name: functionType.errorType, location: statement.type.location },
+                statement.location,
+              );
+            }
+          }
           if (statement.initializer) visitExpression(statement.initializer);
           break;
         case "destructure":

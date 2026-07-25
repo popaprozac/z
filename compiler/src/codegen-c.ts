@@ -513,7 +513,7 @@ export function generateC(program: Program, sourceName: string, semanticInfo: Se
   for (const closure of closures.filter((candidate) => candidate.storable)) {
     lines.push(generateClosureAdapter(closure, structs, enums, semanticInfo.foreignNamedTypes), "");
   }
-  for (const declaration of program.functions.filter((candidate) => candidate.errorType === null && candidate.name !== "main")) {
+  for (const declaration of program.functions.filter((candidate) => candidate.name !== "main")) {
     lines.push(generateFunctionAdapter(declaration, structs, enums, semanticInfo.foreignNamedTypes), "");
   }
   for (const name of new Set(semanticInfo.standardFunctionReferences.values())) {
@@ -800,6 +800,7 @@ function collectFixedArrayTypes(program: Program, semanticInfo: SemanticInfo): s
     if (functionType) {
       for (const parameter of functionType.parameters) add(parameter.type);
       add(functionType.returnType);
+      if (functionType.errorType) add(functionType.errorType);
       return;
     }
     const slice = parseSliceType(name);
@@ -836,6 +837,7 @@ function collectSliceTypes(program: Program, semanticInfo: SemanticInfo): string
     if (functionType) {
       for (const parameter of functionType.parameters) add(parameter.type);
       add(functionType.returnType);
+      if (functionType.errorType) add(functionType.errorType);
       return;
     }
     const slice = parseSliceType(name);
@@ -1146,7 +1148,10 @@ function generateFunctionTypeDefinition(
   foreignNamedTypes: SemanticInfo["foreignNamedTypes"],
 ): string {
   const parameters = generateFunctionTypeParameters(functionType, structs, enums, foreignNamedTypes);
-  const result = mapType(functionType.returnType, structs, enums, foreignNamedTypes);
+  const returnType = functionType.errorType
+    ? resultTypeName(functionType.returnType, functionType.errorType)
+    : functionType.returnType;
+  const result = mapType(returnType, structs, enums, foreignNamedTypes);
   const name = functionTypeCName(functionType);
   const callParameters = ["void *context", ...parameters].join(", ");
   return `typedef struct ${name} ${name};
@@ -1168,7 +1173,7 @@ static inline __attribute__((unused)) void ${functionTypeReleaseName(functionTyp
 }
 
 function generateObjCConnectionRuntime(): string {
-  const functionType: FunctionType = { parameters: [], returnType: "void" };
+  const functionType: FunctionType = { parameters: [], returnType: "void", errorType: null };
   const functionName = functionTypeCName(functionType);
   const releaseName = functionTypeReleaseName(functionType);
   return `@interface ZObjCConnection : NSObject {
@@ -1329,6 +1334,9 @@ function declarationFunctionType(declaration: FunctionDeclaration, skipParameter
       type: parameter.type.name,
     })),
     returnType: declaration.returnType.name,
+    errorType: declaration.errorType && !isGeneratorFunction(declaration)
+      ? declaration.errorType.name
+      : null,
   };
 }
 
@@ -1401,9 +1409,12 @@ function generateFunctionAdapter(
       ? `std::move(${name})`
       : name;
   });
-  const result = mapType(type.returnType, structs, enums, foreignNamedTypes);
+  const effectiveReturnType = type.errorType
+    ? resultTypeName(type.returnType, type.errorType)
+    : type.returnType;
+  const result = mapType(effectiveReturnType, structs, enums, foreignNamedTypes);
   const invoke = `${declaration.name}(${names.join(", ") || ""})`;
-  const returned = type.returnType === "void" ? `${invoke};\n  return;` : `return ${invoke};`;
+  const returned = effectiveReturnType === "void" ? `${invoke};\n  return;` : `return ${invoke};`;
   return `static __attribute__((unused)) ${result} ${functionAdapterName(declaration.name)}(void *context${parameters.length ? `, ${parameters.join(", ")}` : ""}) {
   (void)context;
   ${returned}
@@ -1420,6 +1431,7 @@ function generateStandardFunctionAdapter(
   const functionType: FunctionType = {
     parameters: signature.parameters,
     returnType: signature.returnType,
+    errorType: signature.errorType,
   };
   const parameters = generateFunctionTypeParameters(functionType, structs, enums, foreignNamedTypes);
   const names = signature.parameters.map((parameter) => (
@@ -1461,7 +1473,10 @@ function generateClosureAdapter(
     prefix.push("(void)context;");
   }
   const invoke = `${closure.declaration.name}(${[...hidden, ...visible].join(", ")})`;
-  const returned = type.returnType === "void" ? `${invoke};\n  return;` : `return ${invoke};`;
+  const effectiveReturnType = type.errorType
+    ? resultTypeName(type.returnType, type.errorType)
+    : type.returnType;
+  const returned = effectiveReturnType === "void" ? `${invoke};\n  return;` : `return ${invoke};`;
   return `${generateClosureAdapterSignature(closure, structs, enums, foreignNamedTypes)} {
   ${prefix.join("\n  ")}
   ${returned}
@@ -1476,7 +1491,10 @@ function generateClosureAdapterSignature(
 ): string {
   const type = closureFunctionType(closure);
   const parameters = generateFunctionTypeParameters(type, structs, enums, foreignNamedTypes);
-  return `static ${mapType(type.returnType, structs, enums, foreignNamedTypes)} ${closureAdapterName(closure)}(void *context${parameters.length ? `, ${parameters.join(", ")}` : ""})`;
+  const returnType = type.errorType
+    ? resultTypeName(type.returnType, type.errorType)
+    : type.returnType;
+  return `static ${mapType(returnType, structs, enums, foreignNamedTypes)} ${closureAdapterName(closure)}(void *context${parameters.length ? `, ${parameters.join(", ")}` : ""})`;
 }
 
 function generateClosureEnvironmentDefinition(
@@ -5215,6 +5233,10 @@ function throwingCallResultType(expression: Expression, context: GenerationConte
     if (closure?.declaration.errorType) {
       return resultTypeName(closure.declaration.returnType.name, closure.declaration.errorType.name);
     }
+    const functionType = parseFunctionType(context.localTypes.get(expression.callee.name) ?? "");
+    if (functionType?.errorType) {
+      return resultTypeName(functionType.returnType, functionType.errorType);
+    }
     const target = context.functions.get(expression.callee.name)!;
     return resultTypeName(target.returnType.name, target.errorType!.name);
   }
@@ -5241,6 +5263,9 @@ function throwingCallResultType(expression: Expression, context: GenerationConte
     const weak = parseWeakType(receiverType);
     if (weak && expression.callee.property === "upgrade") return weakResultTypeName(weak.target);
     const receiver = context.structs.get(receiverType)!;
+    const fieldType = receiver.fields.find((candidate) => candidate.name === expression.callee.property)?.type.name;
+    const functionType = fieldType ? parseFunctionType(fieldType) : null;
+    if (functionType?.errorType) return resultTypeName(functionType.returnType, functionType.errorType);
     const method = receiver.methods.find((candidate) => candidate.name === expression.callee.property)!;
     return resultTypeName(method.returnType.name, method.errorType!.name);
   }
@@ -7524,6 +7549,10 @@ function inferExpressionType(expression: Expression, context: GenerationContext)
         if (closure) return closure.declaration.errorType
           ? resultTypeName(closure.declaration.returnType.name, closure.declaration.errorType.name)
           : closure.declaration.returnType.name;
+        const functionType = parseFunctionType(context.localTypes.get(expression.callee.name) ?? "");
+        if (functionType) return functionType.errorType
+          ? resultTypeName(functionType.returnType, functionType.errorType)
+          : functionType.returnType;
         return context.functions.get(expression.callee.name)?.returnType.name ?? "i32";
       }
       if (expression.callee.kind === "member"

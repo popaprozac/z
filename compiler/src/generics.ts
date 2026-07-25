@@ -150,6 +150,7 @@ export function materializeGenerics(
           type: substituteName(parameter.type, substitutions),
         })),
         substituteName(functionType.returnType, substitutions),
+        functionType.errorType ? substituteName(functionType.errorType, substitutions) : null,
       );
     }
     const array = parseFixedArrayType(name);

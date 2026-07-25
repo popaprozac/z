@@ -384,10 +384,12 @@ visitor or sorting callback can also be invoked repeatedly.
 
 Native callbacks that return a status need a bidirectional projection: Z must
 describe both the normal native return and how a thrown Z error becomes a
-native abort value. That surface is intentionally deferred until throwing
-function values are representable end to end. Shipping a return-only projection
-would make libcurl and SQLite early-abort paths inexpressible, so callback
-`return` and callback `throws` will land together.
+native abort value. Throwing function values now preserve `throws E` through
+storage, aliases, calls, `try`, and `attempt`, providing the required language
+foundation. The remaining `.zd` work is to map the callback's success and
+failure outcomes onto the verified native return values. Shipping a return-only
+projection would make libcurl and SQLite early-abort paths inexpressible, so
+callback `return` and callback `throws` will land together.
 
 ## Trust boundary
 

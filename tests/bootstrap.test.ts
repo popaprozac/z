@@ -5779,6 +5779,96 @@ test("stores and calls explicitly typed non-capturing function values", () => {
   );
 });
 
+test("stores, calls, and propagates throwing function values", () => {
+  const source = `
+    struct ParseError {
+      code: i32;
+    }
+
+    type Parser = (value: i32) => i32 throws ParseError;
+
+    function parse(value: i32): i32 throws ParseError {
+      if (value < 0) { throw ParseError({ code: value }); }
+      return value + 1;
+    }
+
+    function invoke(in operation: Parser, value: i32): i32 throws ParseError {
+      return try operation(value);
+    }
+
+    function main(): i32 {
+      const named: Parser = parse;
+      const contextual: Parser = (value) => {
+        if (value < 0) { throw ParseError({ code: value }); }
+        return value + 1;
+      };
+      const explicit: Parser = (value): i32 throws ParseError => {
+        if (value < 0) { throw ParseError({ code: value }); }
+        return value + 1;
+      };
+      const first = attempt invoke(named, 40);
+      const second = attempt contextual(41);
+      const third = attempt explicit(-3);
+      const firstValue = match (first) {
+        success(value) => value;
+        failure(error) => error.code;
+      };
+      const secondValue = match (second) {
+        success(value) => value;
+        failure(error) => error.code;
+      };
+      const thirdValue = match (third) {
+        success(value) => value;
+        failure(error) => -error.code;
+      };
+      return firstValue + secondValue + thirdValue - 86;
+    }
+  `;
+  const generated = compileToC(source, "throwing-function-values.zs");
+  assert.match(
+    generated,
+    /Z_Result_i32_ParseError \(\*call\)\(void \*context, int32_t value\)/,
+  );
+  assert.match(generated, /__z_function_adapter_parse/);
+  assert.match(generated, /__z_closure_call_[0-9]+_adapter/);
+  assert.match(generated, /\.call\([^;]+\.context, 41\)/);
+
+  const namedUse = source.indexOf("named, 40") + 1;
+  assert.match(
+    hover(source, "throwing-function-values.zs", namedUse)?.contents.value ?? "",
+    /named: Parser/,
+  );
+  const contextualParameter = source.indexOf("(value) =>") + 2;
+  assert.match(
+    hover(source, "throwing-function-values.zs", contextualParameter)?.contents.value ?? "",
+    /value: i32/,
+  );
+
+  const directory = mkdtempSync("/tmp/z-throwing-function-values-");
+  const fileName = resolve(directory, "main.zs");
+  writeFileSync(fileName, source);
+  const result = spawnSync(process.execPath, [cli, "run", fileName], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+
+  assert.throws(
+    () => compileToC(source.replace("const first = attempt invoke(named, 40);", "const first = invoke(named, 40);"), "throwing-function-value-call.zs"),
+    /throwing call requires `attempt` or `try`/,
+  );
+  const mismatchedEffect = `
+    struct ParseError { code: i32; }
+    struct OtherError { code: i32; }
+    type Parser = (value: i32) => i32 throws ParseError;
+    function main(): i32 {
+      const parser: Parser = (value): i32 throws OtherError => value;
+      return 0;
+    }
+  `;
+  assert.throws(
+    () => compileToC(mismatchedEffect, "throwing-function-value-effect.zs"),
+    /expected \(value: i32\) => i32 throws ParseError, found \(value: i32\) => i32 throws OtherError/,
+  );
+});
+
 test("names existing types through transparent aliases", () => {
   const example = resolve(projectRoot, "examples/language/types/type-aliases/main.zs");
   const operations = resolve(projectRoot, "examples/language/types/type-aliases/operations.zs");

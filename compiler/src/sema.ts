@@ -2513,6 +2513,9 @@ function collectSemanticTypeIdentities(
       collectSemanticTypeIdentities(parameter.type, childPath(`p${index}`), structs, enums, identities);
     });
     collectSemanticTypeIdentities(functionType.returnType, childPath("r"), structs, enums, identities);
+    if (functionType.errorType) {
+      collectSemanticTypeIdentities(functionType.errorType, childPath("e"), structs, enums, identities);
+    }
     return identities;
   }
   const result = enums.get(typeName);
@@ -3465,6 +3468,7 @@ function closureFunctionType(closure: ClosureInfo): FunctionType {
       type: parameter.type.name,
     })),
     returnType: closure.declaration.returnType.name,
+    errorType: closure.declaration.errorType?.name ?? null,
   };
 }
 
@@ -3480,7 +3484,7 @@ function functionTypeDeclaration(name: string, type: FunctionType, location: Sou
       location,
     })),
     returnType: { name: type.returnType, location },
-    errorType: null,
+    errorType: type.errorType ? { name: type.errorType, location } : null,
     body: [],
     location,
   };
@@ -3524,13 +3528,6 @@ function inferClosureExpression(
         "pass this closure directly to thread.spawn for a dedicated worker",
         "or submit it through TaskScope.schedule for structured executor work",
       ],
-    });
-  }
-  if (expression.errorType && expectedFunction) {
-    throw new DiagnosticError(fileName, expression.errorType.location, "throwing closure values are not implemented yet", {
-      code: "Z0216",
-      notes: ["the first throwing-closure tier is executable through thread.spawn, which owns and joins a one-shot closure"],
-      helps: ["pass this closure directly to thread.spawn, or use a named throwing function outside a callback boundary"],
     });
   }
   if (expectedFunction && expression.parameters.length !== expectedFunction.parameters.length) {
@@ -3710,7 +3707,8 @@ function inferClosureExpression(
       name: resolveSemanticTypeName(expression.returnType, structs, enums, state),
     };
   }
-  let resolvedErrorType = expression.errorType;
+  let resolvedErrorType = expression.errorType
+    ?? (expectedFunction?.errorType ? { name: expectedFunction.errorType, location: expression.location } : null);
   if (expression.errorType) {
     validateType(expression.errorType, structs, enums, state.foreignNamedTypes, fileName, false);
     resolvedErrorType = {
@@ -3803,13 +3801,6 @@ function finalizeClosureFunctionValue(
   allowBorrowedCaptures = false,
 ): ClosureInfo {
   let closure = state.closures.get(expression.location.offset)!;
-  if (closure.declaration.errorType) {
-    throw new DiagnosticError(fileName, closure.declaration.errorType.location, "throwing closure values are not implemented yet", {
-      code: "Z0216",
-      notes: ["thread.spawn supports a one-shot throwing closure without storing it as a general function value"],
-      helps: ["pass the closure directly to thread.spawn"],
-    });
-  }
   if (closure.captures.length > 0 && expression.captureMode !== "move" && !allowBorrowedCaptures) {
     throw new DiagnosticError(
       fileName,
@@ -3828,7 +3819,11 @@ function finalizeClosureFunctionValue(
     throw new DiagnosticError(
       fileName,
       expression.location,
-      `expected ${displayFunctionType(expectedType)}, found ${displayFunctionType(functionTypeName(actualFunction.parameters, actualFunction.returnType))}`,
+      `expected ${displayFunctionType(expectedType)}, found ${displayFunctionType(functionTypeName(
+        actualFunction.parameters,
+        actualFunction.returnType,
+        actualFunction.errorType,
+      ))}`,
     );
   }
   closure = {
@@ -5625,9 +5620,6 @@ function inferExpressionInner(
         if (global.declaration.typeParameters?.length) {
           throw new DiagnosticError(fileName, expression.location, "generic function values require explicit specialization, which is not implemented yet");
         }
-        if (global.declaration.errorType) {
-          throw new DiagnosticError(fileName, expression.location, "throwing function values are not implemented in the first function-type tier");
-        }
         return functionTypeName(
           global.declaration.parameters.map((parameter) => ({
             name: parameter.name,
@@ -5635,6 +5627,9 @@ function inferExpressionInner(
             type: parameter.type.name,
           })),
           global.declaration.returnType.name,
+          global.declaration.errorType && !isGeneratorFunction(global.declaration)
+            ? global.declaration.errorType.name
+            : null,
         );
       }
       if (global?.kind === "standardFunction") {
@@ -5643,7 +5638,7 @@ function inferExpressionInner(
           throw new DiagnosticError(fileName, expression.location, "async function values are deferred; call the function beneath `await` or `task`");
         }
         state.standardFunctionReferences.set(expression.location.offset, global.name);
-        return functionTypeName(signature.parameters, signature.returnType);
+        return functionTypeName(signature.parameters, signature.returnType, signature.errorType);
       }
       if (global?.kind === "foreignFunction") {
         throw new DiagnosticError(fileName, expression.location, "foreign function values are not implemented; call the function instead");
@@ -6725,7 +6720,7 @@ function inferExpressionInner(
                 });
               }
               const operation = expression.arguments[1];
-              const expectedFunction: FunctionType = { parameters: [], returnType: "void" };
+              const expectedFunction: FunctionType = { parameters: [], returnType: "void", errorType: null };
               const expectedType = functionTypeName([], "void");
               inferClosureExpression(operation, locals, globals, structs, enums, fileName, state, expectedFunction);
               finalizeClosureFunctionValue(
@@ -6898,6 +6893,7 @@ function inferExpressionInner(
                   type: parameter.type.name,
                 })),
                 declaration.returnType.name,
+                declaration.errorType?.name ?? null,
               ),
             );
             checkArguments(declaration, expression.arguments, locals, globals, structs, enums, fileName, expression.location, state);
@@ -7175,7 +7171,7 @@ function inferExpressionInner(
               });
             }
             const operation = expression.arguments[1];
-            const expectedFunction: FunctionType = { parameters: [], returnType: "void" };
+            const expectedFunction: FunctionType = { parameters: [], returnType: "void", errorType: null };
             const expectedType = functionTypeName([], "void");
             if (operation.async && operation.errorType) {
               throw new DiagnosticError(fileName, operation.errorType.location, "TaskScope.schedule async operations cannot throw", {
@@ -7881,6 +7877,10 @@ function inferExpressionInner(
             expression.location,
             state,
           );
+          if (fieldFunctionType.errorType) {
+            if (!allowThrowingCall) throw new DiagnosticError(fileName, expression.location, "throwing call requires `attempt` or `try`");
+            return resultTypeName(fieldFunctionType.returnType, fieldFunctionType.errorType);
+          }
           return fieldFunctionType.returnType;
         }
         const method = declaration?.methods.find((candidate) => candidate.name === expression.callee.property);
@@ -8032,6 +8032,10 @@ function inferExpressionInner(
             expression.location,
             state,
           );
+          if (functionType.errorType) {
+            if (!allowThrowingCall) throw new DiagnosticError(fileName, expression.location, "throwing call requires `attempt` or `try`");
+            return resultTypeName(functionType.returnType, functionType.errorType);
+          }
           return functionType.returnType;
         }
         state.expressionTypes.set(expression.callee.location.offset, closure!.type);
@@ -8065,6 +8069,7 @@ function inferExpressionInner(
               type: parameter.type.name,
             })),
             target.declaration.returnType.name,
+            target.declaration.errorType?.name ?? null,
           ),
         );
         checkArguments(target.declaration, expression.arguments, locals, globals, structs, enums, fileName, expression.location, state);
@@ -11731,7 +11736,11 @@ function validateType(
   }
   const functionType = parseFunctionType(type.name);
   if (functionType) {
-    if (functionType.parameters.some((parameter) => containsViewType(parameter.type)) || containsViewType(functionType.returnType)) {
+    if (
+      functionType.parameters.some((parameter) => containsViewType(parameter.type))
+      || containsViewType(functionType.returnType)
+      || (functionType.errorType !== null && containsViewType(functionType.errorType))
+    ) {
       throw new DiagnosticError(fileName, type.location, "function values cannot store or return receiver-tied views", { code: "Z0206" });
     }
     for (const parameter of functionType.parameters) {
@@ -11744,6 +11753,9 @@ function validateType(
       throw new DiagnosticError(fileName, type.location, "returning another function type is deferred beyond the first function-value tier");
     }
     validateType({ name: functionType.returnType, location: type.location }, structs, enums, foreignNamedTypes, fileName, true);
+    if (functionType.errorType) {
+      validateType({ name: functionType.errorType, location: type.location }, structs, enums, foreignNamedTypes, fileName, false);
+    }
     return;
   }
   const weak = parseWeakType(type.name);
@@ -11794,6 +11806,7 @@ function resolveSemanticTypeName(
       return functionTypeName(
         functionType.parameters.map((parameter) => ({ ...parameter, type: resolveName(parameter.type) })),
         resolveName(functionType.returnType),
+        functionType.errorType ? resolveName(functionType.errorType) : null,
       );
     }
     const weak = parseWeakType(name);
@@ -11919,7 +11932,8 @@ function containsViewType(name: string): boolean {
   const functionType = parseFunctionType(name);
   if (functionType) {
     return functionType.parameters.some((parameter) => containsViewType(parameter.type))
-      || containsViewType(functionType.returnType);
+      || containsViewType(functionType.returnType)
+      || (functionType.errorType !== null && containsViewType(functionType.errorType));
   }
   const dynamic = parseDynamicArrayType(name);
   if (dynamic) return containsViewType(dynamic.elementType);

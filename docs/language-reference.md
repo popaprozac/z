@@ -1072,6 +1072,28 @@ Owned closure environments use ARC. Noncapturing closures can lower directly to
 native function pointers where the foreign ABI permits it. `weak` captures may
 break class/closure cycles.
 
+Function types carry their error effect:
+
+```z
+struct DecodeError {
+  code: i32;
+}
+
+type Decoder = (bytes: Slice<u8>) => Message throws DecodeError;
+
+function decode(in operation: Decoder, bytes: Slice<u8>): Message throws DecodeError {
+  return try operation(bytes);
+}
+```
+
+A named throwing function or a closure with the same signature can initialize
+`Decoder`. When a destination function type supplies `throws DecodeError`, the
+closure body is checked in that error context, so it may use `throw` without
+repeating the effect on the literal. An unconstrained closure can spell the
+effect explicitly as `(bytes: Slice<u8>): Message throws DecodeError => { ... }`.
+Calling either form still requires `try` or `attempt`; function values do not
+erase error handling. The error type is part of the function type and ABI.
+
 Nested closures forward free captures automatically:
 
 ```z

@@ -71,7 +71,8 @@ export function parse(tokens: Token[], fileName: string): Program {
       expect("rightParen", "`)`");
       expect("fatArrow", "`=>` in a function type");
       const returnType = parseType();
-      return { name: functionTypeName(parameters, returnType.name), location };
+      const errorType = match("throws") ? parseType() : null;
+      return { name: functionTypeName(parameters, returnType.name, errorType?.name ?? null), location };
     }
     const token = expect("identifier", "a type name");
     let name = token.text;

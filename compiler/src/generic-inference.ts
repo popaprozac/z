@@ -210,6 +210,7 @@ export function inferGenericCalls(
           type: substituteType(parameter.type, substitutions),
         })),
         substituteType(functionType.returnType, substitutions),
+        functionType.errorType ? substituteType(functionType.errorType, substitutions) : null,
       );
     }
     const array = parseFixedArrayType(type);
@@ -229,7 +230,8 @@ export function inferGenericCalls(
     const functionType = parseFunctionType(type);
     if (functionType) {
       return functionType.parameters.some((item) => typeMentionsParameter(item.type, parameter))
-        || typeMentionsParameter(functionType.returnType, parameter);
+        || typeMentionsParameter(functionType.returnType, parameter)
+        || (functionType.errorType !== null && typeMentionsParameter(functionType.errorType, parameter));
     }
     const array = parseFixedArrayType(type);
     if (array) return typeMentionsParameter(array.elementType, parameter);

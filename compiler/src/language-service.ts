@@ -5537,6 +5537,9 @@ function displaySubstitutedType(
           type: substitutions.get(parameter.type) ?? parameter.type,
         })),
         substitutions.get(functionType.returnType) ?? functionType.returnType,
+        functionType.errorType
+          ? substitutions.get(functionType.errorType) ?? functionType.errorType
+          : null,
       ),
       (nested) => displayType(nested, typeDisplayNames),
     )!;
