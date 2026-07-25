@@ -2001,6 +2001,24 @@ deinitializing first. The first tier supports a byte buffer whose length is a
 product of native `size_t` parameters and a callback invoked only on the
 registering thread.
 
+Ordinary non-callback pointer/length pairs use the same vocabulary at function
+scope:
+
+```z
+export function blob_hash(in data: _, length: _): _ {
+  bytes from data length length;
+}
+```
+
+This exposes `blob_hash(data: Slice<u8>)` to safe Z. The declaration's `in`
+classifies the native const pointer; callers omit it because `Slice<u8>` is
+already a borrowed, non-escaping view. The compiler validates a const
+`char *`, `unsigned char *`, or `void *` plus one distinct `size_t` parameter
+and lowers directly to `blob_hash(data.data, data.length)`. Stored fixed
+`u8` arrays and `Array<u8>` values receive the existing call-scoped slice
+conversion. Mutable buffers, retained pointers, and broader element/count
+shapes remain later contracts rather than unchecked inference.
+
 Z's intended foreign boundary has three explicit trust tiers:
 
 1. Header import plus checked `.zd` facts is the safe surface. Clang remains the

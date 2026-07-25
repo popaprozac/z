@@ -236,6 +236,7 @@ function normalizeOverload(
       status: functionNotes?.status ?? null,
       parameters,
       connection: null,
+      buffers: functionNotes?.buffers ?? [],
       variadic: declaration.variadic,
       cSignature: declaration.nativeSignature,
       metadata: {

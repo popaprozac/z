@@ -2,7 +2,13 @@ import { existsSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import type { SourceLocation } from "./ast.ts";
 import { DiagnosticError } from "./diagnostics.ts";
-import type { ApiNotes, FunctionProjectionNote, PointerNote, StatusNote } from "./foreign-api-notes.ts";
+import type {
+  ApiNotes,
+  ByteBufferProjectionNote,
+  FunctionProjectionNote,
+  PointerNote,
+  StatusNote,
+} from "./foreign-api-notes.ts";
 import type {
   ForeignConstant,
   ForeignCallbackTypedef,
@@ -55,6 +61,7 @@ export type ForeignFunctionContract = {
   readonly thread: ForeignThreadContract;
   readonly threadLocations: ForeignThreadContractLocations;
   readonly callbacks: readonly ForeignCallbackContract[];
+  readonly buffers: readonly ForeignBufferContract[];
   readonly asyncCallback: string | null;
   readonly asyncLocation: SourceLocation | null;
   readonly asyncCallbackLocation: SourceLocation | null;
@@ -68,6 +75,14 @@ export type ForeignFunctionContract = {
   readonly asyncThrowLocation: SourceLocation | null;
   readonly executorAffinity: "main" | null;
   readonly executorAffinityLocation: SourceLocation | null;
+};
+
+export type ForeignBufferContract = {
+  readonly buffer: string;
+  readonly factors: readonly string[];
+  readonly location: SourceLocation;
+  readonly bufferLocation: SourceLocation;
+  readonly factorLocations: readonly SourceLocation[];
 };
 
 export type ForeignThreadContractLocations = {
@@ -485,6 +500,7 @@ export function parseForeignDeclarationContracts(source: string, fileName: strin
     let releaseLocation: SourceLocation | null = null;
     let threadContract = emptyThreadContract();
     const callbacks: ForeignCallbackContract[] = [];
+    const buffers: ForeignBufferContract[] = [];
     let asyncCallback: string | null = null;
     let asyncLocation: SourceLocation | null = null;
     let asyncCallbackLocation: SourceLocation | null = null;
@@ -661,6 +677,29 @@ export function parseForeignDeclarationContracts(source: string, fileName: strin
           });
           continue;
         }
+        if (at("bytes")) {
+          take();
+          expectText("from");
+          const buffer = expectIdentifier("a native buffer parameter");
+          expectText("length");
+          const factors: Token[] = [expectIdentifier("a native buffer length parameter")];
+          while (at("*")) {
+            take();
+            factors.push(expectIdentifier("a native buffer length parameter"));
+          }
+          expectText(";");
+          if (buffers.some((candidate) => candidate.buffer === buffer.text)) {
+            fail(buffer, `foreign function ${JSON.stringify(name)} cannot project buffer ${JSON.stringify(buffer.text)} more than once`);
+          }
+          buffers.push({
+            buffer: buffer.text,
+            factors: factors.map((factor) => factor.text),
+            location: contract.location,
+            bufferLocation: buffer.location,
+            factorLocations: factors.map((factor) => factor.location),
+          });
+          continue;
+        }
         if (at("success")) {
           if (returnType.semanticType !== "status-void" && returnType.semanticType !== "connection-status") {
             fail(contract, "success is only valid on a `void throws _` or `connection throws _` native status projection");
@@ -677,7 +716,7 @@ export function parseForeignDeclarationContracts(source: string, fileName: strin
           continue;
         }
         if (!at("deinit")) {
-          fail(contract, `expected "async", "deinit", "thread", "callback", or "success" in foreign function contract, found ${JSON.stringify(contract.text)}`);
+          fail(contract, `expected "async", "bytes", "deinit", "thread", "callback", or "success" in foreign function contract, found ${JSON.stringify(contract.text)}`);
         }
         if (release) fail(contract, `foreign function ${JSON.stringify(name)} cannot declare more than one deinit contract`);
         take();
@@ -718,6 +757,7 @@ export function parseForeignDeclarationContracts(source: string, fileName: strin
       thread: threadContract.thread,
       threadLocations: threadContract.locations,
       callbacks,
+      buffers,
       asyncCallback,
       asyncLocation,
       asyncCallbackLocation,
@@ -761,6 +801,7 @@ export function foreignDeclarationApiNotes(
     return?: PointerNote;
     parameters?: Record<string, PointerNote>;
     status?: StatusNote;
+    buffers?: ByteBufferProjectionNote[];
     executorAffinity?: "main";
     projections?: FunctionProjectionNote[];
   }> = {};
@@ -829,6 +870,7 @@ export function foreignDeclarationApiNotes(
       namedTypes,
       fileName,
     );
+    const buffers = validateFunctionBufferContracts(contract, declaration, fileName);
     const projection = contract.parameters.some((parameter) => parameter.literal || parameter.explicitType)
       || Boolean(pairedCallback)
       || declaration.overloads.some((overload) => contract.parameters.length > overload.parameters.length);
@@ -1031,6 +1073,7 @@ export function foreignDeclarationApiNotes(
           : {}),
       },
       ...(Object.keys(parameters).length ? { parameters } : {}),
+      ...(buffers.length ? { buffers } : {}),
       ...(
         contract.returnSemanticType === "status-void"
         || contract.returnSemanticType === "connection-status"
@@ -1126,6 +1169,125 @@ export function foreignDeclarationApiNotes(
     ...(Object.keys(functions).length ? { functions } : {}),
     ...(Object.keys(objcMethods).length ? { objcMethods } : {}),
   };
+}
+
+function validateFunctionBufferContracts(
+  contract: ForeignFunctionContract,
+  declaration: ForeignFunctionDeclaration,
+  fileName: string,
+): ByteBufferProjectionNote[] {
+  const used = new Set<number>();
+  return contract.buffers.map((buffer) => {
+    if (buffer.factors.length !== 1) {
+      throw new DiagnosticError(
+        fileName,
+        buffer.location,
+        "ordinary byte-buffer projection currently requires exactly one size_t length parameter",
+        {
+          code: "Z0801",
+          notes: ["multi-factor byte counts remain available for callback projections"],
+          helps: ["write `bytes from <buffer> length <length>;`"],
+        },
+      );
+    }
+    const bufferParameter = contract.parameters.findIndex((parameter) => parameter.name === buffer.buffer);
+    if (bufferParameter < 0) {
+      throw new DiagnosticError(
+        fileName,
+        buffer.bufferLocation,
+        `byte projection names unknown function parameter ${JSON.stringify(buffer.buffer)}`,
+        { code: "Z0801" },
+      );
+    }
+    const lengthName = buffer.factors[0];
+    const lengthParameter = contract.parameters.findIndex((parameter) => parameter.name === lengthName);
+    if (lengthParameter < 0) {
+      throw new DiagnosticError(
+        fileName,
+        buffer.factorLocations[0],
+        `byte projection names unknown function parameter ${JSON.stringify(lengthName)}`,
+        { code: "Z0801" },
+      );
+    }
+    if (bufferParameter === lengthParameter || used.has(bufferParameter) || used.has(lengthParameter)) {
+      throw new DiagnosticError(
+        fileName,
+        buffer.location,
+        "ordinary byte-buffer projection parameters must be distinct and may belong to only one projection",
+        { code: "Z0801" },
+      );
+    }
+    const bufferContract = contract.parameters[bufferParameter];
+    const lengthContract = contract.parameters[lengthParameter];
+    if (bufferContract.mode !== "in") {
+      throw new DiagnosticError(
+        fileName,
+        bufferContract.location,
+        `projected byte buffer ${JSON.stringify(buffer.buffer)} requires in borrowing`,
+        { code: "Z0801", helps: [`write \`in ${buffer.buffer}: _\``] },
+      );
+    }
+    if (lengthContract.mode !== "value") {
+      throw new DiagnosticError(
+        fileName,
+        lengthContract.location,
+        `projected byte length ${JSON.stringify(lengthName)} is a derived value and cannot declare a capability`,
+        { code: "Z0801", helps: [`write \`${lengthName}: _\``] },
+      );
+    }
+    for (const overload of declaration.overloads) {
+      const nativeBuffer = overload.parameters[bufferParameter];
+      const nativeLength = overload.parameters[lengthParameter];
+      if (!nativeBuffer || !nativeLength) {
+        throw new DiagnosticError(
+          fileName,
+          buffer.location,
+          "ordinary byte-buffer projection must name fixed native parameters",
+          { code: "Z0801" },
+        );
+      }
+      const pointerSpellings = [
+        nativeBuffer.type.nativeName,
+        nativeBuffer.type.canonicalNativeName,
+      ].filter((value): value is string => Boolean(value));
+      const constBytePointer = pointerSpellings.some((spelling) => {
+        const normalized = normalizeCallbackContextType(spelling);
+        return normalized === "const char *"
+          || normalized === "const unsigned char *"
+          || normalized === "const void *";
+      });
+      if (!constBytePointer) {
+        throw new DiagnosticError(
+          fileName,
+          buffer.bufferLocation,
+          `ordinary byte projection requires a const native byte pointer, found ${JSON.stringify(nativeBuffer.type.nativeName)}`,
+          {
+            code: "Z0801",
+            notes: ["the first tier exposes read-only Slice<u8>; mutable native buffers require a separate reviewed contract"],
+          },
+        );
+      }
+      const lengthSpellings = [
+        nativeLength.type.nativeName,
+        nativeLength.type.canonicalNativeName,
+      ].filter((value): value is string => Boolean(value));
+      if (!lengthSpellings.some((spelling) => normalizeCallbackContextType(spelling) === "size_t")) {
+        throw new DiagnosticError(
+          fileName,
+          buffer.factorLocations[0],
+          `ordinary byte projection length must have native type size_t, found ${JSON.stringify(nativeLength.type.nativeName)}`,
+          { code: "Z0801" },
+        );
+      }
+    }
+    used.add(bufferParameter);
+    used.add(lengthParameter);
+    return {
+      bufferParameter,
+      lengthParameters: [lengthParameter],
+      elementType: "u8",
+    };
+  });
 }
 
 function validatePairedOptionCallbackContract(
@@ -1467,6 +1629,7 @@ function objectiveCMethodApiNote(
     || contract.thread.share
     || contract.thread.deinit
     || contract.statusSuccessValues.length > 0
+    || contract.buffers.length > 0
   ) {
     throw new DiagnosticError(
       fileName,

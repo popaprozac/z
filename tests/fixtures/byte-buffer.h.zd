@@ -1,0 +1,8 @@
+declare module "byte-buffer.h" {
+  export function z_byte_sum(
+    in data: _,
+    length: _
+  ): _ {
+    bytes from data length length;
+  }
+}

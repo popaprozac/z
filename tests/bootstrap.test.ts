@@ -944,6 +944,116 @@ test("ties projected native callbacks to their owner with a move-only connection
   );
 });
 
+test("projects an ordinary native pointer and length as one borrowed byte slice", () => {
+  const fileName = resolve(projectRoot, "tests/fixtures/byte-buffer.zs");
+  const source = readFileSync(fileName, "utf8");
+  const generated = compileToC(source, fileName);
+
+  assert.match(generated, /z_byte_sum\(\(\(bytes\)\.data\), 3\)/);
+  assert.doesNotMatch(generated, /z_byte_sum\([^)]*Z_Slice/);
+
+  const result = spawnSync(process.execPath, [cli, "run", fileName], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+
+  const functionOffset = source.indexOf("z_byte_sum") + 2;
+  assert.match(
+    hover(source, fileName, functionOffset)?.contents.value ?? "",
+    /z_byte_sum\(data: Slice<u8>\): i32/,
+  );
+
+  const declarationFile = resolve(projectRoot, "tests/fixtures/byte-buffer.h.zd");
+  const declarationSource = readFileSync(declarationFile, "utf8");
+  assert.deepEqual(diagnostics(declarationSource, declarationFile), []);
+  assert.match(
+    hover(
+      declarationSource,
+      declarationFile,
+      declarationSource.indexOf("bytes from") + 2,
+    )?.contents.value ?? "",
+    /bytes: Slice<u8>.*borrowed safe argument/,
+  );
+  assert.match(
+    hover(
+      declarationSource,
+      declarationFile,
+      declarationSource.lastIndexOf("data length") + 2,
+    )?.contents.value ?? "",
+    /native pointer supplied by Slice<u8>\.data/,
+  );
+  assert.match(
+    hover(
+      declarationSource,
+      declarationFile,
+      declarationSource.lastIndexOf("length;") + 2,
+    )?.contents.value ?? "",
+    /hidden native length supplied by Slice<u8>\.length/,
+  );
+
+  const bufferCompletionSource = declarationSource.replace("bytes from data", "bytes from da");
+  const bufferCompletionOffset = bufferCompletionSource.indexOf("bytes from da") + "bytes from da".length;
+  assert.match(
+    completions(bufferCompletionSource, declarationFile, bufferCompletionOffset)
+      .find((item) => item.label === "data")?.detail ?? "",
+    /native pointer projected as Slice<u8>\.data/,
+  );
+  const lengthCompletionSource = declarationSource.replace("length length;", "length len");
+  const lengthCompletionOffset = lengthCompletionSource.lastIndexOf("length len") + "length len".length;
+  assert.match(
+    completions(lengthCompletionSource, declarationFile, lengthCompletionOffset)
+      .find((item) => item.label === "length")?.detail ?? "",
+    /native length derived from Slice<u8>\.length/,
+  );
+
+  const missingBorrow = declarationSource.replace("in data: _", "data: _");
+  assert.match(
+    diagnostics(missingBorrow, declarationFile)[0]?.message ?? "",
+    /projected byte buffer "data" requires in borrowing/,
+  );
+  const wrongName = declarationSource.replace("bytes from data", "bytes from missing");
+  assert.match(
+    diagnostics(wrongName, declarationFile)[0]?.message ?? "",
+    /byte projection names unknown function parameter "missing"/,
+  );
+
+  const overflow = source.replace("[20, 21, 1]", "[256, 21, 1]");
+  assert.match(
+    diagnostics(overflow, fileName)[0]?.message ?? "",
+    /integer literal 256 does not fit u8/,
+  );
+  const wrongLength = source.replace("u8[3]", "u8[4]");
+  assert.match(
+    diagnostics(wrongLength, fileName)[0]?.message ?? "",
+    /expected u8\[4\], found u8\[3\]/,
+  );
+
+  const dynamicSource = `
+    import native from "tests/fixtures/byte-buffer.h";
+
+    function sum(bytes: Slice<u8>): i32 {
+      return native.z_byte_sum(bytes);
+    }
+
+    function main(): i32 {
+      let bytes = Array<u8>();
+      bytes.push(20);
+      bytes.push(21);
+      bytes.push(1);
+      return native.z_byte_sum(bytes) + sum(bytes) - 84;
+    }
+  `;
+  const dynamicFile = resolve(projectRoot, "byte-buffer-dynamic.zs");
+  const dynamicGenerated = compileToC(dynamicSource, dynamicFile);
+  assert.match(dynamicGenerated, /z_byte_sum\(\(\(bytes\)\.data\), \(\(bytes\)\.length\)\)/);
+  const dynamicDirectory = mkdtempSync("/tmp/z-byte-buffer-");
+  const dynamicRunFile = resolve(dynamicDirectory, "main.zs");
+  writeFileSync(dynamicRunFile, dynamicSource.replace(
+    '"tests/fixtures/byte-buffer.h"',
+    JSON.stringify(resolve(projectRoot, "tests/fixtures/byte-buffer.h")),
+  ));
+  const dynamicResult = spawnSync(process.execPath, [cli, "run", dynamicRunFile], { encoding: "utf8" });
+  assert.equal(dynamicResult.status, 0, dynamicResult.stderr);
+});
+
 test("keeps unselected C types and constants out of scope", () => {
   const missingType = `
     import { z_score } from "tests/fixtures/geometry.h";
@@ -1625,7 +1735,7 @@ test("diagnoses malformed and mismatched Z declaration contracts", () => {
   `;
   const executableDiagnostic = diagnostics(executableContract, "/tmp/contract.h.zd")[0];
   assert.equal(executableDiagnostic.code, "Z0801");
-  assert.match(executableDiagnostic.message, /expected "async", "deinit", "thread", "callback", or "success" in foreign function contract/);
+  assert.match(executableDiagnostic.message, /expected "async", "bytes", "deinit", "thread", "callback", or "success" in foreign function contract/);
 
   const threadWithoutOwner = `
     declare module "contract.h" {

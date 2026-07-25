@@ -301,6 +301,11 @@ export type ForeignFunctionOverload = {
     readonly callbackOption: string;
     readonly contextOption: string;
   } | null;
+  readonly buffers?: readonly {
+    readonly bufferParameter: number;
+    readonly lengthParameters: readonly number[];
+    readonly elementType: "u8";
+  }[];
   readonly variadic: boolean;
   readonly cSignature: string;
   readonly metadata: ForeignDeclarationMetadata;

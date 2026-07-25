@@ -256,6 +256,8 @@ export type IntegerConversion = {
 export type ForeignCallArgumentPlan =
   | { readonly kind: "argument"; readonly source: number }
   | { readonly kind: "cast"; readonly source: number; readonly cName: string }
+  | { readonly kind: "sliceData"; readonly source: number }
+  | { readonly kind: "sliceLength"; readonly source: number }
   | { readonly kind: "fixed"; readonly expression: string }
   | { readonly kind: "callback"; readonly source: number; readonly callback: ForeignCallbackType; readonly functionType: string }
   | { readonly kind: "context"; readonly source: number; readonly callback: ForeignCallbackType; readonly functionType: string }
@@ -2582,12 +2584,27 @@ function analyzeStatement(
           throw new DiagnosticError(fileName, statement.type.location, "a closure annotation must be a function type");
         }
       }
+      let declaredVariableType: ValueType | null = null;
+      if (statement.type) {
+        validateType(statement.type, structs, enums, state.foreignNamedTypes, fileName, false);
+        declaredVariableType = resolveSemanticTypeName(statement.type, structs, enums, state);
+      }
       const contextualFunction = statement.initializer.kind === "closure" && statement.type
-        ? parseFunctionType(statement.type.name)
+        ? parseFunctionType(String(declaredVariableType))
         : null;
       let initializerType = statement.initializer.kind === "closure"
         ? inferClosureExpression(statement.initializer, locals, globals, structs, enums, fileName, state, contextualFunction)
-        : inferDirectValue(statement.initializer, owner, locals, globals, structs, enums, fileName, state);
+        : inferDirectValue(
+          statement.initializer,
+          owner,
+          locals,
+          globals,
+          structs,
+          enums,
+          fileName,
+          state,
+          declaredVariableType,
+        );
       const inferredBindingType = String(underlyingType(initializerType));
       const bindingResolution = statement.type ? null : {
         location: statement.nameLocation,
@@ -2600,9 +2617,8 @@ function analyzeStatement(
         ? state.observer?.resolveBindingType?.(bindingResolution) ?? initializerType
         : initializerType;
       if (bindingResolution) state.observer?.onBindingResolution?.(bindingResolution);
-      if (statement.type) {
-        validateType(statement.type, structs, enums, state.foreignNamedTypes, fileName, false);
-        variableType = resolveSemanticTypeName(statement.type, structs, enums, state);
+      if (declaredVariableType) {
+        variableType = declaredVariableType;
         if (statement.initializer.kind === "closure") {
           const expectedFunction = parseFunctionType(variableType)!;
           finalizeClosureFunctionValue(
@@ -3387,6 +3403,29 @@ function inferDirectValue(
   state: AnalysisState,
   expected: ValueType | null = null,
 ): ValueType {
+  const expectedArray = expected === null
+    ? null
+    : parseFixedArrayType(String(underlyingType(expected)));
+  if (expression.kind === "arrayExpression" && expectedArray) {
+    for (const element of expression.elements) {
+      const actual = inferDirectValue(
+        element,
+        owner,
+        locals,
+        globals,
+        structs,
+        enums,
+        fileName,
+        state,
+        expectedArray.elementType,
+      );
+      requireAssignable(expectedArray.elementType, actual, element, fileName, structs, enums, state);
+      consumeOwnedValue(element, expectedArray.elementType, locals, structs, enums, fileName, state);
+    }
+    const type = fixedArrayTypeName(expectedArray.elementType, expression.elements.length);
+    state.expressionTypes.set(expression.location.offset, type);
+    return type;
+  }
   if (expression.kind === "try") {
     return inferTrySuccess(expression, owner, locals, globals, structs, enums, fileName, state);
   }
@@ -10897,20 +10936,32 @@ function foreignOverloadScore(
   args: readonly Expression[],
   state: AnalysisState,
 ): number {
-  const parameters = target.parameters.filter((parameter) => (
-    parameter.type.kind !== "callbackContext"
-    && parameter.type.kind !== "callbackRelease"
-    && parameter.type.kind !== "fixedNative"
-  ));
+  const buffers = target.buffers ?? [];
+  const projectedLengths = new Set(buffers.flatMap((buffer) => buffer.lengthParameters));
+  const projectedBuffers = new Map(buffers.map((buffer) => [buffer.bufferParameter, buffer]));
+  const parameters = target.parameters
+    .map((parameter, nativeIndex) => ({ parameter, nativeIndex }))
+    .filter(({ parameter, nativeIndex }) => (
+      parameter.type.kind !== "callbackContext"
+      && parameter.type.kind !== "callbackRelease"
+      && parameter.type.kind !== "fixedNative"
+      && !projectedLengths.has(nativeIndex)
+    ));
   let score = target.variadic ? 0 : 2;
   for (let index = 0; index < args.length; index += 1) {
-    const parameter = parameters[index];
-    if (!parameter) continue;
+    const entry = parameters[index];
+    if (!entry) continue;
+    const { parameter, nativeIndex } = entry;
     if (parameter.literal) {
       // Exact literal projections outrank an otherwise equally shaped overload.
       score += 32;
     }
-    const expected = canonicalType(foreignValueType(parameter.type), state.foreignNamedTypes);
+    const expected = canonicalType(
+      projectedBuffers.has(nativeIndex)
+        ? sliceTypeName(projectedBuffers.get(nativeIndex)!.elementType)
+        : foreignValueType(parameter.type),
+      state.foreignNamedTypes,
+    );
     const argument = args[index];
     if (argument.kind === "number" && isNumericType(expected)) {
       if (isIntegerLiteral(argument.value)) {
@@ -10938,7 +10989,18 @@ function checkForeignCall(
   location: SourceLocation,
   state: AnalysisState,
 ): ValueType {
-  const unsupported = [target.returnType, ...target.parameters.map((parameter) => parameter.type)]
+  const buffers = target.buffers ?? [];
+  const projectedBuffers = new Map(buffers.map((buffer) => [buffer.bufferParameter, buffer]));
+  const projectedLengths = new Map(
+    buffers.flatMap((buffer) => buffer.lengthParameters.map((parameter) => [parameter, buffer] as const)),
+  );
+  const unsupported = [
+    target.returnType,
+    ...target.parameters
+      .map((parameter, nativeIndex) => ({ type: parameter.type, nativeIndex }))
+      .filter(({ nativeIndex }) => !projectedBuffers.has(nativeIndex) && !projectedLengths.has(nativeIndex))
+      .map(({ type }) => type),
+  ]
     .find((type) => type.kind === "unsupported");
   if (unsupported?.kind === "unsupported") {
     throw new DiagnosticError(
@@ -10949,10 +11011,11 @@ function checkForeignCall(
   }
   const visibleParameters = target.parameters
     .map((parameter, nativeIndex) => ({ parameter, nativeIndex }))
-    .filter(({ parameter }) => (
+    .filter(({ parameter, nativeIndex }) => (
       parameter.type.kind !== "callbackContext"
       && parameter.type.kind !== "callbackRelease"
       && parameter.type.kind !== "fixedNative"
+      && !projectedLengths.has(nativeIndex)
     ));
   if (
     target.variadic
@@ -10967,7 +11030,11 @@ function checkForeignCall(
   }
   for (let index = 0; index < args.length; index += 1) {
     const argument = args[index];
-    const parameter = visibleParameters[index]?.parameter;
+    const visibleParameter = visibleParameters[index];
+    const parameter = visibleParameter?.parameter;
+    const bufferProjection = visibleParameter
+      ? projectedBuffers.get(visibleParameter.nativeIndex)
+      : undefined;
     if (parameter?.literal) {
       const constant = argument.kind === "member" ? getForeignConstant(argument, globals) : null;
       if (constant?.cName !== parameter.literal) {
@@ -10983,6 +11050,14 @@ function checkForeignCall(
       }
     }
     if (argument.kind === "argumentReference") {
+      if (bufferProjection) {
+        throw new DiagnosticError(
+          fileName,
+          argument.location,
+          "a projected byte slice is already borrowed; pass its stored value without in, inout, out, or move",
+          { code: "Z0301" },
+        );
+      }
       if (parameter?.type.kind === "pointerOut") {
         if (argument.access !== "out") {
           throw new DiagnosticError(
@@ -11113,6 +11188,45 @@ function checkForeignCall(
         argument.location,
         `C function ${JSON.stringify(target.name)} requires out <mutable binding> for parameter ${index + 1}`,
       );
+    }
+    if (bufferProjection) {
+      if (!isNamedStorageExpression(argument)) {
+        throw new DiagnosticError(
+          fileName,
+          argument.location,
+          `borrowed byte slice passed to ${JSON.stringify(target.name)} requires named storage`,
+          {
+            code: "Z0206",
+            notes: ["the native call borrows the projected data pointer for the duration of the call"],
+            helps: ["bind the Array<u8>, fixed u8 array, or Slice<u8> before passing it"],
+          },
+        );
+      }
+      const actual = inferExpression(argument, locals, globals, structs, enums, fileName, state);
+      const actualName = String(underlyingType(actual));
+      const expectedSlice = sliceTypeName(bufferProjection.elementType);
+      const fixed = parseFixedArrayType(actualName);
+      const dynamic = parseDynamicArrayType(actualName);
+      const slice = parseSliceType(actualName);
+      if ((fixed ?? dynamic)?.elementType === bufferProjection.elementType) {
+        state.sliceConversions.set(argument.location.offset, {
+          sourceType: actualName,
+          targetType: expectedSlice,
+        });
+      } else if (slice?.elementType === bufferProjection.elementType) {
+        requireAssignable(expectedSlice, actual, argument, fileName, structs, enums, state);
+      } else {
+        throw new DiagnosticError(
+          fileName,
+          argument.location,
+          `C function ${JSON.stringify(target.name)} expects ${expectedSlice}, found ${describeValueType(actual, state)}`,
+          {
+            code: "Z0801",
+            notes: ["the .zd contract projects a const native byte pointer and size_t length into one borrowed slice"],
+          },
+        );
+      }
+      continue;
     }
     if (parameter?.type.kind === "recordPointer") {
       if (parameter.type.access !== "in") {
@@ -11326,11 +11440,23 @@ function checkForeignCall(
     ));
   if (
     contextualCallbacks.length > 0
+    || buffers.length > 0
     || target.parameters.some((parameter) => parameter.type.kind === "fixedNative" || parameter.abiCast)
   ) {
     const callbacksByNativeIndex = new Map(contextualCallbacks.map((entry) => [entry.nativeIndex, entry]));
     const visibleByNativeIndex = new Map(visibleParameters.map((entry, source) => [entry.nativeIndex, source]));
     const plan: ForeignCallArgumentPlan[] = target.parameters.map((parameter, nativeIndex) => {
+      const projectedBuffer = projectedBuffers.get(nativeIndex);
+      if (projectedBuffer) {
+        return { kind: "sliceData", source: visibleByNativeIndex.get(nativeIndex)! };
+      }
+      const projectedLength = projectedLengths.get(nativeIndex);
+      if (projectedLength) {
+        return {
+          kind: "sliceLength",
+          source: visibleByNativeIndex.get(projectedLength.bufferParameter)!,
+        };
+      }
       if (parameter.type.kind === "fixedNative") {
         return { kind: "fixed", expression: parameter.type.expression };
       }

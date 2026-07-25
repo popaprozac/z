@@ -2486,6 +2486,29 @@ function foreignDeclarationCompletions(source: string, fileName: string, offset:
       });
     }
   }
+  const ordinaryByteBufferPrefix = /\bexport\s+function\s+[A-Za-z_][A-Za-z0-9_.]*\s*\([^)]*\)\s*:[^{;]+\{[^{}]*\bbytes\s+from\s+([A-Za-z_]*)$/.exec(before)?.[1];
+  const ordinaryByteLengthPrefix = /\bexport\s+function\s+[A-Za-z_][A-Za-z0-9_.]*\s*\([^)]*\)\s*:[^{;]+\{[^{}]*\bbytes\s+from\s+[A-Za-z_][A-Za-z0-9_]*\s+length\s+([A-Za-z_]*)$/.exec(before)?.[1];
+  if (ordinaryByteBufferPrefix !== undefined || ordinaryByteLengthPrefix !== undefined) {
+    const wantedPrefix = ordinaryByteBufferPrefix ?? ordinaryByteLengthPrefix ?? "";
+    const candidates = new Map<string, string>();
+    for (const signature of ownerSignatures) {
+      for (const parameter of signature.parameters) {
+        if (!parameter.name) continue;
+        candidates.set(parameter.name, foreignTypeName(parameter.type));
+      }
+    }
+    for (const [name, type] of candidates) {
+      if (!name.toLowerCase().startsWith(wantedPrefix.toLowerCase())) continue;
+      contextual.push({
+        label: name,
+        kind: completionKinds.variable,
+        detail: ordinaryByteBufferPrefix !== undefined
+          ? `${name}: ${type}; native pointer projected as Slice<u8>.data`
+          : `${name}: ${type}; native length derived from Slice<u8>.length`,
+        sortText: `0-${name}`,
+      });
+    }
+  }
 
   const asyncContractPrefix = /\basync\s+([A-Za-z_][A-Za-z0-9_]*)?$/.exec(before)?.[1];
   if (ownerSignatures.length > 0 && asyncContractPrefix !== undefined) {
@@ -2805,6 +2828,48 @@ function foreignDeclarationHover(source: string, fileName: string, offset: numbe
     ] as const) {
       if (location?.offset === word.start) {
         return markdownHover(`${capability}: ${detail}`, source, word.start, word.end);
+      }
+    }
+    for (const buffer of contract.buffers) {
+      const bufferIndex = contract.parameters.findIndex((parameter) => parameter.name === buffer.buffer);
+      const nativeBufferTypes = new Set(
+        nativeSignatures
+          .map((overload) => overload.parameters[bufferIndex])
+          .filter(Boolean)
+          .map((native) => foreignTypeName(native.type)),
+      );
+      if (buffer.location.offset === word.start) {
+        return markdownHover(
+          `bytes: Slice<u8>  // one borrowed safe argument projects to native ${buffer.buffer} plus ${buffer.factors.join(" * ")}`,
+          source,
+          word.start,
+          word.end,
+        );
+      }
+      if (buffer.bufferLocation.offset === word.start) {
+        return markdownHover(
+          `${buffer.buffer}: ${[...nativeBufferTypes].join(" | ") || "_"}  // native pointer supplied by Slice<u8>.data`,
+          source,
+          word.start,
+          word.end,
+        );
+      }
+      const factorIndex = buffer.factorLocations.findIndex((location) => location.offset === word.start);
+      if (factorIndex >= 0) {
+        const factor = buffer.factors[factorIndex];
+        const parameterIndex = contract.parameters.findIndex((parameter) => parameter.name === factor);
+        const types = new Set(
+          nativeSignatures
+            .map((overload) => overload.parameters[parameterIndex])
+            .filter(Boolean)
+            .map((native) => foreignTypeName(native.type)),
+        );
+        return markdownHover(
+          `${factor}: ${[...types].join(" | ") || "_"}  // hidden native length supplied by Slice<u8>.length`,
+          source,
+          word.start,
+          word.end,
+        );
       }
     }
     for (const callback of contract.callbacks) {
@@ -4831,12 +4896,19 @@ function foreignNamedTypeDetail(named: ForeignNamedType): string {
 
 function foreignFunctionDetail(declaration: ForeignFunction): string {
   return declaration.overloads.map((overload) => {
+    const buffers = overload.buffers ?? [];
+    const projectedBuffers = new Map(buffers.map((buffer) => [buffer.bufferParameter, buffer]));
+    const projectedLengths = new Set(buffers.flatMap((buffer) => buffer.lengthParameters));
     const parameters = overload.parameters
-      .filter((parameter) => parameter.type.kind !== "callbackContext"
+      .map((parameter, nativeIndex) => ({ parameter, nativeIndex }))
+      .filter(({ parameter, nativeIndex }) => parameter.type.kind !== "callbackContext"
         && parameter.type.kind !== "callbackRelease"
-        && parameter.type.kind !== "fixedNative")
-      .map((parameter, index) => (
-        foreignParameterDetail(parameter, index)
+        && parameter.type.kind !== "fixedNative"
+        && !projectedLengths.has(nativeIndex))
+      .map(({ parameter, nativeIndex }, index) => (
+        projectedBuffers.has(nativeIndex)
+          ? `${parameter.name ?? `argument${index + 1}`}: Slice<${projectedBuffers.get(nativeIndex)!.elementType}>`
+          : foreignParameterDetail(parameter, index)
       ));
     if (overload.variadic) parameters.push("...arguments");
     const result = overload.status

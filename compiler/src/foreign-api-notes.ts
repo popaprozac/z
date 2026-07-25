@@ -45,6 +45,12 @@ export type StatusNote = {
   readonly error: "return";
 };
 
+export type ByteBufferProjectionNote = {
+  readonly bufferParameter: number;
+  readonly lengthParameters: readonly number[];
+  readonly elementType: "u8";
+};
+
 export type TypedVariadicParameterNote = {
   readonly name: string;
   readonly type: "cstring" | "clong" | "callback";
@@ -67,6 +73,7 @@ export type FunctionProjectionNote = {
   readonly literals: Readonly<Record<string, string>>;
   readonly variadicParameters: readonly TypedVariadicParameterNote[];
   readonly status?: StatusNote;
+  readonly buffers?: readonly ByteBufferProjectionNote[];
   readonly connection?: {
     readonly ownerParameter: number;
     readonly callbackParameter: number;
@@ -84,6 +91,7 @@ export type ApiNotes = {
     readonly return?: PointerNote;
     readonly parameters?: Readonly<Record<string, PointerNote>>;
     readonly status?: StatusNote;
+    readonly buffers?: readonly ByteBufferProjectionNote[];
     readonly executorAffinity?: "main";
     readonly projections?: readonly FunctionProjectionNote[];
   }>>;
@@ -111,6 +119,7 @@ export function mergeApiNotes(
     return?: PointerNote;
     parameters?: Record<string, PointerNote>;
     status?: StatusNote;
+    buffers?: ByteBufferProjectionNote[];
     executorAffinity?: "main";
     projections?: FunctionProjectionNote[];
   }> = {};
@@ -155,6 +164,16 @@ export function mergeApiNotes(
         }
         if (!target.status) {
           target.status = note.status;
+          owners.set(path, source.name);
+        }
+      }
+      if (note.buffers) {
+        const path = `functions.${functionName}.buffers`;
+        if (target.buffers && JSON.stringify(target.buffers) !== JSON.stringify(note.buffers)) {
+          throw new ApiNoteConflictError(path, owners.get(path) ?? "an earlier source", source.name);
+        }
+        if (!target.buffers) {
+          target.buffers = [...note.buffers];
           owners.set(path, source.name);
         }
       }

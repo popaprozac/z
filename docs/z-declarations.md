@@ -85,6 +85,13 @@ declare module "vendor.h" {
     }
   }
 
+  export function vendor_hash(
+    in data: _,
+    length: _
+  ): _ {
+    bytes from data length length;
+  }
+
   export function vendor_setopt(
     in owner: _,
     option: VENDOR_WRITE,
@@ -148,7 +155,8 @@ spelling does not silently pass through.
 | `type NativeCallback;` | Name the exact callback typedef used by an option-selected native callback | The typedef and its full function-pointer signature must exist in the header |
 | `context option CONSTANT;` | Name the separate native option used to install the opaque callback context | Constant must exist, match the native option type, and differ from the callback option |
 | `owner handle;` | Tie a callback connection to one borrowed native owner parameter | Z prevents the owner from moving or deinitializing while the connection is live |
-| `bytes from buffer length size * count;` | Project a native byte pointer and `size_t` factors into one borrowed `Slice<u8>` | Every named callback parameter and its native type are checked against the typedef |
+| `bytes from data length length;` in a function body | Replace a read-only native byte pointer plus `size_t` length with one borrowed `Slice<u8>` argument | Both names must identify distinct fixed parameters; the pointer must be const byte storage and the length must be `size_t`; generated code passes `.data` and `.length` directly |
+| `bytes from buffer length size * count;` in a callback body | Project native callback byte parameters into one borrowed `Slice<u8>` callback argument | Every named callback parameter and its native type are checked against the typedef |
 | `thread caller;` | Callback invocation and release remain on the registering thread | Escaping closure environment uses ordinary thread-local ownership |
 | `thread any;` | Callback invocation and release may occur on arbitrary threads, including overlapping invocations | Escaping closure environment uses atomic ownership and every capture must satisfy Z's conservative concurrent-shareability rules |
 | `copy;` | Native value has usable copy construction | Enables `copy value` and copying aggregate storage that contains it |
@@ -172,6 +180,41 @@ released—but its owner is determined by location:
 
 `deinit` does not guess ownership. The surrounding result, output, native value,
 or escaping callback contract must establish an owner first.
+
+## Ordinary byte buffers
+
+A native pointer and its adjacent length are one logical value in safe Z:
+
+```c
+int vendor_hash(const unsigned char *data, size_t length);
+```
+
+```z
+declare module "vendor.h" {
+  export function vendor_hash(in data: _, length: _): _ {
+    bytes from data length length;
+  }
+}
+```
+
+The resulting Z signature is:
+
+```z
+vendor_hash(data: Slice<u8>): i32
+```
+
+Callers pass stored fixed arrays, `Array<u8>`, or existing `Slice<u8>` values
+without spelling `in`; a slice is intrinsically borrowed. The declaration's
+`in data` describes the native pointer contract. The length disappears from the
+safe call and is derived from the slice. Lowering remains a direct native call:
+
+```c
+vendor_hash(bytes.data, bytes.length);
+```
+
+The first tier is deliberately read-only and supports one `size_t` length.
+Writable buffers, element types other than `u8`, retained pointers, and
+multi-factor ordinary lengths require separate reviewed contracts.
 
 ## Why `fixed SQLITE_TRANSIENT` exists
 
