@@ -53,7 +53,15 @@ declare module "vendor.h" {
     flags: _,
     sentinel: _ { fixed VENDOR_DEFAULT; }
   ): void throws _ {
-    success 0;
+    success VENDOR_OK;
+  }
+
+  export function vendor_setopt(
+    in handle: _,
+    option: VENDOR_OPTION_TEXT,
+    in text: cstring
+  ): void throws _ {
+    success VENDOR_OK;
   }
 
   export function vendor_visit(
@@ -113,7 +121,10 @@ spelling does not silently pass through.
 | `deinit release;` | Associate owned storage with its exact cleanup operation | Meaning depends on whether it appears on a result, output, callback, or type |
 | `fixed CONSTANT;` | Hide one native ABI parameter and always pass a header constant | Z call omits that argument; generated native code inserts the constant in place |
 | `void throws _` | Project an integer or integer-backed native enum status into Z's error channel | Native return type remains ABI-exact and allocation-free; enum errors retain their imported enum type |
-| `success N;` | Treat status `N` as successful `void` completion | Every other integer or enum status becomes the typed error value; named success constants remain the next declaration-syntax slice |
+| `success N;` | Treat numeric status `N` as successful `void` completion | Every other integer or enum status becomes the typed error value |
+| `success CONSTANT;` | Treat a header-defined integer or enum constant as successful completion | The constant must exist and match the native return type; generated C preserves its symbolic spelling |
+| `option: ENUM_MEMBER` | Restrict this argument to one exact header constant | Selects a safe overload of a native variadic function |
+| `in value: cstring` after the fixed native parameters | Give a C variadic argument an explicit safe type | The native function must be variadic; the Z call remains a direct native call |
 | `callback operation { ... }` | Classify a named native callback or Objective-C block parameter | The parameter must exist and have a compatible native callable type |
 | `context context;` | Pair a C callback with its opaque native context parameter | Generated trampoline recovers the exact Z closure environment; ARC-owned Objective-C blocks omit this |
 | `thread caller;` | Callback invocation and release remain on the registering thread | Escaping closure environment uses ordinary thread-local ownership |
@@ -199,7 +210,8 @@ These are semantic mappings, not textual rewrites:
 | C mutable `T *` input | `inout value: _` | Exclusive mutable call borrow |
 | C `T **` output | `out value: _` plus optional `deinit` | Definitely initialized owned result |
 | C opaque returned handle | Return `_ \| null { deinit close; }` | Nullable owned handle with deterministic cleanup |
-| C integer or integer-backed enum status | `void throws _ { success 0; }` | `try`/`attempt` and `Result<void, E>`; enum failures preserve their native enum type |
+| C integer or integer-backed enum status | `void throws _ { success N; }` or `success CONSTANT;` | `try`/`attempt` and `Result<void, E>`; enum failures preserve their native enum type |
+| C variadic function selected by an enum option | Repeated contracts with `option: ENUM_MEMBER` and explicit trailing types | Closed, type-checked Z overloads that still lower to the original C call |
 | C sentinel/policy argument | Parameter `{ fixed CONSTANT; }` | Argument omitted from the Z call |
 | C call-only callback | `in operation: _` plus callback/context pairing when needed | Nonescaping borrowed closure |
 | C escaping callback | `move operation: _` plus context, release, and an explicit `thread caller` or `thread any` fact | ARC-owned escaping Z closure; `thread any` adds atomic environment ownership and capture checking |

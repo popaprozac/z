@@ -1,0 +1,15 @@
+declare module "typed-variadic.h" {
+  export function z_typed_setopt(
+    option: Z_TYPED_TEXT,
+    in text: cstring
+  ): void throws _ {
+    success Z_TYPED_OK;
+  }
+
+  export function z_typed_setopt(
+    option: Z_TYPED_OTHER,
+    in text: cstring
+  ): void throws _ {
+    success Z_TYPED_OK;
+  }
+}

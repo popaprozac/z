@@ -242,6 +242,8 @@ export type ForeignReferenceType = {
 export type ForeignParameter = {
   readonly name: string | null;
   readonly type: ForeignType;
+  /** A header constant that must appear at this source argument position. */
+  readonly literal?: string;
 };
 
 export type ForeignCallbackType = {
@@ -278,7 +280,7 @@ export type ForeignFunctionOverload = {
   readonly cName: string;
   readonly returnType: ForeignType;
   readonly status: {
-    readonly success: readonly number[];
+    readonly success: readonly (number | string)[];
     readonly result: "void";
     readonly error: "return";
   } | null;

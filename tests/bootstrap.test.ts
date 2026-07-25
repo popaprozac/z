@@ -739,6 +739,7 @@ test("imports anonymous typedef enums and validates flat sidecars for qualified 
   const generated = compileToC(source, fileName);
   assert.match(generated, /z_anonymous_start\(Z_ANONYMOUS_ALL\)/);
   assert.match(generated, /ZAnonymousStatus _z_native_status_/);
+  assert.match(generated, /Z_ANONYMOUS_OK/);
   assert.match(generated, /Z_ANONYMOUS_FAILED/);
 
   const analysis = analyzeSource(source, fileName);
@@ -757,6 +758,58 @@ test("imports anonymous typedef enums and validates flat sidecars for qualified 
   assert.match(
     diagnostics(invalidDeclaration, declarationFile)[0]?.message ?? "",
     /unknown foreign function "z_anonymous_missing"/,
+  );
+});
+
+test("projects header constants and discriminated C variadic arguments through Z declarations", () => {
+  const fileName = resolve(projectRoot, "tests/fixtures/typed-variadic.zs");
+  const source = readFileSync(fileName, "utf8");
+  const generated = compileToC(source, fileName);
+  assert.match(generated, /z_typed_setopt\(Z_TYPED_TEXT, "typed"\)/);
+  assert.match(generated, /_z_native_status_\d+ == Z_TYPED_OK/);
+
+  const result = spawnSync(process.execPath, [cli, "run", fileName], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+
+  const alternateOption = source.replace("native.Z_TYPED_TEXT", "native.Z_TYPED_OTHER");
+  assert.match(compileToC(alternateOption, fileName), /z_typed_setopt\(Z_TYPED_OTHER, "typed"\)/);
+
+  const wrongOption = source.replace("native.Z_TYPED_TEXT", "native.Z_TYPED_UNKNOWN");
+  assert.throws(
+    () => compileToC(wrongOption, fileName),
+    /no overload of foreign function "z_typed_setopt" accepts these arguments/,
+  );
+
+  const wrongValue = source.replace('"typed"', "42");
+  assert.throws(
+    () => compileToC(wrongValue, fileName),
+    /no overload of foreign function "z_typed_setopt" accepts these arguments|expected cstring, found i32/,
+  );
+
+  const declarationFile = resolve(projectRoot, "tests/fixtures/typed-variadic.h.zd");
+  const declarationSource = readFileSync(declarationFile, "utf8");
+  assert.deepEqual(diagnostics(declarationSource, declarationFile), []);
+  const optionOffset = declarationSource.indexOf("Z_TYPED_TEXT") + 2;
+  assert.match(
+    hover(declarationSource, declarationFile, optionOffset)?.contents.value ?? "",
+    /Z_TYPED_TEXT: .*ZTypedOption[\s\S]*exact native argument discriminant/,
+  );
+  const statusOffset = declarationSource.indexOf("Z_TYPED_OK") + 2;
+  assert.match(
+    hover(declarationSource, declarationFile, statusOffset)?.contents.value ?? "",
+    /Z_TYPED_OK: .*ZTypedOption[\s\S]*successful void completion/,
+  );
+  const completionSource = declarationSource.replace("success Z_TYPED_OK;", "success Z_TYPED_");
+  const completionOffset = completionSource.indexOf("success Z_TYPED_") + "success Z_TYPED_".length;
+  assert.equal(
+    completions(completionSource, declarationFile, completionOffset)
+      .find((item) => item.label === "Z_TYPED_OK")?.kind,
+    20,
+  );
+  const duplicateProjection = declarationSource.replace("option: Z_TYPED_OTHER", "option: Z_TYPED_TEXT");
+  assert.match(
+    diagnostics(duplicateProjection, declarationFile)[0]?.message ?? "",
+    /duplicate typed variadic declaration/,
   );
 });
 
@@ -13130,7 +13183,9 @@ test("editor grammar tracks keywords without reserving Result variants", () => {
     .find((pattern: { name: string }) => pattern.name === "keyword.control.concurrent.capture.z");
   const ownershipPattern = grammar.repository.keywords.patterns
     .find((pattern: { name: string }) => pattern.name === "keyword.operator.ownership.z");
-  const asyncProjectionPattern = new RegExp(foreignDeclarationPatterns[12].begin);
+  const asyncProjection = foreignDeclarationPatterns
+    .find((pattern: { name: string }) => pattern.name === "meta.declaration.async-callback-projection.foreign.z");
+  const asyncProjectionPattern = new RegExp(asyncProjection?.begin ?? "$^");
   assert.equal(exportPattern?.name, "keyword.control.export.z");
   assert.match("task fetch()", new RegExp(taskPattern?.match ?? "$^"));
   assert.match("task on thread.main", new RegExp(taskPattern?.match ?? "$^"));
@@ -13168,33 +13223,39 @@ test("editor grammar tracks keywords without reserving Result variants", () => {
   assert.ok(editorPackage.contributes.languages[0].extensions.includes(".zs"));
   assert.ok(editorPackage.contributes.languages[0].extensions.includes(".zd"));
   assert.ok(!editorPackage.contributes.languages[0].extensions.includes(".z"));
-  assert.equal(foreignDeclarationPatterns[0].captures[2].name, "storage.type.module.z");
-  assert.equal(foreignDeclarationPatterns[1].captures[1].name, "storage.type.declaration.z");
-  assert.equal(foreignDeclarationPatterns[1].captures[2].name, "entity.name.type.z");
-  assert.equal(foreignDeclarationPatterns[2].captures[1].name, "storage.modifier.capability.z");
-  assert.equal(foreignDeclarationPatterns[3].captures[1].name, "keyword.control.declaration.thread.z");
-  assert.equal(foreignDeclarationPatterns[4].captures[1].name, "storage.modifier.capability.thread.z");
-  assert.equal(foreignDeclarationPatterns[5].captures[2].name, "variable.parameter.z");
-  assert.equal(foreignDeclarationPatterns[6].captures[2].name, "entity.name.function.destructor.z");
-  assert.equal(foreignDeclarationPatterns[7].captures[1].name, "keyword.control.declaration.fixed.z");
-  assert.equal(foreignDeclarationPatterns[7].captures[2].name, "constant.other.native.z");
-  assert.equal(foreignDeclarationPatterns[8].captures[2].name, "keyword.control.declaration.z");
-  assert.equal(foreignDeclarationPatterns[8].captures[3].name, "storage.type.inferred.z");
-  assert.equal(foreignDeclarationPatterns[9].captures[1].name, "keyword.control.declaration.status.z");
-  assert.equal(foreignDeclarationPatterns[9].captures[2].name, "constant.numeric.integer.status.z");
-  assert.equal(foreignDeclarationPatterns[10].captures[1].name, "storage.type.inferred.z");
-  assert.equal(foreignDeclarationPatterns[11].captures[1].name, "keyword.control.declaration.callback.z");
-  assert.equal(foreignDeclarationPatterns[12].beginCaptures[1].name, "storage.modifier.async.z");
-  assert.equal(foreignDeclarationPatterns[12].beginCaptures[2].name, "entity.name.function.callback.z");
-  assert.equal(foreignDeclarationPatterns[12].patterns[1].captures[1].name, "keyword.control.flow.z");
-  assert.equal(foreignDeclarationPatterns[12].patterns[1].captures[2].name, "variable.parameter.callback.z");
-  assert.equal(foreignDeclarationPatterns[13].captures[1].name, "storage.modifier.async.z");
-  assert.equal(foreignDeclarationPatterns[13].captures[2].name, "entity.name.function.callback.z");
-  assert.equal(foreignDeclarationPatterns[14].captures[1].name, "keyword.control.declaration.callback.z");
-  assert.equal(foreignDeclarationPatterns[14].captures[2].name, "variable.parameter.context.z");
-  assert.equal(foreignDeclarationPatterns[15].captures[1].name, "keyword.control.declaration.callback.z");
-  assert.equal(foreignDeclarationPatterns[15].captures[2].name, "constant.language.callback-thread.z");
-  assert.match(foreignDeclarationPatterns[15].match, /caller\\\|any|caller\|any/);
+  const foreignPattern = (name: string) => foreignDeclarationPatterns
+    .find((pattern: { name: string }) => pattern.name === name);
+  assert.equal(foreignPattern("meta.declaration.module.foreign.z").captures[2].name, "storage.type.module.z");
+  assert.equal(foreignPattern("meta.declaration.type-lifecycle.foreign.z").captures[1].name, "storage.type.declaration.z");
+  assert.equal(foreignPattern("meta.declaration.type-lifecycle.foreign.z").captures[2].name, "entity.name.type.z");
+  assert.equal(foreignPattern("meta.declaration.type-capability.foreign.z").captures[1].name, "storage.modifier.capability.z");
+  assert.equal(foreignPattern("meta.declaration.thread-contract.foreign.z").captures[1].name, "keyword.control.declaration.thread.z");
+  assert.equal(foreignPattern("meta.declaration.thread-capability.foreign.z").captures[1].name, "storage.modifier.capability.thread.z");
+  assert.equal(foreignPattern("meta.declaration.parameter.inferred.z").captures[2].name, "variable.parameter.z");
+  assert.equal(foreignPattern("meta.declaration.parameter.typed-variadic.z").captures[4].name, "storage.type.primitive.z");
+  assert.equal(foreignPattern("meta.declaration.parameter.literal-discriminant.z").captures[3].name, "constant.other.native.z");
+  assert.equal(foreignPattern("meta.declaration.lifecycle.foreign.z").captures[2].name, "entity.name.function.destructor.z");
+  assert.equal(foreignPattern("meta.declaration.fixed-parameter.foreign.z").captures[1].name, "keyword.control.declaration.fixed.z");
+  assert.equal(foreignPattern("meta.declaration.fixed-parameter.foreign.z").captures[2].name, "constant.other.native.z");
+  assert.equal(foreignPattern("meta.declaration.status-result.foreign.z").captures[2].name, "keyword.control.declaration.z");
+  assert.equal(foreignPattern("meta.declaration.status-result.foreign.z").captures[3].name, "storage.type.inferred.z");
+  assert.equal(foreignPattern("meta.declaration.status-success.foreign.z").captures[2].name, "constant.numeric.integer.status.z");
+  assert.equal(foreignPattern("meta.declaration.status-success-symbol.foreign.z").captures[2].name, "constant.other.native.z");
+  assert.equal(foreignPattern("meta.type.inferred.z").captures[1].name, "storage.type.inferred.z");
+  assert.equal(foreignPattern("meta.declaration.callback.foreign.z").captures[1].name, "keyword.control.declaration.callback.z");
+  const asyncProjectionGrammar = foreignPattern("meta.declaration.async-callback-projection.foreign.z");
+  assert.equal(asyncProjectionGrammar.beginCaptures[1].name, "storage.modifier.async.z");
+  assert.equal(asyncProjectionGrammar.beginCaptures[2].name, "entity.name.function.callback.z");
+  assert.equal(asyncProjectionGrammar.patterns[1].captures[1].name, "keyword.control.flow.z");
+  assert.equal(asyncProjectionGrammar.patterns[1].captures[2].name, "variable.parameter.callback.z");
+  assert.equal(foreignPattern("meta.declaration.async-callback.foreign.z").captures[1].name, "storage.modifier.async.z");
+  assert.equal(foreignPattern("meta.declaration.async-callback.foreign.z").captures[2].name, "entity.name.function.callback.z");
+  assert.equal(foreignPattern("meta.declaration.callback-context.foreign.z").captures[1].name, "keyword.control.declaration.callback.z");
+  assert.equal(foreignPattern("meta.declaration.callback-context.foreign.z").captures[2].name, "variable.parameter.context.z");
+  const callbackThreadGrammar = foreignPattern("meta.declaration.callback-thread.foreign.z");
+  assert.equal(callbackThreadGrammar.captures[1].name, "keyword.control.declaration.callback.z");
+  assert.equal(callbackThreadGrammar.captures[2].name, "constant.language.callback-thread.z");
+  assert.match(callbackThreadGrammar.match, /caller\\\|any|caller\|any/);
   assert.match(selectiveImportPatterns, /\\bas\\b/);
   assert.doesNotMatch("move () =>", new RegExp(matchPattern));
   assert.match("some(value) =>", new RegExp(matchPattern));

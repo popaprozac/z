@@ -2,7 +2,7 @@ declare module "curl/curl.h" {
   export function curl_global_init(
     flags: _ { fixed CURL_GLOBAL_ALL; }
   ): void throws _ {
-    success 0;
+    success CURLE_OK;
   }
 
   export function curl_easy_init(): _ | null {
@@ -11,13 +11,14 @@ declare module "curl/curl.h" {
 
   export function curl_easy_setopt(
     in curl: _,
-    option: _
+    option: CURLOPT_URL,
+    in url: cstring
   ): void throws _ {
-    success 0;
+    success CURLE_OK;
   }
 
   export function curl_easy_perform(in curl: _): void throws _ {
-    success 0;
+    success CURLE_OK;
   }
 
   export function curl_easy_cleanup(move curl: _): _;

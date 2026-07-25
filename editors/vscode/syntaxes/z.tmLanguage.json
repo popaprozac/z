@@ -66,6 +66,23 @@
           "2": { "name": "variable.parameter.z" }
         }
       }, {
+        "name": "meta.declaration.parameter.typed-variadic.z",
+        "match": "(?:(\\b(?:in)\\b)\\s+)?([A-Za-z_][A-Za-z0-9_]*)\\s*(:)\\s*(cstring)(?=\\s*[,\\)])",
+        "captures": {
+          "1": { "name": "storage.modifier.capability.z" },
+          "2": { "name": "variable.parameter.z" },
+          "3": { "name": "punctuation.separator.type.z" },
+          "4": { "name": "storage.type.primitive.z" }
+        }
+      }, {
+        "name": "meta.declaration.parameter.literal-discriminant.z",
+        "match": "([A-Za-z_][A-Za-z0-9_]*)\\s*(:)\\s*([A-Za-z_][A-Za-z0-9_]*)(?=\\s*[,\\)])",
+        "captures": {
+          "1": { "name": "variable.parameter.z" },
+          "2": { "name": "punctuation.separator.type.z" },
+          "3": { "name": "constant.other.native.z" }
+        }
+      }, {
         "name": "meta.declaration.lifecycle.foreign.z",
         "match": "\\b(deinit)\\s+([A-Za-z_][A-Za-z0-9_]*(?:\\.[A-Za-z_][A-Za-z0-9_]*)*)(?=\\s*;)",
         "captures": {
@@ -93,6 +110,13 @@
         "captures": {
           "1": { "name": "keyword.control.declaration.status.z" },
           "2": { "name": "constant.numeric.integer.status.z" }
+        }
+      }, {
+        "name": "meta.declaration.status-success-symbol.foreign.z",
+        "match": "\\b(success)\\s+([A-Za-z_][A-Za-z0-9_]*)(?=\\s*;)",
+        "captures": {
+          "1": { "name": "keyword.control.declaration.status.z" },
+          "2": { "name": "constant.other.native.z" }
         }
       }, {
         "name": "meta.type.inferred.z",

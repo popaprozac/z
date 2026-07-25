@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 import type { ImportDeclaration } from "./ast.ts";
 import { DiagnosticError } from "./diagnostics.ts";
 import { foreignDeclarationApiNotes, parseForeignDeclarationContracts } from "./foreign-declarations.ts";
-import type { ForeignFunctionDeclaration, ForeignNamedType, ForeignObjCInterface } from "./foreign-ir.ts";
+import type { ForeignConstant, ForeignFunctionDeclaration, ForeignNamedType, ForeignObjCInterface } from "./foreign-ir.ts";
 
 export type PointerNote = {
   readonly ownership?: "owned" | "borrowed" | "consuming";
@@ -34,9 +34,24 @@ export type PointerNote = {
 };
 
 export type StatusNote = {
-  readonly success: readonly number[];
+  readonly success: readonly (number | string)[];
   readonly result: "void";
   readonly error: "return";
+};
+
+export type TypedVariadicParameterNote = {
+  readonly name: string;
+  readonly type: "cstring";
+  readonly access: "value" | "in";
+};
+
+export type FunctionProjectionNote = {
+  readonly return?: PointerNote;
+  readonly parameters?: Readonly<Record<string, PointerNote>>;
+  readonly literals: Readonly<Record<string, string>>;
+  readonly variadicParameters: readonly TypedVariadicParameterNote[];
+  readonly status?: StatusNote;
+  readonly executorAffinity?: "main";
 };
 
 export type ApiNotes = {
@@ -48,6 +63,7 @@ export type ApiNotes = {
     readonly parameters?: Readonly<Record<string, PointerNote>>;
     readonly status?: StatusNote;
     readonly executorAffinity?: "main";
+    readonly projections?: readonly FunctionProjectionNote[];
   }>>;
   readonly objcMethods?: Readonly<Record<string, {
     readonly parameters?: Readonly<Record<string, PointerNote>>;
@@ -74,6 +90,7 @@ export function mergeApiNotes(
     parameters?: Record<string, PointerNote>;
     status?: StatusNote;
     executorAffinity?: "main";
+    projections?: FunctionProjectionNote[];
   }> = {};
   const types: Record<string, { executorAffinity?: "main" }> = {};
   const objcMethods: Record<string, {
@@ -118,6 +135,10 @@ export function mergeApiNotes(
           target.status = note.status;
           owners.set(path, source.name);
         }
+      }
+      if (note.projections) {
+        const projections = target.projections ??= [];
+        projections.push(...note.projections);
       }
       for (const [index, parameter] of Object.entries(note.parameters ?? {})) {
         const parameters = target.parameters ??= {};
@@ -176,6 +197,7 @@ export function readApiNotes(
   declarations: ReadonlyMap<string, ForeignFunctionDeclaration>,
   namedTypes: ReadonlyMap<string, ForeignNamedType>,
   interfaces: ReadonlyMap<string, ForeignObjCInterface>,
+  constants: ReadonlyMap<string, ForeignConstant>,
   generatedSource: { readonly name: string; readonly notes: ApiNotes } | null = null,
   declarationOverride: { readonly source: string; readonly fileName: string } | null = null,
 ): ApiNotes {
@@ -192,6 +214,7 @@ export function readApiNotes(
             declarations,
             namedTypes,
             interfaces,
+            constants,
             declaration.header,
             includeDirectory,
             declarationOverride.fileName,
@@ -206,6 +229,7 @@ export function readApiNotes(
             declarations,
             namedTypes,
             interfaces,
+            constants,
             declaration.header,
             includeDirectory,
             source.path,

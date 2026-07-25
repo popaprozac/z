@@ -22,7 +22,7 @@ function fetchHosts(): void throws curl.CURLcode {
     try curl.curl_easy_setopt(
         easy,
         curl.CURLOPT_URL,
-        "file:///etc/hosts"
+        "https://example.com"
     );
     try curl.curl_easy_perform(easy);
 }

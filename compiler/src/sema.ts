@@ -118,7 +118,7 @@ export type ObjCPropertyInfo = {
 
 export type ForeignStatusCallInfo = {
   readonly errorType: string;
-  readonly success: readonly number[];
+  readonly success: readonly (number | string)[];
 };
 
 export type ClosureCaptureInfo = {
@@ -10782,6 +10782,10 @@ function foreignOverloadScore(
   for (let index = 0; index < args.length; index += 1) {
     const parameter = parameters[index];
     if (!parameter) continue;
+    if (parameter.literal) {
+      // Exact literal projections outrank an otherwise equally shaped overload.
+      score += 32;
+    }
     const expected = canonicalType(foreignValueType(parameter.type), state.foreignNamedTypes);
     const argument = args[index];
     if (argument.kind === "number" && isNumericType(expected)) {
@@ -10840,6 +10844,20 @@ function checkForeignCall(
   for (let index = 0; index < args.length; index += 1) {
     const argument = args[index];
     const parameter = visibleParameters[index]?.parameter;
+    if (parameter?.literal) {
+      const constant = argument.kind === "member" ? getForeignConstant(argument, globals) : null;
+      if (constant?.cName !== parameter.literal) {
+        throw new DiagnosticError(
+          fileName,
+          argument.location,
+          `C function ${JSON.stringify(target.name)} requires header constant ${parameter.literal} for parameter ${index + 1}`,
+          {
+            code: "Z0803",
+            notes: ["this exact constant selects a safe typed projection of the native variadic function"],
+          },
+        );
+      }
+    }
     if (argument.kind === "argumentReference") {
       if (parameter?.type.kind === "pointerOut") {
         if (argument.access !== "out") {

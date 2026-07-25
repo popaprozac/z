@@ -1912,11 +1912,32 @@ header-verified ABI position while omitting that policy parameter from Z calls;
 code generation supplies the named header constant. This is reserved for
 native semantic sentinels such as `SQLITE_TRANSIENT`, not arbitrary expressions.
 An integer- or integer-backed-enum-returning native function may additionally declare
-`void throws _ { success N; }`: listed statuses become successful `void`,
+`void throws _ { success N; }` or use a compatible header constant such as
+`success CURLE_OK;`: listed statuses become successful `void`,
 every other native status is preserved as the inferred scalar or enum error, and
 owned `out` values become cleanup-active before failure propagation. This
 changes only the safe Z surface, not the native ABI, and introduces no heap
 exception or wrapper call.
+
+Native C variadics whose trailing ABI types are selected by an enum constant
+can be closed into checked overloads:
+
+```z
+export function curl_easy_setopt(
+  in curl: _,
+  option: CURLOPT_URL,
+  in url: cstring
+): void throws _ {
+  success CURLE_OK;
+}
+```
+
+The enum member in type position is an exact literal discriminant. Parameters
+after the header's fixed prefix describe the variadic arguments explicitly.
+Repeated contracts for the same native function form an overload set, and once
+that set exists safe Z rejects unmatched options rather than falling back to
+unchecked varargs. The emitted call remains `curl_easy_setopt(...)`; the
+contract adds no wrapper or runtime dispatch.
 Over time, Clang attributes, Apple's API notes, Windows SAL
 annotations, package metadata, and generated bindings should populate the same
 semantic model so the common case remains simply:

@@ -50,15 +50,63 @@ export function normalizeForeignContracts(
   const pointerTypes = new Map<string, ForeignPointerType>();
   for (const declaration of declarations.values()) {
     const functionNotes = notes.functions?.[declaration.name];
-    const overloads = declaration.overloads.map((overload) => normalizeOverload(
-      overload,
-      functionNotes,
-      namedTypes,
-      mapper,
-      pointerTypes,
-      fileName,
-      location,
-    ));
+    const overloads = functionNotes?.projections?.length
+      ? declaration.overloads.flatMap((overload) => functionNotes.projections!.map((projection) => {
+        const effectiveProjection: FunctionApiNote = {
+          ...functionNotes,
+          ...projection,
+          return: {
+            ...(functionNotes.return ?? {}),
+            ...(projection.return ?? {}),
+          },
+          parameters: {
+            ...(functionNotes.parameters ?? {}),
+            ...(projection.parameters ?? {}),
+          },
+          status: projection.status ?? functionNotes.status,
+          executorAffinity: projection.executorAffinity ?? functionNotes.executorAffinity,
+        };
+        const normalized = normalizeOverload(
+          overload,
+          effectiveProjection,
+          namedTypes,
+          mapper,
+          pointerTypes,
+          fileName,
+          location,
+        );
+        return {
+          ...normalized,
+          parameters: [
+            ...normalized.parameters.map((parameter, index) => ({
+              ...parameter,
+              ...(projection.literals[String(index)]
+                ? { literal: projection.literals[String(index)] }
+                : {}),
+            })),
+            ...projection.variadicParameters.map((parameter) => ({
+              name: parameter.name,
+              type: { kind: "z" as const, name: parameter.type, cName: "const char *" },
+            })),
+          ],
+          variadic: false,
+          cSignature: `${overload.nativeSignature} projected as (${[
+            ...normalized.parameters.map((parameter, index) => (
+              projection.literals[String(index)] ?? parameter.type.cName
+            )),
+            ...projection.variadicParameters.map((parameter) => parameter.type),
+          ].join(", ")})`,
+        };
+      }))
+      : declaration.overloads.map((overload) => normalizeOverload(
+        overload,
+        functionNotes,
+        namedTypes,
+        mapper,
+        pointerTypes,
+        fileName,
+        location,
+      ));
     functions.set(declaration.qualifiedName, {
       name: declaration.name,
       namespacePath: declaration.namespacePath,

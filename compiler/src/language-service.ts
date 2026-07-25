@@ -2316,6 +2316,30 @@ function foreignDeclarationCompletions(source: string, fileName: string, offset:
       sortText: "0-success",
     });
   }
+  const statusValuePrefix = /\bsuccess\s+([A-Za-z_]*)$/.exec(before)?.[1];
+  if (module && statusValuePrefix !== undefined) {
+    for (const constant of module.constants.values()) {
+      if (!constant.name.toLowerCase().startsWith(statusValuePrefix.toLowerCase())) continue;
+      contextual.push({
+        label: constant.name,
+        kind: completionKinds.enumMember,
+        detail: `${foreignConstantDetail(constant)}; successful native status`,
+        sortText: `0-${constant.name}`,
+      });
+    }
+  }
+  const parameterLiteralPrefix = /[,(]\s*(?:in\s+)?[A-Za-z_][A-Za-z0-9_]*\s*:\s*([A-Za-z_]*)$/.exec(before)?.[1];
+  if (module && parameterLiteralPrefix !== undefined) {
+    for (const constant of module.constants.values()) {
+      if (!constant.name.toLowerCase().startsWith(parameterLiteralPrefix.toLowerCase())) continue;
+      contextual.push({
+        label: constant.name,
+        kind: completionKinds.enumMember,
+        detail: `${foreignConstantDetail(constant)}; exact native argument discriminant`,
+        sortText: `0-${constant.name}`,
+      });
+    }
+  }
 
   const deinitPrefix = /\bdeinit\s+([A-Za-z_][A-Za-z0-9_.]*)?$/.exec(before)?.[1];
   if (module && deinitPrefix !== undefined) {
@@ -2586,7 +2610,20 @@ function foreignDeclarationHover(source: string, fileName: string, offset: numbe
     }
     const parameterTypeIndex = contract.parameters.findIndex((parameter) => parameter.typeLocation.offset === word.start);
     if (parameterTypeIndex >= 0) {
-      if (contract.parameters[parameterTypeIndex].nullOnly) {
+      const parameter = contract.parameters[parameterTypeIndex];
+      if (parameter.literal) {
+        const constant = module.constants.get(parameter.literal);
+        return markdownHover(
+          `${constant ? foreignConstantDetail(constant) : parameter.literal}\n// exact native argument discriminant`,
+          source,
+          word.start,
+          word.end,
+        );
+      }
+      if (parameter.explicitType) {
+        return markdownHover(`${parameter.explicitType}  // explicit safe type for a C variadic argument`, source, word.start, word.end);
+      }
+      if (parameter.nullOnly) {
         return markdownHover("null  // only the native null pointer is exposed to safe Z", source, word.start, word.end);
       }
       const types = new Set(nativeSignatures.map((overload) => overload.parameters[parameterTypeIndex]).filter(Boolean).map((native) => foreignTypeName(native.type)));
@@ -2646,6 +2683,17 @@ function foreignDeclarationHover(source: string, fileName: string, offset: numbe
     if (successIndex >= 0) {
       return markdownHover(
         `success ${contract.statusSuccessValues[successIndex]}  // this native status becomes successful void completion`,
+        source,
+        word.start,
+        word.end,
+      );
+    }
+    const successValueIndex = contract.statusSuccessValueLocations.findIndex((location) => location.offset === word.start);
+    if (successValueIndex >= 0) {
+      const value = contract.statusSuccessValues[successValueIndex];
+      const constant = typeof value === "string" ? module.constants.get(value) : null;
+      return markdownHover(
+        `${constant ? foreignConstantDetail(constant) : value}\n// this native status becomes successful void completion`,
         source,
         word.start,
         word.end,

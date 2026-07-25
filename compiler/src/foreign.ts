@@ -306,6 +306,7 @@ function readHeader(
     produced.functions,
     produced.namedTypes,
     produced.interfaces,
+    produced.constants,
     generatedNotes
       ? { name: `Swift module metadata for ${declaration.header}`, notes: generatedNotes }
       : null,

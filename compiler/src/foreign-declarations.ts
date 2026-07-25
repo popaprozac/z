@@ -2,8 +2,9 @@ import { existsSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import type { SourceLocation } from "./ast.ts";
 import { DiagnosticError } from "./diagnostics.ts";
-import type { ApiNotes, PointerNote, StatusNote } from "./foreign-api-notes.ts";
+import type { ApiNotes, FunctionProjectionNote, PointerNote, StatusNote } from "./foreign-api-notes.ts";
 import type {
+  ForeignConstant,
   ForeignBlockType,
   ForeignFunctionDeclaration,
   ForeignNamedType,
@@ -26,6 +27,14 @@ export type ContractParameter = {
   readonly fixed: string | null;
   readonly fixedLocation: SourceLocation | null;
   readonly fixedValueLocation: SourceLocation | null;
+  readonly explicitType: "cstring" | null;
+  readonly literal: string | null;
+};
+
+export type ContractStatusValue = {
+  readonly value: number | string;
+  readonly location: SourceLocation;
+  readonly valueLocation: SourceLocation;
 };
 
 export type ForeignFunctionContract = {
@@ -33,8 +42,9 @@ export type ForeignFunctionContract = {
   readonly parameters: readonly ContractParameter[];
   readonly returnNullable: boolean;
   readonly returnSemanticType: "inferred" | "view-cstring" | "status-void";
-  readonly statusSuccessValues: readonly number[];
+  readonly statusSuccessValues: readonly (number | string)[];
   readonly statusSuccessLocations: readonly SourceLocation[];
+  readonly statusSuccessValueLocations: readonly SourceLocation[];
   readonly throwsLocation: SourceLocation | null;
   readonly release: string | null;
   readonly location: SourceLocation;
@@ -178,7 +188,7 @@ export function parseForeignDeclarationContracts(source: string, fileName: strin
       throwsLocation: null,
     };
   };
-  const parseStatusValue = (): { readonly value: number; readonly location: SourceLocation } => {
+  const parseStatusValue = (): ContractStatusValue => {
     let sign = 1;
     if (at("-")) {
       take();
@@ -187,13 +197,17 @@ export function parseForeignDeclarationContracts(source: string, fileName: strin
       take();
     }
     const literal = peek();
+    if (sign === 1 && literal.kind === "identifier") {
+      take();
+      return { value: literal.text, location: literal.location, valueLocation: literal.location };
+    }
     if (literal.kind !== "number" || !/^[0-9]+$/.test(literal.text)) {
-      fail(literal, "native status success values currently require an integer literal");
+      fail(literal, "native status success values require an integer literal or header constant");
     }
     take();
     const value = sign * Number(literal.text);
     if (!Number.isSafeInteger(value)) fail(literal, "native status success value must be a safe integer");
-    return { value, location: literal.location };
+    return { value, location: literal.location, valueLocation: literal.location };
   };
   const parseParameter = (): ContractParameter => {
     let mode: ContractParameter["mode"] = "value";
@@ -201,9 +215,22 @@ export function parseForeignDeclarationContracts(source: string, fileName: strin
     const name = expectIdentifier("a native parameter name");
     expectText(":");
     const nullOnly = at("null");
-    const type = nullOnly
-      ? { nullable: true, location: take().location }
-      : parseInferredType();
+    let explicitType: "cstring" | null = null;
+    let literal: string | null = null;
+    let type: { readonly nullable: boolean; readonly location: SourceLocation };
+    if (nullOnly) {
+      type = { nullable: true, location: take().location };
+    } else if (at("cstring")) {
+      const token = take();
+      explicitType = "cstring";
+      type = { nullable: false, location: token.location };
+    } else if (!at("_")) {
+      const token = expectIdentifier("`_`, `cstring`, or a header constant");
+      literal = token.text;
+      type = { nullable: false, location: token.location };
+    } else {
+      type = parseInferredType();
+    }
     let release: string | null = null;
     let releaseLocation: SourceLocation | null = null;
     let fixed: string | null = null;
@@ -244,6 +271,15 @@ export function parseForeignDeclarationContracts(source: string, fileName: strin
     if (nullOnly && release) {
       fail(name, "a null-only native parameter cannot produce owned output");
     }
+    if ((explicitType || literal) && (release || fixed || nullOnly)) {
+      fail(name, "an explicit variadic type or literal discriminant cannot also declare null, fixed, or deinit");
+    }
+    if (literal && mode !== "value") {
+      fail(name, "a native literal discriminant cannot declare in, inout, out, or move");
+    }
+    if (explicitType && mode !== "value" && mode !== "in") {
+      fail(name, "an explicit variadic cstring parameter supports value or in access");
+    }
     if (fixed && (mode !== "value" || nullOnly || release)) {
       fail(name, "a fixed native parameter cannot also declare a capability, null-only type, or deinit");
     }
@@ -259,6 +295,8 @@ export function parseForeignDeclarationContracts(source: string, fileName: strin
       fixed,
       fixedLocation,
       fixedValueLocation,
+      explicitType,
+      literal,
     };
   };
   const emptyThreadContract = (): {
@@ -323,7 +361,6 @@ export function parseForeignDeclarationContracts(source: string, fileName: strin
   expectText("{");
   const functions: ForeignFunctionContract[] = [];
   const types: ForeignValueContract[] = [];
-  const functionNames = new Set<string>();
   const typeNames = new Set<string>();
   while (!at("}")) {
     expectText("export");
@@ -413,8 +450,6 @@ export function parseForeignDeclarationContracts(source: string, fileName: strin
     const start = expectText("function");
     const parsedName = parseQualifiedName();
     const name = parsedName.name;
-    if (functionNames.has(name)) fail(start, `duplicate declaration contract for foreign function ${JSON.stringify(name)}`);
-    functionNames.add(name);
     expectText("(");
     const parameters: ContractParameter[] = [];
     if (!at(")")) {
@@ -429,8 +464,9 @@ export function parseForeignDeclarationContracts(source: string, fileName: strin
     const returnType = parseReturnType();
     const executorAffinity = parseExecutorAffinity();
     const returnNullable = returnType.nullable;
-    const statusSuccessValues: number[] = [];
+    const statusSuccessValues: (number | string)[] = [];
     const statusSuccessLocations: SourceLocation[] = [];
+    const statusSuccessValueLocations: SourceLocation[] = [];
     let release: string | null = null;
     let releaseLocation: SourceLocation | null = null;
     let threadContract = emptyThreadContract();
@@ -571,6 +607,7 @@ export function parseForeignDeclarationContracts(source: string, fileName: strin
           }
           statusSuccessValues.push(parsed.value);
           statusSuccessLocations.push(contract.location);
+          statusSuccessValueLocations.push(parsed.valueLocation);
           expectText(";");
           continue;
         }
@@ -606,6 +643,7 @@ export function parseForeignDeclarationContracts(source: string, fileName: strin
       returnSemanticType: returnType.semanticType,
       statusSuccessValues,
       statusSuccessLocations,
+      statusSuccessValueLocations,
       throwsLocation: returnType.throwsLocation,
       release,
       location: start.location,
@@ -637,6 +675,7 @@ export function foreignDeclarationApiNotes(
   declarations: ReadonlyMap<string, ForeignFunctionDeclaration>,
   namedTypes: ReadonlyMap<string, ForeignNamedType>,
   interfaces: ReadonlyMap<string, ForeignObjCInterface>,
+  constants: ReadonlyMap<string, ForeignConstant>,
   expectedModuleSpecifier: string,
   includeDirectory: string,
   fileName: string,
@@ -657,6 +696,7 @@ export function foreignDeclarationApiNotes(
     parameters?: Record<string, PointerNote>;
     status?: StatusNote;
     executorAffinity?: "main";
+    projections?: FunctionProjectionNote[];
   }> = {};
   const types: Record<string, { executorAffinity?: "main" }> = {};
   const objcMethods: Record<string, {
@@ -703,19 +743,34 @@ export function foreignDeclarationApiNotes(
         { code: "Z0801" },
       );
     }
+    const projection = contract.parameters.some((parameter) => parameter.literal || parameter.explicitType)
+      || declaration.overloads.some((overload) => contract.parameters.length > overload.parameters.length);
     const parameters: Record<string, PointerNote> = {};
     for (const overload of declaration.overloads) {
-      if (overload.parameters.length !== contract.parameters.length) {
+      if (
+        (!projection && overload.parameters.length !== contract.parameters.length)
+        || (projection && (!overload.variadic || contract.parameters.length < overload.parameters.length))
+      ) {
         throw new DiagnosticError(
           fileName,
           contract.location,
-          `declaration for ${JSON.stringify(contract.name)} has ${contract.parameters.length} parameters but the native declaration has ${overload.parameters.length}`,
+          projection
+            ? `typed variadic declaration for ${JSON.stringify(contract.name)} requires a variadic native function and at least its ${overload.parameters.length} fixed parameters`
+            : `declaration for ${JSON.stringify(contract.name)} has ${contract.parameters.length} parameters but the native declaration has ${overload.parameters.length}`,
           { code: "Z0801" },
         );
       }
-      for (let parameterIndex = 0; parameterIndex < contract.parameters.length; parameterIndex += 1) {
+      for (let parameterIndex = 0; parameterIndex < overload.parameters.length; parameterIndex += 1) {
         const parameter = contract.parameters[parameterIndex];
         const native = overload.parameters[parameterIndex];
+        if (parameter.explicitType) {
+          throw new DiagnosticError(
+            fileName,
+            parameter.typeLocation,
+            `explicit type ${JSON.stringify(parameter.explicitType)} is only valid for a C variadic argument after the ${overload.parameters.length} fixed native parameters`,
+            { code: "Z0801" },
+          );
+        }
         if (native.name !== null && native.name !== parameter.name) {
           throw new DiagnosticError(
             fileName,
@@ -724,9 +779,32 @@ export function foreignDeclarationApiNotes(
             { code: "Z0801" },
           );
         }
+        if (parameter.literal) {
+          validateContractConstant(
+            parameter.literal,
+            parameter.typeLocation,
+            native.type.nativeName,
+            constants,
+            namedTypes,
+            fileName,
+            `literal discriminant for parameter ${JSON.stringify(parameter.name)}`,
+          );
+        }
+      }
+      for (let parameterIndex = overload.parameters.length; parameterIndex < contract.parameters.length; parameterIndex += 1) {
+        const parameter = contract.parameters[parameterIndex];
+        if (!parameter.explicitType) {
+          throw new DiagnosticError(
+            fileName,
+            parameter.typeLocation,
+            "a typed C variadic argument requires an explicit supported type such as `cstring`",
+            { code: "Z0801" },
+          );
+        }
       }
     }
-    for (let parameterIndex = 0; parameterIndex < contract.parameters.length; parameterIndex += 1) {
+    const nativeParameterCount = declaration.overloads[0]?.parameters.length ?? contract.parameters.length;
+    for (let parameterIndex = 0; parameterIndex < nativeParameterCount; parameterIndex += 1) {
       const parameter = contract.parameters[parameterIndex];
       parameters[String(parameterIndex)] = parameterNote(parameter);
     }
@@ -842,7 +920,19 @@ export function foreignDeclarationApiNotes(
         },
       };
     }
-    functions[contract.name] = {
+    const success = contract.statusSuccessValues.map((value, index) => {
+      if (typeof value === "number") return value;
+      return validateContractConstant(
+        value,
+        contract.statusSuccessValueLocations[index],
+        declaration.overloads[0]?.returnType.nativeName ?? "",
+        constants,
+        namedTypes,
+        fileName,
+        "native success status",
+      ).cName;
+    });
+    const note = {
       ...(contract.executorAffinity ? { executorAffinity: contract.executorAffinity } : {}),
       return: {
         nullable: contract.returnNullable,
@@ -856,19 +946,110 @@ export function foreignDeclarationApiNotes(
       ...(contract.returnSemanticType === "status-void"
         ? {
           status: {
-            success: contract.statusSuccessValues,
+            success,
             result: "void" as const,
             error: "return" as const,
           },
         }
         : {}),
     };
+    if (projection) {
+      const literals = Object.fromEntries(
+        contract.parameters
+          .slice(0, nativeParameterCount)
+          .map((parameter, index) => [String(index), parameter.literal])
+          .filter((entry): entry is [string, string] => entry[1] !== null),
+      );
+      if (Object.keys(literals).length === 0) {
+        throw new DiagnosticError(
+          fileName,
+          contract.location,
+          `typed variadic declaration for ${JSON.stringify(contract.name)} requires at least one header-constant discriminant`,
+          { code: "Z0801" },
+        );
+      }
+      const existing = functions[contract.name] ??= {};
+      const projections = existing.projections ??= [];
+      const key = JSON.stringify(literals);
+      if (projections.some((candidate) => JSON.stringify(candidate.literals) === key)) {
+        throw new DiagnosticError(
+          fileName,
+          contract.location,
+          `duplicate typed variadic declaration for ${JSON.stringify(contract.name)} and discriminant ${Object.values(literals).join(", ")}`,
+          { code: "Z0801" },
+        );
+      }
+      projections.push({
+        ...note,
+        literals,
+        variadicParameters: contract.parameters.slice(nativeParameterCount).map((parameter) => ({
+          name: parameter.name,
+          type: parameter.explicitType!,
+          access: parameter.mode === "in" ? "in" as const : "value" as const,
+        })),
+      });
+    } else {
+      if (functions[contract.name]) {
+        throw new DiagnosticError(
+          fileName,
+          contract.location,
+          `duplicate declaration contract for foreign function ${JSON.stringify(contract.name)}`,
+          { code: "Z0801" },
+        );
+      }
+      functions[contract.name] = note;
+    }
   }
   return {
     ...(Object.keys(types).length ? { types } : {}),
     ...(Object.keys(functions).length ? { functions } : {}),
     ...(Object.keys(objcMethods).length ? { objcMethods } : {}),
   };
+}
+
+function validateContractConstant(
+  name: string,
+  location: SourceLocation,
+  nativeType: string,
+  constants: ReadonlyMap<string, ForeignConstant>,
+  namedTypes: ReadonlyMap<string, ForeignNamedType>,
+  fileName: string,
+  role: string,
+): ForeignConstant {
+  const constant = constants.get(name);
+  if (!constant) {
+    throw new DiagnosticError(fileName, location, `${role} names unknown header constant ${JSON.stringify(name)}`, {
+      code: "Z0801",
+    });
+  }
+  const named = namedTypes.get(constant.typeName);
+  const compact = nativeType.replace(/\b(?:const|volatile|enum)\b/g, "").replace(/\s+/g, "");
+  const nativeNamed = [...namedTypes.values()].find((candidate) => (
+    [candidate.cName, candidate.exportName, candidate.qualifiedName]
+      .map((value) => value.replace(/\s+/g, ""))
+      .some((spelling) => compact.includes(spelling))
+  ));
+  if (nativeNamed?.kind === "enum" && constant.typeName !== nativeNamed.typeName) {
+    throw new DiagnosticError(
+      fileName,
+      location,
+      `${role} ${JSON.stringify(name)} has type ${constant.typeName}, which does not match native enum ${nativeNamed.exportName}`,
+      { code: "Z0801" },
+    );
+  }
+  if (named?.kind === "enum") {
+    const spellings = [named.cName, named.exportName, named.qualifiedName]
+      .map((value) => value.replace(/\s+/g, ""));
+    if (!spellings.some((spelling) => compact.includes(spelling))) {
+      throw new DiagnosticError(
+        fileName,
+        location,
+        `${role} ${JSON.stringify(name)} has type ${named.exportName}, which does not match native type ${JSON.stringify(nativeType)}`,
+        { code: "Z0801" },
+      );
+    }
+  }
+  return constant;
 }
 
 function resolveObjCMethodContract(
