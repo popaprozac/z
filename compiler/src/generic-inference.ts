@@ -1635,6 +1635,7 @@ function displayType(type: string): string {
 
 function inferenceTypeName(type: ForeignType | undefined): string | null {
   if (!type || type.kind === "unsupported" || type.kind === "recordPointer") return null;
+  if (type.kind === "scalarPointer") return type.typeName;
   if (type.kind === "z") return type.name;
   if (type.kind === "named") return type.type.typeName;
   if (type.kind === "reference") return type.type.kind === "scalar" ? type.type.underlying : type.type.typeName;

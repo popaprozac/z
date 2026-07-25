@@ -5473,6 +5473,7 @@ function foreignTypeName(type: ForeignType): string {
     ? `view cstring${type.nullable ? " | null" : ""}`
     : `${type.cName}${type.nullable ? " | null" : ""}`;
   if (type.kind === "pointerOut") return `${type.pointer.cName}${type.pointer.nullable ? " | null" : ""}`;
+  if (type.kind === "scalarPointer") return type.typeName;
   if (type.kind === "callback" || type.kind === "block") {
     const parameters = type.parameters.map((parameter, index) => (
       `${type.kind === "callback" ? type.parameterNames?.[index] ?? `argument${index + 1}` : `argument${index + 1}`}: ${foreignTypeName(parameter)}`
@@ -5485,6 +5486,10 @@ function foreignTypeName(type: ForeignType): string {
 function foreignParameterDetail(parameter: { readonly name: string | null; readonly type: ForeignType }, index: number): string {
   const name = parameter.name ?? `argument${index + 1}`;
   if (parameter.type.kind === "pointerOut") return `out ${name}: ${foreignTypeName(parameter.type)}`;
+  if (parameter.type.kind === "scalarPointer") {
+    const capability = parameter.type.access === "in" ? "" : `${parameter.type.access} `;
+    return `${capability}${name}: ${foreignTypeName(parameter.type)}`;
+  }
   if (parameter.type.kind !== "reference") return `${name}: ${foreignTypeName(parameter.type)}`;
   const capability = parameter.type.access === "move" ? "" : `${parameter.type.access} `;
   return `${capability}${name}: ${foreignTypeName(parameter.type)}`;
@@ -5634,7 +5639,10 @@ function integerConversionHover(conversion: IntegerConversion): string {
   const behavior = conversion.checked
     ? "runtime range check; traps if the source value is not representable"
     : "source range is fully representable; lowers to a direct value-preserving cast";
-  return `${conversion.targetType}(value: ${conversion.sourceType}): ${conversion.targetType}\n// explicit integer conversion\n// ${behavior}`;
+  const representation = conversion.sourceDisplayType
+    ? `\n// native enum representation: ${conversion.sourceType}`
+    : "";
+  return `${conversion.targetType}(value: ${conversion.sourceDisplayType ?? conversion.sourceType}): ${conversion.targetType}\n// explicit integer conversion${representation}\n// ${behavior}`;
 }
 
 function aggregateCopyMayAllocate(

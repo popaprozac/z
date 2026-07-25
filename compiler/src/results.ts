@@ -195,6 +195,7 @@ function projectedForeignTypeName(type: ForeignType): string | null {
   }
   if (type.kind === "pointer" || type.kind === "object") return type.typeName;
   if (type.kind === "pointerOut") return type.pointer.typeName;
+  if (type.kind === "scalarPointer") return type.typeName;
   return null;
 }
 

@@ -40,6 +40,7 @@ import type {
   ForeignObjectType,
   ForeignPointerType,
   ForeignRecordPointerType,
+  ForeignScalarPointerType,
   ForeignReferenceType,
   ForeignScalarTypeName,
   ForeignSourceLocation,
@@ -1702,6 +1703,23 @@ function mapForeignType(
   if (stars === 1 && normalized.endsWith(" *")) {
     const pointeeSpelling = normalized.slice(0, -2).trim();
     const pointee = namedTypes.get(stripValueQualifiers(pointeeSpelling));
+    const scalarPointee = mapBuiltinType(stripValueQualifiers(pointeeSpelling));
+    if (scalarPointee && scalarPointee !== "void" && note?.access) {
+      const access = note.access;
+      const nullable = note.nullable ?? nullabilityFromClang(cName);
+      const constPointee = pointeeSpelling.split(/\s+/).includes("const");
+      const validAccess = position === "parameter"
+        && (access === "in" ? constPointee : (access === "out" || access === "inout") && !constPointee);
+      if (!validAccess || nullable === null) return { kind: "unsupported", cName };
+      const scalarPointer: ForeignScalarPointerType = {
+        kind: "scalarPointer",
+        cName: normalized,
+        typeName: scalarPointee,
+        access,
+        nullable,
+      };
+      return scalarPointer;
+    }
     if (pointee?.kind === "record" && note?.access) {
       const access = note?.access;
       const nullable = note?.nullable ?? nullabilityFromClang(cName);

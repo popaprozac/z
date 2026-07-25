@@ -114,6 +114,20 @@ object type, `any`, or user-written nullable value union. Use `u8` for a byte,
 `String` for owned UTF-8 text, `Option<T>` for optional Z values, and `T | null`
 only where a native nullable representation enters the type system.
 
+Integer construction performs an explicit value conversion:
+
+```z
+const widened = i32(byte);
+const narrowed = u8(count); // traps if count is outside the u8 range
+const nativeKind = u32(events.SDL_EVENT_QUIT);
+```
+
+Conversions whose complete source range fits the destination lower to a direct
+cast. Narrowing conversions perform a runtime range check. A nominal imported
+C enum may convert outward through its ABI integer representation; ordinary
+assignment remains nominal, and an arbitrary integer cannot be constructed
+back into the enum.
+
 ## Structs, classes, and traits
 
 `struct` declares a value type. It may contain fields, instance methods, static

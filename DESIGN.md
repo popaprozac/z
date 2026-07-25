@@ -869,6 +869,19 @@ The initial explicit surface includes `wrappingAdd`, `wrappingSubtract`,
 the receiver's exact integer type. A future checked-result surface should be
 designed with Z's optional-value type rather than inventing a sentinel.
 
+Integer type construction is the explicit width-conversion surface:
+
+```z
+const nativeCount = isize(count);
+const eventType = u32(events.SDL_EVENT_QUIT);
+```
+
+It lowers directly when the complete source range is representable and traps
+on an out-of-range narrowing conversion. Nominal imported C enums may convert
+outward through their Clang-proven ABI integer representation. They do not
+implicitly become integers, and integer-to-enum construction remains rejected
+because range checking alone cannot prove that the value names a valid case.
+
 `null` has no independently inferable storage type. It is accepted only when a
 destination explicitly carries nullable foreign-reference semantics; it cannot
 silently enter ordinary values or non-null foreign boundaries.
@@ -2154,6 +2167,13 @@ supported scalar or nominal enum member, and a scalar copy may leave through
 `select`. The first tier deliberately withholds pointer and nested-record union
 members. A future `.zd` discriminated projection can make recurring
 tag-to-payload relationships safe without weakening the default.
+
+A `.zd` capability may also classify a native pointer to one ABI scalar as
+`in`, `inout`, or `out`. Clang supplies the exact pointee type; the contract
+asserts that the pointer addresses exactly one call-scoped scalar and supplies
+the read/write capability. `out` accepts uninitialized `let` storage and marks
+it initialized only after the native call returns. This does not generalize
+arbitrary pointers or arrays into Z values.
 
 This deliberately adds no source-level raw-pointer type. A later inline-fact
 tier may reuse more `.zd` ownership and lifetime vocabulary when concrete APIs

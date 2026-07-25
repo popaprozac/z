@@ -56,6 +56,11 @@ declare module "vendor.h" {
     success VENDOR_OK;
   }
 
+  export function vendor_position(
+    out x: _,
+    out y: _
+  ): _;
+
   export function vendor_setopt(
     in handle: _,
     option: VENDOR_OPTION_TEXT,
@@ -129,6 +134,14 @@ declare module "vendor.h" {
   }
 }
 ```
+
+For a native signature such as `uint32_t vendor_position(float *x, float *y)`,
+the two `_` placeholders are inferred as `f32` from Clang. `out` is the added
+semantic fact: each pointer initializes exactly one caller-owned scalar during
+the call. Z therefore accepts uninitialized mutable bindings, passes their
+addresses directly, and makes both `f32` values readable only after the call.
+Use `inout` when native code may read the previous scalar value and replace it;
+use `in` for a const pointer that borrows one stored scalar.
 
 Only facts supported by the current compiler are accepted. Undesigned future
 spelling does not silently pass through.

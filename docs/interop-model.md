@@ -367,6 +367,7 @@ declare module "vendor.h" {
   export function vendor_close(move handle: _): _;
   export function vendor_use(in handle: _): _;
   export function vendor_optional(in handle: _ | null): _;
+  export function vendor_position(out x: _, out y: _): _;
   export function vendor_create(
     out handle: _ | null {
       deinit vendor_close;
@@ -376,6 +377,13 @@ declare module "vendor.h" {
   }
 }
 ```
+
+For a native `float *` parameter, `in`, `inout`, or `out` asserts that the
+pointer addresses one call-scoped scalar rather than an array. Clang continues
+to supply the exact `f32` pointee type. `out` accepts uninitialized mutable
+storage and makes it readable only after the native call returns; `inout`
+requires an initialized mutable binding; `in` borrows one initialized stored
+scalar. All three lower directly to the caller storage address.
 
 The declaration is not a wrapper or implementation. `in`, `move`, and `| null`
 retain their ordinary Z meanings. A function contract block is declarative,

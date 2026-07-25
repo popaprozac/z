@@ -40,6 +40,7 @@ export type ForeignType =
   | ForeignBlockType
   | ForeignObjectType
   | ForeignRecordPointerType
+  | ForeignScalarPointerType
   | ForeignOutPointerType
   | ForeignPointerType
   | { readonly kind: "unsupported"; readonly cName: string };
@@ -230,6 +231,14 @@ export type ForeignRecordPointerType = {
   readonly kind: "recordPointer";
   readonly cName: string;
   readonly record: Extract<ForeignNamedType, { kind: "record" }>;
+  readonly access: "in" | "out" | "inout";
+  readonly nullable: boolean;
+};
+
+export type ForeignScalarPointerType = {
+  readonly kind: "scalarPointer";
+  readonly cName: string;
+  readonly typeName: ForeignScalarTypeName;
   readonly access: "in" | "out" | "inout";
   readonly nullable: boolean;
 };

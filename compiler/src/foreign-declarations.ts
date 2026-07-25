@@ -1011,6 +1011,13 @@ export function foreignDeclarationApiNotes(
             { code: "Z0801" },
           );
         }
+        validateScalarPointerCapability(
+          parameter,
+          native.type.nativeName,
+          native.type.canonicalNativeName,
+          namedTypes,
+          fileName,
+        );
         if (parameter.literal) {
           validateContractConstant(
             parameter.literal,
@@ -2189,4 +2196,59 @@ function parameterNote(parameter: ContractParameter): PointerNote {
     };
   }
   return { nullable: parameter.nullable };
+}
+
+function validateScalarPointerCapability(
+  parameter: ContractParameter,
+  nativeName: string,
+  canonicalNativeName: string | undefined,
+  namedTypes: ReadonlyMap<string, ForeignNamedType>,
+  fileName: string,
+): void {
+  if (parameter.mode === "value" || parameter.mode === "move") return;
+  const spelling = canonicalNativeName ?? nativeName;
+  const normalized = spelling
+    .replace(/\b_(?:Nullable|Nonnull|Null_unspecified)\b/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  const pointer = /^(.+?)\s*\*$/.exec(normalized);
+  if (!pointer || pointer[1].includes("*")) return;
+  const pointee = pointer[1]
+    .replace(/\b(?:const|volatile|restrict|_Atomic)\b/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  const builtin = new Set([
+    "float", "double", "signed char", "unsigned char",
+    "short", "short int", "signed short", "signed short int",
+    "unsigned short", "unsigned short int", "int", "signed int",
+    "unsigned", "unsigned int", "long", "long int", "signed long",
+    "signed long int", "unsigned long", "unsigned long int", "long long",
+    "long long int", "signed long long", "signed long long int",
+    "unsigned long long", "unsigned long long int", "_Bool", "bool",
+  ]).has(pointee);
+  const namedScalar = [...namedTypes.values()].some((type) => (
+    type.kind === "scalar"
+    && (type.cName === pointee || type.exportName === pointee || type.qualifiedName === pointee)
+  ));
+  if (!builtin && !namedScalar) return;
+  const constPointee = /\bconst\b/.test(pointer[1]);
+  if (parameter.mode === "in" && !constPointee) {
+    throw new DiagnosticError(
+      fileName,
+      parameter.location,
+      `in scalar parameter ${JSON.stringify(parameter.name)} requires a const native pointer, found ${JSON.stringify(nativeName)}`,
+      {
+        code: "Z0801",
+        helps: ["use inout when native code may replace the caller's scalar value"],
+      },
+    );
+  }
+  if ((parameter.mode === "inout" || parameter.mode === "out") && constPointee) {
+    throw new DiagnosticError(
+      fileName,
+      parameter.location,
+      `${parameter.mode} scalar parameter ${JSON.stringify(parameter.name)} requires a mutable native pointer, found ${JSON.stringify(nativeName)}`,
+      { code: "Z0801" },
+    );
+  }
 }

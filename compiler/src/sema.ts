@@ -257,6 +257,7 @@ export type IntegerOperation = {
 
 export type IntegerConversion = {
   readonly sourceType: string;
+  readonly sourceDisplayType?: string;
   readonly targetType: string;
   readonly checked: boolean;
 };
@@ -6803,7 +6804,11 @@ function inferExpressionInner(
             return targetType;
           }
           const actual = inferExpression(argument, locals, globals, structs, enums, fileName, state);
-          const sourceType = canonicalType(actual, state.foreignNamedTypes);
+          const actualType = String(underlyingType(actual));
+          const nativeEnum = state.foreignNamedTypes.get(actualType);
+          const sourceType = nativeEnum?.kind === "enum"
+            ? nativeEnum.underlying
+            : canonicalType(actual, state.foreignNamedTypes);
           if (!isIntegerType(sourceType)) {
             throw new DiagnosticError(
               fileName,
@@ -6831,6 +6836,7 @@ function inferExpressionInner(
           }
           state.integerConversions.set(expression.location.offset, {
             sourceType,
+            ...(nativeEnum?.kind === "enum" ? { sourceDisplayType: actualType } : {}),
             targetType,
             checked: !integerRangeContains(targetType, sourceType),
           });
@@ -11006,6 +11012,7 @@ function foreignValueType(type: ForeignType): ValueType {
   if (type.kind === "reference") return type.type.kind === "scalar" ? type.type.underlying : type.type.typeName;
   if (type.kind === "pointer" || type.kind === "object") return type.typeName;
   if (type.kind === "pointerOut") return type.pointer.typeName;
+  if (type.kind === "scalarPointer") return type.typeName;
   if (type.kind === "callback" || type.kind === "block") {
     const parameters = type.parameters.map((parameter, index) => ({
       name: type.kind === "callback" ? type.parameterNames?.[index] ?? `argument${index + 1}` : `argument${index + 1}`,
@@ -11034,7 +11041,11 @@ function checkObjCArguments(
   for (let index = 0; index < args.length; index += 1) {
     const argument = args[index];
     const parameter = target.parameters[index];
-    if (parameter.type.kind === "unsupported" || parameter.type.kind === "recordPointer") {
+    if (
+      parameter.type.kind === "unsupported"
+      || parameter.type.kind === "recordPointer"
+      || parameter.type.kind === "scalarPointer"
+    ) {
       throw new DiagnosticError(fileName, argument.location, `Objective-C selector ${JSON.stringify(target.selector)} uses unsupported parameter type ${JSON.stringify(parameter.type.cName)}`);
     }
     const contextual = contextualObjCStringType(parameter.type, argument, state);
@@ -11699,6 +11710,68 @@ function checkForeignCall(
         state.expressionTypes.set(argument.nameLocation.offset, String(underlyingType(stored)));
         continue;
       }
+      if (parameter?.type.kind === "scalarPointer") {
+        if (parameter.type.access !== argument.access) {
+          throw new DiagnosticError(
+            fileName,
+            argument.location,
+            `C function ${JSON.stringify(target.name)} expects ${parameter.type.access} ${argument.name}, found ${argument.access} ${argument.name}`,
+          );
+        }
+        let stored = locals.get(argument.name);
+        if (!stored) {
+          throw new DiagnosticError(fileName, argument.location, `unknown name ${JSON.stringify(argument.name)}`);
+        }
+        if (argument.access === "out" && underlyingType(stored) === "unknown") {
+          const declarationLocation = state.inferredOutBindingLocations.get(argument.name);
+          if (!declarationLocation) {
+            throw new DiagnosticError(fileName, argument.location, `cannot infer storage type for out argument ${JSON.stringify(argument.name)}`);
+          }
+          stored = `${uninitializedPrefix}${mutablePrefix}${parameter.type.typeName}`;
+          locals.set(argument.name, stored);
+          state.bindingTypes.set(declarationLocation.offset, parameter.type.typeName);
+          state.inferredOutBindingLocations.delete(argument.name);
+        }
+        if (argument.access !== "out" && initializationState(stored) !== "initialized") {
+          throw new DiagnosticError(
+            fileName,
+            argument.location,
+            `${argument.access} argument ${JSON.stringify(argument.name)} must be initialized before the call`,
+          );
+        }
+        if (argument.access !== "out" && ownershipState(stored) !== "available") {
+          throw movedValueError(
+            fileName,
+            { name: argument.name, location: argument.location },
+            state,
+            ownershipState(stored) === "maybeMoved",
+          );
+        }
+        if (argument.access !== "in" && !isMutableBinding(stored)) {
+          throw new DiagnosticError(
+            fileName,
+            argument.location,
+            `${argument.access} argument ${JSON.stringify(argument.name)} requires a mutable let binding`,
+          );
+        }
+        requireAssignable(
+          parameter.type.typeName,
+          underlyingType(stored),
+          argument,
+          fileName,
+          structs,
+          enums,
+          state,
+        );
+        state.foreignArgumentAccesses.set(argument.location.offset, argument.access);
+        state.expressionTypes.set(argument.location.offset, parameter.type.typeName);
+        state.expressionTypes.set(argument.nameLocation.offset, parameter.type.typeName);
+        if (argument.access === "out") {
+          locals.set(argument.name, initializedAvailableBinding(stored));
+          state.moveOrigins.delete(argument.name);
+        }
+        continue;
+      }
       if (parameter?.type.kind === "unsupported") {
         throw new DiagnosticError(fileName, argument.location, `${argument.access} requires a checked native capability contract`, {
           code: "Z0823",
@@ -11823,6 +11896,34 @@ function checkForeignCall(
           },
         );
       }
+      continue;
+    }
+    if (parameter?.type.kind === "scalarPointer") {
+      if (parameter.type.access !== "in") {
+        throw new DiagnosticError(
+          fileName,
+          argument.location,
+          `C function ${JSON.stringify(target.name)} requires ${parameter.type.access} <mutable binding> for parameter ${index + 1}`,
+        );
+      }
+      if (!isNamedStorageExpression(argument)) {
+        throw new DiagnosticError(
+          fileName,
+          argument.location,
+          `in scalar argument to C function ${JSON.stringify(target.name)} must be a stored value`,
+        );
+      }
+      const actual = inferExpression(argument, locals, globals, structs, enums, fileName, state);
+      requireAssignable(
+        parameter.type.typeName,
+        actual,
+        argument,
+        fileName,
+        structs,
+        enums,
+        state,
+      );
+      state.foreignArgumentAccesses.set(argument.location.offset, "in");
       continue;
     }
     if (parameter?.type.kind === "recordPointer") {

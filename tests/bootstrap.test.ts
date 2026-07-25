@@ -2762,6 +2762,22 @@ test("constructs integer values with explicit checked conversions", () => {
   assert.equal(asyncResult.status, 0, asyncResult.stderr);
 });
 
+test("converts nominal imported enums through explicit integer construction", () => {
+  const example = resolve(projectRoot, "examples/interop/c/foreign-enum-conversion.zs");
+  const source = readFileSync(example, "utf8");
+  const generated = compileToC(source, example);
+  assert.match(generated, /const int32_t direction = \(\(int32_t\)\(\(\(int32_t\)\(ZForward\)\)\)\);/);
+
+  const conversionOffset = source.indexOf("i32(geometry") + 1;
+  const conversionHover = hover(source, example, conversionOffset)?.contents.value ?? "";
+  assert.match(conversionHover, /i32\(value: geometry\.ZDirection\): i32/);
+  assert.match(conversionHover, /native enum representation: i32/);
+  assert.match(conversionHover, /direct value-preserving cast/);
+
+  const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+});
+
 test("runs floating-point values and typed bitwise option masks", () => {
   const example = resolve(projectRoot, "examples/interop/c/apple-groundwork.zs");
   const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
@@ -5576,6 +5592,52 @@ test("initializes imported C union storage through out and confines scalar membe
   const memberSource = source.replace("event.type", "event.ty");
   const memberOffset = memberSource.indexOf("event.ty") + "event.ty".length;
   assert.ok(completions(memberSource, example, memberOffset).some((item) => item.label === "type"));
+});
+
+test("projects scalar C pointers through in, inout, and out capabilities", () => {
+  const example = resolve(projectRoot, "examples/interop/c/scalar-pointers.zs");
+  const source = readFileSync(example, "utf8");
+  const generated = compileToC(source, example);
+  assert.match(generated, /float x;/);
+  assert.match(generated, /float y;/);
+  assert.match(generated, /z_mouse_state\(&\(x\), &\(y\)\)/);
+  assert.match(generated, /z_increment_float\(&\(x\)\)/);
+  assert.match(generated, /z_read_float\(&\(x\)\)/);
+
+  const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+
+  const declarationFile = resolve(projectRoot, "tests/fixtures/scalar-pointers.h.zd");
+  const declarationSource = readFileSync(declarationFile, "utf8");
+  assert.deepEqual(diagnostics(declarationSource, declarationFile), []);
+  const functionOffset = declarationSource.indexOf("z_mouse_state") + 2;
+  assert.match(
+    hover(declarationSource, declarationFile, functionOffset)?.contents.value ?? "",
+    /z_mouse_state\(out x: f32, out y: f32\): u32/,
+  );
+  const outOffset = source.indexOf("out x") + 1;
+  assert.match(hover(source, example, outOffset)?.contents.value ?? "", /out: f32/);
+  const xOffset = source.indexOf("x;", source.indexOf("let x")) + 1;
+  assert.match(hover(source, example, xOffset)?.contents.value ?? "", /x: f32/);
+  const invalidDeclaration = declarationSource.replace("in value: _", "out value: _");
+  assert.match(
+    diagnostics(invalidDeclaration, declarationFile)[0]?.message ?? "",
+    /out scalar parameter "value" requires a mutable native pointer/,
+  );
+
+  const missingOut = source.replace("out x", "inout x");
+  assert.throws(
+    () => compileToC(missingOut, example),
+    /expects out x, found inout x/,
+  );
+  const uninitializedRead = source.replace(
+    "const buttons = native.z_mouse_state(out x, out y);",
+    "const observedBeforeInitialization = native.z_read_float(x);\n  const buttons = native.z_mouse_state(out x, out y);",
+  );
+  assert.throws(
+    () => compileToC(uninitializedRead, example),
+    /uninitialized value "x"|must be initialized/,
+  );
 });
 
 test("requires exact pointer modes and mutable storage at imported record boundaries", () => {

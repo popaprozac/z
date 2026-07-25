@@ -6483,9 +6483,14 @@ function generateExpressionInner(expression: Expression, context: GenerationCont
         const value = generateExpression(expression.arguments[0], context);
         const targetType = primitiveTypeNames[integerConversion.targetType];
         if (!targetType) throw new Error(`unsupported integer conversion target ${JSON.stringify(integerConversion.targetType)}`);
+        const sourceType = primitiveTypeNames[integerConversion.sourceType];
+        if (!sourceType) throw new Error(`unsupported integer conversion source ${JSON.stringify(integerConversion.sourceType)}`);
+        const sourceValue = integerConversion.sourceDisplayType
+          ? `((${sourceType})(${value}))`
+          : value;
         return integerConversion.checked
-          ? `${integerConversionName(integerConversion)}(${value})`
-          : `((${targetType})(${value}))`;
+          ? `${integerConversionName(integerConversion)}(${sourceValue})`
+          : `((${targetType})(${sourceValue}))`;
       }
       if (context.semanticInfo.optionFromNullable.has(expression.location.offset)) {
         return generateExpression(expression.arguments[0], context);
@@ -7610,7 +7615,8 @@ function inferExpressionType(expression: Expression, context: GenerationContext)
   if (integerOperation) return integerOperation.type;
   const analyzedType = context.semanticInfo.expressionTypes.get(expression.location.offset);
   if (analyzedType && (
-    analyzedType === "String"
+    Object.hasOwn(primitiveTypeNames, analyzedType)
+    || analyzedType === "String"
     || analyzedType === "TextBuffer"
     || analyzedType === "Arena"
     || analyzedType === "TaskScope"
