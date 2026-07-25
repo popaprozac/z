@@ -1,0 +1,12 @@
+declare module "SDL3/SDL_video.h" {
+  export function SDL_CreateWindow(
+    title: _,
+    w: _,
+    h: _,
+    flags: _
+  ): _ | null {
+    deinit SDL_DestroyWindow;
+  }
+
+  export function SDL_DestroyWindow(move window: _): _;
+}

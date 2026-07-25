@@ -148,7 +148,9 @@ and the system libraries the final binary must link:
     "entry": "main.zs",
     "platform": "macos",
     "minimumVersion": "13.0",
+    "includeDirectories": ["vendor/include"],
     "link": {
+      "directories": ["vendor/lib"],
       "libraries": ["sqlite3"]
     }
   }
@@ -164,9 +166,13 @@ only the host platform and does not cross-compile.
 
 `target.link.libraries` contains portable library names rather than raw linker
 flags: `"sqlite3"` becomes `-lsqlite3` for the current native toolchain. Names
-are validated and deduplicated. Importing a header describes the API; selecting
-a library describes where its implementation comes from, so the two concerns
-remain explicit and independent. Run the macOS probe with:
+are validated and deduplicated. `target.includeDirectories` supplies header
+search paths to both compiler and editor analysis, while
+`target.link.directories` supplies native library search paths. Relative paths
+resolve from the `z.json` directory; absolute paths remain absolute. Every
+configured path must name an existing directory. Importing a header describes
+the API; selecting a library describes where its implementation comes from, so
+the two concerns remain explicit and independent. Run the macOS probe with:
 
 ```sh
 bun run z run examples/interop/c/deployment-target/main.zs

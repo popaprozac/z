@@ -1,0 +1,12 @@
+{
+  "target": {
+    "entry": "main.zs",
+    "platform": "macos",
+    "minimumVersion": "14.0",
+    "includeDirectories": ["/opt/homebrew/include"],
+    "link": {
+      "directories": ["/opt/homebrew/lib"],
+      "libraries": ["SDL3"]
+    }
+  }
+}

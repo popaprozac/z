@@ -24,7 +24,9 @@ type ProjectManifest = {
     readonly entry?: string;
     readonly platform?: string;
     readonly minimumVersion?: string;
+    readonly includeDirectories?: readonly string[];
     readonly link?: {
+      readonly directories?: readonly string[];
       readonly libraries?: readonly string[];
     };
     readonly swift?: {
@@ -68,12 +70,28 @@ export function prepareProject(fileName: string): ProjectBuild {
     if (!existsSync(entry)) throw projectDiagnostic(fileName, `Z entry ${JSON.stringify(entry)} does not exist`);
   }
   const deploymentTarget = parseDeploymentTarget(manifest.target, fileName);
+  const includeDirectories = parseProjectDirectories(
+    manifest.target?.includeDirectories,
+    "target.includeDirectories",
+    directory,
+    fileName,
+  );
+  const linkedDirectories = parseProjectDirectories(
+    manifest.target?.link?.directories,
+    "target.link.directories",
+    directory,
+    fileName,
+  );
   const linkedLibraries = parseLinkedLibraries(manifest.target?.link?.libraries, fileName);
   const baseBuild: ProjectBuild = {
     ...emptyBuild,
     manifestPath,
     deploymentTarget,
-    nativeLinkerArguments: linkedLibraries.map((library) => `-l${library}`),
+    includeDirectories,
+    nativeLinkerArguments: [
+      ...linkedDirectories.map((linkedDirectory) => `-L${linkedDirectory}`),
+      ...linkedLibraries.map((library) => `-l${library}`),
+    ],
   };
   if (!swift) return baseBuild;
   const moduleName = swift.module;
@@ -160,7 +178,7 @@ export function prepareProject(fileName: string): ProjectBuild {
   const build: ProjectBuild = {
     manifestPath,
     deploymentTarget,
-    includeDirectories: [buildDirectory],
+    includeDirectories: [...baseBuild.includeDirectories, buildDirectory],
     nativeLibraries: [library],
     nativeLinkerArguments: [
       ...baseBuild.nativeLinkerArguments,
@@ -173,6 +191,31 @@ export function prepareProject(fileName: string): ProjectBuild {
   };
   buildCache.set(manifestPath, { freshness, build });
   return build;
+}
+
+function parseProjectDirectories(
+  directories: readonly string[] | undefined,
+  field: string,
+  manifestDirectory: string,
+  fileName: string,
+): string[] {
+  if (directories === undefined) return [];
+  if (
+    !Array.isArray(directories)
+    || directories.some((directory) => typeof directory !== "string" || directory.length === 0)
+  ) {
+    throw projectDiagnostic(fileName, `z.json ${field} must contain directory paths`);
+  }
+  const resolvedDirectories = [...new Set(directories.map((directory) => resolve(manifestDirectory, directory)))];
+  for (const directory of resolvedDirectories) {
+    if (!existsSync(directory)) {
+      throw projectDiagnostic(fileName, `z.json ${field} directory ${JSON.stringify(directory)} does not exist`);
+    }
+    if (!statSync(directory).isDirectory()) {
+      throw projectDiagnostic(fileName, `z.json ${field} path ${JSON.stringify(directory)} is not a directory`);
+    }
+  }
+  return resolvedDirectories;
 }
 
 function parseLinkedLibraries(libraries: readonly string[] | undefined, fileName: string): string[] {

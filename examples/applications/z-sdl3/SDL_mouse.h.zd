@@ -1,0 +1,3 @@
+declare module "SDL3/SDL_mouse.h" {
+  export function SDL_GetMouseState(out x: _, out y: _): _;
+}

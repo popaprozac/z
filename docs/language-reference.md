@@ -1593,7 +1593,9 @@ Native library selection is explicit project configuration:
 ```json
 {
   "target": {
+    "includeDirectories": ["vendor/include"],
     "link": {
+      "directories": ["vendor/lib"],
       "libraries": ["sqlite3"]
     }
   }
@@ -1601,7 +1603,11 @@ Native library selection is explicit project configuration:
 ```
 
 Each validated, deduplicated library name is translated to the host toolchain's
-native library argument. Raw linker flags are intentionally not part of this
+native library argument. `target.includeDirectories` supplies compiler and
+language-server header search paths; `target.link.directories` supplies native
+library search paths. Relative entries resolve from the directory containing
+`z.json`, absolute entries remain absolute, and configured paths must be
+existing directories. Raw linker flags are intentionally not part of this
 contract. A header import supplies declarations while `target.link.libraries`
 supplies link-time implementations.
 

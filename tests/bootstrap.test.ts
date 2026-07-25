@@ -2488,6 +2488,56 @@ test("adds explicit target native libraries without exposing raw linker flags", 
   );
 });
 
+test("uses project header and library search directories across analysis and native builds", () => {
+  const directory = mkdtempSync("/tmp/z-native-search-paths-");
+  const includeDirectory = resolve(directory, "include");
+  const libraryDirectory = resolve(directory, "lib");
+  const sourceFile = resolve(directory, "main.zs");
+  const manifest = resolve(directory, "z.json");
+  mkdirSync(includeDirectory);
+  mkdirSync(libraryDirectory);
+  writeFileSync(resolve(includeDirectory, "vendor.h"), "static inline int z_project_answer(void) { return 42; }\n");
+  const source = `
+    import vendor from "vendor.h";
+    function main(): i32 { return vendor.z_project_answer(); }
+  `;
+  writeFileSync(sourceFile, source);
+  writeFileSync(manifest, JSON.stringify({
+    target: {
+      entry: "main.zs",
+      includeDirectories: ["include", "include"],
+      link: {
+        directories: ["lib", "lib"],
+        libraries: [],
+      },
+    },
+  }));
+
+  assert.deepEqual(diagnostics(source, sourceFile), []);
+  const functionOffset = source.indexOf("z_project_answer") + 1;
+  assert.match(hover(source, sourceFile, functionOffset)?.contents.value ?? "", /z_project_answer\(\): i32/);
+  const artifact = compileToNative(source, sourceFile);
+  assert.deepEqual(artifact.includeDirectories, [includeDirectory]);
+  assert.deepEqual(artifact.nativeLinkerArguments, [`-L${libraryDirectory}`]);
+  assert.match(artifact.source, /z_project_answer\(\)/);
+
+  writeFileSync(manifest, JSON.stringify({
+    target: { includeDirectories: ["missing"] },
+  }));
+  assert.match(
+    diagnostics(source, sourceFile)[0]?.message ?? "",
+    /target\.includeDirectories directory .*missing.* does not exist/,
+  );
+
+  writeFileSync(manifest, JSON.stringify({
+    target: { link: { directories: "lib" } },
+  }));
+  assert.match(
+    diagnostics(source, sourceFile)[0]?.message ?? "",
+    /target\.link\.directories must contain directory paths/,
+  );
+});
+
 test("rejects malformed or unmatched Z declarations before FIIR reaches sema", () => {
   const directory = mkdtempSync("/tmp/z-fiir-notes-");
   const header = resolve(directory, "contract.h");

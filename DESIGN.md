@@ -1814,6 +1814,14 @@ Manifest paths are relative to `z.json`, generated products live in a local
 ignored `.z-cache`, and manifest or Swift-source modification times invalidate
 both the Swift build and imported Clang metadata.
 
+The same project target may declare validated `includeDirectories` and
+`link.directories`. Relative entries resolve from the manifest directory and
+absolute entries remain absolute. Header import, compiler analysis, and the
+language server consume one shared include-path model; native compilation
+consumes those includes plus the configured library search paths. This keeps
+portable source imports such as `"raylib.h"` independent of host installation
+layout while leaving package discovery as a later layer.
+
 For Objective-C-compatible declared targets, the same cached build emits a
 Swift symbol graph. Swift's generated Objective-C header does not retain
 `@MainActor`; the symbol graph does, together with Objective-C runtime class and

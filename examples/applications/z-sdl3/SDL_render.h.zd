@@ -1,0 +1,36 @@
+declare module "SDL3/SDL_render.h" {
+  export function SDL_CreateRenderer(
+    in window: _,
+    name: null
+  ): _ | null {
+    deinit SDL_DestroyRenderer;
+  }
+
+  export function SDL_SetRenderDrawColor(
+    in renderer: _,
+    r: _,
+    g: _,
+    b: _,
+    a: _
+  ): _;
+
+  export function SDL_RenderClear(in renderer: _): _;
+
+  export function SDL_RenderLine(
+    in renderer: _,
+    x1: _,
+    y1: _,
+    x2: _,
+    y2: _
+  ): _;
+
+  export function SDL_RenderDebugText(
+    in renderer: _,
+    x: _,
+    y: _,
+    str: _
+  ): _;
+
+  export function SDL_RenderPresent(in renderer: _): _;
+  export function SDL_DestroyRenderer(move renderer: _): _;
+}
