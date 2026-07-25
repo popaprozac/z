@@ -24,6 +24,7 @@ export type ForeignContractTypeMapper = {
   ) => ForeignType;
   readonly mapCallbackContext: (cName: string, callbackParameter: number) => ForeignCallbackContextType | ForeignType;
   readonly mapCallbackRelease: (cName: string, callbackParameter: number, contextParameter: number) => ForeignCallbackReleaseType | ForeignType;
+  readonly mapVariadicType: (type: "cstring" | "clong") => ForeignType;
 };
 
 export type NormalizedForeignContracts = {
@@ -86,7 +87,8 @@ export function normalizeForeignContracts(
             })),
             ...projection.variadicParameters.map((parameter) => ({
               name: parameter.name,
-              type: { kind: "z" as const, name: parameter.type, cName: "const char *" },
+              type: mapper.mapVariadicType(parameter.type),
+              ...(parameter.type === "clong" ? { abiCast: "long" } : {}),
             })),
           ],
           variadic: false,

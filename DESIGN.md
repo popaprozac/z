@@ -1938,6 +1938,23 @@ Repeated contracts for the same native function form an overload set, and once
 that set exists safe Z rejects unmatched options rather than falling back to
 unchecked varargs. The emitted call remains `curl_easy_setopt(...)`; the
 contract adds no wrapper or runtime dispatch.
+
+Declaration-only `clong` describes an exact C `long` variadic argument:
+
+```z
+export function curl_easy_setopt(
+  in curl: _,
+  option: CURLOPT_TIMEOUT,
+  seconds: clong
+): void throws _ {
+  success CURLE_OK;
+}
+```
+
+It does not introduce a platform-dependent everyday Z integer. The safe call
+is checked against the target-width fixed integer (`i64` on LP64 and `i32` on
+Windows LLP64), then lowered with an explicit `(long)` cast so default variadic
+promotions cannot silently substitute `long long`.
 Over time, Clang attributes, Apple's API notes, Windows SAL
 annotations, package metadata, and generated bindings should populate the same
 semantic model so the common case remains simply:

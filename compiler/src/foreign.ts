@@ -328,6 +328,9 @@ function readHeader(
       ),
       mapCallbackContext: mapCallbackContextType,
       mapCallbackRelease: mapCallbackReleaseType,
+      mapVariadicType: (type) => type === "cstring"
+        ? { kind: "z", name: "cstring", cName: "const char *" }
+        : mapForeignType("long", undefined, "parameter", new Map(), produced.nativeTypes),
     },
     fileName,
     declaration.location,

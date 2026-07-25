@@ -11,7 +11,9 @@ semantic facts the C header does not express:
 - borrowed easy-handle operations; and
 - `CURLcode` failures as typed Z errors;
 - symbolic `CURLE_OK` status evidence; and
-- a checked `CURLOPT_URL` variadic overload with a `cstring` value.
+- a checked `CURLOPT_URL` variadic overload with a `cstring` value; and
+- a checked `CURLOPT_TIMEOUT` overload whose declaration-only `clong` preserves
+  C `long`'s target ABI.
 
 Run it from the repository root:
 
@@ -24,8 +26,7 @@ libcurl stream the response body to standard output. It therefore requires
 network connectivity when run. Compiler regressions use a separate local
 fixture and do not depend on the network.
 
-The first discriminated variadic slice deliberately covers only `CURLOPT_URL`.
-Numeric options still need a portable C ABI spelling such as `clong`, while
-callback and context options are a deeper follow-up because libcurl installs
-them in separate calls and their shared lifetime must be tied to the easy
-handle.
+The first discriminated variadic slice deliberately covers URL and timeout
+options. Callback and context options are the deeper follow-up because libcurl
+installs them in separate calls and their shared lifetime must be tied to the
+easy handle.

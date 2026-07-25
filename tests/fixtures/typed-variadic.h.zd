@@ -12,4 +12,11 @@ declare module "typed-variadic.h" {
   ): void throws _ {
     success Z_TYPED_OK;
   }
+
+  export function z_typed_setopt(
+    option: Z_TYPED_TIMEOUT,
+    seconds: clong
+  ): void throws _ {
+    success Z_TYPED_OK;
+  }
 }

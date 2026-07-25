@@ -67,7 +67,7 @@
         }
       }, {
         "name": "meta.declaration.parameter.typed-variadic.z",
-        "match": "(?:(\\b(?:in)\\b)\\s+)?([A-Za-z_][A-Za-z0-9_]*)\\s*(:)\\s*(cstring)(?=\\s*[,\\)])",
+        "match": "(?:(\\b(?:in)\\b)\\s+)?([A-Za-z_][A-Za-z0-9_]*)\\s*(:)\\s*(cstring|clong)(?=\\s*[,\\)])",
         "captures": {
           "1": { "name": "storage.modifier.capability.z" },
           "2": { "name": "variable.parameter.z" },

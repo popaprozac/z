@@ -247,6 +247,7 @@ export type IntegerConversion = {
 
 export type ForeignCallArgumentPlan =
   | { readonly kind: "argument"; readonly source: number }
+  | { readonly kind: "cast"; readonly source: number; readonly cName: string }
   | { readonly kind: "fixed"; readonly expression: string }
   | { readonly kind: "callback"; readonly source: number; readonly callback: ForeignCallbackType; readonly functionType: string }
   | { readonly kind: "context"; readonly source: number; readonly callback: ForeignCallbackType; readonly functionType: string }
@@ -11200,7 +11201,10 @@ function checkForeignCall(
     .filter((entry): entry is typeof entry & { readonly parameter: { readonly type: ForeignCallbackType } } => (
       entry.parameter.type.kind === "callback" && entry.parameter.type.context !== null
     ));
-  if (contextualCallbacks.length > 0 || target.parameters.some((parameter) => parameter.type.kind === "fixedNative")) {
+  if (
+    contextualCallbacks.length > 0
+    || target.parameters.some((parameter) => parameter.type.kind === "fixedNative" || parameter.abiCast)
+  ) {
     const callbacksByNativeIndex = new Map(contextualCallbacks.map((entry) => [entry.nativeIndex, entry]));
     const visibleByNativeIndex = new Map(visibleParameters.map((entry, source) => [entry.nativeIndex, source]));
     const plan: ForeignCallArgumentPlan[] = target.parameters.map((parameter, nativeIndex) => {
@@ -11226,6 +11230,9 @@ function checkForeignCall(
         };
       }
       const source = visibleByNativeIndex.get(nativeIndex)!;
+      if (parameter.abiCast) {
+        return { kind: "cast", source, cName: parameter.abiCast };
+      }
       if (parameter.type.kind === "callback" && parameter.type.context) {
         return {
           kind: "callback",

@@ -27,7 +27,7 @@ export type ContractParameter = {
   readonly fixed: string | null;
   readonly fixedLocation: SourceLocation | null;
   readonly fixedValueLocation: SourceLocation | null;
-  readonly explicitType: "cstring" | null;
+  readonly explicitType: "cstring" | "clong" | null;
   readonly literal: string | null;
 };
 
@@ -215,17 +215,17 @@ export function parseForeignDeclarationContracts(source: string, fileName: strin
     const name = expectIdentifier("a native parameter name");
     expectText(":");
     const nullOnly = at("null");
-    let explicitType: "cstring" | null = null;
+    let explicitType: "cstring" | "clong" | null = null;
     let literal: string | null = null;
     let type: { readonly nullable: boolean; readonly location: SourceLocation };
     if (nullOnly) {
       type = { nullable: true, location: take().location };
-    } else if (at("cstring")) {
+    } else if (at("cstring") || at("clong")) {
       const token = take();
-      explicitType = "cstring";
+      explicitType = token.text as "cstring" | "clong";
       type = { nullable: false, location: token.location };
     } else if (!at("_")) {
-      const token = expectIdentifier("`_`, `cstring`, or a header constant");
+      const token = expectIdentifier("`_`, a supported C ABI type, or a header constant");
       literal = token.text;
       type = { nullable: false, location: token.location };
     } else {
@@ -278,7 +278,7 @@ export function parseForeignDeclarationContracts(source: string, fileName: strin
       fail(name, "a native literal discriminant cannot declare in, inout, out, or move");
     }
     if (explicitType && mode !== "value" && mode !== "in") {
-      fail(name, "an explicit variadic cstring parameter supports value or in access");
+      fail(name, "an explicit variadic parameter supports value or in access");
     }
     if (fixed && (mode !== "value" || nullOnly || release)) {
       fail(name, "a fixed native parameter cannot also declare a capability, null-only type, or deinit");
@@ -797,7 +797,7 @@ export function foreignDeclarationApiNotes(
           throw new DiagnosticError(
             fileName,
             parameter.typeLocation,
-            "a typed C variadic argument requires an explicit supported type such as `cstring`",
+            "a typed C variadic argument requires an explicit supported type such as `cstring` or `clong`",
             { code: "Z0801" },
           );
         }

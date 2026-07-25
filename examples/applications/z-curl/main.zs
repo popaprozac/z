@@ -24,6 +24,11 @@ function fetchHosts(): void throws curl.CURLcode {
         curl.CURLOPT_URL,
         "https://example.com"
     );
+    try curl.curl_easy_setopt(
+        easy,
+        curl.CURLOPT_TIMEOUT,
+        10
+    );
     try curl.curl_easy_perform(easy);
 }
 

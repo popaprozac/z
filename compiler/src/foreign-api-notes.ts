@@ -41,7 +41,7 @@ export type StatusNote = {
 
 export type TypedVariadicParameterNote = {
   readonly name: string;
-  readonly type: "cstring";
+  readonly type: "cstring" | "clong";
   readonly access: "value" | "in";
 };
 

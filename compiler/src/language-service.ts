@@ -2139,6 +2139,7 @@ function languageTokenCompletions(fileName: string): CompletionItem[] {
     items.push(
       { label: "_", kind: completionKinds.keyword, detail: "infer type from the native declaration", sortText: "6-_" },
       { label: "null", kind: completionKinds.constant, detail: "nullable foreign value", sortText: "7-null" },
+      { label: "clong", kind: completionKinds.keyword, detail: "C `long` ABI type; projects to the target-width Z integer", sortText: "6-clong" },
     );
   }
   return items;

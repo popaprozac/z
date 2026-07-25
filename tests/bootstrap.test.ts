@@ -766,6 +766,7 @@ test("projects header constants and discriminated C variadic arguments through Z
   const source = readFileSync(fileName, "utf8");
   const generated = compileToC(source, fileName);
   assert.match(generated, /z_typed_setopt\(Z_TYPED_TEXT, "typed"\)/);
+  assert.match(generated, /z_typed_setopt\(Z_TYPED_TIMEOUT, \(long\)\(10LL\)\)/);
   assert.match(generated, /_z_native_status_\d+ == Z_TYPED_OK/);
 
   const result = spawnSync(process.execPath, [cli, "run", fileName], { encoding: "utf8" });
@@ -798,6 +799,11 @@ test("projects header constants and discriminated C variadic arguments through Z
   assert.match(
     hover(declarationSource, declarationFile, statusOffset)?.contents.value ?? "",
     /Z_TYPED_OK: .*ZTypedOption[\s\S]*successful void completion/,
+  );
+  const clongOffset = declarationSource.indexOf("clong") + 2;
+  assert.match(
+    hover(declarationSource, declarationFile, clongOffset)?.contents.value ?? "",
+    /clong.*explicit safe type for a C variadic argument/,
   );
   const completionSource = declarationSource.replace("success Z_TYPED_OK;", "success Z_TYPED_");
   const completionOffset = completionSource.indexOf("success Z_TYPED_") + "success Z_TYPED_".length;
@@ -1639,6 +1645,11 @@ test("normalizes producer declarations without exposing Clang nodes to FIIR cons
       }),
       mapCallbackContext: (cName) => ({ kind: "unsupported", cName }),
       mapCallbackRelease: (cName) => ({ kind: "unsupported", cName }),
+      mapVariadicType: (type) => ({
+        kind: "z",
+        name: type === "cstring" ? "cstring" : "i64",
+        cName: type === "cstring" ? "const char *" : "long",
+      }),
     },
     "cached-producer.fiir",
     { offset: 0, line: 1, column: 1 },

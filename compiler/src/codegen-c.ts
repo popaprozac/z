@@ -6504,6 +6504,7 @@ function generateForeignCallArgument(
   if (plan.kind === "fixed") return plan.expression;
   const expression = arguments_[plan.source];
   if (plan.kind === "argument") return generateCallArgument(expression, context);
+  if (plan.kind === "cast") return `(${plan.cName})(${generateCallArgument(expression, context)})`;
   if (plan.kind === "callback") return foreignCallbackAdapterName(plan);
   if (plan.kind === "release") return foreignCallbackBoxReleaseName(plan);
   if (plan.callback.lifetime === "escape") {

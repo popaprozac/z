@@ -244,6 +244,8 @@ export type ForeignParameter = {
   readonly type: ForeignType;
   /** A header constant that must appear at this source argument position. */
   readonly literal?: string;
+  /** Exact C ABI type required for a projected variadic argument. */
+  readonly abiCast?: string;
 };
 
 export type ForeignCallbackType = {
