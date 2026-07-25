@@ -92,6 +92,7 @@ Read [`async-model.md`](async-model.md) alongside these examples:
 | --- | --- |
 | Sequential await | [`async-sequential.zs`](../examples/async/async-sequential.zs) |
 | Typed errors | [`async-errors.zs`](../examples/async/async-errors.zs) |
+| Cleanup-bearing async errors | [`async-owned-errors.zs`](../examples/async/async-owned-errors.zs) — owned String error fields across observation, propagation, completed discard, and cancellation |
 | Hot task and explicit join | [`async-tasks.zs`](../examples/async/async-tasks.zs) |
 | Lexical task scopes | [`async-scopes.zs`](../examples/async/async-scopes.zs) |
 | Scope-local ownership and child borrows | [`async-scope-locals.zs`](../examples/async/async-scope-locals.zs) |

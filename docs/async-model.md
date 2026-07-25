@@ -453,14 +453,17 @@ single-thread FIFO executor. Each call allocates a typed task frame and each
 `task` enqueues hot children and a task handle joins the already-running frame.
 Scalars, enums with owned payloads, value structs, ARC class references,
 growable arrays, and cleanup-bearing fixed arrays can live in task frames;
-error values are currently cleanup-free. Growable arrays keep their native
-pointer/length/capacity descriptor in the frame, and fixed arrays containing
-non-trivial C++ values use aligned placement storage. Live flags make struct,
-enum, and collection moves explicit, ARC copies retain,
+error storage accepts the same cleanup-bearing Z, ARC, String, and move-only
+native shapes. Growable arrays keep their native pointer/length/capacity
+descriptor in the frame, and fixed arrays or errors containing non-trivial C++
+values use aligned placement storage. Live flags make struct, enum, error, and
+collection moves explicit, ARC copies retain,
 awaited results transfer between frames, and active `Option<T>`/`Result<T, E>`
 payloads are destroyed by tag. Frame destruction releases every value still
-owned on success or propagated error. Task frames also lower `throw`, `try
-await`, `attempt await`, payloadless `void` success, and root failure exit.
+owned on success or failure. Task frames also lower `throw`, `try await`,
+`attempt await`, payloadless `void` success, and root failure exit. Completed
+but unclaimed errors are destroyed by consuming cancellation; cancellation
+before `throw` cleans active locals without manufacturing an error.
 Move-only native Results use aligned placement storage and their generated
 tagged-union destructor instead of plain aggregate assignment. `z
 emit` produces readable C for this subset and `z run` executes it.

@@ -23,7 +23,7 @@ Status meanings:
 | ARC classes | Implemented | Identity, sharing, constructors, private fields, weak references |
 | Traits | Partial | Nominal static conformance, generic declarations/specializations, and generic constraints; no trait values/dynamic dispatch |
 | Enums and `Option`/`Result` | Implemented | Payloads, nesting, exhaustive statement/expression matches, and tag equality for payload-free Z enums |
-| Errors | Implemented | Typed `throws`, `throw`, `try`, and `attempt`, including synchronous cleanup-bearing error values |
+| Errors | Implemented | Typed `throws`, `throw`, `try`, and `attempt`, including synchronous and async cleanup-bearing Z, String, ARC, and move-only native error values with live-state-aware propagation and discard |
 | Control flow expressions | Implemented synchronous tier | Ternary, `if`, `match`, `while`, and `for...of` produce values through explicit `select`; loop expressions require an exhaustion `else`, retain cleanup and ownership analysis, allow `continue`, and reject valueless `break`; async loop expressions remain |
 | Closures | Partial | Borrowed and owned ARC environments plus weak captures; nested closures automatically forward read and mutation captures through intervening environments while preserving shadowing and per-boundary ownership/thread checks. Preserving addressable move-only resource capabilities such as `TextBuffer` through a borrowed closure remains |
 | Strings and console | Implemented | Owned UTF-8 strings, exact byte equality, templates, typed formatting, checked `byteAt`/`copyBytes`, `byteLength`, `isEmpty`, and explicit move-only `std/text` `TextBuffer`; grapheme-aware `length` remains planned |

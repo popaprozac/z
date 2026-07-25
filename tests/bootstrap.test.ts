@@ -14292,6 +14292,78 @@ test("carries plain struct values and errors through async task frames", () => {
 
 });
 
+test("moves and destroys cleanup-bearing errors through async task frames", () => {
+  const example = resolve(projectRoot, "examples/async/async-owned-errors.zs");
+  const source = readFileSync(example, "utf8");
+  const generated = compileToC(source, example);
+  assert.match(generated, /Z_RequestError error;/);
+  assert.match(generated, /bool live_error;/);
+  assert.match(generated, /frame->live_error = true/);
+  assert.match(generated, /child_\d+->live_error = false/);
+  assert.match(generated, /Z_RequestError_deinit\(&\(frame->error\)\)/);
+
+  const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(
+    result.stdout,
+    "released request error 1\nreleased request error 2\nreleased request error 3\n",
+  );
+
+  const directory = mkdtempSync("/tmp/z-async-owned-error-kinds-");
+  const arcError = resolve(directory, "arc.zs");
+  writeFileSync(arcError, `
+    import console from "std/console";
+
+    class ServiceError {
+      readonly code: i32;
+      deinit { console.log(\`released service error \${this.code}\`); }
+    }
+
+    async function fail(): i32 throws ServiceError {
+      throw new ServiceError({ code: 7 });
+    }
+
+    async function main(): i32 {
+      const observed = attempt await fail();
+      return match (observed) {
+        success(value) => value;
+        failure(error) => error.code - 7;
+      };
+    }
+  `);
+  const arcResult = spawnSync(process.execPath, [cli, "run", arcError], { encoding: "utf8" });
+  assert.equal(arcResult.status, 0, arcResult.stderr);
+  assert.equal(arcResult.stdout, "released service error 7\n");
+
+  const nativeError = resolve(directory, "native.zs");
+  const header = resolve(projectRoot, "tests/fixtures/move-only.hpp");
+  writeFileSync(nativeError, `
+    import native from ${JSON.stringify(header)};
+
+    struct NativeError {
+      evidence: native.zcpp.UniqueValue;
+    }
+
+    async function fail(): i32 throws NativeError {
+      throw NativeError({ evidence: native.zcpp.UniqueValue(9) });
+    }
+
+    async function main(): i32 {
+      const observed = attempt await fail();
+      const code = match (observed) {
+        success(value) => value;
+        failure(error) => error.evidence.value();
+      };
+      return code - 9 + native.zcpp.unique_live();
+    }
+  `);
+  const nativeGenerated = compileToNative(readFileSync(nativeError, "utf8"), nativeError).source;
+  assert.match(nativeGenerated, /alignas\(Z_NativeError\) unsigned char error\[sizeof\(Z_NativeError\)\]/);
+  assert.match(nativeGenerated, /z_async_take\([^\n]+live_error/);
+  const nativeResult = spawnSync(process.execPath, [cli, "run", nativeError], { encoding: "utf8" });
+  assert.equal(nativeResult.status, 0, nativeResult.stderr);
+});
+
 test("moves owned structs and retains ARC classes across async task frames", () => {
   const example = resolve(projectRoot, "examples/async/async-ownership.zs");
   const source = readFileSync(example, "utf8");

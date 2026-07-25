@@ -348,12 +348,13 @@ function load(id: i32): User throws UserError { ... }
 - `try operation()` propagates failure and produces the success value.
 - `attempt operation()` materializes `Result<T, E>` for local inspection.
 
-Synchronous error values may contain cleanup-bearing fields such as `String`.
-`throw` transfers the error into the failure result; `try` transfers it onward;
-and consuming or borrowed `match` follows the same payload rules as other
-enums. Move-only native values remain excluded from compiler-provided
-`Result<T, E>` storage until that built-in representation receives native
-construction and destruction.
+Synchronous and async error values may contain cleanup-bearing fields such as
+`String`, ARC identity, or move-only native owners nested in a Z value.
+`throw` transfers the error into failure storage; `try` transfers it onward;
+and `attempt` materializes a live-state-aware `Result<T, E>`. Consuming or
+borrowed `match` follows the same payload rules as other enums. Native-bearing
+failure storage uses placement construction, typed moves, and deterministic
+destruction rather than plain aggregate assignment.
 
 `Result<T, E>` is a built-in tagged union with `success` and `failure` variants;
 those names are variants, not global functions or reserved keywords.

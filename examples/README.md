@@ -77,7 +77,7 @@ support or producing language-server diagnostics from hypothetical imports.
 - [`async-phase-0.zs`](async/async-phase-0.zs): overview of the implemented model
 - [`async-sequential.zs`](async/async-sequential.zs), [`async-tasks.zs`](async/async-tasks.zs), [`async-scopes.zs`](async/async-scopes.zs), and [`async-scope-locals.zs`](async/async-scope-locals.zs)
 - [`async-branch-expressions.zs`](async/async-branch-expressions.zs): selected-only suspension in logical, ternary, value-`if`, and loop-condition branches
-- [`async-errors.zs`](async/async-errors.zs), [`async-cancellation.zs`](async/async-cancellation.zs), [`async-caller-cancellation.zs`](async/async-caller-cancellation.zs), and [`async-delay.zs`](async/async-delay.zs)
+- [`async-errors.zs`](async/async-errors.zs), [`async-owned-errors.zs`](async/async-owned-errors.zs), [`async-cancellation.zs`](async/async-cancellation.zs), [`async-caller-cancellation.zs`](async/async-caller-cancellation.zs), and [`async-delay.zs`](async/async-delay.zs)
 - [`async-aggregates.zs`](async/async-aggregates.zs), [`async-ownership.zs`](async/async-ownership.zs), and [`async-owned-enums.zs`](async/async-owned-enums.zs)
 - [`async-native-ownership.zs`](async/async-native-ownership.zs): move-only C++ ownership across suspension, fallible task-result relays, `try await`, `attempt await`, and match
 - [`async-native-aggregate.zs`](async/async-native-aggregate.zs): a native-owning Z value struct across suspension, fallible relay, consuming match, and deterministic aggregate/native cleanup
