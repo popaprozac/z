@@ -10,6 +10,7 @@ import { normalizeForeignContracts } from "../compiler/src/foreign-contracts.ts"
 import type { ForeignFunctionDeclaration } from "../compiler/src/foreign-ir.ts";
 import { buildStage0ModuleGraph } from "../compiler/src/native-semantic-parity.ts";
 import { NativeFrontendDiagnosticError } from "../compiler/src/native-frontend-diagnostics.ts";
+import { runWithBufferedStdoutOrSpill } from "../compiler/src/process-output.ts";
 import {
   decodeStage1DeclarationStream,
   decodeStage1ModuleGraphStream,
@@ -29,6 +30,16 @@ import {
 
 const projectRoot = resolve(dirnameFromImportMeta(), "..");
 const cli = resolve(projectRoot, "compiler/src/cli.ts");
+
+test("captures machine-readable compiler output beyond the former 64 MiB pipe ceiling", () => {
+  const mebibytes = 65;
+  const result = runWithBufferedStdoutOrSpill(process.execPath, [
+    "-e",
+    `const chunk = "x".repeat(1024 * 1024); for (let i = 0; i < ${mebibytes}; i += 1) process.stdout.write(chunk);`,
+  ], 64 * 1024 * 1024);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(Buffer.byteLength(result.stdout), mebibytes * 1024 * 1024);
+});
 
 test("emits functions and direct imported C calls", () => {
   const source = `
@@ -4704,7 +4715,7 @@ test("copies owned Z strings across NSString boundaries without losing embedded 
   const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stdout, "round trip=answer=42\nembedded=a\0b\n");
-});
+}, 10_000);
 
 test("imports and executes Swift through its generated Objective-C compatibility header", () => {
   if (process.platform !== "darwin") return;

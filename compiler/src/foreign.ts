@@ -15,6 +15,7 @@ import { isStandardModuleSpecifier } from "./standard-library.ts";
 import { sliceTypeName } from "./array-types.ts";
 import { deploymentTargetFlags, type DeploymentTarget } from "./project.ts";
 import { collectIntegerMacroConstants } from "./foreign-macros.ts";
+import { runWithBufferedStdoutOrSpill } from "./process-output.ts";
 import type {
   ForeignCallbackType,
   ForeignCallbackTypedef,
@@ -209,10 +210,13 @@ function readHeader(
     "-fsyntax-only",
     "/dev/null",
   ];
-  const result = spawnSync(objectiveC ? "xcrun" : "clang", objectiveC ? ["clang", ...clangArguments] : clangArguments, {
-    encoding: "utf8",
-    maxBuffer: objectiveC || swiftCxxNamespace ? 512 * 1024 * 1024 : 64 * 1024 * 1024,
-  });
+  const clangCommand = objectiveC ? "xcrun" : "clang";
+  const clangCommandArguments = objectiveC ? ["clang", ...clangArguments] : clangArguments;
+  const result = runWithBufferedStdoutOrSpill(
+    clangCommand,
+    clangCommandArguments,
+    objectiveC || swiftCxxNamespace ? 512 * 1024 * 1024 : 64 * 1024 * 1024,
+  );
 
   if (result.error) {
     throw new DiagnosticError(fileName, declaration.location, `could not run Clang for header ${JSON.stringify(declaration.header)}: ${result.error.message}`);
