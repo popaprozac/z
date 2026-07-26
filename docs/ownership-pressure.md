@@ -362,7 +362,7 @@ scaffolding must therefore fail closed instead of inventing them.
 
 Source: [`compiler/frontend`](../compiler/frontend)
 
-The 2026-07-25 decomposition checkpoint contains 14,594 lines of Z:
+The 2026-07-26 decomposition checkpoint contains 14,672 lines of Z:
 
 | Component | Lines | Responsibility |
 | --- | ---: | --- |
@@ -375,15 +375,20 @@ The 2026-07-25 decomposition checkpoint contains 14,594 lines of Z:
 | `module-graph.zs` | 200 | parsing, dependency edges, graph skeletons, and ordering |
 | `semantic-names.zs` | 406 | lexical scopes, pattern bindings, and unknown-name diagnostics |
 | `semantic-type-shapes.zs` | 325 | intrinsic and compound type-shape parsing shared by validation and inference |
-| `module-resolver.zs` | 7,510 | declaration-type, expression, ownership-flow analysis, and semantic orchestration |
+| `semantic-type-identities.zs` | 373 | canonical symbol identity, cross-module spelling, and trait conformance lookup |
+| `semantic-type-validation.zs` | 723 | declaration and annotated-expression type-name, arity, and constraint validation |
+| `module-resolver.zs` | 6,492 | expression inference, ownership-flow analysis, and semantic orchestration |
 | protocol/library modules | 777 | temporary host boundary and in-process entry points |
 
 This is the largest ownership pressure test in the repository. It parses its
-own ten-module frontend graph and currently produces parity evidence for 509
-symbols, 1,018 binding/signature queries, 949 inferred local bindings, and 3,536
-root expression types. On a warm local run after the type-shape extraction, native
+own twelve-module frontend graph and currently produces parity evidence for 562
+symbols, 1,124 binding/signature queries, 948 inferred local bindings, and 3,498
+root expression types. The binding and expression counts describe the now-smaller
+resolver entry module; declarations moved into the new semantic modules no longer
+appear in that entry module's evidence totals. On a warm local run after the
+identity and validation extraction, native
 lexing, parsing, resolution, semantic analysis, and encoding took approximately
-166 ms; decoding the temporary text protocol took another 9 ms. These are checkpoint
+160 ms; decoding the temporary text protocol took another 9 ms. These are checkpoint
 figures, not a TypeScript-versus-Z speed claim: the two frontends do not yet
 perform identical work and the structural handoff has not replaced the text
 protocol.
@@ -455,12 +460,13 @@ The first extractions moved the public graph, symbol, signature, and evidence
 values into `semantic-model.zs`, isolated lexical module paths, then separated
 declaration-signature projection, symbol construction, graph construction, and
 lexical name validation. Type spelling and callable-shape parsing shared by
-declaration validation and expression inference now form a separate leaf
-module. Stage 0 checks the split, the native resolver resolves its own ten-module
-graph, and warm whole-process Stage-1 latency remains approximately 268 ms
-versus 271 ms at the first decomposition checkpoint. This proves ordinary Z
-modules are already useful for decomposition without imposing a material
-edit-check latency penalty.
+declaration validation and expression inference form a separate leaf module.
+Canonical identity and declaration validation then consume that leaf without
+depending on expression inference. Stage 0 checks the split, the native resolver
+resolves its own twelve-module graph, and warm whole-process Stage-1 latency is
+approximately 262 ms versus 271 ms at the first decomposition checkpoint. This
+proves ordinary Z modules are already useful for decomposition without imposing
+a material edit-check latency penalty.
 
 The split also made visibility pressure concrete. Signature projection accepts
 the parser's owned `Program` directly and needs no new borrowed wrapper.
@@ -477,8 +483,8 @@ language as it exists:
 1. separate semantic evidence/model types from algorithms;
 2. restore `module-resolver.zs` to a small public algorithm facade alongside
    the explicit model module;
-3. move type validation and expression/flow analysis behind internal
-   implementation modules;
+3. move expression and ownership-flow analysis behind internal implementation
+   modules;
 4. keep the complete parity corpus and timing report unchanged;
 5. record exactly where explicit parameter threading remains awkward.
 

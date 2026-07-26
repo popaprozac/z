@@ -644,8 +644,12 @@ When focused self-hosting work resumes, use this order:
    dependency ordering now live in `module-graph.zs`; lexical scope and name
    validation now live in `semantic-names.zs`. Shared intrinsic, numeric,
    nullable, fixed-array, generic, and callable type-shape recognition now lives
-   in `semantic-type-shapes.zs`. Semantic orchestration plus declaration-type,
-   expression, and ownership-flow analysis remain.
+   in `semantic-type-shapes.zs`. Canonical cross-module type identity, spelling
+   rebasing, and trait lookup now live in
+   `semantic-type-identities.zs`; declaration type-name, arity, callable-shape,
+   and generic-constraint validation now live in
+   `semantic-type-validation.zs`. Semantic orchestration, expression inference,
+   and ownership flow remain in the resolver.
 2. Extend native semantics from demonstrated corpus gaps, prioritizing
    user-defined generic-monomorph identities, foreign/intrinsic and async effect
    boundaries, escaping closure environments, precise borrow last-use release,
