@@ -39,3 +39,39 @@ The first checkpoint covers portable kernels, direct C calls, dynamic arrays,
 deterministic ownership, structured task overhead, and native threads. ARC
 identity, Map/Set, generators, Objective-C/C++ boundary calls, and richer async
 fan-out remain explicit follow-up cases.
+
+## Compiler developer-experience latency
+
+Runtime performance and compiler throughput are separate gates. During
+self-hosting, every frontend extraction should preserve the edit-check-run loop
+as well as semantic parity. The 2026-07-25 macOS arm64 checkpoint, measured with
+Hyperfine after splitting `semantic-model.zs` and `module-paths.zs`, is:
+
+| Operation | Warm whole-process time |
+| --- | ---: |
+| Check the 8.7K-line native semantic analyzer through Stage 0 | 267.5 ms ± 7.1 ms |
+| Resolve and analyze the same five-module graph through Stage 1 | 270.8 ms ± 1.6 ms |
+| Compile and run `examples/language/basics/first.zs` | 339.7 ms ± 10.4 ms |
+| Hybrid Stage-0 check plus native authority/parity observation | 2.468 s ± 0.017 s |
+
+The warm Stage-1 command spends approximately 174 ms in native lexing, parsing,
+resolution, semantic analysis, and protocol encoding, then 9 ms decoding the
+temporary protocol. A single cold bridge rebuild after editing the frontend
+spent approximately 769 ms preparing the Stage-0-compiled native library.
+
+The hybrid path is intentionally doing both frontends plus exhaustive
+observation, but 2.5 seconds is too expensive to become the ordinary developer
+loop. It is currently an opt-in migration gate. As native authority replaces
+Stage 0, ordinary `z check` should approach the Stage-1 figure rather than
+retaining both costs. Future reports should distinguish:
+
+- cold compiler/frontend rebuild;
+- warm whole-process command latency;
+- in-process frontend work;
+- protocol or structural-handoff overhead;
+- native C-family compilation and linking;
+- executed program startup.
+
+Modularization is not automatically a win if it makes these numbers materially
+worse. Any regression beyond ordinary measurement noise needs an explanation
+or an optimization before the extraction is treated as complete.

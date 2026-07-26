@@ -362,22 +362,23 @@ scaffolding must therefore fail closed instead of inventing them.
 
 Source: [`compiler/frontend`](../compiler/frontend)
 
-The 2026-07-25 decomposition checkpoint contains 14,366 lines of Z:
+The 2026-07-25 decomposition checkpoint contains 14,372 lines of Z:
 
 | Component | Lines | Responsibility |
 | --- | ---: | --- |
 | `lexer.zs` | 673 | UTF-8 scanning with UTF-16 public locations |
 | `parser.zs` | 3,913 | declarations, statements, and flat expression arenas |
 | `semantic-model.zs` | 164 | graph, symbol, signature, and semantic-evidence values |
-| `module-resolver.zs` | 8,837 | module graph plus the current native semantic analyzer |
+| `module-paths.zs` | 94 | lexical local-module recognition and normalization |
+| `module-resolver.zs` | 8,749 | module graph plus the current native semantic analyzer |
 | protocol/library modules | 779 | temporary host boundary and in-process entry points |
 
 This is the largest ownership pressure test in the repository. It parses its
-own four-module frontend graph and currently produces parity evidence for 411
-symbols, 822 binding/signature queries, 947 inferred local bindings, and 3,562
+own five-module frontend graph and currently produces parity evidence for 415
+symbols, 830 binding/signature queries, 947 inferred local bindings, and 3,562
 root expression types. On a warm local run after the first extraction, native
-lexing, parsing, resolution, semantic analysis, and encoding took 163.18 ms;
-decoding the temporary text protocol took another 8.26 ms. These are checkpoint
+lexing, parsing, resolution, semantic analysis, and encoding took approximately
+174 ms; decoding the temporary text protocol took another 9 ms. These are checkpoint
 figures, not a TypeScript-versus-Z speed claim: the two frontends do not yet
 perform identical work and the structural handoff has not replaced the text
 protocol.
@@ -445,11 +446,12 @@ closed, statically selected pipeline and can be ordinary functions in acyclic
 modules. Dynamic visitor storage would add indirection without solving the
 borrowed-context problem.
 
-The first extraction moved the public graph, symbol, signature, and evidence
-values into `semantic-model.zs` without changing language semantics. Stage 0
-checks the split, the native resolver resolves its own new four-module graph,
-and the warm native timing remained effectively unchanged. This proves ordinary
-Z modules are already useful for decomposition. It also made one smaller
+The first extractions moved the public graph, symbol, signature, and evidence
+values into `semantic-model.zs`, then isolated lexical module-path operations in
+`module-paths.zs`, without changing language semantics. Stage 0 checks the
+split, the native resolver resolves its own new five-module graph, and the warm
+native timing remains close to the monolith baseline. This proves ordinary Z
+modules are already useful for decomposition. It also made one smaller
 limitation concrete: without re-exports or package-private visibility, protocol
 code imports data from the model module and behavior from the resolver module.
 That ceremony is not yet sufficient evidence for new syntax.
