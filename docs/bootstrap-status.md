@@ -1,6 +1,6 @@
 # Bootstrap implementation status
 
-Last reviewed: 2026-07-25.
+Last reviewed: 2026-07-26.
 
 This document answers “what does the Bun/TypeScript stage-0 compiler implement
 today?” It is not the language specification. Accepted source semantics live in
@@ -653,7 +653,10 @@ When focused self-hosting work resumes, use this order:
    ownership state values plus binding copy, mutation, borrow, and branch-merge
    operations now live in `semantic-flow-state.zs`. Generic substitution,
    cleanup detection, move-on-owned-use, explicit-copy eligibility, and custom
-   constructor lookup now live in `semantic-type-ownership.zs`.
+   constructor lookup now live in `semantic-type-ownership.zs`. Enum-match
+   shapes, aggregate-field lookup, method signatures, generic constraint
+   bindings, and owner visibility identities now live in
+   `semantic-member-lookups.zs`.
 2. Extend native semantics from demonstrated corpus gaps, prioritizing
    user-defined generic-monomorph identities, foreign/intrinsic and async effect
    boundaries, escaping closure environments, precise borrow last-use release,

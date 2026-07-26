@@ -362,7 +362,7 @@ scaffolding must therefore fail closed instead of inventing them.
 
 Source: [`compiler/frontend`](../compiler/frontend)
 
-The 2026-07-26 decomposition checkpoint contains 14,742 lines of Z:
+The 2026-07-26 decomposition checkpoint contains 14,752 lines of Z:
 
 | Component | Lines | Responsibility |
 | --- | ---: | --- |
@@ -379,17 +379,18 @@ The 2026-07-26 decomposition checkpoint contains 14,742 lines of Z:
 | `semantic-type-validation.zs` | 723 | declaration and annotated-expression type-name, arity, and constraint validation |
 | `semantic-flow-state.zs` | 361 | initialization/ownership binding state, capability flags, and branch merges |
 | `semantic-type-ownership.zs` | 376 | generic substitution plus cleanup, move, copy, and construction properties |
-| `module-resolver.zs` | 5,825 | expression inference, ownership diagnostics, and semantic orchestration |
+| `semantic-member-lookups.zs` | 575 | enum-match shapes, aggregate fields, method signatures, and generic constraint lookup |
+| `module-resolver.zs` | 5,260 | expression inference, ownership diagnostics, and semantic orchestration |
 | protocol/library modules | 777 | temporary host boundary and in-process entry points |
 
 This is the largest ownership pressure test in the repository. It parses its
-own fourteen-module frontend graph and currently produces parity evidence for
-604 symbols, 1,208 binding/signature queries, 938 inferred local bindings, and
-3,456 root expression types. The binding and expression counts describe the
+own fifteen-module frontend graph and currently produces parity evidence for
+634 symbols, 1,268 binding/signature queries, 927 inferred local bindings, and
+3,424 root expression types. The binding and expression counts describe the
 now-smaller resolver entry module; declarations moved into the new semantic
 modules no longer appear in that entry module's evidence totals. On a warm local
-run after the type-ownership extraction, native lexing, parsing, resolution,
-semantic analysis, and encoding took approximately 163 ms; decoding the
+run after the member-lookup extraction, native lexing, parsing, resolution,
+semantic analysis, and encoding took approximately 165 ms; decoding the
 temporary text protocol took another 9 ms. These are checkpoint
 figures, not a TypeScript-versus-Z speed claim: the two frontends do not yet
 perform identical work and the structural handoff has not replaced the text
@@ -466,8 +467,10 @@ declaration validation and expression inference form a separate leaf module.
 Canonical identity and declaration validation then consume that leaf without
 depending on expression inference. Initialization and ownership state transitions
 form another dependency-free semantic leaf, and type-level cleanup/copy/move
-queries now consume it without depending on expression inference. Stage 0 checks
-the split and the native resolver resolves its own fourteen-module graph.
+queries now consume it without depending on expression inference. Match,
+aggregate-field, method-signature, and constrained-generic lookup form another
+read-only semantic module shared by expression inference and diagnostics. Stage
+0 checks the split and the native resolver resolves its own fifteen-module graph.
 A same-filesystem, same-toolchain comparison measured the new graph at 290 ms
 versus 293 ms for the prior flow-state commit; the independently sampled warm
 checkpoint was 264 ms versus 271 ms at the first decomposition checkpoint. This
