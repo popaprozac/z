@@ -98,6 +98,21 @@ export function stringStartsWith(in value: String, in prefix: String): boolean {
   return true;
 }
 
+export function arrayElementType(in name: String): String {
+  if (stringStartsWith(name, "Array<") || stringStartsWith(name, "Slice<")) {
+    if (name.byteLength > 7 && name.byteAt(name.byteLength - 1) == 62) {
+      const start: usize = 6;
+      return name.copyBytes(start, name.byteLength - 1);
+    }
+  }
+  let index = name.byteLength;
+  while (index > 0) {
+    index = index - 1;
+    if (name.byteAt(index) == 91) return name.copyBytes(0, index);
+  }
+  return "";
+}
+
 function trimmedTypeSlice(in name: String, start: usize, end: usize): String {
   let first = start;
   let last = end;

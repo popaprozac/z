@@ -362,7 +362,7 @@ scaffolding must therefore fail closed instead of inventing them.
 
 Source: [`compiler/frontend`](../compiler/frontend)
 
-The 2026-07-26 decomposition checkpoint contains 14,752 lines of Z:
+The 2026-07-26 decomposition checkpoint contains 14,799 lines of Z:
 
 | Component | Lines | Responsibility |
 | --- | ---: | --- |
@@ -374,24 +374,25 @@ The 2026-07-26 decomposition checkpoint contains 14,752 lines of Z:
 | `module-symbols.zs` | 253 | symbol construction, import bindings, and lookup indexes |
 | `module-graph.zs` | 200 | parsing, dependency edges, graph skeletons, and ordering |
 | `semantic-names.zs` | 406 | lexical scopes, pattern bindings, and unknown-name diagnostics |
-| `semantic-type-shapes.zs` | 325 | intrinsic and compound type-shape parsing shared by validation and inference |
+| `semantic-type-shapes.zs` | 340 | intrinsic, array-element, and compound type-shape parsing shared by validation and inference |
 | `semantic-type-identities.zs` | 373 | canonical symbol identity, cross-module spelling, and trait conformance lookup |
 | `semantic-type-validation.zs` | 723 | declaration and annotated-expression type-name, arity, and constraint validation |
 | `semantic-flow-state.zs` | 361 | initialization/ownership binding state, capability flags, and branch merges |
 | `semantic-type-ownership.zs` | 376 | generic substitution plus cleanup, move, copy, and construction properties |
 | `semantic-member-lookups.zs` | 575 | enum-match shapes, aggregate fields, method signatures, and generic constraint lookup |
-| `module-resolver.zs` | 5,260 | expression inference, ownership diagnostics, and semantic orchestration |
+| `semantic-pattern-validation.zs` | 235 | match payload bindings, object patterns, field visibility, and pattern diagnostics |
+| `module-resolver.zs` | 5,057 | expression inference, ownership-flow merging, and semantic orchestration |
 | protocol/library modules | 777 | temporary host boundary and in-process entry points |
 
 This is the largest ownership pressure test in the repository. It parses its
-own fifteen-module frontend graph and currently produces parity evidence for
-634 symbols, 1,268 binding/signature queries, 927 inferred local bindings, and
-3,424 root expression types. The binding and expression counts describe the
+own sixteen-module frontend graph and currently produces parity evidence for
+658 symbols, 1,316 binding/signature queries, 927 inferred local bindings, and
+3,428 root expression types. The binding and expression counts describe the
 now-smaller resolver entry module; declarations moved into the new semantic
 modules no longer appear in that entry module's evidence totals. On a warm local
-run after the member-lookup extraction, native lexing, parsing, resolution,
-semantic analysis, and encoding took approximately 165 ms; decoding the
-temporary text protocol took another 9 ms. These are checkpoint
+run after the pattern-validation extraction, native lexing, parsing, resolution,
+semantic analysis, and encoding took approximately 173 ms; decoding the
+temporary text protocol took another 10 ms. These are checkpoint
 figures, not a TypeScript-versus-Z speed claim: the two frontends do not yet
 perform identical work and the structural handoff has not replaced the text
 protocol.
@@ -469,8 +470,11 @@ depending on expression inference. Initialization and ownership state transition
 form another dependency-free semantic leaf, and type-level cleanup/copy/move
 queries now consume it without depending on expression inference. Match,
 aggregate-field, method-signature, and constrained-generic lookup form another
-read-only semantic module shared by expression inference and diagnostics. Stage
-0 checks the split and the native resolver resolves its own fifteen-module graph.
+read-only semantic module shared by expression inference and diagnostics. Match
+payload binding, object-pattern validation, private-field enforcement, and
+pattern diagnostics then consume those lookups without depending on expression
+inference. Stage 0 checks the split and the native resolver resolves its own
+sixteen-module graph.
 A same-filesystem, same-toolchain comparison measured the new graph at 290 ms
 versus 293 ms for the prior flow-state commit; the independently sampled warm
 checkpoint was 264 ms versus 271 ms at the first decomposition checkpoint. This
