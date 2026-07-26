@@ -632,24 +632,31 @@ The representative corpus gate must remain green as language work continues.
 
 When focused self-hosting work resumes, use this order:
 
-1. Extend native semantics from demonstrated corpus gaps, prioritizing
+1. Continue decomposing the former 8,980-line `module-resolver.zs` without
+   changing semantics: separate evidence/model types, graph construction, name/type
+   utilities, and expression/ownership flow behind one resolver operation and
+   one explicit model module. Keep parity and timing gates green. Use the
+   extraction to determine whether ordinary Z modules are sufficient or whether
+   a narrowly scoped borrowed semantic context is justified; do not infer a
+   need for trait values merely from the current file size.
+2. Extend native semantics from demonstrated corpus gaps, prioritizing
    user-defined generic-monomorph identities, foreign/intrinsic and async effect
    boundaries, escaping closure environments, precise borrow last-use release,
    receiver-path capabilities, and recursive ownership contexts. Do not port a
    feature merely for nominal completeness; add a realistic corpus case first.
-2. Replace the temporary text protocol with a structural in-process phase
+3. Replace the temporary text protocol with a structural in-process phase
    handoff. Preserve canonical module-local source locations and the guarded
    Stage-0 fallback while doing so. Measure cold library preparation, warm native
    work, protocol/handoff cost, and Stage-0 parity separately.
-3. Finish the native semantic subset required to compile the compiler itself.
+4. Finish the native semantic subset required to compile the compiler itself.
    Broader language features may continue to fall back to Stage 0 until their
    native representation is justified by real programs.
-4. Port lowering and the C-family emitter for that compiler subset. Continue to
+5. Port lowering and the C-family emitter for that compiler subset. Continue to
    invoke Clang as an external tool; self-hosting does not require replacing it.
-5. Move module loading, project driving, files/paths/processes, diagnostics, and
+6. Move module loading, project driving, files/paths/processes, diagnostics, and
    command-line orchestration into the Z driver, then remove the corresponding
    TypeScript/Bun paths only after parity.
-6. Build the compiler with Stage 0, use that native compiler to compile itself,
+7. Build the compiler with Stage 0, use that native compiler to compile itself,
    and compare consecutive generations plus the complete test/corpus results.
 
 The next self-hosting sprint should begin when duplicated Stage-0 semantics are

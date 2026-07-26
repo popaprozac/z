@@ -10,6 +10,8 @@ import {
   ModuleExpressionResolution,
   ModuleSource,
   ModuleSymbol,
+} from "./semantic-model.zs";
+import {
   moduleSymbolKindName,
   resolveModules,
 } from "./module-resolver.zs";

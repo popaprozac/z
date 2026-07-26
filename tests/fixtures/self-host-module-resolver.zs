@@ -4,8 +4,8 @@ import {
   ModuleSource,
   ModuleSymbol,
   ModuleSymbolKind,
-  resolveModules,
-} from "../../compiler/frontend/module-resolver.zs";
+} from "../../compiler/frontend/semantic-model.zs";
+import { resolveModules } from "../../compiler/frontend/module-resolver.zs";
 
 function module(in path: String, in source: String): ModuleSource {
   return ModuleSource({

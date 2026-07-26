@@ -333,6 +333,143 @@ The next resource checkpoint is lifetime provenance for library-owned records
 and branded ownership variants whose cleanup differs despite sharing one C
 record type.
 
+### Interop friction that changed the language
+
+These probes did more than confirm already-designed paths:
+
+- curl forced `.zd` callback contracts to name owner-tied context, invocation
+  cardinality, caller threading, native failure narrowing, and a projected
+  borrowed byte slice without restating the C callback ABI;
+- raylib exposed canonical C typedef-alias identity, the difference between an
+  owned producer and a library-owned borrowed producer of the same record, and
+  the need to keep borrowed records non-escaping until their runtime provenance
+  can be named;
+- SDL3 broke the former 64 MiB Clang-AST pipe assumption, motivated spill-backed
+  importer output, proved scalar `in`/`inout`/`out` projections for floating
+  pointers, and left nested union payloads withheld rather than pretending a
+  partially understood `SDL_Event` is safe;
+- unsupported but locally provable pointer use motivated typed `unsafe`, while
+  function-like macros and source-language-only native constructs motivated
+  `raw`. Keeping those tiers distinct prevented either escape hatch from
+  weakening ordinary Z values or introducing a general raw-pointer type.
+
+The contract surface is consequently larger, but it remains semantic metadata
+over the header rather than a second handwritten ABI declaration. Wrong
+ownership and lifetime facts remain trusted assertions; generated `.zd`
+scaffolding must therefore fail closed instead of inventing them.
+
+## Application probe 4: self-hosted frontend
+
+Source: [`compiler/frontend`](../compiler/frontend)
+
+The 2026-07-25 decomposition checkpoint contains 14,366 lines of Z:
+
+| Component | Lines | Responsibility |
+| --- | ---: | --- |
+| `lexer.zs` | 673 | UTF-8 scanning with UTF-16 public locations |
+| `parser.zs` | 3,913 | declarations, statements, and flat expression arenas |
+| `semantic-model.zs` | 164 | graph, symbol, signature, and semantic-evidence values |
+| `module-resolver.zs` | 8,837 | module graph plus the current native semantic analyzer |
+| protocol/library modules | 779 | temporary host boundary and in-process entry points |
+
+This is the largest ownership pressure test in the repository. It parses its
+own four-module frontend graph and currently produces parity evidence for 411
+symbols, 822 binding/signature queries, 947 inferred local bindings, and 3,562
+root expression types. On a warm local run after the first extraction, native
+lexing, parsing, resolution, semantic analysis, and encoding took 163.18 ms;
+decoding the temporary text protocol took another 8.26 ms. These are checkpoint
+figures, not a TypeScript-versus-Z speed claim: the two frontends do not yet
+perform identical work and the structural handoff has not replaced the text
+protocol.
+
+What the compiler proves:
+
+- owned `String`, `Array`, `Map`, `Set`, `Option`, enums, and typed errors are
+  sufficient to implement a substantial compiler frontend without ARC-owning
+  every syntax node;
+- flat integer-indexed expression and statement arenas avoid recursive object
+  ownership, keep node identity stable across array growth, and cross the
+  bootstrap boundary compactly;
+- parser traversal borrows the token array and copies only text retained by the
+  AST, making the ownership boundary visible rather than depending on hidden
+  source-buffer lifetimes;
+- explicit `in`/`inout` capabilities make graph, scope, flow-state, and evidence
+  mutation reviewable and let the native analyzer model the same capabilities
+  it is compiling;
+- one typed `ModuleResolveError` channel carries lexer, parser, module, name,
+  type, match, and operator failures with source locations through the native
+  boundary.
+
+The same code exposes concrete friction:
+
+- `module-resolver.zs` contains 283 explicit `String.copyBytes` calls. Some are
+  correct ownership transfers into persistent evidence, but repeated canonical
+  type names and identifiers make a compiler-owned string interner and stable
+  symbol/type IDs a higher-value optimization than implicit String sharing.
+- Branch and contextual inference clone binding-flow arrays repeatedly
+  (`copyValueBindings` has 29 call sites). This is safe and simple, but it
+  should be measured against checkpoint/rollback storage or persistent scopes
+  before the analyzer grows further.
+- Core inference functions repeatedly pass six to ten borrowed values:
+  module, graph, arena, expression tree, bindings, and evidence. Z cannot
+  currently put parameter-provenanced `view` and writable loans into a
+  non-escaping context struct, so a conventional stack `SemaContext` is not yet
+  expressible without moving owners or allocating unrelated shared identity.
+- Splitting private helpers across source modules requires exporting their
+  shared implementation types and functions; Z has explicit public exports but
+  no package-private visibility tier. This is manageable, but the resulting
+  internal API should keep one public resolver operation alongside one explicit
+  semantic-model module.
+
+### Why `module-resolver.zs` reached 8,980 lines
+
+Only roughly the first and last 900 lines are module-graph work. The middle is
+the native semantic analyzer: lexical scopes, type-name and generic validation,
+flow initialization, ownership state, call capabilities, type identity,
+matching, field and method lookup, closure capture analysis, expression
+inference, and statement checking.
+
+The size has three causes:
+
+1. **Inherent compiler complexity.** The file now performs far more than its
+   original name says.
+2. **Incremental bootstrap history.** Semantic tiers were deliberately added
+   beside the graph and its private helpers while Stage 0 remained authority.
+   This minimized changing two axes—semantics and module boundaries—at once.
+3. **Real composition pressure.** No package-private exports and no scoped
+   borrowed context aggregate make a clean split more verbose than it would be
+   in the intended mature language.
+
+The absence of trait-typed values is not the immediate cause. These passes are a
+closed, statically selected pipeline and can be ordinary functions in acyclic
+modules. Dynamic visitor storage would add indirection without solving the
+borrowed-context problem.
+
+The first extraction moved the public graph, symbol, signature, and evidence
+values into `semantic-model.zs` without changing language semantics. Stage 0
+checks the split, the native resolver resolves its own new four-module graph,
+and the warm native timing remained effectively unchanged. This proves ordinary
+Z modules are already useful for decomposition. It also made one smaller
+limitation concrete: without re-exports or package-private visibility, protocol
+code imports data from the model module and behavior from the resolver module.
+That ceremony is not yet sufficient evidence for new syntax.
+
+The remaining self-hosting step is a controlled decomposition using the
+language as it exists:
+
+1. separate semantic evidence/model types from algorithms;
+2. restore `module-resolver.zs` to graph construction and a small public
+   algorithm facade alongside the explicit model module;
+3. move lexical/type utilities and expression/flow analysis behind internal
+   implementation modules;
+4. keep the complete parity corpus and timing report unchanged;
+5. record exactly where explicit parameter threading remains awkward.
+
+Only if step 5 repeatedly blocks useful decomposition should Z prototype a
+scoped, non-escaping aggregate of borrowed capabilities. That experiment must
+prove last-use release and exclusivity; it should not introduce general stored
+references or Rust-style lifetime syntax by default.
+
 ## Loop-carried child-task slots
 
 An adversarial loop exposed a compiler/runtime soundness boundary: one

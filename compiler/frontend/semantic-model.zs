@@ -1,0 +1,164 @@
+import { Map } from "std/collections";
+
+export struct ModuleSource {
+  path: String;
+  source: String;
+}
+
+export enum ModuleResolveErrorKind {
+  lexer,
+  parser,
+  missingModule,
+  circularImport,
+  missingExport,
+  duplicateBinding,
+  unknownName,
+  unknownType,
+  unknownMember,
+  typeMismatch,
+  invalidOperator,
+  invalidMatch,
+}
+
+export struct ModuleResolveError {
+  kind: ModuleResolveErrorKind;
+  path: String;
+  message: String;
+  line: usize;
+  column: usize;
+}
+
+export struct ResolvedModule {
+  path: String;
+  dependencies: Array<usize>;
+  symbols: Array<ModuleSymbol>;
+  symbolIndices: Map<String, usize>;
+  semanticEvidence: ModuleSemanticEvidence;
+}
+
+export struct ModuleSemanticEvidence {
+  callResolutions: Array<ModuleCallResolution>;
+  bindingResolutions: Array<ModuleBindingResolution>;
+  expressionResolutions: Array<ModuleExpressionResolution>;
+}
+
+export struct ModuleExpressionResolution {
+  offset: usize;
+  line: usize;
+  column: usize;
+  typeName: String;
+  typeIdentities: Array<ModuleTypeIdentity>;
+}
+
+export struct ModuleBindingResolution {
+  offset: usize;
+  line: usize;
+  column: usize;
+  name: String;
+  mutableBinding: boolean;
+  typeName: String;
+  typeIdentities: Array<ModuleTypeIdentity>;
+}
+
+export struct ModuleTypeIdentity {
+  path: String;
+  targetModuleIndex: usize;
+  targetSymbolIndex: usize;
+}
+
+export struct ModuleCallResolution {
+  offset: usize;
+  line: usize;
+  column: usize;
+  targetModuleIndex: usize;
+  targetSymbolIndex: usize;
+  kind: String;
+  targetName: String;
+  asynchronous: boolean;
+  receiverMode: String;
+  typeParameters: Array<String>;
+  typeArguments: Array<String>;
+  parameterModes: Array<String>;
+  parameterTypes: Array<String>;
+  returnType: String;
+  errorType: String;
+}
+
+export enum ModuleSymbolKind {
+  functionSymbol,
+  structSymbol,
+  classSymbol,
+  traitSymbol,
+  typeAliasSymbol,
+  enumSymbol,
+  namespaceSymbol,
+  importedSymbol,
+}
+
+export struct ModuleSymbol {
+  name: String;
+  kind: ModuleSymbolKind;
+  exported: boolean;
+  targetModule: Option<usize>;
+  importedName: String;
+  functionSignature: Option<ModuleFunctionSignature>;
+  typeSignature: Option<ModuleTypeSignature>;
+  offset: usize;
+  line: usize;
+  column: usize;
+}
+
+export struct ModuleFieldSignature {
+  name: String;
+  typeName: String;
+  visibility: String;
+  readonlyField: boolean;
+}
+
+export struct ModuleVariantSignature {
+  name: String;
+  payloadType: String;
+}
+
+export struct ModuleMethodSignature {
+  name: String;
+  staticMethod: boolean;
+  visibility: String;
+  receiverMode: String;
+  signature: ModuleFunctionSignature;
+}
+
+export struct ModuleTypeParameterConstraint {
+  parameter: String;
+  traitName: String;
+}
+
+export struct ModuleTypeSignature {
+  typeParameters: Array<String>;
+  typeParameterConstraints: Array<ModuleTypeParameterConstraint>;
+  executorAffinity: String;
+  implementedTraits: Array<String>;
+  fields: Array<ModuleFieldSignature>;
+  methods: Array<ModuleMethodSignature>;
+  variants: Array<ModuleVariantSignature>;
+  customDeinit: boolean;
+  customConstructor: boolean;
+  constructorSignature: Option<ModuleFunctionSignature>;
+}
+
+export struct ModuleFunctionSignature {
+  asynchronous: boolean;
+  executorAffinity: String;
+  typeParameters: Array<String>;
+  typeParameterConstraints: Array<ModuleTypeParameterConstraint>;
+  parameterModes: Array<String>;
+  parameterTypes: Array<String>;
+  returnType: String;
+  errorType: String;
+}
+
+export struct ModuleGraph {
+  modules: Array<ResolvedModule>;
+  dependencyOrder: Array<usize>;
+  entry: usize;
+}
