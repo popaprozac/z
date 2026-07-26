@@ -467,24 +467,6 @@ export function lex(
             advance();
             continue;
           }
-          if (/[A-Za-z_]/.test(current)) {
-            const identifierStart = location();
-            let identifier = "";
-            while (/[A-Za-z0-9_]/.test(peek())) identifier += advance();
-            if (identifier.startsWith("Z_") || identifier.startsWith("_z_")) {
-              throw new DiagnosticError(
-                fileName,
-                identifierStart,
-                `raw native source cannot reference compiler-owned symbol ${JSON.stringify(identifier)}`,
-                {
-                  code: "Z0820",
-                  notes: ["Z_ and _z_ are reserved generated-C namespaces and are not a stable foreign ABI"],
-                  helps: ["cross values through using, or call declarations supplied by an imported native header"],
-                },
-              );
-            }
-            continue;
-          }
           if (current === "{") {
             depth += 1;
             advance();

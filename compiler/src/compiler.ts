@@ -28,6 +28,10 @@ import {
   NativeFrontendDiagnosticError,
   type NativeFrontendDiagnosticKind,
 } from "./native-frontend-diagnostics.ts";
+import {
+  hasRawNativeBodies,
+  validateRawNativeGeneratedSymbolAccess,
+} from "./raw-native-hygiene.ts";
 
 export type NativeLanguage = "c" | "objective-c" | "c++" | "objective-c++";
 
@@ -170,6 +174,24 @@ export function analyzeSource(source: string, fileName: string, options: Analysi
     projectBuild.deploymentTarget,
     nativeSemanticBridge?.observer ?? null,
   );
+  if (hasRawNativeBodies(program)) {
+    const asyncDeclaration = [
+      ...program.functions,
+      ...program.structs.flatMap((declaration) => declaration.methods),
+    ].find((declaration) => declaration.async);
+    const asyncGenerated = asyncDeclaration ? generateAsyncC(program, fileName, semanticInfo) : null;
+    const synchronousProgram = asyncGenerated?.synchronousProgram ?? program;
+    const generatedWithoutRawBodies = [
+      generateC(synchronousProgram, fileName, semanticInfo, { omitRawNativeBodies: true }),
+      asyncGenerated?.source ?? "",
+    ].join("\n");
+    validateRawNativeGeneratedSymbolAccess(
+      program,
+      foreignModules,
+      generatedWithoutRawBodies,
+      fileName,
+    );
+  }
   if (nativeFrontendFailure) throw nativeFrontendFailure;
   return {
     sourceProgram,

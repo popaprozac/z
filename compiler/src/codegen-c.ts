@@ -137,7 +137,12 @@ const primitiveTypeNames: Record<string, string> = {
   [nativeConnectionTypeName]: "Z_NativeConnection",
 };
 
-export function generateC(program: Program, sourceName: string, semanticInfo: SemanticInfo): string {
+export function generateC(
+  program: Program,
+  sourceName: string,
+  semanticInfo: SemanticInfo,
+  options: { readonly omitRawNativeBodies?: boolean } = {},
+): string {
   const structs = new Map(program.structs.map((declaration) => [declaration.name, declaration]));
   const enums = new Map(program.enums.map((declaration) => [declaration.name, declaration]));
   const functions = new Map(program.functions.map((declaration) => [declaration.name, declaration]));
@@ -490,7 +495,14 @@ export function generateC(program: Program, sourceName: string, semanticInfo: Se
     lines.push(generateSetRuntime(type, structs, enums, semanticInfo), "");
   }
   for (const plan of semanticInfo.rawExpressions.values()) {
-    lines.push(generateRawExpressionHelper(plan, sourceName, structs, enums, semanticInfo), "");
+    lines.push(generateRawExpressionHelper(
+      plan,
+      sourceName,
+      structs,
+      enums,
+      semanticInfo,
+      options.omitRawNativeBodies ?? false,
+    ), "");
   }
 
   for (const declaration of program.structs) {
@@ -501,7 +513,15 @@ export function generateC(program: Program, sourceName: string, semanticInfo: Se
       lines.push(generateClassLifecycle(declaration, structs, enums, functions, semanticInfo), "");
     }
     for (const method of declaration.methods) {
-      lines.push(generateFunction(method, structs, enums, functions, declaration, semanticInfo), "");
+      lines.push(generateFunction(
+        method,
+        structs,
+        enums,
+        functions,
+        declaration,
+        semanticInfo,
+        options.omitRawNativeBodies ?? false,
+      ), "");
     }
   }
   for (const conformance of semanticInfo.objcProtocolConformances.values()) {
@@ -524,10 +544,26 @@ export function generateC(program: Program, sourceName: string, semanticInfo: Se
     lines.push(generateStandardFunctionAdapter(name, structs, enums, semanticInfo.foreignNamedTypes), "");
   }
   for (const closure of closures) {
-    lines.push(generateFunction(closure.declaration, structs, enums, functions, null, semanticInfo), "");
+    lines.push(generateFunction(
+      closure.declaration,
+      structs,
+      enums,
+      functions,
+      null,
+      semanticInfo,
+      options.omitRawNativeBodies ?? false,
+    ), "");
   }
   for (const declaration of program.functions) {
-    lines.push(generateFunction(declaration, structs, enums, functions, null, semanticInfo), "");
+    lines.push(generateFunction(
+      declaration,
+      structs,
+      enums,
+      functions,
+      null,
+      semanticInfo,
+      options.omitRawNativeBodies ?? false,
+    ), "");
   }
   return `${lines.join("\n")}\n`;
 }
@@ -3244,6 +3280,7 @@ function generateFunction(
   functions: Map<string, FunctionDeclaration>,
   receiver: StructDeclaration | null,
   semanticInfo: SemanticInfo,
+  omitRawNativeBody = false,
 ): string {
   if (!receiver && isGeneratorFunction(declaration)) {
     return generateGeneratorFunction(declaration, structs, enums, functions, semanticInfo);
@@ -3253,7 +3290,11 @@ function generateFunction(
     const parameters = declaration.parameters.map((parameter) => `(void)${cBindingName(parameter.name)};`);
     if (!receiver && declaration.name === "main") parameters.push("(void)argc;", "(void)argv;");
     const prefix = parameters.length > 0 ? `${parameters.map((line) => `  ${line}`).join("\n")}\n` : "";
-    return `${signature} {\n${prefix}${generateRawBodySource(declaration.rawBody, declaration.rawBody.location.fileName ?? "<z-source>")}\n}`;
+    return `${signature} {\n${prefix}${generateRawBodySource(
+      declaration.rawBody,
+      declaration.rawBody.location.fileName ?? "<z-source>",
+      omitRawNativeBody,
+    )}\n}`;
   }
   const instanceReceiver = receiver && !declaration.static ? receiver : null;
   const localTypes = new Map(declaration.parameters.map((parameter) => [parameter.name, parameter.type.name]));
@@ -3348,6 +3389,7 @@ function generateRawExpressionHelper(
   structs: Map<string, StructDeclaration>,
   enums: Map<string, EnumDeclaration>,
   semanticInfo: SemanticInfo,
+  omitRawNativeBody = false,
 ): string {
   const result = mapType(plan.returnType, structs, enums, semanticInfo.foreignNamedTypes);
   const parameters = plan.captures.map((capture) => (
@@ -3355,7 +3397,11 @@ function generateRawExpressionHelper(
   ));
   const signature = `static ${result} ${rawExpressionHelperName(plan.expression.location.offset)}(${parameters.join(", ") || "void"})`;
   const unused = plan.captures.map((capture) => `  (void)${cBindingName(capture.name)};`).join("\n");
-  return `${signature} {\n${unused}${unused ? "\n" : ""}${generateRawBodySource(plan.expression.body, sourceName)}\n}`;
+  return `${signature} {\n${unused}${unused ? "\n" : ""}${generateRawBodySource(
+    plan.expression.body,
+    sourceName,
+    omitRawNativeBody,
+  )}\n}`;
 }
 
 function generateRawBoundaryParameter(
@@ -3378,11 +3424,12 @@ function generateRawBoundaryParameter(
 function generateRawBodySource(
   body: NonNullable<FunctionDeclaration["rawBody"]>,
   fallbackSourceName: string,
+  omit = false,
 ): string {
   const fileName = body.location.fileName ?? fallbackSourceName;
   const firstLinePadding = " ".repeat(Math.max(0, body.location.column - 1));
   return `#line ${body.location.line} ${JSON.stringify(fileName)}\n`
-    + `${firstLinePadding}${body.source}\n`
+    + `${firstLinePadding}${omit ? "" : body.source}\n`
     + '#line 1 "<z-generated>"';
 }
 

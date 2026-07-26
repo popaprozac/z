@@ -364,9 +364,11 @@ function nativeCount(input: i32): i32 = raw cpp {
 `raw objc` may be combined with `on thread.main`. Async, throwing, generic, and
 method raw bodies remain outside the first tier. Clang diagnostics are mapped
 back to the raw source location. Until helpers move to separate translation
-units, identifiers beginning with compiler-owned `Z_` or `_z_` are rejected in
-embedded source. Prefer header imports and `.zd`; raw code receives no Z safety
-proof inside the body.
+units, embedded identifiers are compared with the symbols this compilation
+actually emits. A real generated symbol is rejected, while unrelated native
+names such as zlib's `Z_OK`, `Z_FINISH`, and `Z_STREAM_END` remain usable.
+Prefer header imports and `.zd`; raw code receives no Z safety proof inside the
+body.
 
 The first `.zd` slice augments Clang declarations without repeating their ABI
 types. `_` means "use the header-derived type," while ordinary Z capabilities,

@@ -2132,9 +2132,10 @@ view, and generated Result representations are rejected rather than exposing
 unstable names such as generated structs or liveness flags. `#line` mapping
 returns native diagnostics to the original `.zs` body. Rich embedded-language
 completion remains later editor work. Until raw helpers move to separate
-translation units, embedded source also reserves compiler-owned identifiers
-beginning with `Z_` or `_z_`; referencing one is rejected rather than exposing
-an unstable generated-code ABI.
+translation units, the compiler compares embedded identifiers with the symbols
+this compilation actually emits. Referencing a generated symbol is rejected
+rather than exposing an unstable generated-code ABI; unrelated native names
+such as zlib's `Z_OK` remain available.
 
 The latter two tiers are escape hatches, not substitutes for extending FIIR and
 `.zd`. The first `unsafe` tier accepts two pointer shapes plus scalar/enum

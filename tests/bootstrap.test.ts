@@ -233,6 +233,30 @@ test("checks raw native boundary capabilities and supported representations", ()
     /raw native source cannot reference compiler-owned symbol "Z_Guard"/,
   );
 
+  const localZPrefix = `
+    function main(): i32 {
+      return raw c using (): i32 {
+        int Z_OK = 0;
+        return Z_OK;
+      };
+    }
+  `;
+  assert.match(compileToC(localZPrefix, "raw-local-z-prefix.zs"), /int Z_OK = 0/);
+
+  const importedZPrefix = `
+    import native from "tests/fixtures/raw-z-prefix.h";
+    function main(): i32 {
+      return raw c using (): i32 {
+        return Z_VENDOR_STATUS() + Z_OK;
+      };
+    }
+  `;
+  const importedGenerated = compileToC(
+    importedZPrefix,
+    resolve(projectRoot, "raw-imported-z-prefix.zs"),
+  );
+  assert.match(importedGenerated, /return Z_VENDOR_STATUS\(\) \+ Z_OK;/);
+
   const harmlessText = `
     function main(): i32 {
       return raw c using (): i32 {
