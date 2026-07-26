@@ -641,8 +641,9 @@ When focused self-hosting work resumes, use this order:
    need for trait values merely from the current file size. Evidence/model,
    lexical module paths, signature projection, and symbol construction are now
    separate. Parsing, dependency edges, graph skeleton construction, and
-   dependency ordering now live in `module-graph.zs`; semantic orchestration and
-   name/type/flow analysis remain.
+   dependency ordering now live in `module-graph.zs`; lexical scope and name
+   validation now live in `semantic-names.zs`. Semantic orchestration plus
+   type/expression/ownership-flow analysis remain.
 2. Extend native semantics from demonstrated corpus gaps, prioritizing
    user-defined generic-monomorph identities, foreign/intrinsic and async effect
    boundaries, escaping closure environments, precise borrow last-use release,

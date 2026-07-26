@@ -77,19 +77,28 @@ Modularization is not automatically a win if it makes these numbers materially
 worse. Any regression beyond ordinary measurement noise needs an explanation
 or an optimization before the extraction is treated as complete.
 
-The subsequent signature/symbol and graph extractions produced this comparison:
+The subsequent signature/symbol, graph, and lexical-name extractions produced
+this comparison:
 
-| Operation | Path/model | Signatures/symbols | Graph | Latest change |
-| --- | ---: | ---: | ---: | ---: |
-| Stage-1 self-analysis | 270.8 ms | 270.4 ms | 258.0 ms | -12.4 ms / -4.6% |
-| Ordinary Stage-0 check | 267.5 ms | 278.8 ms | 259.3 ms | -19.5 ms / -7.0% |
-| Hybrid Stage-0/native authority check | 2.468 s | 2.198 s | 2.124 s | -74 ms / -3.4% |
+| Operation | Path/model | Signatures/symbols | Graph | Names | Latest change |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Stage-1 self-analysis | 270.8 ms | 270.4 ms | 258.0 ms | 263.7 ms | +5.7 ms / +2.2% |
+| Ordinary Stage-0 check | 267.5 ms | 278.8 ms | 259.3 ms | 262.8 ms | +3.5 ms / +1.3% |
+| Hybrid Stage-0/native authority check | 2.468 s | 2.198 s | 2.124 s | 2.053 s | -71 ms / -3.3% |
 
 The Stage-1 results show that additional semantic modules do not inherently
-slow the native frontend. The graph split improved every measured warm path,
-suggesting some parsing or semantic work scales nonlinearly with declarations
-or state per file. Smaller Stage-0 semantic units also reduce the exhaustive
-native-authority observation cost.
+slow the native frontend. The small Stage-1 and Stage-0 changes after extracting
+name validation are within ordinary whole-process measurement variance, while
+the exhaustive native-authority observation path improved again. The graph
+split's larger improvement suggests some parsing or semantic work scales
+nonlinearly with declarations or state per file. Smaller Stage-0 semantic units
+also reduce the exhaustive native-authority observation cost.
+
+After the name split, a warm timed resolver invocation spent approximately
+165 ms in native lexing, parsing, graph/name/type/expression analysis, and
+encoding, plus 9 ms decoding the temporary protocol. The first cold bridge
+rebuild spent approximately 856 ms in boundary preparation. Cold rebuild cost
+remains noisier than warm checks and is tracked separately.
 
 The earlier small ordinary Stage-0 increase demonstrated that loading more
 modules is not free, so the direction is not guaranteed for every split.
