@@ -77,20 +77,22 @@ Modularization is not automatically a win if it makes these numbers materially
 worse. Any regression beyond ordinary measurement noise needs an explanation
 or an optimization before the extraction is treated as complete.
 
-The subsequent signature/symbol extraction produced this comparison:
+The subsequent signature/symbol and graph extractions produced this comparison:
 
-| Operation | Path/model split | Signature/symbol split | Change |
-| --- | ---: | ---: | ---: |
-| Stage-1 self-analysis | 270.8 ms | 270.4 ms | effectively flat |
-| Ordinary Stage-0 check | 267.5 ms | 278.8 ms | +11.3 ms / +4.2% |
-| Hybrid Stage-0/native authority check | 2.468 s | 2.198 s | -270 ms / -10.9% |
+| Operation | Path/model | Signatures/symbols | Graph | Latest change |
+| --- | ---: | ---: | ---: | ---: |
+| Stage-1 self-analysis | 270.8 ms | 270.4 ms | 258.0 ms | -12.4 ms / -4.6% |
+| Ordinary Stage-0 check | 267.5 ms | 278.8 ms | 259.3 ms | -19.5 ms / -7.0% |
+| Hybrid Stage-0/native authority check | 2.468 s | 2.198 s | 2.124 s | -74 ms / -3.4% |
 
-The Stage-1 result shows that the additional semantic modules do not inherently
-slow the native frontend. The hybrid improvement suggests smaller Stage-0
-semantic units also reduce the exhaustive native-authority observation cost.
-The small ordinary Stage-0 increase is the cost of loading and checking a larger
-source-module graph in the disposable bootstrap compiler. It is acceptable at
-this checkpoint but remains on the watchlist. Native module fingerprints and
-incremental parse/semantic caches should eventually make a one-file edit
-proportional to the changed module and its dependents rather than the whole
-frontend.
+The Stage-1 results show that additional semantic modules do not inherently
+slow the native frontend. The graph split improved every measured warm path,
+suggesting some parsing or semantic work scales nonlinearly with declarations
+or state per file. Smaller Stage-0 semantic units also reduce the exhaustive
+native-authority observation cost.
+
+The earlier small ordinary Stage-0 increase demonstrated that loading more
+modules is not free, so the direction is not guaranteed for every split.
+Native module fingerprints and incremental parse/semantic caches should
+eventually make a one-file edit proportional to the changed module and its
+dependents rather than the whole frontend.

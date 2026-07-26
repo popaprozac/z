@@ -362,7 +362,7 @@ scaffolding must therefore fail closed instead of inventing them.
 
 Source: [`compiler/frontend`](../compiler/frontend)
 
-The 2026-07-25 decomposition checkpoint contains 14,436 lines of Z:
+The 2026-07-25 decomposition checkpoint contains 14,485 lines of Z:
 
 | Component | Lines | Responsibility |
 | --- | ---: | --- |
@@ -372,15 +372,16 @@ The 2026-07-25 decomposition checkpoint contains 14,436 lines of Z:
 | `module-paths.zs` | 94 | lexical local-module recognition and normalization |
 | `module-signatures.zs` | 263 | declaration-to-semantic signature projection |
 | `module-symbols.zs` | 253 | symbol construction, import bindings, and lookup indexes |
-| `module-resolver.zs` | 8,283 | module graph plus the remaining native semantic analyzer |
+| `module-graph.zs` | 200 | parsing, dependency edges, graph skeletons, and ordering |
+| `module-resolver.zs` | 8,132 | native semantic analysis and graph orchestration |
 | protocol/library modules | 777 | temporary host boundary and in-process entry points |
 
 This is the largest ownership pressure test in the repository. It parses its
-own seven-module frontend graph and currently produces parity evidence for 451
-symbols, 902 binding/signature queries, 943 inferred local bindings, and 3,515
-root expression types. On a warm local run after the symbol extraction, native
+own eight-module frontend graph and currently produces parity evidence for 469
+symbols, 938 binding/signature queries, 946 inferred local bindings, and 3,522
+root expression types. On a warm local run after the graph extraction, native
 lexing, parsing, resolution, semantic analysis, and encoding took approximately
-170 ms; decoding the temporary text protocol took another 9 ms. These are checkpoint
+165 ms; decoding the temporary text protocol took another 9 ms. These are checkpoint
 figures, not a TypeScript-versus-Z speed claim: the two frontends do not yet
 perform identical work and the structural handoff has not replaced the text
 protocol.
@@ -450,10 +451,11 @@ borrowed-context problem.
 
 The first extractions moved the public graph, symbol, signature, and evidence
 values into `semantic-model.zs`, isolated lexical module paths, then separated
-declaration-signature projection and symbol construction. Stage 0 checks the
-split, the native resolver resolves its own seven-module graph, and warm
-whole-process Stage-1 latency remains flat at approximately 270 ms. This proves
-ordinary Z modules are already useful for decomposition.
+declaration-signature projection, symbol construction, and graph construction.
+Stage 0 checks the split, the native resolver resolves its own eight-module
+graph, and warm whole-process Stage-1 latency improved from approximately
+270 ms to 258 ms. This proves ordinary Z modules are already useful for
+decomposition and suggests semantic work has a nonlinear per-file component.
 
 The split also made visibility pressure concrete. Signature projection accepts
 the parser's owned `Program` directly and needs no new borrowed wrapper.

@@ -1,0 +1,200 @@
+import { tokenize } from "./lexer.zs";
+import {
+  parseProgram,
+} from "./parser.zs";
+import {
+  importedModulePath,
+  isLocalModuleHeader,
+  normalizedModulePath,
+} from "./module-paths.zs";
+import {
+  ParsedModule,
+  buildModuleSymbolIndices,
+  buildModuleSymbols,
+  findModule,
+  moduleExports,
+  validateModuleBindings,
+} from "./module-symbols.zs";
+import {
+  ModuleBindingResolution,
+  ModuleCallResolution,
+  ModuleExpressionResolution,
+  ModuleResolveError,
+  ModuleResolveErrorKind,
+  ModuleSemanticEvidence,
+  ModuleSource,
+  ResolvedModule,
+  moduleResolutionError,
+} from "./semantic-model.zs";
+
+function parseModule(in source: ModuleSource): ParsedModule throws ModuleResolveError {
+  const tokenOutcome = attempt tokenize(source.source);
+  const tokens = match (tokenOutcome) {
+    success(tokens) => tokens;
+    failure(error) => {
+      const line = error.line;
+      const column = error.column;
+      throw moduleResolutionError(
+        ModuleResolveErrorKind.lexer,
+        source.path,
+        error.message,
+        line,
+        column
+      );
+    }
+  };
+  const programOutcome = attempt parseProgram(tokens);
+  const program = match (programOutcome) {
+    success(program) => program;
+    failure(error) => {
+      const line = error.line;
+      const column = error.column;
+      throw moduleResolutionError(
+        ModuleResolveErrorKind.parser,
+        source.path,
+        error.message,
+        line,
+        column
+      );
+    }
+  };
+  return ParsedModule({
+    path: source.path.copyBytes(0, source.path.byteLength),
+    program,
+  });
+}
+
+export function parseModuleSources(
+  in sources: Array<ModuleSource>
+): Array<ParsedModule> throws ModuleResolveError {
+  let parsed = Array<ParsedModule>();
+  for (const source of sources) {
+    const module = try parseModule(source);
+    try validateModuleBindings(module);
+    parsed.push(module);
+  }
+  return parsed;
+}
+
+export function findEntryModule(
+  in modules: Array<ParsedModule>,
+  in entryPath: String
+): usize throws ModuleResolveError {
+  const normalizedEntry = normalizedModulePath(entryPath);
+  const entryOption = findModule(modules, normalizedEntry);
+  return match (entryOption) {
+    some(entry) => entry;
+    none => throw moduleResolutionError(
+      ModuleResolveErrorKind.missingModule,
+      normalizedEntry,
+      `could not find entry Z module ${normalizedEntry}`,
+      1,
+      1
+    );
+  };
+}
+
+function resolveDependencies(
+  in modules: Array<ParsedModule>,
+  in module: ParsedModule
+): Array<usize> throws ModuleResolveError {
+  let dependencies = Array<usize>();
+  for (const declaration of module.program.imports) {
+    if (!isLocalModuleHeader(declaration.header)) continue;
+    const targetPath = importedModulePath(module.path, declaration.header);
+    const target = findModule(modules, targetPath);
+    const dependency = match (target) {
+      some(dependency) => dependency;
+      none => {
+        const line = declaration.line;
+        const column = declaration.column;
+        throw moduleResolutionError(
+          ModuleResolveErrorKind.missingModule,
+          module.path,
+          `could not find Z module ${declaration.header}`,
+          line,
+          column
+        );
+      }
+    };
+    if (declaration.selective) {
+      for (const binding of declaration.bindings) {
+        if (!moduleExports(modules[dependency], binding.importedName)) {
+          const line = binding.line;
+          const column = binding.column;
+          throw moduleResolutionError(
+            ModuleResolveErrorKind.missingExport,
+            module.path,
+            `module ${declaration.header} has no export ${binding.importedName}`,
+            line,
+            column
+          );
+        }
+      }
+    }
+    dependencies.push(dependency);
+  }
+  return dependencies;
+}
+
+export function buildResolvedModules(
+  in parsed: Array<ParsedModule>
+): Array<ResolvedModule> throws ModuleResolveError {
+  let modules = Array<ResolvedModule>();
+  let index: usize = 0;
+  while (index < parsed.length) {
+    const dependencies = try resolveDependencies(parsed, parsed[index]);
+    const symbols = buildModuleSymbols(parsed, parsed[index]);
+    const symbolIndices = buildModuleSymbolIndices(symbols);
+    modules.push(ResolvedModule({
+      path: parsed[index].path.copyBytes(0, parsed[index].path.byteLength),
+      dependencies,
+      symbols,
+      symbolIndices,
+      semanticEvidence: ModuleSemanticEvidence({
+        callResolutions: Array<ModuleCallResolution>(),
+        bindingResolutions: Array<ModuleBindingResolution>(),
+        expressionResolutions: Array<ModuleExpressionResolution>(),
+      }),
+    }));
+    index = index + 1;
+  }
+  return modules;
+}
+
+function visitModule(
+  index: usize,
+  in modules: Array<ResolvedModule>,
+  inout states: Array<u8>,
+  inout order: Array<usize>
+): void throws ModuleResolveError {
+  if (states[index] == 2) return;
+  if (states[index] == 1) throw moduleResolutionError(
+    ModuleResolveErrorKind.circularImport,
+    modules[index].path,
+    `circular Z module import through ${modules[index].path}`,
+    1,
+    1
+  );
+  states[index] = 1;
+  for (const dependency of modules[index].dependencies) {
+    try visitModule(dependency, modules, inout states, inout order);
+  }
+  states[index] = 2;
+  order.push(index);
+}
+
+export function resolveModuleOrder(
+  in modules: Array<ResolvedModule>,
+  entry: usize
+): Array<usize> throws ModuleResolveError {
+  let states = Array<u8>();
+  let index: usize = 0;
+  while (index < modules.length) {
+    states.push(0);
+    index = index + 1;
+  }
+  let dependencyOrder = Array<usize>();
+  try visitModule(entry, modules, inout states, inout dependencyOrder);
+  return dependencyOrder;
+}

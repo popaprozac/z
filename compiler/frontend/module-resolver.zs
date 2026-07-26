@@ -1,19 +1,14 @@
 import { TextBuffer } from "std/text";
-import { tokenize } from "./lexer.zs";
 import {
-  importedModulePath,
-  isLocalModuleHeader,
-  normalizedModulePath,
-} from "./module-paths.zs";
+  buildResolvedModules,
+  findEntryModule,
+  parseModuleSources,
+  resolveModuleOrder,
+} from "./module-graph.zs";
 import {
   ParsedModule,
-  buildModuleSymbolIndices as buildSymbolIndices,
-  buildModuleSymbols as buildSymbols,
-  findModule,
   moduleBindingName as bindingName,
-  moduleExports,
   moduleSymbolIndex,
-  validateModuleBindings as validateBindings,
 } from "./module-symbols.zs";
 import {
   ModuleBindingResolution,
@@ -52,7 +47,6 @@ import {
   TraitDeclaration,
   TypeParameter,
   TypeReference,
-  parseProgram,
 } from "./parser.zs";
 
 enum NativeInitializationState {
@@ -156,43 +150,6 @@ function resolutionError(
   column: usize
 ): ModuleResolveError {
   return moduleResolutionError(kind, path, message, line, column);
-}
-
-function parseModule(in source: ModuleSource): ParsedModule throws ModuleResolveError {
-  const tokenOutcome = attempt tokenize(source.source);
-  const tokens = match (tokenOutcome) {
-    success(tokens) => tokens;
-    failure(error) => {
-      const line = error.line;
-      const column = error.column;
-      throw resolutionError(
-        ModuleResolveErrorKind.lexer,
-        source.path,
-        error.message,
-        line,
-        column
-      );
-    }
-  };
-  const programOutcome = attempt parseProgram(tokens);
-  const program = match (programOutcome) {
-    success(program) => program;
-    failure(error) => {
-      const line = error.line;
-      const column = error.column;
-      throw resolutionError(
-        ModuleResolveErrorKind.parser,
-        source.path,
-        error.message,
-        line,
-        column
-      );
-    }
-  };
-  return ParsedModule({
-    path: source.path.copyBytes(0, source.path.byteLength),
-    program,
-  });
 }
 
 function copyBindings(in bindings: Array<String>): Array<String> {
@@ -8155,115 +8112,14 @@ function validateExpressionTypesAndLocals(
   return evidence;
 }
 
-function resolveDependencies(
-  in modules: Array<ParsedModule>,
-  in module: ParsedModule
-): Array<usize> throws ModuleResolveError {
-  let dependencies = Array<usize>();
-  for (const declaration of module.program.imports) {
-    if (!isLocalModuleHeader(declaration.header)) continue;
-    const targetPath = importedModulePath(module.path, declaration.header);
-    const target = findModule(modules, targetPath);
-    const dependency = match (target) {
-      some(dependency) => dependency;
-      none => {
-        const line = declaration.line;
-        const column = declaration.column;
-        throw resolutionError(
-          ModuleResolveErrorKind.missingModule,
-          module.path,
-          `could not find Z module ${declaration.header}`,
-          line,
-          column
-        );
-      }
-    };
-    if (declaration.selective) {
-      for (const binding of declaration.bindings) {
-        if (!moduleExports(modules[dependency], binding.importedName)) {
-          const line = binding.line;
-          const column = binding.column;
-          throw resolutionError(
-            ModuleResolveErrorKind.missingExport,
-            module.path,
-            `module ${declaration.header} has no export ${binding.importedName}`,
-            line,
-            column
-          );
-        }
-      }
-    }
-    dependencies.push(dependency);
-  }
-  return dependencies;
-}
-
-function visitModule(
-  index: usize,
-  in modules: Array<ResolvedModule>,
-  inout states: Array<u8>,
-  inout order: Array<usize>
-): void throws ModuleResolveError {
-  if (states[index] == 2) return;
-  if (states[index] == 1) throw resolutionError(
-    ModuleResolveErrorKind.circularImport,
-    modules[index].path,
-    `circular Z module import through ${modules[index].path}`,
-    1,
-    1
-  );
-  states[index] = 1;
-  for (const dependency of modules[index].dependencies) {
-    try visitModule(dependency, modules, inout states, inout order);
-  }
-  states[index] = 2;
-  order.push(index);
-}
-
 export function resolveModules(
   in sources: Array<ModuleSource>,
   in entryPath: String
 ): ModuleGraph throws ModuleResolveError {
-  let parsed = Array<ParsedModule>();
-  for (const source of sources) {
-    const module = try parseModule(source);
-    try validateBindings(module);
-    parsed.push(module);
-  }
-  const normalizedEntry = normalizedModulePath(entryPath);
-  const entryOption = findModule(parsed, normalizedEntry);
-  const entry = match (entryOption) {
-    some(entry) => entry;
-    none => throw resolutionError(
-      ModuleResolveErrorKind.missingModule,
-      normalizedEntry,
-      `could not find entry Z module ${normalizedEntry}`,
-      1,
-      1
-    );
-  };
-
-  let modules = Array<ResolvedModule>();
+  const parsed = try parseModuleSources(sources);
+  const entry = try findEntryModule(parsed, entryPath);
+  let modules = try buildResolvedModules(parsed);
   let index: usize = 0;
-  while (index < parsed.length) {
-    const dependencies = try resolveDependencies(parsed, parsed[index]);
-    const symbols = buildSymbols(parsed, parsed[index]);
-    const symbolIndices = buildSymbolIndices(symbols);
-    modules.push(ResolvedModule({
-      path: parsed[index].path.copyBytes(0, parsed[index].path.byteLength),
-      dependencies,
-      symbols,
-      symbolIndices,
-      semanticEvidence: ModuleSemanticEvidence({
-        callResolutions: Array<ModuleCallResolution>(),
-        bindingResolutions: Array<ModuleBindingResolution>(),
-        expressionResolutions: Array<ModuleExpressionResolution>(),
-      }),
-    }));
-    index = index + 1;
-  }
-
-  index = 0;
   while (index < parsed.length) {
     try validateTypes(parsed[index], modules, index);
     try validateNames(parsed[index], modules[index].symbols);
@@ -8271,13 +8127,6 @@ export function resolveModules(
     index = index + 1;
   }
 
-  let states = Array<u8>();
-  index = 0;
-  while (index < modules.length) {
-    states.push(0);
-    index = index + 1;
-  }
-  let dependencyOrder = Array<usize>();
-  try visitModule(entry, modules, inout states, inout dependencyOrder);
+  const dependencyOrder = try resolveModuleOrder(modules, entry);
   return ModuleGraph({ modules, dependencyOrder, entry });
 }
