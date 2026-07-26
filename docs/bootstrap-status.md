@@ -649,7 +649,9 @@ When focused self-hosting work resumes, use this order:
    `semantic-type-identities.zs`; declaration type-name, arity, callable-shape,
    and generic-constraint validation now live in
    `semantic-type-validation.zs`. Semantic orchestration, expression inference,
-   and ownership flow remain in the resolver.
+   and ownership diagnostics remain in the resolver. The initialization and
+   ownership state values plus binding copy, mutation, borrow, and branch-merge
+   operations now live in `semantic-flow-state.zs`.
 2. Extend native semantics from demonstrated corpus gaps, prioritizing
    user-defined generic-monomorph identities, foreign/intrinsic and async effect
    boundaries, escaping closure environments, precise borrow last-use release,
