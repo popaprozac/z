@@ -78,14 +78,14 @@ worse. Any regression beyond ordinary measurement noise needs an explanation
 or an optimization before the extraction is treated as complete.
 
 The subsequent signature/symbol, graph, lexical-name, shared type-shape,
-type-identity, declaration-validation, and flow-state extractions produced this
-comparison:
+type-identity, declaration-validation, flow-state, and type-ownership
+extractions produced this comparison:
 
-| Operation | Path/model | Signatures/symbols | Graph | Names | Type shapes | Identity/validation | Flow state | Latest change |
+| Operation | Path/model | Signatures/symbols | Graph | Names | Type shapes | Identity/validation | Flow state | Type ownership |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| Stage-1 self-analysis | 270.8 ms | 270.4 ms | 258.0 ms | 263.7 ms | 268.1 ms | 261.5 ms | 243.5 ms | -18.0 ms / -6.9% |
-| Ordinary Stage-0 check | 267.5 ms | 278.8 ms | 259.3 ms | 262.8 ms | 274.8 ms | 270.1 ms | 240.4 ms | -29.7 ms / -11.0% |
-| Hybrid Stage-0/native authority check | 2.468 s | 2.198 s | 2.124 s | 2.053 s | 1.986 s | 1.669 s | 1.524 s | -145 ms / -8.7% |
+| Stage-1 self-analysis | 270.8 ms | 270.4 ms | 258.0 ms | 263.7 ms | 268.1 ms | 261.5 ms | 243.5 ms | 263.5 ms |
+| Ordinary Stage-0 check | 267.5 ms | 278.8 ms | 259.3 ms | 262.8 ms | 274.8 ms | 270.1 ms | 240.4 ms | 266.4 ms |
+| Hybrid Stage-0/native authority check | 2.468 s | 2.198 s | 2.124 s | 2.053 s | 1.986 s | 1.669 s | 1.524 s | 1.582 s |
 
 The Stage-1 results show that additional semantic modules do not inherently
 slow the native frontend. The small Stage-1 and Stage-0 changes after extracting
@@ -95,11 +95,19 @@ split's larger improvement suggests some parsing or semantic work scales
 nonlinearly with declarations or state per file. Smaller Stage-0 semantic units
 also reduce the exhaustive native-authority observation cost.
 
-After the flow-state split, a warm timed resolver invocation spent approximately
-155 ms in native lexing, parsing,
+The standalone type-ownership checkpoint appeared slower than the immediately
+preceding flow-state sample, so both commits were also archived and measured
+side by side on the same temporary filesystem with the same toolchain and cache
+conditions. In that controlled comparison, type ownership measured 289.8 ms
+versus 292.9 ms for Stage 1, 294.4 ms versus 295.3 ms for Stage 0, and 1.648 s
+versus 1.736 s for the hybrid path. The apparent regression was therefore host
+and filesystem-cache variance rather than a cost introduced by the module.
+
+After the type-ownership split, a warm timed resolver invocation spent
+approximately 163 ms in native lexing, parsing,
 graph/name/type/expression analysis, and
-encoding, plus 8 ms decoding the temporary protocol. The first cold bridge
-rebuild spent approximately 772 ms in boundary preparation. Cold rebuild cost
+encoding, plus 9 ms decoding the temporary protocol. The first cold bridge
+rebuild spent approximately 864 ms in boundary preparation. Cold rebuild cost
 remains noisier than warm checks and is tracked separately.
 
 The earlier small ordinary Stage-0 increase demonstrated that loading more
