@@ -1,5 +1,4 @@
 import { TextBuffer } from "std/text";
-import { Map, Set } from "std/collections";
 import { tokenize } from "./lexer.zs";
 import {
   importedModulePath,
@@ -7,13 +6,21 @@ import {
   normalizedModulePath,
 } from "./module-paths.zs";
 import {
+  ParsedModule,
+  buildModuleSymbolIndices as buildSymbolIndices,
+  buildModuleSymbols as buildSymbols,
+  findModule,
+  moduleBindingName as bindingName,
+  moduleExports,
+  moduleSymbolIndex,
+  validateModuleBindings as validateBindings,
+} from "./module-symbols.zs";
+import {
   ModuleBindingResolution,
   ModuleCallResolution,
   ModuleExpressionResolution,
-  ModuleFieldSignature,
   ModuleFunctionSignature,
   ModuleGraph,
-  ModuleMethodSignature,
   ModuleResolveError,
   ModuleResolveErrorKind,
   ModuleSemanticEvidence,
@@ -23,8 +30,8 @@ import {
   ModuleTypeIdentity,
   ModuleTypeParameterConstraint,
   ModuleTypeSignature,
-  ModuleVariantSignature,
   ResolvedModule,
+  moduleResolutionError,
 } from "./semantic-model.zs";
 import {
   AggregateDeclaration,
@@ -37,24 +44,16 @@ import {
   ExpressionSyntax,
   ExpressionTree,
   FunctionDeclaration,
-  ImportDeclaration,
   Parameter,
   ParameterMode,
-  Program,
   ReceiverMode,
   StatementArena,
   StatementKind,
   TraitDeclaration,
   TypeParameter,
   TypeReference,
-  Visibility,
   parseProgram,
 } from "./parser.zs";
-
-struct ParsedModule {
-  path: String;
-  program: Program;
-}
 
 enum NativeInitializationState {
   initialized,
@@ -149,15 +148,6 @@ struct NativeMethodCallShape {
   signature: ModuleFunctionSignature;
 }
 
-function moduleParameterModeName(mode: ParameterMode): String {
-  return match (mode) {
-    value => "value";
-    input => "in";
-    inputOutput => "inout";
-    output => "out";
-  };
-}
-
 function resolutionError(
   kind: ModuleResolveErrorKind,
   in path: String,
@@ -165,13 +155,7 @@ function resolutionError(
   line: usize,
   column: usize
 ): ModuleResolveError {
-  return ModuleResolveError({
-    kind,
-    path: path.copyBytes(0, path.byteLength),
-    message: message.copyBytes(0, message.byteLength),
-    line,
-    column,
-  });
+  return moduleResolutionError(kind, path, message, line, column);
 }
 
 function parseModule(in source: ModuleSource): ParsedModule throws ModuleResolveError {
@@ -209,456 +193,6 @@ function parseModule(in source: ModuleSource): ParsedModule throws ModuleResolve
     path: source.path.copyBytes(0, source.path.byteLength),
     program,
   });
-}
-
-function findModule(in modules: Array<ParsedModule>, in path: String): Option<usize> {
-  let index: usize = 0;
-  while (index < modules.length) {
-    if (modules[index].path == path) return Option.some(index);
-    index = index + 1;
-  }
-  return Option<usize>.none;
-}
-
-function hasExport(in declaration: Declaration, in name: String): boolean {
-  return declaration.exported && declaration.name == name;
-}
-
-function moduleExports(in module: ParsedModule, in name: String): boolean {
-  for (const declaration of module.program.declarations) {
-    if (hasExport(declaration, name)) return true;
-  }
-  return false;
-}
-
-function declarationSymbolKind(kind: DeclarationKind): ModuleSymbolKind {
-  if (kind == DeclarationKind.functionDeclaration) return ModuleSymbolKind.functionSymbol;
-  if (kind == DeclarationKind.structDeclaration) return ModuleSymbolKind.structSymbol;
-  if (kind == DeclarationKind.classDeclaration) return ModuleSymbolKind.classSymbol;
-  if (kind == DeclarationKind.traitDeclaration) return ModuleSymbolKind.traitSymbol;
-  if (kind == DeclarationKind.typeAliasDeclaration) return ModuleSymbolKind.typeAliasSymbol;
-  return ModuleSymbolKind.enumSymbol;
-}
-
-function moduleFunctionSignature(
-  in module: ParsedModule,
-  in declaration: Declaration
-): Option<ModuleFunctionSignature> {
-  if (declaration.kind != DeclarationKind.functionDeclaration) {
-    return Option<ModuleFunctionSignature>.none;
-  }
-  for (const functionDeclaration of module.program.functions) {
-    if (functionDeclaration.name != declaration.name) continue;
-    return Option.some(functionDeclarationSignature(functionDeclaration));
-  }
-  return Option<ModuleFunctionSignature>.none;
-}
-
-function functionDeclarationSignature(
-  in declaration: FunctionDeclaration
-): ModuleFunctionSignature {
-  let typeParameters = Array<String>();
-  let typeParameterConstraints = Array<ModuleTypeParameterConstraint>();
-  for (const parameter of declaration.typeParameters) {
-    typeParameters.push(parameter.name.copyBytes(0, parameter.name.byteLength));
-    for (const constraint of parameter.constraints) {
-      typeParameterConstraints.push(ModuleTypeParameterConstraint({
-        parameter: parameter.name.copyBytes(0, parameter.name.byteLength),
-        traitName: constraint.name.copyBytes(0, constraint.name.byteLength),
-      }));
-    }
-  }
-  let parameterTypes = Array<String>();
-  let parameterModes = Array<String>();
-  for (const parameter of declaration.parameters) {
-    parameterModes.push(moduleParameterModeName(parameter.mode));
-    parameterTypes.push(parameter.type.name.copyBytes(0, parameter.type.name.byteLength));
-  }
-  let errorType = "";
-  match (in declaration.errorType) {
-    some(error) => errorType = error.name.copyBytes(0, error.name.byteLength);
-    none => {}
-  }
-  return ModuleFunctionSignature({
-    asynchronous: declaration.asynchronous,
-    executorAffinity: declaration.executorAffinity.copyBytes(0, declaration.executorAffinity.byteLength),
-    typeParameters,
-    typeParameterConstraints,
-    parameterModes,
-    parameterTypes,
-    returnType: declaration.returnType.name.copyBytes(
-      0,
-      declaration.returnType.name.byteLength
-    ),
-    errorType,
-  });
-}
-
-function constructorDeclarationSignature(
-  in ownerName: String,
-  in declaration: ConstructorDeclaration
-): ModuleFunctionSignature {
-  let parameterTypes = Array<String>();
-  let parameterModes = Array<String>();
-  for (const parameter of declaration.parameters) {
-    parameterModes.push(moduleParameterModeName(parameter.mode));
-    parameterTypes.push(parameter.type.name.copyBytes(0, parameter.type.name.byteLength));
-  }
-  let errorType = "";
-  match (in declaration.errorType) {
-    some(error) => errorType = error.name.copyBytes(0, error.name.byteLength);
-    none => {}
-  }
-  return ModuleFunctionSignature({
-    asynchronous: false,
-    executorAffinity: "",
-    typeParameters: Array<String>(),
-    typeParameterConstraints: Array<ModuleTypeParameterConstraint>(),
-    parameterModes,
-    parameterTypes,
-    returnType: ownerName.copyBytes(0, ownerName.byteLength),
-    errorType,
-  });
-}
-
-function moduleReceiverModeName(mode: ReceiverMode): String {
-  if (mode == ReceiverMode.inputOutput) return "inout";
-  if (mode == ReceiverMode.move) return "move";
-  return "in";
-}
-
-function moduleVisibilityName(visibility: Visibility): String {
-  if (visibility == Visibility.privateVisibility) return "private";
-  return "public";
-}
-
-function moduleTypeSignature(
-  in module: ParsedModule,
-  in declaration: Declaration
-): Option<ModuleTypeSignature> {
-  if (
-    declaration.kind == DeclarationKind.structDeclaration
-    || declaration.kind == DeclarationKind.classDeclaration
-  ) {
-    for (const aggregate of module.program.aggregates) {
-      if (aggregate.name != declaration.name) continue;
-      let typeParameters = Array<String>();
-      let typeParameterConstraints = Array<ModuleTypeParameterConstraint>();
-      for (const parameter of aggregate.typeParameters) {
-        typeParameters.push(parameter.name.copyBytes(0, parameter.name.byteLength));
-        for (const constraint of parameter.constraints) {
-          typeParameterConstraints.push(ModuleTypeParameterConstraint({
-            parameter: parameter.name.copyBytes(0, parameter.name.byteLength),
-            traitName: constraint.name.copyBytes(0, constraint.name.byteLength),
-          }));
-        }
-      }
-      let implementedTraits = Array<String>();
-      for (const implemented of aggregate.implementedTraits) {
-        implementedTraits.push(implemented.name.copyBytes(0, implemented.name.byteLength));
-      }
-      let fields = Array<ModuleFieldSignature>();
-      for (const field of aggregate.fields) {
-        fields.push(ModuleFieldSignature({
-          name: field.name.copyBytes(0, field.name.byteLength),
-          typeName: field.type.name.copyBytes(0, field.type.name.byteLength),
-          visibility: moduleVisibilityName(field.visibility),
-          readonlyField: field.readonlyField,
-        }));
-      }
-      let methods = Array<ModuleMethodSignature>();
-      for (const method of aggregate.methods) {
-        methods.push(ModuleMethodSignature({
-          name: method.name.copyBytes(0, method.name.byteLength),
-          staticMethod: method.staticMethod,
-          visibility: moduleVisibilityName(method.visibility),
-          receiverMode: moduleReceiverModeName(method.receiverMode),
-          signature: functionDeclarationSignature(method),
-        }));
-      }
-      let customDeinit = false;
-      match (in aggregate.deinitializer) {
-        some(deinitializer) => customDeinit = true;
-        none => {}
-      }
-      let customConstructor = false;
-      let constructorSignature = Option<ModuleFunctionSignature>.none;
-      match (in aggregate.constructorDeclaration) {
-        some(initializer) => {
-          customConstructor = true;
-          constructorSignature = Option.some(constructorDeclarationSignature(
-            aggregate.name,
-            initializer
-          ));
-        }
-        none => {}
-      }
-      return Option.some(ModuleTypeSignature({
-        typeParameters,
-        typeParameterConstraints,
-        executorAffinity: aggregate.executorAffinity.copyBytes(0, aggregate.executorAffinity.byteLength),
-        implementedTraits,
-        fields,
-        methods,
-        variants: Array<ModuleVariantSignature>(),
-        customDeinit,
-        customConstructor,
-        constructorSignature,
-      }));
-    }
-  }
-  if (declaration.kind == DeclarationKind.traitDeclaration) {
-    for (const traitDeclaration of module.program.traits) {
-      if (traitDeclaration.name != declaration.name) continue;
-      let methods = Array<ModuleMethodSignature>();
-      for (const method of traitDeclaration.methods) {
-        methods.push(ModuleMethodSignature({
-          name: method.name.copyBytes(0, method.name.byteLength),
-          staticMethod: false,
-          visibility: "public",
-          receiverMode: "in",
-          signature: functionDeclarationSignature(method),
-        }));
-      }
-      return Option.some(ModuleTypeSignature({
-        typeParameters: Array<String>(),
-        typeParameterConstraints: Array<ModuleTypeParameterConstraint>(),
-        executorAffinity: "",
-        implementedTraits: Array<String>(),
-        fields: Array<ModuleFieldSignature>(),
-        methods,
-        variants: Array<ModuleVariantSignature>(),
-        customDeinit: false,
-        customConstructor: false,
-        constructorSignature: Option<ModuleFunctionSignature>.none,
-      }));
-    }
-  }
-  if (declaration.kind == DeclarationKind.enumDeclaration) {
-    for (const enumDeclaration of module.program.enums) {
-      if (enumDeclaration.name != declaration.name) continue;
-      let variants = Array<ModuleVariantSignature>();
-      for (const variant of enumDeclaration.variants) {
-        let payloadType = "";
-        match (in variant.payload) {
-          some(payload) => payloadType = payload.name.copyBytes(0, payload.name.byteLength);
-          none => {}
-        }
-        variants.push(ModuleVariantSignature({
-          name: variant.name.copyBytes(0, variant.name.byteLength),
-          payloadType,
-        }));
-      }
-      return Option.some(ModuleTypeSignature({
-        typeParameters: Array<String>(),
-        typeParameterConstraints: Array<ModuleTypeParameterConstraint>(),
-        executorAffinity: "",
-        implementedTraits: Array<String>(),
-        fields: Array<ModuleFieldSignature>(),
-        methods: Array<ModuleMethodSignature>(),
-        variants,
-        customDeinit: false,
-        customConstructor: false,
-        constructorSignature: Option<ModuleFunctionSignature>.none,
-      }));
-    }
-  }
-  return Option<ModuleTypeSignature>.none;
-}
-
-function ownSymbol(in module: ParsedModule, in declaration: Declaration): ModuleSymbol {
-  let importedName = declaration.name.copyBytes(0, declaration.name.byteLength);
-  if (declaration.kind == DeclarationKind.typeAliasDeclaration) {
-    for (const alias of module.program.typeAliases) {
-      if (alias.name != declaration.name) continue;
-      importedName = alias.target.name.copyBytes(0, alias.target.name.byteLength);
-    }
-  }
-  return ModuleSymbol({
-    name: declaration.name.copyBytes(0, declaration.name.byteLength),
-    kind: declarationSymbolKind(declaration.kind),
-    exported: declaration.exported,
-    targetModule: Option<usize>.none,
-    importedName,
-    functionSignature: moduleFunctionSignature(module, declaration),
-    typeSignature: moduleTypeSignature(module, declaration),
-    offset: declaration.offset,
-    line: declaration.line,
-    column: declaration.column,
-  });
-}
-
-function importedSymbol(
-  in name: String,
-  in importedName: String,
-  kind: ModuleSymbolKind,
-  targetModule: Option<usize>,
-  offset: usize,
-  line: usize,
-  column: usize
-): ModuleSymbol {
-  return ModuleSymbol({
-    name: name.copyBytes(0, name.byteLength),
-    kind,
-    exported: false,
-    targetModule,
-    importedName: importedName.copyBytes(0, importedName.byteLength),
-    functionSignature: Option<ModuleFunctionSignature>.none,
-    typeSignature: Option<ModuleTypeSignature>.none,
-    offset,
-    line,
-    column,
-  });
-}
-
-function importTarget(
-  in modules: Array<ParsedModule>,
-  in module: ParsedModule,
-  in declaration: ImportDeclaration
-): Option<usize> {
-  if (!isLocalModuleHeader(declaration.header)) return Option<usize>.none;
-  const targetPath = importedModulePath(module.path, declaration.header);
-  return findModule(modules, targetPath);
-}
-
-function buildSymbols(
-  in modules: Array<ParsedModule>,
-  in module: ParsedModule
-): Array<ModuleSymbol> {
-  let symbols = Array<ModuleSymbol>();
-  for (const declaration of module.program.declarations) {
-    if (declaration.kind == DeclarationKind.importDeclaration) continue;
-    symbols.push(ownSymbol(module, declaration));
-  }
-  for (const declaration of module.program.imports) {
-    const target = importTarget(modules, module, declaration);
-    if (declaration.selective) {
-      for (const binding of declaration.bindings) {
-        const offset = binding.offset;
-        const line = binding.line;
-        const column = binding.column;
-        symbols.push(importedSymbol(
-          binding.localName,
-          binding.importedName,
-          ModuleSymbolKind.importedSymbol,
-          target,
-          offset,
-          line,
-          column
-        ));
-      }
-    } else {
-      const name = bindingName(declaration);
-      const offset = declaration.offset;
-      const line = declaration.line;
-      const column = declaration.column;
-      symbols.push(importedSymbol(
-        name,
-        declaration.header,
-        ModuleSymbolKind.namespaceSymbol,
-        target,
-        offset,
-        line,
-        column
-      ));
-    }
-  }
-  return symbols;
-}
-
-export function moduleSymbolKindName(kind: ModuleSymbolKind): String {
-  if (kind == ModuleSymbolKind.functionSymbol) return "function";
-  if (kind == ModuleSymbolKind.structSymbol) return "struct";
-  if (kind == ModuleSymbolKind.classSymbol) return "class";
-  if (kind == ModuleSymbolKind.traitSymbol) return "trait";
-  if (kind == ModuleSymbolKind.typeAliasSymbol) return "type";
-  if (kind == ModuleSymbolKind.enumSymbol) return "enum";
-  if (kind == ModuleSymbolKind.namespaceSymbol) return "namespace";
-  return "imported";
-}
-
-function bindingName(in declaration: ImportDeclaration): String {
-  return declaration.moduleName.copyBytes(0, declaration.moduleName.byteLength);
-}
-
-function requireAvailableBinding(
-  inout occupied: Set<String>,
-  in path: String,
-  in name: String,
-  line: usize,
-  column: usize
-): void throws ModuleResolveError {
-  if (occupied.has(name)) throw resolutionError(
-    ModuleResolveErrorKind.duplicateBinding,
-    path,
-    `duplicate module binding ${name}`,
-    line,
-    column
-  );
-  occupied.add(name.copyBytes(0, name.byteLength));
-}
-
-function validateBindings(in module: ParsedModule): void throws ModuleResolveError {
-  let occupied = Set<String>();
-  for (const declaration of module.program.declarations) {
-    if (declaration.kind == DeclarationKind.importDeclaration) continue;
-    const line = declaration.line;
-    const column = declaration.column;
-    try requireAvailableBinding(
-      inout occupied,
-      module.path,
-      declaration.name,
-      line,
-      column
-    );
-  }
-  for (const declaration of module.program.imports) {
-    if (declaration.selective) {
-      for (const binding of declaration.bindings) {
-        const line = binding.line;
-        const column = binding.column;
-        try requireAvailableBinding(
-          inout occupied,
-          module.path,
-          binding.localName,
-          line,
-          column
-        );
-      }
-    } else {
-      const name = bindingName(declaration);
-      const line = declaration.line;
-      const column = declaration.column;
-      try requireAvailableBinding(
-        inout occupied,
-        module.path,
-        name,
-        line,
-        column
-      );
-    }
-  }
-}
-
-function buildSymbolIndices(in symbols: Array<ModuleSymbol>): Map<String, usize> {
-  let indices = Map<String, usize>();
-  let index: usize = 0;
-  while (index < symbols.length) {
-    indices.set(
-      symbols[index].name.copyBytes(0, symbols[index].name.byteLength),
-      index
-    );
-    index = index + 1;
-  }
-  return indices;
-}
-
-function moduleSymbolIndex(in module: ResolvedModule, in name: String): usize {
-  const found = module.symbolIndices.get(name);
-  match (in found) {
-    some(index) => return index;
-    none => return module.symbols.length;
-  }
 }
 
 function copyBindings(in bindings: Array<String>): Array<String> {

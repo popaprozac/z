@@ -11,10 +11,8 @@ import {
   ModuleSource,
   ModuleSymbol,
 } from "./semantic-model.zs";
-import {
-  moduleSymbolKindName,
-  resolveModules,
-} from "./module-resolver.zs";
+import { resolveModules } from "./module-resolver.zs";
+import { moduleSymbolKindName } from "./module-symbols.zs";
 import { appendHexText, appendHexUsize } from "./parser-protocol.zs";
 
 function hexValue(byte: u8): usize throws String {

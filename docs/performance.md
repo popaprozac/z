@@ -45,7 +45,8 @@ fan-out remain explicit follow-up cases.
 Runtime performance and compiler throughput are separate gates. During
 self-hosting, every frontend extraction should preserve the edit-check-run loop
 as well as semantic parity. The 2026-07-25 macOS arm64 checkpoint, measured with
-Hyperfine after splitting `semantic-model.zs` and `module-paths.zs`, is:
+Hyperfine after splitting `semantic-model.zs` and `module-paths.zs`, established
+this baseline:
 
 | Operation | Warm whole-process time |
 | --- | ---: |
@@ -75,3 +76,21 @@ retaining both costs. Future reports should distinguish:
 Modularization is not automatically a win if it makes these numbers materially
 worse. Any regression beyond ordinary measurement noise needs an explanation
 or an optimization before the extraction is treated as complete.
+
+The subsequent signature/symbol extraction produced this comparison:
+
+| Operation | Path/model split | Signature/symbol split | Change |
+| --- | ---: | ---: | ---: |
+| Stage-1 self-analysis | 270.8 ms | 270.4 ms | effectively flat |
+| Ordinary Stage-0 check | 267.5 ms | 278.8 ms | +11.3 ms / +4.2% |
+| Hybrid Stage-0/native authority check | 2.468 s | 2.198 s | -270 ms / -10.9% |
+
+The Stage-1 result shows that the additional semantic modules do not inherently
+slow the native frontend. The hybrid improvement suggests smaller Stage-0
+semantic units also reduce the exhaustive native-authority observation cost.
+The small ordinary Stage-0 increase is the cost of loading and checking a larger
+source-module graph in the disposable bootstrap compiler. It is acceptable at
+this checkpoint but remains on the watchlist. Native module fingerprints and
+incremental parse/semantic caches should eventually make a one-file edit
+proportional to the changed module and its dependents rather than the whole
+frontend.

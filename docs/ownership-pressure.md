@@ -362,23 +362,25 @@ scaffolding must therefore fail closed instead of inventing them.
 
 Source: [`compiler/frontend`](../compiler/frontend)
 
-The 2026-07-25 decomposition checkpoint contains 14,372 lines of Z:
+The 2026-07-25 decomposition checkpoint contains 14,436 lines of Z:
 
 | Component | Lines | Responsibility |
 | --- | ---: | --- |
 | `lexer.zs` | 673 | UTF-8 scanning with UTF-16 public locations |
 | `parser.zs` | 3,913 | declarations, statements, and flat expression arenas |
-| `semantic-model.zs` | 164 | graph, symbol, signature, and semantic-evidence values |
+| `semantic-model.zs` | 180 | graph, symbol, signature, diagnostic, and semantic-evidence values |
 | `module-paths.zs` | 94 | lexical local-module recognition and normalization |
-| `module-resolver.zs` | 8,749 | module graph plus the current native semantic analyzer |
-| protocol/library modules | 779 | temporary host boundary and in-process entry points |
+| `module-signatures.zs` | 263 | declaration-to-semantic signature projection |
+| `module-symbols.zs` | 253 | symbol construction, import bindings, and lookup indexes |
+| `module-resolver.zs` | 8,283 | module graph plus the remaining native semantic analyzer |
+| protocol/library modules | 777 | temporary host boundary and in-process entry points |
 
 This is the largest ownership pressure test in the repository. It parses its
-own five-module frontend graph and currently produces parity evidence for 415
-symbols, 830 binding/signature queries, 947 inferred local bindings, and 3,562
-root expression types. On a warm local run after the first extraction, native
+own seven-module frontend graph and currently produces parity evidence for 451
+symbols, 902 binding/signature queries, 943 inferred local bindings, and 3,515
+root expression types. On a warm local run after the symbol extraction, native
 lexing, parsing, resolution, semantic analysis, and encoding took approximately
-174 ms; decoding the temporary text protocol took another 9 ms. These are checkpoint
+170 ms; decoding the temporary text protocol took another 9 ms. These are checkpoint
 figures, not a TypeScript-versus-Z speed claim: the two frontends do not yet
 perform identical work and the structural handoff has not replaced the text
 protocol.
@@ -447,14 +449,20 @@ modules. Dynamic visitor storage would add indirection without solving the
 borrowed-context problem.
 
 The first extractions moved the public graph, symbol, signature, and evidence
-values into `semantic-model.zs`, then isolated lexical module-path operations in
-`module-paths.zs`, without changing language semantics. Stage 0 checks the
-split, the native resolver resolves its own new five-module graph, and the warm
-native timing remains close to the monolith baseline. This proves ordinary Z
-modules are already useful for decomposition. It also made one smaller
-limitation concrete: without re-exports or package-private visibility, protocol
-code imports data from the model module and behavior from the resolver module.
-That ceremony is not yet sufficient evidence for new syntax.
+values into `semantic-model.zs`, isolated lexical module paths, then separated
+declaration-signature projection and symbol construction. Stage 0 checks the
+split, the native resolver resolves its own seven-module graph, and warm
+whole-process Stage-1 latency remains flat at approximately 270 ms. This proves
+ordinary Z modules are already useful for decomposition.
+
+The split also made visibility pressure concrete. Signature projection accepts
+the parser's owned `Program` directly and needs no new borrowed wrapper.
+Symbol construction, however, shares a small `ParsedModule { path, program }`
+aggregate with the resolver. It must be marked `export` even though it is an
+implementation detail because Z currently has no package-private visibility.
+Protocol code similarly imports data from the model module and behavior from
+the resolver/symbol modules because Z has no re-export surface. This is genuine
+ceremony, but not yet enough evidence to add either feature.
 
 The remaining self-hosting step is a controlled decomposition using the
 language as it exists:

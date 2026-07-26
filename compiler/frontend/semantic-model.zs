@@ -28,6 +28,22 @@ export struct ModuleResolveError {
   column: usize;
 }
 
+export function moduleResolutionError(
+  kind: ModuleResolveErrorKind,
+  in path: String,
+  in message: String,
+  line: usize,
+  column: usize
+): ModuleResolveError {
+  return ModuleResolveError({
+    kind,
+    path: path.copyBytes(0, path.byteLength),
+    message: message.copyBytes(0, message.byteLength),
+    line,
+    column,
+  });
+}
+
 export struct ResolvedModule {
   path: String;
   dependencies: Array<usize>;
