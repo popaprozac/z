@@ -659,7 +659,11 @@ When focused self-hosting work resumes, use this order:
    `semantic-member-lookups.zs`. Match payload bindings, object-pattern shape
    validation, private-field enforcement, and pattern diagnostics now live in
    `semantic-pattern-validation.zs`; arm expression inference and ownership-flow
-   merging remain in the resolver.
+   merging remain in the resolver. Recursive generic unification, contextual
+   substitution, constraint checking, and parameterized type-name construction
+   now live in `semantic-generic-inference.zs`; aggregate construction consumes
+   one normalized lookup shape while recursive field-expression inference
+   remains in the resolver.
 2. Extend native semantics from demonstrated corpus gaps, prioritizing
    user-defined generic-monomorph identities, foreign/intrinsic and async effect
    boundaries, escaping closure environments, precise borrow last-use release,

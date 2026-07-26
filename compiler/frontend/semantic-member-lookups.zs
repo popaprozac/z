@@ -42,6 +42,14 @@ export struct NativeFieldShape {
   readonlyField: boolean;
 }
 
+export struct NativeAggregateConstructionShape {
+  name: String;
+  genericInstance: boolean;
+  typeParameters: Array<String>;
+  typeParameterConstraints: Array<ModuleTypeParameterConstraint>;
+  fields: Array<String>;
+}
+
 export struct NativeMethodCallShape {
   name: String;
   ownerName: String;
@@ -249,6 +257,59 @@ export function activeOwnerMatches(
       && location.symbolIndex == field.ownerSymbolIndex;
     none => false;
   };
+}
+
+export function aggregateConstructionShape(
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
+  in typeName: String
+): Option<NativeAggregateConstructionShape> {
+  match (typeSymbolLocation(modules, moduleIndex, typeName)) {
+    some(location) => {
+      match (in modules[location.moduleIndex].symbols[location.symbolIndex].typeSignature) {
+        some(signature) => {
+          let typeParameters = Array<String>();
+          for (const parameter of signature.typeParameters) {
+            typeParameters.push(parameter.copyBytes(0, parameter.byteLength));
+          }
+          let genericInstance = false;
+          match (genericTypeShape(typeName)) {
+            some(generic) => genericInstance = true;
+            none => {}
+          }
+          let typeParameterConstraints = Array<ModuleTypeParameterConstraint>();
+          for (const constraint of signature.typeParameterConstraints) {
+            typeParameterConstraints.push(ModuleTypeParameterConstraint({
+              parameter: constraint.parameter.copyBytes(0, constraint.parameter.byteLength),
+              traitName: rebaseTypeName(
+                modules,
+                location.moduleIndex,
+                moduleIndex,
+                constraint.traitName
+              ),
+            }));
+          }
+          let fields = Array<String>();
+          for (const field of signature.fields) {
+            fields.push(field.name.copyBytes(0, field.name.byteLength));
+          }
+          return Option.some(NativeAggregateConstructionShape({
+            name: modules[location.moduleIndex].symbols[location.symbolIndex].name.copyBytes(
+              0,
+              modules[location.moduleIndex].symbols[location.symbolIndex].name.byteLength
+            ),
+            genericInstance,
+            typeParameters,
+            typeParameterConstraints,
+            fields,
+          }));
+        }
+        none => {}
+      }
+    }
+    none => {}
+  }
+  return Option<NativeAggregateConstructionShape>.none;
 }
 
 export function rebaseModuleFunctionSignature(

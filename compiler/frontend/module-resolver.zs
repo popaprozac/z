@@ -35,11 +35,20 @@ import {
   valueBindingType,
 } from "./semantic-flow-state.zs";
 import {
+  bindGenericType,
+  genericCallError,
+  parameterizedTypeName,
+  requireGenericConstraints,
+  settledContextualType,
+} from "./semantic-generic-inference.zs";
+import {
+  NativeAggregateConstructionShape,
   NativeMatchShape,
   NativeMatchVariant,
   NativeMethodCallShape,
   activeOwnerMatchesMethod,
   addTypeParameterBindings,
+  aggregateConstructionShape,
   aggregateFieldShape,
   callableMethodCallShape,
   hasKnownAggregate,
@@ -63,14 +72,12 @@ import {
   equivalentTypes,
   rebaseTypeName,
   semanticTypeIdentity,
-  typeSatisfiesTrait,
   typeSymbolLocation,
 } from "./semantic-type-identities.zs";
 import {
   NativeFixedArrayShape,
   NativeGenericTypeShape,
   arrayElementType,
-  fixedArrayShape,
   genericTypeShape,
   isFloatTypeName,
   isIntegerTypeName,
@@ -80,7 +87,6 @@ import {
   isTypeSymbolKind,
   nativeFunctionDisplayType,
   nativeFunctionSignature,
-  nullableTargetType,
   qualifiedTypeBase,
   qualifiedTypeMember,
   stringStartsWith,
@@ -609,73 +615,6 @@ function iterationObjectFieldType(
   };
 }
 
-function typeMentionsParameter(in name: String, in parameter: String): boolean {
-  if (name == parameter) return true;
-  const nullableTarget = nullableTargetType(name);
-  if (nullableTarget.byteLength > 0) {
-    return typeMentionsParameter(nullableTarget, parameter);
-  }
-  if (stringStartsWith(name, "view ")) {
-    const target = name.copyBytes(5, name.byteLength);
-    return typeMentionsParameter(target, parameter);
-  }
-  match (fixedArrayShape(name)) {
-    some(array) => return typeMentionsParameter(array.elementType, parameter);
-    none => {}
-  }
-  match (nativeFunctionSignature(name)) {
-    some(signature) => {
-      for (const parameterType of signature.parameterTypes) {
-        if (typeMentionsParameter(parameterType, parameter)) return true;
-      }
-      return typeMentionsParameter(signature.returnType, parameter);
-    }
-    none => {}
-  }
-  match (genericTypeShape(name)) {
-    some(generic) => {
-      for (const argument of generic.arguments) {
-        if (typeMentionsParameter(argument, parameter)) return true;
-      }
-    }
-    none => {}
-  }
-  return false;
-}
-
-function settledContextualType(
-  in pattern: String,
-  in typeParameters: Array<String>,
-  in substitutions: Array<NativeValueBinding>
-): String {
-  for (const parameter of typeParameters) {
-    const substitution = valueBindingType(substitutions, parameter);
-    if (
-      substitution.byteLength == 0
-      && typeMentionsParameter(pattern, parameter)
-    ) return "";
-  }
-  return substituteGenericType(pattern, substitutions);
-}
-
-function parameterizedTypeName(
-  in base: String,
-  in parameters: Array<String>
-): String {
-  if (parameters.length == 0) return base.copyBytes(0, base.byteLength);
-  let output = TextBuffer();
-  output.append(base);
-  output.append("<");
-  let index: usize = 0;
-  while (index < parameters.length) {
-    if (index > 0) output.append(", ");
-    output.append(parameters[index]);
-    index = index + 1;
-  }
-  output.append(">");
-  return output.finish();
-}
-
 function throwingGeneratorHandleType(
   in returnType: String,
   in errorType: String
@@ -700,161 +639,6 @@ function throwingGeneratorHandleType(
   };
 }
 
-function genericCallError(
-  in module: ParsedModule,
-  in tree: ExpressionTree,
-  index: usize,
-  in message: String
-): ModuleResolveError {
-  return resolutionError(
-    ModuleResolveErrorKind.typeMismatch,
-    module.path,
-    message,
-    tree.nodes[index].line,
-    tree.nodes[index].column
-  );
-}
-
-function bindGenericType(
-  in module: ParsedModule,
-  in modules: Array<ResolvedModule>,
-  moduleIndex: usize,
-  in tree: ExpressionTree,
-  argumentIndex: usize,
-  in functionName: String,
-  in pattern: String,
-  in actual: String,
-  in typeParameters: Array<String>,
-  inout substitutions: Array<NativeValueBinding>
-): void throws ModuleResolveError {
-  if (actual.byteLength == 0 || actual == "null") return;
-  for (const typeParameter of typeParameters) {
-    if (pattern != typeParameter) continue;
-    const previous = valueBindingType(substitutions, typeParameter);
-    if (
-      previous.byteLength > 0
-      && !equivalentTypes(modules, moduleIndex, previous, actual)
-    ) {
-      throw genericCallError(
-        module,
-        tree,
-        argumentIndex,
-        `conflicting inferred types for ${typeParameter} in ${functionName}: ${previous} and ${actual}`
-      );
-    }
-    if (previous.byteLength == 0) addValueBinding(inout substitutions, typeParameter, actual);
-    return;
-  }
-  const patternNullable = nullableTargetType(pattern);
-  const actualNullable = nullableTargetType(actual);
-  if (patternNullable.byteLength > 0 && actualNullable.byteLength > 0) {
-    try bindGenericType(
-      module,
-      modules,
-      moduleIndex,
-      tree,
-      argumentIndex,
-      functionName,
-      patternNullable,
-      actualNullable,
-      typeParameters,
-      inout substitutions
-    );
-    return;
-  }
-  if (stringStartsWith(pattern, "view ") && stringStartsWith(actual, "view ")) {
-    const patternTarget = pattern.copyBytes(5, pattern.byteLength);
-    const actualTarget = actual.copyBytes(5, actual.byteLength);
-    try bindGenericType(
-      module,
-      modules,
-      moduleIndex,
-      tree,
-      argumentIndex,
-      functionName,
-      patternTarget,
-      actualTarget,
-      typeParameters,
-      inout substitutions
-    );
-    return;
-  }
-  match (fixedArrayShape(pattern)) {
-    some(patternArray) => {
-      match (fixedArrayShape(actual)) {
-        some(actualArray) => {
-          if (patternArray.length == actualArray.length) {
-            try bindGenericType(
-              module,
-              modules,
-              moduleIndex,
-              tree,
-              argumentIndex,
-              functionName,
-              patternArray.elementType,
-              actualArray.elementType,
-              typeParameters,
-              inout substitutions
-            );
-          }
-        }
-        none => {}
-      }
-      return;
-    }
-    none => {}
-  }
-  match (genericTypeShape(pattern)) {
-    some(patternGeneric) => {
-      match (genericTypeShape(actual)) {
-        some(actualGeneric) => {
-          if (
-            patternGeneric.base == actualGeneric.base
-            && patternGeneric.arguments.length == actualGeneric.arguments.length
-          ) {
-            let index: usize = 0;
-            while (index < patternGeneric.arguments.length) {
-              try bindGenericType(
-                module,
-                modules,
-                moduleIndex,
-                tree,
-                argumentIndex,
-                functionName,
-                patternGeneric.arguments[index],
-                actualGeneric.arguments[index],
-                typeParameters,
-                inout substitutions
-              );
-              index = index + 1;
-            }
-          }
-        }
-        none => {
-          if (patternGeneric.base == "Slice") {
-            const actualElement = arrayElementType(actual);
-            if (patternGeneric.arguments.length == 1 && actualElement.byteLength > 0) {
-              try bindGenericType(
-                module,
-                modules,
-                moduleIndex,
-                tree,
-                argumentIndex,
-                functionName,
-                patternGeneric.arguments[0],
-                actualElement,
-                typeParameters,
-                inout substitutions
-              );
-            }
-          }
-        }
-      }
-    }
-    none => {}
-  }
-}
-
 function explicitCallTypeArguments(
   in tree: ExpressionTree,
   calleeIndex: usize
@@ -876,29 +660,6 @@ function containsString(in values: Array<String>, in value: String): boolean {
 function addUniqueString(inout values: Array<String>, in value: String): void {
   if (!containsString(values, value)) {
     values.push(value.copyBytes(0, value.byteLength));
-  }
-}
-
-function requireGenericConstraints(
-  in module: ParsedModule,
-  in modules: Array<ResolvedModule>,
-  moduleIndex: usize,
-  in tree: ExpressionTree,
-  calleeIndex: usize,
-  in functionName: String,
-  in constraints: Array<ModuleTypeParameterConstraint>,
-  in substitutions: Array<NativeValueBinding>
-): void throws ModuleResolveError {
-  for (const constraint of constraints) {
-    const argument = valueBindingType(substitutions, constraint.parameter);
-    if (argument.byteLength == 0) continue;
-    if (typeSatisfiesTrait(modules, moduleIndex, argument, constraint.traitName)) continue;
-    throw genericCallError(
-      module,
-      tree,
-      calleeIndex,
-      `${argument} does not satisfy ${constraint.traitName} for ${constraint.parameter} in "${functionName}"`
-    );
   }
 }
 
@@ -1045,28 +806,23 @@ function inferContextualObjectExpressionNode(
   inout evidence: ModuleSemanticEvidence
 ): String throws ModuleResolveError {
   if (tree.nodes[index].kind != ExpressionKind.objectExpression) return "";
-  let known = false;
-  let genericParameters = Array<String>();
-  match (typeSymbolLocation(modules, moduleIndex, expectedType)) {
-    some(location) => {
-      match (in modules[location.moduleIndex].symbols[location.symbolIndex].typeSignature) {
-        some(signature) => {
-          known = true;
-          match (genericTypeShape(expectedType)) {
-            some(generic) => {}
-            none => {
-              for (const parameter of signature.typeParameters) {
-                genericParameters.push(parameter.copyBytes(0, parameter.byteLength));
-              }
-            }
-          }
-        }
-        none => {}
-      }
-    }
-    none => {}
+  let construction = NativeAggregateConstructionShape({
+    name: "",
+    genericInstance: false,
+    typeParameters: Array<String>(),
+    typeParameterConstraints: Array<ModuleTypeParameterConstraint>(),
+    fields: Array<String>(),
+  });
+  match (aggregateConstructionShape(modules, moduleIndex, expectedType)) {
+    some(shape) => construction = shape;
+    none => return "";
   }
-  if (!known) return "";
+  let genericParameters = Array<String>();
+  if (!construction.genericInstance) {
+    for (const parameter of construction.typeParameters) {
+      genericParameters.push(parameter.copyBytes(0, parameter.byteLength));
+    }
+  }
   const children = copyIndices(tree.nodes[index].children);
   let covered = Array<String>();
   let substitutions = Array<NativeValueBinding>();
@@ -1163,26 +919,16 @@ function inferContextualObjectExpressionNode(
     }
     childIndex = childIndex + 1;
   }
-  match (typeSymbolLocation(modules, moduleIndex, expectedType)) {
-    some(location) => {
-      match (in modules[location.moduleIndex].symbols[location.symbolIndex].typeSignature) {
-        some(signature) => {
-          for (const field of signature.fields) {
-            if (!containsString(covered, field.name)) {
-              throw resolutionError(
-                ModuleResolveErrorKind.typeMismatch,
-                module.path,
-                `missing field "${field.name}" when constructing ${expectedType}`,
-                tree.nodes[index].line,
-                tree.nodes[index].column
-              );
-            }
-          }
-        }
-        none => {}
-      }
+  for (const fieldName of construction.fields) {
+    if (!containsString(covered, fieldName)) {
+      throw resolutionError(
+        ModuleResolveErrorKind.typeMismatch,
+        module.path,
+        `missing field "${fieldName}" when constructing ${expectedType}`,
+        tree.nodes[index].line,
+        tree.nodes[index].column
+      );
     }
-    none => {}
   }
   let arguments = Array<String>();
   for (const parameter of genericParameters) {
@@ -1193,63 +939,31 @@ function inferContextualObjectExpressionNode(
   let constraintSubstitutions = copyValueBindings(substitutions);
   match (genericTypeShape(expectedType)) {
     some(generic) => {
-      match (typeSymbolLocation(modules, moduleIndex, expectedType)) {
-        some(location) => {
-          match (in modules[location.moduleIndex].symbols[location.symbolIndex].typeSignature) {
-            some(signature) => {
-              let typeIndex: usize = 0;
-              while (
-                typeIndex < signature.typeParameters.length
-                && typeIndex < generic.arguments.length
-              ) {
-                addValueBinding(
-                  inout constraintSubstitutions,
-                  signature.typeParameters[typeIndex],
-                  generic.arguments[typeIndex]
-                );
-                typeIndex = typeIndex + 1;
-              }
-            }
-            none => {}
-          }
-        }
-        none => {}
+      let typeIndex: usize = 0;
+      while (
+        typeIndex < construction.typeParameters.length
+        && typeIndex < generic.arguments.length
+      ) {
+        addValueBinding(
+          inout constraintSubstitutions,
+          construction.typeParameters[typeIndex],
+          generic.arguments[typeIndex]
+        );
+        typeIndex = typeIndex + 1;
       }
     }
     none => {}
   }
-  match (typeSymbolLocation(modules, moduleIndex, expectedType)) {
-    some(location) => {
-      match (in modules[location.moduleIndex].symbols[location.symbolIndex].typeSignature) {
-        some(signature) => {
-          let constraints = Array<ModuleTypeParameterConstraint>();
-          for (const constraint of signature.typeParameterConstraints) {
-            constraints.push(ModuleTypeParameterConstraint({
-              parameter: constraint.parameter.copyBytes(0, constraint.parameter.byteLength),
-              traitName: rebaseTypeName(
-                modules,
-                location.moduleIndex,
-                moduleIndex,
-                constraint.traitName
-              ),
-            }));
-          }
-          try requireGenericConstraints(
-            module,
-            modules,
-            moduleIndex,
-            tree,
-            index,
-            modules[location.moduleIndex].symbols[location.symbolIndex].name,
-            constraints,
-            constraintSubstitutions
-          );
-        }
-        none => {}
-      }
-    }
-    none => {}
-  }
+  try requireGenericConstraints(
+    module,
+    modules,
+    moduleIndex,
+    tree,
+    index,
+    construction.name,
+    construction.typeParameterConstraints,
+    constraintSubstitutions
+  );
   if (genericParameters.length == 0) {
     return expectedType.copyBytes(0, expectedType.byteLength);
   }
