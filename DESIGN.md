@@ -2169,9 +2169,42 @@ the explicit owned-copy boundary for an asserted `cstring`. `return` still
 exits the enclosing function. `select` may produce a representable scalar or
 independently owned Z value. Unsafe blocks are synchronous and may not appear
 directly in an async function in this tier. Pointer-bearing native records
-passed by value remain unrepresentable in both checked and unsafe Z. The
-current `.zd` vocabulary cannot change that representation, so such an
-operation requires raw source until a reviewed value-resource contract lands.
+passed by value remain unavailable in `unsafe`, but checked `.zd` may classify
+their canonical C record as a move-only resource:
+
+```z
+export type Image {
+  move;
+  deinit UnloadImage;
+}
+
+export function LoadImage(in path: cstring): _ {
+  owned;
+}
+```
+
+The ABI stays native. `owned` activates deterministic cleanup; `borrowed`
+withholds cleanup and produces a lexical non-escaping value. Every resource
+parameter must declare `in`, `inout`, or `move`, every resource producer must
+declare `owned` or `borrowed`, and canonical Clang identity propagates the
+contract across typedef aliases. An uncontracted operation still requires raw
+source rather than an unchecked by-value representation.
+
+Safe Z cannot synthesize a resource record literal: only a contracted native
+producer may establish valid bytes. Imported scalar fields may be inspected,
+but direct mutation is rejected and pointer-bearing fields stay hidden;
+contracted `inout` operations preserve the native library's invariants.
+`copy resource` is rejected unless a distinct native copy operation returns a
+new `owned` result. Borrowed results cannot enter fields, arrays, enums,
+closures, returns, consuming calls, suspension, or thread transfer in this
+tier. These restrictions may relax only when a future `lifetime` contract
+names the native owner.
+
+Clang verifies the record identity, ABI, aliases, and release-function
+signature. It cannot verify that a producer actually owns its return or that
+arbitrary record bytes represent a valid live resource. Those facts remain a
+reviewed trust boundary, as do alias-producing APIs such as native sound
+aliases whose cleanup differs from their canonical record type.
 
 A C union may receive ABI-preserving storage through a contracted `out Union*`
 parameter without entering `unsafe`: the contract proves initialization of the

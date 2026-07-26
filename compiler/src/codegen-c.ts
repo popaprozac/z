@@ -3507,7 +3507,7 @@ function generateStatement(statement: Statement, context: GenerationContext): st
         const target = generateStoredValue(statement.name, context);
         if (!statement.initializer) return "(void)0;";
         const initialized = generateDirectValue(statement.initializer, context, (value) => `${target} = ${value};`);
-        const liveFlag = hasCleanupType(zType, context.structs, context.enums, context.semanticInfo.foreignTypes)
+        const liveFlag = hasExplicitCleanupType(zType, context.structs, context.enums, context.semanticInfo)
           ? context.liveFlags.get(statement.name)
           : null;
         return `${initialized}\n(void)${target};${liveFlag ? `\n${liveFlag} = true;` : ""}`;
@@ -3564,7 +3564,7 @@ bool ${liveFlag} = true;`;
       }
       const declaration = generateLocalDeclaration(zType, statement.name, statement.mutable, context.structs, context.enums, context.semanticInfo.foreignNamedTypes);
       if (!statement.initializer) {
-        if (!hasCleanupType(zType, context.structs, context.enums, context.semanticInfo.foreignTypes)) return `${declaration};`;
+        if (!hasExplicitCleanupType(zType, context.structs, context.enums, context.semanticInfo)) return `${declaration};`;
         const liveFlag = ensureLiveFlag(statement.name, context);
         const initialization = context.semanticInfo.foreignTypes.has(zType) ? " = NULL" : "";
         return `${declaration}${initialization};\nbool ${liveFlag} = false;`;
@@ -3584,7 +3584,7 @@ bool ${liveFlag} = true;`;
         initialized = generateDirectValue(statement.initializer, context, (value) => `${declaration} = ${value};`);
       }
       initialized = `${initialized}\n(void)${cBindingName(statement.name)};`;
-      if (!hasCleanupType(zType, context.structs, context.enums, context.semanticInfo.foreignTypes)) return initialized;
+      if (!hasExplicitCleanupType(zType, context.structs, context.enums, context.semanticInfo)) return initialized;
       const liveFlag = ensureLiveFlag(statement.name, context);
       return `${initialized}\nbool ${liveFlag} = true;`;
     }
@@ -3621,7 +3621,7 @@ bool ${liveFlag} = true;`;
           (value) => `${generateAssignmentTarget(statement.target, context)} = ${value};${liveFlag ? `\n${liveFlag} = true;` : ""}`,
         );
       }
-      if (hasCleanupType(targetType, context.structs, context.enums, context.semanticInfo.foreignTypes)) {
+      if (hasExplicitCleanupType(targetType, context.structs, context.enums, context.semanticInfo)) {
         return generateCleanupAwareAssignment(statement, targetType, context);
       }
       return generateDirectValue(
@@ -4833,7 +4833,7 @@ function generateTemplateValue(
     const type = context.semanticInfo.expressionTypes.get(part.expression.location.offset)
       ?? inferExpressionType(part.expression, context);
     lines.push(generateDirectValue(part.expression, context, (value) => {
-      if (hasCleanupType(type, context.structs, context.enums, context.semanticInfo.foreignTypes)) {
+      if (hasExplicitCleanupType(type, context.structs, context.enums, context.semanticInfo)) {
         return renderStringValue(value, type, temporary, context).join("\n");
       }
       const valueTemporary = `_z_string_value_${context.valueCounter.value++}`;
@@ -5037,7 +5037,7 @@ function recordVariableType(statement: Statement, context: GenerationContext): v
       : context.semanticInfo.bindingTypes.get(statement.nameLocation.offset));
   if (!type) throw new Error(`missing inferred type for uninitialized binding ${JSON.stringify(statement.name)}`);
   context.localTypes.set(statement.name, type);
-  if (hasCleanupType(type, context.structs, context.enums, context.semanticInfo.foreignTypes)) {
+  if (hasExplicitCleanupType(type, context.structs, context.enums, context.semanticInfo)) {
     context.cleanupScopes.at(-1)!.push({ name: statement.name, type, liveFlag: ensureLiveFlag(statement.name, context) });
   }
 }
@@ -5229,6 +5229,11 @@ function generateValueCleanup(
     const conditions = [liveFlag, foreign.nullable ? `${value} != NULL` : null].filter(Boolean);
     const release = `${foreign.release}(${value});`;
     return conditions.length > 0 ? `if (${conditions.join(" && ")}) ${release}` : release;
+  }
+  const foreignNamed = context.semanticInfo.foreignNamedTypes.get(type);
+  if (foreignNamed?.kind === "record" && foreignNamed.resource) {
+    const release = `${foreignNamed.resource.release}(${value});`;
+    return liveFlag ? `if (${liveFlag}) ${release}` : release;
   }
   const declaration = context.structs.get(type);
   if (declaration?.kind === "class") {
@@ -5432,6 +5437,9 @@ function generateLocalDeclaration(
   if (requiresNativeMove(type, structs, enums, foreignNamedTypes)) {
     // Z still treats a const binding as immutable. C++ move construction,
     // however, requires a non-const source object for its rvalue reference.
+    return `${mapType(type, structs, enums, foreignNamedTypes)} ${name}`;
+  }
+  if (containsCValueResourceStorage(type, structs, enums, foreignNamedTypes)) {
     return `${mapType(type, structs, enums, foreignNamedTypes)} ${name}`;
   }
   const declaration = structs.get(type);
@@ -7864,6 +7872,9 @@ function mapType(
   enums: Map<string, EnumDeclaration>,
   foreignNamedTypes: SemanticInfo["foreignNamedTypes"] = new Map(),
 ): string {
+  if (name.startsWith("__z_borrowed:")) {
+    return mapType(name.slice("__z_borrowed:".length), structs, enums, foreignNamedTypes);
+  }
   const view = parseViewType(name);
   if (view) return `const ${mapType(view.target, structs, enums, foreignNamedTypes)} *`;
   const functionType = parseFunctionType(name);
@@ -7928,7 +7939,8 @@ function requiresNativeLifetime(
   visiting = new Set<string>(),
 ): boolean {
   if (visiting.has(name)) return false;
-  if (foreignNamedTypes.get(name)?.kind === "value") return true;
+  const foreign = foreignNamedTypes.get(name);
+  if (foreign?.kind === "value" || (foreign?.kind === "record" && foreign.resource)) return true;
   const array = parseFixedArrayType(name);
   if (array) return requiresNativeLifetime(array.elementType, structs, enums, foreignNamedTypes, visiting);
   const dynamic = parseDynamicArrayType(name);
@@ -8112,7 +8124,8 @@ function hasSemanticCleanupType(
 ): boolean {
   if (visiting.has(type)) return false;
   if (parseGeneratorType(type)) return true;
-  if (semanticInfo.foreignNamedTypes.get(type)?.kind === "object") return true;
+  const foreignNamed = semanticInfo.foreignNamedTypes.get(type);
+  if (foreignNamed?.kind === "object" || (foreignNamed?.kind === "record" && foreignNamed.resource)) return true;
   if (hasCleanupType(type, structs, enums, semanticInfo.foreignTypes)) return true;
   const dynamic = parseDynamicArrayType(type);
   if (dynamic) return hasSemanticCleanupType(dynamic.elementType, structs, enums, semanticInfo, visiting);
@@ -8126,6 +8139,48 @@ function hasSemanticCleanupType(
     ? declaration.fields.some((field) => hasSemanticCleanupType(field.type.name, structs, enums, semanticInfo, visiting))
     : enumeration!.variants.some((variant) => (
       variant.payload && hasSemanticCleanupType(variant.payload.name, structs, enums, semanticInfo, visiting)
+    ));
+  visiting.delete(type);
+  return Boolean(result);
+}
+
+function hasExplicitCleanupType(
+  type: string,
+  structs: Map<string, StructDeclaration>,
+  enums: Map<string, EnumDeclaration>,
+  semanticInfo: Pick<SemanticInfo, "foreignTypes" | "foreignNamedTypes">,
+): boolean {
+  if (type.startsWith("__z_borrowed:")) return false;
+  return hasCleanupType(type, structs, enums, semanticInfo.foreignTypes)
+    || containsCValueResourceStorage(type, structs, enums, semanticInfo.foreignNamedTypes);
+}
+
+function containsCValueResourceStorage(
+  type: string,
+  structs: Map<string, StructDeclaration>,
+  enums: Map<string, EnumDeclaration>,
+  foreignNamedTypes: SemanticInfo["foreignNamedTypes"],
+  visiting = new Set<string>(),
+): boolean {
+  if (type.startsWith("__z_borrowed:") || visiting.has(type)) return false;
+  const foreign = foreignNamedTypes.get(type);
+  if (foreign?.kind === "record" && foreign.resource) return true;
+  const array = parseFixedArrayType(type);
+  if (array) return containsCValueResourceStorage(array.elementType, structs, enums, foreignNamedTypes, visiting);
+  const dynamic = parseDynamicArrayType(type);
+  if (dynamic) return containsCValueResourceStorage(dynamic.elementType, structs, enums, foreignNamedTypes, visiting);
+  const declaration = structs.get(type);
+  const enumeration = enums.get(type);
+  if (!declaration && !enumeration) return false;
+  if (declaration?.kind === "class") return false;
+  visiting.add(type);
+  const result = declaration
+    ? declaration.fields.some((field) => (
+      containsCValueResourceStorage(field.type.name, structs, enums, foreignNamedTypes, visiting)
+    ))
+    : enumeration!.variants.some((variant) => (
+      variant.payload
+      && containsCValueResourceStorage(variant.payload.name, structs, enums, foreignNamedTypes, visiting)
     ));
   visiting.delete(type);
   return Boolean(result);

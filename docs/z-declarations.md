@@ -102,6 +102,19 @@ declare module "vendor.h" {
     }
   }
 
+  export type VendorImage {
+    move;
+    deinit vendor_image_destroy;
+  }
+
+  export function vendor_image_load(in path: cstring): _ {
+    owned;
+  }
+
+  export function vendor_default_image(): _ {
+    borrowed;
+  }
+
   export function vendor_setopt(
     in owner: _,
     option: VENDOR_WRITE,
@@ -153,7 +166,7 @@ spelling does not silently pass through.
 | `declare module "header"` | Bind this contract to one imported header | Specifier and resolved header must match |
 | `export function name(...)` | Refine an existing native function | Name, parameter count/order, and native types come from Clang |
 | `export function Type.method(...)` | Refine an existing Objective-C method | The class, selector base name, parameter names, and types must match Clang; static and instance methods share this declaration shape |
-| `export type Name { ... }` | Refine an existing C++/generated value type | Clang must prove the named value and supported lifecycle operations |
+| `export type Name { ... }` | Refine an existing C record resource or C++/generated value type | C resources use `move; deinit release;`; Clang proves C++ lifecycle operations |
 | `export type Name on thread.main;` | Isolate an existing native type to the main executor | The type must exist in the imported header; values, construction, member access, destruction, and containing Z aggregates retain the affinity |
 | `export type Name on thread.main { ... }` | Combine executor isolation with native value lifecycle facts | Affinity is independent from copy/move/deinit capability |
 | `export function name(...): _ on thread.main` | Isolate a native function or Objective-C method | Calls require proven main-executor context; the native ABI is unchanged |
@@ -163,9 +176,11 @@ spelling does not silently pass through.
 | `in name: _` | Read-only, call-scoped borrow | Typically `const T *`, `const T &`, or a call-only callback |
 | `inout name: _` | Exclusive mutable borrow | Typically `T *` or `T &`; caller spells `inout value` |
 | `out name: _` | Callee initializes caller storage | Typically an output pointer such as `T *`/`T **`; unreadable until initialized |
-| `move name: _` | Transfer ownership into the native call | C++ rvalue/owned parameter or escaping callback, when the full contract proves it |
+| `move name: _` | Transfer ownership into the native call | C by-value resource, C++ rvalue/owned parameter, or escaping callback, when the full contract proves it |
 | `view cstring` | Borrowed native text tied to the supported input owner | Copies explicitly when converted to owned Z `String` |
 | `deinit release;` | Associate owned storage with its exact cleanup operation | Meaning depends on whether it appears on a result, output, callback, or type |
+| `owned;` in a function result block | Return a new unique C value-resource owner | The return must be a record classified by `export type`; Z schedules its named cleanup |
+| `borrowed;` in a function result block | Return runtime-owned C value-resource bytes without cleanup | First tier is lexical and non-escaping: no fields, collections, enum payloads, captures, returns, or consuming calls |
 | `fixed CONSTANT;` | Hide one native ABI parameter and always pass a header constant | Z call omits that argument; generated native code inserts the constant in place |
 | `void throws _` | Project an integer or integer-backed native enum status into Z's error channel | Native return type remains ABI-exact and allocation-free; enum errors retain their imported enum type |
 | `success N;` | Treat numeric status `N` as successful `void` completion | Every other integer or enum status becomes the typed error value |
@@ -332,6 +347,7 @@ These are semantic mappings, not textual rewrites:
 | C mutable `T *` input | `inout value: _` | Exclusive mutable call borrow |
 | C `T **` output | `out value: _` plus optional `deinit` | Definitely initialized owned result |
 | C opaque returned handle | Return `_ \| null { deinit close; }` | Nullable owned handle with deterministic cleanup |
+| C record carrying resource identity | `export type T { move; deinit release; }` plus `owned;`/`borrowed;` producer results and `in`/`inout`/`move` parameters | Exact native by-value ABI, unique-owner checking, reverse-order cleanup, and conservative borrowed non-escape |
 | C integer or integer-backed enum status | `void throws _ { success N; }` or `success CONSTANT;` | `try`/`attempt` and `Result<void, E>`; enum failures preserve their native enum type |
 | C variadic function selected by an enum option | Repeated contracts with `option: ENUM_MEMBER` and explicit trailing types | Closed, type-checked Z overloads that still lower to the original C call |
 | C variadic `long` | Declaration-only `clong` | Target-width integer checking at the Z surface plus exact `long` ABI lowering |
@@ -433,8 +449,33 @@ shape, nullability, return types, and capability compatibility—against Clang's
 imported declaration graph. `.zd` can then narrow or classify that imported
 surface, but a project author can still lie about behavioral facts that no
 header expresses—for example, claiming that a vendor callback fires exactly
-once or that a native owner may be destroyed on another thread. Such a false
+once, that a record return is owned rather than borrowed, or that a native
+owner may be destroyed on another thread. Such a false
 contract is the foreign equivalent of an unsafe declaration.
+
+C record aliases are matched by canonical Clang identity. A resource contract
+on raylib's `Texture` therefore governs signatures spelled `Texture2D` or
+`TextureCubemap`; conflicting alias contracts are rejected. Resource types have
+no implicit ownership default, and an unclassified producer or parameter is
+withheld from checked Z. A producer return cannot simultaneously be a status
+projection and an `owned`/`borrowed` resource channel; status plus an owned
+`out` parameter remains the supported two-channel form.
+
+Ownership remains a behavioral contract rather than a property inferred from
+layout. All-scalar records such as GPU texture IDs can be just as move-only as
+pointer-bearing images. A future contract generator must therefore emit
+unresolved ownership placeholders that fail compilation until a human reviews
+them; it must never guess `owned` or `borrowed`.
+
+Safe Z never constructs these records from literals. Supported scalar fields
+are read-only, pointer-bearing fields are hidden, and mutation goes through a
+contracted `inout` operation. `copy value` remains unavailable; a library copy
+function may instead return a distinct `owned` result. The first borrowed tier
+also rejects suspension and thread transfer in addition to ordinary storage
+and capture. A contract can prove that cleanup has the correct C signature, but
+cannot prove that arbitrary bytes are a valid resource or that an ownership
+claim matches undocumented library behavior. APIs such as native aliases whose
+cleanup differs from their canonical type therefore require particular review.
 
 Reusable bindings should ship reviewed `.zd` metadata with the library or
 toolchain. Z may also ship reviewed API notes for platform surfaces such as

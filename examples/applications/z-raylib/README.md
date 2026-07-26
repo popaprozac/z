@@ -6,17 +6,24 @@ interactive window with a hoverable quit button. It exercises:
 - direct C function, record, and enum import;
 - construction of native `Color` and `Rectangle` values;
 - native structs returned by value;
+- checked move-only `Image` and aliased `Texture2D` resource records;
+- reverse-order implicit `UnloadTexture` → `UnloadImage` cleanup;
+- a non-escaping borrowed texture owned by raylib's global runtime;
 - explicit nominal-enum conversion with `i32(raylib.MOUSE_BUTTON_LEFT)`; and
 - deterministic global-runtime cleanup through Z `deinit`.
 
-The checked Z surface needs no `.zd` additions because this deliberately narrow
-slice uses only plain C values and functions. That is not yet evidence that all
-of raylib is representable: APIs that pass pointer-bearing resource records
-such as `Image`, `Shader`, and `Model` by value remain outside Z's checked
-foreign-value tier. Z now diagnoses that boundary directly and recommends
-`raw c` for a one-off operation; a reviewed `.zd` value-resource contract is
-the intended reusable solution. `RaylibRuntime` ensures `CloseWindow()` runs on
-every exit after successful initialization.
+The adjacent `raylib.h.zd` adds facts the C header cannot express: `Image` and
+the canonical `Texture` record are move-only resources, their cleanup
+functions, and which producers return owned versus borrowed values. The
+generated call ABI remains the native C ABI—there is no wrapper allocation.
+`Texture2D` and `TextureCubemap` inherit the canonical `Texture` facts even
+though raylib uses only those aliases in function signatures.
+
+The borrowed result of `GetShapesTexture()` is deliberately non-escaping in
+this first tier. It may be inspected locally and passed to contracted `in`
+parameters, but not stored in a Z struct, collection, enum, closure, or return
+value until `.zd` can name its runtime lifetime. `RaylibRuntime` ensures
+`CloseWindow()` runs only after the owned texture and image are released.
 
 On macOS, install raylib with Homebrew and run from the repository root:
 

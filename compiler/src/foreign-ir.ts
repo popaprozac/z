@@ -32,7 +32,13 @@ export type ForeignType =
   | { readonly kind: "fixedNative"; readonly cName: string; readonly expression: string }
   | { readonly kind: "selector"; readonly cName: "SEL" }
   | { readonly kind: "swiftString"; readonly cName: "swift::String" }
-  | { readonly kind: "named"; readonly type: ForeignNamedType; readonly cName: string }
+  | {
+    readonly kind: "named";
+    readonly type: ForeignNamedType;
+    readonly cName: string;
+    /** Present only for a classified C value resource crossing a call boundary. */
+    readonly ownership?: "owned" | "borrowed" | "consuming";
+  }
   | ForeignReferenceType
   | ForeignCallbackType
   | ForeignCallbackContextType
@@ -46,7 +52,7 @@ export type ForeignType =
   | {
     readonly kind: "unsupported";
     readonly cName: string;
-    readonly reason?: "byValueRecordWithPointers" | "byValueRecordLayout";
+    readonly reason?: "byValueRecordWithPointers" | "byValueRecordLayout" | "unclassifiedValueResource";
   };
 
 export type ForeignNamedType = (
@@ -57,6 +63,14 @@ export type ForeignNamedType = (
     readonly cName: string;
     readonly layout: "struct" | "union";
     readonly fields: readonly ForeignField[];
+    /**
+     * A C record whose bytes carry unique native resource ownership. The
+     * record keeps its native ABI/layout; Z adds move tracking and invokes the
+     * named C release function for owned values.
+     */
+    readonly resource: {
+      readonly release: string;
+    } | null;
   }
   | {
     readonly kind: "value";

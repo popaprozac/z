@@ -332,6 +332,14 @@ function readHeader(
     }
     functionDeclarations.set(qualifiedName, { ...existing, overloads });
   });
+  validateCValueResourceReleases(
+    imported.namedTypes,
+    functionDeclarations,
+    imported.byCName,
+    imported.unsupportedValueRecords,
+    fileName,
+    declaration.location,
+  );
   const produced: ForeignModuleDeclarations = {
     producer: "clang",
     functions: functionDeclarations,
@@ -406,6 +414,63 @@ function readHeader(
     objectiveC: produced.objectiveC,
     cPlusPlus: produced.cPlusPlus,
   };
+}
+
+function validateCValueResourceReleases(
+  namedTypes: ReadonlyMap<string, ForeignNamedType>,
+  functions: ReadonlyMap<string, ForeignFunctionDeclaration>,
+  byCName: ReadonlyMap<string, ForeignNamedType>,
+  unsupportedValueRecords: ReadonlyMap<string, "byValueRecordWithPointers" | "byValueRecordLayout">,
+  fileName: string,
+  location: ImportDeclaration["location"],
+): void {
+  const resources = [...namedTypes.values()].filter((type): type is Extract<ForeignNamedType, { kind: "record" }> => (
+    type.kind === "record" && type.resource !== null
+  ));
+  const releases = new Map<string, typeof resources>();
+  for (const resource of resources) {
+    const matching = releases.get(resource.resource!.release) ?? [];
+    matching.push(resource);
+    releases.set(resource.resource!.release, matching);
+  }
+  for (const [release, resourceAliases] of releases) {
+    const declaration = functions.get(release);
+    const valid = declaration?.overloads.some((overload) => {
+      if (overload.parameters.length !== 1) return false;
+      const returnType = mapForeignType(
+        overload.returnType.nativeName,
+        undefined,
+        "return",
+        new Map(),
+        byCName,
+        overload.returnType.canonicalNativeName,
+        unsupportedValueRecords,
+      );
+      if (returnType.kind !== "z" || returnType.name !== "void") return false;
+      const parameter = mapForeignType(
+        overload.parameters[0].type.nativeName,
+        { ownership: "consuming" },
+        "parameter",
+        new Map(),
+        byCName,
+        overload.parameters[0].type.canonicalNativeName,
+        unsupportedValueRecords,
+      );
+      return parameter.kind === "named"
+        && parameter.type.kind === "record"
+        && parameter.type.resource?.release === release;
+    }) ?? false;
+    if (valid) continue;
+    throw new DiagnosticError(
+      fileName,
+      location,
+      `native value-resource deinit ${JSON.stringify(release)} must name a C function taking the classified record by value and returning void`,
+      {
+        code: "Z0801",
+        notes: [`resource aliases: ${resourceAliases.map((type) => type.cName).join(", ")}`],
+      },
+    );
+  }
 }
 
 function applyObjCMethodApiNotes(
@@ -599,6 +664,8 @@ function collectNamedTypes(
     lifecycle?: ForeignValueLifecycle;
     thread?: ForeignValueContract["thread"];
     layout?: "struct" | "union";
+    resourceRelease?: string;
+    canonicalRecordName?: string;
   };
   const seeds = new Map<string, Seed>();
   for (const node of nodes) {
@@ -635,7 +702,33 @@ function collectNamedTypes(
           : undefined,
       flags: kind === "enum" && enumDeclaration?.inner?.some((child) => child.kind === "FlagEnumAttr"),
       layout: kind === "record" ? recordMatch![1] as "struct" | "union" : undefined,
+      canonicalRecordName: kind === "record" ? recordMatch![2] : undefined,
     };
+    if (kind === "record") {
+      const contract = valueContracts.get(node.name) ?? valueContracts.get(recordMatch![2]);
+      if (contract) {
+        if (seed.layout !== "struct") {
+          throw new DiagnosticError(
+            contract.location.fileName ?? fileName,
+            contract.location,
+            `native value-resource contract ${JSON.stringify(contract.name)} requires a C struct, found ${seed.layout ?? "unknown layout"}`,
+            {
+              code: "Z0801",
+              notes: ["the first value-resource tier requires one stable record representation for deterministic cleanup"],
+            },
+          );
+        }
+        if (contract.copy || !contract.move || !contract.deinit || !contract.deinitFunction) {
+          throw new DiagnosticError(
+            contract.location.fileName ?? fileName,
+            contract.location,
+            `C value resource ${JSON.stringify(contract.name)} must declare \`move;\` and \`deinit <release function>;\` without \`copy;\``,
+            { code: "Z0801" },
+          );
+        }
+        seed.resourceRelease = contract.deinitFunction;
+      }
+    }
     const existing = seeds.get(node.name);
     if (
       !existing
@@ -643,6 +736,56 @@ function collectNamedTypes(
     ) {
       seeds.set(node.name, seed);
     }
+  }
+  const resourceContractsByCanonicalRecord = new Map<string, ForeignValueContract>();
+  for (const seed of seeds.values()) {
+    if (seed.kind !== "record" || !seed.canonicalRecordName) continue;
+    const contract = valueContracts.get(seed.qualifiedName);
+    if (!contract) continue;
+    if (seed.layout !== "struct") {
+      throw new DiagnosticError(
+        contract.location.fileName ?? fileName,
+        contract.location,
+        `native value-resource contract ${JSON.stringify(contract.name)} requires a C struct, found ${seed.layout ?? "unknown layout"}`,
+        {
+          code: "Z0801",
+          notes: ["the first value-resource tier requires one stable record representation for deterministic cleanup"],
+        },
+      );
+    }
+    if (contract.copy || !contract.move || !contract.deinit || !contract.deinitFunction) {
+      throw new DiagnosticError(
+        contract.location.fileName ?? fileName,
+        contract.location,
+        `C value resource ${JSON.stringify(contract.name)} must declare \`move;\` and \`deinit <release function>;\` without \`copy;\``,
+        { code: "Z0801" },
+      );
+    }
+    const existing = resourceContractsByCanonicalRecord.get(seed.canonicalRecordName);
+    if (
+      existing
+      && (
+        existing.deinitFunction !== contract.deinitFunction
+        || existing.move !== contract.move
+        || existing.copy !== contract.copy
+      )
+    ) {
+      throw new DiagnosticError(
+        contract.location.fileName ?? fileName,
+        contract.location,
+        `foreign aliases for canonical C record ${JSON.stringify(seed.canonicalRecordName)} declare conflicting resource facts`,
+        {
+          code: "Z0801",
+          notes: [`${JSON.stringify(existing.name)} already classifies the same native record`],
+        },
+      );
+    }
+    resourceContractsByCanonicalRecord.set(seed.canonicalRecordName, contract);
+  }
+  for (const seed of seeds.values()) {
+    if (seed.kind !== "record" || !seed.canonicalRecordName) continue;
+    const contract = resourceContractsByCanonicalRecord.get(seed.canonicalRecordName);
+    if (contract?.deinitFunction) seed.resourceRelease = contract.deinitFunction;
   }
   for (const record of cppRecords) {
     if (seeds.has(record.qualifiedName)) continue;
@@ -723,9 +866,11 @@ function collectNamedTypes(
         : null);
       const supportedFields = mapped.filter((field): field is ForeignField => Boolean(field?.typeName));
       if (
-        seed.layout === "union"
-          ? supportedFields.length > 0
-          : recordIsSupported(seed, potential, new Set()) && supportedFields.length === mapped.length
+        seed.resourceRelease
+          ? seed.layout === "struct"
+          : seed.layout === "union"
+            ? supportedFields.length > 0
+            : recordIsSupported(seed, potential, new Set()) && supportedFields.length === mapped.length
       ) {
         named = {
           kind: "record",
@@ -736,6 +881,7 @@ function collectNamedTypes(
           cName: seed.cName,
           layout: seed.layout ?? "struct",
           fields: supportedFields,
+          resource: seed.resourceRelease ? { release: seed.resourceRelease } : null,
           metadata,
         };
       }
@@ -787,7 +933,11 @@ function collectNamedTypes(
     byCName.set(name, matching[0]);
   }
   for (const contract of valueContracts.values()) {
-    if (!namedTypes.has(contract.name)) {
+    const direct = namedTypes.get(contract.name);
+    const canonicalAlias = [...seeds.values()].some((seed) => (
+      seed.canonicalRecordName === contract.name && namedTypes.has(seed.qualifiedName)
+    ));
+    if (!direct && !canonicalAlias) {
       throw new DiagnosticError(
         contract.nameLocation.fileName ?? fileName,
         contract.nameLocation,
@@ -1704,6 +1854,19 @@ function mapForeignType(
   const named = namedTypes.get(valueName);
   if (named) {
     if (named.kind === "scalar") return { kind: "z", name: named.underlying, cName };
+    if (named.kind === "record" && named.resource) {
+      const ownership = note?.ownership;
+      const valid = position === "return"
+        ? ownership === "owned" || ownership === "borrowed"
+        : ownership === "borrowed" || ownership === "consuming";
+      return valid
+        ? { kind: "named", type: named, cName, ownership }
+        : {
+          kind: "unsupported",
+          cName,
+          reason: "unclassifiedValueResource",
+        };
+    }
     return { kind: "named", type: named, cName };
   }
   const unsupportedValueRecord = unsupportedValueRecords.get(valueName);

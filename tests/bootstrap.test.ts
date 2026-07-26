@@ -2057,7 +2057,7 @@ test("reports unsupported C signatures at the Z call site", () => {
   );
 });
 
-test("does not route unsupported by-value native records through unusable interop remedies", () => {
+test("requires and enforces checked contracts for pointer-bearing C value resources", () => {
   const directory = mkdtempSync("/tmp/z-native-value-diagnostic-");
   const header = resolve(directory, "native-value.h");
   const declaration = `${header}.zd`;
@@ -2089,23 +2089,33 @@ test("does not route unsupported by-value native records through unusable intero
   const direct = diagnostics(source, fileName)[0];
   assert.equal(direct.code, "Z0823");
   assert.match(direct.message, /native record "NativeImage" by value.*contains pointer storage/);
-  assert.match(direct.message, /adjacent \.zd file cannot make this by-value layout representable yet/);
+  assert.match(direct.message, /adjacent \.zd/);
   assert.match(direct.message, /raw c\/cpp\/objc/);
   assert.doesNotMatch(direct.message, /place a local unverified call inside `unsafe/);
 
   writeFileSync(declaration, `
     declare module "native-value.h" {
-      export function z_image_load(): _ {
+      export type NativeImage {
+        move;
         deinit z_image_unload;
+      }
+      export function z_image_load(): _ {
       }
       export function z_image_unload(move image: _): _;
     }
   `);
-  const declared = diagnostics(source, fileName)[0];
-  assert.equal(declared.code, "Z0823");
-  assert.match(declared.message, /native record "NativeImage" by value.*contains pointer storage/);
-  assert.match(declared.message, /raw c\/cpp\/objc/);
+  const missingOwnership = diagnostics(source, fileName)[0];
+  assert.equal(missingOwnership.code, "Z0823");
+  assert.match(missingOwnership.message, /requires an explicit ownership capability/);
 
+  writeFileSync(
+    declaration,
+    readFileSync(declaration, "utf8").replace("export function z_image_load(): _ {\n", "export function z_image_load(): _ {\n        owned;\n"),
+  );
+  assert.deepEqual(diagnostics(source, fileName), []);
+  assert.match(compileToNative(source, fileName).source, /z_image_unload\(image\)/);
+
+  rmSync(declaration);
   const unsafeSource = source.replace(
     "const image = native.z_image_load();",
     "unsafe { const image = native.z_image_load(); }",
@@ -2115,6 +2125,298 @@ test("does not route unsupported by-value native records through unusable intero
   assert.match(unsafeDiagnostic.message, /unsafe cannot represent native record "NativeImage" passed by value/);
   assert.match(unsafeDiagnostic.message, /raw c\/cpp\/objc/);
   assert.doesNotMatch(unsafeDiagnostic.message, /checked \.zd projection/);
+});
+
+test("moves, borrows, aliases, and destroys native C value resources", () => {
+  const fileName = resolve(projectRoot, "tests/fixtures/value-resource-main.zs");
+  const source = `
+    import native from "./value-resource.h";
+
+    struct Loaded {
+      image: native.ZImage;
+    }
+
+    enum Asset {
+      image native.ZImage,
+      empty,
+    }
+
+    function exercise(): i32 {
+      let image = native.z_image_make(40);
+      native.z_image_flip(inout image);
+      const copied = native.z_image_copy(image);
+      const loaded = Loaded({ image: move image });
+      const texture = native.z_texture_make(loaded.image);
+      const systemTexture = native.z_texture_default();
+      const width = native.z_texture_width(systemTexture);
+      native.z_texture_drop(move texture);
+      const asset = Asset.image(move copied);
+      return width - 1;
+    }
+
+    function main(): i32 {
+      const result = exercise();
+      return result + native.z_resource_live_count();
+    }
+  `;
+  assert.deepEqual(diagnostics(source, fileName), []);
+  const generated = compileToNative(source, fileName).source;
+  assert.match(generated, /ZImage image = z_image_make\(40\)/);
+  assert.match(generated, /z_image_flip\(&\(image\)\)/);
+  assert.match(generated, /ZTexture2D texture = z_texture_make/);
+  assert.match(generated, /z_texture_drop\(texture\)/);
+  assert.match(generated, /z_image_drop/);
+
+  // The CLI consumes files, so execute an equivalent temporary source.
+  const directory = mkdtempSync("/tmp/z-value-resource-run-");
+  const runnable = resolve(directory, "main.zs");
+  writeFileSync(runnable, source.replace("./value-resource.h", resolve(projectRoot, "tests/fixtures/value-resource.h")));
+  const run = spawnSync(process.execPath, [cli, "run", runnable], { encoding: "utf8" });
+  assert.equal(run.status, 0, run.stderr);
+  assert.equal(run.status, 0);
+
+  const movedTwice = source.replace(
+    "native.z_texture_drop(move texture);",
+    "native.z_texture_drop(move texture);\n      native.z_texture_drop(move texture);",
+  );
+  assert.match(diagnostics(movedTwice, fileName)[0]?.message ?? "", /moved value "texture"/);
+
+  const aliasContract = analyzeSource(source, fileName)
+    .foreignModules.get("native")?.namedTypes.get("ZTexture2D");
+  assert.equal(aliasContract?.kind, "record");
+  if (aliasContract?.kind === "record") {
+    assert.deepEqual(aliasContract.resource, { release: "z_texture_drop" });
+  }
+
+  const borrowedEscape = `
+    import native from "./value-resource.h";
+    struct Theme { texture: native.ZTexture2D; }
+    function main(): i32 {
+      const texture = native.z_texture_default();
+      const theme = Theme({ texture });
+      return native.z_texture_width(theme.texture);
+    }
+  `;
+  const borrowedDiagnostic = diagnostics(borrowedEscape, fileName)[0];
+  assert.equal(borrowedDiagnostic.code, "Z0206");
+  assert.match(borrowedDiagnostic.message, /borrowed native resource cannot be stored in a struct field/i);
+
+  const borrowedArray = `
+    import native from "./value-resource.h";
+    function main(): i32 {
+      const texture = native.z_texture_default();
+      const textures = [texture];
+      return textures.length;
+    }
+  `;
+  assert.match(diagnostics(borrowedArray, fileName)[0]?.message ?? "", /borrowed native resource cannot be stored in an array/i);
+
+  const borrowedEnum = `
+    import native from "./value-resource.h";
+    enum MaybeTexture { some native.ZTexture2D, none }
+    function main(): i32 {
+      const texture = native.z_texture_default();
+      const selected = MaybeTexture.some(texture);
+      return 0;
+    }
+  `;
+  assert.match(diagnostics(borrowedEnum, fileName)[0]?.message ?? "", /borrowed native resource cannot be stored in an enum payload/i);
+
+  const borrowedClass = `
+    import native from "./value-resource.h";
+    class Theme { texture: native.ZTexture2D; }
+    function main(): i32 {
+      const texture = native.z_texture_default();
+      const theme = new Theme({ texture });
+      return native.z_texture_width(theme.texture);
+    }
+  `;
+  assert.match(
+    diagnostics(borrowedClass, fileName)[0]?.message ?? "",
+    /ARC class fields cannot store move-only native values|borrowed native resource cannot be stored in a struct field/i,
+  );
+
+  const borrowedReturn = `
+    import native from "./value-resource.h";
+    function currentTexture(): native.ZTexture2D {
+      const texture = native.z_texture_default();
+      return texture;
+    }
+    function main(): i32 { return native.z_texture_width(currentTexture()); }
+  `;
+  assert.match(diagnostics(borrowedReturn, fileName)[0]?.message ?? "", /borrowed native resource cannot be returned from a function/i);
+
+  const borrowedCapture = `
+    import native from "./value-resource.h";
+    function main(): i32 {
+      const texture = native.z_texture_default();
+      const inspect: () => i32 = (): i32 => native.z_texture_width(texture);
+      return inspect();
+    }
+  `;
+  assert.match(diagnostics(borrowedCapture, fileName)[0]?.message ?? "", /borrowed native resource "texture" cannot be captured/i);
+
+  const borrowedSuspension = `
+    import native from "./value-resource.h";
+    import { delay } from "std/time";
+    async function main(): i32 {
+      const texture = native.z_texture_default();
+      await delay(1);
+      return native.z_texture_width(texture);
+    }
+  `;
+  assert.match(
+    diagnostics(borrowedSuspension, fileName)[0]?.message ?? "",
+    /cannot await while borrowed storage "texture" is live/i,
+  );
+
+  const copiedResource = source.replace(
+    "const copied = native.z_image_copy(image);",
+    "const copied = copy image;",
+  );
+  assert.match(diagnostics(copiedResource, fileName)[0]?.message ?? "", /type native\.ZImage cannot be explicitly copied/i);
+
+  const resourceLiteral = `
+    import native from "./value-resource.h";
+    function main(): i32 {
+      const texture = native.ZTexture({ id: 1, width: 1 });
+      return texture.width;
+    }
+  `;
+  assert.match(diagnostics(resourceLiteral, fileName)[0]?.message ?? "", /native value resource .* cannot be constructed with a Z struct literal/i);
+
+  const fieldMutation = `
+    import native from "./value-resource.h";
+    function main(): i32 {
+      let texture = native.z_texture_make(native.z_image_make(1));
+      texture.width = 2;
+      return texture.width;
+    }
+  `;
+  assert.match(diagnostics(fieldMutation, fileName)[0]?.message ?? "", /native resource field "width" is read-only in safe Z/i);
+
+  const declarationFile = resolve(projectRoot, "tests/fixtures/value-resource.h.zd");
+  const declarationSource = readFileSync(declarationFile, "utf8");
+  assert.deepEqual(diagnostics(declarationSource, declarationFile), []);
+  const resourceTypeOffset = declarationSource.indexOf("ZTexture") + 2;
+  assert.match(
+    hover(declarationSource, declarationFile, resourceTypeOffset)?.contents.value ?? "",
+    /move-only native C resource.*z_texture_drop/s,
+  );
+  const ownedOffset = declarationSource.indexOf("owned") + 2;
+  assert.match(
+    hover(declarationSource, declarationFile, ownedOffset)?.contents.value ?? "",
+    /caller receives unique native value-resource ownership and deterministic cleanup/s,
+  );
+  const borrowedOffset = declarationSource.indexOf("borrowed") + 2;
+  assert.match(
+    hover(declarationSource, declarationFile, borrowedOffset)?.contents.value ?? "",
+    /native runtime retains ownership.*lexical and non-escaping/s,
+  );
+  const lifecycleCompletionSource = declarationSource.replace(
+    "export type ZTexture {\n    move;",
+    "export type ZTexture {\n    mo",
+  );
+  const lifecycleCompletionOffset = lifecycleCompletionSource.indexOf(
+    "mo",
+    lifecycleCompletionSource.indexOf("export type ZTexture"),
+  ) + 2;
+  assert.equal(
+    completions(lifecycleCompletionSource, declarationFile, lifecycleCompletionOffset)
+      .find((item) => item.label === "move")?.insertText,
+    "move;",
+  );
+  const resultCompletionSource = declarationSource.replace("owned;", "own");
+  const resultCompletionOffset = resultCompletionSource.indexOf("own") + 3;
+  assert.equal(
+    completions(resultCompletionSource, declarationFile, resultCompletionOffset)
+      .find((item) => item.label === "owned")?.insertText,
+    "owned;",
+  );
+});
+
+test("fails closed on contradictory or unverifiable C value-resource contracts", () => {
+  const directory = mkdtempSync("/tmp/z-value-resource-contract-");
+  const header = resolve(directory, "value-resource.h");
+  const declaration = `${header}.zd`;
+  const sourceFile = resolve(directory, "main.zs");
+  const headerSource = readFileSync(resolve(projectRoot, "tests/fixtures/value-resource.h"), "utf8");
+  const declarationSource = readFileSync(resolve(projectRoot, "tests/fixtures/value-resource.h.zd"), "utf8");
+  writeFileSync(header, headerSource);
+  writeFileSync(sourceFile, `
+    import native from "./value-resource.h";
+    function main(): i32 {
+      const image = native.z_image_make(1);
+      return native.z_image_width(image);
+    }
+  `);
+
+  const both = declarationSource.replace("owned;", "owned;\n    borrowed;");
+  writeFileSync(declaration, both);
+  assert.match(
+    diagnostics(both, declaration)[0]?.message ?? "",
+    /cannot declare both owned and borrowed result ownership/i,
+  );
+
+  const conflictingAlias = declarationSource.replace(
+    "export function z_image_make",
+    `export type ZTexture2D {
+    move;
+    deinit z_image_drop;
+  }
+
+  export function z_image_make`,
+  );
+  writeFileSync(declaration, conflictingAlias);
+  assert.match(
+    diagnostics(conflictingAlias, declaration)[0]?.message ?? "",
+    /aliases for canonical C record .* conflicting resource facts/i,
+  );
+
+  const invalidRelease = declarationSource.replace("deinit z_image_drop;", "deinit z_image_width;");
+  writeFileSync(declaration, invalidRelease);
+  assert.match(
+    diagnostics(invalidRelease, declaration)[0]?.message ?? "",
+    /value-resource deinit "z_image_width" must name a C function taking the classified record by value and returning void/i,
+  );
+
+  writeFileSync(header, `
+    typedef union ZNativeUnion {
+      void *pointer;
+      int value;
+    } ZNativeUnion;
+    static inline void z_union_drop(ZNativeUnion value) { (void)value; }
+  `);
+  const unionContract = `
+    declare module "value-resource.h" {
+      export type ZNativeUnion {
+        move;
+        deinit z_union_drop;
+      }
+    }
+  `;
+  writeFileSync(declaration, unionContract);
+  assert.match(
+    diagnostics(unionContract, declaration)[0]?.message ?? "",
+    /value-resource contract "ZNativeUnion" requires a C struct, found union/i,
+  );
+
+  writeFileSync(header, `
+    typedef struct ZPoint { int x; int y; } ZPoint;
+    static inline ZPoint z_point_make(void) { ZPoint value = { 1, 2 }; return value; }
+  `);
+  const ordinaryOwned = `
+    declare module "value-resource.h" {
+      export function z_point_make(): _ {
+        owned;
+      }
+    }
+  `;
+  writeFileSync(declaration, ordinaryOwned);
+  assert.match(
+    diagnostics(ordinaryOwned, declaration)[0]?.message ?? "",
+    /owned result ownership on "z_point_make" requires a classified native value-resource return/i,
+  );
 });
 
 test("narrows, borrows, consumes, and cleans up owned C handles", () => {
@@ -2398,7 +2700,7 @@ test("diagnoses malformed and mismatched Z declaration contracts", () => {
   `;
   const executableDiagnostic = diagnostics(executableContract, "/tmp/contract.h.zd")[0];
   assert.equal(executableDiagnostic.code, "Z0801");
-  assert.match(executableDiagnostic.message, /expected "async", "project", "deinit", "thread", "callback", or "success" in foreign function contract/);
+  assert.match(executableDiagnostic.message, /expected "async", "project", "deinit", "owned", "borrowed", "thread", "callback", or "success" in foreign function contract/);
 
   const threadWithoutOwner = `
     declare module "contract.h" {

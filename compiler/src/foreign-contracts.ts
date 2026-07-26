@@ -219,6 +219,22 @@ function normalizeOverload(
       pointerTypes,
       namedTypes,
     );
+    const returnOwnership = functionNotes?.return?.ownership;
+    if (
+      (returnOwnership === "owned" || returnOwnership === "borrowed")
+      && returnType.kind === "named"
+      && !(
+        returnType.type.kind === "record"
+        && returnType.type.resource
+        && returnType.ownership === returnOwnership
+      )
+    ) {
+      throw contractError(
+        fileName,
+        location,
+        `${returnOwnership} result ownership on ${JSON.stringify(declaration.name)} requires a classified native value-resource return`,
+      );
+    }
     if (functionNotes?.status) {
       const statusType = returnType.kind === "z"
         ? returnType.name

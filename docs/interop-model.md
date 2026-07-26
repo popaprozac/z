@@ -322,11 +322,16 @@ Z ownership or type checking. Reusable ownership, nullability, cleanup,
 callback, or threading facts still belong in `.zd`.
 
 Pointer-bearing native records passed by value are not an unsafe-pointer
-special case: Z must represent their complete ABI value in expressions and
-storage. Both checked and unsafe Z therefore reject them in the current tier,
-and `.zd` cannot yet make them representable. A one-off operation belongs in
-`raw`; a reusable checked value-resource contract remains a separate reviewed
-extension.
+special case. Checked Z admits them only after `.zd` classifies the canonical
+record as a move-only resource, names its C release function, and classifies
+each producer as `owned` or `borrowed`. The bytes and calling convention remain
+native. Uncontracted records remain rejected in checked and `unsafe` Z; a
+one-off operation can still use `raw`.
+
+Borrowed value-resource results are lexical and non-escaping in the first
+tier. This closes double-cleanup without pretending Z knows a global runtime
+lifetime such as raylib's window/graphics context. Future `lifetime` facts may
+relax that wall by tying borrowed records to an explicit owner.
 
 Raw native source is the final escape hatch when an API cannot be represented
 as a Z call even with `.zd` facts. The anonymous form is an immediately applied

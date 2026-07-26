@@ -1,0 +1,38 @@
+declare module "raylib.h" {
+  // Pointer-bearing CPU image storage. The native producer owns its data.
+  export type Image {
+    move;
+    deinit UnloadImage;
+  }
+
+  // raylib spells every API with Texture2D/TextureCubemap, but both aliases
+  // share this canonical C record identity and therefore this resource fact.
+  export type Texture {
+    move;
+    deinit UnloadTexture;
+  }
+
+  export function GenImageColor(width: _, height: _, color: _): _ {
+    owned;
+  }
+
+  export function ImageCopy(in image: _): _ {
+    owned;
+  }
+
+  export function IsImageValid(in image: _): _;
+  export function ImageFlipVertical(inout image: _): _;
+  export function UnloadImage(move image: _): _;
+
+  export function LoadTextureFromImage(in image: _): _ {
+    owned;
+  }
+
+  export function GetShapesTexture(): _ {
+    borrowed;
+  }
+
+  export function IsTextureValid(in texture: _): _;
+  export function DrawTexture(in texture: _, posX: _, posY: _, tint: _): _;
+  export function UnloadTexture(move texture: _): _;
+}

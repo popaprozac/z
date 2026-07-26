@@ -54,6 +54,8 @@ export type ForeignFunctionContract = {
   readonly statusSuccessValueLocations: readonly SourceLocation[];
   readonly throwsLocation: SourceLocation | null;
   readonly release: string | null;
+  readonly resultOwnership: "owned" | "borrowed" | null;
+  readonly resultOwnershipLocation: SourceLocation | null;
   readonly location: SourceLocation;
   readonly nameLocation: SourceLocation;
   readonly returnLocation: SourceLocation;
@@ -140,6 +142,7 @@ export type ForeignValueContract = {
   readonly copyLocation: SourceLocation | null;
   readonly moveLocation: SourceLocation | null;
   readonly deinitLocation: SourceLocation | null;
+  readonly deinitFunction: string | null;
   readonly thread: ForeignThreadContract;
   readonly threadLocations: ForeignThreadContractLocations;
   readonly executorAffinity: "main" | null;
@@ -487,6 +490,7 @@ export function parseForeignDeclarationContracts(source: string, fileName: strin
           copyLocation: null,
           moveLocation: null,
           deinitLocation: null,
+          deinitFunction: null,
           thread: emptyThread.thread,
           threadLocations: emptyThread.locations,
           executorAffinity: executorAffinity.affinity,
@@ -498,6 +502,7 @@ export function parseForeignDeclarationContracts(source: string, fileName: strin
       let copyLocation: SourceLocation | null = null;
       let moveLocation: SourceLocation | null = null;
       let deinitLocation: SourceLocation | null = null;
+      let deinitFunction: string | null = null;
       let threadContract = emptyThreadContract();
       while (!at("}")) {
         if (at("thread")) {
@@ -518,6 +523,7 @@ export function parseForeignDeclarationContracts(source: string, fileName: strin
         } else {
           if (deinitLocation) fail(capability, `foreign type ${JSON.stringify(name)} cannot declare deinit more than once`);
           deinitLocation = capability.location;
+          if (!at(";")) deinitFunction = parseQualifiedName().name;
         }
         expectText(";");
       }
@@ -542,6 +548,7 @@ export function parseForeignDeclarationContracts(source: string, fileName: strin
         copyLocation,
         moveLocation,
         deinitLocation,
+        deinitFunction,
         thread: threadContract.thread,
         threadLocations: threadContract.locations,
         executorAffinity: executorAffinity?.affinity ?? null,
@@ -571,6 +578,8 @@ export function parseForeignDeclarationContracts(source: string, fileName: strin
     const statusSuccessValueLocations: SourceLocation[] = [];
     let release: string | null = null;
     let releaseLocation: SourceLocation | null = null;
+    let resultOwnership: "owned" | "borrowed" | null = null;
+    let resultOwnershipLocation: SourceLocation | null = null;
     let threadContract = emptyThreadContract();
     const callbacks: ForeignCallbackContract[] = [];
     const buffers: ForeignBufferContract[] = [];
@@ -812,6 +821,15 @@ export function parseForeignDeclarationContracts(source: string, fileName: strin
           expectText(";");
           continue;
         }
+        if (at("owned") || at("borrowed")) {
+          if (resultOwnership) {
+            fail(contract, `foreign function ${JSON.stringify(name)} cannot declare both owned and borrowed result ownership`);
+          }
+          resultOwnership = take().text as "owned" | "borrowed";
+          resultOwnershipLocation = contract.location;
+          expectText(";");
+          continue;
+        }
         if (at("failure")) {
           fail(
             contract,
@@ -819,7 +837,7 @@ export function parseForeignDeclarationContracts(source: string, fileName: strin
           );
         }
         if (!at("deinit")) {
-          fail(contract, `expected "async", "project", "deinit", "thread", "callback", or "success" in foreign function contract, found ${JSON.stringify(contract.text)}`);
+          fail(contract, `expected "async", "project", "deinit", "owned", "borrowed", "thread", "callback", or "success" in foreign function contract, found ${JSON.stringify(contract.text)}`);
         }
         if (release) fail(contract, `foreign function ${JSON.stringify(name)} cannot declare more than one deinit contract`);
         take();
@@ -842,6 +860,12 @@ export function parseForeignDeclarationContracts(source: string, fileName: strin
       if (release || threadContract.locations.location) {
         fail(start, `native status projection ${JSON.stringify(name)} cannot declare result deinit or thread ownership`);
       }
+      if (resultOwnership) {
+        fail(start, `native status projection ${JSON.stringify(name)} cannot also declare ${resultOwnership} resource ownership`);
+      }
+    }
+    if (release && resultOwnership) {
+      fail(start, `foreign function ${JSON.stringify(name)} cannot combine pointer deinit ownership with ${resultOwnership} value-resource ownership`);
     }
     functions.push({
       name,
@@ -853,6 +877,8 @@ export function parseForeignDeclarationContracts(source: string, fileName: strin
       statusSuccessValueLocations,
       throwsLocation: returnType.throwsLocation,
       release,
+      resultOwnership,
+      resultOwnershipLocation,
       location: start.location,
       nameLocation: parsedName.location,
       returnLocation: returnType.location,
@@ -1190,6 +1216,7 @@ export function foreignDeclarationApiNotes(
         nullable: contract.returnNullable,
         ...(contract.returnSemanticType === "view-cstring" ? { ownership: "borrowed" as const, semanticType: "view-cstring" as const } : {}),
         ...(contract.release ? { ownership: "owned" as const, release: contract.release } : {}),
+        ...(contract.resultOwnership ? { ownership: contract.resultOwnership } : {}),
         ...(contract.thread.transfer || contract.thread.share || contract.thread.deinit
           ? { thread: contract.thread }
           : {}),

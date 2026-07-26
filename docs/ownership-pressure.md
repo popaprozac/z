@@ -300,13 +300,12 @@ one borrowed `Slice<u8>`. No handwritten shim or raw block is involved.
 
 The raylib 6.0 header exposed 600 imported callable overloads in the measured
 environment. Of those, 302 fit the current checked tier and 298 were withheld.
-The interactive example deliberately uses the clean plain-value subset and
-needs no `.zd`; it must not be read as evidence that all raylib APIs work.
-Many withheld resource APIs pass pointer-bearing records such as `Image`,
-`Shader`, or `Model` by value. Z now diagnoses that representation boundary
-directly. Neither `unsafe` nor the current `.zd` vocabulary can make such a
-value representable; one-off access requires `raw c` until a reusable
-value-resource contract is reviewed.
+The interactive example now crosses the resource boundary without a shim.
+Its adjacent `.zd` classifies pointer-bearing `Image` and all-scalar `Texture`
+as move-only records, names their releases, marks producers `owned`, and marks
+raylib's global shapes texture `borrowed`. The generated ABI remains direct C.
+The borrowed texture is deliberately non-escaping until its validity can be
+tied to the raylib window/runtime lifetime.
 
 SDL3 proved that spill-backed Clang ingestion handles a 70.8 MB
 `SDL_render.h` AST and that `.zd` scalar `out f32` projections compose with
@@ -326,12 +325,13 @@ Together these probes establish a useful line:
 | Plain scalar/record C call | Direct checked import |
 | Missing ownership, status, callback, or scalar-pointer fact | Checked `.zd` contract |
 | Scope-local unsupported pointer proof | `unsafe`, without raw-pointer syntax |
-| Pointer-bearing record passed by value | Precise rejection; `raw` only in the current tier |
+| Contracted by-value resource record | Direct checked call, unique moves, deterministic cleanup |
+| Uncontracted by-value resource record | Precise rejection; `.zd` must classify type, parameters, and producer ownership |
 | Nested C-union payload | Withheld pending a checked discriminator contract |
 
-The next design checkpoint is the reusable pointer-bearing value-resource
-shape. It should reuse Z's existing ownership vocabulary (`in`, `move`, and
-`deinit`) and be validated against raylib before new `.zd` syntax is committed.
+The next resource checkpoint is lifetime provenance for library-owned records
+and branded ownership variants whose cleanup differs despite sharing one C
+record type.
 
 ## Loop-carried child-task slots
 

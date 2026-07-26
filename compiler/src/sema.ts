@@ -2764,6 +2764,15 @@ function analyzeStatement(
           state,
           declaredVariableType,
         );
+      if (isBorrowedNativeResource(initializerType, state)) {
+        if (statement.mutable || statement.type) {
+          throw new DiagnosticError(fileName, statement.location, "a borrowed native resource must be bound directly to an inferred const local", {
+            code: "Z0206",
+            notes: ["tier-one borrowed native resources are lexical, read-only, and non-escaping"],
+            helps: ["use `const value = native.borrowedProducer()` and pass it only to `in` native parameters"],
+          });
+        }
+      }
       const inferredBindingType = String(underlyingType(initializerType));
       const bindingResolution = statement.type ? null : {
         location: statement.nameLocation,
@@ -2879,6 +2888,11 @@ function analyzeStatement(
         state.connectionOrigins.set(statement.name, origin);
         locals.set(statement.name, nativeConnectionTypeName);
         state.bindingTypes.set(statement.nameLocation.offset, nativeConnectionTypeName);
+        return;
+      }
+      if (isBorrowedNativeResource(variableType, state)) {
+        locals.set(statement.name, String(variableType));
+        state.bindingTypes.set(statement.nameLocation.offset, String(variableType));
         return;
       }
       const directForeignValue = state.foreignNamedTypes.get(String(underlyingType(variableType)));
@@ -3072,6 +3086,15 @@ function analyzeStatement(
           }
           return;
         }
+        const nativeOwnerType = inferExpression(statement.target.object, locals, globals, structs, enums, fileName, state);
+        const nativeOwner = state.foreignNamedTypes.get(String(underlyingType(nativeOwnerType)));
+        if (nativeOwner?.kind === "record" && nativeOwner.resource) {
+          throw new DiagnosticError(fileName, statement.target.location, `native resource field ${JSON.stringify(statement.target.property)} is read-only in safe Z`, {
+            code: "Z0823",
+            notes: ["direct field mutation could violate invariants required by the native release function"],
+            helps: ["use a contracted native `inout` operation to mutate the complete resource"],
+          });
+        }
       }
       const root = storageRoot(statement.target);
       if (!root) {
@@ -3109,6 +3132,7 @@ function analyzeStatement(
       actual = contextualCStringLiteral(expected, statement.expression, state) ?? actual;
       actual = contextualObjCStringToZ(expected, actual, statement.expression, state) ?? actual;
       actual = contextualSwiftStringToZ(expected, actual, statement.expression, state) ?? actual;
+      rejectBorrowedNativeResourceEscape(actual, statement.expression, locals, fileName, state, "assigned into storage");
       requireAssignable(expected, actual, statement.expression, fileName, structs, enums, state);
       if (state.unsafeDepth > 0 && isUnsafeUnverifiedValue(statement.expression, state)) {
         const localBindings = state.unsafeLocalBindingScopes.at(-1);
@@ -3227,6 +3251,7 @@ function analyzeStatement(
       actual = contextualCStringLiteral(expected, statement.expression, state) ?? actual;
       actual = contextualObjCStringToZ(expected, actual, statement.expression, state) ?? actual;
       actual = contextualSwiftStringToZ(expected, actual, statement.expression, state) ?? actual;
+      rejectBorrowedNativeResourceEscape(actual, statement.expression, locals, fileName, state, "returned from a function");
       requireAssignable(expected, actual, statement.expression, fileName, structs, enums, state);
       if (state.unsafeDepth > 0 && isUnsafeUnverifiedValue(statement.expression, state)) {
         throw new DiagnosticError(fileName, statement.expression.location, "an unsafe native value cannot be returned from its unsafe block", {
@@ -3848,6 +3873,13 @@ function inferClosureExpression(
       throw movedValueError(fileName, { name: capture.name, location: capture.location }, state, false, "capture");
     }
     const type = String(underlyingType(stored));
+    if (isBorrowedNativeResource(stored, state)) {
+      throw new DiagnosticError(fileName, capture.location, `borrowed native resource ${JSON.stringify(capture.name)} cannot be captured`, {
+        code: "Z0206",
+        notes: ["the native runtime lifetime has no capturable provenance in the first resource tier"],
+        helps: ["use the borrowed resource directly in its lexical scope, or acquire an explicitly owned native copy"],
+      });
+    }
     if (capture.mutated && !isMutableBinding(stored) && structs.get(type)?.kind !== "class") {
       throw new DiagnosticError(fileName, capture.location, `closure cannot mutate immutable capture ${JSON.stringify(capture.name)}`, {
         code: "Z0210",
@@ -6326,6 +6358,13 @@ function inferExpressionInner(
           helps: ["initialize union storage through a checked native out parameter, then inspect a scalar member inside unsafe"],
         });
       }
+      if (foreignDeclaration?.kind === "record" && foreignDeclaration.resource) {
+        throw new DiagnosticError(fileName, expression.location, `native value resource ${JSON.stringify(expression.typeName)} cannot be constructed with a Z struct literal`, {
+          code: "Z0823",
+          notes: ["only its declaring native library can establish a valid resource representation"],
+          helps: ["call a contracted native producer whose result declares `owned;`"],
+        });
+      }
       const constructionAffinity = declaration
         ? state.aggregateExecutorAffinities.get(declaration.name) ?? null
         : null;
@@ -6354,6 +6393,7 @@ function inferExpressionInner(
         const fieldType = "type" in field ? field.type.name : field.typeName;
         let actual = inferExpression(initializer.expression, locals, globals, structs, enums, fileName, state);
         actual = contextualCStringLiteral(fieldType, initializer.expression, state) ?? actual;
+        rejectBorrowedNativeResourceEscape(actual, initializer.expression, locals, fileName, state, "stored in a struct field");
         requireAssignable(fieldType, actual, initializer.expression, fileName, structs, enums, state);
         consumeOwnedValue(initializer.expression, fieldType, locals, structs, enums, fileName, state);
       }
@@ -6378,9 +6418,11 @@ function inferExpressionInner(
       if (elementType === "unknown" || elementType === "never" || elementType === "null") {
         throw new DiagnosticError(fileName, expression.elements[0].location, "cannot infer a fixed array element type from this expression");
       }
+      rejectBorrowedNativeResourceEscape(elementType, expression.elements[0], locals, fileName, state, "stored in an array");
       consumeOwnedValue(expression.elements[0], elementType, locals, structs, enums, fileName, state);
       for (const element of expression.elements.slice(1)) {
         const actual = inferExpression(element, locals, globals, structs, enums, fileName, state);
+        rejectBorrowedNativeResourceEscape(actual, element, locals, fileName, state, "stored in an array");
         requireAssignable(elementType, actual, element, fileName, structs, enums, state);
         consumeOwnedValue(element, elementType, locals, structs, enums, fileName, state);
       }
@@ -6435,6 +6477,7 @@ function inferExpressionInner(
         ? inferContextualObjectExpression(expression.payload, variant.payload.name, locals, globals, structs, enums, fileName, state)
         : inferExpression(expression.payload, locals, globals, structs, enums, fileName, state);
       actual = contextualCStringLiteral(variant.payload.name, expression.payload, state) ?? actual;
+      rejectBorrowedNativeResourceEscape(actual, expression.payload, locals, fileName, state, "stored in an enum payload");
       requireAssignable(variant.payload.name, actual, expression.payload, fileName, structs, enums, state);
       consumeOwnedValue(expression.payload, variant.payload.name, locals, structs, enums, fileName, state);
       return declaration.name;
@@ -7502,6 +7545,14 @@ function inferExpressionInner(
               const actual = argument.kind === "objectExpression"
                 ? inferContextualObjectExpression(argument, variant.payload.name, locals, globals, structs, enums, fileName, state)
                 : inferExpression(argument, locals, globals, structs, enums, fileName, state);
+              rejectBorrowedNativeResourceEscape(
+                actual,
+                argument,
+                locals,
+                fileName,
+                state,
+                "stored in an enum payload",
+              );
               requireAssignable(variant.payload.name, actual, expression.arguments[0], fileName, structs, enums, state);
               consumeOwnedValue(expression.arguments[0], variant.payload.name, locals, structs, enums, fileName, state);
             }
@@ -9525,6 +9576,35 @@ function isBorrowedBinding(type: ValueType): boolean {
   return type.startsWith(borrowedPrefix) || Boolean(parseViewType(String(type)));
 }
 
+function isBorrowedNativeResource(type: ValueType, state: AnalysisState): boolean {
+  if (!isBorrowedBinding(type)) return false;
+  const foreign = state.foreignNamedTypes.get(String(underlyingType(type)));
+  return foreign?.kind === "record" && Boolean(foreign.resource);
+}
+
+function rejectBorrowedNativeResourceEscape(
+  type: ValueType,
+  expression: Expression,
+  locals: ReadonlyMap<string, ValueType>,
+  fileName: string,
+  state: AnalysisState,
+  action: string,
+): void {
+  const rootName = expression.kind === "argumentReference"
+    ? expression.name
+    : storageRoot(expression)?.name ?? null;
+  const stored = rootName ? locals.get(rootName) : null;
+  if (!isBorrowedNativeResource(type, state) && !(stored && isBorrowedNativeResource(stored, state))) return;
+  throw new DiagnosticError(fileName, expression.location, `a borrowed native resource cannot be ${action}`, {
+    code: "Z0206",
+    notes: [
+      "its validity is controlled by native runtime state that Z cannot name in the first resource-lifetime tier",
+      "borrowed native resources are non-escaping until `.zd` lifetime provenance is implemented",
+    ],
+    helps: ["inspect it through a local const binding and pass it only to contracted `in` parameters"],
+  });
+}
+
 function callTargetBinding(type: ValueType, target: string): ValueType {
   return `${callTargetPrefix}${target}:${type}`;
 }
@@ -10706,6 +10786,7 @@ function hasMoveOnlyForeignType(
   if (actual === "unknown" || actual === "never" || visiting.has(actual)) return false;
   const foreign = foreignNamedTypes.get(actual);
   if (foreign?.kind === "value") return foreign.lifecycle.move && !foreign.lifecycle.copy;
+  if (foreign?.kind === "record" && foreign.resource) return true;
   const array = parseFixedArrayType(actual);
   if (array) return hasMoveOnlyForeignType(array.elementType, structs, enums, foreignNamedTypes, visiting);
   const dynamic = parseDynamicArrayType(actual);
@@ -11548,7 +11629,28 @@ function checkForeignCall(
     type.reason === "byValueRecordWithPointers"
     || type.reason === "byValueRecordLayout"
   ));
+  const unclassifiedValueResource = unsupportedTypes.find((type) => (
+    type.reason === "unclassifiedValueResource"
+  ));
   if (unsupported && state.unsafeDepth === 0) {
+    if (unclassifiedValueResource) {
+      throw new DiagnosticError(
+        fileName,
+        location,
+        `C value-resource boundary ${JSON.stringify(target.name)} requires an explicit ownership capability for ${JSON.stringify(unclassifiedValueResource.cName)}`,
+        {
+          code: "Z0823",
+          notes: [
+            "a classified native resource has no default producer or parameter ownership",
+            "the native ABI remains unchanged; the contract tells Z whether this call creates, borrows, or consumes ownership",
+          ],
+          helps: [
+            "declare `owned;` or `borrowed;` on a resource result",
+            "declare `in`, `inout`, or `move` on a resource parameter",
+          ],
+        },
+      );
+    }
     if (unsupportedValueRecord) {
       const pointerBearing = unsupportedValueRecord.reason === "byValueRecordWithPointers";
       throw new DiagnosticError(
@@ -11578,6 +11680,18 @@ function checkForeignCall(
     );
   }
   if (unsupported && state.unsafeDepth > 0) {
+    if (unclassifiedValueResource) {
+      throw new DiagnosticError(
+        fileName,
+        location,
+        `unsafe cannot invent ownership for native value resource ${JSON.stringify(unclassifiedValueResource.cName)}`,
+        {
+          code: "Z0823",
+          notes: ["resource ownership and cleanup must remain reusable across the safe Z boundary"],
+          helps: ["classify the result or parameter in an adjacent .zd file, or isolate the entire operation in raw native source"],
+        },
+      );
+    }
     if (unsupportedValueRecord) {
       throw new DiagnosticError(
         fileName,
@@ -12195,6 +12309,15 @@ function checkForeignCall(
     }
     if (parameter?.type.kind === "named") {
       requireAssignable(parameter.type.type.typeName, actual, argument, fileName, structs, enums, state);
+      if (parameter.type.type.kind === "record" && parameter.type.type.resource) {
+        if (parameter.type.ownership === "consuming") {
+          consumeOwnedValue(argument, actual, locals, structs, enums, fileName, state, true);
+        } else if (parameter.type.ownership !== "borrowed") {
+          throw new DiagnosticError(fileName, argument.location, `C value resource parameter ${index + 1} requires an explicit in or move contract`, {
+            code: "Z0801",
+          });
+        }
+      }
     }
     if (parameter?.type.kind === "pointer") {
       if (actual === "null") {
@@ -12339,6 +12462,14 @@ function checkForeignCall(
     : target.returnType.kind === "unsupported" && state.unsafeDepth > 0
       ? unsafeForeignResultType(target.returnType.cName, location, fileName, state)
       : "unknown";
+  if (
+    target.returnType.kind === "named"
+    && target.returnType.type.kind === "record"
+    && target.returnType.type.resource
+    && target.returnType.ownership === "borrowed"
+  ) {
+    result = `${borrowedPrefix}${result}`;
+  }
   if (target.status) {
     const errorType = target.returnType.kind === "z"
       ? target.returnType.name
@@ -12390,7 +12521,7 @@ function checkForeignCall(
       result = resultTypeName("void", errorType);
     }
   }
-  state.foreignCallTypes.set(location.offset, result);
+  state.foreignCallTypes.set(location.offset, String(result));
   return result;
 }
 
@@ -12797,7 +12928,8 @@ function containsForeignValueStorage(
 ): boolean {
   const actual = String(underlyingType(type));
   if (actual === "unknown" || actual === "never" || visiting.has(actual)) return false;
-  if (foreignNamedTypes.get(actual)?.kind === "value") return true;
+  const foreign = foreignNamedTypes.get(actual);
+  if (foreign?.kind === "value" || (foreign?.kind === "record" && foreign.resource)) return true;
   const array = parseFixedArrayType(actual);
   if (array) return containsForeignValueStorage(array.elementType, structs, enums, foreignNamedTypes, visiting);
   const dynamic = parseDynamicArrayType(actual);

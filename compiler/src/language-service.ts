@@ -116,6 +116,7 @@ const primitiveTypeTokens = [
 const declarationKeywordTokens = [
   "declare", "module", "export", "function", "type", "copy", "in", "inout", "out", "move", "deinit",
   "async", "callback", "context", "thread", "caller", "any", "transfer", "share", "fixed", "throws", "success", "failure",
+  "owned", "borrowed",
   "connection", "option", "owner", "project", "data", "length", "from", "return", "throw", "invoked", "once", "repeatedly",
 ] as const;
 
@@ -1173,7 +1174,10 @@ export function hover(source: string, fileName: string, offset: number): Hover |
       .filter((candidate) => candidate.name === word.text && candidate.offset <= word.start)
       .at(-1);
     const owner = context.semanticInfo.viewBindingOwners.get(binding?.offset ?? word.start);
-    const provenance = owner ? `  // view of ${owner}` : "";
+    const borrowedResource = String(type).startsWith("__z_borrowed:");
+    const provenance = owner
+      ? `  // view of ${owner}`
+      : borrowedResource ? "  // borrowed native resource; non-escaping" : "";
     const sourceType = binding ? sourceBindingTypeName(context.sourceProgram, binding.offset) : null;
     const aliasType = sourceType ? sourceAliasDisplayType(context, sourceType) : null;
     const affinity = context.semanticInfo.aggregateExecutorAffinities.get(String(type))
@@ -2297,7 +2301,7 @@ function foreignDeclarationCompletions(source: string, fileName: string, offset:
   if (module && typePrefix !== undefined) {
     const declared = new Set([...source.matchAll(/\bexport\s+type\s+([A-Za-z_][A-Za-z0-9_.]*)\b/g)].map((match) => match[1]));
     for (const declaration of module.namedTypes.values()) {
-      if (declaration.kind !== "value"
+      if ((declaration.kind !== "value" && declaration.kind !== "record")
         || declared.has(declaration.qualifiedName)
         || !declaration.qualifiedName.toLowerCase().startsWith(typePrefix.toLowerCase())) continue;
       contextual.push({
@@ -2333,6 +2337,20 @@ function foreignDeclarationCompletions(source: string, fileName: string, offset:
           kind: completionKinds.keyword,
           detail: `native ${capability} capability for ${declaration.cName}`,
           insertText: `${capability};`,
+          sortText: `0-${capability}`,
+        });
+      }
+    } else if (declaration?.kind === "record") {
+      const existing = new Set([...lifecycleContext[0].matchAll(/\b(move|deinit)\b/g)].map((match) => match[1]));
+      for (const capability of ["move", "deinit"] as const) {
+        if (existing.has(capability) || !capability.startsWith(lifecycleContext[2])) continue;
+        contextual.push({
+          label: capability,
+          kind: completionKinds.keyword,
+          detail: capability === "move"
+            ? `classify ${declaration.cName} as a unique movable C value resource`
+            : `name the C release function for ${declaration.cName}`,
+          insertText: capability === "move" ? "move;" : "deinit ",
           sortText: `0-${capability}`,
         });
       }
@@ -2408,6 +2426,21 @@ function foreignDeclarationCompletions(source: string, fileName: string, offset:
       insertText: "success ",
       sortText: "0-success",
     });
+  }
+  const resultOwnershipPrefix = /\bexport\s+function\s+[A-Za-z_][A-Za-z0-9_.]*\s*\([^)]*\)\s*:\s*_(?:\s*\|\s*null)?\s*\{[^{}]*\b([A-Za-z_]*)$/.exec(before)?.[1];
+  if (resultOwnershipPrefix !== undefined) {
+    for (const ownership of ["owned", "borrowed"] as const) {
+      if (!ownership.startsWith(resultOwnershipPrefix)) continue;
+      contextual.push({
+        label: ownership,
+        kind: completionKinds.keyword,
+        detail: ownership === "owned"
+          ? "caller receives unique native value-resource ownership"
+          : "native runtime retains ownership; result is lexical and non-escaping",
+        insertText: `${ownership};`,
+        sortText: `0-${ownership}`,
+      });
+    }
   }
   const statusValuePrefix = /\bsuccess\s+([A-Za-z_]*)$/.exec(before)?.[1];
   if (module && statusValuePrefix !== undefined) {
@@ -2770,14 +2803,34 @@ function foreignDeclarationHover(source: string, fileName: string, offset: numbe
         word.end,
       );
     }
-    if (!declaration || declaration.kind !== "value") continue;
+    if (!declaration || (declaration.kind !== "value" && declaration.kind !== "record")) continue;
     for (const [capability, location] of [
       ["copy", contract.copyLocation],
       ["move", contract.moveLocation],
       ["deinit", contract.deinitLocation],
     ] as const) {
       if (location?.offset === word.start) {
-        return markdownHover(`${capability}: native lifecycle capability of ${declaration.cName}`, source, word.start, word.end);
+        const detail = declaration.kind === "record"
+          ? capability === "deinit"
+            ? `native C release contract of ${declaration.cName}`
+            : `unique native C resource capability of ${declaration.cName}`
+          : `native lifecycle capability of ${declaration.cName}`;
+        return markdownHover(`${capability}: ${detail}`, source, word.start, word.end);
+      }
+    }
+    if (
+      declaration.kind === "record"
+      && contract.deinitFunction
+      && contract.deinitLocation
+      && containsDeclarationName(
+        contract.deinitLocation.offset + "deinit ".length,
+        contract.deinitFunction,
+        word.start,
+      )
+    ) {
+      const release = module.functions.get(contract.deinitFunction);
+      if (release) {
+        return markdownHover(`${foreignFunctionDetail(release)}\n// releases owned ${declaration.cName} values`, source, word.start, word.end);
       }
     }
     for (const [capability, location, detail] of [
@@ -2909,6 +2962,16 @@ function foreignDeclarationHover(source: string, fileName: string, offset: numbe
       const types = new Set(nativeSignatures.map((overload) => foreignTypeName(overload.returnType)));
       return markdownHover(
         `throws ${[...types].join(" | ") || "_"}  // error type inferred from the native integer status`,
+        source,
+        word.start,
+        word.end,
+      );
+    }
+    if (contract.resultOwnershipLocation?.offset === word.start && contract.resultOwnership) {
+      return markdownHover(
+        contract.resultOwnership === "owned"
+          ? "owned  // caller receives unique native value-resource ownership and deterministic cleanup"
+          : "borrowed  // native runtime retains ownership; this result is lexical and non-escaping",
         source,
         word.start,
         word.end,
@@ -5066,7 +5129,20 @@ function foreignFunctionHover(
     .filter((line) => line.trim() && !line.startsWith("Availability:"))
     .map((line) => line.replace(/\s+\/\/ C:.*$/, "").trim());
   const nativeSignatures = [...new Set(declaration.overloads.map((overload) => overload.cSignature))];
+  const ownership = [...new Set(declaration.overloads.flatMap((overload) => (
+    overload.returnType.kind === "named"
+    && overload.returnType.type.kind === "record"
+    && overload.returnType.type.resource
+    && overload.returnType.ownership
+      ? [overload.returnType.ownership]
+      : []
+  )))];
   const sections = [
+    ownership.length
+      ? `**Resource ownership:** ${ownership.map((fact) => fact === "owned"
+        ? "`owned` — caller receives unique ownership and deterministic cleanup"
+        : "`borrowed` — native runtime retains ownership; result is non-escaping").join("; ")}`
+      : null,
     `**Native ABI**\n\n${nativeSignatures.map((signature) => `- \`${signature}\``).join("\n")}`,
     foreignAvailabilityMarkdown(declaration.overloads.map((overload) => overload.metadata)),
   ].filter((section): section is string => Boolean(section));
@@ -5217,6 +5293,9 @@ function foreignNamedTypeDetail(named: ForeignNamedType): string {
   if (named.kind === "record" && named.layout === "union") {
     return `${named.exportName}: ${named.cName}${executor}  // native union; scalar member reads require unsafe`;
   }
+  if (named.kind === "record" && named.resource) {
+    return `${named.exportName}: ${named.cName}${executor}  // move-only native C resource; deinit ${named.resource.release}`;
+  }
   if (named.kind !== "value") return `${named.exportName}: ${named.cName}${executor}`;
   const available = (["copy", "move", "deinit"] as const).filter((capability) => named.lifecycle[capability]);
   const unavailable = (["copy", "move", "deinit"] as const).filter((capability) => !named.lifecycle[capability]);
@@ -5258,7 +5337,13 @@ function foreignFunctionDetail(declaration: ForeignFunction, module?: ForeignMod
     const callbackError = overload.parameters.some((parameter) => (
       parameter.type.kind === "callback" && parameter.type.failure !== null
     ));
-    return `${declaration.name}${callbackError ? "<E>" : ""}(${parameters.join(", ")}): ${result}${executor}  // C: ${overload.cSignature}${foreignAvailabilityDetail(overload.metadata)}`;
+    const resourceOwnership = overload.returnType.kind === "named"
+      && overload.returnType.type.kind === "record"
+      && overload.returnType.type.resource
+      && overload.returnType.ownership
+      ? `; ${overload.returnType.ownership} native resource`
+      : "";
+    return `${declaration.name}${callbackError ? "<E>" : ""}(${parameters.join(", ")}): ${result}${executor}  // C: ${overload.cSignature}${resourceOwnership}${foreignAvailabilityDetail(overload.metadata)}`;
   }).join("\n");
 }
 
@@ -5652,6 +5737,16 @@ function foreignParameterDetail(
     const capability = parameter.type.access === "in" ? "" : `${parameter.type.access} `;
     return `${capability}${name}: ${foreignTypeName(parameter.type, module)}`;
   }
+  if (
+    parameter.type.kind === "named"
+    && parameter.type.type.kind === "record"
+    && parameter.type.type.resource
+  ) {
+    const capability = parameter.type.ownership === "consuming"
+      ? "move "
+      : parameter.type.ownership === "borrowed" ? "in " : "";
+    return `${capability}${name}: ${foreignTypeName(parameter.type, module)}`;
+  }
   if (parameter.type.kind !== "reference") return `${name}: ${foreignTypeName(parameter.type, module)}`;
   const capability = parameter.type.access === "move" ? "" : `${parameter.type.access} `;
   return `${capability}${name}: ${foreignTypeName(parameter.type, module)}`;
@@ -5700,6 +5795,9 @@ function asyncGeneratorNextDisplayType(
 }
 
 function displayType(type: string, typeDisplayNames: ReadonlyMap<string, string> = new Map()): string {
+  if (type.startsWith("__z_borrowed:")) {
+    return displayType(type.slice("__z_borrowed:".length), typeDisplayNames);
+  }
   const known = typeDisplayNames.get(type);
   if (known) return known;
   const unsafeNative = displayUnsafeNativeType(type);

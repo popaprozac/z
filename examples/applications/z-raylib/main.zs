@@ -55,6 +55,17 @@ function main(): i32 {
         a: 255,
     });
 
+    // Both values keep their exact raylib C layout. Z destroys `texture`
+    // before `image`, then closes the window through `runtime`.
+    let image = raylib.GenImageColor(72, 72, buttonColor);
+    raylib.ImageFlipVertical(inout image);
+    const texture = raylib.LoadTextureFromImage(image);
+
+    // raylib owns this global texture. Z permits lexical inspection but does
+    // not unload it or allow it to escape into aggregate storage.
+    const shapesTexture = raylib.GetShapesTexture();
+    if (!raylib.IsTextureValid(shapesTexture)) return 2;
+
     const leftMouseButton = i32(raylib.MOUSE_BUTTON_LEFT);
     let running = true;
     while (running && !raylib.WindowShouldClose()) {
@@ -71,6 +82,7 @@ function main(): i32 {
         raylib.BeginDrawing();
         raylib.ClearBackground(background);
         raylib.DrawText("Hello from Z + raylib", 268, 110, 24, textColor);
+        raylib.DrawTexture(texture, 364, 138, buttonTextColor);
         raylib.DrawRectangleRec(
             quitButton,
             insideQuitButton ? buttonHoverColor : buttonColor

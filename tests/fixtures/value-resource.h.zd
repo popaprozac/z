@@ -1,0 +1,36 @@
+declare module "value-resource.h" {
+  export type ZImage {
+    move;
+    deinit z_image_drop;
+  }
+
+  // The canonical declaration governs its Texture2D/TextureCubemap aliases.
+  export type ZTexture {
+    move;
+    deinit z_texture_drop;
+  }
+
+  export function z_image_make(width: _): _ {
+    owned;
+  }
+
+  export function z_image_copy(in image: _): _ {
+    owned;
+  }
+
+  export function z_image_width(in image: _): _;
+  export function z_image_flip(inout image: _): _;
+  export function z_image_drop(move image: _): _;
+
+  export function z_texture_make(in image: _): _ {
+    owned;
+  }
+
+  export function z_texture_default(): _ {
+    borrowed;
+  }
+
+  export function z_texture_width(in texture: _): _;
+  export function z_texture_drop(move texture: _): _;
+  export function z_resource_live_count(): _;
+}
