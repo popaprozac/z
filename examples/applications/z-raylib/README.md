@@ -29,7 +29,7 @@ On macOS, install raylib with Homebrew and run from the repository root:
 
 ```sh
 brew install raylib
-examples/applications/z-raylib/run.sh
+bun run z run examples/applications/z-raylib/main.zs
 ```
 
 The source uses the portable header spelling `"raylib.h"` rather than embedding

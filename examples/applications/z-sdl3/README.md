@@ -30,7 +30,7 @@ On macOS, install SDL3 with Homebrew and run from the repository root:
 
 ```sh
 brew install sdl3
-examples/applications/z-sdl3/run.sh
+bun run z run examples/applications/z-sdl3/main.zs
 ```
 
 `z.json` supplies the Apple Silicon Homebrew header and library directories to
